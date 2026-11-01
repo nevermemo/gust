@@ -35,6 +35,12 @@ pub struct KernelDescriptor {
     /// and the derived `PartialEq`/`Eq` now compare it too, so two descriptors that
     /// differ only in source metadata are no longer equal.
     pub source: SourceOrigin,
+    /// Precompiled artifacts of this kernel. Each is checked against the descriptor by
+    /// [`verify_artifact`](crate::artifact::verify_artifact); the backend that uses them
+    /// will call it before use (planned, slice m4.e1). The macro emits an empty slice.
+    /// Like `source`, a hand-written `KernelDescriptor { .. }` literal must add
+    /// `artifacts: &[]`, and the derived `PartialEq`/`Eq` compare it.
+    pub artifacts: &'static [crate::artifact::Artifact],
 }
 
 /// Rust source location of a kernel module and the line table that maps its

@@ -34,7 +34,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Unit suite
-        # macro and xtask tests, lint, docs-check, check-arch, check-ui, check-cpu, the gust::cpu unit tests
+        # macro and xtask tests, lint, docs-check, check-arch, check-ui, check-cpu, the gust::cpu and gust::artifact tests
         run: cargo --locked xtask test --suite Unit
       - name: Dual test build
         # `--cfg gust_dual` (D26): fmt and clippy of tests/dual, the workspace built with the cfg, and the cross-crate

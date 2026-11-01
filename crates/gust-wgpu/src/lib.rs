@@ -449,7 +449,7 @@ impl<'call, 'resources: 'call, K: Kernel, const N: usize>
 /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
 /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
 /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-/// #         slang_source: "", source: SourceOrigin::UNKNOWN,
+/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
 /// #     };
 /// # }
 /// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
@@ -477,7 +477,7 @@ impl<'call, 'resources: 'call, K: Kernel, const N: usize>
 /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
 /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
 /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-/// #         slang_source: "", source: SourceOrigin::UNKNOWN,
+/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
 /// #     };
 /// # }
 /// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
@@ -2082,6 +2082,7 @@ mod tests {
             void gpu_test_kernel(uint3 id : SV_DispatchThreadID) { if (id.x < 1) out[id.x] = 0.0; }
         "#,
         source: gust::SourceOrigin::UNKNOWN,
+        artifacts: &[],
     };
 
     fn no_adapter() -> Error {

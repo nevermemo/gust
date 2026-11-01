@@ -51,6 +51,19 @@ const CORE_LIB_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust", "--
 /// do need slangc, so the name filter carves them out for the Unit suite and CI.
 const CORE_CPU_TESTS: Step =
     Step::CountedCargo(&["test", "--locked", "-p", "gust", "--lib", "cpu::tests::"]);
+/// The `gust::artifact` tests (`verify_artifact` on the committed precompiled vector-add fixture, the identity and layout
+/// negatives, `content_key` vectors). Pure: no slangc, no process, no GPU. The integration test file is whole; the
+/// library tests are carved out by name and counted, as `cpu::tests::` is.
+const CORE_ARTIFACT_TESTS: Step =
+    Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "artifact"]);
+const CORE_ARTIFACT_UNIT_TESTS: Step = Step::CountedCargo(&[
+    "test",
+    "--locked",
+    "-p",
+    "gust",
+    "--lib",
+    "artifact::tests::",
+]);
 const CORE_DIAGNOSTICS_TESTS: Step =
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "diagnostics"]);
 const WGPU_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust-wgpu"]);
@@ -96,7 +109,7 @@ impl Suite {
     pub(crate) fn covers(self) -> &'static str {
         match self {
             Self::Unit => {
-                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests; no external tools"
+                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture); no external tools"
             }
             Self::Slangc => {
                 "Unit, plus the gust library tests and the diagnostics integration test, which compile generated Slang with slangc"
@@ -144,6 +157,8 @@ impl Suite {
             Step::CheckUi,
             Step::CheckCpu,
             CORE_CPU_TESTS,
+            CORE_ARTIFACT_UNIT_TESTS,
+            CORE_ARTIFACT_TESTS,
         ];
         match self {
             Self::Unit => unit.to_vec(),

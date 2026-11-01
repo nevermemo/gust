@@ -356,6 +356,7 @@ const HANDWRITTEN: KernelDescriptor = KernelDescriptor {
             },
         ],
     },
+    artifacts: &[],
 };
 
 /// The same kernel with a file but an empty line table: nothing maps back.

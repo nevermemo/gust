@@ -1,0 +1,5 @@
+# Committed compiler artifacts are byte-exact inputs to hash checks (the reflection JSON stores their
+# FNV-1a hashes): git must never rewrite their line endings, so they are not text.
+**/gust-artifacts/** -text
+crates/gust/tests/fixtures/precompiled/** -text
+*.spv binary

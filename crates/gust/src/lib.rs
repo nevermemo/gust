@@ -101,6 +101,7 @@
 extern crate self as gust;
 
 mod abi;
+pub mod artifact;
 pub mod cpu;
 mod descriptor;
 mod dispatch;
@@ -114,6 +115,7 @@ pub use abi::{
     GpuPod, ResourceLayout, ScalarKind, ShaderLayoutRules, StructFieldLayout, TypeLayout,
     TypeLayoutKind, pod_slice_as_bytes,
 };
+pub use artifact::{Artifact, Format};
 pub use descriptor::{
     Access, Kernel, KernelDescriptor, LineSpan, ModuleDescriptor, ParameterDescriptor,
     ParameterKind, ResourceBinding, SourceOrigin,

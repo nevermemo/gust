@@ -47,6 +47,7 @@ const fn descriptor(
         parameters,
         slang_source,
         source: SourceOrigin::UNKNOWN,
+        artifacts: &[],
     }
 }
 

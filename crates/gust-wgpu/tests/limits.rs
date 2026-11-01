@@ -89,6 +89,7 @@ fn kernel(element: Element, workgroup: u32, count: usize) -> KernelDescriptor {
         parameters: Box::leak(parameters.into_boxed_slice()),
         slang_source: Box::leak(source.into_boxed_str()),
         source: gust::SourceOrigin::UNKNOWN,
+        artifacts: &[],
     }
 }
 

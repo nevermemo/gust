@@ -185,7 +185,8 @@ and UNC paths; any other (GLOBALROOT, `Volume{GUID}`, device) is an absolute pat
 that is reduced to its file name. Adding the field is a
 public API change: hand-written `KernelDescriptor` literals add
 `source: SourceOrigin::UNKNOWN`, and the derived equality now includes the source
-metadata.
+metadata. The same holds for `artifacts: &[]` (M4, D45): a hand-written literal adds it and
+the derived equality compares it.
 
 ## Struct ABI
 
@@ -323,7 +324,10 @@ descriptor without a table compiles the clean text as before.
 ## Deliberate non-goals for this slice
 
 - Recreating Slang IR or optimization in Rust.
-- Treating generated WGSL or SPIR-V as compile-time constants in descriptors.
+- Treating generated WGSL or SPIR-V as compile-time constants in descriptors. D45 (M4) supersedes this for
+  precompiled output only: `KernelDescriptor::artifacts` can hold compiler output plus the helper's raw reflection
+  JSON, re-verified by `gust::artifact::verify_artifact`; the macro still emits `artifacts: &[]` and the Slang text
+  stays the source of truth.
 - Providing a CPU interpreter for GPU modules. There is none: the CPU twin is the
   rustc-compiled shadow body, emitted only in test and dual builds, and a production
   CPU target is a later milestone (M5).

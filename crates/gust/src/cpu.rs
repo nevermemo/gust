@@ -740,6 +740,7 @@ mod tests {
             parameters,
             slang_source: "",
             source: SourceOrigin::UNKNOWN,
+            artifacts: &[],
         }
     }
 

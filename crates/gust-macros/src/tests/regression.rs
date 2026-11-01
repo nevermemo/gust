@@ -2680,3 +2680,66 @@ fn mismatch_golden() {
         &include_str!("../../../../tests/fixtures/mismatch.slang").replace("\r\n", "\n"),
     );
 }
+
+/// The build-directory errors (a half artifact pair, an export write, a package name) carry stable codes like every
+/// other rejection `#[gpu]` reports (docs/DIAGNOSTICS.md). They are items beside a usable module, not `syn` errors, so
+/// the rendered text is asserted.
+#[test]
+fn build_directory_failures_carry_their_codes() {
+    use crate::expand::expand_with_directories;
+
+    const KERNEL: &str = "mod demo { #[kernel] pub fn run(id: SV_DispatchThreadID, \
+        mut out: RWStructuredBuffer<float>) { let i = id.x; if i < out.len() {} } }";
+    let expand = |manifest: Option<&Path>, export: Option<&Path>, package: Option<&str>| {
+        let module: syn::ItemMod = crate::diagnostics::testing::parse_str(KERNEL).unwrap();
+        expand_with_directories(module, manifest, export, package)
+            .unwrap()
+            .to_string()
+    };
+    let root = env::temp_dir().join(format!("gust-macros-codes-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap();
+
+    // A package name that cannot name a directory (E0713).
+    let records = root.join("records");
+    for package in [None, Some("a/b")] {
+        assert_rendered_code(
+            &expand(None, Some(&records), package),
+            Code::ExportPackageName,
+        );
+    }
+    assert!(!records.exists(), "nothing is written for a refused name");
+
+    // An export directory that is a file (E0712).
+    let blocker = root.join("blocker");
+    fs::write(&blocker, "a file").unwrap();
+    assert_rendered_code(
+        &expand(None, Some(&blocker), Some("demo")),
+        Code::ExportWriteFailed,
+    );
+
+    // Half a pair (E0711), only outside export mode.
+    expand(None, Some(&records), Some("demo"));
+    let key = fs::read_dir(records.join("demo"))
+        .unwrap()
+        .filter_map(|entry| {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            name.strip_suffix(".slang").map(str::to_owned)
+        })
+        .next()
+        .expect("export mode wrote the key");
+    let crate_dir = root.join("crate");
+    fs::create_dir_all(crate_dir.join("gust-artifacts")).unwrap();
+    fs::write(
+        crate_dir.join("gust-artifacts").join(format!("{key}.wgsl")),
+        "wgsl",
+    )
+    .unwrap();
+    assert_rendered_code(
+        &expand(Some(&crate_dir), None, Some("demo")),
+        Code::HalfArtifactPair,
+    );
+    let repaired = expand(Some(&crate_dir), Some(&records), Some("demo"));
+    assert!(!repaired.contains("compile_error"), "{repaired}");
+    let _ = fs::remove_dir_all(&root);
+}

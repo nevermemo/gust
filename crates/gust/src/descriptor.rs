@@ -37,7 +37,8 @@ pub struct KernelDescriptor {
     pub source: SourceOrigin,
     /// Precompiled artifacts of this kernel. Each is checked against the descriptor by
     /// [`verify_artifact`](crate::artifact::verify_artifact); the backend that uses them
-    /// will call it before use (planned, slice m4.e1). The macro emits an empty slice.
+    /// will call it before use (planned, slice m4.e1). The macro embeds the pair `gust-artifacts/<key>.wgsl` and
+    /// `<key>.wgsl.reflection.json` of the kernel crate when both exist, and emits an empty slice otherwise.
     /// Like `source`, a hand-written `KernelDescriptor { .. }` literal must add
     /// `artifacts: &[]`, and the derived `PartialEq`/`Eq` compare it.
     pub artifacts: &'static [crate::artifact::Artifact],

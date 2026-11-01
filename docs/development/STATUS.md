@@ -16,6 +16,15 @@ Codex review (rework), two Opus re-reviews and three revisions; D44 (build profi
 `GUST_PROFILE`), D45 (committed, re-verified artifacts), D46 (`cargo-gust` and the Slang pin)
 and D47 (weak compare-exchange). First: spike S1 (one precompiled, reflection-verified kernel
 running without Slang installed) in parallel with slices m4.0 and m4.h.
+M5 (CPU target and evidence breadth): plan adopted early on 2026-11-01 (owner-delegated) after a
+Codex review (adopt with changes) and one revision. D51 makes `cpu` a production profile with a
+sequential contract, and D52 sets the rules for software-adapter evidence. Slices that share no
+code or test file with M4 run beside it, and M5 closes after M4. The M6 layout spike V1 (decision
+C, a scratch probe on the RTX 5090) found:
+- vec3 must be rejected in buffers;
+- the matrix layout defaults differ between Slang's CLI and its API, so M6 pins column-major;
+- `m * v` lowers to `mul`;
+- uniforms take std140 padding.
 
 - M4 S1 (spike, local commit only): decision A. With no Slang reachable (PATH stripped,
   `GUST_SLANG_REFLECT` unset, `where slangc` failing), a consumer built with the Slang bridge
@@ -82,6 +91,16 @@ running without Slang installed) in parallel with slices m4.0 and m4.h.
   Four Gpu tests prove a readback that is pending and then ready on a busy device (warm
   pipeline, three attempts). Opus keep after one fix round; gates on main at `8640cac` (Gpu
   122 tests). wasm32 is m4.g2.
+- M4 m4.c (`dba0e97`): the macro computes the content key over the clean kernel text, byte-exact
+  with `gust::artifact::content_key` (golden vectors shared by both crates), and embeds a
+  committed `gust-artifacts/` pair with `require_artifact(true)`. Each module with a pair also
+  checks the manifest once, so a strict build without one fails with E0080. Export mode
+  (`GUST_EXPORT_DIR`) writes `<dir>/<pkg>/<key>.{slang,kernel.json}` (schema 1: parameters with
+  the full layout tree, source file and line table); element types the macro cannot lay out
+  are written as `layout: null` for `cargo gust` to fill from reflection (m4.d). A half pair is
+  E0711 outside export mode and absent inside it, so the build tool repairs it; E0712 and E0713
+  cover export write failures (including the twin-text guard) and a missing package name. Two
+  `profile-native-*` ui cases. Opus keep after one fix round; gates on main at `349a084`.
 M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),

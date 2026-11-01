@@ -2,9 +2,10 @@ use std::{fs, path::Path};
 
 use crate::{
     arch::check_arch,
+    checks::check_dual,
     docs::docs_check,
     lint::lint,
-    process::{CheckRecord, require_command, run_checked, run_checked_owned},
+    process::{CheckRecord, report_check, require_command, run_checked, run_checked_owned},
     reflect::{BuildOptions, build_slang_reflect},
     time::now_utc,
     ui::check_ui,
@@ -129,6 +130,14 @@ fn verify_inner(
     for args in cargo_calls(mode) {
         run_checked_owned(root, checks, "cargo", &args)?;
     }
+    if runs_check_dual(mode) {
+        // The dual build and the example runs with the CPU twin (D26): its cargo calls are its own, with their own
+        // target directory and rustflags, so it runs in process and is recorded like the other xtask checks.
+        let outcome = check_dual(&[])
+            .map(|()| "check-dual passed (full mode)\n".to_owned())
+            .map_err(|error| vec![error]);
+        report_check(checks, "check-dual", outcome)?;
+    }
     if matches!(mode, VerifyMode::Artifacts | VerifyMode::Full) {
         run_checked(root, checks, "spirv-val", &["--version"])?;
         let mut spv = fs::read_dir(root.join("generated-wgpu"))
@@ -245,6 +254,12 @@ pub(crate) fn cargo_calls(mode: VerifyMode) -> Vec<Vec<String>> {
         calls.push(owned(&example_run_args(example)));
     }
     calls
+}
+
+/// Whether a mode also runs `cargo xtask check-dual` (full mode, GPU): only the release gate does, after its cargo
+/// calls. It is not part of [`cargo_calls`] because it is a check of its own, not one cargo call.
+pub(crate) fn runs_check_dual(mode: VerifyMode) -> bool {
+    mode == VerifyMode::Full
 }
 
 /// The cargo call that runs one example binary and exports its SPIR-V (the Spirv suite).

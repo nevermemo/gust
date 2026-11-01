@@ -740,20 +740,96 @@ mod tests {
             .collect()
     }
 
-    /// Whether a manifest has a `[lints]`, `[lints.*]` or `[workspace.lints*]` table.
+    /// A manifest line with whitespace and quotes removed, so `[ workspace . "lints" ]` and
+    /// `workspace.lints` compare equal. A key spelled with a TOML unicode escape is not
+    /// decoded; deliberate evasion is out of scope (this crate would also have to opt in).
+    fn squeezed(text: &str) -> String {
+        text.chars()
+            .filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'')
+            .collect()
+    }
+
+    /// The squeezed name of a table header line (`[ "lints" . clippy ] # note` gives
+    /// `lints.clippy`), or `None` for any other line.
+    fn header_name(line: &str) -> Option<String> {
+        let line = line.trim();
+        line.starts_with('[')
+            .then(|| squeezed(line.trim_start_matches('[').split(']').next().unwrap_or("")))
+    }
+
+    /// Whether a manifest has a `[lints]`, `[lints.*]` or `[workspace.lints*]` table, however
+    /// the header is spaced or quoted.
     fn has_lints_table(manifest: &str) -> bool {
-        manifest.lines().any(|line| {
-            let line = line.trim_start();
-            line.starts_with("[lints") || line.starts_with("[workspace.lints")
-        })
+        manifest
+            .lines()
+            .filter_map(header_name)
+            .any(|name| name.starts_with("lints") || name.starts_with("workspace.lints"))
+    }
+
+    /// Whether this crate's own manifest has a lints table in any form: a `[lints` header
+    /// (`has_lints_table`) or a dotted or inline key such as `lints.workspace = true`. This
+    /// crate must not opt in to workspace lints, which is what keeps them away from it.
+    fn crate_manifest_has_lints(manifest: &str) -> bool {
+        has_lints_table(manifest)
+            || manifest.lines().any(|line| {
+                let key = squeezed(line.split('=').next().unwrap_or(""));
+                line.contains('=') && (key == "lints" || key.starts_with("lints."))
+            })
+    }
+
+    /// What the root manifest may not hold in lints: the one allowed table is
+    /// `[workspace.lints.rust]` with the single key `unexpected_cfgs` (the check-cfg
+    /// declaration of `cfg(gust_dual)`). Every other lints content is named: a package-level
+    /// `[lints` table, any other `[workspace.lints` table (a `clippy` group, a key under
+    /// `rust.x`), another key in the allowed table, and the dotted or inline forms of
+    /// `lints` in `[workspace]` or at the top level. A key spelled with a TOML unicode escape
+    /// (a backslash-u escape for one letter of `lints`) is not decoded and gets past this
+    /// parser; deliberate evasion is out of scope, since this crate would also have to opt in.
+    fn root_lints_offenders(manifest: &str) -> Vec<String> {
+        let mut offenders = Vec::new();
+        let mut section = String::new();
+        for line in manifest.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some(name) = header_name(line) {
+                if name.starts_with("lints")
+                    || (name.starts_with("workspace.lints") && name != "workspace.lints.rust")
+                {
+                    offenders.push(format!("table [{name}]"));
+                }
+                section = name;
+                continue;
+            }
+            let Some((key, _)) = line.split_once('=') else {
+                continue;
+            };
+            let key = squeezed(key);
+            let top = section.is_empty();
+            if section == "workspace.lints.rust" {
+                if key != "unexpected_cfgs" {
+                    offenders.push(format!("key {key} in [workspace.lints.rust]"));
+                }
+            } else if (top && (key.starts_with("workspace.lints") || key == "workspace"))
+                || key == "lints"
+                || key.starts_with("lints.")
+                || (section == "workspace" && key.starts_with("lints"))
+            {
+                offenders.push(format!("key {key} in [{section}]"));
+            }
+        }
+        offenders
     }
 
     /// Guard (iii), the allowance: nothing but this file may allow the items `clippy.toml`
     /// bars, so an error without a code cannot be created by silencing the lint. Checked:
     /// the source files of this crate (the lints by name, `clippy::style`, `clippy::all`,
-    /// `warnings`), a lints table in this crate's and the root manifest, and the config
-    /// clippy reads. Clippy takes the first `clippy.toml` or `.clippy.toml` found walking up
-    /// from the crate's directory, so the root one must exist and none may sit in
+    /// `warnings`), a lints table in this crate's manifest (any form), the lints of the root
+    /// manifest (only `[workspace.lints.rust] unexpected_cfgs` is allowed; this crate does
+    /// not opt in to it), and the config clippy reads. Clippy takes the first `clippy.toml`
+    /// or `.clippy.toml` found walking up from the crate's directory, so the root one must
+    /// exist and none may sit in
     /// `crates/gust-macros` or `crates`; `CLIPPY_CONF_DIR` must be unset. Not checked:
     /// `rustflags` in a `.cargo/config.toml` (see docs/DIAGNOSTICS.md).
     #[test]
@@ -765,12 +841,17 @@ mod tests {
             }
         }
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-        for manifest in ["crates/gust-macros/Cargo.toml", "Cargo.toml"] {
-            let text = fs::read_to_string(root.join(manifest))
-                .unwrap_or_else(|error| panic!("could not read {manifest}: {error}"));
-            if has_lints_table(&text) {
-                offenders.push(format!("{manifest}: has a lints table"));
-            }
+        let read = |manifest: &str| {
+            fs::read_to_string(root.join(manifest))
+                .unwrap_or_else(|error| panic!("could not read {manifest}: {error}"))
+        };
+        if crate_manifest_has_lints(&read("crates/gust-macros/Cargo.toml")) {
+            offenders.push("crates/gust-macros/Cargo.toml: has a lints table".to_owned());
+        }
+        for offender in root_lints_offenders(&read("Cargo.toml")) {
+            offenders.push(format!(
+                "Cargo.toml: lints beyond unexpected_cfgs: {offender}"
+            ));
         }
         assert!(
             root.join("clippy.toml").is_file(),
@@ -820,6 +901,101 @@ mod tests {
         }
         assert!(!has_lints_table(
             "# no lints table here\n[package]\nname = \"x\""
+        ));
+    }
+
+    const ROOT_OK: &str = "[workspace]\nmembers = [\"x\"]\n\n# why\n[workspace.lints.rust]\nunexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(gust_dual)'] }\n";
+
+    #[test]
+    fn the_root_may_declare_exactly_the_unexpected_cfgs_check_cfg() {
+        assert_eq!(root_lints_offenders(ROOT_OK), Vec::<String>::new());
+        assert_eq!(
+            root_lints_offenders("[workspace]\nmembers = []\n"),
+            Vec::<String>::new()
+        );
+        // Spacing and quoting of the header do not change what it is.
+        assert!(
+            root_lints_offenders("[ workspace . lints . \"rust\" ]\nunexpected_cfgs = {}\n")
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn any_other_root_lints_content_is_an_offender() {
+        for (name, extra) in [
+            (
+                "a clippy group",
+                "\n[workspace.lints.clippy]\nstyle = \"warn\"\n",
+            ),
+            (
+                "a clippy lint set to allow",
+                "\n[workspace.lints.clippy]\ndisallowed_methods = \"allow\"\n",
+            ),
+            (
+                "the bar lint under rust",
+                "disallowed_methods = \"allow\"\n",
+            ),
+            ("a second rust key", "warnings = \"allow\"\n"),
+            ("a dotted rust key", "unexpected_cfgs.level = \"allow\"\n"),
+            ("a package-level table", "\n[lints]\nworkspace = true\n"),
+            (
+                "a package-level group",
+                "\n[lints.clippy]\nstyle = \"allow\"\n",
+            ),
+            (
+                "a rust sub-table",
+                "\n[workspace.lints.rust.unexpected_cfgs]\nlevel = \"allow\"\n",
+            ),
+            (
+                "a bare lints table",
+                "\n[workspace.lints]\nrust = { warnings = \"allow\" }\n",
+            ),
+            (
+                "a spaced header",
+                "\n[ workspace . lints . clippy ]\nx = \"allow\"\n",
+            ),
+            (
+                "a quoted header",
+                "\n[workspace.\"lints\".clippy]\nx = \"allow\"\n",
+            ),
+        ] {
+            let root = format!("{ROOT_OK}{extra}");
+            assert!(!root_lints_offenders(&root).is_empty(), "{name}: {root}");
+        }
+        // Dotted and inline forms: inside [workspace] and at the top level.
+        for root in [
+            "[workspace]\nlints.clippy.disallowed_methods = \"allow\"\n",
+            "[workspace]\nlints = { clippy = { x = \"allow\" } }\n",
+            "workspace.lints.clippy.x = \"allow\"\n[workspace]\n",
+            "workspace = { lints = { clippy = { x = \"allow\" } } }\n",
+            "lints.workspace = true\n[workspace]\n",
+        ] {
+            assert!(!root_lints_offenders(root).is_empty(), "{root}");
+        }
+        // The allowed key in another table is not covered by the allowance.
+        assert!(
+            !root_lints_offenders("[workspace.lints.clippy]\nunexpected_cfgs = {}\n").is_empty()
+        );
+    }
+
+    #[test]
+    fn this_crates_manifest_may_have_no_lints_in_any_form() {
+        for manifest in [
+            "[package]\nname = \"x\"\n\n[lints]\nworkspace = true\n",
+            "lints.workspace = true\n[package]\nname = \"x\"\n",
+            "lints = { workspace = true }\n[package]\n",
+            "[lints.clippy]\nstyle = \"allow\"\n",
+            "[workspace.lints.rust]\nunexpected_cfgs = {}\n",
+            // Spaced, quoted and commented headers are the same tables.
+            "[ lints ]\nworkspace = true\n",
+            "[\"lints\"]\nworkspace = true\n",
+            "['lints'.clippy]\ndisallowed_methods = \"allow\"\n",
+            "[ lints . clippy ] # allow it\nx = \"allow\"\n",
+        ] {
+            assert!(crate_manifest_has_lints(manifest), "{manifest}");
+        }
+        assert!(!crate_manifest_has_lints(
+            "[package]\nname = \"x\"\n[lib]\nproc-macro = true\n"
         ));
     }
 

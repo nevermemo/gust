@@ -1,5 +1,7 @@
 use std::{path::PathBuf, time::Instant};
 
+#[cfg(gust_dual)]
+use gust::cpu::CpuDevice;
 use gust::{JobStatus, gpu};
 use gust_wgpu::{
     BufferDispatch, GpuBufferAccess, HeadlessDevice, TransferTiming, render_wgpu_source,
@@ -153,6 +155,80 @@ pub fn main() {
     println!("maximum absolute error: {error:e}");
     println!("persistent maximum absolute error: {persistent_error:e}");
     println!("generated wgpu source: {}", generated_source.display());
+
+    // Only the dual test build (`cargo xtask check-dual`, `--cfg gust_dual`, D26) has the twin in a binary.
+    #[cfg(gust_dual)]
+    report_twin(&input, &cpu_output, &gpu_output, cpu_elapsed);
+}
+
+/// The twin-versus-GPU bound, absolute, over the whole input domain: 48 * 2^-24, about 2.86e-6.
+///
+/// Derived from the kernel text (docs/SEMANTICS.md section 4, "Worked example"), not from a measurement. With
+/// `u = 2^-24` and `|v| <= 1` (inputs are `k / 2048 - 1`), multiplication by a power of two is exact, and:
+/// - twin, in the written order: `squared` u, `cubed` 2u, `2.0 * squared` 2u, `curved` 7u (2u + 2u plus u times
+///   its magnitude bound 3), plus `linear` 10.5u, plus `1.0` 15u;
+/// - GPU, in the worst grouping WGSL allows for the four terms: `squared` 2u, `cubed` 4u, `2.0 * squared` 4u,
+///   then three additions of partial sums of magnitude up to 3, 4 and 4.5 at 2u each, so 8u + 23u = 31u;
+/// - twin versus GPU: 15u + 31u = 46u, and 48u asserted, the extra 2u being the margin for second-order terms.
+///
+/// `main`'s inputs, `(index % 4096) / 2048 - 1`, lie inside that domain, so the dual `main` asserts the same bound.
+/// Observed maxima are printed separately and never become the tolerance.
+#[cfg(any(test, gust_dual))]
+const TWIN_VS_GPU_BOUND: f64 = 48.0 / 16_777_216.0;
+
+/// The twin on the same input as `main`'s `run_cpu` and GPU runs. It must equal `run_cpu` to the last bit (the same
+/// operations in the same order) and stay within the derived `TWIN_VS_GPU_BOUND` of the GPU result, which `main`'s
+/// inputs are inside the domain of (the ignored test `twin_matches_reference_and_gpu_within_the_derived_bound`
+/// asserts the same bound on that domain).
+/// Prints the line `cargo xtask check-dual` requires, then the twin's wall time beside `run_cpu`'s: both are
+/// single-threaded runs of the same input on one thread, and the debug profile is not a benchmark.
+#[cfg(gust_dual)]
+fn report_twin(
+    input: &[f32],
+    run_cpu_output: &[f32],
+    gpu_output: &[f32],
+    run_cpu_elapsed: std::time::Duration,
+) {
+    let device = CpuDevice::new();
+    let input_buffer = device.buffer(input);
+    let output = device.buffer(&vec![0.0f32; input.len()]);
+    let started = Instant::now();
+    polynomial::evaluate::dispatch(&device, input.len() as u32, &input_buffer, &output)
+        .expect("the CPU twin should dispatch");
+    let twin_elapsed = started.elapsed();
+    let twin = output.read();
+    let (max_ulps, _) = largest_difference(&twin, run_cpu_output);
+    assert_eq!(max_ulps, 0, "CPU twin versus run_cpu");
+    let (_, gpu_abs) = largest_difference(&twin, gpu_output);
+    assert!(
+        gpu_abs <= TWIN_VS_GPU_BOUND,
+        "CPU twin versus GPU: maximum absolute error {gpu_abs:e} exceeds the derived bound {TWIN_VS_GPU_BOUND:e}"
+    );
+    println!(
+        "CPU twin: matches ({} elements, max ULP {max_ulps})",
+        twin.len()
+    );
+    println!("CPU twin versus GPU: maximum absolute error {gpu_abs:e}");
+    let profile = if cfg!(debug_assertions) {
+        "debug profile"
+    } else {
+        "release profile"
+    };
+    println!(
+        "CPU twin time: {twin_elapsed:?} (run_cpu: {run_cpu_elapsed:?}; {profile}, single-threaded, not a benchmark)"
+    );
+}
+
+/// The largest distance between two results in ULPs and in absolute terms (computed in `f64`).
+#[cfg(any(test, gust_dual))]
+fn largest_difference(left: &[f32], right: &[f32]) -> (u64, f64) {
+    assert_eq!(left.len(), right.len());
+    left.iter().zip(right).fold((0, 0.0), |(ulp, abs), (l, r)| {
+        (
+            ulp.max(gust::cpu::ulps(*l, *r)),
+            abs.max((f64::from(*l) - f64::from(*r)).abs()),
+        )
+    })
 }
 
 fn run_cpu(input: &[f32], output: &mut [f32]) {
@@ -303,22 +379,9 @@ fn export_generated_source() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
-    use gust::cpu::{CpuDevice, Error as CpuError, ulps};
+    use gust::cpu::{CpuDevice, Error as CpuError};
 
     use super::*;
-
-    /// The twin-versus-GPU bound, absolute, over the whole input domain: 48 * 2^-24, about 2.86e-6.
-    ///
-    /// Derived from the kernel text (docs/SEMANTICS.md section 4, "Worked example"), not from a measurement. With
-    /// `u = 2^-24` and `|v| <= 1` (inputs are `k / 2048 - 1`), multiplication by a power of two is exact, and:
-    /// - twin, in the written order: `squared` u, `cubed` 2u, `2.0 * squared` 2u, `curved` 7u (2u + 2u plus u times
-    ///   its magnitude bound 3), plus `linear` 10.5u, plus `1.0` 15u;
-    /// - GPU, in the worst grouping WGSL allows for the four terms: `squared` 2u, `cubed` 4u, `2.0 * squared` 4u,
-    ///   then three additions of partial sums of magnitude up to 3, 4 and 4.5 at 2u each, so 8u + 23u = 31u;
-    /// - twin versus GPU: 15u + 31u = 46u, and 48u asserted, the extra 2u being the margin for second-order terms.
-    ///
-    /// Observed maxima are printed separately by the test and never become the tolerance.
-    const TWIN_VS_GPU_BOUND: f64 = 48.0 / 16_777_216.0;
 
     /// `k / 2048 - 1` for `k` in `0..4096`, the input domain of `main`.
     fn domain() -> Vec<f32> {
@@ -339,17 +402,6 @@ mod tests {
         let output = device.buffer(&vec![0.0f32; input.len()]);
         polynomial::evaluate::dispatch(&device, input.len() as u32, &input_buffer, &output)?;
         Ok(output.read())
-    }
-
-    /// The largest distance between two results in ULPs and in absolute terms (computed in `f64`).
-    fn largest_difference(left: &[f32], right: &[f32]) -> (u64, f64) {
-        assert_eq!(left.len(), right.len());
-        left.iter().zip(right).fold((0, 0.0), |(ulp, abs), (l, r)| {
-            (
-                ulp.max(ulps(*l, *r)),
-                abs.max((f64::from(*l) - f64::from(*r)).abs()),
-            )
-        })
     }
 
     #[test]

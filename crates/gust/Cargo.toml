@@ -8,3 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 gust-macros.workspace = true
+
+[lints]
+workspace = true

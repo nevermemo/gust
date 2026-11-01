@@ -6,17 +6,23 @@ use std::{
 
 use super::{
     DUAL_DIR, DUAL_RUSTFLAGS, DUAL_TESTS, DualKind, DualMode, DualStep, RUSTFLAGS_VARIABLES,
-    dual_command, dual_dir_under, dual_problems, dual_steps, explain_check, parse_dual_args,
-    refuse_preset_rustflags, rustflags_config_files, target_rustflags_variables, tests_not_ok,
+    dual_command, dual_dir_under, dual_problems, dual_run_steps, dual_steps, dual_steps_for,
+    explain_check, parse_dual_args, parse_twin_match, refuse_preset_rustflags,
+    rustflags_config_files, target_rustflags_variables, tests_not_ok, twin_run_problems,
 };
-use crate::{ui::parse_expected, workspace::workspace_root};
+use crate::{
+    ui::parse_expected,
+    verify::{VerifyMode, runs_check_dual},
+    workspace::workspace_root,
+};
 
 fn owned(args: &[&str]) -> Vec<String> {
     args.iter().map(|arg| (*arg).to_owned()).collect()
 }
 
+/// Every step of the full mode: the `--check-only` steps, then the example runs.
 fn steps() -> Vec<DualStep> {
-    dual_steps("TARGET")
+    dual_steps_for(DualMode::Full, "TARGET")
 }
 
 fn step(id: &str) -> DualStep {
@@ -132,11 +138,17 @@ fn the_spawned_child_has_no_rustflags_variable_but_the_cfg_on_the_cfg_steps() {
     assert_eq!(
         cfg,
         [
+            ("fmt", false),
             ("build", true),
+            ("clippy", true),
+            ("clippy-examples", true),
             ("E1", false),
             ("E2-compile", true),
             ("E2-run", true),
-            ("E3", false)
+            ("E3", false),
+            ("run-vector-add", true),
+            ("run-polynomial", true),
+            ("run-vector-add-no-cfg", false),
         ]
     );
     let os = |text: &str| OsString::from(text);
@@ -199,9 +211,49 @@ fn the_argument_lists_are_exactly_these() {
     let manifest = "tests/dual/Cargo.toml";
     let tail = ["--target-dir", "TARGET"];
     let expected: Vec<(&str, Vec<String>)> = vec![
+        // `cargo fmt` builds nothing: no `--locked`, no target directory.
+        (
+            "fmt",
+            owned(&["fmt", "--manifest-path", manifest, "--all", "--", "--check"]),
+        ),
         (
             "build",
             owned(&["build", "--locked", "--workspace", "--all-targets"]),
+        ),
+        // The target directory goes before the `--` that starts the clippy arguments.
+        (
+            "clippy",
+            owned(&[
+                "clippy",
+                "--locked",
+                "--manifest-path",
+                manifest,
+                "--workspace",
+                "--all-targets",
+                "--target-dir",
+                "TARGET",
+                "--",
+                "-D",
+                "warnings",
+            ]),
+        ),
+        // The same, for the two examples with a dual `main`, in the root workspace.
+        (
+            "clippy-examples",
+            owned(&[
+                "clippy",
+                "--locked",
+                "-p",
+                "vector-add",
+                "-p",
+                "polynomial",
+                "--all-targets",
+                "--target-dir",
+                "TARGET",
+                "--",
+                "-D",
+                "warnings",
+            ]),
         ),
         (
             "E1",
@@ -263,11 +315,16 @@ fn the_argument_lists_are_exactly_these() {
             ]),
         ),
     ];
-    let actual: Vec<(&str, Vec<String>)> = steps()
+    let actual: Vec<(&str, Vec<String>)> = dual_steps("TARGET")
         .into_iter()
         .map(|step| {
             let mut args = step.args.clone();
-            assert_eq!(args.split_off(args.len() - 2), tail, "{}", step.id);
+            // Where the directory sits depends on the step: last, before a `--` (clippy, listed whole above), or
+            // nowhere (fmt).
+            match step.id {
+                "fmt" | "clippy" | "clippy-examples" => {}
+                _ => assert_eq!(args.split_off(args.len() - 2), tail, "{}", step.id),
+            }
             (step.id, args)
         })
         .collect();
@@ -275,8 +332,91 @@ fn the_argument_lists_are_exactly_these() {
 }
 
 #[test]
+fn the_example_runs_are_exactly_these() {
+    let tail = ["--target-dir", "TARGET"];
+    let actual: Vec<(&str, Vec<String>, bool, DualKind)> = dual_run_steps("TARGET")
+        .into_iter()
+        .map(|step| {
+            let mut args = step.args;
+            assert_eq!(args.split_off(args.len() - 2), tail, "{}", step.id);
+            (step.id, args, step.cfg, step.kind)
+        })
+        .collect();
+    assert_eq!(
+        actual,
+        [
+            (
+                "run-vector-add",
+                owned(&["run", "--locked", "-p", "vector-add"]),
+                true,
+                DualKind::Runs {
+                    twin: true,
+                    also: &[]
+                }
+            ),
+            (
+                "run-polynomial",
+                owned(&["run", "--locked", "-p", "polynomial"]),
+                true,
+                DualKind::Runs {
+                    twin: true,
+                    also: &["CPU twin time: ", "debug profile, single-threaded"]
+                }
+            ),
+            (
+                "run-vector-add-no-cfg",
+                owned(&["run", "--locked", "-p", "vector-add"]),
+                false,
+                DualKind::Runs {
+                    twin: false,
+                    also: &[]
+                }
+            ),
+        ]
+    );
+}
+
+#[test]
+fn the_check_only_mode_has_no_example_run_and_the_full_mode_adds_them_last() {
+    let ids = |mode| -> Vec<&'static str> {
+        dual_steps_for(mode, "TARGET")
+            .iter()
+            .map(|step| step.id)
+            .collect()
+    };
+    let check_only = ids(DualMode::CheckOnly);
+    assert_eq!(
+        check_only,
+        [
+            "fmt",
+            "build",
+            "clippy",
+            "clippy-examples",
+            "E1",
+            "E2-compile",
+            "E2-run",
+            "E3",
+        ]
+    );
+    let mut full = check_only.clone();
+    full.extend(["run-vector-add", "run-polynomial", "run-vector-add-no-cfg"]);
+    assert_eq!(ids(DualMode::Full), full);
+    // CI's mode runs no example, so it needs no GPU: nothing in it is a `cargo run`.
+    for step in dual_steps_for(DualMode::CheckOnly, "TARGET") {
+        assert!(!matches!(step.kind, DualKind::Runs { .. }), "{}", step.id);
+        assert_ne!(step.args[0], "run", "{}", step.id);
+    }
+}
+
+#[test]
 fn every_cargo_call_of_check_dual_is_locked() {
     for step in steps() {
+        if step.id == "fmt" {
+            // `cargo fmt` builds nothing and takes no `--locked`; it is the only step without it.
+            assert_eq!(step.args[0], "fmt");
+            assert!(!step.args.contains(&"--locked".to_owned()));
+            continue;
+        }
         assert_eq!(
             step.args.iter().filter(|arg| *arg == "--locked").count(),
             1,
@@ -306,18 +446,59 @@ fn the_dual_build_has_its_own_target_directory_under_the_normal_one() {
         dual_dir_under(root, &root.join("target")),
         Path::new("/repo/target/dual")
     );
-    // Every step passes that directory, last.
-    for step in dual_steps("/cache/target/dual") {
-        let last = &step.args[step.args.len() - 2..];
-        assert_eq!(last, ["--target-dir", "/cache/target/dual"], "{}", step.id);
+    // Every step that builds passes that directory exactly once (clippy before its `--`, the rest last); fmt builds
+    // nothing.
+    for step in dual_steps_for(DualMode::Full, "/cache/target/dual") {
+        let pairs: Vec<&[String]> = step
+            .args
+            .windows(2)
+            .filter(|pair| pair[0] == "--target-dir")
+            .collect();
+        if step.id == "fmt" {
+            assert!(pairs.is_empty(), "{}", step.id);
+            continue;
+        }
+        assert_eq!(pairs.len(), 1, "{}", step.id);
+        assert_eq!(pairs[0][1], "/cache/target/dual", "{}", step.id);
+        // The shown command line names a placeholder, never the directory itself.
+        assert!(
+            step.shown().contains("--target-dir <target>/dual"),
+            "{}",
+            step.id
+        );
+        assert!(!step.shown().contains("/cache"), "{}", step.shown());
+    }
+    // A clippy argument list keeps `-D warnings` after the `--` and the directory before it.
+    for id in ["clippy", "clippy-examples"] {
+        let clippy = step(id).shown();
+        assert!(
+            clippy.ends_with("--target-dir <target>/dual -- -D warnings"),
+            "{clippy}"
+        );
+        assert!(step(id).cfg, "{id}");
     }
 }
 
 #[test]
-fn the_steps_run_in_the_order_build_e1_e2_e3_and_e2_is_judged_by_its_tests() {
-    let ids: Vec<&str> = steps().iter().map(|step| step.id).collect();
-    assert_eq!(ids, ["build", "E1", "E2-compile", "E2-run", "E3"]);
+fn the_steps_run_in_the_order_fmt_build_clippy_e1_e2_e3_and_e2_is_judged_by_its_tests() {
+    let ids: Vec<&str> = dual_steps("TARGET").iter().map(|step| step.id).collect();
+    assert_eq!(
+        ids,
+        [
+            "fmt",
+            "build",
+            "clippy",
+            "clippy-examples",
+            "E1",
+            "E2-compile",
+            "E2-run",
+            "E3",
+        ]
+    );
+    assert_eq!(step("fmt").kind, DualKind::Build);
     assert_eq!(step("build").kind, DualKind::Build);
+    assert_eq!(step("clippy").kind, DualKind::Build);
+    assert_eq!(step("clippy-examples").kind, DualKind::Build);
     assert_eq!(step("E2-compile").kind, DualKind::Compiles);
     assert_eq!(step("E2-run").kind, DualKind::Passes { tests: DUAL_TESTS });
     assert_eq!(
@@ -646,7 +827,17 @@ fn e1_and_e3_reject_a_second_error_another_code_another_line_or_a_build_that_suc
 #[test]
 fn a_step_without_an_expectation_file_has_no_problems_to_judge() {
     let root = workspace_root().unwrap();
-    for id in ["build", "E2-compile", "E2-run"] {
+    for id in [
+        "fmt",
+        "build",
+        "clippy",
+        "clippy-examples",
+        "E2-compile",
+        "E2-run",
+        "run-vector-add",
+        "run-polynomial",
+        "run-vector-add-no-cfg",
+    ] {
         let error = dual_problems(&root, &step(id), false, "", "").unwrap_err();
         assert!(error.contains("has no expectation file"), "{error}");
     }
@@ -656,4 +847,243 @@ fn a_step_without_an_expectation_file_has_no_problems_to_judge() {
 fn check_dual_is_explained() {
     assert!(explain_check(Some("check-dual")).is_ok());
     assert!(explain_check(Some("all")).is_ok());
+}
+
+// ---- the example runs of the full mode ----
+
+const MATCH: &str = "CPU twin: matches (262144 elements, max ULP 0)";
+const TIME: &str =
+    "CPU twin time: 1.5s (run_cpu: 0.5s; debug profile, single-threaded, not a benchmark)";
+
+#[test]
+fn the_twin_line_is_parsed_strictly() {
+    assert_eq!(parse_twin_match(MATCH), Some((262_144, 0)));
+    assert_eq!(
+        parse_twin_match("CPU twin: matches (4 elements, max ULP 17)"),
+        Some((4, 17))
+    );
+    for bad in [
+        "",
+        "CPU twin: matches",
+        "CPU twin: matches (4 elements)",
+        "CPU twin: matches (4 elements, max ULP )",
+        "CPU twin: matches ( elements, max ULP 0)",
+        "CPU twin: matches (-4 elements, max ULP 0)",
+        "CPU twin: matches (4 elements, max ULP 0.5)",
+        "CPU twin: matches (4 elements, max ULP 0) ",
+        " CPU twin: matches (4 elements, max ULP 0)",
+        "cpu twin: matches (4 elements, max ULP 0)",
+        "CPU twin: mismatch (4 elements, max ULP 0)",
+        "CPU twin: matches (4 element, max ULP 0)",
+        "CPU twin: matches (99999999999999999999999 elements, max ULP 0)",
+    ] {
+        assert_eq!(parse_twin_match(bad), None, "{bad:?}");
+    }
+}
+
+#[test]
+fn a_dual_run_must_print_exactly_one_matching_line_with_elements() {
+    let also = ["CPU twin time: ", "debug profile, single-threaded"];
+    let output =
+        format!("Polynomial benchmark\nelements: 262144\n{MATCH}\n{TIME}\nCPU is 3x faster\n");
+    assert_eq!(
+        twin_run_problems("run-polynomial", true, &also, &output),
+        Vec::<String>::new()
+    );
+    // Windows line endings and surrounding blanks do not matter.
+    let crlf = output.replace('\n', "\r\n");
+    assert!(twin_run_problems("run-polynomial", true, &also, &crlf).is_empty());
+    // No twin line: the cfg did not reach the example, and the message says so.
+    let problems = twin_run_problems("run-vector-add", true, &[], "GPU result: [11.0]\n");
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("printed no `CPU twin: matches"),
+        "{problems:?}"
+    );
+    assert!(problems[0].contains("run-vector-add"), "{problems:?}");
+    // A twin line that does not parse, with the wrong word or a wrong shape, is no match.
+    for bad in [
+        "CPU twin: mismatch (4 elements, max ULP 0)",
+        "CPU twin: matches (4 elements)",
+        "CPU twin matches (4 elements, max ULP 0)",
+    ] {
+        let problems = twin_run_problems("run-vector-add", true, &[], bad);
+        assert_eq!(problems.len(), 1, "{bad}: {problems:?}");
+    }
+    // Zero elements prove nothing; two lines are ambiguous.
+    let zero = twin_run_problems(
+        "run-vector-add",
+        true,
+        &[],
+        "CPU twin: matches (0 elements, max ULP 0)",
+    );
+    assert!(zero[0].contains("0 elements"), "{zero:?}");
+    let twice = format!("{MATCH}\n{MATCH}\n");
+    let problems = twin_run_problems("run-vector-add", true, &[], &twice);
+    assert!(
+        problems[0].contains("2 `CPU twin: matches` lines"),
+        "{problems:?}"
+    );
+    // Colour codes around the text are ignored like in E2's test names.
+    let colored = format!("\u{1b}[32m{MATCH}\u{1b}[0m\n");
+    assert!(twin_run_problems("run-vector-add", true, &[], &colored).is_empty());
+}
+
+#[test]
+fn polynomial_must_also_print_the_labelled_twin_time() {
+    let also = ["CPU twin time: ", "debug profile, single-threaded"];
+    // Without the time line, and with a time line that lost its label, each is a problem of its own.
+    let problems = twin_run_problems("run-polynomial", true, &also, MATCH);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(problems[0].contains("CPU twin time: "), "{problems:?}");
+    let unlabelled = format!("{MATCH}\nCPU twin time: 1.5s (run_cpu: 0.5s)\n");
+    let problems = twin_run_problems("run-polynomial", true, &also, &unlabelled);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("debug profile, single-threaded"),
+        "{problems:?}"
+    );
+    // The label on a line that does not mention the twin does not count.
+    let elsewhere = format!("{MATCH}\nCPU twin time: 1.5s\ndebug profile, single-threaded\n");
+    assert_eq!(
+        twin_run_problems("run-polynomial", true, &also, &elsewhere).len(),
+        1
+    );
+}
+
+#[test]
+fn a_build_without_the_cfg_must_not_mention_the_twin_at_all() {
+    let plain = "Rust -> Slang -> WGSL -> wgpu (plus SPIR-V export)\nGPU result: [11.0, 22.0]\n";
+    assert!(twin_run_problems("run-vector-add-no-cfg", false, &[], plain).is_empty());
+    assert!(twin_run_problems("run-vector-add-no-cfg", false, &[], "").is_empty());
+    for leaked in [MATCH, TIME, "note: the CPU twin was skipped"] {
+        let output = format!("{plain}{leaked}\n");
+        let problems = twin_run_problems("run-vector-add-no-cfg", false, &[], &output);
+        assert_eq!(problems.len(), 1, "{leaked}: {problems:?}");
+        assert!(
+            problems[0].contains("without --cfg gust_dual"),
+            "{problems:?}"
+        );
+        assert!(problems[0].contains(leaked), "{problems:?}");
+    }
+}
+
+#[test]
+fn only_the_full_gate_runs_check_dual() {
+    for mode in [
+        VerifyMode::Smoke,
+        VerifyMode::Fast,
+        VerifyMode::Gpu,
+        VerifyMode::Examples,
+        VerifyMode::Artifacts,
+    ] {
+        assert!(!runs_check_dual(mode), "{mode:?}");
+    }
+    assert!(runs_check_dual(VerifyMode::Full));
+}
+
+// ---- the manifests, the examples and CI ----
+
+fn repo_file(path: &str) -> String {
+    let root = workspace_root().unwrap();
+    fs::read_to_string(root.join(path))
+        .unwrap_or_else(|error| panic!("{path}: {error}"))
+        .replace("\r\n", "\n")
+}
+
+#[test]
+fn the_workspace_declares_the_cfg_and_every_member_that_can_write_it_opts_in() {
+    let root = repo_file("Cargo.toml");
+    assert!(
+        root.contains(
+            "[workspace.lints.rust]\nunexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(gust_dual)'] }\n"
+        ),
+        "{root}"
+    );
+    let opts_in = |manifest: &str| manifest.contains("\n[lints]\nworkspace = true\n");
+    // The members are read from the root `members` array, so a new member cannot be missed.
+    let array = root
+        .split_once("members = [")
+        .and_then(|(_, rest)| rest.split_once(']'))
+        .map(|(array, _)| array)
+        .expect(&root);
+    let members: Vec<&str> = array
+        .split('"')
+        .skip(1)
+        .step_by(2)
+        .filter(|member| *member != "crates/gust-macros")
+        .collect();
+    assert!(members.len() >= 11, "{members:?}");
+    for must in [
+        "crates/gust",
+        "crates/gust-wgpu",
+        "xtask",
+        "examples/vector-add",
+    ] {
+        assert!(members.contains(&must), "{must} not in {members:?}");
+    }
+    for member in &members {
+        let manifest = format!("{member}/Cargo.toml");
+        assert!(
+            opts_in(&repo_file(&manifest)),
+            "{manifest} lacks [lints] workspace = true"
+        );
+    }
+    // The proc-macro crate only emits the cfg as tokens into the user's crate and never evaluates it.
+    assert!(!opts_in(&repo_file("crates/gust-macros/Cargo.toml")));
+}
+
+#[test]
+fn both_example_mains_print_the_twin_line_only_under_the_cfg() {
+    for (example, also) in [
+        ("vector-add", None),
+        ("polynomial", Some("CPU twin time: ")),
+    ] {
+        let source = repo_file(&format!("examples/{example}/src/app.rs"));
+        // The one call from `main` is behind `#[cfg(gust_dual)]`, and so is the function that prints.
+        assert!(
+            source.contains("    #[cfg(gust_dual)]\n    report_twin("),
+            "{example}"
+        );
+        assert!(
+            source.contains("#[cfg(gust_dual)]\nfn report_twin("),
+            "{example}"
+        );
+        assert_eq!(
+            source
+                .matches("\"CPU twin: matches ({} elements, max ULP {max_ulps})\"")
+                .count(),
+            1,
+            "{example}"
+        );
+        if let Some(also) = also {
+            assert!(source.contains(also), "{example}");
+            assert!(source.contains("single-threaded"), "{example}");
+        }
+    }
+}
+
+#[test]
+fn ci_runs_check_dual_check_only_in_the_unit_job() {
+    let ci = repo_file(".github/workflows/ci.yml");
+    let unit = ci.split("\n  msrv:").next().unwrap();
+    let name = unit.find("      - name: Dual test build\n").expect(unit);
+    let run = unit
+        .find("        run: cargo xtask check-dual --check-only\n")
+        .expect(unit);
+    assert!(name < run, "{unit}");
+    // The step is the last of the job ...
+    let after = &unit[run + 1..];
+    assert!(!after.contains("\n      - "), "{after}");
+    // ... and its run line follows its name directly or after comments only.
+    let between = &unit[name..run];
+    assert!(
+        between
+            .lines()
+            .skip(1)
+            .all(|line| line.trim_start().starts_with('#')),
+        "{between}"
+    );
+    // One step, in the unit job only, and never the GPU mode (the runner has none).
+    assert_eq!(ci.matches("check-dual").count(), 1, "{ci}");
 }

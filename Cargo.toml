@@ -31,3 +31,10 @@ proc-macro2 = { version = "1.0", features = ["span-locations"] }
 quote = "1.0"
 syn = { version = "2.0", features = ["full", "extra-traits", "visit"] }
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "vulkan", "wgsl"] }
+
+# `cfg(gust_dual)` is set by `cargo xtask check-dual` through CARGO_ENCODED_RUSTFLAGS (D26), not by cargo, so rustc's
+# check-cfg must be told about it or every hand-written use warns (and fails clippy -D warnings). Every member that
+# can write such a cfg opts in with `[lints] workspace = true`; `gust-macros`, a proc-macro crate that only emits the
+# cfg as tokens into the user's crate and never evaluates it, does not.
+[workspace.lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

@@ -4,8 +4,9 @@
 //! Authors who export need Slang; consumers and production builds never call this module. The manager downloads the
 //! release archive from Slang's own GitHub release with `curl -fsSL`, checks its SHA-256 (the std-only implementation
 //! in `sha256.rs`) before anything is extracted, extracts it with `tar -xf` into a directory that is private to the
-//! process, and renames that directory into place. The archive layout is kept, so the bundle's own `LICENSE` stays
-//! beside the binaries (`docs/development/LICENSES-SLANG.md` records the audit of the three archives).
+//! process, and renames that directory into place. The archive layout is kept, so the bundle's own `LICENSE`,
+//! `LICENSES/` and `third-party-notices/` stay beside the binaries (`docs/development/LICENSES-SLANG.md` records the
+//! audit of the three archives).
 //!
 //! # Where things live
 //!
@@ -28,8 +29,8 @@
 //! Anything else is an error that names `cargo gust slang install` and the manual download URL. A `slangc` on `PATH`
 //! of another version is accepted only with `--allow-slang-mismatch`, and then it is printed every time. A directory
 //! in step 1 or 2 whose `slangc` reports another version is never substituted: it is a hard error. The pin is the
-//! exact version or a listed validated build ([`VALIDATED_BUILDS`]); `build` and `locate` print a note when the
-//! located version is not exactly the pin.
+//! exact version or a listed validated build ([`VALIDATED_BUILDS`], empty for 2026.20); `build` and `locate` print a
+//! note when the located version is not exactly the pin.
 //!
 //! # Known limitations
 //!
@@ -53,14 +54,20 @@ use crate::{
     tools::{executable_name, find_on_path},
 };
 
-/// The Slang release `cargo gust` works with. It is the version `cargo xtask check-full` validated (STATUS.md
-/// records the run); the pin moves only with a new `check-full`. Moving it into `gust` is an M4 close note.
-pub(crate) const SLANG_VERSION: &str = "2026.13.1";
+/// The Slang release `cargo gust` works with. Slice m4.r ran the Gpu, Slangc, Spirv and Reflect suites,
+/// `check-artifacts`, `check-precompiled` and `check-web` on it (STATUS.md records the run); `cargo xtask check-full`
+/// runs at the M4 close. The pin moves only with a new run of those. `cargo xtask` reads this constant and
+/// [`VALIDATED_BUILDS`] from this file (xtask/src/verify.rs, `PinRule`), so one rule serves both tools. Moving the
+/// constant into `gust` is an M4 close note.
+pub(crate) const SLANG_VERSION: &str = "2026.20";
 
-/// Other `slangc -version` tags that count as the pin. The release archive prints the bare pin; this is the source
-/// build that `cargo xtask check-full` validated on the owner's machine (the VulkanSDK `slangc`, a build one commit
-/// past the release tag). Adding a tag here is a decision, like moving the pin: no pattern admits unlisted builds.
-pub(crate) const VALIDATED_BUILDS: &[&str] = &["2026.13.1-1-g84792eb15"];
+/// Other `slangc -version` tags that count as the pin. The release archive prints the bare pin, so the list ships
+/// empty: 2026.20 was validated with the release archive itself. The mechanism stays for a later source build that
+/// `cargo xtask check-full` validates (the pin rule takes the list as a parameter, so tests exercise it with a
+/// synthetic tag). Adding a tag here is a decision, like moving the pin: no pattern admits unlisted builds. Keep the
+/// list a plain array of string literals: xtask parses it from this source (the tags of the list, with comments
+/// ignored).
+pub(crate) const VALIDATED_BUILDS: &[&str] = &[];
 
 /// The variable that names the cache root.
 pub(crate) const HOME_VARIABLE: &str = "GUST_SLANG_HOME";
@@ -87,25 +94,25 @@ pub(crate) const ASSETS: &[Asset] = &[
         version: SLANG_VERSION,
         os: "windows",
         arch: "x86_64",
-        file: "slang-2026.13.1-windows-x86_64.zip",
-        sha256: "fa1c9bcab2cdcd3626f7a1e250dd35d606c1b84745b64627f1dd63fca3746a70",
-        size: 71_752_959,
+        file: "slang-2026.20-windows-x86_64.zip",
+        sha256: "e6dd32bbddf1720ebb4e679d55e9635ce792865a5bd84f3d2cd9af28647c0174",
+        size: 63_658_255,
     },
     Asset {
         version: SLANG_VERSION,
         os: "linux",
         arch: "x86_64",
-        file: "slang-2026.13.1-linux-x86_64.tar.gz",
-        sha256: "c1ed948af94c6fd2034cc0f82f6892b8b287d5362939758cb4955676f26d893e",
-        size: 77_115_667,
+        file: "slang-2026.20-linux-x86_64.tar.gz",
+        sha256: "e863e568c204810d6e8bc31852f056aef6763c55ea9925db2db7affa060347c9",
+        size: 83_407_874,
     },
     Asset {
         version: SLANG_VERSION,
         os: "macos",
         arch: "aarch64",
-        file: "slang-2026.13.1-macos-aarch64.tar.gz",
-        sha256: "cf58b42ba87f66f58e0de297da57f4a5c92d00b7e7f38a708d2a4244abd8d003",
-        size: 56_400_177,
+        file: "slang-2026.20-macos-aarch64.tar.gz",
+        sha256: "07fa8833fdbb343c3674c84fdd885910f495f3daaaa0c732b32980151e8b58c4",
+        size: 62_779_895,
     },
 ];
 
@@ -126,12 +133,13 @@ pub(crate) fn download_url(asset: &Asset) -> String {
 
 /// Whether the version `slangc -version` printed is the pin.
 ///
-/// The rule is exact equality, or a tag in [`VALIDATED_BUILDS`] that belongs to this pin. The release archive prints
-/// the bare `2026.13.1`; the Slang that `check-full` validated is a source build that prints
-/// `2026.13.1-1-g84792eb15`. Any other build of the same base version (for example `2026.13.1-2-gdeadbee`), a
-/// different base version or a prefix of the pin does not match.
-pub(crate) fn matches_pin(pin: &str, reported: &str) -> bool {
-    reported == pin || (reported.starts_with(pin) && VALIDATED_BUILDS.contains(&reported))
+/// The rule is exact equality, or a tag in `validated` that belongs to this pin. The release archive prints the bare
+/// pin (`2026.20`); a source build that `check-full` validated would print a `git describe` tag such as
+/// `2026.20-1-gabcdef012` and be listed in [`VALIDATED_BUILDS`], which every caller outside the tests passes as
+/// `validated`. Any other build of the same base version, a different base version or a prefix of the pin does not
+/// match.
+pub(crate) fn matches_pin(pin: &str, reported: &str, validated: &[&str]) -> bool {
+    reported == pin || (reported.starts_with(pin) && validated.contains(&reported))
 }
 
 /// The part of the process environment the manager reads. Tests build it by hand.
@@ -308,6 +316,16 @@ pub(crate) fn locate(
     allow_mismatch: bool,
     version_of: &dyn Fn(&Path) -> Result<String, String>,
 ) -> Result<Located, String> {
+    locate_with(env, allow_mismatch, version_of, VALIDATED_BUILDS)
+}
+
+/// [`locate`] with the validated builds given, so the tests can exercise the mechanism with a synthetic tag.
+pub(crate) fn locate_with(
+    env: &Env,
+    allow_mismatch: bool,
+    version_of: &dyn Fn(&Path) -> Result<String, String>,
+    validated: &[&str],
+) -> Result<Located, String> {
     // `GUST_SLANG_HOME`, when set, is the only cache root (section 2.5 reads "or"): an install elsewhere is not looked at.
     let root = match explicit_root(env)? {
         Some(root) => Some((Source::Home, root)),
@@ -325,7 +343,7 @@ pub(crate) fn locate(
                 install_dir.display()
             )
         })?;
-        if !matches_pin(SLANG_VERSION, &version) {
+        if !matches_pin(SLANG_VERSION, &version, validated) {
             return Err(format!(
                 "{} reports Slang `{version}`, not {SLANG_VERSION}; remove {} and run `cargo gust slang install`",
                 slangc.display(),
@@ -353,7 +371,7 @@ pub(crate) fn locate(
             install_hint(env)
         )
     })?;
-    let pinned = matches_pin(SLANG_VERSION, &version);
+    let pinned = matches_pin(SLANG_VERSION, &version, validated);
     if !pinned && !allow_mismatch {
         return Err(format!(
             "the slangc on PATH ({}) is Slang `{version}`, not {SLANG_VERSION}: {}, or pass --allow-slang-mismatch to use it anyway",
@@ -370,19 +388,28 @@ pub(crate) fn locate(
     })
 }
 
-/// The licence and notice files beside the binaries of a managed install (`LICENSE`, and any notice file a later
-/// release adds), sorted by name.
+/// The directories of a release that hold licence texts: 2026.20 ships `LICENSES/` (the SPDX texts of its own and its
+/// components' licences) and `third-party-notices/` (one notice file per bundled component) beside `LICENSE`.
+const NOTICE_DIRECTORIES: &[&str] = &["licenses", "third-party-notices"];
+
+/// The licence and notice paths beside the binaries of a managed install, sorted by name: `LICENSE` and any notice
+/// file a later release adds, and the [`NOTICE_DIRECTORIES`] (listed as directories, not expanded).
 pub(crate) fn notice_files(install_dir: &Path) -> Vec<PathBuf> {
     let mut found: Vec<PathBuf> = fs::read_dir(install_dir)
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|entry| entry.path().is_file())
         .filter(|entry| {
+            let path = entry.path();
             let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-            ["license", "licence", "notice", "copying", "third"]
-                .iter()
-                .any(|prefix| name.starts_with(prefix))
+            if path.is_dir() {
+                NOTICE_DIRECTORIES.contains(&name.as_str())
+            } else {
+                path.is_file()
+                    && ["license", "licence", "notice", "copying", "third"]
+                        .iter()
+                        .any(|prefix| name.starts_with(prefix))
+            }
         })
         .map(|entry| entry.path())
         .collect();

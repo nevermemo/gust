@@ -1,10 +1,12 @@
 use super::{
-    GPU_SUITE_CALL, GPU_SUITE_PIN, GpuSuitePin, HelperPlan, VerifyMode, cargo_calls,
-    check_gpu_suite_counts, check_helper_tag, environment_helper, guard_call, helper_plan,
-    helper_tag, helper_version_output, pins_gpu_counts, printed_text,
+    GPU_SUITE_CALL, GPU_SUITE_PIN, GpuSuitePin, HelperPlan, PinRule, VerifyMode, cargo_calls,
+    check_gpu_suite_counts, check_helper_pin, check_helper_tag, check_slangc_pin,
+    environment_helper, guard_call, helper_plan, helper_tag, helper_version_output, pin_rule,
+    pin_rule_of, pins_gpu_counts, prepare_helper_with, printed_text, slang_pin,
+    slang_validated_builds,
 };
 use crate::process::CheckRecord;
-use std::ffi::OsString;
+use std::{cell::Cell, ffi::OsString, path::Path};
 
 const ALL_MODES: [VerifyMode; 6] = [
     VerifyMode::Smoke,
@@ -419,4 +421,408 @@ fn slangc_prints_its_version_on_standard_error_and_that_counts() {
         ..record
     };
     assert_eq!(check_helper_tag(helper, &printed_text(&on_stdout)), Ok(()));
+}
+
+// ---- the helper must be the pin's (slice m4.r) -------------------------------------------------------------------
+
+/// The text of the one line of `slang.rs` that holds the pin, with a pin that does not follow the real one.
+fn pin_source(pin: &str) -> String {
+    format!(
+        "/// The release.\npub(crate) const SLANG_VERSION: &str = \"{pin}\";\n\n/// Other tags.\npub(crate) const VALIDATED_BUILDS: &[&str] = &[];\n"
+    )
+}
+
+#[test]
+fn the_pin_is_the_string_of_the_one_slang_version_constant() {
+    assert_eq!(
+        slang_pin(&pin_source("2026.99")).as_deref(),
+        Some("2026.99")
+    );
+    // CRLF, as the checkout has it, and indentation.
+    let crlf = pin_source("2026.99").replace('\n', "\r\n");
+    assert_eq!(slang_pin(&crlf).as_deref(), Some("2026.99"));
+    // Not exactly one constant, an empty one, or another type: no pin.
+    assert_eq!(slang_pin(""), None);
+    assert_eq!(slang_pin(&pin_source("")), None);
+    let twice = format!("{}{}", pin_source("2026.99"), pin_source("2026.98"));
+    assert_eq!(slang_pin(&twice), None);
+    assert_eq!(
+        slang_pin("pub(crate) const SLANG_VERSION: &[&str] = &[\"2026.99\"];\n"),
+        None
+    );
+    assert_eq!(slang_pin("// SLANG_VERSION: &str = \"2026.99\";\n"), None);
+    // The real file has one, of the shape of a Slang release.
+    let real = pin_rule(&crate::workspace::workspace_root().unwrap())
+        .unwrap()
+        .pin;
+    assert!(
+        real.split('.').count() >= 2
+            && real
+                .split('.')
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())),
+        "{real}"
+    );
+}
+
+fn rule(pin: &str, validated: &[&str]) -> PinRule {
+    PinRule {
+        pin: pin.to_owned(),
+        validated: validated.iter().map(|tag| (*tag).to_owned()).collect(),
+    }
+}
+
+/// No `slangc` on `PATH` to ask.
+fn no_slangc() -> Option<String> {
+    None
+}
+
+#[test]
+fn the_validated_builds_are_read_from_the_source_that_holds_the_pin() {
+    // Shipped shape: an empty list.
+    assert_eq!(
+        slang_validated_builds(&pin_source("2026.99")),
+        Some(Vec::new())
+    );
+    // A list over several lines, with comments, CRLF as the checkout has it.
+    let listed = "pub(crate) const VALIDATED_BUILDS: &[&str] = &[\n    \"2026.99-1-gabc\", // the first\n    // \"2026.99-9-gnot\",\n    \"2026.99-2-gdef\",\n];\n"
+        .replace('\n', "\r\n");
+    assert_eq!(
+        slang_validated_builds(&listed),
+        Some(vec![
+            "2026.99-1-gabc".to_owned(),
+            "2026.99-2-gdef".to_owned()
+        ])
+    );
+    // No constant, or one that is not closed: no rule.
+    assert_eq!(slang_validated_builds(""), None);
+    assert_eq!(
+        slang_validated_builds("pub(crate) const VALIDATED_BUILDS: &[&str] = &["),
+        None
+    );
+    assert!(pin_rule_of("pub(crate) const SLANG_VERSION: &str = \"2026.99\";\n").is_err());
+    // The rule of `matches_pin`: the pin itself, or a listed build that extends it; nothing else.
+    let listed = rule("2026.99", &["2026.99-1-gabc"]);
+    for ok in ["2026.99", "2026.99-1-gabc"] {
+        assert!(listed.admits(ok), "{ok}");
+    }
+    for refused in [
+        "2026.99-2-gabc",
+        "2026.9",
+        "2026.13.1",
+        "",
+        "2026.99-1-gabcd",
+    ] {
+        assert!(!listed.admits(refused), "{refused}");
+    }
+    assert!(!rule("2026.99", &[]).admits("2026.99-1-gabc"));
+    // The real source: a rule is read, and every listed build extends the pin.
+    let root = crate::workspace::workspace_root().unwrap();
+    let real =
+        pin_rule_of(&std::fs::read_to_string(root.join(super::PIN_SOURCE)).unwrap()).unwrap();
+    assert!(real.validated.iter().all(|tag| tag.starts_with(&real.pin)));
+}
+
+#[test]
+fn a_helper_is_refused_unless_its_tag_is_the_pin_and_its_schema_is_the_current_one() {
+    let helper = |tag: &str| format!("gust-slang-reflect schema=2 slang={tag}\n");
+    let pin = rule("2026.20", &[]);
+    assert_eq!(
+        check_helper_pin(&helper("2026.20"), &pin, "the helper"),
+        Ok(())
+    );
+    // The 2026.13.1 helper that every lane used before the bump, in both spellings, is refused with both tags named.
+    for old in ["2026.13.1", "2026.13.1-1-g84792eb15"] {
+        let error = check_helper_pin(&helper(old), &pin, "the helper named by X").unwrap_err();
+        assert!(
+            error.contains(&format!("built against Slang `{old}`"))
+                && error.contains("the pin is `2026.20`")
+                && error.contains("cargo gust slang build-helper")
+                && error.contains("the helper named by X"),
+            "{error}"
+        );
+    }
+    // A prefix, an extension and a missing tag are not the pin.
+    assert!(check_helper_pin(&helper("2026.2"), &pin, "h").is_err());
+    assert!(check_helper_pin(&helper("2026.20-1-g0a1b2c3d4"), &pin, "h").is_err());
+    assert!(check_helper_pin("gust-slang-reflect schema=2\n", &pin, "h").is_err());
+    assert!(check_helper_pin("", &pin, "h").is_err());
+    // A validated build of the pin is the pin for the helper too (the one rule of slang.rs).
+    let validated = rule("2026.20", &["2026.20-1-g0a1b2c3d4"]);
+    assert_eq!(
+        check_helper_pin(&helper("2026.20-1-g0a1b2c3d4"), &validated, "h"),
+        Ok(())
+    );
+    // Stage 1's helper of the right Slang, with schema 1, is refused; so is one that prints no schema or a later one.
+    for output in [
+        "gust-slang-reflect schema=1 slang=2026.20\n",
+        "gust-slang-reflect slang=2026.20\n",
+        "gust-slang-reflect schema=3 slang=2026.20\n",
+    ] {
+        let error = check_helper_pin(output, &pin, "the helper named by X").unwrap_err();
+        assert!(
+            error.contains("needs `schema=2`")
+                && error.contains("cargo gust slang build-helper")
+                && error.contains("the helper named by X"),
+            "{error}"
+        );
+    }
+    let error =
+        check_helper_pin("gust-slang-reflect schema=1 slang=2026.20\n", &pin, "h").unwrap_err();
+    assert!(error.contains("prints `schema=1`"), "{error}");
+}
+
+#[test]
+fn a_slangc_is_refused_unless_it_reports_the_pin() {
+    let pin = rule("2026.20", &["2026.20-1-g0a1b2c3d4"]);
+    // The release archive prints the bare pin, on standard output or error, with blank lines around it.
+    for ok in ["2026.20\n", "\n2026.20\r\n", "2026.20-1-g0a1b2c3d4\n"] {
+        assert_eq!(check_slangc_pin(ok, &pin), Ok(()), "{ok:?}");
+    }
+    // The VulkanSDK compiler that sits first on PATH on this machine, and the near misses.
+    for old in [
+        "2026.13.1\n",
+        "2026.13.1-1-g84792eb15\n",
+        "2026.2\n",
+        "2026.20-2-gdeadbeef\n",
+    ] {
+        let error = check_slangc_pin(old, &pin).unwrap_err();
+        assert!(
+            error.contains(&format!("`slangc -version` is `{}`", old.trim()))
+                && error.contains("the pin is `2026.20`")
+                && error.contains("SLANG_SDK"),
+            "{error}"
+        );
+    }
+    assert!(check_slangc_pin("", &pin).is_err());
+    assert!(check_slangc_pin("\n \n", &pin).is_err());
+}
+
+/// A checkout with a pin in `slang.rs`, and the files `helper_plan` looks at.
+fn pinned_checkout(name: &str, pin: &str) -> std::path::PathBuf {
+    let root = scratch(name);
+    let source = root
+        .join("crates")
+        .join("cargo-gust")
+        .join("src")
+        .join("slang.rs");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::write(source, pin_source(pin)).unwrap();
+    root
+}
+
+#[test]
+fn a_named_helper_is_used_when_it_is_the_pin_and_refused_when_it_is_not() {
+    let root = pinned_checkout("prepare-use", "2026.99");
+    let other = root.join("elsewhere").join(helper_name());
+    touch(&other);
+    let named = Some(other.as_os_str().to_owned());
+    let built = Cell::new(false);
+    let build = || {
+        built.set(true);
+        Ok(())
+    };
+    let version = |tag: &'static str| {
+        move |_: &Path| Ok(format!("gust-slang-reflect schema=2 slang={tag}\n"))
+    };
+
+    // The pin's helper is used, and nothing is built.
+    let slangc = "2026.99\n";
+    prepare_helper_with(
+        &root,
+        named.clone(),
+        Some(slangc),
+        &build,
+        &version("2026.99"),
+        &no_slangc,
+    )
+    .unwrap();
+    prepare_helper_with(
+        &root,
+        named.clone(),
+        None,
+        &build,
+        &version("2026.99"),
+        &no_slangc,
+    )
+    .unwrap();
+    assert!(!built.get(), "a named helper must not trigger a build");
+
+    // A 13.1 helper is refused with the tag message, and nothing is built either.
+    for old in ["2026.13.1", "2026.13.1-1-g84792eb15"] {
+        let error = prepare_helper_with(
+            &root,
+            named.clone(),
+            Some(slangc),
+            &build,
+            &version(old),
+            &no_slangc,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains(&format!("built against Slang `{old}`"))
+                && error.contains("the pin is `2026.99`"),
+            "{error}"
+        );
+        let error = prepare_helper_with(
+            &root,
+            named.clone(),
+            None,
+            &build,
+            &version(old),
+            &no_slangc,
+        )
+        .unwrap_err();
+        assert!(error.contains("the pin is `2026.99`"), "{error}");
+    }
+    assert!(!built.get());
+
+    // The pin's helper next to a compiler of another build is refused (S1 of the m4.r review: now by the pin rule
+    // before the helper-to-compiler comparison).
+    let error = prepare_helper_with(
+        &root,
+        named.clone(),
+        Some("2026.13.1\n"),
+        &build,
+        &version("2026.99"),
+        &no_slangc,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("`slangc -version` is `2026.13.1`"),
+        "{error}"
+    );
+
+    // A helper that cannot run is the run's error, not a pass.
+    let broken = |_: &Path| Err("could not run".to_owned());
+    assert_eq!(
+        prepare_helper_with(&root, named, None, &build, &broken, &no_slangc).unwrap_err(),
+        "could not run"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn without_a_named_helper_one_is_built_and_it_must_be_the_pin_too() {
+    let root = pinned_checkout("prepare-build", "2026.99");
+    let default = root
+        .join("target")
+        .join("slang-reflect")
+        .join(helper_name());
+    let built = Cell::new(0);
+    let build = || {
+        built.set(built.get() + 1);
+        Ok(())
+    };
+    let version = |tag: &'static str| {
+        move |_: &Path| Ok(format!("gust-slang-reflect schema=2 slang={tag}\n"))
+    };
+
+    // No variable: built, and the build is judged. The built helper is the one that is read.
+    let seen = std::cell::RefCell::new(Vec::new());
+    let reading = |path: &Path| {
+        seen.borrow_mut().push(path.to_owned());
+        Ok("gust-slang-reflect schema=2 slang=2026.99\n".to_owned())
+    };
+    prepare_helper_with(&root, None, None, &build, &reading, &no_slangc).unwrap();
+    assert_eq!(
+        (built.get(), seen.borrow().clone()),
+        (1, vec![default.clone()])
+    );
+
+    // A build against another Slang (the VulkanSDK one) is refused instead of being used silently.
+    let error = prepare_helper_with(
+        &root,
+        None,
+        None,
+        &build,
+        &version("2026.13.1-1-g84792eb15"),
+        &no_slangc,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("the helper built into target/slang-reflect")
+            && error.contains("`2026.13.1-1-g84792eb15`")
+            && error.contains("SLANG_SDK"),
+        "{error}"
+    );
+    assert_eq!(built.get(), 2);
+
+    // The variable naming this checkout's own default output, or a file that is not there, builds as before.
+    touch(&default);
+    let own = Some(default.as_os_str().to_owned());
+    prepare_helper_with(&root, own, None, &build, &version("2026.99"), &no_slangc).unwrap();
+    let missing = Some(root.join("missing").join(helper_name()).into_os_string());
+    prepare_helper_with(
+        &root,
+        missing,
+        None,
+        &build,
+        &version("2026.99"),
+        &no_slangc,
+    )
+    .unwrap();
+    assert_eq!(built.get(), 4);
+
+    // A build that fails is its own error.
+    let failing = || Err("build failed".to_owned());
+    assert_eq!(
+        prepare_helper_with(&root, None, None, &failing, &version("2026.99"), &no_slangc)
+            .unwrap_err(),
+        "build failed"
+    );
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn the_slangc_on_path_must_be_the_pin_on_every_path_even_when_nobody_ran_it() {
+    // S1 of the m4.r review: a managed SDK and a helper of the pin used to run beside a VulkanSDK slangc that came
+    // first on PATH, wherever the caller had not run `slangc -version` itself (Build, the Reflect suite, doctor).
+    let root = pinned_checkout("prepare-slangc", "2026.99");
+    let other = root.join("elsewhere").join(helper_name());
+    touch(&other);
+    let named = Some(other.as_os_str().to_owned());
+    let built = Cell::new(0);
+    let build = || {
+        built.set(built.get() + 1);
+        Ok(())
+    };
+    let pins_helper = |_: &Path| Ok("gust-slang-reflect schema=2 slang=2026.99\n".to_owned());
+    let old_slangc = || Some("2026.13.1\n".to_owned());
+    let pin_slangc = || Some("2026.99\n".to_owned());
+
+    // Without a variable (the Build path) and with one (the Use path), with the caller's output absent: refused,
+    // with both tags named, and nothing is built.
+    for variable in [None, named.clone()] {
+        let error = prepare_helper_with(&root, variable, None, &build, &pins_helper, &old_slangc)
+            .unwrap_err();
+        assert!(
+            error.contains("`slangc -version` is `2026.13.1`")
+                && error.contains("the pin is `2026.99`"),
+            "{error}"
+        );
+    }
+    // A caller that ran `slangc -version` passes that output, and it is judged without asking PATH again.
+    let asked = Cell::new(false);
+    let ask = || {
+        asked.set(true);
+        Some("2026.99\n".to_owned())
+    };
+    let error = prepare_helper_with(&root, None, Some("2026.13.1\n"), &build, &pins_helper, &ask)
+        .unwrap_err();
+    assert!(
+        error.contains("`slangc -version` is `2026.13.1`"),
+        "{error}"
+    );
+    prepare_helper_with(&root, None, Some("2026.99\n"), &build, &pins_helper, &ask).unwrap();
+    assert!(!asked.get());
+    assert_eq!(built.get(), 1, "only the passing Build path built");
+
+    // The pin's compiler passes on both paths; no `slangc` on PATH is not this check's error.
+    for variable in [None, named.clone()] {
+        prepare_helper_with(&root, variable, None, &build, &pins_helper, &pin_slangc).unwrap();
+    }
+    for variable in [None, named] {
+        prepare_helper_with(&root, variable, None, &build, &pins_helper, &no_slangc).unwrap();
+    }
+    let _ = std::fs::remove_dir_all(root);
 }

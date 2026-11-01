@@ -86,7 +86,7 @@ pub(crate) fn lines(facts: &Facts) -> (Vec<String>, bool) {
             }
             match located.source {
                 Source::Path => out.push(
-                    "  licence notices: this slangc is on PATH, so cargo gust does not manage its notices; the release's own LICENSE sits beside its binaries (`cargo gust slang install` keeps them beside a cached copy)"
+                    "  licence notices: this slangc is on PATH, so cargo gust does not manage its notices; the release's own LICENSE, LICENSES/ and third-party-notices/ sit beside its binaries (`cargo gust slang install` keeps them beside a cached copy)"
                         .to_owned(),
                 ),
                 Source::Home | Source::Cache if facts.notices.is_empty() => out.push(
@@ -225,7 +225,11 @@ mod tests {
                 pinned: true,
                 root: Some(PathBuf::from("/slang")),
             }),
-            notices: vec![PathBuf::from("/slang/2026.13.1/LICENSE")],
+            notices: vec![
+                PathBuf::from("/slang/2026.13.1/LICENSE"),
+                PathBuf::from("/slang/2026.13.1/LICENSES"),
+                PathBuf::from("/slang/2026.13.1/third-party-notices"),
+            ],
             helper_candidate: PathBuf::from("gust-slang-reflect"),
             helper_found: Some(PathBuf::from("/tools/gust-slang-reflect")),
             helper_slang: Some(Ok("2026.13.1-1-g84792eb15".to_owned())),
@@ -248,7 +252,12 @@ mod tests {
         assert!(text.contains(
             &"  Slang 2026.13.1-1-g84792eb15 (cargo cache); the pin is 2026.13.1".to_owned()
         ));
-        assert!(text.contains(&"  licence notice: /slang/2026.13.1/LICENSE".to_owned()));
+        for notice in ["LICENSE", "LICENSES", "third-party-notices"] {
+            assert!(
+                text.contains(&format!("  licence notice: /slang/2026.13.1/{notice}")),
+                "{notice}: {text:?}"
+            );
+        }
         assert!(text.contains(&"GUST_PROFILE: not set".to_owned()));
         assert!(
             text.iter()

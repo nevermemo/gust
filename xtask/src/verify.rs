@@ -139,20 +139,7 @@ fn verify_inner(
     run_checked(root, checks, "rustc", &["--version"])?;
     run_checked(root, checks, "slangc", &["-version"])?;
     let slangc_output = checks.last().map(printed_text).unwrap_or_default();
-    match helper_plan(root, env::var_os(HELPER_VARIABLE)) {
-        HelperPlan::Build => {
-            build_slang_reflect(BuildOptions::default())?;
-        }
-        HelperPlan::Use(helper) => {
-            // The tests use this file (it wins over the default location), so a second helper under `target` would
-            // be built and never used; it must be the helper of this `slangc`, though. The path is not printed: it
-            // is a machine path.
-            check_helper_tag(&helper_version_output(&helper)?, &slangc_output)?;
-            println!(
-                "Using the reflection helper named by {HELPER_VARIABLE}: its Slang tag equals `slangc -version`."
-            );
-        }
-    }
+    prepare_helper(root, Some(&slangc_output))?;
     // Before the first GPU step: no adapter, or one that cannot be named, fails the run here and the record says null.
     *adapter = Some(record_adapter(root, checks)?);
     clear_generated_output(root, mode)?;
@@ -243,13 +230,207 @@ pub(crate) fn helper_plan(root: &Path, value: Option<OsString>) -> HelperPlan {
     let Some(path) = environment_helper(value) else {
         return HelperPlan::Build;
     };
-    let default = root
-        .join("target")
-        .join("slang-reflect")
-        .join(format!("gust-slang-reflect{}", env::consts::EXE_SUFFIX));
+    let default = default_helper(root);
     match (fs::canonicalize(&path), fs::canonicalize(&default)) {
         (Ok(named), Ok(default)) if named == default => HelperPlan::Build,
         _ => HelperPlan::Use(path),
+    }
+}
+
+/// The file `cargo xtask build-slang-reflect` writes by default: `<root>/target/slang-reflect/gust-slang-reflect`.
+fn default_helper(root: &Path) -> PathBuf {
+    root.join("target")
+        .join("slang-reflect")
+        .join(format!("gust-slang-reflect{}", env::consts::EXE_SUFFIX))
+}
+
+/// The file that holds the pin of `cargo gust`, the one place the version lives (the workflows read it there too).
+const PIN_SOURCE: &str = "crates/cargo-gust/src/slang.rs";
+
+/// The Slang version `cargo gust` is pinned to: the string of the one `SLANG_VERSION` constant in `source`. `None`
+/// when there is not exactly one such line or its value is empty.
+pub(crate) fn slang_pin(source: &str) -> Option<String> {
+    let mut found = source.lines().filter_map(|line| {
+        line.trim()
+            .strip_prefix("pub(crate) const SLANG_VERSION: &str = \"")?
+            .strip_suffix("\";")
+            .map(str::to_owned)
+    });
+    let pin = found.next()?;
+    (found.next().is_none() && !pin.is_empty() && !pin.contains('"')).then_some(pin)
+}
+
+/// The other `slangc -version` tags that count as the pin: the strings of the `VALIDATED_BUILDS` list of `source`
+/// (empty when the list is empty). Together with [`slang_pin`] this is the rule of `matches_pin` in `slang.rs`,
+/// read from the same source so the two cannot drift: adding a validated build there admits it here too. `None`
+/// when the constant is missing or not closed.
+pub(crate) fn slang_validated_builds(source: &str) -> Option<Vec<String>> {
+    let rest = source
+        .split_once("pub(crate) const VALIDATED_BUILDS: &[&str] = &[")?
+        .1;
+    let list = rest.split_once("];")?.0;
+    let mut builds = Vec::new();
+    for line in list.lines() {
+        let line = line.split("//").next().unwrap_or_default();
+        for piece in line.split('"').skip(1).step_by(2) {
+            builds.push(piece.to_owned());
+        }
+    }
+    Some(builds)
+}
+
+/// The pin of `cargo gust` and the extra tags that count as it, from [`PIN_SOURCE`].
+pub(crate) struct PinRule {
+    pub(crate) pin: String,
+    pub(crate) validated: Vec<String>,
+}
+
+impl PinRule {
+    /// The rule of `matches_pin` in `slang.rs`: the tag is the pin, or it extends the pin and is a validated build.
+    pub(crate) fn admits(&self, tag: &str) -> bool {
+        tag == self.pin || (tag.starts_with(&self.pin) && self.validated.iter().any(|v| v == tag))
+    }
+}
+
+pub(crate) fn pin_rule_of(source: &str) -> Result<PinRule, String> {
+    Ok(PinRule {
+        pin: slang_pin(source)
+            .ok_or_else(|| format!("cannot read the one SLANG_VERSION constant of {PIN_SOURCE}"))?,
+        validated: slang_validated_builds(source)
+            .ok_or_else(|| format!("cannot read the VALIDATED_BUILDS list of {PIN_SOURCE}"))?,
+    })
+}
+
+fn pin_rule(root: &Path) -> Result<PinRule, String> {
+    let source = fs::read_to_string(root.join(PIN_SOURCE))
+        .map_err(|error| format!("cannot read {PIN_SOURCE}: {}", error.kind()))?;
+    pin_rule_of(&source)
+}
+
+/// The reflection schema xtask needs from the helper (the one `gust-slang-reflect` prints as `schema=2` since m6.r).
+const HELPER_SCHEMA: &str = "2";
+
+/// Fails unless the helper writes the schema xtask reads and was built against the Slang the pin names (the pin
+/// itself, or a validated build, see [`PinRule`]). `which` says what the helper is, for the message, which names both
+/// tags and how to get a helper of the pin.
+pub(crate) fn check_helper_pin(
+    helper_output: &str,
+    rule: &PinRule,
+    which: &str,
+) -> Result<(), String> {
+    let Some(tag) = helper_tag(helper_output) else {
+        return Err(format!("{which} printed no `slang=<tag>` for `--version`"));
+    };
+    let pin = &rule.pin;
+    if !rule.admits(tag) {
+        return Err(format!(
+            "{which} was built against Slang `{tag}`, but the pin is `{pin}`; build one against the pinned install \
+             (`cargo gust slang install`, then `cargo gust slang build-helper`) and name it with {HELPER_VARIABLE}, with \
+             SLANG_SDK pointing at that install when xtask builds the helper itself"
+        ));
+    }
+    let schema = helper_output
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("schema="));
+    if schema != Some(HELPER_SCHEMA) {
+        return Err(format!(
+            "{which} prints `schema={}`, but xtask needs `schema={HELPER_SCHEMA}`; rebuild it with the current \
+             `cargo gust slang build-helper`",
+            schema.unwrap_or("<none>")
+        ));
+    }
+    Ok(())
+}
+
+/// Fails unless `slangc -version` reports the pin (or a validated build, see [`PinRule`]). It runs on every path of
+/// [`prepare_helper`], so a managed `SLANG_SDK` and a helper of the pin do not hide an older `slangc` that comes first
+/// on `PATH`: the tools would run as a mixed toolchain.
+pub(crate) fn check_slangc_pin(slangc_output: &str, rule: &PinRule) -> Result<(), String> {
+    let Some(tag) = slangc_output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+    else {
+        return Err("`slangc -version` printed nothing".to_owned());
+    };
+    if rule.admits(tag) {
+        return Ok(());
+    }
+    Err(format!(
+        "`slangc -version` is `{tag}`, but the pin is `{}`; put the pinned slangc first on PATH (`cargo gust slang \
+         install`, then the `bin` directory of `cargo gust slang locate`) and point SLANG_SDK at that install",
+        rule.pin
+    ))
+}
+
+/// Makes the reflection helper ready for the checks that follow (`verify`, `check-feature reflection`, `doctor`).
+///
+/// A helper that `GUST_SLANG_REFLECT` names (see [`helper_plan`]) is used as it is: it is not rebuilt, and nothing
+/// is built into `target/slang-reflect`. It must carry the pin's Slang build tag, and, when `slangc_output` is given
+/// (the output of `slangc -version`), that compiler's tag as well; a helper of another build is refused with a
+/// message that names the tags. Otherwise the helper is built from `SLANG_SDK` or `VULKAN_SDK` into the default
+/// place, and the result must carry the pin too, so a Slang SDK of another version is refused instead of being used
+/// silently. On every path the `slangc` on `PATH` must report the pin as well: `slangc_output` when the caller ran
+/// `slangc -version` already, else it is run here (a `PATH` without `slangc` is not an error here: the callers that
+/// need one require it themselves). The helper's path is not printed: it is a machine path.
+pub(crate) fn prepare_helper(root: &Path, slangc_output: Option<&str>) -> Result<(), String> {
+    prepare_helper_with(
+        root,
+        env::var_os(HELPER_VARIABLE),
+        slangc_output,
+        &|| build_slang_reflect(BuildOptions::default()),
+        &helper_version_output,
+        &path_slangc_version,
+    )
+}
+
+/// What `slangc -version` on `PATH` prints (standard output and error), or `None` when it cannot be run.
+fn path_slangc_version() -> Option<String> {
+    let output = Command::new("slangc").arg("-version").output().ok()?;
+    Some(format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
+}
+
+/// [`prepare_helper`] with the variable, the build, the `--version` run of a helper and the `slangc -version` run on
+/// `PATH` given, so the tests can judge each path.
+pub(crate) fn prepare_helper_with(
+    root: &Path,
+    variable: Option<OsString>,
+    slangc_output: Option<&str>,
+    build: &dyn Fn() -> Result<(), String>,
+    version_of: &dyn Fn(&Path) -> Result<String, String>,
+    slangc_now: &dyn Fn() -> Option<String>,
+) -> Result<(), String> {
+    let rule = pin_rule(root)?;
+    let pin = &rule.pin;
+    let slangc = slangc_output.map(str::to_owned).or_else(slangc_now);
+    if let Some(slangc) = &slangc {
+        check_slangc_pin(slangc, &rule)?;
+    }
+    match helper_plan(root, variable) {
+        HelperPlan::Build => {
+            build()?;
+            let built = version_of(&default_helper(root))?;
+            check_helper_pin(&built, &rule, "the helper built into target/slang-reflect")
+        }
+        HelperPlan::Use(helper) => {
+            let named = version_of(&helper)?;
+            check_helper_pin(
+                &named,
+                &rule,
+                &format!("the helper named by {HELPER_VARIABLE}"),
+            )?;
+            if let Some(slangc) = &slangc {
+                check_helper_tag(&named, slangc)?;
+            }
+            println!(
+                "Using the reflection helper named by {HELPER_VARIABLE}: its Slang tag is the pin `{pin}`."
+            );
+            Ok(())
+        }
     }
 }
 
@@ -286,7 +467,7 @@ pub(crate) fn printed_text(record: &CheckRecord) -> String {
     format!("{}\n{}", record.stdout, record.stderr)
 }
 
-/// The Slang build tag a helper reports: the `slang=<tag>` word of `gust-slang-reflect schema=1 slang=2026.13.1`.
+/// The Slang build tag a helper reports: the `slang=<tag>` word of `gust-slang-reflect schema=2 slang=2026.20`.
 pub(crate) fn helper_tag(output: &str) -> Option<&str> {
     output
         .split_whitespace()

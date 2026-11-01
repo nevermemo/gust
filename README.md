@@ -48,7 +48,7 @@ Requirements:
 
 - The stable Rust toolchain (this checkout was validated with Rust 1.98.0;
   the manifest's older minimum is not independently verified)
-- `slangc` on `PATH` (tested with Slang 2026.13.1)
+- `slangc` on `PATH` (tested with Slang 2026.20)
 - The native reflection helper, built once with
   `cargo xtask build-slang-reflect`. It needs the Slang
   SDK headers and import library (from `VULKAN_SDK` or `SLANG_SDK`) and a C++

@@ -28,9 +28,18 @@ fn join(dirs: &[&Path]) -> OsString {
     env::join_paths(dirs).unwrap()
 }
 
+/// A `git describe` tag that no Slang prints. The tests list it as a validated build to exercise the mechanism; the
+/// shipped list is empty (2026.20 was validated with the release archive), so no real tag is ever listed here.
+const SYNTHETIC_BUILD: &str = "2026.20-1-g0a1b2c3d4";
+const SYNTHETIC_VALIDATED: &[&str] = &[SYNTHETIC_BUILD];
+
+fn locate_synthetic(env: &Env, allow_mismatch: bool) -> Result<Located, String> {
+    locate_with(env, allow_mismatch, &read_version, SYNTHETIC_VALIDATED)
+}
+
 #[test]
 fn the_asset_table_has_the_three_pinned_archives_with_their_digests() {
-    assert_eq!(SLANG_VERSION, "2026.13.1");
+    assert_eq!(SLANG_VERSION, "2026.20");
     type Row = (&'static str, &'static str, &'static str, &'static str, u64);
     let table: Vec<Row> = ASSETS
         .iter()
@@ -42,23 +51,23 @@ fn the_asset_table_has_the_three_pinned_archives_with_their_digests() {
             (
                 "windows",
                 "x86_64",
-                "slang-2026.13.1-windows-x86_64.zip",
-                "fa1c9bcab2cdcd3626f7a1e250dd35d606c1b84745b64627f1dd63fca3746a70",
-                71_752_959
+                "slang-2026.20-windows-x86_64.zip",
+                "e6dd32bbddf1720ebb4e679d55e9635ce792865a5bd84f3d2cd9af28647c0174",
+                63_658_255
             ),
             (
                 "linux",
                 "x86_64",
-                "slang-2026.13.1-linux-x86_64.tar.gz",
-                "c1ed948af94c6fd2034cc0f82f6892b8b287d5362939758cb4955676f26d893e",
-                77_115_667
+                "slang-2026.20-linux-x86_64.tar.gz",
+                "e863e568c204810d6e8bc31852f056aef6763c55ea9925db2db7affa060347c9",
+                83_407_874
             ),
             (
                 "macos",
                 "aarch64",
-                "slang-2026.13.1-macos-aarch64.tar.gz",
-                "cf58b42ba87f66f58e0de297da57f4a5c92d00b7e7f38a708d2a4244abd8d003",
-                56_400_177
+                "slang-2026.20-macos-aarch64.tar.gz",
+                "07fa8833fdbb343c3674c84fdd885910f495f3daaaa0c732b32980151e8b58c4",
+                62_779_895
             ),
         ]
     );
@@ -79,62 +88,94 @@ fn the_asset_table_has_the_three_pinned_archives_with_their_digests() {
         )));
     }
     assert_eq!(
-        asset_for("2026.13.1", "linux", "x86_64").map(|asset| asset.file),
-        Some("slang-2026.13.1-linux-x86_64.tar.gz")
+        asset_for("2026.20", "linux", "x86_64").map(|asset| asset.file),
+        Some("slang-2026.20-linux-x86_64.tar.gz")
     );
-    assert_eq!(asset_for("2026.13.1", "linux", "aarch64"), None);
-    assert_eq!(asset_for("2026.13.0", "linux", "x86_64"), None);
-    assert_eq!(asset_for("2026.13.1", "freebsd", "x86_64"), None);
+    assert_eq!(asset_for("2026.20", "linux", "aarch64"), None);
+    assert_eq!(asset_for("2026.19", "linux", "x86_64"), None);
+    assert_eq!(asset_for("2026.20", "freebsd", "x86_64"), None);
     assert_eq!(
-        download_url(asset_for("2026.13.1", "windows", "x86_64").unwrap()),
-        "https://github.com/shader-slang/slang/releases/download/v2026.13.1/slang-2026.13.1-windows-x86_64.zip"
+        download_url(asset_for("2026.20", "windows", "x86_64").unwrap()),
+        "https://github.com/shader-slang/slang/releases/download/v2026.20/slang-2026.20-windows-x86_64.zip"
     );
 }
 
 #[test]
-fn the_pin_matches_exactly_or_a_listed_validated_build_and_nothing_else() {
-    assert_eq!(VALIDATED_BUILDS, ["2026.13.1-1-g84792eb15"]);
-    for reported in ["2026.13.1", "2026.13.1-1-g84792eb15"] {
-        assert!(matches_pin("2026.13.1", reported), "{reported}");
+fn the_shipped_list_of_validated_builds_is_empty_and_the_release_is_the_pin() {
+    // 2026.20 was validated with the release archive, which prints the bare pin; no source build is listed.
+    assert!(VALIDATED_BUILDS.is_empty(), "{VALIDATED_BUILDS:?}");
+    assert!(matches_pin(SLANG_VERSION, "2026.20", VALIDATED_BUILDS));
+    // So with the shipped list a `git describe` build of the pin is not the pin, whatever it looks like, and neither is
+    // the 2026.20 source build that the earlier pin listed.
+    for reported in [
+        SYNTHETIC_BUILD,
+        "2026.20-1-gdeadbee",
+        "2026.13.1",
+        "2026.13.1-1-g84792eb15",
+    ] {
+        assert!(
+            !matches_pin(SLANG_VERSION, reported, VALIDATED_BUILDS),
+            "{reported}"
+        );
     }
+}
+
+#[test]
+fn the_pin_matches_exactly_or_a_listed_validated_build_and_nothing_else() {
+    for reported in ["2026.20", SYNTHETIC_BUILD] {
+        assert!(
+            matches_pin("2026.20", reported, SYNTHETIC_VALIDATED),
+            "{reported}"
+        );
+    }
+    // The exact pin matches with or without a list.
+    assert!(matches_pin("2026.20", "2026.20", &[]));
     // A validated build belongs to its own pin: it is not the pin of another version.
-    assert!(!matches_pin("2026.14.0", "2026.13.1-1-g84792eb15"));
+    assert!(!matches_pin(
+        "2026.21",
+        SYNTHETIC_BUILD,
+        SYNTHETIC_VALIDATED
+    ));
+    assert!(!matches_pin("2026.20", SYNTHETIC_BUILD, &[]));
     for reported in [
         "",
-        "2026.13",
-        "2026.13.10",
-        "2026.13.2",
-        "2026.13.1-",
-        "2026.13.1-rc1",
-        "2026.13.1-1",
-        "2026.13.1-g84792eb15",
-        "2026.13.1--1-g84792eb15",
-        "2026.13.1-x-g84792eb15",
-        "2026.13.1-1-g84792e",
-        "2026.13.1-1-gzzzzzzz",
-        "2026.13.1-1-g84792eb15-dirty",
+        "2026.2",
+        "2026.200",
+        "2026.21",
+        "2026.20-",
+        "2026.20-rc1",
+        "2026.20-1",
+        "2026.20-g0a1b2c3d4",
+        "2026.20--1-g0a1b2c3d4",
+        "2026.20-x-g0a1b2c3d4",
+        "2026.20-1-g0a1b2c3d",
+        "2026.20-1-gzzzzzzzzz",
+        "2026.20-1-g0a1b2c3d4-dirty",
         // Well-formed `git describe` tags of builds nobody validated.
-        "2026.13.1-2-gdeadbee",
-        "2026.13.1-12-gabcdef0",
-        "2026.13.1-400-gabc1234",
-        "2026.13.1-1-g84792eb16",
-        "2026.13.1 ",
-        "v2026.13.1",
-        "2026.13.0-1-g84792eb15",
-        "12026.13.1",
+        "2026.20-2-gdeadbee",
+        "2026.20-12-gabcdef0",
+        "2026.20-400-gabc1234",
+        "2026.20-1-g0a1b2c3d5",
+        "2026.20 ",
+        "v2026.20",
+        "2026.19-1-g0a1b2c3d4",
+        "12026.20",
     ] {
-        assert!(!matches_pin("2026.13.1", reported), "{reported:?}");
+        assert!(
+            !matches_pin("2026.20", reported, SYNTHETIC_VALIDATED),
+            "{reported:?}"
+        );
     }
 }
 
 #[test]
 fn slangc_version_output_is_one_version_token() {
-    assert_eq!(parse_slangc_version("2026.13.1\n").unwrap(), "2026.13.1");
+    assert_eq!(parse_slangc_version("2026.20\n").unwrap(), "2026.20");
     assert_eq!(
-        parse_slangc_version("\r\n 2026.13.1-1-g84792eb15 \r\n").unwrap(),
-        "2026.13.1-1-g84792eb15"
+        parse_slangc_version("\r\n 2026.20-1-g0a1b2c3d4 \r\n").unwrap(),
+        "2026.20-1-g0a1b2c3d4"
     );
-    for bad in ["", "\n", "error: no input files", "slangc 2026.13.1", "v1"] {
+    for bad in ["", "\n", "error: no input files", "slangc 2026.20", "v1"] {
         let error = parse_slangc_version(bad).unwrap_err();
         assert!(
             error.contains("unexpected `-version` output"),
@@ -187,15 +228,15 @@ fn the_cache_root_is_gust_slang_home_or_the_cargo_home_or_the_dot_cargo_of_the_h
 fn managed_paths_are_keyed_by_the_version() {
     let root = Path::new("/r");
     assert_eq!(
-        slangc_in(&root.join("2026.13.1")),
-        root.join("2026.13.1")
+        slangc_in(&root.join("2026.20")),
+        root.join("2026.20")
             .join("bin")
             .join(executable_name("slangc"))
     );
     assert_eq!(
-        managed_helper(root, "2026.13.1"),
+        managed_helper(root, "2026.20"),
         root.join("helper")
-            .join("2026.13.1")
+            .join("2026.20")
             .join(executable_name("gust-slang-reflect"))
     );
 }
@@ -208,7 +249,7 @@ fn locate_prefers_gust_slang_home_then_the_cache_then_path() {
     let cache = cargo.join("gust").join("slang");
     let on_path = scratch.0.join("path");
     let path = join(&[&on_path]);
-    let path_slangc = fake_slangc(&on_path, "2026.13.1");
+    let path_slangc = fake_slangc(&on_path, "2026.20");
     let env = env_with(Some(&home), Some(&cargo), Some(&path));
     let without_home = env_with(None, Some(&cargo), Some(&path));
 
@@ -219,23 +260,20 @@ fn locate_prefers_gust_slang_home_then_the_cache_then_path() {
     assert!(found.pinned && found.root.is_none() && found.install_dir().is_none());
 
     // The cache beats PATH.
-    let cached = fake_slangc(&cache.join("2026.13.1").join("bin"), "2026.13.1");
+    let cached = fake_slangc(&cache.join("2026.20").join("bin"), "2026.20");
     let found = locate(&without_home, false, &read_version).unwrap();
     assert_eq!(found.source, Source::Cache);
     assert_eq!(found.slangc, cached);
-    assert_eq!(found.install_dir(), Some(cache.join("2026.13.1")));
+    assert_eq!(found.install_dir(), Some(cache.join("2026.20")));
 
     // GUST_SLANG_HOME beats the cache, and replaces it: a home without the pin goes to PATH, not to the cache.
     let found = locate(&env, false, &read_version).unwrap();
     assert_eq!(found.source, Source::Path);
-    let homed = fake_slangc(
-        &home.join("2026.13.1").join("bin"),
-        "2026.13.1-1-g84792eb15",
-    );
-    let found = locate(&env, false, &read_version).unwrap();
+    let homed = fake_slangc(&home.join("2026.20").join("bin"), SYNTHETIC_BUILD);
+    let found = locate_synthetic(&env, false).unwrap();
     assert_eq!(found.source, Source::Home);
     assert_eq!(found.slangc, homed);
-    assert_eq!(found.version, "2026.13.1-1-g84792eb15");
+    assert_eq!(found.version, SYNTHETIC_BUILD);
     assert_eq!(found.root, Some(home.clone()));
 
     // GUST_SLANG_HOME is the only cache root (section 2.5): a home with no pin directory does not fall through to
@@ -263,18 +301,18 @@ fn a_located_slang_that_is_not_exactly_the_pin_gets_a_one_line_note() {
         pinned,
         root: None,
     };
-    assert_eq!(version_note(&located("2026.13.1", true)), None);
-    let validated = version_note(&located("2026.13.1-1-g84792eb15", true)).unwrap();
+    assert_eq!(version_note(&located("2026.20", true)), None);
+    let validated = version_note(&located(SYNTHETIC_BUILD, true)).unwrap();
     assert!(
-        validated.contains("`2026.13.1-1-g84792eb15`")
-            && validated.contains("validated build of the pinned 2026.13.1")
+        validated.contains(&format!("`{SYNTHETIC_BUILD}`"))
+            && validated.contains("validated build of the pinned 2026.20")
             && !validated.contains('\n'),
         "{validated}"
     );
     let other = version_note(&located("2025.1.0", false)).unwrap();
     assert!(
         other.contains("`2025.1.0`")
-            && other.contains("not the pinned 2026.13.1")
+            && other.contains("not the pinned 2026.20")
             && other.contains("--allow-slang-mismatch")
             && !other.contains('\n'),
         "{other}"
@@ -287,7 +325,7 @@ fn an_unlisted_build_of_the_pinned_version_is_refused_everywhere() {
     let home = scratch.0.join("home");
     let on_path = scratch.0.join("path");
     // A tag that looks like a `git describe` build but was not validated.
-    let unlisted = "2026.13.1-2-gdeadbee";
+    let unlisted = "2026.20-2-gdeadbee";
     fake_slangc(&on_path, unlisted);
     let env = env_with(
         None,
@@ -300,7 +338,7 @@ fn an_unlisted_build_of_the_pinned_version_is_refused_everywhere() {
     let found = locate(&env, true, &read_version).unwrap();
     assert!(!found.pinned);
     // In the cache it is a hard error, never substituted.
-    fake_slangc(&home.join("2026.13.1").join("bin"), unlisted);
+    fake_slangc(&home.join("2026.20").join("bin"), unlisted);
     let env = env_with(Some(&home), None, Some(&join(&[&on_path])));
     for allow in [false, true] {
         let error = locate(&env, allow, &read_version).unwrap_err();
@@ -309,14 +347,20 @@ fn an_unlisted_build_of_the_pinned_version_is_refused_everywhere() {
             "{error}"
         );
     }
-    // The validated build is accepted from the cache and is pinned, though it is not exactly the pin.
-    fake_slangc(
-        &home.join("2026.13.1").join("bin"),
-        "2026.13.1-1-g84792eb15",
+    // The shipped list is empty, so the synthetic build is just another unlisted build for the public path ...
+    fake_slangc(&home.join("2026.20").join("bin"), SYNTHETIC_BUILD);
+    let error = locate(&env, false, &read_version).unwrap_err();
+    assert!(
+        error.contains(&format!("reports Slang `{SYNTHETIC_BUILD}`")),
+        "{error}"
     );
-    let found = locate(&env, false, &read_version).unwrap();
+    // ... and with the synthetic build listed it is accepted from the cache and is pinned, though it is not exactly
+    // the pin. The unlisted build is still refused.
+    let found = locate_synthetic(&env, false).unwrap();
     assert!(found.pinned);
     assert_ne!(found.version, SLANG_VERSION);
+    fake_slangc(&home.join("2026.20").join("bin"), unlisted);
+    assert!(locate_synthetic(&env, false).is_err());
 }
 
 #[test]
@@ -325,7 +369,7 @@ fn a_mismatched_slangc_on_path_is_refused_with_the_install_command_unless_allowe
     let first = scratch.0.join("first");
     let second = scratch.0.join("second");
     let wrong = fake_slangc(&first, "2025.1.0");
-    fake_slangc(&second, "2026.13.1");
+    fake_slangc(&second, "2026.20");
     let path = join(&[&first, &second]);
     let env = env_with(None, Some(&scratch.0.join("cargo")), Some(&path));
     let error = locate(&env, false, &read_version).unwrap_err();
@@ -334,7 +378,7 @@ fn a_mismatched_slangc_on_path_is_refused_with_the_install_command_unless_allowe
     assert!(error.contains("cargo gust slang install"), "{error}");
     assert!(error.contains("--allow-slang-mismatch"), "{error}");
     assert!(
-        error.contains("https://github.com/shader-slang/slang/releases/download/v2026.13.1/"),
+        error.contains("https://github.com/shader-slang/slang/releases/download/v2026.20/"),
         "the manual download URL: {error}"
     );
     // With the flag the first slangc on PATH is used, and it is marked as not the pin.
@@ -344,10 +388,7 @@ fn a_mismatched_slangc_on_path_is_refused_with_the_install_command_unless_allowe
     assert!(!found.pinned);
     assert_eq!(found.source, Source::Path);
     // The flag never overrides a pinned install in the cache.
-    let cached = fake_slangc(
-        &scratch.0.join("cargo/gust/slang/2026.13.1/bin"),
-        "2026.13.1",
-    );
+    let cached = fake_slangc(&scratch.0.join("cargo/gust/slang/2026.20/bin"), "2026.20");
     assert_eq!(locate(&env, true, &read_version).unwrap().slangc, cached);
 }
 
@@ -371,9 +412,9 @@ fn nothing_found_is_an_error_that_names_the_install_command_and_the_download() {
 fn an_install_directory_with_another_version_is_never_substituted() {
     let scratch = Scratch::new("locate-bad-install");
     let home = scratch.0.join("home");
-    fake_slangc(&home.join("2026.13.1").join("bin"), "2026.12.0");
+    fake_slangc(&home.join("2026.20").join("bin"), "2026.12.0");
     let on_path = scratch.0.join("path");
-    fake_slangc(&on_path, "2026.13.1");
+    fake_slangc(&on_path, "2026.20");
     let env = env_with(Some(&home), None, Some(&join(&[&on_path])));
     for allow in [false, true] {
         let error = locate(&env, allow, &read_version).unwrap_err();
@@ -396,7 +437,7 @@ fn an_install_directory_with_another_version_is_never_substituted() {
 }
 
 #[test]
-fn notice_files_are_the_licence_files_beside_the_binaries() {
+fn notice_files_are_the_licence_files_and_directories_beside_the_binaries() {
     let scratch = Scratch::new("notices");
     let dir = &scratch.0;
     for name in [
@@ -408,7 +449,12 @@ fn notice_files_are_the_licence_files_beside_the_binaries() {
     ] {
         fs::write(dir.join(name), "x").unwrap();
     }
+    // The two directories of a 2026.20 bundle are listed as directories; any other directory is not, whatever its name.
     fs::create_dir(dir.join("LICENSES")).unwrap();
+    fs::create_dir(dir.join("third-party-notices")).unwrap();
+    fs::create_dir(dir.join("licenses-extra")).unwrap();
+    fs::create_dir(dir.join("share")).unwrap();
+    fs::write(dir.join("LICENSES").join("MIT.txt"), "x").unwrap();
     let names: Vec<String> = notice_files(dir)
         .iter()
         .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
@@ -417,9 +463,11 @@ fn notice_files_are_the_licence_files_beside_the_binaries() {
         names,
         [
             "LICENSE",
+            "LICENSES",
             "NOTICE.txt",
             "THIRD-PARTY-NOTICES.txt",
-            "licence.md"
+            "licence.md",
+            "third-party-notices",
         ]
     );
     assert!(notice_files(&dir.join("missing")).is_empty());
@@ -485,8 +533,17 @@ impl Fetch for Fake {
     fn extract(&self, _archive: &Path, dest: &Path) -> Result<(), String> {
         self.extracts.set(self.extracts.get() + 1);
         fs::write(dest.join("LICENSE"), "Apache-2.0 WITH LLVM-exception").unwrap();
+        // The two notice directories of a 2026.20 bundle.
+        fs::create_dir(dest.join("LICENSES")).unwrap();
+        fs::write(dest.join("LICENSES").join("MIT.txt"), "MIT").unwrap();
+        fs::create_dir(dest.join("third-party-notices")).unwrap();
+        fs::write(
+            dest.join("third-party-notices").join("lz4-LICENSE"),
+            "BSD-2",
+        )
+        .unwrap();
         if self.write_slangc {
-            fake_slangc(&dest.join("bin"), "2026.13.1");
+            fake_slangc(&dest.join("bin"), "2026.20");
         }
         if let Some(hook) = &self.during_extract {
             hook(dest);
@@ -533,17 +590,21 @@ fn install_downloads_verifies_extracts_and_renames_keeping_the_notices_beside_th
     let asset = fake_asset(b"the archive bytes");
     let tools = Fake::serving(b"the archive bytes");
     let installed = install(&root, &asset, &tools, PID).unwrap();
-    let dir = root.join("2026.13.1");
+    let dir = root.join("2026.20");
     assert_eq!(installed, Installed::Fresh(dir.clone()));
     assert_eq!(
         tools.seen_urls.borrow().as_slice(),
-        ["https://github.com/shader-slang/slang/releases/download/v2026.13.1/slang-test.tar.gz"]
+        ["https://github.com/shader-slang/slang/releases/download/v2026.20/slang-test.tar.gz"]
     );
     assert!(slangc_in(&dir).is_file());
     assert_eq!(
         notice_files(&dir),
-        [dir.join("LICENSE")],
-        "the archive layout is kept, so the licence sits beside bin/"
+        [
+            dir.join("LICENSE"),
+            dir.join("LICENSES"),
+            dir.join("third-party-notices")
+        ],
+        "the archive layout is kept, so the licence and the notice directories sit beside bin/"
     );
     // No partial directory and no download left over: only the finished tree and the (empty) archives directory.
     let leftovers: Vec<String> = tree(&root)
@@ -582,7 +643,7 @@ fn a_download_that_fails_the_digest_is_refused_before_extraction_and_leaves_noth
         0,
         "nothing is extracted before the check passes"
     );
-    assert!(!root.join("2026.13.1").exists());
+    assert!(!root.join("2026.20").exists());
     assert_eq!(
         tree(&root),
         ["archives"],
@@ -616,7 +677,7 @@ fn a_cached_archive_with_one_changed_byte_is_refused_before_extraction_and_kept(
     fs::write(&cached, b"the archive bytes").unwrap();
     assert_eq!(
         install(&root, &asset, &tools, PID).unwrap(),
-        Installed::Fresh(root.join("2026.13.1"))
+        Installed::Fresh(root.join("2026.20"))
     );
     assert_eq!(tools.downloads.get(), 0);
     assert!(cached.is_file());
@@ -632,14 +693,14 @@ fn a_failed_extraction_removes_the_partial_directory_and_no_version_directory_ap
     tools.fail_extract_after_writing = true;
     let error = install(&root, &asset, &tools, PID).unwrap_err();
     assert!(error.contains("unexpected end of archive"), "{error}");
-    assert!(!root.join("2026.13.1").exists());
-    assert!(!root.join(format!("2026.13.1.partial-{PID}")).exists());
+    assert!(!root.join("2026.20").exists());
+    assert!(!root.join(format!("2026.20.partial-{PID}")).exists());
     // The verified archive stays, so the next try does not download again.
     assert_eq!(tree(&root), ["archives", "archives/slang-test.tar.gz"]);
     tools.fail_extract_after_writing = false;
     install(&root, &asset, &tools, PID).unwrap();
     assert_eq!(tools.downloads.get(), 1);
-    assert!(slangc_in(&root.join("2026.13.1")).is_file());
+    assert!(slangc_in(&root.join("2026.20")).is_file());
 }
 
 #[test]
@@ -651,8 +712,8 @@ fn an_archive_without_slangc_and_a_failed_download_leave_nothing_behind() {
     tools.write_slangc = false;
     let error = install(&root, &asset, &tools, PID).unwrap_err();
     assert!(error.contains("not a Slang release archive"), "{error}");
-    assert!(!root.join("2026.13.1").exists());
-    assert!(!root.join(format!("2026.13.1.partial-{PID}")).exists());
+    assert!(!root.join("2026.20").exists());
+    assert!(!root.join(format!("2026.20.partial-{PID}")).exists());
 
     let scratch = Scratch::new("install-download-fail");
     let root = scratch.0.join("cache");
@@ -671,14 +732,14 @@ fn an_archive_without_slangc_and_a_failed_download_leave_nothing_behind() {
 fn an_incomplete_version_directory_is_reported_not_overwritten() {
     let scratch = Scratch::new("install-incomplete");
     let root = scratch.0.join("cache");
-    fs::create_dir_all(root.join("2026.13.1")).unwrap();
-    fs::write(root.join("2026.13.1").join("stray"), "x").unwrap();
+    fs::create_dir_all(root.join("2026.20")).unwrap();
+    fs::write(root.join("2026.20").join("stray"), "x").unwrap();
     let asset = fake_asset(b"the archive bytes");
     let tools = Fake::serving(b"the archive bytes");
     let error = install(&root, &asset, &tools, PID).unwrap_err();
     assert!(error.contains("holds no bin/slangc"), "{error}");
     assert_eq!(tools.downloads.get(), 0);
-    assert!(root.join("2026.13.1").join("stray").is_file());
+    assert!(root.join("2026.20").join("stray").is_file());
 }
 
 #[test]
@@ -687,13 +748,13 @@ fn an_install_that_loses_the_race_to_another_process_succeeds_and_cleans_its_par
     let root = scratch.0.join("cache");
     let asset = fake_asset(b"the archive bytes");
     let mut tools = Fake::serving(b"the archive bytes");
-    let rival = root.join("2026.13.1");
+    let rival = root.join("2026.20");
     tools.during_extract = Some(Box::new(move |_| {
-        fake_slangc(&rival.join("bin"), "2026.13.1");
+        fake_slangc(&rival.join("bin"), "2026.20");
     }));
     let installed = install(&root, &asset, &tools, PID).unwrap();
-    assert_eq!(installed, Installed::Already(root.join("2026.13.1")));
-    assert!(!root.join(format!("2026.13.1.partial-{PID}")).exists());
+    assert_eq!(installed, Installed::Already(root.join("2026.20")));
+    assert!(!root.join(format!("2026.20.partial-{PID}")).exists());
 }
 
 /// A `Fetch` that serves fixed bytes but extracts with the real `tar`.
@@ -713,7 +774,7 @@ impl Fetch for RealTar {
 fn the_real_tar_extracts_a_good_archive_and_a_bad_one_leaves_no_version_directory() {
     let scratch = Scratch::new("install-real-tar");
     let source = scratch.0.join("src");
-    fake_slangc(&source.join("bin"), "2026.13.1");
+    fake_slangc(&source.join("bin"), "2026.20");
     fs::write(source.join("LICENSE"), "licence text").unwrap();
     let archive = scratch.0.join("made.tar.gz");
     let status = Command::new(SystemTools::tar())
@@ -729,13 +790,13 @@ fn the_real_tar_extracts_a_good_archive_and_a_bad_one_leaves_no_version_director
     let asset = fake_asset(&bytes);
     let root = scratch.0.join("cache");
     let installed = install(&root, &asset, &RealTar(bytes), PID).unwrap();
-    let dir = root.join("2026.13.1");
+    let dir = root.join("2026.20");
     assert_eq!(installed, Installed::Fresh(dir.clone()));
     assert_eq!(
         fs::read_to_string(dir.join("LICENSE")).unwrap(),
         "licence text"
     );
-    assert_eq!(read_version(&slangc_in(&dir)).unwrap(), "2026.13.1");
+    assert_eq!(read_version(&slangc_in(&dir)).unwrap(), "2026.20");
 
     // A bad archive whose digest is right: the real tar fails, and nothing but the archive is left.
     let garbage = b"this is not an archive at all".to_vec();
@@ -743,6 +804,6 @@ fn the_real_tar_extracts_a_good_archive_and_a_bad_one_leaves_no_version_director
     let root = scratch.0.join("cache2");
     let error = install(&root, &asset, &RealTar(garbage), PID).unwrap_err();
     assert!(error.contains("tar") && error.contains("failed"), "{error}");
-    assert!(!root.join("2026.13.1").exists());
-    assert!(!root.join(format!("2026.13.1.partial-{PID}")).exists());
+    assert!(!root.join("2026.20").exists());
+    assert!(!root.join(format!("2026.20.partial-{PID}")).exists());
 }

@@ -80,7 +80,7 @@ fn the_fixture_verifies_through_the_public_entry() {
     assert_eq!(verified.compiled.entry_point, "gpu_vector_add_add");
     assert_eq!(verified.compiled.workgroup_size, [64, 1, 1]);
     assert_eq!(verified.compiled.artifact, WGSL);
-    assert_eq!(verified.compiled.compiler_version, "2026.13.1-1-g84792eb15");
+    assert_eq!(verified.compiled.compiler_version, "2026.20");
     let names: Vec<_> = verified
         .compiled
         .reflection
@@ -122,8 +122,8 @@ fn the_fixture_files_are_not_line_ending_converted() {
     assert!(!WGSL.contains(&b'\r'), "the WGSL has carriage returns");
     assert!(!REFLECTION.contains('\r'));
     assert!(!MANIFEST.contains('\r'));
-    assert_eq!(WGSL.len(), 476);
-    assert_eq!(REFLECTION.len(), 1055);
+    assert_eq!(WGSL.len(), 478);
+    assert_eq!(REFLECTION.len(), 1040);
 }
 
 #[test]
@@ -139,7 +139,7 @@ fn one_flipped_wgsl_byte_is_an_artifact_hash_mismatch() {
         },
     );
     assert!(
-        message.contains("artifact hash (stored \"993c607e1d2836a0\""),
+        message.contains("artifact hash (stored \"282df814ca1e66dd\""),
         "{message}"
     );
     assert!(!message.contains("source hash"), "{message}");
@@ -156,7 +156,7 @@ fn a_truncated_wgsl_is_an_artifact_hash_mismatch() {
         },
     );
     assert!(
-        message.contains("artifact hash (stored \"993c607e1d2836a0\""),
+        message.contains("artifact hash (stored \"282df814ca1e66dd\""),
         "{message}"
     );
     assert!(!message.contains("source hash"), "{message}");
@@ -173,7 +173,7 @@ fn a_crlf_rewritten_wgsl_is_an_artifact_hash_mismatch() {
         },
     );
     assert!(
-        message.contains("artifact hash (stored \"993c607e1d2836a0\""),
+        message.contains("artifact hash (stored \"282df814ca1e66dd\""),
         "{message}"
     );
     assert!(!message.contains("source hash"), "{message}");

@@ -15,11 +15,10 @@ use crate::{
         run_counted_captured, run_direct, run_direct_args, set_workspace_profile, without_colors,
         workspace_command,
     },
-    reflect::{BuildOptions, build_slang_reflect},
     shader::doctor_smoke,
     ui::{Expectation, judge, parse_expected},
     validation::{compact_validation_summary, json_string},
-    verify::{VerifyMode, verify},
+    verify::{VerifyMode, prepare_helper, verify},
     workspace::{EXAMPLES, cargo_target_dir, changed_paths, workspace_root, workspace_test_args},
 };
 
@@ -193,7 +192,7 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
             ],
         ),
         "reflection" => {
-            build_slang_reflect(BuildOptions::default())?;
+            prepare_helper(&root, None)?;
             for args in REFLECTION_TESTS {
                 run_direct(&root, "cargo", args)?;
             }
@@ -399,7 +398,7 @@ pub(crate) fn doctor(args: &[String]) -> Result<(), String> {
             "missing (needed for artifacts/full)"
         }
     );
-    match build_slang_reflect(BuildOptions::default()) {
+    match workspace_root().and_then(|root| prepare_helper(&root, None)) {
         Ok(()) => println!("  gust-slang-reflect: ready"),
         Err(error) => {
             println!("  gust-slang-reflect: not ready ({error})");

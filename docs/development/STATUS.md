@@ -141,6 +141,21 @@ D55 to D59.
   Gpu tests in `wgsl_spelling.rs` check both bugs against the twin; `gpu-software` pins 142
   passed over 19 result lines. Follow-up: the validator should reject literals outside 32 bits
   (E0812). Opus keep after one fix round; gates on main at `709a86d`.
+- M5 m5.b (`236780b`): the mismatch ledger runs on two adapter kinds (D52, D39). The kind comes
+  from the adapter's device type (`Cpu` is software). Unenforced rows carry one observation pin
+  per kind; the software pins are m5.b0's lavapipe values for 18 rows (KM-07 NaN bits and row
+  100, KM-08 denormals), and the set-valued KM-09 rows keep their set rule. A NOTE compares an
+  observation with the running kind's pin and names driver, backend and `driver_info`; nothing
+  unenforced fails, and an enforced row has no per-kind value. Each run writes
+  `ledger-<kind>.txt` under `CARGO_TARGET_TMPDIR` and asserts its 132 lines. On lavapipe the
+  NOTE count fell from 7 to 0. Opus keep after two fix rounds; gates on main at `bee2c5d`.
+- M5 m5.d2 (`ce17199`): the 84 scalar coretests cases run on the GPU and the twin, each compared
+  with its Rust literal under its R1-7 set (exact integers, 2.5 ULP for float `/`). Guards: every
+  CORETESTS.md id is executed exactly once, the table's columns and rows are checked, and each
+  slot is asserted once; a host unit test covers the ULP and neighbour branches, because no
+  transcribed row reaches them (both `/` rows divide exactly). 84 of 84 pass on the RTX 5090 and
+  on lavapipe (llvmpipe, Mesa 25.2.8). `gpu-software` pins 146 passed over 20 result lines. Opus
+  keep after one fix round; gates on main at `bee2c5d`.
 - M5 m5.d1 (`d2378ce`): 84 scalar cases transcribed from Rust 1.98.0's coretests
   (`library/coretests/tests/num`) into `docs/development/CORETESTS.md`, with acceptance sets
   (exact integers in the domain, WGSL's 2.5 ULP for float `/`) and exclusions; five `#[gpu]`

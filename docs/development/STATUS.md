@@ -215,6 +215,18 @@ D55 to D59.
   5090: one literal fault shrank in 119.0 s over 17 candidates (mean 6.58 s), 0 mismatches in both
   batches; the no-fault check exits 1. An interrupted `--shrink` can leave cargo running on Unix
   (DIFFTEST.md). Evidence: Gpu (RTX 5090). Opus merge after three rounds.
+- M5 m5.e1 (`f60c1b4`): the production `cpu` target (D51). `GUST_PROFILE=cpu` is a fourth profile:
+  never inferred, not strict, refuses `slang-runtime`, does no artifact lookup (`IS_CPU`; `STRICT`
+  stays `native` or `web`). Under `cpu` the macro emits one ungated `impl Run<K, N>` for
+  `CpuDevice` and no `cfg(any(test, gust_dual))` copy, also with `cfg(test)` or `gust_dual`; it
+  emits `option_env!("GUST_PROFILE")` beside gust's `rerun-if-env-changed`, and a guard test fails
+  if both go. Only the exact value `cpu` selects it. Fixture `tests/cpu-target` and check-ui
+  `typed-call-cpu-target`; steps E-a to E-d and E-f to E-h pass by hand (E-h: 10 alternating
+  builds). Not yet enforced: a GPU runtime refusing `cpu` (E-e) needs gust-wgpu to call
+  `require_gpu_target`, which is m5.e2. S5.2 outcome A: `CpuDevice` dispatch within 1.20 to 1.64
+  times (vector-add) and 1.31 to 1.92 times (polynomial) of a hand loop, release, five runs.
+  Evidence: Unit, CPU only; main gates plus Reflect, check-ui and check-cpu green on the merge.
+  Opus merge after one fix round.
 - M6 m6.r (`fe42f3f`): the reflection helper reports vectors (`scalarType`, `elementCount`), matrices
   (rows, columns, layout and the column stride, size divided by columns) and constant buffers (the
   element's Uniform layout plus the `descriptorTableSlot` binding), with matrices pinned

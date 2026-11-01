@@ -66,7 +66,7 @@ remaining chain run beside it now, and the rest wait for the M4 slice named. M5 
 | m5.c1a, m5.c1a2, m5.c1b, m5.c1c | Differential generator in `tests/difftest/`: integers, floats v1 (interval bounds), harness, bounded shrinking | m5.c1a done (`3bcebaf`); c1a2 done (`f60f516`); c1b done (harness, S5.3 outcome A; Gpu: RTX 5090; `a3a7798`); c1c done (Gpu: RTX 5090; `a41ba93`) |
 | S5.4 | Spike: expansion-time profile and cached rebuild transitions | done (decision A: both tracking paths suffice on their own) |
 | m5.b | Ledger on two adapters (per-kind observation pins) | done (`236780b`; 18 software pins) |
-| m5.e1, m5.e2 | Production `cpu` profile (D51); `check-cpu-target` and the `Cpu` tier | m5.e1 running; m5.e2 after it |
+| m5.e1, m5.e2 | Production `cpu` profile (D51); `check-cpu-target` and the `Cpu` tier | m5.e1 done (Unit, CPU only; Opus keep after one fix round; `f60c1b4`); m5.e2 next |
 | m5.c2, m5.a2 | `check-difftest` wiring; `gpu-software` on the Slang manager | m5.a2 done (Gpu (software): lavapipe; Opus merge after one fix round; `e098f2f`); m5.c2 after m4.r |
 
 **Then: M6, language breadth I** (plan adopted 2026-11-01, owner-delegated, after an Opus review, one revision and a

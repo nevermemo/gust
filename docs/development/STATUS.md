@@ -156,6 +156,14 @@ D55 to D59.
   transcribed row reaches them (both `/` rows divide exactly). 84 of 84 pass on the RTX 5090 and
   on lavapipe (llvmpipe, Mesa 25.2.8). `gpu-software` pins 146 passed over 20 result lines. Opus
   keep after one fix round; gates on main at `bee2c5d`.
+- M6 m6.a1 (`b60fca2`): the layout model gains vectors and matrices (`StorageV2`, with
+  `StorageV1` as its scalar sub-case, and `Std140V1`; column-major pinned by `MATRIX_LAYOUT`).
+  The buffer-eligible math types implement `GpuPod` with const asserts on size and alignment;
+  3-wide types and `Mat3` stay out, and `GpuPod` covers only padding-free layouts. The
+  reflection reader keeps schema 1 unchanged and adds schema 2 (vector, matrix,
+  `constantBuffer`, mandatory `matrixLayout`); every committed artifact set still verifies.
+  Known limitation until m6.g1: `create_typed_buffer::<Vec4>` now compiles and panics at run time
+  in the StorageV1 check. Opus keep after one fix round; gates on main at `38ebf29`.
 - M5 m5.d1 (`d2378ce`): 84 scalar cases transcribed from Rust 1.98.0's coretests
   (`library/coretests/tests/num`) into `docs/development/CORETESTS.md`, with acceptance sets
   (exact integers in the domain, WGSL's 2.5 ULP for float `/`) and exclusions; five `#[gpu]`

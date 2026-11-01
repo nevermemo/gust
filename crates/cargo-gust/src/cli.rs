@@ -9,9 +9,12 @@ cargo gust: export precompiled GUST kernels (D45, D46)
 
 USAGE:
     cargo gust init   [-p <crate>] [--manifest-path <path>]
-    cargo gust build  [-p <crate>] [--manifest-path <path>] [--format wgsl|spirv]...
+    cargo gust build  [-p <crate>] [--manifest-path <path>] [--format wgsl|spirv]... [--allow-slang-mismatch]
     cargo gust check  [-p <crate>] [--manifest-path <path>] [--recompile] [--allow-slang-mismatch]
     cargo gust doctor
+    cargo gust slang install
+    cargo gust slang locate [--allow-slang-mismatch]
+    cargo gust slang build-helper [--force] [--sdk-root <dir>] [--out-dir <dir>]
     cargo gust help
 
 COMMANDS:
@@ -20,7 +23,13 @@ COMMANDS:
              WGSL is always built; --format spirv adds SPIR-V (checked with spirv-val when it is on PATH)
     check    fail unless gust-artifacts/ is exactly what a build of the current sources gives
              --recompile also recompiles and compares the bytes; --allow-slang-mismatch accepts another Slang build
-    doctor   show the native helper, the build profile and how to install this tool
+    doctor   show Slang, the native helper, the build profile and how to install this tool
+    slang    manage the pinned Slang (the authors who export need it; consumers and production builds do not)
+               install       download the pinned release, verify its SHA-256 and unpack it into the cache
+               locate        print the slangc a build would use: the cache (GUST_SLANG_HOME if set), then PATH
+               build-helper  build the native reflection helper against that Slang (needs a C++ compiler)
+             --allow-slang-mismatch uses a slangc of another version, printed and never silent
+GUST_SLANG_HOME names the Slang cache directory (default: <CARGO_HOME or ~/.cargo>/gust/slang).
 
 EXIT CODES: 0 success; 1 check found problems; 2 the command could not run (a failed compile, no kernels, bad input).
 ";
@@ -38,6 +47,7 @@ pub(crate) struct BuildOptions {
     pub(crate) target: Target,
     /// What `--format` asked for, in order; WGSL is added by the build.
     pub(crate) formats: Vec<Format>,
+    pub(crate) allow_slang_mismatch: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,12 +57,27 @@ pub(crate) struct CheckOptions {
     pub(crate) allow_slang_mismatch: bool,
 }
 
+/// `cargo gust slang <command>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SlangCommand {
+    Install,
+    Locate {
+        allow_mismatch: bool,
+    },
+    BuildHelper {
+        force: bool,
+        sdk_root: Option<PathBuf>,
+        out_dir: Option<PathBuf>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Command {
     Init(Target),
     Build(BuildOptions),
     Check(CheckOptions),
     Doctor,
+    Slang(SlangCommand),
     Help,
     Version,
 }
@@ -82,9 +107,10 @@ pub(crate) fn parse(args: &[String]) -> Result<Command, String> {
             let parsed = options(
                 rest,
                 &["-p", "--package", "--manifest-path", "--format"],
-                &[],
+                &["--allow-slang-mismatch"],
             )?;
             Ok(Command::Build(BuildOptions {
+                allow_slang_mismatch: parsed.flags.contains(&"--allow-slang-mismatch"),
                 target: parsed.target,
                 formats: parsed.formats,
             }))
@@ -105,7 +131,38 @@ pub(crate) fn parse(args: &[String]) -> Result<Command, String> {
             options(rest, &[], &[])?;
             Ok(Command::Doctor)
         }
+        "slang" => slang(rest).map(Command::Slang),
         other => Err(format!("unknown command `{other}`")),
+    }
+}
+
+/// Parse what follows `slang`.
+fn slang(args: &[String]) -> Result<SlangCommand, String> {
+    let Some((command, rest)) = args.split_first() else {
+        return Err("`slang` needs a command: install, locate or build-helper".to_owned());
+    };
+    match command.as_str() {
+        "install" => {
+            options(rest, &[], &[])?;
+            Ok(SlangCommand::Install)
+        }
+        "locate" => {
+            let parsed = options(rest, &[], &["--allow-slang-mismatch"])?;
+            Ok(SlangCommand::Locate {
+                allow_mismatch: parsed.flags.contains(&"--allow-slang-mismatch"),
+            })
+        }
+        "build-helper" => {
+            let parsed = options(rest, &["--sdk-root", "--out-dir"], &["--force"])?;
+            Ok(SlangCommand::BuildHelper {
+                force: parsed.flags.contains(&"--force"),
+                sdk_root: parsed.sdk_root,
+                out_dir: parsed.out_dir,
+            })
+        }
+        other => Err(format!(
+            "unknown slang command `{other}` (use install, locate or build-helper)"
+        )),
     }
 }
 
@@ -113,6 +170,8 @@ struct Parsed {
     target: Target,
     formats: Vec<Format>,
     flags: Vec<&'static str>,
+    sdk_root: Option<PathBuf>,
+    out_dir: Option<PathBuf>,
 }
 
 /// Read `--name value`, `--name=value` and the listed bare flags.
@@ -120,6 +179,8 @@ fn options(args: &[String], valued: &[&str], bare: &[&'static str]) -> Result<Pa
     let mut target = Target::default();
     let mut formats = Vec::new();
     let mut flags = Vec::new();
+    let mut sdk_root = None;
+    let mut out_dir = None;
     let mut index = 0;
     while index < args.len() {
         let argument = &args[index];
@@ -168,6 +229,16 @@ fn options(args: &[String], valued: &[&str], bare: &[&'static str]) -> Result<Pa
                     return Err("`--manifest-path` was given twice".to_owned());
                 }
             }
+            "--sdk-root" => {
+                if sdk_root.replace(PathBuf::from(value)).is_some() {
+                    return Err("`--sdk-root` was given twice".to_owned());
+                }
+            }
+            "--out-dir" => {
+                if out_dir.replace(PathBuf::from(value)).is_some() {
+                    return Err("`--out-dir` was given twice".to_owned());
+                }
+            }
             _ => {
                 for part in value.split(',') {
                     formats.push(match part {
@@ -185,6 +256,8 @@ fn options(args: &[String], valued: &[&str], bare: &[&'static str]) -> Result<Pa
         target,
         formats,
         flags,
+        sdk_root,
+        out_dir,
     })
 }
 
@@ -245,6 +318,18 @@ mod tests {
                     manifest_path: Some(PathBuf::from("a/Cargo.toml")),
                 },
                 formats: vec![Format::Spirv, Format::Wgsl, Format::Spirv],
+                allow_slang_mismatch: false,
+            })
+        );
+        assert_eq!(
+            parse(&words("build --allow-slang-mismatch -p k")).unwrap(),
+            Command::Build(BuildOptions {
+                target: Target {
+                    package: Some("k".to_owned()),
+                    manifest_path: None,
+                },
+                formats: vec![],
+                allow_slang_mismatch: true,
             })
         );
         assert_eq!(
@@ -272,6 +357,45 @@ mod tests {
     }
 
     #[test]
+    fn the_slang_commands_and_their_options_parse() {
+        assert_eq!(
+            parse(&words("slang install")).unwrap(),
+            Command::Slang(SlangCommand::Install)
+        );
+        assert_eq!(
+            parse(&words("slang locate")).unwrap(),
+            Command::Slang(SlangCommand::Locate {
+                allow_mismatch: false
+            })
+        );
+        assert_eq!(
+            parse(&words("slang locate --allow-slang-mismatch")).unwrap(),
+            Command::Slang(SlangCommand::Locate {
+                allow_mismatch: true
+            })
+        );
+        assert_eq!(
+            parse(&words("slang build-helper")).unwrap(),
+            Command::Slang(SlangCommand::BuildHelper {
+                force: false,
+                sdk_root: None,
+                out_dir: None,
+            })
+        );
+        assert_eq!(
+            parse(&words(
+                "slang build-helper --force --sdk-root /s --out-dir=/o"
+            ))
+            .unwrap(),
+            Command::Slang(SlangCommand::BuildHelper {
+                force: true,
+                sdk_root: Some(PathBuf::from("/s")),
+                out_dir: Some(PathBuf::from("/o")),
+            })
+        );
+    }
+
+    #[test]
     fn bad_input_is_refused_with_a_reason() {
         for (line, expected) in [
             ("frobnicate", "unknown command `frobnicate`"),
@@ -287,6 +411,30 @@ mod tests {
             ("build extra", "unexpected argument `extra`"),
             ("doctor -p x", "unknown option `-p`"),
             ("init --release", "unknown option `--release`"),
+            ("slang", "`slang` needs a command"),
+            ("slang frobnicate", "unknown slang command `frobnicate`"),
+            ("slang install --force", "unknown option `--force`"),
+            ("slang install extra", "unexpected argument `extra`"),
+            ("slang locate --sdk-root x", "unknown option `--sdk-root`"),
+            (
+                "slang build-helper --allow-slang-mismatch",
+                "unknown option",
+            ),
+            (
+                "slang build-helper --sdk-root",
+                "`--sdk-root` needs a value",
+            ),
+            (
+                "slang build-helper --out-dir a --out-dir b",
+                "`--out-dir` was given twice",
+            ),
+            (
+                "slang build-helper --sdk-root a --sdk-root b",
+                "`--sdk-root` was given twice",
+            ),
+            ("slang locate --allow-slang-mismatch=yes", "takes no value"),
+            ("build --force", "unknown option `--force`"),
+            ("check --sdk-root x", "unknown option `--sdk-root`"),
         ] {
             let error = parse(&words(line)).unwrap_err();
             assert!(error.contains(expected), "{line}: {error}");
@@ -295,15 +443,21 @@ mod tests {
 
     #[test]
     fn the_usage_text_lists_every_command() {
-        for command in ["init", "build", "check", "doctor", "help"] {
+        for command in [
+            "init",
+            "build",
+            "check",
+            "doctor",
+            "slang install",
+            "slang locate",
+            "slang build-helper",
+            "help",
+        ] {
             assert!(
                 USAGE.contains(&format!("cargo gust {command}")),
                 "{command}"
             );
         }
-        assert!(
-            !USAGE.contains("slang install"),
-            "slang management is slice m4.f"
-        );
+        assert!(USAGE.contains("GUST_SLANG_HOME"));
     }
 }

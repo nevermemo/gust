@@ -9,7 +9,11 @@
 
 use std::path::PathBuf;
 
-use crate::tools::helper_hint;
+use crate::{
+    slang::{Located, Source},
+    toolchain::check_compatible,
+    tools::helper_hint,
+};
 
 /// The values `GUST_PROFILE` may take.
 const PROFILES: [&str; 3] = ["dev", "native", "web"];
@@ -46,6 +50,12 @@ pub(crate) fn effective_profile(
 pub(crate) struct Facts {
     /// This tool's version.
     pub(crate) version: String,
+    /// The Slang version this tool is pinned to.
+    pub(crate) pin: String,
+    /// The pinned `slangc` that `locate` found, or why it found none.
+    pub(crate) slangc: Result<Located, String>,
+    /// The licence and notice files beside the binaries of a managed install.
+    pub(crate) notices: Vec<PathBuf>,
     /// The helper path `gust` resolved (`GUST_SLANG_REFLECT`, the repository's `target/slang-reflect`, or a bare name).
     pub(crate) helper_candidate: PathBuf,
     /// Where the helper was found, if it was.
@@ -61,11 +71,55 @@ pub(crate) struct Facts {
 pub(crate) fn lines(facts: &Facts) -> (Vec<String>, bool) {
     let mut out = vec![format!("cargo-gust {}", facts.version)];
     let mut healthy = true;
+    match &facts.slangc {
+        Ok(located) => {
+            out.push(format!("slangc: found at {}", located.slangc.display()));
+            out.push(format!(
+                "  Slang {} ({}); the pin is {}",
+                located.version,
+                located.source.label(),
+                facts.pin
+            ));
+            if !located.pinned {
+                healthy = false;
+                out.push("  this is not the pinned version".to_owned());
+            }
+            match located.source {
+                Source::Path => out.push(
+                    "  licence notices: this slangc is on PATH, so cargo gust does not manage its notices; the release's own LICENSE sits beside its binaries (`cargo gust slang install` keeps them beside a cached copy)"
+                        .to_owned(),
+                ),
+                Source::Home | Source::Cache if facts.notices.is_empty() => out.push(
+                    "  licence notices: none found beside the binaries of this install".to_owned(),
+                ),
+                Source::Home | Source::Cache => {
+                    for notice in &facts.notices {
+                        out.push(format!("  licence notice: {}", notice.display()));
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            healthy = false;
+            out.push(format!(
+                "slangc: NOT found as the pinned Slang {}: {error}",
+                facts.pin
+            ));
+        }
+    }
     match (&facts.helper_found, &facts.helper_slang) {
         (Some(path), slang) => {
             out.push(format!("helper: found at {}", path.display()));
             match slang {
-                Some(Ok(tag)) => out.push(format!("  Slang build: {tag}")),
+                Some(Ok(tag)) => {
+                    out.push(format!("  Slang build: {tag}"));
+                    if let Ok(located) = &facts.slangc
+                        && let Err(error) = check_compatible(path, tag, located)
+                    {
+                        healthy = false;
+                        out.push(format!("  helper refused: {error}"));
+                    }
+                }
                 Some(Err(error)) => {
                     healthy = false;
                     out.push(format!("  cannot read its version: {error}"));
@@ -163,6 +217,15 @@ mod tests {
     fn facts() -> Facts {
         Facts {
             version: "0.1.0".to_owned(),
+            pin: "2026.13.1".to_owned(),
+            slangc: Ok(Located {
+                slangc: PathBuf::from("/slang/2026.13.1/bin/slangc"),
+                version: "2026.13.1-1-g84792eb15".to_owned(),
+                source: Source::Cache,
+                pinned: true,
+                root: Some(PathBuf::from("/slang")),
+            }),
+            notices: vec![PathBuf::from("/slang/2026.13.1/LICENSE")],
             helper_candidate: PathBuf::from("gust-slang-reflect"),
             helper_found: Some(PathBuf::from("/tools/gust-slang-reflect")),
             helper_slang: Some(Ok("2026.13.1-1-g84792eb15".to_owned())),
@@ -181,6 +244,11 @@ mod tests {
             "{text:?}"
         );
         assert!(text.contains(&"  Slang build: 2026.13.1-1-g84792eb15".to_owned()));
+        assert!(text.contains(&"slangc: found at /slang/2026.13.1/bin/slangc".to_owned()));
+        assert!(text.contains(
+            &"  Slang 2026.13.1-1-g84792eb15 (cargo cache); the pin is 2026.13.1".to_owned()
+        ));
+        assert!(text.contains(&"  licence notice: /slang/2026.13.1/LICENSE".to_owned()));
         assert!(text.contains(&"GUST_PROFILE: not set".to_owned()));
         assert!(
             text.iter()
@@ -246,5 +314,79 @@ mod tests {
         let mut unreadable = facts();
         unreadable.helper_slang = Some(Err("exit 3".to_owned()));
         assert!(!lines(&unreadable).1);
+    }
+
+    #[test]
+    fn a_helper_built_against_another_slang_is_refused_and_build_helper_is_offered() {
+        // Mutation (b): the helper tag differs from `slangc -version`.
+        let mut mismatched = facts();
+        mismatched.helper_slang = Some(Ok("2025.1.0".to_owned()));
+        let (text, healthy) = lines(&mismatched);
+        assert!(!healthy);
+        let refused = text
+            .iter()
+            .find(|line| line.starts_with("  helper refused:"))
+            .unwrap_or_else(|| panic!("{text:?}"));
+        assert!(
+            refused.contains("built against Slang `2025.1.0`")
+                && refused.contains("is Slang `2026.13.1-1-g84792eb15`")
+                && refused.contains("cargo gust slang build-helper"),
+            "{refused}"
+        );
+        // The pin matching is not enough: two builds of the pinned version still differ.
+        let mut other_build = facts();
+        other_build.helper_slang = Some(Ok("2026.13.1".to_owned()));
+        assert!(!lines(&other_build).1);
+    }
+
+    #[test]
+    fn a_missing_pinned_slangc_is_not_healthy_and_carries_the_locate_error() {
+        let mut missing = facts();
+        missing.slangc =
+            Err("Slang 2026.13.1 was not found: run `cargo gust slang install`".to_owned());
+        missing.notices.clear();
+        let (text, healthy) = lines(&missing);
+        assert!(!healthy);
+        assert!(
+            text.contains(
+                &"slangc: NOT found as the pinned Slang 2026.13.1: Slang 2026.13.1 was not found: run `cargo gust slang install`"
+                    .to_owned()
+            ),
+            "{text:?}"
+        );
+        // With no slangc there is nothing to compare the helper with, so only the slangc line is a problem.
+        assert!(!text.iter().any(|line| line.contains("helper refused")));
+    }
+
+    #[test]
+    fn the_notices_of_an_install_are_listed_and_a_path_slangc_says_they_are_not_managed() {
+        let mut none = facts();
+        none.notices.clear();
+        let (text, _) = lines(&none);
+        assert!(text.contains(
+            &"  licence notices: none found beside the binaries of this install".to_owned()
+        ));
+        let mut on_path = facts();
+        if let Ok(located) = &mut on_path.slangc {
+            located.source = Source::Path;
+            located.root = None;
+        }
+        let (text, healthy) = lines(&on_path);
+        assert!(healthy);
+        assert!(
+            text.iter()
+                .any(|line| line.starts_with("  licence notices: this slangc is on PATH")),
+            "{text:?}"
+        );
+        assert!(
+            !text
+                .iter()
+                .any(|line| line.starts_with("  licence notice: "))
+        );
+        let mut unpinned = facts();
+        if let Ok(located) = &mut unpinned.slangc {
+            located.pinned = false;
+        }
+        assert!(!lines(&unpinned).1);
     }
 }

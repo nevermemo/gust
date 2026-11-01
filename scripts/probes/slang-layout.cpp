@@ -1,3 +1,6 @@
+// The source of truth of gust-slang-reflect, the native reflection helper. cargo-gust ships a copy as
+// crates/cargo-gust/assets/slang-layout.cpp (a cargo-gust test fails when the two differ); after an edit copy this file
+// over it. Build the helper with `cargo gust slang build-helper`, or `cargo xtask build-slang-reflect` in this repository.
 #include <slang.h>
 #include <slang-com-ptr.h>
 #include <cctype>

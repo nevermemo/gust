@@ -16,14 +16,25 @@
 //! `gust::Resource`, and `HeadlessDevice` runs every `gust::Call` (`gust::Run`). A call is
 //! validated like `dispatch_buffers`: each binding is checked against `call.kernel()` at submit,
 //! and one buffer may be bound twice only read-only (`Error::AliasedBinding`).
+//!
+//! # Blocking and async readback
+//!
+//! `read_typed_buffer_async` and `HeadlessDevice::new_async` are the async core (R4.9); a std-only `Completion` future
+//! sits above wgpu's `map_async` callback. On native the blocking functions (`new`, `read_typed_buffer`) keep their
+//! names and wrap the async functions (`new` with `pollster::block_on`); a readback wrapper waits with `poll(Wait)`
+//! first and then polls the finished future once, because on native the callback runs only while something polls the
+//! device. They do not exist on `wasm32`.
 
 use std::{
+    future::Future,
     marker::PhantomData,
+    pin::Pin,
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
+    task::{Context, Poll},
     time::{Duration, Instant},
 };
 
@@ -34,12 +45,14 @@ use gust::{
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 mod cache;
+mod completion;
 mod error;
 mod generated_host;
 pub mod graph;
 pub mod pool;
 pub use cache::PipelineCacheStats;
 use cache::{CachedKernel, KernelCacheKey, PipelineCache};
+use completion::Completion;
 pub use error::Error;
 pub use generated_host::render_wgpu_source;
 pub use graph::{GraphOutput, GraphReport, NodeId, StagedGraph, TransferDirection, TransferRecord};
@@ -567,17 +580,25 @@ const ADAPTER_BACKOFF: [Duration; 2] = [Duration::from_millis(100), Duration::fr
 /// The final `NoAdapter` keeps its message and gains the attempt count. When a request
 /// succeeds after at least one failed attempt, one line goes to `log`, so the transient
 /// failure stays visible instead of being absorbed by the retry.
-fn retry_no_adapter<T>(
+///
+/// Both the request and the pause are futures, so the same loop serves the browser, where
+/// nothing may block. `pause` is awaited between attempts; on native it sleeps the thread and
+/// returns a ready future (`pause_between_attempts`).
+async fn retry_no_adapter<
+    T,
+    Request: Future<Output = Result<T, Error>>,
+    Pause: Future<Output = ()>,
+>(
     attempts: u32,
     backoff: &[Duration],
-    mut pause: impl FnMut(Duration),
+    mut pause: impl FnMut(Duration) -> Pause,
     mut log: impl FnMut(&str),
-    mut request: impl FnMut() -> Result<T, Error>,
+    mut request: impl FnMut() -> Request,
 ) -> Result<T, Error> {
     let mut attempt = 1;
     let mut first_failure: Option<String> = None;
     loop {
-        match request() {
+        match request().await {
             Err(Error::NoAdapter(message)) if attempt >= attempts => {
                 return Err(Error::NoAdapter(format!(
                     "{message} (after {attempt} attempts)"
@@ -586,7 +607,7 @@ fn retry_no_adapter<T>(
             Err(Error::NoAdapter(message)) => {
                 first_failure.get_or_insert(message);
                 if let Some(delay) = backoff.get(attempt as usize - 1) {
-                    pause(*delay);
+                    pause(*delay).await;
                 }
                 attempt += 1;
             }
@@ -599,6 +620,83 @@ fn retry_no_adapter<T>(
                 return other;
             }
         }
+    }
+}
+
+/// The pause between two adapter requests. Native sleeps the calling thread and returns a ready future.
+#[cfg(not(target_arch = "wasm32"))]
+fn pause_between_attempts(delay: Duration) -> std::future::Ready<()> {
+    std::thread::sleep(delay);
+    std::future::ready(())
+}
+
+/// The pause between two adapter requests. A browser thread cannot sleep (`std::thread::sleep` panics on
+/// `wasm32-unknown-unknown`), so the next request follows at once.
+#[cfg(target_arch = "wasm32")]
+fn pause_between_attempts(_delay: Duration) -> std::future::Ready<()> {
+    std::future::ready(())
+}
+
+/// A staging buffer whose `map_async` has been requested, with the completion its callback fills.
+struct PendingMapping {
+    readback: wgpu::Buffer,
+    mapped: Completion<Result<(), String>>,
+}
+
+/// A typed readback after its copy was submitted and its mapping requested. An empty buffer has no mapping.
+struct TypedReadback<T> {
+    mapping: Option<PendingMapping>,
+    element: PhantomData<fn() -> T>,
+}
+
+impl<T: GpuPod> TypedReadback<T> {
+    /// Block until the device has run every pending callback, which includes this mapping's. The native blocking
+    /// wrappers call it before they drive `finish`; without it `finish` would wait for a device poll that no one
+    /// makes.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn wait(&self, device: &wgpu::Device) -> Result<(), Error> {
+        if self.mapping.is_some() {
+            device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .map_err(|error| Error::Poll(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    /// Await the mapping (`MappingReady`), copy the bytes out and unmap.
+    async fn finish(self, device: &wgpu::Device) -> Result<Vec<T>, Error> {
+        let Some(PendingMapping { readback, mapped }) = self.mapping else {
+            return Ok(Vec::new());
+        };
+        MappingReady { device, mapped }.await?;
+        let view = readback
+            .get_mapped_range(..)
+            .map_err(|error| Error::Map(error.to_string()))?;
+        let values = pod_vec_from_bytes(&view)?;
+        drop(view);
+        readback.unmap();
+        Ok(values)
+    }
+}
+
+/// Resolves when the `map_async` callback has delivered its result. Every poll polls the device once without
+/// waiting (`PollType::Poll`), which is what runs the callback on native; it never waits, because the browser must not
+/// block. It stores the task's waker in the completion and never wakes itself.
+struct MappingReady<'device> {
+    device: &'device wgpu::Device,
+    mapped: Completion<Result<(), String>>,
+}
+
+impl Future for MappingReady<'_> {
+    type Output = Result<(), Error>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if let Err(error) = self.device.poll(wgpu::PollType::Poll) {
+            return Poll::Ready(Err(Error::Poll(error.to_string())));
+        }
+        Pin::new(&mut self.mapped)
+            .poll(cx)
+            .map(|result| result.map_err(Error::Map))
     }
 }
 
@@ -624,20 +722,36 @@ impl HeadlessDevice {
     /// no runtime fallback to the CPU twin. The adapter is whatever wgpu offers for Vulkan with a
     /// high-performance preference: a software Vulkan adapter (lavapipe, llvmpipe) is
     /// accepted like a hardware one, because the adapter type is not checked.
+    ///
+    /// This blocks the calling thread (`pollster::block_on` over [`new_async`](Self::new_async)); it is
+    /// not available on `wasm32`, where the browser cannot be blocked.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Result<Self, Error> {
+        pollster::block_on(Self::new_async(wgpu::Backends::VULKAN))
+    }
+
+    /// Select a high-performance adapter among `backends` and open a logical device, with the retry of
+    /// [`new`](Self::new).
+    ///
+    /// On native the retry pauses by sleeping the calling thread, which blocks an executor thread that awaits
+    /// this; call it from a thread that may block, or use `new`. In the browser there is no pause between
+    /// attempts. Opening the device completes without anyone polling it: wgpu drives the adapter and device
+    /// requests itself, unlike the readbacks.
+    pub async fn new_async(backends: wgpu::Backends) -> Result<Self, Error> {
         let adapter = retry_no_adapter(
             ADAPTER_ATTEMPTS,
             &ADAPTER_BACKOFF,
-            std::thread::sleep,
+            pause_between_attempts,
             |line| eprintln!("{line}"),
-            || pollster::block_on(Self::request_adapter()),
-        )?;
-        pollster::block_on(Self::open(adapter))
+            || Self::request_adapter(backends),
+        )
+        .await?;
+        Self::open(adapter).await
     }
 
-    async fn request_adapter() -> Result<wgpu::Adapter, Error> {
+    async fn request_adapter(backends: wgpu::Backends) -> Result<wgpu::Adapter, Error> {
         let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        instance_descriptor.backends = wgpu::Backends::VULKAN;
+        instance_descriptor.backends = backends;
         let instance = wgpu::Instance::new(instance_descriptor);
         instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -852,33 +966,105 @@ impl HeadlessDevice {
     }
 
     /// Copy a persistent read-write POD buffer back to host memory.
+    ///
+    /// Blocks the calling thread until the copy has completed; not available on `wasm32`, where
+    /// [`read_typed_buffer_async`](Self::read_typed_buffer_async) is the readback.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn read_typed_buffer<T: GpuPod>(&self, buffer: &GpuBuffer<T>) -> Result<Vec<T>, Error> {
         self.read_typed_buffer_timed(buffer)
             .map(|(values, _)| values)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn read_f32_buffer(&self, buffer: &GpuBuffer<f32>) -> Result<Vec<f32>, Error> {
         self.read_typed_buffer(buffer)
     }
 
+    /// Copy a persistent read-write POD buffer back to host memory without blocking the caller.
+    ///
+    /// The returned future requests the copy and the mapping when it is first polled. Each poll then polls the
+    /// device once (`wgpu::PollType::Poll`, never `Wait`) and stores the task's waker for the `map_async` callback
+    /// to wake.
+    ///
+    /// # Native: the future completes only while something polls the device
+    ///
+    /// wgpu runs the `map_async` callback inside a device poll, and on native nothing polls the device in the
+    /// background. This future never wakes itself, so awaiting it on an executor that re-polls only after a wake
+    /// hangs, unless another thread keeps polling the device. The blocking [`read_typed_buffer`](Self::read_typed_buffer)
+    /// does it correctly: it starts the copy, waits with `poll(Wait)`, then polls the finished future once
+    /// (an error if it is still pending). On `wasm32` the browser is expected to run the callback from its event loop,
+    /// which wakes the task, so a plain `.await` should suffice there; that path is built and run in m4.g2, not tested
+    /// here.
+    ///
+    /// ```no_run
+    /// # use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+    /// let device = HeadlessDevice::new()?;
+    /// let buffer = device.create_typed_buffer("values", &[1.0f32, 2.0, 3.0], GpuBufferAccess::ReadWrite);
+    /// // On native this is the way to read a buffer back; it polls the device for you.
+    /// let values = device.read_typed_buffer(&buffer)?;
+    /// assert_eq!(values, [1.0, 2.0, 3.0]);
+    /// // A caller who drives the async function on its own executor must keep polling the future (each poll
+    /// // polls the device once) or the device itself, as `read_typed_buffer` does.
+    /// # Ok::<(), gust_wgpu::Error>(())
+    /// ```
+    pub async fn read_typed_buffer_async<T: GpuPod>(
+        &self,
+        buffer: &GpuBuffer<T>,
+    ) -> Result<Vec<T>, Error> {
+        self.start_typed_readback(buffer)?
+            .finish(&self.device)
+            .await
+    }
+
     /// Copy a persistent read-write POD buffer back and report its complete host time.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn read_typed_buffer_timed<T: GpuPod>(
         &self,
         buffer: &GpuBuffer<T>,
     ) -> Result<(Vec<T>, TransferTiming), Error> {
         let started = Instant::now();
+        let readback = self.start_typed_readback(buffer)?;
+        // The callback runs inside a device poll, and nothing else polls this device, so the wait is what
+        // completes the mapping. The future below must therefore be ready at its first poll; it is polled once with a
+        // no-op waker rather than blocked on, so a callback that never ran (nothing would wake a parked thread) is an
+        // error, as it was when this used a channel.
+        readback.wait(&self.device)?;
+        let mut finish = std::pin::pin!(readback.finish(&self.device));
+        let values = match finish
+            .as_mut()
+            .poll(&mut Context::from_waker(std::task::Waker::noop()))
+        {
+            Poll::Ready(values) => values?,
+            Poll::Pending => {
+                return Err(Error::Map(
+                    "mapping not complete after poll(Wait)".to_string(),
+                ));
+            }
+        };
+        Ok((
+            values,
+            TransferTiming {
+                bytes: buffer.len as u64 * size_of::<T>() as u64,
+                elapsed: started.elapsed(),
+            },
+        ))
+    }
+
+    /// Validate `buffer`, copy it into a mappable staging buffer, submit the copy and request the mapping. The
+    /// returned readback completes once a device poll has run the `map_async` callback.
+    fn start_typed_readback<T: GpuPod>(
+        &self,
+        buffer: &GpuBuffer<T>,
+    ) -> Result<TypedReadback<T>, Error> {
         self.validate_buffer_device(buffer)?;
         if buffer.access != GpuBufferAccess::ReadWrite {
             return Err(Error::PersistentBufferNotReadable);
         }
         if buffer.is_empty() {
-            return Ok((
-                Vec::new(),
-                TransferTiming {
-                    bytes: 0,
-                    elapsed: started.elapsed(),
-                },
-            ));
+            return Ok(TypedReadback {
+                mapping: None,
+                element: PhantomData,
+            });
         }
 
         let byte_size = buffer.len as u64 * size_of::<T>() as u64;
@@ -896,32 +1082,20 @@ impl HeadlessDevice {
         encoder.copy_buffer_to_buffer(&buffer.raw, 0, &readback, 0, byte_size);
         self.queue.submit([encoder.finish()]);
 
-        let (sender, receiver) = mpsc::channel();
+        let mapped = Completion::new();
+        let callback = mapped.clone();
         readback.map_async(wgpu::MapMode::Read, .., move |result| {
-            let _ = sender.send(result.map_err(|error| error.to_string()));
+            // The callback is `FnOnce`, so it runs at most once; a late or repeated completion would be rejected by
+            // the `Completion` anyway.
+            let _ = callback.complete(result.map_err(|error| error.to_string()));
         });
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|error| Error::Poll(error.to_string()))?;
-        receiver
-            .recv()
-            .map_err(|error| Error::Map(error.to_string()))?
-            .map_err(Error::Map)?;
-        let view = readback
-            .get_mapped_range(..)
-            .map_err(|error| Error::Map(error.to_string()))?;
-        let values = pod_vec_from_bytes(&view)?;
-        drop(view);
-        readback.unmap();
-        Ok((
-            values,
-            TransferTiming {
-                bytes: byte_size,
-                elapsed: started.elapsed(),
-            },
-        ))
+        Ok(TypedReadback {
+            mapping: Some(PendingMapping { readback, mapped }),
+            element: PhantomData,
+        })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn read_f32_buffer_timed(
         &self,
         buffer: &GpuBuffer<f32>,
@@ -2136,6 +2310,72 @@ mod tests {
 
     fn no_adapter() -> Error {
         Error::NoAdapter("loader failed".to_string())
+    }
+
+    /// The retry loop with synchronous closures, driven to completion: these tests pin the loop's decisions, not its
+    /// futures.
+    fn retry_no_adapter<T>(
+        attempts: u32,
+        backoff: &[Duration],
+        mut pause: impl FnMut(Duration),
+        log: impl FnMut(&str),
+        mut request: impl FnMut() -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        pollster::block_on(super::retry_no_adapter(
+            attempts,
+            backoff,
+            |delay| {
+                pause(delay);
+                std::future::ready(())
+            },
+            log,
+            || std::future::ready(request()),
+        ))
+    }
+
+    /// Pending on its first poll (waking itself), ready on the next.
+    struct YieldOnce(bool);
+
+    impl Future for YieldOnce {
+        type Output = ();
+
+        fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+            if self.0 {
+                return Poll::Ready(());
+            }
+            self.0 = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+
+    #[test]
+    fn adapter_retry_awaits_requests_and_pauses_that_are_not_ready() {
+        let mut calls = 0;
+        let mut pauses = Vec::new();
+        let result = pollster::block_on(super::retry_no_adapter(
+            ADAPTER_ATTEMPTS,
+            &ADAPTER_BACKOFF,
+            |delay| {
+                pauses.push(delay);
+                YieldOnce(false)
+            },
+            |_| {},
+            || {
+                calls += 1;
+                let outcome = if calls < ADAPTER_ATTEMPTS {
+                    Err(no_adapter())
+                } else {
+                    Ok(calls)
+                };
+                async move {
+                    YieldOnce(false).await;
+                    outcome
+                }
+            },
+        ));
+        assert!(matches!(result, Ok(n) if n == ADAPTER_ATTEMPTS));
+        assert_eq!(pauses, ADAPTER_BACKOFF);
     }
 
     #[test]

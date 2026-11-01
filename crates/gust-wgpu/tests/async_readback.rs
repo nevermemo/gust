@@ -210,7 +210,8 @@ fn an_async_readback_queued_behind_a_busy_kernel_waits_for_the_mapping() {
     // A software adapter (lavapipe) runs the kernel on the polling thread, so the first poll returns only when the
     // kernel is done and the pending path cannot be observed (an adapter property, measured in CI: 1 poll in 3 of 3
     // attempts, about 136 ms each). Only this assertion is skipped there; the values above are checked on every
-    // adapter. Hardware adapters keep it (D39: documented, not chased).
+    // adapter. Hardware adapters keep it. Recorded as a software-tier limitation in docs/development/VALIDATION.md
+    // (D52): lavapipe does not prove the pending path.
     let info = device.adapter_info();
     if info.device_type == wgpu::DeviceType::Cpu {
         eprintln!(

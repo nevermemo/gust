@@ -28,10 +28,12 @@ env:
   RUSTUP_TOOLCHAIN: 1.98.0
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: "0"
-  # Mesa, R1-11. Changing the Mesa version is a deliberate commit that edits these two strings. The snapshot id is a
+  # Mesa, R1-11. Changing the Mesa version is a deliberate commit that edits these three strings. The snapshot id is a
   # UTC timestamp of the Ubuntu archive; the version is the Ubuntu package version, which `driver_info` repeats.
   SNAPSHOT_ID: "20261101T110000Z"
   MESA_VERSION: "25.2.8-0ubuntu0.24.04.4"
+  # The whole `driver_info` of the record, LLVM included (the LLVM libraries are dependencies of the Mesa package).
+  MESA_DRIVER_INFO: "Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)"
   # Lavapipe is the only Vulkan device, even if a runner image ever exposes another driver.
   VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json
   # Slang, the same release and archive hash as docs/development/LICENSES-SLANG.md.
@@ -48,46 +50,26 @@ jobs:
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: Prepare the artifact directory
         run: mkdir -p "$RUNNER_TEMP/gpu-software-artifact"
-      - name: Show whether the runner's mirror advertises Snapshots
-        # Informational. The next step decides by the same two facts: a Release file with a `Snapshots:` field and an
-        # apt-get that has `--snapshot`.
-        run: |
-          set -euo pipefail
-          apt-get --version | sed -n 1p
-          sudo apt-get update -qq
-          echo "Release files that advertise Snapshots:"
-          grep -l '^Snapshots:' /var/lib/apt/lists/*_Release || echo "none"
-          if apt-get --snapshot "$SNAPSHOT_ID" --version > /dev/null 2>&1; then
-            echo "apt-get has --snapshot"
-          else
-            echo "apt-get has no --snapshot option"
-          fi
-          echo "Ubuntu sources:"
-          grep -hE '^(URIs|Suites|Snapshot):' /etc/apt/sources.list.d/*.sources 2>/dev/null || echo "no deb822 sources"
       - name: Install Mesa and the tools from the Ubuntu snapshot
+        # The snapshot is the only source of this install (stricter than R1-11, which allowed the runner's mirror with
+        # a `Snapshot:` field): sources and apt lists are redirected with -o, so nothing floats to the live archive.
         run: |
           set -euo pipefail
           apt_get() { sudo env DEBIAN_FRONTEND=noninteractive apt-get "$@"; }
           packages=("mesa-vulkan-drivers=$MESA_VERSION" vulkan-tools build-essential pkg-config spirv-tools)
-          if apt-get --snapshot "$SNAPSHOT_ID" --version > /dev/null 2>&1 && grep -q '^Snapshots:' /var/lib/apt/lists/*_Release; then
-            echo "::notice::apt snapshot mode: --snapshot $SNAPSHOT_ID on the runner's own mirror"
-            apt_get install --update --snapshot "$SNAPSHOT_ID" --yes "${packages[@]}"
-          else
-            echo "::notice::deb822 mode: archive.ubuntu.com with Snapshot: $SNAPSHOT_ID, only this source for the install"
-            dir="$RUNNER_TEMP/apt-snapshot"
-            mkdir -p "$dir/sources.list.d" "$dir/lists/partial"
-            cat > "$dir/sources.list.d/ubuntu-snapshot.sources" <<EOF
+          echo "::notice::apt source: https://snapshot.ubuntu.com/ubuntu/$SNAPSHOT_ID/ only, for this install"
+          dir="$RUNNER_TEMP/apt-snapshot"
+          mkdir -p "$dir/sources.list.d" "$dir/lists/partial"
+          cat > "$dir/sources.list.d/ubuntu-snapshot.sources" <<EOF
           Types: deb
-          URIs: http://archive.ubuntu.com/ubuntu/
+          URIs: https://snapshot.ubuntu.com/ubuntu/$SNAPSHOT_ID/
           Suites: noble noble-updates noble-security
           Components: main universe
           Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
-          Snapshot: $SNAPSHOT_ID
           EOF
-            options=(-o Dir::Etc::sourcelist=/dev/null -o "Dir::Etc::sourceparts=$dir/sources.list.d" -o "Dir::State::lists=$dir/lists")
-            apt_get "${options[@]}" update
-            apt_get "${options[@]}" install --yes "${packages[@]}"
-          fi
+          options=(-o Dir::Etc::sourcelist=/dev/null -o "Dir::Etc::sourceparts=$dir/sources.list.d" -o "Dir::State::lists=$dir/lists")
+          apt_get "${options[@]}" update
+          apt_get "${options[@]}" install --yes "${packages[@]}"
       - name: Check that Mesa did not drift, and that lavapipe is the device
         run: |
           set -euo pipefail
@@ -96,6 +78,7 @@ jobs:
             echo "snapshot id: $SNAPSHOT_ID"
             echo "pinned Mesa package: $MESA_VERSION"
             apt-cache policy mesa-vulkan-drivers
+            dpkg-query -W mesa-vulkan-drivers libllvm20 spirv-tools vulkan-tools libvulkan1
           } | tee "$env_file"
           installed=$(apt-cache policy mesa-vulkan-drivers | awk '/^ *Installed:/ { print $2 }')
           if [ "$installed" != "$MESA_VERSION" ]; then
@@ -154,18 +137,21 @@ jobs:
           record=.ai/VALIDATION.json
           grep -Fq '"device_type": "Cpu"' "$record"
           grep -Eq '^ *"name": "[^"]*llvmpipe' "$record"
-          grep -Fq "\"driver_info\": \"Mesa $MESA_VERSION" "$record"
+          grep -Fq "\"driver_info\": \"$MESA_DRIVER_INFO\"" "$record"
       - name: Assert the test result lines
         env:
-          # The sum of `passed` over every `test result:` line of `cargo test -p gust-wgpu` (the unit tests of the
-          # library, each integration test file, the doc tests). Taken from a run of that command on lane/m5.a after merging main e673fcc
-          # (123 passed, 0 failed, 0 ignored over 17 result lines) and to be confirmed by the first run of this job.
-          # Every slice that adds or removes a Gpu test bumps it in the same commit; drift fails loudly, by design.
-          # To recompute it, on any adapter and any OS, at the commit to be merged (a skipped assertion inside a test
-          # does not change the count; a test that fails does, so fix failures first):
-          #   GUST_PROFILE=dev cargo test --locked -p gust-wgpu --no-fail-fast 2>&1 | grep '^test result:' | awk '{ sum += $4 } END { print sum }'
-          # and check that the same output shows no line other than `0 failed; 0 ignored`.
+          # GPU_SUITE_PASSED is the sum of `passed` over every `test result:` line of `cargo test -p gust-wgpu` (the
+          # unit tests of the library, each integration test file, the doc tests); GPU_SUITE_RESULT_LINES is the
+          # number of those lines (one per test binary and doc-test run), which catches drift that cancels out.
+          # Measured: 123 passed over 17 result lines in the run of this job on the pull request, 41311817894.
+          # Every slice that adds or removes a Gpu test or test file bumps them in the same commit; drift fails loudly,
+          # by design. To recompute them, on any adapter and any OS, at the commit to be merged (a skipped assertion
+          # inside a test does not change the count; a failing test does, so fix failures first):
+          #   GUST_PROFILE=dev cargo test --locked -p gust-wgpu --no-fail-fast 2>&1 \
+          #     | grep '^test result:' | awk '{ sum += $4; n++ } END { print sum, n }'
+          # prints "<passed> <lines>"; the output must also show no line other than `0 failed; 0 ignored`.
           GPU_SUITE_PASSED: "123"
+          GPU_SUITE_RESULT_LINES: "17"
           GPU_SUITE_LOG: ${{ runner.temp }}/gpu-suite.log
         run: |
           set -euo pipefail
@@ -181,9 +167,14 @@ jobs:
             exit 1
           fi
           passed=$(printf '%s\n' "$results" | awk '{ sum += $4 } END { print sum + 0 }')
-          echo "$(printf '%s\n' "$results" | wc -l) test result lines, $passed passed, pinned $GPU_SUITE_PASSED"
+          lines=$(printf '%s\n' "$results" | wc -l)
+          echo "$lines test result lines (pinned $GPU_SUITE_RESULT_LINES), $passed passed (pinned $GPU_SUITE_PASSED)"
           if [ "$passed" -ne "$GPU_SUITE_PASSED" ]; then
             echo "::error::$passed tests passed, the pinned count is $GPU_SUITE_PASSED"
+            exit 1
+          fi
+          if [ "$lines" -ne "$GPU_SUITE_RESULT_LINES" ]; then
+            echo "::error::$lines test result lines, the pinned number is $GPU_SUITE_RESULT_LINES"
             exit 1
           fi
       - name: Collect the evidence

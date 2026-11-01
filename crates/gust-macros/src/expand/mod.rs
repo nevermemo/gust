@@ -732,7 +732,7 @@ fn parameter_facts(
                 None
             };
             Ok(ParameterFacts {
-                name: pattern.ident.to_string(),
+                name: crate::slang::emit_ident(&pattern.ident),
                 rust_type: input.ty.to_token_stream().to_string(),
                 flavor,
                 binding,
@@ -1199,7 +1199,7 @@ fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
     };
     let field_layouts = fields.named.iter().map(|field| {
         let field_ident = field.ident.as_ref().expect("named field");
-        let field_name = field_ident.to_string();
+        let field_name = crate::slang::emit_ident(field_ident);
         let ty = &field.ty;
         quote! {
             ::gust::StructFieldLayout {

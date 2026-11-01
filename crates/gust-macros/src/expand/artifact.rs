@@ -297,7 +297,7 @@ fn layout_at(
         let layout = layout_at(&field.ty, structs, depth + 1)?;
         let size = layout.size;
         described.push(LayoutField {
-            name: field.ident.as_ref()?.to_string(),
+            name: crate::slang::emit_ident(field.ident.as_ref()?),
             offset,
             layout,
         });
@@ -963,6 +963,18 @@ pub(super) mod tests {
             assert_eq!(layout.size, 4);
             assert_eq!(layout.kind, LayoutKind::Scalar(canonical));
         }
+    }
+
+    /// The record's field names are the emitted ones (M6 plan 2.5), so they match what slangc reflects.
+    #[test]
+    fn layout_field_names_are_the_emitted_names() {
+        let source = "struct S { r#new: float, plain: float, r#match: uint }";
+        let layout = layout_of(source, "S").unwrap();
+        let LayoutKind::Struct(fields) = &layout.kind else {
+            panic!("{layout:?}");
+        };
+        let names: Vec<_> = fields.iter().map(|field| field.name.as_str()).collect();
+        assert_eq!(names, ["__gust_r_new", "plain", "match"]);
     }
 
     #[test]

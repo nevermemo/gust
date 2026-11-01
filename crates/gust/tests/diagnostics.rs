@@ -2,10 +2,19 @@
 //! Rust line the faulty statement was written on (DX19 line table).
 //!
 //! The fixtures below are valid Rust and pass validation, so only `slangc` can
-//! reject them: a local named `new` is a Slang syntax error where it is used, and
-//! a self-recursive helper is "recursion not allowed". The expected Rust line is
+//! reject them. A local named `new` used to be one (a Slang syntax error where it is
+//! used); the macro now renames it (`__gust_r_new`, M6 plan 2.5) and the kernel compiles, so
+//! those fixtures keep their line tables and the failing tests take the emitted text
+//! with the prefix deleted (`unrenamed`): the bare `new` is the same syntax error on the
+//! same lines. A self-recursive helper is "recursion not allowed". The expected Rust line is
 //! found by searching
 //! this very file for a marker comment, so no line number is written down by hand.
+//!
+//! The renaming itself is covered at the end: the Slangc-tier table test compiles every
+//! entry of the macro's collision table (`slang/collisions.rs`, included here by path) in
+//! six name positions, with and without the rename, and `annotate_diagnostics` deleting the
+//! prefix from slangc's messages is pinned. The D17 layout check on renamed names needs the native
+//! reflection helper, so it is in `reflection.rs`.
 //!
 //! Both compile paths are covered: `slang::compile` and the two failure sites of
 //! `reflect` (`reflect::reflect`, which runs `slangc`, and
@@ -14,9 +23,10 @@
 //! line, so this file needs only `slangc` on `PATH`, not the helper; the real
 //! helper is exercised by the reflection tests.
 //!
-//! One more fixture, `HANDWRITTEN`, is a `KernelDescriptor` literal with no macro
-//! behind it (an undeclared identifier in hand-written Slang), so it keeps failing
-//! in `slangc` even if the validator one day rejects every construct above.
+//! Two more fixtures, `HANDWRITTEN` and `HANDWRITTEN_SYNTAX`, are `KernelDescriptor` literals
+//! with no macro behind them (an undeclared identifier and a syntax error in hand-written
+//! Slang), so they keep failing in `slangc` even if the validator or the macro one day
+//! accepts every construct above.
 //!
 //! The compile copy carries `#line` directives (M1.3), so the compiler's own
 //! error location is the Rust file and line (`--> <file>:<line>:<column>`); the
@@ -34,6 +44,10 @@ use std::{
 };
 
 const THIS_FILE: &str = include_str!("diagnostics.rs");
+
+/// The macro's collision table, as plain data (the file has no `crate::` paths on purpose).
+#[path = "../../gust-macros/src/slang/collisions.rs"]
+mod collisions;
 
 #[gust::gpu]
 mod keyword_local {
@@ -368,6 +382,57 @@ const HANDWRITTEN_UNMAPPED: KernelDescriptor = KernelDescriptor {
     ..HANDWRITTEN
 };
 
+/// A hand-written syntax error (a missing right-hand side) on line 4 of its Slang, with the same two-record table
+/// shape as `HANDWRITTEN`. It stands in for the old `new` local as the syntax-error fixture: no macro behind it.
+const HANDWRITTEN_SYNTAX_FAULTY_SLANG_LINE: u32 = 4;
+
+const HANDWRITTEN_SYNTAX_SLANG: &str = concat!(
+    "[[vk::binding(0, 0)]] RWStructuredBuffer<uint> output;\n",
+    "[shader(\"compute\")] [numthreads(64, 1, 1)]\n",
+    "void handwritten_syntax(uint3 id : SV_DispatchThreadID) {\n",
+    "    output[id.x] = ;\n",
+    "}\n",
+);
+
+const HANDWRITTEN_SYNTAX: KernelDescriptor = KernelDescriptor {
+    entry_point: "handwritten_syntax",
+    slang_source: HANDWRITTEN_SYNTAX_SLANG,
+    source: SourceOrigin {
+        file: HANDWRITTEN_FILE,
+        lines: &[
+            LineSpan {
+                slang_start: 3,
+                slang_end: 5,
+                rust_line: line!(),
+            },
+            LineSpan {
+                slang_start: HANDWRITTEN_SYNTAX_FAULTY_SLANG_LINE,
+                slang_end: HANDWRITTEN_SYNTAX_FAULTY_SLANG_LINE,
+                rust_line: line!(), // FAILS: handwritten syntax
+            },
+        ],
+    },
+    ..HANDWRITTEN
+};
+
+/// The macro renames `new` and the other colliding names (`__gust_r_<name>`), so the kernels below that were written
+/// to fail on a local named `new` now compile. The failure tests need a Slang-only error on the same lines, so they
+/// take the emitted text with the prefix deleted: that is the bare `new` again, a syntax error where it is used, and
+/// the text keeps its line count and its line table. A source without the prefix is a bug in the test, not a pass.
+fn unrenamed(kernel: &KernelDescriptor) -> KernelDescriptor {
+    assert!(
+        kernel.slang_source.contains(collisions::PREFIX),
+        "`{}` has nothing to un-rename:\n{}",
+        kernel.entry_point,
+        kernel.slang_source
+    );
+    let text = kernel.slang_source.replace(collisions::PREFIX, "");
+    KernelDescriptor {
+        slang_source: Box::leak(text.into_boxed_str()),
+        ..*kernel
+    }
+}
+
 /// The 1-based line of this file whose code ends with the `// FAILS: <what>` marker.
 fn marked_line(what: &str) -> u32 {
     line_ending_with(&format!("// FAILS: {what}"))
@@ -471,17 +536,34 @@ fn descriptors_record_the_defining_file_and_an_ordered_line_table() {
 }
 
 #[test]
+fn a_handwritten_syntax_error_names_the_rust_line() {
+    let expected = marked_line("handwritten syntax");
+    for target in [Target::Wgsl, Target::Spirv] {
+        let diagnostics = failure(&HANDWRITTEN_SYNTAX, target);
+        let (file, line) = rust_source(&diagnostics);
+        assert_eq!(file, HANDWRITTEN_FILE, "{target:?}: {diagnostics}");
+        assert_eq!(line, expected, "{target:?}: {diagnostics}");
+        assert_compiler_location(&diagnostics, &HANDWRITTEN_SYNTAX, expected);
+        assert!(
+            diagnostics.contains("error[E20001]") || diagnostics.contains("syntax error"),
+            "{target:?}: the failure is a syntax error: {diagnostics}"
+        );
+    }
+}
+
+#[test]
 fn a_slang_only_syntax_error_in_a_kernel_names_the_rust_line() {
     let expected = marked_line("keyword local");
+    let failing = unrenamed(&keyword_local::run::DESCRIPTOR);
     for target in [Target::Wgsl, Target::Spirv] {
-        let diagnostics = failure(&keyword_local::run::DESCRIPTOR, target);
+        let diagnostics = failure(&failing, target);
         let (file, line) = rust_source(&diagnostics);
         assert!(
             file.ends_with("diagnostics.rs"),
             "{target:?}: {diagnostics}"
         );
         assert_eq!(line, expected, "{target:?}: {diagnostics}");
-        assert_compiler_location(&diagnostics, &keyword_local::run::DESCRIPTOR, expected);
+        assert_compiler_location(&diagnostics, &failing, expected);
         assert!(
             diagnostics.contains("originating Rust kernel: keyword_local::run"),
             "{target:?}: {diagnostics}"
@@ -519,7 +601,7 @@ fn deliberate_failures() -> Vec<(&'static str, KernelDescriptor, u32)> {
     vec![
         (
             "keyword local",
-            keyword_local::run::DESCRIPTOR,
+            unrenamed(&keyword_local::run::DESCRIPTOR),
             marked_line("keyword local"),
         ),
         (
@@ -529,27 +611,27 @@ fn deliberate_failures() -> Vec<(&'static str, KernelDescriptor, u32)> {
         ),
         (
             "else-if chain",
-            else_if_chain::run::DESCRIPTOR,
+            unrenamed(&else_if_chain::run::DESCRIPTOR),
             owner_line("else-if chain"),
         ),
         (
             "keyword in loop",
-            keyword_in_loop::run::DESCRIPTOR,
+            unrenamed(&keyword_in_loop::run::DESCRIPTOR),
             marked_line("keyword in loop"),
         ),
         (
             "keyword in else",
-            keyword_in_else::run::DESCRIPTOR,
+            unrenamed(&keyword_in_else::run::DESCRIPTOR),
             marked_line("keyword in else"),
         ),
         (
             "keyword at top",
-            keyword_at_top::run::DESCRIPTOR,
+            unrenamed(&keyword_at_top::run::DESCRIPTOR),
             marked_line("keyword at top"),
         ),
         (
             "keyword in helper",
-            keyword_in_helper::run::DESCRIPTOR,
+            unrenamed(&keyword_in_helper::run::DESCRIPTOR),
             marked_line("keyword in helper"),
         ),
         (
@@ -559,7 +641,7 @@ fn deliberate_failures() -> Vec<(&'static str, KernelDescriptor, u32)> {
         ),
         (
             "keyword in nested if",
-            keyword_in_nested_if::run::DESCRIPTOR,
+            unrenamed(&keyword_in_nested_if::run::DESCRIPTOR),
             marked_line("keyword in nested if"),
         ),
         (
@@ -649,7 +731,7 @@ fn directives_change_neither_the_artifacts_nor_the_exported_text() {
 
 #[test]
 fn a_descriptor_without_a_line_table_reports_no_rust_source() {
-    let mut descriptor = keyword_local::run::DESCRIPTOR;
+    let mut descriptor = unrenamed(&keyword_local::run::DESCRIPTOR);
     descriptor.source = gust::SourceOrigin::UNKNOWN;
     let diagnostics = failure(&descriptor, Target::Wgsl);
     assert!(
@@ -676,6 +758,7 @@ fn an_error_in_an_else_if_condition_names_the_line_of_the_owning_if() {
         owner + 2,
         "the fixture's else-if sits two lines down"
     );
+    let failing = unrenamed(&else_if_chain::run::DESCRIPTOR);
     let table = else_if_chain::run::DESCRIPTOR.source;
     // The table has no record of its own for the `else if` header: the owning
     // `if` statement's record covers the whole chain, so no record names the
@@ -692,7 +775,7 @@ fn an_error_in_an_else_if_condition_names_the_line_of_the_owning_if() {
         .expect("a record for the owning if");
     assert!(chain.slang_end > chain.slang_start);
     for target in [Target::Wgsl, Target::Spirv] {
-        let diagnostics = failure(&else_if_chain::run::DESCRIPTOR, target);
+        let diagnostics = failure(&failing, target);
         let (file, line) = rust_source(&diagnostics);
         assert!(
             file.ends_with("diagnostics.rs"),
@@ -700,9 +783,9 @@ fn an_error_in_an_else_if_condition_names_the_line_of_the_owning_if() {
         );
         assert_eq!(line, owner, "{target:?}: {diagnostics}");
         assert_ne!(line, else_if, "{target:?}: {diagnostics}");
-        assert_compiler_location(&diagnostics, &else_if_chain::run::DESCRIPTOR, owner);
+        assert_compiler_location(&diagnostics, &failing, owner);
         // The reflection path reports the same line.
-        let diagnostics = reflect_failure(&else_if_chain::run::DESCRIPTOR, target);
+        let diagnostics = reflect_failure(&failing, target);
         assert_eq!(
             rust_source(&diagnostics).1,
             owner,
@@ -825,9 +908,10 @@ fn assert_unknown_origin(diagnostics: &str, kernel: &str, preceding: &[&str], co
 
 #[test]
 fn the_reflect_path_names_the_kernel_construct_and_rust_line() {
+    let keyword_local = unrenamed(&keyword_local::run::DESCRIPTOR);
     let cases = [
         (
-            &keyword_local::run::DESCRIPTOR,
+            &keyword_local,
             "keyword_local::run",
             marked_line("keyword local"),
         ),
@@ -844,7 +928,7 @@ fn the_reflect_path_names_the_kernel_construct_and_rust_line() {
             let diagnostics = reflect_failure(kernel, target);
             assert_known_origin(&diagnostics, name, expected, &format!("{target:?} {name}"));
         }
-        let diagnostics = reflect_failure(&keyword_local::run::DESCRIPTOR, target);
+        let diagnostics = reflect_failure(&keyword_local, target);
         assert!(
             diagnostics.contains("originating Rust construct: assignment #"),
             "{target:?}: {diagnostics}"
@@ -854,9 +938,10 @@ fn the_reflect_path_names_the_kernel_construct_and_rust_line() {
 
 #[test]
 fn the_reflect_path_without_a_line_table_keeps_the_text_from_before_the_table() {
+    let keyword_local = unrenamed(&keyword_local::run::DESCRIPTOR);
     for target in [Target::Wgsl, Target::Spirv] {
         for (kernel, name) in [
-            (&keyword_local::run::DESCRIPTOR, "keyword_local::run"),
+            (&keyword_local, "keyword_local::run"),
             (&recursive_helper::run::DESCRIPTOR, "recursive_helper::run"),
         ] {
             let diagnostics = reflect_failure(&without_source(kernel), target);
@@ -1043,4 +1128,390 @@ fn a_handwritten_descriptor_without_a_line_table_reports_the_slang_line() {
             "{context}: {diagnostics}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Collision-only identifier renaming (M6 plan 2.5). The table is the macro's own data file; the macro's Unit tests
+// pin that it is emitted at every name site, and these tests compile it with slangc.
+
+/// The seven kernels above that declare a local named `new`.
+fn kernels_with_a_local_named_new() -> [(&'static str, KernelDescriptor); 7] {
+    [
+        ("keyword_local", keyword_local::run::DESCRIPTOR),
+        ("else_if_chain", else_if_chain::run::DESCRIPTOR),
+        ("keyword_in_loop", keyword_in_loop::run::DESCRIPTOR),
+        ("keyword_in_else", keyword_in_else::run::DESCRIPTOR),
+        ("keyword_at_top", keyword_at_top::run::DESCRIPTOR),
+        ("keyword_in_helper", keyword_in_helper::run::DESCRIPTOR),
+        (
+            "keyword_in_nested_if",
+            keyword_in_nested_if::run::DESCRIPTOR,
+        ),
+    ]
+}
+
+#[test]
+fn a_local_named_new_is_emitted_renamed_and_compiles_on_each_target() {
+    for (name, kernel) in kernels_with_a_local_named_new() {
+        assert!(
+            kernel.slang_source.contains("var __gust_r_new = "),
+            "{name}: the local is emitted as __gust_r_new:\n{}",
+            kernel.slang_source
+        );
+        for target in [Target::Wgsl, Target::Spirv] {
+            slang::compile(&kernel, target)
+                .unwrap_or_else(|error| panic!("{name} on {target:?}: {error:?}"));
+        }
+        // And the bare `new` is what slangc refuses, on the same lines (the rest of this file relies on it).
+        for target in [Target::Wgsl, Target::Spirv] {
+            failure(&unrenamed(&kernel), target);
+        }
+    }
+}
+
+/// slangc itself, with no GUST annotation: the raw message text.
+fn raw_slangc(source: &str, entry: &str, target: Target) -> String {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let directory = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    fs::create_dir_all(&directory).unwrap();
+    let stem = format!(
+        "raw-slangc-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    );
+    let input = directory.join(format!("{stem}.slang"));
+    let output = directory.join(format!("{stem}.out"));
+    fs::write(&input, source).unwrap();
+    let target_name = match target {
+        Target::Wgsl => "wgsl",
+        Target::Spirv => "spirv",
+    };
+    let result = std::process::Command::new("slangc")
+        .arg(&input)
+        .args([
+            "-target",
+            target_name,
+            "-entry",
+            entry,
+            "-stage",
+            "compute",
+            "-o",
+        ])
+        .arg(&output)
+        .output()
+        .expect("slangc runs");
+    let _ = fs::remove_file(&input);
+    let _ = fs::remove_file(&output);
+    assert!(
+        !result.status.success(),
+        "the raw compile was meant to fail"
+    );
+    format!(
+        "{}{}",
+        String::from_utf8_lossy(&result.stdout),
+        String::from_utf8_lossy(&result.stderr)
+    )
+}
+
+/// An error that names the renamed local reaches the user with the Rust spelling, on both compile paths, and its
+/// Rust line is the one it had before.
+#[test]
+fn slangc_messages_name_the_rust_spelling_not_the_prefix() {
+    assert_eq!(collisions::PREFIX, "__gust_r_");
+    let kernel = keyword_local::run::DESCRIPTOR;
+    let text = kernel
+        .slang_source
+        .replacen("var __gust_r_new = ", "var __gust_r_nex = ", 1);
+    assert_ne!(text, kernel.slang_source);
+    let broken = KernelDescriptor {
+        slang_source: Box::leak(text.clone().into_boxed_str()),
+        ..kernel
+    };
+    let expected = marked_line("keyword local");
+    for target in [Target::Wgsl, Target::Spirv] {
+        // Without the annotation the compiler says `__gust_r_new`, so the assertions below are not vacuous.
+        let raw = raw_slangc(&text, kernel.entry_point, target);
+        assert!(raw.contains("'__gust_r_new'"), "{target:?}: {raw}");
+        for (path, diagnostics) in [
+            ("compile", failure(&broken, target)),
+            ("reflect", reflect_failure(&broken, target)),
+        ] {
+            let context = format!("{path} on {target:?}: {diagnostics}");
+            assert!(
+                diagnostics.contains("undefined identifier 'new'"),
+                "{context}"
+            );
+            assert!(!diagnostics.contains("__gust_r_"), "{context}");
+            assert_eq!(rust_source(&diagnostics).1, expected, "{context}");
+        }
+    }
+}
+
+/// Runs `work` over `jobs` on a few threads and returns the results in job order.
+fn run_parallel<T: Sync, R: Send>(jobs: &[T], work: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let next = AtomicUsize::new(0);
+    let results = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        for _ in 0..8 {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(job) = jobs.get(index) else {
+                        break;
+                    };
+                    let result = work(job);
+                    results.lock().unwrap().push((index, result));
+                }
+            });
+        }
+    });
+    let mut results = results.into_inner().unwrap();
+    results.sort_by_key(|(index, _)| *index);
+    results.into_iter().map(|(_, result)| result).collect()
+}
+
+/// Whether slangc takes `source`; `Err` carries its first error line.
+fn slangc_takes(source: &str, target: Target) -> Result<(), String> {
+    match slang::compile_source(source, "gpu_table_run", target) {
+        Ok(_) => Ok(()),
+        Err(Error::CompilationFailed { diagnostics, .. }) => Err(diagnostics
+            .lines()
+            .find(|line| line.contains("error"))
+            .unwrap_or("no error line")
+            .to_owned()),
+        Err(other) => panic!("{target:?}: slangc did not run: {other:?}"),
+    }
+}
+
+const BOTH_TARGETS: [Target; 2] = [Target::Wgsl, Target::Spirv];
+
+/// (i) Every entry, renamed, in all six positions on wgsl, and on spirv in its recorded failing positions and the
+/// local position (slangc's two targets agreed on every probed name and position, S6.3 and S6.3b; this keeps the
+/// run short).
+#[test]
+fn every_table_entry_compiles_renamed_in_every_position() {
+    let mut jobs = Vec::new();
+    for entry in collisions::COLLISIONS {
+        for position in collisions::Position::ALL {
+            jobs.push((entry.name, position, Target::Wgsl));
+            if position == collisions::Position::Local || entry.fails_in.contains(&position) {
+                jobs.push((entry.name, position, Target::Spirv));
+            }
+        }
+    }
+    assert!(jobs.len() > collisions::COLLISIONS.len() * 6);
+    let results = run_parallel(&jobs, |&(name, position, target)| {
+        let spelled = collisions::emit_name(name);
+        slangc_takes(&collisions::position_source(position, &spelled), target)
+    });
+    let failures: Vec<String> = jobs
+        .iter()
+        .zip(results)
+        .filter_map(|((name, position, target), result)| {
+            result
+                .err()
+                .map(|message| format!("{name} as {} on {target:?}: {message}", position.label()))
+        })
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// (ii) The measured class-1 record, re-measured on every run: the bare name must fail in exactly the recorded
+/// positions on wgsl, and in each recorded position on spirv too. The record is the probe's, not the table's, so a
+/// dropped or mis-recorded table entry fails here (and a Slang upgrade that stops rejecting a name turns the row into
+/// a documented retirement, D22).
+#[test]
+fn class_1_names_fail_bare_in_exactly_their_recorded_positions() {
+    let mut jobs = Vec::new();
+    for (name, labels) in collisions::MEASURED_CLASS1 {
+        assert!(
+            collisions::collides(name),
+            "the measured class-1 name `{name}` is not renamed: it is not in the table"
+        );
+        for position in collisions::Position::ALL {
+            let recorded = labels.contains(&position.probe_label());
+            jobs.push((*name, position, Target::Wgsl, recorded));
+            if recorded {
+                jobs.push((*name, position, Target::Spirv, recorded));
+            }
+        }
+    }
+    let results = run_parallel(&jobs, |&(name, position, target, _)| {
+        slangc_takes(&collisions::position_source(position, name), target)
+    });
+    let wrong: Vec<String> = jobs
+        .iter()
+        .zip(results)
+        .filter_map(|((name, position, target, recorded), result)| {
+            let failed = result.is_err();
+            (failed != *recorded).then(|| {
+                format!(
+                    "{name} as {} on {target:?}: recorded {}, slangc {}",
+                    position.label(),
+                    if *recorded { "failing" } else { "fine" },
+                    if failed { "fails" } else { "takes it" },
+                )
+            })
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Whether the bare name of a class-2 entry captures silently (the program compiles and means something else).
+fn silent_capture(name: &str) -> bool {
+    collisions::SILENT_CAPTURES
+        .iter()
+        .any(|(silent, _, _)| *silent == name)
+}
+
+/// (iii) Class 2: the bare name captures the construct GUST emits and fails; the renamed one compiles. Every emitted
+/// entry has such a text but `__GustResult`, which E0901 denies to users.
+#[test]
+fn class_2_names_capture_the_emitted_construct_until_they_are_renamed() {
+    let mut jobs = Vec::new();
+    for entry in collisions::COLLISIONS.iter().filter(|entry| entry.emitted) {
+        for target in BOTH_TARGETS {
+            let bare = collisions::capture_source(entry.name, entry.name);
+            if bare.is_none() {
+                assert_eq!(
+                    entry.name, "__GustResult",
+                    "no capture text for {}",
+                    entry.name
+                );
+                continue;
+            }
+            jobs.push((entry.name, target, false));
+            jobs.push((entry.name, target, true));
+        }
+    }
+    assert!(jobs.len() >= 50, "{}", jobs.len());
+    let results = run_parallel(&jobs, |&(name, target, renamed)| {
+        let spelled = if renamed {
+            collisions::emit_name(name).into_owned()
+        } else {
+            name.to_owned()
+        };
+        slangc_takes(
+            &collisions::capture_source(name, &spelled).expect("checked above"),
+            target,
+        )
+    });
+    let wrong: Vec<String> = jobs
+        .iter()
+        .zip(results)
+        .filter_map(
+            |((name, target, renamed), result)| match (renamed, result) {
+                (true, Err(message)) => Some(format!("{name} renamed on {target:?}: {message}")),
+                (false, Ok(())) if !silent_capture(name) => Some(format!(
+                    "{name} bare on {target:?}: no capture, the entry is dead weight"
+                )),
+                _ => None,
+            },
+        )
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// (iii-b) `true` and `false` are captured silently: the bare program compiles, and slangc folds the condition to the
+/// other value. The tests above only see failures, so this one compares the generated code.
+#[test]
+fn true_and_false_captured_by_a_local_silently_change_the_generated_code() {
+    let wgsl = |name: &str, spelled: &str| -> String {
+        let source = collisions::capture_source(name, spelled).expect("a capture text");
+        let bytes = slang::compile_source(&source, "gpu_table_run", Target::Wgsl)
+            .unwrap_or_else(|error| panic!("{name} as `{spelled}`: {error:?}"));
+        String::from_utf8(bytes).unwrap()
+    };
+    assert_eq!(collisions::SILENT_CAPTURES.len(), 2);
+    for (name, bare_has, renamed_has) in collisions::SILENT_CAPTURES {
+        let bare = wgsl(name, name);
+        let renamed = wgsl(name, &collisions::emit_name(name));
+        assert!(
+            bare.contains(bare_has) && !bare.contains(renamed_has),
+            "bare `{name}` holds the other value:\n{bare}"
+        );
+        assert!(
+            renamed.contains(renamed_has) && !renamed.contains(bare_has),
+            "renamed `{name}` keeps the literal:\n{renamed}"
+        );
+    }
+}
+
+/// The statement keywords and `inout` that GUST writes into every program are not looked up in scope: a Rust name
+/// of that spelling declared as a local, a helper, a struct or a global leaves the generated code byte for byte what
+/// it is without it. (`var`, `true`, `false` and the types are different, and are in the table.) A struct or global
+/// of a table name fails at its declaration, which is class 1, so those positions are only tried for the others.
+#[test]
+fn the_statement_keywords_gust_writes_cannot_be_captured_by_a_user_name() {
+    const KERNEL: &str = "[shader(\"compute\")]\n[numthreads(64, 1, 1)]\nvoid gpu_table_run(uint3 gid : SV_DispatchThreadID)\n";
+    let program = |declaration: &str, local: &str| {
+        format!(
+            "void bump(inout uint a, uint b) {{ a = a ^ b; }}\n{declaration}RWStructuredBuffer<uint> ob;\n{KERNEL}{{ {local}\
+             uint total = 0u; for (var i = 0u; i < 2u; i++) {{ if (i == 1u) {{ continue; }} else {{ bump(total, i); }} \
+             if (i > 5u) {{ break; }} }} ob[gid.x] = total; if (total > 9u) {{ return; }} }}\n"
+        )
+    };
+    let wgsl = |source: &str| -> String {
+        let bytes = slang::compile_source(source, "gpu_table_run", Target::Wgsl)
+            .unwrap_or_else(|error| panic!("{source}\n{error:?}"));
+        String::from_utf8(bytes).unwrap()
+    };
+    let baseline = wgsl(&program("", ""));
+    for name in ["if", "else", "for", "break", "continue", "return", "inout"] {
+        let mut declarations = vec![
+            ("local", program("", &format!("var {name} = 1u; "))),
+            (
+                "helper",
+                program(&format!("uint {name}() {{ return 1u; }}\n"), ""),
+            ),
+        ];
+        if !collisions::collides(name) {
+            declarations.push((
+                "struct",
+                program(&format!("struct {name} {{ uint v; }};\n"), ""),
+            ));
+            declarations.push((
+                "global",
+                program(
+                    &format!("[[vk::binding(1, 0)]] RWStructuredBuffer<uint> {name};\n"),
+                    "",
+                ),
+            ));
+        }
+        for (position, source) in declarations {
+            assert_eq!(wgsl(&source), baseline, "`{name}` as a {position}");
+        }
+    }
+}
+
+/// Class 3 stays empty: the Rust keywords that are not in the table (spelled `r#..`, the only way to write most of
+/// them) are plain names to slangc in all six positions, so nothing else needs a rename.
+#[test]
+fn rust_keywords_outside_the_table_compile_bare_in_every_position() {
+    let keywords = [
+        "as", "async", "await", "const", "dyn", "else", "extern", "fn", "impl", "in", "let",
+        "loop", "match", "mod", "move", "mut", "pub", "ref", "static", "trait", "type", "unsafe",
+        "use", "where", "abstract", "become", "box", "final", "macro", "override", "priv",
+        "typeof", "unsized", "virtual", "yield", "gen", "union", "auto",
+    ];
+    let mut jobs = Vec::new();
+    for name in keywords {
+        assert!(!collisions::collides(name), "{name} is in the table");
+        for position in collisions::Position::ALL {
+            jobs.push((name, position));
+        }
+    }
+    let results = run_parallel(&jobs, |&(name, position)| {
+        slangc_takes(&collisions::position_source(position, name), Target::Wgsl)
+    });
+    let failures: Vec<String> = jobs
+        .iter()
+        .zip(results)
+        .filter_map(|((name, position), result)| {
+            result
+                .err()
+                .map(|message| format!("{name} as {}: {message}", position.label()))
+        })
+        .collect();
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

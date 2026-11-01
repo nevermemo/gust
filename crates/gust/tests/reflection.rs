@@ -247,3 +247,94 @@ fn entry_point_resources_are_not_silently_ignored() {
         );
     }
 }
+
+/// D17 on renamed names (M6 plan 2.5): a kernel whose struct (`class`), field (`new`, `This`) and parameter (`new`,
+/// `operator`, `This`) names are renamed. (A parameter and a struct of one name would conflict in Slang's single
+/// namespace, renamed or not, so the parameters do not reuse the struct name.) The descriptor
+/// carries the emitted names, the compiler reflects them, and the cross-check passes; a descriptor that kept the Rust
+/// spelling, or a reflected field with another name, fails it.
+#[allow(non_camel_case_types, non_snake_case)]
+#[gust::gpu]
+mod renamed_reflect {
+    pub struct class {
+        pub new: uint,
+        pub This: float,
+    }
+    #[kernel]
+    pub fn run(
+        new: SV_DispatchThreadID,
+        operator: StructuredBuffer<class>,
+        mut This: RWStructuredBuffer<class>,
+    ) {
+        if new.x < This.len() {
+            This[new.x] = operator[new.x];
+        }
+    }
+}
+
+#[test]
+fn the_layout_cross_check_passes_on_renamed_names_and_fails_on_the_rust_spelling() {
+    let kernel = renamed_reflect::run::DESCRIPTOR;
+    let names: Vec<&str> = kernel.parameters.iter().map(|p| p.name).collect();
+    assert_eq!(
+        names,
+        ["__gust_r_new", "__gust_r_operator", "__gust_r_This"]
+    );
+    for target in [Target::Wgsl, Target::Spirv] {
+        let compiled = compile_reflected(&kernel, target)
+            .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+        let resources = &compiled.reflection.resources;
+        let reflected: Vec<&str> = resources.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(
+            reflected,
+            ["__gust_r_operator", "__gust_r_This"],
+            "{target:?}"
+        );
+        let reports = compiled
+            .reflection
+            .cross_check_kernel(&kernel)
+            .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+        assert_eq!(reports.len(), 2);
+        assert!(reports.iter().all(|report| report.is_full_abi_match()));
+        // The host layout names the fields as the compiler does, and the per-field check ran on them.
+        let host = <renamed_reflect::class as gust::GpuPod>::LAYOUT;
+        let gust::TypeLayoutKind::Struct(fields) = host.kind else {
+            panic!("a struct layout");
+        };
+        let host_fields: Vec<&str> = fields.iter().map(|field| field.name).collect();
+        assert_eq!(host_fields, ["__gust_r_new", "__gust_r_This"]);
+        let checked = cross_check_pod::<renamed_reflect::class>(&resources[0])
+            .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+        assert_eq!(checked.checked_fields, 2);
+
+        // Mutation 1: a reflected field with the Rust spelling is a mismatch.
+        let mut mutated = resources[0].clone();
+        let gust::reflect::ReflectedTypeKind::Struct(fields) = &mut mutated.element.kind else {
+            panic!("a reflected struct");
+        };
+        fields[0].name = "new".to_owned();
+        let error = cross_check_pod::<renamed_reflect::class>(&mutated).unwrap_err();
+        assert!(
+            error.to_string().contains("field name/order differs"),
+            "{error}"
+        );
+
+        // Mutation 2: a descriptor parameter with the Rust spelling finds no compiler binding.
+        let mut parameters = kernel.parameters.to_vec();
+        parameters[1].name = "operator";
+        let respelled = gust::KernelDescriptor {
+            parameters: Box::leak(parameters.into_boxed_slice()),
+            ..kernel
+        };
+        let error = compiled
+            .reflection
+            .cross_check_kernel(&respelled)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("missing compiler binding operator"),
+            "{error}"
+        );
+    }
+}

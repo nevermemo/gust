@@ -160,7 +160,9 @@ fn cached_pipeline_does_not_authorize_a_changed_contract() {
 
 /// A kernel that rustc and the GUST validator accept and only Slang rejects: a
 /// local named `new` (M1.3, the Reflect-tier check that the native helper honours
-/// the compile copy's `#line` directives).
+/// the compile copy's `#line` directives). The macro now emits that local as `__gust_r_new`, which slangc takes, so
+/// the test deletes the prefix from the Slang text and keeps the macro's line table: the bare `new` is the
+/// Slang-only error, on the same lines.
 #[gust::gpu]
 mod rejected_by_slang {
     #[kernel]
@@ -180,8 +182,17 @@ fn the_native_helper_reports_a_slang_failure_at_the_rust_line() {
         .position(|line| line.trim_end().ends_with(marker) && line.contains("out[id.x]"))
         .map(|index| index + 1)
         .expect("marker line");
-    let kernel = rejected_by_slang::run::DESCRIPTOR;
-    assert!(kernel.source.file.ends_with("reflection.rs"));
+    let renamed = rejected_by_slang::run::DESCRIPTOR;
+    assert!(renamed.source.file.ends_with("reflection.rs"));
+    let bare = renamed.slang_source.replace("__gust_r_", "");
+    assert_ne!(
+        bare, renamed.slang_source,
+        "the macro renamed the local `new`"
+    );
+    let kernel = KernelDescriptor {
+        slang_source: Box::leak(bare.into_boxed_str()),
+        ..renamed
+    };
     for target in [Target::Wgsl, Target::Spirv] {
         let error = gust::reflect::compile_reflected(&kernel, target).unwrap_err();
         let gust::reflect::Error::Compiler(gust::slang::Error::CompilationFailed {

@@ -345,7 +345,10 @@ pub(crate) fn annotate_diagnostics(
     diagnostics: &str,
 ) -> String {
     let located = locate(origin, slang_source, source_map, diagnostics);
-    let mut annotated = diagnostics.to_owned();
+    // The macro renames the few user names that slangc cannot take as `__gust_r_<name>` (M6 plan 2.5). The location
+    // above was found on the original text. naga and wgpu messages are not touched: they name slangc's mangled
+    // `_gust_r_<name>_N`.
+    let mut annotated = strip_rename_prefix(diagnostics);
     if let Some(segment) = located.segment {
         annotated.push_str(&format!(
             "\noriginating Rust kernel: {}\noriginating Rust construct: {} #{}",
@@ -362,6 +365,40 @@ pub(crate) fn annotate_diagnostics(
         annotated.push_str("\n(column is in the generated Slang)");
     }
     annotated
+}
+
+#[cfg(feature = "slang-runtime")]
+/// The prefix the macro puts in front of a renamed user identifier (`gust-macros`, `slang/collisions.rs`; E0901 denies
+/// the `__gust_` family to users). `crates/gust/tests/diagnostics.rs` pins that the two agree.
+const RENAME_PREFIX: &str = "__gust_r_";
+
+#[cfg(feature = "slang-runtime")]
+/// Gives a slangc message the Rust spelling of the names the macro renamed: deletes [`RENAME_PREFIX`] where an emitted
+/// renamed name starts, that is at a word boundary (not after a letter, digit or underscore) and in front of a name.
+/// The macro only ever writes the prefix at the start of a name, so this undoes exactly its renames. A user name that
+/// merely contains the text, such as `a__gust_r_b` (E0901 only denies a name that starts with `__gust_`), is left
+/// alone.
+fn strip_rename_prefix(text: &str) -> String {
+    let is_word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let bytes = text.as_bytes();
+    let mut stripped = String::with_capacity(text.len());
+    let mut copied = 0;
+    let mut search = 0;
+    while let Some(found) = text[search..].find(RENAME_PREFIX) {
+        let start = search + found;
+        let end = start + RENAME_PREFIX.len();
+        let at_boundary = start == 0 || !is_word(bytes[start - 1]);
+        let before_name = bytes
+            .get(end)
+            .is_some_and(|byte| byte.is_ascii_alphabetic() || *byte == b'_');
+        if at_boundary && before_name {
+            stripped.push_str(&text[copied..start]);
+            copied = end;
+        }
+        search = end;
+    }
+    stripped.push_str(&text[copied..]);
+    stripped
 }
 
 #[cfg(feature = "slang-runtime")]
@@ -628,6 +665,26 @@ mod tests {
             diagnostic,
         )
         .map(|origin| origin.kernel)
+    }
+
+    #[cfg(feature = "slang-runtime")]
+    #[test]
+    fn the_rename_prefix_is_stripped_only_where_a_renamed_name_starts() {
+        assert_eq!(
+            strip_rename_prefix(
+                "error: undefined identifier '__gust_r_new' in (__gust_r_class.__gust_r_This)"
+            ),
+            "error: undefined identifier 'new' in (class.This)"
+        );
+        // A user name that contains the text is not a renamed name: it keeps every character.
+        assert_eq!(strip_rename_prefix("a__gust_r_b"), "a__gust_r_b");
+        assert_eq!(
+            strip_rename_prefix("1__gust_r_b x_ __gust_r_"),
+            "1__gust_r_b x_ __gust_r_"
+        );
+        assert_eq!(strip_rename_prefix("no prefix here"), "no prefix here");
+        // slangc's mangled form in naga and wgpu messages is not touched.
+        assert_eq!(strip_rename_prefix("_gust_r_new_0"), "_gust_r_new_0");
     }
 
     #[test]

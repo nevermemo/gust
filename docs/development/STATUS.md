@@ -91,6 +91,16 @@ C, a scratch probe on the RTX 5090) found:
   Four Gpu tests prove a readback that is pending and then ready on a busy device (warm
   pipeline, three attempts). Opus keep after one fix round; gates on main at `8640cac` (Gpu
   122 tests). wasm32 is m4.g2.
+- M4 m4.c (`dba0e97`): the macro computes the content key over the clean kernel text, byte-exact
+  with `gust::artifact::content_key` (golden vectors shared by both crates), and embeds a
+  committed `gust-artifacts/` pair with `require_artifact(true)`. Each module with a pair also
+  checks the manifest once, so a strict build without one fails with E0080. Export mode
+  (`GUST_EXPORT_DIR`) writes `<dir>/<pkg>/<key>.{slang,kernel.json}` (schema 1: parameters with
+  the full layout tree, source file and line table); element types the macro cannot lay out
+  are written as `layout: null` for `cargo gust` to fill from reflection (m4.d). A half pair is
+  E0711 outside export mode and absent inside it, so the build tool repairs it; E0712 and E0713
+  cover export write failures (including the twin-text guard) and a missing package name. Two
+  `profile-native-*` ui cases. Opus keep after one fix round; gates on main at `349a084`.
 M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),

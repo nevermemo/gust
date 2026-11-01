@@ -1,5 +1,6 @@
 # Unit-tier gate (docs/development/VALIDATION.md). Hosted runners have no GPU and no
-# slangc, so Slangc, Spirv, Reflect, and Gpu evidence stays local.
+# slangc, so Spirv and Gpu evidence stays local. The `slang` job installs the pinned Slang
+# (cargo gust slang install) and earns the Slangc and Reflect tiers on CI.
 name: ci
 
 on:
@@ -56,3 +57,55 @@ jobs:
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: Check on the minimum version
         run: cargo check --workspace --all-targets --locked
+
+  slang:
+    # The pinned-Slang manager end to end (D46, R4.8, slice m4.f). `cargo gust slang install` downloads Slang 2026.13.1
+    # from Slang's own GitHub release (the archive's SHA-256 is checked before anything is extracted), `build-helper`
+    # compiles the native reflection helper against it with g++ (`CXX` below: without it build-helper takes the first of
+    # cl, clang++, c++, g++ on PATH, and the runner may have clang++), and the Slangc and Reflect tiers run with
+    # that slangc and helper. The S3 reproducibility check builds the artifacts of examples/vector-add twice with
+    # `cargo gust build` and requires byte-identical output (R7: no normalization), then `check --recompile` once more.
+    # No GPU here, so no Gpu tier. Not a required check yet (the `unit` precedent: promoted after two weeks of green).
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      CXX: g++
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: Install the pinned Slang and build the helper
+        # The cache is the tool's default, ~/.cargo/gust/slang/<version>. Later steps get the slangc, the SDK (for
+        # xtask build-slang-reflect) and the helper through the environment files.
+        run: |
+          gust() { cargo run --locked --quiet -p cargo-gust -- "$@"; }
+          gust slang install
+          gust slang locate > "$RUNNER_TEMP/locate.txt"
+          cat "$RUNNER_TEMP/locate.txt"
+          slangc=$(sed -n 's/^slangc: //p' "$RUNNER_TEMP/locate.txt")
+          gust slang build-helper > "$RUNNER_TEMP/helper.txt"
+          cat "$RUNNER_TEMP/helper.txt"
+          helper=$(sed -n 's/^helper: //p' "$RUNNER_TEMP/helper.txt")
+          test -n "$slangc"
+          test -n "$helper"
+          echo "SLANG_SDK=$(dirname "$(dirname "$slangc")")" >> "$GITHUB_ENV"
+          echo "GUST_SLANG_REFLECT=$helper" >> "$GITHUB_ENV"
+          dirname "$slangc" >> "$GITHUB_PATH"
+      - name: Doctor
+        # Must be healthy: the pinned slangc, and a helper built against it.
+        run: |
+          slangc -version
+          cargo run --locked --quiet -p cargo-gust -- doctor
+      - name: Slangc tier
+        run: cargo --locked xtask test --suite Slangc
+      - name: Reflect tier
+        run: cargo --locked xtask test --suite Reflect
+      - name: S3 reproducibility (cargo gust build twice)
+        run: |
+          gust() { cargo run --locked --quiet -p cargo-gust -- "$@"; }
+          rm -rf examples/vector-add/gust-artifacts
+          gust build -p vector-add
+          cp -R examples/vector-add/gust-artifacts "$RUNNER_TEMP/s3-first"
+          gust build -p vector-add
+          diff -r "$RUNNER_TEMP/s3-first" examples/vector-add/gust-artifacts
+          gust check -p vector-add --recompile

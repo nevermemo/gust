@@ -47,7 +47,7 @@ pub(crate) fn find_spirv_val(path_var: Option<&OsStr>) -> Option<PathBuf> {
 
 /// What to do when the helper is missing; printed by `doctor` and by the commands that need it.
 pub(crate) fn helper_hint() -> &'static str {
-    "build it with `cargo xtask build-slang-reflect` in the GUST repository, or set GUST_SLANG_REFLECT to the helper executable"
+    "build it with `cargo gust slang build-helper` (in the GUST repository `cargo xtask build-slang-reflect` does the same), or set GUST_SLANG_REFLECT to the helper executable"
 }
 
 /// Read the Slang build tag from the output of `gust-slang-reflect --version`:

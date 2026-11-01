@@ -11,14 +11,16 @@ use gust::Format;
 
 use crate::{
     check::{self, Report},
-    cli::{BuildOptions, CheckOptions, Target},
+    cli::{BuildOptions, CheckOptions, SlangCommand, Target},
     collect::{self, CollectPlan, Package, clean_command, collect, fresh_nonce, metadata_command},
     doctor::{self, Facts},
     export::{self, Compiler, HelperCompiler, formats_with_wgsl, verify_stored},
+    helper,
     manifest::{MANIFEST_FILE, Manifest, format_name},
     record::Record,
+    slang::{self, Env, Located, SLANG_VERSION, Source},
     store::{self, Commit, Event, read_dir_state},
-    tools,
+    toolchain, tools,
 };
 
 /// The name of the artifact directory in the package directory.
@@ -88,10 +90,14 @@ fn collect_plan(ctx: &Context) -> CollectPlan {
     }
 }
 
-/// The helper executable, or the error that says how to get one.
+/// The helper executable, or the error that says how to get one. It does not look at Slang itself: `check` without
+/// `--recompile` only needs the helper's build tag.
 fn require_helper() -> Result<PathBuf, String> {
-    let candidate = gust::reflect::native_compiler_path();
-    tools::locate_executable(&candidate, std::env::var_os("PATH").as_deref()).ok_or_else(|| {
+    let env = Env::from_process();
+    // Which install the managed helper belongs to; a missing or mismatched slangc must not stop this lookup.
+    let located = slang::locate(&env, true, &slang::slangc_version).ok();
+    let candidate = toolchain::helper_candidate(located.as_ref());
+    tools::locate_executable(&candidate, env.path.as_deref()).ok_or_else(|| {
         format!(
             "the native Slang helper was not found (looked for {}); {}",
             candidate.display(),
@@ -165,7 +171,12 @@ pub(crate) fn build(options: &BuildOptions) -> Result<i32, String> {
             format_name(*format)
         );
     }
-    let helper = require_helper()?;
+    // The pinned slangc and a helper of the same Slang build, or no build at all (R4.8).
+    let toolchain = toolchain::require(&Env::from_process(), options.allow_slang_mismatch)?;
+    if let Some(note) = slang::version_note(&toolchain.slangc) {
+        println!("gust: {note}");
+    }
+    let helper = toolchain.helper;
     let spirv_val = if formats.contains(&Format::Spirv) {
         let found = tools::find_spirv_val(std::env::var_os("PATH").as_deref());
         if found.is_none() {
@@ -208,7 +219,14 @@ pub(crate) fn check(options: &CheckOptions) -> Result<i32, String> {
     let ctx = resolve(&options.target)?;
     let records = export::dedupe(collect(&collect_plan(&ctx), &run_status)?)?;
     let state = read_dir_state(&ctx.artifacts)?;
-    let helper = if options.recompile || !options.allow_slang_mismatch {
+    let helper = if options.recompile {
+        // Recompiling uses the compiler, so it needs the pinned Slang and a helper of the same build (R4.8).
+        let toolchain = toolchain::require(&Env::from_process(), options.allow_slang_mismatch)?;
+        if let Some(note) = slang::version_note(&toolchain.slangc) {
+            println!("gust: {note}");
+        }
+        Some(Ok(toolchain.helper))
+    } else if !options.allow_slang_mismatch {
         Some(require_helper())
     } else {
         None
@@ -298,12 +316,23 @@ pub(crate) fn render_report(report: &Report, kernels: usize) -> Vec<String> {
 }
 
 pub(crate) fn doctor() -> Result<i32, String> {
-    let candidate = gust::reflect::native_compiler_path();
-    let path_var = std::env::var_os("PATH");
+    let env = Env::from_process();
+    let slangc = slang::locate(&env, false, &slang::slangc_version);
+    let candidate = toolchain::helper_candidate(slangc.as_ref().ok());
+    let path_var = env.path.clone();
     let helper_found = tools::locate_executable(&candidate, path_var.as_deref());
     let helper_slang = helper_found.as_deref().map(tools::helper_slang_version);
+    let notices = slangc
+        .as_ref()
+        .ok()
+        .and_then(Located::install_dir)
+        .map(|dir| slang::notice_files(&dir))
+        .unwrap_or_default();
     let facts = Facts {
         version: env!("CARGO_PKG_VERSION").to_owned(),
+        pin: SLANG_VERSION.to_owned(),
+        slangc,
+        notices,
         helper_candidate: candidate,
         helper_found,
         helper_slang,
@@ -316,6 +345,96 @@ pub(crate) fn doctor() -> Result<i32, String> {
         println!("{line}");
     }
     Ok(i32::from(!healthy))
+}
+
+/// `cargo gust slang <command>`.
+pub(crate) fn slang(command: &SlangCommand) -> Result<i32, String> {
+    let env = Env::from_process();
+    match command {
+        SlangCommand::Install => slang_install(&env),
+        SlangCommand::Locate { allow_mismatch } => {
+            let located = slang::locate(&env, *allow_mismatch, &slang::slangc_version)?;
+            println!("slangc: {}", located.slangc.display());
+            println!("version: {}", located.version);
+            println!("source: {}", located.source.label());
+            if let Some(note) = slang::version_note(&located) {
+                println!("{note}");
+            }
+            Ok(0)
+        }
+        SlangCommand::BuildHelper {
+            force,
+            sdk_root,
+            out_dir,
+        } => slang_build_helper(&env, *force, sdk_root.as_deref(), out_dir.as_deref()),
+    }
+}
+
+fn slang_install(env: &Env) -> Result<i32, String> {
+    let asset = slang::asset_for(SLANG_VERSION, std::env::consts::OS, std::env::consts::ARCH)
+        .ok_or_else(|| {
+            format!(
+                "no Slang {SLANG_VERSION} release archive is pinned for {}-{}; install Slang yourself and put its bin directory first on PATH (or pass --allow-slang-mismatch to commands that accept it)",
+                std::env::consts::OS,
+                std::env::consts::ARCH
+            )
+        })?;
+    let root = slang::install_root(env)?;
+    match slang::install(&root, asset, &slang::SystemTools, std::process::id())? {
+        slang::Installed::Already(dir) => {
+            println!(
+                "slang: {SLANG_VERSION} is already installed at {}",
+                dir.display()
+            );
+        }
+        slang::Installed::Fresh(dir) => {
+            println!("slang: installed {SLANG_VERSION} at {}", dir.display());
+        }
+    }
+    let dir = root.join(SLANG_VERSION);
+    for notice in slang::notice_files(&dir) {
+        println!("slang: licence notice kept at {}", notice.display());
+    }
+    println!("next: run `cargo gust slang build-helper` to build the native helper");
+    Ok(0)
+}
+
+fn slang_build_helper(
+    env: &Env,
+    force: bool,
+    sdk_root: Option<&Path>,
+    out_dir: Option<&Path>,
+) -> Result<i32, String> {
+    let (sdk_root, out_dir) = match (sdk_root, out_dir) {
+        (Some(sdk), Some(out)) => (sdk.to_path_buf(), out.to_path_buf()),
+        (Some(_), None) => {
+            return Err("with --sdk-root, also pass --out-dir (the managed helper directory belongs to the pinned install)".to_owned());
+        }
+        (None, out) => {
+            let located = slang::locate(env, false, &slang::slangc_version)?;
+            let Some(root) = located
+                .root
+                .as_deref()
+                .filter(|_| located.source != Source::Path)
+            else {
+                return Err(format!(
+                    "the pinned Slang found at {} is not a cargo gust install, so there is no SDK to build against: pass --sdk-root <dir> and --out-dir <dir>, or run `cargo gust slang install`",
+                    located.slangc.display()
+                ));
+            };
+            let sdk = root.join(SLANG_VERSION);
+            let out = out.map_or_else(|| slang::helper_dir(root, SLANG_VERSION), Path::to_path_buf);
+            (sdk, out)
+        }
+    };
+    let (exe, tag) = helper::build(&helper::BuildOptions {
+        force,
+        sdk_root: Some(sdk_root),
+        out_dir: Some(out_dir),
+    })?;
+    println!("slang: Slang build tag of the helper: {tag}");
+    println!("helper: {}", exe.display());
+    Ok(0)
 }
 
 /// What a build did, for printing.

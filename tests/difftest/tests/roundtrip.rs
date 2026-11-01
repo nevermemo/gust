@@ -1,0 +1,97 @@
+//! The emitter round trip: generated crates pass `cargo check --locked` against the repository's `gust` and
+//! `gust-wgpu` path dependencies, under `GUST_PROFILE=dev`, with the committed template lockfile. Needs cargo and
+//! the registry packages already in the cargo cache (the template lock pins the same versions as the root lock);
+//! needs neither slangc nor a GPU. Generated crates live under the target directory and are never committed.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use difftest::emit::{lock_for, package_name, write_crate};
+use difftest::generator::generate_batch;
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// `<target>/tmp/difftest`: cargo creates `CARGO_TARGET_TMPDIR` for integration tests.
+fn work_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("difftest")
+}
+
+/// Runs `cargo check --locked` on the generated crate in `dir`; returns success and the combined output.
+fn cargo_check(dir: &Path) -> (bool, String) {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let output = Command::new(cargo)
+        .args(["check", "--locked", "--manifest-path"])
+        .arg(dir.join("Cargo.toml"))
+        // One build directory for all generated crates and runs, separate from the one this test runs in.
+        .env("CARGO_TARGET_DIR", work_dir().join("target"))
+        .env("GUST_PROFILE", "dev")
+        .output()
+        .expect("cargo should start");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    (output.status.success(), text)
+}
+
+fn tail(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(60)..].join("\n")
+}
+
+#[test]
+fn generated_crates_pass_cargo_check_with_the_template_lockfile() {
+    let dir = work_dir().join("roundtrip-ok");
+    let mut programs = Vec::new();
+    for seed in 1..=8 {
+        programs.extend(generate_batch(seed).unwrap().programs);
+    }
+    assert_eq!(programs.len(), 128);
+    write_crate(&dir, &package_name("ok").unwrap(), &programs, &repo_root()).unwrap();
+    let (ok, output) = cargo_check(&dir);
+    assert!(ok, "cargo check failed:\n{}", tail(&output));
+    // `--locked` would have refused a lockfile that needed an update; the crate used the template as written.
+    let lock = std::fs::read_to_string(dir.join("Cargo.lock")).unwrap();
+    assert_eq!(lock, lock_for("difftest-case-ok").unwrap());
+}
+
+#[test]
+fn the_round_trip_check_fails_on_a_broken_crate() {
+    let dir = work_dir().join("roundtrip-broken");
+    let batch = generate_batch(1).unwrap();
+    let package = package_name("broken").unwrap();
+    write_crate(&dir, &package, &batch.programs[..1], &repo_root()).unwrap();
+    let lib = dir.join("src").join("lib.rs");
+    let mut text = std::fs::read_to_string(&lib).unwrap();
+    text.push_str("\npub const BROKEN: u32 = true;\n");
+    std::fs::write(&lib, text).unwrap();
+    let (ok, output) = cargo_check(&dir);
+    assert!(!ok, "cargo check accepted a type error");
+    assert!(output.contains("mismatched types"), "{}", tail(&output));
+}
+
+#[test]
+fn the_round_trip_check_fails_when_the_gpu_validator_rejects_a_module() {
+    let dir = work_dir().join("roundtrip-rejected");
+    let batch = generate_batch(1).unwrap();
+    write_crate(
+        &dir,
+        &package_name("rejected").unwrap(),
+        &batch.programs[..1],
+        &repo_root(),
+    )
+    .unwrap();
+    let lib = dir.join("src").join("lib.rs");
+    let mut text = std::fs::read_to_string(&lib).unwrap();
+    // `while` is outside the dialect: the macro must refuse it with a GUST diagnostic, not rustc.
+    text.push_str(
+        "\n#[gust::gpu]\npub mod rejected {\n    #[kernel(workgroup_size(64, 1, 1))]\n    pub fn k(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {\n        let mut n = 0u32;\n        while n < 3u32 {\n            n = n + 1u32;\n        }\n        out[id.x] = n;\n    }\n}\n",
+    );
+    std::fs::write(&lib, text).unwrap();
+    let (ok, output) = cargo_check(&dir);
+    assert!(!ok, "cargo check accepted a module outside the dialect");
+    assert!(output.contains("[GUST-E"), "{}", tail(&output));
+}

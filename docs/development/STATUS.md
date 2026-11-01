@@ -132,6 +132,15 @@ D55 to D59.
   in helpers against the twin. Known gap, fixed next in fx.wgsl: slangc drops the parentheses
   in `f(a < b, c > d)`, which WGSL then reads as a template list. Opus keep after one fix
   round; gates on main at `9cfdfe4`.
+- Fix fx.wgsl (`60d36c2`): naga reads `a < b, c > d` in a call, a `^` operand pair or an array
+  literal as a template list, since a `<` after an identifier opens a candidate that any later
+  `>` at its depth closes. The macro wraps every `<` comparison in a list element other than the
+  last (also through the right operand of `&&` and `||`) in `__gust_keep(bool)`, an identity
+  helper emitted only in modules that need it. Unsuffixed integer literals from 2^31 to
+  `u32::MAX` are emitted as `uint(N)`. Emitter tests pin the wrapped and unwrapped shapes; two
+  Gpu tests in `wgsl_spelling.rs` check both bugs against the twin; `gpu-software` pins 142
+  passed over 19 result lines. Follow-up: the validator should reject literals outside 32 bits
+  (E0812). Opus keep after one fix round; gates on main at `709a86d`.
 - M5 m5.d1 (`d2378ce`): 84 scalar cases transcribed from Rust 1.98.0's coretests
   (`library/coretests/tests/num`) into `docs/development/CORETESTS.md`, with acceptance sets
   (exact integers in the domain, WGSL's 2.5 ULP for float `/`) and exclusions; five `#[gpu]`

@@ -61,8 +61,8 @@ test module; do not mix that mechanical move with behavior changes.
 
 - Explicit `wrapping_add`, `wrapping_sub`, `wrapping_mul` and `wrapping_neg` methods in
   the dialect, lowered to the plain Slang operator, only when a kernel needs an
-  intentional wrap. Not a fix for the overflow edge cases of the ledger (D39); a
-  wrapping rewrite of twin bodies is deferred to M5's production CPU target (D38).
+  intentional wrap. Not a fix for the overflow edge cases of the ledger: D39 drops the
+  wrapping rewrite of twin bodies that D38 had deferred to M5.
 - A debug write-set race checker in `gust::cpu`: the twin runs invocations one after
   another, so a kernel in which two invocations write one location gives a clean twin
   result and proves nothing about the GPU (SEMANTICS section 5). The checker would
@@ -84,6 +84,17 @@ test module; do not mix that mechanical move with behavior changes.
 - M10, benchmark fairness: bounds checking and panic behaviour must be equal on the
   compared implementations (the GUST CPU target, rayon, CubeCL, rust-gpu) before a
   benchmark is reported.
+- Test pinning by name (known limitation of m3.g's test-count guard): a counted call
+  fails when it reports no passed test, but deleting one test, or marking it
+  `#[ignore]` outside an `--include-ignored` call, while its siblings still run passes.
+  Only check-dual's E2 and the release call's two release-only tests are required by
+  name. A per-example list of required test names would close it.
+- Record the adapter in `.ai/VALIDATION.json`: any Vulkan adapter satisfies the GPU
+  tiers, a software one (lavapipe) included, and the record does not say which ran.
+  Until then a GPU claim names its adapter in STATUS.
+- Stale SPIR-V in the ignored `generated-wgpu` directory can satisfy `check-artifacts`'
+  name check locally (CI starts clean); clear the directory before the export, or
+  compare timestamps.
 
 ## Deferred language/runtime breadth
 

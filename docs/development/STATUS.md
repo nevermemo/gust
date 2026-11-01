@@ -13,8 +13,25 @@ adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),
 m3.c (macro twins), m3.c2 (check-cpu), m3.d (atomics, fixture twins), m3.e1 (four example
-twins), m3.e2 (graph example twins), m3.f1 (`check-dual --check-only`) and m3.f2 (check-cfg
-lints, dual mains, full `check-dual`, CI step) done; the M3 close-out and sanity check next.
+twins), m3.e2 (graph example twins), m3.f1 (`check-dual --check-only`), m3.f2 (check-cfg
+lints, dual mains, full `check-dual`, CI step) and m3.g (gates that cannot pass by skipping)
+done; the close-out docs and D40, D41 are in; `check-full` on a clean tree and the M3 sanity
+check next.
+
+- M3 m3.g (`95c5514`): a read-only audit (plan Revision 7) found no gate that skips through
+  an early return, a missing tool or a CI condition, but six holes, now closed: `check-full`
+  and `verify --mode examples` ran the examples with `--ignored` only (now
+  `--include-ignored`, so the twin-versus-host and guard tests run there too); a cargo test
+  call that ran zero tests passed (a test-count guard now fails it, and also fails a failed or,
+  under `--include-ignored`, an ignored test, for check-cpu, the examples, the release `--lib`
+  call and the filtered check-feature calls); the release call now also runs the `gust::cpu`
+  id-range test and requires both release-only tests by name; six examples' max-error folds
+  turned a NaN into 0 (now propagated, with a NaN unit test each); the check-ui fixtures are
+  pinned by name; and the 30 `gust::cpu` unit tests, which need neither slangc nor a GPU, are
+  a Unit step, so CI runs them. Known limitation, in NEXT_TASKS: the guard counts per call,
+  not per test. Evidence: fmt, clippy, xtask tests, check-cpu, Unit, check-ui, check-fast,
+  check-examples (GPU, all eight examples with `--include-ignored`), docs-check, lint; the
+  release call by hand (both release-only tests ok); five mutations killed.
 
 - M3 m3.f2 (`98acabc`): the root manifest declares `cfg(gust_dual)` through
   `[workspace.lints.rust] unexpected_cfgs`, and every crate except the proc-macro crate

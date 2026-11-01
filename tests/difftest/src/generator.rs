@@ -16,8 +16,10 @@ use crate::interp;
 use crate::prng::{Prng, byte_stream};
 
 /// Bump when a change alters what any seed decodes to, or the emitted text. 2: the program space gained `f32`
-/// (m5.c1a2, R1-4).
-pub const DIFFTEST_FORMAT: u32 = 2;
+/// (m5.c1a2, R1-4). 3: the condition and literal biases of the float space (m5.c1b): an `if` condition is never a bare
+/// `true` or `false`, it often compares an input element with a value of the data or tests the element index, and a
+/// literal is often a value that the data holds, so that both sides of a condition are taken by some elements.
+pub const DIFFTEST_FORMAT: u32 = 3;
 
 /// Which programs the generator writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,9 +88,22 @@ struct Gen<'a> {
     b: Bytes<'a>,
     floats: bool,
     inputs: Vec<Ty>,
+    /// The data of each input buffer (same order as `inputs`); the float space draws literals and conditions from it.
+    data: Vec<Vec<u32>>,
+    count: u32,
     next_var: u32,
     /// (variable, type, mutable), innermost last.
     scope: Vec<(u32, Ty, bool)>,
+}
+
+/// A data value as a literal; i32::MIN is written as the expression -2147483647 - 1 (the emitter never writes the
+/// literal -2147483648i32).
+fn data_value(ty: Ty, bits: u32) -> Expr {
+    if ty == Ty::I32 && bits == 0x8000_0000 {
+        Expr::i32_min()
+    } else {
+        Expr::Lit(ty, bits)
+    }
 }
 
 const SMALL_DIVISORS: [u32; 8] = [1, 2, 3, 4, 7, 10, 16, 255];
@@ -129,7 +144,27 @@ impl Gen<'_> {
         [Ty::U32, Ty::I32][self.b.below(2) as usize]
     }
 
+    /// A value that an input buffer of type `ty` holds, as a literal; `None` when the program has no such buffer.
+    fn data_literal(&mut self, ty: Ty) -> Option<Expr> {
+        let buffers = self.inputs_of(ty);
+        if buffers.is_empty() {
+            return None;
+        }
+        let buf = buffers[self.b.below(buffers.len() as u32) as usize];
+        let at = self.b.below(self.count) as usize;
+        Some(data_value(ty, self.data[buf][at]))
+    }
+
     fn literal(&mut self, ty: Ty) -> Expr {
+        // The float space: one literal in eight is a value the data holds, so that a comparison with it has both
+        // outcomes over the elements (a literal drawn from the edge lists almost never equals or separates the data).
+        if self.floats
+            && ty != Ty::Bool
+            && self.b.chance(12)
+            && let Some(literal) = self.data_literal(ty)
+        {
+            return literal;
+        }
         match ty {
             Ty::F32 => self.float_literal(),
             Ty::Bool => Expr::bool(self.b.below(2) == 1),
@@ -412,6 +447,96 @@ impl Gen<'_> {
         Expr::f32(if self.b.chance(33) { -value } else { value })
     }
 
+    /// A condition on the element index: it splits the elements whenever there are two or more.
+    fn index_condition(&mut self) -> Expr {
+        let cmp = |op, l, r| Expr::bin(op, l, r);
+        match self.b.weighted(&[40, 35, 25]) {
+            0 => {
+                let modulus = [2, 3, 4, 5, 8][self.b.below(5) as usize];
+                let remainder = self.b.below(modulus);
+                cmp(
+                    BinOp::Eq,
+                    cmp(BinOp::Rem, Expr::Gid, Expr::u32(modulus)),
+                    Expr::u32(remainder),
+                )
+            }
+            1 => {
+                let bound = 1 + self.b.below(self.count.max(2) - 1);
+                cmp(BinOp::Lt, Expr::Gid, Expr::u32(bound))
+            }
+            _ => {
+                let mask = [1, 2, 4, 8, 16, 32][self.b.below(6) as usize];
+                cmp(
+                    BinOp::Ne,
+                    cmp(BinOp::BitAnd, Expr::Gid, Expr::u32(mask)),
+                    Expr::u32(0),
+                )
+            }
+        }
+    }
+
+    /// An element of an input buffer compared with a value of the data. For `f32` the pivot is the midpoint of two
+    /// elements (a literal equal to an element would make the intervals overlap, and the pair would be discarded).
+    fn pivot_condition(&mut self) -> Expr {
+        let buf = self.b.below(self.inputs.len() as u32) as usize;
+        let ty = self.inputs[buf];
+        let p = self.b.below(self.count) as usize;
+        let q = self.b.below(self.count) as usize;
+        let (first, second) = (self.data[buf][p], self.data[buf][q]);
+        let pivot = if ty == Ty::F32 {
+            let mid = (f32::from_bits(first) + f32::from_bits(second)) / 2.0;
+            Expr::Lit(
+                ty,
+                if mid.is_finite() {
+                    mid.to_bits()
+                } else {
+                    first
+                },
+            )
+        } else {
+            data_value(ty, first)
+        };
+        let ops = if ty == Ty::F32 {
+            [
+                BinOp::Lt,
+                BinOp::Le,
+                BinOp::Gt,
+                BinOp::Ge,
+                BinOp::Lt,
+                BinOp::Gt,
+            ]
+        } else {
+            [
+                BinOp::Lt,
+                BinOp::Le,
+                BinOp::Gt,
+                BinOp::Ge,
+                BinOp::Eq,
+                BinOp::Ne,
+            ]
+        };
+        let op = ops[self.b.below(6) as usize];
+        Expr::bin(op, Expr::input(buf, ty, Expr::Gid), pivot)
+    }
+
+    /// The condition of an `if`. The default space never writes a bare `true` or `false` (a third of the conditions
+    /// of format 2 were one, and only 2 of 55 evaluated `if`s took both sides over the elements, measured at
+    /// m5.c1b): it compares an input element with a value of the data, tests the element index, or writes the general
+    /// boolean expression of format 2 (replaced by an index condition if it came out as a bare literal).
+    fn condition(&mut self) -> Expr {
+        if !self.floats {
+            return self.expr(Ty::Bool, 4);
+        }
+        match self.b.weighted(&[35, 25, 40]) {
+            0 => self.pivot_condition(),
+            1 => self.index_condition(),
+            _ => match self.expr(Ty::Bool, 4) {
+                Expr::Lit(..) => self.index_condition(),
+                other => other,
+            },
+        }
+    }
+
     fn bool_expr(&mut self, d: u32) -> Expr {
         let mut weights = vec![55, 20, 10, 5];
         if self.floats {
@@ -488,7 +613,7 @@ impl Gen<'_> {
                 }
                 1 => stmts.push(self.assign()),
                 2 => {
-                    let cond = self.expr(Ty::Bool, 4);
+                    let cond = self.condition();
                     let then = self.block(depth + 1, 1, 3);
                     let els = self.block(depth + 1, 0, 2);
                     stmts.push(Stmt::If { cond, then, els });
@@ -684,6 +809,8 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         },
         floats: space == Space::Float,
         inputs: Vec::new(),
+        data: Vec::new(),
+        count: 1,
         next_var: 0,
         scope: Vec::new(),
     };
@@ -691,6 +818,7 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         k @ 0..=4 => COUNTS[k as usize],
         _ => 1 + g.b.below(4095),
     };
+    g.count = count;
     let input_count = 1 + g.b.below(3);
     let mut inputs = Vec::new();
     for _ in 0..input_count {
@@ -701,11 +829,10 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         };
         let class = g.b.weighted(&[3, 4, 4, 3, 2, 1, 3]);
         let sub_seed = g.b.u64();
+        let data = input_data(ty, class, count, sub_seed);
         g.inputs.push(ty);
-        inputs.push(InputBuf {
-            ty,
-            data: input_data(ty, class, count, sub_seed),
-        });
+        g.data.push(data.clone());
+        inputs.push(InputBuf { ty, data });
     }
     let body = g.block(0, 2, 7);
     let ty = g.pick_ty();

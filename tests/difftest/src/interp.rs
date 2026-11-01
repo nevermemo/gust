@@ -11,6 +11,8 @@
 //! a conforming WGSL implementation may hold (R1-4). A float construct whose result the interval cannot pin down is a
 //! `Violation` too, and the program is discarded, never asserted.
 
+use std::collections::{BTreeMap, HashMap};
+
 use crate::ast::{BinOp, Expr, Program, Stmt, Ty, UnOp};
 use crate::float::{self, Fl};
 
@@ -217,9 +219,45 @@ struct Machine<'a> {
     program: &'a Program,
     element: u32,
     vars: Vec<Val>,
+    /// Executed-operator counts, kept only by `run_covered`.
+    coverage: Option<Box<Counting>>,
+}
+
+/// What `run_covered` counts while it runs.
+#[derive(Default)]
+struct Counting {
+    /// (kind, head, tail) -> evaluations; see `operator_name`.
+    operators: BTreeMap<(u8, &'static str, &'static str), u64>,
+    /// `if` statement (by address) -> (evaluations that took the then branch, evaluations that took the else branch).
+    branches: HashMap<usize, (u64, u64)>,
+    /// `&&` and `||` evaluations whose right operand was evaluated, and whose right operand was skipped.
+    rhs_evaluated: u64,
+    rhs_skipped: u64,
+}
+
+const KIND_UNARY: u8 = 0;
+const KIND_BINARY: u8 = 1;
+const KIND_CAST: u8 = 2;
+const KIND_FOR: u8 = 3;
+
+/// The name of a counted operator, the same spelling as `ast::operator_counts` (`+ u32`, `-f32`, `!bool`, `as f32`, `for`).
+fn operator_name(kind: u8, head: &str, tail: &str) -> String {
+    match kind {
+        KIND_UNARY if head == "!" => format!("!{tail}"),
+        KIND_UNARY => head.to_owned(),
+        KIND_BINARY => format!("{head} {tail}"),
+        KIND_CAST => format!("as {tail}"),
+        _ => "for".to_owned(),
+    }
 }
 
 impl Machine<'_> {
+    fn count(&mut self, kind: u8, head: &'static str, tail: &'static str) {
+        if let Some(counting) = &mut self.coverage {
+            *counting.operators.entry((kind, head, tail)).or_default() += 1;
+        }
+    }
+
     fn expr(&mut self, expr: &Expr) -> Result<Val, Violation> {
         match expr {
             Expr::Lit(Ty::F32, bits) => {
@@ -249,10 +287,19 @@ impl Machine<'_> {
                 ty: Ty::F32,
                 e,
             } => {
+                self.count(KIND_UNARY, "-f32", "");
                 let (reference, fl) = self.expr(e)?.float();
                 Ok(checked_value(-reference, fl.negated()))
             }
             Expr::Un { op, ty, e } => {
+                self.count(
+                    KIND_UNARY,
+                    match op {
+                        UnOp::Neg => "-",
+                        UnOp::Not => "!",
+                    },
+                    ty.name(),
+                );
                 let value = self.expr(e)?.int();
                 Ok(Val::I(unary(*op, *ty, value)?))
             }
@@ -262,9 +309,16 @@ impl Machine<'_> {
                 r,
                 ..
             } => {
+                self.count(KIND_BINARY, op.symbol(), "bool");
                 let left = self.expr(l)?.int();
                 if (*op == BinOp::And) == (left == 0) {
+                    if let Some(counting) = &mut self.coverage {
+                        counting.rhs_skipped += 1;
+                    }
                     return Ok(Val::I(left));
+                }
+                if let Some(counting) = &mut self.coverage {
+                    counting.rhs_evaluated += 1;
                 }
                 self.expr(r)
             }
@@ -274,6 +328,7 @@ impl Machine<'_> {
                 l,
                 r,
             } => {
+                self.count(KIND_BINARY, op.symbol(), "f32");
                 let left = self.expr(l)?.float();
                 let right = self.expr(r)?.float();
                 if op.is_comparison() {
@@ -295,11 +350,13 @@ impl Machine<'_> {
                 float_binary(*op, left, right)
             }
             Expr::Bin { op, ty, l, r } => {
+                self.count(KIND_BINARY, op.symbol(), ty.name());
                 let left = self.expr(l)?.int();
                 let right = self.expr(r)?.int();
                 Ok(Val::I(binary(*op, *ty, left, right)?))
             }
             Expr::Cast { to, e } => {
+                self.count(KIND_CAST, "as", to.name());
                 let from = e.ty();
                 let value = self.expr(e)?;
                 match (from, *to) {
@@ -342,13 +399,26 @@ impl Machine<'_> {
                     self.vars[*var as usize] = value;
                 }
                 Stmt::If { cond, then, els } => {
-                    if self.expr(cond)?.int() != 0 {
+                    let taken = self.expr(cond)?.int() != 0;
+                    if let Some(counting) = &mut self.coverage {
+                        let entry = counting
+                            .branches
+                            .entry(std::ptr::from_ref(stmt) as usize)
+                            .or_default();
+                        if taken {
+                            entry.0 += 1;
+                        } else {
+                            entry.1 += 1;
+                        }
+                    }
+                    if taken {
                         self.block(then)?;
                     } else {
                         self.block(els)?;
                     }
                 }
                 Stmt::For { var, trips, body } => {
+                    self.count(KIND_FOR, "for", "");
                     for k in 0..*trips {
                         self.vars[*var as usize] = Val::I(k);
                         self.block(body)?;
@@ -403,10 +473,51 @@ pub struct Run {
 /// interval of every element, or the first domain violation (lowest element, first violating evaluation in Rust's
 /// order). An `f32` output element whose interval is wider than `2^-10` of its magnitude is `Unboundable`.
 pub fn run_full(program: &Program) -> Result<Run, Failure> {
+    run_machine(program, false).map(|(run, _)| run)
+}
+
+/// What a run executed, summed over all elements of the program: the evaluations of each operator (the names of
+/// `ast::operator_counts`, so a syntactic count and an executed count compare), the `if` statements by the sides they
+/// took, and the `&&`/`||` evaluations by whether the right operand ran. Dead code (a branch no element takes, the right
+/// side of an `&&` whose left side is always false) shows as a syntactic operator with no evaluations.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Coverage {
+    pub operators: BTreeMap<String, u64>,
+    /// `if` statements in the program (each counted once; evaluated or not).
+    pub if_statements: u64,
+    /// `if` statements some element evaluated.
+    pub if_evaluated: u64,
+    /// ... that took the then branch for some element, and the else branch for some element.
+    pub if_then_taken: u64,
+    pub if_else_taken: u64,
+    /// ... that took both sides over the elements of the program.
+    pub if_both_sides: u64,
+    pub rhs_evaluated: u64,
+    pub rhs_skipped: u64,
+}
+
+/// `run_full` that also counts what was executed.
+pub fn run_covered(program: &Program) -> Result<(Run, Coverage), Failure> {
+    run_machine(program, true).map(|(run, coverage)| (run, coverage.unwrap_or_default()))
+}
+
+fn count_ifs(stmts: &[Stmt]) -> u64 {
+    stmts
+        .iter()
+        .map(|stmt| match stmt {
+            Stmt::If { then, els, .. } => 1 + count_ifs(then) + count_ifs(els),
+            Stmt::For { body, .. } => count_ifs(body),
+            _ => 0,
+        })
+        .sum()
+}
+
+fn run_machine(program: &Program, covered: bool) -> Result<(Run, Option<Coverage>), Failure> {
     let mut machine = Machine {
         program,
         element: 0,
         vars: vec![Val::I(0); variable_slots(program)],
+        coverage: covered.then(Box::default),
     };
     let mut values = Vec::with_capacity(program.count as usize);
     let mut intervals = Vec::new();
@@ -429,7 +540,27 @@ pub fn run_full(program: &Program) -> Result<Run, Failure> {
         values.push(result.0);
         intervals.extend(result.1);
     }
-    Ok(Run { values, intervals })
+    let coverage = machine.coverage.map(|counting| {
+        let mut coverage = Coverage {
+            if_statements: count_ifs(&program.body),
+            rhs_evaluated: counting.rhs_evaluated,
+            rhs_skipped: counting.rhs_skipped,
+            ..Coverage::default()
+        };
+        for ((kind, head, tail), n) in counting.operators {
+            coverage
+                .operators
+                .insert(operator_name(kind, head, tail), n);
+        }
+        for (then_taken, else_taken) in counting.branches.values() {
+            coverage.if_evaluated += 1;
+            coverage.if_then_taken += u64::from(*then_taken > 0);
+            coverage.if_else_taken += u64::from(*else_taken > 0);
+            coverage.if_both_sides += u64::from(*then_taken > 0 && *else_taken > 0);
+        }
+        coverage
+    });
+    Ok((Run { values, intervals }, coverage))
 }
 
 /// `run_full` without the intervals: the output buffer's bit patterns, or the first domain violation.
@@ -1527,5 +1658,83 @@ mod tests {
             Some(Violation::FloatDomain)
         );
         assert_eq!(in_dead_code(Expr::cast(Ty::I32, f(3.5)), Ty::I32), None);
+    }
+    #[test]
+    fn coverage_counts_what_is_executed_not_what_is_written() {
+        // Four elements. The first `if` is taken by elements 2 and 3; the second is dead (a literal `false`), so the
+        // multiplication in it is written but never executed.
+        let a_i = Expr::input(0, Ty::U32, Expr::Gid);
+        let body = vec![
+            Stmt::Let {
+                var: 0,
+                ty: Ty::U32,
+                mutable: true,
+                init: u(0),
+            },
+            Stmt::If {
+                cond: bin(BinOp::Ge, Expr::Gid, u(2)),
+                then: vec![Stmt::Assign {
+                    var: 0,
+                    value: bin(BinOp::Add, a_i, u(1)),
+                }],
+                els: Vec::new(),
+            },
+            Stmt::If {
+                cond: Expr::bool(false),
+                then: vec![Stmt::Assign {
+                    var: 0,
+                    value: bin(BinOp::Mul, u(2), u(3)),
+                }],
+                els: Vec::new(),
+            },
+        ];
+        let result = bin(BinOp::BitXor, Expr::Var(0, Ty::U32), u(0));
+        let program = program(&[7, 7, 5, 6], body, result);
+        let (run, coverage) = run_covered(&program).unwrap();
+        assert_eq!(run.values, [0, 0, 6, 7]);
+        assert_eq!(coverage.operators[">= u32"], 4);
+        assert_eq!(coverage.operators["^ u32"], 4);
+        // The addition runs for the two elements that take the branch; the dead multiplication never runs.
+        assert_eq!(coverage.operators["+ u32"], 2);
+        assert!(!coverage.operators.contains_key("* u32"));
+        assert!(crate::ast::operator_counts(&program).contains_key("* u32"));
+        assert_eq!((coverage.if_statements, coverage.if_evaluated), (2, 2));
+        // First `if`: both sides. Second: only the (empty) else side.
+        assert_eq!(coverage.if_both_sides, 1);
+        assert_eq!((coverage.if_then_taken, coverage.if_else_taken), (1, 2));
+    }
+
+    #[test]
+    fn coverage_counts_the_right_operand_of_a_logical_operator_only_when_it_runs() {
+        let a_i = Expr::input(0, Ty::U32, Expr::Gid);
+        let guard = bin(
+            BinOp::And,
+            bin(BinOp::Lt, Expr::Gid, u(2)),
+            bin(BinOp::Eq, a_i, u(7)),
+        );
+        let (run, coverage) = run_covered(&program(&[7, 7, 5, 6], Vec::new(), guard)).unwrap();
+        assert_eq!(run.values, [1, 1, 0, 0]);
+        assert_eq!(coverage.operators["&& bool"], 4);
+        assert_eq!((coverage.rhs_evaluated, coverage.rhs_skipped), (2, 2));
+        assert_eq!(coverage.operators["== u32"], 2);
+        assert_eq!(coverage.operators["< u32"], 4);
+    }
+
+    #[test]
+    fn covered_and_plain_runs_agree_and_executed_operators_are_written_ones() {
+        for seed in 1..=3 {
+            for program in crate::generator::generate_batch(seed).unwrap().programs {
+                let plain = run_full(&program).unwrap();
+                let (covered, coverage) = run_covered(&program).unwrap();
+                assert_eq!(plain, covered);
+                let written = crate::ast::operator_counts(&program);
+                for name in coverage.operators.keys() {
+                    assert!(
+                        written.contains_key(name),
+                        "{name} executed but not written"
+                    );
+                }
+            }
+        }
     }
 }

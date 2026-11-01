@@ -8,6 +8,7 @@ use std::process::Command;
 
 use difftest::emit::{lock_for, package_name, write_crate};
 use difftest::generator::generate_batch;
+use difftest::runsrc::{plan_seed, write_run_crate};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -20,9 +21,16 @@ fn work_dir() -> PathBuf {
 
 /// Runs `cargo check --locked` on the generated crate in `dir`; returns success and the combined output.
 fn cargo_check(dir: &Path) -> (bool, String) {
+    cargo_check_with(dir, &[])
+}
+
+/// `cargo check --locked <extra>`; the run crate needs `--tests` (its twin and test module exist only under cfg(test)).
+fn cargo_check_with(dir: &Path, extra: &[&str]) -> (bool, String) {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
     let output = Command::new(cargo)
-        .args(["check", "--locked", "--manifest-path"])
+        .args(["check", "--locked"])
+        .args(extra)
+        .args(["--manifest-path"])
         .arg(dir.join("Cargo.toml"))
         // One build directory for all generated crates and runs, separate from the one this test runs in.
         .env("CARGO_TARGET_DIR", work_dir().join("target"))
@@ -56,6 +64,29 @@ fn generated_crates_pass_cargo_check_with_the_template_lockfile() {
     // `--locked` would have refused a lockfile that needed an update; the crate used the template as written.
     let lock = std::fs::read_to_string(dir.join("Cargo.lock")).unwrap();
     assert_eq!(lock, lock_for("difftest-case-ok").unwrap());
+}
+
+#[test]
+fn run_crates_pass_cargo_check_with_their_test_module() {
+    // The crate that `difftest-run` builds: the 128 kernels of seeds 1 to 8 plus the generated test module (the twin
+    // dispatches, the GPU path, the result files) must type-check against the repository's `gust` and `gust-wgpu`.
+    let dir = work_dir().join("roundtrip-run");
+    let mut plan = Vec::new();
+    for seed in 1..=8 {
+        plan.extend(plan_seed(seed).unwrap());
+    }
+    assert_eq!(plan.len(), 128);
+    let package = package_name("run-roundtrip").unwrap();
+    write_run_crate(&dir, &package, &plan, &repo_root()).unwrap();
+    let (ok, output) = cargo_check_with(&dir, &["--tests"]);
+    assert!(
+        ok,
+        "cargo check --tests failed:
+{}",
+        tail(&output)
+    );
+    let lock = std::fs::read_to_string(dir.join("Cargo.lock")).unwrap();
+    assert_eq!(lock, lock_for(&package).unwrap());
 }
 
 #[test]

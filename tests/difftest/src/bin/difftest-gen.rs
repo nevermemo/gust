@@ -1,9 +1,11 @@
-//! `difftest-gen`: print or write what the generator decodes. Not the runner (that is m5.c1b).
+//! `difftest-gen`: print or write what the generator decodes. The batch runner is `difftest-run`.
 //!
 //! ```text
 //! difftest-gen seeds FIRST LAST        the seeds.txt text for the seeds FIRST..=LAST
 //! difftest-gen show SEED [INDEX]       the Rust text of the in-domain programs of SEED (or only program INDEX)
 //! difftest-gen emit SEED DIR [ROOT]    write the generated crate of SEED into DIR (ROOT: repository root, default ../..)
+//! difftest-gen emit-run SEEDS DIR [ROOT]  write the run crate (kernels, test module, data) of SEEDS (e.g. 1-2) into DIR
+//! difftest-gen time SEEDS              generation and interpreter time of SEEDS (milliseconds)
 //! ```
 
 use std::path::PathBuf;
@@ -12,6 +14,8 @@ use std::process::ExitCode;
 use difftest::corpus::corpus_text;
 use difftest::emit::{emit_module, package_name, write_crate};
 use difftest::generator::generate_batch;
+use difftest::harness::parse_seeds;
+use difftest::runsrc::{plan_seed, write_run_crate};
 
 fn number(arg: Option<&String>, name: &str) -> Result<u64, String> {
     arg.ok_or_else(|| format!("missing {name}"))?
@@ -51,9 +55,43 @@ fn run(args: &[String]) -> Result<(), String> {
                 dir.display()
             );
         }
+        Some("emit-run") => {
+            let seeds = parse_seeds(args.get(1).ok_or("missing SEEDS")?)?;
+            let dir = PathBuf::from(args.get(2).ok_or("missing DIR")?);
+            let root = PathBuf::from(args.get(3).map_or("../..", String::as_str));
+            let root =
+                std::fs::canonicalize(&root).map_err(|e| format!("{}: {e}", root.display()))?;
+            let mut plan = Vec::new();
+            for seed in &seeds {
+                plan.extend(plan_seed(*seed)?);
+            }
+            let package = package_name("run-probe")?;
+            write_run_crate(&dir, &package, &plan, &root).map_err(|e| e.to_string())?;
+            println!("wrote {} programs to {}", plan.len(), dir.display());
+        }
+        Some("time") => {
+            let seeds = parse_seeds(args.get(1).ok_or("missing SEEDS")?)?;
+            let (mut generate, mut interpret, mut programs) = (0.0, 0.0, 0);
+            for seed in &seeds {
+                let start = std::time::Instant::now();
+                let batch = generate_batch(*seed)?;
+                generate += start.elapsed().as_secs_f64() * 1e3;
+                for program in &batch.programs {
+                    let start = std::time::Instant::now();
+                    difftest::interp::run_full(program).map_err(|f| format!("{f:?}"))?;
+                    interpret += start.elapsed().as_secs_f64() * 1e3;
+                    programs += 1;
+                }
+            }
+            println!(
+                "seeds {} programs {programs}: generation {generate:.1} ms in all (rejected attempts included), interpreter {interpret:.1} ms in all, {:.2} ms per program",
+                seeds.len(),
+                interpret / f64::from(programs)
+            );
+        }
         _ => {
             return Err(
-                "usage: difftest-gen seeds FIRST LAST | show SEED [INDEX] | emit SEED DIR [ROOT]"
+                "usage: difftest-gen seeds FIRST LAST | show SEED [INDEX] | emit SEED DIR [ROOT] | emit-run SEEDS DIR [ROOT] | time SEEDS"
                     .into(),
             );
         }

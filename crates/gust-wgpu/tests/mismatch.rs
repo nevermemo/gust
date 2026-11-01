@@ -133,6 +133,7 @@ enum Kind {
     OobStoreElsewhere,
     ContendedExchange,
     ContendedCompareExchange,
+    UncontendedCompareExchange,
 }
 
 struct Case {
@@ -1156,6 +1157,16 @@ fn cases() -> Vec<Case> {
         Outcome::WithinOr(1, CONTENDERS, 999),
         |_| v(1),
     ));
+    // The same kernel with one invocation, so nothing contends. The weak compare-exchange may still fail spuriously
+    // (WGSL 17.8.5; D47): the cell ends at 1 (exchanged) or stays 999. Plain Rust and the twin always end at 1.
+    add(case(
+        "KM-09",
+        "1 x atomic_compare_exchange(cell, 999, id + 1): uncontended success",
+        UncontendedCompareExchange,
+        (0, 0, 0),
+        Outcome::WithinOr(1, 1, 999),
+        |_| v(1),
+    ));
 
     rows
 }
@@ -1254,6 +1265,13 @@ fn rust_observed(case: &Case) -> Observed {
                 }
                 cell
             }
+            Kind::UncontendedCompareExchange => {
+                let mut cell = black_box(999u32);
+                if cell == 999 {
+                    cell = black_box(1u32);
+                }
+                cell
+            }
         }
     }));
     match outcome {
@@ -1320,14 +1338,16 @@ fn twin_out_of_bounds(source_len: usize) -> (u32, [u32; 4]) {
     (seen.read()[0], [sink[0], sink[1], sink[2], sink[3]])
 }
 
-/// KM-09 on the twin: the final cell of a 257-way contended dispatch, run in ascending invocation order.
+/// KM-09 on the twin: the final cell of a `count`-way dispatch (257 contended, or 1 uncontended), run in ascending
+/// invocation order.
 fn twin_contended(
     initial: u32,
+    count: u32,
     dispatch: impl FnOnce(&CpuDevice, u32, Independent<&CpuBuffer<u32>>) -> Result<(), CpuError>,
 ) -> u32 {
     let cpu = CpuDevice::new();
     let cell = cpu.buffer(&[initial]);
-    dispatch(&cpu, CONTENDERS, Independent(&cell))
+    dispatch(&cpu, count, Independent(&cell))
         .unwrap_or_else(|error| panic!("the twin refused the call: {error}"));
     cell.read()[0]
 }
@@ -1374,10 +1394,13 @@ fn twin_observed(case: &Case) -> Observed {
                 let sink = twin_out_of_bounds(OOB_STORE_SOURCE_LEN).1;
                 sink[0] | sink[1] | sink[2]
             }
-            Kind::ContendedExchange => twin_contended(9999, |d, count, cell| {
+            Kind::ContendedExchange => twin_contended(9999, CONTENDERS, |d, count, cell| {
                 mismatch::contend_exchange::dispatch(d, count, cell)
             }),
-            Kind::ContendedCompareExchange => twin_contended(999, |d, count, cell| {
+            Kind::ContendedCompareExchange => twin_contended(999, CONTENDERS, |d, count, cell| {
+                mismatch::contend_compare_exchange::dispatch(d, count, cell)
+            }),
+            Kind::UncontendedCompareExchange => twin_contended(999, 1, |d, count, cell| {
                 mismatch::contend_compare_exchange::dispatch(d, count, cell)
             }),
         }
@@ -1521,15 +1544,20 @@ fn run_out_of_bounds(device: &HeadlessDevice, source_len: usize) -> (u32, [u32; 
     )
 }
 
-/// KM-09: final cell values of repeated 257-way contended dispatches.
-fn run_contended(device: &HeadlessDevice, kernel: &KernelDescriptor, initial: u32) -> Vec<u32> {
+/// KM-09: final cell values of repeated `count`-way dispatches (257 contended, or 1 uncontended).
+fn run_contended(
+    device: &HeadlessDevice,
+    kernel: &KernelDescriptor,
+    initial: u32,
+    count: u32,
+) -> Vec<u32> {
     (0..CONTENDED_RUNS)
         .map(|_| {
             let cell = device.create_typed_buffer("cell", &[initial], GpuBufferAccess::ReadWrite);
             device
                 .dispatch_buffers(
                     kernel,
-                    CONTENDERS,
+                    count,
                     &[BufferBinding::read_write(&cell).independent_length()],
                 )
                 .unwrap();
@@ -1621,10 +1649,28 @@ fn gpu_observed(device: &HeadlessDevice, cases: &[Case]) -> Vec<Vec<u32>> {
         out[n] = vec![sink[0] | sink[1] | sink[2]];
     }
     for n in of_kind(Kind::ContendedExchange) {
-        out[n] = run_contended(device, &mismatch::contend_exchange::DESCRIPTOR, 9999);
+        out[n] = run_contended(
+            device,
+            &mismatch::contend_exchange::DESCRIPTOR,
+            9999,
+            CONTENDERS,
+        );
     }
     for n in of_kind(Kind::ContendedCompareExchange) {
-        out[n] = run_contended(device, &mismatch::contend_compare_exchange::DESCRIPTOR, 999);
+        out[n] = run_contended(
+            device,
+            &mismatch::contend_compare_exchange::DESCRIPTOR,
+            999,
+            CONTENDERS,
+        );
+    }
+    for n in of_kind(Kind::UncontendedCompareExchange) {
+        out[n] = run_contended(
+            device,
+            &mismatch::contend_compare_exchange::DESCRIPTOR,
+            999,
+            1,
+        );
     }
     out
 }

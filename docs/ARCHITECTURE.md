@@ -463,8 +463,9 @@ only, and ordinary indexed reads or writes of it are rejected in that kernel. On
 relaxed (default) memory ordering is provided. Expression-position atomics, float
 elements, and read-only, local, or non-element receivers are rejected. The `atomics`
 fixture locks the Slang. Real-GPU tests check contended `atomic_add`, `atomic_min`,
-`atomic_max`, and deterministic compare-exchange cases exactly; contended
-`atomic_exchange` and `atomic_compare_exchange` are checked only for a valid result.
+`atomic_max`, and the failing compare-exchange exactly; contended
+`atomic_exchange` and `atomic_compare_exchange` and the uncontended compare-exchange successes are checked only
+for a valid result on the GPU (set-valued, D47) and exactly on the twin.
 
 The syn translator still lacks rustc-resolved semantics. Inferred integer types,
 overflow, casts outside their safe input domain, evaluation ordering for effectful

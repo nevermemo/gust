@@ -25,7 +25,8 @@ lints, dual mains, full `check-dual`, CI step) done; the M3 close-out and sanity
   normal builds print nothing new. `check-dual` gains fmt and clippy for `tests/dual`, clippy
   with the cfg on the two examples, and a full mode (GPU) that requires the line with the cfg
   and its absence without; `check-full` runs the full mode, and CI's `unit` job ends with
-  `check-dual --check-only` (local: 9 s warm, 74 s for the first dual build). Evidence: fmt,
+  `check-dual --check-only` (local: 9 s warm, 74 s for the first dual build; on the CI runner
+  82 s, inside R5's 5-minute budget). Evidence: fmt,
   clippy, xtask and gust-macros tests, check-dual in both modes, check-ui, both examples' tests
   with and without `--ignored` (GPU), Unit suite, check-fast, docs-check, lint, and the same
   again on the merge plus check-cpu; four mutations killed.

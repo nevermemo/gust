@@ -1,0 +1,13 @@
+[package]
+name = "kernel-lib"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+gust = { path = "../../../crates/gust" }
+
+# This is a separate workspace, so the root `[workspace.lints]` does not reach it: declare the cfg that
+# `--cfg gust_dual` sets, so that a hand-written `cfg(gust_dual)` is not an unexpected cfg here.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

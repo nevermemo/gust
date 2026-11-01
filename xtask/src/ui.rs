@@ -123,6 +123,7 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         problems.extend(judge(
             &case.name,
+            &case.name,
             &case.expectation,
             output.status.success(),
             &stdout,
@@ -317,12 +318,18 @@ fn is_absolute(path: &str) -> bool {
 
 /// The problems of one fixture run: none when the outcome matches the expectation.
 ///
-/// Only the case's own diagnostics count (`target.name` is the case), so a dependency's error
-/// never satisfies an expectation. A failing case must report exactly one error-level message;
+/// `case` is the fixture crate's directory in its workspace (what `file:` is relative to) and `target` the cargo
+/// target whose diagnostics count (`target.name`). `check-ui` passes the case name for both. A package with several
+/// targets (`check-dual`'s `consumer` library and its `prod` binary) passes the target it means, so that a
+/// diagnostic on a sibling target is neither taken for the target's own nor counted as a second error.
+///
+/// Only that target's own diagnostics count, so a dependency's error never satisfies an expectation. A failing
+/// case must report exactly one error-level message;
 /// warnings and the summary `failure-note` are ignored, and a second error is a problem of its
 /// own that names it.
 pub(crate) fn judge(
     case: &str,
+    target: &str,
     expectation: &Expectation,
     success: bool,
     stdout: &str,
@@ -331,7 +338,7 @@ pub(crate) fn judge(
     let diagnostics = parse_diagnostics(stdout);
     let errors: Vec<&Diagnostic> = diagnostics
         .iter()
-        .filter(|diagnostic| diagnostic.target == case && diagnostic.level == "error")
+        .filter(|diagnostic| diagnostic.target == target && diagnostic.level == "error")
         .collect();
     let shown = || indent(&output_shown(&diagnostics, stderr));
     match expectation {

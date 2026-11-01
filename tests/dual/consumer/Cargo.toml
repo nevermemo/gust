@@ -1,0 +1,21 @@
+[package]
+name = "consumer"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+gust = { path = "../../../crates/gust" }
+kernel-lib = { path = "../kernel-lib" }
+
+# `prod` stands for a production binary: it is never built as a test target, so `cargo test -p consumer --lib`
+# has exactly the error of the library test and nothing else (either `--lib` or `test = false` alone suffices; both are kept as belt and braces).
+[[bin]]
+name = "prod"
+path = "src/bin/prod.rs"
+test = false
+
+# This is a separate workspace, so the root `[workspace.lints]` does not reach it: declare the cfg that
+# `--cfg gust_dual` sets, so that a hand-written `cfg(gust_dual)` is not an unexpected cfg here.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

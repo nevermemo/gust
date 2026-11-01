@@ -1,0 +1,13 @@
+# Fixture workspace for `cargo xtask check-dual`: the cross-crate proof of the dual test build (D26). It is a
+# workspace root of its own, so the root workspace does not contain it and `cargo test --workspace` and
+# `cargo clippy --workspace` never build it.
+[workspace]
+members = ["kernel-lib", "consumer"]
+resolver = "3"
+
+# The cross-crate overflow proof: a dependent can set `overflow-checks` for its own package, and the twin and
+# `gust::cpu::overflow_checks!()` follow the crate they are compiled in, not `gust`. Only `consumer` is switched
+# (off, which differs from the dev default), so in the dev and test profiles `gust` is checked and `consumer` wraps;
+# the test `overflow_mode_is_the_dependents_own` in consumer/src/lib.rs compares the two answers.
+[profile.dev.package.consumer]
+overflow-checks = false

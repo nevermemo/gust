@@ -184,9 +184,14 @@ println!("{}", descriptor.slang_source);
 println!("entry point: {}", descriptor.entry_point);
 ```
 
-The source function is retained only as a private Rust type-checking shadow. It is
-not a CPU execution API. CPU comparisons in the benchmark examples are ordinary,
-independent Rust implementations outside the `#[gpu]` module.
+The source function is retained as a private Rust shadow that rustc type-checks. It
+is not a public CPU execution API (there is no `.cpu(...)` wrapper). In a test build
+(`cfg(test)` of the crate that defines the kernel) or a dual build (`--cfg gust_dual`,
+see "Development and next milestones") the macro also emits a CPU twin that runs this
+shadow body on `gust::cpu::CpuDevice`; `#[kernel(cpu = "unsupported")]` leaves a kernel
+without one. A production build contains no twin. CPU comparisons in the benchmark
+examples are ordinary, independent Rust implementations outside the `#[gpu]` module, and
+they stay the expected values in tests.
 
 ## Running a kernel: typed calls
 
@@ -415,8 +420,11 @@ cargo run --release -p typed-pipeline
 ```
 
 CPU numbers in those examples measure separate host implementations. That makes
-the comparison explicit: the shader frontend no longer promises that one Rust
-function has identical CPU and GPU operational semantics.
+the comparison explicit: the shader frontend does not promise that one Rust function
+has identical CPU and GPU operational semantics outside a defined domain. The CPU twin
+of a kernel agrees with the GPU inside that domain and may differ outside it; the
+[semantics contract](docs/SEMANTICS.md) states the domain, the float bounds and the
+known-mismatch ledger.
 
 ## Current subset
 
@@ -477,9 +485,11 @@ Around the translator, the host side currently provides:
   host does not check.
 
 Its CPU backend, `gust::cpu`, runs the Rust body of each kernel that has a typed call, unless it opts out with
-`cpu = "unsupported"`, as a test-only twin (emitted under
+`#[kernel(cpu = "unsupported")]`, as a test-only twin (emitted under
 `cfg(test)` or `--cfg gust_dual`, never in a production build; a production CPU target is
-roadmap M5). It does not yet provide multi-dimensional dispatch
+roadmap M5). The twin is test evidence next to the GPU and the independent host
+reference, never in place of them, and never GPU evidence; where it may differ from the
+GPU, [SEMANTICS](docs/SEMANTICS.md) lists the limitation. It does not yet provide multi-dimensional dispatch
 (roadmap M7), a compile-time portable limit floor (roadmap M8), fallible buffer
 creation against `max_buffer_size`, or an access mode in the buffer type.
 
@@ -519,6 +529,15 @@ Use focused checks first. `cargo test --workspace` skips ignored example tests;
 `cargo xtask check-full` runs them with `--ignored`, runs each example binary, and
 validates exported SPIR-V artifacts. Per-feature compile-smoke tests use WGSL only;
 SPIR-V structure/semantic validation is centralized in full verification.
+
+Dual test builds contain the GPU pipeline and the CPU twins together, chosen at build
+time and never through a Cargo feature (D26). `cfg(test)` gives a crate the twins of its
+own kernels; `--cfg gust_dual` gives them to a dependent crate's tests and to binaries.
+Do not set the flag by hand: `cargo xtask check-dual` sets it through
+`CARGO_ENCODED_RUSTFLAGS`, builds into a separate target directory, and proves with the
+`tests/dual` fixture that a dependent crate sees the twin only with the flag
+(`--check-only` needs no GPU). `cargo xtask check-cpu` runs the twin tests of the
+examples without a GPU. The workspace declares `gust_dual` to rustc's `unexpected_cfgs` lint.
 
 Golden Slang and a real-GPU semantics fixture live in `tests/fixtures/`; update
 expected output only after reviewing the change and testing both target compilers.

@@ -11,9 +11,10 @@ a typed call (slice m3.c). The fixture tests assert the twin next to the GPU and
 atomic functions run for real on the twin, and the ledger has a twin column (slice m3.d). `cargo xtask check-cpu`
 (slice m3.c2) is a step of the Unit suite and runs the locked, GPU-free tests of the vector-add, polynomial,
 signal-pipeline, particle-step, typed-pipeline, atomic-counter (slice m3.e1), staged-graph and component-pool (slice
-m3.e2) examples. What is still to come is marked **planned**: the `--cfg gust_dual` checks and the cross-crate proof
-(m3.f1, m3.f2). A planned statement describes the intended behaviour and is not
-evidence.
+m3.e2) examples. `cargo xtask check-dual` (slices m3.f1 and m3.f2) proves across crates that the twin is absent from a
+production build and present in a `--cfg gust_dual` build, and that a dependent crate's own overflow mode reaches its
+twin. The label **planned** is kept for a statement about behaviour that does not run yet; a planned statement
+describes the intended behaviour and is not evidence.
 
 ## 1. Scope
 
@@ -27,8 +28,8 @@ evidence.
 - **CPU twin (exists).** In a test build (`cfg(test)` of the crate that defines the kernel, or `--cfg gust_dual`, D26)
   the macro emits an `impl Run` for `gust::cpu::CpuDevice` that runs the rustc-checked body of each kernel, one
   invocation at a time in ascending `global_id.x`. A production build holds one target (D21): the twin is absent from
-  it, which the check-ui fixture `typed-call-no-cpu-twin` proves for the defining crate (the cross-crate proof is
-  planned, m3.f1). The production CPU target belongs to a later milestone (M5) and is not described here.
+  it, which the check-ui fixture `typed-call-no-cpu-twin` proves for the defining crate and the `tests/dual` fixture of
+  `check-dual` proves for a dependent crate (m3.f1). The production CPU target belongs to a later milestone (M5) and is not described here.
 - **Not executed by the twin.** Kernels with a `Uniform<T>` parameter (they have no typed call), indirect dispatch
   and staged graphs stay GPU-only. A kernel can opt out explicitly with `#[kernel(cpu = "unsupported")]` (D26).
   The examples that use them carry kernel-level twin evidence only (exists, m3.e2): `staged-graph` and
@@ -82,7 +83,8 @@ the consuming build has `overflow-checks` enabled or not (D38); the test reads t
 `gust::cpu::overflow_checks!()`, which expands in the test crate, and asserts the matching column. The twin is
 compiled in the crate that defines the kernel and so follows that build's mode; GUST pins no profile. The ledger is
 one workspace profile, so the macro, the function `gust::cpu::overflow_checks()` and the twin agree there; the
-cross-crate evidence (a dependent crate with a per-package override sees its own mode) is still planned, m3.f1.
+cross-crate evidence (a dependent crate with a per-package override sees its own mode) is the `tests/dual` test
+`overflow_mode_is_the_dependents_own`, run by `check-dual` (m3.f1).
 
 ## 3. The defined domain, and what lies outside it
 
@@ -276,6 +278,12 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   order and proves nothing about the GPU, where the order is unspecified. Every reference in a fixture or example is
   therefore order-independent by construction: each written index has exactly one writer, or the kernel uses
   atomics.
+- **What the twin does not model (later constructs).** The twin finishes one invocation before it starts the next, so
+  it has no notion of a construct whose meaning spans invocations: workgroup barriers, subgroup operations and
+  deliberate races (roadmap M7 plans barriers and shared memory, M8 subgroup operations). Before such a construct is accepted into the dialect, it needs a twin
+  strategy written into this contract (what the twin does, and where it may differ from the GPU), or the kernels that
+  use it must carry `#[kernel(cpu = "unsupported")]`, which leaves them without a twin. Running such a kernel
+  one invocation at a time would give a clean result that says nothing about the GPU.
 - **Visibility.** The writes of a dispatch are visible after the dispatch completes. Within a dispatch, an invocation
   must not depend on another invocation's non-atomic writes.
 - **Launch size (CPU backend).** The CPU backend (`gust::cpu`) rejects only a launch whose invocation total, rounded up

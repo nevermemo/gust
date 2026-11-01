@@ -11,7 +11,7 @@ compiler core. The macro's job is intentionally smaller:
 
 1. Parse and validate a GPU-safe subset of Rust syntax.
 2. Keep a private Rust shadow function so rustc provides name resolution and type
-   checking.
+   checking (it also runs as the CPU twin in test and dual builds).
 3. Translate the original `syn` syntax tree directly to readable Slang.
 4. Attach that source and resource metadata to a host descriptor.
 5. Let Slang produce backend artifacts.
@@ -45,8 +45,23 @@ that kernel's resources, and one prefixed compute entry point. Helpers and user
 identifiers are not fully hygienically renamed yet.
 
 The original kernel function is renamed to a private `__gpu_typecheck_*` item in
-the expanded Rust module. It is compiled only to make rustc check the user's body.
-There is deliberately no public `.cpu(...)` wrapper.
+the expanded Rust module. In a production build it is compiled only to make rustc
+check the user's body. There is deliberately no public `.cpu(...)` wrapper.
+
+In a test or dual build the same function is the CPU twin's body (roadmap M3). For
+each kernel that has a typed call the macro emits, under `cfg(any(test, gust_dual))`,
+an `impl Run<K, N>` for `gust::cpu::CpuDevice`: the CPU form of a kernel is that `Run`
+impl, present only in test and dual builds. `cfg(test)` is evaluated in the crate that
+defines the kernel; `--cfg gust_dual` makes a dependent crate's tests and a benchmark
+see the twins of a library's kernels, and it is never a Cargo feature (D26, D21). The
+emitted impl validates the call, acquires the bindings through the hidden support
+functions of `gust::cpu`, and calls the shadow function as written once per
+invocation, in ascending `global_id.x`. It copies no body, rewrites no operator and
+emits no downcast or IR. A kernel opts out with `#[kernel(cpu = "unsupported")]`
+(parsed with the other `#[kernel]` options; a wrong value is GUST-E0709 and a repeated
+option GUST-E0710); `CpuDevice` then lacks the `Run` impl and the generated `dispatch`
+on it does not compile, which is also what a production build shows. A kernel with a
+uniform parameter has no typed call and so no twin.
 
 ### `gust`
 
@@ -58,7 +73,14 @@ The core crate owns:
 - the `slangc` process bridge;
 - small target-artifact inspection helpers;
 - backend-neutral job/device traits;
-- the typed call surface and the device contract behind it (`gust::dispatch`).
+- the typed call surface and the device contract behind it (`gust::dispatch`);
+- the CPU twin backend (`gust::cpu`, roadmap M3): `CpuDevice` and `CpuBuffer`, which
+  implement `TypedDevice` and the `Resource` contract in safe Rust (`forbid(unsafe_code)`),
+  the hidden functions the macro-emitted twin calls (`validate`, `read`, `write`,
+  `invocations`), and `overflow_checks()` with its macro `overflow_checks!()`. It is a
+  testing backend, not a production CPU target (roadmap M5): the macro emits the
+  per-kernel `Run` impls only in test and dual builds, and a call completes inside
+  `submit` on the calling thread.
 
 The typed call surface is what the macro generates `call`, `submit` and `dispatch`
 against. `Device` is unchanged; the extension trait `TypedDevice: Device` names the
@@ -237,26 +259,34 @@ option records, dependency tracking, and a content-addressed disk cache.
 
 ## CPU comparison policy
 
-CPU reference code lives outside `#[gpu]` modules. This is an explicit consequence
-of the new boundary: GPU authoring types are Rust shadows for Slang concepts, not a
-promise of normal Rust runtime behavior.
+Independent CPU reference code lives outside `#[gpu]` modules. GPU authoring types are
+Rust shadows for Slang concepts, and the shadow body is not the oracle for them (D04,
+D26).
 
 The polynomial, signal, particle, and typed-pipeline examples maintain independent
-scalar CPU implementations. Tests compare those results against actual GPU
-execution. The typed pipeline additionally verifies dependencies across three
-ordered kernels whose intermediate buffers all use different struct types. This is
-useful for correctness and benchmarking without coupling the shader language to a
-CPU interpreter.
+scalar CPU implementations, and the semantics fixtures compute independent host
+references. Tests compare actual GPU execution against those, and those host
+references stay the expected values. The typed pipeline additionally verifies
+dependencies across three ordered kernels whose intermediate buffers all use different
+struct types. This is useful for correctness and benchmarking.
 
-The policy is unchanged by the typed call surface. The test devices in the
-`gust::dispatch` unit tests exist only to exercise that surface: the recording mock
-mirrors a GPU backend and never runs a kernel body, and the CPU side is the real
-`gust::cpu::CpuDevice` (since m3.b), on which those tests run hand-written test bodies
-through the same `Call`. The recording mock is not a CPU runtime for `#[gpu]` shadow
-bodies. The CPU backend is `gust::cpu::CpuDevice` (roadmap M3), which
-implements `TypedDevice` and `Run<K, N>`; the macro emits its per-kernel `Run` impl
-(the CPU twin) under `cfg(test)` of the defining crate or `--cfg gust_dual`, never in a
-production build.
+Since M3 the shadow body also executes, as a CPU twin in test and dual builds, and the
+twin is a third party next to the GPU and the host reference. A twin assertion is test
+evidence of the shadow semantics. It is never GPU evidence (the Gpu tier needs readback
+on a device) and never an oracle, and it is added to the host-reference and GPU
+assertions, never in place of them (see "Evidence tiers" in
+[VALIDATION](development/VALIDATION.md)). Where the twin and the GPU may legitimately
+differ, the known-mismatch ledger in [SEMANTICS](SEMANTICS.md) lists the construct as a
+documented limitation with both outcomes pinned; such an edge-case difference is
+recorded, not matched (D39).
+
+The test devices in the `gust::dispatch` unit tests exist only to exercise the typed
+call surface: the recording mock mirrors a GPU backend and never runs a kernel body,
+and the CPU side is the real `gust::cpu::CpuDevice` (since m3.b), on which those tests
+run hand-written test bodies through the same `Call`. The recording mock is not a CPU
+runtime for `#[gpu]` shadow bodies. The macro-emitted CPU twin (the `Run<K, N>` impl for
+`CpuDevice`) exists under `cfg(test)` of the defining crate or `--cfg gust_dual`, never
+in a production build.
 
 ## Validation layers
 
@@ -270,7 +300,9 @@ not one sequential backend path: WGSL execution and SPIR-V validation are branch
 5. `spirv-val --target-env vulkan1.2` performs external semantic validation of
    exported modules in artifact/full checks; a missing tool fails those checks.
 6. wgpu validates the generated WGSL, bind-group layout, pipeline, and dispatch.
-7. Integration tests compare readback values with independent CPU references.
+7. Integration tests compare readback values with independent CPU references. In test
+   and dual builds the same typed call also runs on the CPU twin, and its result is
+   asserted next to the GPU's and the reference's, never instead of them.
 
 Slang diagnostics point to generated `.slang` lines. The bridge recognizes current
 multiline and legacy locations, writes a temporary `kernel.map.json` beside its
@@ -291,7 +323,9 @@ descriptor without a table compiles the clean text as before.
 
 - Recreating Slang IR or optimization in Rust.
 - Treating generated WGSL or SPIR-V as compile-time constants in descriptors.
-- Providing a public CPU interpreter for GPU modules.
+- Providing a CPU interpreter for GPU modules. There is none: the CPU twin is the
+  rustc-compiled shadow body, emitted only in test and dual builds, and a production
+  CPU target is a later milestone (M5).
 - Supporting arbitrary Rust control flow or library calls.
 - Claiming complete Slang language or resource coverage.
 - Hiding target artifacts; readable Slang, WGSL, SPIR-V, and host code remain
@@ -348,7 +382,8 @@ Numeric semantics are proven, not assumed. For the supported 32-bit scalar subse
 GPU matches Rust: signed and unsigned division truncate toward zero, signed modulo
 keeps the dividend's sign, unsigned modulo is non-negative, and in-range float-to-int
 casts truncate toward zero. Integer overflow wraps on the GPU (matching Rust
-`wrapping_*` / release semantics, not the debug panic). These cases are locked in by
+`wrapping_*` / release semantics, not the debug panic; the CPU twin follows the overflow
+mode of the build that compiles the kernel). These cases are locked in by
 the `numeric` fixture's golden Slang, both target compilations, and a real-GPU
 readback test against an independent host reference. Integer division or modulo by a
 literal zero is rejected at the Rust boundary with a diagnostic, because Slang makes

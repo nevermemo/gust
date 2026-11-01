@@ -36,6 +36,10 @@ jobs:
       - name: Unit suite
         # macro and xtask tests, lint, docs-check, check-arch, check-ui, check-cpu
         run: cargo --locked xtask test --suite Unit
+      - name: Dual test build
+        # `--cfg gust_dual` (D26): fmt and clippy of tests/dual, the workspace built with the cfg, and the cross-crate
+        # proof E1-E3. Cargo only; the examples' GPU runs of the full mode stay local.
+        run: cargo xtask check-dual --check-only
 
   msrv:
     # Measures the declared minimum Rust version (Cargo.toml rust-version, D30): compiles every

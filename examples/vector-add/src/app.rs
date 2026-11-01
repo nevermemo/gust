@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+#[cfg(any(test, gust_dual))]
+use gust::cpu::{CpuDevice, Error as CpuError};
 #[cfg(test)]
 use gust::{Access, ResourceBinding};
 use gust::{gpu, slang, spirv};
@@ -45,6 +47,41 @@ pub fn main() {
     println!("\nGenerated Slang:\n{}", descriptor.slang_source);
 
     assert_eq!(result, expected);
+
+    // Only the dual test build (`cargo xtask check-dual`, `--cfg gust_dual`, D26) has the twin in a binary.
+    #[cfg(gust_dual)]
+    report_twin(&a, &b, &seed, &expected, &result);
+}
+
+/// The same inputs through the CPU twin, checked against the host reference (to the last bit: the sums are exact)
+/// and against the GPU result, which `cargo xtask check-dual` requires `main` to print.
+#[cfg(gust_dual)]
+fn report_twin(a: &[f32], b: &[f32], seed: &[f32], expected: &[f32], gpu: &[f32]) {
+    let twin = add_on_cpu(a, b, seed).expect("the CPU twin should dispatch");
+    let max_ulps = twin
+        .iter()
+        .zip(expected)
+        .map(|(twin, expected)| gust::cpu::ulps(*twin, *expected))
+        .max()
+        .unwrap_or(0);
+    assert_eq!(max_ulps, 0, "CPU twin versus the host reference");
+    assert_eq!(twin, gpu, "CPU twin versus the GPU result");
+    println!(
+        "CPU twin: matches ({} elements, max ULP {max_ulps})",
+        twin.len()
+    );
+}
+
+/// The same typed `dispatch` on the CPU twin, which the macro emits under `cfg(test)` and `--cfg gust_dual`: no GPU
+/// involved.
+#[cfg(any(test, gust_dual))]
+fn add_on_cpu(a: &[f32], b: &[f32], seed: &[f32]) -> Result<Vec<f32>, CpuError> {
+    let device = CpuDevice::new();
+    let a = device.buffer(a);
+    let b = device.buffer(b);
+    let out = device.buffer(seed);
+    vector_add::add::dispatch(&device, seed.len() as u32, &a, &b, &out)?;
+    Ok(out.read())
 }
 
 /// Uploads the inputs, runs the generated typed `dispatch` (the element types and the device of the
@@ -87,23 +124,11 @@ fn export_artifacts() -> Result<PathBuf, Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
-    use gust::cpu::{CpuDevice, Error as CpuError};
-
     use super::*;
 
     /// The host reference: what the kernel computes for every element.
     fn host_reference(a: &[f32], b: &[f32]) -> Vec<f32> {
         a.iter().zip(b).map(|(left, right)| left + right).collect()
-    }
-
-    /// The same typed `dispatch` on the CPU twin, which the macro emits under `cfg(test)`: no GPU involved.
-    fn add_on_cpu(a: &[f32], b: &[f32], seed: &[f32]) -> Result<Vec<f32>, CpuError> {
-        let device = CpuDevice::new();
-        let a = device.buffer(a);
-        let b = device.buffer(b);
-        let out = device.buffer(seed);
-        vector_add::add::dispatch(&device, seed.len() as u32, &a, &b, &out)?;
-        Ok(out.read())
     }
 
     /// Inputs whose sums are exact in `f32`, so every comparison below is exact.

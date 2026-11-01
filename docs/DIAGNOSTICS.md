@@ -36,10 +36,17 @@ Only `diagnostics.rs` allows them, and it offers coded wrappers (`error`, `wrap`
 fails the build. Clippy resolves the real item, so an alias or a renamed import is caught
 too. Unit tests fail if `clippy.toml` drops an entry, if another source file names the
 lints, their groups (`clippy::style`, `clippy::all`) or `allow(warnings`, if this crate's
-or the root manifest has a `[lints` table, if the root `clippy.toml` is missing, if one sits
-in `crates/` or `crates/gust-macros` (clippy takes the first it finds walking up), or if
-`CLIPPY_CONF_DIR` is set. Not checked: `rustflags` in a `.cargo/config.toml` (for example
+manifest has lints in any form (a `[lints` table however spaced or quoted, or
+`lints.workspace = true`), if the root manifest has lints other than `[workspace.lints.rust]`
+with the single key `unexpected_cfgs` (the check-cfg declaration of `cfg(gust_dual)`; a
+package-level `[lints`, a `clippy` or other group, another key, and the dotted or inline
+spellings are all offenders), if the root `clippy.toml` is missing, if one sits in `crates/` or
+`crates/gust-macros` (clippy takes the first it finds walking up), or if `CLIPPY_CONF_DIR` is
+set. Not checked: `rustflags` in a `.cargo/config.toml` (for example
 `-A clippy::disallowed_methods`) would silence the bar; keep such flags out of the repository.
+The root `unexpected_cfgs` table cannot reach this crate: a workspace lints table applies
+only to members that opt in with `lints.workspace = true`, this crate does not, and its own
+manifest may have no lints at all, so the test above fails if it ever tried.
 The limits of the guard: clippy cannot bar one type's `From` impl, so the
 conversion `syn::Error::from(LexError)` is only checked as text (`LexError` and
 `Error::from(` outside `diagnostics.rs`). It also does not see a `syn::Error` that arrives

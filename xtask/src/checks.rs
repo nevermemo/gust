@@ -10,7 +10,8 @@ use std::{
 
 use crate::{
     process::{
-        command_exists, print_command, require_command, run_checked, run_direct, run_direct_args,
+        command_exists, print_command, require_command, run_checked, run_counted, run_direct,
+        run_direct_args, without_colors,
     },
     reflect::{BuildOptions, build_slang_reflect},
     shader::doctor_smoke,
@@ -51,8 +52,10 @@ pub(crate) const CPU_TESTS: &[&[&str]] = &[
 /// `cargo xtask check-cpu`: the CPU-twin evidence, needing neither slangc nor a GPU.
 pub(crate) fn check_cpu() -> Result<(), String> {
     let root = workspace_root()?;
+    // Counted: `cargo test` exits 0 with no test at all, so a package whose tests vanished (or were
+    // all marked `#[ignore]`) must fail here instead of passing.
     for args in CPU_TESTS {
-        run_direct(&root, "cargo", args)?;
+        run_counted(&root, args)?;
     }
     Ok(())
 }
@@ -111,7 +114,7 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
             Ok(())
         }
         "loops" => {
-            run_direct(&root, "cargo", &["test", "-p", "gust-macros", "loops"])?;
+            run_counted(&root, &["test", "-p", "gust-macros", "loops"])?;
             run_direct(
                 &root,
                 "cargo",
@@ -119,11 +122,7 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
             )
         }
         "result" => {
-            run_direct(
-                &root,
-                "cargo",
-                &["test", "-p", "gust-macros", "--", "result"],
-            )?;
+            run_counted(&root, &["test", "-p", "gust-macros", "--", "result"])?;
             run_direct(
                 &root,
                 "cargo",
@@ -397,7 +396,7 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
             "result: Result lowering/match regressions plus WGSL, SPIR-V, and real-GPU Result tests"
         }
         "examples" => {
-            "examples: ignored example tests and example binaries; use for major behavior confidence"
+            "examples: every example test (ordinary and ignored, `--include-ignored`; a package that runs no test fails) and example binaries; use for major behavior confidence"
         }
         "artifacts" => "artifacts: example binaries plus exported SPIR-V validation",
         "full" => "full: release evidence; writes .ai/VALIDATION.json",
@@ -420,7 +419,7 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
             "check-ui: cargo check of each tests/ui fixture crate; a crate with an expected.txt must fail with exactly one error satisfying every key (`code: none` names a macro error without a rustc code and needs a `message:`); also part of check-fast and the Unit suite"
         }
         "check-cpu" => {
-            "check-cpu: `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial, signal-pipeline, particle-step, typed-pipeline, atomic-counter, staged-graph, component-pool), running the non-ignored twin tests against the host references; needs neither slangc nor a GPU; a step of the Unit suite"
+            "check-cpu: `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial, signal-pipeline, particle-step, typed-pipeline, atomic-counter, staged-graph, component-pool), running the non-ignored twin tests against the host references (a package that runs no test fails); needs neither slangc nor a GPU; a step of the Unit suite"
         }
         "check-dual" => {
             "check-dual: the dual test build (`--cfg gust_dual`, D26) and its cross-crate proof, with its own target directory <target>/dual: tests/dual is formatted (`cargo fmt --check`) and passes clippy with -D warnings (the root fmt and CI clippy do not reach that workspace), as do vector-add and polynomial with the cfg (CI's clippy compiles their dual code out); the workspace builds with the cfg; in tests/dual a consumer's test (E1) and production binary (E3) each fail with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib` without the cfg, and with it (E2) the test passes. Without `--check-only` it then runs `cargo run` of vector-add and polynomial with the cfg, which must print the `CPU twin: matches (N elements, max ULP k)` line (polynomial also the twin's time beside run_cpu's), and of vector-add without the cfg, which must not mention the twin; that part needs a Vulkan GPU, and `check-full` runs it. Refuses to run while RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS or CARGO_BUILD_RUSTFLAGS is set (it delivers the cfg through CARGO_ENCODED_RUSTFLAGS). `--check-only` is the CPU-only mode CI runs; it needs cargo only"
@@ -1031,25 +1030,6 @@ fn cargo_home() -> Option<PathBuf> {
         env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
             .map(|home| PathBuf::from(home).join(".cargo"))
     })
-}
-
-/// `text` without ANSI colour sequences (`ESC [ ... m`), which libtest prints around `ok` when colour is forced
-/// (`CARGO_TERM_COLOR=always`, as CI sets it).
-fn without_colors(text: &str) -> String {
-    let mut plain = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' && chars.peek() == Some(&'[') {
-            for skipped in chars.by_ref() {
-                if skipped.is_ascii_alphabetic() {
-                    break;
-                }
-            }
-        } else {
-            plain.push(c);
-        }
-    }
-    plain
 }
 
 /// The names of `tests` that `stdout` of `cargo test` does not report as `ok`.

@@ -140,15 +140,15 @@ pub(crate) fn count_listed(listing: &str, name: &str) -> usize {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-struct TestCounts {
-    ok: bool,
-    passed: u32,
-    failed: u32,
-    ignored: u32,
+pub(crate) struct TestCounts {
+    pub(crate) ok: bool,
+    pub(crate) passed: u32,
+    pub(crate) failed: u32,
+    pub(crate) ignored: u32,
 }
 
 /// Parses `test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; ...`.
-fn parse_result_line(line: &str) -> Option<TestCounts> {
+pub(crate) fn parse_result_line(line: &str) -> Option<TestCounts> {
     let rest = line.trim_start().strip_prefix("test result: ")?;
     let (status, counts) = rest.split_once(". ")?;
     let (mut passed, mut failed, mut ignored) = (None, None, None);

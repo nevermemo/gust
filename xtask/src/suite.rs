@@ -3,7 +3,7 @@ use crate::{
     checks::{check_cpu, check_feature},
     docs::docs_check,
     lint::lint,
-    process::{require_command, run_direct},
+    process::{require_command, run_counted, run_direct},
     ui::check_ui,
     verify::{VerifyMode, verify},
     workspace::workspace_root,
@@ -25,6 +25,9 @@ pub(crate) enum Suite {
 pub(crate) enum Step {
     /// `cargo <args>` in the workspace root.
     Cargo(&'static [&'static str]),
+    /// `cargo test <filter>` in the workspace root that must run at least one test (a filter that
+    /// matches nothing exits 0 in cargo).
+    CountedCargo(&'static [&'static str]),
     /// A tool on `PATH`; a missing tool fails the suite by name.
     RequireTool(&'static str),
     Lint,
@@ -43,6 +46,11 @@ pub(crate) enum Step {
 const MACROS_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust-macros"]);
 const XTASK_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "xtask"]);
 const CORE_LIB_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust", "--lib"]);
+/// The `gust::cpu` runtime tests (the CPU twin's device, `ulps`, call checks). They need neither slangc nor a GPU
+/// (the `gust` crate has no build script and no GPU dependency), but share the library test binary with tests that
+/// do need slangc, so the name filter carves them out for the Unit suite and CI.
+const CORE_CPU_TESTS: Step =
+    Step::CountedCargo(&["test", "--locked", "-p", "gust", "--lib", "cpu::tests::"]);
 const CORE_DIAGNOSTICS_TESTS: Step =
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "diagnostics"]);
 const WGPU_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust-wgpu"]);
@@ -88,7 +96,7 @@ impl Suite {
     pub(crate) fn covers(self) -> &'static str {
         match self {
             Self::Unit => {
-                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references); no external tools"
+                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests; no external tools"
             }
             Self::Slangc => {
                 "Unit, plus the gust library tests and the diagnostics integration test, which compile generated Slang with slangc"
@@ -135,6 +143,7 @@ impl Suite {
             Step::CheckArch,
             Step::CheckUi,
             Step::CheckCpu,
+            CORE_CPU_TESTS,
         ];
         match self {
             Self::Unit => unit.to_vec(),
@@ -156,7 +165,7 @@ impl Suite {
 impl Step {
     fn label(self) -> String {
         match self {
-            Self::Cargo(args) => format!("cargo {}", args.join(" ")),
+            Self::Cargo(args) | Self::CountedCargo(args) => format!("cargo {}", args.join(" ")),
             Self::RequireTool(tool) => format!("require {tool} on PATH"),
             Self::Lint => "cargo xtask lint".to_owned(),
             Self::DocsCheck => "cargo xtask docs-check".to_owned(),
@@ -172,6 +181,7 @@ impl Step {
         let root = workspace_root()?;
         match self {
             Self::Cargo(args) => run_direct(&root, "cargo", args),
+            Self::CountedCargo(args) => run_counted(&root, args).map(|_| ()),
             Self::RequireTool(tool) => require_command(tool),
             Self::Lint => lint(&root, &mut Vec::new()),
             Self::DocsCheck => docs_check(&root, &mut Vec::new()),

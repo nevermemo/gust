@@ -387,15 +387,43 @@ mod tests {
         (expected, echo)
     }
 
+    /// `a.max(b)` that keeps a NaN. `f64::max` returns the other operand when one is NaN, so a fold with it turns a
+    /// NaN difference into 0 and a bound check on the result passes; this poisons the maximum, so that
+    /// `maximum <= bound` fails.
+    fn propagating_max(a: f64, b: f64) -> f64 {
+        if a.is_nan() || b.is_nan() {
+            f64::NAN
+        } else {
+            a.max(b)
+        }
+    }
+
     /// The largest distance between two results in ULPs and in absolute terms (computed in `f64`).
     fn largest_difference(left: &[f32], right: &[f32]) -> (u64, f64) {
         assert_eq!(left.len(), right.len());
         left.iter().zip(right).fold((0, 0.0), |(ulp, abs), (l, r)| {
             (
                 ulp.max(ulps(*l, *r)),
-                abs.max((f64::from(*l) - f64::from(*r)).abs()),
+                propagating_max(abs, (f64::from(*l) - f64::from(*r)).abs()),
             )
         })
+    }
+
+    #[test]
+    fn a_nan_in_a_compared_value_fails_the_bound_checks() {
+        // `fold(0.0, f64::max)` returned 0 for a NaN difference, so NaN output passed a bound.
+        let finite = [1.0f32, 2.0, 3.0];
+        let mut poisoned = finite;
+        poisoned[1] = f32::NAN;
+        assert_eq!(largest_difference(&finite, &finite), (0, 0.0));
+        for (left, right) in [(&finite, &poisoned), (&poisoned, &finite)] {
+            let (ulps, abs) = largest_difference(left, right);
+            assert_eq!(ulps, u64::MAX);
+            assert!(abs.is_nan(), "{abs}");
+            let passes = abs <= 1.0e9;
+            assert!(!passes, "a NaN must not pass the bound");
+        }
+        assert!(largest_difference(&[f32::NAN, 5.0], &[0.0, 0.0]).1.is_nan());
     }
 
     /// Per bounded output of `step` (the order of `STEP_OUTPUTS`): the largest (ULPs, absolute difference) between

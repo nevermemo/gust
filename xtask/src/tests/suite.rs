@@ -5,7 +5,7 @@ use crate::{
     workspace::EXAMPLES,
 };
 
-const UNIT: [Step; 7] = [
+const UNIT: [Step; 8] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
@@ -13,6 +13,7 @@ const UNIT: [Step; 7] = [
     Step::CheckArch,
     Step::CheckUi,
     Step::CheckCpu,
+    Step::CountedCargo(&["test", "--locked", "-p", "gust", "--lib", "cpu::tests::"]),
 ];
 
 #[test]
@@ -80,11 +81,11 @@ fn the_other_tiers_alias_existing_commands() {
 /// The cargo calls a step makes, as argument lists. Steps that call cargo through another
 /// xtask command are listed by that command's data, so that no call hides behind a step.
 /// The Full suite is not expanded: it runs `cargo fmt` (which has no `--locked`) and the
-/// examples' `--ignored` tests, which are not locked, so it is not checked here.
+/// examples' `--include-ignored` tests, which are not locked, so it is not checked here.
 fn cargo_calls(step: Step) -> Vec<Vec<String>> {
     let owned = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
     match step {
-        Step::Cargo(args) => vec![owned(args)],
+        Step::Cargo(args) | Step::CountedCargo(args) => vec![owned(args)],
         Step::CheckCpu => CPU_TESTS.iter().map(|args| owned(args)).collect(),
         Step::Feature("reflection") => REFLECTION_TESTS.iter().map(|args| owned(args)).collect(),
         Step::Verify(VerifyMode::Artifacts, _) => EXAMPLES
@@ -155,7 +156,9 @@ fn the_full_gate_runs_the_release_slang_tests() {
             "-p",
             "gust",
             "--lib",
-            "slang"
+            "--",
+            "slang",
+            "cpu::tests::invocations_are_capped_at_the_id_range_in_release"
         ]
     );
     assert!(Suite::Full.covers().contains("release-profile"));
@@ -218,4 +221,18 @@ fn check_cpu_and_check_ui_are_explained() {
     assert!(explain_check(Some("check-cpu")).is_ok());
     assert!(explain_check(Some("check-ui")).is_ok());
     assert!(explain_check(Some("check-nothing")).is_err());
+}
+
+#[test]
+fn the_unit_suite_runs_the_gust_cpu_tests_with_the_count_guard() {
+    // `gust::cpu` tests need neither slangc nor a GPU; without this step no CI job ran them.
+    let step = Step::CountedCargo(&["test", "--locked", "-p", "gust", "--lib", "cpu::tests::"]);
+    let steps = Suite::Unit.steps();
+    assert_eq!(steps.iter().filter(|s| **s == step).count(), 1);
+    assert!(steps.iter().all(|s| !matches!(s, Step::RequireTool(_))));
+    assert_eq!(
+        step.label(),
+        "cargo test --locked -p gust --lib cpu::tests::"
+    );
+    assert!(Suite::Unit.covers().contains("gust::cpu"));
 }

@@ -61,7 +61,7 @@ remaining chain run beside it now, and the rest wait for the M4 slice named. M5 
 | m5.b0 | Probe: the ledger on lavapipe, debug and release | planned (can run now) |
 | m5.a | `gpu-software` CI job: Mesa pinned through the Ubuntu snapshot, adapter record asserted (D52) | planned (can run now) |
 | m5.d1, m5.d2, m5.d3 | Scalar `coretests` cases: fixture and twin; on the GPU; golden and registration | m5.d1 done (`d2378ce`); d2 after m4.e1 and the bool `^` fix; d3 after m4.e2 |
-| m5.c1a, m5.c1a2, m5.c1b, m5.c1c | Differential generator in `tests/difftest/`: integers, floats v1 (interval bounds), harness, bounded shrinking | planned (can run now, in order) |
+| m5.c1a, m5.c1a2, m5.c1b, m5.c1c | Differential generator in `tests/difftest/`: integers, floats v1 (interval bounds), harness, bounded shrinking | m5.c1a done (`3bcebaf`); c1a2 running; then c1b, c1c in order |
 | S5.4 | Spike: expansion-time profile and cached rebuild transitions | after m4.c |
 | m5.b | Ledger on two adapters (per-kind observation pins) | after m4.e1 |
 | m5.e1, m5.e2 | Production `cpu` profile (D51); `check-cpu-target` and the `Cpu` tier | after m4.g2 |

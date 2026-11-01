@@ -116,6 +116,14 @@ D55 to D59.
   new (operator, type, class) triples to the 20 already tested. The fixture found a compiler gap:
   `bool ^` lowers to WGSL `^`, which naga rejects (CT-30), so the GPU half (m5.d2) waits for the
   fix. Opus keep after one fix round; gates on main at `3ec3094`.
+- M5 m5.c1a (`3bcebaf`): the differential generator core in `tests/difftest/` (std-only). It
+  generates `#[gpu]` programs over `u32`, `i32` and `bool`, interprets them as the oracle inside
+  D38's domain, discards anything outside it (including a static fold of constant
+  subexpressions in dead code), and emits them with full parentheses, checked by a re-parse
+  test. `seeds.txt` pins seeds 1 to 8 with hashes of the code and the inputs. Generated crates
+  take unique package names, because cargo gives two crates of one name in one target dir a
+  single fingerprint (reproduced without GUST). Opus keep after one fix round; gates on main at
+  `c2df942`.
 M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),

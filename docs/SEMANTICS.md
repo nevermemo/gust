@@ -12,8 +12,10 @@ atomic functions run for real on the twin, and the ledger has a twin column (sli
 (slice m3.c2) is a step of the Unit suite and runs the locked, GPU-free tests of the vector-add, polynomial,
 signal-pipeline, particle-step, typed-pipeline, atomic-counter (slice m3.e1), staged-graph and component-pool (slice
 m3.e2) examples. `cargo xtask check-dual` (slices m3.f1 and m3.f2) proves across crates that the twin is absent from a
-production build and present in a `--cfg gust_dual` build, and that a dependent crate's own overflow mode reaches its
-twin. The label **planned** is kept for a statement about behaviour that does not run yet; a planned statement
+production build and present in a `--cfg gust_dual` build, and, with an integer kernel whose `+` overflows, that a twin
+runs in the overflow mode of the package that defines its kernel: the twin of a dependency's kernel panics when the
+dependency has checks on while the dependent has them off, and the twin of a kernel the dependent defines itself wraps
+(the dependent's own override does not reach a dependency's twin). The label **planned** is kept for a statement about behaviour that does not run yet; a planned statement
 describes the intended behaviour and is not evidence.
 
 ## 1. Scope
@@ -82,9 +84,12 @@ Every statement about GPU behaviour carries one of these, and they are never mer
 the consuming build has `overflow-checks` enabled or not (D38); the test reads the mode at run time with the macro
 `gust::cpu::overflow_checks!()`, which expands in the test crate, and asserts the matching column. The twin is
 compiled in the crate that defines the kernel and so follows that build's mode; GUST pins no profile. The ledger is
-one workspace profile, so the macro, the function `gust::cpu::overflow_checks()` and the twin agree there; the
-cross-crate evidence (a dependent crate with a per-package override sees its own mode) is the `tests/dual` test
-`overflow_mode_is_the_dependents_own`, run by `check-dual` (m3.f1).
+one workspace profile, so the macro, the function `gust::cpu::overflow_checks()` and the twin agree there. The
+cross-crate evidence is in `tests/dual`, run by `check-dual`: `overflow_mode_is_the_dependents_own` (m3.f1) shows that
+a dependent with a per-package override sees its own mode through the macro, and the two `twin_overflow` tests show
+what the twins do with `u32::MAX + 1`: the twin of the dependency's kernel follows the dependency's mode (a panic in
+the dev profile, where only the dependent has checks off), the twin of the dependent's own kernel follows the
+dependent's. Both outcomes are asserted per mode, in the dev profile; in the release profile every package wraps.
 
 ## 3. The defined domain, and what lies outside it
 
@@ -97,8 +102,17 @@ WGSL specification leaves open (NaN and infinity, subnormals, NaN conversions, o
 included: they are recorded as one-adapter observations and never fail a test. Outcomes the specification fixes, and
 the plain-Rust outcomes, are still pinned and fail the test when they change.
 
-Inside the domain the GPU and the twin give the same bits for integers, `bool` and control flow, and the
-float rules of section 4 apply. The domain is:
+Inside the domain the GPU and the twin give the same bits for integers and `bool` values and take the same
+control-flow path, with two exceptions that the domain does not remove. A decision derived from a float value (a
+float-to-integer cast, a comparison or a branch on a float, even with every operand finite, normal and inside the
+float bounds of section 4, as in the threshold guard at the end of that section) is exact only while no value lies
+within its bound of the decision point, because the float results themselves differ by up to that bound, and the
+integers and booleans computed from such a decision inherit the difference. Contended atomics are the second
+exception: the twin runs the invocations in ascending order and yields one member of the set that the GPU may give
+(section 6). The final value of a cell that receives only `atomic_add`, only `atomic_min` or only `atomic_max`
+does not depend on the order and is identical; a cell that receives different kinds of operation is order-dependent.
+The outcome of a contended `atomic_exchange` and of any `atomic_compare_exchange`, contended or not, is set-valued
+on the GPU (it may fail spuriously, section 6; KM-09). The float rules of section 4 apply. The domain is:
 
 1. `+`, `-`, `*` and unary `-` on `u32` and `i32` give a result that fits the type (KM-10).
 2. Divisors are not zero, and `i32::MIN / -1` and `i32::MIN % -1` do not occur (KM-01 to KM-03).
@@ -129,8 +143,9 @@ language feature of their own, not a way to close this gap. Do not rely on the t
 path: the GPU wraps silently whatever the twin does.
 
 **Limitation: arithmetic inside `gust` follows `gust`'s own overflow mode.** Rust fixes overflow behaviour when a
-crate is compiled. An integer operation that the shadow body writes is compiled in the consumer's crate and follows
-the consumer's mode (`gust::cpu::overflow_checks!()`). An integer operation that `gust` itself implements (a shadow
+crate is compiled. An integer operation that the shadow body writes is compiled in the crate that defines the kernel
+and follows that crate's mode (`gust::cpu::overflow_checks!()` written there; a dependent that runs the twin of a
+dependency's kernel gets the dependency's mode, not its own). An integer operation that `gust` itself implements (a shadow
 function or type provided by the library, as opposed to the kernel's own `+`) is compiled in `gust` and follows
 `gust`'s mode (the function `gust::cpu::overflow_checks()`). The two modes differ only when a profile overrides
 `overflow-checks` for one of the two packages. Today the only such operation is `atomic_add`. It never panics on
@@ -366,7 +381,7 @@ difference, and the proven label needs the two targets to agree.
 | KM-08 | Denormal (subnormal) `f32` operands and results | Kept: `1.0e-40 * 1.0` is `1.0e-40`, `1.0e-40 == 0.0` is false. | Unspecified (flushing to zero is allowed). Observed: operands and results flushed to zero (`1.0e-40 * 1.0`, `+ 0.0`, `* 2.0`, `/ 2.0` and `4.0e-38 / 4.0` give 0), and `1.0e-40 == 0.0` is true. | unspecified, measured |
 | KM-09 | Contended `atomic_exchange` and `atomic_compare_exchange` (257 invocations, one cell) | Sequential, ascending invocation id: the exchange ends at 256; the compare-exchange from 999 to `id + 1` ends at 1. | Set-valued: the exchange ends at some id in 0 to 256, the compare-exchange at some value in 1 to 257, or at 999 (unchanged) because the weak compare-exchange may fail spuriously (WGSL section 17.8.5); the test accepts all of that set. Observed over 32 dispatches per run, three runs: 1 to 10 distinct final values per run, and never the sequential result (the exchange ended between 1 and 251, the compare-exchange between 7 and 137). | spec-allowed (the set), measured |
 | KM-10 | Overflow of `+`, `-`, `*` and unary `-` on `u32` and `i32` | Checks on: panics ("attempt to add with overflow" and so on). Checks off: wraps modulo 2^32. | Wraps modulo 2^32 (WGSL section 6.2.3): `u32::MAX + 1 == 0`, `i32::MAX + 1 == i32::MIN`, `0u32 - 1 == u32::MAX`, `-i32::MIN == i32::MIN`. | spec-allowed, measured |
-| KM-11 | Out-of-bounds index equal to the buffer length | Panics "index out of bounds" in every profile. | Unspecified (a dynamic error, WGSL section 6.5.7). Observed with a 4-element buffer and index 4: the load returned 0 and the store was dropped (the buffer was unchanged). | unspecified, measured |
+| KM-11 | Out-of-bounds index equal to the buffer length | Panics "index out of bounds" in every profile. | Unspecified (a dynamic error, WGSL section 6.5.7). Observed with index 4: a load from a 4-element buffer returned 0, and a store into a 4-element buffer was dropped (the buffer was unchanged); the store is measured alone, with a longer `source` so that the kernel's own load is in bounds, and the twin's store row panics at the store because its load is in bounds. | unspecified, measured |
 
 Reading the table: the Rust column and every GPU value that the specification fixes (labelled spec-allowed) are
 enforced, so the test fails when one changes and the row is edited in the same change. A value marked unspecified is

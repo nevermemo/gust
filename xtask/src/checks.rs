@@ -10,8 +10,8 @@ use std::{
 
 use crate::{
     process::{
-        command_exists, print_command, require_command, run_checked, run_counted, run_direct,
-        run_direct_args, without_colors,
+        command_exists, print_command, require_command, run_checked, run_counted,
+        run_counted_captured, run_direct, run_direct_args, without_colors,
     },
     reflect::{BuildOptions, build_slang_reflect},
     shader::doctor_smoke,
@@ -49,16 +49,100 @@ pub(crate) const CPU_TESTS: &[&[&str]] = &[
     &["test", "--locked", "-p", "component-pool"],
 ];
 
+/// The tests that `cargo xtask check-cpu` requires to be reported `ok` by name, per package of [`CPU_TESTS`] (same
+/// order): the non-ignored twin tests (`twin_*`) and, where the example has one, the guard that its inputs stay inside
+/// the derivation domain of its tolerances. The count guard alone passes while a sibling test still runs, so a
+/// deleted, renamed or `#[ignore]`d twin test would go unnoticed. The pin tests in `tests/cpu_pins.rs` read the
+/// example sources, so a new non-ignored `twin_*` or derivation-domain test must be added here.
+pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
+    (
+        "vector-add",
+        &[
+            "app::tests::twin_matches_host_reference",
+            "app::tests::twin_checks_buffer_aliasing_like_the_gpu_backend",
+        ],
+    ),
+    ("polynomial", &["app::tests::twin_matches_host_reference"]),
+    (
+        "signal-pipeline",
+        &[
+            "app::tests::inputs_stay_inside_the_derivation_domain",
+            "app::tests::twin_matches_host_reference",
+        ],
+    ),
+    (
+        "particle-step",
+        &[
+            "app::tests::inputs_stay_inside_the_derivation_domain",
+            "app::tests::twin_matches_host_references_for_every_kernel",
+        ],
+    ),
+    (
+        "typed-pipeline",
+        &[
+            "app::tests::inputs_stay_inside_the_derivation_domain",
+            "app::tests::twin_chain_matches_host_reference",
+        ],
+    ),
+    ("atomic-counter", &["tests::twin_counts_every_invocation"]),
+    (
+        "staged-graph",
+        &[
+            "app::tests::inputs_stay_inside_the_derivation_domain",
+            "app::tests::twin_chain_matches_host_reference",
+        ],
+    ),
+    (
+        "component-pool",
+        &[
+            "app::tests::the_derivation_domain_holds_for_the_settings_and_the_spawned_particles",
+            "app::tests::twin_frames_match_host_reference",
+        ],
+    ),
+];
+
+/// The package of a `cargo test --locked -p <package>` call of [`CPU_TESTS`].
+pub(crate) fn cpu_test_package<'a>(args: &[&'a str]) -> Option<&'a str> {
+    let at = args.iter().position(|arg| *arg == "-p")?;
+    args.get(at + 1).copied()
+}
+
+/// Judges the captured output of one [`CPU_TESTS`] call: every test of [`CPU_REQUIRED_TESTS`] for `package` must be
+/// reported `ok`. A package without an entry is an error too, so a new example cannot be added to `CPU_TESTS` unpinned.
+pub(crate) fn check_cpu_output(package: &str, stdout: &str) -> Result<(), String> {
+    let Some((_, required)) = CPU_REQUIRED_TESTS.iter().find(|(name, _)| *name == package) else {
+        return Err(format!(
+            "check-cpu: no required tests are listed for `{package}` in CPU_REQUIRED_TESTS (xtask/src/checks.rs)"
+        ));
+    };
+    let missing = tests_not_ok(stdout, required);
+    if missing.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "check-cpu: cargo test -p {package}: the required test(s) `{}` did not run and pass (renamed, deleted, ignored or failed?)",
+        missing.join("`, `")
+    ))
+}
+
 /// `cargo xtask check-cpu`: the CPU-twin evidence, needing neither slangc nor a GPU.
 pub(crate) fn check_cpu() -> Result<(), String> {
     let root = workspace_root()?;
     // Counted: `cargo test` exits 0 with no test at all, so a package whose tests vanished (or were
-    // all marked `#[ignore]`) must fail here instead of passing.
+    // all marked `#[ignore]`) must fail here instead of passing. The twin tests are also required by name:
+    // the count passes while a sibling test of the package still runs.
     for args in CPU_TESTS {
-        run_counted(&root, args)?;
+        let (_, stdout) = run_counted_captured(&root, args)?;
+        let package = cpu_test_package(args)
+            .ok_or_else(|| format!("check-cpu: no `-p <package>` in the call {args:?}"))?;
+        check_cpu_output(package, &stdout)?;
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tests/cpu_pins.rs"]
+mod cpu_pins_tests;
 
 pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
     let root = workspace_root()?;
@@ -419,7 +503,7 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
             "check-ui: cargo check of each tests/ui fixture crate; a crate with an expected.txt must fail with exactly one error satisfying every key (`code: none` names a macro error without a rustc code and needs a `message:`); also part of check-fast and the Unit suite"
         }
         "check-cpu" => {
-            "check-cpu: `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial, signal-pipeline, particle-step, typed-pipeline, atomic-counter, staged-graph, component-pool), running the non-ignored twin tests against the host references (a package that runs no test fails); needs neither slangc nor a GPU; a step of the Unit suite"
+            "check-cpu: `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial, signal-pipeline, particle-step, typed-pipeline, atomic-counter, staged-graph, component-pool), running the non-ignored twin tests against the host references (a package that runs no test fails, and each package's twin tests and derivation-domain guard must be reported `ok` by name); needs neither slangc nor a GPU; a step of the Unit suite"
         }
         "check-dual" => {
             "check-dual: the dual test build (`--cfg gust_dual`, D26) and its cross-crate proof, with its own target directory <target>/dual: tests/dual is formatted (`cargo fmt --check`) and passes clippy with -D warnings (the root fmt and CI clippy do not reach that workspace), as do vector-add and polynomial with the cfg (CI's clippy compiles their dual code out); the workspace builds with the cfg; in tests/dual a consumer's test (E1) and production binary (E3) each fail with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib` without the cfg, and with it (E2) the test passes. Without `--check-only` it then runs `cargo run` of vector-add and polynomial with the cfg, which must print the `CPU twin: matches (N elements, max ULP k)` line (polynomial also the twin's time beside run_cpu's), and of vector-add without the cfg, which must not mention the twin; that part needs a Vulkan GPU, and `check-full` runs it. Refuses to run while RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS or CARGO_BUILD_RUSTFLAGS is set (it delivers the cfg through CARGO_ENCODED_RUSTFLAGS). `--check-only` is the CPU-only mode CI runs; it needs cargo only"
@@ -587,11 +671,15 @@ pub(crate) const RUSTFLAGS_VARIABLES: [&str; 3] = [
     "CARGO_BUILD_RUSTFLAGS",
 ];
 
-/// The tests of `consumer` that E2 requires to run and pass: the twin on a dependency's kernel, and the overflow
-/// mode of a dependent with a per-package override.
+/// The tests of `consumer` that E2 requires to run and pass: the twin on a dependency's kernel, the overflow mode
+/// that a dependent with a per-package override reports, and what the twins do with an overflowing addition: the one
+/// of a dependency's kernel follows the dependency's mode, the one of the dependent's own kernel follows the
+/// dependent's.
 pub(crate) const DUAL_TESTS: &[&str] = &[
     "tests::twin_runs",
     "tests::overflow_mode_is_the_dependents_own",
+    "twin_overflow::a_twin_follows_the_overflow_mode_of_the_package_that_defines_the_kernel",
+    "twin_overflow::a_twin_defined_in_the_dependent_follows_the_dependents_own_mode",
 ];
 
 /// What `cargo xtask check-dual` runs.
@@ -1119,7 +1207,7 @@ pub(crate) fn check_dual(args: &[String]) -> Result<(), String> {
         run_dual_step(&root, &step)?;
     }
     println!(
-        "check-dual passed: tests/dual is formatted and passes clippy with -D warnings; the workspace built with --cfg gust_dual; without it the tests/dual consumer's test (E1) and binary (E3) each failed with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib`, and with it (E2) the test dispatched on `gust::cpu::CpuDevice` and passed, together with the overflow-mode test of a package with its own override."
+        "check-dual passed: tests/dual is formatted and passes clippy with -D warnings; the workspace built with --cfg gust_dual; without it the tests/dual consumer's test (E1) and binary (E3) each failed with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib`, and with it (E2) the test dispatched on `gust::cpu::CpuDevice` and passed, together with the overflow-mode test of a package with its own override and the two tests that dispatch an overflowing integer kernel (the dependency's twin followed the dependency's mode, the twin of the dependent's own kernel the dependent's)."
     );
     match mode {
         DualMode::CheckOnly => println!(

@@ -195,6 +195,19 @@ const MUL_OVERFLOW: &str = "attempt to multiply with overflow";
 const NEG_OVERFLOW: &str = "attempt to negate with overflow";
 const OOB: &str = "index out of bounds";
 
+/// KM-11: the index passed to `out_of_bounds`, equal to the length of `sink` (4).
+const OOB_INDEX: u32 = 4;
+/// KM-11 load row: `source` is as long as `sink`, so the load `source[4]` is out of bounds (and comes first).
+const OOB_LOAD_SOURCE_LEN: usize = 4;
+/// KM-11 store rows: `source` is longer than `sink`, so the load `source[4]` is in bounds by construction and the
+/// store `sink[4] = 77` is the only out-of-bounds access of the kernel.
+const OOB_STORE_SOURCE_LEN: usize = 8;
+
+/// The contents of `source`: 10, 11, 12, ... (so `source[4]` is 14 where it exists).
+fn oob_source(len: usize) -> Vec<u32> {
+    (10..).take(len).collect()
+}
+
 const NAN: u32 = f32::NAN.to_bits();
 const INF: u32 = f32::INFINITY.to_bits();
 const NEG_INF: u32 = f32::NEG_INFINITY.to_bits();
@@ -1110,7 +1123,7 @@ fn cases() -> Vec<Case> {
     ));
     add(case(
         "KM-11",
-        "store sink[len] = 77: sink[len - 1] afterwards",
+        "store sink[len] = 77 (load in bounds): sink[len - 1] afterwards",
         OobStoreLast,
         (0, 0, 0),
         v(0),
@@ -1118,7 +1131,7 @@ fn cases() -> Vec<Case> {
     ));
     add(case(
         "KM-11",
-        "store sink[len] = 77: sink[0..len - 1] afterwards (OR of them)",
+        "store sink[len] = 77 (load in bounds): sink[0..len - 1] afterwards (OR of them)",
         OobStoreElsewhere,
         (0, 0, 0),
         v(0),
@@ -1288,10 +1301,10 @@ fn twin_casts<O: Bits>(
 
 /// KM-11 on the twin: the same kernel and buffers as `run_out_of_bounds`. Returns what the GPU column extracts:
 /// the loaded value and the sink contents (only reached when the twin does not panic).
-fn twin_out_of_bounds() -> (u32, [u32; 4]) {
+fn twin_out_of_bounds(source_len: usize) -> (u32, [u32; 4]) {
     let cpu = CpuDevice::new();
-    let idx = cpu.buffer(&[4u32]);
-    let source = cpu.buffer(&[10u32, 11, 12, 13]);
+    let idx = cpu.buffer(&[OOB_INDEX]);
+    let source = cpu.buffer(&oob_source(source_len));
     let sink = cpu.buffer(&[0u32; 4]);
     let seen = cpu.buffer(&[0xAAAA_AAAAu32]);
     mismatch::out_of_bounds::dispatch(
@@ -1355,10 +1368,10 @@ fn twin_observed(case: &Case) -> Observed {
             Kind::FloatCmp => twin_ops::<f32, f32, u32>(operands, |d, op, a, b, out| {
                 mismatch::float_cmp::dispatch(d, 1, op, a, b, out)
             }),
-            Kind::OobLoad => twin_out_of_bounds().0,
-            Kind::OobStoreLast => twin_out_of_bounds().1[3],
+            Kind::OobLoad => twin_out_of_bounds(OOB_LOAD_SOURCE_LEN).0,
+            Kind::OobStoreLast => twin_out_of_bounds(OOB_STORE_SOURCE_LEN).1[3],
             Kind::OobStoreElsewhere => {
-                let sink = twin_out_of_bounds().1;
+                let sink = twin_out_of_bounds(OOB_STORE_SOURCE_LEN).1;
                 sink[0] | sink[1] | sink[2]
             }
             Kind::ContendedExchange => twin_contended(9999, |d, count, cell| {
@@ -1477,13 +1490,13 @@ fn run_casts<O: Bits>(
         .collect()
 }
 
-/// KM-11: the index equals the length of `source` and `sink` (4). Returns the loaded value
+/// KM-11: the index equals the length of `sink` (4); `source` has `source_len` elements. Returns the loaded value
 /// (`seen[0]`, 0xAAAA_AAAA if the invocation never reached the store) and the sink contents.
-fn run_out_of_bounds(device: &HeadlessDevice) -> (u32, [u32; 4]) {
-    let idx = device.create_typed_buffer("oob idx", &[4u32], GpuBufferAccess::ReadOnly);
+fn run_out_of_bounds(device: &HeadlessDevice, source_len: usize) -> (u32, [u32; 4]) {
+    let idx = device.create_typed_buffer("oob idx", &[OOB_INDEX], GpuBufferAccess::ReadOnly);
     let source = device.create_typed_buffer(
         "oob source",
-        &[10u32, 11, 12, 13],
+        &oob_source(source_len),
         GpuBufferAccess::ReadOnly,
     );
     let sink = device.create_typed_buffer("oob sink", &[0u32; 4], GpuBufferAccess::ReadWrite);
@@ -1591,8 +1604,13 @@ fn gpu_observed(device: &HeadlessDevice, cases: &[Case]) -> Vec<Vec<u32>> {
         run_ops::<f32, f32, u32>(device, &mismatch::float_cmp::DESCRIPTOR, &pick(&n)),
     );
 
-    let (seen, sink) = run_out_of_bounds(device);
-    eprintln!("S2 raw KM-11: seen[0] = 0x{seen:08x}, sink = {sink:08x?}");
+    // The load row: both accesses are out of bounds (the load first). The store rows: the load is in bounds, so the
+    // store is the only access out of bounds and its effect on `sink` is what is observed.
+    let (seen, _) = run_out_of_bounds(device, OOB_LOAD_SOURCE_LEN);
+    let (stored_seen, sink) = run_out_of_bounds(device, OOB_STORE_SOURCE_LEN);
+    eprintln!(
+        "S2 raw KM-11: load row seen[0] = 0x{seen:08x}; store rows seen[0] = 0x{stored_seen:08x}, sink = {sink:08x?}"
+    );
     for n in of_kind(Kind::OobLoad) {
         out[n] = vec![seen];
     }
@@ -1837,6 +1855,54 @@ mod zero_storage {
         let distance: uint = 2u32 - id.x;
         let _quotient: uint = 10u32 / distance;
     }
+}
+
+/// KM-11 on the twin, store rows, without a GPU: `source` is longer than `sink`, so the load `source[4]` is in
+/// bounds and the only out-of-bounds access is the store `sink[4] = 77`. The panic therefore comes from the store:
+/// `seen` holds the loaded `source[4]` (14, it was 0xAAAA_AAAA) although the invocation panicked, so the load ran
+/// and passed first, and `sink` is unchanged. The control with index 3 shows that the same invocation does reach the
+/// store and write it when the index is in bounds.
+#[test]
+fn the_out_of_bounds_store_twin_stops_at_the_store_after_a_load_that_succeeded() {
+    fn dispatch_with_index(index: u32) -> (CpuBuffer<u32>, CpuBuffer<u32>, Result<(), String>) {
+        let cpu = CpuDevice::new();
+        let idx = cpu.buffer(&[index]);
+        let source = cpu.buffer(&oob_source(OOB_STORE_SOURCE_LEN));
+        let sink = cpu.buffer(&[0u32; 4]);
+        let seen = cpu.buffer(&[0xAAAA_AAAAu32]);
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            mismatch::out_of_bounds::dispatch(
+                &cpu,
+                1,
+                Independent(&idx),
+                Independent(&source),
+                Independent(&sink),
+                Independent(&seen),
+            )
+            .unwrap_or_else(|error| panic!("the twin refused the call: {error}"));
+        }));
+        let outcome = outcome.map_err(|payload| panic_message(payload.as_ref()));
+        (seen, sink, outcome)
+    }
+
+    let (seen, sink, outcome) = dispatch_with_index(OOB_INDEX);
+    let message = outcome.expect_err("the store sink[4] is out of bounds");
+    assert!(message.starts_with(OOB), "{message}");
+    assert!(
+        message.contains("the len is 4 but the index is 4"),
+        "{message}"
+    );
+    assert_eq!(
+        seen.read(),
+        [14],
+        "the load source[4] ran and was in bounds"
+    );
+    assert_eq!(sink.read(), [0; 4], "the store did not complete");
+
+    let (seen, sink, outcome) = dispatch_with_index(3);
+    outcome.expect("index 3 is in bounds for both buffers");
+    assert_eq!(seen.read(), [13]);
+    assert_eq!(sink.read(), [0, 0, 0, 77], "the store ran");
 }
 
 /// The twin of a kernel with no storage parameters (`Run<K, 0>`): the typed `dispatch` infers the device from its

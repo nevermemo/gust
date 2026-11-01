@@ -214,7 +214,10 @@ mod mismatch {
     }
 
     // KM-11: one invocation reads `source[idx[0]]` and writes `sink[idx[0]]`; the host
-    // passes an index equal to the buffer length.
+    // passes an index equal to the length of `sink`. For the load row `source` has the same
+    // length, so the load is out of bounds and happens first. For the store rows `source` is
+    // longer, so the load is in bounds by construction and the store is the only access out of
+    // bounds (crates/gust-wgpu/tests/mismatch.rs).
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn out_of_bounds(
         id: SV_DispatchThreadID,

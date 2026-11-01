@@ -277,8 +277,9 @@ on a device) and never an oracle, and it is added to the host-reference and GPU
 assertions, never in place of them (see "Evidence tiers" in
 [VALIDATION](development/VALIDATION.md)). Where the twin and the GPU may legitimately
 differ, the known-mismatch ledger in [SEMANTICS](SEMANTICS.md) lists the construct as a
-documented limitation with both outcomes pinned; such an edge-case difference is
-recorded, not matched (D39).
+documented limitation: the plain-Rust and twin outcomes are pinned, and the GPU outcome is measured
+(enforced only where the WGSL specification fixes it, recorded as unspecified where it does not); such an edge-case
+difference is recorded, not matched (D39).
 
 The test devices in the `gust::dispatch` unit tests exist only to exercise the typed
 call surface: the recording mock mirrors a GPU backend and never runs a kernel body,

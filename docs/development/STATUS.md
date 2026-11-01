@@ -17,7 +17,8 @@ twins), m3.e2 (graph example twins), m3.f1 (`check-dual --check-only`), m3.f2 (c
 lints, dual mains, full `check-dual`, CI step) and m3.g (gates that cannot pass by skipping)
 done; the close-out docs and D40 to D42 are in; `check-full` passed on a clean tree at `96e4b9d`
 (RTX 5090, 2026-11-01 05:36-05:43Z: 13 SPIR-V modules validated, `check-dual` full mode, every
-example test with `--include-ignored`, both release-only tests by name); the M3 sanity check next.
+example test with `--include-ignored`, both release-only tests by name); the M3 sanity check (Fable and Codex,
+both "proceed with fixes") is in, and slice m3.h applies its fixes.
 
 - M3 m3.g (`95c5514`): a read-only audit (plan Revision 7) found no gate that skips through
   an early return, a missing tool or a CI condition, but six holes, now closed: `check-full`
@@ -322,7 +323,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M3 planning (see the roadmap's Now and next)
+claim: roadmap M3 sanity-check fixes (slice m3.h), then M4 (see the roadmap's Now and next)
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no
 ```
@@ -331,13 +332,14 @@ full_check_needed_before_commit: no
 
 - Branch: `main`
 - Last complete compiler feature: T12, statement-only `match Result<T, T>`
-- Last full validation: `cargo xtask check-full` passed from 2026-10-24T05:40:27Z to
-  05:44:34Z on NVIDIA GeForce RTX 5090 / Vulkan at `634a50e` (clean tree), through the
-  shared cargo slot wrapper: workspace tests, release-mode slang tests, all 8 examples
-  (debug builds), and 13 SPIR-V artifacts through `spirv-val`. Release-mode example runs
-  are per-slice evidence (m2.f1, m2.f2 probe logs), not part of this record. The previous
-  full run (M1) was at `a6cbb8f`, together with the Slangc and Reflect suites. The local `.ai/VALIDATION.json` record
-  stamps the commit and dirty state and contains no machine paths.
+- Last full validation: `cargo xtask check-full` passed on a clean tree at `96e4b9d`
+  (2026-11-01, NVIDIA GeForce RTX 5090 / Vulkan, 05:36 to 05:43Z), through the shared
+  cargo slot wrapper: workspace tests, the release-only tests required by name, every example
+  test with `--include-ignored`, `check-dual` in full mode, and 13 SPIR-V artifacts through
+  `spirv-val`. `1380913` changed documentation only. The run before it was at `634a50e`
+  (M2 close, 2026-10-24) and the one before that (M1) at `a6cbb8f`, together with the Slangc
+  and Reflect suites. The local `.ai/VALIDATION.json` record stamps the commit and dirty
+  state and contains no machine paths.
 - DX19 is closed: full validation, two independent reviews, and fixes (`027eef7`,
   `08a4843`, `3296885`).
 - CI (`unit` job: fmt, clippy, Unit suite; `msrv` job on Rust 1.90) passes on main;

@@ -7,7 +7,9 @@ resolver = "3"
 
 # The cross-crate overflow proof: a dependent can set `overflow-checks` for its own package, and the twin and
 # `gust::cpu::overflow_checks!()` follow the crate they are compiled in, not `gust`. Only `consumer` is switched
-# (off, which differs from the dev default), so in the dev and test profiles `gust` is checked and `consumer` wraps;
-# the test `overflow_mode_is_the_dependents_own` in consumer/src/lib.rs compares the two answers.
+# (off, which differs from the dev default), so in the dev and test profiles `gust` and `kernel-lib` are checked and
+# `consumer` wraps; the test `overflow_mode_is_the_dependents_own` in consumer/src/lib.rs compares the two answers
+# of the probes, and the tests of its `twin_overflow` module dispatch an overflowing integer kernel: the twin of
+# `kernel-lib`'s kernel panics (it is compiled in `kernel-lib`), the twin of a kernel defined in `consumer` wraps.
 [profile.dev.package.consumer]
 overflow-checks = false

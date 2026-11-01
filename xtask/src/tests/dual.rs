@@ -505,7 +505,9 @@ fn the_steps_run_in_the_order_fmt_build_clippy_e1_e2_e3_and_e2_is_judged_by_its_
         DUAL_TESTS,
         [
             "tests::twin_runs",
-            "tests::overflow_mode_is_the_dependents_own"
+            "tests::overflow_mode_is_the_dependents_own",
+            "twin_overflow::a_twin_follows_the_overflow_mode_of_the_package_that_defines_the_kernel",
+            "twin_overflow::a_twin_defined_in_the_dependent_follows_the_dependents_own_mode"
         ]
     );
     // E1 and E3 each name the file of their expectation and the target they judge.
@@ -546,7 +548,7 @@ fn only_check_only_or_no_argument_is_accepted() {
 
 #[test]
 fn e2_requires_each_test_to_be_reported_ok() {
-    let ok = "running 2 tests\ntest tests::overflow_mode_is_the_dependents_own ... ok\ntest tests::twin_runs ... ok\n\ntest result: ok. 2 passed\n";
+    let ok = "running 4 tests\ntest tests::overflow_mode_is_the_dependents_own ... ok\ntest tests::twin_runs ... ok\ntest twin_overflow::a_twin_follows_the_overflow_mode_of_the_package_that_defines_the_kernel ... ok\ntest twin_overflow::a_twin_defined_in_the_dependent_follows_the_dependents_own_mode ... ok\n\ntest result: ok. 4 passed\n";
     assert!(tests_not_ok(ok, DUAL_TESTS).is_empty());
     // A run that found no test succeeds in cargo and must still fail here.
     assert_eq!(
@@ -554,7 +556,7 @@ fn e2_requires_each_test_to_be_reported_ok() {
         DUAL_TESTS
     );
     // Colour codes that a forced colour output puts around `ok` (CI sets CARGO_TERM_COLOR=always) are ignored.
-    let colored = "test tests::twin_runs ... \u{1b}[32mok\u{1b}[0m\ntest tests::overflow_mode_is_the_dependents_own ... \u{1b}[32mok\u{1b}[0m\n";
+    let colored = "test tests::twin_runs ... \u{1b}[32mok\u{1b}[0m\ntest tests::overflow_mode_is_the_dependents_own ... \u{1b}[32mok\u{1b}[0m\ntest twin_overflow::a_twin_follows_the_overflow_mode_of_the_package_that_defines_the_kernel ... \u{1b}[32mok\u{1b}[0m\ntest twin_overflow::a_twin_defined_in_the_dependent_follows_the_dependents_own_mode ... \u{1b}[32mok\u{1b}[0m\n";
     assert!(tests_not_ok(colored, DUAL_TESTS).is_empty());
     assert_eq!(
         tests_not_ok(
@@ -563,6 +565,9 @@ fn e2_requires_each_test_to_be_reported_ok() {
         ),
         ["tests::twin_runs"]
     );
+    // Each of the four is required: the two overflow-outcome tests do not pass vacuously through the older two.
+    let older = "running 2 tests\ntest tests::overflow_mode_is_the_dependents_own ... ok\ntest tests::twin_runs ... ok\n\ntest result: ok. 2 passed\n";
+    assert_eq!(tests_not_ok(older, DUAL_TESTS), &DUAL_TESTS[2..]);
     // Failed, ignored and filtered tests are not ok; a name that only contains another one does not count.
     let mixed = "test tests::twin_runs ... FAILED\ntest tests::overflow_mode_is_the_dependents_own ... ignored\n";
     assert_eq!(tests_not_ok(mixed, DUAL_TESTS), DUAL_TESTS);
@@ -695,6 +700,16 @@ fn the_fixture_pins_the_overflow_mode_of_a_package_with_its_own_override() {
     );
     let source = fixture("consumer/src/lib.rs");
     assert!(source.contains("fn overflow_mode_is_the_dependents_own()"));
+    // The overflow-outcome tests observe what a twin does, not what a probe reports, and each kernel's twin is
+    // compiled in the package that defines it.
+    assert!(
+        source.contains("#[cfg(all(test, gust_dual))]\nmod twin_overflow")
+            || source.contains("#[cfg(all(test, gust_dual))]\r\nmod twin_overflow")
+    );
+    assert!(source.contains("\"attempt to add with overflow\""));
+    assert!(source.contains("kernel_lib::kernels::add_one::dispatch("));
+    assert!(source.contains("own::add_one::dispatch("));
+    assert!(fixture("kernel-lib/src/lib.rs").contains("pub fn add_one("));
     assert!(source.contains("gust::cpu::overflow_checks!()"));
     assert!(source.contains("gust::cpu::overflow_checks()"));
     for name in DUAL_TESTS {

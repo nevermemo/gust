@@ -12,8 +12,24 @@ Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test b
 adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),
-m3.c (macro twins), m3.c2 (check-cpu), m3.d (atomics, fixture twins) and m3.f1
-(`check-dual --check-only`) done; m3.e1 in review, then m3.e2 and m3.f2.
+m3.c (macro twins), m3.c2 (check-cpu), m3.d (atomics, fixture twins), m3.e1 (four example
+twins) and m3.f1 (`check-dual --check-only`) done; m3.e2 and m3.f2 next.
+
+- M3 m3.e1 (`41b4d0e`): every kernel with a typed call in signal-pipeline, particle-step,
+  typed-pipeline and atomic-counter has CPU-twin assertions; none opts out. The twin equals
+  the host reference exactly. Against the GPU, integer and struct outputs are exact and float
+  outputs stay within absolute bounds derived per kernel by the SEMANTICS.md §4 procedure and
+  written in each test's doc comment (signal-pipeline `transform` 900u, u = 2^-24; particle-step
+  `step` 3u to 98u per field; typed-pipeline `calibrate` up to 172u, `classify` 63u, `finalize`
+  14u); every observed maximum on the RTX 5090 is inside its bound and none is used as a
+  tolerance. typed-pipeline feeds each kernel's twin the GPU's intermediate buffers, and
+  `classify`'s severity is compared after an asserted guard that no score lies within the
+  bound of an f32 threshold. Each example adds non-ignored CPU-only tests to `check-cpu`.
+  SEMANTICS.md gains a derived-kernels table and lists the exact example kernels as proven.
+  Evidence: fmt, clippy, the four examples' tests with and without `--ignored` (GPU),
+  check-cpu, check-examples, check-artifacts (spirv-val green, same `.spv` names), xtask
+  tests, Unit suite, check-fast, docs-check, lint, and clippy, xtask tests, check-cpu,
+  check-dual and Unit again on the merge; five mutations killed.
 
 - M3 m3.f1 (`5c5a9ad`): `cargo xtask check-dual --check-only` and the `tests/dual` fixture
   workspace (`kernel-lib` with one `#[gust::gpu]` kernel; `consumer` with a `cfg(test)` twin

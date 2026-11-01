@@ -418,7 +418,7 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
             "check-ui: cargo check of each tests/ui fixture crate; a crate with an expected.txt must fail with exactly one error satisfying every key (`code: none` names a macro error without a rustc code and needs a `message:`); also part of check-fast and the Unit suite"
         }
         "check-cpu" => {
-            "check-cpu: `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial), running the non-ignored twin tests against the host references; needs neither slangc nor a GPU; a step of the Unit suite"
+            "check-cpu: `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial, signal-pipeline, particle-step, typed-pipeline, atomic-counter), running the non-ignored twin tests against the host references; needs neither slangc nor a GPU; a step of the Unit suite"
         }
         "check-dual" => {
             "check-dual: the dual test build (`--cfg gust_dual`, D26) and its cross-crate proof, with its own target directory <target>/dual: the workspace builds with the cfg; in tests/dual a consumer's test (E1) and production binary (E3) each fail with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib` without the cfg, and with it (E2) the test passes. Refuses to run while RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS or CARGO_BUILD_RUSTFLAGS is set (it delivers the cfg through CARGO_ENCODED_RUSTFLAGS). `--check-only` is the CPU-only mode CI will run; needs cargo only"

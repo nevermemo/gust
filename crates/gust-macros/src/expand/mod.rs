@@ -56,6 +56,8 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
         let emitted = crate::slang::emit_kernel(&original_module, original_kernel, options)?;
         let source_origin = source_origin(original_kernel, &emitted.lines);
         let slang_source = emitted.source;
+        let (artifacts, artifact_present) = artifact_tokens();
+        let strict_artifact = require_artifact_item(artifact_present, original_name.span());
         let [x, y, z] = options.workgroup_size;
         let (handle_doc, typed_calls) = typed_call_items(&original_name, &function.sig.inputs)?;
         let element_assertions = element_layout_assertions(&original_name, &function.sig.inputs)?;
@@ -87,11 +89,13 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
                     parameters: &[#(#parameter_descriptors),*],
                     slang_source: #slang_source,
                     source: #source_origin,
-                    artifacts: &[],
+                    artifacts: #artifacts,
                 };
             }
 
             #typed_calls
+
+            #strict_artifact
 
             #cpu_twin
 
@@ -100,6 +104,7 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
     }
 
     items.insert(0, syn::parse_quote! { use ::gust::prelude::*; });
+    let tracked_environment = tracked_environment();
     let module_ident = &module.ident;
     let module_vis = &module.vis;
     let module_attrs = &module.attrs;
@@ -112,6 +117,8 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
             #(#content)*
             #(#generated)*
 
+            #tracked_environment
+
             pub const MODULE_DESCRIPTOR: ::gust::ModuleDescriptor =
                 ::gust::ModuleDescriptor {
                     name: #module_name,
@@ -119,6 +126,32 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
                 };
         }
     })
+}
+
+/// The `artifacts:` field of a kernel descriptor and whether it holds an artifact. Artifacts are looked up and
+/// embedded from slice m4.c on; until then every kernel has none, which a strict profile turns into a compile error
+/// through [`require_artifact_item`].
+fn artifact_tokens() -> (TokenStream, bool) {
+    (quote!(&[]), false)
+}
+
+/// The profile check of one kernel: `gust::profile::require_artifact(present)` in a `const _`, spanned at the kernel
+/// so that a strict build (`GUST_PROFILE=native` or `web`, D44) without an artifact fails at the kernel's own line
+/// in the user's file, not inside `gust`. Under `dev` it does nothing. It is emitted in every expansion.
+fn require_artifact_item(present: bool, span: proc_macro2::Span) -> TokenStream {
+    quote_spanned! {span=>
+        const _: () = ::gust::profile::require_artifact(#present);
+    }
+}
+
+/// Reads the two variables that decide what a kernel crate's expansion contains, so that rustc records them as
+/// dependencies of the crate (`option_env!` is tracked) and Cargo re-expands the `#[gpu]` module when either one
+/// changes: `GUST_PROFILE` (the profile, D44) and `GUST_EXPORT_DIR` (export mode, D46). The values are not used.
+fn tracked_environment() -> TokenStream {
+    quote! {
+        const _: ::core::option::Option<&::core::primitive::str> = ::core::option_env!("GUST_PROFILE");
+        const _: ::core::option::Option<&::core::primitive::str> = ::core::option_env!("GUST_EXPORT_DIR");
+    }
 }
 
 /// The `source:` field of a kernel descriptor: the Rust file the kernel was
@@ -1094,6 +1127,69 @@ mod tests {
         let output = expand(module).unwrap().to_string();
         assert!(output.contains("source : :: gust :: SourceOrigin :: UNKNOWN"));
         assert!(!output.contains("LineSpan"));
+    }
+
+    /// The lines on which the identifiers called `name` of `tokens` start, depth first.
+    fn ident_lines(tokens: TokenStream, name: &str, lines: &mut Vec<usize>) {
+        for tree in tokens {
+            match tree {
+                proc_macro2::TokenTree::Ident(ident) if ident == name => {
+                    lines.push(ident.span().start().line);
+                }
+                proc_macro2::TokenTree::Group(group) => ident_lines(group.stream(), name, lines),
+                _ => {}
+            }
+        }
+    }
+
+    #[test]
+    fn every_kernel_checks_its_artifact_spanned_at_the_kernel() {
+        // `first` is on line 3, `second` on line 7.
+        let module: syn::ItemMod = crate::diagnostics::testing::parse_str(
+            "mod layout {\n#[kernel]\npub fn first(id: SV_DispatchThreadID, values: StructuredBuffer<f32>) {\nlet i = id.x;\n}\n#[kernel]\npub fn second(id: SV_DispatchThreadID, values: StructuredBuffer<f32>) {\nlet i = id.x;\n}\n}",
+        )
+        .unwrap();
+        let output = expand(module).unwrap();
+        let text = output.to_string();
+        // No artifact exists before m4.c, so the argument is `false`; one check per kernel, none per module.
+        assert_eq!(
+            text.matches("const _ : () = :: gust :: profile :: require_artifact (false) ;")
+                .count(),
+            2,
+            "{text}"
+        );
+        assert_eq!(text.matches("require_artifact").count(), 2, "{text}");
+        // Each check carries the line of its own kernel, which is where a strict build reports the error.
+        let mut lines = Vec::new();
+        ident_lines(output, "require_artifact", &mut lines);
+        assert_eq!(lines, [3, 7], "{text}");
+    }
+
+    #[test]
+    fn the_checks_use_the_value_the_artifacts_field_reports() {
+        let (artifacts, present) = artifact_tokens();
+        assert_eq!(artifacts.to_string(), "& []");
+        assert!(!present);
+        let item = require_artifact_item(true, proc_macro2::Span::call_site()).to_string();
+        assert_eq!(
+            item,
+            "const _ : () = :: gust :: profile :: require_artifact (true) ;"
+        );
+    }
+
+    #[test]
+    fn every_expansion_tracks_the_profile_and_the_export_directory() {
+        let kernel = "mod layout {\n#[kernel]\npub fn inspect(id: SV_DispatchThreadID, values: StructuredBuffer<f32>) {\nlet i = id.x;\n}\n}";
+        for source in [kernel, "mod empty {}"] {
+            let module: syn::ItemMod = crate::diagnostics::testing::parse_str(source).unwrap();
+            let text = expand(module).unwrap().to_string();
+            for variable in ["GUST_PROFILE", "GUST_EXPORT_DIR"] {
+                let item = format!(
+                    "const _ : :: core :: option :: Option < & :: core :: primitive :: str > = :: core :: option_env ! (\"{variable}\") ;"
+                );
+                assert_eq!(text.matches(&item).count(), 1, "{variable} in {text}");
+            }
+        }
     }
 
     const UNIX_ROOT: Option<&str> = Some("/srv/build/gust/crates/demo");

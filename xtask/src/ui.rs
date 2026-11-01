@@ -19,6 +19,16 @@ pub(crate) const UI_DIR: &str = "tests/ui";
 /// `compile_error!` of a proc macro. Exact, lower case; no rustc code is spelled this way.
 pub(crate) const NO_CODE: &str = "none";
 
+/// The key of an `expected.txt` that names text of a build script's failure (see [`Expectation::BuildFails`]).
+pub(crate) const BUILD_ERROR: &str = "build-error";
+
+/// The file of a fixture crate that sets environment variables for its `cargo check` (see [`parse_env`]).
+pub(crate) const ENV_FILE: &str = "env.txt";
+
+/// What cargo prints when a build script of `gust` fails, up to the package version. A refusal of another
+/// package's script would not satisfy a `build-error:`.
+const GUST_SCRIPT_FAILED: &str = "failed to run custom build command for `gust ";
+
 /// What `cargo check` of one fixture crate must do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Expectation {
@@ -27,6 +37,10 @@ pub(crate) enum Expectation {
     /// `expected.txt` lists keys: the crate must fail with exactly one error, and that error must
     /// satisfy all of them (code, location, message and label), not just the output as a whole.
     Fails(Expected),
+    /// `expected.txt` lists `build-error:` lines: `cargo check` must fail in the build script of `gust`, before
+    /// rustc reports anything about the crate, and cargo's output must contain every text. A build script prints
+    /// its refusal to stderr; it is no rustc diagnostic, so none of the keys of [`Expected`] can name it.
+    BuildFails(Vec<String>),
 }
 
 /// The keys of an `expected.txt`, all to hold in the one error of the crate.
@@ -54,6 +68,9 @@ pub(crate) struct Expected {
 pub(crate) struct Case {
     pub(crate) name: String,
     pub(crate) expectation: Expectation,
+    /// The `env.txt` of the fixture: variables its `cargo check` runs with, after the workspace profile. Empty
+    /// when there is no `env.txt`.
+    pub(crate) env: Vec<(String, String)>,
 }
 
 /// A place in a source file: a span's own, or one of the call sites of its macro expansion.
@@ -107,7 +124,7 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
     let mut problems = Vec::new();
     for case in &cases {
         let args = cargo_args(&case.name);
-        let output = case_command(root, &case.name).output();
+        let output = case_command(root, &case.name, &case.env).output();
         let output = match output {
             Ok(output) => output,
             Err(error) => {
@@ -146,21 +163,31 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
         .iter()
         .filter(|case| matches!(case.expectation, Expectation::Fails(_)))
         .count();
+    let refused = cases
+        .iter()
+        .filter(|case| matches!(case.expectation, Expectation::BuildFails(_)))
+        .count();
+    let with_env = cases.iter().filter(|case| !case.env.is_empty()).count();
     Ok(format!(
-        "UI check passed: {failing} fixture crate(s) failed to compile with exactly the expected rustc error and {} compiled cleanly (tests/ui, `cargo check --locked --message-format json`). Only the keys of each expected.txt (code, file, line, message and label) are compared, all within the one error of the crate itself (warnings and other crates are ignored, a second error fails) read from cargo's JSON, not the whole rustc output; no slangc and no GPU were involved.\n",
-        cases.len() - failing
+        "UI check passed: {failing} fixture crate(s) failed to compile with exactly the expected rustc error, {refused} failed in the build script of gust with the expected text and {} compiled cleanly (tests/ui, `cargo check --locked --message-format json`; {with_env} with variables of their own from env.txt). Only the keys of each expected.txt (code, file, line, message and label) are compared, all within the one error of the crate itself (warnings and other crates are ignored, a second error fails) read from cargo's JSON, not the whole rustc output; a `build-error:` text is looked up in cargo's stderr; no slangc and no GPU were involved.\n",
+        cases.len() - failing - refused
     ))
 }
 
 /// The cargo child that checks one fixture crate. It runs under `GUST_PROFILE=dev` like the other children of a
-/// workspace command (R4.2); the fixtures are not the release artefact either.
-pub(crate) fn case_command(root: &Path, case: &str) -> Command {
+/// workspace command (R4.2); the fixtures are not the release artefact either. The variables of the fixture's
+/// `env.txt` (`fixture_env`) are set after that, so a fixture that is about a profile can name `GUST_PROFILE`
+/// itself, and only that fixture does.
+pub(crate) fn case_command(root: &Path, case: &str, fixture_env: &[(String, String)]) -> Command {
     let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")));
     command
         .args(cargo_args(case))
         .current_dir(root)
         .stdin(Stdio::null());
     set_workspace_profile(&mut command);
+    for (name, value) in fixture_env {
+        command.env(name, value);
+    }
     command
 }
 
@@ -209,13 +236,23 @@ pub(crate) fn discover_cases(ui_root: &Path) -> Result<Vec<Case>, String> {
             let expectation = if expected.is_file() {
                 let text = fs::read_to_string(&expected)
                     .map_err(|error| format!("{UI_DIR}/{name}/expected.txt: {error}"))?;
-                Expectation::Fails(
-                    parse_expected(&text).map_err(|error| format!("{UI_DIR}/{name}: {error}"))?,
-                )
+                parse_expectation(&text).map_err(|error| format!("{UI_DIR}/{name}: {error}"))?
             } else {
                 Expectation::Compiles
             };
-            Ok(Case { name, expectation })
+            let env_file = ui_root.join(&name).join(ENV_FILE);
+            let env = if env_file.is_file() {
+                let text = fs::read_to_string(&env_file)
+                    .map_err(|error| format!("{UI_DIR}/{name}/{ENV_FILE}: {error}"))?;
+                parse_env(&text).map_err(|error| format!("{UI_DIR}/{name}: {error}"))?
+            } else {
+                Vec::new()
+            };
+            Ok(Case {
+                name,
+                expectation,
+                env,
+            })
         })
         .collect()
 }
@@ -318,6 +355,82 @@ pub(crate) fn parse_expected(text: &str) -> Result<Expected, String> {
     })
 }
 
+/// An `expected.txt` as an [`Expectation`]. Either it has `build-error: <text>` lines only (any number, each text a
+/// substring of cargo's stderr, see [`Expectation::BuildFails`]), or it is the rustc keys of [`parse_expected`]. A
+/// file that mixes the two is an error: a crate cannot both fail in a build script and report a rustc error.
+pub(crate) fn parse_expectation(text: &str) -> Result<Expectation, String> {
+    let mut texts = Vec::new();
+    let mut rustc_keys = false;
+    for raw in text.trim_start_matches('\u{feff}').lines() {
+        let entry = raw.trim();
+        if entry.is_empty() || entry.starts_with('#') {
+            continue;
+        }
+        match entry.split_once(':') {
+            Some((key, value)) if key.trim() == BUILD_ERROR => {
+                let value = value.trim();
+                if value.is_empty() {
+                    return Err(format!("expected.txt: `{BUILD_ERROR}` has no value"));
+                }
+                if value.contains('\\') {
+                    return Err(format!(
+                        "expected.txt: `{BUILD_ERROR}: {value}` contains a backslash; cargo's stderr is compared with backslashes read as slashes, so write a slash"
+                    ));
+                }
+                texts.push(value.to_owned());
+            }
+            _ => rustc_keys = true,
+        }
+    }
+    if texts.is_empty() {
+        return parse_expected(text).map(Expectation::Fails);
+    }
+    if rustc_keys {
+        return Err(format!(
+            "expected.txt mixes `{BUILD_ERROR}:` with other lines; a crate that fails in a build script has no rustc error to key"
+        ));
+    }
+    Ok(Expectation::BuildFails(texts))
+}
+
+/// The `env.txt` of a fixture crate: `NAME=value` lines (blank lines and lines starting with `#` ignored) in the
+/// order written. The value is everything after the first `=`, as written: it may be empty (`GUST_PROFILE=` sets the
+/// variable to an empty string) and is not trimmed. A name is ASCII letters, digits and underscores and appears
+/// once; a file that sets nothing, a line without `=` and a duplicate name are errors.
+pub(crate) fn parse_env(text: &str) -> Result<Vec<(String, String)>, String> {
+    let mut variables: Vec<(String, String)> = Vec::new();
+    for raw in text.trim_start_matches('\u{feff}').lines() {
+        if raw.trim().is_empty() || raw.trim_start().starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = raw.split_once('=') else {
+            return Err(format!(
+                "{ENV_FILE} line `{raw}` is not a `NAME=value` pair"
+            ));
+        };
+        let name = name.trim();
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return Err(format!(
+                "{ENV_FILE}: `{name}` is not a variable name (ASCII letters, digits and underscores)"
+            ));
+        }
+        if variables.iter().any(|(known, _)| known == name) {
+            return Err(format!("{ENV_FILE}: `{name}` appears twice"));
+        }
+        variables.push((name.to_owned(), value.to_owned()));
+    }
+    if variables.is_empty() {
+        return Err(format!(
+            "{ENV_FILE} sets no variable; delete it if the crate needs none"
+        ));
+    }
+    Ok(variables)
+}
+
 /// Whether a slash-separated path is absolute: a leading slash (also `//host/share`) or a
 /// drive letter.
 fn is_absolute(path: &str) -> bool {
@@ -355,6 +468,40 @@ pub(crate) fn judge(
             "{case}: has no expected.txt so it must compile, but `cargo check` failed:\n{}",
             shown()
         )],
+        Expectation::BuildFails(_) if success => vec![format!(
+            "{case}: has `{BUILD_ERROR}:` lines in expected.txt so `cargo check` must fail in a build script, but it compiled"
+        )],
+        Expectation::BuildFails(texts) => {
+            let cargo_text = stderr.replace('\\', "/");
+            let mut problems = Vec::new();
+            if !errors.is_empty() {
+                problems.push(format!(
+                    "{case}: expected.txt wants a failure in the build script of `gust`, but rustc reported {} error(s) of the crate itself: {}",
+                    errors.len(),
+                    errors
+                        .iter()
+                        .map(|error| describe(case, error))
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                ));
+            }
+            if !cargo_text.contains(GUST_SCRIPT_FAILED) {
+                problems.push(format!(
+                    "{case}: `cargo check` failed, but not in the build script of `gust` (cargo's output has no `{GUST_SCRIPT_FAILED}..`)"
+                ));
+            }
+            for text in texts {
+                if !cargo_text.contains(text.as_str()) {
+                    problems.push(format!(
+                        "{case}: cargo's output does not contain `{BUILD_ERROR}: {text}` of expected.txt"
+                    ));
+                }
+            }
+            if !problems.is_empty() {
+                problems.push(format!("{case}: cargo's output was:\n{}", shown()));
+            }
+            problems
+        }
         Expectation::Fails(_) if success => vec![format!(
             "{case}: has an expected.txt so `cargo check` must fail, but it compiled"
         )],

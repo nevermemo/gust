@@ -93,6 +93,20 @@ development puts the feature on a `[dev-dependencies]` entry,
 process-spawning compiler. Check that state with
 `cargo check -p gust -p gust-wgpu --no-default-features --lib` (the Unit suite runs it).
 
+Build profiles (D44): the environment variable `GUST_PROFILE` is `dev`, `native` or `web`, and `gust`'s build
+script reads it (any other value, including an empty one, fails the build). `native` and `web` are strict: every
+`#[gpu]` kernel must have a precompiled artifact, or the build fails with a compile error at the kernel, and the
+`slang-runtime` feature is refused, so the build holds no run-time Slang compiler. `dev` has neither rule. A release
+build is strict even without the variable: with `GUST_PROFILE` unset, `cargo build --release` of a crate with
+`#[gpu]` kernels is treated as `web` for `wasm32` and `native` for every other target, and prints
+`warning: gust@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`;
+cargo shows a build script's warning only for path and workspace packages, or with `-vv`). A release build that
+wants the run-time bridge, such as the benchmark examples below, sets `GUST_PROFILE=dev` explicitly
+(`GUST_PROFILE=dev cargo run --release -p polynomial`; in PowerShell `$env:GUST_PROFILE = "dev"` first). The
+repository's `cargo xtask` commands run their cargo children under `GUST_PROFILE=dev`, whatever the parent
+environment holds (a different value is logged and overridden), which covers `check-full`'s release tests. No
+precompiled artifacts exist before slice m4.c, so until then a strict build of any kernel fails by design.
+
 For the full release-readiness check (including ignored example tests, all eight
 examples, and mandatory external validation of all thirteen SPIR-V exports):
 
@@ -422,12 +436,13 @@ Release-mode benchmark examples use fixed sizes selected in each example's
 `main` function, kept within the default limit of 65 535 workgroups per dispatch
 dimension (`gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION`; a unit test
 in each affected example checks it); there is currently no
-environment-variable size override:
+environment-variable size override. The examples enable `slang-runtime`, which a release build refuses unless
+`GUST_PROFILE=dev` is set (see the build profiles above):
 
 ```sh
-cargo run --release -p polynomial
-cargo run --release -p signal-pipeline
-cargo run --release -p typed-pipeline
+GUST_PROFILE=dev cargo run --release -p polynomial
+GUST_PROFILE=dev cargo run --release -p signal-pipeline
+GUST_PROFILE=dev cargo run --release -p typed-pipeline
 ```
 
 CPU numbers in those examples measure separate host implementations. That makes

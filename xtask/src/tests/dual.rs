@@ -1015,7 +1015,7 @@ fn the_workspace_declares_the_cfg_and_every_member_that_can_write_it_opts_in() {
     let root = repo_file("Cargo.toml");
     assert!(
         root.contains(
-            "[workspace.lints.rust]\nunexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(gust_dual)'] }\n"
+            "[workspace.lints.rust]\nunexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(gust_dual)', 'cfg(gust_profile, values(\"dev\", \"native\", \"web\"))'] }\n"
         ),
         "{root}"
     );

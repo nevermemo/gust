@@ -13,7 +13,22 @@ adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),
 m3.c (macro twins), m3.c2 (check-cpu), m3.d (atomics, fixture twins), m3.e1 (four example
-twins), m3.e2 (graph example twins) and m3.f1 (`check-dual --check-only`) done; m3.f2 next.
+twins), m3.e2 (graph example twins), m3.f1 (`check-dual --check-only`) and m3.f2 (check-cfg
+lints, dual mains, full `check-dual`, CI step) done; the M3 close-out and sanity check next.
+
+- M3 m3.f2 (`98acabc`): the root manifest declares `cfg(gust_dual)` through
+  `[workspace.lints.rust] unexpected_cfgs`, and every crate except the proc-macro crate
+  gust-macros opts in with `[lints] workspace = true`. The gust-macros guard now allows exactly
+  that root table and still rejects any lints table in its own manifest, however spaced or
+  quoted. Under `--cfg gust_dual`, vector-add and polynomial run the twin on `main`'s inputs and
+  print "CPU twin: matches (N elements, max ULP k)", asserting against the derived bound;
+  normal builds print nothing new. `check-dual` gains fmt and clippy for `tests/dual`, clippy
+  with the cfg on the two examples, and a full mode (GPU) that requires the line with the cfg
+  and its absence without; `check-full` runs the full mode, and CI's `unit` job ends with
+  `check-dual --check-only` (local: 9 s warm, 74 s for the first dual build). Evidence: fmt,
+  clippy, xtask and gust-macros tests, check-dual in both modes, check-ui, both examples' tests
+  with and without `--ignored` (GPU), Unit suite, check-fast, docs-check, lint, and the same
+  again on the merge plus check-cpu; four mutations killed.
 
 - M3 m3.e2 (`00127a4`): every kernel of staged-graph and component-pool has CPU-twin
   assertions; none opts out. Each twin is fed the GPU's inputs to that kernel (read back where

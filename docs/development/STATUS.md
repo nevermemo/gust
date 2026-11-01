@@ -1,6 +1,6 @@
 # Current status
 
-## Active: roadmap M3 (2026-10-24)
+## Active: roadmap M4 (2026-11-01)
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done; M0.15
@@ -8,8 +8,12 @@ The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed o
 2026-10-23 (D33): M1.0 to M1.6 are done (per-item evidence in the roadmap), after a
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
 below. M2 (typed host API) closed on 2026-10-24 (D37) after a sanity check by Fable and
-Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test builds): plan
-adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
+Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test builds) closed
+on 2026-11-01 (D43) after a sanity check by Fable and Codex (both "proceed with fixes"), the
+fixes in slice m3.h and `check-full` on a clean tree at `5971c12` (RTX 5090, 06:28-06:31Z).
+M4 (build-time targets and distribution) is next: its plan starts with a pre-registered
+spike, one precompiled, reflection-verified kernel running without Slang installed (D43).
+M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),
 m3.c (macro twins), m3.c2 (check-cpu), m3.d (atomics, fixture twins), m3.e1 (four example
@@ -18,7 +22,22 @@ lints, dual mains, full `check-dual`, CI step) and m3.g (gates that cannot pass 
 done; the close-out docs and D40 to D42 are in; `check-full` passed on a clean tree at `96e4b9d`
 (RTX 5090, 2026-11-01 05:36-05:43Z: 13 SPIR-V modules validated, `check-dual` full mode, every
 example test with `--include-ignored`, both release-only tests by name); the M3 sanity check (Fable and Codex,
-both "proceed with fixes") is in, and slice m3.h applies its fixes.
+both "proceed with fixes") followed, and slice m3.h applied its fixes.
+
+- M3 m3.h (`a169bec`, merge `5971c12`): the sanity fixes. The KM-11 out-of-bounds store rows
+  use an 8-element `source`, so the load is in bounds and the twin's panic is the store's (a
+  GPU-free test pins the store line, with an in-bounds control). tests/dual's consumer gains
+  `twin_overflow` (under `cfg(all(test, gust_dual))`, so E1's single error stays on line 23):
+  the twin of kernel-lib's kernel panics on `u32::MAX + 1` because kernel-lib builds with
+  checks on, and a kernel the consumer defines wraps under the consumer's checks-off override,
+  so a twin follows the crate that defines the kernel (D43 corrects D38's wording); both tests
+  are required by name in `check-dual`. `check-cpu` requires every example's twin and
+  derivation-domain tests by name (`CPU_REQUIRED_TESTS`, pinned against the example sources).
+  Docs: SEMANTICS excludes float-derived decisions and order-dependent atomic results from
+  the identical-results claim, ARCHITECTURE matches D39, VALIDATION and DIAGNOSTICS updated.
+  Mutations killed: an in-bounds store index, the consumer's mode expected for the
+  dependency's twin, a renamed twin test. Opus keep after one fix round; gates 13 of 13 in
+  the worktree; `check-full` PASS at `5971c12`.
 
 - M3 m3.g (`95c5514`): a read-only audit (plan Revision 7) found no gate that skips through
   an early return, a missing tool or a CI condition, but six holes, now closed: `check-full`
@@ -332,12 +351,12 @@ full_check_needed_before_commit: no
 
 - Branch: `main`
 - Last complete compiler feature: T12, statement-only `match Result<T, T>`
-- Last full validation: `cargo xtask check-full` passed on a clean tree at `96e4b9d`
-  (2026-11-01, NVIDIA GeForce RTX 5090 / Vulkan, 05:36 to 05:43Z), through the shared
-  cargo slot wrapper: workspace tests, the release-only tests required by name, every example
-  test with `--include-ignored`, `check-dual` in full mode, and 13 SPIR-V artifacts through
-  `spirv-val`. `1380913` changed documentation only. The run before it was at `634a50e`
-  (M2 close, 2026-10-24) and the one before that (M1) at `a6cbb8f`, together with the Slangc
+- Last full validation: `cargo xtask check-full` passed on a clean tree at `5971c12`
+  (M3 close, 2026-11-01, NVIDIA GeForce RTX 5090 / Vulkan, 06:28 to 06:31Z), through the
+  shared cargo slot wrapper: workspace tests, the release-only tests required by name, every
+  example test with `--include-ignored`, `check-dual` in full mode, and 13 SPIR-V artifacts
+  through `spirv-val`. The run before it was at `96e4b9d` (2026-11-01, before the M3 sanity
+  fixes), then `634a50e` (M2 close, 2026-10-24) and the one before that (M1) at `a6cbb8f`, together with the Slangc
   and Reflect suites. The local `.ai/VALIDATION.json` record stamps the commit and dirty
   state and contains no machine paths.
 - DX19 is closed: full validation, two independent reviews, and fixes (`027eef7`,

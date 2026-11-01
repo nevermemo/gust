@@ -31,8 +31,12 @@ framework, and Hurricane, the game engine (today's
 
 ## Now and next
 
-**Now: M3, dual test builds.** Plan adopted 2026-10-24 (owner-delegated); slices run one at a time. The M2 sanity check (D37) keeps M3's scope
-and fixes the order inside it.
+**Now: M4, build-time targets and distribution.** Next: the M4 plan with pre-registered spikes (D43). The first spike runs
+one precompiled, reflection-verified kernel without Slang installed, and the plan chooses the build-profile mechanism so
+that it composes with `check-dual` before any coding.
+
+**Done: M3, dual test builds** (closed 2026-11-01, D43). Plan adopted 2026-10-24 (owner-delegated); slices ran one at a
+time. The M2 sanity check (D37) kept M3's scope and fixed the order inside it.
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -47,6 +51,8 @@ and fixes the order inside it.
 | m3.e1, m3.e2 | Remaining examples: per-kernel twins or explicit opt-outs (graph examples use read-back intermediates) | m3.e1 done (Gpu: RTX 5090; Opus keep after one fix round; `41b4d0e`); m3.e2 done (Gpu: RTX 5090; Opus keep after one fix round; `00127a4`) |
 | m3.f1, m3.f2 | `--cfg gust_dual`: a cross-crate fixture proving the twin is absent from production builds, `check-dual`, check-cfg lints, example mains, CI step | m3.f1 done (Unit, CPU only; Opus keep after one fix round; `5c5a9ad`); m3.f2 done (Unit + Gpu: RTX 5090; Opus keep after one fix round; `98acabc`) |
 | m3.g | Gates that cannot pass by skipping (plan Revision 7): examples with `--include-ignored` in `check-full`, a test-count guard, release-only tests required by name, NaN-propagating error folds, pinned check-ui fixtures, `gust::cpu` unit tests in the Unit suite | done (Unit; Opus keep after two fix rounds; `95c5514`); `check-full` PASS at `96e4b9d` (clean tree, RTX 5090) |
+| M3 sanity check | Fable and Codex, read-only, on `69b2bf3..1380913` | done (both "proceed with fixes"; D43) |
+| m3.h | Sanity fixes: KM-11 store rows reach the store, cross-crate overflow proof in `check-dual`, `check-cpu` requires twin tests by name, documentation drift | done (Unit + Gpu: RTX 5090; Opus keep after one fix round; `a169bec`); `check-full` PASS at `5971c12` (clean tree, RTX 5090) |
 
 **Done: M2, typed host API** (closed 2026-10-24, D37). Plan adopted after two Codex reviews (owner-delegated); slices
 ran one at a time, and each landed slice is recorded in STATUS.
@@ -112,8 +118,8 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M0 Close-out and housekeeping | See Now and next | done (D28; M0.15 done 2026-11-01) |
 | M1 Diagnostics | `#line` markers so Slang errors point at Rust file and line (extends DX19); stable diagnostic codes; `#[diagnostic::on_unimplemented]` on shadow-type traits; original tokens kept beside `compile_error!` | done (D33; M1.0 to M1.6) |
 | M2 Typed host API | Typed per-kernel dispatch, designed backend-neutral so the same call runs on the GPU or a CPU twin; const `offset_of!`/`size_of` layout assertions; StagedGraph deriving dependencies from typed reads and writes; launch-limit checks | done (D37) |
-| M3 Dual test builds | Executable shadow types under the semantics contract (D22); CPU dispatch; CPU twins emitted under `cfg(test)`; `--cfg gust_dual` for cross-crate tests and benchmarks; per-kernel opt-out (`#[kernel(cpu = "unsupported")]`); existing GPU tests gain CPU-versus-GPU checks while semantics fixtures keep independent host references (D26). From M2 (D34): the CPU backend implements `TypedDevice` once and `Run<K, N>` per kernel, keeps the alias contract, and `#[kernel(cpu = "unsupported")]` is the absence of the `Run` impl | in progress |
-| M4 Build-time targets and distribution | Build profiles (target plus capability set) chosen at build time; hash-keyed artifact manifest; D17 at export time for WGSL and SPIR-V; runtime `slangc` behind a development feature; a pinned-Slang manager for crate users; first browser WebGPU run. Note: first spike: choose the build-profile mechanism (build.rs env, `--config`, or a cfg namespace) so it composes with check-dual's `CARGO_ENCODED_RUSTFLAGS` and its refusal; the artifact manifest hashes Slang output only (the twin never enters it or the published crate) | planned |
+| M3 Dual test builds | Executable shadow types under the semantics contract (D22); CPU dispatch; CPU twins emitted under `cfg(test)`; `--cfg gust_dual` for cross-crate tests and benchmarks; per-kernel opt-out (`#[kernel(cpu = "unsupported")]`); existing GPU tests gain CPU-versus-GPU checks while semantics fixtures keep independent host references (D26). From M2 (D34): the CPU backend implements `TypedDevice` once and `Run<K, N>` per kernel, keeps the alias contract, and `#[kernel(cpu = "unsupported")]` is the absence of the `Run` impl | done (D43) |
+| M4 Build-time targets and distribution | Build profiles (target plus capability set) chosen at build time; hash-keyed artifact manifest; D17 at export time for WGSL and SPIR-V; runtime `slangc` behind a development feature; a pinned-Slang manager for crate users; first browser WebGPU run. Note: first spike: choose the build-profile mechanism (build.rs env, `--config`, or a cfg namespace) so it composes with check-dual's `CARGO_ENCODED_RUSTFLAGS` and its refusal; the artifact manifest hashes Slang output only (the twin never enters it or the published crate) | next (plan; D43) |
 | M5 CPU target and evidence breadth | Production `cpu` build target and runtime; lavapipe CI job labelled `Gpu (software)`; differential program generator with shrinking; scalar `coretests` cases on the GPU. Note: the known-mismatch ledger and the semantics contract exist since M3 and are not new M5 work; M5 adds the production target, lavapipe and the generator | planned |
 | M6 Language breadth I | Vectors and matrices (vec3 and mat3 rejected in buffers at first; `m * v` lowers to `mul`); collision-only identifier renaming; uniforms (`ConstantBuffer<T>`). Note: uniform typed calls were decided in M3 (D40): such kernels have no typed call and no CPU twin until this milestone | planned |
 | M7 GPU concepts in Rust | `par_for!` SIMT dispatch on both pipelines; workgroup shared memory and barriers, including a CPU strategy; reduce, scan and compaction primitives (T13 lands here). Multi-dimensional dispatch lifts the `max_compute_workgroups_per_dimension` ceiling (D36). Note: `#[kernel(cpu = "unsupported")]` is the opt-out for barrier kernels until a CPU strategy exists; a validator rule rejects a construct with cross-invocation meaning unless the kernel carries `cpu = "unsupported"` or a declared twin strategy (D42) | planned |

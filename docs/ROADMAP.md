@@ -79,7 +79,7 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M1.5 | Stable diagnostic codes (`[GUST-E0401]`), `docs/DIAGNOSTICS.md`, tests assert codes | done (Unit: 111 codes, every code tested or listed unreachable, three guards; Fable keep, fixes `f20d313`; `df07122`, `6e195bc`) |
 | M1.6 | Sanity-check fixes (Opus and Fable, D33): clippy `disallowed-methods` replaces the uncoded-error scanner; the code guard counts assertions, not mentions; `resolver = "3"`; one `#line` path rule for macro and compiler; docs | done (Unit + Slangc + Reflect on the merged tree; Opus keep after two fix rounds; `1f961fc`) |
 
-**Done: M0, close-out and housekeeping** (closed 2026-10-23, D28; M0.15 waits for 2026-10-30).
+**Done: M0, close-out and housekeeping** (closed 2026-10-23, D28; M0.15 done 2026-11-01).
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -102,13 +102,13 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M0.18 | Slice B review fixes: check-arch reads root `[workspace.dependencies]` renames; `--locked` wording in VALIDATION.md or flags on Reflect/Spirv suites; xtask `rust-version`; nits | done (Unit, 5503e5a; Codex review: keep after fixes -> M0.20) |
 | M0.19 | No silent GPU skips: examples fail on `NoAdapter`; `else if` header braces; `match` ordinal scope in the DX19 contract; retry visibility | done (Gpu: check-examples on RTX 5090, 3296885; Codex review keep) |
 | M0.20 | check-arch: quoted TOML keys and basic-string escapes (Codex review of M0.18) | done (Gpu: check-full RTX 5090 2026-10-23T13:24Z at 8200431; Codex review keep) |
-| M0.15 | Make the CI `unit` job a required check after a week of green runs (from 2026-10-30) | planned |
+| M0.15 | Make the CI `unit` job a required check after a week of green runs (from 2026-10-30) | done (2026-11-01: branch protection on `main` requires `unit`; admins exempt, no required reviews; green since 2026-10-23) |
 
 ## Milestones
 
 | Milestone | Content | Status |
 | --- | --- | --- |
-| M0 Close-out and housekeeping | See Now and next | done (D28; M0.15 waits for 2026-10-30) |
+| M0 Close-out and housekeeping | See Now and next | done (D28; M0.15 done 2026-11-01) |
 | M1 Diagnostics | `#line` markers so Slang errors point at Rust file and line (extends DX19); stable diagnostic codes; `#[diagnostic::on_unimplemented]` on shadow-type traits; original tokens kept beside `compile_error!` | done (D33; M1.0 to M1.6) |
 | M2 Typed host API | Typed per-kernel dispatch, designed backend-neutral so the same call runs on the GPU or a CPU twin; const `offset_of!`/`size_of` layout assertions; StagedGraph deriving dependencies from typed reads and writes; launch-limit checks | done (D37) |
 | M3 Dual test builds | Executable shadow types under the semantics contract (D22); CPU dispatch; CPU twins emitted under `cfg(test)`; `--cfg gust_dual` for cross-crate tests and benchmarks; per-kernel opt-out (`#[gpu(cpu = "unsupported")]`); existing GPU tests gain CPU-versus-GPU checks while semantics fixtures keep independent host references (D26). From M2 (D34): the CPU backend implements `TypedDevice` once and `Run<K, N>` per kernel, keeps the alias contract, and `#[gpu(cpu = "unsupported")]` is the absence of the `Run` impl | in progress |

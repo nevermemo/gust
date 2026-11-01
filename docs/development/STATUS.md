@@ -3,8 +3,8 @@
 ## Active: roadmap M3 (2026-10-24)
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
-2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done except M0.15,
-which waits for a week of green CI (from 2026-10-30). M1 (diagnostics) closed on
+2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done; M0.15
+(the CI `unit` job is a required check on `main`) followed on 2026-11-01. M1 (diagnostics) closed on
 2026-10-23 (D33): M1.0 to M1.6 are done (per-item evidence in the roadmap), after a
 sanity check by Fable and Opus (both "proceed with fixes") and the full validation
 below. M2 (typed host API) closed on 2026-10-24 (D37) after a sanity check by Fable and
@@ -19,8 +19,8 @@ m3.c (macro twins) and m3.c2 (check-cpu) done; m3.d next.
   host references; it is a step of the Unit suite and so of the CI `unit` job. check-ui gains
   `code: none` for macro errors without a rustc code (it needs a `message:` line and still
   pins file and line), with the fixtures `kernel-cpu-bad-value` (E0709) and
-  `kernel-cpu-duplicate` (E0710). Cost: 7 to 8 s warm and 67 s cold locally; the CI-runner
-  time is not yet measured (plan R5 budget: five minutes). Evidence: fmt, clippy, xtask tests
+  `kernel-cpu-duplicate` (E0710). Cost: 7 to 8 s warm and 67 s cold locally; on the CI runner
+  the Unit step went from 12 s to 41 s (plan R5 budget: five minutes). Evidence: fmt, clippy, xtask tests
   (161), check-ui, check-cpu, Unit suite, check-fast, docs-check, lint; three mutations
   killed. Opus keep, no must-fix.
 - M3 m3.c (`732c774`): for every kernel with a typed call, the `#[gpu]` macro emits

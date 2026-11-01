@@ -13,7 +13,22 @@ adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),
 m3.c (macro twins), m3.c2 (check-cpu), m3.d (atomics, fixture twins), m3.e1 (four example
-twins) and m3.f1 (`check-dual --check-only`) done; m3.e2 and m3.f2 next.
+twins), m3.e2 (graph example twins) and m3.f1 (`check-dual --check-only`) done; m3.f2 next.
+
+- M3 m3.e2 (`00127a4`): every kernel of staged-graph and component-pool has CPU-twin
+  assertions; none opts out. Each twin is fed the GPU's inputs to that kernel (read back where
+  an earlier kernel produced them), and each test carries the label "kernel-level twin
+  evidence; graph and indirect dispatch GPU-only": the graph, its dependency edges, the
+  indirect launch and the pool growth run on the GPU alone. Integer and struct outputs are
+  exact, including `prepare_dispatch`'s indirect arguments, which also match a host formula.
+  Float bounds are derived per kernel (staged-graph `transform` 193u, `summarize` total 3886u;
+  component-pool `integrate` 19u to 73u per field); every observed maximum on the RTX 5090 is
+  inside its bound and none is used as a tolerance. A guard asserts that no host intermediate
+  lies within the bound of staged-graph's f32 threshold. Both examples add non-ignored CPU-only
+  tests to `check-cpu`. Evidence: fmt, clippy, both examples' tests with and without
+  `--ignored` (GPU), check-cpu, check-examples, check-artifacts, xtask tests, Unit suite,
+  check-fast, docs-check, lint, and the same test, check-cpu and Unit steps again on the merge;
+  five mutations killed.
 
 - M3 m3.e1 (`41b4d0e`): every kernel with a typed call in signal-pipeline, particle-step,
   typed-pipeline and atomic-counter has CPU-twin assertions; none opts out. The twin equals

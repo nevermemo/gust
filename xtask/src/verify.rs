@@ -12,7 +12,7 @@ use crate::{
     reflect::{BuildOptions, build_slang_reflect},
     time::now_utc,
     ui::check_ui,
-    validation::{ArtifactRecord, GitStamp, RunInfo, sha256_hex, write_validation},
+    validation::{AdapterRecord, ArtifactRecord, GitStamp, RunInfo, sha256_hex, write_validation},
     workspace::{EXAMPLES, EXPECTED_SPIRV, SMOKE_EXAMPLES, workspace_root, workspace_test_args},
 };
 
@@ -91,12 +91,14 @@ pub(crate) fn verify(mode: VerifyMode, record: bool) -> Result<(), String> {
     let git = GitStamp::read(&root);
     let mut checks = Vec::new();
     let mut artifacts = Vec::new();
-    let result = verify_inner(&root, mode, &mut checks, &mut artifacts);
+    let mut adapter = None;
+    let result = verify_inner(&root, mode, &mut checks, &mut artifacts, &mut adapter);
     if record {
         let run = RunInfo {
             mode,
             started: &started,
             git: &git,
+            adapter: adapter.as_ref(),
         };
         write_validation(&root, &run, result.as_ref().err(), &checks, &artifacts)?;
     }
@@ -110,6 +112,7 @@ fn verify_inner(
     mode: VerifyMode,
     checks: &mut Vec<CheckRecord>,
     artifacts: &mut Vec<ArtifactRecord>,
+    adapter: &mut Option<AdapterRecord>,
 ) -> Result<(), String> {
     // Cheapest checks first; they need only git, and check-ui needs cargo (no slangc, no GPU).
     if matches!(
@@ -130,6 +133,9 @@ fn verify_inner(
     run_checked(root, checks, "rustc", &["--version"])?;
     run_checked(root, checks, "slangc", &["-version"])?;
     build_slang_reflect(BuildOptions::default())?;
+    // Before the first GPU step: no adapter, or one that cannot be named, fails the run here and the record says null.
+    *adapter = Some(record_adapter(root, checks)?);
+    clear_generated_output(root, mode)?;
     for args in cargo_calls(mode) {
         run_checked_owned(root, checks, "cargo", &args)?;
         if counts_tests(&args)
@@ -154,7 +160,7 @@ fn verify_inner(
     }
     if matches!(mode, VerifyMode::Artifacts | VerifyMode::Full) {
         run_checked(root, checks, "spirv-val", &["--version"])?;
-        let mut spv = fs::read_dir(root.join("generated-wgpu"))
+        let mut spv = fs::read_dir(root.join(GENERATED_DIR))
             .map_err(|error| error.to_string())?
             .filter_map(Result::ok)
             .map(|entry| entry.path())
@@ -189,6 +195,63 @@ fn verify_inner(
         }
     }
     Ok(())
+}
+
+/// The directory the examples export their Slang, WGSL and SPIR-V to (ignored by git, never committed).
+const GENERATED_DIR: &str = "generated-wgpu";
+
+/// The cargo call that prints the selected adapter as one JSON line (`crates/gust-wgpu/examples/adapter_info.rs`).
+pub(crate) const ADAPTER_INFO_ARGS: [&str; 7] = [
+    "run",
+    "--locked",
+    "--quiet",
+    "-p",
+    "gust-wgpu",
+    "--example",
+    "adapter_info",
+];
+
+/// Runs [`ADAPTER_INFO_ARGS`] and reads the adapter from its output. A failed run, a run that prints nothing, and
+/// output that does not name an adapter all fail the step; the record of the check then carries no exit code.
+fn record_adapter(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<AdapterRecord, String> {
+    run_checked(root, checks, "cargo", &ADAPTER_INFO_ARGS)?;
+    let Some(record) = checks.last_mut() else {
+        return Err("the adapter step left no check record".to_owned());
+    };
+    adapter_from_check(record)
+}
+
+/// Reads the adapter from the captured output of the finished adapter check. When the output does not name one, the
+/// process still exited 0, so the record must not say success: no exit code, and the reason on stderr.
+pub(crate) fn adapter_from_check(record: &mut CheckRecord) -> Result<AdapterRecord, String> {
+    AdapterRecord::parse(&record.stdout).inspect_err(|error| {
+        record.exit_code = None;
+        record.stderr.push_str(&format!("adapter guard: {error}\n"));
+    })
+}
+
+/// Whether a mode checks the exported artifacts and so starts from an empty [`GENERATED_DIR`].
+pub(crate) fn clears_generated_output(mode: VerifyMode) -> bool {
+    matches!(mode, VerifyMode::Artifacts | VerifyMode::Full)
+}
+
+/// Empties [`GENERATED_DIR`] under `root` before the examples export into it, for the modes that check the
+/// artifacts. The directory is ignored by git and survives between runs, so without this a file of a deleted or
+/// renamed kernel would still satisfy the name check and pass `spirv-val`. A missing directory is fine (the examples
+/// create it); any other failure fails the step, because stale files would then remain.
+pub(crate) fn clear_generated_output(root: &Path, mode: VerifyMode) -> Result<(), String> {
+    if !clears_generated_output(mode) {
+        return Ok(());
+    }
+    let directory = root.join(GENERATED_DIR);
+    // `remove_dir_all` removes a symlink or junction itself, not its target.
+    match fs::remove_dir_all(&directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("could not clear {GENERATED_DIR}: {error}")),
+    }
+    fs::create_dir_all(&directory)
+        .map_err(|error| format!("could not recreate {GENERATED_DIR}: {error}"))
 }
 
 /// The Slang tests of the core library in the release profile (the Full mode and suite).
@@ -358,6 +421,10 @@ fn compare_artifact_names(expected: &[&str], found: &[String]) -> Result<(), Str
 #[cfg(test)]
 #[path = "tests/artifact_names.rs"]
 mod artifact_names_tests;
+
+#[cfg(test)]
+#[path = "tests/verify_generated.rs"]
+mod verify_generated_tests;
 
 #[cfg(test)]
 #[path = "tests/verify_steps.rs"]

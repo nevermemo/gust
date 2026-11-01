@@ -6,7 +6,7 @@ use std::{
 };
 
 use super::{
-    ArtifactRecord, GitStamp, RunInfo, compact_validation_summary, json_string,
+    AdapterRecord, ArtifactRecord, GitStamp, RunInfo, compact_validation_summary, json_string,
     validation_redaction_tests::HOME, write_validation_with_home,
 };
 use crate::{process::CheckRecord, verify::VerifyMode};
@@ -16,6 +16,7 @@ fn run(mode: VerifyMode, git: &GitStamp) -> RunInfo<'_> {
         mode,
         started: "2026-10-23T00:00:00Z",
         git,
+        adapter: None,
     }
 }
 
@@ -246,4 +247,138 @@ fn an_untracked_file_makes_the_tree_dirty_even_when_git_is_told_to_hide_untracke
     let dirty = GitStamp::read(&root).dirty;
     let _ = fs::remove_dir_all(&root);
     assert_eq!(dirty, Some(true));
+}
+
+fn adapter_line() -> &'static str {
+    r#"{"name":"NVIDIA GeForce RTX 5090","vendor":4318,"device":11011,"device_type":"DiscreteGpu","backend":"Vulkan","driver":"NVIDIA","driver_info":"581.80"}"#
+}
+
+fn adapter() -> AdapterRecord {
+    AdapterRecord::parse(adapter_line()).unwrap()
+}
+
+#[test]
+fn the_adapter_line_of_the_example_is_read_field_by_field() {
+    let parsed = adapter();
+    assert_eq!(
+        parsed,
+        AdapterRecord {
+            name: "NVIDIA GeForce RTX 5090".to_owned(),
+            vendor: "4318".to_owned(),
+            device: "11011".to_owned(),
+            device_type: "DiscreteGpu".to_owned(),
+            backend: "Vulkan".to_owned(),
+            driver: "NVIDIA".to_owned(),
+            driver_info: "581.80".to_owned(),
+        }
+    );
+    // Blank lines around the one line are fine; JSON escapes are decoded.
+    let escaped = adapter_line().replace("RTX 5090", r#"RTX \"5090\" \\ x"#);
+    let with_blanks = format!("\r\n{escaped}\r\n\r\n");
+    assert_eq!(
+        AdapterRecord::parse(&with_blanks).unwrap().name,
+        r#"NVIDIA GeForce RTX "5090" \ x"#
+    );
+    // Driver text may be empty (some drivers report none); the name may not.
+    let no_driver = adapter_line().replace(r#""driver_info":"581.80""#, r#""driver_info":"""#);
+    assert_eq!(AdapterRecord::parse(&no_driver).unwrap().driver_info, "");
+}
+
+#[test]
+fn an_adapter_that_cannot_be_named_is_an_error_never_an_empty_record() {
+    let rejected = [
+        String::new(),
+        "\n  \r\n".to_owned(),
+        "no adapter".to_owned(),
+        "[]".to_owned(),
+        "{}".to_owned(),
+        format!("{}\n{}", adapter_line(), adapter_line()),
+        adapter_line().replace("NVIDIA GeForce RTX 5090", ""),
+        adapter_line().replace("NVIDIA GeForce RTX 5090", "   "),
+        adapter_line().replace("DiscreteGpu", ""),
+        adapter_line().replace("Vulkan", ""),
+        adapter_line().replace(r#""backend":"Vulkan","#, ""),
+        adapter_line().replace(r#""driver":"NVIDIA","#, ""),
+        adapter_line().replace("4318", r#""4318""#),
+        adapter_line().replace("4318", "-1"),
+        adapter_line().replace("4318", "4.5"),
+        adapter_line().replace("11011", "null"),
+        format!("{}x", adapter_line()),
+    ];
+    for text in rejected {
+        let outcome = AdapterRecord::parse(&text);
+        assert!(outcome.is_err(), "accepted {text:?}: {outcome:?}");
+    }
+    assert_eq!(
+        AdapterRecord::parse("").unwrap_err(),
+        "adapter_info must print exactly one JSON line on stdout (no adapter?)"
+    );
+    assert_eq!(
+        AdapterRecord::parse(&adapter_line().replace("NVIDIA GeForce RTX 5090", "")).unwrap_err(),
+        "adapter_info output has an empty `name`"
+    );
+}
+
+#[test]
+fn the_record_carries_the_adapter_or_says_null() {
+    let root = temp_root();
+    let git = GitStamp::UNKNOWN;
+    let adapter = adapter();
+    let named = RunInfo {
+        adapter: Some(&adapter),
+        ..run(VerifyMode::Full, &git)
+    };
+    write_validation_with_home(&root, HOME, &named, None, &[], &[]).unwrap();
+    let with = fs::read_to_string(root.join(".ai/VALIDATION.json")).unwrap();
+    write_validation_with_home(&root, HOME, &run(VerifyMode::Fast, &git), None, &[], &[]).unwrap();
+    let without = fs::read_to_string(root.join(".ai/VALIDATION.json")).unwrap();
+    let _ = fs::remove_dir_all(&root);
+
+    assert!(
+        with.contains(concat!(
+            "  \"adapter\": {\n",
+            "    \"name\": \"NVIDIA GeForce RTX 5090\",\n",
+            "    \"vendor\": 4318,\n",
+            "    \"device\": 11011,\n",
+            "    \"device_type\": \"DiscreteGpu\",\n",
+            "    \"backend\": \"Vulkan\",\n",
+            "    \"driver\": \"NVIDIA\",\n",
+            "    \"driver_info\": \"581.80\"\n",
+            "  },\n  \"passed\": true,\n"
+        )),
+        "{with}"
+    );
+    assert!(
+        without.contains("  \"adapter\": null,\n  \"passed\": true,\n"),
+        "{without}"
+    );
+    // The summary line of `cargo xtask status` is unchanged by the new member.
+    assert!(compact_validation_summary(&with).ends_with("commit=null dirty=null"));
+}
+
+#[test]
+fn the_adapter_text_is_redacted_like_the_rest_of_the_record() {
+    let root = temp_root();
+    let root_text = root.display().to_string();
+    let git = GitStamp::UNKNOWN;
+    let mut leaky = adapter();
+    leaky.driver_info = format!("{root_text}\\icd.json and {HOME}\\driver");
+    let named = RunInfo {
+        adapter: Some(&leaky),
+        ..run(VerifyMode::Full, &git)
+    };
+    write_validation_with_home(&root, HOME, &named, None, &[], &[]).unwrap();
+    let json = fs::read_to_string(root.join(".ai/VALIDATION.json")).unwrap();
+    let _ = fs::remove_dir_all(&root);
+
+    let lowered = json.to_ascii_lowercase();
+    for secret in spellings(&root_text).iter().chain(&spellings(HOME)) {
+        for form in json_forms(secret) {
+            assert!(!lowered.contains(&form), "leaks `{secret}`:\n{json}");
+        }
+    }
+    assert!(
+        json.contains(r#""driver_info": "<workspace>\\icd.json and ~\\driver""#),
+        "{json}"
+    );
 }

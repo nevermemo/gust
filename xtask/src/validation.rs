@@ -81,6 +81,96 @@ pub(crate) struct RunInfo<'a> {
     pub(crate) mode: VerifyMode,
     pub(crate) started: &'a str,
     pub(crate) git: &'a GitStamp,
+    /// The adapter the run's GPU steps used; `None` ("null" in the record) when the run failed before the adapter
+    /// step could say.
+    pub(crate) adapter: Option<&'a AdapterRecord>,
+}
+
+/// The Vulkan adapter `HeadlessDevice` selected, as `crates/gust-wgpu/examples/adapter_info.rs` printed it. Any
+/// Vulkan adapter satisfies the GPU tiers, a software one (lavapipe) included, so the record says which ran.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct AdapterRecord {
+    pub(crate) name: String,
+    /// Decimal digits (a `u32` in wgpu).
+    pub(crate) vendor: String,
+    /// Decimal digits (a `u32` in wgpu).
+    pub(crate) device: String,
+    /// The `Debug` name of wgpu's `DeviceType`, for instance `DiscreteGpu` or `Cpu`.
+    pub(crate) device_type: String,
+    pub(crate) backend: String,
+    pub(crate) driver: String,
+    pub(crate) driver_info: String,
+}
+
+impl AdapterRecord {
+    /// Reads the standard output of the `adapter_info` example: exactly one JSON object line. A missing or blank
+    /// name, device type or backend, a non-numeric vendor or device id, or any other shape is an error, so an empty
+    /// run can never be recorded as an adapter.
+    pub(crate) fn parse(stdout: &str) -> Result<Self, String> {
+        let mut lines = stdout
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty());
+        let (Some(line), None) = (lines.next(), lines.next()) else {
+            return Err(
+                "adapter_info must print exactly one JSON line on stdout (no adapter?)".to_owned(),
+            );
+        };
+        let value =
+            crate::json::parse(line).map_err(|error| format!("adapter_info output: {error}"))?;
+        let text = |key: &str| -> Result<String, String> {
+            value
+                .get(key)
+                .and_then(crate::json::Json::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| format!("adapter_info output has no string `{key}`"))
+        };
+        let named = |key: &str| -> Result<String, String> {
+            let field = text(key)?;
+            if field.trim().is_empty() {
+                Err(format!("adapter_info output has an empty `{key}`"))
+            } else {
+                Ok(field)
+            }
+        };
+        let id = |key: &str| -> Result<String, String> {
+            match value.get(key) {
+                Some(crate::json::Json::Number(digits))
+                    if !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()) =>
+                {
+                    Ok(digits.clone())
+                }
+                _ => Err(format!("adapter_info output has no numeric `{key}`")),
+            }
+        };
+        Ok(Self {
+            name: named("name")?,
+            vendor: id("vendor")?,
+            device: id("device")?,
+            device_type: named("device_type")?,
+            backend: named("backend")?,
+            driver: text("driver")?,
+            driver_info: text("driver_info")?,
+        })
+    }
+
+    /// The `"adapter"` member of the record (or `null`), ending in a comma and a newline.
+    fn json(adapter: Option<&Self>, redacted: &dyn Fn(&str) -> String) -> String {
+        let Some(adapter) = adapter else {
+            return "  \"adapter\": null,\n".to_owned();
+        };
+        let text = |value: &str| json_string(&redacted(value));
+        format!(
+            "  \"adapter\": {{\n    \"name\": {},\n    \"vendor\": {},\n    \"device\": {},\n    \"device_type\": {},\n    \"backend\": {},\n    \"driver\": {},\n    \"driver_info\": {}\n  }},\n",
+            text(&adapter.name),
+            adapter.vendor,
+            adapter.device,
+            text(&adapter.device_type),
+            text(&adapter.backend),
+            text(&adapter.driver),
+            text(&adapter.driver_info),
+        )
+    }
 }
 
 pub(crate) fn write_validation(
@@ -129,6 +219,7 @@ fn write_validation_with_home(
         run.git.commit_json(),
         run.git.dirty_json()
     ));
+    json.push_str(&AdapterRecord::json(run.adapter, &redacted));
     json.push_str(&format!("  \"passed\": {},\n", failure.is_none()));
     match failure {
         Some(error) => json.push_str(&format!(

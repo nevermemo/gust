@@ -101,12 +101,6 @@ test module; do not mix that mechanical move with behavior changes.
   unchecked crate (the defining-crate rule is measured for non-generic shadow bodies only).
 - Optional: `cargo test -- --color never` in the counted calls would remove the ANSI
   stripping (`without_colors`) from the count guard.
-- Record the adapter in `.ai/VALIDATION.json`: any Vulkan adapter satisfies the GPU
-  tiers, a software one (lavapipe) included, and the record does not say which ran.
-  Until then a GPU claim names its adapter in STATUS.
-- Stale SPIR-V in the ignored `generated-wgpu` directory can satisfy `check-artifacts`'
-  name check locally (CI starts clean); clear the directory before the export, or
-  compare timestamps.
 
 ## Deferred language/runtime breadth
 

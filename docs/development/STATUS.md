@@ -34,6 +34,13 @@ committed artifacts stay byte-identical. The keyword and construct spikes and th
 types run beside M4; the keyword renaming follows the bool `^` fix; the rest waits for m4.e1, m5.c1c and M4. Its decision drafts take
 D55 to D59.
 
+- M5 S5.4 (spike, local commit only): decision A. A lane-local prototype in which the macro drops
+  the twin's cfg gate under `GUST_PROFILE=cpu` ran a non-test binary on `CpuDevice` with the host
+  result, built with `--cfg gust_dual` without a duplicate impl, and passed `cargo test` under
+  `cpu`. In warm target dirs, flips in both directions (`cpu`, unset, `cpu`, ...) were each
+  correct by behaviour. Each tracking path suffices alone: the macro's `option_env!` line
+  (kernel crate and dependents rebuild) or `gust`'s `rerun-if-env-changed` (`gust` rebuilds
+  too); with both removed, expansions went stale. m5.e1 keeps both and guards them.
 - M4 S1 (spike, local commit only): decision A. With no Slang reachable (PATH stripped,
   `GUST_SLANG_REFLECT` unset, `where slangc` failing), a consumer built with the Slang bridge
   compiled out ran a precompiled vector-add whose embedded WGSL and helper reflection JSON were

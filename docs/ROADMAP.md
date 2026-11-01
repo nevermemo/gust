@@ -39,10 +39,10 @@ its slice, and two fix rounds per slice.
 | Item | Work | Status |
 | --- | --- | --- |
 | M4 plan | Plan with pre-registered spikes; Fable plan, Codex review (rework), Opus re-reviews in the Codex slot, three revisions | done (D44 to D47) |
-| S1 | Spike: one precompiled, reflection-verified kernel (vector-add) runs without Slang installed and keeps D17's identity (kill: identity cannot be kept without shipping Slang, or the artifact path needs a custom IR) | next |
-| m4.0 | Weak compare-exchange: uncontended success set-valued on the GPU, exact on the twin (D47) | next |
+| S1 | Spike: one precompiled, reflection-verified kernel (vector-add) runs without Slang installed and keeps D17's identity (kill: identity cannot be kept without shipping Slang, or the artifact path needs a custom IR) | done (decision A, Gpu: RTX 5090 with no Slang reachable; local spike commit, not merged) |
+| m4.0 | Weak compare-exchange: uncontended success set-valued on the GPU, exact on the twin (D47) | done (Gpu: RTX 5090, debug and release; Opus keep after one fix round; `8d49412`) |
 | m4.h | M3 follow-ups: `check-artifacts` clears stale generated output first; the adapter name in `VALIDATION.json` | next |
-| S2 | Spike: the `GUST_PROFILE` mechanism composes with `check-dual` and Cargo's rebuild tracking (D44) | planned |
+| S2 | Spike: the `GUST_PROFILE` mechanism composes with `check-dual` and Cargo's rebuild tracking (D44) | running |
 | m4.a | `gust::artifact`: `Artifact`, `verify_artifact`, `content_key`, `KernelDescriptor::artifacts` | planned |
 | m4.b1, m4.b2 | `slang-runtime` feature, off by default; build profiles in `gust`'s build script, strict-profile refusals | planned |
 | m4.c | Macro: content key, artifact and manifest embedding, export mode | planned |

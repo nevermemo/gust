@@ -16,6 +16,23 @@ Codex review (rework), two Opus re-reviews and three revisions; D44 (build profi
 `GUST_PROFILE`), D45 (committed, re-verified artifacts), D46 (`cargo-gust` and the Slang pin)
 and D47 (weak compare-exchange). First: spike S1 (one precompiled, reflection-verified kernel
 running without Slang installed) in parallel with slices m4.0 and m4.h.
+
+- M4 S1 (spike, local commit only): decision A. With no Slang reachable (PATH stripped,
+  `GUST_SLANG_REFLECT` unset, `where slangc` failing), a consumer built with the Slang bridge
+  compiled out ran a precompiled vector-add whose embedded WGSL and helper reflection JSON were
+  re-verified through D17's functions, and the RTX 5090 result equalled the host reference.
+  Flipped, truncated or CRLF bytes, a replaced source hash, a renamed entry point and changed
+  bindings are all rejected by the existing checks (the identity error does not name the field;
+  m4.a improves it). Clean and `#line` WGSL are byte-identical. Toggling `GUST_EXPORT_DIR` or
+  `GUST_PROFILE` through `option_env!` re-expands only the kernel crate and its consumer.
+  `core.autocrlf` would convert committed WGSL, so `**/gust-artifacts/** -text` is required.
+- M4 m4.0 (`8d49412`): weak compare-exchange per D47. The GPU checks for uncontended success
+  accept exactly the value pair WGSL allows (`{7, 11}`, `{-5, 11}`) through two check
+  functions that a GPU-free test feeds the spurious, success and bad readbacks; the twin stays
+  pinned; failures stay exact; KM-09 gains an uncontended case (one invocation, `{1, 999}`).
+  A GPU-side no-op compare-exchange is not detected by a GPU test (the emission is pinned by
+  the gust-macros regression tests). No signed ledger case (it needs a new fixture kernel).
+  Opus keep after one fix round; gates on main at `64922ad`.
 M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),

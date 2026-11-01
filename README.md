@@ -82,6 +82,17 @@ Example crate tests are intentionally ignored by default. They remain available 
 major changes and release validation, but the ordinary workspace loop prioritizes
 compiler/runtime feedback over full example proofs.
 
+Compiling a kernel at run time (launching `slangc` and the native reflection helper) is the
+`slang-runtime` feature of `gust` and `gust-wgpu`, off by default (D44). The eight examples
+enable it in their manifests, and `gust` and `gust-wgpu` enable it for their own tests through a
+dev-dependency on themselves, so `cargo run -p vector-add`, `cargo test -p gust-wgpu` and
+`cargo test --workspace` need no flag. A crate of your own that runs kernels this way during
+development puts the feature on a `[dev-dependencies]` entry,
+`gust-wgpu = { version = "...", features = ["slang-runtime"] }`, or passes
+`--features gust-wgpu/slang-runtime`, so that its normal dependencies, and a release build, hold no
+process-spawning compiler. Check that state with
+`cargo check -p gust -p gust-wgpu --no-default-features --lib` (the Unit suite runs it).
+
 For the full release-readiness check (including ignored example tests, all eight
 examples, and mandatory external validation of all thirteen SPIR-V exports):
 

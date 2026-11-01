@@ -3,17 +3,23 @@
 //! CLI JSON remains an explicit partial-evidence compatibility path.
 //! Only global structured-buffer resources are supported. Entry-point parameters
 //! must be the generated `SV_DispatchThreadID` system value, not resources/uniforms.
+//!
+//! # The `slang-runtime` feature
+//!
+//! The functions that launch a compiler process (`reflect`, `compile_reflected`, `compile_reflected_with_helper`,
+//! `native_compiler_path`) exist only with the `slang-runtime` feature, which is off by default (D44). Parsing
+//! and checking reflection JSON (`Reflection::from_json`, `cross_check_*`, `CompiledReflection::from_output`) needs
+//! no feature, so [`crate::artifact::verify_artifact`] works without a compiler.
 
 use crate::{
-    GpuPod, KernelDescriptor, ScalarKind, SourceOrigin, TypeLayout, TypeLayoutKind,
-    slang::{self, Target, TemporaryDirectory},
+    GpuPod, KernelDescriptor, ScalarKind, TypeLayout, TypeLayoutKind,
+    slang::{self, Target},
 };
-use std::{
-    collections::BTreeMap,
-    error, fmt, fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
+#[cfg(feature = "slang-runtime")]
+use crate::{SourceOrigin, slang::TemporaryDirectory};
+use std::{collections::BTreeMap, error, fmt, path::PathBuf};
+#[cfg(feature = "slang-runtime")]
+use std::{fs, path::Path, process::Command};
 
 #[derive(Debug)]
 pub enum Error {
@@ -118,6 +124,7 @@ pub struct CompiledReflection {
     pub workgroup_size: [u32; 3],
 }
 
+#[cfg(feature = "slang-runtime")]
 pub fn native_compiler_path() -> PathBuf {
     if let Some(path) = std::env::var_os("GUST_SLANG_REFLECT") {
         return path.into();
@@ -133,6 +140,7 @@ pub fn native_compiler_path() -> PathBuf {
     }
 }
 
+#[cfg(feature = "slang-runtime")]
 /// Compile and reflect the same linked program using the native Slang helper.
 pub fn compile_reflected(
     kernel: &KernelDescriptor,
@@ -141,6 +149,7 @@ pub fn compile_reflected(
     compile_reflected_with_helper(kernel, target, native_compiler_path())
 }
 
+#[cfg(feature = "slang-runtime")]
 pub fn compile_reflected_with_helper(
     kernel: &KernelDescriptor,
     target: Target,
@@ -189,6 +198,7 @@ pub fn compile_reflected_with_helper(
     )
 }
 
+#[cfg(feature = "slang-runtime")]
 /// Attribute a failed compile to its Rust origin, as `slang::compile` does. A
 /// diagnostic whose error location cannot be mapped still names the kernel.
 ///
@@ -301,6 +311,7 @@ impl CompiledReflection {
     }
 }
 
+#[cfg(feature = "slang-runtime")]
 /// Compile exactly this target and entry point, requesting Slang's JSON metadata.
 pub fn reflect(kernel: &KernelDescriptor, target: Target) -> Result<Reflection, Error> {
     let directory = TemporaryDirectory::create()?;

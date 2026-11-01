@@ -8,7 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 gust.workspace = true
-gust-wgpu.workspace = true
+gust-wgpu = { workspace = true, features = ["slang-runtime"] }
 
 [lints]
 workspace = true

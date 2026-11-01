@@ -8,7 +8,7 @@ use std::{
 
 use crate::{
     json::{self, Json},
-    process::{CheckRecord, report_check},
+    process::{CheckRecord, report_check, set_workspace_profile},
 };
 
 /// The fixture workspace, relative to the repository root. It has a `[workspace]` of its own
@@ -107,11 +107,7 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
     let mut problems = Vec::new();
     for case in &cases {
         let args = cargo_args(&case.name);
-        let output = Command::new(env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")))
-            .args(&args)
-            .current_dir(root)
-            .stdin(Stdio::null())
-            .output();
+        let output = case_command(root, &case.name).output();
         let output = match output {
             Ok(output) => output,
             Err(error) => {
@@ -154,6 +150,18 @@ fn run_cases(root: &Path, checks: &mut Vec<CheckRecord>) -> Result<String, Vec<S
         "UI check passed: {failing} fixture crate(s) failed to compile with exactly the expected rustc error and {} compiled cleanly (tests/ui, `cargo check --locked --message-format json`). Only the keys of each expected.txt (code, file, line, message and label) are compared, all within the one error of the crate itself (warnings and other crates are ignored, a second error fails) read from cargo's JSON, not the whole rustc output; no slangc and no GPU were involved.\n",
         cases.len() - failing
     ))
+}
+
+/// The cargo child that checks one fixture crate. It runs under `GUST_PROFILE=dev` like the other children of a
+/// workspace command (R4.2); the fixtures are not the release artefact either.
+pub(crate) fn case_command(root: &Path, case: &str) -> Command {
+    let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")));
+    command
+        .args(cargo_args(case))
+        .current_dir(root)
+        .stdin(Stdio::null());
+    set_workspace_profile(&mut command);
+    command
 }
 
 /// The arguments after `cargo` that check one fixture crate. `--locked` keeps the fixture's own

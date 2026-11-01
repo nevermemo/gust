@@ -2,25 +2,37 @@
 //!
 //! The procedural macro emits portable Slang source. Host backends call the
 //! compiler only when they need a concrete target such as SPIR-V or WGSL.
+//!
+//! # The `slang-runtime` feature
+//!
+//! Everything that launches `slangc` (`compile`, `compile_spirv`, `compile_wgsl`, `compile_source`, `probe`) and the
+//! helpers only those use (the temporary directory, the diagnostic mapping) exist only with the `slang-runtime`
+//! feature, which is off by default (D44). `Target`, `Error`, `decode_spirv` and `compile_copy` stay outside
+//! the feature, because [`crate::artifact`] verifies a precompiled artifact without a compiler.
 
+use std::{error, fmt, fs, path::Path};
+#[cfg(feature = "slang-runtime")]
 use std::{
-    error, fmt, fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use crate::{KernelDescriptor, SourceOrigin};
+#[cfg(feature = "slang-runtime")]
 use source_map::{SourceMap, SourceMapSegment};
 
+#[cfg(feature = "slang-runtime")]
 mod source_map;
 
+#[cfg(feature = "slang-runtime")]
 static NEXT_INVOCATION: AtomicU64 = AtomicU64::new(1);
 
 /// What the compile-time copy is called, and the name a `#line` directive returns
 /// to for lines with no Rust origin.
 pub(crate) const KERNEL_FILE: &str = "kernel.slang";
 /// The clean text, written beside the copy when the copy carries directives.
+#[cfg(feature = "slang-runtime")]
 const EXPORT_FILE: &str = "kernel.export.slang";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +41,7 @@ pub enum Target {
     Wgsl,
 }
 
+#[cfg(feature = "slang-runtime")]
 impl Target {
     const fn slang_name(self) -> &'static str {
         match self {
@@ -96,6 +109,7 @@ impl From<std::io::Error> for Error {
     }
 }
 
+#[cfg(feature = "slang-runtime")]
 pub fn compile(kernel: &KernelDescriptor, target: Target) -> Result<Vec<u8>, Error> {
     compile_with_origin(
         kernel.slang_source,
@@ -105,6 +119,7 @@ pub fn compile(kernel: &KernelDescriptor, target: Target) -> Result<Vec<u8>, Err
     )
 }
 
+#[cfg(feature = "slang-runtime")]
 pub fn compile_spirv(kernel: &KernelDescriptor) -> Result<Vec<u32>, Error> {
     let bytes = compile(kernel, Target::Spirv)?;
     decode_spirv(&bytes)
@@ -122,16 +137,19 @@ pub(crate) fn decode_spirv(bytes: &[u8]) -> Result<Vec<u32>, Error> {
     Ok(words)
 }
 
+#[cfg(feature = "slang-runtime")]
 pub fn compile_wgsl(kernel: &KernelDescriptor) -> Result<String, Error> {
     let bytes = compile(kernel, Target::Wgsl)?;
     String::from_utf8(bytes)
         .map_err(|error| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error)))
 }
 
+#[cfg(feature = "slang-runtime")]
 pub fn compile_source(source: &str, entry: &str, target: Target) -> Result<Vec<u8>, Error> {
     compile_with_origin(source, entry, &SourceOrigin::UNKNOWN, target)
 }
 
+#[cfg(feature = "slang-runtime")]
 fn compile_with_origin(
     source: &str,
     entry: &str,
@@ -141,6 +159,7 @@ fn compile_with_origin(
     compile_in_directory(TemporaryDirectory::create()?, source, entry, origin, target)
 }
 
+#[cfg(feature = "slang-runtime")]
 fn compile_in_directory(
     directory: TemporaryDirectory,
     source: &str,
@@ -152,6 +171,7 @@ fn compile_in_directory(
     compile_at(&directory.0, source, entry, origin, target)
 }
 
+#[cfg(feature = "slang-runtime")]
 /// Compile inside `directory`, which the caller owns and removes.
 fn compile_at(
     directory: &Path,
@@ -259,6 +279,13 @@ fn directive_file_is_usable(file: &str) -> bool {
 /// copy equals `source` byte for byte (hand-written descriptors, probes). The
 /// copy is a compile-time input only: exports, `KernelDescriptor::slang_source`
 /// and the cache identity never see it.
+#[cfg_attr(
+    not(any(test, feature = "slang-runtime")),
+    expect(
+        dead_code,
+        reason = "only the run-time bridge and a unit test of `artifact` call it"
+    )
+)]
 pub(crate) fn compile_copy(source: &str, origin: &SourceOrigin) -> String {
     if origin.lines.is_empty() || !directive_file_is_usable(origin.file) {
         return source.to_owned();
@@ -288,6 +315,7 @@ pub(crate) fn compile_copy(source: &str, origin: &SourceOrigin) -> String {
     copy
 }
 
+#[cfg(feature = "slang-runtime")]
 /// Write what the compiler reads into `directory` as `kernel.slang` and, when
 /// that differs from `source`, the clean text beside it as `kernel.export.slang`,
 /// so the directory still shows the readable artifact. Returns the copy; it
@@ -305,6 +333,7 @@ pub(crate) fn write_compile_inputs(
     Ok(copy)
 }
 
+#[cfg(feature = "slang-runtime")]
 /// Append the originating Rust kernel and construct (DX19), and the Rust source
 /// location when the descriptor carries a line table, to a Slang failure.
 /// Shared by every path that compiles a kernel, so none reports less than the
@@ -335,6 +364,7 @@ pub(crate) fn annotate_diagnostics(
     annotated
 }
 
+#[cfg(feature = "slang-runtime")]
 /// Where a failure came from, as far as the descriptor can tell.
 struct Located {
     /// The construct segment of the failing Slang line, if it has one.
@@ -347,6 +377,7 @@ struct Located {
     rust_location: bool,
 }
 
+#[cfg(feature = "slang-runtime")]
 fn locate(
     origin: &SourceOrigin,
     slang_source: &str,
@@ -382,6 +413,7 @@ fn locate(
     }
 }
 
+#[cfg(feature = "slang-runtime")]
 /// The lowest Slang line of any record generated from `rust_line`.
 fn first_slang_line_of(origin: &SourceOrigin, rust_line: u32) -> Option<u32> {
     origin
@@ -392,6 +424,7 @@ fn first_slang_line_of(origin: &SourceOrigin, rust_line: u32) -> Option<u32> {
         .min()
 }
 
+#[cfg(feature = "slang-runtime")]
 /// [`annotate_diagnostics`] for a kernel that is compiled without the sidecar
 /// map, such as the reflection helper path.
 pub(crate) fn annotate_kernel_diagnostics(kernel: &KernelDescriptor, diagnostics: &str) -> String {
@@ -416,6 +449,7 @@ fn map_slang_diagnostic(
     locate(origin, slang_source, source_map, diagnostic).segment
 }
 
+#[cfg(feature = "slang-runtime")]
 /// Where a compiler error points.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DiagnosticLocation {
@@ -425,6 +459,7 @@ enum DiagnosticLocation {
     Rust(u32),
 }
 
+#[cfg(feature = "slang-runtime")]
 /// Whether `path` names the compile copy or the kernel's Rust file. The Rust file
 /// must match `rust_file` exactly: the compiler echoes the directive's string
 /// verbatim, and the directive only ever holds `/` separators. Any other file
@@ -442,6 +477,7 @@ fn classify_location(path: &str, line: usize, rust_file: &str) -> Option<Diagnos
     }
 }
 
+#[cfg(feature = "slang-runtime")]
 /// Select an error in this compilation unit, not an earlier warning or a filename
 /// that merely ends with `kernel.slang`. Both `(line)` and `(line,column)` occur
 /// in compiler diagnostics. A location in `rust_file` (empty for none) is a Rust
@@ -485,6 +521,7 @@ fn parse_diagnostic_location(diagnostic: &str, rust_file: &str) -> Option<Diagno
     })
 }
 
+#[cfg(feature = "slang-runtime")]
 fn positive_coordinate(value: &str) -> Option<usize> {
     let value = value.trim();
     if !value.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -493,8 +530,10 @@ fn positive_coordinate(value: &str) -> Option<usize> {
     value.parse().ok().filter(|value| *value > 0)
 }
 
+#[cfg(feature = "slang-runtime")]
 pub struct TemporaryDirectory(PathBuf);
 
+#[cfg(feature = "slang-runtime")]
 impl TemporaryDirectory {
     pub fn path(&self) -> &Path {
         &self.0
@@ -523,6 +562,7 @@ impl TemporaryDirectory {
     }
 }
 
+#[cfg(feature = "slang-runtime")]
 impl Drop for TemporaryDirectory {
     fn drop(&mut self) {
         // Only this exclusively created child is owned; never remove a collided path.
@@ -535,6 +575,7 @@ pub fn write_source(kernel: &KernelDescriptor, path: impl AsRef<Path>) -> Result
     fs::write(path, kernel.slang_source).map_err(Error::Io)
 }
 
+#[cfg(feature = "slang-runtime")]
 /// Machine-readable record of whether the installed Slang compiler can emit a
 /// target. Capability claims must follow this evidence, not assumption.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -547,6 +588,7 @@ pub struct TargetProbe {
     pub detail: String,
 }
 
+#[cfg(feature = "slang-runtime")]
 /// A minimal, known-good compute kernel used only to probe target capability.
 const PROBE_KERNEL: &str = concat!(
     "[shader(\"compute\")]\n",
@@ -554,6 +596,7 @@ const PROBE_KERNEL: &str = concat!(
     "void gpu_probe_entry(uint3 id : SV_DispatchThreadID) {}\n",
 );
 
+#[cfg(feature = "slang-runtime")]
 /// Probe whether `slangc` can emit `target` by compiling a known-good kernel.
 ///
 /// This is capability evidence, not a correctness test: it records whether the

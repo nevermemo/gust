@@ -1,10 +1,10 @@
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Stdio},
-};
+use std::{fs, path::Path, process::Stdio};
 
-use crate::{process::print_command, validation::sha256_hex, workspace::workspace_root};
+use crate::{
+    process::{print_command, workspace_command},
+    validation::sha256_hex,
+    workspace::workspace_root,
+};
 
 const FIXTURE_DIR: &str = "tests/fixtures";
 
@@ -18,7 +18,7 @@ pub(crate) fn bless() -> Result<(), String> {
     println!(
         "Running the golden tests with BLESS_GOLDEN=1 (a changed golden fails its test by design)."
     );
-    let status = Command::new("cargo")
+    let status = workspace_command("cargo")
         .args(["test", "--locked", "-p", "gust-macros", "golden"])
         .env("BLESS_GOLDEN", "1")
         .current_dir(&root)

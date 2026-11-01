@@ -88,17 +88,43 @@ fn current_packages() -> Vec<String> {
                 from_registry("syn"),
             ],
         ),
-        package_json("gust", &[workspace_crate("gust-macros")]),
+        package_json(
+            "gust",
+            &[workspace_crate("gust-macros"), workspace_crate("gust")],
+        ),
         package_json(
             "gust-wgpu",
             &[
                 workspace_crate("gust"),
+                workspace_crate("gust-wgpu"),
                 from_registry("pollster"),
                 from_registry("wgpu"),
             ],
         ),
         package_json("xtask", &[]),
     ]
+}
+
+#[test]
+fn gust_and_gust_wgpu_may_depend_on_themselves_but_nothing_else_may() {
+    // The dev-dependency that enables the package's own `slang-runtime` feature for its tests (D44).
+    assert!(found_for("gust", &[workspace_crate("gust")]).is_empty());
+    assert!(found_for("gust-wgpu", &[workspace_crate("gust-wgpu")]).is_empty());
+    // It is not a licence for a package to depend on its siblings, or for another crate to depend on gust.
+    let sibling = found_for("gust", &[workspace_crate("gust-wgpu")]);
+    assert_eq!(sibling.len(), 1, "{sibling:?}");
+    assert!(
+        sibling[0].contains("`gust-wgpu`, which is not in its allow-list"),
+        "{sibling:?}"
+    );
+    let other = found_for("gust-macros", &[workspace_crate("gust-macros")]);
+    assert_eq!(other.len(), 1, "{other:?}");
+    assert!(
+        other[0].contains("`gust-macros` has dependency `gust-macros`"),
+        "{other:?}"
+    );
+    let xtask = found_for("xtask", &[workspace_crate("xtask")]);
+    assert_eq!(xtask.len(), 1, "{xtask:?}");
 }
 
 #[test]

@@ -154,9 +154,12 @@ fn the_spawned_child_has_no_rustflags_variable_but_the_cfg_on_the_cfg_steps() {
     let os = |text: &str| OsString::from(text);
     // Every step, cfg or not, removes all three variables (absent, not inherited) ...
     let removed = |name: &str| (os(name), None);
+    // ... and builds the workspace under the `dev` profile whatever the parent has (R4.2).
+    let profile = (os("GUST_PROFILE"), Some(os("dev")));
     let without_cfg = vec![
         removed("CARGO_BUILD_RUSTFLAGS"),
         removed("CARGO_ENCODED_RUSTFLAGS"),
+        profile.clone(),
         removed("RUSTFLAGS"),
     ];
     // ... and the cfg steps then set the encoded one, exactly `--cfg` 0x1f `gust_dual`.
@@ -166,6 +169,7 @@ fn the_spawned_child_has_no_rustflags_variable_but_the_cfg_on_the_cfg_steps() {
             os("CARGO_ENCODED_RUSTFLAGS"),
             Some(os("--cfg\u{1f}gust_dual")),
         ),
+        profile,
         removed("RUSTFLAGS"),
     ];
     let program = std::env::var_os("CARGO").unwrap_or_else(|| os("cargo"));

@@ -25,6 +25,12 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
         &mut source,
         format_args!("// Shader source: Rust -> Slang -> WGSL"),
     );
+    write_line(
+        &mut source,
+        format_args!(
+            "// Compiling the Slang at run time (gust::slang::compile_wgsl) needs gust's `slang-runtime` feature, which is off by default."
+        ),
+    );
     for parameter in &resources {
         let binding = parameter.binding.expect("validated resource binding");
         let layout = parameter

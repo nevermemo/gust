@@ -5,7 +5,7 @@ use crate::{
     workspace::EXAMPLES,
 };
 
-const UNIT: [Step; 10] = [
+const UNIT: [Step; 12] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
@@ -23,6 +23,29 @@ const UNIT: [Step; 10] = [
         "artifact::tests::",
     ]),
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "artifact"]),
+    Step::Cargo(&[
+        "clippy",
+        "--locked",
+        "-p",
+        "gust",
+        "-p",
+        "gust-wgpu",
+        "--no-default-features",
+        "--lib",
+        "--",
+        "-D",
+        "warnings",
+    ]),
+    Step::Cargo(&[
+        "check",
+        "--locked",
+        "-p",
+        "gust",
+        "-p",
+        "gust-wgpu",
+        "--no-default-features",
+        "--lib",
+    ]),
 ];
 
 #[test]
@@ -244,6 +267,20 @@ fn the_unit_suite_runs_the_gust_cpu_tests_with_the_count_guard() {
         "cargo test --locked -p gust --lib cpu::tests::"
     );
     assert!(Suite::Unit.covers().contains("gust::cpu"));
+}
+
+#[test]
+fn the_unit_suite_builds_gust_and_gust_wgpu_without_default_features() {
+    // The only observers of the `slang-runtime` off state: the workspace build unifies the feature on.
+    let clippy =
+        "cargo clippy --locked -p gust -p gust-wgpu --no-default-features --lib -- -D warnings";
+    let check = "cargo check --locked -p gust -p gust-wgpu --no-default-features --lib";
+    for suite in [Suite::Unit, Suite::Slangc] {
+        let labels: Vec<String> = suite.steps().iter().map(|step| step.label()).collect();
+        assert_eq!(labels.iter().filter(|label| *label == clippy).count(), 1);
+        assert_eq!(labels.iter().filter(|label| *label == check).count(), 1);
+    }
+    assert!(Suite::Unit.covers().contains("slang-runtime"));
 }
 
 #[test]

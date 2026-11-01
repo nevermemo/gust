@@ -1,8 +1,8 @@
 use std::fs;
 
 use super::{
-    Expectation, Expected, UI_DIR, cargo_args, discover_cases, judge, parse_diagnostics,
-    parse_expected,
+    Expectation, Expected, UI_DIR, cargo_args, case_command, discover_cases, judge,
+    parse_diagnostics, parse_expected,
 };
 use crate::workspace::workspace_root;
 
@@ -676,6 +676,23 @@ fn the_cargo_call_is_locked_per_crate_colorless_and_json() {
     assert!(pair("--color", "never"), "{args:?}");
     assert!(pair("--message-format", "json"), "{args:?}");
     assert!(!args.iter().any(|arg| arg == "short"), "{args:?}");
+}
+
+#[test]
+fn the_fixture_check_runs_under_the_dev_profile() {
+    let command = case_command(std::path::Path::new("ROOT"), "gpupod-missing");
+    let args: Vec<_> = command.get_args().map(ToOwned::to_owned).collect();
+    let wanted: Vec<std::ffi::OsString> = cargo_args("gpupod-missing")
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    assert_eq!(args, wanted);
+    let profile: Vec<_> = command
+        .get_envs()
+        .filter(|(name, _)| *name == "GUST_PROFILE")
+        .map(|(_, value)| value.map(ToOwned::to_owned))
+        .collect();
+    assert_eq!(profile, [Some(std::ffi::OsString::from("dev"))]);
 }
 
 #[test]

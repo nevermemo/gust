@@ -1,11 +1,16 @@
 //! The known-mismatch ledger (roadmap M3, slice m3.a1; D22, D38; `docs/SEMANTICS.md`).
 //!
-//! Every row pins two outcomes of one construct whose result is not portable and that no
+//! Every row pins three outcomes of one construct whose result is not portable and that no
 //! diagnostic can prevent, because the operands are run-time values: what the GPU does
-//! (measured here, through `HeadlessDevice`) and what plain Rust does (a closure with
-//! `black_box` operands under `catch_unwind`, in this test crate's own profile). Rust's
-//! expectation is a function of the overflow-checks mode detected at run time; no row is
-//! ignored in any profile. The CPU twin is not involved yet (slice m3.d adds its column).
+//! (measured here, through `HeadlessDevice`), what plain Rust does (a closure with
+//! `black_box` operands under `catch_unwind`, in this test crate's own profile) and what the
+//! CPU twin does (the macro-emitted `Run` impl of the same kernel on `gust::cpu::CpuDevice`,
+//! one case per dispatch under `catch_unwind`; slice m3.d). The twin runs the shadow body
+//! compiled in this crate, so it must equal the plain-Rust column in the same mode; it is
+//! compared with Rust and never with the GPU (D39: an edge case that the GPU leaves
+//! unspecified is recorded, not matched). Rust's and the twin's expectation is a function of
+//! the overflow-checks mode of this crate, read with `gust::cpu::overflow_checks!()`; no row
+//! is ignored in any profile.
 //!
 //! `DOMAIN` rows are controls inside the defined domain (results that fit, non-zero
 //! divisors, shift amounts below 32, normal finite floats): GPU and Rust must agree on
@@ -22,40 +27,36 @@ use std::{
     collections::BTreeSet,
     hint::black_box,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::OnceLock,
 };
 
-use gust::{GpuPod, KernelDescriptor};
+use gust::cpu::{CpuBuffer, CpuDevice, Error as CpuError, OverflowChecks};
+use gust::{GpuPod, Independent, KernelDescriptor};
 use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
 
-// ---- overflow-checks detection (private copy until `gust::cpu::overflow_checks`, m3.b/m3.d) ----
+// ---- overflow-checks detection (the consumer-side macro of gust::cpu, D38) ----
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum OverflowChecks {
-    Checked,
-    Wrapping,
+/// The overflow mode of this test crate, which is also the crate that holds the shadow bodies the twin runs. The
+/// macro expands its probe here, so it answers for this crate's build whatever `gust` itself was compiled with. It is
+/// cached per call site, so this is the only call site. In a checked build the first call prints one panic message to
+/// stderr (the default hook); the ledger test calls it first.
+fn overflow_checks() -> OverflowChecks {
+    gust::cpu::overflow_checks!()
 }
 
-impl OverflowChecks {
+/// Picks the checked or the wrapping outcome of a row.
+trait Pick {
+    fn pick(self, checked: Outcome, wrapping: Outcome) -> Outcome;
+}
+
+impl Pick for OverflowChecks {
     fn pick(self, checked: Outcome, wrapping: Outcome) -> Outcome {
         match self {
             Self::Checked => checked,
             Self::Wrapping => wrapping,
+            // `OverflowChecks` is non-exhaustive: a future mode needs a decision here, not a silent default.
+            other => panic!("the ledger has no column for the overflow mode {other:?}"),
         }
     }
-}
-
-/// `Checked` when `u32::MAX + 1` panics in this crate's build. In a checked build the first
-/// call prints one panic message to stderr (the default hook); the ledger test calls it first.
-fn overflow_checks() -> OverflowChecks {
-    static MODE: OnceLock<OverflowChecks> = OnceLock::new();
-    *MODE.get_or_init(|| {
-        if catch_unwind(|| black_box(u32::MAX) + black_box(1)).is_err() {
-            OverflowChecks::Checked
-        } else {
-            OverflowChecks::Wrapping
-        }
-    })
 }
 
 // ---- outcomes ----
@@ -70,6 +71,8 @@ enum Outcome {
     Panic(&'static str),
     /// Set-valued GPU outcomes (KM-09): every observation lies in the inclusive range.
     Within(u32, u32),
+    /// As `Within`, or this one extra value (the unchanged sentinel of a weak compare-exchange, WGSL 17.8.5).
+    WithinOr(u32, u32, u32),
 }
 
 /// What one side actually did.
@@ -86,6 +89,9 @@ impl Outcome {
             (Self::Nan, Observed::Value(got)) => f32::from_bits(*got).is_nan(),
             (Self::Panic(prefix), Observed::Panic(message)) => message.starts_with(prefix),
             (Self::Within(low, high), Observed::Value(got)) => (low..=high).contains(got),
+            (Self::WithinOr(low, high, extra), Observed::Value(got)) => {
+                (low..=high).contains(got) || *got == extra
+            }
             _ => false,
         }
     }
@@ -1133,7 +1139,8 @@ fn cases() -> Vec<Case> {
         "257 x atomic_compare_exchange(cell, 999, id + 1): final cell",
         ContendedCompareExchange,
         (0, 0, 0),
-        Outcome::Within(1, CONTENDERS),
+        // 999 stays when every weak attempt fails spuriously (WGSL 17.8.5): part of the spec-allowed set.
+        Outcome::WithinOr(1, CONTENDERS, 999),
         |_| v(1),
     ));
 
@@ -1217,7 +1224,7 @@ fn rust_observed(case: &Case) -> Observed {
                 sink[index] = 77;
                 sink[3]
             }
-            // The sequential host loop: ascending ids, as the CPU twin will run them.
+            // The sequential host loop: ascending ids, as the CPU twin runs them.
             Kind::ContendedExchange => {
                 let mut cell = black_box(9999u32);
                 for id in 0..CONTENDERS {
@@ -1234,6 +1241,132 @@ fn rust_observed(case: &Case) -> Observed {
                 }
                 cell
             }
+        }
+    }));
+    match outcome {
+        Ok(bits) => Observed::Value(bits),
+        Err(payload) => Observed::Panic(panic_message(payload.as_ref())),
+    }
+}
+
+// ---- the CPU twin column ----
+
+/// Dispatches `kernel(op, a, b, out)` on the twin for one case (one element, so one workgroup) and returns the result
+/// as bits. A call the twin refuses is a test defect and panics with its own message.
+fn twin_ops<A: Bits, B: Bits, O: Bits>(
+    (op, a, b): (u32, u32, u32),
+    dispatch: impl FnOnce(
+        &CpuDevice,
+        &CpuBuffer<u32>,
+        &CpuBuffer<A>,
+        &CpuBuffer<B>,
+        &CpuBuffer<O>,
+    ) -> Result<(), CpuError>,
+) -> u32 {
+    let cpu = CpuDevice::new();
+    let ops = cpu.buffer(&[op]);
+    let first = cpu.buffer(&[A::from_bits32(a)]);
+    let second = cpu.buffer(&[B::from_bits32(b)]);
+    let out = cpu.buffer(&[O::from_bits32(0)]);
+    dispatch(&cpu, &ops, &first, &second, &out)
+        .unwrap_or_else(|error| panic!("the twin refused the call: {error}"));
+    out.read()[0].to_bits32()
+}
+
+/// Dispatches `kernel(f, out)` on the twin for one case.
+fn twin_casts<O: Bits>(
+    bits: u32,
+    dispatch: impl FnOnce(&CpuDevice, &CpuBuffer<f32>, &CpuBuffer<O>) -> Result<(), CpuError>,
+) -> u32 {
+    let cpu = CpuDevice::new();
+    let floats = cpu.buffer(&[f32::from_bits(bits)]);
+    let out = cpu.buffer(&[O::from_bits32(0)]);
+    dispatch(&cpu, &floats, &out)
+        .unwrap_or_else(|error| panic!("the twin refused the call: {error}"));
+    out.read()[0].to_bits32()
+}
+
+/// KM-11 on the twin: the same kernel and buffers as `run_out_of_bounds`. Returns what the GPU column extracts:
+/// the loaded value and the sink contents (only reached when the twin does not panic).
+fn twin_out_of_bounds() -> (u32, [u32; 4]) {
+    let cpu = CpuDevice::new();
+    let idx = cpu.buffer(&[4u32]);
+    let source = cpu.buffer(&[10u32, 11, 12, 13]);
+    let sink = cpu.buffer(&[0u32; 4]);
+    let seen = cpu.buffer(&[0xAAAA_AAAAu32]);
+    mismatch::out_of_bounds::dispatch(
+        &cpu,
+        1,
+        Independent(&idx),
+        Independent(&source),
+        Independent(&sink),
+        Independent(&seen),
+    )
+    .unwrap_or_else(|error| panic!("the twin refused the call: {error}"));
+    let sink = sink.read();
+    (seen.read()[0], [sink[0], sink[1], sink[2], sink[3]])
+}
+
+/// KM-09 on the twin: the final cell of a 257-way contended dispatch, run in ascending invocation order.
+fn twin_contended(
+    initial: u32,
+    dispatch: impl FnOnce(&CpuDevice, u32, Independent<&CpuBuffer<u32>>) -> Result<(), CpuError>,
+) -> u32 {
+    let cpu = CpuDevice::new();
+    let cell = cpu.buffer(&[initial]);
+    dispatch(&cpu, CONTENDERS, Independent(&cell))
+        .unwrap_or_else(|error| panic!("the twin refused the call: {error}"));
+    cell.read()[0]
+}
+
+/// What the CPU twin does for one case: the macro-emitted `Run` impl of the same kernel, called through the typed
+/// `dispatch` exactly as the GPU column calls it, under `catch_unwind`.
+fn twin_observed(case: &Case) -> Observed {
+    let (kind, operands) = (case.kind, case.operands);
+    let outcome = catch_unwind(AssertUnwindSafe(move || -> u32 {
+        match kind {
+            Kind::UDiv => twin_ops::<u32, u32, u32>(operands, |d, op, a, b, out| {
+                mismatch::udivide::dispatch(d, 1, op, a, b, out)
+            }),
+            Kind::IDiv => twin_ops::<i32, i32, i32>(operands, |d, op, a, b, out| {
+                mismatch::idivide::dispatch(d, 1, op, a, b, out)
+            }),
+            Kind::UShift => twin_ops::<u32, u32, u32>(operands, |d, op, a, n, out| {
+                mismatch::ushift::dispatch(d, 1, op, a, n, out)
+            }),
+            Kind::IShift => twin_ops::<i32, u32, i32>(operands, |d, op, a, n, out| {
+                mismatch::ishift::dispatch(d, 1, op, a, n, out)
+            }),
+            Kind::UArith => twin_ops::<u32, u32, u32>(operands, |d, op, a, b, out| {
+                mismatch::uarith::dispatch(d, 1, op, a, b, out)
+            }),
+            Kind::IArith => twin_ops::<i32, i32, i32>(operands, |d, op, a, b, out| {
+                mismatch::iarith::dispatch(d, 1, op, a, b, out)
+            }),
+            Kind::CastInt => twin_casts::<i32>(operands.1, |d, f, out| {
+                mismatch::cast_int::dispatch(d, 1, f, out)
+            }),
+            Kind::CastUint => twin_casts::<u32>(operands.1, |d, f, out| {
+                mismatch::cast_uint::dispatch(d, 1, f, out)
+            }),
+            Kind::FloatOp => twin_ops::<f32, f32, f32>(operands, |d, op, a, b, out| {
+                mismatch::float_op::dispatch(d, 1, op, a, b, out)
+            }),
+            Kind::FloatCmp => twin_ops::<f32, f32, u32>(operands, |d, op, a, b, out| {
+                mismatch::float_cmp::dispatch(d, 1, op, a, b, out)
+            }),
+            Kind::OobLoad => twin_out_of_bounds().0,
+            Kind::OobStoreLast => twin_out_of_bounds().1[3],
+            Kind::OobStoreElsewhere => {
+                let sink = twin_out_of_bounds().1;
+                sink[0] | sink[1] | sink[2]
+            }
+            Kind::ContendedExchange => twin_contended(9999, |d, count, cell| {
+                mismatch::contend_exchange::dispatch(d, count, cell)
+            }),
+            Kind::ContendedCompareExchange => twin_contended(999, |d, count, cell| {
+                mismatch::contend_compare_exchange::dispatch(d, count, cell)
+            }),
         }
     }));
     match outcome {
@@ -1517,7 +1650,7 @@ fn gpu_summary(values: &[u32]) -> String {
 }
 
 #[test]
-fn known_mismatches_pin_the_gpu_and_the_plain_rust_outcome() {
+fn known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome() {
     let mode = overflow_checks();
     let device =
         HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
@@ -1533,14 +1666,17 @@ fn known_mismatches_pin_the_gpu_and_the_plain_rust_outcome() {
     let mut failures = Vec::new();
     for (case, gpu) in cases.iter().zip(&observed) {
         let rust = rust_observed(case);
+        let twin = twin_observed(case);
         let rust_expected = (case.rust)(mode);
         let gpu_ok = gpu
             .iter()
             .all(|&bits| case.gpu.accepts(&Observed::Value(bits)));
         let rust_ok = rust_expected.accepts(&rust);
+        // The twin runs the shadow body compiled in this crate, so it must do what plain Rust does here.
+        let twin_ok = rust_expected.accepts(&twin);
         let enforced = case.enforced;
         eprintln!(
-            "S2 | {} | {} | gpu expected {:?} observed {} {} | rust[{mode:?}] expected {:?} observed {} {}",
+            "S2 | {} | {} | gpu expected {:?} observed {} {} | rust[{mode:?}] expected {:?} observed {} {} | twin observed {} {}",
             case.id,
             case.what,
             case.gpu,
@@ -1549,6 +1685,8 @@ fn known_mismatches_pin_the_gpu_and_the_plain_rust_outcome() {
             rust_expected,
             show(&rust),
             if rust_ok { "ok" } else { "DEVIATES" },
+            show(&twin),
+            if twin_ok { "ok" } else { "DEVIATES" },
         );
         if !gpu_ok && !enforced {
             // Owner ruling D39: an unspecified outcome is a one-adapter observation, not a
@@ -1577,6 +1715,15 @@ fn known_mismatches_pin_the_gpu_and_the_plain_rust_outcome() {
                 case.what,
                 rust_expected,
                 show(&rust)
+            ));
+        }
+        if !twin_ok {
+            failures.push(format!(
+                "{} `{}`: CPU twin [{mode:?}] expected the plain-Rust outcome {:?}, observed {}",
+                case.id,
+                case.what,
+                rust_expected,
+                show(&twin)
             ));
         }
         if case.id == "DOMAIN" {
@@ -1664,4 +1811,50 @@ fn the_emitted_wgsl_uses_plain_operators_and_conversions() {
     assert!(signed_arithmetic.contains("a_0[i_0] - b_0[i_0]"));
     assert!(signed_arithmetic.contains("a_0[i_0] * b_0[i_0]"));
     assert!(signed_arithmetic.contains("- a_0[i_0]"));
+}
+
+/// The mode that the ledger keys on comes from the consumer-side macro and is this workspace's profile for this
+/// crate: `cargo test` is checked and `cargo test --release` wraps, because the root `Cargo.toml` pins neither. The
+/// row outcomes that depend on the mode (KM-04, KM-10) are checked by the ledger test above in whichever mode runs.
+#[test]
+fn the_ledger_mode_is_the_overflow_mode_of_this_crate() {
+    let expected = if cfg!(debug_assertions) {
+        OverflowChecks::Checked
+    } else {
+        OverflowChecks::Wrapping
+    };
+    assert_eq!(overflow_checks(), expected);
+    // The macro and the probe of a build agree here: no per-package override exists in this workspace.
+    assert_eq!(overflow_checks(), gust::cpu::overflow_checks());
+}
+
+// A kernel without storage parameters: the only observable effect of its twin is a panic, so it divides by a value
+// that reaches zero at invocation 2 (the shadow body is rustc's own arithmetic, as in the ledger rows above).
+#[gust::gpu]
+mod zero_storage {
+    #[kernel(workgroup_size(1, 1, 1))]
+    pub fn divide_by_distance(id: SV_DispatchThreadID) {
+        let distance: uint = 2u32 - id.x;
+        let _quotient: uint = 10u32 / distance;
+    }
+}
+
+/// The twin of a kernel with no storage parameters (`Run<K, 0>`): the typed `dispatch` infers the device from its
+/// first argument, and runs the body. A zero-storage body has no observable except a panic, so the test shows only
+/// this: counts 0 and 2 do not reach id 2 and return `Ok`, and count 3 does reach it, where the body divides by zero
+/// (KM-01) and panics. It does not show that ids 0 and 1 ran.
+#[test]
+fn a_kernel_without_storage_parameters_runs_on_the_twin() {
+    let cpu = CpuDevice::new();
+    zero_storage::divide_by_distance::dispatch(&cpu, 0).unwrap();
+    zero_storage::divide_by_distance::dispatch(&cpu, 2).unwrap();
+    let outcome = catch_unwind(AssertUnwindSafe(|| {
+        zero_storage::divide_by_distance::dispatch(&cpu, 3)
+    }));
+    let message = panic_message(
+        outcome
+            .expect_err("invocation 2 divides by zero, so the third element must panic")
+            .as_ref(),
+    );
+    assert!(message.starts_with(DIV_ZERO), "{message}");
 }

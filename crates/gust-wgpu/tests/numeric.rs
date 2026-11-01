@@ -1,5 +1,6 @@
 include!("../../../tests/fixtures/numeric.rs");
 
+use gust::cpu::CpuDevice;
 use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
 
 /// Independent host reference. This is ordinary Rust, not execution of a shader
@@ -89,6 +90,51 @@ fn numeric_semantics_and_struct_construction_execute_on_gpu() {
         let actual_cast = device.read_typed_buffer(&cast_out).unwrap();
         let actual_pair = device.read_typed_buffer(&pair_out).unwrap();
 
+        // The CPU twin: the same typed call with the device swapped (macro-emitted under `cfg(test)`).
+        let cpu = CpuDevice::new();
+        let twin_a = cpu.buffer(&a);
+        let twin_b = cpu.buffer(&b);
+        let twin_f = cpu.buffer(&f);
+        let twin_signed = cpu.buffer(&vec![0i32; count]);
+        let twin_unsigned = cpu.buffer(&vec![0u32; count]);
+        let twin_cast = cpu.buffer(&vec![0i32; count]);
+        let twin_pair = cpu.buffer(&vec![
+            numeric::Pair {
+                first: 0,
+                second: 0
+            };
+            count
+        ]);
+        numeric::run::dispatch(
+            &cpu,
+            count as u32,
+            &twin_a,
+            &twin_b,
+            &twin_f,
+            &twin_signed,
+            &twin_unsigned,
+            &twin_cast,
+            &twin_pair,
+        )
+        .unwrap();
+        let twin_signed = twin_signed.read();
+        let twin_unsigned = twin_unsigned.read();
+        let twin_cast = twin_cast.read();
+        let twin_pair = twin_pair.read();
+        assert_eq!(twin_signed, actual_signed, "twin signed, count {count}");
+        assert_eq!(
+            twin_unsigned, actual_unsigned,
+            "twin unsigned, count {count}"
+        );
+        assert_eq!(twin_cast, actual_cast, "twin cast, count {count}");
+        for i in 0..count {
+            assert_eq!(
+                (twin_pair[i].first, twin_pair[i].second),
+                (actual_pair[i].first, actual_pair[i].second),
+                "twin pair[{i}] against the GPU"
+            );
+        }
+
         for i in 0..count {
             let (exp_signed, exp_unsigned, exp_cast, exp_first, exp_second) =
                 reference(a[i], b[i], f[i]);
@@ -99,6 +145,12 @@ fn numeric_semantics_and_struct_construction_execute_on_gpu() {
             // though the literal wrote `second` first.
             assert_eq!(actual_pair[i].first, exp_first, "pair.first[{i}]");
             assert_eq!(actual_pair[i].second, exp_second, "pair.second[{i}]");
+            // The twin against the independent reference, not only against the GPU.
+            assert_eq!(twin_signed[i], exp_signed, "twin signed[{i}]");
+            assert_eq!(twin_unsigned[i], exp_unsigned, "twin unsigned[{i}]");
+            assert_eq!(twin_cast[i], exp_cast, "twin cast[{i}]");
+            assert_eq!(twin_pair[i].first, exp_first, "twin pair.first[{i}]");
+            assert_eq!(twin_pair[i].second, exp_second, "twin pair.second[{i}]");
         }
     }
 }

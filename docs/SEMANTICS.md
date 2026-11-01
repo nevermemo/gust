@@ -7,10 +7,12 @@ position is that such differences are expected edge cases that developers avoid 
 does not try to make the targets match.
 
 The CPU twin exists: `gust::cpu` (slice m3.b) is its backend and the `#[gpu]` macro emits the twin of every kernel with
-a typed call (slice m3.c). What is still to come is marked **planned**: the twin column of the ledger and the twin
-assertions in the fixture tests (m3.d), the remaining examples (m3.e1, m3.e2), the `--cfg gust_dual` checks and the
-cross-crate proof (m3.f1, m3.f2) and `cargo xtask check-cpu` (m3.c2). A planned statement describes the intended
-behaviour and is not evidence.
+a typed call (slice m3.c). The fixture tests assert the twin next to the GPU and the independent host reference, the
+atomic functions run for real on the twin, and the ledger has a twin column (slice m3.d). `cargo xtask check-cpu`
+(slice m3.c2) is a step of the Unit suite and runs the locked, GPU-free tests of the vector-add and polynomial
+examples. What is still to come is marked **planned**: the remaining examples (m3.e1, m3.e2) and the `--cfg gust_dual`
+checks and the cross-crate proof (m3.f1, m3.f2). A planned statement describes the intended behaviour and is not
+evidence.
 
 ## 1. Scope
 
@@ -50,16 +52,17 @@ Every statement about GPU behaviour carries one of these, and they are never mer
   for example NaN converted to an integer). The GPU value in the ledger is an observation and not a requirement;
   the test prints a NOTE when it changes (shown with `--nocapture`, not in a default run) and never fails on it.
 - **measured**: one adapter, one driver, one date (the adapter in section 1). Not portable.
-- **proven**: a test pins the result on both targets and the pinned value lies inside the spec-allowed set. No
-  statement has this label yet: the twin column arrives in m3.d, and one matching observation never promotes a line.
-  Until then the closest evidence is a GPU run against an independent host reference, which is labelled measured.
+- **proven**: a test pins the result on both targets and the pinned value lies inside the spec-allowed set. The
+  statements that carry it are listed in section 8, each with its test; one matching observation never promotes a
+  line. A GPU run against an independent host reference alone is labelled measured.
 - **planned**: the twin will behave this way; nothing runs yet.
 
 "Rust" in the ledger is the plain-Rust result in the crate that compiled the test. "Checks on" and "checks off" mean
-the consuming build has `overflow-checks` enabled or not (D38); the test detects the mode at run time and asserts the
-matching column. The twin is compiled in the crate that defines the kernel and so follows that build's mode; GUST
-pins no profile. The overflow-mode evidence across crates (the m3.d replacement of the ledger's private mode detector
-and the m3.f1 fixture) is still planned.
+the consuming build has `overflow-checks` enabled or not (D38); the test reads the mode at run time with the macro
+`gust::cpu::overflow_checks!()`, which expands in the test crate, and asserts the matching column. The twin is
+compiled in the crate that defines the kernel and so follows that build's mode; GUST pins no profile. The ledger is
+one workspace profile, so the macro, the function `gust::cpu::overflow_checks()` and the twin agree there; the
+cross-crate evidence (a dependent crate with a per-package override sees its own mode) is still planned, m3.f1.
 
 ## 3. The defined domain, and what lies outside it
 
@@ -103,6 +106,15 @@ diagnostic; a run-time zero is not. There are no explicit `wrapping_*` operation
 language feature of their own, not a way to close this gap. Do not rely on the twin to detect overflow on the GPU
 path: the GPU wraps silently whatever the twin does.
 
+**Limitation: arithmetic inside `gust` follows `gust`'s own overflow mode.** Rust fixes overflow behaviour when a
+crate is compiled. An integer operation that the shadow body writes is compiled in the consumer's crate and follows
+the consumer's mode (`gust::cpu::overflow_checks!()`). An integer operation that `gust` itself implements (a shadow
+function or type provided by the library, as opposed to the kernel's own `+`) is compiled in `gust` and follows
+`gust`'s mode (the function `gust::cpu::overflow_checks()`). The two modes differ only when a profile overrides
+`overflow-checks` for one of the two packages. Today the only such operation is `atomic_add`. It never panics on
+overflow, not even in a checked twin, unlike the kernel's own `+`: it wraps modulo 2^32 in every build, exactly as the
+GPU does (the other atomic functions cannot overflow). So the case does not arise. This is documented, not fixed (D39).
+
 The ledger test also runs controls inside the domain (integer cases, and float cases on exactly representable values,
 so they say nothing about rounding). They must agree between the GPU and plain Rust in both overflow modes; a
 disagreement there fails the test, because it would mean the domain is wrong.
@@ -110,8 +122,8 @@ disagreement there fails the test, because it would mean the domain is wrong.
 ## 4. Floats
 
 D22 gives each float operation a documented error bound, because GPU `f32` is not strictly IEEE. The GPU column
-below is what WGSL allows; the twin column is planned and is Rust's IEEE 754 binary32 with round-to-nearest-even, and
-Rust does not fuse `a * b + c` by itself.
+below is what WGSL allows; the twin column is Rust's IEEE 754 binary32 with round-to-nearest-even, and Rust does not
+fuse `a * b + c` by itself.
 
 Quotes (WGSL editor's draft, section numbers as read):
 
@@ -145,7 +157,7 @@ bound, not an observation.
 | a chain of additions or subtractions | domain | Evaluated in the written order. | May be regrouped, with no accuracy condition (15.7.5). | No constant: derive it over the worst grouping (below). |
 | `x == y`, `x != y`, `x < y`, `x <= y`, `x > y`, `x >= y` | no NaN operand, no subnormal operand | IEEE 754. | "Correct result". | Identical truth values. |
 | `i32 as f32`, `u32 as f32` | any | Nearest, ties to even. | Exact when the value is representable (all `abs(x)` up to 2^24); otherwise either neighbour (15.7.6). | Identical up to 2^24 in magnitude; above it at most 1 ULP, not measured. |
-| `f32 as i32`, `f32 as u32` | truncated value fits the target type | Truncates toward zero. | Truncates toward zero (15.7.6). | Identical. Only in-range `f32 as i32` has a test (`numeric`, against a host reference); no test covers `f32 as u32` inside the domain. |
+| `f32 as i32`, `f32 as u32` | truncated value fits the target type | Truncates toward zero. | Truncates toward zero (15.7.6). | Identical. Only in-range `f32 as i32` has a test (`numeric`, against a host reference, on the GPU and on the twin); no test covers `f32 as u32` inside the domain. |
 | float `%` | accepted by the validator, not covered | Not stated. | WGSL inherits it from `x - y * trunc(x/y)` (15.7.4.1). | No bound stated. |
 | NaN, infinity, subnormal operands or results, out-of-range casts | outside the domain | IEEE 754, kept subnormals, saturating casts. | Indeterminate, flushable, clamped (15.7.2, 15.7.6). | Ledger rows KM-05 to KM-08. |
 
@@ -222,23 +234,39 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   same dispatch.
 - **The ordering rule.** An atomic whose final result does not depend on the order of the contending invocations
   gives the same result on both targets: `atomic_add` (it wraps modulo 2^32 on both targets by definition, its
-  specification body in 17.8.3.1 is `old + v`, and the twin's version is planned to use `wrapping_add`; no test
-  drives an atomic add past the limit), `atomic_min` and `atomic_max`. A result that depends on which invocation goes
-  first (`atomic_exchange`, a contended `atomic_compare_exchange`) is set-valued on the GPU: any invocation may win. The
-  twin (planned) runs invocations in ascending order and so yields one member of that set (KM-09). Tests of such
-  kernels must accept the whole set, not the twin's value.
+  specification body in 17.8.3.1 is `old + v`, and the twin's version uses `wrapping_add`, unit-tested at
+  `u32::MAX` and `i32::MAX` in `runtime.rs`; no kernel test drives an atomic add past the limit), `atomic_min` and
+  `atomic_max`. A result that depends on which invocation goes first (`atomic_exchange`, a contended
+  `atomic_compare_exchange`) is set-valued on the GPU: any invocation may win. The twin runs invocations in ascending
+  order and so yields one member of that set: the exchange of 257 invocations ends at 256, the contended
+  compare-exchange from 999 to `id + 1` at 1 (KM-09). That is the twin's order rule and nothing else: tests of such
+  kernels accept the whole set on the GPU, never the twin's value, and the twin's value is asserted separately.
+- **The CPU twin (exists, m3.d).** `atomic_add`, `atomic_min`, `atomic_max`, `atomic_exchange` and
+  `atomic_compare_exchange` in `crates/gust/src/runtime.rs` are real sequential operations on `u32` and `i32`
+  through a sealed helper trait, so a float receiver stays a rustc error (the validator already rejects it). Because the
+  twin runs one invocation at a time, a plain read-modify-write is atomic. The shadow functions return the old value
+  (the exchange and the arithmetic ones) or whether the swap happened (compare-exchange); in a kernel the GPU form is
+  statement-only, so the returned value is not observable there. The twin's compare-exchange never fails
+  spuriously.
 - **Compare-exchange may fail spuriously.** WGSL's only compare-exchange is `atomicCompareExchangeWeak` (17.8.5):
   "The equality comparison may spuriously fail on some implementations." So even an uncontended compare-exchange
   that should succeed is not guaranteed to, and in the contended case the unchanged value (999 in the ledger case)
   is also a spec-allowed result. That the success case succeeds is a measured observation, not a guarantee.
-- **Tested today (GPU only, measured).** `crates/gust-wgpu/tests/atomics.rs` checks a contended `atomic_add` sum, the
+- **Tested (GPU measured, twin exact).** `crates/gust-wgpu/tests/atomics.rs` checks a contended `atomic_add` sum, the
   contended minimum and maximum, the compare-exchange success and failure cases, and signed add, exchange and
-  compare-exchange exactly, and checks that the contended exchange and compare-exchange end in a valid value. The
-  returned old value of an atomic is never observable in GPU code (statement-only); the twin is planned to return it
-  anyway.
-- **Known limitation of that test.** It asserts that the contended compare-exchange ends in 1 to 257, a narrower set
-  than the specification allows (it excludes 999), and it asserts the success case as if it were guaranteed. To be
-  revisited in m3.d (planned).
+  compare-exchange exactly, on the GPU and on the twin. The twin's final cell is compared directly with the GPU's in
+  every test except the contended exchange and compare-exchange; in the signed sequence (add, exchange, compare-exchange
+  on one cell) each step of both sides is pinned to the same literal (-4, -5, 11) and only the final state is compared
+  directly. For the contended
+  exchange the GPU must end in 0 to 256 and for the contended compare-exchange in 1 to 257 or at the unchanged 999
+  (the weak compare-exchange may fail every attempt); the twin is asserted at 256 and at 1 respectively, and never
+  compared with the GPU there. The returned old value of an atomic is never observable in GPU code (statement-only);
+  the twin returns it and `runtime.rs` unit-tests it.
+- **Known limitation of the GPU half.** The compare-exchange success case (a single invocation, 7 to 11) is asserted
+  as succeeding. WGSL allows a spurious failure there too (17.8.5), so on the GPU that is a measured observation,
+  not a guarantee; on the twin it holds by definition. Because the unchanged 999 is accepted for the contended case,
+  a GPU compare-exchange that did nothing would pass the contended GPU assertion; the success case and the twin
+  assertion are what catch a no-op.
 
 ## 7. Known-mismatch ledger
 
@@ -246,10 +274,16 @@ The ledger lists the constructs where the GPU and plain Rust (which the CPU targ
 or where the GPU's result is unspecified, and that no diagnostic can prevent because the operands are run-time
 values. Differences like these are expected and acceptable (D39): they are documented here, not removed.
 
-Each row is pinned by `crates/gust-wgpu/tests/mismatch.rs`, which runs every case on the GPU and as plain Rust; an
-id guard in that file keeps this table and the test in step. The column "Rust (and CPU twin)" holds the plain-Rust
-result today; the twin assertion (planned, m3.d) must equal it. Labels are defined in section 2. No row is
-**proven**.
+Each row is pinned by `crates/gust-wgpu/tests/mismatch.rs`, which runs every case on the GPU, as plain Rust and on the
+CPU twin (the macro-emitted twin of the same ledger kernel, called through the typed `dispatch`, one case per
+dispatch); an id guard in that file keeps this table and the test in step. The column "Rust (and CPU twin)" holds the
+plain-Rust result, and the test asserts that the twin's outcome is accepted by that same expectation, in the overflow
+mode of the test crate: the twin runs the shadow body compiled in that crate, so it panics or wraps exactly as the
+Rust column does. The twin is compared with Rust and never with the GPU, which D39 allows to differ. Each row's twin
+outcome is therefore pinned, including for the rows where the specification leaves the GPU open (KM-05 to KM-08,
+KM-11), where the GPU value stays an unenforced observation. A kernel without storage parameters is covered by a
+separate test in the same file. Labels are defined in section 2. No ledger row is **proven**: a row records a
+difference, and the proven label needs the two targets to agree.
 
 | Id | Case | Rust (and CPU twin) | GPU | Label |
 | --- | --- | --- | --- | --- |
@@ -261,7 +295,7 @@ result today; the twin assertion (planned, m3.d) must equal it. Labels are defin
 | KM-06 | `f32 as u32` of a negative, too large or NaN value | Saturates: negative and NaN give 0, `1.0e10` and `2^32` give `u32::MAX`, in every profile. | Finite values (WGSL section 15.7.6, as KM-05): negatives such as `-1.0`, `-3.99` and `-1.0e10` give 0; `1.0e10` and `2^32` give 4294967040 (`0xffffff00`), not `u32::MAX`. NaN: indeterminate; observed 0. | spec-allowed (finite), unspecified (NaN), measured |
 | KM-07 | NaN and infinity through arithmetic and comparison | IEEE 754: NaN propagates, `NaN != NaN` is true, ordered comparisons with NaN are false, `1.0 / 0.0` is `+inf`. | Unspecified (an operation that would produce NaN or infinity may give an indeterminate value; comparisons with NaN are not guaranteed to be unordered). Observed: NaN and infinity propagate and compare as in IEEE for every case except `NaN != NaN`, which is false. The sign and payload of a NaN are not preserved either: the GPU produced `0x7fffffff` in every case, Rust produces `0x7fc00000` or `0xffc00000`. Division by a divisor above 2^126 is also outside WGSL's division accuracy range: `3.0e38 / 3.0e38` gave 0 on the GPU, Rust gives 1. | unspecified, measured |
 | KM-08 | Denormal (subnormal) `f32` operands and results | Kept: `1.0e-40 * 1.0` is `1.0e-40`, `1.0e-40 == 0.0` is false. | Unspecified (flushing to zero is allowed). Observed: operands and results flushed to zero (`1.0e-40 * 1.0`, `+ 0.0`, `* 2.0`, `/ 2.0` and `4.0e-38 / 4.0` give 0), and `1.0e-40 == 0.0` is true. | unspecified, measured |
-| KM-09 | Contended `atomic_exchange` and `atomic_compare_exchange` (257 invocations, one cell) | Sequential, ascending invocation id: the exchange ends at 256; the compare-exchange from 999 to `id + 1` ends at 1. | Set-valued: the exchange ends at some id in 0 to 256, the compare-exchange at some value in 1 to 257, or at 999 (unchanged) because the weak compare-exchange may fail spuriously (WGSL section 17.8.5); the test accepts 1 to 257 only. Observed over 32 dispatches per run, three runs: 1 to 10 distinct final values per run, and never the sequential result (the exchange ended between 1 and 251, the compare-exchange between 7 and 137). | spec-allowed (the set), measured |
+| KM-09 | Contended `atomic_exchange` and `atomic_compare_exchange` (257 invocations, one cell) | Sequential, ascending invocation id: the exchange ends at 256; the compare-exchange from 999 to `id + 1` ends at 1. | Set-valued: the exchange ends at some id in 0 to 256, the compare-exchange at some value in 1 to 257, or at 999 (unchanged) because the weak compare-exchange may fail spuriously (WGSL section 17.8.5); the test accepts all of that set. Observed over 32 dispatches per run, three runs: 1 to 10 distinct final values per run, and never the sequential result (the exchange ended between 1 and 251, the compare-exchange between 7 and 137). | spec-allowed (the set), measured |
 | KM-10 | Overflow of `+`, `-`, `*` and unary `-` on `u32` and `i32` | Checks on: panics ("attempt to add with overflow" and so on). Checks off: wraps modulo 2^32. | Wraps modulo 2^32 (WGSL section 6.2.3): `u32::MAX + 1 == 0`, `i32::MAX + 1 == i32::MIN`, `0u32 - 1 == u32::MAX`, `-i32::MIN == i32::MIN`. | spec-allowed, measured |
 | KM-11 | Out-of-bounds index equal to the buffer length | Panics "index out of bounds" in every profile. | Unspecified (a dynamic error, WGSL section 6.5.7). Observed with a 4-element buffer and index 4: the load returned 0 and the store was dropped (the buffer was unchanged). | unspecified, measured |
 
@@ -270,3 +304,24 @@ enforced, so the test fails when one changes and the row is edited in the same c
 an observation: the test prints a NOTE when it changes and never fails (D39). Adding a construct to the ledger means
 adding
 its `KM-nn` row here and its case in `crates/gust-wgpu/tests/mismatch.rs`; the id guard fails if only one is done.
+
+## 8. What is proven
+
+A statement here has the **proven** label of section 2: one test asserts the same result on the GPU, on the CPU twin
+and against an independent host reference, on the inputs the test uses, and the result lies inside the set that the
+WGSL specification allows. It is a statement about those inputs and operations inside the defined domain (section 3),
+not a general theorem. The twin half is `cfg(test)` code of the test crate (slice m3.d); the GPU half ran on the
+adapter in section 1.
+
+- **Integer, `bool` and control-flow results of the fixture kernels**, with element counts 1, 63, 64, 65 and 257:
+  `semantics` (`translated_semantics_execute_on_gpu`: integers and the float branches on small exactly representable
+  values), `numeric` (signed and unsigned division and remainder with non-zero divisors, the in-range `f32 as i32`
+  cast, struct construction), `option`, `result` (the `ok` and `err` input sets), `loops` and `struct_assignment`.
+- **Atomics** (`atomics.rs`): the contended `atomic_add` sum, the contended `atomic_min` and `atomic_max`, the failing
+  compare-exchange, and signed `atomic_add` and `atomic_exchange`. Not proven: the succeeding compare-exchange (single
+  and signed), because a weak compare-exchange may fail spuriously on the GPU (section 6), and the contended
+  exchange and compare-exchange, where the targets are allowed to differ (KM-09).
+
+Everything else on this page stays **spec-allowed**, **unspecified**, **measured** or **planned**. The floats of
+section 4 remain measured on the polynomial example only; the signal-pipeline example (m3.e1) is where more float
+evidence will come from.

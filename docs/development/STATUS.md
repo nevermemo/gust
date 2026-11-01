@@ -16,6 +16,15 @@ Codex review (rework), two Opus re-reviews and three revisions; D44 (build profi
 `GUST_PROFILE`), D45 (committed, re-verified artifacts), D46 (`cargo-gust` and the Slang pin)
 and D47 (weak compare-exchange). First: spike S1 (one precompiled, reflection-verified kernel
 running without Slang installed) in parallel with slices m4.0 and m4.h.
+M5 (CPU target and evidence breadth): plan adopted early on 2026-11-01 (owner-delegated) after a
+Codex review (adopt with changes) and one revision. D51 makes `cpu` a production profile with a
+sequential contract, and D52 sets the rules for software-adapter evidence. Slices that share no
+code or test file with M4 run beside it, and M5 closes after M4. The M6 layout spike V1 (decision
+C, a scratch probe on the RTX 5090) found:
+- vec3 must be rejected in buffers;
+- the matrix layout defaults differ between Slang's CLI and its API, so M6 pins column-major;
+- `m * v` lowers to `mul`;
+- uniforms take std140 padding.
 
 - M4 S1 (spike, local commit only): decision A. With no Slang reachable (PATH stripped,
   `GUST_SLANG_REFLECT` unset, `where slangc` failing), a consumer built with the Slang bridge

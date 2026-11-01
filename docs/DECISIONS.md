@@ -1,6 +1,6 @@
 # Decisions and boundaries
 
-Append-only log. Next id: **D50**. Add a row for every owner decision or durable
+Append-only log. Next id: **D51**. Add a row for every owner decision or durable
 technical decision, with its date and source; supersede an old row with a new one
 instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
 earlier reflection deferral, and independent inspection. Chat research is design
@@ -57,6 +57,7 @@ input, not proof of code state.
 | D47 | Weak compare-exchange: on the GPU, uncontended success is set-valued (`{7, 11}` unsigned, `{-5, 11}` signed), while on the twin it is exact; the failure cases and KM-09's contended set are unchanged. Coordinator decision, owner-delegated, 2026-11-01 (M4 plan, slice m4.0) | WGSL allows a weak compare-exchange to fail spuriously even without contention, so the current assertions of uncontended success could reject a conforming adapter. The Codex M3 sanity check raised this, and the M4 planner confirmed it in the atomics tests. It must land before any second adapter counts as evidence |
 | D48 | Crate names (owner, 2026-11-01; refines D25): GUST publishes as `gust-compute`, with `gust-compute-macros`, `gust-compute-wgpu` and the `cargo-gust` tool; Breeze as `breeze-gfx`; Hurricane as `hurricane-engine`. The macro resolves the facade crate under whatever name the consumer imported it (the `proc-macro-crate` pattern or a hidden re-export) instead of hard-coding `::gust::` paths; that change lands in M10 | `gust`, `breeze` and `hurricane` are taken. "compute" says what GUST does (compute only) better than "gpu", and `breeze-gfx` covers rendering and its helpers. The owner reserves the names with 0.0.0 placeholders; publishing is the owner's action. Before release, settle "North Star" versus "Hurricane" in the engine docs |
 | D49 | The engine is named Hurricane everywhere (owner, 2026-11-01; settles the naming question in D48): `docs/ENGINE_NORTH_STAR.md` is now `docs/ENGINE_HURRICANE.md`, and every reference, including history files, points to the new name | One name in docs and crates (`hurricane-engine`, D48) before anything public. The engine doc keeps its content; only its name and title changed. The T13 stash does not touch the engine doc |
+| D50 | check-arch's D02 allow-lists admit each of `gust` and `gust-wgpu` depending on itself. Cargo allows that only as a dev-dependency, which here turns on the package's own `slang-runtime` feature for its tests (D44; measured in m4.b1: without it the tests fail with E0425). It adds no edge between crates. Coordinator, owner-delegated, 2026-11-01 (slice m4.b1) | D02 keeps the crate graph small and explicit, and a self dev-dependency adds no new crate edge. `cargo publish` strips path-only self dev-dependencies, so the packaged tests need a plan in M10. Revisit if the bridge moves to its own crate (R4.1 option 3) |
 
 ## Notes
 

@@ -54,6 +54,16 @@ running without Slang installed) in parallel with slices m4.0 and m4.h.
   clone. 16 negative and positive tests and 4 unit tests run in the Unit suite. The fixture
   manifest is S1's interim shape, not D45's schema-1 manifest (m4.d). Opus keep after one fix
   round; gates on main at `6d04248`.
+- M4 m4.b1 (`cbbf35a`): the Slang bridge in `gust` and `gust-wgpu` sits behind the
+  `slang-runtime` feature, which is off by default. Artifact verification (`Target`, `Error`,
+  `decode_spirv`, `compile_copy`) stays outside the feature. With the feature off, a run-time
+  compile returns an `Unsupported` error that names the feature; m4.e1's `NoArtifact` replaces
+  it. Each crate's own tests turn the feature on through a self dev-dependency. That was
+  measured: without it the tests fail with E0425. check-arch admits it (D50). The Unit suite
+  runs `--no-default-features` clippy and check of both crates. Every xtask cargo child,
+  check-ui's included, runs with `GUST_PROFILE=dev`; a preset value is logged and overridden.
+  No test yet runs the feature-off code, so m4.e2's fixture is the first that will. Opus keep
+  after one fix round; gates on main at `69c0c1c` (Gpu 110 tests).
 M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),

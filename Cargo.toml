@@ -24,9 +24,9 @@ license = "MIT OR Apache-2.0"
 rust-version = "1.90"
 
 [workspace.dependencies]
-gust = { path = "crates/gust" }
-gust-macros = { path = "crates/gust-macros" }
-gust-wgpu = { path = "crates/gust-wgpu" }
+gust = { version = "0.1.0", path = "crates/gust" }
+gust-macros = { version = "0.1.0", path = "crates/gust-macros" }
+gust-wgpu = { version = "0.1.0", path = "crates/gust-wgpu" }
 pollster = "0.4"
 proc-macro2 = { version = "1.0", features = ["span-locations"] }
 quote = "1.0"

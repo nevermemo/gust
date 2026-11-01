@@ -215,6 +215,27 @@ D55 to D59.
   5090: one literal fault shrank in 119.0 s over 17 candidates (mean 6.58 s), 0 mismatches in both
   batches; the no-fault check exits 1. An interrupted `--shrink` can leave cargo running on Unix
   (DIFFTEST.md). Evidence: Gpu (RTX 5090). Opus merge after three rounds.
+- M6 m6.r (`fe42f3f`): the reflection helper reports vectors (`scalarType`, `elementCount`), matrices
+  (rows, columns, layout and the column stride, size divided by columns) and constant buffers (the
+  element's Uniform layout plus the `descriptorTableSlot` binding), with matrices pinned
+  column-major in the helper (`defaultMatrixLayoutMode`) and at both slangc call sites
+  (`-matrix-layout-column-major`). Schema 2, with a top-level `matrixLayout`, appears only when a
+  resource holds one of those kinds, so all 11 files of the 5 committed artifact sets stay
+  byte-identical; cargo-gust accepts helper schemas 1 and 2. Storage buffers are unchanged: a padded
+  `float3` is still refused by `is_storage_v1`/`v2`, the macro's layouts and gust-wgpu. The CLI and
+  native paths give the same bytes for a matrix kernel, and real helper output passes the
+  cross-check as StorageV2 and Std140V1. Evidence: Unit, Reflect, Slangc and Spirv on main; the
+  machine's shared helper is now schema 2. D17's "fails on anything outside StorageV1" is amended at
+  the M6 close. Opus merge after one fix round.
+- M5 m5.a2 (`e098f2f`): `gpu-software` takes Slang from the cargo-gust manager's pin (version and
+  Linux sha256 read from slang.rs, one line each or fail) through `cargo gust slang install` and
+  `build-helper`, runs `cargo gust doctor`, and never restores a helper from the cache. The test
+  counts moved from YAML into `cargo xtask verify --mode gpu` (`GPU_SUITE_PIN` in verify.rs: 146
+  passed over 20 lines), which also refuses a named helper whose Slang tag differs from slangc's. A
+  nightly list (03:00 UTC, or dispatch with `extended`) adds check-examples and the release ledger;
+  both ledgers are uploaded. Evidence: Gpu (software), lavapipe on GitHub: PR list 2m31s and nightly
+  list 4m21s, both without caches (the warm time comes from the next run). Opus merge after one fix
+  round.
 - M5 m5.c1b (`a3a7798`): the difftest harness `difftest-run`. It writes one run crate per
   batch, builds it with `cargo test --locked` under `GUST_PROFILE=dev`, requires exactly one
   complete result file per program, and writes `report.json` with exact counts. The GPU f32 is

@@ -17,6 +17,12 @@
 //! both columns in both modes. A disagreement there is not a ledger row, it means the
 //! contract's defined domain is wrong (spike S2 kill rule), and the test fails.
 //!
+//! Two kinds of adapter run this file (slice m5.b, D52): hardware and software (`device_type` `Cpu`, lavapipe).
+//! An enforced row and every `DOMAIN` control have one pin that holds on both. An unenforced row (KM-07, KM-08,
+//! KM-11 and the NaN casts of KM-05 and KM-06) has its hardware observation in `Case::gpu` and, where lavapipe
+//! differs, its software observation in `Case::software`; the NOTE compares with the running kind's pin. Each run
+//! writes one `LEDGER` line per case to `ledger-<kind>.txt` under the target's tmp directory.
+//!
 //! Labels (docs/SEMANTICS.md): the GPU values pinned here are *measured* on one adapter
 //! and are never promoted to *proven* by this file. Each failing row names its id.
 
@@ -97,6 +103,14 @@ impl Outcome {
     }
 }
 
+/// A pin in hex where it is one value (the derived `Debug` prints the bits in decimal).
+fn pin_text(pin: Outcome) -> String {
+    match pin {
+        Outcome::Value(bits) => format!("0x{bits:08x}"),
+        other => format!("{other:?}"),
+    }
+}
+
 fn show(observed: &Observed) -> String {
     match observed {
         Observed::Value(bits) => format!("0x{bits:08x}"),
@@ -111,6 +125,34 @@ fn panic_message(payload: &(dyn Any + Send)) -> String {
         text.clone()
     } else {
         "<non-string panic payload>".to_owned()
+    }
+}
+
+// ---- adapter kinds ----
+
+/// The kind of adapter that runs the ledger (R1-5). Unenforced rows are pinned once per kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdapterKind {
+    /// Any adapter that is not a CPU implementation.
+    Hardware,
+    /// A CPU implementation of Vulkan (`wgpu::DeviceType::Cpu`, for example lavapipe).
+    Software,
+}
+
+impl AdapterKind {
+    fn of(device_type: wgpu::DeviceType) -> Self {
+        if device_type == wgpu::DeviceType::Cpu {
+            Self::Software
+        } else {
+            Self::Hardware
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Hardware => "hardware",
+            Self::Software => "software",
+        }
     }
 }
 
@@ -143,10 +185,34 @@ struct Case {
     kind: Kind,
     /// Operation selector, first operand, second operand (bit patterns).
     operands: (u32, u32, u32),
+    /// The pinned GPU outcome: the requirement of an enforced row, the hardware observation of an unenforced one.
     gpu: Outcome,
+    /// The observation on a software adapter (lavapipe), for an unenforced row where it differs from `gpu`. `None` is
+    /// "no software pin": the hardware pin accepted m5.b0's value there. Never set on an enforced row or on a
+    /// set-valued KM-09 row.
+    software: Option<Outcome>,
     rust: fn(OverflowChecks) -> Outcome,
     /// Whether the pinned GPU value is a requirement the test enforces (see `gpu_is_enforced`).
     enforced: bool,
+}
+
+impl Case {
+    /// Adds the software-adapter observation of an unenforced row.
+    fn software(mut self, observation: Outcome) -> Self {
+        self.software = Some(observation);
+        self
+    }
+
+    /// The pin that the running kind compares with: the one pin of an enforced row, else the kind's own.
+    fn pin(&self, kind: AdapterKind) -> Option<Outcome> {
+        if self.enforced {
+            return Some(self.gpu);
+        }
+        match kind {
+            AdapterKind::Hardware => Some(self.gpu),
+            AdapterKind::Software => self.software,
+        }
+    }
 }
 
 fn case(
@@ -163,6 +229,7 @@ fn case(
         kind,
         operands,
         gpu,
+        software: None,
         rust,
         enforced: gpu_is_enforced(id, kind, operands.1),
     }
@@ -758,7 +825,8 @@ fn cases() -> Vec<Case> {
         (0, NAN, f(1.0)),
         Outcome::Nan,
         |_| Outcome::Nan,
-    ));
+    )
+    .software(v(0x7fc00000)));
     add(case(
         "KM-07",
         "f32 +inf + 1.0",
@@ -782,7 +850,8 @@ fn cases() -> Vec<Case> {
         (2, NAN, f(0.0)),
         Outcome::Nan,
         |_| Outcome::Nan,
-    ));
+    )
+    .software(v(0x7fc00000)));
     add(case(
         "KM-07",
         "f32 +inf * 0.0",
@@ -790,7 +859,8 @@ fn cases() -> Vec<Case> {
         (2, INF, f(0.0)),
         Outcome::Nan,
         |_| Outcome::Nan,
-    ));
+    )
+    .software(v(0xffc00000)));
     add(case(
         "KM-07",
         "f32 -inf * 0.0",
@@ -798,7 +868,8 @@ fn cases() -> Vec<Case> {
         (2, NEG_INF, f(0.0)),
         Outcome::Nan,
         |_| Outcome::Nan,
-    ));
+    )
+    .software(v(0xffc00000)));
     add(case(
         "KM-07",
         "f32 NaN - NaN",
@@ -806,7 +877,8 @@ fn cases() -> Vec<Case> {
         (1, NAN, NAN),
         Outcome::Nan,
         |_| Outcome::Nan,
-    ));
+    )
+    .software(v(0x7fc00000)));
     add(case(
         "KM-07",
         "f32 +inf - +inf",
@@ -814,7 +886,8 @@ fn cases() -> Vec<Case> {
         (1, INF, INF),
         Outcome::Nan,
         |_| Outcome::Nan,
-    ));
+    )
+    .software(v(0xffc00000)));
     add(case(
         "KM-07",
         "f32 NaN / NaN",
@@ -822,7 +895,8 @@ fn cases() -> Vec<Case> {
         (3, NAN, NAN),
         Outcome::Nan,
         |_| Outcome::Nan,
-    ));
+    )
+    .software(v(0x7fc00000)));
     add(case(
         "KM-07",
         "f32 +inf / +inf",
@@ -830,7 +904,8 @@ fn cases() -> Vec<Case> {
         (3, INF, INF),
         Outcome::Nan,
         |_| Outcome::Nan,
-    ));
+    )
+    .software(v(0xffc00000)));
     add(case(
         "KM-07",
         "f32 0.0 / 0.0",
@@ -838,7 +913,8 @@ fn cases() -> Vec<Case> {
         (3, f(0.0), f(0.0)),
         Outcome::Nan,
         |_| Outcome::Nan,
-    ));
+    )
+    .software(v(0xffc00000)));
     add(case(
         "KM-07",
         "f32 1.0 / 0.0",
@@ -870,7 +946,8 @@ fn cases() -> Vec<Case> {
         (1, NEG_INF, NEG_INF),
         Outcome::Nan,
         |_| Outcome::Nan,
-    ));
+    )
+    .software(v(0xffc00000)));
     add(case(
         "KM-07",
         "f32 -inf / -inf",
@@ -878,7 +955,8 @@ fn cases() -> Vec<Case> {
         (3, NEG_INF, NEG_INF),
         Outcome::Nan,
         |_| Outcome::Nan,
-    ));
+    )
+    .software(v(0xffc00000)));
     // The remaining pre-registered inputs (0.0, 1.0, 3.0e38) through the same operations. Their
     // results are finite or (0.0 / 0.0, above) NaN, so they are controls.
     macro_rules! control {
@@ -922,7 +1000,8 @@ fn cases() -> Vec<Case> {
         (3, f(3.0e38), f(3.0e38)),
         v(0),
         |_| v(f(1.0)),
-    ));
+    )
+    .software(v(0x3f800000)));
     control!(
         "f32 3.0e38 == 3.0e38",
         FloatCmp,
@@ -1068,7 +1147,8 @@ fn cases() -> Vec<Case> {
         (2, f(DENORMAL), f(1.0)),
         v(0),
         |_| v((DENORMAL * 1.0).to_bits()),
-    ));
+    )
+    .software(v(0x000116c2)));
     add(case(
         "KM-08",
         "f32 1.0e-40 + 0.0",
@@ -1076,7 +1156,8 @@ fn cases() -> Vec<Case> {
         (0, f(DENORMAL), f(0.0)),
         v(0),
         |_| v((DENORMAL + 0.0).to_bits()),
-    ));
+    )
+    .software(v(0x000116c2)));
     add(case(
         "KM-08",
         "f32 1.0e-40 * 2.0",
@@ -1084,7 +1165,8 @@ fn cases() -> Vec<Case> {
         (2, f(DENORMAL), f(2.0)),
         v(0),
         |_| v((DENORMAL * 2.0).to_bits()),
-    ));
+    )
+    .software(v(0x00022d84)));
     add(case(
         "KM-08",
         "f32 1.0e-40 / 2.0",
@@ -1092,7 +1174,8 @@ fn cases() -> Vec<Case> {
         (3, f(DENORMAL), f(2.0)),
         v(0),
         |_| v((DENORMAL / 2.0).to_bits()),
-    ));
+    )
+    .software(v(0x00008b61)));
     add(case(
         "KM-08",
         "f32 1.0e-40 == 0.0",
@@ -1100,7 +1183,8 @@ fn cases() -> Vec<Case> {
         (0, f(DENORMAL), f(0.0)),
         v(1),
         |_| v(0),
-    ));
+    )
+    .software(v(0x00000000)));
     // Revision 1 wrote `1.0e-38 / 4.0` as "a normal input"; 1.0e-38 is itself below the
     // smallest normal f32 (1.17549435e-38), so the normal input used here is 4.0e-38.
     add(case(
@@ -1110,7 +1194,8 @@ fn cases() -> Vec<Case> {
         (3, f(4.0e-38), f(4.0)),
         v(0),
         |_| v((4.0e-38f32 / 4.0).to_bits()),
-    ));
+    )
+    .software(v(0x006ce3ee)));
     assert!(DENORMAL.is_subnormal());
 
     // ---- KM-11 out-of-bounds index equal to the buffer length ----
@@ -1686,8 +1771,8 @@ fn gpu_observed(device: &HeadlessDevice, cases: &[Case]) -> Vec<Vec<u32>> {
 /// finite KM-05 and KM-06 cases. Only the NaN conversions are indeterminate, and NaN or infinity
 /// results and comparisons (KM-07), denormal handling (KM-08) and out-of-bounds access (KM-11)
 /// are unspecified or implementation-dependent: the pinned GPU value there is a measured
-/// one-adapter observation, and a different value is reported as a NOTE, never a failure (owner
-/// ruling D39). The plain Rust column is always enforced.
+/// one-adapter observation per adapter kind, and a different value is reported as a NOTE, never a failure
+/// (owner ruling D39). The plain Rust column is always enforced.
 fn gpu_is_enforced(id: &str, kind: Kind, first: u32) -> bool {
     match id {
         "KM-07" | "KM-08" | "KM-11" => false,
@@ -1713,28 +1798,54 @@ fn gpu_summary(values: &[u32]) -> String {
     }
 }
 
+/// The ledger file of an adapter kind: one `LEDGER` line per case, written by the ledger test below (R1-5). Cargo
+/// creates `CARGO_TARGET_TMPDIR` (`target/tmp/`) for integration tests.
+fn ledger_path(kind: AdapterKind) -> &'static str {
+    match kind {
+        AdapterKind::Hardware => concat!(env!("CARGO_TARGET_TMPDIR"), "/ledger-hardware.txt"),
+        AdapterKind::Software => concat!(env!("CARGO_TARGET_TMPDIR"), "/ledger-software.txt"),
+    }
+}
+
 #[test]
 fn known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome() {
     let mode = overflow_checks();
     let device =
         HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
     let info = device.adapter_info();
+    let kind = AdapterKind::of(info.device_type);
+    let identity = format!(
+        "driver={:?} backend={:?} driver_info={:?}",
+        info.driver, info.backend, info.driver_info
+    );
     eprintln!(
-        "S2 adapter: name={:?} backend={:?} device_type={:?} driver={:?} driver_info={:?}",
-        info.name, info.backend, info.device_type, info.driver, info.driver_info
+        "S2 adapter: name={:?} backend={:?} device_type={:?} driver={:?} driver_info={:?} kind={}",
+        info.name,
+        info.backend,
+        info.device_type,
+        info.driver,
+        info.driver_info,
+        kind.name()
     );
     eprintln!("S2 overflow checks detected in this build: {mode:?}");
 
     let cases = cases();
     let observed = gpu_observed(&device, &cases);
     let mut failures = Vec::new();
+    let mut ledger = Vec::new();
     for (case, gpu) in cases.iter().zip(&observed) {
+        let failures_before = failures.len();
         let rust = rust_observed(case);
         let twin = twin_observed(case);
         let rust_expected = (case.rust)(mode);
+        // An enforced row is checked against its one pin on every adapter. An unenforced row is compared with the
+        // running kind's own pin; a row without one has no software pin (the hardware pin accepted
+        // m5.b0's value), and the observation is then only compared with the hardware pin to tell whether it is new.
+        let pin = case.pin(kind);
+        let reference = pin.unwrap_or(case.gpu);
         let gpu_ok = gpu
             .iter()
-            .all(|&bits| case.gpu.accepts(&Observed::Value(bits)));
+            .all(|&bits| reference.accepts(&Observed::Value(bits)));
         let rust_ok = rust_expected.accepts(&rust);
         // The twin runs the shadow body compiled in this crate, so it must do what plain Rust does here.
         let twin_ok = rust_expected.accepts(&twin);
@@ -1743,7 +1854,7 @@ fn known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome() {
             "S2 | {} | {} | gpu expected {:?} observed {} {} | rust[{mode:?}] expected {:?} observed {} {} | twin observed {} {}",
             case.id,
             case.what,
-            case.gpu,
+            reference,
             gpu_summary(gpu),
             if gpu_ok { "ok" } else { "DEVIATES" },
             rust_expected,
@@ -1752,16 +1863,30 @@ fn known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome() {
             show(&twin),
             if twin_ok { "ok" } else { "DEVIATES" },
         );
+        let mut noted = false;
         if !gpu_ok && !enforced {
-            // Owner ruling D39: an unspecified outcome is a one-adapter observation, not a
-            // requirement. A change is reported, never failed.
-            eprintln!(
-                "NOTE {} `{}`: the one-adapter observation changed (was {:?}, now {}); unspecified by WGSL, not enforced",
-                case.id,
-                case.what,
-                case.gpu,
-                gpu_summary(gpu)
-            );
+            // Owner ruling D39: an unspecified outcome is a per-kind observation, not a requirement. A change is
+            // reported, never failed.
+            noted = true;
+            if pin.is_some() {
+                eprintln!(
+                    "NOTE {} `{}`: the {} observation changed (was {}, now {}); unspecified by WGSL, not enforced; {identity}",
+                    case.id,
+                    case.what,
+                    kind.name(),
+                    pin_text(reference),
+                    gpu_summary(gpu)
+                );
+            } else {
+                eprintln!(
+                    "NOTE {} `{}`: no {} pin (the hardware pin accepted m5.b0's value); observed {}, which the hardware pin {} does not accept; unspecified by WGSL, not enforced; {identity}",
+                    case.id,
+                    case.what,
+                    kind.name(),
+                    gpu_summary(gpu),
+                    pin_text(reference)
+                );
+            }
         }
         if !gpu_ok && enforced {
             failures.push(format!(
@@ -1801,7 +1926,45 @@ fn known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome() {
                 }
             }
         }
+        if enforced && case.software.is_some() {
+            failures.push(format!(
+                "{} `{}`: an enforced row has one pin for every adapter and takes no software observation",
+                case.id, case.what
+            ));
+        }
+        let status = if failures.len() > failures_before {
+            "fail"
+        } else if noted {
+            "note"
+        } else {
+            "ok"
+        };
+        ledger.push(format!(
+            "LEDGER kind={} driver={:?} backend={:?} version={:?} row={} what={:?} observed={:?} status={status}",
+            kind.name(),
+            info.driver,
+            info.backend,
+            info.driver_info,
+            case.id,
+            case.what,
+            gpu_summary(gpu),
+        ));
     }
+
+    // One line per case, written before anything can fail so that the file survives a red run, and counted back
+    // from disk.
+    let path = ledger_path(kind);
+    std::fs::create_dir_all(std::path::Path::new(path).parent().unwrap())
+        .expect("create the ledger directory");
+    std::fs::write(path, ledger.join("\n") + "\n").expect("write the ledger file");
+    let written = std::fs::read_to_string(path).expect("read the ledger file back");
+    assert_eq!(
+        written.lines().count(),
+        cases.len(),
+        "the ledger file {path} must hold exactly one line per case"
+    );
+    eprintln!("S2 ledger file: {} lines in {path}", cases.len());
+
     assert!(
         failures.is_empty(),
         "{} ledger expectation(s) failed:\n{}",

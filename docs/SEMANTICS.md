@@ -411,6 +411,25 @@ an observation: the test prints a NOTE when it changes and never fails (D39). Ad
 adding
 its `KM-nn` row here and its case in `crates/gust-wgpu/tests/mismatch.rs`; the id guard fails if only one is done.
 
+Two kinds of adapter run the ledger, told apart by `device_type`: hardware, and software (`Cpu`, Mesa lavapipe in the
+`gpu-software` job). The kind never changes what is enforced: the spec-allowed GPU values, the Rust column, the twin
+column and every `DOMAIN` control hold on both, and a deviation of one of them on lavapipe is a red test, never a
+second observation. Only the observations of the unenforced rows (KM-07, KM-08, KM-11 and the NaN casts of KM-05 and
+KM-06) are kept per kind. The GPU column above is the hardware observation (RTX 5090, NVIDIA 610.88, Vulkan). The
+software column is a separate pin, set only where lavapipe differs from it, and the test prints a NOTE, with the
+driver, backend and `driver_info` of the adapter, when the running kind's own pin changes. A row without a software
+pin (the hardware pin accepted m5.b0's value) is then compared only with the hardware pin, the NOTE says "no software
+pin (the hardware pin accepted m5.b0's value)" for a difference from it, and nothing fails. The
+software pins of the NaN rows record m5.b0's exact payload bits, so a lavapipe payload change prints a NOTE, while the
+hardware pin accepts any NaN; neither ever fails, because the payload is not part of the contract. Measured on
+lavapipe (llvmpipe, LLVM 20.1.2, Mesa 25.2.8, debug and release alike, 18 rows): KM-07 gives `0x7fc00000` (the operand
+NaN, `f32::NAN`, propagating) from a NaN operand and `0xffc00000` (the x86 default NaN) from `inf * 0.0`,
+`inf - inf`, `inf / inf` and `0.0 / 0.0`, where the RTX 5090 gives `0x7fffffff`; `3.0e38 / 3.0e38` gives 1
+as Rust does, where the RTX 5090 gives 0; and KM-08 keeps denormals as Rust does (`1.0e-40 * 1.0` is `0x000116c2`,
+that is `1.0e-40`, and `1.0e-40 == 0.0` is false), where the RTX 5090 flushes them. KM-09 keeps its set rule on both
+kinds and gets no per-kind value: its observations vary between runs. Both are unspecified, measured observations of
+one driver version each, not requirements, and the Rust and twin columns are unchanged.
+
 ## 8. What is proven
 
 A statement here has the **proven** label of section 2: one test asserts the same result on the GPU, on the CPU twin

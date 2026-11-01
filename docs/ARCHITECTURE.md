@@ -2,7 +2,7 @@
 
 This file describes implemented mechanisms, not the future semantic frontend or
 execution-graph compiler. See [vision](VISION.md), [execution graph](EXECUTION_GRAPH.md),
-and [engine destination](ENGINE_NORTH_STAR.md) for those separately labeled plans.
+and [engine destination](ENGINE_HURRICANE.md) for those separately labeled plans.
 
 ## Decision
 

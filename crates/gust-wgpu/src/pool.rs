@@ -1,7 +1,7 @@
 //! `GpuPool<T>`: the first vector-like resident collection (T08).
 //!
 //! One typed storage allocation plus separate host-tracked metadata, following
-//! the contract in `docs/ENGINE_NORTH_STAR.md`. Growth allocates a larger
+//! the contract in `docs/ENGINE_HURRICANE.md`. Growth allocates a larger
 //! buffer, copies the live prefix GPU-to-GPU, and retires the old allocation
 //! behind the copy's submission fence. Nothing is read back to grow.
 

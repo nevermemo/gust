@@ -39,7 +39,7 @@ This inventory itself is an added file and is intentionally not self-hashed.
 - `crates/gust-macros/src/tests/regression.rs` — SHA-256 `4383f3231578d35b8f97ac758a422459ed91419ce7e601d162afa579ca3a5f3f`
 - `crates/gust-wgpu/tests/semantics.rs` — SHA-256 `6fb07a847607a43a0fc90568b00428fecd47787999911bc92a19aafafe968008`
 - `docs/DECISIONS.md` — SHA-256 `d2f6ed8f8f9b6fa08f7058461c6abcff2062803541479a3c830e7b3432843729`
-- `docs/ENGINE_NORTH_STAR.md` — SHA-256 `cd9bf52be97a6afe21f6758324d9b59da8dbdeedd84dc8c1cb6ca50f72975c0f`
+- `docs/ENGINE_HURRICANE.md` — SHA-256 `cd9bf52be97a6afe21f6758324d9b59da8dbdeedd84dc8c1cb6ca50f72975c0f`
 - `docs/EXECUTION_GRAPH.md` — SHA-256 `aa1ef9931c119c7f7bb44afa8c595ba42c6ba52485b215b03652d174236836f5`
 - `docs/PORTABLE_SLANG_CORE.md` — SHA-256 `5caf7e199c731f7c252c000e518a762580ccff5ac3f088a6c9f85a9d7ab04e88`
 - `docs/ROADMAP.md` — SHA-256 `8ce261142c1bb52aee83c98e01ceea8d77a710f2a4e8f1a1507f399fcde8ad63`

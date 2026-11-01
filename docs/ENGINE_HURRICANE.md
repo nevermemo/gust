@@ -1,4 +1,4 @@
-# GPU-centric ECS engine destination
+# Hurricane: GPU-centric ECS engine destination
 
 ## Implemented now
 

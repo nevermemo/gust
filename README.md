@@ -14,7 +14,7 @@ Start with [current status](docs/development/STATUS.md),
 [the handoff](docs/development/HANDOFF.md). Engineering agents should read
 [AGENTS.md](AGENTS.md).
 The [vision](docs/VISION.md), [roadmap](docs/ROADMAP.md), and
-[engine north star](docs/ENGINE_NORTH_STAR.md) distinguish implementation from plans.
+[Hurricane engine destination](docs/ENGINE_HURRICANE.md) distinguish implementation from plans.
 Development conventions live in [repository structure](docs/development/REPO_STRUCTURE.md),
 [validation strategy](docs/development/VALIDATION.md), and
 [agent workflow](docs/development/AGENT_WORKFLOW.md).
@@ -373,7 +373,7 @@ silently zeroes a count above the real device's per-dimension limit on Vulkan
 downlevel flags, which Vulkan adapters set); without that
 flag the count reaches the GPU unvalidated. A limit lowered with `with_limits` does
 not apply to it, and the kernel that writes the arguments must clamp. See the contract in
-[docs/ENGINE_NORTH_STAR.md](docs/ENGINE_NORTH_STAR.md).
+[docs/ENGINE_HURRICANE.md](docs/ENGINE_HURRICANE.md).
 
 ## Examples
 

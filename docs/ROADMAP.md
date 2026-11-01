@@ -26,8 +26,8 @@ written contract, and brings GPU concepts (vector types, SIMT dispatch, workgrou
 memory, capability-specific code) into Rust. The target hardware and platform are
 chosen at build time; GPU and CPU builds follow one semantics contract (D21, D22).
 GUST is the foundation for two later projects: Breeze, a rendering and interaction
-framework, and Hurricane, the game engine (today's
-[ENGINE_NORTH_STAR](ENGINE_NORTH_STAR.md)). Their scope is defined when GUST is ready.
+framework, and Hurricane, the game engine (destination in
+[ENGINE_HURRICANE](ENGINE_HURRICANE.md)). Their scope is defined when GUST is ready.
 
 ## Now and next
 

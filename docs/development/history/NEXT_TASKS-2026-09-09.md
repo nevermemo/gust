@@ -210,7 +210,7 @@ CPU nodes, continuations. Verify: `cargo test -p staged-graph` and the workspace
 
 Status: complete (2026-09-07). Goal: GPU data survives host-driven capacity growth
 without resize readback, then active-count-driven indirect dispatch. Why: concrete ECS
-prerequisites. Contract specified first in `docs/ENGINE_NORTH_STAR.md` (D16).
+prerequisites. Contract specified first in `docs/ENGINE_HURRICANE.md` (D16).
 Done: `gust_wgpu::GpuPool<T>` (`crates/gust-wgpu/src/pool.rs`):
 capacity, host-tracked logical length mirrored to a one-element count buffer,
 `pool_push`/`pool_reserve` growth by GPU→GPU copy of the live prefix with

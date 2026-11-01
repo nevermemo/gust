@@ -4,7 +4,7 @@
 
 Prove GPU-authored active-count generation drives a validated indirect compute
 dispatch without CPU readback. This is the third small engine proof from
-`ENGINE_NORTH_STAR.md`.
+`ENGINE_HURRICANE.md`.
 
 ## Contract
 
@@ -32,7 +32,7 @@ semantics.
   cannot express the bounded proof.
 - `crates/gust-wgpu/tests/`: GPU readback, dependency, clamp, and invalid-binding
   regressions.
-- `docs/ENGINE_NORTH_STAR.md`, `docs/DECISIONS.md`, and `docs/development/STATUS.md`:
+- `docs/ENGINE_HURRICANE.md`, `docs/DECISIONS.md`, and `docs/development/STATUS.md`:
   contract and evidence.
 
 ## Checks

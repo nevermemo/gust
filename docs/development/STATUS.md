@@ -422,7 +422,7 @@ full_check_needed_before_commit: no
   were moved out of the tree, so `generated-wgpu/` again holds the 13 `.spv` files
   `check-full` expects. The T13 stash is untouched.
 - 2026-10-22 documentation sync, no code changes: README, ARCHITECTURE,
-  ENGINE_NORTH_STAR, NEXT_TASKS, HANDOFF, and the Copilot builder agent profile now
+  ENGINE_HURRICANE, NEXT_TASKS, HANDOFF, and the Copilot builder agent profile now
   record DX19 as committed with release evidence pending, point T13 at its stash, and
   list atomics (T10), Option/Result (D14), and bounded struct literals (D07) as
   supported. An independent read-only review checked each added claim against the

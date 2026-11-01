@@ -125,6 +125,13 @@ D55 to D59.
   unavailable. End to end on a vector-add copy: rebuild identical, about 55 s cold. Manifest
   field names differ from the plan's draft; the D45 amendment records them at the M4 close.
   Opus keep after two fix rounds; gates on main at `29f8f6f`.
+- Fix fx.bxor (`7463405`, found by the m5.d1 corpus): WGSL has no `^` on bool, so bool `^`
+  and `^=` now lower through `__gust_xor` and `__gust_xor_assign` overloads (bool `!=`,
+  integer `^`; the place is evaluated once), emitted only in modules that use them. A GPU test
+  runs every input pair of the bool operators and `^=` on buffer elements, struct fields and
+  in helpers against the twin. Known gap, fixed next in fx.wgsl: slangc drops the parentheses
+  in `f(a < b, c > d)`, which WGSL then reads as a template list. Opus keep after one fix
+  round; gates on main at `9cfdfe4`.
 - M5 m5.d1 (`d2378ce`): 84 scalar cases transcribed from Rust 1.98.0's coretests
   (`library/coretests/tests/num`) into `docs/development/CORETESTS.md`, with acceptance sets
   (exact integers in the domain, WGSL's 2.5 ULP for float `/`) and exclusions; five `#[gpu]`

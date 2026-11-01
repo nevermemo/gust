@@ -33,6 +33,17 @@ running without Slang installed) in parallel with slices m4.0 and m4.h.
   A GPU-side no-op compare-exchange is not detected by a GPU test (the emission is pinned by
   the gust-macros regression tests). No signed ledger case (it needs a new fixture kernel).
   Opus keep after one fix round; gates on main at `64922ad`.
+- M4 S2 (spike, local commit only): decision A. The compile-time refusal (E0080) fires in all
+  three native-setting cases; Cargo re-runs on a `GUST_PROFILE` change through `gust`'s build
+  script alone; a release build without a profile becomes native and `GUST_PROFILE=dev` is the
+  escape. `check-dual` children inherit the variable, so xtask must set `dev` for the dual
+  fixture. The wasm32-to-web inference is not measured yet (m4.g2).
+- M4 m4.h (`b26bccd`): `check-artifacts` and `check-full` empty `generated-wgpu/` before the
+  examples run, so a stale SPIR-V file cannot validate. Every verify mode runs the
+  `adapter_info` example before its first GPU step and records the adapter (name, backend,
+  driver) in `VALIDATION.json`; a missing or malformed adapter line fails the mode and records
+  `"adapter": null`. The call order is pinned by a source test (the steps need cargo, slangc and
+  a GPU). Opus keep after one fix round; gates on main at `72bd6bf`.
 M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),

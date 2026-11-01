@@ -12,8 +12,22 @@ Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test b
 adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),
-m3.c (macro twins) and m3.c2 (check-cpu) done; m3.d next.
+m3.c (macro twins), m3.c2 (check-cpu) and m3.d (atomics, fixture twins) done; m3.e1 and
+m3.f1 next.
 
+- M3 m3.d (`0f2ff27`): the five `gust::runtime` atomics (u32 and i32) run for real on the CPU
+  twin, sequentially in ascending invocation order (a valid ordering of the GPU semantics);
+  `atomic_add` wraps in every build and never panics. The semantics, numeric, option, result,
+  loops, struct_assignment and atomics fixture tests dispatch the twin with the same call as
+  the GPU and assert twin == host reference and twin == GPU wherever the spec defines one
+  result; for contended exchange and compare-exchange the GPU may land anywhere in the spec
+  set (including 999 for the weak compare-exchange, KM-09) and the twin is pinned to its own
+  value. The known-mismatch ledger has a twin column keyed on `gust::cpu::overflow_checks!()`
+  (debug: Checked, release: Wrapping). A zero-storage kernel's twin runs and panics as plain
+  Rust does. SEMANTICS.md gains the D39 limitation for arithmetic inside `gust` and a list of
+  proven statements. Evidence: fmt, clippy, gust lib, gpu-semantics, the eight GPU fixture
+  tests (RTX 5090), the ledger in release, Unit suite, check-fast, docs-check, lint; four
+  mutations killed (one shows the ledger twin column fails on a reordered twin).
 - M3 m3.c2 (`35eb2a5`): `cargo xtask check-cpu` runs the `--locked`, GPU-free tests of the
   vector-add and polynomial examples, so their macro-emitted CPU twins are checked against the
   host references; it is a step of the Unit suite and so of the CI `unit` job. check-ui gains

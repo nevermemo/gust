@@ -43,7 +43,7 @@ and fixes the order inside it.
 | m3.b | `gust::cpu`: `CpuDevice`, `CpuBuffer`, bindings, jobs, validation, `overflow_checks()` | done (Unit; Opus keep after two fix rounds; `a7dcb95`) |
 | m3.c | Macro-emitted CPU twins under `cfg(any(test, gust_dual))`, `#[kernel(cpu = "unsupported")]`, vector-add and polynomial twin assertions with derived bounds | done (Unit + Gpu: check-ui exclusion fixture, vector-add exact, polynomial within 48u on RTX 5090; Opus keep after two fix rounds; `732c774`) |
 | m3.c2 | `cargo xtask check-cpu` in the Unit suite; check-ui mode for macro errors without a rustc code, with E0709 and E0710 fixtures | done (Unit; Opus keep; `35eb2a5`) |
-| m3.d | Shadow-type breadth (T01-T12): executable atomics, twin assertions in the fixture tests, ledger twin column | planned |
+| m3.d | Shadow-type breadth (T01-T12): executable atomics, twin assertions in the fixture tests, ledger twin column | done (Gpu: RTX 5090, debug and release ledger; Opus keep after one fix round; `0f2ff27`) |
 | m3.e1, m3.e2 | Remaining examples: per-kernel twins or explicit opt-outs (graph examples use read-back intermediates) | planned |
 | m3.f1, m3.f2 | `--cfg gust_dual`: a cross-crate fixture proving the twin is absent from production builds, `check-dual`, check-cfg lints, example mains, CI step | planned |
 

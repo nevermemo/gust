@@ -384,8 +384,276 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    use gust::cpu::{CpuDevice, Error as CpuError};
+
     use super::*;
     use gust_wgpu::{Error, TransferDirection};
+
+    /// The label of every test below that runs a kernel's CPU twin. The graph, the dependency edges and the
+    /// transfers are not executed by the twin: they stay GPU-only (docs/SEMANTICS.md, section 1).
+    const LABEL: &str = "kernel-level twin evidence; graph and indirect dispatch GPU-only";
+
+    /// `2^-24`.
+    const U: f64 = 1.0 / 16_777_216.0;
+
+    /// The twin-versus-GPU bounds of the float outputs, absolute, in units of `U`. Each kernel is compared on identical
+    /// inputs (`summarize` is fed the intermediate the GPU read back from stage A), so a bound covers that kernel's own
+    /// roundings only.
+    ///
+    /// Derived from the kernel text (docs/SEMANTICS.md section 4, "Deriving a tolerance"), not from a measurement.
+    /// With the domain asserted by `assert_derivation_domain` and `assert_intermediate_domain` (`abs(sample) <= 18`,
+    /// `abs(scale) <= 1.5`, `abs(offset) <= 10`, so `abs(intermediate) <= 27 + 10 = 37`), one rounding of at most `u`
+    /// times the result's magnitude on the twin and `2u` on the GPU for `+ - *`, first-order propagation, magnitudes
+    /// `M`, twin error `T` and GPU error `G` in units of `u`, the GPU side without fusion:
+    ///
+    /// `transform` (`samples[i] * scale + offset`):
+    ///
+    /// | step | M | T | G |
+    /// | --- | --- | --- | --- |
+    /// | `samples[i] * scale` | 27 | 27 | 54 |
+    /// | `... + offset` | 37 | 64 | 128 |
+    ///
+    /// Twin plus GPU: 192u, plus 1u for the second-order terms is 193u.
+    ///
+    /// `summarize`, `total`: eight values of magnitude at most 37 are added into `0.0`. The first addition (`0.0 + v`)
+    /// is exact. The twin adds in the written order, so its seven roundings have partial sums of at most 37 k for
+    /// k = 2 to 8: T = 37 * 35 = 1295. WGSL 15.7.5 lets the GPU regroup the additions; the grouping with the largest
+    /// partial sums is the same left-deep chain (a balanced tree has smaller ones), so G = 2 * 1295 = 2590. Twin plus
+    /// GPU: 3885u, plus 1u is 3886u.
+    ///
+    /// `summarize`, `peak` is a value of the input copied by comparisons, `above_threshold` compares an input with
+    /// `threshold` and `count` counts: with identical inputs these are exact, and the test asserts them equal.
+    ///
+    /// Observed maxima are printed separately by the ignored test and never become the tolerance.
+    const TRANSFORM_BOUND: f64 = 193.0 * U;
+    const TOTAL_BOUND: f64 = 3886.0 * U;
+
+    /// Two settings with exactly representable scale and offset (no rounding happens), and a third whose scale and
+    /// offset are not representable, so the products and sums round. The thresholds lie off the grid of the
+    /// intermediates (`assert_decisions_are_stable`).
+    fn test_settings() -> [Settings; 3] {
+        [
+            Settings {
+                scale: 0.1,
+                offset: 0.3,
+                threshold: 2.07,
+                block: BLOCK,
+            },
+            Settings {
+                scale: 1.5,
+                offset: 2.0,
+                threshold: 4.05,
+                block: BLOCK,
+            },
+            Settings {
+                scale: -0.5,
+                offset: 10.0,
+                threshold: 11.05,
+                block: BLOCK,
+            },
+        ]
+    }
+
+    /// The domain the bounds are derived for. `make_samples` has period 97, so 1000 samples reach every extreme.
+    fn assert_derivation_domain(samples: &[f32], settings: &Settings) {
+        assert!(
+            samples.iter().all(|sample| (-6.0..=18.0).contains(sample)),
+            "sample"
+        );
+        assert!(settings.scale.abs() <= 1.5, "scale");
+        assert!(settings.offset.abs() <= 10.0, "offset");
+        assert_eq!(settings.block, BLOCK, "block");
+    }
+
+    /// The domain of the values that cross from stage A to stage B, which the bound of `total` assumes.
+    fn assert_intermediate_domain(intermediate: &[f32]) {
+        assert!(
+            intermediate.iter().all(|value| value.abs() <= 37.0),
+            "intermediate"
+        );
+    }
+
+    /// `above_threshold` is a decision on a float: the targets agree on it unless an intermediate lies within the
+    /// `transform` bound of the threshold (WGSL lets a product or sum round to either neighbour). Checked on the host
+    /// intermediates, so the GPU's (within the bound) fall on the same side. The thresholds of `test_settings` lie off
+    /// the grid of the samples, and this guard fails the test, never skips, if a change moves one onto it. (The
+    /// twin-versus-GPU comparison of `summarize` is unaffected: its inputs are identical.)
+    fn assert_decisions_are_stable(samples: &[f32], settings: &Settings) {
+        // The f32 value the kernel compares with, not the decimal literal it was written as.
+        let threshold = f64::from(settings.threshold);
+        for (index, value) in intermediate_on_host(samples, settings).iter().enumerate() {
+            assert!(
+                (f64::from(*value) - threshold).abs() > TRANSFORM_BOUND,
+                "intermediate[{index}] = {value} lies within the derived bound of the threshold {threshold}"
+            );
+        }
+    }
+
+    fn blank_summary() -> Summary {
+        Summary {
+            total: -1.0e9,
+            peak: -1.0e9,
+            above_threshold: u32::MAX,
+            count: u32::MAX,
+        }
+    }
+
+    /// The independent host reference of stage A.
+    fn intermediate_on_host(samples: &[f32], settings: &Settings) -> Vec<f32> {
+        samples
+            .iter()
+            .map(|&sample| sample * settings.scale + settings.offset)
+            .collect()
+    }
+
+    /// Stage A on the twin. The output is seeded with a value no result equals, so a kernel that writes nothing fails.
+    fn transform_on_cpu(samples: &[f32], settings: &Settings) -> Result<Vec<f32>, CpuError> {
+        let device = CpuDevice::new();
+        let samples_buffer = device.buffer(samples);
+        let settings_buffer = device.buffer(&[*settings]);
+        let out = device.buffer(&vec![-1.0e9f32; samples.len()]);
+        staged::transform::dispatch(
+            &device,
+            samples.len() as u32,
+            &samples_buffer,
+            Independent(&settings_buffer),
+            &out,
+        )?;
+        Ok(out.read())
+    }
+
+    /// Stage B on the twin, over the `intermediate` it is given (the twin's own, or the one the GPU read back).
+    fn summarize_on_cpu(
+        intermediate: &[f32],
+        settings: &Settings,
+        summaries: usize,
+    ) -> Result<Vec<Summary>, CpuError> {
+        let device = CpuDevice::new();
+        let intermediate_buffer = device.buffer(intermediate);
+        let settings_buffer = device.buffer(&[*settings]);
+        let out = device.buffer(&vec![blank_summary(); summaries]);
+        staged::summarize::dispatch(
+            &device,
+            summaries as u32,
+            Independent(&intermediate_buffer),
+            Independent(&settings_buffer),
+            &out,
+        )?;
+        Ok(out.read())
+    }
+
+    /// The largest absolute difference (computed in `f64`) between two float sequences.
+    fn largest_abs(left: impl Iterator<Item = f32>, right: impl Iterator<Item = f32>) -> f64 {
+        left.zip(right)
+            .map(|(l, r)| (f64::from(l) - f64::from(r)).abs())
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn inputs_stay_inside_the_derivation_domain() {
+        for count in [0, 1, 97, 1000, DEBUG_COUNT] {
+            let samples = make_samples(count);
+            for settings in test_settings() {
+                assert_derivation_domain(&samples, &settings);
+                assert_decisions_are_stable(&samples, &settings);
+                assert_intermediate_domain(&intermediate_on_host(&samples, &settings));
+            }
+        }
+    }
+
+    /// Kernel-level twin evidence; graph and indirect dispatch GPU-only (`LABEL`).
+    #[test]
+    fn twin_chain_matches_host_reference() {
+        // The two twins run the shadow bodies, which perform the operations of `run_cpu` in the same order, and Rust
+        // does not contract them, so floats agree to the last bit and integers are equal. The counts straddle the
+        // block of 8 and the workgroup of 64.
+        for count in [0, 1, 7, 8, 9, 63, 64, 65, 257, 1000] {
+            let samples = make_samples(count);
+            for settings in test_settings() {
+                let intermediate = transform_on_cpu(&samples, &settings).expect("transform twin");
+                assert_eq!(
+                    intermediate,
+                    intermediate_on_host(&samples, &settings),
+                    "transform, {count} samples; {LABEL}"
+                );
+                assert_intermediate_domain(&intermediate);
+                let summaries = summarize_on_cpu(&intermediate, &settings, summary_count(count))
+                    .expect("summarize twin");
+                assert_eq!(
+                    summaries,
+                    run_cpu(&samples, &settings),
+                    "summarize, {count} samples; {LABEL}"
+                );
+            }
+        }
+    }
+
+    /// Kernel-level twin evidence; graph and indirect dispatch GPU-only (`LABEL`). The twin's `transform` is compared
+    /// with the GPU's intermediate on the same samples and settings, and its `summarize` is fed the GPU's intermediate,
+    /// read back once per run, so both kernels are compared on identical inputs.
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn twin_matches_reference_and_gpu_within_the_derived_bounds() {
+        let device = HeadlessDevice::new().expect("Vulkan adapter");
+        for count in [0, 1, 7, 8, 9, 63, 64, 65, 257, 1000] {
+            let samples = make_samples(count);
+            let state = ResidentState::new(&device, &samples);
+            for settings in test_settings() {
+                assert_derivation_domain(&samples, &settings);
+                assert_decisions_are_stable(&samples, &settings);
+                let host = run_cpu(&samples, &settings);
+                let (gpu_summaries, _report, _edges) =
+                    run_graph_traced(&device, &state, &[settings]).unwrap();
+                // The GPU against the host reference comes first so that a failing twin cannot hide it.
+                assert_close(&gpu_summaries, &host);
+                let gpu_intermediate = device.read_typed_buffer(&state.intermediate).unwrap();
+                assert_eq!(gpu_intermediate.len(), count);
+
+                let twin_intermediate = transform_on_cpu(&samples, &settings).unwrap();
+                assert_eq!(
+                    twin_intermediate,
+                    intermediate_on_host(&samples, &settings),
+                    "transform twin versus host, {count} samples"
+                );
+                let transform = largest_abs(
+                    twin_intermediate.iter().copied(),
+                    gpu_intermediate.iter().copied(),
+                );
+                println!(
+                    "S4 staged-graph transform, {count} samples, scale {}: twin versus GPU max abs error {transform:e} (bound {TRANSFORM_BOUND:e}); {LABEL}",
+                    settings.scale
+                );
+                assert!(transform <= TRANSFORM_BOUND, "transform {transform:e}");
+
+                // From here on the twin is fed what the GPU produced for stage A: identical inputs.
+                assert_intermediate_domain(&gpu_intermediate);
+                let twin_summaries =
+                    summarize_on_cpu(&gpu_intermediate, &settings, summary_count(count)).unwrap();
+                assert_eq!(
+                    twin_summaries.len(),
+                    gpu_summaries.len(),
+                    "summarize output length, {count} samples"
+                );
+                let total = largest_abs(
+                    twin_summaries.iter().map(|s| s.total),
+                    gpu_summaries.iter().map(|s| s.total),
+                );
+                println!(
+                    "S4 staged-graph summarize, {count} samples, scale {}: twin versus GPU max abs error total {total:e} (bound {TOTAL_BOUND:e}); {LABEL}",
+                    settings.scale
+                );
+                assert!(total <= TOTAL_BOUND, "total {total:e}");
+                for (index, (twin, gpu)) in twin_summaries.iter().zip(&gpu_summaries).enumerate() {
+                    assert_eq!(twin.peak, gpu.peak, "summarize peak[{index}]");
+                    assert_eq!(
+                        twin.above_threshold, gpu.above_threshold,
+                        "summarize above_threshold[{index}]"
+                    );
+                    assert_eq!(twin.count, gpu.count, "summarize count[{index}]");
+                }
+            }
+        }
+    }
 
     #[test]
     fn demo_sizes_stay_within_the_default_workgroup_limit() {

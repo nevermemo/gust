@@ -275,6 +275,41 @@ matrix_ops!(Mat2);
 matrix_ops!(Mat3);
 matrix_ops!(Mat4);
 
+/// `GpuPod` for the buffer-eligible types (slice m6.a1): the 2- and 4-wide vectors and `Mat2`, `Mat4`. Each carries its
+/// alignment, so `#[repr(C)]` gives Slang's storage layout; the const assertion pins `LAYOUT` to Rust's size and
+/// alignment, and to the `StorageV2` rule, at compile time. `Vec3`, `UVec3` and `Mat3` have no impl: they are locals
+/// and helper parameters only.
+macro_rules! gpu_pod_impl {
+    ($($Ty:ident => $layout:expr),+ $(,)?) => {
+        $(
+            // SAFETY: `$Ty` is `repr(C)` with `align(8|16)`, made of 32-bit fields with no padding (its size is the sum
+            // of the field sizes), every bit pattern is valid, and the assertion below ties `LAYOUT` to its size and
+            // alignment.
+            unsafe impl crate::GpuPod for $Ty {
+                const LAYOUT: crate::TypeLayout = $layout;
+            }
+
+            const _: () = {
+                let layout = <$Ty as crate::GpuPod>::LAYOUT;
+                assert!(layout.size as usize == core::mem::size_of::<$Ty>());
+                assert!(layout.alignment as usize == core::mem::align_of::<$Ty>());
+                assert!(layout.is_storage_v2());
+            };
+        )+
+    };
+}
+
+gpu_pod_impl!(
+    Vec2 => crate::TypeLayout::vector("Vec2", crate::ScalarKind::F32, 2),
+    Vec4 => crate::TypeLayout::vector("Vec4", crate::ScalarKind::F32, 4),
+    IVec2 => crate::TypeLayout::vector("IVec2", crate::ScalarKind::I32, 2),
+    IVec4 => crate::TypeLayout::vector("IVec4", crate::ScalarKind::I32, 4),
+    UVec2 => crate::TypeLayout::vector("UVec2", crate::ScalarKind::U32, 2),
+    UVec4 => crate::TypeLayout::vector("UVec4", crate::ScalarKind::U32, 4),
+    Mat2 => crate::TypeLayout::matrix("Mat2", crate::ScalarKind::F32, 2, 2),
+    Mat4 => crate::TypeLayout::matrix("Mat4", crate::ScalarKind::F32, 4, 4),
+);
+
 impl Mat2 {
     /// The identity matrix.
     pub const IDENTITY: Self = Self::from_cols(Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0));

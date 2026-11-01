@@ -46,7 +46,7 @@ its slice, and two fix rounds per slice.
 | m4.a | `gust::artifact`: `Artifact`, `verify_artifact`, `content_key`, `KernelDescriptor::artifacts` | done (Unit; Opus keep after one fix round; `2dcb9e3`) |
 | m4.b1, m4.b2 | `slang-runtime` feature, off by default; build profiles in `gust`'s build script, strict-profile refusals | m4.b1 done (Unit + Gpu; Opus keep after one fix round; `cbbf35a`); m4.b2 done (Unit + Gpu; Opus keep after one fix round; `41b6ff9`) |
 | m4.c | Macro: content key, artifact and manifest embedding, export mode | done (`dba0e97`) |
-| m4.d | `cargo-gust`: `init`, `build` (isolated collection, D17 at export for WGSL and SPIR-V), `check`, `doctor` (D46) | planned |
+| m4.d | `cargo-gust`: `init`, `build` (isolated collection, D17 at export for WGSL and SPIR-V), `check`, `doctor` (D46) | done (`e7dd73d`) |
 | m4.e1, m4.e2 | `gust-wgpu` precompiled path and cache key; precompiled fixture, `check-precompiled`, packaged-consumer proof without Slang | planned |
 | m4.f | Pinned-Slang manager with licence audit; CI `slang` job | licence audit done (all three platforms accepted, [LICENSES-SLANG](development/LICENSES-SLANG.md)); manager planned |
 | m4.g1, m4.g2 | Completion model (async read-back); wasm32 and the first browser WebGPU run | m4.g1 done (Gpu: RTX 5090; moved ahead of m4.e1; Opus keep after one fix round; `671b3dd`); m4.g2 planned |

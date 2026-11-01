@@ -116,6 +116,15 @@ D55 to D59.
   E0711 outside export mode and absent inside it, so the build tool repairs it; E0712 and E0713
   cover export write failures (including the twin-text guard) and a missing package name. Two
   `profile-native-*` ui cases. Opus keep after one fix round; gates on main at `349a084`.
+- M4 m4.d (`e7dd73d`): new crate `cargo-gust` with `init`, `build`, `check` and `doctor`.
+  `build` collects kernels in an isolated export-mode build (`GUST_EXPORT_DIR`), fills
+  `layout: null` from reflection, applies D17 at export to WGSL and SPIR-V, then writes each
+  pair and the manifest atomically and prunes strays. `check` verifies the committed artifacts
+  without writing; `doctor` reports the toolchain. The export write refuses a differing
+  overwrite of the same key (E0712, making R4.4 real) and copies when hard links are
+  unavailable. End to end on a vector-add copy: rebuild identical, about 55 s cold. Manifest
+  field names differ from the plan's draft; the D45 amendment records them at the M4 close.
+  Opus keep after two fix rounds; gates on main at `29f8f6f`.
 - M5 m5.d1 (`d2378ce`): 84 scalar cases transcribed from Rust 1.98.0's coretests
   (`library/coretests/tests/num`) into `docs/development/CORETESTS.md`, with acceptance sets
   (exact integers in the domain, WGSL's 2.5 ULP for float `/`) and exclusions; five `#[gpu]`
@@ -205,7 +214,7 @@ both "proceed with fixes") followed, and slice m3.h applied its fixes.
 - M3 m3.e1 (`41b4d0e`): every kernel with a typed call in signal-pipeline, particle-step,
   typed-pipeline and atomic-counter has CPU-twin assertions; none opts out. The twin equals
   the host reference exactly. Against the GPU, integer and struct outputs are exact and float
-  outputs stay within absolute bounds derived per kernel by the SEMANTICS.md §4 procedure and
+  outputs stay within absolute bounds derived per kernel by the SEMANTICS.md Â§4 procedure and
   written in each test's doc comment (signal-pipeline `transform` 900u, u = 2^-24; particle-step
   `step` 3u to 98u per field; typed-pipeline `calibrate` up to 172u, `classify` 63u, `finalize`
   14u); every observed maximum on the RTX 5090 is inside its bound and none is used as a

@@ -264,6 +264,12 @@ codes! {
     UnknownCpuValue = 709 => "GUST-E0709";
     /// `cpu` given twice.
     DuplicateCpuOption = 710 => "GUST-E0710";
+    /// A kernel with one file of its precompiled artifact pair on disk, outside export mode.
+    HalfArtifactPair = 711 => "GUST-E0711";
+    /// Export mode could not write a kernel's records, or refused a record that held CPU twin text.
+    ExportWriteFailed = 712 => "GUST-E0712";
+    /// Export mode with a `CARGO_PKG_NAME` that cannot name the record directory.
+    ExportPackageName = 713 => "GUST-E0713";
 
     // E08xx: rejections only the emitter makes, after validation passed.
     /// A kernel parameter that is neither a resource nor the dispatch thread.

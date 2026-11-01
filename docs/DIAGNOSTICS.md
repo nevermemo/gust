@@ -901,6 +901,37 @@ Fixture: `tests/ui/kernel-cpu-duplicate` (`cargo xtask check-ui`, `code: none` p
 Write instead: state `cpu` once.
 Decision: D26, D40.
 
+### GUST-E0711 half an artifact pair
+
+A kernel's precompiled artifact is two files in the kernel crate's `gust-artifacts/`
+directory, `<key>.wgsl` and `<key>.wgsl.reflection.json`; only one of them exists. The macro
+never turns that into an empty artifact list silently. Export mode (`GUST_EXPORT_DIR`, which
+`cargo gust build` sets) treats a half pair as absent, so the build tool can repair it.
+Reached through `#[gpu]`.
+Rejected: a build outside `cargo gust build` while `gust-artifacts/` holds only one of the two files.
+Write instead: delete the file that is left, then run `cargo gust build`, which writes both.
+Decision: D45, D46.
+
+### GUST-E0712 export records not written
+
+Export mode (`GUST_EXPORT_DIR` set) writes `<key>.slang` and `<key>.kernel.json` for each
+kernel, and the write failed: the directory or a file cannot be created, or a record held
+CPU twin text (a bug in the macro; records never hold a twin).
+Reached through `#[gpu]`.
+Rejected: `GUST_EXPORT_DIR` pointing at a path that is a file, or at a read-only directory.
+Write instead: point `GUST_EXPORT_DIR` at a writable directory, or let `cargo gust build` choose it.
+Decision: D45, D46.
+
+### GUST-E0713 export package name
+
+Export mode names the record directory after `CARGO_PKG_NAME`, and the value is missing or is
+not a plain cargo package name (ASCII letters, digits, `-` and `_`), so it could climb out of the
+export directory.
+Reached through `#[gpu]`.
+Rejected: `GUST_EXPORT_DIR` set while `CARGO_PKG_NAME` is unset or contains a path separator.
+Write instead: build through cargo, which sets `CARGO_PKG_NAME`.
+Decision: D45, D46.
+
 ## E08xx: emitter-only rejections
 
 These are checked by the Slang emitter after the validator has accepted the module. The

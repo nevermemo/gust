@@ -91,6 +91,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "profile-native-artifact"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "profile-native-bridge"
 version = "0.0.0"
 dependencies = [
@@ -99,6 +106,13 @@ dependencies = [
 
 [[package]]
 name = "profile-native-no-artifact"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "profile-native-no-manifest"
 version = "0.0.0"
 dependencies = [
  "gust",

@@ -1,14 +1,14 @@
 # Differential program generator (`tests/difftest`)
 
-Status: slices m5.c1a (the integer core), m5.c1a2 (floats v1, the exact-interval subset of R1-4) and m5.c1b (the
-batch runner `difftest-run`). The crate generates scalar integer, boolean and `f32` kernels from a seed, evaluates them
-with an independent interpreter that tracks the defined domain (and, for floats, an interval of every value a
-conforming WGSL implementation may hold), writes them as a `#[gust::gpu]` crate, and `difftest-run` builds a batch of
-them, runs every program on the interpreter, the CPU twin and the GPU, and reports what disagreed. The crate itself is
-std only and has no GPU code: the GPU code lives in the generated run crate, which depends on `gust` and `gust-wgpu`.
-Shrinking is the later slice m5.c1c. A unit test is evidence about the generator, the interpreter, the emitter and the
-classifier only; a GPU claim needs a `report.json` of a `gpu` run, whose `mode`, `adapter` and
-`programs_executed` say what ran.
+Status: slices m5.c1a (the integer core), m5.c1a2 (floats v1, the exact-interval subset of R1-4), m5.c1b (the
+batch runner `difftest-run`) and m5.c1c (the shrinker). The crate generates scalar integer, boolean and `f32`
+kernels from a seed, evaluates them with an independent interpreter that tracks the defined domain (and, for floats,
+an interval of every value a conforming WGSL implementation may hold), writes them as a `#[gust::gpu]` crate, and
+`difftest-run` builds a batch of them, runs every program on the interpreter, the CPU twin and the GPU, and reports
+what disagreed. The crate itself is std only and has no GPU code: the GPU code lives in the generated run crate,
+which depends on `gust` and `gust-wgpu`. `difftest-run --shrink` reduces one failing program (local use only; see
+Shrinking). A unit test is evidence about the generator, the interpreter, the emitter and the classifier only; a GPU
+claim needs a `report.json` of a `gpu` run, whose `mode`, `adapter` and `programs_executed` say what ran.
 
 `tests/difftest` is a workspace of its own (own `Cargo.lock`, std only, `publish = false`), like `tests/ui` and
 `tests/dual`; the root workspace does not contain it. Run it from that directory with the repository's usual cargo
@@ -23,6 +23,7 @@ cargo test --locked -- --ignored   # the GPU short-circuit test (Gpu tier: Vulka
 cargo run --locked --bin difftest-gen -- show 1 0     # the Rust text of program 0 of seed 1
 cargo run --locked --bin difftest-run -- --seeds 1-2 --report report.json   # a measured batch on the GPU
 cargo run --locked --bin difftest-run -- --seeds 1-4 --cpu-only             # interpreter against twin, no GPU
+cargo run --locked --bin difftest-run -- --shrink 1:8 --report shrink.json   # local only: CI never calls it
 ```
 
 ## Program space
@@ -133,8 +134,8 @@ against an adversarial CPU model, not against hardware.
 
 A program is a pure function of `(seed, attempt)`: `prng.rs` (xorshift64* seeded through SplitMix64) writes 4096 bytes,
 and `generator.rs` decodes them into the AST; bytes past the end read as zero, which selects the first option of every
-choice, so a truncated stream is still a valid, smaller program (the m5.c1c shrinker relies on that). `generate_batch`
-walks attempts 0, 1, 2, ... and keeps the in-domain programs until it has 16.
+choice, so a truncated stream is still a valid, smaller program (the last pass of the shrinker relies on that).
+`generate_batch` walks attempts 0, 1, 2, ... and keeps the in-domain programs until it has 16.
 
 `seeds.txt` pins seeds 1 to 8 (R1-13: 8 seeds, 16 programs each, 128 programs): per line `seed programs discarded
 reason=count... hash=`, where the hash is FNV-1a 64 of the emitted `src/lib.rs` followed by the input data of every
@@ -344,8 +345,7 @@ Outcome A: every figure is at or below the plan's estimate and the largest batch
 of outcome C. In the units of R1-13: `unit` keeps 4 seeds CPU-only, `gpu-software` per pull request keeps 2 seeds, the
 nightly `gpu-software` and `check-full` keep all 8 seeds, and shrinking stays local. Not measured, so not claimed: the
 GitHub runner and lavapipe (slangc time will dominate there too: 8 seeds are 128 kernels, about 68 s of slangc here), the
-`unit` job's cold build on a runner, and the shrink half of S5.3 (time per candidate, candidates used), which belongs to
-m5.c1c.
+`unit` job's cold build on a runner. The shrink half of S5.3 is measured under Shrinking below.
 
 ### Mutation checks
 
@@ -358,6 +358,124 @@ permanent tests that fail for the same reason (the second was re-run against the
 | a wrong literal in the emitter (`u32` literals plus 2), in a `--cpu-only` batch | 8 of the 16 programs of seed 1 reported (`twin-vs-interpreter`, `twin-error`), each named, exit 1 | `emit::tests` (exact text, re-parse), `corpus::tests`, the integer-space pin |
 | compare the GPU `f32` by bits (or the twin by value) | the `-0.0` tests fail | `classify::tests::the_gpu_f32_is_held_by_value...`, `the_twin_is_compared_bit_for_bit...` |
 | one package name for different batches | the uniqueness tests fail | `harness::tests::every_distinct_batch...`, `two_crate_dirs_with_one_package_name_are_refused` |
+
+## Shrinking (slice m5.c1c)
+
+`difftest-run --shrink <seed>:<index>` takes program `index` of the 16 that seed plans (the `index` field of a
+mismatch in the batch report) and reduces it while it keeps failing the same way. It is a local tool: CI never calls
+it and uploads the seed, the program text and the three outputs of a failing batch instead. Exit status: 0 a failure
+record was written, 1 the program does not fail (nothing to shrink), 2 the harness failed. Options: `--cpu-only`,
+`--report PATH` (the record; stdout without it), `--max-candidates N` (default 60), `--max-minutes M` (default 10).
+
+One candidate is one build of a single-program crate `<target>/difftest/shrink-f<format>-s<seed>-i<index>/`, one test
+run (interpreter, CPU twin and, unless `--cpu-only`, the GPU) and one classification, so it costs a cargo build plus a
+GPU dispatch. The reducer itself (`reduce.rs`, std only) knows nothing about cargo: it takes a predicate
+`Program -> Option<u32>`.
+
+Size, against the 400-line limit of R1-12. The ruling of the coordinator is that the limit applies to the reducer
+search, `reduce.rs`: 399 lines (351 without comments and blank lines). Two other parts are harness code that the
+proptest fallback would need as well, so they are counted apart: the identity predicate, the failure record and the
+executor in `shrink.rs` (302 lines), and the deadline in `harness.rs` (about 70 lines for the process-tree kill, the
+output drains and the timed run, and about 15 more in `cargo_step`). Tests are in `reduce_tests.rs` and
+`shrink_tests.rs`.
+
+Passes, in this order, each to a fixed point, and the whole round repeats until no pass changes anything:
+
+1. delta debugging over statements (chunks are dropped, a block is replaced by its body or by one branch);
+2. replace a subexpression by the value the interpreter observed for the first failing element (the literal of that
+   bit pattern, in the expression's type);
+3. loop trip counts toward 1 (to 1, or to half);
+4. element count toward the failing index plus one, rounded up to the workgroup size (64), else the index plus one;
+5. literals (not `bool`) to 0, to 1 (-1 for a negative `i32`), or to the power of two at or below the literal (an
+   `f32`: the sign and exponent with a zero mantissa). There is no halving step, so a literal that is already a power
+   of two does not move: this is why the reproducer of the measurement below stops at 2^31 and not at 16. A halving
+   or decrement candidate (about 27 more builds here) is a candidate improvement for m5.c2;
+6. the byte stream: the original 4096 bytes are cut at 0, 1/8, 1/4, 1/2 and 3/4 of the bytes the program used and
+   decoded again (a truncated stream reads zeros, which selects the first option of every choice, so it is still a
+   valid and smaller program), which also removes trailing zeros.
+
+Bounds, as built:
+
+- Every candidate must be type-valid (`Program::check`) and pass the interpreter's domain filter (`discard_reason`)
+  before it costs a build; those rejected there are not counted.
+- Identity (`shrink.rs`, `reproduces`): the same classification, the same output type (the output buffer is `out`),
+  and a mismatch that names an element. "The same classification" is the set of kinds of the mismatches that name an
+  element: if the original is `{twin-vs-interpreter, gpu-vs-interpreter}`, a candidate that loses either one, or that
+  gains another kind, is a different failure. A compile error, a validator rejection, an error of a party, a mismatch
+  without an element, or a timeout is "does not reproduce". The failing element is the one of the first mismatch of
+  the original's kind in `classify` order (the twin first).
+- Accept only if strictly smaller by size, the tuple (statements, expression nodes, loop trips, elements, sum of
+  literal magnitudes) in lexicographic order. This is what makes the search terminate.
+- A cache keyed by the FNV hash of the emitted program text plus its inputs: a candidate seen before costs nothing and
+  does not use the budget.
+- One clock for the time budget. The original run comes first and has its own 120 s per cargo step; the 10 minutes
+  start after it (`Limits::origin`, set by `shrink_with` once the original run has failed as expected), and `reduce`
+  and the step deadlines both read that one origin. Each cargo step of a candidate has a deadline of the smaller of
+  120 s and the time left (`step_deadline`), so the wall clock cannot overrun by more than the kill itself. A candidate
+  is not started at all when less than `MIN_STEP` (1 s) is left: that ends the search with `stopped_by: time budget`,
+  and it is neither run, nor counted as a timeout, nor taken from the candidate budget.
+- On a timeout the process tree is killed (`taskkill /T /F` on Windows; elsewhere the child is spawned as the leader
+  of a process group and the group is killed), the output so far is written to the step's log, and the candidate is
+  "does not reproduce". After a kill the output readers are not joined, so a child that survived cannot block the
+  search. On Unix, Ctrl-C is not forwarded: the child is in its own group, and std has no signal handling, so an
+  interrupted `--shrink` can leave cargo running there until it finishes (`kill -- -<pid>` of its group stops it);
+  on Windows the console delivers Ctrl-C to the children.
+- Budget: 60 candidates or 10 minutes of search, whichever comes first (the record says which one stopped it).
+
+The failure record (`--report`) is JSON with `tool`, `format`, `mode`, `adapter`, `seed`, `index`, `attempt`,
+`classification`, `output_buffer`, `output_type`, `failing_element`, `candidates_used`, `cache_hits`, `accepted_steps`,
+`stopped_by` (`fixed point`, `candidate budget` or `time budget`), `seconds`, `candidates` (the seconds and result of
+each candidate that ran) and two blocks, `original` and `shrunk`. Each block has `program_text` (the emitter's output
+at the time of the run: with a fault in the emitter, it is the faulted text), `size` (`statements`,
+`expression_nodes`, `loop_trips`, `elements`, `literal_magnitudes`), `inputs` (type and decimal `u32` words per
+buffer), and the three outputs: `interpreter`, `twin` and `gpu` (with `twin_error` / `gpu_error` when a party failed)
+plus the `mismatches` of that program. The seed and index reproduce the original; the shrunk text is the program to
+read.
+
+### Cost of shrinking (spike S5.3, shrink half)
+
+Measured 2026-11-01 on the development PC (RTX 5090, Vulkan, dev profile, warm target directory). A fault was injected
+by hand into the emitter in the lane only (`u32` literals of 16 or more written one too large), seed 1 gave 8 mismatch
+records for 4 of its 16 programs on the GPU, and program 8 (3393 elements, the most differing elements) was shrunk
+with a 40-candidate budget. The fault was removed afterwards (the file hash equals the original). The same binary
+was run twice, and the binary was rebuilt and run again after each of the two rounds of review fixes.
+
+| Quantity | Plan estimate | Measured |
+| --- | --- | --- |
+| time per candidate | 5 to 15 s | means 9.0 s, 7.45 s (max 13.4 s), 6.97 s, 6.69 s (max 7.34 s) in runs 1 to 4 |
+| candidates used | 15 to 30 | 17 in all four (9 accepted, 8 not; 4 more were cache hits), fixed point |
+| total | under the 10 minute budget | 162.8 s, 133.9 s, 140.2 s, 126.0 s |
+| size, original to shrunk | | 2 statements, 29 nodes, 3393 elements to 1 statement, 7 nodes, 1 element |
+
+Outcome: **A (one program, one literal fault, warm, RTX 5090)** in the units of R1-13: both figures are inside the
+estimate, so the reducer stays as built and no property test fallback is needed on this evidence. The fault
+reproduces on nearly any literal of 16 or more, so the sample is favourable; a failure that needs loops, a cold
+target directory or a runner without a GPU is not measured. The shrunk program keeps the one `let` that reads an
+input (the domain filter discards a program that reads no input) and a result literal of 2^31: the interpreter
+computes 2147483648, and the faulted emitter writes `2147483649u32` into the text of the record, which is what the
+twin and the GPU computed. It stops at 2^31 because of pass 5 (above). The failure is a `twin-vs-interpreter` one
+because the fault is in the emitted text, which the twin and the GPU share (the record's `mismatches` hold both).
+
+### Shrinker mutation checks
+
+Each was applied by hand to the lane, observed to fail in the unit tests, and restored (copy back, hash compared with
+the saved original). The first four ran on the first version of the rule, (a) was re-run on the final one, and
+(f) and (g) were added in fix round 2.
+
+| Mutation | Observed |
+| --- | --- |
+| identity accepts any failure (a) | `only_the_same_classification...` and `a_candidate_that_gains...` fail |
+| identity is one kind again (no set check) | `a_candidate_that_gains_or_drops...` fails |
+| the strictly-smaller check is dropped (b) | `the_search_ends_at_a_fixed_point...` fails at its 20 s bound |
+| a timeout counts as reproducing (c) | `a_build_failure_and_a_timeout...` and `candidates_that_time_out...` fail |
+| the cache lookup never hits (d) | `a_candidate_seen_before_is_not_run_again` fails (a call counter) |
+| deadlines count from the start of `shrink_with` again (f) | `an_original_run_that_takes_most...` fails |
+| no `MIN_STEP` (g) | `no_candidate_is_started_with_less...` and `a_candidate_is_not_started...` fail |
+
+The kill path has its own test, `harness::tests::a_hung_step_is_killed_with_its_children_and_returns_at_the_deadline`:
+the test binary runs itself as a sleeping process that starts a sleeping copy of itself, the step returns at its 6 s
+deadline with the output so far, and both processes are gone afterwards. It passed on Windows (the gate) and on
+Linux (WSL Ubuntu 24.04, the process-group path, run by hand with `cargo test --offline`; not part of any gate).
 
 ## Tests
 
@@ -401,6 +519,16 @@ permanent tests that fail for the same reason (the second was re-run against the
   corpus, the template manifest, the template lock against the root lock.
 - `corpus`: FNV reference vectors, the committed `seeds.txt`, the hash covering the input data, the `MIN / -1` discard
   inside seeds 1 to 8.
+- `reduce` and `shrink` (with a fake predicate and a fake executor, no cargo): the size order, each pass on a small
+  program, termination at a fixed point (the predicate asserts that every accepted candidate is strictly smaller), the
+  cache (a predicate call counter), the candidate and time budgets, the filters (ill-typed and out-of-domain candidates
+  never reach the predicate), the identity rule (same classification with an element; a build failure, a timeout, a
+  different classification or an error never reproduces), `parse_target`, and an end-to-end shrink against a fake
+  executor whose GPU is wrong exactly when the program contains a `u32` product; a candidate that gains or drops one
+  party's mismatch is another failure; every run is given at most the time left of the budget as its deadline;
+  the budget starts after the original run, and a candidate is not started with under `MIN_STEP` left.
+- `harness` (deadline): a sleeping process and the sleeping copy of itself that it starts are killed at the deadline
+  and gone afterwards, the step returns promptly with the output so far, and a finishing command returns all its output.
 - `tests/short_circuit.rs`: see Short circuit above (a CPU test, an `#[ignore]`d GPU test, and the check of the WGSL guard). It builds its run crates in `CARGO_TARGET_DIR` when that is set, else under `CARGO_TARGET_TMPDIR`.
 - `tests/roundtrip.rs`: the run crate of seeds 1 to 8 (128 kernels plus the generated test module) passes
   `cargo check --tests --locked`; all 128 corpus programs (the float ones included, so the dialect accepts `f32` buffers,

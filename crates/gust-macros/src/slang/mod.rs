@@ -157,6 +157,19 @@ pub fn emit_kernel(
         .unwrap();
     }
 
+    // WGSL reads `name < .. >` as a template list, and slangc drops the parentheses around a comparison that is an
+    // argument, so `f(a < b, c > d)` reaches WGSL with the same text and fails to parse. An identity call keeps
+    // the `<` away from the list: the comparison sits inside its own parentheses.
+    let mut keep = KeepUsage(false);
+    keep.visit_item_mod(module);
+    if keep.0 {
+        writeln!(
+            output,
+            "bool {KEEP_HELPER}(bool value) {{ return value; }}\n"
+        )
+        .unwrap();
+    }
+
     // Rust `Option<T>` lowers to Slang's `Optional<T>`. Generic helpers let the
     // payload type be inferred at each use instead of requiring annotations.
     let mut option = OptionUsage(false);
@@ -745,24 +758,15 @@ fn emit_for(
 
 fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
     Ok(match expression {
-        syn::Expr::Array(array) => format!(
-            "{{ {} }}",
-            array
-                .elems
-                .iter()
-                .map(emit_expression)
-                .collect::<syn::Result<Vec<_>>>()?
-                .join(", ")
-        ),
+        syn::Expr::Array(array) => format!("{{ {} }}", emit_list(array.elems.iter())?.join(", ")),
         syn::Expr::Assign(assign) => format!(
             "{} = {}",
             emit_expression(&assign.left)?,
             emit_expression(&assign.right)?
         ),
         syn::Expr::Binary(binary) if matches!(binary.op, syn::BinOp::BitXor(_)) => format!(
-            "__gust_xor({}, {})",
-            emit_expression(&binary.left)?,
-            emit_expression(&binary.right)?
+            "__gust_xor({})",
+            emit_list([binary.left.as_ref(), binary.right.as_ref()].into_iter())?.join(", ")
         ),
         syn::Expr::Binary(binary) if matches!(binary.op, syn::BinOp::BitXorAssign(_)) => format!(
             "__gust_xor_assign({}, {})",
@@ -826,11 +830,7 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         syn::Expr::Call(call) => format!(
             "{}({})",
             emit_expression(&call.func)?,
-            call.args
-                .iter()
-                .map(emit_expression)
-                .collect::<syn::Result<Vec<_>>>()?
-                .join(", ")
+            emit_list(call.args.iter())?.join(", ")
         ),
         syn::Expr::Cast(cast) => {
             format!("{}({})", emit_type(&cast.ty)?, emit_expression(&cast.expr)?)
@@ -890,6 +890,10 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Not(_)) => {
             format!("__gust_not({})", emit_expression(&unary.expr)?)
         }
+        syn::Expr::Unary(unary) if negated_integer_literal(unary).is_some() => {
+            let value = negated_integer_literal(unary).expect("guarded by the match arm");
+            format!("(-{})", integer_literal(value, true)?)
+        }
         syn::Expr::Unary(unary) => format!(
             "({}{})",
             unary.op.to_token_stream(),
@@ -903,6 +907,105 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             ));
         }
     })
+}
+
+/// The literal operand of a unary minus, if it is an integer literal.
+fn negated_integer_literal(unary: &syn::ExprUnary) -> Option<&syn::LitInt> {
+    match (&unary.op, unary.expr.as_ref()) {
+        (syn::UnOp::Neg(_), syn::Expr::Lit(literal)) => match &literal.lit {
+            syn::Lit::Int(value) => Some(value),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The name of the identity helper that keeps a `<` comparison out of a WGSL template list.
+const KEEP_HELPER: &str = "__gust_keep";
+
+/// Whether an expression is a `<` comparison, through parentheses and the right operand of `&&` and `||`.
+///
+/// WGSL's template-list discovery (which naga's lexer follows) starts a candidate at a `<` that follows an
+/// identifier and ends it at any later `>` on the same nesting depth, whatever follows the `>`: `>=` and `>>` close
+/// one too. A `)` or `]` drops the candidates opened inside its brackets; `=`, `:`, `;` and `{` drop all of them;
+/// `&&` and `||` drop only the candidates opened before them, so a `<` after a `&&` stays pending. `<=` and `<<` do
+/// not open one. A comparison that is an argument sits at the depth of the list, and slangc keeps no parentheses
+/// around it. slangc does parenthesise shifts and turns `&&` and `||` into branches today, so `g(a < b, c >> 1)` and
+/// `g(c && a < b, d > e)` come out safe, but by slangc's choice and not by the rule, so the right operand of `&&`
+/// and `||` counts as well. Only `<` opens a candidate, so only `<` needs the helper.
+fn is_less_than(expression: &syn::Expr) -> bool {
+    match expression {
+        syn::Expr::Paren(paren) => is_less_than(&paren.expr),
+        syn::Expr::Group(group) => is_less_than(&group.expr),
+        syn::Expr::Binary(binary) => match binary.op {
+            syn::BinOp::Lt(_) => true,
+            syn::BinOp::And(_) | syn::BinOp::Or(_) => is_less_than(&binary.right),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// Whether the element at `index` of a comma-separated list of `len` elements goes through `__gust_keep`.
+///
+/// A candidate opened in the last element ends at the `)` that closes the list, so only an element followed by
+/// another one can meet a later `>`. The rule is the same for call arguments, array elements and the two operands
+/// of `^`, which is a call to `__gust_xor`.
+fn needs_keep(expression: &syn::Expr, index: usize, len: usize) -> bool {
+    index + 1 < len && is_less_than(expression)
+}
+
+/// Whether any element of a list goes through `__gust_keep`.
+fn list_needs_keep<'a>(elements: impl ExactSizeIterator<Item = &'a syn::Expr>) -> bool {
+    let len = elements.len();
+    elements
+        .enumerate()
+        .any(|(index, element)| needs_keep(element, index, len))
+}
+
+/// Emit the elements of a comma-separated list, wrapping those that need `__gust_keep`.
+fn emit_list<'a>(
+    elements: impl ExactSizeIterator<Item = &'a syn::Expr>,
+) -> syn::Result<Vec<String>> {
+    let len = elements.len();
+    elements
+        .enumerate()
+        .map(|(index, element)| {
+            let text = emit_expression(element)?;
+            Ok(if needs_keep(element, index, len) {
+                format!("{KEEP_HELPER}({text})")
+            } else {
+                text
+            })
+        })
+        .collect()
+}
+
+/// Whether the module has a list with an element that goes through `__gust_keep`, so the helper is emitted only
+/// when needed. It visits the same lists `emit_expression` builds with `emit_list`.
+struct KeepUsage(bool);
+
+impl<'ast> Visit<'ast> for KeepUsage {
+    fn visit_expr_array(&mut self, array: &'ast syn::ExprArray) {
+        self.0 |= list_needs_keep(array.elems.iter());
+        syn::visit::visit_expr_array(self, array);
+    }
+
+    fn visit_expr_binary(&mut self, expression: &'ast syn::ExprBinary) {
+        if matches!(expression.op, syn::BinOp::BitXor(_)) {
+            self.0 |=
+                list_needs_keep([expression.left.as_ref(), expression.right.as_ref()].into_iter());
+        }
+        syn::visit::visit_expr_binary(self, expression);
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        // `Some`, `Ok`, `Err` take one argument and the atomic calls emit their own argument lists.
+        if !is_some_constructor(call) && !is_result_constructor(call) && !is_atomic_call(call) {
+            self.0 |= list_needs_keep(call.args.iter());
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
 }
 
 struct NotUsage(bool);
@@ -1063,6 +1166,39 @@ impl<'ast> Visit<'ast> for ResultUsage {
     }
 }
 
+/// The Slang spelling of an integer literal; `negated` says a unary minus applies to it directly.
+///
+/// The dialect has no 64-bit integers, but slangc types a bare decimal above `i32::MAX` as `int64_t`, which WGSL
+/// and SPIR-V validation refuse once it meets a 32-bit operand. In Rust such an unsuffixed literal can only be
+/// `u32` (an `i32` one is a compile error), so it is spelled `uint(..)`, exactly as `u32`-suffixed ones are. Bare
+/// digits stay for everything else: values up to `i32::MAX`, a negated literal (`-2147483648` is `i32::MIN` and
+/// slangc types it right), and a value above `u32::MAX`, which no 32-bit type holds and which stays loud (slangc
+/// keeps it 64-bit and shader creation refuses it) instead of being truncated by a `uint(..)`. The M6 vector
+/// operands call this too.
+fn integer_literal(value: &syn::LitInt, negated: bool) -> syn::Result<String> {
+    let digits = value.base10_digits();
+    match value.suffix() {
+        "" => {
+            let above_i32 = digits
+                .parse::<u64>()
+                .is_ok_and(|v| v > i32::MAX as u64 && v <= u64::from(u32::MAX));
+            Ok(if above_i32 && !negated {
+                format!("uint({digits})")
+            } else {
+                digits.to_owned()
+            })
+        }
+        "u32" => Ok(format!("uint({digits})")),
+        "i32" => Ok(format!("int({digits})")),
+        "f32" => Ok(format!("float({digits}.0)")),
+        _ => Err(diagnostics::error(
+            Code::UnsupportedLiteral,
+            value,
+            "GPU literals support booleans and 32-bit numbers (i32, u32, f32) only",
+        )),
+    }
+}
+
 fn emit_literal(literal: &syn::Lit) -> syn::Result<String> {
     let unsupported = || {
         diagnostics::error(
@@ -1073,16 +1209,7 @@ fn emit_literal(literal: &syn::Lit) -> syn::Result<String> {
     };
     match literal {
         syn::Lit::Bool(value) => Ok(value.value.to_string()),
-        syn::Lit::Int(value) => {
-            let digits = value.base10_digits();
-            match value.suffix() {
-                "" => Ok(digits.to_owned()),
-                "u32" => Ok(format!("uint({digits})")),
-                "i32" => Ok(format!("int({digits})")),
-                "f32" => Ok(format!("float({digits}.0)")),
-                _ => Err(unsupported()),
-            }
-        }
+        syn::Lit::Int(value) => integer_literal(value, false),
         syn::Lit::Float(value) => match value.suffix() {
             "" => Ok(value.base10_digits().to_owned()),
             "f32" => Ok(format!("float({})", value.base10_digits())),

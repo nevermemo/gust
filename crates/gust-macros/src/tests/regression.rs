@@ -2808,3 +2808,204 @@ fn bool_xor_lowers_to_overload_helpers() {
     );
     assert!(helper_only.contains("__gust_xor(x, y)"), "{helper_only}");
 }
+
+/// A kernel body in a module that has the `both` helper, translated for the `__gust_keep` tests.
+fn keep_module(body: &str) -> String {
+    translate(&format!(
+        "mod m {{
+            fn both(x: bool, y: bool) -> bool {{ if x {{ return y; }} return false; }}
+            fn all3(x: bool, y: bool, z: bool) -> bool {{ if x {{ if y {{ return z; }} }} return false; }}
+            #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {{
+                let a: uint = out[0];
+                let b: uint = out[1];
+                let c: int = out[2] as int;
+                let d: int = out[3] as int;
+                let t: bool = a == b;
+                {body}
+            }}
+        }}"
+    ))
+    .unwrap()
+}
+
+/// WGSL reads `name < .. >` as a template list and slangc drops the parentheses around a comparison argument, so a
+/// `<` comparison that is followed by another element of the same list goes through the gated `__gust_keep` helper
+/// (naga's lexer and the fx.wgsl probes). The call arguments, the operands of `^` and the array elements are the lists.
+#[test]
+fn less_than_list_elements_go_through_keep() {
+    let source = keep_module(
+        "let r: bool = both(a < b, c > d);
+         let s: bool = both((a < b), c >= d);
+         let u: bool = all3(t, a < b, c > d);
+         let v: bool = (a < b) ^ (c > d);
+         let w: bool = both(both(a < b, t), c > d);
+         let x: bool = both(a < b && t, c > d);
+         let y: bool = both(t && a < b, c > d);
+         let z: bool = both(t || (a < b), c > d);
+         out[4] = a;",
+    );
+    assert!(
+        source.contains("bool __gust_keep(bool value) { return value; }"),
+        "{source}"
+    );
+    for wrapped in [
+        "both(__gust_keep((a < b)), (c > d))",
+        "both(__gust_keep(((a < b))), (c >= d))",
+        "all3(t, __gust_keep((a < b)), (c > d))",
+        "__gust_xor(__gust_keep(((a < b))), ((c > d)))",
+        // The inner list is wrapped as well: its `<` is followed by `t`.
+        "both(both(__gust_keep((a < b)), t), (c > d))",
+    ] {
+        assert!(source.contains(wrapped), "missing {wrapped}\n{source}");
+    }
+    // A `&&` ends a candidate, so it is not a list element that is a `<`.
+    assert!(source.contains("both(((a < b) && t), (c > d))"), "{source}");
+    // A `<` after a `&&` or `||` stays pending until a later `>`, so the whole element is wrapped.
+    for wrapped in [
+        "both(__gust_keep((t && (a < b))), (c > d))",
+        "both(__gust_keep((t || ((a < b)))), (c > d))",
+    ] {
+        assert!(source.contains(wrapped), "missing {wrapped}\n{source}");
+    }
+
+    // The helper is declared once, before its first use.
+    assert_eq!(source.matches("bool __gust_keep(").count(), 1, "{source}");
+    assert!(
+        source.find("bool __gust_keep(") < source.find("void gpu_m_run"),
+        "{source}"
+    );
+}
+
+/// Elements that cannot open a candidate that a later `>` closes stay as they are.
+#[test]
+fn keep_is_not_added_where_the_list_cannot_misparse() {
+    let source = keep_module(
+        "let r1: bool = both(c > d, a < b);
+         let r2: bool = both(a <= b, c > d);
+         let r3: bool = both(a > b, t);
+         let r4: bool = all3(t, c > d, a < b);
+         let r5: bool = both(a < b, t);
+         let r6: bool = (a < b) & (c > d);
+         let r7: bool = (a < b) == (c > d);
+         let r8: bool = (a < b) && (c > d);
+         let r9: bool = a < b;
+         let q: bool = (a >= b) ^ (c <= d);
+         if a < b { out[4] = a; }
+         out[5] = a;",
+    );
+    // `r5` has a `<` that another element follows, so it is the only wrapped list.
+    assert_eq!(source.matches("__gust_keep(").count(), 2, "{source}");
+    assert!(source.contains("both(__gust_keep((a < b)), t)"), "{source}");
+    for plain in [
+        "both((c > d), (a < b))",
+        "both((a <= b), (c > d))",
+        "both((a > b), t)",
+        "all3(t, (c > d), (a < b))",
+        "__gust_xor(((a >= b)), ((c <= d)))",
+    ] {
+        assert!(source.contains(plain), "missing {plain}\n{source}");
+    }
+}
+
+/// `__gust_keep` is emitted only in a module that has a list with a wrapped element, like the other `__gust_*`
+/// helpers, wherever that list is (here in a helper function, which the kernel calls).
+#[test]
+fn keep_helper_is_gated_on_use() {
+    let without = keep_module(
+        "let r: bool = both(c > d, a < b);
+         let s: bool = (a < b) == (c > d);
+         if both(t, a <= b) { out[4] = a; }
+         out[5] = a;",
+    );
+    assert!(!without.contains("__gust_keep"), "{without}");
+
+    let helper_only = translate(
+        "mod m {
+            fn wide(a: uint, b: uint, c: int, d: int) -> bool {
+                (a < b) ^ (c > d)
+            }
+            #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+                if wide(out[0], out[1], 1i32, 2i32) { out[2] = 1u32; }
+            }
+        }",
+    )
+    .unwrap();
+    assert!(
+        helper_only.contains("bool __gust_keep(bool value) { return value; }"),
+        "{helper_only}"
+    );
+    assert!(
+        helper_only.contains("__gust_xor(__gust_keep(((a < b))), ((c > d)))"),
+        "{helper_only}"
+    );
+    // `^` on two comparisons wants both the xor helpers and the keep helper, in that order.
+    assert!(
+        helper_only.find("bool __gust_xor(") < helper_only.find("bool __gust_keep("),
+        "{helper_only}"
+    );
+
+    // `Some`, `Ok`, `Err` and the atomic calls build their own argument lists and never use it.
+    let constructors = translate(
+        "mod m {
+            #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+                let a: uint = out[0];
+                let o: Option<bool> = Some(a < 5u32);
+                if o.unwrap_or(a > 1u32) { out[1] = 1u32; }
+            }
+        }",
+    )
+    .unwrap();
+    assert!(!constructors.contains("__gust_keep"), "{constructors}");
+}
+
+/// An unsuffixed integer literal above `i32::MAX` is `u32` in the dialect, and slangc types a bare one `int64_t`,
+/// which WGSL and SPIR-V validation refuse next to a 32-bit operand. It is spelled `uint(..)`, like a suffixed one.
+#[test]
+fn large_unsuffixed_integer_literals_are_spelled_uint() {
+    let source = translate(
+        "mod m { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+            let x: uint = out[0];
+            let n: int = out[1] as int;
+            out[0] = x + 3000000000;
+            if x == 4294967295 { out[1] = 1u32; }
+            out[2] = 2147483648;
+            out[3] = 0x8000_0000;
+            out[4] = 3000000000u32;
+            out[5] = 4294967295;
+            if n < 2147483647 { out[6] = 1u32; }
+            if n > -2147483648 { out[7] = 1u32; }
+            if n < 2147483647i32 { out[8] = 2147483647u32; }
+            if x > 0 { out[9] = 5; }
+        } }",
+    )
+    .unwrap();
+    for spelled in [
+        "(x + uint(3000000000))",
+        "(x == uint(4294967295))",
+        "out[2] = uint(2147483648);",
+        // Hexadecimal digits are normalised by `base10_digits`.
+        "out[3] = uint(2147483648);",
+        "out[4] = uint(3000000000);",
+        "out[5] = uint(4294967295);",
+        // The edges: `i32::MAX` and its negation neighbour stay as written.
+        "(n < 2147483647)",
+        "(n > (-2147483648))",
+        "(n < int(2147483647))",
+        "out[8] = uint(2147483647);",
+        "(x > 0)",
+        "out[9] = 5;",
+    ] {
+        assert!(source.contains(spelled), "missing {spelled}\n{source}");
+    }
+    assert!(!source.contains("uint(5)"), "{source}");
+
+    // Above `u32::MAX` no 32-bit type fits. The digits are kept, so slangc keeps them 64-bit and shader creation
+    // refuses the module (a `uint(..)` would truncate them silently). Reported in the slice notes; no new code.
+    let too_large = translate(
+        "mod m { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+            out[0] = out[1] + 5000000000;
+        } }",
+    )
+    .unwrap();
+    assert!(too_large.contains("(out[1] + 5000000000)"), "{too_large}");
+}

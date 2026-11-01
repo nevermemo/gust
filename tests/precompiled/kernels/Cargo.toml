@@ -1,0 +1,16 @@
+[package]
+name = "kernels"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Fixture of GUST's precompiled path: one vector-add kernel with committed artifacts"
+
+# `gust` by `version` plus `path`: `cargo package` keeps only the version in the packaged manifest (plan R2-4). The
+# package is not `publish = false`, because `cargo package` refuses such a package.
+[dependencies]
+gust = { version = "0.1.0", path = "../../../crates/gust", default-features = false }
+
+# This is a separate workspace, so the root `[workspace.lints]` does not reach it: declare the cfg that
+# `--cfg gust_dual` sets, so that a hand-written `cfg(gust_dual)` is not an unexpected cfg here.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

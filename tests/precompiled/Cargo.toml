@@ -1,0 +1,12 @@
+# Fixture workspace for `cargo xtask check-precompiled`: a production-shaped consumer of precompiled kernels (D45,
+# D46). It is a workspace root of its own, so the root workspace does not contain it and `cargo test --workspace` and
+# `cargo clippy --workspace` never build it, and it has its own committed `Cargo.lock`.
+#
+# `kernels` holds the `#[gpu]` module and its committed `gust-artifacts/` (written by `cargo gust build`, never by hand);
+# `app` dispatches the kernel through `gust-wgpu` and checks the result. Neither enables the `slang-runtime` feature,
+# so the fixture builds and runs on a machine that has no Slang (E1), and its release binary holds no run-time Slang
+# bridge (E2). The profile is never set here: `cargo xtask check-precompiled` sets `GUST_PROFILE` in each child's
+# environment, and a config file would be documentation for humans only (R4.2).
+[workspace]
+members = ["kernels", "app"]
+resolver = "3"

@@ -15,6 +15,14 @@ pub enum Error {
     MissingSlangSource(String),
     Slang(gust::slang::Error),
     Reflection(gust::reflect::Error),
+    /// The kernel has no precompiled WGSL artifact and this build cannot compile one at run time: the
+    /// `slang-runtime` feature of `gust-wgpu` is off (D44), and with it the only compiler this crate could start.
+    /// `profile` is the build profile of `gust` (D44). Remedy: run `cargo gust build` in the kernel's crate and
+    /// rebuild, so that the artifact is embedded; or, in a `dev` build, enable the `slang-runtime` feature.
+    NoArtifact {
+        kernel: String,
+        profile: &'static str,
+    },
     UnsupportedWorkgroupSize([u32; 3]),
     UnsupportedParameter {
         name: String,
@@ -135,6 +143,10 @@ impl fmt::Display for Error {
             Self::Reflection(error) => {
                 write!(formatter, "could not validate kernel reflection: {error}")
             }
+            Self::NoArtifact { kernel, profile } => write!(
+                formatter,
+                "kernel `{kernel}` has no precompiled WGSL artifact, and this build of gust-wgpu (profile `{profile}`) was built without the `slang-runtime` feature, so it cannot compile the kernel at run time; run `cargo gust build` in the crate that defines the kernel and rebuild, or enable the `slang-runtime` feature in a dev build",
+            ),
             Self::UnsupportedWorkgroupSize(size) => {
                 write!(
                     formatter,

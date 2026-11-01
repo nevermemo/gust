@@ -2,15 +2,21 @@
 //!
 //! Storage buffers support 32-bit scalars and nested GPU POD structs.
 //! It reflects the descriptor's group-0 bindings, uploads the supplied data,
-//! compiles descriptor Slang source to WGSL, dispatches it, and reads writable buffers back. A
-//! persistent typed-buffer path separates allocation, upload, dispatch, and
+//! takes the WGSL of a precompiled artifact or compiles descriptor Slang source to WGSL, dispatches it, and reads
+//! writable buffers back. A persistent typed-buffer path separates allocation, upload, dispatch, and
 //! readback so allocations can remain resident across repeated work.
 //!
-//! # The `slang-runtime` feature
+//! # Where a kernel's shader comes from
 //!
-//! Compiling a descriptor's Slang at run time needs the `slang-runtime` feature (off by default, D44), which enables
-//! `gust/slang-runtime`. Without it the crate holds no process-spawning compiler, and a kernel that would need one
-//! fails when it is dispatched with `Error::Slang`, an I/O error of kind `Unsupported` that names the feature.
+//! A kernel is dispatched in this order of preference (D45):
+//!
+//! 1. The first WGSL artifact of `KernelDescriptor::artifacts`. It is checked with `gust::artifact::verify_artifact`
+//!    (D17: identity, content hashes, reflection against the descriptor's layouts) before a shader module is created.
+//!    A check that fails is an error (`Error::Reflection`), never a reason to compile the Slang instead.
+//! 2. With the `slang-runtime` feature (off by default, D44, which enables `gust/slang-runtime`): compile the
+//!    descriptor's Slang at run time through the native helper.
+//! 3. Otherwise `Error::NoArtifact`: the crate holds no process-spawning compiler. `cargo gust build` writes the
+//!    artifact.
 //!
 //! The backend-neutral typed surface of `gust` is implemented here: `GpuBuffer<T>` is a
 //! `gust::Resource`, and `HeadlessDevice` runs every `gust::Call` (`gust::Run`). A call is
@@ -1758,12 +1764,13 @@ impl HeadlessDevice {
     }
 
     /// Without `slang-runtime` this crate holds no compiler: the only kernels it can run are the ones whose
-    /// precompiled artifact it verifies (m4.e1 adds that path and `Error::NoArtifact`; until then none).
+    /// precompiled artifact it verifies. `select_shader_source` never sends a kernel here in this build (it
+    /// answers `NoArtifact` first); the same error is returned in case a caller does.
     #[cfg(not(feature = "slang-runtime"))]
     fn compile_at_run_time(
-        _kernel: &KernelDescriptor,
+        kernel: &KernelDescriptor,
     ) -> Result<gust::reflect::CompiledReflection, Error> {
-        Err(runtime_feature_off())
+        Err(no_artifact(kernel))
     }
 
     fn compile_kernel(
@@ -1771,7 +1778,15 @@ impl HeadlessDevice {
         kernel: &KernelDescriptor,
         resources: &[&ParameterDescriptor],
     ) -> Result<CachedKernel, Error> {
-        let compiled = Self::compile_at_run_time(kernel)?;
+        let compiled = match select_shader_source(kernel, cfg!(feature = "slang-runtime"))? {
+            // A verification failure is the answer: there is no fallback to the run-time compiler.
+            ShaderSource::Precompiled(artifact) => {
+                gust::artifact::verify_artifact(kernel, artifact)
+                    .map_err(Error::Reflection)?
+                    .compiled
+            }
+            ShaderSource::RunTime => Self::compile_at_run_time(kernel)?,
+        };
         let wgsl = std::str::from_utf8(&compiled.artifact)
             .expect("WGSL validated by the native compiler bridge");
         let label = kernel.qualified_name().to_string();
@@ -2250,14 +2265,38 @@ fn pod_vec_from_bytes<T: GpuPod>(bytes: &[u8]) -> Result<Vec<T>, Error> {
     Ok(values)
 }
 
-/// The error of a run-time compile in a build without the `slang-runtime` feature. An I/O error of kind
-/// `Unsupported`, because installing `slangc` would not help: the fix is the feature, or a precompiled artifact.
-#[cfg(any(test, not(feature = "slang-runtime")))]
-fn runtime_feature_off() -> Error {
-    Error::Slang(gust::slang::Error::Io(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "this build of gust-wgpu was built without the `slang-runtime` feature, so it cannot compile a kernel at run time; enable the feature or use a precompiled artifact",
-    )))
+/// Where the WGSL of a kernel comes from.
+#[derive(Clone, Copy, Debug)]
+enum ShaderSource {
+    /// The kernel's embedded WGSL artifact, to be verified before use.
+    Precompiled(&'static gust::Artifact),
+    /// The run-time compiler (the `slang-runtime` feature).
+    RunTime,
+}
+
+/// The shader source policy (D45): a kernel with a WGSL artifact uses it, whether or not the run-time compiler is
+/// available; a kernel without one is compiled at run time only when `run_time_compiler` says this build holds the
+/// compiler, and is otherwise `Error::NoArtifact`. `run_time_compiler` is `cfg!(feature = "slang-runtime")` in
+/// production and an argument so that a test can reach both builds from the one it runs in.
+fn select_shader_source(
+    kernel: &KernelDescriptor,
+    run_time_compiler: bool,
+) -> Result<ShaderSource, Error> {
+    if let Some(artifact) = cache::preferred_artifact(kernel) {
+        return Ok(ShaderSource::Precompiled(artifact));
+    }
+    if run_time_compiler {
+        return Ok(ShaderSource::RunTime);
+    }
+    Err(no_artifact(kernel))
+}
+
+/// The error of a kernel that has no WGSL artifact in a build without the run-time compiler.
+fn no_artifact(kernel: &KernelDescriptor) -> Error {
+    Error::NoArtifact {
+        kernel: kernel.qualified_name().to_string(),
+        profile: gust::profile::NAME,
+    }
 }
 
 #[cfg(test)]
@@ -2265,19 +2304,66 @@ mod tests {
     use super::*;
     use gust::ResourceBinding;
 
+    const WGSL_ARTIFACT: gust::Artifact = gust::Artifact {
+        format: gust::Format::Wgsl,
+        key: "0123456789abcdef",
+        bytes: b"",
+        reflection: "",
+    };
+
     #[test]
-    fn the_error_of_a_build_without_slang_runtime_names_the_feature_and_is_unsupported() {
-        // The feature is always on in tests (the self dev-dependency), so the stub itself cannot run here; this pins
-        // the error it returns.
-        let error = runtime_feature_off();
-        let Error::Slang(gust::slang::Error::Io(io)) = &error else {
-            panic!("{error:?}");
+    fn a_kernel_with_a_wgsl_artifact_uses_it_with_or_without_the_run_time_compiler() {
+        let kernel = KernelDescriptor {
+            artifacts: &[WGSL_ARTIFACT],
+            ..DESCRIPTOR
         };
-        assert_eq!(io.kind(), std::io::ErrorKind::Unsupported);
-        assert_eq!(
-            error.to_string(),
-            "could not compile kernel with Slang: Slang artifact I/O failed: this build of gust-wgpu was built without the `slang-runtime` feature, so it cannot compile a kernel at run time; enable the feature or use a precompiled artifact"
-        );
+        for run_time_compiler in [false, true] {
+            let Ok(ShaderSource::Precompiled(artifact)) =
+                select_shader_source(&kernel, run_time_compiler)
+            else {
+                panic!("a WGSL artifact is always preferred");
+            };
+            assert_eq!(artifact, &WGSL_ARTIFACT);
+        }
+    }
+
+    #[test]
+    fn a_kernel_without_an_artifact_compiles_at_run_time_only_where_the_compiler_exists() {
+        assert!(DESCRIPTOR.artifacts.is_empty());
+        assert!(matches!(
+            select_shader_source(&DESCRIPTOR, true),
+            Ok(ShaderSource::RunTime)
+        ));
+    }
+
+    #[test]
+    fn a_kernel_without_an_artifact_in_a_build_without_the_compiler_is_no_artifact() {
+        // The `slang-runtime` feature is always on in tests (the self dev-dependency), so this is the one place the
+        // off-state policy runs: through the argument that stands for the feature.
+        let spirv_only = KernelDescriptor {
+            artifacts: &[gust::Artifact {
+                format: gust::Format::Spirv,
+                ..WGSL_ARTIFACT
+            }],
+            ..DESCRIPTOR
+        };
+        for kernel in [&DESCRIPTOR, &spirv_only] {
+            let error = select_shader_source(kernel, false)
+                .expect_err("no WGSL artifact and no compiler is an error, not a fallback");
+            let Error::NoArtifact {
+                kernel: name,
+                profile,
+            } = &error
+            else {
+                panic!("{error:?}");
+            };
+            assert_eq!(name, &kernel.qualified_name().to_string());
+            assert_eq!(*profile, gust::profile::NAME);
+            let message = error.to_string();
+            assert!(message.contains(&format!("`{name}`")), "{message}");
+            assert!(message.contains("cargo gust build"), "{message}");
+            assert!(message.contains("slang-runtime"), "{message}");
+        }
     }
 
     const PARAMETERS: &[ParameterDescriptor] = &[ParameterDescriptor {
@@ -2618,6 +2704,8 @@ mod tests {
         assert!(source.contains("binding: 0,"));
         assert!(source.contains("read_only: false"));
         assert!(source.contains("gust::slang::compile_wgsl"));
+        assert!(source.contains("gust::artifact::verify_artifact(descriptor, artifact)"));
+        assert!(source.contains("artifact.format == gust::Format::Wgsl"));
         assert!(source.contains("out: f32 [storage-v1; size=4, align=4, stride=4]"));
         assert!(source.contains("pass.dispatch_workgroups(element_count.div_ceil(64), 1, 1);"));
     }

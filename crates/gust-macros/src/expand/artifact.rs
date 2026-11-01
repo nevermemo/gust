@@ -363,7 +363,8 @@ pub(super) struct ParameterRecord {
     /// The binding in descriptor set 0; `None` for a parameter without a resource.
     pub binding: Option<u32>,
     /// The element layout of a storage parameter; `None` for other parameters and for an element type the macro cannot
-    /// describe (a storage parameter with no layout: `cargo gust build` refuses it).
+    /// describe (a storage parameter with no layout: `cargo gust build` fills it from the Slang reflection and lists the
+    /// parameter as `export_unchecked` in the manifest).
     pub layout: Option<Layout>,
 }
 
@@ -492,7 +493,9 @@ fn twin_text(text: &str) -> Option<&'static str> {
 }
 
 /// Writes `<key>.slang` (the clean text, exact bytes) and `<key>.kernel.json` into `directory`, creating it. A record
-/// that holds CPU twin text is refused before anything is written. The error names the path.
+/// that holds CPU twin text is refused before anything is written. A file that already exists with other bytes is kept
+/// and refused: two kernels of the package have one key (R4.4); an identical rewrite is fine. The error names the path
+/// or both kernels.
 pub(super) fn write_records(
     directory: &Path,
     key: &str,
@@ -517,14 +520,100 @@ pub(super) fn write_records(
         (format!("{key}.kernel.json"), json),
     ] {
         let path = directory.join(name);
-        fs::write(&path, text.as_bytes()).map_err(|error| {
+        let existing = write_once(&path, text.as_bytes()).map_err(|error| {
             format!(
                 "gust: export mode could not write `{}`: {error}",
                 path.display()
             )
         })?;
+        if existing.is_some() {
+            let old = fs::read_to_string(directory.join(format!("{key}.kernel.json"))).ok();
+            return Err(collision_message(
+                key,
+                record_name(json).as_deref(),
+                old.as_deref().and_then(record_name).as_deref(),
+                path.extension()
+                    .is_some_and(|extension| extension == "slang"),
+            ));
+        }
     }
     Ok(())
+}
+
+/// Creates `path` with `bytes` unless it exists. `Ok(None)` when the file was created or already holds exactly
+/// `bytes` (the same kernel expanded again, for example in a library and a binary target); `Ok(Some(old))` when it
+/// holds other bytes, which it keeps.
+///
+/// Every file in a record directory is new for the run (the directory is named by a per-run nonce), so another
+/// content under one key means two kernels of the package share that key (R4.4). The file appears complete or not
+/// at all: it is written beside the target and hard linked into place, so a parallel expansion that finds it can
+/// compare it without seeing a half-written file.
+/// Where hard links are not available (FAT, exFAT) the fallback is a plain write, which is neither exclusive nor atomic.
+fn write_once(path: &Path, bytes: &[u8]) -> std::io::Result<Option<Vec<u8>>> {
+    use std::sync::atomic::{AtomicU32, Ordering};
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    let file_name = path
+        .file_name()
+        .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
+    let temporary = path.with_file_name(format!(
+        ".{file_name}.{}.{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(&temporary, bytes)?;
+    let linked = fs::hard_link(&temporary, path);
+    // If this fails the dot-prefixed `.tmp` file stays; `cargo gust` ignores such files when it reads the records.
+    let _ = fs::remove_file(&temporary);
+    match linked {
+        Ok(()) => Ok(None),
+        Err(link_error) => match fs::read(path) {
+            Ok(existing) if existing == bytes => Ok(None),
+            Ok(existing) => Ok(Some(existing)),
+            // The path is there but cannot be read (a directory): that is the error to report.
+            Err(read_error) if link_error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(read_error)
+            }
+            // Hard links are not available here and nothing is in the way: write the file directly.
+            Err(_) => fs::write(path, bytes).map(|()| None),
+        },
+    }
+}
+
+/// `module::name` of a record's JSON text, read without a JSON parser (the writer is ours: keys sorted, two-space
+/// indentation, so the top-level `module` and `name` start their lines), or `None` when it cannot be read.
+fn record_name(json: &str) -> Option<String> {
+    let value = |key: &str| {
+        let marker = format!("\n  \"{key}\": \"");
+        let start = json.find(&marker)? + marker.len();
+        let length = json[start..].find('"')?;
+        Some(json[start..start + length].to_owned())
+    };
+    Some(format!("{}::{}", value("module")?, value("name")?))
+}
+
+/// The message of the duplicate-key error ([`Code::ExportWriteFailed`]).
+fn collision_message(
+    key: &str,
+    new: Option<&str>,
+    old: Option<&str>,
+    slang_differs: bool,
+) -> String {
+    let name = |kernel: Option<&str>| {
+        kernel.map_or_else(
+            || "a kernel whose name could not be read".to_owned(),
+            |kernel| format!("`{kernel}`"),
+        )
+    };
+    let (new, old) = (name(new), name(old));
+    if slang_differs {
+        format!(
+            "gust: kernels {new} and {old} have the same artifact key {key} but different Slang text: the 64-bit FNV-1a keys collided (R4.4). Change the text of one of the kernels"
+        )
+    } else {
+        format!(
+            "gust: kernels {new} and {old} have the same entry point and Slang text, so they would share the artifact key {key} (R4.4). Rename one of the kernels"
+        )
+    }
 }
 
 // ---- a small JSON writer ----
@@ -1061,6 +1150,75 @@ pub(super) mod tests {
             fs::read_to_string(directory.join("0123456789abcdef.kernel.json")).unwrap(),
             sample_json()
         );
+    }
+
+    #[test]
+    fn an_existing_record_with_other_bytes_is_kept_and_refused_naming_both_kernels() {
+        let scratch = Scratch::new("collision");
+        let directory = scratch.0.join("records").join("demo");
+        let key = "0123456789abcdef";
+        let first = sample_json();
+        write_records(&directory, key, "uint a;\n", &first).unwrap();
+        // The same key with other Slang text: the keys collided.
+        let second = first.replace("\"name\": \"run\"", "\"name\": \"walk\"");
+        assert_ne!(first, second);
+        let error = write_records(&directory, key, "uint b;\n", &second).unwrap_err();
+        assert!(
+            error.contains("`demo::walk` and `demo::run`")
+                && error.contains(key)
+                && error.contains("different Slang text"),
+            "{error}"
+        );
+        // The same entry point and text under another name: they would share the files.
+        let error = write_records(&directory, key, "uint a;\n", &second).unwrap_err();
+        assert!(
+            error.contains("`demo::walk` and `demo::run`")
+                && error.contains("same entry point and Slang text"),
+            "{error}"
+        );
+        // The first kernel's files are untouched by both refusals, and no temporary file is left.
+        assert_eq!(
+            fs::read(directory.join(format!("{key}.slang"))).unwrap(),
+            b"uint a;\n"
+        );
+        assert_eq!(
+            fs::read_to_string(directory.join(format!("{key}.kernel.json"))).unwrap(),
+            first
+        );
+        let mut names: Vec<String> = fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [format!("{key}.kernel.json"), format!("{key}.slang")]
+        );
+        // Writing the first kernel again is fine, and so is a record whose names cannot be read.
+        write_records(&directory, key, "uint a;\n", &first).unwrap();
+        let error = write_records(&directory, key, "uint c;\n", "{}").unwrap_err();
+        assert!(
+            error.contains("a kernel whose name could not be read")
+                && error.contains("`demo::run`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn two_threads_writing_one_record_never_see_a_half_written_file() {
+        let scratch = Scratch::new("parallel");
+        let directory = scratch.0.join("records");
+        let text = "uint x;\n".repeat(20_000);
+        let json = sample_json();
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(|| {
+                    for _ in 0..20 {
+                        write_records(&directory, "0123456789abcdef", &text, &json).unwrap();
+                    }
+                });
+            }
+        });
     }
 
     #[test]

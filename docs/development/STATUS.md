@@ -176,6 +176,18 @@ D55 to D59.
   the merge. Known gap: the committed artifact sets carry the local build tag
   `2026.13.1-1-g84792eb15`, so `cargo gust check` of them fails with the release Slang until a
   re-bless slice after m4.e2b. Opus keep after one fix round; gates on main at `6b064dc`.
+- M4 m4.e2b (`3c95f8a`): the packaged-consumer proof without Slang. `check-precompiled` gains E5
+  (strict plus dual; the app asserts the `native` profile), E6 (build-script refusals judged on
+  exact messages), E7 (re-expansion on a changed `GUST_EXPORT_DIR`; `cargo gust build` from
+  deleted artifacts writes 3 files, then 0, byte-identical to the committed set) and E8 (`cargo
+  package` allow-lists for the three crates, packaged in one multi-package call; a relocated
+  registry-style consumer resolves them through `[patch.crates-io]`, R2-4 mechanism 1, and a
+  `cargo metadata` walk proves no `default` feature reaches `slang-runtime`). crates.io holds an
+  unrelated `gust` 0.1.0; the consumer's pin, patch and three guards keep it out. Root path
+  dependencies gain versions; packages exclude tests, examples and benches. Evidence: Gpu (RTX
+  5090), full `check-precompiled` rc 0 on the merged tree (640 s). CI's `precompiled` job runs
+  `--check-only` plus a NoAdapter run of the release consumer; the runs of E1, E3 and E8 and E7b
+  stay local. Opus keep after one fix round.
 - M5 m5.c1b (`a3a7798`): the difftest harness `difftest-run`. It writes one run crate per
   batch, builds it with `cargo test --locked` under `GUST_PROFILE=dev`, requires exactly one
   complete result file per program, and writes `report.json` with exact counts. The GPU f32 is

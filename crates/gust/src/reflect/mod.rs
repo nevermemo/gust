@@ -222,17 +222,16 @@ fn target_name(target: Target) -> &'static str {
 }
 
 fn fingerprint(bytes: &[u8]) -> String {
-    let hash = bytes.iter().fold(0xcbf29ce484222325_u64, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
-    });
-    format!("{hash:016x}")
+    format!("{:016x}", crate::artifact::fnv1a64(&[bytes]))
 }
 
 impl CompiledReflection {
-    /// `compiled_source` is the text the helper compiled: the kernel's Slang with
-    /// the `#line` directives of [`slang::compile_copy`], whose hash the helper
-    /// reports as `sourceHash`.
-    fn from_output(
+    /// `compiled_source` is the text the helper compiled, whose hash the helper
+    /// reports as `sourceHash`: the kernel's Slang with the `#line` directives of
+    /// [`slang::compile_copy`] for a compile at run time, the clean
+    /// `KernelDescriptor::slang_source` for a precompiled artifact
+    /// ([`crate::artifact::verify_artifact`]).
+    pub(crate) fn from_output(
         kernel: &KernelDescriptor,
         compiled_source: &str,
         target: Target,
@@ -247,14 +246,25 @@ impl CompiledReflection {
         if compiler_version.trim().is_empty() {
             return Err(invalid("missing native compiler build identity"));
         }
-        if root.get("target")?.string()? != target_name(target)
-            || root.get("entryPoint")?.string()? != kernel.entry_point
-            || root.get("sourceHash")?.string()? != fingerprint(compiled_source.as_bytes())
-            || root.get("artifactHash")?.string()? != fingerprint(&artifact)
-        {
-            return Err(invalid(
-                "native target, entry point, source or artifact identity mismatch",
-            ));
+        let source_hash = fingerprint(compiled_source.as_bytes());
+        let artifact_hash = fingerprint(&artifact);
+        let mut differs = Vec::new();
+        for (what, key, expected) in [
+            ("target", "target", target_name(target)),
+            ("entry point", "entryPoint", kernel.entry_point),
+            ("source hash", "sourceHash", source_hash.as_str()),
+            ("artifact hash", "artifactHash", artifact_hash.as_str()),
+        ] {
+            let stored = root.get(key)?.string()?;
+            if stored != expected {
+                differs.push(format!("{what} (stored {stored:?}, expected {expected:?})"));
+            }
+        }
+        if !differs.is_empty() {
+            return Err(invalid(format!(
+                "native target, entry point, source or artifact identity mismatch: {}",
+                differs.join("; ")
+            )));
         }
         let workgroup_size = root
             .get("workgroupSize")?
@@ -564,6 +574,7 @@ mod tests {
             file: "src/k.rs",
             lines: LINES,
         },
+        artifacts: &[],
     };
     const ARTIFACT: &[u8] = b"artifact bytes";
 

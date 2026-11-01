@@ -136,7 +136,7 @@ pub enum LengthRule {
 /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
 /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
 /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-/// #         slang_source: "", source: SourceOrigin::UNKNOWN,
+/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
 /// #     };
 /// # }
 /// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
@@ -185,7 +185,7 @@ pub enum LengthRule {
 /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
 /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
 /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-/// #         slang_source: "", source: SourceOrigin::UNKNOWN,
+/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
 /// #     };
 /// # }
 /// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
@@ -234,7 +234,7 @@ pub enum LengthRule {
 /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
 /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
 /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-/// #         slang_source: "", source: SourceOrigin::UNKNOWN,
+/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
 /// #     };
 /// # }
 /// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
@@ -393,7 +393,7 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
     /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
     /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-    /// #         slang_source: "", source: SourceOrigin::UNKNOWN,
+    /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
     /// #     };
     /// # }
     /// # fn build<const N: usize>() -> Call<'static, Dev, Probe, N> {
@@ -431,7 +431,7 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
     /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
     /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-    /// #         slang_source: "", source: SourceOrigin::UNKNOWN,
+    /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
     /// #     };
     /// # }
     /// # fn build<const N: usize>() -> Call<'static, Dev, Probe, N> {
@@ -530,6 +530,7 @@ mod tests {
             parameters,
             slang_source: "",
             source: SourceOrigin::UNKNOWN,
+            artifacts: &[],
         }
     }
 

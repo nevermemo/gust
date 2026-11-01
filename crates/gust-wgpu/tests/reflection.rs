@@ -30,6 +30,7 @@ const KERNEL: KernelDescriptor = KernelDescriptor {
         }
     "#,
     source: gust::SourceOrigin::UNKNOWN,
+    artifacts: &[],
 };
 
 fn assert_mismatch(error: Error, expected: &str) {
@@ -257,6 +258,7 @@ const HANDWRITTEN_FAILING: KernelDescriptor = KernelDescriptor {
             },
         ],
     },
+    artifacts: &[],
 };
 
 #[test]

@@ -5,7 +5,7 @@ use crate::{
     workspace::EXAMPLES,
 };
 
-const UNIT: [Step; 8] = [
+const UNIT: [Step; 10] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
@@ -14,6 +14,15 @@ const UNIT: [Step; 8] = [
     Step::CheckUi,
     Step::CheckCpu,
     Step::CountedCargo(&["test", "--locked", "-p", "gust", "--lib", "cpu::tests::"]),
+    Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust",
+        "--lib",
+        "artifact::tests::",
+    ]),
+    Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "artifact"]),
 ];
 
 #[test]
@@ -235,4 +244,30 @@ fn the_unit_suite_runs_the_gust_cpu_tests_with_the_count_guard() {
         "cargo test --locked -p gust --lib cpu::tests::"
     );
     assert!(Suite::Unit.covers().contains("gust::cpu"));
+}
+
+#[test]
+fn the_unit_suite_runs_the_gust_artifact_tests_with_the_count_guard() {
+    // Pure tests (no slangc, no GPU): the integration file and the counted library tests.
+    let unit = Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust",
+        "--lib",
+        "artifact::tests::",
+    ]);
+    let integration = Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "artifact"]);
+    let steps = Suite::Unit.steps();
+    assert_eq!(steps.iter().filter(|s| **s == unit).count(), 1);
+    assert_eq!(steps.iter().filter(|s| **s == integration).count(), 1);
+    assert_eq!(
+        unit.label(),
+        "cargo test --locked -p gust --lib artifact::tests::"
+    );
+    assert_eq!(
+        integration.label(),
+        "cargo test --locked -p gust --test artifact"
+    );
+    assert!(Suite::Unit.covers().contains("gust::artifact"));
 }

@@ -87,6 +87,7 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
                     parameters: &[#(#parameter_descriptors),*],
                     slang_source: #slang_source,
                     source: #source_origin,
+                    artifacts: &[],
                 };
             }
 

@@ -23,12 +23,20 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
     );
     write_line(
         &mut source,
-        format_args!("// Shader source: Rust -> Slang -> WGSL"),
+        format_args!(
+            "// Shader source: the kernel's embedded WGSL artifact (checked by gust::artifact::verify_artifact), else Rust -> Slang -> WGSL"
+        ),
     );
     write_line(
         &mut source,
         format_args!(
-            "// Compiling the Slang at run time (gust::slang::compile_wgsl) needs gust's `slang-runtime` feature, which is off by default."
+            "// Compiling the Slang at run time (gust::slang::compile_wgsl) needs gust's `slang-runtime` feature, which is off by default;"
+        ),
+    );
+    write_line(
+        &mut source,
+        format_args!(
+            "// without it, replace the `None` arm below with a panic or an error that names `cargo gust build`, which writes the artifact."
         ),
     );
     for parameter in &resources {
@@ -81,7 +89,7 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
         ),
     );
     source.push_str(
-        "        let wgsl = gust::slang::compile_wgsl(descriptor).expect(\"compile generated Slang\");\n",
+        "        let wgsl = match descriptor\n            .artifacts\n            .iter()\n            .find(|artifact| artifact.format == gust::Format::Wgsl)\n        {\n            Some(artifact) => {\n                let verified = gust::artifact::verify_artifact(descriptor, artifact)\n                    .expect(\"verify the embedded WGSL artifact\");\n                String::from_utf8(verified.compiled.artifact).expect(\"WGSL is UTF-8\")\n            }\n            None => gust::slang::compile_wgsl(descriptor).expect(\"compile generated Slang\"),\n        };\n",
     );
     source.push_str(
         "        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {\n",

@@ -2,4 +2,5 @@
 # FNV-1a hashes): git must never rewrite their line endings, so they are not text.
 **/gust-artifacts/** -text
 crates/gust/tests/fixtures/precompiled/** -text
+crates/gust-wgpu/tests/fixtures/precompiled/** -text
 *.spv binary

@@ -147,6 +147,24 @@ D55 to D59.
   take unique package names, because cargo gives two crates of one name in one target dir a
   single fingerprint (reproduced without GUST). Opus keep after one fix round; gates on main at
   `c2df942`.
+- M5 m5.c1a2 (`f60f516`): floats v1 in the generator. f32 inputs are 0 or in 2^-20..2^20;
+  `+ - * /`, negation, comparisons, casts to and from `i32` and `u32`, loop accumulators and
+  short chains. Each f32 output carries an interval that encloses the twin and every GPU result
+  SEMANTICS allows; a chain of n roundings widens by (n-1) ULPs of S' = S + 2(n-1) ULP(S), so
+  binade edges stay sound (an Opus probe found the edge case; the new soundness test, with
+  adversarial neighbours and three groupings, now finds it on its own). Programs that cannot be
+  bounded are discarded by class; comparisons need disjoint intervals. `DIFFTEST_FORMAT` 2; the
+  integer space keeps the c1a programs (hashes pinned). Opus keep after one fix round; gates on
+  main at `34baf39`.
+- M5 m5.a (`00ad885`): the `gpu-software` workflow runs the whole Gpu suite on Mesa lavapipe on
+  a hosted runner (D52), installing only from one Ubuntu snapshot URI (stricter than the plan:
+  a `Snapshot:` field on the live archive still read live indices). It asserts the adapter
+  record (device type `Cpu`, llvmpipe, the full Mesa and LLVM `driver_info`) and the pinned
+  passed count and result-line count, and `cargo xtask status` prints `tier=Gpu (software)`.
+  Software evidence is never hardware evidence. On lavapipe the first readback poll blocks until
+  the kernel ends, so one async test skips only its pending-path check there (VALIDATION.md).
+  Runs: 1m52s cold, 1m27s warm. Any slice that adds Gpu tests bumps the two pins. Opus keep after
+  two CI fix rounds; gates on main at `00ad885`.
 M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),

@@ -12,8 +12,23 @@ Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test b
 adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),
-m3.c (macro twins), m3.c2 (check-cpu) and m3.d (atomics, fixture twins) done; m3.e1 and
-m3.f1 next.
+m3.c (macro twins), m3.c2 (check-cpu), m3.d (atomics, fixture twins) and m3.f1
+(`check-dual --check-only`) done; m3.e1 in review, then m3.e2 and m3.f2.
+
+- M3 m3.f1 (`5c5a9ad`): `cargo xtask check-dual --check-only` and the `tests/dual` fixture
+  workspace (`kernel-lib` with one `#[gust::gpu]` kernel; `consumer` with a `cfg(test)` twin
+  test and a production binary). It refuses a preset `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` or
+  `CARGO_BUILD_RUSTFLAGS`, builds the workspace with `--cfg gust_dual` through
+  `CARGO_ENCODED_RUSTFLAGS` in `<target>/dual`, and checks that without the cfg a dependent's
+  own `cfg(test)` (E1) and a production binary (E3) get no twin of a library kernel (exactly one
+  E0277 each, matched per target by `ui::judge`'s new target parameter), while with it the twin
+  test compiles and passes (E2). E2 also shows `gust::cpu::overflow_checks!()` reports the
+  calling crate's per-package overflow mode (Revision 5). S3: first dual build 76 s, no-change
+  rerun 11 s; a no-change main build afterwards compiles nothing; the dual target directory is
+  about 8 GB. Not yet in a suite or CI (m3.f2). Not covered: root fmt and CI clippy do not reach
+  `tests/dual` (nor `tests/ui`). Evidence: fmt, clippy (workspace and `tests/dual` with and
+  without the cfg), xtask tests (183), check-dual, check-ui, Unit suite, check-fast, docs-check,
+  lint, and check-dual, xtask tests and Unit again on the merge with m3.d; four mutations killed.
 
 - M3 m3.d (`0f2ff27`): the five `gust::runtime` atomics (u32 and i32) run for real on the CPU
   twin, sequentially in ascending invocation order (a valid ordering of the GPU semantics);

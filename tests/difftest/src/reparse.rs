@@ -6,7 +6,9 @@
 //!
 //! The parser reads only the grammar the emitter writes: `let`, assignment, `if`/`else`, `for v in 0u32..Nu32`, the
 //! final `out[i] = ...` store, and expressions with parentheses, unary `-`/`!`, `as`, the binary operators and
-//! `name[...]` / `name.len()`. A negated integer literal (`-5i32`) is read as one literal, as `Expr::negated` folds it.
+//! `name[...]` / `name.len()`. A negated integer or non-zero `f32` literal (`-5i32`, `-0.5f32`) is read as one literal,
+//! as `Expr::negated` folds it. An `f32` literal is read with Rust's own correctly rounded `str::parse`, so a literal
+//! the emitter wrote inexactly would not come back to the same bits.
 
 use std::collections::BTreeMap;
 
@@ -17,6 +19,8 @@ use crate::emit::BUFFER_NAMES;
 enum Tok {
     Ident(String),
     Int(u64, String),
+    /// An `f32` literal: its digits (no sign, no suffix).
+    Float(String),
     Punct(&'static str),
 }
 
@@ -44,6 +48,25 @@ fn tokenize(text: &str) -> Result<Vec<Tok>, String> {
             let start = pos;
             while pos < chars.len() && chars[pos].is_ascii_digit() {
                 pos += 1;
+            }
+            if chars.get(pos) == Some(&'.') && chars.get(pos + 1).is_some_and(char::is_ascii_digit)
+            {
+                pos += 1;
+                while pos < chars.len() && chars[pos].is_ascii_digit() {
+                    pos += 1;
+                }
+                let text: String = chars[start..pos].iter().collect();
+                let suffix_start = pos;
+                while pos < chars.len() && (chars[pos].is_ascii_alphanumeric() || chars[pos] == '_')
+                {
+                    pos += 1;
+                }
+                let suffix: String = chars[suffix_start..pos].iter().collect();
+                if suffix != "f32" {
+                    return Err(format!("float literal {text}{suffix}"));
+                }
+                toks.push(Tok::Float(text));
+                continue;
             }
             let digits: String = chars[start..pos].iter().collect();
             let value = digits
@@ -139,6 +162,7 @@ impl Parser {
             "u32" => Ok(Ty::U32),
             "i32" => Ok(Ty::I32),
             "bool" => Ok(Ty::Bool),
+            "f32" => Ok(Ty::F32),
             other => Err(format!("unknown type {other}")),
         }
     }
@@ -178,6 +202,13 @@ impl Parser {
 
     fn unary(&mut self) -> Res<Expr> {
         if self.eat_punct("-") {
+            if let Some(Tok::Float(text)) = self.peek().cloned() {
+                let value: f32 = text.parse().map_err(|e| format!("{text}: {e}"))?;
+                if value != 0.0 {
+                    self.pos += 1;
+                    return Ok(Expr::f32(-value));
+                }
+            }
             if let Some(Tok::Int(value, suffix)) = self.peek().cloned() {
                 if suffix != "i32" || value > i32::MAX as u64 {
                     return Err(format!("negated literal {value}{suffix}"));
@@ -188,7 +219,7 @@ impl Parser {
             let e = self.unary()?;
             return Ok(Expr::Un {
                 op: UnOp::Neg,
-                ty: Ty::I32,
+                ty: e.ty(),
                 e: Box::new(e),
             });
         }
@@ -200,6 +231,10 @@ impl Parser {
 
     fn atom(&mut self) -> Res<Expr> {
         match self.next()? {
+            Tok::Float(text) => {
+                let value: f32 = text.parse().map_err(|e| format!("{text}: {e}"))?;
+                Ok(Expr::f32(value))
+            }
             Tok::Int(value, suffix) => match suffix.as_str() {
                 "u32" if value <= u64::from(u32::MAX) => Ok(Expr::u32(value as u32)),
                 "i32" if value <= i32::MAX as u64 => Ok(Expr::i32(value as i32)),

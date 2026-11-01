@@ -1,4 +1,4 @@
-//! The scalar AST of the generated kernels (integers and booleans, v1 of the program space).
+//! The scalar AST of the generated kernels (integers, booleans and, from DIFFTEST_FORMAT 2, `f32`).
 //!
 //! Every value is a 32-bit pattern (`u32`); `bool` is 0 or 1. Nodes that the interpreter and the emitter need to
 //! type carry their operand type, so `Expr::ty` is O(1). `Program::check` verifies the invariants the generator
@@ -12,6 +12,8 @@ pub enum Ty {
     U32,
     I32,
     Bool,
+    /// `f32` (R1-4 of the M5 plan: the exact-interval subset). A value is the 32-bit IEEE pattern.
+    F32,
 }
 
 impl Ty {
@@ -21,6 +23,7 @@ impl Ty {
             Ty::U32 => "u32",
             Ty::I32 => "i32",
             Ty::Bool => "bool",
+            Ty::F32 => "f32",
         }
     }
 
@@ -30,17 +33,22 @@ impl Ty {
             Ty::U32 => "uint",
             Ty::I32 => "int",
             Ty::Bool => "bool",
+            Ty::F32 => "float",
         }
     }
 
     pub fn is_int(self) -> bool {
         matches!(self, Ty::U32 | Ty::I32)
     }
+
+    pub fn is_float(self) -> bool {
+        self == Ty::F32
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnOp {
-    /// Arithmetic negation, `i32` only (Rust has no `-` on `u32`).
+    /// Arithmetic negation, `i32` and `f32` only (Rust has no `-` on `u32`).
     Neg,
     /// `!`: bitwise on integers, logical on `bool`.
     Not,
@@ -158,7 +166,8 @@ impl BinOp {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr {
-    /// A literal: the 32-bit pattern. `i32::MIN` has no literal form (see `Expr::i32_min`).
+    /// A literal: the 32-bit pattern. `i32::MIN` has no literal form (see `Expr::i32_min`). An `f32` literal is a
+    /// finite value that is not a negative zero.
     Lit(Ty, u32),
     /// A local variable (a `let` binding or a loop variable).
     Var(u32, Ty),
@@ -181,7 +190,8 @@ pub enum Expr {
         l: Box<Expr>,
         r: Box<Expr>,
     },
-    /// `e as to`, between `u32` and `i32` only: the bits are unchanged.
+    /// `e as to` among `u32`, `i32` and `f32`. Between `u32` and `i32` the bits are unchanged; to and from `f32` the
+    /// value is converted (the interpreter's rules for the cases it accepts are in `interp.rs`).
     Cast { to: Ty, e: Box<Expr> },
 }
 
@@ -194,6 +204,16 @@ impl Expr {
     pub fn i32(value: i32) -> Expr {
         assert!(value != i32::MIN, "i32::MIN has no literal form");
         Expr::Lit(Ty::I32, value as u32)
+    }
+
+    /// An `f32` literal. A negative zero and a non-finite value have no literal here.
+    pub fn f32(value: f32) -> Expr {
+        assert!(value.is_finite(), "non-finite f32 literal");
+        assert!(
+            value.to_bits() != (-0.0f32).to_bits(),
+            "negative zero has no literal form"
+        );
+        Expr::Lit(Ty::F32, value.to_bits())
     }
 
     pub fn bool(value: bool) -> Expr {
@@ -218,15 +238,19 @@ impl Expr {
     /// `-e`. A negated literal is folded into the literal (the emitted text is the same, and the re-parser reads
     /// `-5i32` as one literal), so the AST never holds `Un(Neg, Lit)`.
     pub fn negated(e: Expr) -> Expr {
-        if let Expr::Lit(Ty::I32, bits) = e {
-            let value = bits as i32;
-            if value != i32::MIN {
-                return Expr::i32(-value);
+        match e {
+            Expr::Lit(Ty::I32, bits) if bits as i32 != i32::MIN => {
+                return Expr::i32(-(bits as i32));
             }
+            // `-0.0` stays an operation: the literal form of a negative zero does not exist.
+            Expr::Lit(Ty::F32, bits) if f32::from_bits(bits) != 0.0 => {
+                return Expr::f32(-f32::from_bits(bits));
+            }
+            _ => {}
         }
         Expr::Un {
             op: UnOp::Neg,
-            ty: Ty::I32,
+            ty: e.ty(),
             e: Box::new(e),
         }
     }
@@ -338,6 +362,14 @@ impl Program {
         }
     }
 
+    /// Whether any value of the program is an `f32`: an input or the result (a local always descends from one of
+    /// them, or from a cast of an integer, which `visit_exprs` sees).
+    pub fn has_float(&self) -> bool {
+        let mut found = self.inputs.iter().any(|input| input.ty == Ty::F32);
+        visit_exprs(self, &mut |e| found |= e.ty() == Ty::F32);
+        found
+    }
+
     /// Whether any expression reads an input buffer (a program that reads none is a constant, not a test).
     pub fn reads_input(&self) -> bool {
         fn block(stmts: &[Stmt]) -> bool {
@@ -360,8 +392,8 @@ impl Program {
             return Err(format!("{} input buffers", self.inputs.len()));
         }
         for (k, input) in self.inputs.iter().enumerate() {
-            if !input.ty.is_int() {
-                return Err(format!("input {k} is not an integer buffer"));
+            if input.ty == Ty::Bool {
+                return Err(format!("input {k} is a bool buffer"));
             }
             if input.data.len() != self.count as usize {
                 return Err(format!("input {k} has {} elements", input.data.len()));
@@ -465,6 +497,12 @@ impl Check {
         match expr {
             Expr::Lit(Ty::Bool, bits) if *bits > 1 => Err("bool literal out of range".into()),
             Expr::Lit(Ty::I32, bits) if *bits == i32::MIN as u32 => Err("i32::MIN literal".into()),
+            Expr::Lit(Ty::F32, bits) if !f32::from_bits(*bits).is_finite() => {
+                Err("non-finite f32 literal".into())
+            }
+            Expr::Lit(Ty::F32, bits) if *bits == (-0.0f32).to_bits() => {
+                Err("negative zero literal".into())
+            }
             Expr::Lit(..) | Expr::Gid => Ok(()),
             Expr::Var(var, ty) => match self.lookup(*var) {
                 Some((declared, _)) if declared == *ty => Ok(()),
@@ -494,10 +532,16 @@ impl Check {
                     return Err("unary operand type mismatch".into());
                 }
                 match op {
-                    UnOp::Neg if *ty != Ty::I32 => Err("negation of a non-i32".into()),
-                    UnOp::Neg if matches!(**e, Expr::Lit(..)) => {
+                    UnOp::Neg if !matches!(*ty, Ty::I32 | Ty::F32) => {
+                        Err("negation of a non-i32, non-f32".into())
+                    }
+                    UnOp::Neg if matches!(**e, Expr::Lit(Ty::I32, _)) => {
                         Err("negated literal not folded".into())
                     }
+                    UnOp::Neg if matches!(**e, Expr::Lit(Ty::F32, bits) if f32::from_bits(bits) != 0.0) => {
+                        Err("negated literal not folded".into())
+                    }
+                    UnOp::Not if *ty == Ty::F32 => Err("`!` on f32".into()),
                     _ => Ok(()),
                 }
             }
@@ -511,11 +555,19 @@ impl Check {
                     (true, Ty::U32)
                 } else if op.is_logical() {
                     (false, Ty::Bool)
+                } else if op.is_comparison()
+                    || (*ty == Ty::F32
+                        && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div))
+                {
+                    (false, *ty)
                 } else {
-                    (!matches!(op, BinOp::Eq | BinOp::Ne), *ty)
+                    (true, *ty)
                 };
                 if op.is_logical() && *ty != Ty::Bool {
                     return Err("logical operator on a non-bool".into());
+                }
+                if op.is_comparison() && !matches!(op, BinOp::Eq | BinOp::Ne) && *ty == Ty::Bool {
+                    return Err(format!("`{}` on bool", op.symbol()));
                 }
                 if need_int && !ty.is_int() {
                     return Err(format!("`{}` on {}", op.symbol(), ty.name()));
@@ -527,8 +579,9 @@ impl Check {
             }
             Expr::Cast { to, e } => {
                 self.expr(e)?;
-                if !to.is_int() || !e.ty().is_int() || e.ty() == *to {
-                    return Err("cast outside u32 <-> i32".into());
+                let castable = |ty: Ty| ty != Ty::Bool;
+                if !castable(*to) || !castable(e.ty()) || e.ty() == *to {
+                    return Err("cast outside u32, i32 and f32".into());
                 }
                 Ok(())
             }
@@ -569,6 +622,20 @@ pub fn visit_exprs(program: &Program, f: &mut dyn FnMut(&Expr)) {
     expr(&program.result, f);
 }
 
+/// The number of terms of the maximal `+`/`-` chain that starts at `expr` (1 if `expr` is not an `f32` addition or
+/// subtraction). This is the "written terms" count of R1-4; a chain continued through a variable is not counted.
+pub fn chain_terms(expr: &Expr) -> usize {
+    match expr {
+        Expr::Bin {
+            op: BinOp::Add | BinOp::Sub,
+            ty: Ty::F32,
+            l,
+            r,
+        } => chain_terms(l) + chain_terms(r),
+        _ => 1,
+    }
+}
+
 /// How many times each operator is used in `program` (for coverage counts in tests and reports).
 pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
     fn expr(e: &Expr, counts: &mut BTreeMap<String, usize>) {
@@ -577,6 +644,7 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
             Expr::Input { index, .. } => expr(index, counts),
             Expr::Un { op, ty, e } => {
                 let name = match op {
+                    UnOp::Neg if *ty == Ty::F32 => "-f32".to_owned(),
                     UnOp::Neg => "-".to_owned(),
                     UnOp::Not => format!("!{}", ty.name()),
                 };

@@ -5,10 +5,16 @@
 //! that leaves the domain at any element, in any evaluated sub-expression, returns the first `Violation` and the
 //! generator discards the program. Evaluation order and short-circuiting follow Rust, so a sub-expression Rust does
 //! not evaluate (the right side of `&&` after `false`) cannot violate the domain.
+//!
+//! `f32` values (DIFFTEST_FORMAT 2) carry two things: the reference value, computed in `f32` in the written order
+//! with round to nearest even (what the CPU twin computes), and an interval from `float.rs` that contains every value
+//! a conforming WGSL implementation may hold (R1-4). A float construct whose result the interval cannot pin down is a
+//! `Violation` too, and the program is discarded, never asserted.
 
 use crate::ast::{BinOp, Expr, Program, Stmt, Ty, UnOp};
+use crate::float::{self, Fl};
 
-/// A way to leave the defined integer domain.
+/// A way to leave the defined domain: the integer conditions of D38 and the float conditions of R1-4.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Violation {
     /// `+ - *` or unary `-` whose result does not fit the type.
@@ -21,18 +27,31 @@ pub enum Violation {
     ShiftAmount,
     /// A buffer index not below `len()`.
     Index,
+    /// A float interval outside `+-[2^-100, 2^100]` (or holding zero without being `[0, 0]`), a float divisor
+    /// interval outside that range, or a float-to-integer cast whose interval leaves the target range.
+    FloatDomain,
+    /// A float comparison whose operand intervals are not disjoint.
+    ComparisonOverlap,
+    /// An output interval wider than `2^-10` relative, or a float-to-integer cast whose interval spans two integers.
+    Unboundable,
+    /// An integer of magnitude above `2^24` converted to `f32` (the two-neighbour set of 15.7.6 is v2 material).
+    FloatConstruct,
 }
 
 impl Violation {
-    pub const ALL: [Violation; 5] = [
+    pub const ALL: [Violation; 9] = [
         Violation::Overflow,
         Violation::DivisionByZero,
         Violation::MinOverMinusOne,
         Violation::ShiftAmount,
         Violation::Index,
+        Violation::FloatDomain,
+        Violation::ComparisonOverlap,
+        Violation::Unboundable,
+        Violation::FloatConstruct,
     ];
 
-    /// The name used in discard counts and in `seeds.txt`.
+    /// The name used in discard counts and in `seeds.txt` (no spaces: a line is split on spaces).
     pub fn label(self) -> &'static str {
         match self {
             Violation::Overflow => "overflow",
@@ -40,6 +59,10 @@ impl Violation {
             Violation::MinOverMinusOne => "min-over-minus-one",
             Violation::ShiftAmount => "shift-amount",
             Violation::Index => "index",
+            Violation::FloatDomain => "float-domain",
+            Violation::ComparisonOverlap => "comparison-overlap",
+            Violation::Unboundable => "unboundable",
+            Violation::FloatConstruct => "float-construct-not-in-v1",
         }
     }
 }
@@ -53,7 +76,7 @@ pub struct Failure {
 
 /// Evaluates `l op r` for operands of type `ty` (the left operand's type; `r` of a shift is `u32`). Both
 /// operands are 32-bit patterns; the result is a pattern (`bool` as 0 or 1). `&&` and `||` are evaluated
-/// without short-circuiting here; `Machine::expr` short-circuits before calling this.
+/// without short-circuiting here; `Machine::expr` short-circuits before calling this. Integers and `bool` only.
 pub fn binary(op: BinOp, ty: Ty, l: u32, r: u32) -> Result<u32, Violation> {
     let (a, b) = (l as i32, r as i32);
     let signed = ty == Ty::I32;
@@ -102,7 +125,7 @@ pub fn binary(op: BinOp, ty: Ty, l: u32, r: u32) -> Result<u32, Violation> {
     value.ok_or(Violation::Overflow)
 }
 
-/// Evaluates `op e` for an operand of type `ty`.
+/// Evaluates `op e` for an integer or `bool` operand of type `ty`.
 pub fn unary(op: UnOp, ty: Ty, e: u32) -> Result<u32, Violation> {
     match (op, ty) {
         (UnOp::Neg, _) => (e as i32)
@@ -114,30 +137,124 @@ pub fn unary(op: UnOp, ty: Ty, e: u32) -> Result<u32, Violation> {
     }
 }
 
+/// A value of the machine: an integer or `bool` pattern, or an `f32` with its reference value and its interval.
+#[derive(Clone, Copy, Debug)]
+enum Val {
+    I(u32),
+    F(f32, Fl),
+}
+
+impl Val {
+    fn int(self) -> u32 {
+        match self {
+            Val::I(bits) => bits,
+            Val::F(..) => unreachable!("a float where the program is typed to hold an integer"),
+        }
+    }
+
+    fn float(self) -> (f32, Fl) {
+        match self {
+            Val::F(reference, fl) => (reference, fl),
+            Val::I(_) => unreachable!("an integer where the program is typed to hold a float"),
+        }
+    }
+}
+
+/// `Ok` if the finished interval of `fl` obeys the range rule (R1-4: every intermediate).
+fn in_domain(fl: Fl) -> Result<Fl, Violation> {
+    let (lo, hi) = fl.interval();
+    if float::in_range(lo, hi) {
+        Ok(fl)
+    } else {
+        Err(Violation::FloatDomain)
+    }
+}
+
+/// The reference value must lie inside its interval: the interval method's own soundness, checked in debug builds
+/// at every operation. A failure is a bug of this module, not a property of the program.
+fn checked_value(reference: f32, fl: Fl) -> Val {
+    debug_assert!(
+        fl.contains(f64::from(reference)),
+        "reference {reference} outside its interval {:?}",
+        fl.interval()
+    );
+    Val::F(reference, fl)
+}
+
+/// `f32` arithmetic of the written operation, in `f32` (round to nearest even, no fusion).
+fn float_binary(op: BinOp, a: (f32, Fl), b: (f32, Fl)) -> Result<Val, Violation> {
+    let (fa, fb) = (a.1, b.1);
+    let (reference, fl) = match op {
+        BinOp::Add => (a.0 + b.0, fa.plus(fb)),
+        BinOp::Sub => (a.0 - b.0, fa.minus(fb)),
+        BinOp::Mul => (a.0 * b.0, fa.times(fb)),
+        BinOp::Div => (a.0 / b.0, fa.over(fb)?),
+        other => unreachable!("float operator {}", other.symbol()),
+    };
+    Ok(checked_value(reference, in_domain(fl)?))
+}
+
+/// The truncated integer of the float interval `[lo, hi]`, if every value in it converts to the same one.
+fn float_to_int(to: Ty, reference: f32, fl: &Fl) -> Result<u32, Violation> {
+    let (lo, hi) = fl.interval();
+    if lo.trunc() != hi.trunc() {
+        return Err(Violation::Unboundable);
+    }
+    // The target range with a margin of one on each end (R1-4).
+    let (min, max) = match to {
+        Ty::I32 => (-(i64::from(i32::MAX)), i64::from(i32::MAX) - 1),
+        Ty::U32 => (0, i64::from(u32::MAX) - 1),
+        other => unreachable!("cast to {}", other.name()),
+    };
+    if lo.trunc() < min as f64 || hi.trunc() > max as f64 {
+        return Err(Violation::FloatDomain);
+    }
+    // `reference` lies in the interval, so it truncates to the same integer.
+    Ok(f64::from(reference).trunc() as i64 as u32)
+}
+
 struct Machine<'a> {
     program: &'a Program,
     element: u32,
-    vars: Vec<u32>,
+    vars: Vec<Val>,
 }
 
 impl Machine<'_> {
-    fn expr(&mut self, expr: &Expr) -> Result<u32, Violation> {
+    fn expr(&mut self, expr: &Expr) -> Result<Val, Violation> {
         match expr {
-            Expr::Lit(_, bits) => Ok(*bits),
+            Expr::Lit(Ty::F32, bits) => {
+                let value = f32::from_bits(*bits);
+                Ok(Val::F(value, in_domain(Fl::exact(value))?))
+            }
+            Expr::Lit(_, bits) => Ok(Val::I(*bits)),
             Expr::Var(var, _) => Ok(self.vars[*var as usize]),
-            Expr::Gid => Ok(self.element),
-            Expr::Len(buf) => Ok(self.program.inputs[*buf].data.len() as u32),
-            Expr::Input { buf, index, .. } => {
-                let index = self.expr(index)?;
-                self.program.inputs[*buf]
+            Expr::Gid => Ok(Val::I(self.element)),
+            Expr::Len(buf) => Ok(Val::I(self.program.inputs[*buf].data.len() as u32)),
+            Expr::Input { buf, index, ty } => {
+                let index = self.expr(index)?.int();
+                let bits = self.program.inputs[*buf]
                     .data
                     .get(index as usize)
                     .copied()
-                    .ok_or(Violation::Index)
+                    .ok_or(Violation::Index)?;
+                if *ty == Ty::F32 {
+                    let value = f32::from_bits(bits);
+                    Ok(Val::F(value, in_domain(Fl::exact(value))?))
+                } else {
+                    Ok(Val::I(bits))
+                }
+            }
+            Expr::Un {
+                op: UnOp::Neg,
+                ty: Ty::F32,
+                e,
+            } => {
+                let (reference, fl) = self.expr(e)?.float();
+                Ok(checked_value(-reference, fl.negated()))
             }
             Expr::Un { op, ty, e } => {
-                let value = self.expr(e)?;
-                unary(*op, *ty, value)
+                let value = self.expr(e)?.int();
+                Ok(Val::I(unary(*op, *ty, value)?))
             }
             Expr::Bin {
                 op: op @ (BinOp::And | BinOp::Or),
@@ -145,18 +262,71 @@ impl Machine<'_> {
                 r,
                 ..
             } => {
-                let left = self.expr(l)?;
+                let left = self.expr(l)?.int();
                 if (*op == BinOp::And) == (left == 0) {
-                    return Ok(left);
+                    return Ok(Val::I(left));
                 }
                 self.expr(r)
             }
-            Expr::Bin { op, ty, l, r } => {
-                let left = self.expr(l)?;
-                let right = self.expr(r)?;
-                binary(*op, *ty, left, right)
+            Expr::Bin {
+                op,
+                ty: Ty::F32,
+                l,
+                r,
+            } => {
+                let left = self.expr(l)?.float();
+                let right = self.expr(r)?.float();
+                if op.is_comparison() {
+                    let truth = float::compare(op.symbol(), &left.1, &right.1)?;
+                    debug_assert_eq!(
+                        truth,
+                        match op {
+                            BinOp::Eq => left.0 == right.0,
+                            BinOp::Ne => left.0 != right.0,
+                            BinOp::Lt => left.0 < right.0,
+                            BinOp::Le => left.0 <= right.0,
+                            BinOp::Gt => left.0 > right.0,
+                            _ => left.0 >= right.0,
+                        },
+                        "the reference comparison disagrees with the disjoint intervals"
+                    );
+                    return Ok(Val::I(u32::from(truth)));
+                }
+                float_binary(*op, left, right)
             }
-            Expr::Cast { e, .. } => self.expr(e),
+            Expr::Bin { op, ty, l, r } => {
+                let left = self.expr(l)?.int();
+                let right = self.expr(r)?.int();
+                Ok(Val::I(binary(*op, *ty, left, right)?))
+            }
+            Expr::Cast { to, e } => {
+                let from = e.ty();
+                let value = self.expr(e)?;
+                match (from, *to) {
+                    (Ty::F32, Ty::I32 | Ty::U32) => {
+                        let (reference, fl) = value.float();
+                        Ok(Val::I(float_to_int(*to, reference, &fl)?))
+                    }
+                    (Ty::I32 | Ty::U32, Ty::F32) => {
+                        let bits = value.int();
+                        let magnitude = if from == Ty::I32 {
+                            u64::from((bits as i32).unsigned_abs())
+                        } else {
+                            u64::from(bits)
+                        };
+                        if magnitude > float::EXACT_INT_LIMIT {
+                            return Err(Violation::FloatConstruct);
+                        }
+                        let number = if from == Ty::I32 {
+                            (bits as i32) as f32
+                        } else {
+                            bits as f32
+                        };
+                        Ok(Val::F(number, Fl::exact(number)))
+                    }
+                    _ => Ok(value),
+                }
+            }
         }
     }
 
@@ -172,7 +342,7 @@ impl Machine<'_> {
                     self.vars[*var as usize] = value;
                 }
                 Stmt::If { cond, then, els } => {
-                    if self.expr(cond)? != 0 {
+                    if self.expr(cond)?.int() != 0 {
                         self.block(then)?;
                     } else {
                         self.block(els)?;
@@ -180,7 +350,7 @@ impl Machine<'_> {
                 }
                 Stmt::For { var, trips, body } => {
                     for k in 0..*trips {
-                        self.vars[*var as usize] = k;
+                        self.vars[*var as usize] = Val::I(k);
                         self.block(body)?;
                     }
                 }
@@ -191,94 +361,220 @@ impl Machine<'_> {
 }
 
 fn variable_slots(program: &Program) -> usize {
-    fn expr(e: &Expr, max: &mut usize) {
-        match e {
-            Expr::Var(var, _) => *max = (*max).max(*var as usize + 1),
-            Expr::Lit(..) | Expr::Gid | Expr::Len(_) => {}
-            Expr::Input { index, .. } => expr(index, max),
-            Expr::Un { e, .. } | Expr::Cast { e, .. } => expr(e, max),
-            Expr::Bin { l, r, .. } => {
-                expr(l, max);
-                expr(r, max);
-            }
-        }
-    }
+    let mut max = 0;
     fn block(stmts: &[Stmt], max: &mut usize) {
         for stmt in stmts {
             match stmt {
-                Stmt::Let { var, init, .. } => {
+                Stmt::Let { var, .. } | Stmt::Assign { var, .. } | Stmt::For { var, .. } => {
                     *max = (*max).max(*var as usize + 1);
-                    expr(init, max);
                 }
-                Stmt::Assign { var, value } => {
-                    *max = (*max).max(*var as usize + 1);
-                    expr(value, max);
-                }
-                Stmt::If { cond, then, els } => {
-                    expr(cond, max);
+                Stmt::If { .. } => {}
+            }
+            match stmt {
+                Stmt::If { then, els, .. } => {
                     block(then, max);
                     block(els, max);
                 }
-                Stmt::For { var, body, .. } => {
-                    *max = (*max).max(*var as usize + 1);
-                    block(body, max);
-                }
+                Stmt::For { body, .. } => block(body, max),
+                _ => {}
             }
         }
     }
-    let mut max = 0;
     block(&program.body, &mut max);
-    expr(&program.result, &mut max);
+    crate::ast::visit_exprs(program, &mut |e| {
+        if let Expr::Var(var, _) = e {
+            max = max.max(*var as usize + 1);
+        }
+    });
     max
 }
 
-/// Runs the kernel body for every element `0..count` and returns the output buffer's bit patterns (`bool` results
-/// as 0 or 1), or the first domain violation (lowest element, first violating evaluation in Rust's order).
-pub fn run(program: &Program) -> Result<Vec<u32>, Failure> {
+/// The outcome of a run that stayed inside the domain.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Run {
+    /// The output buffer's bit patterns (`bool` as 0 or 1; an `f32` as the reference value's bits).
+    pub values: Vec<u32>,
+    /// For an `f32` output, the interval `[lo, hi]` of every element that a conforming implementation may hold;
+    /// empty otherwise.
+    pub intervals: Vec<(f64, f64)>,
+}
+
+/// Runs the kernel body for every element `0..count` and returns the output buffer and, for an `f32` output, the
+/// interval of every element, or the first domain violation (lowest element, first violating evaluation in Rust's
+/// order). An `f32` output element whose interval is wider than `2^-10` of its magnitude is `Unboundable`.
+pub fn run_full(program: &Program) -> Result<Run, Failure> {
     let mut machine = Machine {
         program,
         element: 0,
-        vars: vec![0; variable_slots(program)],
+        vars: vec![Val::I(0); variable_slots(program)],
     };
-    let mut out = Vec::with_capacity(program.count as usize);
+    let mut values = Vec::with_capacity(program.count as usize);
+    let mut intervals = Vec::new();
     for element in 0..program.count {
         machine.element = element;
-        let value = machine
+        let result = machine
             .block(&program.body)
             .and_then(|()| machine.expr(&program.result))
+            .and_then(|value| match value {
+                Val::I(bits) => Ok((bits, None)),
+                Val::F(reference, fl) => {
+                    let (lo, hi) = fl.interval();
+                    if hi - lo > float::MAX_RELATIVE_WIDTH * lo.abs().max(hi.abs()) {
+                        return Err(Violation::Unboundable);
+                    }
+                    Ok((reference.to_bits(), Some((lo, hi))))
+                }
+            })
             .map_err(|violation| Failure { element, violation })?;
-        out.push(value);
+        values.push(result.0);
+        intervals.extend(result.1);
     }
-    Ok(out)
+    Ok(Run { values, intervals })
+}
+
+/// `run_full` without the intervals: the output buffer's bit patterns, or the first domain violation.
+pub fn run(program: &Program) -> Result<Vec<u32>, Failure> {
+    run_full(program).map(|run| run.values)
+}
+
+/// A constant of the static check.
+#[derive(Clone, Copy)]
+enum Const {
+    I(u32),
+    F(f32),
+}
+
+impl Const {
+    fn int(self) -> u32 {
+        match self {
+            Const::I(bits) => bits,
+            Const::F(_) => unreachable!("typed program"),
+        }
+    }
+
+    fn float(self) -> f32 {
+        match self {
+            Const::F(value) => value,
+            Const::I(_) => unreachable!("typed program"),
+        }
+    }
+}
+
+/// A closed `f32` constant must be zero or inside `+-[2^-100, 2^100]`.
+fn float_constant(value: f32) -> Result<Option<Const>, Violation> {
+    let v = f64::from(value);
+    if float::in_range(v, v) {
+        Ok(Some(Const::F(value)))
+    } else {
+        Err(Violation::FloatDomain)
+    }
 }
 
 /// The first domain violation in a closed sub-expression (one made of literals only) anywhere in the program,
 /// dead code included, or `None`. Closed sub-expressions are folded eagerly, without short-circuiting, with the same
 /// `binary` and `unary` as the interpreter. A shift by a literal 32 or more and a division by a literal zero count
 /// even when the other operand is not closed. Such a constant is a compile-time error in some shader languages
-/// (const-expression rules), so the generator keeps none, in executed or dead code (labelled `static`).
+/// (const-expression rules), so the generator keeps none, in executed or dead code (labelled `static`). Closed
+/// `f32` constants are folded in `f32` and must be zero or inside `+-[2^-100, 2^100]`; a closed float division by
+/// zero, an integer above `2^24` converted to `f32` and a closed cast out of the integer range count too.
 pub fn static_violation(program: &Program) -> Option<Violation> {
-    fn fold(e: &Expr) -> Result<Option<u32>, Violation> {
+    fn fold(e: &Expr) -> Result<Option<Const>, Violation> {
         match e {
-            Expr::Lit(_, bits) => Ok(Some(*bits)),
+            Expr::Lit(Ty::F32, bits) => float_constant(f32::from_bits(*bits)),
+            Expr::Lit(_, bits) => Ok(Some(Const::I(*bits))),
             Expr::Var(..) | Expr::Gid | Expr::Len(_) => Ok(None),
             Expr::Input { index, .. } => fold(index).map(|_| None),
-            Expr::Un { op, ty, e } => fold(e)?.map(|v| unary(*op, *ty, v)).transpose(),
+            Expr::Un {
+                op: UnOp::Neg,
+                ty: Ty::F32,
+                e,
+            } => fold(e)?
+                .map(|v| float_constant(-v.float()))
+                .transpose()
+                .map(Option::flatten),
+            Expr::Un { op, ty, e } => fold(e)?
+                .map(|v| unary(*op, *ty, v.int()).map(Const::I))
+                .transpose(),
+            Expr::Bin { op, ty, l, r } if *ty == Ty::F32 => {
+                let (left, right) = (fold(l)?, fold(r)?);
+                if *op == BinOp::Div && right.is_some_and(|v| v.float() == 0.0) {
+                    return Err(Violation::DivisionByZero);
+                }
+                let (Some(a), Some(b)) = (left, right) else {
+                    return Ok(None);
+                };
+                let (a, b) = (a.float(), b.float());
+                let value = match op {
+                    BinOp::Add => a + b,
+                    BinOp::Sub => a - b,
+                    BinOp::Mul => a * b,
+                    BinOp::Div => a / b,
+                    BinOp::Eq => return Ok(Some(Const::I(u32::from(a == b)))),
+                    BinOp::Ne => return Ok(Some(Const::I(u32::from(a != b)))),
+                    BinOp::Lt => return Ok(Some(Const::I(u32::from(a < b)))),
+                    BinOp::Le => return Ok(Some(Const::I(u32::from(a <= b)))),
+                    BinOp::Gt => return Ok(Some(Const::I(u32::from(a > b)))),
+                    BinOp::Ge => return Ok(Some(Const::I(u32::from(a >= b)))),
+                    other => unreachable!("float operator {}", other.symbol()),
+                };
+                float_constant(value)
+            }
             Expr::Bin { op, ty, l, r } => {
                 let (left, right) = (fold(l)?, fold(r)?);
                 match (op, right) {
-                    (BinOp::Div | BinOp::Rem, Some(0)) => return Err(Violation::DivisionByZero),
-                    (BinOp::Shl | BinOp::Shr, Some(amount)) if amount >= 32 => {
+                    (BinOp::Div | BinOp::Rem, Some(Const::I(0))) => {
+                        return Err(Violation::DivisionByZero);
+                    }
+                    (BinOp::Shl | BinOp::Shr, Some(Const::I(amount))) if amount >= 32 => {
                         return Err(Violation::ShiftAmount);
                     }
                     _ => {}
                 }
                 match (left, right) {
-                    (Some(l), Some(r)) => binary(*op, *ty, l, r).map(Some),
+                    (Some(l), Some(r)) => {
+                        binary(*op, *ty, l.int(), r.int()).map(|v| Some(Const::I(v)))
+                    }
                     _ => Ok(None),
                 }
             }
-            Expr::Cast { e, .. } => fold(e),
+            Expr::Cast { to, e } => {
+                let from = e.ty();
+                let Some(value) = fold(e)? else {
+                    return Ok(None);
+                };
+                match (from, *to) {
+                    (Ty::I32 | Ty::U32, Ty::F32) => {
+                        let bits = value.int();
+                        let magnitude = if from == Ty::I32 {
+                            u64::from((bits as i32).unsigned_abs())
+                        } else {
+                            u64::from(bits)
+                        };
+                        if magnitude > float::EXACT_INT_LIMIT {
+                            return Err(Violation::FloatConstruct);
+                        }
+                        let number = if from == Ty::I32 {
+                            (bits as i32) as f32
+                        } else {
+                            bits as f32
+                        };
+                        float_constant(number)
+                    }
+                    (Ty::F32, Ty::I32 | Ty::U32) => {
+                        let truncated = f64::from(value.float()).trunc();
+                        let (min, max) = if *to == Ty::I32 {
+                            (-(f64::from(i32::MAX)), f64::from(i32::MAX) - 1.0)
+                        } else {
+                            (0.0, f64::from(u32::MAX) - 1.0)
+                        };
+                        if truncated < min || truncated > max {
+                            return Err(Violation::FloatDomain);
+                        }
+                        Ok(Some(Const::I(truncated as i64 as u32)))
+                    }
+                    _ => Ok(Some(value)),
+                }
+            }
         }
     }
     let mut found = None;
@@ -833,5 +1129,403 @@ mod tests {
             u(0),
         );
         assert_eq!(static_violation(&in_loop), Some(Violation::Overflow));
+    }
+
+    // ---- floats (R1-4) ----
+
+    fn f(v: f32) -> Expr {
+        Expr::f32(v)
+    }
+
+    fn fbin(op: BinOp, l: Expr, r: Expr) -> Expr {
+        Expr::bin(op, l, r)
+    }
+
+    /// A program over one `f32` input buffer holding `data`.
+    fn float_program(data: &[f32], body: Vec<Stmt>, result: Expr) -> Program {
+        Program {
+            seed: 0,
+            attempt: 0,
+            count: data.len() as u32,
+            inputs: vec![InputBuf {
+                ty: Ty::F32,
+                data: data.iter().map(|v| v.to_bits()).collect(),
+            }],
+            body,
+            result,
+        }
+    }
+
+    fn fin(index: Expr) -> Expr {
+        Expr::input(0, Ty::F32, index)
+    }
+
+    /// The violation of a float result evaluated for one element holding `1.0`.
+    fn float_violation(result: Expr) -> Option<Violation> {
+        let program = float_program(&[1.0], Vec::new(), result);
+        program.check().unwrap();
+        run_full(&program).err().map(|failure| failure.violation)
+    }
+
+    fn lit_u32_cast(value: u32) -> Expr {
+        Expr::cast(Ty::F32, u(value))
+    }
+
+    #[test]
+    fn the_reference_value_is_the_f32_arithmetic_of_the_written_order() {
+        // 0.1 + 0.2 in f32 (not f64), left to right, and the result's bits are the reference value's.
+        let result = fbin(BinOp::Add, fbin(BinOp::Add, f(0.1), f(0.2)), fin(Expr::Gid));
+        let program = float_program(&[3.0, 4.0], Vec::new(), result);
+        let run = run_full(&program).unwrap();
+        let expected = [(0.1f32 + 0.2f32) + 3.0f32, (0.1f32 + 0.2f32) + 4.0f32];
+        assert_eq!(run.values, expected.map(f32::to_bits));
+        assert_eq!(run.intervals.len(), 2);
+        for (value, (lo, hi)) in expected.iter().zip(&run.intervals) {
+            assert!(*lo <= f64::from(*value) && f64::from(*value) <= *hi);
+        }
+        // An integer program has no intervals.
+        let ints = program_int_input();
+        assert!(run_full(&ints).unwrap().intervals.is_empty());
+    }
+
+    fn program_int_input() -> Program {
+        program(&[1], Vec::new(), Expr::input(0, Ty::U32, Expr::Gid))
+    }
+
+    #[test]
+    fn a_product_with_a_zero_input_is_exact_zero() {
+        let program = float_program(
+            &[0.0, 2.0],
+            Vec::new(),
+            fbin(BinOp::Mul, fin(Expr::Gid), f(0.5)),
+        );
+        let run = run_full(&program).unwrap();
+        assert_eq!(run.values, [0.0f32.to_bits(), 1.0f32.to_bits()]);
+        assert_eq!(run.intervals[0], (0.0, 0.0));
+    }
+
+    #[test]
+    fn the_16777217_cast_is_discarded_and_16777216_is_not() {
+        // 16777217 is the first integer that f32 cannot hold: 15.7.6 lets the GPU pick either neighbour.
+        assert_eq!(
+            float_violation(lit_u32_cast(16_777_217)),
+            Some(Violation::FloatConstruct)
+        );
+        assert_eq!(float_violation(lit_u32_cast(16_777_216)), None);
+        assert_eq!(float_violation(lit_u32_cast(16_777_215)), None);
+        assert_eq!(
+            float_violation(Expr::cast(Ty::F32, i(-16_777_217))),
+            Some(Violation::FloatConstruct)
+        );
+        assert_eq!(float_violation(Expr::cast(Ty::F32, i(-16_777_216))), None);
+        // The same through a value read at run time.
+        let at_run_time = program(
+            &[16_777_216, 16_777_217],
+            Vec::new(),
+            Expr::cast(Ty::F32, Expr::input(0, Ty::U32, Expr::Gid)),
+        );
+        assert_eq!(
+            run_full(&at_run_time).map_err(|failure| (failure.element, failure.violation)),
+            Err((1, Violation::FloatConstruct))
+        );
+        // Statically, in dead code, where the interpreter never looks.
+        let dead = Program {
+            body: vec![Stmt::If {
+                cond: Expr::bool(false),
+                then: vec![Stmt::Let {
+                    var: 0,
+                    ty: Ty::F32,
+                    mutable: false,
+                    init: lit_u32_cast(16_777_217),
+                }],
+                els: Vec::new(),
+            }],
+            ..float_program(&[1.0], Vec::new(), fin(Expr::Gid))
+        };
+        assert_eq!(static_violation(&dead), Some(Violation::FloatConstruct));
+        assert!(run_full(&dead).is_ok());
+    }
+
+    /// The value (0 or 1) of a float comparison, or the violation.
+    fn comparison_result(cond: Expr) -> Result<u32, Violation> {
+        let program = float_program(&[1.0], Vec::new(), cond);
+        program.check().unwrap();
+        run_full(&program)
+            .map(|run| run.values[0])
+            .map_err(|failure| failure.violation)
+    }
+
+    #[test]
+    fn a_comparison_of_overlapping_intervals_is_discarded_and_a_disjoint_one_is_decided() {
+        let sum = fbin(BinOp::Add, f(1.0), f(0.0));
+        // `1.0 + 0.0` is an interval around 1.0, so comparing it with 1.0 overlaps, whatever the operator ...
+        for op in [
+            BinOp::Eq,
+            BinOp::Ne,
+            BinOp::Lt,
+            BinOp::Le,
+            BinOp::Gt,
+            BinOp::Ge,
+        ] {
+            assert_eq!(
+                comparison_result(fbin(op, sum.clone(), f(1.0))),
+                Err(Violation::ComparisonOverlap),
+                "{}",
+                op.symbol()
+            );
+        }
+        // ... and with 2.0 it does not.
+        let against_two = |op| comparison_result(fbin(op, sum.clone(), f(2.0)));
+        assert_eq!(against_two(BinOp::Lt), Ok(1));
+        assert_eq!(against_two(BinOp::Le), Ok(1));
+        assert_eq!(against_two(BinOp::Gt), Ok(0));
+        assert_eq!(against_two(BinOp::Ge), Ok(0));
+        assert_eq!(against_two(BinOp::Eq), Ok(0));
+        assert_eq!(against_two(BinOp::Ne), Ok(1));
+        // A branch on an overlapping comparison is discarded, whichever branch it would have taken.
+        let branch = float_program(
+            &[1.0],
+            vec![Stmt::If {
+                cond: fbin(BinOp::Le, fin(Expr::Gid), f(1.0)),
+                then: Vec::new(),
+                els: Vec::new(),
+            }],
+            fin(Expr::Gid),
+        );
+        assert_eq!(
+            run_full(&branch).map_err(|failure| failure.violation),
+            Err(Violation::ComparisonOverlap)
+        );
+    }
+
+    #[test]
+    fn division_needs_a_divisor_interval_away_from_zero() {
+        assert_eq!(
+            float_violation(fbin(BinOp::Div, f(1.0), f(0.0))),
+            Some(Violation::FloatDomain)
+        );
+        // 3.0 - 3.0 is an interval around zero, not [0, 0]: the GPU's divisor may be zero or tiny.
+        let around_zero = fbin(BinOp::Sub, f(3.0), f(3.0));
+        assert_eq!(
+            float_violation(fbin(BinOp::Div, f(1.0), around_zero)),
+            Some(Violation::FloatDomain)
+        );
+        assert_eq!(float_violation(fbin(BinOp::Div, f(1.0), f(4.0))), None);
+        assert_eq!(float_violation(fbin(BinOp::Div, f(1.0), f(-4.0))), None);
+        // A divisor past 2^100 (here 2^120, from a product), and one below 2^-100.
+        let big = fbin(BinOp::Mul, f(2f32.powi(60)), f(2f32.powi(60)));
+        assert_eq!(
+            float_violation(fbin(BinOp::Div, f(1.0), big)),
+            Some(Violation::FloatDomain)
+        );
+        assert_eq!(
+            float_violation(fbin(BinOp::Div, f(1.0), f(2f32.powi(-101)))),
+            Some(Violation::FloatDomain)
+        );
+    }
+
+    #[test]
+    fn every_float_intermediate_stays_inside_the_range() {
+        let big = f(2f32.powi(60));
+        // 2^120 > 2^100 and 2^-120 < 2^-100.
+        assert_eq!(
+            float_violation(fbin(BinOp::Mul, big.clone(), big)),
+            Some(Violation::FloatDomain)
+        );
+        let small = f(2f32.powi(-60));
+        assert_eq!(
+            float_violation(fbin(BinOp::Mul, small.clone(), small)),
+            Some(Violation::FloatDomain)
+        );
+        assert_eq!(
+            float_violation(fbin(BinOp::Mul, f(2f32.powi(40)), f(2f32.powi(40)))),
+            None
+        );
+        // A literal outside the range is out; exactly zero is in.
+        assert_eq!(
+            float_violation(f(2f32.powi(-101))),
+            Some(Violation::FloatDomain)
+        );
+        assert_eq!(
+            float_violation(f(2f32.powi(101))),
+            Some(Violation::FloatDomain)
+        );
+        assert_eq!(float_violation(f(0.0)), None);
+    }
+
+    #[test]
+    fn a_result_wider_than_two_to_the_minus_ten_relative_is_unboundable() {
+        // 1 + 4096 - 4095 = 2. The chain has three terms: two ULPs of 8192 (2^-10 each) are 2^-9 each side, a width of
+        // 2^-8 on a result of 2, which is 2^-9 relative: wider than 2^-10.
+        let near = fbin(
+            BinOp::Sub,
+            fbin(BinOp::Add, fin(Expr::Gid), f(4096.0)),
+            f(4095.0),
+        );
+        let program = float_program(&[1.0], Vec::new(), near);
+        assert_eq!(
+            run_full(&program).map_err(|failure| failure.violation),
+            Err(Violation::Unboundable)
+        );
+        // The same sum with small terms is bounded.
+        let small = fbin(BinOp::Sub, fbin(BinOp::Add, fin(Expr::Gid), f(4.0)), f(2.0));
+        let run = run_full(&float_program(&[1.0], Vec::new(), small)).unwrap();
+        assert_eq!(run.values, [3.0f32.to_bits()]);
+        // x - x: the interval holds zero without being [0, 0], so the range rule discards it first.
+        let zero = float_program(
+            &[1.0],
+            Vec::new(),
+            fbin(BinOp::Sub, fin(Expr::Gid), fin(Expr::Gid)),
+        );
+        assert_eq!(
+            run_full(&zero).map_err(|failure| failure.violation),
+            Err(Violation::FloatDomain)
+        );
+    }
+
+    /// The integer a float cast gives for one element, or the violation.
+    fn float_to_int_result(to: Ty, e: Expr) -> Result<u32, Violation> {
+        // The program reads its input in a dead binding; the cast is of the closed expression `e`.
+        let mut program = float_program(&[1.0], Vec::new(), Expr::cast(to, e));
+        program.body = vec![Stmt::Let {
+            var: 0,
+            ty: Ty::F32,
+            mutable: false,
+            init: fin(Expr::Gid),
+        }];
+        program.check().unwrap();
+        run(&program)
+            .map(|out| out[0])
+            .map_err(|failure| failure.violation)
+    }
+
+    #[test]
+    fn float_to_integer_casts_need_one_integer_for_the_whole_interval() {
+        assert_eq!(float_to_int_result(Ty::I32, f(2.5)), Ok(2));
+        assert_eq!(float_to_int_result(Ty::I32, f(-2.5)), Ok((-2i32) as u32));
+        assert_eq!(float_to_int_result(Ty::U32, f(2.75)), Ok(2));
+        assert_eq!(float_to_int_result(Ty::I32, f(0.0)), Ok(0));
+        // 2.0 + 1.0 is an interval around 3.0: below and above it, so it spans 2 and 3.
+        let three = fbin(BinOp::Add, f(2.0), f(1.0));
+        assert_eq!(
+            float_to_int_result(Ty::I32, three.clone()),
+            Err(Violation::Unboundable)
+        );
+        assert_eq!(
+            float_to_int_result(Ty::U32, three),
+            Err(Violation::Unboundable)
+        );
+        // 2.5 + 0.25 is around 2.75: one integer.
+        assert_eq!(
+            float_to_int_result(Ty::I32, fbin(BinOp::Add, f(2.5), f(0.25))),
+            Ok(2)
+        );
+        // A negative value to u32 is outside the target range.
+        assert_eq!(
+            float_to_int_result(Ty::U32, f(-2.5)),
+            Err(Violation::FloatDomain)
+        );
+        // The range, with a margin of one: 2^31 is out for i32, 2147483520 (the f32 below it) is in.
+        assert_eq!(
+            float_to_int_result(Ty::I32, f(2_147_483_648.0)),
+            Err(Violation::FloatDomain)
+        );
+        assert_eq!(
+            float_to_int_result(Ty::I32, f(2_147_483_520.0)),
+            Ok(2_147_483_520)
+        );
+        assert_eq!(
+            float_to_int_result(Ty::I32, f(-2_147_483_648.0)),
+            Err(Violation::FloatDomain)
+        );
+    }
+
+    #[test]
+    fn a_loop_accumulator_is_one_chain_of_trips_plus_one_terms() {
+        // acc = x; for k in 0..8 { acc = acc + 1.0 }: nine terms, eight roundings of one ULP of 9.
+        let body = vec![
+            Stmt::Let {
+                var: 0,
+                ty: Ty::F32,
+                mutable: true,
+                init: fin(Expr::Gid),
+            },
+            Stmt::For {
+                var: 1,
+                trips: 8,
+                body: vec![Stmt::Assign {
+                    var: 0,
+                    value: fbin(BinOp::Add, Expr::Var(0, Ty::F32), f(1.0)),
+                }],
+            },
+        ];
+        let program = float_program(&[1.0], body, Expr::Var(0, Ty::F32));
+        program.check().unwrap();
+        let run = run_full(&program).unwrap();
+        assert_eq!(run.values, [9.0f32.to_bits()]);
+        let (lo, hi) = run.intervals[0];
+        let w = 8.0 * (crate::float::ulp32(9.0) + crate::float::MARGIN * 9.0);
+        assert_eq!((lo, hi), (9.0 - w, 9.0 + w));
+        // Not eight independent single-operation widenings of the written-order partial sums 2, 3, ..., 9.
+        let per_operation: f64 = (2..=9).map(|k| crate::float::ulp32(f64::from(k))).sum();
+        assert!(w > per_operation, "{w} <= {per_operation}");
+        // A chain through a variable is also a chain: `(x + 2)` stored in a variable, then `+ 4`, is three terms.
+        let two_step = float_program(
+            &[1.0],
+            vec![Stmt::Let {
+                var: 0,
+                ty: Ty::F32,
+                mutable: false,
+                init: fbin(BinOp::Add, fin(Expr::Gid), f(2.0)),
+            }],
+            fbin(BinOp::Add, Expr::Var(0, Ty::F32), f(4.0)),
+        );
+        let (lo, hi) = run_full(&two_step).unwrap().intervals[0];
+        let w = 2.0 * (crate::float::ulp32(7.0) + crate::float::MARGIN * 7.0);
+        assert_eq!((lo, hi), (7.0 - w, 7.0 + w));
+    }
+
+    #[test]
+    fn static_violation_covers_closed_float_constants() {
+        let in_dead_code = |init: Expr, ty: Ty| {
+            static_violation(&Program {
+                body: vec![Stmt::If {
+                    cond: Expr::bool(false),
+                    then: vec![Stmt::Let {
+                        var: 0,
+                        ty,
+                        mutable: false,
+                        init,
+                    }],
+                    els: Vec::new(),
+                }],
+                ..float_program(&[1.0], Vec::new(), fin(Expr::Gid))
+            })
+        };
+        assert_eq!(
+            in_dead_code(fbin(BinOp::Div, f(1.0), f(0.0)), Ty::F32),
+            Some(Violation::DivisionByZero)
+        );
+        assert_eq!(
+            in_dead_code(fbin(BinOp::Div, fin(Expr::Gid), f(0.0)), Ty::F32),
+            Some(Violation::DivisionByZero)
+        );
+        assert_eq!(
+            in_dead_code(fbin(BinOp::Mul, f(1e30), f(1e30)), Ty::F32),
+            Some(Violation::FloatDomain)
+        );
+        assert_eq!(
+            in_dead_code(fbin(BinOp::Lt, f(1.0), f(2.0)), Ty::Bool),
+            None
+        );
+        assert_eq!(
+            in_dead_code(fbin(BinOp::Add, f(1.0), f(2.0)), Ty::F32),
+            None
+        );
+        assert_eq!(
+            in_dead_code(Expr::cast(Ty::I32, f(3e9)), Ty::I32),
+            Some(Violation::FloatDomain)
+        );
+        assert_eq!(in_dead_code(Expr::cast(Ty::I32, f(3.5)), Ty::I32), None);
     }
 }

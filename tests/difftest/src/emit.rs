@@ -35,8 +35,75 @@ pub fn module_name(program: &Program) -> String {
     format!("s{}_a{}", program.seed, program.attempt)
 }
 
+/// The exact decimal expansion of a finite `f32`, with a decimal point and the suffix `f32` (`0.5f32`, `-1048576.0f32`,
+/// `0.000030517578125f32`). Every `f32` is a dyadic rational, so its decimal expansion is finite and rustc, the
+/// re-parser and Slang all read it back to the same bits (no shortest-round-trip digits that could sit on a rounding
+/// boundary). Spelling: an exact decimal, not `f32::from_bits`, because the dialect has no function calls.
+pub fn f32_literal(bits: u32) -> String {
+    let value = f32::from_bits(bits);
+    assert!(value.is_finite(), "non-finite f32 literal");
+    let negative = bits >> 31 == 1;
+    let exponent_field = ((bits >> 23) & 0xFF) as i32;
+    let fraction = bits & 0x7F_FFFF;
+    // value = mantissa * 2^exponent
+    let (mantissa, exponent) = if exponent_field == 0 {
+        (fraction, -149)
+    } else {
+        (fraction | 0x80_0000, exponent_field - 150)
+    };
+    // Decimal digits of `mantissa * 2^exponent`: scale by 2 for a positive exponent, by 5 and move the point for a
+    // negative one (2^-k = 5^k / 10^k).
+    let mut digits: Vec<u8> = mantissa.to_string().bytes().map(|b| b - b'0').collect();
+    let mut places = 0;
+    let (factor, times) = if exponent >= 0 {
+        (2, exponent)
+    } else {
+        (5, -exponent)
+    };
+    for _ in 0..times {
+        let mut carry = 0;
+        for digit in digits.iter_mut().rev() {
+            let product = *digit * factor + carry;
+            *digit = product % 10;
+            carry = product / 10;
+        }
+        while carry > 0 {
+            digits.insert(0, carry % 10);
+            carry /= 10;
+        }
+    }
+    if exponent < 0 {
+        places = -exponent as usize;
+    }
+    while digits.len() <= places {
+        digits.insert(0, 0);
+    }
+    let split = digits.len() - places;
+    let integer: String = digits[..split]
+        .iter()
+        .map(|d| char::from(b'0' + d))
+        .collect();
+    let integer = integer.trim_start_matches('0');
+    let integer = if integer.is_empty() { "0" } else { integer };
+    let fractional: String = digits[split..]
+        .iter()
+        .map(|d| char::from(b'0' + d))
+        .collect();
+    let fractional = fractional.trim_end_matches('0');
+    let fractional = if fractional.is_empty() {
+        "0"
+    } else {
+        fractional
+    };
+    format!(
+        "{}{integer}.{fractional}f32",
+        if negative { "-" } else { "" }
+    )
+}
+
 fn literal(ty: Ty, bits: u32) -> String {
     match ty {
+        Ty::F32 => f32_literal(bits),
         Ty::Bool => (bits != 0).to_string(),
         Ty::U32 => format!("{bits}u32"),
         Ty::I32 => {
@@ -54,6 +121,7 @@ fn literal(ty: Ty, bits: u32) -> String {
 fn is_atom(expr: &Expr) -> bool {
     match expr {
         Expr::Lit(Ty::I32, bits) => (*bits as i32) >= 0,
+        Expr::Lit(Ty::F32, bits) => bits >> 31 == 0,
         Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Input { .. } => true,
         Expr::Un { .. } | Expr::Bin { .. } | Expr::Cast { .. } => false,
     }
@@ -328,6 +396,55 @@ mod tests {
     }
 
     #[test]
+    fn f32_literals_are_exact_decimals_that_read_back_to_the_same_bits() {
+        // Exact text of a few values.
+        for (value, text) in [
+            (0.5f32, "0.5f32"),
+            (1.0, "1.0f32"),
+            (-1.0, "-1.0f32"),
+            (1_048_576.0, "1048576.0f32"),
+            (0.1, "0.100000001490116119384765625f32"),
+            (-2.5, "-2.5f32"),
+            (0.0, "0.0f32"),
+            (2f32.powi(-20), "0.00000095367431640625f32"),
+        ] {
+            assert_eq!(f32_literal(value.to_bits()), text);
+        }
+        // Read-back: edges of the bounded input range and of the interval range, then a pseudo-random sweep over
+        // every exponent.
+        let mut bits: Vec<u32> = [
+            2f32.powi(-100),
+            2f32.powi(100),
+            2f32.powi(-20),
+            2f32.powi(20),
+            f32::MIN_POSITIVE,
+            f32::MAX,
+            16_777_216.0,
+            1.0 - f32::EPSILON / 2.0,
+            1.0 + f32::EPSILON,
+            0.3,
+            1.0 / 3.0,
+            1e-7,
+        ]
+        .iter()
+        .flat_map(|v| [v.to_bits(), (-v).to_bits()])
+        .collect();
+        let mut prng = crate::prng::Prng::new(0xF32);
+        for _ in 0..5000 {
+            let bits32 = prng.next_u32();
+            if f32::from_bits(bits32).is_finite() {
+                bits.push(bits32);
+            }
+        }
+        for bits32 in bits {
+            let text = f32_literal(bits32);
+            let digits = text.strip_suffix("f32").expect("suffix");
+            let back: f32 = digits.parse().expect("parses");
+            assert_eq!(back.to_bits(), bits32, "{text}");
+        }
+    }
+
+    #[test]
     fn operands_are_parenthesised_unless_they_are_atoms() {
         let a0 = Expr::input(0, Ty::U32, Expr::Gid);
         let cases: Vec<(Expr, &str)> = vec![
@@ -498,7 +615,7 @@ pub mod s9_a4 {
     fn the_crate_source_lists_every_module_after_the_header() {
         let program = tiny_program();
         let text = emit_crate_source(&[program.clone(), program]);
-        assert!(text.starts_with("// Generated by difftest (DIFFTEST_FORMAT 1)."));
+        assert!(text.starts_with("// Generated by difftest (DIFFTEST_FORMAT 2)."));
         assert_eq!(text.matches("#[gust::gpu]").count(), 2);
         assert!(text.lines().nth(1).unwrap().starts_with("#![allow("));
         assert!(!text.contains('\r'));

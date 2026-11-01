@@ -11,9 +11,18 @@ below. M2 (typed host API) closed on 2026-10-24 (D37) after a sanity check by Fa
 Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test builds): plan
 adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
-spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`)
-and m3.c (macro twins) done; m3.c2 next.
+spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),
+m3.c (macro twins) and m3.c2 (check-cpu) done; m3.d next.
 
+- M3 m3.c2 (`35eb2a5`): `cargo xtask check-cpu` runs the `--locked`, GPU-free tests of the
+  vector-add and polynomial examples, so their macro-emitted CPU twins are checked against the
+  host references; it is a step of the Unit suite and so of the CI `unit` job. check-ui gains
+  `code: none` for macro errors without a rustc code (it needs a `message:` line and still
+  pins file and line), with the fixtures `kernel-cpu-bad-value` (E0709) and
+  `kernel-cpu-duplicate` (E0710). Cost: 7 to 8 s warm and 67 s cold locally; the CI-runner
+  time is not yet measured (plan R5 budget: five minutes). Evidence: fmt, clippy, xtask tests
+  (161), check-ui, check-cpu, Unit suite, check-fast, docs-check, lint; three mutations
+  killed. Opus keep, no must-fix.
 - M3 m3.c (`732c774`): for every kernel with a typed call, the `#[gpu]` macro emits
   `#[cfg(any(test, gust_dual))] impl Run<K, N> for gust::cpu::CpuDevice`, which runs the
   shadow body as written. It matches m3.b's hand-written impl token for token. Uniform kernels
@@ -24,7 +33,7 @@ and m3.c (macro twins) done; m3.c2 next.
   `run_cpu` bit for bit and stays within the derived bound `48 * 2^-24` of the GPU (S4,
   RTX 5090: max abs 2.38e-7 observed). CPU-only twin tests run without a GPU. Compile time
   is unchanged (`-p gust-wgpu --no-run`, warm, 18 s). Not covered: E0709/E0710 have unit
-  tests but no check-ui fixture (macro errors carry no rustc code; m3.c2 adds the mode), and
+  tests but no check-ui fixture (macro errors carry no rustc code; m3.c2 added the mode and both fixtures), and
   the zero-storage twin is only expansion-tested. MSRV is checked by CI only. Evidence: fmt,
   clippy, gust-macros, gust lib and doctests, rustdoc `-D warnings`, check-ui, bless
   (unchanged), Unit suite, check-fast, docs-check, both examples with `--ignored`,

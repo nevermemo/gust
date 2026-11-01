@@ -164,6 +164,14 @@ D55 to D59.
   `constantBuffer`, mandatory `matrixLayout`); every committed artifact set still verifies.
   Known limitation until m6.g1: `create_typed_buffer::<Vec4>` now compiles and panics at run time
   in the StorageV1 check. Opus keep after one fix round; gates on main at `38ebf29`.
+- M4 m4.e2a (`29cfc58`): the fixture workspace `tests/precompiled` (a `kernels` crate with
+  committed artifacts and an `app` on `gust-wgpu` without `slang-runtime`, with its own lock) and
+  `cargo xtask check-precompiled` E1 to E4. E1 builds the workspace crates from clean and runs the
+  release `app` on the RTX 5090 in a child environment with every Slang route removed: the first
+  "no Slang on the machine" record. E2 finds none of the gated Slang markers in that binary,
+  while a `dev` control build holds them all. E3: a mutated artifact gives the identity error.
+  E4: a missing artifact under `native` gives one E0080 at the kernel line. Not yet in a suite or
+  CI (m4.e2b). Opus keep after one fix round; gates on main at `2324485`.
 - M5 m5.d1 (`d2378ce`): 84 scalar cases transcribed from Rust 1.98.0's coretests
   (`library/coretests/tests/num`) into `docs/development/CORETESTS.md`, with acceptance sets
   (exact integers in the domain, WGSL's 2.5 ULP for float `/`) and exclusions; five `#[gpu]`

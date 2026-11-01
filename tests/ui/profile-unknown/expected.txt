@@ -1,2 +1,2 @@
 # Texts of cargo's stderr (`build-error:`), not rustc keys: a build script's refusal is no rustc diagnostic.
-build-error: gust: unknown GUST_PROFILE `bogus`; use dev, native or web
+build-error: gust: unknown GUST_PROFILE `bogus`; use dev, native, web or cpu

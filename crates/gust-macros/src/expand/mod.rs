@@ -16,19 +16,54 @@ pub struct KernelOptions {
     pub workgroup_size: [u32; 3],
 }
 
+/// What the expansion knows about the build profile (D44, R1-9). The macro cannot infer a profile (the build script of
+/// `gust` owns the effective one and its release inference), so it asks one question only: is `GUST_PROFILE` exactly
+/// `cpu`? The answer is an argument, never read from the process inside the expander, so expansion tests run in
+/// parallel threads without touching the environment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Profile {
+    /// `GUST_PROFILE=cpu`: the production CPU target (D21). The CPU impl is ungated, no artifact is looked up or
+    /// embedded, and nothing of the artifact directory is tracked.
+    Cpu,
+    /// Every other value, and an unset variable: the CPU impl is a twin behind `cfg(any(test, gust_dual))` and
+    /// artifacts are embedded as before.
+    Other,
+}
+
+impl Profile {
+    /// The profile for the value of `GUST_PROFILE` (`None` when unset). Only the exact text `cpu` is `Cpu`; the build
+    /// script rejects every unknown value with the real error, so the macro never validates.
+    pub fn from_value(value: Option<&str>) -> Self {
+        if value == Some("cpu") {
+            Self::Cpu
+        } else {
+            Self::Other
+        }
+    }
+}
+
 /// Whether a kernel gets a CPU twin (roadmap M3): the `cpu` option of `#[kernel]`. It is kept beside
 /// [`KernelOptions`], not inside it, because only the expander reads it; the Slang emitter never does.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum CpuTwin {
-    /// The default: the kernel runs on `gust::cpu::CpuDevice` under `cfg(any(test, gust_dual))`.
+    /// The default: the kernel runs on `gust::cpu::CpuDevice` under `cfg(any(test, gust_dual))`, or in every build
+    /// under `GUST_PROFILE=cpu`.
     #[default]
     Emitted,
     /// `cpu = "unsupported"`: no twin is emitted.
     Unsupported,
 }
 
+/// [`expand_with`] for a caller that has no profile: [`Profile::Other`].
+#[cfg(test)]
 pub fn expand(module: syn::ItemMod) -> syn::Result<TokenStream> {
-    expand_in(module, &Environment::from_process())
+    expand_with(module, Profile::Other)
+}
+
+/// Expands a module for the build profile `profile`, reading the crate directory and the export directory from the
+/// process environment.
+pub fn expand_with(module: syn::ItemMod, profile: Profile) -> syn::Result<TokenStream> {
+    expand_in(module, &Environment::from_process(), profile)
 }
 
 /// [`expand`] with the crate directory, the export directory and the package name given, for the pipeline tests that
@@ -46,17 +81,25 @@ pub(crate) fn expand_with_directories(
         package: package.map(str::to_owned),
         reported_file: None,
     };
-    expand_in(module, &environment)
+    expand_in(module, &environment, Profile::Other)
 }
 
-/// [`expand`] with the environment given, so that tests choose the crate directory and the export directory without
-/// touching the process environment.
-fn expand_in(mut module: syn::ItemMod, environment: &Environment) -> syn::Result<TokenStream> {
+/// [`expand_with`] with the environment given, so that tests choose the crate directory and the export directory
+/// without touching the process environment.
+///
+/// Under [`Profile::Cpu`] the artifact directory is not read at all (GPU bytes do not belong in a CPU binary, and a
+/// half pair there is no concern of a CPU build), so every kernel is `Lookup::Absent` and the manifest is absent;
+/// the per-kernel `require_artifact` item is still emitted, and the build script's profile makes it a no-op.
+fn expand_in(
+    mut module: syn::ItemMod,
+    environment: &Environment,
+    profile: Profile,
+) -> syn::Result<TokenStream> {
     crate::validate::validate_module(&module)?;
     let original_module = module.clone();
     let module_name = module.ident.to_string();
     let manifest_dir = environment.manifest_dir.as_deref();
-    let manifest_present = artifact::manifest_present(manifest_dir);
+    let manifest_present = profile != Profile::Cpu && artifact::manifest_present(manifest_dir);
     let record_directory = environment.record_directory();
     let export_mode = environment.export_dir.is_some();
     // The kernel whose line carries the module's one `require_manifest` check: the first with a complete pair.
@@ -105,6 +148,8 @@ fn expand_in(mut module: syn::ItemMod, environment: &Environment) -> syn::Result
         // never reaches it.
         let key = artifact::content_key(&entry_point, &slang_source);
         let lookup = match artifact::lookup(manifest_dir, &key) {
+            // A CPU build looks at no artifact: nothing is embedded and nothing is tracked.
+            _ if profile == Profile::Cpu => Lookup::Absent,
             // Export mode is how `cargo gust build` writes the missing half, and it expands this crate to do so: a
             // half pair must not stop that expansion, so it counts as absent there (and only there).
             Lookup::Incomplete { .. } if export_mode => Lookup::Absent,
@@ -146,7 +191,13 @@ fn expand_in(mut module: syn::ItemMod, environment: &Environment) -> syn::Result
         let [x, y, z] = options.workgroup_size;
         let (handle_doc, typed_calls) = typed_call_items(&original_name, &function.sig.inputs)?;
         let element_assertions = element_layout_assertions(&original_name, &function.sig.inputs)?;
-        let cpu_twin = cpu_twin_items(&original_name, &typecheck_name, &function.sig.inputs, cpu)?;
+        let cpu_twin = cpu_twin_items(
+            &original_name,
+            &typecheck_name,
+            &function.sig.inputs,
+            cpu,
+            profile,
+        )?;
 
         function
             .attrs
@@ -892,7 +943,8 @@ fn typed_call_items(
         "Handle of the GUST kernel `{kernel}`, with the typed host API `call`, `submit` and `dispatch` \
          (storage parameters only: a kernel with a uniform parameter has none of them).{turbofish} \
          Under `cfg(test)` of the crate that defines the kernel, or `--cfg gust_dual`, the kernel also runs on \
-         `gust::cpu::CpuDevice` (its CPU twin), unless `#[kernel(cpu = \"unsupported\")]`."
+         `gust::cpu::CpuDevice` (its CPU twin), unless `#[kernel(cpu = \"unsupported\")]`. Under \
+         `GUST_PROFILE=cpu` it runs on `gust::cpu::CpuDevice` in every build of the crate."
     );
     let submit_doc = format!(
         "Submit `{kernel}`: `__gust_device`, `__gust_element_count`, {order}. Returns a job to wait on."
@@ -1040,8 +1092,10 @@ fn typed_call_items(
 }
 
 /// The CPU twin of one kernel (roadmap M3): `impl Run<Kernel, N> for ::gust::cpu::CpuDevice` under
-/// `cfg(any(test, gust_dual))`. It calls the shadow body (the renamed typecheck function) as written, once per
-/// invocation, and reaches the bindings only through `::gust::cpu::{validate, read, write, invocations}`: no body
+/// `cfg(any(test, gust_dual))`, or ungated under [`Profile::Cpu`] (the production CPU target, D21: the same impl with
+/// no `cfg` copy, so `cpu` plus `cfg(test)` or `--cfg gust_dual` still has exactly one). It calls the shadow body (the
+/// renamed typecheck function) as written, once per invocation,
+/// and reaches the bindings only through `::gust::cpu::{validate, read, write, invocations}`: no body
 /// copy, no rewrite, no IR and no downcast in the emitted code. `gust/src/cpu.rs` holds a hand-written impl of this
 /// exact shape in its tests, which is the specification.
 ///
@@ -1053,6 +1107,7 @@ fn cpu_twin_items(
     typecheck: &syn::Ident,
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
     cpu: CpuTwin,
+    profile: Profile,
 ) -> syn::Result<TokenStream> {
     if cpu == CpuTwin::Unsupported {
         return Ok(TokenStream::new());
@@ -1097,8 +1152,12 @@ fn cpu_twin_items(
         }
     }
     let count = proc_macro2::Literal::usize_unsuffixed(names.len());
+    let gate = match profile {
+        Profile::Cpu => TokenStream::new(),
+        Profile::Other => quote!(#[cfg(any(test, gust_dual))]),
+    };
     Ok(quote! {
-        #[cfg(any(test, gust_dual))]
+        #gate
         impl ::gust::Run<#kernel, #count> for ::gust::cpu::CpuDevice {
             fn submit_call(
                 &self,
@@ -1424,7 +1483,7 @@ mod tests {
 
     fn expanded(source: &str, environment: &Environment) -> TokenStream {
         let module: syn::ItemMod = crate::diagnostics::testing::parse_str(source).unwrap();
-        expand_in(module, environment).unwrap()
+        expand_in(module, environment, Profile::Other).unwrap()
     }
 
     /// Expands `source` in export mode once and returns its key and clean Slang text, as the records say them.
@@ -2268,6 +2327,109 @@ mod tests {
         // ... and no lines is still unknown.
         let output = origin_tokens("/repo/src/lib.rs", REPO, &[]).to_string();
         assert!(output.ends_with(unknown), "{output}");
+    }
+
+    // ---- the build profile (m5.e1, R1-9): injected, never read from the process ----
+
+    /// Expands `source` for `profile` in `environment`, in process: no test here sets or removes a variable.
+    fn expanded_for(source: &str, environment: &Environment, profile: Profile) -> TokenStream {
+        let module: syn::ItemMod = crate::diagnostics::testing::parse_str(source).unwrap();
+        expand_in(module, environment, profile).unwrap()
+    }
+
+    #[test]
+    fn only_the_exact_text_cpu_is_the_cpu_profile() {
+        assert_eq!(Profile::from_value(Some("cpu")), Profile::Cpu);
+        for other in [
+            None,
+            Some("dev"),
+            Some("native"),
+            Some("web"),
+            Some("CPU"),
+            Some("Cpu"),
+            Some(" cpu"),
+            Some("cpu "),
+            Some("cpu+simd"),
+            Some(""),
+            Some("bogus"),
+        ] {
+            assert_eq!(Profile::from_value(other), Profile::Other, "{other:?}");
+        }
+    }
+
+    #[test]
+    fn under_cpu_a_complete_pair_is_neither_embedded_nor_tracked() {
+        let (scratch, _) = crate_with_pair("cpu-pair-present", true);
+        let environment = environment(Some(&scratch.0), None);
+        // The control: the same crate directory under every other profile embeds the pair and tracks the manifest.
+        let other = expanded_for(KERNEL, &environment, Profile::Other).to_string();
+        assert!(other.contains("include_bytes"), "{other}");
+        assert!(other.contains("manifest.json"), "{other}");
+        let cpu = expanded_for(KERNEL, &environment, Profile::Cpu).to_string();
+        assert!(cpu.contains("artifacts : & []"), "{cpu}");
+        for needle in [
+            "include_bytes",
+            "include_str",
+            "manifest.json",
+            "gust-artifacts",
+            "require_manifest",
+        ] {
+            assert!(!cpu.contains(needle), "`{needle}` in {cpu}");
+        }
+        // The per-kernel check is still emitted; the build script's profile makes it a no-op under `cpu`.
+        assert_eq!(cpu.matches("require_artifact (false)").count(), 1, "{cpu}");
+    }
+
+    #[test]
+    fn under_cpu_half_a_pair_is_no_error_because_no_artifact_is_looked_at() {
+        let (key, _) = exported(KERNEL);
+        let half = Scratch::new("cpu-half-pair");
+        half.artifact(&format!("{key}.wgsl"), "x");
+        let environment = environment(Some(&half.0), None);
+        let other = expanded_for(KERNEL, &environment, Profile::Other).to_string();
+        assert!(other.contains("[GUST-E0711]"), "{other}");
+        let cpu = expanded_for(KERNEL, &environment, Profile::Cpu).to_string();
+        assert!(!cpu.contains("compile_error"), "{cpu}");
+        assert!(!cpu.contains("E0711"), "{cpu}");
+    }
+
+    #[test]
+    fn every_expansion_of_every_profile_emits_the_profile_tracking_item() {
+        let item = "const _ : :: core :: option :: Option < & :: core :: primitive :: str > = :: core :: option_env ! (\"GUST_PROFILE\") ;";
+        for profile in [Profile::Cpu, Profile::Other] {
+            for source in [KERNEL, "mod empty {}"] {
+                let text = expanded_for(source, &Environment::default(), profile).to_string();
+                assert_eq!(text.matches(item).count(), 1, "{profile:?}: {text}");
+            }
+        }
+    }
+
+    /// D44's rebuild tracking has two mechanisms, and S5.4 measured (probe/s54/s54.log) that each alone suffices to
+    /// re-expand a kernel crate after `GUST_PROFILE` changes: the `option_env!("GUST_PROFILE")` item every expansion
+    /// emits (rustc tracks it), and `rerun-if-env-changed=GUST_PROFILE` in the build script of `gust` (the cascade
+    /// rebuilds every dependent). With both gone an expansion goes stale: a `cpu` build keeps the `dev` expansion. The
+    /// macro reads the variable with `std::env::var`, which rustc does not track. This guard fails when both are gone;
+    /// each has its own test besides.
+    #[test]
+    fn a_profile_change_is_tracked_by_at_least_one_mechanism() {
+        let emitted = [Profile::Cpu, Profile::Other].iter().all(|profile| {
+            expanded_for(KERNEL, &Environment::default(), *profile)
+                .to_string()
+                .contains("option_env ! (\"GUST_PROFILE\")")
+        });
+        // Only the part before the unit tests: the tests of the script name the directive too.
+        let script = include_str!("../../../gust/build.rs");
+        let production = script.split("#[cfg(test)]").next().unwrap();
+        assert!(
+            production.len() < script.len(),
+            "the script has no test module to cut off"
+        );
+        let rerun = production.contains("\"cargo:rerun-if-env-changed=GUST_PROFILE\"");
+        assert!(
+            emitted || rerun,
+            "neither `option_env!(\"GUST_PROFILE\")` in the expansion nor `rerun-if-env-changed=GUST_PROFILE` in \
+             crates/gust/build.rs remains: a profile change would leave stale expansions (S5.4, V3)"
+        );
     }
 
     /// [`contained_record`] from the reported string.

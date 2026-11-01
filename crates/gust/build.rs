@@ -1,9 +1,9 @@
 //! Build script of `gust`: the effective build profile (D44, plan M4 R2-2).
 //!
-//! `GUST_PROFILE` (`dev`, `native` or `web`) selects the profile. Without it a release build is strict (`web` on
-//! `wasm32`, `native` elsewhere) and any other build is `dev`. The result reaches `gust` as `cfg(gust_profile = "..")`
-//! (see `gust::profile`), and a strict profile refuses the `slang-runtime` feature, so a production build can never
-//! contain the run-time Slang bridge, not even through feature unification.
+//! `GUST_PROFILE` (`dev`, `native`, `web` or `cpu`) selects the profile. Without it a release build is strict (`web` on
+//! `wasm32`, `native` elsewhere) and any other build is `dev`; `cpu` is never inferred. The result reaches `gust` as
+//! `cfg(gust_profile = "..")` (see `gust::profile`), and every profile but `dev` refuses the `slang-runtime` feature,
+//! so a production build can never contain the run-time Slang bridge, not even through feature unification.
 //!
 //! The decision is a pure function of [`Inputs`] that returns the exact lines this script prints, so the unit tests
 //! (`cargo test -p gust`, which includes this file from `src/profile.rs`) pin them.
@@ -11,7 +11,7 @@
 use std::{env, process::ExitCode};
 
 /// The values `GUST_PROFILE` may take.
-const PROFILES: [&str; 3] = ["dev", "native", "web"];
+const PROFILES: [&str; 4] = ["dev", "native", "web", "cpu"];
 
 /// What the decision reads from the environment of the build script.
 struct Inputs<'a> {
@@ -43,14 +43,30 @@ fn effective(inputs: &Inputs<'_>) -> Result<(&'static str, bool), String> {
     }
 }
 
-/// `dev, native or web`.
+/// `dev, native, web or cpu`.
 fn allowed() -> String {
-    format!("{}, {} or {}", PROFILES[0], PROFILES[1], PROFILES[2])
+    format!(
+        "{}, {}, {} or {}",
+        PROFILES[0], PROFILES[1], PROFILES[2], PROFILES[3]
+    )
+}
+
+/// The cargo directive that declares the values of `cfg(gust_profile)`.
+fn check_cfg() -> String {
+    let values: Vec<String> = PROFILES.iter().map(|name| format!("\"{name}\"")).collect();
+    format!(
+        "cargo:rustc-check-cfg=cfg(gust_profile, values({}))",
+        values.join(", ")
+    )
 }
 
 /// The lines (without the trailing newline) this script prints for cargo, or the reason the build must fail.
 fn directives(inputs: &Inputs<'_>) -> Result<Vec<String>, String> {
     let (profile, inferred) = effective(inputs)?;
+    if inputs.slang_runtime && profile == "cpu" {
+        // `cpu` is never inferred, so there is no origin to name.
+        return Err("gust: profile cpu refuses feature slang-runtime; a CPU build contains no compiler, bridge or GPU runtime. Do not enable the feature for this build (look for features = [\"slang-runtime\"] in a dependency, or --features ...slang-runtime; `cargo tree -e features -i gust` shows who enables it), or build with GUST_PROFILE=dev.".to_owned());
+    }
     if inputs.slang_runtime && profile != "dev" {
         let origin = if inferred {
             " This profile was inferred from a release build without GUST_PROFILE."
@@ -67,10 +83,7 @@ fn directives(inputs: &Inputs<'_>) -> Result<Vec<String>, String> {
     let mut lines = vec![
         "cargo:rerun-if-changed=build.rs".to_owned(),
         "cargo:rerun-if-env-changed=GUST_PROFILE".to_owned(),
-        format!(
-            "cargo:rustc-check-cfg=cfg(gust_profile, values(\"{}\", \"{}\", \"{}\"))",
-            PROFILES[0], PROFILES[1], PROFILES[2]
-        ),
+        check_cfg(),
     ];
     if inferred {
         lines.push(format!(
@@ -167,7 +180,7 @@ mod tests {
     fn an_explicit_value_wins_over_the_release_inference_and_is_never_warned_about() {
         for release in [false, true] {
             for wasm in [false, true] {
-                for name in ["dev", "native", "web"] {
+                for name in ["dev", "native", "web", "cpu"] {
                     let inputs = Inputs {
                         profile: Some(name),
                         release,
@@ -186,27 +199,35 @@ mod tests {
     }
 
     #[test]
-    fn a_value_other_than_the_three_names_is_refused_with_the_names() {
+    fn a_value_other_than_the_four_names_is_refused_with_the_names() {
         for (value, message) in [
             (
                 "bogus",
-                "gust: unknown GUST_PROFILE `bogus`; use dev, native or web",
+                "gust: unknown GUST_PROFILE `bogus`; use dev, native, web or cpu",
             ),
             (
                 "Native",
-                "gust: unknown GUST_PROFILE `Native`; use dev, native or web",
+                "gust: unknown GUST_PROFILE `Native`; use dev, native, web or cpu",
             ),
             (
                 " native",
-                "gust: unknown GUST_PROFILE ` native`; use dev, native or web",
+                "gust: unknown GUST_PROFILE ` native`; use dev, native, web or cpu",
             ),
             (
                 "native+gpu",
-                "gust: unknown GUST_PROFILE `native+gpu`; use dev, native or web",
+                "gust: unknown GUST_PROFILE `native+gpu`; use dev, native, web or cpu",
+            ),
+            (
+                "CPU",
+                "gust: unknown GUST_PROFILE `CPU`; use dev, native, web or cpu",
+            ),
+            (
+                "cpu+simd",
+                "gust: unknown GUST_PROFILE `cpu+simd`; use dev, native, web or cpu",
             ),
             (
                 "",
-                "gust: GUST_PROFILE is set but empty; use dev, native or web (or unset it)",
+                "gust: GUST_PROFILE is set but empty; use dev, native, web or cpu (or unset it)",
             ),
         ] {
             let inputs = Inputs {
@@ -231,6 +252,10 @@ mod tests {
                 profile: Some("web"),
                 ..NONE
             },
+            Inputs {
+                profile: Some("cpu"),
+                ..NONE
+            },
         ] {
             let lines = directives(&inputs).unwrap();
             assert!(
@@ -239,7 +264,7 @@ mod tests {
             );
             assert!(
                 lines.contains(
-                    &"cargo:rustc-check-cfg=cfg(gust_profile, values(\"dev\", \"native\", \"web\"))"
+                    &"cargo:rustc-check-cfg=cfg(gust_profile, values(\"dev\", \"native\", \"web\", \"cpu\"))"
                         .to_owned()
                 ),
                 "{lines:?}"
@@ -321,6 +346,51 @@ mod tests {
     }
 
     #[test]
+    fn the_cpu_profile_is_never_inferred_and_never_warned_about() {
+        // A release build without the variable is native or web, whatever else is true of it.
+        for wasm in [false, true] {
+            let inferred = Inputs {
+                release: true,
+                wasm,
+                ..NONE
+            };
+            let (profile, _) = effective(&inferred).unwrap();
+            assert_ne!(profile, "cpu");
+        }
+        // Explicit, it is exactly one cfg and no warning, in a debug and a release build.
+        for release in [false, true] {
+            let explicit = Inputs {
+                profile: Some("cpu"),
+                release,
+                ..NONE
+            };
+            assert_eq!(effective(&explicit), Ok(("cpu", false)));
+            let lines = directives(&explicit).unwrap();
+            assert!(lines.contains(&cfg_line("cpu")), "{lines:?}");
+            assert!(
+                !lines.iter().any(|line| line.contains("warning")),
+                "{lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_cpu_profile_refuses_the_slang_runtime_feature_word_for_word() {
+        for release in [false, true] {
+            let inputs = Inputs {
+                profile: Some("cpu"),
+                release,
+                slang_runtime: true,
+                ..NONE
+            };
+            assert_eq!(
+                directives(&inputs),
+                Err("gust: profile cpu refuses feature slang-runtime; a CPU build contains no compiler, bridge or GPU runtime. Do not enable the feature for this build (look for features = [\"slang-runtime\"] in a dependency, or --features ...slang-runtime; `cargo tree -e features -i gust` shows who enables it), or build with GUST_PROFILE=dev.".to_owned())
+            );
+        }
+    }
+
+    #[test]
     fn the_dev_profile_accepts_the_slang_runtime_feature_in_every_build() {
         for release in [false, true] {
             let inputs = Inputs {
@@ -349,7 +419,7 @@ mod tests {
         };
         assert_eq!(
             directives(&inputs),
-            Err("gust: unknown GUST_PROFILE `bogus`; use dev, native or web".to_owned())
+            Err("gust: unknown GUST_PROFILE `bogus`; use dev, native, web or cpu".to_owned())
         );
     }
 }

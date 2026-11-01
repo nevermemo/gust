@@ -1,0 +1,12 @@
+# Step E-d: keys matched against the one error of the `single-dispatch` binary of `app`, built WITHOUT the profile:
+#   GUST_PROFILE=dev cargo check --locked -p app --bin single-dispatch --message-format json
+# (see tests/ui/typed-call-no-cpu-twin/expected.txt for the key format; `file` is relative to tests/cpu-target).
+# A normal build sets neither `cfg(test)` nor `--cfg gust_dual`, so `kernels` has no CPU impl and the dispatch has
+# no `Run` impl for `CpuDevice`. The note says what step E-g's expectation checks from the other side.
+code: E0277
+file: app/src/bin/single_dispatch.rs
+line: 14
+message: `CpuDevice` cannot run the kernel `add`
+message: the trait `Run<add, 3>` is not implemented for `CpuDevice`
+message: a kernel runs on `CpuDevice` in a test build of its crate, under `--cfg gust_dual`, and in every build under `GUST_PROFILE=cpu`
+label: this device has no executable form of the kernel

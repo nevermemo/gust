@@ -16,11 +16,14 @@ use crate::{
 };
 
 /// The values `GUST_PROFILE` may take.
-const PROFILES: [&str; 3] = ["dev", "native", "web"];
+const PROFILES: [&str; 4] = ["dev", "native", "web", "cpu"];
 
-/// `dev, native or web`.
+/// `dev, native, web or cpu`.
 fn allowed() -> String {
-    format!("{}, {} or {}", PROFILES[0], PROFILES[1], PROFILES[2])
+    format!(
+        "{}, {}, {} or {}",
+        PROFILES[0], PROFILES[1], PROFILES[2], PROFILES[3]
+    )
 }
 
 /// The effective profile of a build and whether it was inferred from a release build (no explicit `GUST_PROFILE`).
@@ -205,11 +208,11 @@ mod tests {
         }
         assert_eq!(
             effective_profile(Some(""), false, false).unwrap_err(),
-            "GUST_PROFILE is set but empty; use dev, native or web (or unset it)"
+            "GUST_PROFILE is set but empty; use dev, native, web or cpu (or unset it)"
         );
         assert_eq!(
             effective_profile(Some("fast"), true, false).unwrap_err(),
-            "unknown GUST_PROFILE `fast`; use dev, native or web"
+            "unknown GUST_PROFILE `fast`; use dev, native, web or cpu"
         );
         assert!(effective_profile(Some("Dev"), false, false).is_err());
     }

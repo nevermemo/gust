@@ -1,1 +1,1 @@
-build-error: gust: GUST_PROFILE is set but empty; use dev, native or web (or unset it)
+build-error: gust: GUST_PROFILE is set but empty; use dev, native, web or cpu (or unset it)

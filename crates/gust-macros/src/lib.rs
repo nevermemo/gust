@@ -18,7 +18,23 @@ mod regression_tests;
 /// kernel directly to Slang, and generates host-side handles and descriptors.
 #[proc_macro_attribute]
 pub fn gpu(attribute: TokenStream, item: TokenStream) -> TokenStream {
-    gpu_impl(attribute.into(), item.into()).into()
+    // The one place that reads the build profile (D44, R1-9): everything below takes it as an argument, so tests
+    // never set an environment variable. `gust`'s build script validates the value; the macro only asks whether it
+    // is exactly `cpu`. The expansion also emits `option_env!("GUST_PROFILE")`, which is what makes rustc track this
+    // read: `std::env::var` alone is not tracked.
+    let value = std::env::var("GUST_PROFILE").ok();
+    let profile = expand::Profile::from_value(value.as_deref());
+    gpu_impl_with(attribute.into(), item.into(), profile).into()
+}
+
+/// [`gpu_impl_with`] for a caller that has no profile: the `Other` path, which keeps the CPU twin behind
+/// `cfg(any(test, gust_dual))`.
+#[cfg(test)]
+pub(crate) fn gpu_impl(
+    attribute: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+) -> proc_macro2::TokenStream {
+    gpu_impl_with(attribute, item, expand::Profile::Other)
 }
 
 /// [`gpu`] on `proc_macro2` tokens, so it can be tested outside a proc-macro context.
@@ -27,9 +43,10 @@ pub fn gpu(attribute: TokenStream, item: TokenStream) -> TokenStream {
 /// [`recover`]), so rustc and editors still resolve the module's items and the one real
 /// diagnostic is not buried in follow-on "cannot find" errors. The attribute-argument
 /// error is reported before a parse error, as before.
-pub(crate) fn gpu_impl(
+pub(crate) fn gpu_impl_with(
     attribute: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
+    profile: expand::Profile,
 ) -> proc_macro2::TokenStream {
     // `syn` words the parse failure itself; the code is added in front.
     let parsed = diagnostics::parse2::<syn::ItemMod>(Code::ItemNotModule, item.clone());
@@ -45,7 +62,7 @@ pub(crate) fn gpu_impl(
         Ok(module) => module,
         Err(error) => return recover::beside_error(error, &item, None),
     };
-    match expand::expand(module.clone()) {
+    match expand::expand_with(module.clone(), profile) {
         Ok(tokens) => tokens,
         Err(error) => recover::beside_error(error, &item, Some(module)),
     }

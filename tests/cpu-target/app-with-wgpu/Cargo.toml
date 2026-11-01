@@ -1,0 +1,15 @@
+[package]
+name = "app-with-wgpu"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The negative of E-e: a crate graph that reaches the GPU runtime. A build holds one target (D21), so under
+# `GUST_PROFILE=cpu` this must not build (the refusal is `gust::profile::require_gpu_target`, called by `gust-wgpu`
+# from slice m5.e2 on).
+[dependencies]
+gust = { path = "../../../crates/gust", default-features = false }
+gust-wgpu = { path = "../../../crates/gust-wgpu", default-features = false }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

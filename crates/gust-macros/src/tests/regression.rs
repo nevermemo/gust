@@ -2272,6 +2272,157 @@ fn a_uniform_kernel_gets_no_twin() {
     assert!(!text.contains("CpuDevice"), "{text}");
 }
 
+// ---- the build profile (roadmap M5, slice m5.e1): `cpu` makes the CPU impl production code ----
+
+/// The expansion of an inline module given as source text, for the build profile `profile`.
+fn expansion_for(source: &str, profile: crate::expand::Profile) -> proc_macro2::TokenStream {
+    let module: syn::ItemMod = crate::diagnostics::testing::parse_str(source).unwrap();
+    crate::expand::expand_with(module, profile).unwrap()
+}
+
+/// The impl text without the `cfg` attribute: what the twin looks like when it is ungated.
+const UNGATED_IMPL: &str = "impl :: gust :: Run <";
+
+#[test]
+fn under_cpu_the_impl_is_ungated_and_no_cfg_copy_exists() {
+    let text = expansion_for(VECTOR_ADD, crate::expand::Profile::Cpu).to_string();
+    assert_eq!(text.matches(UNGATED_IMPL).count(), 1, "{text}");
+    assert!(
+        text.contains("impl :: gust :: Run < add , 3 > for :: gust :: cpu :: CpuDevice"),
+        "{text}"
+    );
+    // No gate of any spelling: not on the impl and not on a second copy (the handle doc names the dual cfg in prose).
+    assert!(!text.contains("any (test , gust_dual)"), "{text}");
+    assert!(!text.contains("any (test"), "{text}");
+    assert_eq!(text.matches("cfg (").count(), 0, "{text}");
+    assert!(!text.contains(TWIN_CFG), "{text}");
+}
+
+#[test]
+fn the_ungated_impl_has_the_exact_shape_of_the_gated_one() {
+    let text = expansion_for(VECTOR_ADD, crate::expand::Profile::Cpu).to_string();
+    let expected = quote::quote! {
+        impl ::gust::Run<add, 3> for ::gust::cpu::CpuDevice {
+            fn submit_call(
+                &self,
+                __gust_call: &::gust::Call<'_, Self, add, 3>,
+            ) -> ::core::result::Result<::gust::cpu::CpuJob, ::gust::cpu::Error> {
+                ::gust::cpu::validate(self, __gust_call)?;
+                let [a, b, out] = *__gust_call.bindings();
+                let a = ::gust::cpu::read::<float>(a, "a")?;
+                let b = ::gust::cpu::read::<float>(b, "b")?;
+                let mut out = ::gust::cpu::write::<float>(out, "out")?;
+                for __gust_id in
+                    ::gust::cpu::invocations(__gust_call.kernel(), __gust_call.element_count())
+                {
+                    __gpu_typecheck_add(
+                        <SV_DispatchThreadID as ::gust::cpu::FromGlobalId>::from_global_id(__gust_id),
+                        ::gust::Storage::new(&a),
+                        ::gust::Storage::new(&b),
+                        ::gust::StorageMut::new(&mut out)
+                    );
+                }
+                ::core::result::Result::Ok(::gust::cpu::CpuJob::complete())
+            }
+        }
+    }
+    .to_string();
+    assert!(text.contains(&expected), "{expected}\n---\n{text}");
+}
+
+#[test]
+fn the_cpu_expansion_is_the_other_expansion_without_the_gate_and_nothing_else() {
+    use crate::expand::Profile;
+    let other = expansion_for(VECTOR_ADD, Profile::Other).to_string();
+    let cpu = expansion_for(VECTOR_ADD, Profile::Cpu).to_string();
+    assert_ne!(other, cpu);
+    assert_eq!(
+        squeezed(&cpu),
+        squeezed(&other.replace(TWIN_CFG, UNGATED_IMPL))
+    );
+}
+
+#[test]
+fn every_value_but_exactly_cpu_keeps_the_gated_twin() {
+    use crate::expand::Profile;
+    for (value, gated) in [
+        (Some("cpu"), false),
+        (None, true),
+        (Some("dev"), true),
+        (Some("native"), true),
+        (Some("web"), true),
+        (Some("CPU"), true),
+        (Some("cpu+simd"), true),
+        (Some(""), true),
+        (Some("bogus"), true),
+    ] {
+        let text = expansion_for(VECTOR_ADD, Profile::from_value(value)).to_string();
+        assert_eq!(
+            text.matches(TWIN_CFG).count(),
+            usize::from(gated),
+            "{value:?}: {text}"
+        );
+        assert_eq!(
+            text.matches(UNGATED_IMPL).count(),
+            1,
+            "{value:?}: exactly one impl either way: {text}"
+        );
+    }
+}
+
+#[test]
+fn the_entry_point_takes_the_profile_as_an_argument() {
+    use crate::expand::Profile;
+    let item: proc_macro2::TokenStream = VECTOR_ADD.parse().unwrap();
+    let cpu = crate::gpu_impl_with(proc_macro2::TokenStream::new(), item.clone(), Profile::Cpu)
+        .to_string();
+    let other = crate::gpu_impl(proc_macro2::TokenStream::new(), item.clone()).to_string();
+    let explicit =
+        crate::gpu_impl_with(proc_macro2::TokenStream::new(), item, Profile::Other).to_string();
+    assert!(!cpu.contains("compile_error"), "{cpu}");
+    assert_eq!(cpu.matches(TWIN_CFG).count(), 0, "{cpu}");
+    assert_eq!(other.matches(TWIN_CFG).count(), 1, "{other}");
+    assert_eq!(other, explicit, "`gpu_impl` is the `Other` path");
+}
+
+#[test]
+fn kernels_without_a_twin_have_none_under_cpu_either() {
+    use crate::expand::Profile;
+    // `cpu = "unsupported"`: no impl, so a dispatch on `CpuDevice` is the existing E0277 under every profile.
+    let opted_out = "mod vector_add { \
+        #[kernel(cpu = \"unsupported\")] \
+        pub fn add(id: SV_DispatchThreadID, a: StructuredBuffer<float>, b: StructuredBuffer<float>, \
+                   mut out: RWStructuredBuffer<float>) { \
+            let i = id.x; \
+            if i < out.len() { out[i] = a[i] + b[i]; } \
+        } \
+    }";
+    // A uniform parameter: no typed call, so no CPU path until M6 (D40).
+    let uniform = "mod odd { #[kernel] pub fn run(id: SV_DispatchThreadID, settings: Uniform<float>, \
+         mut out: RWStructuredBuffer<float>) { let i = id.x; if i < out.len() {} } }";
+    for source in [opted_out, uniform] {
+        let cpu = expansion_for(source, Profile::Cpu).to_string();
+        let other = expansion_for(source, Profile::Other).to_string();
+        assert!(!cpu.contains("impl :: gust :: Run"), "{cpu}");
+        assert!(!cpu.contains(":: cpu :: CpuDevice"), "{cpu}");
+        assert_eq!(squeezed(&cpu), squeezed(&other));
+    }
+}
+
+#[test]
+fn a_kernel_without_storage_parameters_gets_an_ungated_impl_over_no_bindings_under_cpu() {
+    let text = expansion_for(
+        "mod empty { #[kernel] pub fn nothing(id: SV_DispatchThreadID) { let i = id.x; if i < 1u32 {} } }",
+        crate::expand::Profile::Cpu,
+    )
+    .to_string();
+    assert!(
+        text.contains("impl :: gust :: Run < nothing , 0 >"),
+        "{text}"
+    );
+    assert!(!text.contains("cfg ("), "{text}");
+}
+
 #[test]
 fn cpu_unsupported_emits_no_twin_and_keeps_the_typed_host_api() {
     let output = expansion(
@@ -2396,6 +2547,11 @@ fn the_handle_documents_the_twin_and_its_opt_out() {
             "Under `cfg(test)` of the crate that defines the kernel, or `--cfg gust_dual`, the kernel also runs on \
              `gust::cpu::CpuDevice` (its CPU twin), unless `#[kernel(cpu = \\\"unsupported\\\")]`."
         ),
+        "{add}"
+    );
+    // The production CPU target (m5.e1) is named in the same doc.
+    assert!(
+        add.contains("Under `GUST_PROFILE=cpu` it runs on `gust::cpu::CpuDevice` in every build of the crate."),
         "{add}"
     );
 }

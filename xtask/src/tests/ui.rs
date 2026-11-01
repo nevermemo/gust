@@ -1518,12 +1518,14 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
     assert_eq!(find("profile-unknown").env, variable("bogus"));
     assert_eq!(
         find("profile-unknown").expectation,
-        build_fails(&["gust: unknown GUST_PROFILE `bogus`; use dev, native or web"])
+        build_fails(&["gust: unknown GUST_PROFILE `bogus`; use dev, native, web or cpu"])
     );
     assert_eq!(find("profile-empty").env, variable(""));
     assert_eq!(
         find("profile-empty").expectation,
-        build_fails(&["gust: GUST_PROFILE is set but empty; use dev, native or web (or unset it)"])
+        build_fails(&[
+            "gust: GUST_PROFILE is set but empty; use dev, native, web or cpu (or unset it)",
+        ])
     );
     // A strict profile with the feature on: the manifest turns it on, the build script refuses.
     assert_eq!(find("profile-native-bridge").env, variable("native"));
@@ -1553,7 +1555,8 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "profile-native-bridge",
             "profile-native-no-artifact",
             "profile-native-no-manifest",
-            "profile-unknown"
+            "profile-unknown",
+            "typed-call-cpu-target"
         ]
     );
 }
@@ -1561,7 +1564,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 19] = [
+const PINNED_FIXTURES: [&str; 20] = [
     "gpupod-missing",
     "gpupod-present",
     "kernel-cpu-bad-value",
@@ -1577,6 +1580,7 @@ const PINNED_FIXTURES: [&str; 19] = [
     "profile-native-no-manifest",
     "profile-unknown",
     "reserved-gust-prefix",
+    "typed-call-cpu-target",
     "typed-call-mismatch",
     "typed-call-no-cpu-twin",
     "typed-call-no-run",

@@ -1,0 +1,30 @@
+[package]
+name = "web-vector-add"
+description = "The vector-add kernel in a browser: wasm32 plus WebGPU, run by `cargo xtask check-web`"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+# The crate is a browser module: its whole source is `cfg(target_arch = "wasm32")`, so on the host it is an empty
+# library and the host workspace commands (`cargo test --workspace`, clippy for the host) neither build a GPU path nor
+# need Slang for it. The wasm32 build is checked by the wasm32 clippy step of CI and run by `cargo xtask check-web`,
+# which builds it under `GUST_PROFILE=web` (the strict profile: the kernel's artifacts are the committed files in
+# `gust-artifacts/`, and the build never runs Slang).
+[lib]
+crate-type = ["cdylib"]
+
+# Target-scoped like `gust-wgpu`'s `webgpu` feature, so a host build compiles none of it. `wasm-bindgen` is pinned to
+# the version of the `wasm-bindgen` CLI that `check-web` requires (it compares the CLI with Cargo.lock).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+gust.workspace = true
+gust-wgpu.workspace = true
+js-sys = "0.3"
+wasm-bindgen = "=0.2.127"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["console"] }
+wgpu.workspace = true
+
+[lints]
+workspace = true

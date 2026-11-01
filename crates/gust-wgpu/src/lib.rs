@@ -30,6 +30,15 @@
 //! names and wrap the async functions (`new` with `pollster::block_on`); a readback wrapper waits with `poll(Wait)`
 //! first and then polls the finished future once, because on native the callback runs only while something polls the
 //! device. They do not exist on `wasm32`.
+//!
+//! # The `wasm32` surface
+//!
+//! In the browser (`wasm32-unknown-unknown`, wgpu's `webgpu` backend) nothing may block or read a clock, so the
+//! crate offers only what can run there: `new_async`, the buffer, upload and typed `dispatch`/`submit` functions, and
+//! `read_typed_buffer_async`. These are compiled out on `wasm32`: the blocking readbacks, the `_timed` functions
+//! (`std::time::Instant` panics in the browser), `dispatch_f32`/`dispatch_u32` and the timestamp readback (one-shot
+//! channels), the `graph` module and `HeadlessDevice::pool_read`. A call to one of them fails to
+//! compile. The one exception to "nothing blocks" is [`WgpuJob::wait`], which cannot be removed (see there).
 
 use std::{
     future::Future,
@@ -38,11 +47,12 @@ use std::{
     sync::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicU64, Ordering},
-        mpsc,
     },
     task::{Context, Poll},
-    time::{Duration, Instant},
+    time::Duration,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use std::{sync::mpsc, time::Instant};
 
 use gust::{
     Access, Call, GpuPod, JobStatus, Kernel, KernelDescriptor, LengthRule, ParameterDescriptor,
@@ -54,6 +64,7 @@ mod cache;
 mod completion;
 mod error;
 mod generated_host;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod graph;
 pub mod pool;
 pub use cache::PipelineCacheStats;
@@ -61,6 +72,7 @@ use cache::{CachedKernel, KernelCacheKey, PipelineCache};
 use completion::Completion;
 pub use error::Error;
 pub use generated_host::render_wgpu_source;
+#[cfg(not(target_arch = "wasm32"))]
 pub use graph::{GraphOutput, GraphReport, NodeId, StagedGraph, TransferDirection, TransferRecord};
 pub use pool::{GpuPool, GrowthRecord};
 
@@ -103,12 +115,14 @@ pub enum F32Binding<'a> {
 }
 
 impl<'a> F32Binding<'a> {
+    #[cfg(not(target_arch = "wasm32"))]
     fn values(self) -> &'a [f32] {
         match self {
             Self::ReadOnly(values) | Self::ReadWrite(values) => values,
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn access(self) -> Access {
         match self {
             Self::ReadOnly(_) => Access::ReadOnly,
@@ -125,12 +139,14 @@ pub enum U32Binding<'a> {
 }
 
 impl<'a> U32Binding<'a> {
+    #[cfg(not(target_arch = "wasm32"))]
     fn values(self) -> &'a [u32] {
         match self {
             Self::ReadOnly(values) | Self::ReadWrite(values) => values,
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn access(self) -> Access {
         match self {
             Self::ReadOnly(_) => Access::ReadOnly,
@@ -224,6 +240,7 @@ pub struct BufferBinding<'a> {
     access: Access,
     device_id: u64,
     independent_length: bool,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     indirect: bool,
 }
 
@@ -262,6 +279,7 @@ impl<'a> BufferBinding<'a> {
         }
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn byte_len(&self) -> u64 {
         self.len as u64 * u64::from(self.layout.stride)
     }
@@ -370,6 +388,16 @@ impl WgpuJob<'_> {
     }
 
     /// Wait indefinitely for this submission, without waiting for later work.
+    ///
+    /// # On `wasm32` this does not wait
+    ///
+    /// The browser cannot block, and the WebGPU backend of `wgpu` 30.0.1 answers every device poll with `QueueEmpty` at
+    /// once (its source says "Device is polled automatically"; read there, not otherwise observed), so `wait`,
+    /// `wait_timeout` and `status` return `Complete` before the GPU is necessarily done.
+    /// It is not gated off because `gust::Job::wait` is a trait method that the blocking typed `dispatch` calls
+    /// (`gust/src/dispatch.rs`). The synchronisation on the web is an awaited readback
+    /// ([`read_typed_buffer_async`](HeadlessDevice::read_typed_buffer_async)), which resolves only when the work and the
+    /// copy are done.
     pub fn wait(&self) -> Result<(), Error> {
         self.poll_with_timeout(None).map(|_| ())
     }
@@ -543,6 +571,7 @@ struct PreparedDispatch {
 
 const TIMESTAMP_RESULT_BYTES: u64 = 2 * size_of::<u64>() as u64;
 
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 struct TimestampProfiler {
     query_set: wgpu::QuerySet,
     resolve_buffer: wgpu::Buffer,
@@ -946,6 +975,7 @@ impl HeadlessDevice {
     }
 
     /// Replace a persistent POD buffer and wait until the upload has completed.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn write_typed_buffer_timed<T: GpuPod>(
         &self,
         buffer: &GpuBuffer<T>,
@@ -963,6 +993,7 @@ impl HeadlessDevice {
         })
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn write_f32_buffer_timed(
         &self,
         buffer: &GpuBuffer<f32>,
@@ -998,9 +1029,8 @@ impl HeadlessDevice {
     /// background. This future never wakes itself, so awaiting it on an executor that re-polls only after a wake
     /// hangs, unless another thread keeps polling the device. The blocking [`read_typed_buffer`](Self::read_typed_buffer)
     /// does it correctly: it starts the copy, waits with `poll(Wait)`, then polls the finished future once
-    /// (an error if it is still pending). On `wasm32` the browser is expected to run the callback from its event loop,
-    /// which wakes the task, so a plain `.await` should suffice there; that path is built and run in m4.g2, not tested
-    /// here.
+    /// (an error if it is still pending). On `wasm32` the browser runs the callback from its event loop, which wakes the task,
+    /// so a plain `.await` suffices there (measured in Chrome by `cargo xtask check-web`).
     ///
     /// ```no_run
     /// # use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
@@ -1129,6 +1159,7 @@ impl HeadlessDevice {
             .wait()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn dispatch_f32_buffers_timed(
         &self,
         kernel: &KernelDescriptor,
@@ -1149,6 +1180,7 @@ impl HeadlessDevice {
         self.submit_f32_batch(dispatches)?.wait()
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn dispatch_f32_batch_timed(
         &self,
         dispatches: &[F32BufferDispatch<'_>],
@@ -1183,6 +1215,7 @@ impl HeadlessDevice {
     ///
     /// `gpu_elapsed` covers only the compute pass. It is `None` when the
     /// adapter does not expose timestamp queries or when `element_count` is zero.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn dispatch_buffers_timed(
         &self,
         kernel: &KernelDescriptor,
@@ -1239,6 +1272,7 @@ impl HeadlessDevice {
     /// `gpu_elapsed` brackets the entire compute pass containing every
     /// non-empty dispatch. Divide it by the batch length when the dispatches
     /// represent equivalent repeated work.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn dispatch_batch_timed(
         &self,
         dispatches: &[BufferDispatch<'_>],
@@ -1316,6 +1350,7 @@ impl HeadlessDevice {
     ///
     /// This v1 slice accepts one host binding for each storage parameter and reads
     /// every read-write binding back after the dispatch completes.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn dispatch_f32(
         &self,
         kernel: &KernelDescriptor,
@@ -1456,6 +1491,7 @@ impl HeadlessDevice {
 
     /// Dispatch an executable kernel over `element_count` one-dimensional invocations
     /// using `u32` storage buffers.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn dispatch_u32(
         &self,
         kernel: &KernelDescriptor,
@@ -1604,6 +1640,7 @@ impl HeadlessDevice {
     /// Prepare one indirect dispatch: every check of `prepare_batch` except the workgroup count,
     /// which only the GPU reads, from the arguments buffer. `dispatch.element_count` must be a
     /// nonzero placeholder; the prepared `workgroup_count` is meaningless (0) and never encoded.
+    #[cfg(not(target_arch = "wasm32"))]
     fn prepare_indirect(
         &self,
         dispatch: &BufferDispatch<'_>,
@@ -1858,6 +1895,7 @@ impl HeadlessDevice {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn wait_for_submission(&self, submission: wgpu::SubmissionIndex) -> Result<(), Error> {
         self.device
             .poll(wgpu::PollType::Wait {
@@ -1868,6 +1906,7 @@ impl HeadlessDevice {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn read_timestamp_duration(
         &self,
         profiler: &TimestampProfiler,
@@ -2059,6 +2098,7 @@ fn validate_binding_layout(
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn validate_dispatch(
     kernel: &KernelDescriptor,
     element_count: u32,
@@ -2094,6 +2134,7 @@ fn validate_dispatch(
     Ok(resources)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn validate_u32_dispatch(
     kernel: &KernelDescriptor,
     element_count: u32,
@@ -2237,6 +2278,7 @@ pub(crate) fn validate_kernel(
     Ok(resources)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn f32_as_bytes(values: &[f32]) -> &[u8] {
     pod_slice_as_bytes(values)
 }

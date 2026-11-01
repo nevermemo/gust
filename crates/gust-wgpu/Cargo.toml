@@ -21,6 +21,12 @@ wgpu.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 pollster.workspace = true
 
+# The browser backend, for wasm32 only (R4.9, D45): the workspace turns wgpu's default features off, so `webgpu` is not
+# reachable otherwise, and a native build must not gain it. wgpu 30 vendors its WebGPU bindings, so no unstable cfg flag
+# is needed. `cargo xtask check-web` runs the result in Chrome.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { workspace = true, features = ["webgpu"] }
+
 # Cargo unifies the features of a package with those of its dev-dependency on itself, so every `cargo test -p gust-wgpu`
 # builds the tests with the bridge; without this line they do not compile.
 [dev-dependencies]

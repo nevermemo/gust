@@ -12,6 +12,7 @@ members = [
     "examples/staged-graph",
     "examples/typed-pipeline",
     "examples/vector-add",
+    "examples/web-vector-add",
     "xtask",
 ]
 default-members = ["examples/vector-add"]

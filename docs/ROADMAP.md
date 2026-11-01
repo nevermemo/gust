@@ -46,7 +46,7 @@ and fixes the order inside it.
 | m3.d | Shadow-type breadth (T01-T12): executable atomics, twin assertions in the fixture tests, ledger twin column | done (Gpu: RTX 5090, debug and release ledger; Opus keep after one fix round; `0f2ff27`) |
 | m3.e1, m3.e2 | Remaining examples: per-kernel twins or explicit opt-outs (graph examples use read-back intermediates) | m3.e1 done (Gpu: RTX 5090; Opus keep after one fix round; `41b4d0e`); m3.e2 done (Gpu: RTX 5090; Opus keep after one fix round; `00127a4`) |
 | m3.f1, m3.f2 | `--cfg gust_dual`: a cross-crate fixture proving the twin is absent from production builds, `check-dual`, check-cfg lints, example mains, CI step | m3.f1 done (Unit, CPU only; Opus keep after one fix round; `5c5a9ad`); m3.f2 done (Unit + Gpu: RTX 5090; Opus keep after one fix round; `98acabc`) |
-| m3.g | Gates that cannot pass by skipping (plan Revision 7): examples with `--include-ignored` in `check-full`, a test-count guard, release-only tests required by name, NaN-propagating error folds, pinned check-ui fixtures, `gust::cpu` unit tests in the Unit suite | done (Unit; Opus keep after two fix rounds; `95c5514`); `check-full` on the merge pending |
+| m3.g | Gates that cannot pass by skipping (plan Revision 7): examples with `--include-ignored` in `check-full`, a test-count guard, release-only tests required by name, NaN-propagating error folds, pinned check-ui fixtures, `gust::cpu` unit tests in the Unit suite | done (Unit; Opus keep after two fix rounds; `95c5514`); `check-full` PASS at `96e4b9d` (clean tree, RTX 5090) |
 
 **Done: M2, typed host API** (closed 2026-10-24, D37). Plan adopted after two Codex reviews (owner-delegated); slices
 ran one at a time, and each landed slice is recorded in STATUS.

@@ -15,8 +15,9 @@ spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust
 m3.c (macro twins), m3.c2 (check-cpu), m3.d (atomics, fixture twins), m3.e1 (four example
 twins), m3.e2 (graph example twins), m3.f1 (`check-dual --check-only`), m3.f2 (check-cfg
 lints, dual mains, full `check-dual`, CI step) and m3.g (gates that cannot pass by skipping)
-done; the close-out docs and D40, D41 are in; `check-full` on a clean tree and the M3 sanity
-check next.
+done; the close-out docs and D40 to D42 are in; `check-full` passed on a clean tree at `96e4b9d`
+(RTX 5090, 2026-11-01 05:36-05:43Z: 13 SPIR-V modules validated, `check-dual` full mode, every
+example test with `--include-ignored`, both release-only tests by name); the M3 sanity check next.
 
 - M3 m3.g (`95c5514`): a read-only audit (plan Revision 7) found no gate that skips through
   an early return, a missing tool or a CI condition, but six holes, now closed: `check-full`

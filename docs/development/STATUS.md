@@ -44,6 +44,16 @@ running without Slang installed) in parallel with slices m4.0 and m4.h.
   driver) in `VALIDATION.json`; a missing or malformed adapter line fails the mode and records
   `"adapter": null`. The call order is pinned by a source test (the steps need cargo, slangc and
   a GPU). Opus keep after one fix round; gates on main at `72bd6bf`.
+- M4 m4.a (`2dcb9e3`): `gust::artifact` (D45) adds `Format`, `Artifact`, `content_key` (FNV-1a 64
+  of the entry point, a NUL and the clean Slang, with no line-ending normalization) and
+  `verify_artifact`. That function runs D17's identity check and the reflection cross-check and
+  returns `Verified`. `KernelDescriptor` gains `artifacts`; the macro emits an empty slice, and
+  17 full literals were updated. The identity error now names each differing value (target,
+  entry point, source hash, artifact hash). S1's vector-add is the positive fixture, kept
+  byte-exact under `core.autocrlf` by a root `.gitattributes`, which was proved in a scratch
+  clone. 16 negative and positive tests and 4 unit tests run in the Unit suite. The fixture
+  manifest is S1's interim shape, not D45's schema-1 manifest (m4.d). Opus keep after one fix
+  round; gates on main at `6d04248`.
 M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),

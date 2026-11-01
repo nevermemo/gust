@@ -43,8 +43,8 @@ its slice, and two fix rounds per slice.
 | m4.0 | Weak compare-exchange: uncontended success set-valued on the GPU, exact on the twin (D47) | done (Gpu: RTX 5090, debug and release; Opus keep after one fix round; `8d49412`) |
 | m4.h | M3 follow-ups: `check-artifacts` clears stale generated output first; the adapter name in `VALIDATION.json` | done (Gpu: RTX 5090, `check-full` and `check-artifacts`; Opus keep after one fix round; `b26bccd`) |
 | S2 | Spike: the `GUST_PROFILE` mechanism composes with `check-dual` and Cargo's rebuild tracking (D44) | done (decision A; local spike commit, not merged; `check-dual` must set `GUST_PROFILE=dev` for the dual fixture) |
-| m4.a | `gust::artifact`: `Artifact`, `verify_artifact`, `content_key`, `KernelDescriptor::artifacts` | running |
-| m4.b1, m4.b2 | `slang-runtime` feature, off by default; build profiles in `gust`'s build script, strict-profile refusals | planned |
+| m4.a | `gust::artifact`: `Artifact`, `verify_artifact`, `content_key`, `KernelDescriptor::artifacts` | done (Unit; Opus keep after one fix round; `2dcb9e3`) |
+| m4.b1, m4.b2 | `slang-runtime` feature, off by default; build profiles in `gust`'s build script, strict-profile refusals | m4.b1 running |
 | m4.c | Macro: content key, artifact and manifest embedding, export mode | planned |
 | m4.d | `cargo-gust`: `init`, `build` (isolated collection, D17 at export for WGSL and SPIR-V), `check`, `doctor` (D46) | planned |
 | m4.e1, m4.e2 | `gust-wgpu` precompiled path and cache key; precompiled fixture, `check-precompiled`, packaged-consumer proof without Slang | planned |

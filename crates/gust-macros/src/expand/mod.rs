@@ -1,3 +1,5 @@
+use std::{collections::HashMap, path::Path};
+
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote, quote_spanned};
 
@@ -5,6 +7,9 @@ use crate::{
     diagnostics::{self, Code},
     slang::ParameterFlavor,
 };
+
+mod artifact;
+use artifact::{Environment, Lookup};
 
 #[derive(Clone, Copy, Debug)]
 pub struct KernelOptions {
@@ -22,10 +27,49 @@ pub enum CpuTwin {
     Unsupported,
 }
 
-pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
+pub fn expand(module: syn::ItemMod) -> syn::Result<TokenStream> {
+    expand_in(module, &Environment::from_process())
+}
+
+/// [`expand`] with the crate directory, the export directory and the package name given, for the pipeline tests that
+/// assert the codes of the build-directory errors (E0711 to E0713) without touching the process environment.
+#[cfg(test)]
+pub(crate) fn expand_with_directories(
+    module: syn::ItemMod,
+    manifest_dir: Option<&Path>,
+    export_dir: Option<&Path>,
+    package: Option<&str>,
+) -> syn::Result<TokenStream> {
+    let environment = Environment {
+        manifest_dir: manifest_dir.map(Path::to_path_buf),
+        export_dir: export_dir.map(Path::to_path_buf),
+        package: package.map(str::to_owned),
+        reported_file: None,
+    };
+    expand_in(module, &environment)
+}
+
+/// [`expand`] with the environment given, so that tests choose the crate directory and the export directory without
+/// touching the process environment.
+fn expand_in(mut module: syn::ItemMod, environment: &Environment) -> syn::Result<TokenStream> {
     crate::validate::validate_module(&module)?;
     let original_module = module.clone();
     let module_name = module.ident.to_string();
+    let manifest_dir = environment.manifest_dir.as_deref();
+    let manifest_present = artifact::manifest_present(manifest_dir);
+    let record_directory = environment.record_directory();
+    let export_mode = environment.export_dir.is_some();
+    // The kernel whose line carries the module's one `require_manifest` check: the first with a complete pair.
+    let mut manifest_span: Option<proc_macro2::Span> = None;
+    let structs: HashMap<String, &syn::ItemStruct> = original_module
+        .content
+        .iter()
+        .flat_map(|(_, items)| items)
+        .filter_map(|item| match item {
+            syn::Item::Struct(item) => Some((item.ident.to_string(), item)),
+            _ => None,
+        })
+        .collect();
     let (_, items) = module.content.as_mut().expect("validated inline module");
     let mut generated = Vec::new();
     let mut descriptor_paths = Vec::new();
@@ -54,10 +98,51 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
         let parameter_descriptors = parameter_descriptors(&function.sig.inputs)?;
         let original_kernel = find_function(&original_module, &original_name_text);
         let emitted = crate::slang::emit_kernel(&original_module, original_kernel, options)?;
-        let source_origin = source_origin(original_kernel, &emitted.lines);
+        let reported = reported_file(original_kernel, environment);
+        let source_origin = source_origin(reported.as_deref(), manifest_dir, &emitted.lines);
         let slang_source = emitted.source;
-        let (artifacts, artifact_present) = artifact_tokens();
-        let strict_artifact = require_artifact_item(artifact_present, original_name.span());
+        // The key hashes the clean text, so it is computed here: the Slang text is final, and the CPU twin (below)
+        // never reaches it.
+        let key = artifact::content_key(&entry_point, &slang_source);
+        let lookup = match artifact::lookup(manifest_dir, &key) {
+            // Export mode is how `cargo gust build` writes the missing half, and it expands this crate to do so: a
+            // half pair must not stop that expansion, so it counts as absent there (and only there).
+            Lookup::Incomplete { .. } if export_mode => Lookup::Absent,
+            other => other,
+        };
+        let artifacts = artifact::artifact_tokens(&key, &lookup);
+        let strict_artifact = artifact_check_items(&lookup, original_name.span());
+        if lookup == Lookup::Present && manifest_span.is_none() {
+            manifest_span = Some(original_name.span());
+        }
+        let export_error = match &record_directory {
+            Ok(None) => TokenStream::new(),
+            Ok(Some(directory)) => {
+                let parameters = parameter_records(&function.sig.inputs, &structs)?;
+                let file = origin_file(reported.as_deref(), manifest_dir, &emitted.lines);
+                let record = artifact::KernelRecord {
+                    key: &key,
+                    module: &module_name,
+                    name: &original_name_text,
+                    entry_point: &entry_point,
+                    workgroup_size: options.workgroup_size,
+                    parameters: &parameters,
+                    file: file.as_deref().unwrap_or_default(),
+                    lines: if file.is_some() { &emitted.lines } else { &[] },
+                };
+                match artifact::write_records(directory, &key, &slang_source, &record.json()) {
+                    Ok(()) => TokenStream::new(),
+                    Err(message) => artifact::error_item(
+                        Code::ExportWriteFailed,
+                        original_name.span(),
+                        &message,
+                    ),
+                }
+            }
+            Err(message) => {
+                artifact::error_item(Code::ExportPackageName, original_name.span(), message)
+            }
+        };
         let [x, y, z] = options.workgroup_size;
         let (handle_doc, typed_calls) = typed_call_items(&original_name, &function.sig.inputs)?;
         let element_assertions = element_layout_assertions(&original_name, &function.sig.inputs)?;
@@ -97,6 +182,8 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
 
             #strict_artifact
 
+            #export_error
+
             #cpu_twin
 
             #element_assertions
@@ -105,6 +192,12 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
 
     items.insert(0, syn::parse_quote! { use ::gust::prelude::*; });
     let tracked_environment = tracked_environment();
+    let manifest_include = artifact::manifest_tokens(manifest_present);
+    // One check per module, not per kernel: the manifest is a property of the crate, so N kernels with a pair and no
+    // manifest are one cause and one error, spanned at the first kernel of them.
+    let manifest_check = manifest_span
+        .map(|span| require_manifest_item(manifest_present, span))
+        .unwrap_or_default();
     let module_ident = &module.ident;
     let module_vis = &module.vis;
     let module_attrs = &module.attrs;
@@ -119,6 +212,10 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
 
             #tracked_environment
 
+            #manifest_include
+
+            #manifest_check
+
             pub const MODULE_DESCRIPTOR: ::gust::ModuleDescriptor =
                 ::gust::ModuleDescriptor {
                     name: #module_name,
@@ -128,20 +225,73 @@ pub fn expand(mut module: syn::ItemMod) -> syn::Result<TokenStream> {
     })
 }
 
-/// The `artifacts:` field of a kernel descriptor and whether it holds an artifact. Artifacts are looked up and
-/// embedded from slice m4.c on; until then every kernel has none, which a strict profile turns into a compile error
-/// through [`require_artifact_item`].
-fn artifact_tokens() -> (TokenStream, bool) {
-    (quote!(&[]), false)
+/// The profile checks of one kernel, all spanned at the kernel so that a strict build fails at the kernel's own line in
+/// the user's file, not inside `gust`:
+/// - no artifact: `require_artifact(false)`, which a strict profile (D44) turns into a compile error;
+/// - a complete pair: `require_artifact(true)`. The module as a whole then also gets one
+///   `require_manifest(<the manifest exists>)` (see `expand_in`), which a strict profile turns into the "run
+///   `cargo gust init` and `cargo gust build`" error (R4.3). A kernel without an artifact reports only the artifact,
+///   so that one cause is one error; its fix, `cargo gust build`, writes the manifest too;
+/// - half a pair (outside export mode, where it is absent): a coded `compile_error!` naming the missing file and the
+///   one to delete, and nothing else, so that it is never a silent `&[]`.
+///
+/// Under `dev` the profile checks do nothing. They are emitted in every expansion.
+fn artifact_check_items(lookup: &Lookup, span: proc_macro2::Span) -> TokenStream {
+    match lookup {
+        Lookup::Absent => require_artifact_item(false, span),
+        Lookup::Present => require_artifact_item(true, span),
+        Lookup::Incomplete { left, missing } => artifact::error_item(
+            Code::HalfArtifactPair,
+            span,
+            &artifact::incomplete_message(left, missing),
+        ),
+    }
 }
 
-/// The profile check of one kernel: `gust::profile::require_artifact(present)` in a `const _`, spanned at the kernel
-/// so that a strict build (`GUST_PROFILE=native` or `web`, D44) without an artifact fails at the kernel's own line
-/// in the user's file, not inside `gust`. Under `dev` it does nothing. It is emitted in every expansion.
+/// `gust::profile::require_artifact(present)` in a `const _`. Under `dev` it does nothing.
 fn require_artifact_item(present: bool, span: proc_macro2::Span) -> TokenStream {
     quote_spanned! {span=>
         const _: () = ::gust::profile::require_artifact(#present);
     }
+}
+
+/// `gust::profile::require_manifest(present)` in a `const _`. Under `dev` it does nothing.
+fn require_manifest_item(present: bool, span: proc_macro2::Span) -> TokenStream {
+    quote_spanned! {span=>
+        const _: () = ::gust::profile::require_manifest(#present);
+    }
+}
+
+/// The parameters of a kernel as `kernel.json` records them: the facts [`parameter_descriptors`] turns into tokens,
+/// plus the element layout of each storage parameter.
+fn parameter_records(
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
+    structs: &HashMap<String, &syn::ItemStruct>,
+) -> syn::Result<Vec<artifact::ParameterRecord>> {
+    Ok(parameter_facts(inputs)?
+        .into_iter()
+        .map(|fact| {
+            let (kind, access) = match fact.flavor {
+                ParameterFlavor::Invocation => ("invocation", "not_applicable"),
+                ParameterFlavor::StorageRead => ("storage", "read_only"),
+                ParameterFlavor::StorageReadWrite => ("storage", "read_write"),
+                ParameterFlavor::Uniform => ("uniform", "read_only"),
+                ParameterFlavor::Value => ("value", "not_applicable"),
+            };
+            let layout = fact
+                .element
+                .as_ref()
+                .and_then(|element| artifact::element_layout(element, structs));
+            artifact::ParameterRecord {
+                name: fact.name,
+                rust_type: fact.rust_type,
+                kind,
+                access,
+                binding: fact.binding,
+                layout,
+            }
+        })
+        .collect())
 }
 
 /// Reads the two variables that decide what a kernel crate's expansion contains, so that rustc records them as
@@ -163,13 +313,46 @@ fn tracked_environment() -> TokenStream {
 /// real file (a span from a synthesized token stream, as in unit tests), or
 /// [`recorded_path`] could not produce a safe one, the origin is unknown and the
 /// table is dropped, because lines without a file cannot be reported.
-fn source_origin(kernel: &syn::ItemFn, lines: &[crate::slang::LineRecord]) -> TokenStream {
-    let reported = kernel.sig.ident.span().file();
-    if reported.is_empty() || reported.starts_with('<') {
+fn source_origin(
+    reported: Option<&str>,
+    manifest_dir: Option<&Path>,
+    lines: &[crate::slang::LineRecord],
+) -> TokenStream {
+    let Some(reported) = reported else {
         return quote!(::gust::SourceOrigin::UNKNOWN);
-    }
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").ok();
-    origin_tokens(&reported, manifest_dir.as_deref(), lines)
+    };
+    origin_tokens(reported, manifest_dir.and_then(Path::to_str), lines)
+}
+
+/// The file rustc reports for `kernel`, or the one the [`Environment`] gives in its place; `None` when there is no
+/// real file (a span from a synthesized token stream).
+fn reported_file(kernel: &syn::ItemFn, environment: &Environment) -> Option<String> {
+    let reported = environment
+        .reported_file
+        .clone()
+        .unwrap_or_else(|| kernel.sig.ident.span().file());
+    (!reported.is_empty() && !reported.starts_with('<')).then_some(reported)
+}
+
+/// The recorded source file of a kernel when its origin is known, which is when [`source_origin`] emits a table: the
+/// export record holds the same file and the same line table as the descriptor. The crate directory comes from the
+/// [`Environment`], like everything else the expansion reads.
+fn origin_file(
+    reported: Option<&str>,
+    manifest_dir: Option<&Path>,
+    lines: &[crate::slang::LineRecord],
+) -> Option<String> {
+    known_origin_file(reported?, manifest_dir.and_then(Path::to_str), lines)
+}
+
+/// The file of an origin: [`recorded_path`], unless that is empty or there are no lines to map.
+fn known_origin_file(
+    reported: &str,
+    manifest_dir: Option<&str>,
+    lines: &[crate::slang::LineRecord],
+) -> Option<String> {
+    let file = recorded_path(reported, manifest_dir);
+    (!file.is_empty() && !lines.is_empty()).then_some(file)
 }
 
 /// [`source_origin`] once the span file and the manifest dir are known.
@@ -178,10 +361,9 @@ fn origin_tokens(
     manifest_dir: Option<&str>,
     lines: &[crate::slang::LineRecord],
 ) -> TokenStream {
-    let file = recorded_path(reported, manifest_dir);
-    if file.is_empty() || lines.is_empty() {
+    let Some(file) = known_origin_file(reported, manifest_dir, lines) else {
         return quote!(::gust::SourceOrigin::UNKNOWN);
-    }
+    };
     let lines = lines.iter().map(|line| {
         let (slang_start, slang_end, rust_line) =
             (line.slang_start, line.slang_end, line.rust_line);
@@ -496,9 +678,21 @@ pub fn kernel_attribute(function: &syn::ItemFn) -> syn::Result<Option<(KernelOpt
     )))
 }
 
-fn parameter_descriptors(
+/// What the expander knows about one kernel parameter. The descriptor tokens ([`parameter_descriptors`]) and the
+/// export record ([`parameter_records`]) are both made from it, so they cannot disagree about a binding.
+struct ParameterFacts {
+    name: String,
+    rust_type: String,
+    flavor: ParameterFlavor,
+    /// The binding in descriptor set 0 of a storage or uniform parameter, numbered in declaration order.
+    binding: Option<u32>,
+    /// The element type of a storage parameter.
+    element: Option<syn::Type>,
+}
+
+fn parameter_facts(
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
-) -> syn::Result<Vec<TokenStream>> {
+) -> syn::Result<Vec<ParameterFacts>> {
     let mut next_binding = 0_u32;
     inputs
         .iter()
@@ -517,9 +711,50 @@ fn parameter_descriptors(
                     "GPU parameters need identifier names",
                 ));
             };
-            let name = pattern.ident.to_string();
-            let rust_type = input.ty.to_token_stream().to_string();
             let flavor = crate::slang::parameter_flavor(&input.ty);
+            let is_resource = matches!(
+                flavor,
+                ParameterFlavor::StorageRead
+                    | ParameterFlavor::StorageReadWrite
+                    | ParameterFlavor::Uniform
+            );
+            let binding = is_resource.then(|| {
+                let binding = next_binding;
+                next_binding += 1;
+                binding
+            });
+            let element = if matches!(
+                flavor,
+                ParameterFlavor::StorageRead | ParameterFlavor::StorageReadWrite
+            ) {
+                Some(crate::slang::wrapper_element_type(&input.ty)?.clone())
+            } else {
+                None
+            };
+            Ok(ParameterFacts {
+                name: pattern.ident.to_string(),
+                rust_type: input.ty.to_token_stream().to_string(),
+                flavor,
+                binding,
+                element,
+            })
+        })
+        .collect()
+}
+
+fn parameter_descriptors(
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
+) -> syn::Result<Vec<TokenStream>> {
+    parameter_facts(inputs)?
+        .into_iter()
+        .map(|fact| {
+            let ParameterFacts {
+                name,
+                rust_type,
+                flavor,
+                binding,
+                element,
+            } = fact;
             let (kind, access) = match flavor {
                 ParameterFlavor::Invocation => (
                     quote!(::gust::ParameterKind::Invocation),
@@ -542,29 +777,17 @@ fn parameter_descriptors(
                     quote!(::gust::Access::NotApplicable),
                 ),
             };
-            let is_resource = matches!(
-                flavor,
-                ParameterFlavor::StorageRead
-                    | ParameterFlavor::StorageReadWrite
-                    | ParameterFlavor::Uniform
-            );
-            let binding = if is_resource {
-                let binding = next_binding;
-                next_binding += 1;
-                quote!(Some(::gust::ResourceBinding { group: 0, binding: #binding }))
-            } else {
-                quote!(None)
+            let binding = match binding {
+                Some(binding) => {
+                    quote!(Some(::gust::ResourceBinding { group: 0, binding: #binding }))
+                }
+                None => quote!(None),
             };
-            let resource_layout = if matches!(
-                flavor,
-                ParameterFlavor::StorageRead | ParameterFlavor::StorageReadWrite
-            ) {
-                let element = crate::slang::wrapper_element_type(&input.ty)?;
-                quote!(Some(::gust::ResourceLayout::storage_v1(
+            let resource_layout = match element {
+                Some(element) => quote!(Some(::gust::ResourceLayout::storage_v1(
                     <#element as ::gust::GpuPod>::LAYOUT,
-                )))
-            } else {
-                quote!(None)
+                ))),
+                None => quote!(None),
             };
             Ok(quote! {
                 ::gust::ParameterDescriptor {
@@ -1044,6 +1267,8 @@ fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::Path};
+
     use super::*;
 
     /// Not reachable through `#[gpu]`: the validator rejects a struct without named fields
@@ -1151,7 +1376,7 @@ mod tests {
         .unwrap();
         let output = expand(module).unwrap();
         let text = output.to_string();
-        // No artifact exists before m4.c, so the argument is `false`; one check per kernel, none per module.
+        // No `gust-artifacts/` exists in this crate, so the argument is `false`; one check per kernel, none per module.
         assert_eq!(
             text.matches("const _ : () = :: gust :: profile :: require_artifact (false) ;")
                 .count(),
@@ -1167,14 +1392,493 @@ mod tests {
 
     #[test]
     fn the_checks_use_the_value_the_artifacts_field_reports() {
-        let (artifacts, present) = artifact_tokens();
+        let artifacts = artifact::artifact_tokens("0123456789abcdef", &Lookup::Absent);
         assert_eq!(artifacts.to_string(), "& []");
-        assert!(!present);
         let item = require_artifact_item(true, proc_macro2::Span::call_site()).to_string();
         assert_eq!(
             item,
             "const _ : () = :: gust :: profile :: require_artifact (true) ;"
         );
+        let item = require_manifest_item(false, proc_macro2::Span::call_site()).to_string();
+        assert_eq!(
+            item,
+            "const _ : () = :: gust :: profile :: require_manifest (false) ;"
+        );
+    }
+
+    // ---- artifacts and export mode (m4.c) ----
+
+    use artifact::tests::Scratch;
+
+    const KERNEL: &str = "mod layout {\n#[kernel]\npub fn inspect(id: SV_DispatchThreadID, values: StructuredBuffer<f32>) {\nlet i = id.x;\n}\n}";
+
+    /// An environment for a crate named `demo-crate` at `manifest` and, optionally, with export mode on.
+    fn environment(manifest: Option<&Path>, export: Option<&Path>) -> Environment {
+        Environment {
+            manifest_dir: manifest.map(Path::to_path_buf),
+            export_dir: export.map(Path::to_path_buf),
+            package: Some("demo-crate".to_owned()),
+            reported_file: None,
+        }
+    }
+
+    fn expanded(source: &str, environment: &Environment) -> TokenStream {
+        let module: syn::ItemMod = crate::diagnostics::testing::parse_str(source).unwrap();
+        expand_in(module, environment).unwrap()
+    }
+
+    /// Expands `source` in export mode once and returns its key and clean Slang text, as the records say them.
+    fn exported(source: &str) -> (String, String) {
+        let scratch = Scratch::new("exported");
+        let records = scratch.0.join("records");
+        expanded(source, &environment(None, Some(&records)));
+        let directory = records.join("demo-crate");
+        let mut keys: Vec<String> = fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .filter_map(|name| name.strip_suffix(".slang").map(str::to_owned))
+            .collect();
+        assert_eq!(keys.len(), 1, "{keys:?}");
+        let key = keys.remove(0);
+        let slang = fs::read_to_string(directory.join(format!("{key}.slang"))).unwrap();
+        (key, slang)
+    }
+
+    /// A crate directory holding the artifact pair of `KERNEL` and, if asked, the manifest.
+    fn crate_with_pair(name: &str, manifest: bool) -> (Scratch, String) {
+        let (key, _) = exported(KERNEL);
+        let scratch = Scratch::new(name);
+        scratch.artifact(&format!("{key}.wgsl"), "wgsl bytes");
+        scratch.artifact(&format!("{key}.wgsl.reflection.json"), "{}");
+        if manifest {
+            scratch.artifact("manifest.json", "{}");
+        }
+        (scratch, key)
+    }
+
+    #[test]
+    fn the_exported_key_is_the_content_key_of_the_entry_point_and_the_clean_text() {
+        let (key, slang) = exported(KERNEL);
+        assert_eq!(key, artifact::content_key("gpu_layout_inspect", &slang));
+        assert!(
+            !slang.contains("#line"),
+            "the key hashes the clean text: {slang}"
+        );
+    }
+
+    #[test]
+    fn a_complete_pair_is_embedded_and_required() {
+        let (scratch, key) = crate_with_pair("pair-present", true);
+        let text = expanded(KERNEL, &environment(Some(&scratch.0), None)).to_string();
+        assert!(
+            text.contains(
+                "artifacts : & [:: gust :: Artifact { format : :: gust :: Format :: Wgsl"
+            ),
+            "{text}"
+        );
+        assert!(text.contains(&format!("key : \"{key}\"")), "{text}");
+        assert!(text.contains(&format!(
+            "bytes : :: core :: include_bytes ! (:: core :: concat ! (:: core :: env ! (\"CARGO_MANIFEST_DIR\") , \"/gust-artifacts/{key}.wgsl\"))"
+        )), "{text}");
+        assert!(text.contains(&format!(
+            "reflection : :: core :: include_str ! (:: core :: concat ! (:: core :: env ! (\"CARGO_MANIFEST_DIR\") , \"/gust-artifacts/{key}.wgsl.reflection.json\"))"
+        )), "{text}");
+        assert!(text.contains("require_artifact (true)"), "{text}");
+        assert!(!text.contains("require_artifact (false)"), "{text}");
+        assert!(text.contains("require_manifest (true)"), "{text}");
+        assert_eq!(
+            text.matches("manifest.json").count(),
+            1,
+            "one include: {text}"
+        );
+    }
+
+    #[test]
+    fn without_files_the_slice_is_empty_and_the_artifact_is_required() {
+        let scratch = Scratch::new("pair-absent");
+        scratch.artifact("0000000000000000.wgsl", "another kernel's file");
+        let text = expanded(KERNEL, &environment(Some(&scratch.0), None)).to_string();
+        assert!(text.contains("artifacts : & []"), "{text}");
+        assert!(text.contains("require_artifact (false)"), "{text}");
+        assert!(!text.contains("require_artifact (true)"), "{text}");
+        // One cause, one error under a strict profile: the artifact alone is reported.
+        assert!(!text.contains("require_manifest"), "{text}");
+        assert!(!text.contains("include_bytes"), "{text}");
+        assert!(!text.contains("compile_error"), "{text}");
+    }
+
+    #[test]
+    fn half_a_pair_is_a_compile_error_naming_the_missing_file_never_a_silent_empty_slice() {
+        let (key, _) = exported(KERNEL);
+        for remove in [format!("{key}.wgsl.reflection.json"), format!("{key}.wgsl")] {
+            let missing = &remove;
+            let half = Scratch::new(&format!("half {remove}"));
+            half.artifact(&format!("{key}.wgsl"), "x");
+            half.artifact(&format!("{key}.wgsl.reflection.json"), "{}");
+            fs::remove_file(half.0.join("gust-artifacts").join(&remove)).unwrap();
+            let output = expanded(KERNEL, &environment(Some(&half.0), None));
+            let text = output.to_string();
+            assert!(text.contains("compile_error !"), "{text}");
+            assert!(text.contains("[GUST-E0711]"), "{text}");
+            assert!(
+                text.contains(&format!("`gust-artifacts/{missing}` is missing")),
+                "{text}"
+            );
+            // The message names the file to delete (the one that is left) and the command that then works.
+            let left = if remove.ends_with(".json") {
+                format!("{key}.wgsl")
+            } else {
+                format!("{key}.wgsl.reflection.json")
+            };
+            assert!(
+                text.contains(&format!(
+                    "Delete the file that is left, `gust-artifacts/{left}`, then run `cargo gust build`"
+                )),
+                "{text}"
+            );
+            // Not a silent `&[]`: the error is the whole story, with no profile check that could add a second one.
+            assert!(!text.contains("require_artifact"), "{text}");
+            assert!(!text.contains("include_bytes"), "{text}");
+            // The error sits at the kernel's identifier (line 3 of KERNEL).
+            let mut lines = Vec::new();
+            ident_lines(output, "compile_error", &mut lines);
+            assert_eq!(lines, [3], "{text}");
+        }
+    }
+
+    /// `cargo gust build` expands the kernel crate in export mode to learn what to compile; a half pair on disk must
+    /// not stop that expansion, or the build tool could never repair the half it finds.
+    #[test]
+    fn in_export_mode_half_a_pair_is_absent_so_that_the_build_tool_can_repair_it() {
+        let (key, _) = exported(KERNEL);
+        for remove in [format!("{key}.wgsl.reflection.json"), format!("{key}.wgsl")] {
+            let half = Scratch::new(&format!("half-export {remove}"));
+            half.artifact(&format!("{key}.wgsl"), "x");
+            half.artifact(&format!("{key}.wgsl.reflection.json"), "{}");
+            fs::remove_file(half.0.join("gust-artifacts").join(&remove)).unwrap();
+            let records = half.0.join("target-records");
+            let text = expanded(KERNEL, &environment(Some(&half.0), Some(&records))).to_string();
+            assert!(!text.contains("compile_error"), "{text}");
+            assert!(text.contains("artifacts : & []"), "{text}");
+            assert!(text.contains("require_artifact (false)"), "{text}");
+            assert!(!text.contains("include_bytes"), "{text}");
+            // The records were still written: that is what the build tool reads.
+            assert!(
+                records
+                    .join("demo-crate")
+                    .join(format!("{key}.kernel.json"))
+                    .is_file()
+            );
+            // The same crate without export mode keeps the hard error.
+            let strict = expanded(KERNEL, &environment(Some(&half.0), None)).to_string();
+            assert!(strict.contains("[GUST-E0711]"), "{strict}");
+        }
+    }
+
+    /// The manifest check is a property of the crate, so a module with several kernels that have a pair gets it once.
+    #[test]
+    fn require_manifest_is_emitted_once_per_module_not_once_per_kernel() {
+        let two = "mod two {\n#[kernel]\npub fn a(id: SV_DispatchThreadID, v: StructuredBuffer<f32>) { let i = id.x; }\n#[kernel]\npub fn b(id: SV_DispatchThreadID, mut v: RWStructuredBuffer<f32>) { v[id.x] = 1.0; }\n}";
+        let scratch = Scratch::new("manifest-once");
+        let records = scratch.0.join("records");
+        expanded(two, &environment(None, Some(&records)));
+        let directory = records.join("demo-crate");
+        let mut keys = 0;
+        for entry in fs::read_dir(&directory).unwrap() {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            if let Some(key) = name.strip_suffix(".slang") {
+                scratch.artifact(&format!("{key}.wgsl"), "wgsl");
+                scratch.artifact(&format!("{key}.wgsl.reflection.json"), "{}");
+                keys += 1;
+            }
+        }
+        assert_eq!(keys, 2);
+        for manifest in [false, true] {
+            if manifest {
+                scratch.artifact("manifest.json", "{}");
+            }
+            let output = expanded(two, &environment(Some(&scratch.0), None));
+            let text = output.to_string();
+            assert_eq!(text.matches("require_artifact (true)").count(), 2, "{text}");
+            assert_eq!(
+                text.matches(&format!("require_manifest ({manifest})"))
+                    .count(),
+                1,
+                "{text}"
+            );
+            assert_eq!(text.matches("require_manifest").count(), 1, "{text}");
+            // The one check sits at the first kernel with a pair (`a`, line 3 of the module).
+            let mut lines = Vec::new();
+            ident_lines(output, "require_manifest", &mut lines);
+            assert_eq!(lines, [3], "{text}");
+        }
+    }
+
+    #[test]
+    fn a_strict_profile_needs_the_manifest_only_beside_a_present_pair() {
+        let (without, _) = crate_with_pair("manifest-absent", false);
+        let text = expanded(KERNEL, &environment(Some(&without.0), None)).to_string();
+        assert!(text.contains("require_artifact (true)"), "{text}");
+        assert!(text.contains("require_manifest (false)"), "{text}");
+        assert!(!text.contains("manifest.json"), "{text}");
+        let mut lines = Vec::new();
+        ident_lines(
+            expanded(KERNEL, &environment(Some(&without.0), None)),
+            "require_manifest",
+            &mut lines,
+        );
+        assert_eq!(lines, [3]);
+    }
+
+    #[test]
+    fn the_manifest_is_included_once_per_module_even_without_kernels() {
+        let scratch = Scratch::new("manifest-modules");
+        scratch.artifact("manifest.json", "{}");
+        for (source, kernels) in [(KERNEL, 1), ("mod empty {}", 0)] {
+            let text = expanded(source, &environment(Some(&scratch.0), None)).to_string();
+            assert_eq!(
+                text.matches("\"/gust-artifacts/manifest.json\"").count(),
+                1,
+                "{text}"
+            );
+            assert_eq!(text.matches("require_artifact").count(), kernels, "{text}");
+        }
+        let two = "mod two {\n#[kernel]\npub fn a(id: SV_DispatchThreadID, v: StructuredBuffer<f32>) { let i = id.x; }\n#[kernel]\npub fn b(id: SV_DispatchThreadID, v: StructuredBuffer<f32>) { let i = id.x; }\n}";
+        let text = expanded(two, &environment(Some(&scratch.0), None)).to_string();
+        assert_eq!(text.matches("manifest.json").count(), 1, "{text}");
+    }
+
+    #[test]
+    fn export_mode_writes_both_records_under_the_package_and_matches_the_golden() {
+        let scratch = Scratch::new("export-golden");
+        let records = scratch.0.join("records");
+        let source = "mod demo {\nstruct Pair { a: uint, b: float }\n#[kernel(workgroup_size(32, 2, 1))]\npub fn run(id: SV_DispatchThreadID, pairs: StructuredBuffer<Pair>, mut out: RWStructuredBuffer<float>) {\nout[id.x] = pairs[id.x].b;\n}\n}";
+        expanded(source, &environment(None, Some(&records)));
+        let directory = records.join("demo-crate");
+        let mut names: Vec<String> = fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        names.sort();
+        assert_eq!(names.len(), 2, "{names:?}");
+        let key = names[0].strip_suffix(".kernel.json").unwrap().to_owned();
+        assert_eq!(
+            names,
+            [format!("{key}.kernel.json"), format!("{key}.slang")]
+        );
+        let slang = fs::read(directory.join(format!("{key}.slang"))).unwrap();
+        assert_eq!(
+            key,
+            artifact::content_key("gpu_demo_run", std::str::from_utf8(&slang).unwrap())
+        );
+        let json = fs::read_to_string(directory.join(format!("{key}.kernel.json"))).unwrap();
+        // The key follows the emitter's output, which has its own goldens; the rest of the record is pinned here.
+        assert_eq!(json.matches(&key).count(), 1, "{json}");
+        artifact::tests::assert_golden(
+            &json.replace(&key, "<key>"),
+            "demo-run.kernel.json",
+            &include_str!("../../tests/golden/demo-run.kernel.json").replace("\r\n", "\n"),
+        );
+        // A second expansion rewrites identical bytes.
+        expanded(source, &environment(None, Some(&records)));
+        assert_eq!(
+            fs::read(directory.join(format!("{key}.kernel.json"))).unwrap(),
+            json.as_bytes()
+        );
+        assert_eq!(
+            fs::read(directory.join(format!("{key}.slang"))).unwrap(),
+            slang
+        );
+    }
+
+    #[test]
+    fn export_mode_keeps_the_strict_assert_for_what_is_present() {
+        let (scratch, _) = crate_with_pair("export-present", true);
+        let records = scratch.0.join("target-records");
+        let text = expanded(KERNEL, &environment(Some(&scratch.0), Some(&records))).to_string();
+        assert!(text.contains("require_artifact (true)"), "{text}");
+        assert!(
+            text.contains("artifacts : & [:: gust :: Artifact"),
+            "{text}"
+        );
+        let empty = Scratch::new("export-absent");
+        let text = expanded(KERNEL, &environment(Some(&empty.0), Some(&records))).to_string();
+        assert!(text.contains("require_artifact (false)"), "{text}");
+        assert!(!text.contains("require_artifact (true)"), "{text}");
+        assert!(text.contains("artifacts : & []"), "{text}");
+    }
+
+    #[test]
+    fn export_mode_without_a_package_name_is_a_compile_error() {
+        let scratch = Scratch::new("export-no-package");
+        let mut environment = environment(None, Some(&scratch.0));
+        environment.package = None;
+        let text = expanded(KERNEL, &environment).to_string();
+        assert!(text.contains("compile_error !"), "{text}");
+        assert!(text.contains("[GUST-E0713]"), "{text}");
+        assert!(text.contains("CARGO_PKG_NAME"), "{text}");
+        assert!(fs::read_dir(&scratch.0).unwrap().next().is_none());
+    }
+
+    #[test]
+    fn an_export_write_failure_is_a_compile_error_naming_the_path() {
+        let scratch = Scratch::new("export-failure");
+        let blocker = scratch.0.join("blocked");
+        fs::write(&blocker, "a file where the export directory should be").unwrap();
+        let output = expanded(KERNEL, &environment(None, Some(&blocker)));
+        let text = output.to_string();
+        assert!(text.contains("compile_error !"), "{text}");
+        assert!(text.contains("[GUST-E0712]"), "{text}");
+        assert!(text.contains("blocked"), "{text}");
+        assert!(text.contains("could not create"), "{text}");
+        let mut lines = Vec::new();
+        ident_lines(output, "compile_error", &mut lines);
+        assert_eq!(lines, [3], "{text}");
+    }
+
+    #[test]
+    fn no_export_without_the_variable() {
+        let scratch = Scratch::new("no-export");
+        let text = expanded(KERNEL, &environment(Some(&scratch.0), None)).to_string();
+        assert!(!text.contains("compile_error"), "{text}");
+        assert!(fs::read_dir(&scratch.0).unwrap().next().is_none());
+    }
+
+    /// The sibling of `descriptor_contains_slang_not_custom_ir_or_spirv`'s `fn cpu` check: the records of a kernel
+    /// that does get a CPU twin hold none of the twin's text, though the expansion itself does.
+    #[test]
+    fn the_records_of_a_kernel_with_a_twin_hold_no_twin_text() {
+        let scratch = Scratch::new("twin-free");
+        let records = scratch.0.join("records");
+        let expansion = expanded(KERNEL, &environment(None, Some(&records))).to_string();
+        for marker in ["gust_dual", "CpuDevice", "__gpu_typecheck_"] {
+            assert!(
+                expansion.contains(marker),
+                "the expansion must carry the twin, or this test proves nothing: {marker}"
+            );
+        }
+        let directory = records.join("demo-crate");
+        let mut checked = 0;
+        for entry in fs::read_dir(&directory).unwrap() {
+            let record = fs::read_to_string(entry.unwrap().path()).unwrap();
+            for marker in artifact::TWIN_TEXT {
+                assert!(!record.contains(marker), "{marker} in {record}");
+            }
+            assert!(!record.contains("cpu"), "no `cpu` at all in {record}");
+            checked += 1;
+        }
+        assert_eq!(checked, 2);
+    }
+
+    /// A user identifier is not twin text: a struct called `CpuDevice` and a function called `gust_dual` export like
+    /// any other names. The guard matches the forms the generated twin takes (see `TWIN_TEXT`), and reserving the two
+    /// names would reject programs that are valid today.
+    #[test]
+    fn user_names_like_the_twin_export_without_a_bug_report() {
+        let source = "mod names {\nstruct CpuDevice { a: uint }\nfn gust_dual(x: uint) -> uint { x + 1u32 }\n#[kernel]\npub fn run(id: SV_DispatchThreadID, v: StructuredBuffer<CpuDevice>, mut out: RWStructuredBuffer<uint>) {\nlet gust_dual_value = gust_dual(v[id.x].a);\nout[id.x] = gust_dual_value;\n}\n}";
+        let scratch = Scratch::new("twin-names");
+        let records = scratch.0.join("records");
+        let text = expanded(source, &environment(None, Some(&records))).to_string();
+        assert!(!text.contains("compile_error"), "{text}");
+        let directory = records.join("demo-crate");
+        let mut slang = String::new();
+        let mut json = String::new();
+        for entry in fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            let text = fs::read_to_string(&path).unwrap();
+            if path
+                .extension()
+                .is_some_and(|extension| extension == "slang")
+            {
+                slang = text;
+            } else {
+                json = text;
+            }
+        }
+        assert!(slang.contains("gust_dual"), "{slang}");
+        assert!(slang.contains("CpuDevice"), "{slang}");
+        assert!(json.contains("StructuredBuffer < CpuDevice >"), "{json}");
+    }
+
+    /// The source table of the record is the descriptor's: with a real file and a line table, both are non-empty and
+    /// equal. (The fallback spans of a unit test have no file, so the file is injected through the `Environment`.)
+    #[test]
+    fn export_records_hold_the_source_file_and_the_line_table_the_descriptor_holds() {
+        let scratch = Scratch::new("origin");
+        let records = scratch.0.join("records");
+        let mut environment = environment(Some(&scratch.0), Some(&records));
+        environment.reported_file = Some(format!(
+            "{}/src/kernels.rs",
+            scratch.0.display().to_string().replace('\\', "/")
+        ));
+        let text = expanded(KERNEL, &environment).to_string();
+        // The descriptor: the file relative to the crate, and a non-empty table.
+        assert!(
+            text.contains("source : :: gust :: SourceOrigin { file : \"src/kernels.rs\" , lines : & [:: gust :: LineSpan"),
+            "{text}"
+        );
+        let directory = records.join("demo-crate");
+        let record = fs::read_dir(&directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.to_string_lossy().ends_with(".kernel.json"))
+            .unwrap();
+        let json = fs::read_to_string(record).unwrap();
+        assert!(json.contains("\"file\": \"src/kernels.rs\""), "{json}");
+        assert!(!json.contains("\"lines\": []"), "{json}");
+        // The same table, entry for entry: every `[start, end, rust_line]` triple of the descriptor is in the record.
+        let mut triples = 0;
+        for part in text.split("slang_start : ").skip(1) {
+            let start = part.split(',').next().unwrap();
+            let end = part
+                .split("slang_end : ")
+                .nth(1)
+                .unwrap()
+                .split(',')
+                .next()
+                .unwrap();
+            let line = part
+                .split("rust_line : ")
+                .nth(1)
+                .unwrap()
+                .split(['}', ','])
+                .next()
+                .unwrap();
+            let number = |text: &str| -> String {
+                text.trim()
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect()
+            };
+            let triple = format!("[{}, {}, {}]", number(start), number(end), number(line));
+            assert!(json.contains(&triple), "{triple} not in {json}");
+            triples += 1;
+        }
+        assert!(triples > 0, "{text}");
+        // Without a real file there is no table in either place.
+        let anonymous = Scratch::new("origin-none");
+        let records = anonymous.0.join("records");
+        let text = expanded(KERNEL, &environment_without_file(&records)).to_string();
+        assert!(text.contains("SourceOrigin :: UNKNOWN"), "{text}");
+    }
+
+    fn environment_without_file(records: &Path) -> Environment {
+        environment(None, Some(records))
+    }
+
+    #[test]
+    fn the_record_file_is_the_one_the_descriptor_origin_names() {
+        let lines = [crate::slang::LineRecord {
+            slang_start: 3,
+            slang_end: 4,
+            rust_line: 12,
+        }];
+        assert_eq!(
+            known_origin_file("/repo/src/lib.rs", REPO, &lines).as_deref(),
+            Some("src/lib.rs")
+        );
+        assert_eq!(known_origin_file("/repo/src/lib.rs", REPO, &[]), None);
+        assert_eq!(known_origin_file("src/my kernel.rs", REPO, &lines), None);
     }
 
     #[test]

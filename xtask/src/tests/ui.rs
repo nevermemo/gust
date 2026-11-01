@@ -1480,6 +1480,25 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             &[],
         ))
     );
+    // A strict profile with the artifact pair but no manifest.json fails at the kernel too, with the manifest text.
+    let no_manifest = find("profile-native-no-manifest");
+    assert_eq!(no_manifest.env, variable("native"));
+    assert_eq!(
+        no_manifest.expectation,
+        fails(expected(
+            "E0080",
+            "profile-native-no-manifest/src/main.rs",
+            9,
+            &[
+                "evaluation panicked: gust: a strict profile (GUST_PROFILE native or web) needs gust-artifacts/manifest.json in the kernel crate; run `cargo gust init` and `cargo gust build`, or build with GUST_PROFILE=dev"
+            ],
+            &[],
+        ))
+    );
+    // With the pair and the manifest present the same strict build compiles.
+    let complete = find("profile-native-artifact");
+    assert_eq!(complete.env, variable("native"));
+    assert_eq!(complete.expectation, Expectation::Compiles);
     // Under `dev` the very same file compiles.
     let dev = find("profile-dev-no-artifact");
     assert_eq!(dev.env, variable("dev"));
@@ -1530,8 +1549,10 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
         [
             "profile-dev-no-artifact",
             "profile-empty",
+            "profile-native-artifact",
             "profile-native-bridge",
             "profile-native-no-artifact",
+            "profile-native-no-manifest",
             "profile-unknown"
         ]
     );
@@ -1540,7 +1561,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 16] = [
+const PINNED_FIXTURES: [&str; 18] = [
     "gpupod-missing",
     "gpupod-present",
     "kernel-cpu-bad-value",
@@ -1550,8 +1571,10 @@ const PINNED_FIXTURES: [&str; 16] = [
     "layout-outside-field",
     "profile-dev-no-artifact",
     "profile-empty",
+    "profile-native-artifact",
     "profile-native-bridge",
     "profile-native-no-artifact",
+    "profile-native-no-manifest",
     "profile-unknown",
     "typed-call-mismatch",
     "typed-call-no-cpu-twin",

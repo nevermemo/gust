@@ -26,6 +26,14 @@ C, a scratch probe on the RTX 5090) found:
 - `m * v` lowers to `mul`;
 - uniforms take std140 padding.
 
+M6 (language breadth I): plan adopted early on 2026-11-01 (owner-delegated) after an Opus review
+(in the Codex slot), one revision and an Opus re-check. `m * v` ships in M6 through a
+`__gust_mul` overload table, enabled only in modules that name a `Mat` type; the reflection
+reader accepts schema 1 and 2, and the helper keeps schema 1 for scalar-only programs, so
+committed artifacts stay byte-identical. The keyword and construct spikes and the pure-Rust math
+types run beside M4; the keyword renaming follows the bool `^` fix; the rest waits for m4.e1, m5.c1c and M4. Its decision drafts take
+D55 to D59.
+
 - M4 S1 (spike, local commit only): decision A. With no Slang reachable (PATH stripped,
   `GUST_SLANG_REFLECT` unset, `where slangc` failing), a consumer built with the Slang bridge
   compiled out ran a precompiled vector-add whose embedded WGSL and helper reflection JSON were
@@ -101,6 +109,13 @@ C, a scratch probe on the RTX 5090) found:
   E0711 outside export mode and absent inside it, so the build tool repairs it; E0712 and E0713
   cover export write failures (including the twin-text guard) and a missing package name. Two
   `profile-native-*` ui cases. Opus keep after one fix round; gates on main at `349a084`.
+- M5 m5.d1 (`d2378ce`): 84 scalar cases transcribed from Rust 1.98.0's coretests
+  (`library/coretests/tests/num`) into `docs/development/CORETESTS.md`, with acceptance sets
+  (exact integers in the domain, WGSL's 2.5 ULP for float `/`) and exclusions; five `#[gpu]`
+  kernels in `tests/fixtures/coretests.rs`; a CPU twin test that parses the table. They add 50
+  new (operator, type, class) triples to the 20 already tested. The fixture found a compiler gap:
+  `bool ^` lowers to WGSL `^`, which naga rejects (CT-30), so the GPU half (m5.d2) waits for the
+  fix. Opus keep after one fix round; gates on main at `3ec3094`.
 M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),

@@ -60,12 +60,18 @@ remaining chain run beside it now, and the rest wait for the M4 slice named. M5 
 | S5.1 | Spike: the Gpu suite on Mesa lavapipe in WSL | done (decision A: 110/110 on llvmpipe 25.2.8, a WSL measurement) |
 | m5.b0 | Probe: the ledger on lavapipe, debug and release | planned (can run now) |
 | m5.a | `gpu-software` CI job: Mesa pinned through the Ubuntu snapshot, adapter record asserted (D52) | planned (can run now) |
-| m5.d1, m5.d2, m5.d3 | Scalar `coretests` cases: fixture and twin; on the GPU; golden and registration | m5.d1 can run now; d2 after m4.e1; d3 after m4.e2 |
+| m5.d1, m5.d2, m5.d3 | Scalar `coretests` cases: fixture and twin; on the GPU; golden and registration | m5.d1 done (`d2378ce`); d2 after m4.e1 and the bool `^` fix; d3 after m4.e2 |
 | m5.c1a, m5.c1a2, m5.c1b, m5.c1c | Differential generator in `tests/difftest/`: integers, floats v1 (interval bounds), harness, bounded shrinking | planned (can run now, in order) |
 | S5.4 | Spike: expansion-time profile and cached rebuild transitions | after m4.c |
 | m5.b | Ledger on two adapters (per-kind observation pins) | after m4.e1 |
 | m5.e1, m5.e2 | Production `cpu` profile (D51); `check-cpu-target` and the `Cpu` tier | after m4.g2 |
 | m5.c2, m5.a2 | `check-difftest` wiring; `gpu-software` on the Slang manager | after m4.g2 |
+
+**Then: M6, language breadth I** (plan adopted 2026-11-01, owner-delegated, after an Opus review, one revision and a
+re-check). The keyword and construct spikes (S6.3b, S6.1) and the pure-Rust math types (m6.a2) can run now. The
+keyword renaming (m6.k) follows the bool `^` fix in the macro crate, the layout model and reflection schema 2 (m6.a1, m6.r) for m4.e1, matrix
+products (m6.m1, m6.m2) follow them, uniforms (m6.u1, m6.u2) wait for M4 and M5's `cpu` profile, and the difftest
+vector extension (m6.d) waits for m5.c1c. M6 closes after M5.
 
 **Done: M3, dual test builds** (closed 2026-11-01, D43). Plan adopted 2026-10-24 (owner-delegated); slices ran one at a
 time. The M2 sanity check (D37) kept M3's scope and fixed the order inside it.
@@ -153,7 +159,7 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M3 Dual test builds | Executable shadow types under the semantics contract (D22); CPU dispatch; CPU twins emitted under `cfg(test)`; `--cfg gust_dual` for cross-crate tests and benchmarks; per-kernel opt-out (`#[kernel(cpu = "unsupported")]`); existing GPU tests gain CPU-versus-GPU checks while semantics fixtures keep independent host references (D26). From M2 (D34): the CPU backend implements `TypedDevice` once and `Run<K, N>` per kernel, keeps the alias contract, and `#[kernel(cpu = "unsupported")]` is the absence of the `Run` impl | done (D43) |
 | M4 Build-time targets and distribution | Build profiles (target plus capability set) chosen at build time; hash-keyed artifact manifest; D17 at export time for WGSL and SPIR-V; runtime `slangc` behind a development feature; a pinned-Slang manager for crate users; first browser WebGPU run. Note: first spike: choose the build-profile mechanism (build.rs env, `--config`, or a cfg namespace) so it composes with check-dual's `CARGO_ENCODED_RUSTFLAGS` and its refusal; the artifact manifest hashes Slang output only (the twin never enters it or the published crate) | in progress (plan adopted; D44 to D47) |
 | M5 CPU target and evidence breadth | Production `cpu` build target and runtime; lavapipe CI job labelled `Gpu (software)`; differential program generator with shrinking; scalar `coretests` cases on the GPU. Note: the known-mismatch ledger and the semantics contract exist since M3 and are not new M5 work; M5 adds the production target, lavapipe and the generator | plan adopted (D51, D52); slices beside M4 |
-| M6 Language breadth I | Vectors and matrices (vec3 and mat3 rejected in buffers at first; `m * v` lowers to `mul`); collision-only identifier renaming; uniforms (`ConstantBuffer<T>`). Note: uniform typed calls were decided in M3 (D40): such kernels have no typed call and no CPU twin until this milestone | planned |
+| M6 Language breadth I | Vectors and matrices (vec3 and mat3 rejected in buffers at first; `m * v` lowers to `mul`); collision-only identifier renaming; uniforms (`ConstantBuffer<T>`). Note: uniform typed calls were decided in M3 (D40): such kernels have no typed call and no CPU twin until this milestone | plan adopted; spikes and m6.a2 beside M4 |
 | M7 GPU concepts in Rust | `par_for!` SIMT dispatch on both pipelines; workgroup shared memory and barriers, including a CPU strategy; reduce, scan and compaction primitives (T13 lands here). Multi-dimensional dispatch lifts the `max_compute_workgroups_per_dimension` ceiling (D36). Note: `#[kernel(cpu = "unsupported")]` is the opt-out for barrier kernels until a CPU strategy exists; a validator rule rejects a construct with cross-invocation meaning unless the kernel carries `cpu = "unsupported"` or a declared twin strategy (D42) | planned |
 | M8 Capability variants | Capability-keyed variants with platform aliases; exhaustiveness checked against the crate's declared target list, with CPU as a target; one rustc-checked signature; subgroup operations first (D23). Compile-time portable floor for workgroup size and storage counts; `with_limits` is the runtime half (D36) | planned |
 | M9 Language breadth II | Methods in `impl` blocks; user enums with `match`; tuples; fixed-size arrays; non-capturing closures; then traits mapped to Slang interfaces and generics | planned |

@@ -143,7 +143,7 @@ jobs:
           # GPU_SUITE_PASSED is the sum of `passed` over every `test result:` line of `cargo test -p gust-wgpu` (the
           # unit tests of the library, each integration test file, the doc tests); GPU_SUITE_RESULT_LINES is the
           # number of those lines (one per test binary and doc-test run), which catches drift that cancels out.
-          # Measured: 140 passed over 18 result lines on the RTX 5090 at the m4.e1 merge (first run here: 123 over 17, 41311817894).
+          # Measured: 140 passed over 18 lines on the RTX 5090 at the m4.e1 merge (first run 123/17, 41311817894).
           # Every slice that adds or removes a Gpu test or test file bumps them in the same commit; drift fails loudly,
           # by design. To recompute them, on any adapter and any OS, at the commit to be merged (a skipped assertion
           # inside a test does not change the count; a failing test does, so fix failures first):

@@ -160,6 +160,8 @@ checks. Routine verify modes do not rewrite `.ai/VALIDATION.json` unless passed
 reflection helper build is timestamp-gated and still runs `--version`, so repeated
 checks do not relink unchanged C++ code.
 
+CI also runs the Gpu suite on Mesa lavapipe (`.github/workflows/gpu-software.yml`): `Gpu (software)` evidence, never hardware evidence and never a required check ([VALIDATION](docs/development/VALIDATION.md)).
+
 The same checks are exposed as VS Code tasks: `GUST: check fast`, `GUST: check
 feature`, `GUST: check changed`, `GUST: check examples`, `GUST: check artifacts`, and
 `GUST: check full`.

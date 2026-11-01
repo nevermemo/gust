@@ -356,6 +356,70 @@ fn the_record_carries_the_adapter_or_says_null() {
     assert!(compact_validation_summary(&with).ends_with("commit=null dirty=null"));
 }
 
+/// What `adapter_info` printed on lavapipe in the M5 spike (WSL, Mesa 25.2.8): the software adapter of D52.
+fn software_adapter_line() -> &'static str {
+    r#"{"name":"llvmpipe (LLVM 20.1.2, 256 bits)","vendor":65541,"device":0,"device_type":"Cpu","backend":"Vulkan","driver":"llvmpipe","driver_info":"Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)"}"#
+}
+
+fn record_with_adapter(line: &str) -> String {
+    let root = temp_root();
+    let git = GitStamp::UNKNOWN;
+    let adapter = AdapterRecord::parse(line).unwrap();
+    let named = RunInfo {
+        adapter: Some(&adapter),
+        ..run(VerifyMode::Gpu, &git)
+    };
+    write_validation_with_home(&root, HOME, &named, None, &[], &[]).unwrap();
+    let json = fs::read_to_string(root.join(".ai/VALIDATION.json")).unwrap();
+    let _ = fs::remove_dir_all(&root);
+    json
+}
+
+#[test]
+fn a_software_adapter_reads_as_gpu_software_in_the_status_summary() {
+    let json = record_with_adapter(software_adapter_line());
+    // The lines the `gpu-software` workflow greps for (R1-6) are what the record writer produces.
+    for line in [
+        "    \"device_type\": \"Cpu\",\n",
+        "    \"name\": \"llvmpipe (LLVM 20.1.2, 256 bits)\",\n",
+        "    \"driver_info\": \"Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)\"\n",
+    ] {
+        assert!(json.contains(line), "missing {line:?} in\n{json}");
+    }
+    let summary = compact_validation_summary(&json);
+    assert!(summary.starts_with("finished=20"), "{summary}");
+    assert!(
+        summary.ends_with(" mode=gpu passed=true commit=null dirty=null tier=Gpu (software)"),
+        "{summary}"
+    );
+}
+
+#[test]
+fn hardware_missing_and_old_records_get_no_tier_word() {
+    let hardware = record_with_adapter(adapter_line());
+    assert!(
+        hardware.contains("\"device_type\": \"DiscreteGpu\""),
+        "{hardware}"
+    );
+    // Only the exact `Cpu` counts: a name that merely mentions it, or another device type, does not.
+    let lookalikes = [
+        adapter_line().replace("NVIDIA GeForce RTX 5090", "Cpu"),
+        adapter_line().replace("DiscreteGpu", "IntegratedGpu"),
+        adapter_line().replace("DiscreteGpu", "VirtualGpu"),
+        adapter_line().replace("DiscreteGpu", "Other"),
+        adapter_line().replace("DiscreteGpu", "cpu"),
+    ];
+    let mut summaries = vec![hardware];
+    summaries.extend(lookalikes.iter().map(|line| record_with_adapter(line)));
+    summaries.push("{\n  \"adapter\": null,\n  \"passed\": true\n}\n".to_owned());
+    summaries.push("{\n  \"mode\": \"full\",\n  \"passed\": true\n}\n".to_owned());
+    for json in summaries {
+        let summary = compact_validation_summary(&json);
+        assert!(!summary.contains("tier="), "{summary}\nfor\n{json}");
+        assert!(summary.ends_with("dirty=null") || summary.ends_with("dirty=unknown"));
+    }
+}
+
 #[test]
 fn the_adapter_text_is_redacted_like_the_rest_of_the_record() {
     let root = temp_root();

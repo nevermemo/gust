@@ -1,0 +1,191 @@
+# Gpu (software) evidence (docs/development/VALIDATION.md, D52): the whole Gpu suite on Mesa lavapipe, a conforming
+# software Vulkan implementation, on a hosted runner. It is execution evidence on a second adapter, never hardware
+# evidence, and never a required check: a red run is visible on every pull request and blocks nothing.
+#
+# Order: Mesa from the Ubuntu snapshot service (pinned by snapshot id and package version, drift-checked), Slang by
+# curl and SHA-256 (interim, until the Slang manager of m4.f), the reflection helper, doctor, then
+# `cargo xtask verify --mode gpu --record`, then assertions on the record and on the `test result:` lines.
+name: gpu-software
+
+on:
+  # Budget rule (plan M5 R1-10): these triggers stay only while the measured warm job time is at most five minutes.
+  # If it is not, the push and pull_request triggers give way to `schedule` (nightly 03:00 UTC) plus a `paths` filter.
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gpu-software-${{ github.ref }}
+  # Superseded pull request runs are cancelled; runs on main are never cancelled.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Pinned here so a new stable release cannot change CI without a commit (same pin as ci.yml).
+  RUSTUP_TOOLCHAIN: 1.98.0
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  # Mesa, R1-11. Changing the Mesa version is a deliberate commit that edits these three strings. The snapshot id is a
+  # UTC timestamp of the Ubuntu archive; the version is the Ubuntu package version, which `driver_info` repeats.
+  SNAPSHOT_ID: "20261101T110000Z"
+  MESA_VERSION: "25.2.8-0ubuntu0.24.04.4"
+  # The whole `driver_info` of the record, LLVM included (the LLVM libraries are dependencies of the Mesa package).
+  MESA_DRIVER_INFO: "Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)"
+  # Lavapipe is the only Vulkan device, even if a runner image ever exposes another driver.
+  VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json
+  # Slang, the same release and archive hash as docs/development/LICENSES-SLANG.md.
+  SLANG_VERSION: "2026.13.1"
+  SLANG_SHA256: c1ed948af94c6fd2034cc0f82f6892b8b287d5362939758cb4955676f26d893e
+
+jobs:
+  gpu-software:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: Prepare the artifact directory
+        run: mkdir -p "$RUNNER_TEMP/gpu-software-artifact"
+      - name: Install Mesa and the tools from the Ubuntu snapshot
+        # The snapshot is the only source of this install (stricter than R1-11, which allowed the runner's mirror with
+        # a `Snapshot:` field): sources and apt lists are redirected with -o, so nothing floats to the live archive.
+        run: |
+          set -euo pipefail
+          apt_get() { sudo env DEBIAN_FRONTEND=noninteractive apt-get "$@"; }
+          packages=("mesa-vulkan-drivers=$MESA_VERSION" vulkan-tools build-essential pkg-config spirv-tools)
+          echo "::notice::apt source: https://snapshot.ubuntu.com/ubuntu/$SNAPSHOT_ID/ only, for this install"
+          dir="$RUNNER_TEMP/apt-snapshot"
+          mkdir -p "$dir/sources.list.d" "$dir/lists/partial"
+          cat > "$dir/sources.list.d/ubuntu-snapshot.sources" <<EOF
+          Types: deb
+          URIs: https://snapshot.ubuntu.com/ubuntu/$SNAPSHOT_ID/
+          Suites: noble noble-updates noble-security
+          Components: main universe
+          Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+          EOF
+          options=(-o Dir::Etc::sourcelist=/dev/null -o "Dir::Etc::sourceparts=$dir/sources.list.d" -o "Dir::State::lists=$dir/lists")
+          apt_get "${options[@]}" update
+          apt_get "${options[@]}" install --yes "${packages[@]}"
+      - name: Check that Mesa did not drift, and that lavapipe is the device
+        run: |
+          set -euo pipefail
+          env_file="$RUNNER_TEMP/gpu-software-artifact/environment.txt"
+          {
+            echo "snapshot id: $SNAPSHOT_ID"
+            echo "pinned Mesa package: $MESA_VERSION"
+            apt-cache policy mesa-vulkan-drivers
+            dpkg-query -W mesa-vulkan-drivers libllvm20 spirv-tools vulkan-tools libvulkan1
+          } | tee "$env_file"
+          installed=$(apt-cache policy mesa-vulkan-drivers | awk '/^ *Installed:/ { print $2 }')
+          if [ "$installed" != "$MESA_VERSION" ]; then
+            echo "::error::mesa-vulkan-drivers is $installed, the pin is $MESA_VERSION"
+            exit 1
+          fi
+          test -f "$VK_DRIVER_FILES"
+          vulkaninfo --summary 2>&1 | tee -a "$env_file"
+      - name: Cache cargo and the target directory
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: gpu-software-cargo-${{ runner.os }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: |
+            gpu-software-cargo-${{ runner.os }}-${{ env.RUSTUP_TOOLCHAIN }}-
+      - name: Cache the Slang archive
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/slang
+          key: gpu-software-slang-${{ env.SLANG_VERSION }}-${{ env.SLANG_SHA256 }}
+      - name: Install Slang
+        run: |
+          set -euo pipefail
+          slang_dir="$RUNNER_TEMP/slang"
+          if [ ! -x "$slang_dir/bin/slangc" ]; then
+            archive="$RUNNER_TEMP/slang.tar.gz"
+            curl --fail --silent --show-error --location --retry 3 -o "$archive" \
+              "https://github.com/shader-slang/slang/releases/download/v${SLANG_VERSION}/slang-${SLANG_VERSION}-linux-x86_64.tar.gz"
+            echo "$SLANG_SHA256  $archive" | sha256sum --check -
+            mkdir -p "$slang_dir"
+            tar -xzf "$archive" -C "$slang_dir"
+            rm -f "$archive"
+          fi
+          echo "$slang_dir/bin" >> "$GITHUB_PATH"
+          {
+            echo "SLANG_SDK=$slang_dir"
+            echo "LD_LIBRARY_PATH=$slang_dir/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+            echo "GUST_SLANG_REFLECT=$GITHUB_WORKSPACE/target/slang-reflect/gust-slang-reflect"
+          } >> "$GITHUB_ENV"
+      - name: Build the reflection helper
+        run: cargo --locked xtask build-slang-reflect --sdk-root "$SLANG_SDK"
+      - name: Doctor
+        run: cargo --locked xtask doctor
+      - name: Gpu suite on lavapipe
+        # The log is kept outside the workspace so that it cannot make the recorded tree dirty.
+        run: |
+          set -o pipefail
+          cargo --locked xtask verify --mode gpu --record 2>&1 | tee "$RUNNER_TEMP/gpu-suite.log"
+      - name: Assert the adapter record is lavapipe
+        run: |
+          set -euo pipefail
+          record=.ai/VALIDATION.json
+          grep -Fq '"device_type": "Cpu"' "$record"
+          grep -Eq '^ *"name": "[^"]*llvmpipe' "$record"
+          grep -Fq "\"driver_info\": \"$MESA_DRIVER_INFO\"" "$record"
+      - name: Assert the test result lines
+        env:
+          # GPU_SUITE_PASSED is the sum of `passed` over every `test result:` line of `cargo test -p gust-wgpu` (the
+          # unit tests of the library, each integration test file, the doc tests); GPU_SUITE_RESULT_LINES is the
+          # number of those lines (one per test binary and doc-test run), which catches drift that cancels out.
+          # Measured: 123 passed over 17 result lines in the run of this job on the pull request, 41311817894.
+          # Every slice that adds or removes a Gpu test or test file bumps them in the same commit; drift fails loudly,
+          # by design. To recompute them, on any adapter and any OS, at the commit to be merged (a skipped assertion
+          # inside a test does not change the count; a failing test does, so fix failures first):
+          #   GUST_PROFILE=dev cargo test --locked -p gust-wgpu --no-fail-fast 2>&1 \
+          #     | grep '^test result:' | awk '{ sum += $4; n++ } END { print sum, n }'
+          # prints "<passed> <lines>"; the output must also show no line other than `0 failed; 0 ignored`.
+          GPU_SUITE_PASSED: "123"
+          GPU_SUITE_RESULT_LINES: "17"
+          GPU_SUITE_LOG: ${{ runner.temp }}/gpu-suite.log
+        run: |
+          set -euo pipefail
+          results=$(grep -E '^test result:' "$GPU_SUITE_LOG" || true)
+          if [ -z "$results" ]; then
+            echo "::error::no 'test result:' line in the log"
+            exit 1
+          fi
+          bad=$(printf '%s\n' "$results" | grep -Ev '^test result: ok\. [0-9]+ passed; 0 failed; 0 ignored;' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::a test result line is not '0 failed; 0 ignored':"
+            printf '%s\n' "$bad"
+            exit 1
+          fi
+          passed=$(printf '%s\n' "$results" | awk '{ sum += $4 } END { print sum + 0 }')
+          lines=$(printf '%s\n' "$results" | wc -l)
+          echo "$lines test result lines (pinned $GPU_SUITE_RESULT_LINES), $passed passed (pinned $GPU_SUITE_PASSED)"
+          if [ "$passed" -ne "$GPU_SUITE_PASSED" ]; then
+            echo "::error::$passed tests passed, the pinned count is $GPU_SUITE_PASSED"
+            exit 1
+          fi
+          if [ "$lines" -ne "$GPU_SUITE_RESULT_LINES" ]; then
+            echo "::error::$lines test result lines, the pinned number is $GPU_SUITE_RESULT_LINES"
+            exit 1
+          fi
+      - name: Collect the evidence
+        if: always()
+        run: |
+          cp -f .ai/VALIDATION.json "$RUNNER_TEMP/gpu-software-artifact/" || true
+          cp -f "$RUNNER_TEMP/gpu-suite.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
+      - name: Upload the record and the log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gpu-software-${{ github.run_id }}
+          path: ${{ runner.temp }}/gpu-software-artifact
+          if-no-files-found: warn

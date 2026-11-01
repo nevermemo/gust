@@ -1,6 +1,9 @@
 use std::{
-    env, fs,
+    env,
+    ffi::OsString,
+    fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 use crate::{
@@ -135,13 +138,20 @@ fn verify_inner(
     }
     run_checked(root, checks, "rustc", &["--version"])?;
     run_checked(root, checks, "slangc", &["-version"])?;
-    if environment_helper(env::var_os(HELPER_VARIABLE)).is_some() {
-        // The tests use this file (it wins over the default location), so a second helper under `target` would be
-        // built and never used. The pinned-Slang manager's helper is the case CI has (`gpu-software`). The path is
-        // not printed: it is a machine path.
-        println!("Using the reflection helper named by {HELPER_VARIABLE}; building none.");
-    } else {
-        build_slang_reflect(BuildOptions::default())?;
+    let slangc_output = checks.last().map(printed_text).unwrap_or_default();
+    match helper_plan(root, env::var_os(HELPER_VARIABLE)) {
+        HelperPlan::Build => {
+            build_slang_reflect(BuildOptions::default())?;
+        }
+        HelperPlan::Use(helper) => {
+            // The tests use this file (it wins over the default location), so a second helper under `target` would
+            // be built and never used; it must be the helper of this `slangc`, though. The path is not printed: it
+            // is a machine path.
+            check_helper_tag(&helper_version_output(&helper)?, &slangc_output)?;
+            println!(
+                "Using the reflection helper named by {HELPER_VARIABLE}: its Slang tag equals `slangc -version`."
+            );
+        }
     }
     // Before the first GPU step: no adapter, or one that cannot be named, fails the run here and the record says null.
     *adapter = Some(record_adapter(root, checks)?);
@@ -211,9 +221,102 @@ const HELPER_VARIABLE: &str = "GUST_SLANG_REFLECT";
 
 /// The helper file `GUST_SLANG_REFLECT` names, when it is set and the file exists. Anything else (unset, empty, a
 /// missing file) is `None`, and the caller builds the helper into the default place as before.
-pub(crate) fn environment_helper(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+pub(crate) fn environment_helper(value: Option<OsString>) -> Option<PathBuf> {
     let path = PathBuf::from(value.filter(|value| !value.is_empty())?);
     path.is_file().then_some(path)
+}
+
+/// What `verify` does about the reflection helper.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum HelperPlan {
+    /// Build it into the default place, `<root>/target/slang-reflect`, refreshing it when it is out of date.
+    Build,
+    /// Use this file, which `GUST_SLANG_REFLECT` names; it is checked against `slangc` first ([`check_helper_tag`]).
+    Use(PathBuf),
+}
+
+/// A helper that `GUST_SLANG_REFLECT` names is used as it is, except when it is the default output of this checkout
+/// (`<root>/target/slang-reflect/gust-slang-reflect`): that one is still built, so it follows a change of the helper
+/// source or of Slang as before (the local wrapper names exactly that file). Anything else, or no variable, or a
+/// missing file, builds into the default place.
+pub(crate) fn helper_plan(root: &Path, value: Option<OsString>) -> HelperPlan {
+    let Some(path) = environment_helper(value) else {
+        return HelperPlan::Build;
+    };
+    let default = root
+        .join("target")
+        .join("slang-reflect")
+        .join(format!("gust-slang-reflect{}", env::consts::EXE_SUFFIX));
+    match (fs::canonicalize(&path), fs::canonicalize(&default)) {
+        (Ok(named), Ok(default)) if named == default => HelperPlan::Build,
+        _ => HelperPlan::Use(path),
+    }
+}
+
+/// The output of `<helper> --version`. A failure names the variable, not the path, and hides the path in the helper's
+/// own message.
+fn helper_version_output(helper: &Path) -> Result<String, String> {
+    let output = Command::new(helper)
+        .arg("--version")
+        .output()
+        .map_err(|error| {
+            format!(
+                "could not run `--version` of the helper named by {HELPER_VARIABLE}: {}",
+                error.kind()
+            )
+        })?;
+    let stderr = String::from_utf8_lossy(&output.stderr)
+        .replace(helper.to_string_lossy().as_ref(), "<helper>");
+    if !output.status.success() {
+        return Err(format!(
+            "`--version` of the helper named by {HELPER_VARIABLE} failed (exit {}): {}",
+            output.status.code().unwrap_or(-1),
+            stderr.trim()
+        ));
+    }
+    Ok(format!(
+        "{}\n{stderr}",
+        String::from_utf8_lossy(&output.stdout)
+    ))
+}
+
+/// Everything a finished check printed. `slangc -version` prints its version on standard error (Linux, release
+/// archive), so the standard output alone can be empty.
+pub(crate) fn printed_text(record: &CheckRecord) -> String {
+    format!("{}\n{}", record.stdout, record.stderr)
+}
+
+/// The Slang build tag a helper reports: the `slang=<tag>` word of `gust-slang-reflect schema=1 slang=2026.13.1`.
+pub(crate) fn helper_tag(output: &str) -> Option<&str> {
+    output
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("slang="))
+        .filter(|tag| !tag.is_empty())
+}
+
+/// Fails unless the helper was built against the compiler `slangc -version` names: its tag must equal the first
+/// line of that output exactly (a release prints the bare pin, a source build its own tag, and the helper reports
+/// the same one for the same install). The message names both tags.
+pub(crate) fn check_helper_tag(helper_output: &str, slangc_output: &str) -> Result<(), String> {
+    let Some(helper) = helper_tag(helper_output) else {
+        return Err(format!(
+            "the helper named by {HELPER_VARIABLE} printed no `slang=<tag>` for `--version`"
+        ));
+    };
+    let Some(slangc) = slangc_output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+    else {
+        return Err("`slangc -version` printed nothing".to_owned());
+    };
+    if helper == slangc {
+        return Ok(());
+    }
+    Err(format!(
+        "the helper named by {HELPER_VARIABLE} was built against Slang `{helper}`, but `slangc -version` is `{slangc}`; \
+         rebuild it (`cargo gust slang build-helper`) or unset {HELPER_VARIABLE}"
+    ))
 }
 
 /// The directory the examples export their Slang, WGSL and SPIR-V to (ignored by git, never committed).

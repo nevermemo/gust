@@ -1,7 +1,9 @@
 use super::{
-    GPU_SUITE_CALL, GPU_SUITE_PIN, GpuSuitePin, VerifyMode, cargo_calls, check_gpu_suite_counts,
-    environment_helper, guard_call, pins_gpu_counts,
+    GPU_SUITE_CALL, GPU_SUITE_PIN, GpuSuitePin, HelperPlan, VerifyMode, cargo_calls,
+    check_gpu_suite_counts, check_helper_tag, environment_helper, guard_call, helper_plan,
+    helper_tag, helper_version_output, pins_gpu_counts, printed_text,
 };
+use crate::process::CheckRecord;
 use std::ffi::OsString;
 
 const ALL_MODES: [VerifyMode; 6] = [
@@ -287,4 +289,134 @@ fn a_helper_named_by_the_environment_must_exist() {
         environment_helper(Some(this_test_binary.clone().into_os_string())),
         Some(this_test_binary)
     );
+}
+
+fn helper_name() -> String {
+    format!("gust-slang-reflect{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// A fresh scratch directory under the temp directory, removed by the caller.
+fn scratch(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("gust-m5a2-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+fn touch(path: &std::path::Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, b"x").unwrap();
+}
+
+#[test]
+fn the_default_output_is_built_and_any_other_named_helper_is_used() {
+    let root = scratch("plan");
+    let default = root
+        .join("target")
+        .join("slang-reflect")
+        .join(helper_name());
+    let other = root.join("elsewhere").join(helper_name());
+    touch(&default);
+    touch(&other);
+    let named = |path: &std::path::Path| Some(path.as_os_str().to_owned());
+    // No variable, or a file that does not exist: build into the default place.
+    assert_eq!(helper_plan(&root, None), HelperPlan::Build);
+    assert_eq!(
+        helper_plan(&root, named(&root.join("missing").join(helper_name()))),
+        HelperPlan::Build
+    );
+    // The default output itself, however it is spelled: still built, so it follows the helper source and Slang.
+    assert_eq!(helper_plan(&root, named(&default)), HelperPlan::Build);
+    let roundabout = root
+        .join("target")
+        .join("slang-reflect")
+        .join("..")
+        .join("slang-reflect")
+        .join(helper_name());
+    assert_eq!(helper_plan(&root, named(&roundabout)), HelperPlan::Build);
+    // Another file is used (after the tag check), and so is the default output of another checkout.
+    assert_eq!(helper_plan(&root, named(&other)), HelperPlan::Use(other));
+    let second_root = scratch("plan-second");
+    assert_eq!(
+        helper_plan(&second_root, named(&default)),
+        HelperPlan::Use(default)
+    );
+    let _ = std::fs::remove_dir_all(root);
+    let _ = std::fs::remove_dir_all(second_root);
+}
+
+#[test]
+fn the_helper_tag_is_the_slang_word_of_the_version_line() {
+    assert_eq!(
+        helper_tag("gust-slang-reflect schema=1 slang=2026.13.1\n"),
+        Some("2026.13.1")
+    );
+    assert_eq!(
+        helper_tag("\ngust-slang-reflect schema=1 slang=2026.13.1-1-g84792eb15\n"),
+        Some("2026.13.1-1-g84792eb15")
+    );
+    assert_eq!(helper_tag("gust-slang-reflect schema=1\n"), None);
+    assert_eq!(helper_tag("slang= schema=1"), None);
+    assert_eq!(helper_tag(""), None);
+}
+
+#[test]
+fn a_helper_is_used_only_when_its_tag_equals_slangc_version() {
+    let helper = |tag: &str| format!("gust-slang-reflect schema=1 slang={tag}\n");
+    assert_eq!(
+        check_helper_tag(&helper("2026.13.1"), "2026.13.1\n"),
+        Ok(())
+    );
+    assert_eq!(
+        check_helper_tag(&helper("2026.13.1"), "\r\n  2026.13.1  \r\n"),
+        Ok(())
+    );
+    // A source build is its own tag: helper and compiler must agree on it.
+    let build = "2026.13.1-1-g84792eb15";
+    assert_eq!(check_helper_tag(&helper(build), build), Ok(()));
+    // A mismatch names both tags.
+    let error = check_helper_tag(&helper("2026.12.0"), "2026.13.1\n").unwrap_err();
+    assert!(
+        error.contains("`2026.12.0`") && error.contains("`2026.13.1`"),
+        "{error}"
+    );
+    assert!(error.contains("GUST_SLANG_REFLECT"), "{error}");
+    // The release and the source build of the same version are different compilers.
+    assert!(check_helper_tag(&helper("2026.13.1"), build).is_err());
+    assert!(check_helper_tag(&helper(build), "2026.13.1").is_err());
+    // A prefix is not a match.
+    assert!(check_helper_tag(&helper("2026.13"), "2026.13.1").is_err());
+    // No tag, or no compiler version, never passes.
+    assert!(check_helper_tag("gust-slang-reflect schema=1", "2026.13.1").is_err());
+    assert!(check_helper_tag(&helper("2026.13.1"), "").is_err());
+    assert!(check_helper_tag(&helper("2026.13.1"), "\n  \n").is_err());
+}
+
+#[test]
+fn a_helper_that_cannot_run_is_an_error_that_hides_its_path() {
+    let missing = std::env::temp_dir()
+        .join("gust-m5a2-no-such-dir")
+        .join(helper_name());
+    let error = helper_version_output(&missing).unwrap_err();
+    assert!(error.contains("GUST_SLANG_REFLECT"), "{error}");
+    assert!(!error.contains("gust-m5a2-no-such-dir"), "{error}");
+}
+
+#[test]
+fn slangc_prints_its_version_on_standard_error_and_that_counts() {
+    let record = CheckRecord {
+        program: "slangc".to_owned(),
+        arguments: vec!["-version".to_owned()],
+        exit_code: Some(0),
+        stdout: String::new(),
+        stderr: "2026.13.1\n".to_owned(),
+    };
+    let helper = "gust-slang-reflect schema=1 slang=2026.13.1\n";
+    assert_eq!(check_helper_tag(helper, &printed_text(&record)), Ok(()));
+    let on_stdout = CheckRecord {
+        stdout: "2026.13.1\n".to_owned(),
+        stderr: String::new(),
+        ..record
+    };
+    assert_eq!(check_helper_tag(helper, &printed_text(&on_stdout)), Ok(()));
 }

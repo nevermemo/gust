@@ -59,7 +59,8 @@ jobs:
     # nightly list.
     timeout-minutes: ${{ (github.event_name == 'schedule' || inputs.extended) && 40 || 20 }}
     env:
-      # 'true' for the nightly list, 'false' for the pull request list; the steps of the nightly list test it.
+      # 'true' for the nightly list; empty (a pull request or a push) or 'false' otherwise. The steps of the nightly
+      # list test for 'true'.
       GPU_SOFTWARE_NIGHTLY: ${{ github.event_name == 'schedule' || inputs.extended }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -106,6 +107,9 @@ jobs:
           test -f "$VK_DRIVER_FILES"
           vulkaninfo --summary 2>&1 | tee -a "$env_file"
       - name: Cache cargo and the target directory
+        # `target/slang-reflect` is left out: a helper restored from an older cache is judged up to date by its file
+        # times and then fails to load the Slang library of another install (m5.a2 run 41346473154). The helper of
+        # this job is the manager's, built every run (GUST_SLANG_REFLECT).
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -113,6 +117,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
+            !target/slang-reflect
           key: gpu-software-cargo-${{ runner.os }}-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
             gpu-software-cargo-${{ runner.os }}-${{ env.RUSTUP_TOOLCHAIN }}-
@@ -131,6 +136,15 @@ jobs:
             /^ *os: / { os = $2 }
             /^ *arch: / { arch = $2 }
             /^ *sha256: / && current && os == "linux" && arch == "x86_64" { print $2 }')
+          one() {
+            count=$(printf '%s\n' "$1" | grep -c . || true)
+            if [ "$count" -ne 1 ]; then
+              echo "::error::expected exactly one $2 in $file, found $count"
+              exit 1
+            fi
+          }
+          one "$version" "SLANG_VERSION line"
+          one "$sha256" "linux x86_64 sha256 line of the pinned version"
           if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+(\.[0-9]+)+$'; then
             echo "::error::cannot read SLANG_VERSION from $file (got '$version')"
             exit 1
@@ -164,6 +178,8 @@ jobs:
           SLANG_CACHE_HIT: ${{ steps.slang-cache.outputs.cache-hit }}
         run: |
           set -euo pipefail
+          # Nothing in this job uses it; a stale one from an older cache must not be found by accident.
+          rm -rf target/slang-reflect
           key="gpu-software-slang-$RUNNER_OS-$SLANG_PIN_VERSION-$SLANG_PIN_SHA256"
           echo "Slang cache hit: ${SLANG_CACHE_HIT:-false} (key $key)"
           gust() { cargo run --locked --quiet -p cargo-gust -- "$@"; }
@@ -182,9 +198,11 @@ jobs:
           } >> "$GITHUB_ENV"
           dirname "$slangc" >> "$GITHUB_PATH"
       - name: Doctor
+        # Must be healthy: the pinned slangc, and the manager's helper built against it (as in ci.yml). Not `xtask
+        # doctor`, which checks and rebuilds a helper of its own under target/slang-reflect.
         run: |
           slangc -version
-          cargo --locked xtask doctor
+          cargo run --locked --quiet -p cargo-gust -- doctor
       - name: Gpu suite on lavapipe
         # The log is kept outside the workspace so that it cannot make the recorded tree dirty. The check of the
         # `test result:` lines against the pinned counts is part of the command (a failure names both numbers).
@@ -198,6 +216,14 @@ jobs:
           grep -Fq '"device_type": "Cpu"' "$record"
           grep -Eq '^ *"name": "[^"]*llvmpipe' "$record"
           grep -Fq "\"driver_info\": \"$MESA_DRIVER_INFO\"" "$record"
+      - name: Keep the ledger lines of the debug run
+        # The release run below writes the same file names, so the debug run's are moved aside first.
+        if: always()
+        run: |
+          shopt -s nullglob
+          for file in target/tmp/ledger-*.txt; do
+            mv -f "$file" "$RUNNER_TEMP/gpu-software-artifact/debug-$(basename "$file")"
+          done
       - name: Examples on lavapipe (nightly list)
         if: env.GPU_SOFTWARE_NIGHTLY == 'true'
         run: |
@@ -221,6 +247,11 @@ jobs:
           cp -f "$RUNNER_TEMP/gpu-suite.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
           cp -f "$RUNNER_TEMP/check-examples.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
           cp -f "$RUNNER_TEMP/ledger-release.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
+          # Only the release run can have written these now: the debug run's were moved aside.
+          shopt -s nullglob
+          for file in target/tmp/ledger-*.txt; do
+            cp -f "$file" "$RUNNER_TEMP/gpu-software-artifact/release-$(basename "$file")"
+          done
       - name: Upload the record and the log
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

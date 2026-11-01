@@ -165,6 +165,12 @@ D55 to D59.
   the kernel ends, so one async test skips only its pending-path check there (VALIDATION.md).
   Runs: 1m52s cold, 1m27s warm. Any slice that adds Gpu tests bumps the two pins. Opus keep after
   two CI fix rounds; gates on main at `00ad885`.
+- M4 m4.e1 (`894ab0e`): `gust-wgpu` prefers the verified precompiled artifact over runtime
+  Slang (D17, D45). The embedded artifact passes `verify_artifact` before use; a kernel with no
+  artifact and no `slang-runtime` gives `Error::NoArtifact`. The pipeline cache key includes the
+  content key, and a cache hit leaves `entries` and `misses` unchanged. A test on the artifact
+  bytes catches a mutation that the identity check alone missed. The `gpu-software` pins are 140
+  passed over 18 result lines. Opus keep after one fix round; gates on main at `a91cb49`.
 M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),

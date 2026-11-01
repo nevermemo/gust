@@ -33,6 +33,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernel-cpu-bad-value"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "kernel-cpu-duplicate"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "kernel-missing"
 version = "0.0.0"
 dependencies = [

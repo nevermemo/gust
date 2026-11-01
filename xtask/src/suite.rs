@@ -1,6 +1,6 @@
 use crate::{
     arch::check_arch,
-    checks::check_feature,
+    checks::{check_cpu, check_feature},
     docs::docs_check,
     lint::lint,
     process::{require_command, run_direct},
@@ -32,6 +32,8 @@ pub(crate) enum Step {
     CheckArch,
     /// `cargo xtask check-ui`: `cargo check` of the fixture crates under tests/ui.
     CheckUi,
+    /// `cargo xtask check-cpu`: the examples' CPU-twin tests (`checks::CPU_TESTS`).
+    CheckCpu,
     /// `cargo xtask check-feature <area>`.
     Feature(&'static str),
     /// `cargo xtask verify --mode <mode>`, recording only when the flag is set.
@@ -86,7 +88,7 @@ impl Suite {
     pub(crate) fn covers(self) -> &'static str {
         match self {
             Self::Unit => {
-                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui; no external tools"
+                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references); no external tools"
             }
             Self::Slangc => {
                 "Unit, plus the gust library tests and the diagnostics integration test, which compile generated Slang with slangc"
@@ -132,6 +134,7 @@ impl Suite {
             Step::DocsCheck,
             Step::CheckArch,
             Step::CheckUi,
+            Step::CheckCpu,
         ];
         match self {
             Self::Unit => unit.to_vec(),
@@ -159,6 +162,7 @@ impl Step {
             Self::DocsCheck => "cargo xtask docs-check".to_owned(),
             Self::CheckArch => "cargo xtask check-arch".to_owned(),
             Self::CheckUi => "cargo xtask check-ui".to_owned(),
+            Self::CheckCpu => "cargo xtask check-cpu".to_owned(),
             Self::Feature(area) => format!("cargo xtask check-feature {area}"),
             Self::Verify(mode, _) => format!("cargo xtask verify --mode {}", mode.as_str()),
         }
@@ -173,6 +177,7 @@ impl Step {
             Self::DocsCheck => docs_check(&root, &mut Vec::new()),
             Self::CheckArch => check_arch(&root, &mut Vec::new()),
             Self::CheckUi => check_ui(&root, &mut Vec::new()),
+            Self::CheckCpu => check_cpu(),
             Self::Feature(area) => check_feature(Some(area)),
             Self::Verify(mode, record) => verify(mode, record),
         }

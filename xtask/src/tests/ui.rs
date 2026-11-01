@@ -958,3 +958,153 @@ fn the_outermost_call_site_in_the_case_is_the_one_reported() {
     let five = expected("E0080", "a/src/main.rs", 5, &[], &[]);
     assert!(run_a(&five, &[line])[0].contains("`line: 5`"));
 }
+
+/// The `compiler-message` line of `cargo check --message-format json -p kernel-cpu-bad-value`
+/// (m3.c2), trimmed from a real run on Windows. A macro's `compile_error!` has
+/// `"code": null`, so the message text is all that names it, and its span is the `cpu = "off"` option
+/// in the user's file. Cut: `package_id`, `manifest_path`, the target's paths, the rendered snippet and
+/// the `text` array. Kept: the backslash `file_name`, the null code and the macro's own message.
+const MACRO_ERROR_LINE: &str = r#"{"reason":"compiler-message","target":{"kind":["bin"],"crate_types":["bin"],"name":"kernel-cpu-bad-value"},"message":{"rendered":"error: [GUST-E0709] unknown `cpu` value; the only value is `\"unsupported\"`\n --> kernel-cpu-bad-value\\src\\main.rs:7:14\n","$message_type":"diagnostic","children":[],"level":"error","message":"[GUST-E0709] unknown `cpu` value; the only value is `\"unsupported\"`","spans":[{"byte_end":310,"byte_start":299,"column_end":25,"column_start":14,"expansion":null,"file_name":"kernel-cpu-bad-value\\src\\main.rs","is_primary":true,"label":null,"line_end":7,"line_start":7,"suggested_replacement":null,"suggestion_applicability":null,"text":[]}],"code":null}}"#;
+
+fn macro_expected() -> Expected {
+    expected(
+        "none",
+        "kernel-cpu-bad-value/src/main.rs",
+        7,
+        &["[GUST-E0709] unknown `cpu` value; the only value is `\"unsupported\"`"],
+        &[],
+    )
+}
+
+fn run_macro(wanted: &Expected, line: &str) -> Vec<String> {
+    judge(
+        "kernel-cpu-bad-value",
+        &fails(wanted.clone()),
+        false,
+        &cargo_stdout(&[line]),
+        "",
+    )
+}
+
+#[test]
+fn code_none_names_an_error_without_a_rustc_code_by_its_message() {
+    let diagnostics = parse_diagnostics(MACRO_ERROR_LINE);
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].code, None);
+    assert_eq!(
+        run_macro(&macro_expected(), MACRO_ERROR_LINE),
+        Vec::<String>::new()
+    );
+    // The message is a substring of the macro's text, so a shorter pin matches too.
+    let mut shorter = macro_expected();
+    shorter.messages = vec!["[GUST-E0709]".to_owned()];
+    assert!(run_macro(&shorter, MACRO_ERROR_LINE).is_empty());
+}
+
+#[test]
+fn code_none_still_pins_the_message_the_file_and_the_line() {
+    // Another macro code, or other text, is a message gap: the message is what tells code-less errors apart.
+    for wrong in ["[GUST-E0710] duplicate cpu option", "unknown `cpu` value!"] {
+        let mut wanted = macro_expected();
+        wanted.messages = vec![wrong.to_owned()];
+        let problems = run_macro(&wanted, MACRO_ERROR_LINE);
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(
+            problems[0].contains(&format!("`message: {wrong}`")),
+            "{problems:?}"
+        );
+        assert!(
+            problems[0].contains("at kernel-cpu-bad-value/src/main.rs:7)"),
+            "{problems:?}"
+        );
+    }
+    let mut line = macro_expected();
+    line.line = 8;
+    assert!(run_macro(&line, MACRO_ERROR_LINE)[0].contains("`line: 8`"));
+    let mut file = macro_expected();
+    file.file = "other/src/main.rs".to_owned();
+    assert!(run_macro(&file, MACRO_ERROR_LINE)[0].contains("`file: other/src/main.rs`"));
+}
+
+#[test]
+fn code_none_rejects_an_error_that_has_a_code_and_a_code_rejects_a_codeless_one() {
+    let coded = [message_line(
+        "error",
+        Some("E0277"),
+        "same text",
+        &[("a.rs", 3, true, None)],
+        &[],
+    )];
+    let none = expected("none", "a.rs", 3, &["same text"], &[]);
+    let problems = run_a(&none, &coded);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(problems[0].contains("`code: none`"), "{problems:?}");
+    assert!(
+        problems[0].contains("error[E0277] same text"),
+        "{problems:?}"
+    );
+    // And the other way round: a code-less macro error does not satisfy `code: E0277`.
+    let mut wanted = macro_expected();
+    wanted.code = "E0277".to_owned();
+    let problems = run_macro(&wanted, MACRO_ERROR_LINE);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(problems[0].contains("`code: E0277`"), "{problems:?}");
+}
+
+#[test]
+fn code_none_needs_a_message_and_is_spelled_in_lower_case() {
+    assert_eq!(
+        parse_expected("code: none\nfile: a.rs\nline: 2\nmessage: [GUST-E0709] x\n"),
+        Ok(expected("none", "a.rs", 2, &["[GUST-E0709] x"], &[]))
+    );
+    // Without a message any error without a code would do; a label does not stand in for it.
+    for text in [
+        "code: none\nfile: a.rs\nline: 2\n",
+        "code: none\nfile: a.rs\nline: 2\nlabel: x\n",
+    ] {
+        let error = parse_expected(text).unwrap_err();
+        assert!(
+            error.contains("`code: none` but no `message:` line"),
+            "{error}"
+        );
+    }
+    // The other required keys are still reported first; a real code needs no message.
+    assert!(
+        parse_expected("code: none\nmessage: x\n")
+            .unwrap_err()
+            .contains("no `file:` line")
+    );
+    assert!(parse_expected("code: E0277\nfile: a.rs\nline: 2\n").is_ok());
+    // `None` is an ordinary code, which no diagnostic has: it never matches a code-less error.
+    let wanted = parse_expected("code: None\nfile: a.rs\nline: 2\nmessage: x\n").unwrap();
+    assert_eq!(wanted.code, "None");
+    let codeless = [message_line(
+        "error",
+        None,
+        "x",
+        &[("a.rs", 2, true, None)],
+        &[],
+    )];
+    assert!(run_a(&wanted, &codeless)[0].contains("`code: None`"));
+}
+
+#[test]
+fn the_cpu_option_fixtures_pin_the_macro_messages_of_e0709_and_e0710() {
+    let ui = workspace_root().unwrap().join(UI_DIR);
+    let cases = discover_cases(&ui).unwrap();
+    let find = |name: &str| cases.iter().find(|case| case.name == name).unwrap();
+    assert_eq!(
+        find("kernel-cpu-bad-value").expectation,
+        fails(macro_expected())
+    );
+    assert_eq!(
+        find("kernel-cpu-duplicate").expectation,
+        fails(expected(
+            "none",
+            "kernel-cpu-duplicate/src/main.rs",
+            6,
+            &["[GUST-E0710] duplicate cpu option"],
+            &[],
+        ))
+    );
+}

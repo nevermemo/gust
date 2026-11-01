@@ -40,6 +40,10 @@ pub(crate) const REFLECTION_TESTS: &[&[&str]] = &[
 pub(crate) const CPU_TESTS: &[&[&str]] = &[
     &["test", "--locked", "-p", "vector-add"],
     &["test", "--locked", "-p", "polynomial"],
+    &["test", "--locked", "-p", "signal-pipeline"],
+    &["test", "--locked", "-p", "particle-step"],
+    &["test", "--locked", "-p", "typed-pipeline"],
+    &["test", "--locked", "-p", "atomic-counter"],
 ];
 
 /// `cargo xtask check-cpu`: the CPU-twin evidence, needing neither slangc nor a GPU.

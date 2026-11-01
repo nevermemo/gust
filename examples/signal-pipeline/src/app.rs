@@ -379,7 +379,151 @@ fn export_generated_source() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    use gust::cpu::{CpuDevice, Error as CpuError, ulps};
+
     use super::*;
+
+    /// The twin-versus-GPU bound for `transform`, absolute, over the input domain of `Inputs`: 900 * 2^-24, about
+    /// 5.4e-5.
+    ///
+    /// Derived from the kernel text (docs/SEMANTICS.md section 4, "Deriving a tolerance"), not from a measurement.
+    /// With `u = 2^-24`, the domain below (asserted by `assert_derivation_domain`) and one rounding of at most `u`
+    /// times the result's magnitude on the twin, `2u` on the GPU for `+ - *` and `5u` for `/` (divisor in
+    /// `[1, 1.66]`, inside the `[2^-126, 2^126]` range of the 2.5 ULP row), first-order propagation, magnitudes
+    /// `M`, twin error `T` and GPU error `G` in units of `u`, the GPU side without fusion (its maximum):
+    ///
+    /// | step | operation | M | T | G |
+    /// | --- | --- | --- | --- | --- |
+    /// | `centered` | `signal - baseline`, `abs(signal) <= 4`, `abs(baseline) <= 0.16` | 4.16 | 4.16 | 8.32 |
+    /// | `amplified` | `* gain`, `gain <= 1.16` | 4.83 | 9.65 | 19.30 |
+    /// | `biased` | `+ bias`, `abs(bias) <= 0.13` | 4.96 | 14.61 | 29.21 |
+    /// | `normalized` | `/ scale`, `scale >= 1`, so the inputs' error is divided by at most 1 | 4.96 | 19.56 | 53.99 |
+    /// | `energy` | `normalized * normalized`, error `2 M T` plus the rounding | 24.56 | 218.44 | 584.24 |
+    /// | `out` | `energy + 0.25 * normalized` (the product is exact: a power of two) | 25.80 | 249.13 | 649.33 |
+    ///
+    /// Twin plus GPU is 898.46u, so 899u rounded up, and 900u asserted, the extra 1u covering the second-order terms
+    /// (below 0.001u here). Reassociation cannot raise it: every sum has two operands, and a chain of products has
+    /// the same relative error in any grouping. Fusing `centered * gain + bias` or `energy + 0.25 * normalized`
+    /// only removes a rounding. A sign change near a root stays inside the bound.
+    ///
+    /// Observed maxima are printed separately by the ignored test and never become the tolerance.
+    const TWIN_VS_GPU_BOUND: f64 = 900.0 / 16_777_216.0;
+
+    /// The domain the bound is derived for: every input of `Inputs::new` lies in these ranges. All inputs are periodic
+    /// with periods of at most 2048, so 4096 elements reach every extreme.
+    fn assert_derivation_domain(inputs: &Inputs) {
+        let largest = |values: &[f32]| values.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(largest(&inputs.signal) <= 4.0, "signal");
+        assert!(largest(&inputs.baseline) <= 0.16, "baseline");
+        assert!(largest(&inputs.gain) <= 1.16, "gain");
+        assert!(largest(&inputs.bias) <= 0.13, "bias");
+        assert!(
+            inputs.scale.iter().all(|scale| *scale >= 1.0),
+            "scale (the divisor) is at least 1"
+        );
+    }
+
+    /// The host reference: `run_cpu` over a fresh output.
+    fn reference(inputs: &Inputs) -> Vec<f32> {
+        let mut output = vec![0.0; inputs.signal.len()];
+        run_cpu(inputs, &mut output);
+        output
+    }
+
+    /// The same typed `dispatch` on the CPU twin, which the macro emits under `cfg(test)`: no GPU involved.
+    fn transform_on_cpu(inputs: &Inputs) -> Result<Vec<f32>, CpuError> {
+        let device = CpuDevice::new();
+        let signal = device.buffer(&inputs.signal);
+        let baseline = device.buffer(&inputs.baseline);
+        let gain = device.buffer(&inputs.gain);
+        let bias = device.buffer(&inputs.bias);
+        let scale = device.buffer(&inputs.scale);
+        let out = device.buffer(&vec![-1.0f32; inputs.signal.len()]);
+        signal_pipeline::transform::dispatch(
+            &device,
+            inputs.signal.len() as u32,
+            &signal,
+            &baseline,
+            &gain,
+            &bias,
+            &scale,
+            &out,
+        )?;
+        Ok(out.read())
+    }
+
+    /// The largest distance between two results in ULPs and in absolute terms (computed in `f64`).
+    fn largest_difference(left: &[f32], right: &[f32]) -> (u64, f64) {
+        assert_eq!(left.len(), right.len());
+        left.iter().zip(right).fold((0, 0.0), |(ulp, abs), (l, r)| {
+            (
+                ulp.max(ulps(*l, *r)),
+                abs.max((f64::from(*l) - f64::from(*r)).abs()),
+            )
+        })
+    }
+
+    #[test]
+    fn inputs_stay_inside_the_derivation_domain() {
+        assert_derivation_domain(&Inputs::new(4096));
+        assert_derivation_domain(&Inputs::new(DEBUG_COUNT));
+    }
+
+    #[test]
+    fn twin_matches_host_reference() {
+        // The twin runs the shadow body, which performs the operations of `run_cpu` in the same order, and Rust
+        // does not contract them, so the two agree to the last bit. 257 elements end mid-workgroup of 128 (the
+        // kernel's `i < out.len()` guard keeps the tail inside the buffer); 0 and 1 are the edges.
+        for count in [0, 1, 127, 128, 129, 257, 4096] {
+            let inputs = Inputs::new(count);
+            let twin = transform_on_cpu(&inputs).expect("twin dispatch");
+            let (max_ulps, max_abs) = largest_difference(&twin, &reference(&inputs));
+            println!(
+                "twin versus run_cpu, {count} elements: max {max_ulps} ULP, max abs error {max_abs:e}"
+            );
+            assert_eq!(max_ulps, 0, "{count} elements");
+        }
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn twin_matches_reference_and_gpu_within_the_derived_bound() {
+        let device = match HeadlessDevice::new() {
+            Ok(device) => device,
+            Err(error) => panic!(
+                "Vulkan adapter required; this test must not silently skip: could not initialize headless wgpu: {error}"
+            ),
+        };
+        let inputs = Inputs::new(DEBUG_COUNT);
+        assert_derivation_domain(&inputs);
+        let host = reference(&inputs);
+        let gpu = dispatch_gpu(&device, &inputs, &vec![0.0; DEBUG_COUNT]).expect("GPU dispatch");
+        let twin = transform_on_cpu(&inputs).expect("twin dispatch");
+
+        let (gpu_host_ulps, gpu_host_abs) = largest_difference(&gpu, &host);
+        let (twin_host_ulps, twin_host_abs) = largest_difference(&twin, &host);
+        let (twin_gpu_ulps, twin_gpu_abs) = largest_difference(&twin, &gpu);
+        // Observations on this adapter, recorded in the slice log (probe/s4-e1.log); not tolerances.
+        println!("S4 adapter: {}", device.adapter_info().name);
+        println!("S4 GPU versus run_cpu: max {gpu_host_ulps} ULP, max abs error {gpu_host_abs:e}");
+        println!(
+            "S4 twin versus run_cpu: max {twin_host_ulps} ULP, max abs error {twin_host_abs:e}"
+        );
+        println!("S4 twin versus GPU: max {twin_gpu_ulps} ULP, max abs error {twin_gpu_abs:e}");
+        println!("S4 derived bound (900 * 2^-24): {TWIN_VS_GPU_BOUND:e}");
+
+        // The GPU against the host reference is the same pair as the twin against the GPU, because the twin
+        // equals the host reference bit for bit; it is asserted first so that a failing twin cannot hide it.
+        assert!(
+            gpu_host_abs <= TWIN_VS_GPU_BOUND,
+            "GPU versus run_cpu: max abs error {gpu_host_abs:e} exceeds the derived bound {TWIN_VS_GPU_BOUND:e}"
+        );
+        assert_eq!(twin_host_ulps, 0, "twin versus run_cpu");
+        assert!(
+            twin_gpu_abs <= TWIN_VS_GPU_BOUND,
+            "twin versus GPU: max abs error {twin_gpu_abs:e} exceeds the derived bound {TWIN_VS_GPU_BOUND:e}"
+        );
+    }
 
     #[test]
     fn demo_sizes_stay_within_the_default_workgroup_limit() {

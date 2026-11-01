@@ -172,7 +172,7 @@ fn the_full_gate_runs_the_release_slang_tests() {
 }
 
 #[test]
-fn check_cpu_is_a_unit_step_of_two_locked_example_test_runs() {
+fn check_cpu_is_a_unit_step_of_locked_example_test_runs() {
     let calls: Vec<Vec<String>> = CPU_TESTS
         .iter()
         .map(|args| args.iter().map(|arg| (*arg).to_owned()).collect())
@@ -181,7 +181,11 @@ fn check_cpu_is_a_unit_step_of_two_locked_example_test_runs() {
         calls,
         [
             ["test", "--locked", "-p", "vector-add"],
-            ["test", "--locked", "-p", "polynomial"]
+            ["test", "--locked", "-p", "polynomial"],
+            ["test", "--locked", "-p", "signal-pipeline"],
+            ["test", "--locked", "-p", "particle-step"],
+            ["test", "--locked", "-p", "typed-pipeline"],
+            ["test", "--locked", "-p", "atomic-counter"]
         ]
     );
     // The step is in Unit (after check-ui) and so in Slangc, which contains Unit; CI runs Unit.

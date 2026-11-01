@@ -7,8 +7,8 @@
         {
           "file": "52e85c5f03f72272.wgsl",
           "format": "wgsl",
-          "reflection_sha256": "fdb9241e03c9407e5721cba13ea5715d46e64460b478f8c0bc424990f1083f2d",
-          "sha256": "c23fa854636f3b5f0b7ec7143505a2db115829c23969983198bfbc3ff9a2884b"
+          "reflection_sha256": "e102648ec13284e0c14a7bba000edad37ff3b4bdbcae195e542716af8d327029",
+          "sha256": "6b83da9c0c13d3d1b156951e7baeb6b5a832a205ad4a6f1b63719767c125a614"
         }
       ],
       "key": "52e85c5f03f72272",
@@ -17,5 +17,5 @@
     }
   ],
   "schema": 1,
-  "slang": "2026.13.1-1-g84792eb15"
+  "slang": "2026.20"
 }

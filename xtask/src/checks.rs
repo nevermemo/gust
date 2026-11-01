@@ -31,6 +31,23 @@ pub(crate) const REFLECTION_TESTS: &[&[&str]] = &[
     ],
 ];
 
+/// The cargo calls of `cargo xtask check-cpu` (a step of the Unit suite): the non-ignored,
+/// GPU-free tests of the examples, which run each kernel's CPU twin against its host reference.
+/// Later slices append their examples. Kept as data so a test can require `--locked` on each.
+pub(crate) const CPU_TESTS: &[&[&str]] = &[
+    &["test", "--locked", "-p", "vector-add"],
+    &["test", "--locked", "-p", "polynomial"],
+];
+
+/// `cargo xtask check-cpu`: the CPU-twin evidence, needing neither slangc nor a GPU.
+pub(crate) fn check_cpu() -> Result<(), String> {
+    let root = workspace_root()?;
+    for args in CPU_TESTS {
+        run_direct(&root, "cargo", args)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
     let root = workspace_root()?;
     let area = area.ok_or("check-feature needs an area")?;
@@ -390,6 +407,12 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
         "check-arch" => {
             "check-arch: per-crate dependency allow-list (D02), no IR module or file outside future/, no SPIR-V library in the compiler crates; also part of check-fast"
         }
+        "check-ui" => {
+            "check-ui: cargo check of each tests/ui fixture crate; a crate with an expected.txt must fail with exactly one error satisfying every key (`code: none` names a macro error without a rustc code and needs a `message:`); also part of check-fast and the Unit suite"
+        }
+        "check-cpu" => {
+            "check-cpu: `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial), running the non-ignored twin tests against the host references; needs neither slangc nor a GPU; a step of the Unit suite"
+        }
         "bless" => {
             "bless: reruns the Slang golden tests with BLESS_GOLDEN=1, which rewrites changed fixtures and fails with the diff; review before committing"
         }
@@ -397,7 +420,7 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
             "test: `cargo xtask test --suite Unit|Slangc|Spirv|Reflect|Gpu|Full` runs one evidence tier of VALIDATION.md"
         }
         "all" => {
-            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, examples, artifacts, full, changed, workspace, format, lints, lint, docs-check, check-arch, bless, test"
+            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, examples, artifacts, full, changed, workspace, format, lints, lint, docs-check, check-arch, check-ui, check-cpu, bless, test"
         }
         _ => return Err(format!("unknown check area `{area}`")),
     };

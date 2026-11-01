@@ -1,17 +1,18 @@
 use super::{Step, Suite};
 use crate::{
-    checks::REFLECTION_TESTS,
+    checks::{CPU_TESTS, REFLECTION_TESTS},
     verify::{RELEASE_SLANG_TESTS, VerifyMode, cargo_calls as mode_cargo_calls, example_run_args},
     workspace::EXAMPLES,
 };
 
-const UNIT: [Step; 6] = [
+const UNIT: [Step; 7] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
     Step::DocsCheck,
     Step::CheckArch,
     Step::CheckUi,
+    Step::CheckCpu,
 ];
 
 #[test]
@@ -84,6 +85,7 @@ fn cargo_calls(step: Step) -> Vec<Vec<String>> {
     let owned = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
     match step {
         Step::Cargo(args) => vec![owned(args)],
+        Step::CheckCpu => CPU_TESTS.iter().map(|args| owned(args)).collect(),
         Step::Feature("reflection") => REFLECTION_TESTS.iter().map(|args| owned(args)).collect(),
         Step::Verify(VerifyMode::Artifacts, _) => EXAMPLES
             .iter()
@@ -167,4 +169,47 @@ fn the_full_gate_runs_the_release_slang_tests() {
             .count(),
         1
     );
+}
+
+#[test]
+fn check_cpu_is_a_unit_step_of_two_locked_example_test_runs() {
+    let calls: Vec<Vec<String>> = CPU_TESTS
+        .iter()
+        .map(|args| args.iter().map(|arg| (*arg).to_owned()).collect())
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            ["test", "--locked", "-p", "vector-add"],
+            ["test", "--locked", "-p", "polynomial"]
+        ]
+    );
+    // The step is in Unit (after check-ui) and so in Slangc, which contains Unit; CI runs Unit.
+    for suite in [Suite::Unit, Suite::Slangc] {
+        let steps = suite.steps();
+        let ui = steps
+            .iter()
+            .position(|step| *step == Step::CheckUi)
+            .unwrap();
+        assert_eq!(steps[ui + 1], Step::CheckCpu, "{suite:?}");
+    }
+    assert!(Suite::Unit.covers().contains("check-cpu"));
+    assert_eq!(Step::CheckCpu.label(), "cargo xtask check-cpu");
+    // The calls the Unit suite makes include both, each locked (every_cargo_step_is_locked checks the flag).
+    let unit_calls: Vec<Vec<String>> = Suite::Unit
+        .steps()
+        .into_iter()
+        .flat_map(cargo_calls)
+        .collect();
+    for call in &calls {
+        assert!(unit_calls.contains(call), "{call:?}");
+    }
+}
+
+#[test]
+fn check_cpu_and_check_ui_are_explained() {
+    use crate::checks::explain_check;
+    assert!(explain_check(Some("check-cpu")).is_ok());
+    assert!(explain_check(Some("check-ui")).is_ok());
+    assert!(explain_check(Some("check-nothing")).is_err());
 }

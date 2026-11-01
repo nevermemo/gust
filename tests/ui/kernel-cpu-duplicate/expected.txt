@@ -1,0 +1,8 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt and kernel-cpu-bad-value/expected.txt for `code: none`). The macro's own text
+# carries its GUST code (docs/DIAGNOSTICS.md, E0710); the line is the repeated `cpu` option of the
+# `#[kernel(..)]` attribute.
+code: none
+file: kernel-cpu-duplicate/src/main.rs
+line: 6
+message: [GUST-E0710] duplicate cpu option

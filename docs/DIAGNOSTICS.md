@@ -881,6 +881,7 @@ Decision: D02.
 `--cfg gust_dual`. The only value is `"unsupported"`.
 Reached through `#[gpu]`.
 Rejected: `#[kernel(cpu = "off")]`.
+Fixture: `tests/ui/kernel-cpu-bad-value` (`cargo xtask check-ui`, `code: none` plus the message).
 Write instead: `#[kernel(cpu = "unsupported")]`, or no `cpu` option to keep the twin.
 Decision: D26.
 
@@ -889,6 +890,7 @@ Decision: D26.
 The `cpu` option is stated once.
 Reached through `#[gpu]`.
 Rejected: `#[kernel(cpu = "unsupported", cpu = "unsupported")]`.
+Fixture: `tests/ui/kernel-cpu-duplicate` (`cargo xtask check-ui`, `code: none` plus the message).
 Write instead: state `cpu` once.
 Decision: D26.
 

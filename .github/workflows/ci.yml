@@ -34,7 +34,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Unit suite
-        # macro and xtask tests, lint, docs-check, check-arch, check-ui
+        # macro and xtask tests, lint, docs-check, check-arch, check-ui, check-cpu
         run: cargo --locked xtask test --suite Unit
 
   msrv:

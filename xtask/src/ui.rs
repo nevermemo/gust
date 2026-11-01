@@ -15,6 +15,10 @@ use crate::{
 /// and is not a member of the root workspace, so `cargo test --workspace` never builds it.
 pub(crate) const UI_DIR: &str = "tests/ui";
 
+/// The value of `code:` for an error that has no rustc code (`"code": null`), such as the
+/// `compile_error!` of a proc macro. Exact, lower case; no rustc code is spelled this way.
+pub(crate) const NO_CODE: &str = "none";
+
 /// What `cargo check` of one fixture crate must do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Expectation {
@@ -28,7 +32,9 @@ pub(crate) enum Expectation {
 /// The keys of an `expected.txt`, all to hold in the one error of the crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Expected {
-    /// `code: E0277`: the diagnostic's `code.code`. Required.
+    /// `code: E0277`: the diagnostic's `code.code`. Required. [`NO_CODE`] (`code: none`) instead
+    /// requires `"code": null`, which is what a macro's `compile_error!` has; it is only accepted
+    /// together with a `message:`.
     pub(crate) code: String,
     /// `file: gpupod-missing/src/main.rs`: the `file_name` of a primary span, with slashes.
     /// Required, so that a fixture cannot pass on a diagnostic from somewhere else.
@@ -207,8 +213,10 @@ pub(crate) fn discover_cases(ui_root: &Path) -> Result<Vec<Case>, String> {
 
 /// The keys of an `expected.txt`: `key: value` lines, blank lines and lines starting with `#`
 /// ignored. `code`, `file` and `line` are required (a file without them would accept almost any
-/// failure) and may appear once; `message` and `label` may repeat. Unknown keys, empty values, a
-/// `line` that is not a positive number and an absolute `file` are errors.
+/// failure) and may appear once; `message` and `label` may repeat. `code: none` names an error
+/// without a rustc code (a macro's `compile_error!`) and needs at least one `message:`, since the
+/// message text is then the only thing that tells the error from any other code-less one. Unknown
+/// keys, empty values, a `line` that is not a positive number and an absolute `file` are errors.
 pub(crate) fn parse_expected(text: &str) -> Result<Expected, String> {
     let mut code: Option<String> = None;
     let mut file: Option<String> = None;
@@ -287,6 +295,11 @@ pub(crate) fn parse_expected(text: &str) -> Result<Expected, String> {
             "expected.txt has no `line:` line; without it any line of the file would do".to_owned(),
         );
     };
+    if code == NO_CODE && messages.is_empty() {
+        return Err(format!(
+            "expected.txt has `code: {NO_CODE}` but no `message:` line; without it any error without a rustc code would do"
+        ));
+    }
     Ok(Expected {
         code,
         file,
@@ -370,7 +383,13 @@ pub(crate) fn judge(
 /// The keys of `wanted` that `error` does not satisfy, each written as in expected.txt.
 fn gaps(case: &str, wanted: &Expected, error: &Diagnostic) -> Vec<String> {
     let mut gaps = Vec::new();
-    if error.code.as_deref() != Some(wanted.code.as_str()) {
+    // `code: none` wants an error with no rustc code; any other value wants exactly that code.
+    let code_holds = if wanted.code == NO_CODE {
+        error.code.is_none()
+    } else {
+        error.code.as_deref() == Some(wanted.code.as_str())
+    };
+    if !code_holds {
         gaps.push(format!("code: {}", wanted.code));
     }
     // `file` and `line` say where the error is reported: one primary span must carry both. A

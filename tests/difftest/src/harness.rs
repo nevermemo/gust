@@ -8,9 +8,11 @@
 //! ran (`mode`, `adapter`, `programs_executed`) and what disagreed.
 
 use std::collections::BTreeMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Instant;
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::ast::{Expr, Program, Stmt, operator_counts};
 use crate::classify::{CLASSES, Mismatch, Raw, classify, discard_class, read_results};
@@ -269,7 +271,82 @@ pub fn lock_was_rejected(output: &str) -> bool {
 /// The message that replaces cargo's when the template lockfile no longer fits the manifest.
 pub const STALE_LOCK_MESSAGE: &str = "template lockfile stale; run `difftest-run --refresh-lock` and commit tests/difftest/template/Cargo.lock";
 
-/// Runs one cargo step of the run crate, with its output in `log`; returns the seconds it took.
+/// The start of the error of a step that ran past its deadline; the reducer counts such a candidate as not reproducing.
+pub const TIMED_OUT: &str = "timed out";
+
+/// Kills `child` and everything it started (cargo's rustc and the test binary): `taskkill /T` on Windows, the child's
+/// process group elsewhere (`run_with_deadline` makes the child a group leader).
+fn kill_tree(child: &mut Child) {
+    let _ = if cfg!(windows) {
+        Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .output()
+    } else {
+        Command::new("kill")
+            .args(["-KILL", "--", &format!("-{}", child.id())])
+            .output()
+    };
+    let _ = child.kill();
+}
+
+/// Copies a pipe into `buffer` as it arrives, so that the output so far survives a thread that is never joined.
+fn drain<R: Read + Send + 'static>(
+    pipe: Option<R>,
+    buffer: &Arc<Mutex<Vec<u8>>>,
+) -> std::thread::JoinHandle<()> {
+    let buffer = Arc::clone(buffer);
+    std::thread::spawn(move || {
+        let (Some(mut pipe), mut chunk) = (pipe, [0u8; 8192]) else {
+            return;
+        };
+        while let Ok(n @ 1..) = pipe.read(&mut chunk) {
+            buffer.lock().unwrap().extend_from_slice(&chunk[..n]);
+        }
+    })
+}
+
+/// Runs `command` with its stdout and stderr captured; kills it and its children after `deadline`. The status is
+/// `None` on a timeout, and then the text is what the command had written (the drains are not waited for, because a
+/// child that survived the kill would hold the pipes open).
+fn run_with_deadline(
+    mut command: Command,
+    deadline: Option<Duration>,
+) -> Result<(Option<ExitStatus>, String), String> {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    #[cfg(unix)]
+    if deadline.is_some() {
+        std::os::unix::process::CommandExt::process_group(&mut command, 0);
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("cannot start cargo: {e}"))?;
+    let buffers = [Arc::default(), Arc::default()];
+    let drains = [
+        drain(child.stdout.take(), &buffers[0]),
+        drain(child.stderr.take(), &buffers[1]),
+    ];
+    let start = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
+            for drain in drains {
+                let _ = drain.join();
+            }
+            break Some(status);
+        }
+        if deadline.is_some_and(|d| start.elapsed() >= d) {
+            kill_tree(&mut child);
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let text = |b: &Arc<Mutex<Vec<u8>>>| String::from_utf8_lossy(&b.lock().unwrap()).into_owned();
+    Ok((status, text(&buffers[0]) + &text(&buffers[1])))
+}
+
+/// Runs one cargo step of the run crate, with its output in `log`; returns the seconds it took. `deadline` bounds the
+/// step (the reducer's 120 s); the batch runner passes `None`.
+#[allow(clippy::too_many_arguments)]
 fn cargo_step(
     crate_dir: &Path,
     target_dir: &Path,
@@ -278,6 +355,7 @@ fn cargo_step(
     cpu_only: bool,
     log: &Path,
     env: &[(&str, &Path)],
+    deadline: Option<Duration>,
 ) -> Result<f64, String> {
     let mut command = cargo_command();
     command
@@ -288,7 +366,7 @@ fn cargo_step(
         .env("CARGO_TARGET_DIR", target_dir)
         .env("GUST_PROFILE", "dev")
         .env("DIFFTEST_CPU_ONLY", if cpu_only { "1" } else { "0" })
-        .stdin(std::process::Stdio::null());
+        .stdin(Stdio::null());
     if let Some(out_dir) = out_dir {
         command.env("DIFFTEST_OUT", out_dir);
     }
@@ -296,17 +374,18 @@ fn cargo_step(
         command.env(key, value);
     }
     let start = Instant::now();
-    let output = command
-        .output()
-        .map_err(|e| format!("cannot start cargo: {e}"))?;
+    let (finished, text) = run_with_deadline(command, deadline)?;
     let seconds = start.elapsed().as_secs_f64();
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
     std::fs::write(log, &text).map_err(|e| format!("{}: {e}", log.display()))?;
-    if output.status.success() {
+    let Some(status) = finished else {
+        return Err(format!(
+            "{TIMED_OUT}: cargo {} ran past {} s; the output so far is in {}",
+            args.join(" "),
+            deadline.map_or(0, |d| d.as_secs()),
+            log.display()
+        ));
+    };
+    if status.success() {
         return Ok(seconds);
     }
     if lock_was_rejected(&text) {
@@ -315,7 +394,7 @@ fn cargo_step(
     Err(format!(
         "cargo {} failed ({}); log {}:\n{}",
         args.join(" "),
-        output.status,
+        status,
         log.display(),
         tail(&text, 40)
     ))
@@ -468,6 +547,18 @@ pub fn execute_plan(
     plan: &[Planned],
     env: &[(&str, &Path)],
 ) -> Result<(Vec<Raw>, CargoRun), String> {
+    execute_plan_within(options, package, name, plan, env, None)
+}
+
+/// [`execute_plan`] with a deadline for each of the two cargo steps (the build and the test run).
+pub fn execute_plan_within(
+    options: &Options,
+    package: &str,
+    name: &str,
+    plan: &[Planned],
+    env: &[(&str, &Path)],
+    deadline: Option<Duration>,
+) -> Result<(Vec<Raw>, CargoRun), String> {
     let batches = options.target_dir.join("difftest");
     let dir = batches.join(name);
     write_run_crate(&dir, package, plan, &options.repo_root)
@@ -485,6 +576,7 @@ pub fn execute_plan(
         options.cpu_only,
         &dir.join("build.log"),
         &[],
+        deadline,
     )?;
     let run_s = cargo_step(
         &dir,
@@ -494,6 +586,7 @@ pub fn execute_plan(
         options.cpu_only,
         &dir.join("run.log"),
         env,
+        deadline,
     )?;
     let raws = read_results(&out, plan)?;
     Ok((raws, CargoRun { build_s, run_s }))
@@ -589,6 +682,97 @@ pub fn template_manifest() -> String {
 mod tests {
     use super::*;
     use crate::runsrc::plan_seed;
+
+    /// Not a test: the process that `a_hung_step_...` starts (this test binary again, with the variables set). It
+    /// writes its pid, says it is ready and sleeps; the "outer" role also starts an "inner" copy of itself.
+    #[test]
+    fn sleeper_helper() {
+        use std::io::Write;
+        let (Some(dir), Ok(role)) = (
+            std::env::var_os("DIFFTEST_SLEEPER_DIR"),
+            std::env::var("DIFFTEST_SLEEPER_ROLE"),
+        ) else {
+            return;
+        };
+        std::fs::write(Path::new(&dir).join(&role), std::process::id().to_string()).unwrap();
+        let mut stdout = std::io::stdout();
+        stdout.write_all(b"sleeper-ready\n").unwrap();
+        stdout.flush().unwrap();
+        if role == "outer" {
+            let mut inner = Command::new(std::env::current_exe().unwrap());
+            inner.args(["--exact", "harness::tests::sleeper_helper"]);
+            let _ = inner.env("DIFFTEST_SLEEPER_ROLE", "inner").status();
+        } else {
+            std::thread::sleep(Duration::from_secs(120));
+        }
+    }
+
+    fn alive(pid: &str) -> bool {
+        if cfg!(windows) {
+            let filter = format!("PID eq {pid}");
+            let listing = Command::new("tasklist")
+                .args(["/FI", &filter, "/FO", "CSV", "/NH"])
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&listing.stdout).contains(&format!("\"{pid}\""))
+        } else {
+            Command::new("kill")
+                .args(["-0", pid])
+                .output()
+                .unwrap()
+                .status
+                .success()
+        }
+    }
+
+    #[test]
+    fn a_hung_step_is_killed_with_its_children_and_returns_at_the_deadline() {
+        let dir = std::env::temp_dir().join(format!("difftest-sleeper-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "harness::tests::sleeper_helper"]);
+        command
+            .env("DIFFTEST_SLEEPER_DIR", &dir)
+            .env("DIFFTEST_SLEEPER_ROLE", "outer");
+        let start = Instant::now();
+        let (status, text) = run_with_deadline(command, Some(Duration::from_secs(6))).unwrap();
+        let waited = start.elapsed();
+        assert!(status.is_none(), "the sleeper finished: {text}");
+        assert!(
+            waited < Duration::from_secs(30),
+            "returned after {waited:?}"
+        );
+        assert!(
+            text.contains("sleeper-ready"),
+            "the output so far is kept: {text:?}"
+        );
+        // Both the process and the copy of itself that it started are gone (they would sleep for 120 s).
+        let pids: Vec<String> = ["outer", "inner"]
+            .iter()
+            .map(|role| {
+                std::fs::read_to_string(dir.join(role)).unwrap_or_else(|e| panic!("{role}: {e}"))
+            })
+            .collect();
+        let gone = |pids: &[String]| pids.iter().all(|pid| !alive(pid));
+        for _ in 0..100 {
+            if gone(&pids) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        let survivors: Vec<&String> = pids.iter().filter(|pid| alive(pid)).collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(survivors.is_empty(), "still running: {survivors:?}");
+    }
+
+    #[test]
+    fn a_command_that_finishes_returns_its_status_and_all_its_output() {
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "harness::tests::sleeper_helper"]);
+        let (status, text) = run_with_deadline(command, Some(Duration::from_secs(60))).unwrap();
+        assert!(status.unwrap().success());
+        assert!(text.contains("test result: ok"), "{text}");
+    }
 
     #[test]
     fn seeds_parse_as_ranges_and_lists() {

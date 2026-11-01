@@ -221,6 +221,8 @@ struct Machine<'a> {
     vars: Vec<Val>,
     /// Executed-operator counts, kept only by `run_covered`.
     coverage: Option<Box<Counting>>,
+    /// The first value of every expression node (by address), kept only by `observed_values`.
+    observed: Option<HashMap<usize, u32>>,
 }
 
 /// What `run_covered` counts while it runs.
@@ -258,7 +260,21 @@ impl Machine<'_> {
         }
     }
 
+    /// Evaluates `expr` and, for `observed_values`, remembers the first value each node takes.
     fn expr(&mut self, expr: &Expr) -> Result<Val, Violation> {
+        let value = self.eval(expr)?;
+        if let Some(seen) = &mut self.observed {
+            let bits = match value {
+                Val::I(bits) => bits,
+                Val::F(reference, _) => reference.to_bits(),
+            };
+            seen.entry(std::ptr::from_ref(expr) as usize)
+                .or_insert(bits);
+        }
+        Ok(value)
+    }
+
+    fn eval(&mut self, expr: &Expr) -> Result<Val, Violation> {
         match expr {
             Expr::Lit(Ty::F32, bits) => {
                 let value = f32::from_bits(*bits);
@@ -518,6 +534,7 @@ fn run_machine(program: &Program, covered: bool) -> Result<(Run, Option<Coverage
         element: 0,
         vars: vec![Val::I(0); variable_slots(program)],
         coverage: covered.then(Box::default),
+        observed: None,
     };
     let mut values = Vec::with_capacity(program.count as usize);
     let mut intervals = Vec::new();
@@ -561,6 +578,24 @@ fn run_machine(program: &Program, covered: bool) -> Result<(Run, Option<Coverage
         coverage
     });
     Ok((Run { values, intervals }, coverage))
+}
+
+/// The first value (the bit pattern; an `f32` as its reference value) that each expression node of `program` takes at
+/// `element`, by the node's address, for the reducer's "replace a subexpression by what it evaluated to" pass. A node
+/// that element never evaluates is absent. Runs that one element only; a violation ends the walk early (the nodes seen
+/// until then stay).
+pub fn observed_values(program: &Program, element: u32) -> HashMap<usize, u32> {
+    let mut machine = Machine {
+        program,
+        element,
+        vars: vec![Val::I(0); variable_slots(program)],
+        coverage: None,
+        observed: Some(HashMap::new()),
+    };
+    let _ = machine
+        .block(&program.body)
+        .and_then(|()| machine.expr(&program.result));
+    machine.observed.unwrap_or_default()
 }
 
 /// `run_full` without the intervals: the output buffer's bit patterns, or the first domain violation.

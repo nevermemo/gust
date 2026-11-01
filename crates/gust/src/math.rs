@@ -1,0 +1,1154 @@
+//! `gust::math`: the vector and matrix types of `#[gpu]` kernels, in pure Rust (slice m6.a2).
+//!
+//! These are the Rust shadows of Slang's `float2/3/4`, `int2/4`, `uint2/3/4` and `float2x2/3x3/4x4`. A kernel body is
+//! ordinary Rust, so the CPU twin runs these types' methods and operators; they are plain `f32`, `i32` and `u32`
+//! arithmetic on the components in field order (`x` then `y` ...), with no fusion and no SIMD.
+//!
+//! # Layout
+//!
+//! The 2- and 4-wide types carry their alignment (`Vec2` 8, `Vec4` 16, and likewise the integer forms), so they match
+//! Slang's storage rule in every position without wrapper types. The 3-wide types are `#[repr(C)]` with alignment 4:
+//! locals and helper parameters only, never a buffer field. `Mat2` is two `Vec2` columns (size 16, alignment 8),
+//! `Mat4` four `Vec4` columns (size 64, alignment 16), `Mat3` three `Vec3` columns (size 36, alignment 4; no buffer
+//! layout). Matrices are column-major and expose no indexing and no component access: their columns are built by
+//! `from_cols` or `from_rows` and used through the methods below.
+//!
+//! # Operators
+//!
+//! Vectors add, subtract and divide component-wise (`Vec / Vec`, `Vec / scalar`), float vectors and all matrices
+//! negate, and the `*Assign` forms exist. Multiplication (`Mul` and `MulAssign`) is generated elsewhere; this module
+//! writes none. Integer vector operators are the plain operators on the components, and a zero divisor panics. Every
+//! operator and method is `#[inline]`, which is load-bearing (a test pins it): an inline function is copied into the
+//! package that uses it. Measured in incremental dev and test builds (optimized builds may differ; the
+//! `vector_overflow` test of `tests/dual` pins it): an integer vector operator panics on overflow only if both this
+//! crate and the package that compiles that copy have overflow checks on. Without `#[inline]` the copy in this crate is
+//! used and this crate's setting alone decides.
+//!
+//! Matrix products are methods: `m.mul_vec4(v)` is M x v (`result[i] = sum_j cols[j][i] * v[j]`, summed in written
+//! order) and `a.mul_mat4(b)` is a x b (`(a x b).cols[j] = a x b.cols[j]`), the same meaning as Slang's `mul(m, v)` and
+//! `mul(a, b)`.
+//!
+//! The types implement no `PartialEq`, except `UVec3` (the invocation id type, which already derived it).
+
+use core::ops::{Add, AddAssign, Div, DivAssign, Neg, Sub, SubAssign};
+
+pub use crate::runtime::UVec3;
+
+mod swizzle;
+
+macro_rules! vector_struct {
+    ($(#[$meta:meta])* $Ty:ident, $S:ty, $align:literal; $($f:ident),+) => {
+        $(#[$meta])*
+        #[derive(Clone, Copy, Debug, Default)]
+        #[repr(C, align($align))]
+        pub struct $Ty {
+            $(
+                #[doc = concat!("The `", stringify!($f), "` component.")]
+                pub $f: $S,
+            )+
+        }
+    };
+}
+
+vector_struct!(
+    /// A pair of `f32` (Slang `float2`); size 8, alignment 8.
+    Vec2, f32, 8; x, y
+);
+vector_struct!(
+    /// Three `f32` (Slang `float3`); size 12, alignment 4. Locals and helper parameters only: it has no layout that
+    /// matches Slang in every buffer position.
+    Vec3, f32, 4; x, y, z
+);
+vector_struct!(
+    /// Four `f32` (Slang `float4`); size 16, alignment 16.
+    Vec4, f32, 16; x, y, z, w
+);
+vector_struct!(
+    /// A pair of `i32` (Slang `int2`); size 8, alignment 8.
+    IVec2, i32, 8; x, y
+);
+vector_struct!(
+    /// Four `i32` (Slang `int4`); size 16, alignment 16.
+    IVec4, i32, 16; x, y, z, w
+);
+vector_struct!(
+    /// A pair of `u32` (Slang `uint2`); size 8, alignment 8.
+    UVec2, u32, 8; x, y
+);
+vector_struct!(
+    /// Four `u32` (Slang `uint4`); size 16, alignment 16.
+    UVec4, u32, 16; x, y, z, w
+);
+
+/// Constructors, `dot` and the component-wise operators of a vector type, for a struct with the listed fields.
+/// `Mul` and `MulAssign` are not here (module documentation).
+macro_rules! vector_impl {
+    ($Ty:ident, $S:ty; $($f:ident),+) => {
+        impl $Ty {
+            /// A vector from its components.
+            #[inline]
+            pub const fn new($($f: $S),+) -> Self {
+                Self { $($f),+ }
+            }
+
+            /// A vector with every component equal to `value`.
+            #[inline]
+            pub const fn splat(value: $S) -> Self {
+                Self { $($f: value),+ }
+            }
+
+            /// The dot product, summed in written order (`x * x + y * y + ...`).
+            #[inline]
+            pub fn dot(self, rhs: Self) -> $S {
+                let products = [$(self.$f * rhs.$f),+];
+                let mut sum = products[0];
+                for product in &products[1..] {
+                    sum += *product;
+                }
+                sum
+            }
+        }
+
+        impl Add for $Ty {
+            type Output = Self;
+            #[inline]
+            fn add(self, rhs: Self) -> Self {
+                Self { $($f: self.$f + rhs.$f),+ }
+            }
+        }
+
+        impl Sub for $Ty {
+            type Output = Self;
+            #[inline]
+            fn sub(self, rhs: Self) -> Self {
+                Self { $($f: self.$f - rhs.$f),+ }
+            }
+        }
+
+        impl Div for $Ty {
+            type Output = Self;
+            #[inline]
+            fn div(self, rhs: Self) -> Self {
+                Self { $($f: self.$f / rhs.$f),+ }
+            }
+        }
+
+        impl Div<$S> for $Ty {
+            type Output = Self;
+            #[inline]
+            fn div(self, rhs: $S) -> Self {
+                Self { $($f: self.$f / rhs),+ }
+            }
+        }
+
+        impl AddAssign for $Ty {
+            #[inline]
+            fn add_assign(&mut self, rhs: Self) {
+                $(self.$f += rhs.$f;)+
+            }
+        }
+
+        impl SubAssign for $Ty {
+            #[inline]
+            fn sub_assign(&mut self, rhs: Self) {
+                $(self.$f -= rhs.$f;)+
+            }
+        }
+
+        impl DivAssign for $Ty {
+            #[inline]
+            fn div_assign(&mut self, rhs: Self) {
+                $(self.$f /= rhs.$f;)+
+            }
+        }
+
+        impl DivAssign<$S> for $Ty {
+            #[inline]
+            fn div_assign(&mut self, rhs: $S) {
+                $(self.$f /= rhs;)+
+            }
+        }
+    };
+}
+
+/// Unary minus of a float vector.
+macro_rules! vector_neg {
+    ($Ty:ident; $($f:ident),+) => {
+        impl Neg for $Ty {
+            type Output = Self;
+            #[inline]
+            fn neg(self) -> Self {
+                Self { $($f: -self.$f),+ }
+            }
+        }
+    };
+}
+
+vector_impl!(Vec2, f32; x, y);
+vector_impl!(Vec3, f32; x, y, z);
+vector_impl!(Vec4, f32; x, y, z, w);
+vector_impl!(IVec2, i32; x, y);
+vector_impl!(IVec4, i32; x, y, z, w);
+vector_impl!(UVec2, u32; x, y);
+vector_impl!(UVec3, u32; x, y, z);
+vector_impl!(UVec4, u32; x, y, z, w);
+
+vector_neg!(Vec2; x, y);
+vector_neg!(Vec3; x, y, z);
+vector_neg!(Vec4; x, y, z, w);
+
+/// Addition, subtraction, negation and their assignment forms of a matrix, column by column.
+macro_rules! matrix_ops {
+    ($Mat:ident) => {
+        impl Add for $Mat {
+            type Output = Self;
+            #[inline]
+            fn add(self, rhs: Self) -> Self {
+                let mut sum = self;
+                sum += rhs;
+                sum
+            }
+        }
+
+        impl Sub for $Mat {
+            type Output = Self;
+            #[inline]
+            fn sub(self, rhs: Self) -> Self {
+                let mut difference = self;
+                difference -= rhs;
+                difference
+            }
+        }
+
+        impl Neg for $Mat {
+            type Output = Self;
+            #[inline]
+            fn neg(self) -> Self {
+                Self {
+                    cols: self.cols.map(|column| -column),
+                }
+            }
+        }
+
+        impl AddAssign for $Mat {
+            #[inline]
+            fn add_assign(&mut self, rhs: Self) {
+                for (column, other) in self.cols.iter_mut().zip(rhs.cols) {
+                    *column += other;
+                }
+            }
+        }
+
+        impl SubAssign for $Mat {
+            #[inline]
+            fn sub_assign(&mut self, rhs: Self) {
+                for (column, other) in self.cols.iter_mut().zip(rhs.cols) {
+                    *column -= other;
+                }
+            }
+        }
+    };
+}
+
+/// A 2x2 `f32` matrix, column-major (Slang `float2x2`); size 16, alignment 8.
+#[derive(Clone, Copy, Debug)]
+#[repr(C, align(8))]
+pub struct Mat2 {
+    cols: [Vec2; 2],
+}
+
+/// A 3x3 `f32` matrix, column-major (Slang `float3x3`); size 36, alignment 4. Locals and helper parameters only.
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+pub struct Mat3 {
+    cols: [Vec3; 3],
+}
+
+/// A 4x4 `f32` matrix, column-major (Slang `float4x4`); size 64, alignment 16.
+#[derive(Clone, Copy, Debug)]
+#[repr(C, align(16))]
+pub struct Mat4 {
+    cols: [Vec4; 4],
+}
+
+matrix_ops!(Mat2);
+matrix_ops!(Mat3);
+matrix_ops!(Mat4);
+
+impl Mat2 {
+    /// The identity matrix.
+    pub const IDENTITY: Self = Self::from_cols(Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0));
+
+    /// A matrix from its columns.
+    #[inline]
+    pub const fn from_cols(c0: Vec2, c1: Vec2) -> Self {
+        Self { cols: [c0, c1] }
+    }
+
+    /// A matrix from its rows: row `i` supplies component `i` of every column.
+    #[inline]
+    pub const fn from_rows(r0: Vec2, r1: Vec2) -> Self {
+        Self::from_cols(Vec2::new(r0.x, r1.x), Vec2::new(r0.y, r1.y))
+    }
+
+    /// The transpose.
+    #[inline]
+    pub const fn transpose(self) -> Self {
+        let [c0, c1] = self.cols;
+        Self::from_rows(c0, c1)
+    }
+
+    /// The product `self x v` (Slang `mul(self, v)`).
+    #[inline]
+    pub fn mul_vec2(self, v: Vec2) -> Vec2 {
+        let [c0, c1] = self.cols;
+        Vec2 {
+            x: c0.x * v.x + c1.x * v.y,
+            y: c0.y * v.x + c1.y * v.y,
+        }
+    }
+
+    /// The product `self x rhs` (Slang `mul(self, rhs)`): each column of `rhs` is multiplied by `self`.
+    #[inline]
+    pub fn mul_mat2(self, rhs: Self) -> Self {
+        Self::from_cols(self.mul_vec2(rhs.cols[0]), self.mul_vec2(rhs.cols[1]))
+    }
+}
+
+impl Mat3 {
+    /// The identity matrix.
+    pub const IDENTITY: Self = Self::from_cols(
+        Vec3::new(1.0, 0.0, 0.0),
+        Vec3::new(0.0, 1.0, 0.0),
+        Vec3::new(0.0, 0.0, 1.0),
+    );
+
+    /// A matrix from its columns.
+    #[inline]
+    pub const fn from_cols(c0: Vec3, c1: Vec3, c2: Vec3) -> Self {
+        Self { cols: [c0, c1, c2] }
+    }
+
+    /// A matrix from its rows: row `i` supplies component `i` of every column.
+    #[inline]
+    pub const fn from_rows(r0: Vec3, r1: Vec3, r2: Vec3) -> Self {
+        Self::from_cols(
+            Vec3::new(r0.x, r1.x, r2.x),
+            Vec3::new(r0.y, r1.y, r2.y),
+            Vec3::new(r0.z, r1.z, r2.z),
+        )
+    }
+
+    /// The transpose.
+    #[inline]
+    pub const fn transpose(self) -> Self {
+        let [c0, c1, c2] = self.cols;
+        Self::from_rows(c0, c1, c2)
+    }
+
+    /// The product `self x v` (Slang `mul(self, v)`).
+    #[inline]
+    pub fn mul_vec3(self, v: Vec3) -> Vec3 {
+        let [c0, c1, c2] = self.cols;
+        Vec3 {
+            x: c0.x * v.x + c1.x * v.y + c2.x * v.z,
+            y: c0.y * v.x + c1.y * v.y + c2.y * v.z,
+            z: c0.z * v.x + c1.z * v.y + c2.z * v.z,
+        }
+    }
+
+    /// The product `self x rhs` (Slang `mul(self, rhs)`): each column of `rhs` is multiplied by `self`.
+    #[inline]
+    pub fn mul_mat3(self, rhs: Self) -> Self {
+        Self::from_cols(
+            self.mul_vec3(rhs.cols[0]),
+            self.mul_vec3(rhs.cols[1]),
+            self.mul_vec3(rhs.cols[2]),
+        )
+    }
+}
+
+impl Mat4 {
+    /// The identity matrix.
+    pub const IDENTITY: Self = Self::from_cols(
+        Vec4::new(1.0, 0.0, 0.0, 0.0),
+        Vec4::new(0.0, 1.0, 0.0, 0.0),
+        Vec4::new(0.0, 0.0, 1.0, 0.0),
+        Vec4::new(0.0, 0.0, 0.0, 1.0),
+    );
+
+    /// A matrix from its columns.
+    #[inline]
+    pub const fn from_cols(c0: Vec4, c1: Vec4, c2: Vec4, c3: Vec4) -> Self {
+        Self {
+            cols: [c0, c1, c2, c3],
+        }
+    }
+
+    /// A matrix from its rows: row `i` supplies component `i` of every column.
+    #[inline]
+    pub const fn from_rows(r0: Vec4, r1: Vec4, r2: Vec4, r3: Vec4) -> Self {
+        Self::from_cols(
+            Vec4::new(r0.x, r1.x, r2.x, r3.x),
+            Vec4::new(r0.y, r1.y, r2.y, r3.y),
+            Vec4::new(r0.z, r1.z, r2.z, r3.z),
+            Vec4::new(r0.w, r1.w, r2.w, r3.w),
+        )
+    }
+
+    /// The transpose.
+    #[inline]
+    pub const fn transpose(self) -> Self {
+        let [c0, c1, c2, c3] = self.cols;
+        Self::from_rows(c0, c1, c2, c3)
+    }
+
+    /// The product `self x v` (Slang `mul(self, v)`).
+    #[inline]
+    pub fn mul_vec4(self, v: Vec4) -> Vec4 {
+        let [c0, c1, c2, c3] = self.cols;
+        Vec4 {
+            x: c0.x * v.x + c1.x * v.y + c2.x * v.z + c3.x * v.w,
+            y: c0.y * v.x + c1.y * v.y + c2.y * v.z + c3.y * v.w,
+            z: c0.z * v.x + c1.z * v.y + c2.z * v.z + c3.z * v.w,
+            w: c0.w * v.x + c1.w * v.y + c2.w * v.z + c3.w * v.w,
+        }
+    }
+
+    /// The product `self x rhs` (Slang `mul(self, rhs)`): each column of `rhs` is multiplied by `self`.
+    #[inline]
+    pub fn mul_mat4(self, rhs: Self) -> Self {
+        Self::from_cols(
+            self.mul_vec4(rhs.cols[0]),
+            self.mul_vec4(rhs.cols[1]),
+            self.mul_vec4(rhs.cols[2]),
+            self.mul_vec4(rhs.cols[3]),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use core::mem::{align_of, offset_of, size_of};
+
+    use super::*;
+
+    fn v2(v: Vec2) -> [f32; 2] {
+        [v.x, v.y]
+    }
+
+    fn v3(v: Vec3) -> [f32; 3] {
+        [v.x, v.y, v.z]
+    }
+
+    fn v4(v: Vec4) -> [f32; 4] {
+        [v.x, v.y, v.z, v.w]
+    }
+
+    fn m2(m: Mat2) -> [[f32; 2]; 2] {
+        m.cols.map(v2)
+    }
+
+    fn m3(m: Mat3) -> [[f32; 3]; 3] {
+        m.cols.map(v3)
+    }
+
+    fn m4(m: Mat4) -> [[f32; 4]; 4] {
+        m.cols.map(v4)
+    }
+
+    #[test]
+    fn sizes_and_alignments_match_the_measured_slang_layouts() {
+        // F4: float2 8/8, float4 16/16; the 3-wide types are locals only (size 12, alignment 4 here).
+        assert_eq!((size_of::<Vec2>(), align_of::<Vec2>()), (8, 8));
+        assert_eq!((size_of::<Vec4>(), align_of::<Vec4>()), (16, 16));
+        assert_eq!((size_of::<IVec2>(), align_of::<IVec2>()), (8, 8));
+        assert_eq!((size_of::<IVec4>(), align_of::<IVec4>()), (16, 16));
+        assert_eq!((size_of::<UVec2>(), align_of::<UVec2>()), (8, 8));
+        assert_eq!((size_of::<UVec4>(), align_of::<UVec4>()), (16, 16));
+        assert_eq!((size_of::<Vec3>(), align_of::<Vec3>()), (12, 4));
+        assert_eq!((size_of::<UVec3>(), align_of::<UVec3>()), (12, 4));
+        // F5: float2x2 column stride 8, size 16; float4x4 column stride 16, size 64.
+        assert_eq!((size_of::<Mat2>(), align_of::<Mat2>()), (16, 8));
+        assert_eq!((size_of::<Mat4>(), align_of::<Mat4>()), (64, 16));
+        assert_eq!(size_of::<[Vec2; 2]>(), 16);
+        assert_eq!(size_of::<[Vec4; 4]>(), 64);
+        assert_eq!((size_of::<Mat3>(), align_of::<Mat3>()), (36, 4));
+    }
+
+    #[test]
+    fn components_are_laid_out_in_order() {
+        assert_eq!(offset_of!(Vec4, x), 0);
+        assert_eq!(offset_of!(Vec4, y), 4);
+        assert_eq!(offset_of!(Vec4, z), 8);
+        assert_eq!(offset_of!(Vec4, w), 12);
+        assert_eq!(offset_of!(UVec2, y), 4);
+        assert_eq!(offset_of!(IVec4, w), 12);
+        assert_eq!(offset_of!(Vec3, z), 8);
+        assert_eq!(offset_of!(UVec3, z), 8);
+        assert_eq!(offset_of!(Mat2, cols), 0);
+        // Column j starts at j times the column stride.
+        let m = Mat4::from_cols(
+            Vec4::splat(1.0),
+            Vec4::splat(2.0),
+            Vec4::splat(3.0),
+            Vec4::splat(4.0),
+        );
+        let address = core::ptr::addr_of!(m) as usize;
+        for (j, column) in m.cols.iter().enumerate() {
+            assert_eq!(core::ptr::from_ref(column) as usize - address, j * 16);
+        }
+    }
+
+    #[test]
+    fn the_invocation_type_is_the_same_type() {
+        // `math::UVec3` is `runtime::UVec3` re-exported, and it keeps `PartialEq`, `Eq` and `repr(C)`.
+        let id: crate::SV_DispatchThreadID = UVec3 { x: 1, y: 2, z: 3 };
+        assert_eq!(id, crate::UVec3::new(1, 2, 3));
+        assert_eq!(UVec3::default(), UVec3::splat(0));
+    }
+
+    #[test]
+    fn vector_constructors() {
+        assert_eq!(v2(Vec2::new(1.0, 2.0)), [1.0, 2.0]);
+        assert_eq!(v3(Vec3::new(1.0, 2.0, 3.0)), [1.0, 2.0, 3.0]);
+        assert_eq!(v4(Vec4::new(1.0, 2.0, 3.0, 4.0)), [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(v4(Vec4::splat(-2.5)), [-2.5; 4]);
+        assert_eq!(v2(Vec2::splat(7.0)), [7.0; 2]);
+        let i = IVec4::new(-1, 2, -3, 4);
+        assert_eq!([i.x, i.y, i.z, i.w], [-1, 2, -3, 4]);
+        let u = UVec2::splat(9);
+        assert_eq!([u.x, u.y], [9, 9]);
+        let u = UVec3::new(1, 2, 3);
+        assert_eq!(u, UVec3 { x: 1, y: 2, z: 3 });
+        let u = UVec4::new(1, 2, 3, 4);
+        assert_eq!([u.x, u.y, u.z, u.w], [1, 2, 3, 4]);
+        let i = IVec2::splat(-5);
+        assert_eq!([i.x, i.y], [-5, -5]);
+    }
+
+    #[test]
+    fn float_vector_operators() {
+        let a = Vec4::new(1.0, 2.0, 3.0, 4.0);
+        let b = Vec4::new(8.0, 4.0, 2.0, 1.0);
+        assert_eq!(v4(a + b), [9.0, 6.0, 5.0, 5.0]);
+        assert_eq!(v4(a - b), [-7.0, -2.0, 1.0, 3.0]);
+        assert_eq!(v4(a / b), [0.125, 0.5, 1.5, 4.0]);
+        assert_eq!(v4(a / 2.0), [0.5, 1.0, 1.5, 2.0]);
+        assert_eq!(v4(-a), [-1.0, -2.0, -3.0, -4.0]);
+        let mut c = a;
+        c += b;
+        assert_eq!(v4(c), [9.0, 6.0, 5.0, 5.0]);
+        c -= b;
+        assert_eq!(v4(c), [1.0, 2.0, 3.0, 4.0]);
+        c /= b;
+        assert_eq!(v4(c), [0.125, 0.5, 1.5, 4.0]);
+        c /= 0.5;
+        assert_eq!(v4(c), [0.25, 1.0, 3.0, 8.0]);
+
+        let p = Vec2::new(3.0, -4.0);
+        let q = Vec2::new(0.5, 2.0);
+        assert_eq!(v2(p + q), [3.5, -2.0]);
+        assert_eq!(v2(p - q), [2.5, -6.0]);
+        assert_eq!(v2(p / q), [6.0, -2.0]);
+        assert_eq!(v2(p / 4.0), [0.75, -1.0]);
+        assert_eq!(v2(-p), [-3.0, 4.0]);
+
+        let r = Vec3::new(1.0, 2.0, 3.0);
+        let s = Vec3::new(4.0, 5.0, 6.0);
+        assert_eq!(v3(r + s), [5.0, 7.0, 9.0]);
+        assert_eq!(v3(s - r), [3.0, 3.0, 3.0]);
+        assert_eq!(v3(s / r), [4.0, 2.5, 2.0]);
+        assert_eq!(v3(s / 2.0), [2.0, 2.5, 3.0]);
+        assert_eq!(v3(-r), [-1.0, -2.0, -3.0]);
+        let mut t = r;
+        t += s;
+        t -= Vec3::splat(1.0);
+        t /= Vec3::splat(2.0);
+        assert_eq!(v3(t), [2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn integer_vector_operators() {
+        let a = IVec4::new(10, -20, 30, -40);
+        let b = IVec4::new(3, 4, -5, 6);
+        let sum = a + b;
+        assert_eq!([sum.x, sum.y, sum.z, sum.w], [13, -16, 25, -34]);
+        let difference = a - b;
+        assert_eq!(
+            [difference.x, difference.y, difference.z, difference.w],
+            [7, -24, 35, -46]
+        );
+        let quotient = a / b;
+        assert_eq!(
+            [quotient.x, quotient.y, quotient.z, quotient.w],
+            [3, -5, -6, -6]
+        );
+        let scaled = a / 4;
+        assert_eq!([scaled.x, scaled.y, scaled.z, scaled.w], [2, -5, 7, -10]);
+        let mut c = a;
+        c += b;
+        c -= IVec4::splat(1);
+        c /= IVec4::splat(2);
+        assert_eq!([c.x, c.y, c.z, c.w], [6, -8, 12, -17]);
+        c /= 3;
+        assert_eq!([c.x, c.y, c.z, c.w], [2, -2, 4, -5]);
+
+        let p = IVec2::new(7, -7);
+        let q = IVec2::new(2, 2);
+        let sum = p + q;
+        assert_eq!([sum.x, sum.y], [9, -5]);
+        let quotient = p / q;
+        assert_eq!([quotient.x, quotient.y], [3, -3]);
+
+        let u = UVec2::new(10, 20);
+        let w = UVec2::new(3, 6);
+        let sum = u + w;
+        assert_eq!([sum.x, sum.y], [13, 26]);
+        let difference = u - w;
+        assert_eq!([difference.x, difference.y], [7, 14]);
+        let quotient = u / w;
+        assert_eq!([quotient.x, quotient.y], [3, 3]);
+        let scaled = u / 5;
+        assert_eq!([scaled.x, scaled.y], [2, 4]);
+        let mut d = u;
+        d += w;
+        d -= UVec2::splat(1);
+        d /= UVec2::splat(2);
+        d /= 2;
+        assert_eq!([d.x, d.y], [3, 6]);
+
+        let a = UVec4::new(100, 200, 300, 400);
+        let b = UVec4::new(1, 2, 3, 4);
+        let sum = a + b;
+        assert_eq!([sum.x, sum.y, sum.z, sum.w], [101, 202, 303, 404]);
+        let quotient = a / b;
+        assert_eq!(
+            [quotient.x, quotient.y, quotient.z, quotient.w],
+            [100, 100, 100, 100]
+        );
+    }
+
+    #[test]
+    fn the_invocation_vector_has_the_vector_operators() {
+        let a = UVec3::new(10, 20, 30);
+        let b = UVec3::new(1, 2, 3);
+        assert_eq!(a + b, UVec3::new(11, 22, 33));
+        assert_eq!(a - b, UVec3::new(9, 18, 27));
+        assert_eq!(a / b, UVec3::new(10, 10, 10));
+        assert_eq!(a / 10, UVec3::new(1, 2, 3));
+        let mut c = a;
+        c += b;
+        c -= UVec3::splat(1);
+        c /= UVec3::splat(2);
+        c /= 2;
+        assert_eq!(c, UVec3::new(2, 5, 8));
+        assert_eq!(a.dot(b), 140);
+    }
+
+    #[test]
+    fn dot_products() {
+        assert_eq!(
+            Vec2::new(1.0, 2.0).dot(Vec2::new(3.0, 4.0)),
+            11.0,
+            "1*3 + 2*4"
+        );
+        assert_eq!(
+            Vec3::new(1.0, 2.0, 3.0).dot(Vec3::new(4.0, -5.0, 6.0)),
+            12.0,
+            "4 - 10 + 18"
+        );
+        assert_eq!(
+            Vec4::new(1.0, 2.0, 3.0, 4.0).dot(Vec4::new(5.0, 6.0, 7.0, 8.0)),
+            70.0,
+            "5 + 12 + 21 + 32"
+        );
+        assert_eq!(IVec2::new(-3, 4).dot(IVec2::new(5, 6)), 9);
+        assert_eq!(IVec4::new(1, -2, 3, -4).dot(IVec4::new(4, 3, 2, 1)), 0);
+        assert_eq!(UVec2::new(7, 8).dot(UVec2::new(9, 10)), 143);
+        assert_eq!(UVec4::new(1, 2, 3, 4).dot(UVec4::new(1, 1, 1, 1)), 10);
+        // Written order: ((a0 b0 + a1 b1) + a2 b2): with 2^24 first the small terms vanish one at a time.
+        let big = 16_777_216.0_f32;
+        assert_eq!(
+            Vec3::new(big, 1.0, 1.0).dot(Vec3::new(1.0, 1.0, 1.0)),
+            big,
+            "(2^24 + 1) rounds to 2^24, and so does the next sum"
+        );
+        assert_eq!(
+            Vec3::new(1.0, 1.0, big).dot(Vec3::new(1.0, 1.0, 1.0)),
+            big + 2.0,
+            "(1 + 1) + 2^24 is exact"
+        );
+    }
+
+    #[test]
+    fn swizzles() {
+        let v = Vec4::new(1.0, 2.0, 3.0, 4.0);
+        assert_eq!(v2(v.xy()), [1.0, 2.0]);
+        assert_eq!(v2(v.wz()), [4.0, 3.0]);
+        assert_eq!(v2(v.yy()), [2.0, 2.0]);
+        assert_eq!(v3(v.xyz()), [1.0, 2.0, 3.0]);
+        assert_eq!(v3(v.zyx()), [3.0, 2.0, 1.0]);
+        assert_eq!(v3(v.www()), [4.0; 3]);
+        assert_eq!(v4(v.wzyx()), [4.0, 3.0, 2.0, 1.0]);
+        assert_eq!(v4(v.xxww()), [1.0, 1.0, 4.0, 4.0]);
+        assert_eq!(v4(v.xyzw()), [1.0, 2.0, 3.0, 4.0]);
+        assert_eq!(v4(v.zzzz()), [3.0; 4]);
+
+        let v = Vec3::new(1.0, 2.0, 3.0);
+        assert_eq!(v2(v.zx()), [3.0, 1.0]);
+        assert_eq!(v3(v.yzx()), [2.0, 3.0, 1.0]);
+        assert_eq!(v4(v.zzyx()), [3.0, 3.0, 2.0, 1.0]);
+
+        let v = Vec2::new(1.0, 2.0);
+        assert_eq!(v2(v.yx()), [2.0, 1.0]);
+        assert_eq!(v3(v.xyx()), [1.0, 2.0, 1.0]);
+        assert_eq!(v4(v.yyxx()), [2.0, 2.0, 1.0, 1.0]);
+
+        let i = IVec4::new(-1, 2, -3, 4);
+        let r = i.wz();
+        assert_eq!([r.x, r.y], [4, -3]);
+        let r = i.wzyx();
+        assert_eq!([r.x, r.y, r.z, r.w], [4, -3, 2, -1]);
+        let r = IVec2::new(5, 6).yxxy();
+        assert_eq!([r.x, r.y, r.z, r.w], [6, 5, 5, 6]);
+
+        let u = UVec4::new(1, 2, 3, 4);
+        let r = u.zyx();
+        assert_eq!([r.x, r.y, r.z], [3, 2, 1]);
+        let r = u.ww();
+        assert_eq!([r.x, r.y], [4, 4]);
+        let r = UVec2::new(8, 9).yx();
+        assert_eq!([r.x, r.y], [9, 8]);
+        let r = UVec2::new(8, 9).xyy();
+        assert_eq!([r.x, r.y, r.z], [8, 9, 9]);
+        let r = UVec3::new(1, 2, 3).zyxz();
+        assert_eq!([r.x, r.y, r.z, r.w], [3, 2, 1, 3]);
+        assert_eq!(UVec3::new(1, 2, 3).yzx(), UVec3::new(2, 3, 1));
+        let r = UVec3::new(1, 2, 3).xz();
+        assert_eq!([r.x, r.y], [1, 3]);
+    }
+
+    /// Every `words_N_L!` list in `math/swizzle.rs` holds exactly the `N^L` words of length `L` over the first `N`
+    /// letters of `xyzw`, each with its letters spelled out, and each list is used by the types the module says.
+    #[test]
+    fn the_swizzle_lists_are_complete() {
+        // `lines()` drops the CR of a CRLF checkout, so the list ends are found the same way on every platform.
+        let source = include_str!("math/swizzle.rs")
+            .lines()
+            .collect::<Vec<_>>()
+            .join("\n");
+        let letters = ['x', 'y', 'z', 'w'];
+        for n in 2..=4_usize {
+            for len in 2..=4_u32 {
+                let header = format!("macro_rules! words_{n}_{len} {{");
+                let start = source.find(&header).expect("list present");
+                let body = &source[start..];
+                let end = body.find("\n}\n").expect("list end");
+                let body = &body[..end];
+                let mut seen = Vec::new();
+                for line in body.lines().map(str::trim) {
+                    let Some((word, spelled)) =
+                        line.strip_suffix(';').and_then(|l| l.split_once(": "))
+                    else {
+                        continue;
+                    };
+                    let expanded: Vec<String> = word.chars().map(String::from).collect();
+                    assert_eq!(spelled, expanded.join(" "), "{word}");
+                    assert_eq!(word.len() as u32, len, "{word}");
+                    assert!(word.chars().all(|c| letters[..n].contains(&c)), "{word}");
+                    seen.push(word.to_owned());
+                }
+                let wanted = n.pow(len);
+                assert_eq!(seen.len(), wanted, "words_{n}_{len}");
+                seen.sort();
+                seen.dedup();
+                assert_eq!(seen.len(), wanted, "words_{n}_{len} has a repeated word");
+            }
+        }
+    }
+
+    #[test]
+    fn identity_matrices() {
+        assert_eq!(m2(Mat2::IDENTITY), [[1.0, 0.0], [0.0, 1.0]]);
+        assert_eq!(
+            m3(Mat3::IDENTITY),
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
+        );
+        assert_eq!(
+            m4(Mat4::IDENTITY),
+            [
+                [1.0, 0.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0]
+            ]
+        );
+        let v = Vec4::new(3.0, -1.0, 2.0, 5.0);
+        assert_eq!(v4(Mat4::IDENTITY.mul_vec4(v)), v4(v));
+    }
+
+    #[test]
+    fn from_cols_and_from_rows_round_trip() {
+        // Columns are stored as given; rows supply component i of every column.
+        let c = Mat2::from_cols(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0));
+        assert_eq!(m2(c), [[1.0, 2.0], [3.0, 4.0]]);
+        let r = Mat2::from_rows(Vec2::new(1.0, 3.0), Vec2::new(2.0, 4.0));
+        assert_eq!(m2(r), m2(c));
+
+        let c = Mat3::from_cols(
+            Vec3::new(1.0, 2.0, 3.0),
+            Vec3::new(4.0, 5.0, 6.0),
+            Vec3::new(7.0, 8.0, 9.0),
+        );
+        let r = Mat3::from_rows(
+            Vec3::new(1.0, 4.0, 7.0),
+            Vec3::new(2.0, 5.0, 8.0),
+            Vec3::new(3.0, 6.0, 9.0),
+        );
+        assert_eq!(m3(r), m3(c));
+        assert_eq!(m3(c), [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]]);
+
+        let c = Mat4::from_cols(
+            Vec4::new(1.0, 2.0, 3.0, 4.0),
+            Vec4::new(5.0, 6.0, 7.0, 8.0),
+            Vec4::new(9.0, 10.0, 11.0, 12.0),
+            Vec4::new(13.0, 14.0, 15.0, 16.0),
+        );
+        let r = Mat4::from_rows(
+            Vec4::new(1.0, 5.0, 9.0, 13.0),
+            Vec4::new(2.0, 6.0, 10.0, 14.0),
+            Vec4::new(3.0, 7.0, 11.0, 15.0),
+            Vec4::new(4.0, 8.0, 12.0, 16.0),
+        );
+        assert_eq!(m4(r), m4(c));
+        assert_eq!(
+            m4(c),
+            [
+                [1.0, 2.0, 3.0, 4.0],
+                [5.0, 6.0, 7.0, 8.0],
+                [9.0, 10.0, 11.0, 12.0],
+                [13.0, 14.0, 15.0, 16.0]
+            ]
+        );
+        // The same numbers given as rows are the transpose of given as columns.
+        let as_rows = Mat4::from_rows(c.cols[0], c.cols[1], c.cols[2], c.cols[3]);
+        assert_eq!(m4(as_rows), m4(c.transpose()));
+    }
+
+    #[test]
+    fn transposes() {
+        let a = Mat2::from_cols(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0));
+        assert_eq!(m2(a.transpose()), [[1.0, 3.0], [2.0, 4.0]]);
+        assert_eq!(m2(a.transpose().transpose()), m2(a));
+
+        let b = Mat3::from_cols(
+            Vec3::new(1.0, 2.0, 3.0),
+            Vec3::new(4.0, 5.0, 6.0),
+            Vec3::new(7.0, 8.0, 9.0),
+        );
+        assert_eq!(
+            m3(b.transpose()),
+            [[1.0, 4.0, 7.0], [2.0, 5.0, 8.0], [3.0, 6.0, 9.0]]
+        );
+        assert_eq!(m3(b.transpose().transpose()), m3(b));
+
+        let c = Mat4::from_cols(
+            Vec4::new(1.0, 2.0, 3.0, 4.0),
+            Vec4::new(5.0, 6.0, 7.0, 8.0),
+            Vec4::new(9.0, 10.0, 11.0, 12.0),
+            Vec4::new(13.0, 14.0, 15.0, 16.0),
+        );
+        assert_eq!(
+            m4(c.transpose()),
+            [
+                [1.0, 5.0, 9.0, 13.0],
+                [2.0, 6.0, 10.0, 14.0],
+                [3.0, 7.0, 11.0, 15.0],
+                [4.0, 8.0, 12.0, 16.0]
+            ]
+        );
+        assert_eq!(m4(c.transpose().transpose()), m4(c));
+    }
+
+    fn sample4() -> Mat4 {
+        Mat4::from_cols(
+            Vec4::new(1.0, 2.0, 3.0, 4.0),
+            Vec4::new(5.0, 6.0, 7.0, 8.0),
+            Vec4::new(9.0, 10.0, 11.0, 12.0),
+            Vec4::new(13.0, 14.0, 15.0, 16.0),
+        )
+    }
+
+    #[test]
+    fn mul_vec4_matches_a_hand_product() {
+        // M x v with cols (1,2,3,4) (5,6,7,8) (9,10,11,12) (13,14,15,16) and v = (1,2,3,4):
+        // x = 1*1 + 5*2 + 9*3 + 13*4 = 90, y = 2 + 12 + 30 + 56 = 100, z = 3 + 14 + 33 + 60 = 110, w = 120.
+        let v = Vec4::new(1.0, 2.0, 3.0, 4.0);
+        assert_eq!(v4(sample4().mul_vec4(v)), [90.0, 100.0, 110.0, 120.0]);
+        // A unit vector picks a column.
+        assert_eq!(
+            v4(sample4().mul_vec4(Vec4::new(0.0, 0.0, 1.0, 0.0))),
+            [9.0, 10.0, 11.0, 12.0]
+        );
+        // The transpose picks a row: M^T x e1 is (2, 6, 10, 14), the second row of M.
+        assert_eq!(
+            v4(sample4()
+                .transpose()
+                .mul_vec4(Vec4::new(0.0, 1.0, 0.0, 0.0))),
+            [2.0, 6.0, 10.0, 14.0]
+        );
+    }
+
+    #[test]
+    fn mul_vec2_and_mul_vec3_match_hand_products() {
+        let a = Mat2::from_cols(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0));
+        // x = 1*5 + 3*6 = 23, y = 2*5 + 4*6 = 34.
+        assert_eq!(v2(a.mul_vec2(Vec2::new(5.0, 6.0))), [23.0, 34.0]);
+        let b = Mat3::from_cols(
+            Vec3::new(1.0, 2.0, 3.0),
+            Vec3::new(4.0, 5.0, 6.0),
+            Vec3::new(7.0, 8.0, 9.0),
+        );
+        // x = 1 - 7, y = 2 - 8, z = 3 - 9.
+        assert_eq!(
+            v3(b.mul_vec3(Vec3::new(1.0, 0.0, -1.0))),
+            [-6.0, -6.0, -6.0]
+        );
+        assert_eq!(v3(b.mul_vec3(Vec3::new(1.0, 1.0, 1.0))), [12.0, 15.0, 18.0]);
+    }
+
+    #[test]
+    fn mul_mat_matches_hand_products() {
+        let a = Mat2::from_cols(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0));
+        let b = Mat2::from_cols(Vec2::new(5.0, 6.0), Vec2::new(7.0, 8.0));
+        // (a x b).cols[0] = a x (5, 6) = (23, 34); cols[1] = a x (7, 8) = (31, 46).
+        assert_eq!(m2(a.mul_mat2(b)), [[23.0, 34.0], [31.0, 46.0]]);
+        // The product is not commutative: b x a has cols (5+14, 6+16) = (19, 22) and (15+28, 18+32) = (43, 50).
+        assert_eq!(m2(b.mul_mat2(a)), [[19.0, 22.0], [43.0, 50.0]]);
+        assert_eq!(m2(a.mul_mat2(Mat2::IDENTITY)), m2(a));
+
+        let c = Mat3::from_cols(
+            Vec3::new(1.0, 2.0, 3.0),
+            Vec3::new(4.0, 5.0, 6.0),
+            Vec3::new(7.0, 8.0, 9.0),
+        );
+        assert_eq!(
+            m3(c.mul_mat3(c)),
+            [
+                [30.0, 36.0, 42.0],
+                [66.0, 81.0, 96.0],
+                [102.0, 126.0, 150.0]
+            ]
+        );
+        assert_eq!(m3(Mat3::IDENTITY.mul_mat3(c)), m3(c));
+
+        // Right-multiplying by a column swap (e1, e0, e2, e3) swaps the first two columns.
+        let swap = Mat4::from_cols(
+            Vec4::new(0.0, 1.0, 0.0, 0.0),
+            Vec4::new(1.0, 0.0, 0.0, 0.0),
+            Vec4::new(0.0, 0.0, 1.0, 0.0),
+            Vec4::new(0.0, 0.0, 0.0, 1.0),
+        );
+        let d = sample4();
+        assert_eq!(
+            m4(d.mul_mat4(swap)),
+            [
+                [5.0, 6.0, 7.0, 8.0],
+                [1.0, 2.0, 3.0, 4.0],
+                [9.0, 10.0, 11.0, 12.0],
+                [13.0, 14.0, 15.0, 16.0]
+            ]
+        );
+        // Left-multiplying swaps the first two rows instead.
+        assert_eq!(
+            m4(swap.mul_mat4(d)),
+            [
+                [2.0, 1.0, 3.0, 4.0],
+                [6.0, 5.0, 7.0, 8.0],
+                [10.0, 9.0, 11.0, 12.0],
+                [14.0, 13.0, 15.0, 16.0]
+            ]
+        );
+        assert_eq!(m4(d.mul_mat4(Mat4::IDENTITY)), m4(d));
+        // (a x b)^T = b^T x a^T.
+        let left = d.mul_mat4(swap).transpose();
+        let right = swap.transpose().mul_mat4(d.transpose());
+        assert_eq!(m4(left), m4(right));
+    }
+
+    #[test]
+    fn matrix_sums_differences_and_negation() {
+        let a = Mat2::from_cols(Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0));
+        let b = Mat2::from_cols(Vec2::new(10.0, 20.0), Vec2::new(30.0, 40.0));
+        assert_eq!(m2(a + b), [[11.0, 22.0], [33.0, 44.0]]);
+        assert_eq!(m2(b - a), [[9.0, 18.0], [27.0, 36.0]]);
+        assert_eq!(m2(-a), [[-1.0, -2.0], [-3.0, -4.0]]);
+        let mut c = a;
+        c += b;
+        assert_eq!(m2(c), [[11.0, 22.0], [33.0, 44.0]]);
+        c -= a;
+        assert_eq!(m2(c), m2(b));
+
+        let d = sample4();
+        let e = Mat4::IDENTITY;
+        assert_eq!(
+            m4(d + e),
+            [
+                [2.0, 2.0, 3.0, 4.0],
+                [5.0, 7.0, 7.0, 8.0],
+                [9.0, 10.0, 12.0, 12.0],
+                [13.0, 14.0, 15.0, 17.0]
+            ]
+        );
+        assert_eq!(
+            m4(d - e),
+            [
+                [0.0, 2.0, 3.0, 4.0],
+                [5.0, 5.0, 7.0, 8.0],
+                [9.0, 10.0, 10.0, 12.0],
+                [13.0, 14.0, 15.0, 15.0]
+            ]
+        );
+        assert_eq!(m4((-d).transpose())[0], [-1.0, -5.0, -9.0, -13.0]);
+        let mut f = d;
+        f += e;
+        f -= e;
+        assert_eq!(m4(f), m4(d));
+
+        let g = Mat3::IDENTITY;
+        assert_eq!(
+            m3(g + g),
+            [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]]
+        );
+        assert_eq!(
+            m3(g - g),
+            [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]
+        );
+        assert_eq!(m3(-g)[1], [0.0, -1.0, 0.0]);
+        let mut h = g;
+        h += g;
+        h -= g;
+        assert_eq!(m3(h), m3(g));
+    }
+
+    /// No `Mul` or `MulAssign` is written in this file (m6.m2 generates them), and the types carry no `PartialEq`.
+    #[test]
+    fn this_file_writes_no_products_and_no_equality() {
+        // The needles are assembled so that this test does not match itself. A comment line is not code; any other
+        // line that mentions equality is rejected whatever the path (`PartialEq`, `core::cmp::PartialEq`, a derive),
+        // and so is any `impl` line that mentions a product trait, qualified or not.
+        let equality = ["Partial", "Eq"].concat();
+        let product = ["M", "ul"].concat();
+        let implementation = ["im", "pl"].concat();
+        for (file, source) in [
+            ("math.rs", include_str!("math.rs")),
+            ("math/swizzle.rs", include_str!("math/swizzle.rs")),
+        ] {
+            for (number, line) in source.lines().enumerate() {
+                if line.trim_start().starts_with("//") {
+                    continue;
+                }
+                assert!(!line.contains(&equality), "{file}:{}: {line}", number + 1);
+                assert!(
+                    !(line.contains(&implementation) && line.contains(&product)),
+                    "{file}:{}: {line}",
+                    number + 1
+                );
+            }
+        }
+    }
+
+    /// Every function of this module and of its swizzle file is `#[inline]`: the overflow rule of the integer vector
+    /// operators (module documentation, `tests/dual`) depends on it, and one operator is not enough to notice a loss.
+    #[test]
+    fn every_function_is_inline() {
+        for (file, source) in [
+            ("math.rs", include_str!("math.rs")),
+            ("math/swizzle.rs", include_str!("math/swizzle.rs")),
+        ] {
+            // The unit tests follow `#[cfg(test)]` and are not part of the API.
+            let code = source.split("#[cfg(test)]").next().expect("source");
+            let lines: Vec<&str> = code.lines().map(str::trim).collect();
+            let mut functions = 0;
+            for (index, line) in lines.iter().enumerate() {
+                let is_function = ["fn ", "pub fn ", "pub const fn ", "const fn "]
+                    .iter()
+                    .any(|start| line.starts_with(start));
+                if !is_function {
+                    continue;
+                }
+                functions += 1;
+                let mut inline = false;
+                for above in lines[..index].iter().rev() {
+                    if !(above.starts_with("///")
+                        || above.starts_with("#[")
+                        || above.starts_with("//"))
+                    {
+                        break;
+                    }
+                    inline |= *above == "#[inline]";
+                }
+                assert!(inline, "{file}:{}: {line}", index + 1);
+            }
+            assert!(functions > 0, "{file} has no function; the scan is broken");
+        }
+    }
+
+    /// Which swizzle list serves which type: the invocations at the end of `math/swizzle.rs` are exactly these. A
+    /// vector gets the words of every length that has a type to return (`IVec2` and `IVec4` have no 3-letter words).
+    #[test]
+    fn each_type_uses_the_swizzle_lists_of_its_letters() {
+        let vector_outputs: [(u32, &str); 3] = [(2, "Vec2"), (3, "Vec3"), (4, "Vec4")];
+        let unsigned_outputs: [(u32, &str); 3] = [(2, "UVec2"), (3, "UVec3"), (4, "UVec4")];
+        let signed_outputs: [(u32, &str); 2] = [(2, "IVec2"), (4, "IVec4")];
+        type Outputs<'a> = &'a [(u32, &'a str)];
+        let table: [(&str, usize, Outputs); 8] = [
+            ("Vec2", 2, &vector_outputs),
+            ("Vec3", 3, &vector_outputs),
+            ("Vec4", 4, &vector_outputs),
+            ("IVec2", 2, &signed_outputs),
+            ("IVec4", 4, &signed_outputs),
+            ("UVec2", 2, &unsigned_outputs),
+            ("UVec3", 3, &unsigned_outputs),
+            ("UVec4", 4, &unsigned_outputs),
+        ];
+        let mut wanted = Vec::new();
+        for (ty, letters, outputs) in table {
+            for (length, output) in outputs {
+                wanted.push(format!(
+                    "words_{letters}_{length}!(swizzle_methods, {ty}, {output});"
+                ));
+            }
+        }
+        let mut found: Vec<String> = include_str!("math/swizzle.rs")
+            .lines()
+            .filter(|line| line.starts_with("words_"))
+            .map(str::to_owned)
+            .collect();
+        wanted.sort();
+        found.sort();
+        assert_eq!(found, wanted);
+    }
+
+    #[test]
+    fn swizzle_lists_serve_the_integer_vectors() {
+        // `IVec2`: 2- and 4-letter words; `UVec2` and `UVec4`: 2-, 3- and 4-letter words.
+        let r = IVec2::new(5, 6).yx();
+        assert_eq!([r.x, r.y], [6, 5]);
+        let r = IVec2::new(5, 6).xyyx();
+        assert_eq!([r.x, r.y, r.z, r.w], [5, 6, 6, 5]);
+        let r = UVec2::new(5, 6).yxxy();
+        assert_eq!([r.x, r.y, r.z, r.w], [6, 5, 5, 6]);
+        let r = UVec2::new(5, 6).xyx();
+        assert_eq!([r.x, r.y, r.z], [5, 6, 5]);
+        let r = UVec4::new(1, 2, 3, 4).wzyx();
+        assert_eq!([r.x, r.y, r.z, r.w], [4, 3, 2, 1]);
+        let r = UVec4::new(1, 2, 3, 4).xxww();
+        assert_eq!([r.x, r.y, r.z, r.w], [1, 1, 4, 4]);
+        let r = UVec4::new(1, 2, 3, 4).wx();
+        assert_eq!([r.x, r.y], [4, 1]);
+        let r = UVec4::new(1, 2, 3, 4).zwy();
+        assert_eq!([r.x, r.y, r.z], [3, 4, 2]);
+    }
+}

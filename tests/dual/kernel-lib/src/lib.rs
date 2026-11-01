@@ -31,6 +31,26 @@ pub mod kernels {
             out[i] = input[i] + 1u32;
         }
     }
+
+    // The same overflow through a vector operator (m6.a2): `UVec2 + UVec2` is `impl Add for UVec2` in `gust::math`.
+    // The twin is compiled in THIS crate (consumer/src/lib.rs, module `vector_overflow`, says what it does).
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn add_one_uvec2(
+        id: SV_DispatchThreadID,
+        input: StructuredBuffer<uint>,
+        mut out: RWStructuredBuffer<uint>,
+    ) {
+        let i = id.x;
+        if i < out.len() {
+            let value = UVec2 {
+                x: input[i],
+                y: 0u32,
+            };
+            let one = UVec2 { x: 1u32, y: 0u32 };
+            let sum = value + one;
+            out[i] = sum.x;
+        }
+    }
 }
 
 /// The overflow mode of THIS package (`kernel-lib`): the macro expands here, so it answers for the crate that holds

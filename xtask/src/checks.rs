@@ -681,6 +681,7 @@ pub(crate) const DUAL_TESTS: &[&str] = &[
     "tests::overflow_mode_is_the_dependents_own",
     "twin_overflow::a_twin_follows_the_overflow_mode_of_the_package_that_defines_the_kernel",
     "twin_overflow::a_twin_defined_in_the_dependent_follows_the_dependents_own_mode",
+    "vector_overflow::an_integer_vector_add_panics_only_where_gust_and_the_kernels_package_both_check",
 ];
 
 /// What `cargo xtask check-dual` runs.

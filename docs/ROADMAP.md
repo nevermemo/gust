@@ -50,6 +50,8 @@ its slice, and two fix rounds per slice.
 | m4.e1, m4.e2 | `gust-wgpu` precompiled path and cache key; precompiled fixture, `check-precompiled`, packaged-consumer proof without Slang | m4.e1 done (Gpu: RTX 5090; Opus keep after one fix round; `894ab0e`); m4.e2a done (fixture, `check-precompiled` E1 to E4; Gpu: RTX 5090 with no Slang in the environment; Opus keep after one fix round; `29cfc58`); m4.e2b next |
 | m4.f | Pinned-Slang manager with licence audit; CI `slang` job | licence audit done (all three platforms accepted, [LICENSES-SLANG](development/LICENSES-SLANG.md)); manager done (`cargo gust slang` install, locate and build-helper; Opus keep after one fix round; `9b42958`); CI `slang` job green on Linux (`9a5c529`; Reflect tier left to gpu-software) |
 | m4.g1, m4.g2 | Completion model (async read-back); wasm32 and the first browser WebGPU run | m4.g1 done (Gpu: RTX 5090; moved ahead of m4.e1; Opus keep after one fix round; `671b3dd`); m4.g2 planned |
+| m4.r | Slang pin bump to v2026.20 (fixes the WGSL template-list bug, shader-slang/slang 13566) and re-bless of every committed set (owner, 2026-11-01) | stage 1 (measurement) running; stage 2 after m4.e2b and m4.g2 |
+| m4.z | Repository cleanup before the M4 sanity check: dead code, the `__gust_keep` workaround if m4.r makes it redundant, STATUS consolidation, stale docs (owner, 2026-11-01) | queued after m4.r |
 
 **Next: M5, CPU target and evidence breadth** (plan adopted 2026-11-01, owner-delegated, after a Codex review
 (adopt with changes) and one revision; decisions D51 and D52). Slices that share no code or test file with M4's

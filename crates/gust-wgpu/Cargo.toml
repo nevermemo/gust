@@ -6,10 +6,20 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Compile a kernel at run time through `gust/slang-runtime` (the native reflection helper). Off by default (D44):
+# without it the crate has no process-spawning compiler, and a run-time compile returns an error.
+slang-runtime = ["gust/slang-runtime"]
+
 [dependencies]
 gust.workspace = true
 pollster.workspace = true
 wgpu.workspace = true
+
+# Cargo unifies the features of a package with those of its dev-dependency on itself, so every `cargo test -p gust-wgpu`
+# builds the tests with the bridge; without this line they do not compile.
+[dev-dependencies]
+gust-wgpu = { path = ".", features = ["slang-runtime"] }
 
 [lints]
 workspace = true

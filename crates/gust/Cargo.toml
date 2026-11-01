@@ -6,8 +6,21 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# The run-time Slang bridge: compiling and reflecting a kernel by launching `slangc` or the native reflection helper
+# (`slang::compile*`, `reflect::reflect`, `reflect::compile_reflected*`, `slang::probe`). Off by default (D44):
+# a production build must contain no process-spawning compiler. `slang::Target`, `slang::Error`, `reflect::Error`,
+# `reflect::Reflection` and `artifact::verify_artifact` need no feature, so a precompiled artifact is verified without it.
+# The repository enables the feature in its examples and, through the self dev-dependency below, in its own tests.
+slang-runtime = []
+
 [dependencies]
 gust-macros.workspace = true
+
+# Cargo unifies the features of a package with those of its dev-dependency on itself, so every `cargo test -p gust`
+# builds the unit and integration tests with the bridge; without this line they do not compile.
+[dev-dependencies]
+gust = { path = ".", features = ["slang-runtime"] }
 
 [lints]
 workspace = true

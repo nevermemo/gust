@@ -1,10 +1,60 @@
 use std::{
+    ffi::OsStr,
     io::{self, BufRead, BufReader, Write},
     path::Path,
     process::{Command, Stdio},
+    sync::Once,
 };
 
 use crate::test_exact::parse_result_line;
+
+/// The variable that selects the profile `gust` is built under (D44, plan M4 R4.2).
+pub(crate) const PROFILE_VARIABLE: &str = "GUST_PROFILE";
+
+/// The profile the repository's own workspace builds under. The examples and the tests depend on the
+/// `slang-runtime` feature, which a strict profile (`native`, `web`) refuses by design, and the workspace is not a
+/// release artefact. So every cargo child of a workspace command gets this value, whatever the parent has.
+pub(crate) const WORKSPACE_PROFILE: &str = "dev";
+
+/// What is printed when the parent environment has a `GUST_PROFILE` other than [`WORKSPACE_PROFILE`]; `None` when
+/// there is nothing to say. A preset strict value is overridden, not refused: unlike a preset rustflags variable it
+/// cannot corrupt a measurement, so the override is only logged.
+pub(crate) fn profile_override_note(preset: Option<&OsStr>) -> Option<String> {
+    let preset = preset?;
+    (preset != WORKSPACE_PROFILE).then(|| {
+        format!(
+            "xtask: {PROFILE_VARIABLE}={} is set in the environment; workspace builds run under {PROFILE_VARIABLE}={WORKSPACE_PROFILE} instead",
+            preset.to_string_lossy()
+        )
+    })
+}
+
+/// Gives `command`, a cargo child that builds workspace crates, `GUST_PROFILE=dev`, and logs once per process when
+/// that overrides a different value of the parent.
+pub(crate) fn set_workspace_profile(command: &mut Command) -> &mut Command {
+    static NOTED: Once = Once::new();
+    NOTED.call_once(|| {
+        let preset = std::env::var_os(PROFILE_VARIABLE);
+        if let Some(note) = profile_override_note(preset.as_deref()) {
+            eprintln!("{note}");
+        }
+    });
+    command.env(PROFILE_VARIABLE, WORKSPACE_PROFILE)
+}
+
+/// `Command::new(program)`, with [`set_workspace_profile`] applied when the program is cargo (by file stem, so a
+/// full path from `$CARGO` counts). Any other program, such as `git` or `slangc`, is left alone.
+pub(crate) fn workspace_command(program: impl AsRef<OsStr>) -> Command {
+    let program = program.as_ref();
+    let mut command = Command::new(program);
+    if Path::new(program)
+        .file_stem()
+        .is_some_and(|stem| stem == "cargo")
+    {
+        set_workspace_profile(&mut command);
+    }
+    command
+}
 
 pub(crate) struct CheckRecord {
     pub(crate) program: String,
@@ -20,7 +70,7 @@ pub(crate) fn run_checked(
     program: &str,
     args: &[&str],
 ) -> Result<(), String> {
-    let output = Command::new(program)
+    let output = workspace_command(program)
         .args(args)
         .current_dir(root)
         .output()
@@ -68,7 +118,7 @@ pub(crate) fn run_direct(root: &Path, program: &str, args: &[&str]) -> Result<()
 }
 
 pub(crate) fn run_direct_args(root: &Path, program: &str, args: &[String]) -> Result<(), String> {
-    let status = Command::new(program)
+    let status = workspace_command(program)
         .args(args)
         .current_dir(root)
         .stdin(Stdio::inherit())
@@ -243,7 +293,7 @@ pub(crate) fn run_cargo_test_captured(
     root: &Path,
     args: &[String],
 ) -> Result<(TestTotals, String), String> {
-    let mut child = Command::new("cargo")
+    let mut child = workspace_command("cargo")
         .args(args)
         .current_dir(root)
         .stdin(Stdio::inherit())
@@ -317,3 +367,7 @@ pub(crate) fn run_counted_captured(
 #[cfg(test)]
 #[path = "tests/test_counts.rs"]
 mod test_counts_tests;
+
+#[cfg(test)]
+#[path = "tests/workspace_profile.rs"]
+mod workspace_profile_tests;

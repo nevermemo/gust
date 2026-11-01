@@ -12,7 +12,11 @@ use crate::{
 };
 
 /// One checked crate: its manifest, name, and the only dependencies it may declare (all
-/// kinds: normal, dev, build, and target-specific). D02 keeps this set fixed.
+/// kinds: normal, dev, build, and target-specific). D02 keeps this set fixed. `gust` and
+/// `gust-wgpu` list themselves: each has a dev-dependency on itself that turns its own
+/// `slang-runtime` feature on for its tests (D44), the one way cargo lets a package's tests
+/// differ from its default features. A package can depend on itself only that way, so the entry
+/// adds no edge to the architecture.
 struct CrateRule {
     manifest: &'static str,
     name: &'static str,
@@ -28,12 +32,12 @@ const CRATE_RULES: &[CrateRule] = &[
     CrateRule {
         manifest: "crates/gust/Cargo.toml",
         name: "gust",
-        allowed: &["gust-macros"],
+        allowed: &["gust-macros", "gust"],
     },
     CrateRule {
         manifest: "crates/gust-wgpu/Cargo.toml",
         name: "gust-wgpu",
-        allowed: &["gust", "pollster", "wgpu"],
+        allowed: &["gust", "gust-wgpu", "pollster", "wgpu"],
     },
     CrateRule {
         manifest: "xtask/Cargo.toml",

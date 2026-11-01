@@ -1,6 +1,4 @@
-use std::process::Command;
-
-use crate::workspace::workspace_root;
+use crate::{process::workspace_command, workspace::workspace_root};
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct TestExactOptions {
@@ -78,7 +76,7 @@ pub(crate) fn test_exact(options: &TestExactOptions) -> Result<(), String> {
 
     let mut list = options.base_args();
     list.extend(["--".to_owned(), "--list".to_owned()]);
-    let listing = Command::new("cargo")
+    let listing = workspace_command("cargo")
         .args(&list)
         .current_dir(&root)
         .output()
@@ -109,7 +107,7 @@ pub(crate) fn test_exact(options: &TestExactOptions) -> Result<(), String> {
         ]
         .map(str::to_owned),
     );
-    let output = Command::new("cargo")
+    let output = workspace_command("cargo")
         .args(&run)
         .current_dir(&root)
         .output()

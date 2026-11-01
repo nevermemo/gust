@@ -6,6 +6,12 @@
 //! persistent typed-buffer path separates allocation, upload, dispatch, and
 //! readback so allocations can remain resident across repeated work.
 //!
+//! # The `slang-runtime` feature
+//!
+//! Compiling a descriptor's Slang at run time needs the `slang-runtime` feature (off by default, D44), which enables
+//! `gust/slang-runtime`. Without it the crate holds no process-spawning compiler, and a kernel that would need one
+//! fails when it is dispatched with `Error::Slang`, an I/O error of kind `Unsupported` that names the feature.
+//!
 //! The backend-neutral typed surface of `gust` is implemented here: `GpuBuffer<T>` is a
 //! `gust::Resource`, and `HeadlessDevice` runs every `gust::Call` (`gust::Run`). A call is
 //! validated like `dispatch_buffers`: each binding is checked against `call.kernel()` at submit,
@@ -23,7 +29,7 @@ use std::{
 
 use gust::{
     Access, Call, GpuPod, JobStatus, Kernel, KernelDescriptor, LengthRule, ParameterDescriptor,
-    ParameterKind, Resource, ResourceLayout, Run, TypedDevice, pod_slice_as_bytes, slang,
+    ParameterKind, Resource, ResourceLayout, Run, TypedDevice, pod_slice_as_bytes,
 };
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
@@ -1563,17 +1569,35 @@ impl HeadlessDevice {
         Ok(compiled)
     }
 
-    fn compile_kernel(
-        &self,
+    /// Compile and reflect `kernel` through the native helper, then cross-check it against the descriptor.
+    #[cfg(feature = "slang-runtime")]
+    fn compile_at_run_time(
         kernel: &KernelDescriptor,
-        resources: &[&ParameterDescriptor],
-    ) -> Result<CachedKernel, Error> {
-        let compiled = gust::reflect::compile_reflected(kernel, slang::Target::Wgsl)
+    ) -> Result<gust::reflect::CompiledReflection, Error> {
+        let compiled = gust::reflect::compile_reflected(kernel, gust::slang::Target::Wgsl)
             .map_err(Error::Reflection)?;
         let _ = compiled
             .reflection
             .cross_check_kernel(kernel)
             .map_err(Error::Reflection)?;
+        Ok(compiled)
+    }
+
+    /// Without `slang-runtime` this crate holds no compiler: the only kernels it can run are the ones whose
+    /// precompiled artifact it verifies (m4.e1 adds that path and `Error::NoArtifact`; until then none).
+    #[cfg(not(feature = "slang-runtime"))]
+    fn compile_at_run_time(
+        _kernel: &KernelDescriptor,
+    ) -> Result<gust::reflect::CompiledReflection, Error> {
+        Err(runtime_feature_off())
+    }
+
+    fn compile_kernel(
+        &self,
+        kernel: &KernelDescriptor,
+        resources: &[&ParameterDescriptor],
+    ) -> Result<CachedKernel, Error> {
+        let compiled = Self::compile_at_run_time(kernel)?;
         let wgsl = std::str::from_utf8(&compiled.artifact)
             .expect("WGSL validated by the native compiler bridge");
         let label = kernel.qualified_name().to_string();
@@ -2052,10 +2076,35 @@ fn pod_vec_from_bytes<T: GpuPod>(bytes: &[u8]) -> Result<Vec<T>, Error> {
     Ok(values)
 }
 
+/// The error of a run-time compile in a build without the `slang-runtime` feature. An I/O error of kind
+/// `Unsupported`, because installing `slangc` would not help: the fix is the feature, or a precompiled artifact.
+#[cfg(any(test, not(feature = "slang-runtime")))]
+fn runtime_feature_off() -> Error {
+    Error::Slang(gust::slang::Error::Io(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "this build of gust-wgpu was built without the `slang-runtime` feature, so it cannot compile a kernel at run time; enable the feature or use a precompiled artifact",
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use gust::ResourceBinding;
+
+    #[test]
+    fn the_error_of_a_build_without_slang_runtime_names_the_feature_and_is_unsupported() {
+        // The feature is always on in tests (the self dev-dependency), so the stub itself cannot run here; this pins
+        // the error it returns.
+        let error = runtime_feature_off();
+        let Error::Slang(gust::slang::Error::Io(io)) = &error else {
+            panic!("{error:?}");
+        };
+        assert_eq!(io.kind(), std::io::ErrorKind::Unsupported);
+        assert_eq!(
+            error.to_string(),
+            "could not compile kernel with Slang: Slang artifact I/O failed: this build of gust-wgpu was built without the `slang-runtime` feature, so it cannot compile a kernel at run time; enable the feature or use a precompiled artifact"
+        );
+    }
 
     const PARAMETERS: &[ParameterDescriptor] = &[ParameterDescriptor {
         name: "out",

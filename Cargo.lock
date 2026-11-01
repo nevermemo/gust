@@ -200,6 +200,7 @@ dependencies = [
 name = "gust"
 version = "0.1.0"
 dependencies = [
+ "gust",
  "gust-macros",
 ]
 
@@ -217,6 +218,7 @@ name = "gust-wgpu"
 version = "0.1.0"
 dependencies = [
  "gust",
+ "gust-wgpu",
  "pollster",
  "wgpu",
 ]

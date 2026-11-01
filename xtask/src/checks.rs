@@ -11,7 +11,8 @@ use std::{
 use crate::{
     process::{
         command_exists, print_command, require_command, run_checked, run_counted,
-        run_counted_captured, run_direct, run_direct_args, without_colors,
+        run_counted_captured, run_direct, run_direct_args, set_workspace_profile, without_colors,
+        workspace_command,
     },
     reflect::{BuildOptions, build_slang_reflect},
     shader::doctor_smoke,
@@ -423,7 +424,7 @@ pub(crate) fn doctor(args: &[String]) -> Result<(), String> {
 
 pub(crate) fn list_tests() -> Result<(), String> {
     let root = workspace_root()?;
-    let output = Command::new("cargo")
+    let output = workspace_command("cargo")
         .args(["test", "--workspace", "--", "--list"])
         .current_dir(&root)
         .output()
@@ -582,7 +583,7 @@ pub(crate) fn measure_tests(args: &[String]) -> Result<(), String> {
         }
         println!("== {}", command.join(" "));
         let start = Instant::now();
-        let status = Command::new(&command[0])
+        let status = workspace_command(&command[0])
             .args(&command[1..])
             .current_dir(&root)
             .status()
@@ -1144,6 +1145,9 @@ fn dual_command(root: &Path, step: &DualStep) -> Command {
     for name in RUSTFLAGS_VARIABLES {
         command.env_remove(name);
     }
+    // The workspace builds under `dev` whatever the parent has (R4.2); a step's own environment, applied next, may
+    // still choose another profile (the strict-plus-dual gate of m4.e2 does).
+    set_workspace_profile(&mut command);
     for (name, value) in step.env() {
         command.env(name, value);
     }

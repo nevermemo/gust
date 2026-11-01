@@ -56,6 +56,33 @@ const CORE_CPU_TESTS: Step =
 /// library tests are carved out by name and counted, as `cpu::tests::` is.
 const CORE_ARTIFACT_TESTS: Step =
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "artifact"]);
+/// The off state of the `slang-runtime` feature (D44). The workspace build unifies the feature on (the examples and the
+/// self dev-dependencies ask for it), so these two calls, which build `gust` and `gust-wgpu` alone and without default
+/// features, are the only observers of the bridge's cfg attributes: they fail when something the precompiled path needs
+/// slips behind the feature, or when something behind the feature leaks into the off state. They need cargo only.
+const OFF_STATE_CLIPPY: Step = Step::Cargo(&[
+    "clippy",
+    "--locked",
+    "-p",
+    "gust",
+    "-p",
+    "gust-wgpu",
+    "--no-default-features",
+    "--lib",
+    "--",
+    "-D",
+    "warnings",
+]);
+const OFF_STATE_CHECK: Step = Step::Cargo(&[
+    "check",
+    "--locked",
+    "-p",
+    "gust",
+    "-p",
+    "gust-wgpu",
+    "--no-default-features",
+    "--lib",
+]);
 const CORE_ARTIFACT_UNIT_TESTS: Step = Step::CountedCargo(&[
     "test",
     "--locked",
@@ -109,7 +136,7 @@ impl Suite {
     pub(crate) fn covers(self) -> &'static str {
         match self {
             Self::Unit => {
-                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture); no external tools"
+                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), clippy and check of gust and gust-wgpu without default features (the slang-runtime off state); no external tools"
             }
             Self::Slangc => {
                 "Unit, plus the gust library tests and the diagnostics integration test, which compile generated Slang with slangc"
@@ -159,6 +186,8 @@ impl Suite {
             CORE_CPU_TESTS,
             CORE_ARTIFACT_UNIT_TESTS,
             CORE_ARTIFACT_TESTS,
+            OFF_STATE_CLIPPY,
+            OFF_STATE_CHECK,
         ];
         match self {
             Self::Unit => unit.to_vec(),

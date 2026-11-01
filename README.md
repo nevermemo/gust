@@ -328,7 +328,8 @@ diagnostics, checks SPIR-V structure, and attempts cleanup on every return path.
 `gust::reflect` is the layout gate. `compile_reflected` runs the native helper
 (`scripts/probes/slang-layout.cpp`, built by `cargo xtask build-slang-reflect`) to
 compile one entry point and reflect the identical linked program; the result carries
-the artifact, its hashes, the compiler build tag, and complete `StorageV1` layouts.
+the artifact, its hashes, the compiler build tag, and complete layouts (`StorageV1`
+buffers; schema 2 adds vectors, matrices and constant buffers, matrices column-major).
 `Reflection::cross_check_kernel` compares that evidence against the descriptor and
 fails on any difference. The SPIR-V it produces is byte-identical to `compile_spirv`,
 and its WGSL differs from `compile_wgsl` only in line endings. The older

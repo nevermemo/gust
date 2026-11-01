@@ -51,7 +51,7 @@ pub(crate) fn helper_hint() -> &'static str {
 }
 
 /// Read the Slang build tag from the output of `gust-slang-reflect --version`:
-/// `gust-slang-reflect schema=1 slang=<tag>`.
+/// `gust-slang-reflect schema=<1|2> slang=<tag>` (the highest reflection schema the helper writes).
 pub(crate) fn parse_helper_version(output: &str) -> Result<String, String> {
     let line = output.lines().next().unwrap_or_default().trim();
     let mut words = line.split_whitespace();
@@ -70,9 +70,9 @@ pub(crate) fn parse_helper_version(output: &str) -> Result<String, String> {
         }
     }
     match (schema, slang) {
-        (Some("1"), Some(tag)) if !tag.is_empty() => Ok(tag.to_owned()),
-        (Some(other), _) if other != "1" => Err(format!(
-            "the helper reports schema {other}; this tool reads schema 1"
+        (Some("1" | "2"), Some(tag)) if !tag.is_empty() => Ok(tag.to_owned()),
+        (Some(other), _) if other != "1" && other != "2" => Err(format!(
+            "the helper reports schema {other}; this tool reads schemas 1 and 2"
         )),
         _ => Err(format!(
             "the helper's `--version` output has no schema and slang tag: `{line}`"
@@ -109,10 +109,16 @@ mod tests {
                 .unwrap(),
             "2026.13.1-1-g84792eb15"
         );
+        // The grown helper (schema 2) names the same tag.
+        assert_eq!(
+            parse_helper_version("gust-slang-reflect schema=2 slang=2026.13.1-1-g84792eb15\n")
+                .unwrap(),
+            "2026.13.1-1-g84792eb15"
+        );
         for (bad, expected) in [
             ("", "unexpected"),
             ("slangc 2026.13.1\n", "unexpected"),
-            ("gust-slang-reflect schema=2 slang=x\n", "schema 2"),
+            ("gust-slang-reflect schema=3 slang=x\n", "schema 3"),
             ("gust-slang-reflect slang=x\n", "no schema"),
             ("gust-slang-reflect schema=1 slang=\n", "no schema"),
             ("gust-slang-reflect schema=1\n", "no schema"),

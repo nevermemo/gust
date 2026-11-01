@@ -501,7 +501,7 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
             "check-arch: per-crate dependency allow-list (D02), no IR module or file outside future/, no SPIR-V library in the compiler crates; also part of check-fast"
         }
         "check-ui" => {
-            "check-ui: cargo check of each tests/ui fixture crate; a crate with an expected.txt must fail with exactly one error satisfying every key (`code: none` names a macro error without a rustc code and needs a `message:`); also part of check-fast and the Unit suite"
+            "check-ui: cargo check of each tests/ui fixture crate; a crate with an expected.txt must fail with exactly one error satisfying every key (`code: none` names a macro error without a rustc code and needs a `message:`), or, with `build-error:` lines instead, must fail in the build script of gust with those texts in cargo's stderr; an env.txt gives a fixture its own environment variables (for example GUST_PROFILE=native, set after the workspace's dev); also part of check-fast and the Unit suite"
         }
         "check-cpu" => {
             "check-cpu: `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial, signal-pipeline, particle-step, typed-pipeline, atomic-counter, staged-graph, component-pool), running the non-ignored twin tests against the host references (a package that runs no test fails, and each package's twin tests and derivation-domain guard must be reported `ok` by name); needs neither slangc nor a GPU; a step of the Unit suite"

@@ -2,7 +2,7 @@ use std::fs;
 
 use super::{
     Expectation, Expected, UI_DIR, cargo_args, case_command, discover_cases, judge,
-    parse_diagnostics, parse_expected,
+    parse_diagnostics, parse_env, parse_expectation, parse_expected,
 };
 use crate::workspace::workspace_root;
 
@@ -680,7 +680,7 @@ fn the_cargo_call_is_locked_per_crate_colorless_and_json() {
 
 #[test]
 fn the_fixture_check_runs_under_the_dev_profile() {
-    let command = case_command(std::path::Path::new("ROOT"), "gpupod-missing");
+    let command = case_command(std::path::Path::new("ROOT"), "gpupod-missing", &[]);
     let args: Vec<_> = command.get_args().map(ToOwned::to_owned).collect();
     let wanted: Vec<std::ffi::OsString> = cargo_args("gpupod-missing")
         .into_iter()
@@ -1206,10 +1206,341 @@ fn a_diagnostic_on_a_sibling_target_is_selected_by_the_target_name() {
     assert!(problems[0].contains("`line: 7`"), "{problems:?}");
 }
 
+// ---- build profiles (slice m4.b2): per-fixture environment and failures in `gust`'s build script ----
+
+/// The stderr of `cargo check -p profile-unknown` under `GUST_PROFILE=bogus`, trimmed from a real run (the machine
+/// paths are replaced by `<path>`): cargo's own report of the failed build script, then the script's stderr.
+const BUILD_SCRIPT_STDERR: &str = "error: failed to run custom build command for `gust v0.1.0 (<path>)`\n\nCaused by:\n  process didn't exit successfully: `<path>\\build-script-build` (exit code: 1)\n  --- stderr\n  gust: unknown GUST_PROFILE `bogus`; use dev, native or web\n";
+
+fn build_fails(texts: &[&str]) -> Expectation {
+    Expectation::BuildFails(texts.iter().map(|text| (*text).to_owned()).collect())
+}
+
+fn judge_script(texts: &[&str], success: bool, stdout: &str, stderr: &str) -> Vec<String> {
+    judge(
+        "profile-unknown",
+        "profile-unknown",
+        &build_fails(texts),
+        success,
+        stdout,
+        stderr,
+    )
+}
+
+#[test]
+fn expected_txt_with_build_error_lines_is_a_build_script_expectation() {
+    assert_eq!(
+        parse_expectation(
+            "# a comment\nbuild-error: gust: unknown GUST_PROFILE `x`; use dev, native or web\n\nbuild-error: second: with a colon\n"
+        ),
+        Ok(build_fails(&[
+            "gust: unknown GUST_PROFILE `x`; use dev, native or web",
+            "second: with a colon"
+        ]))
+    );
+    // CRLF and a byte order mark do not matter.
+    assert_eq!(
+        parse_expectation("\u{feff}build-error: a\r\n"),
+        Ok(build_fails(&["a"]))
+    );
+    // Without it the file is the rustc keys, as before.
+    assert_eq!(
+        parse_expectation("code: E0277\nfile: a.rs\nline: 2\n"),
+        Ok(Expectation::Fails(expected("E0277", "a.rs", 2, &[], &[])))
+    );
+}
+
+#[test]
+fn a_build_error_file_cannot_also_key_a_rustc_error_and_needs_a_value() {
+    let rejected = |text: &str| parse_expectation(text).unwrap_err();
+    assert!(rejected("build-error: a\ncode: E0080\n").contains("mixes `build-error:`"));
+    assert!(rejected("build-error: a\nfile: a.rs\nline: 1\n").contains("mixes"));
+    assert!(rejected("build-error:   \n").contains("`build-error` has no value"));
+    assert!(rejected("build-error:\nbuild-error: a\n").contains("no value"));
+    // A backslash could never match: cargo's stderr is compared with backslashes read as slashes.
+    let error = rejected("build-error: path a\\b\n");
+    assert!(error.contains("contains a backslash"), "{error}");
+    assert!(error.contains("`build-error: path a\\b`"), "{error}");
+    assert_eq!(
+        parse_expectation("build-error: path a/b\n"),
+        Ok(build_fails(&["path a/b"]))
+    );
+    // An empty file keeps its error, and `build-error` is no key of `parse_expected` (check-dual's files).
+    assert!(rejected("").contains("lists no key"));
+    assert!(
+        parse_expected("build-error: a\n")
+            .unwrap_err()
+            .contains("unknown key `build-error`")
+    );
+}
+
+#[test]
+fn env_txt_lists_variables_in_order_and_keeps_values_as_written() {
+    assert_eq!(
+        parse_env("# why\n\nGUST_PROFILE=native\r\nOTHER_1=a=b c\n"),
+        Ok(vec![
+            ("GUST_PROFILE".to_owned(), "native".to_owned()),
+            ("OTHER_1".to_owned(), "a=b c".to_owned()),
+        ])
+    );
+    // An empty value is a value (the variable is set to the empty string); spaces after `=` are part of it.
+    assert_eq!(
+        parse_env("GUST_PROFILE=\n"),
+        Ok(vec![("GUST_PROFILE".to_owned(), String::new())])
+    );
+    assert_eq!(
+        parse_env("GUST_PROFILE= native\n"),
+        Ok(vec![("GUST_PROFILE".to_owned(), " native".to_owned())])
+    );
+    // A byte order mark and spaces around the name do not matter.
+    assert_eq!(
+        parse_env("\u{feff} A =1\n"),
+        Ok(vec![("A".to_owned(), "1".to_owned())])
+    );
+}
+
+#[test]
+fn env_txt_rejects_what_would_silently_do_nothing() {
+    let rejected = |text: &str| parse_env(text).unwrap_err();
+    for empty in ["", "\n\n", "# only a comment\n"] {
+        assert!(rejected(empty).contains("sets no variable"), "{empty:?}");
+    }
+    assert!(rejected("GUST_PROFILE native\n").contains("`NAME=value`"));
+    assert!(rejected("=native\n").contains("is not a variable name"));
+    assert!(rejected("GUST PROFILE=native\n").contains("`GUST PROFILE` is not a variable name"));
+    assert!(rejected("GUST-PROFILE=native\n").contains("is not a variable name"));
+    assert!(
+        rejected("GUST_PROFILE=native\nGUST_PROFILE=web\n")
+            .contains("`GUST_PROFILE` appears twice")
+    );
+}
+
+#[test]
+fn a_fixture_sets_its_variables_after_the_workspace_profile() {
+    let env = [
+        ("GUST_PROFILE".to_owned(), "native".to_owned()),
+        ("EXTRA".to_owned(), String::new()),
+    ];
+    let command = case_command(std::path::Path::new("ROOT"), "gpupod-missing", &env);
+    let mut values = std::collections::BTreeMap::new();
+    for (name, value) in command.get_envs() {
+        values.insert(name.to_owned(), value.map(ToOwned::to_owned));
+    }
+    // The fixture's value wins over `dev`; an empty value stays set (it is not a removal).
+    assert_eq!(
+        values.get(std::ffi::OsStr::new("GUST_PROFILE")),
+        Some(&Some(std::ffi::OsString::from("native")))
+    );
+    assert_eq!(
+        values.get(std::ffi::OsStr::new("EXTRA")),
+        Some(&Some(std::ffi::OsString::new()))
+    );
+    // Without an `env.txt` the workspace profile stays (see the test above).
+    let plain = case_command(std::path::Path::new("ROOT"), "gpupod-missing", &[]);
+    assert!(
+        plain
+            .get_envs()
+            .any(|(name, value)| name == "GUST_PROFILE" && value == Some("dev".as_ref()))
+    );
+}
+
+#[test]
+fn discovery_reads_env_txt_beside_expected_txt() {
+    let root = std::env::temp_dir().join(format!("gust-ui-env-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("a")).unwrap();
+    fs::create_dir_all(root.join("b")).unwrap();
+    for name in ["a", "b"] {
+        fs::write(root.join(name).join("Cargo.toml"), "[package]\n").unwrap();
+    }
+    fs::write(root.join("a").join("env.txt"), "GUST_PROFILE=native\n").unwrap();
+    let cases = discover_cases(&root).unwrap();
+    assert_eq!(
+        cases[0].env,
+        vec![("GUST_PROFILE".to_owned(), "native".to_owned())]
+    );
+    assert!(cases[1].env.is_empty());
+    assert_eq!(cases[0].expectation, Expectation::Compiles);
+    // A broken env.txt is an error that names the fixture, not a case without variables.
+    fs::write(root.join("b").join("env.txt"), "# nothing\n").unwrap();
+    let error = discover_cases(&root).unwrap_err();
+    let _ = fs::remove_dir_all(&root);
+    assert!(
+        error.contains("tests/ui/b") && error.contains("sets no variable"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_build_script_failure_with_the_text_passes() {
+    let texts = ["gust: unknown GUST_PROFILE `bogus`; use dev, native or web"];
+    assert!(judge_script(&texts, false, "", BUILD_SCRIPT_STDERR).is_empty());
+    // The text may be a part of a line.
+    assert!(judge_script(&["unknown GUST_PROFILE"], false, "", BUILD_SCRIPT_STDERR).is_empty());
+    // Several texts must all be there.
+    assert!(
+        judge_script(
+            &["unknown GUST_PROFILE", "dev, native or web"],
+            false,
+            "",
+            BUILD_SCRIPT_STDERR
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_build_script_failure_without_the_text_or_that_compiled_is_a_problem() {
+    // The text is missing, or differs by one character.
+    for wrong in [
+        "gust: unknown GUST_PROFILE `bogus`; use dev, native, web",
+        "gust: unknown GUST_PROFILE `other`; use dev, native or web",
+        "refuses feature slang-runtime",
+    ] {
+        let problems = judge_script(&[wrong], false, "", BUILD_SCRIPT_STDERR);
+        assert_eq!(problems.len(), 2, "{wrong}: {problems:?}");
+        assert!(
+            problems[0].contains(&format!("does not contain `build-error: {wrong}`")),
+            "{problems:?}"
+        );
+        assert!(problems[1].contains("cargo's output was:"), "{problems:?}");
+        assert!(problems[1].contains("--- stderr"), "{problems:?}");
+    }
+    // One text found does not excuse another that is missing.
+    let problems = judge_script(
+        &["unknown GUST_PROFILE", "refuses feature"],
+        false,
+        "",
+        BUILD_SCRIPT_STDERR,
+    );
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(
+        problems[0].contains("`build-error: refuses feature`"),
+        "{problems:?}"
+    );
+    // A crate that compiles is a failure of the expectation, whatever the output says.
+    let problems = judge_script(&["unknown GUST_PROFILE"], true, "", BUILD_SCRIPT_STDERR);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("must fail in a build script, but it compiled"),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn a_failure_elsewhere_than_in_the_build_script_of_gust_never_satisfies_build_error() {
+    let text = ["unknown GUST_PROFILE"];
+    // Another package's build script, with the same words in its stderr.
+    let other = BUILD_SCRIPT_STDERR.replace("`gust v0.1.0", "`other v0.1.0");
+    let problems = judge_script(&text, false, "", &other);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(
+        problems[0].contains("not in the build script of `gust`"),
+        "{problems:?}"
+    );
+    // The words in a plain failure of cargo (no build script at all).
+    let plain = "error: could not compile `x`: gust: unknown GUST_PROFILE `bogus`\n";
+    assert_eq!(judge_script(&text, false, "", plain).len(), 2);
+    // A rustc error of the crate itself means the build script did not fail first.
+    let problems = judge_script(
+        &text,
+        false,
+        &gpupod_stdout().replace("gpupod-missing", "profile-unknown"),
+        BUILD_SCRIPT_STDERR,
+    );
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(
+        problems[0].contains("but rustc reported 1 error(s) of the crate itself"),
+        "{problems:?}"
+    );
+    assert!(
+        problems[0].contains("is not a GUST GPU POD type"),
+        "{problems:?}"
+    );
+}
+
+#[test]
+fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
+    let ui = workspace_root().unwrap().join(UI_DIR);
+    let cases = discover_cases(&ui).unwrap();
+    let find = |name: &str| cases.iter().find(|case| case.name == name).unwrap();
+    let variable = |value: &str| vec![("GUST_PROFILE".to_owned(), value.to_owned())];
+    // Under `native`, the kernel without an artifact fails at its own line (`fn fill`, line 9 of the file).
+    let native = find("profile-native-no-artifact");
+    assert_eq!(native.env, variable("native"));
+    assert_eq!(
+        native.expectation,
+        fails(expected(
+            "E0080",
+            "profile-native-no-artifact/src/main.rs",
+            9,
+            &[
+                "evaluation panicked: gust: a strict profile (GUST_PROFILE native or web) needs a precompiled artifact for this kernel; run `cargo gust build`, or build with GUST_PROFILE=dev"
+            ],
+            &[],
+        ))
+    );
+    // Under `dev` the very same file compiles.
+    let dev = find("profile-dev-no-artifact");
+    assert_eq!(dev.env, variable("dev"));
+    assert_eq!(dev.expectation, Expectation::Compiles);
+    let manifest =
+        fs::read_to_string(ui.join("profile-dev-no-artifact").join("Cargo.toml")).unwrap();
+    assert!(
+        manifest.contains("path = \"../profile-native-no-artifact/src/main.rs\""),
+        "{manifest}"
+    );
+    let source = fs::read_to_string(ui.join("profile-native-no-artifact/src/main.rs")).unwrap();
+    assert_eq!(
+        source.replace("\r\n", "\n").lines().nth(8),
+        Some("    fn fill(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {")
+    );
+    // An unknown value, and an empty one, are refused by the build script with its exact text.
+    assert_eq!(find("profile-unknown").env, variable("bogus"));
+    assert_eq!(
+        find("profile-unknown").expectation,
+        build_fails(&["gust: unknown GUST_PROFILE `bogus`; use dev, native or web"])
+    );
+    assert_eq!(find("profile-empty").env, variable(""));
+    assert_eq!(
+        find("profile-empty").expectation,
+        build_fails(&["gust: GUST_PROFILE is set but empty; use dev, native or web (or unset it)"])
+    );
+    // A strict profile with the feature on: the manifest turns it on, the build script refuses.
+    assert_eq!(find("profile-native-bridge").env, variable("native"));
+    assert_eq!(
+        find("profile-native-bridge").expectation,
+        build_fails(&[
+            "gust: profile native refuses feature slang-runtime; a strict profile builds no run-time Slang bridge. Do not enable the feature for this build (look for features = [\"slang-runtime\"] in a dependency, or --features ...slang-runtime; `cargo tree -e features -i gust` shows who enables it), or build with GUST_PROFILE=dev."
+        ])
+    );
+    let manifest = fs::read_to_string(ui.join("profile-native-bridge").join("Cargo.toml")).unwrap();
+    assert!(
+        manifest.contains("features = [\"slang-runtime\"]"),
+        "{manifest}"
+    );
+    // No other fixture has variables of its own.
+    let with_env: Vec<&str> = cases
+        .iter()
+        .filter(|case| !case.env.is_empty())
+        .map(|case| case.name.as_str())
+        .collect();
+    assert_eq!(
+        with_env,
+        [
+            "profile-dev-no-artifact",
+            "profile-empty",
+            "profile-native-bridge",
+            "profile-native-no-artifact",
+            "profile-unknown"
+        ]
+    );
+}
+
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 11] = [
+const PINNED_FIXTURES: [&str; 16] = [
     "gpupod-missing",
     "gpupod-present",
     "kernel-cpu-bad-value",
@@ -1217,6 +1548,11 @@ const PINNED_FIXTURES: [&str; 11] = [
     "kernel-missing",
     "layout-outside-element",
     "layout-outside-field",
+    "profile-dev-no-artifact",
+    "profile-empty",
+    "profile-native-bridge",
+    "profile-native-no-artifact",
+    "profile-unknown",
     "typed-call-mismatch",
     "typed-call-no-cpu-twin",
     "typed-call-no-run",

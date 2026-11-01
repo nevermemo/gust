@@ -77,6 +77,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "profile-dev-no-artifact"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "profile-empty"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "profile-native-bridge"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "profile-native-no-artifact"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "profile-unknown"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,8 @@
+# Keys matched against the one error of `cargo check --message-format json` (see gpupod-missing/expected.txt).
+# `require_artifact` panics in a const that the macro emitted at the kernel's identifier, so the primary span (or the
+# outermost call site of it) is the line of `fn fill` in the user's file. The message is the text of
+# `gust::profile::MISSING`.
+code: E0080
+file: profile-native-no-artifact/src/main.rs
+line: 9
+message: evaluation panicked: gust: a strict profile (GUST_PROFILE native or web) needs a precompiled artifact for this kernel; run `cargo gust build`, or build with GUST_PROFILE=dev

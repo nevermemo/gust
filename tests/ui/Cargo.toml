@@ -1,5 +1,5 @@
 # Fixture workspace for `cargo xtask check-ui`. It is a workspace root of its own, so the
 # root workspace does not contain it and `cargo test --workspace` never builds it.
 [workspace]
-members = ["gpupod-missing", "gpupod-present", "kernel-cpu-bad-value", "kernel-cpu-duplicate", "kernel-missing", "layout-outside-element", "layout-outside-field", "typed-call-mismatch", "typed-call-no-cpu-twin", "typed-call-no-run", "typed-call-ok"]
+members = ["gpupod-missing", "gpupod-present", "kernel-cpu-bad-value", "kernel-cpu-duplicate", "kernel-missing", "layout-outside-element", "layout-outside-field", "profile-dev-no-artifact", "profile-empty", "profile-native-bridge", "profile-native-no-artifact", "profile-unknown", "typed-call-mismatch", "typed-call-no-cpu-twin", "typed-call-no-run", "typed-call-ok"]
 resolver = "3"

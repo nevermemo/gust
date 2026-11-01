@@ -95,6 +95,31 @@
 //! the kernel or under `--cfg gust_dual`, unless the kernel has a uniform parameter or `#[kernel(cpu =
 //! "unsupported")]`. Nothing of it is re-exported at the crate root, except the hidden macro behind
 //! `cpu::overflow_checks!`.
+//!
+//! # Build profiles
+//!
+//! The environment variable `GUST_PROFILE` chooses the profile of a build (D44): `dev`, `native` or `web`. `gust`'s
+//! build script reads it; any other value, including an empty one, fails the build and names the three. `native` and
+//! `web` are strict: every `#[gpu]` kernel must have a precompiled artifact (see [`artifact`]), or the build fails
+//! with a compile error at the kernel, and the `slang-runtime` feature is refused, so the build contains no run-time
+//! Slang compiler. `dev` has neither rule. [`profile::NAME`] is the effective profile.
+//!
+//! A release build is strict even without the variable: when `GUST_PROFILE` is not set and Cargo builds `gust` with
+//! `PROFILE=release`, the profile is `web` for `wasm32` and `native` for every other target, and the build prints
+//! `warning: gust@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`; cargo shows a build
+//! script's warning only for path and workspace packages, or with `-vv`, so a registry or git dependency stays
+//! silent). So `cargo build --release` of any crate with `#[gpu]` kernels needs artifacts and no bridge. A release
+//! build that wants the bridge, such as
+//! `cargo run --release` of an example that enables `slang-runtime`, sets `GUST_PROFILE=dev` explicitly:
+//!
+//! ```sh
+//! GUST_PROFILE=dev cargo run --release -p polynomial
+//! ```
+//!
+//! Set the variable per command, in the shell, in CI, or per workspace in `.cargo/config.toml` under `[env]`. Changing
+//! it rebuilds `gust` and everything that depends on it. The repository's own `cargo xtask` commands run their cargo
+//! children under `GUST_PROFILE=dev`, whatever the parent environment holds (a different preset value is logged and
+//! overridden).
 
 // The `#[gpu]` expansion names `::gust::..`; this lets the crate's own unit tests expand it too.
 #[cfg(test)]
@@ -106,6 +131,7 @@ pub mod cpu;
 mod descriptor;
 mod dispatch;
 mod job;
+pub mod profile;
 pub mod reflect;
 mod runtime;
 pub mod slang;

@@ -1,0 +1,10 @@
+# DIFFTEST_FORMAT 1
+# seed programs discarded [reason=count ...] hash=<fnv1a64 of the emitted lib.rs and the input data>
+1 16 57 division-by-zero=3 index=6 no-input-read=3 overflow=34 shift-amount=3 static=8 hash=371fa2522e6681c7
+2 16 36 division-by-zero=6 index=2 min-over-minus-one=1 overflow=21 static=6 hash=811a4d82af66a078
+3 16 38 division-by-zero=8 no-input-read=2 overflow=20 static=8 hash=7816c1f177b708c2
+4 16 53 division-by-zero=7 index=5 no-input-read=1 overflow=25 shift-amount=1 static=14 hash=a2e31f20063e9b07
+5 16 42 division-by-zero=5 no-input-read=3 overflow=21 shift-amount=3 static=10 hash=d44f7f81932ad6cd
+6 16 36 division-by-zero=1 index=3 no-input-read=1 overflow=25 shift-amount=1 static=5 hash=353164f5a86323f9
+7 16 61 division-by-zero=8 index=3 no-input-read=2 overflow=37 shift-amount=1 static=10 hash=6155afa997189c32
+8 16 63 division-by-zero=4 index=1 no-input-read=2 overflow=45 static=11 hash=9a617649d6598029

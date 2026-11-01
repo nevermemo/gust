@@ -1,0 +1,23 @@
+# Differential program generator for the GUST dialect (M5, slice m5.c1a): integers only, no GPU, no harness.
+# It is a workspace root of its own, so the root workspace does not contain it and `cargo test --workspace` never
+# builds it. Std only (no dependencies): the generator, the interpreter and the emitter are plain Rust.
+[workspace]
+resolver = "3"
+
+[package]
+name = "difftest"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "Seeded integer program generator, domain-tracking interpreter and #[gpu] source emitter"
+
+[[bin]]
+name = "difftest-gen"
+path = "src/bin/difftest-gen.rs"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+# The interpreter runs every element of every candidate program; the unit tests regenerate the seed corpus.
+[profile.dev]
+opt-level = 2

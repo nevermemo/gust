@@ -53,8 +53,37 @@ test module; do not mix that mechanical move with behavior changes.
   `Independent(&buf)` is revisited when M7's primitives need it.
 - Kernels with a `Uniform<T>`/`ConstantBuffer<T>` parameter have no generated typed call,
   and the headless runtime rejects them (`Error::UnsupportedParameter`); plain value
-  parameters are rejected by the macro. Decide in M3 whether uniforms get a typed call
-  (with M6's uniform work) or such kernels stay without a CPU twin.
+  parameters are rejected by the macro. Resolved at M3 close (D40): uniform kernels stay
+  without a typed call and without a CPU twin until M6's uniform work, which decides
+  both together.
+
+## M3 follow-ups (filed at M3 close)
+
+- Explicit `wrapping_add`, `wrapping_sub`, `wrapping_mul` and `wrapping_neg` methods in
+  the dialect, lowered to the plain Slang operator, only when a kernel needs an
+  intentional wrap. Not a fix for the overflow edge cases of the ledger (D39); a
+  wrapping rewrite of twin bodies is deferred to M5's production CPU target (D38).
+- A debug write-set race checker in `gust::cpu`: the twin runs invocations one after
+  another, so a kernel in which two invocations write one location gives a clean twin
+  result and proves nothing about the GPU (SEMANTICS section 5). The checker would
+  record the written indices of a call in debug builds and report a repeated one.
+- M5, CPU limits: decide whether the production CPU target emulates the device limits
+  (workgroup count per dimension, invocations per workgroup, storage binding size) or
+  keeps documenting the difference; today the CPU backend rejects only a launch above
+  2^32 invocations.
+- M5, difftest shape and CI: the form of the differential test (the same kernel source
+  on the CPU target and the GPU, generated inputs with shrinking, comparison under the
+  SEMANTICS domain and tolerances) and a lavapipe CI job labelled `Gpu (software)`. The
+  ledger and the contract exist since M3; M5 adds the production target, lavapipe and
+  the generator.
+- M7, parallel twin execution: run the invocations of a twin on several threads once
+  barriers and shared memory exist. A CPU strategy for them is part of M7; until then a
+  barrier kernel uses `#[kernel(cpu = "unsupported")]` (SEMANTICS section 5).
+- M8, capability-gated tests that fail rather than skip: a test that needs a capability
+  the adapter lacks is a failure of its tier, never a skipped or ignored pass.
+- M10, benchmark fairness: bounds checking and panic behaviour must be equal on the
+  compared implementations (the GUST CPU target, rayon, CubeCL, rust-gpu) before a
+  benchmark is reported.
 
 ## Deferred language/runtime breadth
 

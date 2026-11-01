@@ -94,6 +94,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cargo-gust"
+version = "0.1.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

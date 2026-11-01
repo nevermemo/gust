@@ -198,6 +198,103 @@ pub fn compile_reflected_with_helper(
     )
 }
 
+/// What [`compile_reflected_clean`] produced: the parsed result and the helper's JSON, verbatim.
+#[cfg(feature = "slang-runtime")]
+#[derive(Debug)]
+pub struct CleanCompilation {
+    /// The artifact and layouts, checked by `from_output` against the clean text.
+    pub compiled: CompiledReflection,
+    /// The helper's reflection JSON, byte for byte, as an export stores it beside the artifact.
+    pub reflection_json: String,
+}
+
+/// Compile and reflect the kernel's *clean* Slang text: `KernelDescriptor::slang_source` exactly, without the `#line`
+/// directives of [`slang::compile_copy`]. The helper's `sourceHash` is then the hash that
+/// [`crate::artifact::verify_artifact`] recomputes at run time, so the result can be stored as a precompiled artifact
+/// (D45).
+///
+/// Only a failed compile touches the directive copy: the helper compiles it once more, so that the diagnostics name
+/// Rust lines as `compile_reflected_with_helper` does.
+#[cfg(feature = "slang-runtime")]
+pub fn compile_reflected_clean(
+    kernel: &KernelDescriptor,
+    target: Target,
+    helper: impl AsRef<Path>,
+) -> Result<CleanCompilation, Error> {
+    let helper = helper.as_ref();
+    compile_clean_with(kernel, target, helper, |source, artifact, json| {
+        Command::new(helper)
+            .arg(source)
+            .arg(kernel.entry_point)
+            .arg(target_name(target))
+            .arg(artifact)
+            .arg(json)
+            .output()
+    })
+}
+
+/// The clean compile with the helper run by `run(source, artifact, json)`; a test supplies a fake.
+#[cfg(feature = "slang-runtime")]
+fn compile_clean_with(
+    kernel: &KernelDescriptor,
+    target: Target,
+    helper: &Path,
+    run: impl FnOnce(&Path, &Path, &Path) -> std::io::Result<std::process::Output>,
+) -> Result<CleanCompilation, Error> {
+    let directory = TemporaryDirectory::create()?;
+    let source = directory.path().join("kernel.slang");
+    let artifact = directory.path().join("kernel.artifact");
+    let json = directory.path().join("reflection.json");
+    let compiled_source = write_clean_input(directory.path(), kernel)?;
+    let output = run(&source, &artifact, &json).map_err(|source| Error::HelperUnavailable {
+        helper: helper.to_owned(),
+        source,
+    })?;
+    if !output.status.success() {
+        let clean_failure = Error::Compiler(slang::Error::CompilationFailed {
+            target,
+            diagnostics: format!(
+                "{}\n{}\ncompiler exit: {}\nreflection helper: {}\noriginating Rust kernel: {}",
+                String::from_utf8_lossy(&output.stderr),
+                String::from_utf8_lossy(&output.stdout),
+                output.status,
+                helper.display(),
+                kernel.qualified_name(),
+            ),
+        });
+        // The lines above refer to the clean text. Rust lines come from the directive copy.
+        return Err(
+            match compile_reflected_with_helper(kernel, target, helper) {
+                Err(annotated @ Error::Compiler(_)) => annotated,
+                _ => clean_failure,
+            },
+        );
+    }
+    let reflection_json = fs::read_to_string(&json)?;
+    let compiled = CompiledReflection::from_output(
+        kernel,
+        compiled_source,
+        target,
+        fs::read(&artifact)?,
+        &reflection_json,
+    )?;
+    Ok(CleanCompilation {
+        compiled,
+        reflection_json,
+    })
+}
+
+/// Write the clean text as `kernel.slang` into `directory` and return the text the compiler will read, which is
+/// `kernel.slang_source` itself.
+#[cfg(feature = "slang-runtime")]
+fn write_clean_input<'a>(
+    directory: &Path,
+    kernel: &'a KernelDescriptor,
+) -> Result<&'a str, std::io::Error> {
+    fs::write(directory.join("kernel.slang"), kernel.slang_source)?;
+    Ok(kernel.slang_source)
+}
+
 #[cfg(feature = "slang-runtime")]
 /// Attribute a failed compile to its Rust origin, as `slang::compile` does. A
 /// diagnostic whose error location cannot be mapped still names the kernel.
@@ -638,6 +735,103 @@ mod tests {
         ] {
             assert!(identity_error(&copy, &json), "{what}");
         }
+    }
+
+    /// What the real helper writes for a WGSL artifact whose bytes are `text`, computed from the text it was given.
+    #[cfg(feature = "slang-runtime")]
+    fn fake_helper_json(text: &str, source_hash_of: &str) -> String {
+        format!(
+            "{{\"schemaVersion\":1,\"compiler\":\"canned\",\"target\":\"wgsl\",\"entryPoint\":\"entry\",\"sourceHash\":\"{}\",\"artifactHash\":\"{}\",\"workgroupSize\":[1,1,1],\"parameters\":[]}}\n",
+            fingerprint(source_hash_of.as_bytes()),
+            fingerprint(text.as_bytes()),
+        )
+    }
+
+    #[cfg(feature = "slang-runtime")]
+    fn success_output() -> std::process::Output {
+        std::process::Output {
+            status: std::process::ExitStatus::default(),
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+        }
+    }
+
+    /// The clean compile hands the helper `kernel.slang_source` exactly, never the `#line` copy, and checks the
+    /// helper's `sourceHash` against that text, so the stored artifact verifies at run time (D45).
+    #[cfg(feature = "slang-runtime")]
+    #[test]
+    fn the_clean_compile_gives_the_helper_the_clean_text_never_the_directive_copy() {
+        let copy = slang::compile_copy(SOURCE, &KERNEL.source);
+        assert_ne!(copy, SOURCE, "the fixture must have directives");
+        let given = std::cell::RefCell::new(None);
+        let written = std::cell::RefCell::new(String::new());
+        let result = compile_clean_with(
+            &KERNEL,
+            Target::Wgsl,
+            Path::new("fake-helper"),
+            |source, artifact, json| {
+                let text = fs::read_to_string(source).unwrap();
+                fs::write(artifact, &text).unwrap();
+                let report = fake_helper_json(&text, &text);
+                fs::write(json, &report).unwrap();
+                *written.borrow_mut() = report;
+                *given.borrow_mut() = Some(text);
+                Ok(success_output())
+            },
+        )
+        .unwrap();
+        assert_eq!(given.borrow().as_deref(), Some(SOURCE));
+        assert_eq!(result.compiled.artifact, SOURCE.as_bytes());
+        assert_eq!(result.reflection_json, *written.borrow());
+        assert_eq!(result.compiled.compiler_version, "canned");
+        assert!(
+            result
+                .reflection_json
+                .contains(&fingerprint(SOURCE.as_bytes()))
+        );
+        assert!(
+            !result
+                .reflection_json
+                .contains(&fingerprint(copy.as_bytes()))
+        );
+    }
+
+    /// A helper that reports the hash of the directive copy is rejected: the identity is the clean text's.
+    #[cfg(feature = "slang-runtime")]
+    #[test]
+    fn the_clean_compile_rejects_a_source_hash_of_the_directive_copy() {
+        let copy = slang::compile_copy(SOURCE, &KERNEL.source);
+        let error = compile_clean_with(
+            &KERNEL,
+            Target::Wgsl,
+            Path::new("fake-helper"),
+            |source, artifact, json| {
+                let text = fs::read_to_string(source).unwrap();
+                fs::write(artifact, &text).unwrap();
+                fs::write(json, fake_helper_json(&text, &copy)).unwrap();
+                Ok(success_output())
+            },
+        )
+        .unwrap_err();
+        match error {
+            Error::Invalid(message) => assert!(message.contains("source hash"), "{message}"),
+            other => panic!("expected an identity mismatch, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "slang-runtime")]
+    #[test]
+    fn the_clean_compile_without_a_helper_is_the_helper_unavailable_error() {
+        let error = compile_reflected_clean(
+            &KERNEL,
+            Target::Wgsl,
+            "no-such-helper-for-the-clean-compile-test",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::HelperUnavailable { .. }),
+            "{error:?}"
+        );
     }
 
     #[test]

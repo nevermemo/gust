@@ -2743,3 +2743,68 @@ fn build_directory_failures_carry_their_codes() {
     assert!(!repaired.contains("compile_error"), "{repaired}");
     let _ = fs::remove_dir_all(&root);
 }
+
+/// `^` and `^=` lower to the `__gust_xor` overload helpers, because WGSL has no `^` on `bool`. The helpers exist
+/// only in a module that uses the operator, and every other bitwise operator on `bool` stays a plain operator.
+#[test]
+fn bool_xor_lowers_to_overload_helpers() {
+    let source = translate(
+        "mod m { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+            let a: bool = out[0] != 0u32;
+            let mut b: bool = a ^ true;
+            b ^= a;
+            let c: bool = a & b | a;
+            out[1] = out[2] ^ 3u32;
+            out[3] ^= out[4];
+        } }",
+    )
+    .unwrap();
+    for helper in [
+        "bool __gust_xor(bool a, bool b) { return a != b; }",
+        "int __gust_xor(int a, int b) { return a ^ b; }",
+        "uint __gust_xor(uint a, uint b) { return a ^ b; }",
+        "void __gust_xor_assign(inout bool a, bool b) { a = a != b; }",
+        "void __gust_xor_assign(inout int a, int b) { a = a ^ b; }",
+        "void __gust_xor_assign(inout uint a, uint b) { a = a ^ b; }",
+    ] {
+        assert!(source.contains(helper), "missing {helper}\n{source}");
+    }
+    assert!(source.contains("__gust_xor(a, true)"), "{source}");
+    assert!(source.contains("__gust_xor_assign(b, a);"), "{source}");
+    assert!(source.contains("__gust_xor(out[2], uint(3))"), "{source}");
+    assert!(
+        source.contains("__gust_xor_assign(out[3], out[4]);"),
+        "{source}"
+    );
+    assert!(source.contains("((a & b) | a)"), "{source}");
+    // A raw `^` must not survive: WGSL rejects it on `bool`.
+    let body = source
+        .split("void gpu_m_run")
+        .nth(1)
+        .expect("kernel function emitted");
+    assert!(!body.contains(" ^ ") && !body.contains(" ^= "), "{source}");
+
+    let without = translate(
+        "mod m { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+            out[0] = out[1] & out[2] | 4u32;
+        } }",
+    )
+    .unwrap();
+    assert!(!without.contains("__gust_xor"), "{without}");
+
+    // The module's only `^` is in a helper, and the helpers must still be emitted.
+    let helper_only = translate(
+        "mod m {
+            fn mix(x: bool, y: bool) -> bool { x ^ y }
+            #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+                if mix(true, false) { out[0] = 1u32; }
+            }
+        }",
+    )
+    .unwrap();
+    assert!(
+        helper_only.contains("bool __gust_xor(bool a, bool b) { return a != b; }"),
+        "{helper_only}"
+    );
+    assert!(helper_only.contains("__gust_xor(x, y)"), "{helper_only}");
+}

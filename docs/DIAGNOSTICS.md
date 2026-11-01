@@ -916,9 +916,10 @@ Decision: D45, D46.
 
 Export mode (`GUST_EXPORT_DIR` set) writes `<key>.slang` and `<key>.kernel.json` for each
 kernel, and the write failed: the directory or a file cannot be created, or a record held
-CPU twin text (a bug in the macro; records never hold a twin).
+CPU twin text (a bug in the macro; records never hold a twin), or a record with the same key but other bytes already exists.
 Reached through `#[gpu]`.
 Rejected: `GUST_EXPORT_DIR` pointing at a path that is a file, or at a read-only directory.
+Also rejected: two kernels of one package with the same 64-bit key and different text; the second one fails here instead of overwriting the first one's record (the message names both kernels).
 Write instead: point `GUST_EXPORT_DIR` at a writable directory, or let `cargo gust build` choose it.
 Decision: D45, D46.
 

@@ -1,0 +1,21 @@
+[package]
+name = "cargo-gust"
+description = "Export tool for GUST: collects #[gpu] kernels, compiles them with Slang and writes the committed gust-artifacts directory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+# Not published yet (M10 decides the name and the install story); see the crate documentation for `cargo install`.
+publish = false
+
+[[bin]]
+name = "cargo-gust"
+path = "src/main.rs"
+
+# The tool compiles and verifies kernels, so it needs the run-time Slang bridge that production builds refuse (D44).
+# It must therefore be built under GUST_PROFILE=dev, which the repository's xtask does for its children.
+[dependencies]
+gust = { workspace = true, features = ["slang-runtime"] }
+
+[lints]
+workspace = true

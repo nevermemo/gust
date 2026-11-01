@@ -46,7 +46,7 @@ its slice, and two fix rounds per slice.
 | m4.a | `gust::artifact`: `Artifact`, `verify_artifact`, `content_key`, `KernelDescriptor::artifacts` | done (Unit; Opus keep after one fix round; `2dcb9e3`) |
 | m4.b1, m4.b2 | `slang-runtime` feature, off by default; build profiles in `gust`'s build script, strict-profile refusals | m4.b1 done (Unit + Gpu; Opus keep after one fix round; `cbbf35a`); m4.b2 done (Unit + Gpu; Opus keep after one fix round; `41b6ff9`) |
 | m4.c | Macro: content key, artifact and manifest embedding, export mode | done (`dba0e97`) |
-| m4.d | `cargo-gust`: `init`, `build` (isolated collection, D17 at export for WGSL and SPIR-V), `check`, `doctor` (D46) | planned |
+| m4.d | `cargo-gust`: `init`, `build` (isolated collection, D17 at export for WGSL and SPIR-V), `check`, `doctor` (D46) | done (`e7dd73d`) |
 | m4.e1, m4.e2 | `gust-wgpu` precompiled path and cache key; precompiled fixture, `check-precompiled`, packaged-consumer proof without Slang | planned |
 | m4.f | Pinned-Slang manager with licence audit; CI `slang` job | licence audit done (all three platforms accepted, [LICENSES-SLANG](development/LICENSES-SLANG.md)); manager planned |
 | m4.g1, m4.g2 | Completion model (async read-back); wasm32 and the first browser WebGPU run | m4.g1 done (Gpu: RTX 5090; moved ahead of m4.e1; Opus keep after one fix round; `671b3dd`); m4.g2 planned |
@@ -60,7 +60,7 @@ remaining chain run beside it now, and the rest wait for the M4 slice named. M5 
 | S5.1 | Spike: the Gpu suite on Mesa lavapipe in WSL | done (decision A: 110/110 on llvmpipe 25.2.8, a WSL measurement) |
 | m5.b0 | Probe: the ledger on lavapipe, debug and release | planned (can run now) |
 | m5.a | `gpu-software` CI job: Mesa pinned through the Ubuntu snapshot, adapter record asserted (D52) | planned (can run now) |
-| m5.d1, m5.d2, m5.d3 | Scalar `coretests` cases: fixture and twin; on the GPU; golden and registration | m5.d1 done (`d2378ce`); d2 after m4.e1 and the bool `^` fix; d3 after m4.e2 |
+| m5.d1, m5.d2, m5.d3 | Scalar `coretests` cases: fixture and twin; on the GPU; golden and registration | m5.d1 done (`d2378ce`); d2 after m4.e1 (the bool `^` fix is done, `7463405`); d3 after m4.e2 |
 | m5.c1a, m5.c1a2, m5.c1b, m5.c1c | Differential generator in `tests/difftest/`: integers, floats v1 (interval bounds), harness, bounded shrinking | m5.c1a done (`3bcebaf`); c1a2 running; then c1b, c1c in order |
 | S5.4 | Spike: expansion-time profile and cached rebuild transitions | done (decision A: both tracking paths suffice on their own) |
 | m5.b | Ledger on two adapters (per-kind observation pins) | after m4.e1 |

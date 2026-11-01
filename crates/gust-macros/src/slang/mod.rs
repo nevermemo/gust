@@ -123,6 +123,40 @@ pub fn emit_kernel(
         writeln!(output, "uint __gust_not(uint value) {{ return ~value; }}\n").unwrap();
     }
 
+    // Rust `^` is logical xor on `bool` and bitwise xor on integers, but WGSL defines `^` only on integers, so a
+    // `bool ^` forwarded verbatim fails at shader creation. Overload resolution picks the right body for each use.
+    // The `_assign` forms take the place by `inout`, so `place ^= value` evaluates the place once.
+    let mut xor = XorUsage(false);
+    xor.visit_item_mod(module);
+    if xor.0 {
+        writeln!(
+            output,
+            "bool __gust_xor(bool a, bool b) {{ return a != b; }}"
+        )
+        .unwrap();
+        writeln!(output, "int __gust_xor(int a, int b) {{ return a ^ b; }}").unwrap();
+        writeln!(
+            output,
+            "uint __gust_xor(uint a, uint b) {{ return a ^ b; }}"
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "void __gust_xor_assign(inout bool a, bool b) {{ a = a != b; }}"
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "void __gust_xor_assign(inout int a, int b) {{ a = a ^ b; }}"
+        )
+        .unwrap();
+        writeln!(
+            output,
+            "void __gust_xor_assign(inout uint a, uint b) {{ a = a ^ b; }}\n"
+        )
+        .unwrap();
+    }
+
     // Rust `Option<T>` lowers to Slang's `Optional<T>`. Generic helpers let the
     // payload type be inferred at each use instead of requiring annotations.
     let mut option = OptionUsage(false);
@@ -725,6 +759,16 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             emit_expression(&assign.left)?,
             emit_expression(&assign.right)?
         ),
+        syn::Expr::Binary(binary) if matches!(binary.op, syn::BinOp::BitXor(_)) => format!(
+            "__gust_xor({}, {})",
+            emit_expression(&binary.left)?,
+            emit_expression(&binary.right)?
+        ),
+        syn::Expr::Binary(binary) if matches!(binary.op, syn::BinOp::BitXorAssign(_)) => format!(
+            "__gust_xor_assign({}, {})",
+            emit_expression(&binary.left)?,
+            emit_expression(&binary.right)?
+        ),
         syn::Expr::Binary(binary) => format!(
             "({} {} {})",
             emit_expression(&binary.left)?,
@@ -867,6 +911,19 @@ impl<'ast> Visit<'ast> for NotUsage {
     fn visit_expr_unary(&mut self, expression: &'ast syn::ExprUnary) {
         self.0 |= matches!(expression.op, syn::UnOp::Not(_));
         syn::visit::visit_expr_unary(self, expression);
+    }
+}
+
+/// Whether the module uses `^` or `^=`, so the `__gust_xor` helpers are emitted only when needed.
+struct XorUsage(bool);
+
+impl<'ast> Visit<'ast> for XorUsage {
+    fn visit_expr_binary(&mut self, expression: &'ast syn::ExprBinary) {
+        self.0 |= matches!(
+            expression.op,
+            syn::BinOp::BitXor(_) | syn::BinOp::BitXorAssign(_)
+        );
+        syn::visit::visit_expr_binary(self, expression);
     }
 }
 

@@ -1,6 +1,7 @@
 # Unit-tier gate (docs/development/VALIDATION.md). Hosted runners have no GPU and no
 # slangc, so Spirv and Gpu evidence stays local. The `slang` job installs the pinned Slang
-# (cargo gust slang install) and earns the Slangc and Reflect tiers on CI.
+# (cargo gust slang install) and earns the Slangc tier on CI; the Reflect tier needs an adapter
+# and runs in gpu-software (lavapipe).
 name: ci
 
 on:
@@ -62,9 +63,10 @@ jobs:
     # The pinned-Slang manager end to end (D46, R4.8, slice m4.f). `cargo gust slang install` downloads Slang 2026.13.1
     # from Slang's own GitHub release (the archive's SHA-256 is checked before anything is extracted), `build-helper`
     # compiles the native reflection helper against it with g++ (`CXX` below: without it build-helper takes the first of
-    # cl, clang++, c++, g++ on PATH, and the runner may have clang++), and the Slangc and Reflect tiers run with
-    # that slangc and helper. The S3 reproducibility check builds the artifacts of examples/vector-add twice with
-    # `cargo gust build` and requires byte-identical output (R7: no normalization), then `check --recompile` once more.
+    # cl, clang++, c++, g++ on PATH, and the runner may have clang++), and the Slangc tier runs with that slangc
+    # and helper. The Reflect tier dispatches on a GPU, so it runs in gpu-software (lavapipe), not here. The S3
+    # reproducibility check builds the artifacts of examples/vector-add twice with `cargo gust build` and requires
+    # byte-identical output (R7: no normalization), then `check --recompile` once more.
     # No GPU here, so no Gpu tier. Not a required check yet (the `unit` precedent: promoted after two weeks of green).
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -98,8 +100,6 @@ jobs:
           cargo run --locked --quiet -p cargo-gust -- doctor
       - name: Slangc tier
         run: cargo --locked xtask test --suite Slangc
-      - name: Reflect tier
-        run: cargo --locked xtask test --suite Reflect
       - name: S3 reproducibility (cargo gust build twice)
         run: |
           gust() { cargo run --locked --quiet -p cargo-gust -- "$@"; }

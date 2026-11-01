@@ -335,22 +335,34 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
 - **Compare-exchange may fail spuriously.** WGSL's only compare-exchange is `atomicCompareExchangeWeak` (17.8.5):
   "The equality comparison may spuriously fail on some implementations." So even an uncontended compare-exchange
   that should succeed is not guaranteed to, and in the contended case the unchanged value (999 in the ledger case)
-  is also a spec-allowed result. That the success case succeeds is a measured observation, not a guarantee.
+  is also a spec-allowed result. The contract (D47): on the GPU the success case is set-valued, the cell ends at
+  the new value or stays unchanged (`{7, 11}` for 7 to 11, `{-5, 11}` for -5 to 11); on the twin it is exact (11).
+  The failure case (compare against a value the cell does not hold) is exact on both, because a spurious failure
+  only adds failures. The returned flag is never part of the contract: the GPU form is statement-only.
 - **Tested (GPU measured, twin exact).** `crates/gust-wgpu/tests/atomics.rs` checks a contended `atomic_add` sum, the
-  contended minimum and maximum, the compare-exchange success and failure cases, and signed add, exchange and
-  compare-exchange exactly, on the GPU and on the twin. The twin's final cell is compared directly with the GPU's in
-  every test except the contended exchange and compare-exchange; in the signed sequence (add, exchange, compare-exchange
-  on one cell) each step of both sides is pinned to the same literal (-4, -5, 11) and only the final state is compared
-  directly. For the contended
+  contended minimum and maximum, the compare-exchange failure case, and signed add and exchange exactly, on the GPU
+  and on the twin, and the uncontended compare-exchange success cases (unsigned and signed) as a set on the GPU and
+  exactly on the twin. The twin's final cell is compared directly with the GPU's in the contended add, min and max
+  tests and the failure case, and not in the contended exchange and compare-exchange or the two success cases. In
+  the signed sequence (add, exchange, compare-exchange on one cell) the add and exchange steps are pinned to the same
+  literals (-4, -5) on both sides without comparing the sides, and the compare-exchange step is the set `{-5, 11}`
+  on the GPU and 11 on the twin. For the contended
   exchange the GPU must end in 0 to 256 and for the contended compare-exchange in 1 to 257 or at the unchanged 999
   (the weak compare-exchange may fail every attempt); the twin is asserted at 256 and at 1 respectively, and never
   compared with the GPU there. The returned old value of an atomic is never observable in GPU code (statement-only);
   the twin returns it and `runtime.rs` unit-tests it.
-- **Known limitation of the GPU half.** The compare-exchange success case (a single invocation, 7 to 11) is asserted
-  as succeeding. WGSL allows a spurious failure there too (17.8.5), so on the GPU that is a measured observation,
-  not a guarantee; on the twin it holds by definition. Because the unchanged 999 is accepted for the contended case,
-  a GPU compare-exchange that did nothing would pass the contended GPU assertion; the success case and the twin
-  assertion are what catch a no-op.
+- **Weak compare-exchange on the GPU (D47).** The compare-exchange success cases (a single invocation, 7 to 11 and
+  -5 to 11) are asserted as the set `{7, 11}` and `{-5, 11}` on the GPU, because WGSL allows a spurious failure
+  there too (17.8.5); on the twin they are asserted at 11, by definition. The RTX 5090 took the exchange branch in
+  every measured run, so the spurious branch is exercised only by the GPU-free test of the two check functions that
+  the GPU tests call, never by an adapter.
+  Because the unchanged value is accepted in every compare-exchange case, a GPU compare-exchange that did nothing
+  would pass all of the GPU assertions. The twin assertion catches a no-op twin; the failure case (exact, at 7, on
+  both sides) catches a compare-exchange that always swaps, but cannot tell a no-op GPU from a correct one. A GPU
+  compare-exchange that does nothing is therefore not detected by these tests; that is accepted for the same
+  reason the set is (KM-09). At the emission level, the unit test `atomic_compare_exchange_on_rw_u32_is_accepted`
+  in `gust-macros` checks that the call lowers to `.compareExchange()`; the `atomics` Slang golden covers the
+  `atomic_add` kernel only and does not guard the compare-exchange.
 
 ## 7. Known-mismatch ledger
 
@@ -379,7 +391,7 @@ difference, and the proven label needs the two targets to agree.
 | KM-06 | `f32 as u32` of a negative, too large or NaN value | Saturates: negative and NaN give 0, `1.0e10` and `2^32` give `u32::MAX`, in every profile. | Finite values (WGSL section 15.7.6, as KM-05): negatives such as `-1.0`, `-3.99` and `-1.0e10` give 0; `1.0e10` and `2^32` give 4294967040 (`0xffffff00`), not `u32::MAX`. NaN: indeterminate; observed 0. | spec-allowed (finite), unspecified (NaN), measured |
 | KM-07 | NaN and infinity through arithmetic and comparison | IEEE 754: NaN propagates, `NaN != NaN` is true, ordered comparisons with NaN are false, `1.0 / 0.0` is `+inf`. | Unspecified (an operation that would produce NaN or infinity may give an indeterminate value; comparisons with NaN are not guaranteed to be unordered). Observed: NaN and infinity propagate and compare as in IEEE for every case except `NaN != NaN`, which is false. The sign and payload of a NaN are not preserved either: the GPU produced `0x7fffffff` in every case, Rust produces `0x7fc00000` or `0xffc00000`. Division by a divisor above 2^126 is also outside WGSL's division accuracy range: `3.0e38 / 3.0e38` gave 0 on the GPU, Rust gives 1. | unspecified, measured |
 | KM-08 | Denormal (subnormal) `f32` operands and results | Kept: `1.0e-40 * 1.0` is `1.0e-40`, `1.0e-40 == 0.0` is false. | Unspecified (flushing to zero is allowed). Observed: operands and results flushed to zero (`1.0e-40 * 1.0`, `+ 0.0`, `* 2.0`, `/ 2.0` and `4.0e-38 / 4.0` give 0), and `1.0e-40 == 0.0` is true. | unspecified, measured |
-| KM-09 | Contended `atomic_exchange` and `atomic_compare_exchange` (257 invocations, one cell) | Sequential, ascending invocation id: the exchange ends at 256; the compare-exchange from 999 to `id + 1` ends at 1. | Set-valued: the exchange ends at some id in 0 to 256, the compare-exchange at some value in 1 to 257, or at 999 (unchanged) because the weak compare-exchange may fail spuriously (WGSL section 17.8.5); the test accepts all of that set. Observed over 32 dispatches per run, three runs: 1 to 10 distinct final values per run, and never the sequential result (the exchange ended between 1 and 251, the compare-exchange between 7 and 137). | spec-allowed (the set), measured |
+| KM-09 | Contended `atomic_exchange` and `atomic_compare_exchange` (257 invocations, one cell), and the uncontended `atomic_compare_exchange` (one invocation) | Sequential, ascending invocation id: the exchange ends at 256; the compare-exchange from 999 to `id + 1` ends at 1. | Set-valued: the exchange ends at some id in 0 to 256, the compare-exchange at some value in 1 to 257, or at 999 (unchanged) because the weak compare-exchange may fail spuriously (WGSL section 17.8.5); the test accepts all of that set. The uncontended case (one invocation, `compare-exchange(cell, 999, id + 1)`) is set-valued too: the cell ends at 1 or stays 999 (WGSL section 17.8.5, D47), and the Rust and twin columns end at 1. Observed over 32 dispatches per run, three runs: 1 to 10 distinct final values per run, and, in the contended cases, never the sequential result (the exchange ended between 1 and 251, the compare-exchange between 7 and 137). The uncontended case ended at 1, the sequential result, in every dispatch, in both overflow modes. | spec-allowed (the set), measured |
 | KM-10 | Overflow of `+`, `-`, `*` and unary `-` on `u32` and `i32` | Checks on: panics ("attempt to add with overflow" and so on). Checks off: wraps modulo 2^32. | Wraps modulo 2^32 (WGSL section 6.2.3): `u32::MAX + 1 == 0`, `i32::MAX + 1 == i32::MIN`, `0u32 - 1 == u32::MAX`, `-i32::MIN == i32::MIN`. | spec-allowed, measured |
 | KM-11 | Out-of-bounds index equal to the buffer length | Panics "index out of bounds" in every profile. | Unspecified (a dynamic error, WGSL section 6.5.7). Observed with index 4: a load from a 4-element buffer returned 0, and a store into a 4-element buffer was dropped (the buffer was unchanged); the store is measured alone, with a longer `source` so that the kernel's own load is in bounds, and the twin's store row panics at the store because its load is in bounds. | unspecified, measured |
 

@@ -1,5 +1,6 @@
 include!("../../../tests/fixtures/option.rs");
 
+use gust::cpu::CpuDevice;
 use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
 
 /// Independent host reference. Ordinary Rust `Option` semantics the GPU lowering
@@ -70,8 +71,60 @@ fn option_lowering_executes_on_gpu() {
         let actual_flags = device.read_typed_buffer(&flags).unwrap();
         let actual_values = device.read_typed_buffer(&values).unwrap();
         let actual_pairs = device.read_typed_buffer(&pairs).unwrap();
+
+        // The CPU twin: the same typed call with the device swapped (macro-emitted under `cfg(test)`).
+        let cpu = CpuDevice::new();
+        let twin_input = cpu.buffer(&input);
+        let twin_flags = cpu.buffer(&vec![0u32; count]);
+        let twin_values = cpu.buffer(&vec![0u32; count]);
+        let twin_pairs = cpu.buffer(&vec![
+            optional::Pair {
+                first: 0,
+                second: 0
+            };
+            count
+        ]);
+        optional::run::dispatch(
+            &cpu,
+            count as u32,
+            &twin_input,
+            &twin_flags,
+            &twin_values,
+            &twin_pairs,
+        )
+        .unwrap();
+        let twin_flags = twin_flags.read();
+        let twin_values = twin_values.read();
+        let twin_pairs = twin_pairs.read();
+        assert_eq!(twin_flags, actual_flags, "twin flags, count {count}");
+        assert_eq!(twin_values, actual_values, "twin values, count {count}");
+        for i in 0..count {
+            assert_eq!(
+                (twin_pairs[i].first, twin_pairs[i].second),
+                (actual_pairs[i].first, actual_pairs[i].second),
+                "twin pairs[{i}] against the GPU for input {}",
+                input[i]
+            );
+        }
+
         for i in 0..count {
             let (flags, total, (first, second)) = reference(input[i]);
+            assert_eq!(
+                twin_flags[i], flags,
+                "twin flags[{i}] for input {}",
+                input[i]
+            );
+            assert_eq!(
+                twin_values[i], total,
+                "twin values[{i}] for input {}",
+                input[i]
+            );
+            assert_eq!(
+                (twin_pairs[i].first, twin_pairs[i].second),
+                (first, second),
+                "twin pairs[{i}] for input {}",
+                input[i]
+            );
             assert_eq!(actual_flags[i], flags, "flags[{i}] for input {}", input[i]);
             assert_eq!(
                 actual_values[i], total,

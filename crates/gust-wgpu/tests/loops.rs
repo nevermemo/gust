@@ -1,5 +1,6 @@
 include!("../../../tests/fixtures/loops.rs");
 
+use gust::cpu::CpuDevice;
 use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
 
 /// Independent host reference for the `loops` fixture. Closed forms are used where
@@ -92,6 +93,31 @@ fn bounded_loops_execute_on_gpu() {
         let actual_sums = device.read_typed_buffer(&sums).unwrap();
         let actual_counts = device.read_typed_buffer(&counts).unwrap();
         let actual_nested = device.read_typed_buffer(&nested).unwrap();
+
+        // The CPU twin: the same typed call with the device swapped (macro-emitted under `cfg(test)`).
+        let cpu = CpuDevice::new();
+        let twin_input = cpu.buffer(&input);
+        let twin_windows = cpu.buffer(&windows);
+        let twin_sums = cpu.buffer(&vec![0u32; count]);
+        let twin_counts = cpu.buffer(&vec![0u32; count]);
+        let twin_nested = cpu.buffer(&vec![0u32; count]);
+        loops::run::dispatch(
+            &cpu,
+            count as u32,
+            &twin_input,
+            &twin_windows,
+            &twin_sums,
+            &twin_counts,
+            &twin_nested,
+        )
+        .unwrap();
+        let twin_sums = twin_sums.read();
+        let twin_counts = twin_counts.read();
+        let twin_nested = twin_nested.read();
+        assert_eq!(twin_sums, actual_sums, "twin sums, count {count}");
+        assert_eq!(twin_counts, actual_counts, "twin counts, count {count}");
+        assert_eq!(twin_nested, actual_nested, "twin nested, count {count}");
+
         let mut break_paths = 0;
         for i in 0..count {
             let expected = reference(input[i], (windows[i].lo, windows[i].hi), &input);
@@ -111,6 +137,21 @@ fn bounded_loops_execute_on_gpu() {
             assert_eq!(
                 actual_nested[i], expected.nested,
                 "nested[{i}] for input {}",
+                input[i]
+            );
+            assert_eq!(
+                twin_counts[i], expected.count,
+                "twin counts[{i}] for input {}",
+                input[i]
+            );
+            assert_eq!(
+                twin_sums[i], expected.sum,
+                "twin sums[{i}] for input {}",
+                input[i]
+            );
+            assert_eq!(
+                twin_nested[i], expected.nested,
+                "twin nested[{i}] for input {}",
                 input[i]
             );
         }

@@ -2,6 +2,7 @@ include!("../../../tests/fixtures/result.rs");
 
 use std::{fs, process::Command};
 
+use gust::cpu::CpuDevice;
 use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
 
 #[allow(clippy::unnecessary_literal_unwrap)]
@@ -79,10 +80,31 @@ fn result_lowering_executes_on_gpu() {
                 .unwrap();
             let actual_flags = device.read_typed_buffer(&flags).unwrap();
             let actual_values = device.read_typed_buffer(&values).unwrap();
+
+            // The CPU twin: the same typed call with the device swapped (macro-emitted under `cfg(test)`).
+            let cpu = CpuDevice::new();
+            let twin_input = cpu.buffer(&input);
+            let twin_flags = cpu.buffer(&vec![0u32; count]);
+            let twin_values = cpu.buffer(&vec![0u32; count]);
+            results::run::dispatch(&cpu, count as u32, &twin_input, &twin_flags, &twin_values)
+                .unwrap();
+            let twin_flags = twin_flags.read();
+            let twin_values = twin_values.read();
+            assert_eq!(
+                twin_flags, actual_flags,
+                "{label} twin flags, count {count}"
+            );
+            assert_eq!(
+                twin_values, actual_values,
+                "{label} twin values, count {count}"
+            );
+
             for index in 0..count {
                 let (flags, value) = reference(input[index]);
                 assert_eq!(actual_flags[index], flags, "{label} flags[{index}]");
                 assert_eq!(actual_values[index], value, "{label} values[{index}]");
+                assert_eq!(twin_flags[index], flags, "{label} twin flags[{index}]");
+                assert_eq!(twin_values[index], value, "{label} twin values[{index}]");
             }
         }
     }

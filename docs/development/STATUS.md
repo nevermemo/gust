@@ -188,6 +188,16 @@ D55 to D59.
   5090), full `check-precompiled` rc 0 on the merged tree (640 s). CI's `precompiled` job runs
   `--check-only` plus a NoAdapter run of the release consumer; the runs of E1, E3 and E8 and E7b
   stay local. Opus keep after one fix round.
+- M6 m6.k (`ce17eb2`): collision-only identifier renaming. A user identifier that collides with a
+  Slang or WGSL keyword, a prelude name or a GUST-reserved spelling is emitted as `__gust_r_<name>`
+  at every name site (locals, parameters, fields, structs, invocation and ConstantBuffer sites);
+  `annotate_diagnostics` strips the prefix from slangc messages at a word boundary, and
+  descriptors and host names keep the Rust spelling (D17, checked in the Reflect tier on `class`,
+  `new`, `This` and `operator`). A sweep of about 156 words in four positions found that a local
+  named `true` or `false` silently rebinds the literal (`true ? 7u : 9u` stored 9); both are now
+  renamed, and `var` (loud, E30060) joined the table. The `__gust` prefix is reserved (new UI
+  case). Bless: 0 changed goldens. Evidence: Unit, Slangc and Reflect on main. Deferred to m6.m1:
+  raw `r#` kernel and module names (`gpu_m_r#k`, loud). Opus keep after three fix rounds.
 - M5 m5.c1b (`a3a7798`): the difftest harness `difftest-run`. It writes one run crate per
   batch, builds it with `cargo test --locked` under `GUST_PROFILE=dev`, requires exactly one
   complete result file per program, and writes `report.json` with exact counts. The GPU f32 is

@@ -164,6 +164,16 @@ D55 to D59.
   `constantBuffer`, mandatory `matrixLayout`); every committed artifact set still verifies.
   Known limitation until m6.g1: `create_typed_buffer::<Vec4>` now compiles and panics at run time
   in the StorageV1 check. Opus keep after one fix round; gates on main at `38ebf29`.
+- M5 m5.c1b (`a3a7798`): the difftest harness `difftest-run`. It writes one run crate per
+  batch, builds it with `cargo test --locked` under `GUST_PROFILE=dev`, requires exactly one
+  complete result file per program, and writes `report.json` with exact counts. The GPU f32 is
+  compared by value inside the interpreter's interval; the CPU twin and every integer are
+  compared bit for bit. DIFFTEST_FORMAT 3 fixes dead and one-sided float conditions (both-sided
+  `if`s: 2 of 55 before, 58 of 94 after); the integer programs are unchanged. A short-circuit
+  test checks that `&&` and `||` lower to a guarded if/else (Gpu tier, run by m5.c2). Batches:
+  seeds 1-2 on the RTX 5090, 32 of 32 with 0 mismatches; seeds 1-8 CPU-only, 128 of 128. S5.3
+  outcome A: a batch of 32 takes about 26 s warm and 101 s cold. Opus keep after one fix round;
+  gates on main at `63c8e25`.
 - M4 m4.e2a (`29cfc58`): the fixture workspace `tests/precompiled` (a `kernels` crate with
   committed artifacts and an `app` on `gust-wgpu` without `slang-runtime`, with its own lock) and
   `cargo xtask check-precompiled` E1 to E4. E1 builds the workspace crates from clean and runs the

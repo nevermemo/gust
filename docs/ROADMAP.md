@@ -61,7 +61,7 @@ remaining chain run beside it now, and the rest wait for the M4 slice named. M5 
 | m5.b0 | Probe: the ledger on lavapipe, debug and release | done (passes on lavapipe in both profiles; 20 of 132 rows differ from the RTX 5090) |
 | m5.a | `gpu-software` CI job: Mesa pinned through the Ubuntu snapshot, adapter record asserted (D52) | done (`00ad885`) |
 | m5.d1, m5.d2, m5.d3 | Scalar `coretests` cases: fixture and twin; on the GPU; golden and registration | m5.d1 done (`d2378ce`); d2 done (`ce17199`; 84 cases on the RTX 5090 and lavapipe); d3 after m4.e2 |
-| m5.c1a, m5.c1a2, m5.c1b, m5.c1c | Differential generator in `tests/difftest/`: integers, floats v1 (interval bounds), harness, bounded shrinking | m5.c1a done (`3bcebaf`); c1a2 done (`f60f516`); c1b running; then c1c |
+| m5.c1a, m5.c1a2, m5.c1b, m5.c1c | Differential generator in `tests/difftest/`: integers, floats v1 (interval bounds), harness, bounded shrinking | m5.c1a done (`3bcebaf`); c1a2 done (`f60f516`); c1b done (harness, S5.3 outcome A; Gpu: RTX 5090; `a3a7798`); c1c next |
 | S5.4 | Spike: expansion-time profile and cached rebuild transitions | done (decision A: both tracking paths suffice on their own) |
 | m5.b | Ledger on two adapters (per-kind observation pins) | done (`236780b`; 18 software pins) |
 | m5.e1, m5.e2 | Production `cpu` profile (D51); `check-cpu-target` and the `Cpu` tier | after m4.g2 |

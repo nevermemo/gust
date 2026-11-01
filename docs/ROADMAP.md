@@ -48,8 +48,8 @@ its slice, and two fix rounds per slice.
 | m4.c | Macro: content key, artifact and manifest embedding, export mode | planned |
 | m4.d | `cargo-gust`: `init`, `build` (isolated collection, D17 at export for WGSL and SPIR-V), `check`, `doctor` (D46) | planned |
 | m4.e1, m4.e2 | `gust-wgpu` precompiled path and cache key; precompiled fixture, `check-precompiled`, packaged-consumer proof without Slang | planned |
-| m4.f | Pinned-Slang manager with licence audit; CI `slang` job | planned |
-| m4.g1, m4.g2 | Completion model (async read-back); wasm32 and the first browser WebGPU run | planned |
+| m4.f | Pinned-Slang manager with licence audit; CI `slang` job | licence audit done (all three platforms accepted, [LICENSES-SLANG](development/LICENSES-SLANG.md)); manager planned |
+| m4.g1, m4.g2 | Completion model (async read-back); wasm32 and the first browser WebGPU run | m4.g1 running (moved ahead of m4.e1: no shared files with m4.b2 to m4.d); m4.g2 planned |
 
 **Done: M3, dual test builds** (closed 2026-11-01, D43). Plan adopted 2026-10-24 (owner-delegated); slices ran one at a
 time. The M2 sanity check (D37) kept M3's scope and fixed the order inside it.

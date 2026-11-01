@@ -340,14 +340,350 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    use gust::cpu::{CpuDevice, Error as CpuError};
+
     use super::*;
     use gust_wgpu::Error;
+
+    /// The label of every test below that runs a kernel's CPU twin. The graph, its edges, the indirect launch that consumes the arguments and
+    /// the pool growth are not executed by the twin: they stay GPU-only (docs/SEMANTICS.md, section 1). The twin of
+    /// `prepare_dispatch` does compute the arguments, which the ignored test compares with the GPU's.
+    const LABEL: &str = "kernel-level twin evidence; graph and indirect dispatch GPU-only";
+
+    /// `2^-24`.
+    const U: f64 = 1.0 / 16_777_216.0;
+
+    /// The twin-versus-GPU bounds of the float outputs of `integrate`, absolute, in units of `U`. The twin is fed the
+    /// particles, the settings and the active count that the GPU frame started from (the pool's allocation read back
+    /// before the frame, the count and indirect arguments read back after it), so a bound covers one frame's own
+    /// roundings only.
+    ///
+    /// Derived from the kernel text (docs/SEMANTICS.md section 4, "Deriving a tolerance"), not from a measurement.
+    /// With the domain asserted by `assert_derivation_domain` and `assert_state_domain` (`0 < dt <= 0.5`,
+    /// `abs(gravity * dt) <= 1`, and for each particle the frame steps `abs(x) <= 16`, `abs(y) <= 16`,
+    /// `abs(vx) <= 1.5`, `abs(vy) <= 4`), one rounding of at most `u` times the result's magnitude on the twin and
+    /// `2u` on the GPU for `+ - *`, first-order propagation, magnitudes `M`, twin error `T` and GPU error `G` in units
+    /// of `u`, the GPU side without fusion:
+    ///
+    /// `vy` = `vy + gravity * dt`, `abs(vy) <= 5` afterwards:
+    ///
+    /// | step | M | T | G |
+    /// | --- | --- | --- | --- |
+    /// | `gravity * dt` | 1 | 1 | 2 |
+    /// | `vy + ...` | 5 | 6 | 12 |
+    ///
+    /// Twin plus GPU: 18u, plus 1u for the second-order terms is 19u.
+    ///
+    /// `x` = `x + vx * dt`:
+    ///
+    /// | step | M | T | G |
+    /// | --- | --- | --- | --- |
+    /// | `vx * dt` | 0.75 | 0.75 | 1.5 |
+    /// | `x + ...` | 16.75 | 17.5 | 35 |
+    ///
+    /// Twin plus GPU: 52.5u gives 53u, plus 1u is 54u.
+    ///
+    /// `y` = `y + vy * dt` uses the new `vy`, whose error (T 6, G 12) enters scaled by `dt <= 0.5`:
+    ///
+    /// | step | M | T | G |
+    /// | --- | --- | --- | --- |
+    /// | `vy * dt`, carrying the error of `vy` | 2.5 | 3 + 2.5 | 6 + 5 |
+    /// | `y + ...` | 18.5 | 24 | 48 |
+    ///
+    /// Twin plus GPU: 72u, plus 1u is 73u.
+    ///
+    /// `vx`, `steps` and every field of a particle that is not stepped are copies or integer counts and must be equal.
+    /// `prepare_dispatch` is integer-only (`min`, `/`, `%`, `+` on `u32`) and exact: the test compares the active
+    /// count and the three indirect arguments with the twin and with a host formula.
+    ///
+    /// Observed maxima are printed separately by the ignored test and never become the tolerance.
+    const VY_BOUND: f64 = 19.0 * U;
+    const X_BOUND: f64 = 54.0 * U;
+    const Y_BOUND: f64 = 73.0 * U;
 
     fn settings(budget: u32) -> Settings {
         Settings {
             dt: 0.5,
             gravity: -2.0,
             budget,
+        }
+    }
+
+    /// Workgroup width of `integrate`, which the indirect arguments count in.
+    fn width() -> u32 {
+        pool::integrate::DESCRIPTOR.workgroup_size[0]
+    }
+
+    fn blank_active() -> Active {
+        Active { count: u32::MAX }
+    }
+
+    fn blank_args() -> DispatchArgs {
+        DispatchArgs {
+            x: u32::MAX,
+            y: u32::MAX,
+            z: u32::MAX,
+        }
+    }
+
+    /// The independent host formula for `prepare_dispatch`: the live count clamped to the allocation and the budget,
+    /// and the workgroups that cover it.
+    fn expected_prepare(count: u32, capacity: usize, budget: u32) -> (Active, DispatchArgs) {
+        let active = count.min(capacity as u32).min(budget);
+        (
+            Active { count: active },
+            DispatchArgs {
+                x: active.div_ceil(width()),
+                y: 1,
+                z: 1,
+            },
+        )
+    }
+
+    /// The domain the bounds are derived for.
+    fn assert_derivation_domain(settings: &Settings) {
+        assert!(
+            settings.dt > 0.0 && settings.dt <= 0.5,
+            "dt {}",
+            settings.dt
+        );
+        assert!(
+            (f64::from(settings.gravity) * f64::from(settings.dt)).abs() <= 1.0,
+            "gravity * dt"
+        );
+    }
+
+    /// The particles a frame steps (the first `stepped`) stay inside the domain of the bounds.
+    fn assert_state_domain(particles: &[Particle], stepped: usize) {
+        for particle in &particles[..stepped] {
+            assert!(particle.x.abs() <= 16.0, "x {}", particle.x);
+            assert!(particle.y.abs() <= 16.0, "y {}", particle.y);
+            assert!(particle.vx.abs() <= 1.5, "vx {}", particle.vx);
+            assert!(particle.vy.abs() <= 4.0, "vy {}", particle.vy);
+        }
+    }
+
+    /// `prepare_dispatch` on the twin. The two outputs are seeded with values no result equals, so a kernel that
+    /// writes nothing fails. `allocation` is the pool's whole allocation: the kernel reads only its length.
+    fn prepare_on_cpu(
+        count: u32,
+        settings: &Settings,
+        allocation: &[Particle],
+    ) -> Result<(Active, DispatchArgs), CpuError> {
+        let device = CpuDevice::new();
+        let count_buffer = device.buffer(&[count]);
+        let settings_buffer = device.buffer(&[*settings]);
+        let particles_buffer = device.buffer(allocation);
+        let active = device.buffer(&[blank_active()]);
+        let args = device.buffer(&[blank_args()]);
+        pool::prepare_dispatch::dispatch(
+            &device,
+            1,
+            Independent(&count_buffer),
+            Independent(&settings_buffer),
+            Independent(&particles_buffer),
+            Independent(&active),
+            Independent(&args),
+        )?;
+        Ok((active.read()[0], args.read()[0]))
+    }
+
+    /// `integrate` on the twin over `groups` workgroups of the given `active` count and `allocation`. The indirect
+    /// dispatch is GPU-only: the twin is launched with the invocations the arguments of the frame ask for.
+    fn integrate_on_cpu(
+        active: Active,
+        groups: u32,
+        settings: &Settings,
+        allocation: &[Particle],
+    ) -> Result<Vec<Particle>, CpuError> {
+        let device = CpuDevice::new();
+        let active_buffer = device.buffer(&[active]);
+        let settings_buffer = device.buffer(&[*settings]);
+        let particles_buffer = device.buffer(allocation);
+        pool::integrate::dispatch(
+            &device,
+            groups * width(),
+            Independent(&active_buffer),
+            Independent(&settings_buffer),
+            Independent(&particles_buffer),
+        )?;
+        Ok(particles_buffer.read())
+    }
+
+    /// The largest absolute difference (computed in `f64`) between two float sequences.
+    fn largest_abs(left: impl Iterator<Item = f32>, right: impl Iterator<Item = f32>) -> f64 {
+        left.zip(right)
+            .map(|(l, r)| (f64::from(l) - f64::from(r)).abs())
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn the_derivation_domain_holds_for_the_settings_and_the_spawned_particles() {
+        for (dt, gravity) in [(0.016f32, -9.8f32), (0.5, -2.0)] {
+            assert_derivation_domain(&Settings {
+                dt,
+                gravity,
+                budget: 0,
+            });
+        }
+        assert_state_domain(&spawn(0, 4096), 4096);
+    }
+
+    /// Kernel-level twin evidence; graph and indirect dispatch GPU-only (`LABEL`). The two twins run in sequence over
+    /// frames that clamp to the budget, to the live count and to the allocation, and the allocation is compared with
+    /// the host reference `step_cpu`. The shadow bodies perform the operations of `step_cpu` in the same order and
+    /// Rust does not contract them, so floats agree to the last bit.
+    #[test]
+    fn twin_frames_match_host_reference() {
+        let capacity = 130;
+        for (dt, gravity) in [(0.016f32, -9.8f32), (0.5, -2.0)] {
+            let mut allocation = spawn(0, capacity);
+            let mut reference = allocation.clone();
+            // (live count in the count buffer, budget). 1000 is a malformed count past the allocation.
+            for (frame, (count, budget)) in [
+                (130, 100),
+                (130, 1000),
+                (65, 1000),
+                (0, 1000),
+                (1000, 1000),
+                (130, 0),
+                (129, 64),
+                (130, 65),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let settings = Settings {
+                    dt,
+                    gravity,
+                    budget,
+                };
+                let (active, args) =
+                    prepare_on_cpu(count, &settings, &allocation).expect("prepare twin");
+                let (expected_active, expected_args) = expected_prepare(count, capacity, budget);
+                assert_eq!(active, expected_active, "active, frame {frame}; {LABEL}");
+                assert_eq!(args, expected_args, "args, frame {frame}; {LABEL}");
+
+                allocation = integrate_on_cpu(active, args.x, &settings, &allocation)
+                    .expect("integrate twin");
+                let live = count as usize;
+                let stepped = step_cpu(&mut reference[..live.min(capacity)], &settings);
+                assert_eq!(stepped, active.count as usize, "stepped, frame {frame}");
+                assert_eq!(
+                    allocation, reference,
+                    "allocation after frame {frame}; {LABEL}"
+                );
+            }
+            // The first two frames step 100 and then all 130 particles, so every particle moved at least once (the
+            // frames (0, 1000) and (130, 0) step nothing).
+            assert!(reference.iter().all(|particle| particle.steps >= 1));
+        }
+    }
+
+    /// Kernel-level twin evidence; graph and indirect dispatch GPU-only (`LABEL`). Each frame of a pool that is
+    /// truncated and grown between frames runs on the GPU, and then both kernels run on the twin from the state the
+    /// GPU started the frame from: `prepare_dispatch` from the allocation read back before the frame, `integrate` from
+    /// that allocation, the active count the frame's graph read back and the indirect arguments read back after it.
+    /// The growth and the indirect launch stay on the GPU.
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn twin_matches_reference_and_gpu_within_the_derived_bounds() {
+        let device = HeadlessDevice::new().expect("Vulkan adapter");
+        let frame = Frame::new(&device).unwrap();
+        for (dt, gravity) in [(0.016f32, -9.8f32), (0.5, -2.0)] {
+            let mut reference = spawn(0, 130);
+            let mut particles = device.create_pool("particles", &reference, 130);
+            // The actions before each frame: grow, truncate, or nothing. Each is GPU-only.
+            for (index, (budget, action)) in [
+                (100, "none"),
+                (1000, "grow"),
+                (1000, "none"),
+                (1000, "truncate 65"),
+                (1000, "truncate 0"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                match action {
+                    "grow" => {
+                        let spawned = spawn(reference.len(), 70);
+                        let growth = device.pool_push(&mut particles, &spawned).unwrap();
+                        assert!(growth.is_some(), "130 -> 200 must grow the allocation");
+                        reference.extend(spawned);
+                    }
+                    "truncate 65" => {
+                        device.pool_truncate(&mut particles, 65).unwrap();
+                        reference.truncate(65);
+                    }
+                    "truncate 0" => {
+                        device.pool_truncate(&mut particles, 0).unwrap();
+                        reference.clear();
+                    }
+                    _ => {}
+                }
+                let settings = Settings {
+                    dt,
+                    gravity,
+                    budget,
+                };
+                assert_derivation_domain(&settings);
+
+                let len = particles.len();
+                let capacity = particles.capacity();
+                let before = device.read_typed_buffer(particles.buffer()).unwrap();
+                assert_eq!(before.len(), capacity);
+                let (expected_active, expected_args) =
+                    expected_prepare(len as u32, capacity, budget);
+                let stepped = expected_active.count as usize;
+                assert_state_domain(&before, stepped);
+
+                let (gpu_count, _report, _edges) =
+                    run_frame_traced(&device, &frame, &particles, &[settings]).unwrap();
+                let gpu_active = Active { count: gpu_count };
+                let gpu_args = device.read_typed_buffer(&frame.args).unwrap()[0];
+                let after = device.read_typed_buffer(particles.buffer()).unwrap();
+                assert_eq!(after.len(), capacity);
+
+                // The GPU against the independent host references comes first so that a failing twin cannot hide it.
+                assert_eq!(gpu_active, expected_active, "GPU active, frame {index}");
+                assert_eq!(gpu_args, expected_args, "GPU args, frame {index}");
+                assert_eq!(step_cpu(&mut reference, &settings), stepped);
+                assert_close(&after[..len], &reference);
+
+                // prepare_dispatch: integer-only, exact.
+                // The count buffer is the pool's own mirror of its length (read-only, so not readable back): the host
+                // `len` is exactly what it holds, and so the kernel's input.
+                let (twin_active, twin_args) =
+                    prepare_on_cpu(len as u32, &settings, &before).unwrap();
+                assert_eq!(twin_active, expected_active, "twin active, frame {index}");
+                assert_eq!(twin_args, expected_args, "twin args, frame {index}");
+                assert_eq!(twin_active, gpu_active, "active, frame {index}; {LABEL}");
+                assert_eq!(twin_args, gpu_args, "args, frame {index}; {LABEL}");
+
+                // integrate: fed the GPU's active count and indirect arguments, over the GPU's starting allocation.
+                let twin_after =
+                    integrate_on_cpu(gpu_active, gpu_args.x, &settings, &before).unwrap();
+                assert_eq!(twin_after.len(), after.len());
+                for (slot, ((twin, gpu), start)) in
+                    twin_after.iter().zip(&after).zip(&before).enumerate()
+                {
+                    assert_eq!(twin.vx, gpu.vx, "vx[{slot}], frame {index}");
+                    assert_eq!(twin.steps, gpu.steps, "steps[{slot}], frame {index}");
+                    if slot >= stepped {
+                        assert_eq!(twin, start, "twin moved particle {slot}, frame {index}");
+                        assert_eq!(gpu, start, "GPU moved particle {slot}, frame {index}");
+                    }
+                }
+                let vy = largest_abs(twin_after.iter().map(|p| p.vy), after.iter().map(|p| p.vy));
+                let x = largest_abs(twin_after.iter().map(|p| p.x), after.iter().map(|p| p.x));
+                let y = largest_abs(twin_after.iter().map(|p| p.y), after.iter().map(|p| p.y));
+                println!(
+                    "S4 component-pool integrate, dt {dt}, frame {index}, {stepped} stepped of {len}: twin versus GPU max abs error vy {vy:e} (bound {VY_BOUND:e}), x {x:e} (bound {X_BOUND:e}), y {y:e} (bound {Y_BOUND:e}); {LABEL}"
+                );
+                assert!(vy <= VY_BOUND, "vy {vy:e}");
+                assert!(x <= X_BOUND, "x {x:e}");
+                assert!(y <= Y_BOUND, "y {y:e}");
+            }
         }
     }
 

@@ -64,6 +64,24 @@ running without Slang installed) in parallel with slices m4.0 and m4.h.
   check-ui's included, runs with `GUST_PROFILE=dev`; a preset value is logged and overridden.
   No test yet runs the feature-off code, so m4.e2's fixture is the first that will. Opus keep
   after one fix round; gates on main at `69c0c1c` (Gpu 110 tests).
+- M4 m4.b2 (`41b6ff9`): `gust`'s build script computes the effective profile (D44). It uses
+  `GUST_PROFILE` when set (`dev`, `native` or `web`; anything else is refused). Otherwise a
+  release build infers `web` on wasm32 and `native` elsewhere and prints a warning, which cargo
+  shows only for path and workspace packages or with `-vv`. Every other build is `dev`. Under a
+  strict profile the `slang-runtime` feature is refused with a pinned message naming the
+  `GUST_PROFILE=dev` escape. `gust::profile::require_artifact` turns a kernel without an
+  artifact into E0080 at the user's kernel line. The macro emits it with `false` until m4.c,
+  plus `option_env!` tracking of `GUST_PROFILE` and `GUST_EXPORT_DIR`. check-ui gains
+  per-case `env.txt` and build-failure expectations, with five `profile-*` cases. A plain
+  `cargo install cargo-gust` will need `GUST_PROFILE=dev` (m4.d and M10 notes). Opus keep after
+  one fix round; gates on main at `edac8b2`.
+- M4 m4.g1 (`671b3dd`): the completion model (R4.9) in native form. `gust-wgpu` has a
+  std-only `Completion` future, `HeadlessDevice::new_async` and `read_typed_buffer_async`.
+  The blocking readbacks are native-only wrappers: they call `poll(Wait)` and poll once, and
+  return `Error::Map` instead of parking if the mapping is not done. `pollster` is native-only.
+  Four Gpu tests prove a readback that is pending and then ready on a busy device (warm
+  pipeline, three attempts). Opus keep after one fix round; gates on main at `8640cac` (Gpu
+  122 tests). wasm32 is m4.g2.
 M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),

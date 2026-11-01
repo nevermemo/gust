@@ -234,6 +234,15 @@ pub(crate) fn require_tests_ran(args: &[String], totals: &TestTotals) -> Result<
 /// Runs `cargo <args>` (a `cargo test` call) like [`run_direct_args`], streaming its output to the
 /// console as it arrives, then requires that tests really ran ([`require_tests_ran`]).
 pub(crate) fn run_cargo_test_counted(root: &Path, args: &[String]) -> Result<TestTotals, String> {
+    run_cargo_test_captured(root, args).map(|(totals, _)| totals)
+}
+
+/// [`run_cargo_test_counted`], also returning the captured standard output, for a caller that requires named tests
+/// to be reported `ok` ([`crate::checks::tests_not_ok`]).
+pub(crate) fn run_cargo_test_captured(
+    root: &Path,
+    args: &[String],
+) -> Result<(TestTotals, String), String> {
     let mut child = Command::new("cargo")
         .args(args)
         .current_dir(root)
@@ -280,14 +289,26 @@ pub(crate) fn run_cargo_test_counted(root: &Path, args: &[String]) -> Result<Tes
             status.code().unwrap_or(-1)
         ));
     }
-    let totals = sum_test_results(&String::from_utf8_lossy(&captured));
+    let stdout = String::from_utf8_lossy(&captured).into_owned();
+    let totals = sum_test_results(&stdout);
     require_tests_ran(args, &totals)?;
-    Ok(totals)
+    Ok((totals, stdout))
 }
 
 /// [`run_cargo_test_counted`] for a borrowed argument list.
 pub(crate) fn run_counted(root: &Path, args: &[&str]) -> Result<TestTotals, String> {
     run_cargo_test_counted(
+        root,
+        &args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>(),
+    )
+}
+
+/// [`run_cargo_test_captured`] for a borrowed argument list.
+pub(crate) fn run_counted_captured(
+    root: &Path,
+    args: &[&str],
+) -> Result<(TestTotals, String), String> {
+    run_cargo_test_captured(
         root,
         &args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>(),
     )

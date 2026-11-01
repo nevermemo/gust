@@ -24,9 +24,9 @@
 //!
 //! # Where the twin and the GPU differ
 //!
-//! The twin executes the shadow body with Rust semantics in the consuming build: integer overflow panics when the
-//! crate that contains the body has `overflow-checks` and wraps when it has not (the macro `overflow_checks!()`
-//! tells which for the crate where it is written; the function [`overflow_checks()`] answers for `gust` itself),
+//! The twin executes the shadow body with Rust semantics, compiled in the crate that defines the kernel: integer
+//! overflow panics when that crate (the one that contains the body) has `overflow-checks` and wraps when it has not
+//! (the macro `overflow_checks!()` tells which for the crate where it is written; the function [`overflow_checks()`] answers for `gust` itself),
 //! division by zero panics, and floating-point results are rustc's, which the GPU may round differently.
 //! Edge cases are documented limitations, never matched (D39); see `docs/SEMANTICS.md` for the contract and the
 //! known-mismatch ledger.
@@ -613,8 +613,8 @@ fn probe_overflow_checks() -> OverflowChecks {
 /// The overflow mode of the `gust` crate itself, detected at run time (D38).
 ///
 /// Rust decides overflow behaviour per crate when the crate is compiled, so this function answers for the crate
-/// that contains it, `gust`. A twin is compiled in the user's crate, and a user's twin tests must key their
-/// expectations on the crate that contains the shadow body: use the macro [`overflow_checks!`](crate::cpu::overflow_checks!)
+/// that contains it, `gust`. A twin is compiled in the crate that defines its kernel, and twin tests must key their
+/// expectations on that crate, the one that contains the shadow body: use the macro [`overflow_checks!`](crate::cpu::overflow_checks!)
 /// there. The function and the macro agree whenever one profile covers the whole dependency graph (the default);
 /// they differ under a `[profile.<name>.package.gust]` (or `package.<your-crate>`) override of `overflow-checks`.
 ///
@@ -639,8 +639,9 @@ pub fn overflow_checks() -> OverflowChecks {
 
 /// The overflow mode of the crate where this macro is written, as an [`OverflowChecks`] (D38).
 ///
-/// This is the form a user's twin tests use: the twin runs the shadow body compiled in the user's crate, so integer
-/// overflow in it panics exactly when that crate is built with `overflow-checks`. The macro expands the probe
+/// This is the form twin tests use: the twin runs the shadow body compiled in the crate that defines the kernel, so
+/// integer overflow in it panics exactly when that crate is built with `overflow-checks` (a dependent crate's own
+/// setting does not reach the twin of a dependency's kernel). The macro expands the probe
 /// (`u32::MAX + 1` under `std::panic::catch_unwind`) in the calling crate, so it reports that crate's mode, also
 /// under a per-package `overflow-checks` override that makes the function [`overflow_checks()`](crate::cpu::overflow_checks())
 /// answer for `gust` instead. The result is cached once per call site (a `static OnceLock` in the expansion); two

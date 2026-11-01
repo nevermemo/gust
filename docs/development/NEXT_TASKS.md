@@ -87,8 +87,20 @@ test module; do not mix that mechanical move with behavior changes.
 - Test pinning by name (known limitation of m3.g's test-count guard): a counted call
   fails when it reports no passed test, but deleting one test, or marking it
   `#[ignore]` outside an `--include-ignored` call, while its siblings still run passes.
-  Only check-dual's E2 and the release call's two release-only tests are required by
-  name. A per-example list of required test names would close it.
+  check-dual's E2, the release call's two release-only tests and, since m3.h, the twin
+  and derivation-domain tests of each check-cpu example (`CPU_REQUIRED_TESTS`) are required
+  by name; the example calls of `check-examples` and `check-full` and the filtered
+  check-feature calls are still counted only.
+- The module-wide `#[allow(unexpected_cfgs)]` that the `#[gpu]` expansion carries also
+  silences a user's cfg typos inside the `#[gpu]` module; narrow it to the emitted twin
+  items.
+- `gust::cpu::invocations` iterates `workgroup_size` x only. `validate` rejects a y or z
+  other than 1 (`UnsupportedWorkgroupSize`, as `gust-wgpu` does), so no typed call reaches the
+  gap today; give `invocations` a guard of its own before M7 lifts the restriction.
+- If kernels ever become generic, re-check that a defining crate's overflow checks survive instantiation in an
+  unchecked crate (the defining-crate rule is measured for non-generic shadow bodies only).
+- Optional: `cargo test -- --color never` in the counted calls would remove the ANSI
+  stripping (`without_colors`) from the count guard.
 - Record the adapter in `.ai/VALIDATION.json`: any Vulkan adapter satisfies the GPU
   tiers, a software one (lavapipe) included, and the record does not say which ran.
   Until then a GPU claim names its adapter in STATUS.

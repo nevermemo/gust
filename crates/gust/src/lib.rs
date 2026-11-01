@@ -93,16 +93,26 @@
 //! [`cpu`] runs a kernel's Rust shadow body on the CPU (`CpuDevice`, `CpuBuffer`); the per-kernel twin of the typed
 //! calls that the `#[gpu]` macro emits uses it. The macro emits the twin under `cfg(test)` of the crate that defines
 //! the kernel or under `--cfg gust_dual`, unless the kernel has a uniform parameter or `#[kernel(cpu =
-//! "unsupported")]`. Nothing of it is re-exported at the crate root, except the hidden macro behind
-//! `cpu::overflow_checks!`.
+//! "unsupported")]`; under `GUST_PROFILE=cpu` it emits the same impl in every build (see "Build profiles"). Nothing of
+//! it is re-exported at the crate root, except the hidden macro behind `cpu::overflow_checks!`.
 //!
 //! # Build profiles
 //!
-//! The environment variable `GUST_PROFILE` chooses the profile of a build (D44): `dev`, `native` or `web`. `gust`'s
-//! build script reads it; any other value, including an empty one, fails the build and names the three. `native` and
-//! `web` are strict: every `#[gpu]` kernel must have a precompiled artifact (see [`artifact`]), or the build fails
-//! with a compile error at the kernel, and the `slang-runtime` feature is refused, so the build contains no run-time
-//! Slang compiler. `dev` has neither rule. [`profile::NAME`] is the effective profile.
+//! The environment variable `GUST_PROFILE` chooses the profile of a build (D44): `dev`, `native`, `web` or `cpu`.
+//! `gust`'s build script reads it; any other value, including an empty one, fails the build and names the four.
+//! `native` and `web` are strict: every `#[gpu]` kernel must have a precompiled artifact (see [`artifact`]), or the
+//! build fails with a compile error at the kernel, and the `slang-runtime` feature is refused, so the build contains
+//! no run-time Slang compiler. `dev` has neither rule. [`profile::NAME`] is the effective profile.
+//!
+//! `cpu` is the production CPU target (D21): the `#[gpu]` macro emits the kernel's `Run` impl for
+//! [`cpu::CpuDevice`](crate::cpu::CpuDevice) in every build, without the test and `gust_dual` gate, uses no
+//! artifact, and the `slang-runtime` feature is refused, so the build holds no compiler or bridge. From slice m5.e2 on
+//! a GPU runtime crate evaluates [`profile::require_gpu_target`], which fails under it; until then nothing calls it.
+//! It is never inferred: a release build without the variable stays `native` (`web` on `wasm32`). The Slang text that
+//! a kernel's descriptor keeps in a `cpu` build is metadata (the identity of the kernel, what `export` and
+//! diagnostics show), not a second target: nothing in the build can turn it into a pipeline. A panic in a kernel
+//! body follows the build's panic strategy: it unwinds out of `dispatch` and `submit` under `panic = "unwind"` and
+//! aborts the process under `panic = "abort"`; nothing catches it.
 //!
 //! A release build is strict even without the variable: when `GUST_PROFILE` is not set and Cargo builds `gust` with
 //! `PROFILE=release`, the profile is `web` for `wasm32` and `native` for every other target, and the build prints

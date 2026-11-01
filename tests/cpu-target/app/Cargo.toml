@@ -1,0 +1,25 @@
+[package]
+name = "app"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The production consumer. `default-features = false` and no `features`: `cargo tree -e features -p app` must show
+# neither `gust-wgpu` nor the `slang-runtime` feature (E-b).
+[dependencies]
+kernels = { path = "../kernels" }
+gust = { path = "../../../crates/gust", default-features = false }
+
+[[bin]]
+name = "app"
+path = "src/main.rs"
+
+# One dispatch and nothing else: built without the profile it has exactly one error (E-d).
+[[bin]]
+name = "single-dispatch"
+path = "src/bin/single_dispatch.rs"
+
+# This is a separate workspace, so the root `[workspace.lints]` does not reach it: declare the cfg that
+# `--cfg gust_dual` sets, so that a hand-written `cfg(gust_dual)` is not an unexpected cfg here.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

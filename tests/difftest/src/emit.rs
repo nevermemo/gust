@@ -291,7 +291,7 @@ gust-wgpu = {{ path = \"{root}/crates/gust-wgpu\", features = [\"slang-runtime\"
 \n\
 # `--cfg gust_dual` and `gust_profile` are set by cargo xtask and by gust's build script, not by this manifest.\n\
 [lints.rust]\n\
-unexpected_cfgs = {{ level = \"warn\", check-cfg = ['cfg(gust_dual)', 'cfg(gust_profile, values(\"dev\", \"native\", \"web\"))'] }}\n\
+unexpected_cfgs = {{ level = \"warn\", check-cfg = ['cfg(gust_dual)', 'cfg(gust_profile, values(\"dev\", \"native\", \"web\", \"cpu\"))'] }}\n\
 \n\
 # A workspace of its own, so a parent directory's manifest never claims the crate.\n\
 [workspace]\n"

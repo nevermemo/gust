@@ -1,0 +1,12 @@
+[package]
+name = "optout"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+kernels = { path = "../kernels" }
+gust = { path = "../../../crates/gust", default-features = false }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

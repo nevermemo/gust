@@ -14,7 +14,7 @@ gust-wgpu = { path = "../../../crates/gust-wgpu", features = ["slang-runtime"] }
 
 # `--cfg gust_dual` and `gust_profile` are set by cargo xtask and by gust's build script, not by this manifest.
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)', 'cfg(gust_profile, values("dev", "native", "web"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)', 'cfg(gust_profile, values("dev", "native", "web", "cpu"))'] }
 
 # A workspace of its own, so a parent directory's manifest never claims the crate.
 [workspace]

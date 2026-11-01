@@ -1,0 +1,11 @@
+# Step E-g: keys matched against the one error of the `optout` binary, built under GUST_PROFILE=cpu:
+#   GUST_PROFILE=cpu cargo check --locked -p optout --message-format json
+# `negate` is `#[kernel(cpu = "unsupported")]`, so even the production CPU target has no impl for it: the same E0277 as
+# step E-d, and its note names the opt-out (the text added to `Run`'s `on_unimplemented` in slice m5.e1).
+code: E0277
+file: optout/src/main.rs
+line: 12
+message: `CpuDevice` cannot run the kernel `negate`
+message: the trait `Run<negate, 2>` is not implemented for `CpuDevice`
+message: it never does when it is `#[kernel(cpu = "unsupported")]`, so if this build is `GUST_PROFILE=cpu` the kernel opted out of the CPU
+label: this device has no executable form of the kernel

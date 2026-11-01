@@ -66,7 +66,8 @@ pub trait TypedDevice: Device {
 /// when the call returns. Backends check every binding against `call.kernel()` (see the module documentation).
 #[diagnostic::on_unimplemented(
     message = "`{Self}` cannot run the kernel `{K}`",
-    label = "this device has no executable form of the kernel; GPU devices run every kernel that has a typed call (not one with a uniform parameter), CPU twins only those emitted for them"
+    label = "this device has no executable form of the kernel; GPU devices run every kernel that has a typed call (not one with a uniform parameter), CPU twins only those emitted for them",
+    note = "a kernel runs on `CpuDevice` in a test build of its crate, under `--cfg gust_dual`, and in every build under `GUST_PROFILE=cpu`; it never does when it is `#[kernel(cpu = \"unsupported\")]`, so if this build is `GUST_PROFILE=cpu` the kernel opted out of the CPU"
 )]
 pub trait Run<K: Kernel, const N: usize>: TypedDevice {
     /// Start the call and return a job to wait on.

@@ -1,0 +1,21 @@
+# Fixture workspace for the production CPU target (`GUST_PROFILE=cpu`, D21, plan M5 section 2.1): a production-shaped
+# consumer of `#[gust::gpu]` kernels that runs them on `gust::cpu::CpuDevice` in an ordinary (non-test) build with no
+# compiler, no bridge and no GPU runtime. It is a workspace root of its own, so the root workspace does not contain it
+# and `cargo test --workspace` and `cargo clippy --workspace` never build it, and it has its own committed `Cargo.lock`
+# (the `tests/dual` pattern). Build it with its own target directory.
+#
+# - `kernels` holds the `#[gust::gpu]` modules: vector-add, the polynomial of `examples/polynomial`, the atomic
+#   counter, and one kernel that opted out of the CPU.
+# - `app` runs the three CPU kernels, compares them with independent host references and prints a `CPU target:
+#   matches (...)` line each (steps E-a to E-c, E-h). Its `single-dispatch` binary has exactly one dispatch, so that a
+#   build without the profile has exactly one error (E-d). `app --bench` prints the sequential-premise measurement
+#   (S5.2).
+# - `optout` dispatches the opted-out kernel (E-g). `app-with-wgpu` depends on `gust-wgpu`: the negative of E-e.
+#
+# The profile is never set here: the commands that build the fixture set `GUST_PROFILE` in each child's environment,
+# and a config file would be documentation for humans only (R4.2). Expectation files: e-d-expected.txt,
+# e-f-expected.txt and e-g-expected.txt (formats: tests/ui/typed-call-no-cpu-twin/expected.txt and
+# tests/ui/profile-native-bridge/expected.txt; `file` is relative to tests/cpu-target).
+[workspace]
+members = ["kernels", "app", "optout", "app-with-wgpu"]
+resolver = "3"

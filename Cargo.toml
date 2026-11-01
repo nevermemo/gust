@@ -41,4 +41,4 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "vulka
 # `gust`'s build script for `gust` alone, which declares it itself; it is listed here too so that a member that reads
 # it, as `gust` may in its own sources, never warns.
 [workspace.lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)', 'cfg(gust_profile, values("dev", "native", "web"))'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)', 'cfg(gust_profile, values("dev", "native", "web", "cpu"))'] }

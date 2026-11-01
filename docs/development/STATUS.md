@@ -171,6 +171,12 @@ D55 to D59.
   content key, and a cache hit leaves `entries` and `misses` unchanged. A test on the artifact
   bytes catches a mutation that the identity check alone missed. The `gpu-software` pins are 140
   passed over 18 result lines. Opus keep after one fix round; gates on main at `a91cb49`.
+- M6 m6.a2 (`56b5ecd`): `gust::math` vector and matrix types in pure Rust (§2.1 of the M6 plan),
+  with swizzles, and dual kernels that use them in `tests/dual`. Integer vector operations are
+  `#[inline]`, so in incremental dev and test builds they panic on overflow only when both `gust`
+  and the compiling crate have checks on (measured over nine profile runs); SEMANTICS §3 records
+  it as a limitation (D39). The struct-literal dual kernels emit Slang that nothing compiles yet;
+  m6.m1 makes them compile. Opus keep after one fix round; gates on main at `76c83d5`.
 M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),

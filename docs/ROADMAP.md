@@ -68,10 +68,11 @@ remaining chain run beside it now, and the rest wait for the M4 slice named. M5 
 | m5.c2, m5.a2 | `check-difftest` wiring; `gpu-software` on the Slang manager | after m4.g2 |
 
 **Then: M6, language breadth I** (plan adopted 2026-11-01, owner-delegated, after an Opus review, one revision and a
-re-check). The keyword and construct spikes (S6.3b, S6.1) and the pure-Rust math types (m6.a2) can run now. The
-keyword renaming (m6.k) follows the bool `^` fix in the macro crate, the layout model and reflection schema 2 (m6.a1, m6.r) for m4.e1, matrix
-products (m6.m1, m6.m2) follow them, uniforms (m6.u1, m6.u2) wait for M4 and M5's `cpu` profile, and the difftest
-vector extension (m6.d) waits for m5.c1c. M6 closes after M5.
+re-check). The keyword and construct spikes (S6.3b, S6.1) are done, and so are the pure-Rust math types (m6.a2,
+`56b5ecd`). The keyword renaming (m6.k) follows the macro fixes (fx.wgsl, running); the layout model and reflection
+schema 2 (m6.a1, m6.r) can run now that m4.e1 is done; matrix products (m6.m1, m6.m2) follow them, uniforms (m6.u1,
+m6.u2) wait for M4 and M5's `cpu` profile, and the difftest vector extension (m6.d) waits for m5.c1c. M6 closes
+after M5.
 
 **Done: M3, dual test builds** (closed 2026-11-01, D43). Plan adopted 2026-10-24 (owner-delegated); slices ran one at a
 time. The M2 sanity check (D37) kept M3's scope and fixed the order inside it.

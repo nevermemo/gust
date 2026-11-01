@@ -158,8 +158,8 @@ jobs:
       - name: Assert the test result lines
         env:
           # The sum of `passed` over every `test result:` line of `cargo test -p gust-wgpu` (the unit tests of the
-          # library, each integration test file, the doc tests). Taken from a run of that command on main at 05b30f8
-          # (122 passed, 0 failed, 0 ignored over 16 result lines) and to be confirmed by the first run of this job.
+          # library, each integration test file, the doc tests). Taken from a run of that command on lane/m5.a after merging main e673fcc
+          # (123 passed, 0 failed, 0 ignored over 17 result lines) and to be confirmed by the first run of this job.
           # Every slice that adds or removes a Gpu test bumps it in the same commit; drift fails loudly, by design.
           # To recompute it, on any adapter and any OS, at the commit to be merged (a skipped assertion inside a test
           # does not change the count; a test that fails does, so fix failures first):

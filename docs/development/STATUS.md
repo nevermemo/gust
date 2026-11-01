@@ -164,6 +164,18 @@ D55 to D59.
   `constantBuffer`, mandatory `matrixLayout`); every committed artifact set still verifies.
   Known limitation until m6.g1: `create_typed_buffer::<Vec4>` now compiles and panics at run time
   in the StorageV1 check. Opus keep after one fix round; gates on main at `38ebf29`.
+- M4 m4.f (`9b42958`): the pinned-Slang manager in `cargo-gust`. `cargo gust slang install`
+  downloads the pinned release (2026.13.1) for this platform, checks its SHA-256 (taken from the
+  GitHub release and cross-checked against the audit archives) before extraction, and renames a
+  partial directory into the cache; `locate` takes the cache (`GUST_SLANG_HOME` when set) and
+  accepts a `PATH` slangc only at the exact pin or a listed validated build;
+  `build-helper` builds `gust-slang-reflect` from a shipped copy of `slang-layout.cpp`, and
+  `doctor` and `build` refuse a helper built against another Slang. `xtask build-slang-reflect`
+  delegates to it. Measured on Windows: a scratch install, the helper, the Slangc and Reflect
+  tiers, and two byte-identical exports (S3). The CI `slang` job (Linux, g++) had not run before
+  the merge. Known gap: the committed artifact sets carry the local build tag
+  `2026.13.1-1-g84792eb15`, so `cargo gust check` of them fails with the release Slang until a
+  re-bless slice after m4.e2b. Opus keep after one fix round; gates on main at `6b064dc`.
 - M5 m5.c1b (`a3a7798`): the difftest harness `difftest-run`. It writes one run crate per
   batch, builds it with `cargo test --locked` under `GUST_PROFILE=dev`, requires exactly one
   complete result file per program, and writes `report.json` with exact counts. The GPU f32 is

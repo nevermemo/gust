@@ -48,7 +48,7 @@ its slice, and two fix rounds per slice.
 | m4.c | Macro: content key, artifact and manifest embedding, export mode | done (`dba0e97`) |
 | m4.d | `cargo-gust`: `init`, `build` (isolated collection, D17 at export for WGSL and SPIR-V), `check`, `doctor` (D46) | done (`e7dd73d`) |
 | m4.e1, m4.e2 | `gust-wgpu` precompiled path and cache key; precompiled fixture, `check-precompiled`, packaged-consumer proof without Slang | m4.e1 done (Gpu: RTX 5090; Opus keep after one fix round; `894ab0e`); m4.e2a done (fixture, `check-precompiled` E1 to E4; Gpu: RTX 5090 with no Slang in the environment; Opus keep after one fix round; `29cfc58`); m4.e2b next |
-| m4.f | Pinned-Slang manager with licence audit; CI `slang` job | licence audit done (all three platforms accepted, [LICENSES-SLANG](development/LICENSES-SLANG.md)); manager planned |
+| m4.f | Pinned-Slang manager with licence audit; CI `slang` job | licence audit done (all three platforms accepted, [LICENSES-SLANG](development/LICENSES-SLANG.md)); manager done (`cargo gust slang` install, locate and build-helper; Opus keep after one fix round; `9b42958`); CI `slang` job first run on Linux pending |
 | m4.g1, m4.g2 | Completion model (async read-back); wasm32 and the first browser WebGPU run | m4.g1 done (Gpu: RTX 5090; moved ahead of m4.e1; Opus keep after one fix round; `671b3dd`); m4.g2 planned |
 
 **Next: M5, CPU target and evidence breadth** (plan adopted 2026-11-01, owner-delegated, after a Codex review

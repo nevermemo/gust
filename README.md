@@ -463,7 +463,7 @@ The direct syntax translator currently supports:
 - local bindings (including explicit type annotations), arithmetic and comparison operators, assignments, indexing,
   field access, `if`/`else`, returns, casts, and calls to helpers in the same module;
 - implicit helper returns (including tail `if`/`else` and blocks), 32-bit numeric
-  suffixes/radix literals, Rust expression grouping, and boolean/integer `!`;
+  suffixes/radix literals, Rust expression grouping, and boolean/integer `!` and `^`;
 - struct literals as a `let` initializer or the right side of an assignment (D07);
 - `Option<T>` and `Result<T, T>` as local and helper values, including `if let` and
   a statement-only `match` with `Ok(x)`/`Err(e)` block arms (D14);

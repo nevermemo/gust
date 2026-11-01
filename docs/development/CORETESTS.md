@@ -5,11 +5,13 @@ kernels, the literals they must produce, the sets the GPU may produce instead, a
 the record of roadmap slice m5.d1 (M5, "coretests on every target"). The kernels are `tests/fixtures/coretests.rs`;
 `crates/gust/tests/coretests_twin.rs` runs the CPU twin of every kernel against the literals of the table below
 (Unit tier, no adapter). The GPU half, the same kernels on a hardware adapter and on the software adapter with the
-acceptance sets of the "Acceptance" column, is slice m5.d2.
+acceptance sets of the "Acceptance" column, is `crates/gust-wgpu/tests/coretests.rs` (slice m5.d2); section 7
+records its runs.
 
 The expected literal is the independent reference (D26, `docs/SEMANTICS.md`): it comes from the Rust sources or is
-derived by hand, never from the twin or from a GPU. The twin is asserted exact in every row. Nothing on this page is
-GPU evidence, and no statement of `docs/SEMANTICS.md` section 8 rests on it until slice m5.d2 has run the GPU half.
+derived by hand, never from the twin or from a GPU. The twin is asserted exact in every row and is never GPU
+evidence. The only GPU evidence on this page is section 7, the runs of slice m5.d2; the table and sections 1 to 6 are
+unchanged by them.
 
 ## 1. Pin and procedure
 
@@ -163,6 +165,8 @@ rejects it (section 6: WGSL defines `^` on integers only). The case stays in the
 The fix is a separate slice that lowers `^` and `^=` on `bool` through a gated `__gust_xor` overload, like
 `__gust_not`; it must land before slice m5.d2, because until then the whole `bools` kernel, so CT-27 to CT-30, fails
 at shader creation on a GPU. The twin is unaffected: it runs Rust's `^`.
+
+Resolved: the fix (slice fx.bxor, `__gust_xor`) has merged, and CT-30 passes on both adapters of section 7.
 
 ## 4. Unique coverage
 
@@ -336,8 +340,8 @@ Each exclusion has its reason. "Dialect" means `docs/SEMANTICS.md` section 1, "L
 - every output slot of every kernel is asserted by exactly one case;
 - the unique-coverage numbers above equal what the Triples column says.
 
-Not claimed: GPU behaviour of any row (slice m5.d2), the labels of `docs/SEMANTICS.md` section 2 (nothing here is
-`measured` or `proven`), or equivalence of the twin and the GPU.
+Not claimed by the twin test: GPU behaviour of any row (section 7 records it), the labels of `docs/SEMANTICS.md`
+section 2 (nothing here is `measured` or `proven`), or equivalence of the twin and the GPU.
 
 Observations from writing the fixture, all about this repository and not about the Rust sources:
 
@@ -356,7 +360,59 @@ Observations from writing the fixture, all about this repository and not about t
   constants `INTS_A` to `BOOLS_OUT`, lines 30 to 69) unchanged, element for element, so that the slots and variables of
   the table mean the same thing on the GPU.
 
-## 7. Attribution and licence
+## 7. GPU results (slice m5.d2)
+
+`crates/gust-wgpu/tests/coretests.rs` (Gpu tier) includes the fixture, dispatches the five kernels on the adapter with
+the input arrays and output lengths of the twin test unchanged, runs the twin on the same inputs, and compares every
+output slot with the literal of the table: the adapter under the acceptance set of the row, the twin exact. It prints
+the adapter (name, backend, device type, driver, `driver_info`) and, for the two-neighbour and `/` rows, the observed
+value. A failure names the case id, the accepted set, and the GPU and twin values. The id guard records each case id
+as it runs and requires the executed set to equal the ids of the table above (each exactly once, none unknown); a second
+check requires the slot, literal and acceptance columns of every table row to equal what the test's own cases assert,
+rejects a duplicate row, and requires every output slot of every kernel to be asserted by exactly one case (the
+twin test's guards, ported; the two files are not tied by `include_str!`, so the table is their common reference).
+Nothing is skipped, ignored or loosened. The run was a debug-profile build (`GUST_PROFILE=dev`) on 2026-11-01.
+
+Adapters:
+
+- **RTX 5090**: `NVIDIA GeForce RTX 5090`, backend Vulkan, device type `DiscreteGpu`, driver `NVIDIA`, `driver_info`
+  `610.88` (Windows).
+- **lavapipe**: `llvmpipe (LLVM 20.1.2, 256 bits)`, backend Vulkan, device type `Cpu`, driver `llvmpipe`, `driver_info`
+  `Mesa 25.2.8-0ubuntu0.24.04.4 (LLVM 20.1.2)` (WSL Ubuntu 24.04, `VK_DRIVER_FILES` set to the lavapipe ICD).
+
+Per group of rows (the label applies to every row of the group; "pass" means all slots of all rows were inside the
+acceptance set and the twin equalled the literal):
+
+| Group | Rows | Count | Acceptance | RTX 5090 | lavapipe |
+| --- | --- | --- | --- | --- | --- |
+| i32 operators, comparisons, `-`, `!` | CT-01 to CT-11, CT-31 to CT-35, CT-45 to CT-67 | 39 | exact | pass | pass |
+| u32 operators, comparisons, `!` | CT-12 to CT-21, CT-36 to CT-40, CT-68 to CT-75 | 23 | exact | pass | pass |
+| f32 `+ - *`, unary minus, `==` | CT-22 to CT-25, CT-41 to CT-43, CT-76 | 8 | exact | pass | pass |
+| f32 `/` | CT-26, CT-44 | 2 | GPU: 2.5 ULP set | pass, 0 ULP | pass, 0 ULP |
+| bool `! & \| ^` | CT-27 to CT-30 | 4 | exact | pass | pass |
+| i32 to f32 to i32 at and below 2^24 | CT-77 to CT-79, CT-81 to CT-83 | 6 | exact | pass | pass |
+| i32 to f32 to i32 above 2^24 | CT-80, CT-84 | 2 | GPU: two-neighbour set | pass, nearest even | pass, nearest even |
+
+Both adapters executed 84 cases and 121 output slots, and no case failed on either.
+
+What the runs show and what they do not:
+
+- The float `/` rows are weak evidence for the 2.5 ULP set: `0.0 / 1.0` and `10.0 / 2.0` are exactly representable and
+  both adapters returned them exactly (0 ULP). With the set tightened to exact, no case fails on either adapter, so the
+  rows do not exercise the slack that WGSL allows; they are kept because the set is the contract (R1-7), not because
+  the slack was observed. The 2.5 ULP branch (and the 16777218 neighbour branch) is covered by a host-only unit test of
+  the acceptance function in `coretests.rs` with synthetic values, not by data: the literal and 1 and 2 ULP either way
+  pass, 3 ULP, NaN and infinity fail, zeros of either sign agree, and both neighbours pass while the source integer
+  fails. No non-exact `/` row was added, because the table is a transcription. R1-7's `ulps <= 2` is stricter than
+  WGSL's 2.5 ULP just below a power of two, where the spacing halves; that matters only for future rows.
+- Both adapters converted 16777217 and -16777217 to the nearest even neighbour (16777216 and -16777216), which is the
+  twin's value; the set also accepts 16777218 and -16777218, and neither adapter used that slack. This is an
+  observation of two adapters, not a bound, and it changes no label of `docs/SEMANTICS.md` section 2.
+- CT-30 (`bool ^`) runs on both adapters, which is the regression for the `__gust_xor` lowering.
+- Nothing here changes a statement of `docs/SEMANTICS.md`; the values are inside the defined domain, so a difference on
+  any adapter would have been a failure to investigate, not a second observation.
+
+## 8. Attribution and licence
 
 The cases are transcribed from the Rust core tests, copyright The Rust Project Developers, licensed MIT OR Apache-2.0,
 as is this repository. This page and the fixture take operations, operand values and expected results only. No test

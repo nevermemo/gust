@@ -150,8 +150,8 @@ jobs:
           #   GUST_PROFILE=dev cargo test --locked -p gust-wgpu --no-fail-fast 2>&1 \
           #     | grep '^test result:' | awk '{ sum += $4; n++ } END { print sum, n }'
           # prints "<passed> <lines>"; the output must also show no line other than `0 failed; 0 ignored`.
-          GPU_SUITE_PASSED: "140"
-          GPU_SUITE_RESULT_LINES: "18"
+          GPU_SUITE_PASSED: "141"
+          GPU_SUITE_RESULT_LINES: "19"
           GPU_SUITE_LOG: ${{ runner.temp }}/gpu-suite.log
         run: |
           set -euo pipefail

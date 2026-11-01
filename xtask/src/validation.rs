@@ -386,8 +386,19 @@ pub(crate) fn compact_validation_summary(text: &str) -> String {
     let passed = field("passed").unwrap_or_else(|| "unknown".to_owned());
     let commit = field("git_commit").unwrap_or_else(|| "unknown".to_owned());
     let dirty = field("git_dirty").unwrap_or_else(|| "unknown".to_owned());
-    format!("finished={finished} mode={mode} passed={passed} commit={commit} dirty={dirty}")
+    // Only a software adapter gets a tier word, appended last: a hardware record, a record without an adapter and
+    // a record from before the adapter member keep the line they always had.
+    let tier = if field("device_type").as_deref() == Some(SOFTWARE_DEVICE_TYPE) {
+        " tier=Gpu (software)"
+    } else {
+        ""
+    };
+    format!("finished={finished} mode={mode} passed={passed} commit={commit} dirty={dirty}{tier}")
 }
+
+/// The `device_type` of the adapter record for a software Vulkan driver such as lavapipe: the `Debug` name of
+/// wgpu's `DeviceType::Cpu`. Evidence from such an adapter is `Gpu (software)`, never hardware evidence (D52).
+const SOFTWARE_DEVICE_TYPE: &str = "Cpu";
 
 pub(crate) fn json_string(value: &str) -> String {
     let mut out = String::from("\"");

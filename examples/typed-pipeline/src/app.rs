@@ -458,7 +458,302 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    use gust::cpu::{CpuDevice, Error as CpuError};
+
     use super::*;
+
+    /// `2^-24`.
+    const U: f64 = 1.0 / 16_777_216.0;
+
+    /// The twin-versus-GPU bounds of the float outputs, absolute, in units of `U`, one per output and kernel. Each
+    /// kernel is compared on identical inputs (the twin is fed what the GPU read back from the stage before), so a
+    /// bound covers that kernel's own roundings only.
+    ///
+    /// Derived from the kernel text (docs/SEMANTICS.md section 4, "Deriving a tolerance"), not from a measurement.
+    /// With the domain asserted by `assert_derivation_domain` and `assert_stage_domains`, one rounding of at most
+    /// `u` times the result's magnitude on the twin and `2u` on the GPU for `+ - *`, first-order propagation,
+    /// magnitudes `M`, twin error `T` and GPU error `G` in units of `u`, the GPU side without fusion:
+    ///
+    /// `calibrate` (`raw_temperature <= 28`, `temperature_scale <= 1.01`, `abs(temperature_bias) <= 0.16`,
+    /// `raw_humidity <= 0.81`, `humidity_scale <= 1.04`, `abs(humidity_bias) <= 0.026`; `clamp_value` never changes
+    /// a value here and is continuous, so it adds no error):
+    ///
+    /// | step | M | T | G |
+    /// | --- | --- | --- | --- |
+    /// | `temperature` = `raw * scale + bias` | 28.44 | 56.72 | 113.44 |
+    /// | `humidity` = `clamp(raw * scale + bias)` | 0.87 | 1.71 | 3.42 |
+    /// | `centered` = `humidity - 0.5`, `abs <= 0.37` | 0.37 | 2.08 | 4.16 |
+    /// | `centered * centered` | 0.14 | 1.68 | 3.35 |
+    /// | `quality` = `1.0 - centered * centered` | 1.00 | 2.68 | 5.35 |
+    ///
+    /// Twin plus GPU: `temperature` 170.16u gives 172u, `humidity` 5.13u gives 7u, `quality` 8.03u gives 10u
+    /// (rounded up to a whole `u` plus 1u for the second-order terms, below 0.001u here).
+    ///
+    /// `classify` (`17.4 <= temperature <= 28.5`, `0.16 <= humidity <= 0.87`, `0.0 <= temperature_weight <= 0.091`,
+    /// `humidity_weight = 2`; `temperature - 22` is at most 6.5 in magnitude):
+    ///
+    /// | step | M | T | G |
+    /// | --- | --- | --- | --- |
+    /// | `temperature_delta * temperature_delta` | 42.25 | 126.75 | 253.50 |
+    /// | `... * temperature_weight` | 3.84 | 15.38 | 30.76 |
+    /// | `humidity_delta * humidity_delta * 2.0` (the 2.0 is exact) | 0.27 | 0.82 | 1.64 |
+    /// | `score` = sum of the two | 4.12 | 20.32 | 40.64 |
+    ///
+    /// Twin plus GPU: `score` 60.96u gives 62u, plus 1u is 63u. A chain of products has the same relative error in
+    /// any grouping; the sum has two operands.
+    ///
+    /// `finalize` (`score <= 4.12`, `quality >= 0.86`, so `1.0 - quality <= 0.14`): `(1.0 - quality) * 0.5` has
+    /// M 0.07, T 0.07 and G 0.14, and `adjusted_score = score + that` has M 4.19, T 4.26 and G 8.52; twin plus GPU
+    /// 12.78u gives 13u, plus 1u is 14u.
+    ///
+    /// The integer fields and `confidence` are copies and must be equal. `severity` and `action` are decisions on
+    /// floats: `severity` compares `score` with 0.8 and 2.4 and is asserted equal only after the test has checked
+    /// that no score lies within the `score` bound of either threshold (`assert_decisions_are_stable`); `action`
+    /// compares the copied `quality` (at least 0.86) with 0.25 and the copied `severity`, so both targets decide on
+    /// identical inputs.
+    ///
+    /// Observed maxima are printed separately by the ignored test and never become the tolerance.
+    const TEMPERATURE_BOUND: f64 = 172.0 * U;
+    const HUMIDITY_BOUND: f64 = 7.0 * U;
+    const QUALITY_BOUND: f64 = 10.0 * U;
+    const SCORE_BOUND: f64 = 63.0 * U;
+    const ADJUSTED_SCORE_BOUND: f64 = 14.0 * U;
+
+    /// The domain the bounds are derived for. `make_inputs` is periodic with periods of at most 41, so 4096 elements
+    /// reach every extreme.
+    fn assert_derivation_domain(inputs: &Inputs) {
+        for reading in &inputs.readings {
+            assert!(
+                (18.0..=28.0).contains(&reading.raw_temperature),
+                "raw_temperature"
+            );
+            assert!((0.0..=0.81).contains(&reading.raw_humidity), "raw_humidity");
+        }
+        for parameters in &inputs.calibration {
+            assert!(
+                (0.0..=1.01).contains(&parameters.temperature_scale),
+                "temperature_scale"
+            );
+            assert!(
+                parameters.temperature_bias.abs() <= 0.16,
+                "temperature_bias"
+            );
+            assert!(
+                (0.0..=1.04).contains(&parameters.humidity_scale),
+                "humidity_scale"
+            );
+            assert!(parameters.humidity_bias.abs() <= 0.026, "humidity_bias");
+        }
+        for limits in &inputs.thresholds {
+            assert!(
+                (0.0..=0.091).contains(&limits.temperature_weight),
+                "temperature_weight"
+            );
+            assert_eq!(limits.humidity_weight, 2.0);
+            assert_eq!(limits.target_temperature, 22.0);
+            assert_eq!(limits.target_humidity, 0.5);
+        }
+    }
+
+    /// The domains of the values that cross from one stage to the next, which the bounds of `classify` and
+    /// `finalize` assume. They hold for the twin's and the GPU's samples alike.
+    fn assert_stage_domains(samples: &[sensor_pipeline::CalibratedSample], scores: &[f32]) {
+        for sample in samples {
+            assert!((17.4..=28.5).contains(&sample.temperature), "temperature");
+            assert!((0.16..=0.87).contains(&sample.humidity), "humidity");
+            assert!((0.86..=1.0).contains(&sample.quality), "quality");
+        }
+        for score in scores {
+            assert!((0.0..=4.12).contains(score), "score");
+        }
+    }
+
+    /// `severity` is a decision on a float: the targets agree on it unless a score lies within the `score` bound of a
+    /// threshold. Checked on the twin's scores, so the GPU's (within the bound) fall on the same side.
+    fn assert_decisions_are_stable(
+        alerts: &[sensor_pipeline::Alert],
+        thresholds: &[sensor_pipeline::AlertThresholds],
+    ) {
+        assert_eq!(alerts.len(), thresholds.len());
+        for (alert, limits) in alerts.iter().zip(thresholds) {
+            // The f32 values the kernel compares with, not the decimal literals they were written as.
+            for threshold in [f64::from(limits.warning), f64::from(limits.critical)] {
+                assert!(
+                    (f64::from(alert.score) - threshold).abs() > SCORE_BOUND,
+                    "score {} lies within the derived bound of the threshold {threshold}",
+                    alert.score
+                );
+            }
+        }
+    }
+
+    fn calibrate_on_cpu(
+        readings: &[sensor_pipeline::SensorReading],
+        calibration: &[sensor_pipeline::Calibration],
+    ) -> Result<Vec<sensor_pipeline::CalibratedSample>, CpuError> {
+        let device = CpuDevice::new();
+        let readings_buffer = device.buffer(readings);
+        let calibration_buffer = device.buffer(calibration);
+        let out = device.buffer(&vec![empty_sample(); readings.len()]);
+        sensor_pipeline::calibrate::dispatch(
+            &device,
+            readings.len() as u32,
+            &readings_buffer,
+            &calibration_buffer,
+            &out,
+        )?;
+        Ok(out.read())
+    }
+
+    fn classify_on_cpu(
+        samples: &[sensor_pipeline::CalibratedSample],
+        thresholds: &[sensor_pipeline::AlertThresholds],
+    ) -> Result<Vec<sensor_pipeline::Alert>, CpuError> {
+        let device = CpuDevice::new();
+        let samples_buffer = device.buffer(samples);
+        let thresholds_buffer = device.buffer(thresholds);
+        let out = device.buffer(&vec![empty_alert(); samples.len()]);
+        sensor_pipeline::classify::dispatch(
+            &device,
+            samples.len() as u32,
+            &samples_buffer,
+            &thresholds_buffer,
+            &out,
+        )?;
+        Ok(out.read())
+    }
+
+    fn finalize_on_cpu(
+        alerts: &[sensor_pipeline::Alert],
+    ) -> Result<Vec<sensor_pipeline::Report>, CpuError> {
+        let device = CpuDevice::new();
+        let alerts_buffer = device.buffer(alerts);
+        let out = device.buffer(&vec![empty_report(); alerts.len()]);
+        sensor_pipeline::finalize::dispatch(&device, alerts.len() as u32, &alerts_buffer, &out)?;
+        Ok(out.read())
+    }
+
+    /// The largest absolute difference (computed in `f64`) between two float sequences.
+    fn largest_abs(left: impl Iterator<Item = f32>, right: impl Iterator<Item = f32>) -> f64 {
+        left.zip(right)
+            .map(|(l, r)| (f64::from(l) - f64::from(r)).abs())
+            .fold(0.0, f64::max)
+    }
+
+    #[test]
+    fn inputs_stay_inside_the_derivation_domain() {
+        assert_derivation_domain(&make_inputs(4096));
+        assert_derivation_domain(&make_inputs(DEBUG_COUNT));
+    }
+
+    #[test]
+    fn twin_chain_matches_host_reference() {
+        // The three twins run the shadow bodies, which perform the operations of `run_cpu` in the same order, and Rust
+        // does not contract them, so floats agree to the last bit and integers are equal. 0 and 1 are the edges;
+        // 63 to 65 straddle one workgroup of 64.
+        for count in [0, 1, 63, 64, 65, 257, 4096] {
+            let inputs = make_inputs(count);
+            let expected = run_cpu(&inputs);
+            let samples =
+                calibrate_on_cpu(&inputs.readings, &inputs.calibration).expect("calibrate twin");
+            assert_eq!(samples, expected.samples, "calibrate, {count} elements");
+            let alerts = classify_on_cpu(&samples, &inputs.thresholds).expect("classify twin");
+            assert_eq!(alerts, expected.alerts, "classify, {count} elements");
+            let reports = finalize_on_cpu(&alerts).expect("finalize twin");
+            assert_eq!(reports, expected.reports, "finalize, {count} elements");
+        }
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn twin_matches_reference_and_gpu_within_the_derived_bounds() {
+        let device = HeadlessDevice::new().expect("Vulkan adapter");
+        for count in [0, 1, 63, 64, 65, 257, 1 << 15] {
+            let inputs = make_inputs(count);
+            assert_derivation_domain(&inputs);
+            let host = run_cpu(&inputs);
+            let gpu = run_gpu(&device, &inputs).unwrap();
+            // The GPU against the host reference comes first so that a failing twin cannot hide it.
+            assert_close(&gpu, &host);
+
+            let samples =
+                calibrate_on_cpu(&inputs.readings, &inputs.calibration).expect("calibrate twin");
+            assert_eq!(samples, host.samples, "calibrate twin versus run_cpu");
+            let temperature = largest_abs(
+                samples.iter().map(|s| s.temperature),
+                gpu.samples.iter().map(|s| s.temperature),
+            );
+            let humidity = largest_abs(
+                samples.iter().map(|s| s.humidity),
+                gpu.samples.iter().map(|s| s.humidity),
+            );
+            let quality = largest_abs(
+                samples.iter().map(|s| s.quality),
+                gpu.samples.iter().map(|s| s.quality),
+            );
+            println!(
+                "S4 typed-pipeline calibrate, {count} elements: twin versus GPU max abs error temperature {temperature:e} (bound {TEMPERATURE_BOUND:e}), humidity {humidity:e} (bound {HUMIDITY_BOUND:e}), quality {quality:e} (bound {QUALITY_BOUND:e})"
+            );
+            assert!(
+                temperature <= TEMPERATURE_BOUND,
+                "temperature {temperature:e}"
+            );
+            assert!(humidity <= HUMIDITY_BOUND, "humidity {humidity:e}");
+            assert!(quality <= QUALITY_BOUND, "quality {quality:e}");
+            assert!(
+                samples
+                    .iter()
+                    .zip(&gpu.samples)
+                    .all(|(twin, gpu)| twin.sensor_id == gpu.sensor_id),
+                "calibrate sensor_id"
+            );
+
+            // From here on each twin is fed what the GPU produced for the stage before: identical inputs.
+            assert_stage_domains(&gpu.samples, &[]);
+            let alerts = classify_on_cpu(&gpu.samples, &inputs.thresholds).expect("classify twin");
+            let scores: Vec<f32> = alerts.iter().map(|alert| alert.score).collect();
+            assert_stage_domains(&gpu.samples, &scores);
+            let gpu_scores: Vec<f32> = gpu.alerts.iter().map(|alert| alert.score).collect();
+            assert_stage_domains(&gpu.samples, &gpu_scores);
+            assert_decisions_are_stable(&alerts, &inputs.thresholds);
+            assert_eq!(
+                alerts.len(),
+                gpu.alerts.len(),
+                "classify output length, {count} elements"
+            );
+            let score = largest_abs(
+                alerts.iter().map(|a| a.score),
+                gpu.alerts.iter().map(|a| a.score),
+            );
+            println!(
+                "S4 typed-pipeline classify, {count} elements: twin versus GPU max abs error score {score:e} (bound {SCORE_BOUND:e})"
+            );
+            assert!(score <= SCORE_BOUND, "score {score:e}");
+            for (twin, gpu) in alerts.iter().zip(&gpu.alerts) {
+                assert_eq!(twin.quality, gpu.quality, "classify quality");
+                assert_eq!(twin.sensor_id, gpu.sensor_id, "classify sensor_id");
+                assert_eq!(twin.severity, gpu.severity, "classify severity");
+            }
+
+            let reports = finalize_on_cpu(&gpu.alerts).expect("finalize twin");
+            let adjusted = largest_abs(
+                reports.iter().map(|r| r.adjusted_score),
+                gpu.reports.iter().map(|r| r.adjusted_score),
+            );
+            println!(
+                "S4 typed-pipeline finalize, {count} elements: twin versus GPU max abs error adjusted_score {adjusted:e} (bound {ADJUSTED_SCORE_BOUND:e})"
+            );
+            assert!(
+                adjusted <= ADJUSTED_SCORE_BOUND,
+                "adjusted_score {adjusted:e}"
+            );
+            for (twin, gpu) in reports.iter().zip(&gpu.reports) {
+                assert_eq!(twin.confidence, gpu.confidence, "finalize confidence");
+                assert_eq!(twin.sensor_id, gpu.sensor_id, "finalize sensor_id");
+                assert_eq!(twin.action, gpu.action, "finalize action");
+            }
+        }
+    }
 
     #[test]
     fn demo_sizes_stay_within_the_default_workgroup_limit() {

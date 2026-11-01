@@ -9,9 +9,10 @@ does not try to make the targets match.
 The CPU twin exists: `gust::cpu` (slice m3.b) is its backend and the `#[gpu]` macro emits the twin of every kernel with
 a typed call (slice m3.c). The fixture tests assert the twin next to the GPU and the independent host reference, the
 atomic functions run for real on the twin, and the ledger has a twin column (slice m3.d). `cargo xtask check-cpu`
-(slice m3.c2) is a step of the Unit suite and runs the locked, GPU-free tests of the vector-add and polynomial
-examples. What is still to come is marked **planned**: the remaining examples (m3.e1, m3.e2) and the `--cfg gust_dual`
-checks and the cross-crate proof (m3.f1, m3.f2). A planned statement describes the intended behaviour and is not
+(slice m3.c2) is a step of the Unit suite and runs the locked, GPU-free tests of the vector-add, polynomial,
+signal-pipeline, particle-step, typed-pipeline and atomic-counter examples (slice m3.e1). What is still to come is
+marked **planned**: the two graph examples (m3.e2) and the `--cfg gust_dual` checks and the cross-crate proof (m3.f1,
+m3.f2). A planned statement describes the intended behaviour and is not
 evidence.
 
 ## 1. Scope
@@ -30,7 +31,17 @@ evidence.
   planned, m3.f1). The production CPU target belongs to a later milestone (M5) and is not described here.
 - **Not executed by the twin.** Kernels with a `Uniform<T>` parameter (they have no typed call), indirect dispatch
   and staged graphs stay GPU-only. A kernel can opt out explicitly with `#[kernel(cpu = "unsupported")]` (D26).
-  Examples that use graphs will carry kernel-level twin evidence only (planned, m3.e1, m3.e2).
+  Examples that use graphs will carry kernel-level twin evidence only (planned, m3.e2).
+- **Twin coverage of the examples (exists, m3.c to m3.e1).** Every kernel with a typed call in these examples runs on
+  the twin next to the GPU and a host reference; none uses the opt-out. Integer, struct and copied outputs are exact;
+  float outputs use the bound derived in section 4. The twin equals the host reference bit for bit in each of them.
+  - `vector-add` (`add`), `polynomial` (`evaluate`): m3.c.
+  - `signal-pipeline` (`transform`): derived bound.
+  - `particle-step` (`scalar_order`, `field_order`, `snapshot`: exact; `step`: derived bounds).
+  - `typed-pipeline` (`calibrate`, `classify`, `finalize`): derived bounds, each kernel compared on the inputs the GPU
+    produced for the stage before; `severity` is exact after a stability check.
+  - `atomic-counter` (`increment`): exact.
+  - `staged-graph` and `component-pool`: planned, m3.e2.
 - **Language subset.** 32-bit `f32`, `i32`, `u32`, `bool` and module structs of them (README, "Current subset"). Float
   arithmetic is `+ - * /`, comparisons and casts: the validator accepts no other method than `.len()`,
   `.global_id()` and the `Option` / `Result` helpers, so there is no `sqrt`, `fma` or trigonometry to bound.
@@ -172,7 +183,8 @@ condition, so the GPU may add in a different order than the source. The twin add
 Two correct programs can therefore differ by more than the per-operation bounds suggest, and a bound must be derived
 over the worst grouping.
 
-**Deriving a tolerance for a kernel (done for polynomial in m3.c; planned for the other examples, m3.e1).** An
+**Deriving a tolerance for a kernel (done for polynomial in m3.c and for the float kernels of the other examples in m3.e1,
+see "Derived kernels" below).** An
 expression-level tolerance is derived per test from these bounds and the test's input domain, and written in the test's doc comment. It is never an observed
 maximum. Method: list the kernel's operations in order; mark the exact ones (multiplication by a power of two,
 addition of 0, negation); bound each intermediate's magnitude from the input domain; give each inexact operation a
@@ -194,6 +206,36 @@ additions whose partial sums have magnitude at most 3, 4 and 4.5, costing 2u eac
 (slice m3.c) asserts 48u = 48 * 2^-24, about 2.86e-6, where the extra 2u is the margin for second-order terms.
 Observation, not a tolerance: on the RTX 5090 the largest absolute twin-versus-GPU difference over the whole input
 domain was 2.38e-7 (4u), and the twin equalled the host reference to the last bit.
+
+**Derived kernels (slice m3.e1).** The same method, per kernel, with the per-operation numbers of the table above (a
+rounding of at most `u` times the result's magnitude on the twin, `2u` on the GPU for `+ - *`, `u` and `5u` for `/`
+with the divisor in `[2^-126, 2^126]`), the GPU side without fusion, first-order propagation, and each input's range
+asserted by a test of the example (the ranges that typed-pipeline's later stages receive from the GPU, in its ignored
+test). The asserted bound is the derived sum rounded up to a whole `u` plus
+1u for the second-order terms. The step-by-step tables are in the doc comment of each example's bound constant. The
+last column is an observation on the RTX 5090 (debug profile, 2026-11-01), printed by the
+ignored tests (`--nocapture`) and kept in the m3.e1 slice log; it is not a tolerance and no test uses it.
+
+| Kernel (example) | Output | Derived | Asserted, absolute | Observed twin versus GPU |
+| --- | --- | --- | --- | --- |
+| `evaluate` (polynomial, slice m3.c) | `out` | 46u | 48u = 2.86e-6 | 2.38e-7 |
+| `transform` (signal-pipeline) | `out` | 898.46u | 900u = 5.36e-5 | 7.63e-6 |
+| `step` (particle-step) | `velocity.x` | 1.79u | 3u = 1.79e-7 | 0 |
+| `step` (particle-step) | `velocity.y` | 6.57u | 8u = 4.77e-7 | 0 |
+| `step` (particle-step) | `position.x` | 96.08u | 98u = 5.84e-6 | 1.49e-8 |
+| `step` (particle-step) | `position.y` | 6.30u | 8u = 4.77e-7 | 0 |
+| `step` (particle-step) | `energy` | 85.75u | 87u = 5.19e-6 | 4.77e-7 |
+| `calibrate` (typed-pipeline) | `temperature` | 170.16u | 172u = 1.03e-5 | 1.91e-6 |
+| `calibrate` (typed-pipeline) | `humidity` | 5.13u | 7u = 4.17e-7 | 5.96e-8 |
+| `calibrate` (typed-pipeline) | `quality` | 8.03u | 10u = 5.96e-7 | 5.96e-8 |
+| `classify` (typed-pipeline) | `score` | 60.96u | 63u = 3.76e-6 | 0 |
+| `finalize` (typed-pipeline) | `adjusted_score` | 12.78u | 14u = 8.34e-7 | 0 |
+
+Two properties of these kernels are worth stating. A chain of products has the same relative error in any grouping, and
+every sum in them has two operands, so reassociation (15.7.5) cannot raise a bound; fusing a product into a sum only
+removes a rounding. A decision on a float (`severity` in `classify`, which compares `score` with 0.8 and 2.4) is
+exact only while no value lies within the bound of its threshold; the typed-pipeline test checks that on the data it
+uses, and a different input set could make the targets disagree on `severity`, as the ledger's float rows allow.
 
 ## 5. Memory preconditions
 
@@ -321,7 +363,15 @@ adapter in section 1.
   compare-exchange, and signed `atomic_add` and `atomic_exchange`. Not proven: the succeeding compare-exchange (single
   and signed), because a weak compare-exchange may fail spuriously on the GPU (section 6), and the contended
   exchange and compare-exchange, where the targets are allowed to differ (KM-09).
+- **Exact example kernels** (m3.c to m3.e1), each asserted equal on the GPU, on the twin and against a host reference:
+  `vector-add` `add` on inputs whose sums are exact in `f32` (`twin_matches_reference_and_gpu`, counts 4, 65 and
+  200); `atomic-counter` `increment`, a contended `atomic_add` of 1 whose sum does not depend on the order
+  (`twin_matches_reference_and_gpu`, 1, 64, 257 and 1000 invocations); `particle-step` `scalar_order`, `field_order`
+  (sums of multiples of 1/16, exact in `f32`) and `snapshot`, whose GPU output buffers are seeded with zeroed
+  particles so that a kernel that wrote nothing or copied part of a struct would fail
+  (`twin_matches_reference_and_gpu_for_the_exact_kernels`, counts 1, 63, 64, 65 and 257).
 
 Everything else on this page stays **spec-allowed**, **unspecified**, **measured** or **planned**. The floats of
-section 4 remain measured on the polynomial example only; the signal-pipeline example (m3.e1) is where more float
-evidence will come from.
+section 4 remain derived and measured on the examples listed under "Derived kernels" (polynomial, signal-pipeline,
+particle-step, typed-pipeline) only. Those bounds are spec-allowed arithmetic checked by one GPU run, not a proof of
+the GPU's rounding; the floats are not **proven**.

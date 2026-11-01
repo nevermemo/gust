@@ -1,10 +1,10 @@
-# DIFFTEST_FORMAT 1
+# DIFFTEST_FORMAT 2
 # seed programs discarded [reason=count ...] hash=<fnv1a64 of the emitted lib.rs and the input data>
-1 16 57 division-by-zero=3 index=6 no-input-read=3 overflow=34 shift-amount=3 static=8 hash=371fa2522e6681c7
-2 16 36 division-by-zero=6 index=2 min-over-minus-one=1 overflow=21 static=6 hash=811a4d82af66a078
-3 16 38 division-by-zero=8 no-input-read=2 overflow=20 static=8 hash=7816c1f177b708c2
-4 16 53 division-by-zero=7 index=5 no-input-read=1 overflow=25 shift-amount=1 static=14 hash=a2e31f20063e9b07
-5 16 42 division-by-zero=5 no-input-read=3 overflow=21 shift-amount=3 static=10 hash=d44f7f81932ad6cd
-6 16 36 division-by-zero=1 index=3 no-input-read=1 overflow=25 shift-amount=1 static=5 hash=353164f5a86323f9
-7 16 61 division-by-zero=8 index=3 no-input-read=2 overflow=37 shift-amount=1 static=10 hash=6155afa997189c32
-8 16 63 division-by-zero=4 index=1 no-input-read=2 overflow=45 static=11 hash=9a617649d6598029
+1 16 64 division-by-zero=4 float-domain=10 index=7 no-input-read=6 overflow=21 shift-amount=1 static=12 unboundable=3 hash=4a3373155b8647b0
+2 16 27 division-by-zero=2 float-domain=2 min-over-minus-one=2 no-input-read=2 overflow=4 shift-amount=2 static=10 unboundable=3 hash=9719d2b6f6066a79
+3 16 72 division-by-zero=5 float-domain=16 index=2 no-input-read=3 overflow=26 static=16 unboundable=4 hash=b23c929fc1e3bb80
+4 16 50 comparison-overlap=2 division-by-zero=5 float-domain=9 no-input-read=4 overflow=16 static=14 hash=304f483b54c06eeb
+5 16 61 comparison-overlap=3 division-by-zero=6 float-construct-not-in-v1=1 float-domain=16 index=2 no-input-read=3 overflow=15 static=12 unboundable=3 hash=a140770873ea098d
+6 16 36 division-by-zero=4 float-domain=2 index=4 no-input-read=4 overflow=11 static=9 unboundable=2 hash=5726326b078b41dc
+7 16 30 division-by-zero=1 float-domain=5 index=3 no-input-read=4 overflow=9 shift-amount=1 static=4 unboundable=3 hash=e06ed274fa643db7
+8 16 34 division-by-zero=3 float-domain=4 index=2 no-input-read=1 overflow=12 shift-amount=2 static=8 unboundable=2 hash=10fa293db0dc8b81

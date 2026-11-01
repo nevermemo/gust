@@ -11,12 +11,23 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast::{BinOp, Expr, InputBuf, MAX_TRIPS, Program, Stmt, Ty};
+use crate::ast::{BinOp, Expr, InputBuf, MAX_TRIPS, Program, Stmt, Ty, chain_terms};
 use crate::interp;
 use crate::prng::{Prng, byte_stream};
 
-/// Bump when a change alters what any seed decodes to, or the emitted text.
-pub const DIFFTEST_FORMAT: u32 = 1;
+/// Bump when a change alters what any seed decodes to, or the emitted text. 2: the program space gained `f32`
+/// (m5.c1a2, R1-4).
+pub const DIFFTEST_FORMAT: u32 = 2;
+
+/// Which programs the generator writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Space {
+    /// Integers and booleans only. Reads exactly the bytes, and makes exactly the choices, that DIFFTEST_FORMAT 1 did,
+    /// so the programs are those of m5.c1a (a unit test pins their discard counts).
+    Integer,
+    /// Integers, booleans and `f32` (the exact-interval subset of R1-4). The default.
+    Float,
+}
 /// Bytes of the stream one program may consume; the decoder reads zeros beyond.
 pub const BYTES_PER_PROGRAM: usize = 4096;
 /// In-domain programs per seed (R1-13).
@@ -73,6 +84,7 @@ impl Bytes<'_> {
 
 struct Gen<'a> {
     b: Bytes<'a>,
+    floats: bool,
     inputs: Vec<Ty>,
     next_var: u32,
     /// (variable, type, mutable), innermost last.
@@ -107,6 +119,9 @@ impl Gen<'_> {
     }
 
     fn pick_ty(&mut self) -> Ty {
+        if self.floats {
+            return [Ty::U32, Ty::I32, Ty::Bool, Ty::F32][self.b.weighted(&[30, 30, 15, 25])];
+        }
         [Ty::U32, Ty::I32, Ty::Bool][self.b.weighted(&[40, 40, 20])]
     }
 
@@ -116,6 +131,7 @@ impl Gen<'_> {
 
     fn literal(&mut self, ty: Ty) -> Expr {
         match ty {
+            Ty::F32 => self.float_literal(),
             Ty::Bool => Expr::bool(self.b.below(2) == 1),
             Ty::U32 => Expr::u32(match self.b.weighted(&[55, 12, 8, 8, 12, 5]) {
                 0 => self.b.below(17),
@@ -259,12 +275,16 @@ impl Gen<'_> {
         if ty == Ty::Bool {
             return self.bool_expr(d);
         }
-        // add sub mul div rem and or xor shl shr neg not cast
+        if ty == Ty::F32 {
+            return self.float_expr(d);
+        }
+        // add sub mul div rem and or xor shl shr neg not cast (and, in the float space, cast from f32)
         let neg_weight = if ty == Ty::I32 { 4 } else { 0 };
-        match self
-            .b
-            .weighted(&[14, 9, 8, 6, 6, 7, 5, 5, 5, 6, neg_weight, 3, 6])
-        {
+        let mut weights = vec![14, 9, 8, 6, 6, 7, 5, 5, 5, 6, neg_weight, 3, 6];
+        if self.floats {
+            weights.push(5);
+        }
+        match self.b.weighted(&weights) {
             0 => self.arithmetic(BinOp::Add, ty, depth),
             1 => self.arithmetic(BinOp::Sub, ty, depth),
             2 => self.arithmetic(BinOp::Mul, ty, depth),
@@ -302,15 +322,114 @@ impl Gen<'_> {
             }
             10 => Expr::negated(self.expr(Ty::I32, d)),
             11 => Expr::inverted(self.expr(ty, d)),
-            _ => {
+            12 => {
                 let other = if ty == Ty::U32 { Ty::I32 } else { Ty::U32 };
                 Expr::cast(ty, self.expr(other, d))
+            }
+            _ => Expr::cast(ty, self.expr(Ty::F32, d)),
+        }
+    }
+
+    /// An `f32` expression (R1-4): `+ - * /`, unary `-`, and casts from integers. A `+`/`-` chain has at most four
+    /// written terms; a divisor is mostly kept away from zero by construction.
+    fn float_expr(&mut self, d: u32) -> Expr {
+        match self.b.weighted(&[16, 10, 14, 8, 6, 8]) {
+            kind @ (0 | 1) => {
+                let op = if kind == 0 { BinOp::Add } else { BinOp::Sub };
+                let l = self.expr(Ty::F32, d);
+                let r = self.expr(Ty::F32, d);
+                let (l, r) = self.fit_chain(l, r, 4);
+                Expr::bin(op, l, r)
+            }
+            2 => {
+                let l = self.expr(Ty::F32, d);
+                let r = self.expr(Ty::F32, d);
+                Expr::bin(BinOp::Mul, l, r)
+            }
+            3 => {
+                let l = self.expr(Ty::F32, d);
+                let r = self.float_divisor(d);
+                Expr::bin(BinOp::Div, l, r)
+            }
+            4 => Expr::negated(self.expr(Ty::F32, d)),
+            _ => {
+                let ty = self.int_ty();
+                let e = self.expr(ty, d);
+                // A converted integer must stay within 2^24: mostly masked to 16 bits.
+                let e = if self.b.chance(70) {
+                    Expr::bin(BinOp::BitAnd, e, Expr::Lit(ty, 0xFFFF))
+                } else {
+                    e
+                };
+                Expr::cast(Ty::F32, e)
             }
         }
     }
 
+    /// Replaces operands of a `+`/`-` chain by leaves until it has at most `max` written terms.
+    fn fit_chain(&mut self, mut l: Expr, mut r: Expr, max: usize) -> (Expr, Expr) {
+        while chain_terms(&l) + chain_terms(&r) > max {
+            if chain_terms(&l) >= chain_terms(&r) {
+                l = self.leaf(Ty::F32);
+            } else {
+                r = self.leaf(Ty::F32);
+            }
+        }
+        (l, r)
+    }
+
+    fn float_divisor(&mut self, d: u32) -> Expr {
+        const DIVISORS: [f32; 10] = [0.5, 1.0, 2.0, 3.0, 4.0, 0.25, 10.0, -2.0, -4.0, 8.0];
+        match self.b.weighted(&[40, 30, 30]) {
+            0 => Expr::f32(DIVISORS[self.b.below(DIVISORS.len() as u32) as usize]),
+            1 => match self.expr(Ty::F32, d) {
+                // Never a literal zero divisor (the validator refuses one even in dead code).
+                Expr::Lit(_, 0) => Expr::f32(1.0),
+                other => other,
+            },
+            _ => {
+                // x * x + c with c >= 1: away from zero whatever x is.
+                let e = self.expr(Ty::F32, d);
+                let square = Expr::bin(BinOp::Mul, e.clone(), e);
+                let c = Expr::f32(1.0 + self.b.below(4) as f32);
+                Expr::bin(BinOp::Add, square, c)
+            }
+        }
+    }
+
+    /// A literal from a spread of values: small integers, powers of two, decimals, zero; a third of them negative.
+    fn float_literal(&mut self) -> Expr {
+        let value = match self.b.weighted(&[30, 25, 20, 8, 17]) {
+            0 => 1.0 + self.b.below(16) as f32,
+            1 => f32::from_bits((127 - 8 + self.b.below(17)) << 23),
+            2 => {
+                let mantissa = self.b.below(1 << 16) as f32 / 65_536.0;
+                (1.0 + mantissa) * f32::from_bits((127 - 6 + self.b.below(13)) << 23)
+            }
+            3 => return Expr::f32(0.0),
+            _ => [0.5, 1.0, 2.0, 0.1, 0.25, 1.5][self.b.below(6) as usize],
+        };
+        Expr::f32(if self.b.chance(33) { -value } else { value })
+    }
+
     fn bool_expr(&mut self, d: u32) -> Expr {
-        match self.b.weighted(&[55, 20, 10, 5]) {
+        let mut weights = vec![55, 20, 10, 5];
+        if self.floats {
+            weights = vec![50, 20, 10, 8, 18];
+        }
+        match self.b.weighted(&weights) {
+            4 => {
+                // Only comparisons of disjoint intervals are kept (R1-4), `==` and `!=` included.
+                let op = [
+                    BinOp::Eq,
+                    BinOp::Ne,
+                    BinOp::Lt,
+                    BinOp::Le,
+                    BinOp::Gt,
+                    BinOp::Ge,
+                ][self.b.below(6) as usize];
+                Expr::bin(op, self.expr(Ty::F32, d), self.expr(Ty::F32, d))
+            }
             0 => {
                 let ty = self.int_ty();
                 let op = [
@@ -377,8 +496,37 @@ impl Gen<'_> {
                 _ => {
                     let trips = 1 + self.b.below(MAX_TRIPS);
                     let var = self.fresh();
-                    self.scope.push((var, Ty::U32, false));
-                    let body = self.block(depth + 1, 1, 3);
+                    // The float accumulator: a `let mut` before the loop and `acc = acc + term` first in the body, a
+                    // chain of up to `trips + 1` terms (R1-4).
+                    let mut accumulate = Vec::new();
+                    if self.floats && self.b.chance(40) {
+                        let init = if self.b.chance(50) {
+                            Expr::f32(0.0)
+                        } else {
+                            self.expr(Ty::F32, 2)
+                        };
+                        let acc = self.fresh();
+                        stmts.push(Stmt::Let {
+                            var: acc,
+                            ty: Ty::F32,
+                            mutable: true,
+                            init,
+                        });
+                        self.scope.push((acc, Ty::F32, true));
+                        self.scope.push((var, Ty::U32, false));
+                        let term = self.expr(Ty::F32, 3);
+                        let current = Expr::Var(acc, Ty::F32);
+                        let (current, term) = self.fit_chain(current, term, 4);
+                        let op = [BinOp::Add, BinOp::Add, BinOp::Sub][self.b.below(3) as usize];
+                        accumulate.push(Stmt::Assign {
+                            var: acc,
+                            value: Expr::bin(op, current, term),
+                        });
+                    } else {
+                        self.scope.push((var, Ty::U32, false));
+                    }
+                    let mut body = accumulate;
+                    body.extend(self.block(depth + 1, 1, 3));
                     // The loop variable leaves the scope with the loop.
                     self.scope.retain(|(id, ..)| *id != var);
                     stmts.push(Stmt::For { var, trips, body });
@@ -402,6 +550,9 @@ impl Gen<'_> {
             let current = Expr::Var(var, ty);
             let rhs = self.expr(ty, 3);
             let op = match ty {
+                Ty::F32 => {
+                    [BinOp::Add, BinOp::Add, BinOp::Sub, BinOp::Mul][self.b.below(4) as usize]
+                }
                 Ty::Bool => [BinOp::And, BinOp::Or][self.b.below(2) as usize],
                 _ => [
                     BinOp::Add,
@@ -412,6 +563,11 @@ impl Gen<'_> {
                     BinOp::Mul,
                 ][self.b.below(6) as usize],
             };
+            let (current, rhs) = if matches!(op, BinOp::Add | BinOp::Sub) && ty == Ty::F32 {
+                self.fit_chain(current, rhs, 4)
+            } else {
+                (current, rhs)
+            };
             Expr::bin(op, current, rhs)
         } else {
             self.expr(ty, 4)
@@ -420,8 +576,51 @@ impl Gen<'_> {
     }
 }
 
+/// An `f32` bit pattern of magnitude `2^e * (1 + m / 2^23)` for a random mantissa `m`, with `e` in `e_lo..=e_hi` (the
+/// bounded input set of R1-4 is `2^-20 <= |x| < 2^20` or zero), negative if `negative`.
+fn float_in_set(prng: &mut Prng, e_lo: i32, e_hi: i32, negative: bool) -> u32 {
+    let e = e_lo + prng.below((e_hi - e_lo + 1) as u32) as i32;
+    let mantissa = prng.next_u32() & 0x7F_FFFF;
+    (u32::from(negative) << 31) | (((e + 127) as u32) << 23) | mantissa
+}
+
+/// How `data` is drawn for one `f32` input buffer: always inside the bounded set of R1-4 (magnitudes in
+/// `[2^-20, 2^20]`, or exactly zero; no negative zero).
+fn float_input_data(class: usize, count: u32, sub_seed: u64) -> Vec<u32> {
+    let mut prng = Prng::new(sub_seed);
+    (0..count)
+        .map(|_| {
+            let negative = prng.next_u32() & 1 == 1;
+            match class {
+                0 => float_in_set(&mut prng, -2, 1, negative),
+                1 => float_in_set(&mut prng, -20, 19, negative),
+                2 if prng.below(100) < 30 => 0,
+                2 => float_in_set(&mut prng, -6, 6, negative),
+                3 => {
+                    // Small exact integers: the values casts to integers see.
+                    let value = 1 + prng.below(1000);
+                    (value as f32).to_bits() | (u32::from(negative) << 31)
+                }
+                4 => float_in_set(&mut prng, 0, 3, false),
+                5 => {
+                    // Multiples of 1/16: exact in every grouping.
+                    let value = 1 + prng.below(64);
+                    (value as f32 / 16.0).to_bits() | (u32::from(negative) << 31)
+                }
+                _ => {
+                    const EDGES: [f32; 9] = [0.0, 1.0, -1.0, 0.5, 2.0, 1.5, -2.5, 0.1, 1_048_575.0];
+                    EDGES[prng.below(EDGES.len() as u32) as usize].to_bits()
+                }
+            }
+        })
+        .collect()
+}
+
 /// How `data` is drawn for one input buffer.
 fn input_data(ty: Ty, class: usize, count: u32, sub_seed: u64) -> Vec<u32> {
+    if ty == Ty::F32 {
+        return float_input_data(class, count, sub_seed);
+    }
     const U32_EDGES: [u32; 13] = [
         0,
         1,
@@ -470,13 +669,20 @@ fn input_data(ty: Ty, class: usize, count: u32, sub_seed: u64) -> Vec<u32> {
         .collect()
 }
 
-/// Decodes one program from a byte stream. Pure: the same bytes give the same program.
+/// Decodes one program of the default (`Space::Float`) space from a byte stream. Pure: the same bytes give the
+/// same program.
 pub fn decode(bytes: &[u8], seed: u64, attempt: u64) -> Program {
+    decode_in(Space::Float, bytes, seed, attempt)
+}
+
+/// Decodes one program of `space` from a byte stream.
+pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program {
     let mut g = Gen {
         b: Bytes {
             data: bytes,
             pos: 0,
         },
+        floats: space == Space::Float,
         inputs: Vec::new(),
         next_var: 0,
         scope: Vec::new(),
@@ -488,7 +694,11 @@ pub fn decode(bytes: &[u8], seed: u64, attempt: u64) -> Program {
     let input_count = 1 + g.b.below(3);
     let mut inputs = Vec::new();
     for _ in 0..input_count {
-        let ty = g.int_ty();
+        let ty = if g.floats {
+            [Ty::U32, Ty::I32, Ty::F32][g.b.weighted(&[35, 35, 30])]
+        } else {
+            g.int_ty()
+        };
         let class = g.b.weighted(&[3, 4, 4, 3, 2, 1, 3]);
         let sub_seed = g.b.u64();
         g.inputs.push(ty);
@@ -529,6 +739,9 @@ pub fn decode(bytes: &[u8], seed: u64, attempt: u64) -> Program {
 fn fold_in(result: Expr, local: Expr) -> Expr {
     let (ty, local_ty) = (result.ty(), local.ty());
     match (ty, local_ty) {
+        // A float local joins a float result as one more term, if the chain stays within four written terms.
+        (Ty::F32, Ty::F32) if chain_terms(&result) < 4 => Expr::bin(BinOp::Add, result, local),
+        (Ty::F32, _) | (Ty::Bool, Ty::F32) => result,
         (Ty::Bool, Ty::Bool) => Expr::bin(BinOp::Or, result, local),
         (Ty::Bool, _) => Expr::bin(
             BinOp::And,
@@ -541,9 +754,15 @@ fn fold_in(result: Expr, local: Expr) -> Expr {
     }
 }
 
-/// The program of `seed` at `attempt`, whether or not it is in the domain.
+/// The program of `seed` at `attempt` in the default (`Space::Float`) space, whether or not it is in the domain.
 pub fn generate_attempt(seed: u64, attempt: u64) -> Program {
-    decode(
+    generate_attempt_in(Space::Float, seed, attempt)
+}
+
+/// The program of `seed` at `attempt` in `space`, whether or not it is in the domain.
+pub fn generate_attempt_in(space: Space, seed: u64, attempt: u64) -> Program {
+    decode_in(
+        space,
         &byte_stream(seed, attempt, BYTES_PER_PROGRAM),
         seed,
         attempt,
@@ -581,8 +800,14 @@ pub fn discard_reason(program: &Program) -> Option<&'static str> {
         .map(|failure| failure.violation.label())
 }
 
-/// Generates the `PROGRAMS_PER_SEED` in-domain programs of `seed`, in attempt order.
+/// Generates the `PROGRAMS_PER_SEED` in-domain programs of `seed`, in attempt order, in the default
+/// (`Space::Float`) space.
 pub fn generate_batch(seed: u64) -> Result<Batch, String> {
+    generate_batch_in(Space::Float, seed)
+}
+
+/// Generates the `PROGRAMS_PER_SEED` in-domain programs of `seed` in `space`, in attempt order.
+pub fn generate_batch_in(space: Space, seed: u64) -> Result<Batch, String> {
     let mut batch = Batch {
         seed,
         programs: Vec::new(),
@@ -591,7 +816,7 @@ pub fn generate_batch(seed: u64) -> Result<Batch, String> {
     };
     for attempt in 0..MAX_ATTEMPTS {
         batch.attempts = attempt + 1;
-        let program = generate_attempt(seed, attempt);
+        let program = generate_attempt_in(space, seed, attempt);
         match discard_reason(&program) {
             Some(reason) => *batch.discarded.entry(reason).or_default() += 1,
             None => batch.programs.push(program),
@@ -662,12 +887,63 @@ mod tests {
             .map(|p| format!("{:?}", content(p)))
             .collect();
         assert_eq!(distinct.len(), PROGRAMS_PER_SEED);
-        // A pinned decode: these change only with a deliberate format change (and then seeds.txt changes too).
+        // A pinned decode of the integer space (it reads the bytes DIFFTEST_FORMAT 1 read, so these are the m5.c1a
+        // values): they change only with a deliberate format change (and then seeds.txt changes too).
+        let one = generate_batch_in(Space::Integer, 1).unwrap();
+        let two = generate_batch_in(Space::Integer, 2).unwrap();
         let first = &one.programs[0];
         assert_eq!((first.seed, first.attempt, first.count), (1, 0, 1));
         let first = &two.programs[0];
         assert_eq!((first.seed, first.attempt, first.count), (2, 0, 64));
         assert_eq!((one.programs[1].attempt, one.programs[1].count), (3, 2898));
+    }
+
+    #[test]
+    fn the_integer_space_decodes_to_the_programs_of_m5_c1a() {
+        // The discard counts of the m5.c1a corpus (its seeds.txt at 3bcebaf; the hashes are read with the format stamp
+        // as 1): the integer space must reproduce them, so it is the same program space.
+        let expected = [
+            "1 16 57 division-by-zero=3 index=6 no-input-read=3 overflow=34 shift-amount=3 static=8",
+            "2 16 36 division-by-zero=6 index=2 min-over-minus-one=1 overflow=21 static=6",
+            "3 16 38 division-by-zero=8 no-input-read=2 overflow=20 static=8",
+            "4 16 53 division-by-zero=7 index=5 no-input-read=1 overflow=25 shift-amount=1 static=14",
+            "5 16 42 division-by-zero=5 no-input-read=3 overflow=21 shift-amount=3 static=10",
+            "6 16 36 division-by-zero=1 index=3 no-input-read=1 overflow=25 shift-amount=1 static=5",
+            "7 16 61 division-by-zero=8 index=3 no-input-read=2 overflow=37 shift-amount=1 static=10",
+            "8 16 63 division-by-zero=4 index=1 no-input-read=2 overflow=45 static=11",
+        ];
+        // The m5.c1a hashes of the same programs: the emitted text and the input data, byte for byte, with the format
+        // stamp read as 1 (the stamp is the only difference of format 2 for an integer program).
+        let hashes = [
+            0x371f_a252_2e66_81c7_u64,
+            0x811a_4d82_af66_a078,
+            0x7816_c1f1_77b7_08c2,
+            0xa2e3_1f20_063e_9b07,
+            0xd44f_7f81_932a_d6cd,
+            0x3531_64f5_a863_23f9,
+            0x6155_afa9_9718_9c32,
+            0x9a61_7649_d659_8029,
+        ];
+        for ((seed, expected), hash) in (1..=8).zip(expected).zip(hashes) {
+            let batch = generate_batch_in(Space::Integer, seed).unwrap();
+            assert_eq!(
+                crate::corpus::batch_hash_as_format(&batch.programs, 1),
+                hash,
+                "seed {seed}"
+            );
+            let mut line = format!(
+                "{seed} {} {}",
+                batch.programs.len(),
+                batch.discarded_total()
+            );
+            for (reason, count) in &batch.discarded {
+                line.push_str(&format!(" {reason}={count}"));
+            }
+            assert_eq!(line, expected);
+            for program in &batch.programs {
+                assert!(!program.has_float());
+            }
+        }
     }
 
     #[test]
@@ -717,11 +993,33 @@ mod tests {
     #[test]
     fn discards_cover_the_domain_conditions_the_generator_can_reach() {
         let mut reasons = BTreeSet::new();
+        let mut float_reasons = BTreeSet::new();
         for attempt in 0..3000 {
-            if let Some(reason) = discard_reason(&generate_attempt(1, attempt)) {
+            if let Some(reason) = discard_reason(&generate_attempt_in(Space::Integer, 1, attempt)) {
                 reasons.insert(reason);
             }
+            if let Some(reason) = discard_reason(&generate_attempt(1, attempt)) {
+                float_reasons.insert(reason);
+            }
         }
+        // The four float labels of R1-4, so the narrowing is visible in every run's counts.
+        for violation in [
+            Violation::FloatDomain,
+            Violation::ComparisonOverlap,
+            Violation::Unboundable,
+            Violation::FloatConstruct,
+        ] {
+            assert!(
+                float_reasons.contains(violation.label()),
+                "{float_reasons:?}"
+            );
+        }
+        assert!(
+            !reasons.iter().any(|r| r.starts_with("float-")
+                || *r == "unboundable"
+                || *r == "comparison-overlap"),
+            "{reasons:?}"
+        );
         for violation in [
             Violation::Overflow,
             Violation::DivisionByZero,
@@ -745,10 +1043,10 @@ mod tests {
     }
 
     #[test]
-    fn the_corpus_covers_the_full_operator_set_for_both_types() {
+    fn the_integer_corpus_covers_the_full_operator_set_for_both_types() {
         let mut total: BTreeMap<String, usize> = BTreeMap::new();
         for seed in 1..=8 {
-            for program in generate_batch(seed).unwrap().programs {
+            for program in generate_batch_in(Space::Integer, seed).unwrap().programs {
                 for (key, count) in operator_counts(&program) {
                     *total.entry(key).or_default() += count;
                 }
@@ -854,5 +1152,102 @@ mod tests {
             wide_shifts > 0,
             "the generator no longer writes out-of-range literal shifts"
         );
+    }
+
+    #[test]
+    fn the_float_corpus_covers_the_float_subset() {
+        let mut total: BTreeMap<String, usize> = BTreeMap::new();
+        let mut loop_accumulators = 0;
+        let mut float_outputs = 0;
+        let mut float_to_int = 0;
+        for seed in 1..=8 {
+            for program in generate_batch(seed).unwrap().programs {
+                for (key, count) in operator_counts(&program) {
+                    *total.entry(key).or_default() += count;
+                }
+                float_outputs += usize::from(program.out_ty() == Ty::F32);
+                crate::ast::visit_exprs(&program, &mut |e| {
+                    if let Expr::Cast { to, e } = e {
+                        float_to_int += usize::from(to.is_int() && e.ty() == Ty::F32);
+                    }
+                });
+                fn has_accumulator(stmts: &[Stmt]) -> bool {
+                    stmts.iter().any(|stmt| match stmt {
+                        Stmt::For { body, .. } => body.iter().any(
+                            |s| matches!(s, Stmt::Assign { value, .. } if value.ty() == Ty::F32),
+                        ) || has_accumulator(body),
+                        Stmt::If { then, els, .. } => has_accumulator(then) || has_accumulator(els),
+                        _ => false,
+                    })
+                }
+                loop_accumulators += usize::from(has_accumulator(&program.body));
+            }
+        }
+        let mut expected: Vec<String> = ["+", "-", "*", "/", "==", "!=", "<", "<=", ">", ">="]
+            .iter()
+            .map(|op| format!("{op} f32"))
+            .collect();
+        expected.extend(["-f32".to_owned(), "as f32".to_owned()]);
+        let missing: Vec<&String> = expected
+            .iter()
+            .filter(|key| !total.contains_key(*key))
+            .collect();
+        assert!(missing.is_empty(), "not covered: {missing:?}\n{total:?}");
+        assert!(
+            loop_accumulators > 0,
+            "no float loop accumulator in the corpus"
+        );
+        assert!(float_outputs > 0, "no f32 output in the corpus");
+        assert!(float_to_int > 0, "no f32 -> integer cast in the corpus");
+    }
+
+    #[test]
+    fn float_programs_stay_inside_the_subset() {
+        let mut floats = 0;
+        for seed in 1..=3 {
+            for attempt in 0..400 {
+                let program = generate_attempt(seed, attempt);
+                floats += usize::from(program.has_float());
+                for input in program.inputs.iter().filter(|input| input.ty == Ty::F32) {
+                    for bits in &input.data {
+                        let value = f32::from_bits(*bits);
+                        assert!(
+                            *bits == 0
+                                || (value.abs() >= 2f32.powi(-20) && value.abs() < 2f32.powi(20)),
+                            "input {value:e} is outside the bounded set"
+                        );
+                    }
+                }
+                crate::ast::visit_exprs(&program, &mut |e| {
+                    // At most four written terms per chain; no float `%`; no bool buffer (`check` refuses both).
+                    assert!(
+                        crate::ast::chain_terms(e) <= 4,
+                        "seed {seed} attempt {attempt}"
+                    );
+                });
+                program.check().unwrap();
+            }
+        }
+        assert!(floats > 400, "{floats} float programs in 1200 attempts");
+    }
+
+    #[test]
+    fn no_float_divisor_is_a_literal_zero_in_the_float_space_either() {
+        // Covered by `no_decoded_program_has_a_literal_zero_divisor`, which scans the float space; this checks the
+        // scan can see a float divisor at all.
+        let mut float_divisions = 0;
+        for attempt in 0..2000 {
+            crate::ast::visit_exprs(&generate_attempt(1, attempt), &mut |e| {
+                if let Expr::Bin {
+                    op: BinOp::Div,
+                    ty: Ty::F32,
+                    ..
+                } = e
+                {
+                    float_divisions += 1;
+                }
+            });
+        }
+        assert!(float_divisions > 20, "{float_divisions}");
     }
 }

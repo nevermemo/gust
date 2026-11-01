@@ -24,7 +24,18 @@ pub fn fnv1a64_update(hash: u64, bytes: &[u8]) -> u64 {
 
 /// The corpus hash of a batch: the emitted `lib.rs`, then every input buffer of every program.
 pub fn batch_hash(programs: &[Program]) -> u64 {
-    let mut hash = fnv1a64(emit_crate_source(programs).as_bytes());
+    batch_hash_as_format(programs, DIFFTEST_FORMAT)
+}
+
+/// [`batch_hash`] with the format stamp of the emitted text read as `format`: the stamp is the one thing a format bump
+/// changes in a program that is otherwise the same, so this reproduces the hash an older format wrote for it.
+pub fn batch_hash_as_format(programs: &[Program], format: u32) -> u64 {
+    let text = emit_crate_source(programs).replacen(
+        &format!("(DIFFTEST_FORMAT {DIFFTEST_FORMAT})"),
+        &format!("(DIFFTEST_FORMAT {format})"),
+        1,
+    );
+    let mut hash = fnv1a64(text.as_bytes());
     for program in programs {
         for input in &program.inputs {
             hash = fnv1a64_update(hash, &[input.ty.name().len() as u8]);

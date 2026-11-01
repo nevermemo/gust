@@ -30,7 +30,7 @@ fn the_packaged_helper_source_is_the_probe_source() {
         original.replace("\r\n", "\n"),
         "copy scripts/probes/slang-layout.cpp to crates/cargo-gust/assets/slang-layout.cpp"
     );
-    assert!(HELPER_SOURCE.contains("gust-slang-reflect schema=1 slang="));
+    assert!(HELPER_SOURCE.contains("gust-slang-reflect schema=2 slang="));
 }
 
 #[test]

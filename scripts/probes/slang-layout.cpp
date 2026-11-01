@@ -53,6 +53,38 @@ static std::string json_string(const char* text)
     return output.str();
 }
 
+// The matrix layout is pinned, not left to the API default (row-major in the native API, column-major on the slangc
+// command line: M6 spike V1). The CLI path passes -matrix-layout-column-major for the same reason.
+static const SlangMatrixLayoutMode kMatrixLayoutMode = SLANG_MATRIX_LAYOUT_COLUMN_MAJOR;
+
+static const char* matrix_layout_name(SlangMatrixLayoutMode mode)
+{
+    switch (mode)
+    {
+    case SLANG_MATRIX_LAYOUT_COLUMN_MAJOR: return "column";
+    case SLANG_MATRIX_LAYOUT_ROW_MAJOR: return "row";
+    default: throw std::runtime_error("unknown matrix layout mode");
+    }
+}
+
+static const char* scalar_name(slang::TypeReflection::ScalarType scalar)
+{
+    switch (scalar)
+    {
+    case slang::TypeReflection::ScalarType::Float32: return "float32";
+    case slang::TypeReflection::ScalarType::Int32: return "int32";
+    case slang::TypeReflection::ScalarType::UInt32: return "uint32";
+    default: throw std::runtime_error("unsupported scalar type; only 32-bit scalars are supported");
+    }
+}
+
+// Schema 1 describes 32-bit scalars and structs of them in structured buffers. A vector, a matrix or a constant buffer
+// anywhere in the program makes the document schema 2: a top-level matrixLayout and the new type kinds.
+struct SchemaUse
+{
+    bool newKinds = false;
+};
+
 static std::string fingerprint(const void* data, size_t size)
 {
     uint64_t hash = UINT64_C(14695981039346656037);
@@ -67,32 +99,42 @@ static std::string fingerprint(const void* data, size_t size)
     return output.str();
 }
 
-static std::string type_json(slang::TypeLayoutReflection* type, unsigned depth = 0)
+static std::string type_json(slang::TypeLayoutReflection* type, SchemaUse& use, unsigned depth = 0)
 {
     if (!type || depth > 32) throw std::runtime_error("missing or excessively nested element layout");
     const auto size = known(type->getSize(), "size");
-    const auto stride = known(type->getStride(), "stride");
+    auto stride = known(type->getStride(), "stride");
     const auto alignment = type->getAlignment();
     if (size == 0 || stride == 0 || alignment <= 0)
         throw std::runtime_error("missing byte layout");
+    if (type->getKind() == slang::TypeReflection::Kind::Matrix)
+    {
+        // The "stride" of a matrix in the document is its column stride (its row stride in a row-major matrix). The
+        // API's stride is the array stride of the whole matrix, which a structured buffer reports as elementStride.
+        const auto major = type->getMatrixLayoutMode() == SLANG_MATRIX_LAYOUT_ROW_MAJOR ? type->getRowCount()
+                                                                                         : type->getColumnCount();
+        if (major == 0 || size % major) throw std::runtime_error("matrix size is not a whole number of columns");
+        stride = size / major;
+    }
     std::ostringstream output;
     output << "{\"size\":" << size << ",\"alignment\":" << alignment << ",\"stride\":" << stride;
     if (type->getName()) output << ",\"name\":" << json_string(type->getName());
     switch (type->getKind())
     {
     case slang::TypeReflection::Kind::Scalar:
-    {
-        const char* scalar = nullptr;
-        switch (type->getScalarType())
-        {
-        case slang::TypeReflection::ScalarType::Float32: scalar = "float32"; break;
-        case slang::TypeReflection::ScalarType::Int32: scalar = "int32"; break;
-        case slang::TypeReflection::ScalarType::UInt32: scalar = "uint32"; break;
-        default: throw std::runtime_error("unsupported scalar type; StorageV1 requires 32-bit scalars");
-        }
-        output << ",\"kind\":\"scalar\",\"scalarType\":" << json_string(scalar);
+        output << ",\"kind\":\"scalar\",\"scalarType\":" << json_string(scalar_name(type->getScalarType()));
         break;
-    }
+    case slang::TypeReflection::Kind::Vector:
+        use.newKinds = true;
+        output << ",\"kind\":\"vector\",\"scalarType\":" << json_string(scalar_name(type->getScalarType()))
+               << ",\"elementCount\":" << type->getType()->getElementCount();
+        break;
+    case slang::TypeReflection::Kind::Matrix:
+        use.newKinds = true;
+        output << ",\"kind\":\"matrix\",\"scalarType\":" << json_string(scalar_name(type->getScalarType()))
+               << ",\"rows\":" << type->getRowCount() << ",\"columns\":" << type->getColumnCount()
+               << ",\"matrixLayout\":" << json_string(matrix_layout_name(type->getMatrixLayoutMode()));
+        break;
     case slang::TypeReflection::Kind::Struct:
         if (!type->getFieldCount()) throw std::runtime_error("empty struct layout");
         output << ",\"kind\":\"struct\",\"fields\":[";
@@ -108,12 +150,12 @@ static std::string type_json(slang::TypeLayoutReflection* type, unsigned depth =
                    << ",\"binding\":{\"kind\":\"uniform\",\"offset\":"
                    << known(field->getOffset(), "field offset") << ",\"size\":"
                    << known(field->getTypeLayout()->getSize(), "field size") << "},\"type\":"
-                   << type_json(field->getTypeLayout(), depth + 1) << '}';
+                   << type_json(field->getTypeLayout(), use, depth + 1) << '}';
         }
         output << ']';
         break;
     default:
-        throw std::runtime_error("unsupported element type; StorageV1 accepts only 32-bit scalars and structs");
+        throw std::runtime_error("unsupported element type; only 32-bit scalars, vectors, matrices and structs are supported");
     }
     output << '}';
     return output.str();
@@ -147,20 +189,34 @@ static std::string reflection_json(slang::ProgramLayout* layout, const char* ent
     }
     SlangUInt dimensions[3] = {};
     entry->getComputeThreadGroupSize(3, dimensions);
-    std::ostringstream output;
-    output << "{\"schemaVersion\":1,\"compiler\":" << json_string(compiler)
-           << ",\"target\":" << json_string(target) << ",\"entryPoint\":" << json_string(entryName)
-           << ",\"sourceHash\":\"" << fingerprint(source.data(), source.size())
-           << "\",\"artifactHash\":\"" << fingerprint(code->getBufferPointer(), code->getBufferSize())
-           << "\",\"workgroupSize\":[" << known(dimensions[0], "workgroup x") << ','
-           << known(dimensions[1], "workgroup y") << ',' << known(dimensions[2], "workgroup z")
-           << "],\"parameters\":[";
+    SchemaUse use;
+    std::ostringstream parameters;
     for (unsigned index = 0; index < layout->getParameterCount(); ++index)
     {
         auto resource = layout->getParameterByIndex(index);
         if (!resource || !resource->getTypeLayout()) throw std::runtime_error("missing resource layout");
         auto type = resource->getTypeLayout();
         const auto category = slang::ParameterCategory::DescriptorTableSlot;
+        if (type->getKind() == slang::TypeReflection::Kind::ConstantBuffer)
+        {
+            // A constant buffer occupies one descriptor slot; only its element carries a byte layout (Uniform).
+            if (resource->getCategoryCount() != 1 || resource->getCategoryByIndex(0) != category ||
+                type->getSize(category) != 1)
+                throw std::runtime_error("only individual constant-buffer descriptor bindings are supported");
+            auto element = type->getElementTypeLayout();
+            if (!element) throw std::runtime_error("missing constant-buffer element layout");
+            use.newKinds = true;
+            const auto elementJson = type_json(element, use);
+            if (index) parameters << ',';
+            parameters << "{\"name\":" << json_string(resource->getName())
+                       << ",\"binding\":{\"kind\":\"descriptorTableSlot\",\"count\":1,\"index\":"
+                       << known(resource->getOffset(category), "binding index") << ",\"space\":"
+                       << known(resource->getBindingSpace(category), "binding space")
+                       << "},\"type\":{\"kind\":\"constantBuffer\",\"size\":"
+                       << known(element->getSize(), "constant buffer size") << ",\"elementType\":" << elementJson
+                       << "}}";
+            continue;
+        }
         if (type->getKind() != slang::TypeReflection::Kind::Resource ||
             type->getResourceShape() != SLANG_STRUCTURED_BUFFER ||
             type->getExplicitCounter() || resource->getCategoryCount() != 1 ||
@@ -174,17 +230,26 @@ static std::string reflection_json(slang::ProgramLayout* layout, const char* ent
         default: throw std::runtime_error("unsupported resource access");
         }
         auto element = type->getElementTypeLayout();
-        const auto elementJson = type_json(element);
-        if (index) output << ',';
-        output << "{\"name\":" << json_string(resource->getName())
-               << ",\"binding\":{\"kind\":\"descriptorTableSlot\",\"count\":1,\"index\":"
-               << known(resource->getOffset(category), "binding index") << ",\"space\":"
-               << known(resource->getBindingSpace(category), "binding space")
-               << "},\"elementStride\":" << known(element->getStride(), "buffer element stride")
-               << ",\"type\":{\"kind\":\"resource\",\"baseShape\":\"structuredBuffer\",\"access\":"
-               << json_string(access) << ",\"resultType\":" << elementJson << "}}";
+        const auto elementJson = type_json(element, use);
+        if (index) parameters << ',';
+        parameters << "{\"name\":" << json_string(resource->getName())
+                   << ",\"binding\":{\"kind\":\"descriptorTableSlot\",\"count\":1,\"index\":"
+                   << known(resource->getOffset(category), "binding index") << ",\"space\":"
+                   << known(resource->getBindingSpace(category), "binding space")
+                   << "},\"elementStride\":" << known(element->getStride(), "buffer element stride")
+                   << ",\"type\":{\"kind\":\"resource\",\"baseShape\":\"structuredBuffer\",\"access\":"
+                   << json_string(access) << ",\"resultType\":" << elementJson << "}}";
     }
-    output << "]}";
+    std::ostringstream output;
+    output << "{\"schemaVersion\":" << (use.newKinds ? 2 : 1);
+    if (use.newKinds) output << ",\"matrixLayout\":" << json_string(matrix_layout_name(kMatrixLayoutMode));
+    output << ",\"compiler\":" << json_string(compiler)
+           << ",\"target\":" << json_string(target) << ",\"entryPoint\":" << json_string(entryName)
+           << ",\"sourceHash\":\"" << fingerprint(source.data(), source.size())
+           << "\",\"artifactHash\":\"" << fingerprint(code->getBufferPointer(), code->getBufferSize())
+           << "\",\"workgroupSize\":[" << known(dimensions[0], "workgroup x") << ','
+           << known(dimensions[1], "workgroup y") << ',' << known(dimensions[2], "workgroup z")
+           << "],\"parameters\":[" << parameters.str() << "]}";
     return output.str();
 }
 
@@ -235,6 +300,7 @@ static void probe(slang::IGlobalSession* global, const std::string& source,
     slang::SessionDesc desc;
     desc.targets = &target;
     desc.targetCount = 1;
+    desc.defaultMatrixLayoutMode = kMatrixLayoutMode;
     ComPtr<slang::ISession> session;
     check(global->createSession(desc, session.writeRef()), "createSession failed");
     ComPtr<slang::IBlob> diag;
@@ -264,7 +330,7 @@ static void probe(slang::IGlobalSession* global, const std::string& source,
         write_file(reflectionPath, json.data(), json.size());
         return;
     }
-    if (layout->getParameterCount() != 4) throw std::runtime_error("missing fixture resources");
+    if (layout->getParameterCount() == 0) throw std::runtime_error("missing fixture resources");
     std::cout << "target=" << label << " code_bytes=" << code->getBufferSize() << '\n';
     for (unsigned i = 0; i < layout->getParameterCount(); ++i)
     {
@@ -293,7 +359,7 @@ int main(int argc, char** argv)
         check(slang::createGlobalSession(global.writeRef()), "createGlobalSession failed");
         if (argc == 2 && std::string(argv[1]) == "--version")
         {
-            std::cout << "gust-slang-reflect schema=1 slang=" << global->getBuildTagString() << '\n';
+            std::cout << "gust-slang-reflect schema=2 slang=" << global->getBuildTagString() << '\n';
             return 0;
         }
         std::ifstream stream(argv[1], std::ios::binary);

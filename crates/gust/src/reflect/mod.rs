@@ -441,29 +441,38 @@ impl CompiledReflection {
     }
 }
 
+/// The `slangc` command of the CLI reflection path up to its output options. The matrix layout is named for the same
+/// reason as in `slang::slangc_command`: the CLI and the native helper must agree on it (M6 spike V1).
+#[cfg(feature = "slang-runtime")]
+fn slangc_reflection_command(source: &std::path::Path, target: Target, entry: &str) -> Command {
+    let mut command = Command::new("slangc");
+    command.arg(source).args([
+        "-target",
+        target_name(target),
+        "-entry",
+        entry,
+        "-stage",
+        "compute",
+        "-matrix-layout-column-major",
+    ]);
+    if target == Target::Spirv {
+        command.arg("-fvk-use-entrypoint-name");
+    }
+    command
+}
+
 #[cfg(feature = "slang-runtime")]
 /// Compile exactly this target and entry point, requesting Slang's JSON metadata.
 pub fn reflect(kernel: &KernelDescriptor, target: Target) -> Result<Reflection, Error> {
     let directory = TemporaryDirectory::create()?;
     let source = directory.path().join("kernel.slang");
     let json = directory.path().join("reflection.json");
-    let (target_name, extension) = match target {
-        Target::Wgsl => ("wgsl", "wgsl"),
-        Target::Spirv => ("spirv", "spv"),
+    let extension = match target {
+        Target::Wgsl => "wgsl",
+        Target::Spirv => "spv",
     };
     slang::write_compile_inputs(directory.path(), kernel.slang_source, &kernel.source)?;
-    let mut command = Command::new("slangc");
-    command.arg(source).args([
-        "-target",
-        target_name,
-        "-entry",
-        kernel.entry_point,
-        "-stage",
-        "compute",
-    ]);
-    if target == Target::Spirv {
-        command.arg("-fvk-use-entrypoint-name");
-    }
+    let mut command = slangc_reflection_command(&source, target, kernel.entry_point);
     let output = command
         .arg("-reflection-json")
         .arg(&json)
@@ -806,6 +815,35 @@ mod tests {
         artifacts: &[],
     };
     const ARTIFACT: &[u8] = b"artifact bytes";
+
+    /// The CLI reflection path names the matrix layout (the native helper pins the same one).
+    #[cfg(feature = "slang-runtime")]
+    #[test]
+    fn the_cli_reflection_command_pins_the_column_major_matrix_layout() {
+        for (target, spirv_flag) in [
+            (Target::Wgsl, None),
+            (Target::Spirv, Some("-fvk-use-entrypoint-name")),
+        ] {
+            let command =
+                slangc_reflection_command(std::path::Path::new("kernel.slang"), target, "entry");
+            let mut expected = vec![
+                "kernel.slang",
+                "-target",
+                target_name(target),
+                "-entry",
+                "entry",
+                "-stage",
+                "compute",
+                "-matrix-layout-column-major",
+            ];
+            expected.extend(spirv_flag);
+            let actual: Vec<String> = command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(actual, expected, "{target:?}");
+        }
+    }
 
     /// A canned helper result (a real one cannot be forced to lie): only the
     /// identity fields, which `from_output` checks before anything else.

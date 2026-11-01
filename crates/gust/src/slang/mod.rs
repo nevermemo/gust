@@ -171,6 +171,27 @@ fn compile_in_directory(
     compile_at(&directory.0, source, entry, origin, target)
 }
 
+/// The `slangc` command up to the output options. The matrix layout is named, not left to the default: the command
+/// line defaults to column-major today and the native API of the reflection helper to row-major (M6 spike V1), and
+/// `abi::MATRIX_LAYOUT` is column-major, so both paths pin it (the helper through `defaultMatrixLayoutMode`).
+#[cfg(feature = "slang-runtime")]
+fn slangc_command(source: &Path, target: Target, entry: &str) -> Command {
+    let mut command = Command::new("slangc");
+    command.arg(source).args([
+        "-target",
+        target.slang_name(),
+        "-entry",
+        entry,
+        "-stage",
+        "compute",
+        "-matrix-layout-column-major",
+    ]);
+    if target == Target::Spirv {
+        command.arg("-fvk-use-entrypoint-name");
+    }
+    command
+}
+
 #[cfg(feature = "slang-runtime")]
 /// Compile inside `directory`, which the caller owns and removes.
 fn compile_at(
@@ -187,18 +208,7 @@ fn compile_at(
     let line_directives = write_compile_inputs(directory, source, origin)? != source;
     fs::write(&map_path, source_map.json(origin, line_directives))?;
 
-    let mut command = Command::new("slangc");
-    command.arg(&source_path).args([
-        "-target",
-        target.slang_name(),
-        "-entry",
-        entry,
-        "-stage",
-        "compute",
-    ]);
-    if target == Target::Spirv {
-        command.arg("-fvk-use-entrypoint-name");
-    }
+    let mut command = slangc_command(&source_path, target, entry);
     let result = command.arg("-o").arg(&output_path).output();
     let output = match result {
         Ok(output) => output,
@@ -665,6 +675,34 @@ mod tests {
             diagnostic,
         )
         .map(|origin| origin.kernel)
+    }
+
+    /// The compile path names the matrix layout (the reflection helper pins the same one natively).
+    #[cfg(feature = "slang-runtime")]
+    #[test]
+    fn the_compile_command_pins_the_column_major_matrix_layout() {
+        for (target, spirv_flag) in [
+            (Target::Wgsl, None),
+            (Target::Spirv, Some("-fvk-use-entrypoint-name")),
+        ] {
+            let command = slangc_command(Path::new("kernel.slang"), target, "gpu_m_k");
+            let mut expected = vec![
+                "kernel.slang",
+                "-target",
+                target.slang_name(),
+                "-entry",
+                "gpu_m_k",
+                "-stage",
+                "compute",
+                "-matrix-layout-column-major",
+            ];
+            expected.extend(spirv_flag);
+            let actual: Vec<String> = command
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect();
+            assert_eq!(actual, expected, "{target:?}");
+        }
     }
 
     #[cfg(feature = "slang-runtime")]

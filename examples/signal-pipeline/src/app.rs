@@ -269,11 +269,19 @@ fn benchmark_element_count() -> usize {
     }
 }
 
+/// The largest absolute difference; NaN when any difference is NaN, so that `error <= bound` fails
+/// (`f32::max` would return the other operand and a fold with it would turn the NaN into 0).
 fn max_abs_error(left: &[f32], right: &[f32]) -> f32 {
     left.iter()
         .zip(right)
         .map(|(left, right)| (left - right).abs())
-        .fold(0.0, f32::max)
+        .fold(0.0, |max: f32, diff| {
+            if max.is_nan() || diff.is_nan() {
+                f32::NAN
+            } else {
+                max.max(diff)
+            }
+        })
 }
 
 fn print_comparison(
@@ -412,7 +420,16 @@ mod tests {
     /// The domain the bound is derived for: every input of `Inputs::new` lies in these ranges. All inputs are periodic
     /// with periods of at most 2048, so 4096 elements reach every extreme.
     fn assert_derivation_domain(inputs: &Inputs) {
-        let largest = |values: &[f32]| values.iter().fold(0.0f32, |m, v| m.max(v.abs()));
+        // A NaN input must fail its bound: `f32::max` would skip it, so the maximum is poisoned instead.
+        let largest = |values: &[f32]| {
+            values.iter().fold(0.0f32, |m, v| {
+                if m.is_nan() || v.is_nan() {
+                    f32::NAN
+                } else {
+                    m.max(v.abs())
+                }
+            })
+        };
         assert!(largest(&inputs.signal) <= 4.0, "signal");
         assert!(largest(&inputs.baseline) <= 0.16, "baseline");
         assert!(largest(&inputs.gain) <= 1.16, "gain");
@@ -452,15 +469,55 @@ mod tests {
         Ok(out.read())
     }
 
+    /// `a.max(b)` that keeps a NaN. `f64::max` returns the other operand when one is NaN, so a fold with it turns a
+    /// NaN difference into 0 and a bound check on the result passes; this poisons the maximum, so that
+    /// `maximum <= bound` fails.
+    fn propagating_max(a: f64, b: f64) -> f64 {
+        if a.is_nan() || b.is_nan() {
+            f64::NAN
+        } else {
+            a.max(b)
+        }
+    }
+
     /// The largest distance between two results in ULPs and in absolute terms (computed in `f64`).
     fn largest_difference(left: &[f32], right: &[f32]) -> (u64, f64) {
         assert_eq!(left.len(), right.len());
         left.iter().zip(right).fold((0, 0.0), |(ulp, abs), (l, r)| {
             (
                 ulp.max(ulps(*l, *r)),
-                abs.max((f64::from(*l) - f64::from(*r)).abs()),
+                propagating_max(abs, (f64::from(*l) - f64::from(*r)).abs()),
             )
         })
+    }
+
+    #[test]
+    fn a_nan_in_a_compared_value_fails_the_bound_checks() {
+        // `fold(0.0, f32::max)` returned 0 for a NaN difference, so a GPU that wrote NaN passed the bounds.
+        let finite = [1.0f32, 2.0, 3.0];
+        let mut poisoned = finite;
+        poisoned[1] = f32::NAN;
+        let (_, clean) = largest_difference(&finite, &finite);
+        assert!(clean <= TWIN_VS_GPU_BOUND);
+        for (left, right) in [(&finite, &poisoned), (&poisoned, &finite)] {
+            let (ulps, abs) = largest_difference(left, right);
+            assert!(abs.is_nan(), "the absolute error must stay NaN, got {abs}");
+            let passes = abs <= TWIN_VS_GPU_BOUND;
+            assert!(!passes, "a NaN must not pass the bound");
+            assert_eq!(ulps, u64::MAX);
+            assert!(max_abs_error(left, right).is_nan());
+            let passes = max_abs_error(left, right) <= 2.0e-5;
+            assert!(!passes, "a NaN must not pass the bound");
+        }
+        let late = [f32::NAN, 5.0, 9.0];
+        assert!(largest_difference(&late, &[0.0, 0.0, 0.0]).1.is_nan());
+        assert!(max_abs_error(&late, &[0.0, 0.0, 0.0]).is_nan());
+        assert_eq!(max_abs_error(&[1.0, 4.0], &[1.5, 1.0]), 3.0);
+        // The derivation-domain guard rejects a NaN input too.
+        let mut inputs = Inputs::new(64);
+        inputs.signal[7] = f32::NAN;
+        let rejected = std::panic::catch_unwind(|| assert_derivation_domain(&inputs));
+        assert!(rejected.is_err(), "a NaN signal must fail the domain guard");
     }
 
     #[test]

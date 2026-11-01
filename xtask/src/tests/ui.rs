@@ -1188,3 +1188,36 @@ fn a_diagnostic_on_a_sibling_target_is_selected_by_the_target_name() {
     assert_eq!(problems.len(), 2, "{problems:#?}");
     assert!(problems[0].contains("`line: 7`"), "{problems:?}");
 }
+
+/// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
+/// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
+/// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
+const PINNED_FIXTURES: [&str; 11] = [
+    "gpupod-missing",
+    "gpupod-present",
+    "kernel-cpu-bad-value",
+    "kernel-cpu-duplicate",
+    "kernel-missing",
+    "layout-outside-element",
+    "layout-outside-field",
+    "typed-call-mismatch",
+    "typed-call-no-cpu-twin",
+    "typed-call-no-run",
+    "typed-call-ok",
+];
+
+#[test]
+fn the_repository_fixture_set_is_pinned_by_name() {
+    let ui = workspace_root().unwrap().join(UI_DIR);
+    let found: Vec<String> = discover_cases(&ui)
+        .unwrap()
+        .into_iter()
+        .map(|case| case.name)
+        .collect();
+    assert_eq!(found, PINNED_FIXTURES, "tests/ui fixture crates changed");
+    // Each pinned fixture is also a member of the fixture workspace.
+    let manifest = fs::read_to_string(ui.join("Cargo.toml")).unwrap();
+    for name in PINNED_FIXTURES {
+        assert!(manifest.contains(&format!("\"{name}\"")), "{name}");
+    }
+}

@@ -1,7 +1,10 @@
 use std::{
+    io::{self, BufRead, BufReader, Write},
     path::Path,
     process::{Command, Stdio},
 };
+
+use crate::test_exact::parse_result_line;
 
 pub(crate) struct CheckRecord {
     pub(crate) program: String,
@@ -152,3 +155,144 @@ pub(crate) fn report_check(
     });
     result
 }
+
+/// The totals of every libtest `test result:` line of one `cargo test` call: each test binary
+/// (lib, bin, integration target) and the doc-tests print one line, and this sums them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct TestTotals {
+    pub(crate) passed: u64,
+    pub(crate) failed: u64,
+    pub(crate) ignored: u64,
+    /// How many `test result:` lines were read.
+    pub(crate) summaries: u64,
+}
+
+/// `text` without ANSI colour sequences (`ESC [ ... m`), which libtest prints around `ok` when colour is forced
+/// (`CARGO_TERM_COLOR=always`, as CI sets it).
+pub(crate) fn without_colors(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' && chars.peek() == Some(&'[') {
+            for skipped in chars.by_ref() {
+                if skipped.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            plain.push(c);
+        }
+    }
+    plain
+}
+
+/// Sums the `test result: ok. N passed; M failed; K ignored; ...` lines of `output`. A
+/// `test result:` line that cannot be read counts as nothing, so it can only make a gate stricter.
+pub(crate) fn sum_test_results(output: &str) -> TestTotals {
+    let mut totals = TestTotals::default();
+    for line in without_colors(output).lines() {
+        if let Some(counts) = parse_result_line(line) {
+            totals.passed += u64::from(counts.passed);
+            // A line that is not `ok` counts as a failure even when it names none.
+            totals.failed += u64::from(counts.failed).max(u64::from(!counts.ok));
+            totals.ignored += u64::from(counts.ignored);
+            totals.summaries += 1;
+        }
+    }
+    totals
+}
+
+/// Whether the cargo test arguments run the ignored tests as well (`-- --include-ignored`).
+fn includes_ignored(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--include-ignored")
+}
+
+/// Fails when a `cargo test` call, which exits 0 with no test at all, ran nothing: the sum of its
+/// passed tests must be above zero and nothing may have failed. A call with `--include-ignored`
+/// must also report no ignored test (every ignored test ran, so an `ignored` count means the
+/// harness did not run it).
+pub(crate) fn require_tests_ran(args: &[String], totals: &TestTotals) -> Result<(), String> {
+    let call = format!("cargo {}", args.join(" "));
+    if totals.failed > 0 {
+        return Err(format!("{call}: {} test(s) failed", totals.failed));
+    }
+    if totals.passed == 0 {
+        return Err(format!(
+            "{call}: ran 0 tests ({} test result line(s) read, none with a passed test); a gate that runs no test proves nothing, so a filter or an attribute that matches nothing fails",
+            totals.summaries
+        ));
+    }
+    if includes_ignored(args) && totals.ignored > 0 {
+        return Err(format!(
+            "{call}: {} test(s) reported ignored although --include-ignored was given",
+            totals.ignored
+        ));
+    }
+    Ok(())
+}
+
+/// Runs `cargo <args>` (a `cargo test` call) like [`run_direct_args`], streaming its output to the
+/// console as it arrives, then requires that tests really ran ([`require_tests_ran`]).
+pub(crate) fn run_cargo_test_counted(root: &Path, args: &[String]) -> Result<TestTotals, String> {
+    let mut child = Command::new("cargo")
+        .args(args)
+        .current_dir(root)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|error| format!("could not launch cargo: {error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or("could not capture the cargo test output")?;
+    let mut reader = BufReader::new(stdout);
+    let mut captured = Vec::new();
+    let mut line = Vec::new();
+    let mut read_error = None;
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) => break,
+            Ok(_) => {
+                // Echoing is best effort; the captured copy is what the guard reads.
+                let _ = io::stdout().write_all(&line);
+                captured.extend_from_slice(&line);
+            }
+            Err(error) => {
+                read_error = Some(error);
+                break;
+            }
+        }
+    }
+    if let Some(error) = read_error {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(format!("could not read the cargo test output: {error}"));
+    }
+    let status = child
+        .wait()
+        .map_err(|error| format!("could not wait for cargo: {error}"))?;
+    if !status.success() {
+        return Err(format!(
+            "cargo {} failed (exit {})",
+            args.join(" "),
+            status.code().unwrap_or(-1)
+        ));
+    }
+    let totals = sum_test_results(&String::from_utf8_lossy(&captured));
+    require_tests_ran(args, &totals)?;
+    Ok(totals)
+}
+
+/// [`run_cargo_test_counted`] for a borrowed argument list.
+pub(crate) fn run_counted(root: &Path, args: &[&str]) -> Result<TestTotals, String> {
+    run_cargo_test_counted(
+        root,
+        &args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>(),
+    )
+}
+
+#[cfg(test)]
+#[path = "tests/test_counts.rs"]
+mod test_counts_tests;

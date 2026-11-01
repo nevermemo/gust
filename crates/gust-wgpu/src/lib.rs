@@ -614,8 +614,10 @@ impl HeadlessDevice {
     ///
     /// A missing adapter is retried a bounded number of times with a short backoff,
     /// because the Vulkan loader can fail transiently when many devices are opened at
-    /// once. After the last attempt the `NoAdapter` error is returned; there is no
-    /// skip and no software or CPU fallback.
+    /// once. After the last attempt the `NoAdapter` error is returned; there is no skip and
+    /// no runtime fallback to the CPU twin. The adapter is whatever wgpu offers for Vulkan with a
+    /// high-performance preference: a software Vulkan adapter (lavapipe, llvmpipe) is
+    /// accepted like a hardware one, because the adapter type is not checked.
     pub fn new() -> Result<Self, Error> {
         let adapter = retry_no_adapter(
             ADAPTER_ATTEMPTS,

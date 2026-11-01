@@ -2,10 +2,13 @@ use std::{fs, path::Path};
 
 use crate::{
     arch::check_arch,
-    checks::check_dual,
+    checks::{check_dual, tests_not_ok},
     docs::docs_check,
     lint::lint,
-    process::{CheckRecord, report_check, require_command, run_checked, run_checked_owned},
+    process::{
+        CheckRecord, report_check, require_command, require_tests_ran, run_checked,
+        run_checked_owned, sum_test_results,
+    },
     reflect::{BuildOptions, build_slang_reflect},
     time::now_utc,
     ui::check_ui,
@@ -129,6 +132,17 @@ fn verify_inner(
     build_slang_reflect(BuildOptions::default())?;
     for args in cargo_calls(mode) {
         run_checked_owned(root, checks, "cargo", &args)?;
+        if counts_tests(&args)
+            && let Some(record) = checks.last_mut()
+            && let Err(error) = check_counted_call(&args, &record.stdout)
+        {
+            // The process exited 0, so the record must not say success: no exit status, and the reason.
+            record.exit_code = None;
+            record
+                .stderr
+                .push_str(&format!("test-count guard: {error}\n"));
+            return Err(error);
+        }
     }
     if runs_check_dual(mode) {
         // The dual build and the example runs with the CPU twin (D26): its cargo calls are its own, with their own
@@ -178,15 +192,19 @@ fn verify_inner(
 }
 
 /// The Slang tests of the core library in the release profile (the Full mode and suite).
-/// `cfg(not(debug_assertions))` tests, such as the source-map fallback, run only here.
-pub(crate) const RELEASE_SLANG_TESTS: [&str; 7] = [
+/// `cfg(not(debug_assertions))` tests, such as the source-map fallback, run only here. The two filters after `--`
+/// are ORed by libtest: `slang` (everything under the Slang emitter, as before) and the one release-only `gust::cpu`
+/// test, which the `slang` substring does not match.
+pub(crate) const RELEASE_SLANG_TESTS: [&str; 9] = [
     "test",
     "--locked",
     "--release",
     "-p",
     "gust",
     "--lib",
+    "--",
     "slang",
+    "cpu::tests::invocations_are_capped_at_the_id_range_in_release",
 ];
 
 /// The known-mismatch ledger in the release profile (the Full mode). The ledger asserts the plain-Rust outcome
@@ -242,7 +260,9 @@ pub(crate) fn cargo_calls(mode: VerifyMode) -> Vec<Vec<String>> {
     }
     if matches!(mode, VerifyMode::Examples | VerifyMode::Full) {
         for example in EXAMPLES {
-            calls.push(owned(&["test", "-p", example, "--", "--ignored"]));
+            // `--include-ignored`, not `--ignored`: the examples' ordinary tests (the CPU twin against the host
+            // reference, the derivation-domain guards) run here too, next to the GPU tests they gate.
+            calls.push(owned(&["test", "-p", example, "--", "--include-ignored"]));
         }
     }
     let examples_to_run = match mode {
@@ -260,6 +280,39 @@ pub(crate) fn cargo_calls(mode: VerifyMode) -> Vec<Vec<String>> {
 /// calls. It is not part of [`cargo_calls`] because it is a check of its own, not one cargo call.
 pub(crate) fn runs_check_dual(mode: VerifyMode) -> bool {
     mode == VerifyMode::Full
+}
+
+/// Whether a cargo call of a mode must run at least one test: the examples' tests (`--include-ignored`, which
+/// also must leave nothing ignored) and the name-filtered release Slang tests. The unfiltered package and
+/// integration-target calls are not counted here; they have no filter that can match nothing.
+fn counts_tests(call: &[String]) -> bool {
+    call.iter().any(|arg| arg == "--include-ignored")
+        || call.iter().map(String::as_str).eq(RELEASE_SLANG_TESTS)
+}
+
+/// The release-only tests the release `--lib` step exists for (`cfg(not(debug_assertions))`, so they run nowhere
+/// else). A count alone would still pass if one were moved, renamed or dropped from the filters, because dozens of
+/// other tests remain; each must be reported `ok`.
+pub(crate) const RELEASE_ONLY_SLANG_TEST: &str = "slang::source_map::tests::unparsable_match_marker_number_falls_back_to_the_map_ordinal_in_release";
+pub(crate) const RELEASE_ONLY_CPU_TEST: &str =
+    "cpu::tests::invocations_are_capped_at_the_id_range_in_release";
+pub(crate) const RELEASE_ONLY_TESTS: [&str; 2] = [RELEASE_ONLY_SLANG_TEST, RELEASE_ONLY_CPU_TEST];
+
+/// The guard for a call of [`counts_tests`] on its captured `stdout`: tests ran, and the release call also
+/// reported every one of [`RELEASE_ONLY_TESTS`] as `ok`.
+fn check_counted_call(call: &[String], stdout: &str) -> Result<(), String> {
+    require_tests_ran(call, &sum_test_results(stdout))?;
+    if call.iter().map(String::as_str).eq(RELEASE_SLANG_TESTS) {
+        let missing = tests_not_ok(stdout, &RELEASE_ONLY_TESTS);
+        if !missing.is_empty() {
+            return Err(format!(
+                "cargo {}: the release-only test(s) `{}` did not run and pass (moved, renamed, ignored, or left out of the filters?)",
+                call.join(" "),
+                missing.join("`, `")
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The cargo call that runs one example binary and exports its SPIR-V (the Spirv suite).

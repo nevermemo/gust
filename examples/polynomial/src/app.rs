@@ -219,6 +219,18 @@ fn report_twin(
     );
 }
 
+/// `a.max(b)` that keeps a NaN. `f64::max` returns the other operand when one is NaN, so a `fold(0.0, f64::max)` of
+/// differences turns a NaN difference into 0 and a bound check on the result passes; this fold poisons the maximum
+/// instead and `maximum <= bound` fails.
+#[cfg(any(test, gust_dual))]
+fn propagating_max(a: f64, b: f64) -> f64 {
+    if a.is_nan() || b.is_nan() {
+        f64::NAN
+    } else {
+        a.max(b)
+    }
+}
+
 /// The largest distance between two results in ULPs and in absolute terms (computed in `f64`).
 #[cfg(any(test, gust_dual))]
 fn largest_difference(left: &[f32], right: &[f32]) -> (u64, f64) {
@@ -226,7 +238,7 @@ fn largest_difference(left: &[f32], right: &[f32]) -> (u64, f64) {
     left.iter().zip(right).fold((0, 0.0), |(ulp, abs), (l, r)| {
         (
             ulp.max(gust::cpu::ulps(*l, *r)),
-            abs.max((f64::from(*l) - f64::from(*r)).abs()),
+            propagating_max(abs, (f64::from(*l) - f64::from(*r)).abs()),
         )
     })
 }
@@ -269,11 +281,19 @@ fn benchmark_element_count() -> usize {
     }
 }
 
+/// The largest absolute difference; NaN when any difference is NaN, so that `error <= bound` fails
+/// (`f32::max` would return the other operand and a fold with it would turn the NaN into 0).
 fn max_abs_error(left: &[f32], right: &[f32]) -> f32 {
     left.iter()
         .zip(right)
         .map(|(left, right)| (left - right).abs())
-        .fold(0.0, f32::max)
+        .fold(0.0, |max: f32, diff| {
+            if max.is_nan() || diff.is_nan() {
+                f32::NAN
+            } else {
+                max.max(diff)
+            }
+        })
 }
 
 fn print_comparison(
@@ -393,6 +413,31 @@ mod tests {
         let mut output = vec![0.0; input.len()];
         run_cpu(input, &mut output);
         output
+    }
+
+    #[test]
+    fn a_nan_in_a_compared_value_fails_the_bound_checks() {
+        // `fold(0.0, f64::max)` returned 0 for a NaN difference, so a GPU that wrote NaN passed the bounds.
+        let finite = [1.0f32, 2.0, 3.0];
+        let mut poisoned = finite;
+        poisoned[1] = f32::NAN;
+        let (_, clean) = largest_difference(&finite, &finite);
+        assert!(clean <= TWIN_VS_GPU_BOUND);
+        for (left, right) in [(&finite, &poisoned), (&poisoned, &finite)] {
+            let (ulps, abs) = largest_difference(left, right);
+            assert!(abs.is_nan(), "the absolute error must stay NaN, got {abs}");
+            let passes = abs <= TWIN_VS_GPU_BOUND;
+            assert!(!passes, "a NaN must not pass the bound");
+            assert_eq!(ulps, u64::MAX);
+            assert!(max_abs_error(left, right).is_nan());
+            let passes = max_abs_error(left, right) <= 1.0e-5;
+            assert!(!passes, "a NaN must not pass the bound");
+        }
+        // A NaN in the first or the last position and a larger finite error elsewhere still poison the maximum.
+        let late = [f32::NAN, 5.0, 9.0];
+        assert!(largest_difference(&late, &[0.0, 0.0, 0.0]).1.is_nan());
+        assert!(max_abs_error(&late, &[0.0, 0.0, 0.0]).is_nan());
+        assert_eq!(max_abs_error(&[1.0, 4.0], &[1.5, 1.0]), 3.0);
     }
 
     /// The same typed `dispatch` on the CPU twin, which the macro emits under `cfg(test)`: no GPU involved.

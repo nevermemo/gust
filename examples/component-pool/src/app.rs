@@ -510,11 +510,42 @@ mod tests {
         Ok(particles_buffer.read())
     }
 
+    #[test]
+    fn a_nan_in_a_compared_value_fails_the_bound_checks() {
+        // `fold(0.0, f64::max)` returned 0 for a NaN difference, so NaN output passed a bound.
+        let finite = [1.0f32, 2.0, 3.0];
+        let nan_second = [1.0f32, f32::NAN, 3.0];
+        let nan_first = [f32::NAN, 2.0, 3.0];
+        assert_eq!(largest_abs(finite.into_iter(), finite.into_iter()), 0.0);
+        assert_eq!(
+            largest_abs(finite.into_iter(), [1.5f32, 2.0, 0.0].into_iter()),
+            3.0
+        );
+        for (left, right) in [
+            (finite, nan_second),
+            (nan_second, finite),
+            (nan_first, finite),
+        ] {
+            let largest = largest_abs(left.into_iter(), right.into_iter());
+            assert!(largest.is_nan(), "{largest}");
+            let passes = largest <= 1.0e9;
+            assert!(!passes, "a NaN must not pass the bound");
+        }
+    }
+
     /// The largest absolute difference (computed in `f64`) between two float sequences.
     fn largest_abs(left: impl Iterator<Item = f32>, right: impl Iterator<Item = f32>) -> f64 {
         left.zip(right)
             .map(|(l, r)| (f64::from(l) - f64::from(r)).abs())
-            .fold(0.0, f64::max)
+            .fold(0.0, |max: f64, diff| {
+                // `f64::max` would return the other operand for a NaN and turn it into 0; a NaN stays NaN here,
+                // so `largest <= bound` fails.
+                if max.is_nan() || diff.is_nan() {
+                    f64::NAN
+                } else {
+                    max.max(diff)
+                }
+            })
     }
 
     #[test]

@@ -196,6 +196,7 @@ impl HeadlessDevice {
     }
 
     /// Copy back the live prefix only.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn pool_read<T: GpuPod>(&self, pool: &GpuPool<T>) -> Result<Vec<T>, Error> {
         let mut values = self.read_typed_buffer(&pool.buffer)?;
         values.truncate(pool.len);

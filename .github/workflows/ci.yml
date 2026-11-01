@@ -1,6 +1,7 @@
 # Unit-tier gate (docs/development/VALIDATION.md). Hosted runners have no GPU and no
 # slangc, so Spirv and Gpu evidence stays local. The `slang` job installs the pinned Slang
-# (cargo gust slang install) and earns the Slangc and Reflect tiers on CI.
+# (cargo gust slang install) and earns the Slangc tier on CI; the Reflect tier needs an adapter
+# and runs in gpu-software (lavapipe).
 name: ci
 
 on:
@@ -62,9 +63,10 @@ jobs:
     # The pinned-Slang manager end to end (D46, R4.8, slice m4.f). `cargo gust slang install` downloads Slang 2026.13.1
     # from Slang's own GitHub release (the archive's SHA-256 is checked before anything is extracted), `build-helper`
     # compiles the native reflection helper against it with g++ (`CXX` below: without it build-helper takes the first of
-    # cl, clang++, c++, g++ on PATH, and the runner may have clang++), and the Slangc and Reflect tiers run with
-    # that slangc and helper. The S3 reproducibility check builds the artifacts of examples/vector-add twice with
-    # `cargo gust build` and requires byte-identical output (R7: no normalization), then `check --recompile` once more.
+    # cl, clang++, c++, g++ on PATH, and the runner may have clang++), and the Slangc tier runs with that slangc
+    # and helper. The Reflect tier dispatches on a GPU, so it runs in gpu-software (lavapipe), not here. The S3
+    # reproducibility check builds the artifacts of examples/vector-add twice with `cargo gust build` and requires
+    # byte-identical output (R7: no normalization), then `check --recompile` once more.
     # No GPU here, so no Gpu tier. Not a required check yet (the `unit` precedent: promoted after two weeks of green).
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -73,7 +75,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
       - name: Install the pinned Slang and build the helper
         # The cache is the tool's default, ~/.cargo/gust/slang/<version>. Later steps get the slangc, the SDK (for
         # xtask build-slang-reflect) and the helper through the environment files.
@@ -98,8 +100,6 @@ jobs:
           cargo run --locked --quiet -p cargo-gust -- doctor
       - name: Slangc tier
         run: cargo --locked xtask test --suite Slangc
-      - name: Reflect tier
-        run: cargo --locked xtask test --suite Reflect
       - name: S3 reproducibility (cargo gust build twice)
         run: |
           gust() { cargo run --locked --quiet -p cargo-gust -- "$@"; }
@@ -109,3 +109,64 @@ jobs:
           gust build -p vector-add
           diff -r "$RUNNER_TEMP/s3-first" examples/vector-add/gust-artifacts
           gust check -p vector-add --recompile
+
+  precompiled:
+    # D45, D46: the production-shaped consumer of precompiled kernels (tests/precompiled). `--check-only` is the mode
+    # for a runner without an adapter or Slang: it runs the builds and checks of E1 to E8 (the stripped-environment
+    # build, the binary scan and `cargo tree`, the mutated and missing artifacts, strict plus dual, the build-script
+    # refusals, the re-expansion on a changed GUST_EXPORT_DIR, the `cargo package` allow-lists and the relocated
+    # registry-style consumer) and skips what needs a GPU (the runs of E1, E3 and E8) or Slang (`cargo gust build`
+    # twice, E7). Those stay local, with the full command `cargo xtask check-precompiled`. E8 downloads `wgpu` from
+    # crates.io. After it, the release `app` that E1 built is run with the Vulkan loader pointed at no driver (R2-4:
+    # "expect NoAdapter"); that proves the consumer reaches the adapter request and ends with the error, not that it
+    # computes anything. Not covered on CI: the runs of E1, E3 and E8, E7b, and a successful dispatch. Runnable locally
+    # in sh form: `cargo --locked xtask check-precompiled --check-only`, then the step below.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+      - name: Precompiled fixture, fmt and clippy
+        run: |
+          cargo fmt --manifest-path tests/precompiled/Cargo.toml --all -- --check
+          cargo clippy --locked --manifest-path tests/precompiled/Cargo.toml --workspace --all-targets -- -D warnings
+      - name: Precompiled checks E1 to E8
+        run: cargo --locked xtask check-precompiled --check-only
+      - name: Consumer without an adapter (NoAdapter)
+        # The consumer asks for Vulkan only, and with no driver file it finds no adapter, also on a runner that has a
+        # software Vulkan driver installed. The binary is the release `app` that E1 built.
+        run: |
+          set +e
+          VK_DRIVER_FILES=/nonexistent VK_ICD_FILENAMES=/nonexistent target/precompiled/release/app > run.out 2> run.err
+          code=$?
+          set -e
+          cat run.out run.err
+          test "$code" -eq 1
+          grep -q "^error: no GPU adapter: " run.err
+          if grep -q "^verified:" run.out; then exit 1; fi
+
+  wasm:
+    # The browser surface of gust-wgpu (D45, R4.9, slice m4.g2): `gust`, `gust-wgpu` and `examples/web-vector-add` lint
+    # clean for `wasm32-unknown-unknown` under `GUST_PROFILE=web` (a plain wasm32 check infers `dev`; only `web` is the
+    # strict profile). Limits of this compile: it fails when code that stays on wasm32 calls something gated off (for
+    # example `pool_read`, whose gate was the one error of the unmodified tree) and when a gated-off helper is left
+    # unused, but `Instant` and `mpsc` compile on wasm32, so it cannot prove that no timed or blocking call survives;
+    # only a browser run does.
+    # This job does not run anything in a browser: `cargo xtask check-web` needs Chrome with a WebGPU adapter and
+    # stays local Gpu evidence. Whether a software adapter (SwiftShader) can earn `Gpu (software)` on a hosted runner is
+    # slice S4 of the plan, not decided yet.
+    # The MSRV job does not build the wasm32-only dependencies, so nothing checks them against the minimum Rust version.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust with the wasm32 target
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy --target wasm32-unknown-unknown
+      - name: Feature guard (webgpu is wasm32 only)
+        # `cargo tree -e features`: the wgpu `webgpu` feature is on for wasm32 and not for the host (no browser needed).
+        run: cargo xtask check-web --tree-only
+      - name: Clippy on wasm32 (strict web profile)
+        env:
+          GUST_PROFILE: web
+        run: cargo clippy --locked --target wasm32-unknown-unknown -p gust -p gust-wgpu -p web-vector-add -- -D warnings

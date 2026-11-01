@@ -9,8 +9,9 @@ use std::{
 };
 
 use crate::{
+    precompiled::PRECOMPILED_DIR,
     process::{
-        command_exists, print_command, require_command, run_checked, run_counted,
+        PROFILE_VARIABLE, command_exists, print_command, require_command, run_checked, run_counted,
         run_counted_captured, run_direct, run_direct_args, set_workspace_profile, without_colors,
         workspace_command,
     },
@@ -718,40 +719,54 @@ pub(crate) enum DualKind {
         twin: bool,
         also: &'static [&'static str],
     },
+    /// E5 of `check-precompiled` (`cargo tree -e features`): must succeed, list the crates that carry the feature,
+    /// and show no `slang-runtime` ([`crate::precompiled::tree_problems`]). It builds nothing and takes no
+    /// `--target-dir`.
+    Tree,
 }
 
 /// One cargo call of `check-dual`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DualStep {
     /// `fmt`, `build`, `clippy`, `clippy-examples`, `E1`, `E2-compile`, `E2-run`, `E3` or, in Full mode,
-    /// `run-vector-add`, `run-polynomial` or `run-vector-add-no-cfg`.
+    /// `run-vector-add`, `run-polynomial` or `run-vector-add-no-cfg`; the steps of the precompiled fixture
+    /// ([`precompiled_dual_steps`]) are `E5-build`, `E5-test` and `E5-tree`.
     pub(crate) id: &'static str,
     /// The arguments after `cargo`. Every step has exactly one `--target-dir <dir>` pair (before any `--`), except
-    /// `fmt`, which builds nothing.
+    /// `fmt`, which builds nothing, and `E5-tree`.
     pub(crate) args: Vec<String>,
     /// Whether the child gets `CARGO_ENCODED_RUSTFLAGS` with `--cfg gust_dual`.
     pub(crate) cfg: bool,
+    /// The `GUST_PROFILE` this step builds under, set after the `dev` of the workspace steps ([`dual_command`]);
+    /// `None` keeps `dev`. Only the steps of the precompiled fixture are strict (R4.2).
+    pub(crate) profile: Option<&'static str>,
     pub(crate) kind: DualKind,
 }
 
 impl DualStep {
-    /// The environment this step adds to the child's: the cfg, or nothing (E1 and E3 build without it).
+    /// The environment this step adds to the child's: the cfg (E1 and E3 build without it) and, for the fixture, the
+    /// strict profile. The workspace steps add no profile and keep the `dev` of [`set_workspace_profile`].
     pub(crate) fn env(&self) -> Vec<(&'static str, &'static str)> {
+        let mut env = Vec::new();
         if self.cfg {
-            vec![(DUAL_RUSTFLAGS_VARIABLE, DUAL_RUSTFLAGS)]
-        } else {
-            Vec::new()
+            env.push((DUAL_RUSTFLAGS_VARIABLE, DUAL_RUSTFLAGS));
         }
+        if let Some(profile) = self.profile {
+            env.push((PROFILE_VARIABLE, profile));
+        }
+        env
     }
 
     /// The command line for the terminal: the arguments with the target directory (a machine-specific path) replaced
     /// by `<target>/dual`.
-    fn shown(&self) -> String {
-        let env = if self.cfg {
-            "CARGO_ENCODED_RUSTFLAGS=\"--cfg gust_dual\" "
-        } else {
-            ""
-        };
+    pub(crate) fn shown(&self) -> String {
+        let mut env = String::new();
+        if self.cfg {
+            env.push_str("CARGO_ENCODED_RUSTFLAGS=\"--cfg gust_dual\" ");
+        }
+        if let Some(profile) = self.profile {
+            env.push_str(&format!("{PROFILE_VARIABLE}={profile} "));
+        }
         let mut shown: Vec<&str> = Vec::with_capacity(self.args.len());
         let mut args = self.args.iter().map(String::as_str);
         while let Some(arg) = args.next() {
@@ -809,12 +824,14 @@ pub(crate) fn dual_steps(target_dir: &str) -> Vec<DualStep> {
             .map(|arg| (*arg).to_owned())
             .collect(),
             cfg: false,
+            profile: None,
             kind: DualKind::Build,
         },
         DualStep {
             id: "build",
             args: strings(&["build", "--locked", "--workspace", "--all-targets"]),
             cfg: true,
+            profile: None,
             kind: DualKind::Build,
         },
         DualStep {
@@ -836,6 +853,7 @@ pub(crate) fn dual_steps(target_dir: &str) -> Vec<DualStep> {
             .map(|arg| (*arg).to_owned())
             .collect(),
             cfg: true,
+            profile: None,
             kind: DualKind::Build,
         },
         // The root workspace's code that only exists with the cfg (the examples' `report_twin`, the macro's twins
@@ -860,6 +878,7 @@ pub(crate) fn dual_steps(target_dir: &str) -> Vec<DualStep> {
             .map(|arg| (*arg).to_owned())
             .collect(),
             cfg: true,
+            profile: None,
             kind: DualKind::Build,
         },
         // E1: without the cfg the consumer's own `cfg(test)` does not give `kernel-lib` its twin.
@@ -880,6 +899,7 @@ pub(crate) fn dual_steps(target_dir: &str) -> Vec<DualStep> {
                 "json",
             ]),
             cfg: false,
+            profile: None,
             kind: DualKind::Fails {
                 case: "consumer",
                 target: "consumer",
@@ -900,6 +920,7 @@ pub(crate) fn dual_steps(target_dir: &str) -> Vec<DualStep> {
                 "--no-run",
             ]),
             cfg: true,
+            profile: None,
             kind: DualKind::Compiles,
         },
         DualStep {
@@ -914,6 +935,7 @@ pub(crate) fn dual_steps(target_dir: &str) -> Vec<DualStep> {
                 "--lib",
             ]),
             cfg: true,
+            profile: None,
             kind: DualKind::Passes { tests: DUAL_TESTS },
         },
         // E3: without the cfg a production binary gets no twin.
@@ -934,6 +956,7 @@ pub(crate) fn dual_steps(target_dir: &str) -> Vec<DualStep> {
                 "json",
             ]),
             cfg: false,
+            profile: None,
             kind: DualKind::Fails {
                 case: "consumer",
                 target: "prod",
@@ -959,6 +982,7 @@ pub(crate) fn dual_run_steps(target_dir: &str) -> Vec<DualStep> {
             id: "run-vector-add",
             args: run("vector-add"),
             cfg: true,
+            profile: None,
             kind: DualKind::Runs {
                 twin: true,
                 also: &[],
@@ -968,6 +992,7 @@ pub(crate) fn dual_run_steps(target_dir: &str) -> Vec<DualStep> {
             id: "run-polynomial",
             args: run("polynomial"),
             cfg: true,
+            profile: None,
             kind: DualKind::Runs {
                 twin: true,
                 also: &["CPU twin time: ", "debug profile, single-threaded"],
@@ -977,10 +1002,93 @@ pub(crate) fn dual_run_steps(target_dir: &str) -> Vec<DualStep> {
             id: "run-vector-add-no-cfg",
             args: run("vector-add"),
             cfg: false,
+            profile: None,
             kind: DualKind::Runs {
                 twin: false,
                 also: &[],
             },
+        },
+    ]
+}
+
+/// The test of the fixture `app` that E5 requires to run and pass: the CPU twin of the fixture's own kernel against
+/// the host reference. It exists only under `--cfg gust_dual` (`tests/precompiled/app/src/lib.rs`), so a build
+/// without the cfg runs nothing, reports no such test, and fails.
+pub(crate) const PRECOMPILED_TWIN_TESTS: &[&str] =
+    &["tests::the_cpu_twin_matches_the_host_reference"];
+
+/// The profile of E5: the strict one the fixture is built under (R4.2).
+pub(crate) const PRECOMPILED_PROFILE: &str = "native";
+
+/// The cargo calls of E5 (`check-precompiled`, strict plus dual, R4.2) on the fixture `tests/precompiled`, built
+/// through [`dual_command`] like every other step here: no rustflags variable but the cfg, the dual target
+/// directory, and `GUST_PROFILE=native` instead of the `dev` of the workspace steps. Each step has the cfg and the
+/// strict profile; the fixture has `default-features = false` and no feature, so the bridge is absent, and its
+/// committed artifacts satisfy the strict assert. Kept as data so a test can require the exact lists.
+///
+/// 1. `E5-build`: the whole fixture builds (all targets), `kernels` with its twin and its embedded artifact.
+/// 2. `E5-test`: `app`'s unit test dispatches the twin on `gust::cpu::CpuDevice` and compares it with the host
+///    reference; it exists only under the cfg, so dropping the cfg makes this step fail on the missing test.
+/// 3. `E5-tree`: `cargo tree -e features` of `app` shows no `slang-runtime`.
+pub(crate) fn precompiled_dual_steps(target_dir: &str) -> Vec<DualStep> {
+    let manifest = format!("{PRECOMPILED_DIR}/Cargo.toml");
+    let owned =
+        |args: &[&str]| -> Vec<String> { args.iter().map(|arg| (*arg).to_owned()).collect() };
+    let with_target = |args: &[&str]| -> Vec<String> {
+        let mut args = owned(args);
+        args.push("--target-dir".to_owned());
+        args.push(target_dir.to_owned());
+        args
+    };
+    vec![
+        DualStep {
+            id: "E5-build",
+            args: with_target(&[
+                "build",
+                "--locked",
+                "--manifest-path",
+                &manifest,
+                "--workspace",
+                "--all-targets",
+            ]),
+            cfg: true,
+            profile: Some(PRECOMPILED_PROFILE),
+            kind: DualKind::Build,
+        },
+        DualStep {
+            id: "E5-test",
+            args: with_target(&[
+                "test",
+                "--locked",
+                "--manifest-path",
+                &manifest,
+                "-p",
+                "app",
+                "--lib",
+            ]),
+            cfg: true,
+            profile: Some(PRECOMPILED_PROFILE),
+            kind: DualKind::Passes {
+                tests: PRECOMPILED_TWIN_TESTS,
+            },
+        },
+        DualStep {
+            id: "E5-tree",
+            args: owned(&[
+                "tree",
+                "--locked",
+                "--color",
+                "never",
+                "-e",
+                "features",
+                "--manifest-path",
+                &manifest,
+                "-p",
+                "app",
+            ]),
+            cfg: true,
+            profile: Some(PRECOMPILED_PROFILE),
+            kind: DualKind::Tree,
         },
     ]
 }
@@ -1135,7 +1243,7 @@ pub(crate) fn tests_not_ok<'a>(stdout: &str, tests: &[&'a str]) -> Vec<&'a str> 
         .collect()
 }
 
-fn dual_command(root: &Path, step: &DualStep) -> Command {
+pub(crate) fn dual_command(root: &Path, step: &DualStep) -> Command {
     let mut command = Command::new(env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")));
     command
         .args(&step.args)
@@ -1211,8 +1319,14 @@ pub(crate) fn check_dual(args: &[String]) -> Result<(), String> {
         println!("check-dual {}: {}", step.id, step.shown());
         run_dual_step(&root, &step)?;
     }
+    // The strict-plus-dual build of the precompiled fixture (E5 of `check-precompiled`), last: it is the only part
+    // here that builds under another profile than `dev`.
+    for step in precompiled_dual_steps(target_dir) {
+        println!("check-dual {}: {}", step.id, step.shown());
+        run_dual_step(&root, &step)?;
+    }
     println!(
-        "check-dual passed: tests/dual is formatted and passes clippy with -D warnings; the workspace built with --cfg gust_dual; without it the tests/dual consumer's test (E1) and binary (E3) each failed with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib`, and with it (E2) the test dispatched on `gust::cpu::CpuDevice` and passed, together with the overflow-mode test of a package with its own override and the two tests that dispatch an overflowing integer kernel (the dependency's twin followed the dependency's mode, the twin of the dependent's own kernel the dependent's)."
+        "check-dual passed: tests/dual is formatted and passes clippy with -D warnings; the workspace built with --cfg gust_dual; without it the tests/dual consumer's test (E1) and binary (E3) each failed with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib`, and with it (E2) the test dispatched on `gust::cpu::CpuDevice` and passed, together with the overflow-mode test of a package with its own override and the two tests that dispatch an overflowing integer kernel (the dependency's twin followed the dependency's mode, the twin of the dependent's own kernel the dependent's). Last, the precompiled fixture tests/precompiled (E5 of check-precompiled) built with the cfg under GUST_PROFILE=native, its `app` test ran the CPU twin of the fixture's own kernel against the host reference, and `cargo tree -e features` of `app` showed no slang-runtime."
     );
     match mode {
         DualMode::CheckOnly => println!(
@@ -1263,7 +1377,7 @@ pub(crate) fn dual_problems(
     ))
 }
 
-fn run_dual_step(root: &Path, step: &DualStep) -> Result<(), String> {
+pub(crate) fn run_dual_step(root: &Path, step: &DualStep) -> Result<(), String> {
     let id = step.id;
     let launch = |error: io::Error| format!("check-dual {id}: could not launch cargo: {error}");
     match &step.kind {
@@ -1327,6 +1441,26 @@ fn run_dual_step(root: &Path, step: &DualStep) -> Result<(), String> {
                 return Ok(());
             }
             Err(problems.join("\n"))
+        }
+        DualKind::Tree => {
+            let output = dual_command(root, step).output().map_err(launch)?;
+            if !output.status.success() {
+                return Err(format!(
+                    "check-dual {id}: cargo failed (exit {}):\n{}{}",
+                    exit_code(output.status),
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                ));
+            }
+            let tree = String::from_utf8_lossy(&output.stdout).into_owned();
+            let problems = crate::precompiled::tree_problems(&tree);
+            if problems.is_empty() {
+                return Ok(());
+            }
+            Err(format!(
+                "check-dual {id}: cargo tree -e features -p app: {}",
+                problems.join("; ")
+            ))
         }
         DualKind::Passes { tests } => {
             let output = dual_command(root, step).output().map_err(launch)?;

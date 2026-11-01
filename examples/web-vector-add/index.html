@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>GUST web-vector-add</title>
+<pre id="out">pending</pre>
+<script type="module">
+  // `cargo xtask check-web` reads the one line that starts with GUST_OK or GUST_FAIL from Chrome's console. The Rust
+  // side logs it; this page only covers what Rust cannot, a module that fails to load or a trap that escapes.
+  import init, { run } from "./web_vector_add.js";
+  const out = document.getElementById("out");
+  try {
+    await init();
+    out.textContent = await run();
+  } catch (error) {
+    const line = "GUST_FAIL " + String(error).replace(/\s+/g, " ");
+    console.log(line);
+    out.textContent = line;
+  }
+</script>

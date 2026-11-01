@@ -11,8 +11,11 @@ below. M2 (typed host API) closed on 2026-10-24 (D37) after a sanity check by Fa
 Codex (both "proceed with fixes") and `check-full` at `634a50e`. M3 (dual test builds) closed
 on 2026-11-01 (D43) after a sanity check by Fable and Codex (both "proceed with fixes"), the
 fixes in slice m3.h and `check-full` on a clean tree at `5971c12` (RTX 5090, 06:28-06:31Z).
-M4 (build-time targets and distribution) is next: its plan starts with a pre-registered
-spike, one precompiled, reflection-verified kernel running without Slang installed (D43).
+M4 (build-time targets and distribution): plan adopted 2026-11-01 (owner-delegated) after a
+Codex review (rework), two Opus re-reviews and three revisions; D44 (build profiles through
+`GUST_PROFILE`), D45 (committed, re-verified artifacts), D46 (`cargo-gust` and the Slang pin)
+and D47 (weak compare-exchange). First: spike S1 (one precompiled, reflection-verified kernel
+running without Slang installed) in parallel with slices m4.0 and m4.h.
 M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
 confirmed it in D39: edge-case differences are documented limitations, not to be matched);
 spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),

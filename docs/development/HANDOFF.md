@@ -3,7 +3,7 @@
 ## Current state
 
 - Branch: `main`
-- Active: roadmap M4 (build-time targets and distribution), starting with its plan; see the
+- Active: roadmap M4 (build-time targets and distribution), plan adopted (D44 to D47); see the
   "Now and next" section of [ROADMAP.md](../ROADMAP.md) and [STATUS.md](STATUS.md).
 - M0 is closed (D28), and M0.15 (the CI `unit` job is a required check on `main`) followed on
   2026-11-01. M1 (diagnostics) is closed (D33), M2 (typed host API) is closed (D37), and

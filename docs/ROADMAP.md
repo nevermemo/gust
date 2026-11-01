@@ -31,9 +31,25 @@ framework, and Hurricane, the game engine (today's
 
 ## Now and next
 
-**Now: M4, build-time targets and distribution.** Next: the M4 plan with pre-registered spikes (D43). The first spike runs
-one precompiled, reflection-verified kernel without Slang installed, and the plan chooses the build-profile mechanism so
-that it composes with `check-dual` before any coding.
+**Now: M4, build-time targets and distribution.** Plan adopted 2026-11-01 (owner-delegated) after a Codex review
+(rework), two Opus re-reviews and three revisions; decisions D44 to D47. S1, m4.0 and m4.h run in parallel on disjoint
+files; everything after S2 runs on one lane. Stop rules: a kill rule stops M4, an undiagnosed read-back mismatch stops
+its slice, and two fix rounds per slice.
+
+| Item | Work | Status |
+| --- | --- | --- |
+| M4 plan | Plan with pre-registered spikes; Fable plan, Codex review (rework), Opus re-reviews in the Codex slot, three revisions | done (D44 to D47) |
+| S1 | Spike: one precompiled, reflection-verified kernel (vector-add) runs without Slang installed and keeps D17's identity (kill: identity cannot be kept without shipping Slang, or the artifact path needs a custom IR) | next |
+| m4.0 | Weak compare-exchange: uncontended success set-valued on the GPU, exact on the twin (D47) | next |
+| m4.h | M3 follow-ups: `check-artifacts` clears stale generated output first; the adapter name in `VALIDATION.json` | next |
+| S2 | Spike: the `GUST_PROFILE` mechanism composes with `check-dual` and Cargo's rebuild tracking (D44) | planned |
+| m4.a | `gust::artifact`: `Artifact`, `verify_artifact`, `content_key`, `KernelDescriptor::artifacts` | planned |
+| m4.b1, m4.b2 | `slang-runtime` feature, off by default; build profiles in `gust`'s build script, strict-profile refusals | planned |
+| m4.c | Macro: content key, artifact and manifest embedding, export mode | planned |
+| m4.d | `cargo-gust`: `init`, `build` (isolated collection, D17 at export for WGSL and SPIR-V), `check`, `doctor` (D46) | planned |
+| m4.e1, m4.e2 | `gust-wgpu` precompiled path and cache key; precompiled fixture, `check-precompiled`, packaged-consumer proof without Slang | planned |
+| m4.f | Pinned-Slang manager with licence audit; CI `slang` job | planned |
+| m4.g1, m4.g2 | Completion model (async read-back); wasm32 and the first browser WebGPU run | planned |
 
 **Done: M3, dual test builds** (closed 2026-11-01, D43). Plan adopted 2026-10-24 (owner-delegated); slices ran one at a
 time. The M2 sanity check (D37) kept M3's scope and fixed the order inside it.
@@ -119,7 +135,7 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M1 Diagnostics | `#line` markers so Slang errors point at Rust file and line (extends DX19); stable diagnostic codes; `#[diagnostic::on_unimplemented]` on shadow-type traits; original tokens kept beside `compile_error!` | done (D33; M1.0 to M1.6) |
 | M2 Typed host API | Typed per-kernel dispatch, designed backend-neutral so the same call runs on the GPU or a CPU twin; const `offset_of!`/`size_of` layout assertions; StagedGraph deriving dependencies from typed reads and writes; launch-limit checks | done (D37) |
 | M3 Dual test builds | Executable shadow types under the semantics contract (D22); CPU dispatch; CPU twins emitted under `cfg(test)`; `--cfg gust_dual` for cross-crate tests and benchmarks; per-kernel opt-out (`#[kernel(cpu = "unsupported")]`); existing GPU tests gain CPU-versus-GPU checks while semantics fixtures keep independent host references (D26). From M2 (D34): the CPU backend implements `TypedDevice` once and `Run<K, N>` per kernel, keeps the alias contract, and `#[kernel(cpu = "unsupported")]` is the absence of the `Run` impl | done (D43) |
-| M4 Build-time targets and distribution | Build profiles (target plus capability set) chosen at build time; hash-keyed artifact manifest; D17 at export time for WGSL and SPIR-V; runtime `slangc` behind a development feature; a pinned-Slang manager for crate users; first browser WebGPU run. Note: first spike: choose the build-profile mechanism (build.rs env, `--config`, or a cfg namespace) so it composes with check-dual's `CARGO_ENCODED_RUSTFLAGS` and its refusal; the artifact manifest hashes Slang output only (the twin never enters it or the published crate) | next (plan; D43) |
+| M4 Build-time targets and distribution | Build profiles (target plus capability set) chosen at build time; hash-keyed artifact manifest; D17 at export time for WGSL and SPIR-V; runtime `slangc` behind a development feature; a pinned-Slang manager for crate users; first browser WebGPU run. Note: first spike: choose the build-profile mechanism (build.rs env, `--config`, or a cfg namespace) so it composes with check-dual's `CARGO_ENCODED_RUSTFLAGS` and its refusal; the artifact manifest hashes Slang output only (the twin never enters it or the published crate) | in progress (plan adopted; D44 to D47) |
 | M5 CPU target and evidence breadth | Production `cpu` build target and runtime; lavapipe CI job labelled `Gpu (software)`; differential program generator with shrinking; scalar `coretests` cases on the GPU. Note: the known-mismatch ledger and the semantics contract exist since M3 and are not new M5 work; M5 adds the production target, lavapipe and the generator | planned |
 | M6 Language breadth I | Vectors and matrices (vec3 and mat3 rejected in buffers at first; `m * v` lowers to `mul`); collision-only identifier renaming; uniforms (`ConstantBuffer<T>`). Note: uniform typed calls were decided in M3 (D40): such kernels have no typed call and no CPU twin until this milestone | planned |
 | M7 GPU concepts in Rust | `par_for!` SIMT dispatch on both pipelines; workgroup shared memory and barriers, including a CPU strategy; reduce, scan and compaction primitives (T13 lands here). Multi-dimensional dispatch lifts the `max_compute_workgroups_per_dimension` ceiling (D36). Note: `#[kernel(cpu = "unsupported")]` is the opt-out for barrier kernels until a CPU strategy exists; a validator rule rejects a construct with cross-invocation meaning unless the kernel carries `cpu = "unsupported"` or a declared twin strategy (D42) | planned |

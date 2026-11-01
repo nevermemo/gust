@@ -511,7 +511,8 @@ fn the_steps_run_in_the_order_fmt_build_clippy_e1_e2_e3_and_e2_is_judged_by_its_
             "tests::twin_runs",
             "tests::overflow_mode_is_the_dependents_own",
             "twin_overflow::a_twin_follows_the_overflow_mode_of_the_package_that_defines_the_kernel",
-            "twin_overflow::a_twin_defined_in_the_dependent_follows_the_dependents_own_mode"
+            "twin_overflow::a_twin_defined_in_the_dependent_follows_the_dependents_own_mode",
+            "vector_overflow::an_integer_vector_add_panics_only_where_gust_and_the_kernels_package_both_check"
         ]
     );
     // E1 and E3 each name the file of their expectation and the target they judge.
@@ -552,7 +553,7 @@ fn only_check_only_or_no_argument_is_accepted() {
 
 #[test]
 fn e2_requires_each_test_to_be_reported_ok() {
-    let ok = "running 4 tests\ntest tests::overflow_mode_is_the_dependents_own ... ok\ntest tests::twin_runs ... ok\ntest twin_overflow::a_twin_follows_the_overflow_mode_of_the_package_that_defines_the_kernel ... ok\ntest twin_overflow::a_twin_defined_in_the_dependent_follows_the_dependents_own_mode ... ok\n\ntest result: ok. 4 passed\n";
+    let ok = "running 5 tests\ntest tests::overflow_mode_is_the_dependents_own ... ok\ntest tests::twin_runs ... ok\ntest twin_overflow::a_twin_follows_the_overflow_mode_of_the_package_that_defines_the_kernel ... ok\ntest twin_overflow::a_twin_defined_in_the_dependent_follows_the_dependents_own_mode ... ok\ntest vector_overflow::an_integer_vector_add_panics_only_where_gust_and_the_kernels_package_both_check ... ok\n\ntest result: ok. 5 passed\n";
     assert!(tests_not_ok(ok, DUAL_TESTS).is_empty());
     // A run that found no test succeeds in cargo and must still fail here.
     assert_eq!(
@@ -560,7 +561,7 @@ fn e2_requires_each_test_to_be_reported_ok() {
         DUAL_TESTS
     );
     // Colour codes that a forced colour output puts around `ok` (CI sets CARGO_TERM_COLOR=always) are ignored.
-    let colored = "test tests::twin_runs ... \u{1b}[32mok\u{1b}[0m\ntest tests::overflow_mode_is_the_dependents_own ... \u{1b}[32mok\u{1b}[0m\ntest twin_overflow::a_twin_follows_the_overflow_mode_of_the_package_that_defines_the_kernel ... \u{1b}[32mok\u{1b}[0m\ntest twin_overflow::a_twin_defined_in_the_dependent_follows_the_dependents_own_mode ... \u{1b}[32mok\u{1b}[0m\n";
+    let colored = "test tests::twin_runs ... \u{1b}[32mok\u{1b}[0m\ntest tests::overflow_mode_is_the_dependents_own ... \u{1b}[32mok\u{1b}[0m\ntest twin_overflow::a_twin_follows_the_overflow_mode_of_the_package_that_defines_the_kernel ... \u{1b}[32mok\u{1b}[0m\ntest twin_overflow::a_twin_defined_in_the_dependent_follows_the_dependents_own_mode ... \u{1b}[32mok\u{1b}[0m\ntest vector_overflow::an_integer_vector_add_panics_only_where_gust_and_the_kernels_package_both_check ... \u{1b}[32mok\u{1b}[0m\n";
     assert!(tests_not_ok(colored, DUAL_TESTS).is_empty());
     assert_eq!(
         tests_not_ok(

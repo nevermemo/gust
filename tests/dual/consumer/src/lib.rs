@@ -159,3 +159,114 @@ mod twin_overflow {
         );
     }
 }
+
+/// The overflow of an integer vector operator in a twin (m6.a2, R1.1-4): two kernels add `UVec2 { u32::MAX, 0 } +
+/// UVec2 { 1, 0 }` with `+`, which is `impl Add for UVec2` in `gust::math`, a crate that checks overflow in the dev
+/// profile. One kernel is defined in `kernel-lib` (checks on in the dev profile) and one here (checks off,
+/// tests/dual/Cargo.toml).
+///
+/// Measured (rustc 1.98.0, 2026-11-01, incremental dev and test builds; optimized builds may differ): the vector
+/// operator panics ("attempt to add with overflow") only if both `gust` and the package that compiles the copy of the
+/// operator have overflow checks on. `gust::math` marks its operators `#[inline]`, so each using package gets its own
+/// copy: the twin of `kernel-lib`'s kernel panics in the dev profile (both on) and the twin of this package's kernel
+/// wraps (this package off). Without `#[inline]` the copy in `gust` is used and `gust`'s setting alone decides. A
+/// reviewer's runs with `gust` off made the inline operator wrap in every package while a scalar `+` still panicked.
+///
+/// There is no release case: the release profile proves nothing, because every crate has checks off by default, so
+/// every twin wraps there whichever way the rule goes.
+#[cfg(all(test, gust_dual))]
+mod vector_overflow {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+
+    use gust::cpu::{CpuBuffer, CpuDevice, Error, OverflowChecks};
+
+    #[gust::gpu]
+    mod own {
+        #[kernel(workgroup_size(64, 1, 1))]
+        pub fn add_one_uvec2(
+            id: SV_DispatchThreadID,
+            input: StructuredBuffer<uint>,
+            mut out: RWStructuredBuffer<uint>,
+        ) {
+            let i = id.x;
+            if i < out.len() {
+                let value = UVec2 {
+                    x: input[i],
+                    y: 0u32,
+                };
+                let one = UVec2 { x: 1u32, y: 0u32 };
+                let sum = value + one;
+                out[i] = sum.x;
+            }
+        }
+    }
+
+    /// Dispatches `dispatch` on the single input `u32::MAX` and returns the output, or the panic message.
+    fn add_one_to_the_maximum(
+        dispatch: impl FnOnce(&CpuDevice, &CpuBuffer<u32>, &CpuBuffer<u32>) -> Result<(), Error>,
+    ) -> Result<u32, String> {
+        let device = CpuDevice::new();
+        let input = device.buffer(&[u32::MAX]);
+        let out = device.buffer(&[7u32]);
+        catch_unwind(AssertUnwindSafe(|| {
+            dispatch(&device, &input, &out)
+                .unwrap_or_else(|error| panic!("the twin refused the call: {error}"));
+        }))
+        .map_err(|payload| {
+            if let Some(text) = payload.downcast_ref::<&str>() {
+                (*text).to_owned()
+            } else if let Some(text) = payload.downcast_ref::<String>() {
+                text.clone()
+            } else {
+                "<non-string panic payload>".to_owned()
+            }
+        })?;
+        Ok(out.read()[0])
+    }
+
+    /// Checks on: the addition panics. Checks off: it wraps to 0.
+    fn assert_outcome(mode: OverflowChecks, outcome: Result<u32, String>) {
+        match mode {
+            OverflowChecks::Checked => {
+                let message = outcome.expect_err("checks on: u32::MAX + 1 must panic");
+                assert!(
+                    message.starts_with("attempt to add with overflow"),
+                    "{message}"
+                );
+            }
+            OverflowChecks::Wrapping => {
+                assert_eq!(outcome, Ok(0), "checks off: u32::MAX + 1 wraps")
+            }
+            other => panic!("no expectation for the overflow mode {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_integer_vector_add_panics_only_where_gust_and_the_kernels_package_both_check() {
+        let consumer = gust::cpu::overflow_checks!();
+        let kernel_lib = kernel_lib::overflow_mode();
+        let in_gust = gust::cpu::overflow_checks();
+        assert_eq!(consumer, OverflowChecks::Wrapping, "this package");
+        assert_eq!(kernel_lib != consumer, cfg!(debug_assertions));
+        // The rule: the operator panics only if `gust` and the compiling package both check.
+        let expected = |package: OverflowChecks| {
+            if in_gust == OverflowChecks::Checked && package == OverflowChecks::Checked {
+                OverflowChecks::Checked
+            } else {
+                OverflowChecks::Wrapping
+            }
+        };
+        assert_outcome(
+            expected(kernel_lib),
+            add_one_to_the_maximum(|device, input, out| {
+                kernel_lib::kernels::add_one_uvec2::dispatch(device, 1, input, out)
+            }),
+        );
+        assert_outcome(
+            expected(consumer),
+            add_one_to_the_maximum(|device, input, out| {
+                own::add_one_uvec2::dispatch(device, 1, input, out)
+            }),
+        );
+    }
+}

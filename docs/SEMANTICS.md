@@ -148,9 +148,19 @@ and follows that crate's mode (`gust::cpu::overflow_checks!()` written there; a 
 dependency's kernel gets the dependency's mode, not its own). An integer operation that `gust` itself implements (a shadow
 function or type provided by the library, as opposed to the kernel's own `+`) is compiled in `gust` and follows
 `gust`'s mode (the function `gust::cpu::overflow_checks()`). The two modes differ only when a profile overrides
-`overflow-checks` for one of the two packages. Today the only such operation is `atomic_add`. It never panics on
-overflow, not even in a checked twin, unlike the kernel's own `+`: it wraps modulo 2^32 in every build, exactly as the
-GPU does (the other atomic functions cannot overflow). So the case does not arise. This is documented, not fixed (D39).
+`overflow-checks` for one of the two packages. Apart from the vector operations below, the only such operation is
+`atomic_add`. It never panics on overflow, not even in a checked twin, unlike the kernel's own `+`: it wraps modulo
+2^32 in every build, exactly as the GPU does (the other atomic functions cannot overflow). So the case does not arise
+for atomics. This is documented, not fixed (D39).
+
+**Limitation: vector operations follow two overflow modes.** The integer vector operations of `gust::math` (the
+lane-wise arithmetic operators and `dot` on `u32` and `i32` lanes) are `#[inline]` functions in `gust`, so each crate
+that uses one compiles its own copy. Measured in incremental dev and test builds (m6.a2): such an operation panics on
+overflow only when both `gust` and the crate that compiles the copy have `overflow-checks` on; otherwise it wraps
+modulo 2^32, as the GPU does. With one workspace profile the two modes agree, and a vector operation behaves like the
+scalar operation beside it. Optimized non-incremental builds may inline code across crates differently, so a profile
+that overrides `overflow-checks` for one of the two packages can see either mode there. This is documented, not fixed
+(D39).
 
 The ledger test also runs controls inside the domain (integer cases, and float cases on exactly representable values,
 so they say nothing about rounding). They must agree between the GPU and plain Rust in both overflow modes; a

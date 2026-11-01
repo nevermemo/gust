@@ -1,0 +1,200 @@
+    //! The test side of a generated crate (difftest-run). Everything here is std, `gust` and `gust-wgpu`.
+    //!
+    //! One test runs every program in order: the CPU twin through the generated `dispatch`, then (unless
+    //! `DIFFTEST_CPU_ONLY=1`) the GPU through `gust-wgpu`, and writes one JSON file per program into the directory
+    //! named by `DIFFTEST_OUT`. It never asserts on a value: classification belongs to `difftest-run`. A panic in
+    //! the twin or the GPU path (a wgpu validation error panics) is caught and recorded as that program's error.
+
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::path::PathBuf;
+    use std::time::Instant;
+
+    use gust::cpu::CpuDevice;
+    use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+
+    struct Data {
+        count: u32,
+        inputs: Vec<Vec<u32>>,
+        interp: Vec<u32>,
+    }
+
+    struct GpuRun {
+        bits: Vec<u32>,
+        first_ns: u128,
+        warm_ns: u128,
+    }
+
+    struct Outcome {
+        twin: Result<(Vec<u32>, u128), String>,
+        gpu: Option<Result<GpuRun, String>>,
+    }
+
+    struct Case {
+        name: &'static str,
+        seed: u64,
+        attempt: u64,
+        index: usize,
+        out_ty: &'static str,
+        run: fn(&Data, Option<&HeadlessDevice>) -> Outcome,
+    }
+
+    /// `data/<name>.txt`: lines `count N`, `in<k> <type> <words...>` and `interp <words...>` (decimal `u32` patterns).
+    fn load(name: &str) -> Data {
+        let path = format!("{}/data/{name}.txt", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{path}: {e}"));
+        let mut data = Data {
+            count: 0,
+            inputs: Vec::new(),
+            interp: Vec::new(),
+        };
+        for line in text.lines() {
+            let mut parts = line.split_ascii_whitespace();
+            let words = |parts: std::str::SplitAsciiWhitespace<'_>| -> Vec<u32> {
+                parts.map(|w| w.parse().expect("a u32 word")).collect()
+            };
+            match parts.next() {
+                Some("count") => data.count = parts.next().expect("count").parse().expect("count"),
+                Some("interp") => data.interp = words(parts),
+                Some(key) if key.starts_with("in") => {
+                    parts.next(); // the element type, for the reader
+                    data.inputs.push(words(parts));
+                }
+                Some(other) => panic!("{path}: unknown line {other}"),
+                None => {}
+            }
+        }
+        assert_eq!(data.interp.len(), data.count as usize, "{path}");
+        data
+    }
+
+    fn panic_text(stage: &str, payload: Box<dyn std::any::Any + Send>) -> String {
+        let message = payload
+            .downcast_ref::<String>()
+            .map(String::as_str)
+            .or_else(|| payload.downcast_ref::<&str>().copied())
+            .unwrap_or("non-text panic payload");
+        format!("{stage} panicked: {message}")
+    }
+
+    fn json_text(text: &str) -> String {
+        let mut out = String::from("\"");
+        for ch in text.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+
+    fn json_words(words: &[u32]) -> String {
+        let mut out = String::from("[");
+        for (n, word) in words.iter().enumerate() {
+            if n > 0 {
+                out.push(',');
+            }
+            out.push_str(&word.to_string());
+        }
+        out.push(']');
+        out
+    }
+
+    fn write_result(
+        dir: &std::path::Path,
+        case: &Case,
+        data: &Data,
+        outcome: &Outcome,
+        adapter: &Option<String>,
+        cpu_only: bool,
+    ) {
+        let mut json = String::from("{\n");
+        let mut field = |key: &str, value: String| {
+            json.push_str(&format!("  \"{key}\": {value},\n"));
+        };
+        field("format", "__FORMAT__".to_owned());
+        field("program", json_text(case.name));
+        field("seed", case.seed.to_string());
+        field("attempt", case.attempt.to_string());
+        field("index", case.index.to_string());
+        field("count", data.count.to_string());
+        field("out_ty", json_text(case.out_ty));
+        field("mode", json_text(if cpu_only { "cpu-only" } else { "gpu" }));
+        field("adapter", adapter.as_deref().map_or("null".to_owned(), json_text));
+        field("interp", json_words(&data.interp));
+        match &outcome.twin {
+            Ok((bits, ns)) => {
+                field("twin", json_words(bits));
+                field("twin_error", "null".to_owned());
+                field("twin_ns", ns.to_string());
+            }
+            Err(message) => {
+                field("twin", "null".to_owned());
+                field("twin_error", json_text(message));
+                field("twin_ns", "0".to_owned());
+            }
+        }
+        match &outcome.gpu {
+            None => {
+                for key in ["gpu", "gpu_error"] {
+                    field(key, "null".to_owned());
+                }
+                field("wgsl_validated", "false".to_owned());
+                for key in ["gpu_first_ns", "gpu_warm_ns"] {
+                    field(key, "0".to_owned());
+                }
+            }
+            Some(Ok(run)) => {
+                field("gpu", json_words(&run.bits));
+                field("gpu_error", "null".to_owned());
+                field("wgsl_validated", "true".to_owned());
+                field("gpu_first_ns", run.first_ns.to_string());
+                field("gpu_warm_ns", run.warm_ns.to_string());
+            }
+            Some(Err(message)) => {
+                field("gpu", "null".to_owned());
+                field("gpu_error", json_text(message));
+                field("wgsl_validated", "false".to_owned());
+                for key in ["gpu_first_ns", "gpu_warm_ns"] {
+                    field(key, "0".to_owned());
+                }
+            }
+        }
+        json.push_str("  \"end\": true\n}\n");
+        let path = dir.join(format!("{}.json", case.name));
+        std::fs::write(&path, json).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    }
+
+    #[test]
+    fn difftest_run_all() {
+        let out_dir = PathBuf::from(
+            std::env::var_os("DIFFTEST_OUT").expect("DIFFTEST_OUT must name the result directory"),
+        );
+        let cpu_only = std::env::var("DIFFTEST_CPU_ONLY").is_ok_and(|v| v == "1");
+        std::fs::create_dir_all(&out_dir).expect("create DIFFTEST_OUT");
+        let device = if cpu_only {
+            None
+        } else {
+            Some(
+                HeadlessDevice::new()
+                    .expect("Vulkan adapter required; this test must not silently skip"),
+            )
+        };
+        let adapter = device.as_ref().map(|device| {
+            let info = device.adapter_info();
+            format!(
+                "{} | {:?} | {:?} | {} {}",
+                info.name, info.device_type, info.backend, info.driver, info.driver_info
+            )
+        });
+        for case in CASES {
+            let data = load(case.name);
+            let outcome = (case.run)(&data, device.as_ref());
+            write_result(&out_dir, case, &data, &outcome, &adapter, cpu_only);
+        }
+    }

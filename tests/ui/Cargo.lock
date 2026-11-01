@@ -135,6 +135,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "reserved-gust-prefix"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"

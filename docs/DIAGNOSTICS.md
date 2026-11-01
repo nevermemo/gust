@@ -1086,11 +1086,32 @@ Decision: D02.
 
 ### GUST-E0901 reserved prefix
 
-Names starting with `__gust_` or `__gpu_` are generated shader symbols.
+Names starting with `__gust_`, `__gpu_` or `__Gust` are generated shader symbols (`__GustResult`, the
+generics of the typed call, and the `__gust_r_` prefix of renamed identifiers, see below). The check reads the
+unrawed name, so `r#__gust_r_new` is rejected too.
 Reached through `#[gpu]`.
-Rejected: `fn __gust_not(x: u32) -> u32`, a parameter named `__gpu_len_out`.
+Rejected: `fn __gust_not(x: u32) -> u32`, a parameter named `__gpu_len_out`, a local named `__GustCount`.
 Write instead: any other name.
 Decision: D02.
+
+### Renamed identifiers (not a diagnostic)
+
+A few Rust names are valid in the Rust twin but cannot be Slang identifiers, or would capture a name the generated
+Slang uses: `new`, `class`, `float4`, `mul`, `uint`, `none`, `var`, `true`, `false` and the rest of the collision table in
+`crates/gust-macros/src/slang/collisions.rs`. The macro emits such a name as `__gust_r_<name>` at every site (local,
+parameter, helper, struct, field, kernel parameter) and leaves every other name as written; a raw prefix (`r#new`) is
+stripped first. Nothing is rejected, so there is no code, and the Rust source is unchanged. A raw `r#true` or `r#false` is renamed because, left alone, it would silently change what the `true` and `false` literals that GUST writes after it mean (slangc takes the program and stores the other value); a local named `var` would break every local after it.
+
+- **Slangc messages** have the prefix deleted before they reach you, so an error about `__gust_r_new` says `new`. The
+  rename only ever writes the prefix at the start of a name, so the deletion (at a word boundary, in front of a name) undoes it; a name that merely contains the text, such as `a__gust_r_b`, is left as written. The line mapping is unchanged.
+- **naga and wgpu messages are not de-renamed.** slangc has already mangled the name, so a shader-creation error names
+  `_gust_r_new_0` (a leading underscore, a trailing counter). Read `_gust_r_<name>_N` as the Rust name `<name>`.
+- **Exported Slang, artifacts and reflection** keep the renamed text, because it is the compiled text. Kernel
+  descriptors carry the emitted names (`ParameterDescriptor.name`, `StructFieldLayout.name`), so a layout-check
+  message about a renamed parameter or field names `__gust_r_<name>`, which you can search for in the exported
+  `.slang`. `rust_type` keeps the Rust spelling.
+
+Decision: M6 plan section 2.5 (renaming is a build-time text rule; the decision row lands with the M6 close).
 
 ### GUST-E0902 shadowed parameter
 

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use quote::ToTokens;
+use syn::ext::IdentExt as _;
 use syn::visit::{self, Visit};
 
 use crate::diagnostics::{self, Code};
@@ -770,12 +771,14 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_ident(&mut self, ident: &'ast syn::Ident) {
-        let name = ident.to_string();
-        if name.starts_with("__gust_") || name.starts_with("__gpu_") {
+        // The unrawed text, because emission strips a raw prefix: `r#__gust_r_new` would otherwise print the name that
+        // renaming gives `new`.
+        let name = ident.unraw().to_string();
+        if name.starts_with("__gust_") || name.starts_with("__gpu_") || name.starts_with("__Gust") {
             self.reject(
                 Code::ReservedPrefix,
                 ident,
-                "the __gust_ and __gpu_ prefixes are reserved for generated shader symbols",
+                "the __gust_, __gpu_ and __Gust prefixes are reserved for generated shader symbols",
             );
         }
     }

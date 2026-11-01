@@ -1,0 +1,8 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). A macro error is a `compile_error!` and has no rustc code, so `code: none`
+# requires `"code": null` and at least one `message:`. The macro's own text carries its GUST code
+# (docs/DIAGNOSTICS.md, E0901); the line is the local named `__GustCount`.
+code: none
+file: reserved-gust-prefix/src/main.rs
+line: 13
+message: [GUST-E0901] the __gust_, __gpu_ and __Gust prefixes are reserved for generated shader symbols

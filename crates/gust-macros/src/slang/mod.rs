@@ -1,12 +1,23 @@
 use std::fmt::Write as _;
 
 use quote::ToTokens;
-use syn::{spanned::Spanned, visit::Visit};
+use syn::{ext::IdentExt as _, spanned::Spanned, visit::Visit};
 
 use crate::{
     diagnostics::{self, Code},
     expand::KernelOptions,
 };
+
+#[cfg(test)]
+mod collision_tests;
+pub(crate) mod collisions;
+
+/// The Slang spelling of a user identifier (M6 plan 2.5): a raw prefix is stripped, and a name in the collision table
+/// becomes `__gust_r_<name>`. Every site that writes a user name into Slang, and every descriptor `name:` string, goes
+/// through this one function, so a renamed name is the same text everywhere.
+pub(crate) fn emit_ident(ident: &syn::Ident) -> String {
+    collisions::emit_name(&ident.unraw().to_string()).into_owned()
+}
 
 /// One inclusive, 1-based range of emitted Slang lines generated from one Rust
 /// line (DX19). Records are in emission order, outer construct first.
@@ -224,8 +235,9 @@ pub fn emit_kernel(
     let mut invocation = None;
     for argument in &kernel.sig.inputs {
         let (name, ty) = typed_argument(argument)?;
+        let name = emit_ident(name);
         match parameter_flavor(ty) {
-            ParameterFlavor::Invocation => invocation = Some(name.to_string()),
+            ParameterFlavor::Invocation => invocation = Some(name),
             ParameterFlavor::StorageRead | ParameterFlavor::StorageReadWrite => {
                 let element = wrapper_element_type(ty)?;
                 let wrapper = if parameter_flavor(ty) == ParameterFlavor::StorageRead {
@@ -233,7 +245,7 @@ pub fn emit_kernel(
                 } else {
                     "RWStructuredBuffer"
                 };
-                let element_type = if atomic.0.contains(&name.to_string()) {
+                let element_type = if atomic.0.contains(&name) {
                     format!("Atomic<{}>", emit_type(element)?)
                 } else {
                     emit_type(element)?
@@ -243,7 +255,7 @@ pub fn emit_kernel(
                     "[[vk::binding({binding}, 0)]] {wrapper}<{element_type}> {name};",
                 )
                 .unwrap();
-                resources.push(name.to_string());
+                resources.push(name);
                 binding += 1;
             }
             ParameterFlavor::Uniform => {
@@ -325,13 +337,13 @@ fn emit_struct(
     item: &syn::ItemStruct,
 ) -> syn::Result<()> {
     let record = table.begin(output, item.ident.span());
-    writeln!(output, "struct {}", item.ident).unwrap();
+    writeln!(output, "struct {}", emit_ident(&item.ident)).unwrap();
     writeln!(output, "{{").unwrap();
     let syn::Fields::Named(fields) = &item.fields else {
         unreachable!("validated named fields")
     };
     for field in &fields.named {
-        let name = field.ident.as_ref().expect("named field");
+        let name = emit_ident(field.ident.as_ref().expect("named field"));
         writeln!(output, "    {} {name};", emit_type(&field.ty)?).unwrap();
     }
     table.finish_at_next(output, record);
@@ -349,13 +361,13 @@ fn emit_helper(
         syn::ReturnType::Default => "void".to_owned(),
         syn::ReturnType::Type(_, ty) => emit_type(ty)?,
     };
-    write!(output, "{return_type} {}(", function.sig.ident).unwrap();
+    write!(output, "{return_type} {}(", emit_ident(&function.sig.ident)).unwrap();
     for (index, argument) in function.sig.inputs.iter().enumerate() {
         if index != 0 {
             write!(output, ", ").unwrap();
         }
         let (name, ty) = typed_argument(argument)?;
-        write!(output, "{} {name}", emit_type(ty)?).unwrap();
+        write!(output, "{} {}", emit_type(ty)?, emit_ident(name)).unwrap();
     }
     writeln!(output, ")").unwrap();
     writeln!(output, "{{").unwrap();
@@ -416,7 +428,12 @@ fn emit_statement(
                     Some(ty) => emit_type(ty)?,
                     None => struct_literal_type(value)?,
                 };
-                writeln!(output, "{padding}{ty} {} = {temporary};", pattern.ident).unwrap();
+                writeln!(
+                    output,
+                    "{padding}{ty} {} = {temporary};",
+                    emit_ident(&pattern.ident)
+                )
+                .unwrap();
                 return Ok(());
             }
             let declaration = annotation
@@ -426,7 +443,7 @@ fn emit_statement(
             writeln!(
                 output,
                 "{padding}{declaration} {} = {};",
-                pattern.ident,
+                emit_ident(&pattern.ident),
                 emit_expression(&initial.expr)?
             )
             .unwrap();
@@ -536,7 +553,7 @@ fn emit_struct_assign(
     let padding = "    ".repeat(indent);
     for field in &value.fields {
         let name = match &field.member {
-            syn::Member::Named(ident) => ident,
+            syn::Member::Named(ident) => emit_ident(ident),
             syn::Member::Unnamed(_) => {
                 return Err(diagnostics::error(
                     Code::StructLiteralFieldName,
@@ -618,7 +635,7 @@ fn emit_if(
             output,
             "{}var {} = {temporary}.value;",
             "    ".repeat(indent + 1),
-            name.ident
+            emit_ident(&name.ident)
         )
         .unwrap();
     } else {
@@ -696,7 +713,7 @@ fn emit_result_match(
         output,
         "{}var {} = {temporary}.value;",
         "    ".repeat(indent + 1),
-        ok_name.ident
+        emit_ident(&ok_name.ident)
     )
     .unwrap();
     emit_statements(output, table, &ok_body.stmts, indent + 1, false)?;
@@ -707,7 +724,7 @@ fn emit_result_match(
         output,
         "{}var {} = {temporary}.value;",
         "    ".repeat(indent + 1),
-        err_name.ident
+        emit_ident(&err_name.ident)
     )
     .unwrap();
     emit_statements(output, table, &err_body.stmts, indent + 1, false)?;
@@ -729,7 +746,7 @@ fn emit_for(
 ) -> syn::Result<()> {
     let padding = "    ".repeat(indent);
     let variable = match crate::validate::loop_variable(&expression.pat) {
-        Ok(Some(variable)) => variable.ident.to_string(),
+        Ok(Some(variable)) => emit_ident(&variable.ident),
         Ok(None) => format!("__gust_iter_{index}"),
         Err((code, message)) => {
             return Err(diagnostics::error(code, &expression.pat, message));
@@ -838,7 +855,10 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         syn::Expr::Field(field) => format!(
             "{}.{}",
             emit_expression(&field.base)?,
-            field.member.to_token_stream()
+            match &field.member {
+                syn::Member::Named(ident) => emit_ident(ident),
+                member @ syn::Member::Unnamed(_) => member.to_token_stream().to_string(),
+            }
         ),
         syn::Expr::Group(group) => emit_expression(&group.expr)?,
         syn::Expr::Index(index) => format!(
@@ -875,6 +895,11 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         }
         syn::Expr::Paren(paren) => format!("({})", emit_expression(&paren.expr)?),
         syn::Expr::Path(path) if path.path.is_ident("None") => "none".to_owned(),
+        // A single-segment path is a value name (a local, a parameter or a helper), so it is renamed like its
+        // declaration. A longer path names a type or module first and is emitted as written.
+        syn::Expr::Path(path) if path.path.get_ident().is_some() && path.qself.is_none() => {
+            emit_ident(path.path.get_ident().expect("guarded by the match arm"))
+        }
         syn::Expr::Path(path) => path.path.to_token_stream().to_string().replace(" :: ", "."),
         syn::Expr::Return(expression) => match &expression.expr {
             Some(value) => format!("return {}", emit_expression(value)?),
@@ -1098,7 +1123,7 @@ impl<'ast> Visit<'ast> for AtomicUsage {
             && let syn::Expr::Path(path) = index.expr.as_ref()
             && let Some(segment) = path.path.segments.first()
         {
-            self.0.insert(segment.ident.to_string());
+            self.0.insert(emit_ident(&segment.ident));
         }
         syn::visit::visit_expr_call(self, call);
     }
@@ -1231,7 +1256,7 @@ fn emit_type(ty: &syn::Type) -> syn::Result<String> {
         ));
     };
     let segment = path.path.segments.last().expect("nonempty type path");
-    let source_name = segment.ident.to_string();
+    let source_name = segment.ident.unraw().to_string();
     let name = match source_name.as_str() {
         "f32" | "float" => "float".to_owned(),
         "i32" | "int" => "int".to_owned(),
@@ -1240,7 +1265,8 @@ fn emit_type(ty: &syn::Type) -> syn::Result<String> {
         "Option" => "Optional".to_owned(),
         "Result" => "__GustResult".to_owned(),
         "UVec3" | "SV_DispatchThreadID" => "uint3".to_owned(),
-        name => name.to_owned(),
+        // Any other type name is a struct of the module, so it is renamed exactly like its declaration.
+        name => collisions::emit_name(name).into_owned(),
     };
     let syn::PathArguments::AngleBracketed(arguments) = &segment.arguments else {
         return Ok(name);

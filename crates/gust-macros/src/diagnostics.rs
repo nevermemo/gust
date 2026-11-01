@@ -308,7 +308,7 @@ codes! {
     ResourceElementMissing = 817 => "GUST-E0817";
 
     // E09xx: reserved names and shadowing.
-    /// An identifier with a reserved `__gust_` or `__gpu_` prefix.
+    /// An identifier with a reserved `__gust_`, `__gpu_` or `__Gust` prefix.
     ReservedPrefix = 901 => "GUST-E0901";
     /// A local that shadows a resource or dispatch-thread parameter.
     ShadowedParameter = 902 => "GUST-E0902";

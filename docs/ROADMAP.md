@@ -49,8 +49,8 @@ its slice, and two fix rounds per slice.
 | m4.d | `cargo-gust`: `init`, `build` (isolated collection, D17 at export for WGSL and SPIR-V), `check`, `doctor` (D46) | done (`e7dd73d`) |
 | m4.e1, m4.e2 | `gust-wgpu` precompiled path and cache key; precompiled fixture, `check-precompiled`, packaged-consumer proof without Slang | m4.e1 done (Gpu: RTX 5090; Opus keep after one fix round; `894ab0e`); m4.e2a done (fixture, `check-precompiled` E1 to E4; Gpu: RTX 5090 with no Slang in the environment; Opus keep after one fix round; `29cfc58`); m4.e2b done (E5 to E8: strict plus dual, build-script refusals, re-expansion, `cargo package` allow-lists and a relocated registry-style consumer; Gpu: RTX 5090; CI `precompiled` job runs `--check-only` plus a NoAdapter run; Opus keep after one fix round; `3c95f8a`) |
 | m4.f | Pinned-Slang manager with licence audit; CI `slang` job | licence audit done (all three platforms accepted, [LICENSES-SLANG](development/LICENSES-SLANG.md)); manager done (`cargo gust slang` install, locate and build-helper; Opus keep after one fix round; `9b42958`); CI `slang` job green on Linux (`9a5c529`; Reflect tier left to gpu-software) |
-| m4.g1, m4.g2 | Completion model (async read-back); wasm32 and the first browser WebGPU run | m4.g1 done (Gpu: RTX 5090; moved ahead of m4.e1; Opus keep after one fix round; `671b3dd`); m4.g2 planned |
-| m4.r | Slang pin bump to v2026.20 (fixes the WGSL template-list bug, shader-slang/slang 13566) and re-bless of every committed set (owner, 2026-11-01) | stage 1 (measurement) running; stage 2 after m4.e2b and m4.g2 |
+| m4.g1, m4.g2 | Completion model (async read-back); wasm32 and the first browser WebGPU run | m4.g1 done (Gpu: RTX 5090; moved ahead of m4.e1; Opus keep after one fix round; `671b3dd`); m4.g2 done (Gpu: WebGPU in Chrome 156 on the RTX 5090; Opus keep after two fix rounds; `4e096f5`) |
+| m4.r | Slang pin bump to v2026.20 (fixes the WGSL template-list bug, shader-slang/slang 13566) and re-bless of every committed set (owner, 2026-11-01) | stage 1 (measurement) done, all suites pass on v2026.20; stage 2 after m6.r |
 | m4.z | Repository cleanup before the M4 sanity check: dead code, the `__gust_keep` workaround if m4.r makes it redundant, STATUS consolidation, stale docs (owner, 2026-11-01) | queued after m4.r |
 
 **Next: M5, CPU target and evidence breadth** (plan adopted 2026-11-01, owner-delegated, after a Codex review
@@ -63,11 +63,11 @@ remaining chain run beside it now, and the rest wait for the M4 slice named. M5 
 | m5.b0 | Probe: the ledger on lavapipe, debug and release | done (passes on lavapipe in both profiles; 20 of 132 rows differ from the RTX 5090) |
 | m5.a | `gpu-software` CI job: Mesa pinned through the Ubuntu snapshot, adapter record asserted (D52) | done (`00ad885`) |
 | m5.d1, m5.d2, m5.d3 | Scalar `coretests` cases: fixture and twin; on the GPU; golden and registration | m5.d1 done (`d2378ce`); d2 done (`ce17199`; 84 cases on the RTX 5090 and lavapipe); d3 after m4.e2 |
-| m5.c1a, m5.c1a2, m5.c1b, m5.c1c | Differential generator in `tests/difftest/`: integers, floats v1 (interval bounds), harness, bounded shrinking | m5.c1a done (`3bcebaf`); c1a2 done (`f60f516`); c1b done (harness, S5.3 outcome A; Gpu: RTX 5090; `a3a7798`); c1c next |
+| m5.c1a, m5.c1a2, m5.c1b, m5.c1c | Differential generator in `tests/difftest/`: integers, floats v1 (interval bounds), harness, bounded shrinking | m5.c1a done (`3bcebaf`); c1a2 done (`f60f516`); c1b done (harness, S5.3 outcome A; Gpu: RTX 5090; `a3a7798`); c1c done (Gpu: RTX 5090; `a41ba93`) |
 | S5.4 | Spike: expansion-time profile and cached rebuild transitions | done (decision A: both tracking paths suffice on their own) |
 | m5.b | Ledger on two adapters (per-kind observation pins) | done (`236780b`; 18 software pins) |
-| m5.e1, m5.e2 | Production `cpu` profile (D51); `check-cpu-target` and the `Cpu` tier | after m4.g2 |
-| m5.c2, m5.a2 | `check-difftest` wiring; `gpu-software` on the Slang manager | after m4.g2 |
+| m5.e1, m5.e2 | Production `cpu` profile (D51); `check-cpu-target` and the `Cpu` tier | m5.e1 running; m5.e2 after it |
+| m5.c2, m5.a2 | `check-difftest` wiring; `gpu-software` on the Slang manager | ready (m4.g2 and m5.c1c merged); serial with m4.r on CI files |
 
 **Then: M6, language breadth I** (plan adopted 2026-11-01, owner-delegated, after an Opus review, one revision and a
 re-check). The keyword and construct spikes (S6.3b, S6.1) are done, and so are the pure-Rust math types (m6.a2,

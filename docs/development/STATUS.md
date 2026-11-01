@@ -198,6 +198,23 @@ D55 to D59.
   renamed, and `var` (loud, E30060) joined the table. The `__gust` prefix is reserved (new UI
   case). Bless: 0 changed goldens. Evidence: Unit, Slangc and Reflect on main. Deferred to m6.m1:
   raw `r#` kernel and module names (`gpu_m_r#k`, loud). Opus keep after three fix rounds.
+- M4 m4.g2 (`4e096f5`): wasm32 and the first browser WebGPU run (D45). On wasm32 everything that
+  blocks or reads a clock is gated out (the typed host `dispatch*`, the `*_timed` family,
+  `wait_for_submission`, the timestamp reader, `pool_read`, `graph`); `WgpuJob::wait` is a
+  documented no-op there. `examples/web-vector-add` runs the real gust-wgpu vector-add (1000
+  elements) in the browser and checks it against a host reference. `cargo xtask check-web` builds
+  it in release under `GUST_PROFILE=web`, serves it on a loopback port and drives headless Chrome
+  with a fresh profile. Evidence: Gpu (WebGPU, Chrome 156.0.8078.74, nvidia blackwell; vendor and
+  architecture from a second high-performance requestAdapter, same adapter assumed), check-web rc
+  0 on the merged tree. CI's `wasm` job compiles only (`check-web --tree-only`, wasm32 clippy).
+  Deferred to the M4 close: a wasm-aware `gust::Job` contract and clippy disallowed-methods for
+  `Instant::now` and `std::thread::sleep`. Opus keep after two fix rounds.
+- M5 m5.c1c (`a41ba93`): bounded shrinking for difftest. `difftest-run --shrink` reduces a failing
+  program with an AST reducer; one clock started after the original run bounds the search and
+  each candidate's cargo steps, and no candidate starts with under 1 s left. Measured on the RTX
+  5090: one literal fault shrank in 119.0 s over 17 candidates (mean 6.58 s), 0 mismatches in both
+  batches; the no-fault check exits 1. An interrupted `--shrink` can leave cargo running on Unix
+  (DIFFTEST.md). Evidence: Gpu (RTX 5090). Opus merge after three rounds.
 - M5 m5.c1b (`a3a7798`): the difftest harness `difftest-run`. It writes one run crate per
   batch, builds it with `cargo test --locked` under `GUST_PROFILE=dev`, requires exactly one
   complete result file per program, and writes `report.json` with exact counts. The GPU f32 is

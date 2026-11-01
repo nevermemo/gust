@@ -1,4 +1,7 @@
-use std::{fs, path::Path};
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     arch::check_arch,
@@ -7,7 +10,7 @@ use crate::{
     lint::lint,
     process::{
         CheckRecord, report_check, require_command, require_tests_ran, run_checked,
-        run_checked_owned, sum_test_results,
+        run_checked_owned, sum_test_results, without_colors,
     },
     reflect::{BuildOptions, build_slang_reflect},
     time::now_utc,
@@ -132,15 +135,21 @@ fn verify_inner(
     }
     run_checked(root, checks, "rustc", &["--version"])?;
     run_checked(root, checks, "slangc", &["-version"])?;
-    build_slang_reflect(BuildOptions::default())?;
+    if environment_helper(env::var_os(HELPER_VARIABLE)).is_some() {
+        // The tests use this file (it wins over the default location), so a second helper under `target` would be
+        // built and never used. The pinned-Slang manager's helper is the case CI has (`gpu-software`). The path is
+        // not printed: it is a machine path.
+        println!("Using the reflection helper named by {HELPER_VARIABLE}; building none.");
+    } else {
+        build_slang_reflect(BuildOptions::default())?;
+    }
     // Before the first GPU step: no adapter, or one that cannot be named, fails the run here and the record says null.
     *adapter = Some(record_adapter(root, checks)?);
     clear_generated_output(root, mode)?;
     for args in cargo_calls(mode) {
         run_checked_owned(root, checks, "cargo", &args)?;
-        if counts_tests(&args)
-            && let Some(record) = checks.last_mut()
-            && let Err(error) = check_counted_call(&args, &record.stdout)
+        if let Some(record) = checks.last_mut()
+            && let Err(error) = guard_call(mode, &args, &record.stdout)
         {
             // The process exited 0, so the record must not say success: no exit status, and the reason.
             record.exit_code = None;
@@ -195,6 +204,16 @@ fn verify_inner(
         }
     }
     Ok(())
+}
+
+/// The variable that names the reflection helper the tests use (`gust::reflect::native_compiler_path`).
+const HELPER_VARIABLE: &str = "GUST_SLANG_REFLECT";
+
+/// The helper file `GUST_SLANG_REFLECT` names, when it is set and the file exists. Anything else (unset, empty, a
+/// missing file) is `None`, and the caller builds the helper into the default place as before.
+pub(crate) fn environment_helper(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
+    let path = PathBuf::from(value.filter(|value| !value.is_empty())?);
+    path.is_file().then_some(path)
 }
 
 /// The directory the examples export their Slang, WGSL and SPIR-V to (ignored by git, never committed).
@@ -312,7 +331,7 @@ pub(crate) fn cargo_calls(mode: VerifyMode) -> Vec<Vec<String>> {
             calls.push(owned(&["test", "--locked", "-p", "gust", "--lib"]));
             calls.push(owned(&["test", "--locked", "-p", "gust-wgpu"]));
         }
-        VerifyMode::Gpu => calls.push(owned(&["test", "--locked", "-p", "gust-wgpu"])),
+        VerifyMode::Gpu => calls.push(owned(&GPU_SUITE_CALL)),
         VerifyMode::Smoke => calls.push(workspace_test_args()),
         VerifyMode::Full => {
             calls.push(workspace_test_args());
@@ -351,6 +370,113 @@ pub(crate) fn runs_check_dual(mode: VerifyMode) -> bool {
 fn counts_tests(call: &[String]) -> bool {
     call.iter().any(|arg| arg == "--include-ignored")
         || call.iter().map(String::as_str).eq(RELEASE_SLANG_TESTS)
+}
+
+/// The cargo call of the Gpu mode: every test of `gust-wgpu`, the unit tests of the library, each integration test
+/// file and the doc tests.
+pub(crate) const GPU_SUITE_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-wgpu"];
+
+/// The shape of [`GPU_SUITE_CALL`]'s output: `passed` is the sum over every `test result:` line, `result_lines`
+/// the number of those lines (one per test binary and doc-test run), which catches drift that cancels out.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct GpuSuitePin {
+    pub(crate) passed: u64,
+    pub(crate) result_lines: u64,
+}
+
+/// The pinned shape of [`GPU_SUITE_CALL`]'s output (D52, plan M5 R1-6), checked in the Gpu mode on every adapter.
+/// Every `test result:` line must also read `ok` with `0 failed; 0 ignored`.
+///
+/// This is the only place the numbers live (the `gpu-software` workflow only calls `verify --mode gpu`). Every
+/// slice that adds or removes a Gpu test or test file bumps them in the same commit; drift fails loudly, by
+/// design. Measured: 140 passed over 18 lines on the RTX 5090 at the m4.e1 merge (first CI run 123/17); 146 over
+/// 20 is the value the workflow pinned at 672c5ca, moved here by slice m5.a2. To recompute them, on any adapter and
+/// any OS, at the commit to be merged (a skipped assertion inside a test does not change the count; a failing test
+/// does, so fix failures first):
+///
+/// ```text
+/// GUST_PROFILE=dev cargo test --locked -p gust-wgpu --no-fail-fast 2>&1 \
+///   | grep '^test result:' | awk '{ sum += $4; n++ } END { print sum, n }'
+/// ```
+///
+/// prints `<passed> <lines>`; the output must also show no line other than `0 failed; 0 ignored`.
+pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
+    passed: 146,
+    result_lines: 20,
+};
+
+/// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu
+/// mode. The Fast mode makes the same call, but it is not the evidence the pin belongs to.
+pub(crate) fn pins_gpu_counts(mode: VerifyMode, call: &[String]) -> bool {
+    mode == VerifyMode::Gpu && call.iter().map(String::as_str).eq(GPU_SUITE_CALL)
+}
+
+/// The guards on a finished cargo call, in order: the examples and release Slang tests must run tests
+/// ([`check_counted_call`]), the Gpu suite must match [`GPU_SUITE_PIN`] ([`check_gpu_suite_counts`]).
+fn guard_call(mode: VerifyMode, call: &[String], stdout: &str) -> Result<(), String> {
+    if counts_tests(call) {
+        check_counted_call(call, stdout)
+    } else if pins_gpu_counts(mode, call) {
+        check_gpu_suite_counts(call, stdout, GPU_SUITE_PIN)
+    } else {
+        Ok(())
+    }
+}
+
+/// The guard for the Gpu suite on its captured `stdout`: at least one `test result:` line; every line readable, `ok`,
+/// `0 failed; 0 ignored`; the `passed` sum and the number of lines equal to `pin`. All findings are reported
+/// together, and a count mismatch names the number found and the number pinned.
+pub(crate) fn check_gpu_suite_counts(
+    call: &[String],
+    stdout: &str,
+    pin: GpuSuitePin,
+) -> Result<(), String> {
+    let plain = without_colors(stdout);
+    let printed = plain
+        .lines()
+        .filter(|line| line.trim_start().starts_with("test result:"))
+        .count() as u64;
+    let totals = sum_test_results(&plain);
+    let mut problems = Vec::new();
+    if printed == 0 {
+        problems.push("no `test result:` line in the output".to_owned());
+    }
+    if totals.summaries != printed {
+        problems.push(format!(
+            "{} of {printed} `test result:` line(s) could not be read",
+            printed - totals.summaries
+        ));
+    }
+    if totals.failed > 0 || totals.ignored > 0 {
+        problems.push(format!(
+            "the result lines are not all `ok` with `0 failed; 0 ignored` ({} failed, {} ignored)",
+            totals.failed, totals.ignored
+        ));
+    }
+    if totals.passed != pin.passed {
+        problems.push(format!(
+            "{} tests passed, the pinned count is {} (GPU_SUITE_PIN.passed)",
+            totals.passed, pin.passed
+        ));
+    }
+    if printed != pin.result_lines {
+        problems.push(format!(
+            "{printed} test result lines, the pinned number is {} (GPU_SUITE_PIN.result_lines)",
+            pin.result_lines
+        ));
+    }
+    if problems.is_empty() {
+        println!(
+            "{printed} test result lines (pinned {}), {} passed (pinned {})",
+            pin.result_lines, totals.passed, pin.passed
+        );
+        return Ok(());
+    }
+    Err(format!(
+        "cargo {}: {}. If a Gpu test or test file was added or removed on purpose, change GPU_SUITE_PIN in xtask/src/verify.rs in the same commit",
+        call.join(" "),
+        problems.join("; ")
+    ))
 }
 
 /// The release-only tests the release `--lib` step exists for (`cfg(not(debug_assertions))`, so they run nowhere
@@ -421,6 +547,10 @@ fn compare_artifact_names(expected: &[&str], found: &[String]) -> Result<(), Str
 #[cfg(test)]
 #[path = "tests/artifact_names.rs"]
 mod artifact_names_tests;
+
+#[cfg(test)]
+#[path = "tests/gpu_counts.rs"]
+mod gpu_counts_tests;
 
 #[cfg(test)]
 #[path = "tests/verify_generated.rs"]

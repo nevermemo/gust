@@ -18,9 +18,9 @@ mod verify;
 mod workspace;
 
 use checks::{
-    check_changed, check_cpu, check_feature, check_format, check_lints, check_workspace, doctor,
-    explain_check, export_artifacts, hook_format_rust_after_edit, list_tests, measure_tests,
-    self_test, status,
+    check_changed, check_cpu, check_dual, check_feature, check_format, check_lints,
+    check_workspace, doctor, explain_check, export_artifacts, hook_format_rust_after_edit,
+    list_tests, measure_tests, self_test, status,
 };
 use reflect::{BuildOptions, build_slang_reflect};
 use shader::{SlangcOptions, SpirvValOptions, slangc, spirv_val};
@@ -97,6 +97,7 @@ fn run() -> Result<(), String> {
             }
             check_cpu()?;
         }
+        "check-dual" => check_dual(&args)?,
         "bless" => {
             if !args.is_empty() {
                 return Err("bless takes no arguments (it sets BLESS_GOLDEN=1 itself)".into());
@@ -121,7 +122,7 @@ fn run() -> Result<(), String> {
 
 fn usage() {
     eprintln!(
-        "usage: cargo xtask <command>\n\n  build-slang-reflect [--force] [--sdk-root PATH] [--out-dir PATH]\n  verify [--mode smoke|fast|gpu|examples|artifacts|full] [--record|--no-record]\n  check-feature <{}>\n  check-changed | check-workspace | check-format | check-lints\n  check-fast | check-examples | check-artifacts | check-full\n  lint   no tracked shell scripts, no machine-specific paths; scans tracked files only\n  docs-check   relative Markdown links resolve to project files, no conflict markers, DECISIONS ids; scans tracked and untracked non-ignored files (anchors and external links are not checked)\n  check-arch   dependency allow-list per crate read from `cargo metadata` (D02), no IR module outside future/, no SPIR-V library; and every allow-listed package in Cargo.lock resolves from crates.io or crates/ (a [patch] or [replace] redirect fails); scans tracked and untracked non-ignored files\n  check-ui   `cargo check --locked --message-format json` of each tests/ui fixture crate: one with an expected.txt must fail with exactly one error satisfying every key (code, file and line required, message, label: diagnostic::on_unimplemented wording; `code: none` plus a `message:` for a macro error without a rustc code), one without must compile; needs cargo only\n  check-cpu   `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial): the non-ignored twin tests; needs neither slangc nor a GPU; a step of the Unit suite\n  bless   rewrite reviewed Slang goldens (BLESS_GOLDEN=1); exits non-zero when a fixture changed\n  test --suite <{}>   evidence tier as one command\n  slangc <file.slang> --entry NAME --target wgsl|spirv --out PATH [-- SLANGC_ARGS]\n  spirv-val <file.spv> --target-env ENV\n  test-exact -p PACKAGE --test TARGET [--features LIST] NAME\n  status | doctor [--smoke] | list-tests | explain-check <area>\n  export-artifacts\n  measure-tests [--json PATH] [command ...]\n  hook-format-rust-after-edit\n  self-test",
+        "usage: cargo xtask <command>\n\n  build-slang-reflect [--force] [--sdk-root PATH] [--out-dir PATH]\n  verify [--mode smoke|fast|gpu|examples|artifacts|full] [--record|--no-record]\n  check-feature <{}>\n  check-changed | check-workspace | check-format | check-lints\n  check-fast | check-examples | check-artifacts | check-full\n  lint   no tracked shell scripts, no machine-specific paths; scans tracked files only\n  docs-check   relative Markdown links resolve to project files, no conflict markers, DECISIONS ids; scans tracked and untracked non-ignored files (anchors and external links are not checked)\n  check-arch   dependency allow-list per crate read from `cargo metadata` (D02), no IR module outside future/, no SPIR-V library; and every allow-listed package in Cargo.lock resolves from crates.io or crates/ (a [patch] or [replace] redirect fails); scans tracked and untracked non-ignored files\n  check-ui   `cargo check --locked --message-format json` of each tests/ui fixture crate: one with an expected.txt must fail with exactly one error satisfying every key (code, file and line required, message, label: diagnostic::on_unimplemented wording; `code: none` plus a `message:` for a macro error without a rustc code), one without must compile; needs cargo only\n  check-cpu   `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial): the non-ignored twin tests; needs neither slangc nor a GPU; a step of the Unit suite\n  check-dual [--check-only]   the dual test build (`--cfg gust_dual`, D26) and its cross-crate proof: the workspace builds with the cfg into <target>/dual, and in tests/dual a consumer's test (E1) and production binary (E3) each fail with exactly one E0277 without the cfg and the test passes with it (E2); refuses to run while RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS or CARGO_BUILD_RUSTFLAGS is set; `--check-only` is the CPU-only mode CI will run; needs cargo only\n  bless   rewrite reviewed Slang goldens (BLESS_GOLDEN=1); exits non-zero when a fixture changed\n  test --suite <{}>   evidence tier as one command\n  slangc <file.slang> --entry NAME --target wgsl|spirv --out PATH [-- SLANGC_ARGS]\n  spirv-val <file.spv> --target-env ENV\n  test-exact -p PACKAGE --test TARGET [--features LIST] NAME\n  status | doctor [--smoke] | list-tests | explain-check <area>\n  export-artifacts\n  measure-tests [--json PATH] [command ...]\n  hook-format-rust-after-edit\n  self-test",
         FEATURE_AREAS.join("|"),
         suite::Suite::names().join("|")
     );

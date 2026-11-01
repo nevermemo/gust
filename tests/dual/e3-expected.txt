@@ -1,0 +1,11 @@
+# Keys matched by `cargo xtask check-dual` (step E3) against the one error of
+#   cargo check --locked --manifest-path tests/dual/Cargo.toml -p consumer --bin prod
+# built WITHOUT `--cfg gust_dual` (format as in e1-expected.txt). A production consumer gets no twin: the unconditional
+# typed `dispatch` on `gust::cpu::CpuDevice` in `consumer/src/bin/prod.rs` has no `Run` impl. The error is on the cargo
+# target `prod`, a sibling of the library target `consumer`.
+code: E0277
+file: consumer/src/bin/prod.rs
+line: 13
+message: `CpuDevice` cannot run the kernel `add`
+message: the trait `Run<add, 3>` is not implemented for `CpuDevice`
+label: this device has no executable form of the kernel

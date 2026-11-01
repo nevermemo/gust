@@ -110,13 +110,21 @@ fn fails(wanted: Expected) -> Expectation {
 }
 
 fn run(wanted: &Expected, stdout: &str) -> Vec<String> {
-    judge("gpupod-missing", &fails(wanted.clone()), false, stdout, "")
+    judge(
+        "gpupod-missing",
+        "gpupod-missing",
+        &fails(wanted.clone()),
+        false,
+        stdout,
+        "",
+    )
 }
 
 /// The case `a` of the synthetic lines.
 fn run_a(wanted: &Expected, lines: &[String]) -> Vec<String> {
     let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
     judge(
+        "a",
         "a",
         &fails(wanted.clone()),
         false,
@@ -564,6 +572,7 @@ fn a_failing_run_without_an_error_is_a_problem_naming_cargos_output() {
     let stdout = cargo_stdout(&[ARTIFACT_LINE, FINISHED_LINE]);
     let problems = judge(
         "c",
+        "c",
         &fails(gpupod_expected()),
         false,
         &stdout,
@@ -582,13 +591,14 @@ fn a_failing_run_without_an_error_is_a_problem_naming_cargos_output() {
     );
     // No output at all is the same problem.
     assert_eq!(
-        judge("c", &fails(gpupod_expected()), false, "", "").len(),
+        judge("c", "c", &fails(gpupod_expected()), false, "", "").len(),
         1
     );
     // A truncated JSON line does not count as a diagnostic.
     let truncated = &GPUPOD_MISSING_LINE[..GPUPOD_MISSING_LINE.len() / 2];
     assert_eq!(
         judge(
+            "gpupod-missing",
             "gpupod-missing",
             &fails(gpupod_expected()),
             false,
@@ -606,7 +616,14 @@ fn a_failing_run_without_an_error_is_a_problem_naming_cargos_output() {
 #[test]
 fn a_crate_that_compiles_when_it_must_fail_is_a_failure() {
     // Exit status zero is a failure even when the output happens to contain the diagnostic.
-    let problems = judge("c", &fails(gpupod_expected()), true, &gpupod_stdout(), "");
+    let problems = judge(
+        "c",
+        "c",
+        &fails(gpupod_expected()),
+        true,
+        &gpupod_stdout(),
+        "",
+    );
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
         problems[0].contains("must fail, but it compiled"),
@@ -616,15 +633,16 @@ fn a_crate_that_compiles_when_it_must_fail_is_a_failure() {
 
 #[test]
 fn a_crate_without_expected_txt_must_compile() {
-    assert!(judge("c", &Expectation::Compiles, true, "", "").is_empty());
+    assert!(judge("c", "c", &Expectation::Compiles, true, "", "").is_empty());
     // A compiled crate may print warnings.
     let warning = cargo_stdout(&[
         &message_line("warning", Some("unused"), "w", &[], &[]),
         r#"{"reason":"build-finished","success":true}"#,
     ]);
-    assert!(judge("c", &Expectation::Compiles, true, &warning, "").is_empty());
+    assert!(judge("c", "c", &Expectation::Compiles, true, &warning, "").is_empty());
     // A failure shows the rendered diagnostics (of any crate) and cargo's own text, with slashes.
     let problems = judge(
+        "c",
         "c",
         &Expectation::Compiles,
         false,
@@ -823,6 +841,7 @@ fn const_panic_expected() -> Expected {
 fn run_const_panic(wanted: &Expected, line: &str) -> Vec<String> {
     judge(
         "layout-outside-field",
+        "layout-outside-field",
         &fails(wanted.clone()),
         false,
         &cargo_stdout(&[line]),
@@ -979,6 +998,7 @@ fn macro_expected() -> Expected {
 fn run_macro(wanted: &Expected, line: &str) -> Vec<String> {
     judge(
         "kernel-cpu-bad-value",
+        "kernel-cpu-bad-value",
         &fails(wanted.clone()),
         false,
         &cargo_stdout(&[line]),
@@ -1107,4 +1127,64 @@ fn the_cpu_option_fixtures_pin_the_macro_messages_of_e0709_and_e0710() {
             &[],
         ))
     );
+}
+
+/// A synthetic `compiler-message` of the cargo target `target` of the package whose directory is `consumer`.
+fn sibling_line(target: &str, kind: &str, line: u32) -> String {
+    message_line(
+        "error",
+        Some("E0277"),
+        "`CpuDevice` cannot run the kernel `add`",
+        &[(
+            "consumer/src/lib.rs",
+            line,
+            true,
+            Some("this device has no executable form of the kernel"),
+        )],
+        &[],
+    )
+    .replace(
+        r#""target":{"kind":["bin"],"name":"a"}"#,
+        &format!(r#""target":{{"kind":["{kind}"],"name":"{target}"}}"#),
+    )
+}
+
+#[test]
+fn a_diagnostic_on_a_sibling_target_is_selected_by_the_target_name() {
+    // One package directory (`consumer`), two cargo targets: the library `consumer` and the binary `prod`.
+    let wanted = expected(
+        "E0277",
+        "consumer/src/lib.rs",
+        7,
+        &["`CpuDevice` cannot run the kernel `add`"],
+        &["no executable form"],
+    );
+    let on_bin = [sibling_line("prod", "bin", 7)];
+    let stdout = cargo_stdout(&[&on_bin[0]]);
+    let judged = |case: &str, target: &str, stdout: &str| {
+        judge(case, target, &fails(wanted.clone()), false, stdout, "")
+    };
+    // Asking for the binary finds its error.
+    assert_eq!(
+        judged("consumer", "prod", &stdout),
+        Vec::<String>::new(),
+        "the error of target `prod` satisfies an expectation that names `prod`"
+    );
+    // The default of `check-ui`, target = case, sees no error of its own on a package with two targets.
+    let problems = judged("consumer", "consumer", &stdout);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("printed no error-level compiler-message of its own"),
+        "{problems:?}"
+    );
+    // A sibling target's error is neither this target's error nor a second one: the library's error does not
+    // rescue the binary's wrong line, and does not make a correct binary error count twice.
+    let on_lib = sibling_line("consumer", "lib", 7);
+    let both = cargo_stdout(&[&on_lib, &on_bin[0]]);
+    assert_eq!(judged("consumer", "prod", &both), Vec::<String>::new());
+    assert_eq!(judged("consumer", "consumer", &both), Vec::<String>::new());
+    let wrong_line = cargo_stdout(&[&on_lib, &sibling_line("prod", "bin", 99)]);
+    let problems = judged("consumer", "prod", &wrong_line);
+    assert_eq!(problems.len(), 2, "{problems:#?}");
+    assert!(problems[0].contains("`line: 7`"), "{problems:?}");
 }

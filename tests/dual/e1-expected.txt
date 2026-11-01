@@ -1,0 +1,11 @@
+# Keys matched by `cargo xtask check-dual` (step E1) against the one error of
+#   cargo test --locked --manifest-path tests/dual/Cargo.toml -p consumer --lib --no-run
+# built WITHOUT `--cfg gust_dual` (see tests/ui/gpupod-missing/expected.txt for the key format; `file` is relative to
+# tests/dual). The consumer's own `cfg(test)` does not give the dependency `kernel-lib` its CPU twin, so the typed
+# `dispatch` on `gust::cpu::CpuDevice` in `consumer/src/lib.rs` (test `twin_runs`) has no `Run` impl.
+code: E0277
+file: consumer/src/lib.rs
+line: 23
+message: `CpuDevice` cannot run the kernel `add`
+message: the trait `Run<add, 3>` is not implemented for `CpuDevice`
+label: this device has no executable form of the kernel

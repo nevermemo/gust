@@ -300,6 +300,60 @@ fn is_unsuffixed_integer_literal(expression: &syn::Expr) -> bool {
     }
 }
 
+/// The first unsuffixed integer literal of an initializer whose type nothing in the initializer itself fixes, or `None`
+/// when some operand is typed (a suffix, a cast, a name, a call, a field, an index) or the expression is something
+/// else. Covered: a bare literal, through parentheses, groups, unary `-` and `!`; arithmetic and bitwise binary
+/// operators with a literal-only operand on each side; a shift with a literal-only left operand (the result takes the
+/// left operand's type, whatever the right one is); `Some(..)`, `Ok(..)` and `Err(..)` of a literal-only payload.
+/// Comparisons and `&&`/`||` give `bool`, so they are not covered. Slang types such an initializer `int`, while rustc
+/// types the local from its later uses (`u32` for `d /= y` with `y: u32`), so the two would silently diverge (D86).
+fn unsuffixed_literal_only(expression: &syn::Expr) -> Option<&syn::Expr> {
+    match expression {
+        syn::Expr::Lit(literal) => {
+            matches!(&literal.lit, syn::Lit::Int(value) if value.suffix().is_empty())
+                .then_some(expression)
+        }
+        syn::Expr::Paren(paren) => unsuffixed_literal_only(&paren.expr),
+        syn::Expr::Group(group) => unsuffixed_literal_only(&group.expr),
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_) | syn::UnOp::Not(_)) => {
+            unsuffixed_literal_only(&unary.expr)
+        }
+        syn::Expr::Binary(binary)
+            if matches!(binary.op, syn::BinOp::Shl(_) | syn::BinOp::Shr(_)) =>
+        {
+            unsuffixed_literal_only(&binary.left)
+        }
+        syn::Expr::Binary(binary)
+            if matches!(
+                binary.op,
+                syn::BinOp::Add(_)
+                    | syn::BinOp::Sub(_)
+                    | syn::BinOp::Mul(_)
+                    | syn::BinOp::Div(_)
+                    | syn::BinOp::Rem(_)
+                    | syn::BinOp::BitAnd(_)
+                    | syn::BinOp::BitOr(_)
+                    | syn::BinOp::BitXor(_)
+            ) =>
+        {
+            let left = unsuffixed_literal_only(&binary.left)?;
+            unsuffixed_literal_only(&binary.right)?;
+            Some(left)
+        }
+        syn::Expr::Call(call)
+            if call.args.len() == 1
+                && matches!(
+                    call.func.as_ref(),
+                    syn::Expr::Path(path)
+                        if path.path.is_ident("Some") || path.path.is_ident("Ok") || path.path.is_ident("Err")
+                ) =>
+        {
+            unsuffixed_literal_only(&call.args[0])
+        }
+        _ => None,
+    }
+}
+
 /// A rejection reason without a span: the code and message the caller attaches to
 /// the node it was checking (see [`diagnostics::error`]).
 pub type Reason = (Code, &'static str);
@@ -1791,6 +1845,21 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 Code::LetElse,
                 local,
                 "let-else requires control-flow lowering and is not supported yet",
+            );
+            return;
+        }
+        if matches!(local.pat, syn::Pat::Ident(_))
+            && let Some(literal) = local
+                .init
+                .as_ref()
+                .and_then(|initial| unsuffixed_literal_only(&initial.expr))
+        {
+            self.reject(
+                Code::UnsuffixedLiteralLet,
+                literal,
+                "an integer literal without a suffix or a type annotation gives the local no type of its own: Slang \
+                 types it `int` while rustc infers the type from the later uses, so the two can differ; add a suffix \
+                 (`0u32`, `0i32`) or a type annotation (`let x: u32 = 0;`)",
             );
             return;
         }

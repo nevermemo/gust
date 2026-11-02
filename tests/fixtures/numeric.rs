@@ -10,6 +10,16 @@ mod numeric {
         pub step: int,
     }
 
+    pub struct Typed {
+        pub big: uint,
+        pub small: uint,
+        pub above: uint,
+        pub shifted: uint,
+        pub negative: int,
+        pub arithmetic: int,
+        pub quotient: int,
+    }
+
     // Wrapping arithmetic (slice m7.w): a multiplicative hash and a linear congruential step, defined modulo 2^32 for
     // every input. Plain `*` and `+` would be outside the domain (KM-10) wherever the product does not fit.
     fn scramble(x: uint) -> uint {
@@ -54,6 +64,52 @@ mod numeric {
             pair_out[i] = Pair { first: p.first, second: p.second };
             // Wrapping methods through helpers: the same value on the GPU, the twin and Rust's own `wrapping_*`.
             wrap_out[i] = Wrapped { hash: scramble(b[i]), step: step(a[i]) };
+        }
+    }
+
+    // Typed locals at the edge the untyped path got wrong (slice m6.z2, D86). An unannotated `let mut d = 7;` would
+    // be Slang `int`, and `d /= y` with `y >= 2^31` divides signed there and unsigned in Rust; GUST-E0326 now refuses
+    // that `let`, so every local here carries a suffix or an annotation. The `uint` fields are the unsigned division
+    // of a large and of a small dividend, an unsigned comparison and a logical shift right of a value with the top bit
+    // set; the `int` fields are a signed comparison, an arithmetic shift right and a signed division. Every case is
+    // inside the defined domain (no zero divisor, no overflow, shifts below 32).
+    #[allow(clippy::redundant_field_names)]
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn typed_locals(
+        id: SV_DispatchThreadID,
+        y: StructuredBuffer<uint>,
+        s: StructuredBuffer<int>,
+        mut out: RWStructuredBuffer<Typed>,
+    ) {
+        let i: uint = id.x;
+        if i < y.len() && i < s.len() && i < out.len() {
+            let mut big = 4_000_000_000u32;
+            big /= y[i];
+            let mut small: u32 = 7;
+            small /= y[i];
+            let limit: u32 = 5;
+            let mut above: u32 = 0;
+            if y[i] > limit {
+                above = 1;
+            }
+            let word: u32 = y[i];
+            let shifted: u32 = word >> 4;
+            let value: i32 = s[i];
+            let mut negative: i32 = 0;
+            if value < 0 {
+                negative = 1;
+            }
+            let mut quotient = -100i32;
+            quotient /= value;
+            out[i] = Typed {
+                big: big,
+                small: small,
+                above: above,
+                shifted: shifted,
+                negative: negative,
+                arithmetic: value >> 3,
+                quotient: quotient,
+            };
         }
     }
 }

@@ -1564,7 +1564,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 24] = [
+const PINNED_FIXTURES: [&str; 26] = [
     "gpupod-missing",
     "gpupod-present",
     "kernel-cpu-bad-value",
@@ -1572,6 +1572,8 @@ const PINNED_FIXTURES: [&str; 24] = [
     "kernel-missing",
     "layout-outside-element",
     "layout-outside-field",
+    "literal-let-ok",
+    "literal-let-rejected",
     "profile-dev-no-artifact",
     "profile-empty",
     "profile-native-artifact",

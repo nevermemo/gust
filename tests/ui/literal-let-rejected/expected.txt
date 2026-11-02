@@ -1,0 +1,9 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). A macro error is a `compile_error!` and has no rustc code, so `code: none`
+# requires `"code": null` and at least one `message:`. The macro's own text carries its GUST code
+# (docs/DIAGNOSTICS.md, E0326) and the help; the line is the literal, not the statement.
+code: none
+file: literal-let-rejected/src/main.rs
+line: 12
+message: [GUST-E0326] an integer literal without a suffix or a type annotation gives the local no type of its own
+message: add a suffix (`0u32`, `0i32`) or a type annotation (`let x: u32 = 0;`)

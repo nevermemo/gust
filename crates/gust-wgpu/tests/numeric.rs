@@ -190,6 +190,131 @@ fn numeric_semantics_and_struct_construction_execute_on_gpu() {
     }
 }
 
+/// Independent host reference of `typed_locals` (slice m6.z2): ordinary Rust on `u32` and `i32`, with the operands as
+/// run-time values.
+fn typed_reference(y: u32, s: i32) -> ([u32; 4], [i32; 3]) {
+    (
+        [
+            std::hint::black_box(4_000_000_000u32) / y,
+            std::hint::black_box(7u32) / y,
+            u32::from(y > 5),
+            y >> 4,
+        ],
+        [i32::from(s < 0), s >> 3, std::hint::black_box(-100i32) / s],
+    )
+}
+
+fn typed_fields(t: &numeric::Typed) -> ([u32; 4], [i32; 3]) {
+    (
+        [t.big, t.small, t.above, t.shifted],
+        [t.negative, t.arithmetic, t.quotient],
+    )
+}
+
+/// Typed locals at the edge the unannotated path got wrong (D86): `u32` division by a divisor of 2^31 or more, an
+/// unsigned comparison and a logical shift right of a value with the top bit set, and the signed counterparts. The GPU
+/// and the CPU twin are both compared with the host reference.
+#[test]
+fn typed_locals_match_host_rust_at_the_signed_edge() {
+    // The edge is real: the signed reading of the same operands differs from the unsigned one.
+    let edge = std::hint::black_box(0xFFFF_FFFFu32);
+    assert_ne!(
+        (std::hint::black_box(7i32) / (edge as i32)) as u32,
+        std::hint::black_box(7u32) / edge
+    );
+    assert_ne!((edge >> 4) as i32, (edge as i32) >> 4);
+    assert!((edge as i32) < 5 && edge > 5);
+
+    let divisors: [u32; 14] = [
+        1,
+        2,
+        3,
+        5,
+        6,
+        7,
+        16,
+        17,
+        0x7FFF_FFFF,
+        0x8000_0000,
+        0x8000_0001,
+        0xC000_0000,
+        0xF000_0000,
+        0xFFFF_FFFF,
+    ];
+    let signed: [i32; 14] = [
+        3,
+        -3,
+        7,
+        -7,
+        1,
+        -1,
+        100,
+        -100,
+        i32::MAX,
+        i32::MIN + 1,
+        -8,
+        8,
+        -9,
+        9,
+    ];
+    let device =
+        HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip");
+    for count in [1usize, 14, 64, 65, 100] {
+        let y: Vec<u32> = (0..count).map(|i| divisors[i % 14]).collect();
+        let s: Vec<i32> = (0..count).map(|i| signed[(i * 5) % 14]).collect();
+        let y_buf = device.create_typed_buffer("typed y", &y, GpuBufferAccess::ReadOnly);
+        let s_buf = device.create_typed_buffer("typed s", &s, GpuBufferAccess::ReadOnly);
+        let zero = numeric::Typed {
+            big: 0,
+            small: 0,
+            above: 0,
+            shifted: 0,
+            negative: 0,
+            arithmetic: 0,
+            quotient: 0,
+        };
+        let out =
+            device.create_typed_buffer("typed out", &vec![zero; count], GpuBufferAccess::ReadWrite);
+        device
+            .dispatch_buffers(
+                &numeric::typed_locals::DESCRIPTOR,
+                count as u32,
+                &[
+                    BufferBinding::read_only(&y_buf),
+                    BufferBinding::read_only(&s_buf),
+                    BufferBinding::read_write(&out),
+                ],
+            )
+            .unwrap();
+        let gpu = device.read_typed_buffer(&out).unwrap();
+
+        let cpu = CpuDevice::new();
+        let twin_y = cpu.buffer(&y);
+        let twin_s = cpu.buffer(&s);
+        let twin_out = cpu.buffer(&vec![zero; count]);
+        numeric::typed_locals::dispatch(&cpu, count as u32, &twin_y, &twin_s, &twin_out).unwrap();
+        let twin = twin_out.read();
+
+        for k in 0..count {
+            let expected = typed_reference(y[k], s[k]);
+            assert_eq!(
+                typed_fields(&gpu[k]),
+                expected,
+                "GPU, y = {:#x}, s = {}, element {k}, count {count}",
+                y[k],
+                s[k]
+            );
+            assert_eq!(
+                typed_fields(&twin[k]),
+                expected,
+                "twin, y = {:#x}, s = {}, element {k}, count {count}",
+                y[k],
+                s[k]
+            );
+        }
+    }
+}
+
 #[test]
 fn numeric_compiles_to_wgsl() {
     let descriptor = &numeric::run::DESCRIPTOR;

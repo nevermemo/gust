@@ -471,6 +471,88 @@ fn unbounded_or_unproven_loop_forms_are_rejected() {
     );
 }
 
+/// Slice m6.z2 (D86): an unannotated `let` whose initializer is only unsuffixed integer literals is GUST-E0326, because
+/// Slang types it `int` while rustc infers the type from the later uses (`let mut d = 7; d /= y` with `y: u32`).
+#[test]
+fn an_unannotated_unsuffixed_integer_literal_let_is_e0326() {
+    for body in [
+        "let mut acc = 0; acc += id.x;",
+        "let x = 7;",
+        "let x = -1;",
+        "let x = (7);",
+        "let x = -(2147483648);",
+        "let x = 0xFF;",
+        "let x = 1 + 2;",
+        "let x = (1 + 2) * 3 - 4 / 2 % 3;",
+        "let x = 1 << 3;",
+        "let x = 1 << id.x;",
+        "let x = 1 << 3u32;",
+        "let x = 6 & 3 | 8 ^ 1;",
+        "let x = !0;",
+        "let x = Some(7);",
+        "let x = Ok(7);",
+        "let x = Err(-7);",
+    ] {
+        let source = kernel_with_body(body);
+        assert_rejected(&source, Code::UnsuffixedLiteralLet);
+        let text = translate(&source).unwrap_err().to_string();
+        assert!(
+            text.contains("add a suffix (`0u32`, `0i32`) or a type annotation"),
+            "{body}: {text}"
+        );
+    }
+    // An `if` or a `match` is not a value in the dialect, so literal arms never reach this check (docs/DIAGNOSTICS.md).
+    assert_rejected(
+        &kernel_with_body("let y = if id.x > 1u32 { 1 } else { 2 };"),
+        Code::UnsupportedExpression,
+    );
+    assert_rejected(
+        &kernel_with_body("let y = match id.x { _ => 1 };"),
+        Code::MatchAsValue,
+    );
+    // One error per such `let`, in source order; the annotated one between them is fine.
+    let error = translate(&kernel_with_body("let a = 1; let b: u32 = 2; let c = 3;")).unwrap_err();
+    crate::diagnostics::testing::assert_codes(
+        &error,
+        &[Code::UnsuffixedLiteralLet, Code::UnsuffixedLiteralLet],
+    );
+}
+
+/// What stays accepted: any suffix, any annotation, and every initializer with an operand that has a type of its own.
+/// Float literals are not covered (Slang `float` and the twin's `f32` agree on a float literal that meets an `f32`
+/// operand; see docs/SEMANTICS.md).
+#[test]
+fn a_suffixed_annotated_or_typed_let_is_not_e0326() {
+    for body in [
+        "let mut acc = 0u32; acc += id.x;",
+        "let x = 7i32;",
+        "let x = -1i32;",
+        "let x = (7u32);",
+        "let x: u32 = 7;",
+        "let x: i32 = -(1 + 2);",
+        "let x: u32 = 1 << 3;",
+        "let x = 1u32 + 2;",
+        "let x = 1 + 2u32;",
+        "let x = 1u32 << 3;",
+        "let x = id.x << 1;",
+        "let x = 3 * id.x;",
+        "let x = 7 as u32;",
+        "let x = id.x + 1;",
+        "let x = 2.0;",
+        "let x = true;",
+        "let x = 1 < 2;",
+        "let x: Option<u32> = Some(7);",
+        "let x = Some(7u32);",
+        "let x;",
+    ] {
+        let source = kernel_with_body(body);
+        let module: syn::ItemMod = crate::diagnostics::testing::parse_str(&source).unwrap();
+        if let Err(error) = validate_module(&module) {
+            panic!("{body}: {error}");
+        }
+    }
+}
+
 #[test]
 fn for_loop_end_bound_is_evaluated_once_and_body_control_flow_maps_directly() {
     let source = translate(
@@ -4498,7 +4580,7 @@ fn star_assign_in_a_matrix_module_writes_the_place_through_the_overload() {
         "",
         "let mut v = Vec2::new(1.0, 2.0); v.x *= 2.0; v *= Vec2::splat(2.0); \
          let mut m = Mat4::IDENTITY; m *= 0.5; out[i] *= 2.0; out[i * 2 + 1] *= v.y; \
-         let mut a = 1; a *= 3;",
+         let mut a: i32 = 1; a *= 3;",
     ))
     .unwrap();
     for expected in [
@@ -4846,7 +4928,7 @@ fn a_module_that_names_a_matrix_lowers_unary_minus_to_the_overload() {
     let source = translate(&matrix_module(
         "",
         "let a = 2.0; let b = -a; let c = -Mat4::IDENTITY; let d = -(-a); let e = -a * 3.0; let f = -2.0; \
-         let g = -3; let h = -(a + 1.0); out[i] = b;",
+         let g: i32 = -3; let h = -(a + 1.0); out[i] = b;",
     ))
     .unwrap();
     for expected in [
@@ -4861,7 +4943,7 @@ fn a_module_that_names_a_matrix_lowers_unary_minus_to_the_overload() {
     // A literal operand is a scalar whatever the module names: it keeps the plain `-`. A parenthesised literal is not
     // a literal to the emitter, so it takes the overload, which slangc resolves by the operand type (probed).
     assert!(source.contains("var f = (-2.0);"), "{source}");
-    assert!(source.contains("var g = (-3);"), "{source}");
+    assert!(source.contains("int g = (-3);"), "{source}");
     assert!(!source.contains("__gust_neg(2.0)") && !source.contains("__gust_neg(3)"));
     // The table follows the product table, once, before the first declaration.
     let table = neg_table::overload_text();
@@ -4884,12 +4966,12 @@ fn a_module_that_names_a_matrix_lowers_unary_minus_to_the_overload() {
 fn a_parenthesised_literal_takes_the_overload_in_a_matrix_module() {
     let source = translate(&matrix_module(
         "",
-        "let p = -(2.0); let q = -(2147483648); out[i] = p;",
+        "let p = -(2.0); let q: i32 = -(2147483648); out[i] = p;",
     ))
     .unwrap();
     assert!(source.contains("var p = __gust_neg((2.0));"), "{source}");
     assert!(
-        source.contains("var q = __gust_neg((uint(2147483648)));"),
+        source.contains("int q = __gust_neg((uint(2147483648)));"),
         "{source}"
     );
 }

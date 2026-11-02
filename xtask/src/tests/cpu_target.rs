@@ -308,7 +308,7 @@ fn ci_runs_check_cpu_target_once_in_a_job_of_its_own() {
         .find("      - name: Production CPU target\n")
         .expect(job);
     let run = job
-        .find("        run: cargo xtask check-cpu-target\n")
+        .find("        run: cargo --locked xtask check-cpu-target\n")
         .expect(job);
     assert!(name < run, "{job}");
     // The run line follows the name directly or after comments only, and it is the last step of the job.

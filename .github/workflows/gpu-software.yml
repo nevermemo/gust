@@ -6,13 +6,16 @@
 # reflection helper from the pinned-Slang manager (`cargo gust slang install` and `build-helper`; the version and the
 # archive hash live in crates/cargo-gust/src/slang.rs and nowhere else), doctor, then `cargo xtask verify --mode gpu
 # --record`, which also checks the `test result:` lines against the pinned counts (GPU_SUITE_PIN, in
-# xtask/src/verify.rs), then assertions on the record.
+# xtask/src/verify.rs; `cargo xtask test --suite Gpu` checks the same pin), then assertions on the record. The Mesa
+# install retries each download five times and the whole install once more after 60 s (the snapshot service has
+# answered 503/504); the pinned snapshot and the identity assertions are unchanged.
 #
 # One job, two lists (plan M5 R1-10). The list of a pull request, a push to main and a dispatch without `extended` is
 # everything above, plus the differential test on 2 seeds (32 generated programs on three parties: the interpreter, the
 # CPU twin and the lavapipe GPU; R1-13). The nightly list (`schedule`, 03:00 UTC, and a dispatch with `extended`, the
-# default) adds the steps marked "nightly list": `cargo xtask check-examples` and the release-profile mismatch ledger,
-# and runs the differential test on all 8 seeds (128 programs) in place of the 2. Slices that grow the nightly list add
+# default) adds the steps marked "nightly list": `cargo xtask check-examples` and the release-profile mismatch ledger
+# (`cargo xtask check-ledger`, guarded as the Full mode is: no ignored test, every ledger test named), and runs the
+# differential test on all 8 seeds (128 programs) in place of the 2. Slices that grow the nightly list add
 # steps behind the same condition. Moving a step to the pull request list is deleting its `if:` line, and it is allowed
 # only while the measured warm job time of a pull request stays at five minutes or less (the budget rule; STATUS names
 # each list and its measured time). The nightly steps after the differential test carry `!cancelled() &&` in that
@@ -76,7 +79,13 @@ jobs:
         # a `Snapshot:` field): sources and apt lists are redirected with -o, so nothing floats to the live archive.
         run: |
           set -euo pipefail
-          apt_get() { sudo env DEBIAN_FRONTEND=noninteractive apt-get "$@"; }
+          # The snapshot service answered 503/504 in three runs: five retries per file and a 30 s timeout
+          # per request, then one more try of the whole install after 60 s (below). The pinned snapshot, the packages
+          # and the identity assertions of the next step are unchanged; there is no fallback mirror (D52).
+          apt_get() {
+            sudo env DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \
+              -o Acquire::https::Timeout=30 "$@"
+          }
           packages=("mesa-vulkan-drivers=$MESA_VERSION" vulkan-tools build-essential pkg-config spirv-tools)
           echo "::notice::apt source: https://snapshot.ubuntu.com/ubuntu/$SNAPSHOT_ID/ only, for this install"
           dir="$RUNNER_TEMP/apt-snapshot"
@@ -90,8 +99,14 @@ jobs:
           EOF
           options=(-o Dir::Etc::sourcelist=/dev/null -o "Dir::Etc::sourceparts=$dir/sources.list.d"
             -o "Dir::State::lists=$dir/lists")
-          apt_get "${options[@]}" update
-          apt_get "${options[@]}" install --yes "${packages[@]}"
+          install_mesa() {
+            apt_get "${options[@]}" update && apt_get "${options[@]}" install --yes "${packages[@]}"
+          }
+          if ! install_mesa; then
+            echo "::warning::the Mesa install from the snapshot failed; trying the whole install once more in 60 s"
+            sleep 60
+            install_mesa
+          fi
       - name: Check that Mesa did not drift, and that lavapipe is the device
         run: |
           set -euo pipefail
@@ -258,14 +273,14 @@ jobs:
       - name: Mismatch ledger in the release profile (nightly list)
         # The ledger asserts the plain-Rust outcome of its mode-keyed rows for the `overflow-checks` mode it detects at
         # run time (D38); the Gpu suite above is the debug run, this is the release run (the second of the two that the
-        # Full mode makes, xtask RELEASE_LEDGER_TEST). GUST_PROFILE=dev is what every xtask cargo child gets.
+        # Full mode makes, xtask RELEASE_LEDGER_TEST). `cargo xtask check-ledger` runs exactly that call and applies the
+        # guard of the Full mode: at least one test ran, 0 failed, 0 ignored, and each ledger test named in xtask
+        # RELEASE_LEDGER_TESTS reported ok, so an `#[ignore]`d or renamed ledger test turns this step red. xtask gives
+        # every cargo child GUST_PROFILE=dev.
         if: ${{ !cancelled() && env.GPU_SOFTWARE_NIGHTLY == 'true' }}
-        env:
-          GUST_PROFILE: dev
         run: |
           set -o pipefail
-          cargo --locked test --release -p gust-wgpu --test mismatch -- --nocapture 2>&1 \
-            | tee "$RUNNER_TEMP/ledger-release.log"
+          cargo --locked xtask check-ledger 2>&1 | tee "$RUNNER_TEMP/ledger-release.log"
       - name: Collect the evidence
         if: always()
         run: |

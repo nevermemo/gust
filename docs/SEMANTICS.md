@@ -22,7 +22,8 @@ describes the intended behaviour and is not evidence.
 
 - **GPU target (exists).** A `#[gpu]` module is translated directly from the Rust syntax tree to Slang, `slangc`
   compiles the Slang to WGSL, and wgpu runs the WGSL. The measured adapter is NVIDIA GeForce RTX 5090 on Vulkan,
-  driver 610.88, slangc 2026.13.1, 2026-10-24. The WGSL specification is the portable reference for this path. The
+  driver 610.88, slangc 2026.20, 2026-11-01 (the semantics were first measured on slangc 2026.13.1, 2026-10-24, and the
+  Gpu suite passed again on 2026.20). The WGSL specification is the portable reference for this path. The
   contract does not extend to Slang's other targets: Slang itself leaves, for example, integer division by zero
   undefined. The test `the_emitted_wgsl_uses_plain_operators_and_conversions` checks that division, remainder,
   shifts, signed subtraction and multiplication, negation and the float-to-integer casts reach the WGSL as plain

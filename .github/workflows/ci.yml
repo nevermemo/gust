@@ -110,6 +110,14 @@ jobs:
           gust build -p vector-add
           diff -r "$RUNNER_TEMP/s3-first" examples/vector-add/gust-artifacts
           gust check -p vector-add --recompile
+      - name: Committed artifacts match the pinned Slang
+        # A pin bump without a re-bless fails here: `check --recompile` rebuilds the kernels of tests/precompiled with
+        # the pinned slangc and compares them with the committed set. Only the web copy of that set is byte-checked
+        # (xtask/src/tests/web.rs); the other copies pass verify_artifact only. Measured locally, warm, on the
+        # 2026.20 install: 36 s.
+        run: >-
+          cargo run --locked --quiet -p cargo-gust --
+          check -p kernels --manifest-path tests/precompiled/Cargo.toml --recompile
 
   precompiled:
     # D45, D46: the production-shaped consumer of precompiled kernels (tests/precompiled). `--check-only` is the mode

@@ -20,11 +20,13 @@ detail lives in [NEXT_TASKS](development/NEXT_TASKS.md) and task contracts in
 
 ## Direction
 
-GUST is a published, compute-only crate for writing GPU code in Rust: "Slang with Rust
+GUST is a published compute crate for writing GPU code in Rust: "Slang with Rust
 syntax and rustc checking". It covers as much Rust syntax as can be lowered with a
 written contract, and brings GPU concepts (vector types, SIMT dispatch, workgroup
 memory, capability-specific code) into Rust. The target hardware and platform are
 chosen at build time; GPU and CPU builds follow one semantics contract (D21, D22).
+Kernels may also run in non-compute GPU stages as computation (execution shapes,
+D61); GUST owns no rendering state.
 GUST is the foundation for two later projects: Breeze, a rendering and interaction
 framework, and Hurricane, the game engine (destination in
 [ENGINE_HURRICANE](ENGINE_HURRICANE.md)). Their scope is defined when GUST is ready.
@@ -50,8 +52,8 @@ its slice, and two fix rounds per slice.
 | m4.e1, m4.e2 | `gust-wgpu` precompiled path and cache key; precompiled fixture, `check-precompiled`, packaged-consumer proof without Slang | m4.e1 done (Gpu: RTX 5090; Opus keep after one fix round; `894ab0e`); m4.e2a done (fixture, `check-precompiled` E1 to E4; Gpu: RTX 5090 with no Slang in the environment; Opus keep after one fix round; `29cfc58`); m4.e2b done (E5 to E8: strict plus dual, build-script refusals, re-expansion, `cargo package` allow-lists and a relocated registry-style consumer; Gpu: RTX 5090; CI `precompiled` job runs `--check-only` plus a NoAdapter run; Opus keep after one fix round; `3c95f8a`) |
 | m4.f | Pinned-Slang manager with licence audit; CI `slang` job | licence audit done (all three platforms accepted, [LICENSES-SLANG](development/LICENSES-SLANG.md)); manager done (`cargo gust slang` install, locate and build-helper; Opus keep after one fix round; `9b42958`); CI `slang` job green on Linux (`9a5c529`; Reflect tier left to gpu-software) |
 | m4.g1, m4.g2 | Completion model (async read-back); wasm32 and the first browser WebGPU run | m4.g1 done (Gpu: RTX 5090; moved ahead of m4.e1; Opus keep after one fix round; `671b3dd`); m4.g2 done (Gpu: WebGPU in Chrome 156 on the RTX 5090; Opus keep after two fix rounds; `4e096f5`) |
-| m4.r | Slang pin bump to v2026.20 (fixes the WGSL template-list bug, shader-slang/slang 13566) and re-bless of every committed set (owner, 2026-11-01) | stage 1 (measurement) done, all suites pass on v2026.20; stage 2 running |
-| m4.z | Repository cleanup before the M4 sanity check: dead code, the `__gust_keep` workaround if m4.r makes it redundant, STATUS consolidation, stale docs (owner, 2026-11-01) | queued after m4.r |
+| m4.r | Slang pin bump to v2026.20 (fixes the WGSL template-list bug, shader-slang/slang 13566) and re-bless of every committed set (owner, 2026-11-01) | done (Gpu: RTX 5090; Slangc, Spirv, Reflect on 2026.20; Opus keep after one fix round; `12ab066`) |
+| m4.z | Repository cleanup before the M4 sanity check: dead code, the `__gust_keep` workaround if m4.r makes it redundant, STATUS consolidation, stale docs (owner, 2026-11-01) | next |
 
 **Next: M5, CPU target and evidence breadth** (plan adopted 2026-11-01, owner-delegated, after a Codex review
 (adopt with changes) and one revision; decisions D51 and D52). Slices that share no code or test file with M4's
@@ -163,8 +165,8 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M4 Build-time targets and distribution | Build profiles (target plus capability set) chosen at build time; hash-keyed artifact manifest; D17 at export time for WGSL and SPIR-V; runtime `slangc` behind a development feature; a pinned-Slang manager for crate users; first browser WebGPU run. Note: first spike: choose the build-profile mechanism (build.rs env, `--config`, or a cfg namespace) so it composes with check-dual's `CARGO_ENCODED_RUSTFLAGS` and its refusal; the artifact manifest hashes Slang output only (the twin never enters it or the published crate) | in progress (plan adopted; D44 to D47) |
 | M5 CPU target and evidence breadth | Production `cpu` build target and runtime; lavapipe CI job labelled `Gpu (software)`; differential program generator with shrinking; scalar `coretests` cases on the GPU. Note: the known-mismatch ledger and the semantics contract exist since M3 and are not new M5 work; M5 adds the production target, lavapipe and the generator | plan adopted (D51, D52); slices beside M4 |
 | M6 Language breadth I | Vectors and matrices (vec3 and mat3 rejected in buffers at first; `m * v` lowers to `mul`); collision-only identifier renaming; uniforms (`ConstantBuffer<T>`). Note: uniform typed calls were decided in M3 (D40): such kernels have no typed call and no CPU twin until this milestone | plan adopted; spikes and m6.a2 beside M4 |
-| M7 GPU concepts in Rust | First, m7.a: element-wise calls from a plain scalar `#[gpu] fn` (`name::map` over slices, GPU-resident `GpuVec` values, `map_async` for the browser), owner direction 2026-11-01, D60, spikes m7.s1 and m7.s2 first; `par_for!` reuses its kernel generator. Then `par_for!` SIMT dispatch on both pipelines; workgroup shared memory and barriers, including a CPU strategy; reduce, scan and compaction primitives (T13 lands here). Multi-dimensional dispatch lifts the `max_compute_workgroups_per_dimension` ceiling (D36). Note: `#[kernel(cpu = "unsupported")]` is the opt-out for barrier kernels until a CPU strategy exists; a validator rule rejects a construct with cross-invocation meaning unless the kernel carries `cpu = "unsupported"` or a declared twin strategy (D42) | planned; spike m7.s1 queued |
-| M8 Capability variants | Capability-keyed variants with platform aliases; exhaustiveness checked against the crate's declared target list, with CPU as a target; one rustc-checked signature; subgroup operations first (D23). Compile-time portable floor for workgroup size and storage counts; `with_limits` is the runtime half (D36) | planned |
+| M7 GPU concepts in Rust | First, m7.a: element-wise calls from a plain scalar `#[gpu] fn` (`name::map` over slices, GPU-resident `GpuVec` values, `map_async` for the browser), owner direction 2026-11-01, D60, spikes m7.s1 and m7.s2 first; `par_for!` reuses its kernel generator. Then `par_for!` SIMT dispatch on both pipelines; workgroup shared memory and barriers, including a CPU strategy; reduce, scan and compaction primitives (T13 lands here). Multi-dimensional dispatch lifts the `max_compute_workgroups_per_dimension` ceiling (D36). Note: `#[kernel(cpu = "unsupported")]` is the opt-out for barrier kernels until a CPU strategy exists; a validator rule rejects a construct with cross-invocation meaning unless the kernel carries `cpu = "unsupported"` or a declared twin strategy (D42) | plan adopted 2026-11-02 (owner-delegated): Codex review (rework), Revision 1, an Opus re-review in the Codex slot (adopt with changes), R1.1; spikes m7.s1 and m7.s2 done, m7.s3 (CUDA comparison, owner request) running |
+| M8 Capability variants | Capability-keyed variants with platform aliases; exhaustiveness checked against the crate's declared target list, with CPU as a target; one rustc-checked signature; subgroup operations first (D23). Compile-time portable floor for workgroup size and storage counts; `with_limits` is the runtime half (D36). Build-time routing per function tag (D65 to D67) lands alongside, after m7.a | planned |
 | M9 Language breadth II | Methods in `impl` blocks; user enums with `match`; tuples; fixed-size arrays; non-capturing closures; then traits mapped to Slang interfaces and generics | planned |
 | M10 Publication | Benchmarks against rayon, hand-written WGSL with wgpu, CubeCL and rust-gpu; a "Rust program to GPU" example gallery; docs and a book; API stability pass; crate names per D48 (`gust-compute`; the macro resolves the imported crate path instead of `::gust::`); crates.io release | planned |
 
@@ -175,6 +177,8 @@ and M9; that cut is an owner decision when M7 is done.
 
 - GPU builds with a CPU fallback (D21 leaves this open as a future option).
 - WebGL2 (out of scope for GUST compute, D24; revisit for Breeze).
+- Execution shapes beyond `grid` (D61 to D63) and textures (D64): the slot is open; recommended
+  between M7 and M8. Spike X-S1 measures the `pixel` premise first.
 - Slang automatic differentiation.
 - An optional nightly-pinned THIR checker behind a cargo subcommand.
 - Per-API SPIR-V, MSL and DXIL builds for native-only capabilities.

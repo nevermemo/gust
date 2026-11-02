@@ -36,7 +36,27 @@ Each tier is one command: `cargo xtask test --suite <Tier>`. Unit runs `cargo te
 
 The run-time Slang bridge is the `slang-runtime` feature of `gust` and `gust-wgpu`, off by default (D44). The examples enable it in their manifests, and `gust` and `gust-wgpu` enable it for their own tests through a dev-dependency on themselves, so no test command here needs `--features`. The workspace build therefore unifies the feature on, and the off state is observed by the last two steps of the Unit suite, `cargo clippy --locked -p gust -p gust-wgpu --no-default-features --lib -- -D warnings` and `cargo check --locked -p gust -p gust-wgpu --no-default-features --lib` (cargo only: no slangc, no GPU); they are the only steps that build `gust-wgpu` that way. `cargo xtask check-ui` and the `tests/dual` steps of `cargo xtask check-dual` also build `gust` without the feature, as a side effect. A unit test of xtask pins that the manifests set no default feature and no `features` on the `gust` entries of the workspace root and of `gust-wgpu`. Every cargo child that `cargo xtask` starts for the workspace runs under `GUST_PROFILE=dev`, whatever the parent has; a preset other value is logged and overridden. The profile itself is decided in `crates/gust/build.rs` (unit-tested from `cargo test -p gust --lib profile::`): `GUST_PROFILE` is `dev`, `native` or `web`, any other value (an empty one included) fails the build, and a release build with the variable unset is `native` (`web` on `wasm32`) with a warning, so `cargo test --release` outside `cargo xtask` needs `GUST_PROFILE=dev`. A strict profile refuses the `slang-runtime` feature in that script and makes a kernel without an artifact a compile error at the kernel (`gust::profile::require_artifact`). `cargo xtask check-ui` proves four of these cases with the fixtures `profile-native-no-artifact` (E0080 at the kernel line under `native`), `profile-dev-no-artifact` (the same file compiles under `dev`), `profile-unknown` and `profile-empty` (the build script refuses the value) and `profile-native-bridge` (`native` with the feature on is refused); a fixture gets its own variables from an `env.txt`, set after the workspace `dev`, and a `build-error:` line in its `expected.txt` names text of the build script's refusal in cargo's stderr. Switching between plain `cargo` (no `GUST_PROFILE`) and `cargo xtask` (`dev`) rebuilds `gust` and its dependents, because the build script reruns when the variable changes.
 
-Label format: `done (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.13.1, <commit>)`.
+Label format: `done (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.20, <commit>)`.
+
+**The Slang pin (D46, slice m4.r).** `cargo gust` is pinned to the Slang 2026.20 release, and `VALIDATED_BUILDS` ships
+empty. The pin was validated on Windows with the release archive itself: every committed artifact set was re-blessed
+with that slangc and a helper built against it, the Spirv, Reflect and Gpu suites ran on the RTX 5090, and the three
+particle-step SPIR-V modules that changed with the bump were executed on the adapter and read back equal to the
+2026.13.1 ones. The Linux archive (`slang-2026.20-linux-x86_64.tar.gz`) and the macOS archive were never executed
+before this slice: CI, whose `slang` job installs the pin with the manager, builds the helper with g++, runs the
+Slangc tier and re-checks the committed `tests/precompiled` artifacts with `cargo gust check --recompile` (so a pin
+bump without a re-bless fails there), and whose gpu-software job does the same on lavapipe, is the first run of the
+Linux archive. Its result is the evidence for that platform, and a red CI run there is a finding about the archive,
+not about this slice's Windows evidence. The macOS archive has no CI job and stays unexecuted.
+
+**The reflection helper in `cargo xtask` (slice m4.r).** `verify` (the Spirv suite), `check-feature reflection` (the
+Reflect suite) and `doctor` use the helper that `GUST_SLANG_REFLECT` names when it is set to a file other than this
+checkout's own `target/slang-reflect` output, and build none of their own. Its `--version` Slang tag must equal the pin
+in `crates/cargo-gust/src/slang.rs` (and, for `verify`, the output of `slangc -version`); a helper of another build,
+such as one built on 2026.13.1, is refused with a message that names both tags. When the variable is unset, the helper
+is built from `SLANG_SDK` or `VULKAN_SDK` as before, and the result must carry the pin as well, so an SDK of another
+version is refused instead of being used silently (a VulkanSDK that ships 2026.13.1 therefore needs `SLANG_SDK` to
+name the managed 2026.20 install).
 A software Vulkan driver such as lavapipe counts as `Gpu (software)`, never as
 hardware evidence. Expected values come from an independent host reference, never from
 the shadow bodies (D04). A missing tool or adapter is a failure for its tier, not a skip.

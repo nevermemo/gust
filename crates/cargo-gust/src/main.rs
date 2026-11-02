@@ -72,18 +72,20 @@
 //! # The pinned Slang
 //!
 //! Authors who export need Slang; consumers and production builds never call these commands (D46, section 2.5 of the
-//! M4 plan). The pin is the version `cargo xtask check-full` validated.
+//! M4 plan). The pin is the version the M4 Slang bump (m4.r) validated with the GPU, Slangc, Spirv and Reflect
+//! suites, check-artifacts, check-precompiled and check-web; check-full runs at the M4 close.
 //!
 //! - `cargo gust slang install` downloads the release archive for this platform from Slang's GitHub release with
 //!   `curl -fsSL`, checks its SHA-256 before anything is extracted, extracts it with `tar -xf` into
 //!   `<cache>/<version>.partial-<pid>` and renames that to `<cache>/<version>`; on any failure the partial directory is
-//!   removed. The archive layout is kept, so the release's `LICENSE` stays beside the binaries (`doctor` lists it).
+//!   removed. The archive layout is kept, so the release's `LICENSE`, `LICENSES/` and `third-party-notices/` stay
+//!   beside the binaries (`doctor` and `install` list them).
 //!   The cache is `GUST_SLANG_HOME` when set, else `<CARGO_HOME or ~/.cargo>/gust/slang`. To install without a network,
 //!   put the release archive in `<cache>/archives/` and run the command again; its digest is checked the same way.
 //! - `cargo gust slang locate [--allow-slang-mismatch]` prints the `slangc` a build would use: the cache
 //!   (`GUST_SLANG_HOME` when set, else the default), then a `slangc` on `PATH`. A `PATH` slangc counts when its
-//!   `-version` is the pin exactly or a build listed in `VALIDATED_BUILDS` (the release prints `2026.13.1`; the source
-//!   build `check-full` validated prints `2026.13.1-1-g84792eb15`). Anything else is an error naming the install
+//!   `-version` is the pin exactly or a build listed in `VALIDATED_BUILDS` (the release prints `2026.20`; the list is
+//!   empty, since 2026.20 was validated with the release itself). Anything else is an error naming the install
 //!   command and the download URL; a `PATH` slangc of another version is used only with the flag, and is printed.
 //! - `cargo gust slang build-helper [--force] [--sdk-root <dir> --out-dir <dir>]` builds `gust-slang-reflect` from
 //!   `assets/slang-layout.cpp` (a copy of `scripts/probes/slang-layout.cpp`, kept equal by a test) with the first of

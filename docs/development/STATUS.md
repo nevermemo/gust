@@ -173,7 +173,7 @@ D55 to D59.
   `doctor` and `build` refuse a helper built against another Slang. `xtask build-slang-reflect`
   delegates to it. Measured on Windows: a scratch install, the helper, the Slangc and Reflect
   tiers, and two byte-identical exports (S3). The CI `slang` job (Linux, g++) had not run before
-  the merge. Known gap: the committed artifact sets carry the local build tag
+  the merge. Known gap (resolved by m4.r): the committed artifact sets carry the local build tag
   `2026.13.1-1-g84792eb15`, so `cargo gust check` of them fails with the release Slang until a
   re-bless slice after m4.e2b. Opus keep after one fix round; gates on main at `6b064dc`.
 - M4 m4.e2b (`3c95f8a`): the packaged-consumer proof without Slang. `check-precompiled` gains E5
@@ -215,6 +215,19 @@ D55 to D59.
   5090: one literal fault shrank in 119.0 s over 17 candidates (mean 6.58 s), 0 mismatches in both
   batches; the no-fault check exits 1. An interrupted `--shrink` can leave cargo running on Unix
   (DIFFTEST.md). Evidence: Gpu (RTX 5090). Opus merge after three rounds.
+- M4 m4.r (`12ab066`): Slang pinned at v2026.20 (fixes the WGSL template-list bug, shader-slang/slang
+  13566); the URLs and sha256 of all three platforms match the release's published digests, and
+  `VALIDATED_BUILDS` ships empty. Every committed artifact set is re-blessed: WGSL and reflection
+  byte-identical across the five copies, content keys unchanged (D45 keys the entry point and the
+  clean Slang; the compiler is recorded in the manifest and the reflection's `artifactHash`).
+  Particle-step SPIR-V from 13.1 and from 2026.20 gives byte-identical read-backs on the RTX 5090.
+  xtask judges the helper (schema 2 required) and `slangc -version` against the pin on every path,
+  with cargo-gust's rule, so a 13.1 `slangc` first on `PATH` is refused. CI's `slang` job
+  recompiles `tests/precompiled` with the pinned Slang (36 s locally; its first Linux run is
+  CI's). Known gaps, for m4.z: helper freshness is judged by file times; only the web copy of
+  the artifact set is byte-checked. Evidence: Gpu (RTX 5090), Slangc, Spirv, Reflect, check-web,
+  check-artifacts and check-precompiled on 2026.20; main gates green on the merge. Opus merge
+  after one fix round.
 - M5 m5.e1 (`f60c1b4`): the production `cpu` target (D51). `GUST_PROFILE=cpu` is a fourth profile:
   never inferred, not strict, refuses `slang-runtime`, does no artifact lookup (`IS_CPU`; `STRICT`
   stays `native` or `web`). Under `cpu` the macro emits one ungated `impl Run<K, N>` for

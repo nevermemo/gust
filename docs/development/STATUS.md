@@ -283,7 +283,8 @@ checks.
   landed (m3.f2 added `tests/dual`).
 
 **M4, build-time targets and distribution.** The code chain is merged through m4.r; the cleanup slice m4.z (entry above)
-is merged, and the M4 sanity check (Fable and Codex) follows. Plan adopted 2026-11-01; D44 to D47 (profiles,
+is merged, `check-full` passed at `c964222` (2026-11-02), the close rows are D68 to D72, and the M4 sanity check
+(Fable and Codex) runs. Plan adopted 2026-11-01; D44 to D47 (profiles,
 committed and re-verified artifacts, `cargo-gust` and the Slang pin, weak compare-exchange).
 Tier: Gpu (RTX 5090) except where noted.
 - Landed: spike S1 (local commit): with no Slang reachable, a precompiled vector-add verified through D17 and equal to
@@ -307,8 +308,8 @@ Tier: Gpu (RTX 5090) except where noted.
   is therefore redundant under 2026.20 (slice m4.z, 2026-11-02: 30 comparison-in-list shapes all validate in naga
   without it) but needed under 13.1 (13 of the 30 fail), and `gust::slang` runs whatever `slangc` is on `PATH`, so it
   stays until the library enforces the pin.
-- Open (the first two are for the M4 close): the manifest field names differ from the plan's draft, so D45 is amended;
-  `gust::Job` needs a wasm-aware contract (`WgpuJob::wait` is a documented no-op on wasm32 and `status` reports
+- Open (filed in NEXT_TASKS at the M4 close; D71 records the manifest field names): `gust::Job` needs the
+  wasm-aware contract of D69 (`WgpuJob::wait` is a documented no-op on wasm32 and `status` reports
   `Complete` early); the wasm32 clippy ban on `std::thread::sleep` and `Instant::now` covers `gust-wgpu` only (m4.z),
   not `gust` or `web-vector-add`; a plain
   `cargo install cargo-gust` needs `GUST_PROFILE=dev`; CI's `precompiled` job runs `--check-only` plus a NoAdapter run
@@ -325,7 +326,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M4 close (slice m4.z fix round, then the M4 sanity check); see the roadmap's Now and next
+claim: roadmap M4 close (the M4 sanity check by Fable and Codex); see the roadmap's Now and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no
 ```
@@ -334,12 +335,12 @@ full_check_needed_before_commit: no
 
 - Branch: `main`
 - Last complete compiler feature: T12, statement-only `match Result<T, T>`
-- Last full validation: `cargo xtask check-full` passed on a clean tree at `5971c12`
-  (M3 close, 2026-11-01, NVIDIA GeForce RTX 5090 / Vulkan, 06:28 to 06:31Z), through the
+- Last full validation: `cargo xtask check-full` passed at `c964222` (M4 close, 2026-11-02, NVIDIA GeForce
+  RTX 5090 / Vulkan, Slang v2026.20, 04:59 to 05:06Z; no tracked change, one untracked log file), through the
   shared cargo slot wrapper: workspace tests, the release-only tests required by name, every
   example test with `--include-ignored`, `check-dual` in full mode, and 13 SPIR-V artifacts
-  through `spirv-val`. The run before it was at `96e4b9d` (2026-11-01, before the M3 sanity
-  fixes), then `634a50e` (M2 close, 2026-10-24) and the one before that (M1) at `a6cbb8f`, together with the Slangc
+  through `spirv-val`. The run before it was at `5971c12` (M3 close, 2026-11-01, clean tree),
+  then `96e4b9d` (2026-11-01, before the M3 sanity fixes), then `634a50e` (M2 close, 2026-10-24) and the one before that (M1) at `a6cbb8f`, together with the Slangc
   and Reflect suites. The local `.ai/VALIDATION.json` record stamps the commit and dirty
   state and contains no machine paths.
 - DX19 is closed: full validation, two independent reviews, and fixes (`027eef7`,

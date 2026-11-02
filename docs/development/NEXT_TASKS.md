@@ -102,6 +102,20 @@ test module; do not mix that mechanical move with behavior changes.
 - Optional: `cargo test -- --color never` in the counted calls would remove the ANSI
   stripping (`without_colors`) from the count guard.
 
+## M4 follow-ups (filed at M4 close)
+
+- `gust::slang` checks `slangc -version` against the pin (D72). Then remove the `__gust_keep` wrapper behind the
+  naga comparison and a GPU read-back (m4.z measured that 2026.20 no longer needs it; 13.1 fails 13 of 30 shapes).
+- `gust::Job` on wasm32 as D69 states: `status` from `on_submitted_work_done`, `wait` returns an error,
+  `Device::dispatch` and `dispatch_call` gated. Until then `WgpuJob::wait` is a documented no-op.
+- The wasm32 `disallowed-methods` ban (`std::thread::sleep`, `Instant::now`) for `gust` and `web-vector-add`, as
+  `gust-wgpu` has it (m4.z).
+- Browser automation in CI (S4, D69): measure a software WebGPU adapter on a Linux runner first.
+- `layout: null` element types are exported unchecked (D71): describe them from the type, or refuse them.
+- M10 publication: `cargo publish` strips self dev-dependencies (D68); docs.rs needs `package.metadata.docs.rs` and
+  `doc(cfg)`; registry users see no inferred-profile warning.
+- `xtask/src/bless.rs` hashes only `tests/fixtures/*.slang`, so blessing other goldens reports a false failure.
+
 ## Deferred language/runtime breadth
 
 Vectors/matrices, uniforms, textures, samplers, additional binding groups, and

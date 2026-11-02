@@ -5,11 +5,12 @@ use crate::{
     difftest::check_difftest,
     docs::docs_check,
     lint::lint,
-    process::{require_command, run_cargo_test_captured, run_counted, run_direct},
+    process::{TestTotals, require_command, run_cargo_test_captured, run_counted, run_direct},
     ui::check_ui,
     verify::{GPU_SUITE_CALL, GPU_SUITE_PIN, VerifyMode, check_gpu_suite_counts, verify},
     workspace::workspace_root,
 };
+use std::path::Path;
 
 /// An evidence tier of docs/development/VALIDATION.md, runnable as one command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,6 +23,10 @@ pub(crate) enum Suite {
     Gpu,
     Full,
 }
+
+/// Runs a `cargo test` call in a directory and returns its totals and captured standard output
+/// ([`run_cargo_test_captured`]).
+type TestRunner<'a> = dyn Fn(&Path, &[String]) -> Result<(TestTotals, String), String> + 'a;
 
 /// One step of a suite. Every step is an existing command or a `cargo test` call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -300,12 +305,19 @@ impl Step {
 
     fn run(self) -> Result<(), String> {
         let root = workspace_root()?;
+        self.run_in(&root, &run_cargo_test_captured)
+    }
+
+    /// [`Step::run`] in `root`, with the runner of the steps that judge a captured `cargo test` output (the Gpu
+    /// suite) given, so that a test can show which of them a step uses.
+    fn run_in(self, root: &Path, test_runner: &TestRunner<'_>) -> Result<(), String> {
+        let root = root.to_path_buf();
         match self {
             Self::Cargo(args) => run_direct(&root, "cargo", args),
             Self::CountedCargo(args) => run_counted(&root, args).map(|_| ()),
             Self::GpuSuite => {
                 let call = GPU_SUITE_CALL.map(str::to_owned);
-                let (_, stdout) = run_cargo_test_captured(&root, &call)?;
+                let (_, stdout) = test_runner(&root, &call)?;
                 check_gpu_suite_counts(&call, &stdout, GPU_SUITE_PIN)
             }
             Self::RequireTool(tool) => require_command(tool),

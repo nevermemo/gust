@@ -3,13 +3,14 @@ use crate::{
     checks::{CPU_TESTS, GPU_SEMANTICS_TESTS, REFLECTION_TESTS},
     cpu_target::{Dirs, all_calls},
     difftest::{DifftestStep, Mode, Options, batch_args, short_circuit_args, steps},
+    process::{TestTotals, sum_test_results},
     verify::{
-        GPU_SUITE_CALL, RELEASE_SLANG_TESTS, VerifyMode, cargo_calls as mode_cargo_calls,
-        example_run_args,
+        GPU_SUITE_CALL, GPU_SUITE_PIN, RELEASE_SLANG_TESTS, VerifyMode,
+        cargo_calls as mode_cargo_calls, example_run_args,
     },
     workspace::EXAMPLES,
 };
-use std::path::Path;
+use std::{cell::RefCell, path::Path};
 
 const UNIT: [Step; 17] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-macros"]),
@@ -311,6 +312,11 @@ fn gpu_software_runs_the_ledger_through_the_guarded_xtask_command() {
         &job,
         "Mismatch ledger in the release profile (nightly list)",
     );
+    // The nightly list only: the ledger is not a step of the pull request list.
+    assert!(
+        step.contains("        if: ${{ !cancelled() && env.GPU_SOFTWARE_NIGHTLY == 'true' }}\n"),
+        "{step}"
+    );
     let call = "          cargo --locked xtask check-ledger 2>&1 | tee ";
     assert!(
         step.contains(&format!("{call}\"$RUNNER_TEMP/ledger-release.log\"\n")),
@@ -409,6 +415,65 @@ fn the_other_tiers_alias_existing_commands() {
     assert_eq!(
         Suite::Full.steps(),
         vec![Step::Verify(VerifyMode::Full, true)]
+    );
+}
+
+/// Output of the Gpu suite call with `passed` tests over `lines` result lines, as libtest prints it.
+fn gpu_suite_output(passed: u64, lines: u64) -> String {
+    let mut text = format!(
+        "test result: ok. {passed} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.0s\n"
+    );
+    for _ in 1..lines {
+        text.push_str(
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.0s\n",
+        );
+    }
+    text
+}
+
+/// A test runner that records the calls it gets and answers each with `output`.
+fn recording_runner(
+    calls: &RefCell<Vec<Vec<String>>>,
+    output: String,
+) -> impl Fn(&Path, &[String]) -> Result<(TestTotals, String), String> + '_ {
+    move |_, args| {
+        calls.borrow_mut().push(args.to_vec());
+        Ok((sum_test_results(&output), output.clone()))
+    }
+}
+
+/// The Gpu step runs the call through the captured-output runner and judges it against `GPU_SUITE_PIN` (m5.f1,
+/// review): a `run_direct` in its arm would never ask the runner, and the first assertion below would fail.
+#[test]
+fn the_gpu_suite_step_runs_the_captured_runner_and_fails_on_a_drifted_count() {
+    let calls = RefCell::new(Vec::new());
+    let pinned = gpu_suite_output(GPU_SUITE_PIN.passed, GPU_SUITE_PIN.result_lines);
+    let root = Path::new("ROOT");
+    assert_eq!(
+        Step::GpuSuite.run_in(root, &recording_runner(&calls, pinned)),
+        Ok(())
+    );
+    let expected = GPU_SUITE_CALL.map(str::to_owned).to_vec();
+    assert_eq!(*calls.borrow(), vec![expected]);
+    // One test more, one fewer, and one result line fewer all fail, naming the pin.
+    for (passed, lines) in [
+        (GPU_SUITE_PIN.passed + 1, GPU_SUITE_PIN.result_lines),
+        (GPU_SUITE_PIN.passed - 1, GPU_SUITE_PIN.result_lines),
+        (GPU_SUITE_PIN.passed, GPU_SUITE_PIN.result_lines - 1),
+    ] {
+        let error = Step::GpuSuite
+            .run_in(
+                root,
+                &recording_runner(&calls, gpu_suite_output(passed, lines)),
+            )
+            .unwrap_err();
+        assert!(error.contains("GPU_SUITE_PIN"), "{passed} {lines}: {error}");
+    }
+    // The runner's own failure (cargo failed, nothing ran) passes through.
+    let failing = |_: &Path, _: &[String]| Err("cargo failed".to_owned());
+    assert_eq!(
+        Step::GpuSuite.run_in(root, &failing),
+        Err("cargo failed".to_owned())
     );
 }
 

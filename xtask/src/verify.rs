@@ -724,7 +724,10 @@ pub(crate) const RELEASE_SLANG_TESTS: [&str; 9] = [
 /// The known-mismatch ledger in the release profile (the Full mode). The ledger asserts the plain-Rust outcome
 /// of every row for the `overflow-checks` mode it detects at run time (D38); the debug run (Gpu suite) covers
 /// checks on, this run covers checks off, so both branches of every mode-keyed row run on every full gate.
-pub(crate) const RELEASE_LEDGER_TEST: [&str; 7] = [
+/// `--nocapture` (m5.f1, review) lets the run print, on stderr, the adapter, the detected overflow mode and the `S2 |`
+/// rows of the ledger: that is the release evidence in the log. The tests print to stderr only, so the `test .. ok`
+/// lines of standard output, which the guard reads ([`check_counted_call`]), stay whole.
+pub(crate) const RELEASE_LEDGER_TEST: [&str; 9] = [
     "test",
     "--locked",
     "--release",
@@ -732,6 +735,8 @@ pub(crate) const RELEASE_LEDGER_TEST: [&str; 7] = [
     "gust-wgpu",
     "--test",
     "mismatch",
+    "--",
+    "--nocapture",
 ];
 
 /// The tests of `crates/gust-wgpu/tests/mismatch.rs`, all of which the release ledger call must report `ok`. A count
@@ -828,14 +833,17 @@ fn is_release_ledger(call: &[String]) -> bool {
 
 /// `cargo xtask check-ledger`: runs exactly [`RELEASE_LEDGER_TEST`] and judges its output with the guard of the Full
 /// mode ([`check_counted_call`]), so that the release gate and the nightly list of the `gpu-software` workflow share
-/// one guard. Needs `slangc`, the reflection helper (as the Gpu suite does) and a Vulkan adapter, and is evidence only
-/// for the adapter the ledger lines name.
+/// one guard. Needs `slangc`, the reflection helper (prepared as `verify` does) and a Vulkan adapter, and is
+/// evidence only for the adapter the ledger lines name.
 pub(crate) fn check_ledger(args: &[String]) -> Result<(), String> {
     if !args.is_empty() {
         return Err("check-ledger takes no arguments".to_owned());
     }
     require_command("slangc")?;
     let root = workspace_root()?;
+    // As `verify` does before its first GPU step: the helper named by `GUST_SLANG_REFLECT` must match the Slang on
+    // `PATH`, or is built when the variable is unset.
+    prepare_helper(&root, None)?;
     let call = owned_args(&RELEASE_LEDGER_TEST);
     let (_, stdout) = run_cargo_test_captured(&root, &call)?;
     check_counted_call(&call, &stdout)?;
@@ -885,8 +893,8 @@ pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu
-/// mode. The Fast mode makes the same call, but it is not the evidence the pin belongs to; the Gpu suite has its own step
-/// ([`crate::suite::Step::GpuSuite`]) that applies the same check.
+/// mode. The Fast mode makes the same call, but it is not the evidence the pin belongs to; the Gpu suite has its
+/// own step ([`crate::suite::Step::GpuSuite`]) that applies the same check.
 pub(crate) fn pins_gpu_counts(mode: VerifyMode, call: &[String]) -> bool {
     mode == VerifyMode::Gpu && call.iter().map(String::as_str).eq(GPU_SUITE_CALL)
 }

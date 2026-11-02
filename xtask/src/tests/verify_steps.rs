@@ -90,6 +90,8 @@ fn the_full_gate_is_fmt_clippy_workspace_tests_release_slang_and_ledger_tests_ex
         "gust-wgpu",
         "--test",
         "mismatch",
+        "--",
+        "--nocapture",
     ]));
     expected.extend(example_tests());
     expected.extend(example_runs(EXAMPLES));
@@ -129,7 +131,9 @@ fn only_the_full_gate_runs_the_release_ledger_and_exactly_once() {
             "-p",
             "gust-wgpu",
             "--test",
-            "mismatch"
+            "mismatch",
+            "--",
+            "--nocapture"
         ])
     );
     for mode in ALL_MODES {
@@ -292,6 +296,38 @@ fn a_renamed_removed_or_filtered_out_ledger_test_fails_by_name() {
         "test tests::a_kernel_without_storage",
     );
     assert!(check_counted_call(&call, &renamed).is_err());
+}
+
+/// What the ledger tests print on stderr with `--nocapture` (mismatch.rs `eprintln!`): the adapter, the detected
+/// overflow mode and the per-case rows.
+const LEDGER_STDERR: &str = "S2 adapter: name=NVIDIA GeForce RTX 5090 device_type=DiscreteGpu\n\
+    S2 overflow checks detected in this build: Wrapping\n\
+    S2 | KM-01 | gpu=1 | rust=2 | twin=2\n\
+    S2 ledger file: 132 lines in target/tmp/ledger-hardware.txt\n";
+
+#[test]
+fn the_release_ledger_runs_with_nocapture_and_the_guard_reads_stdout_only() {
+    // The release run keeps its stderr evidence (adapter, overflow mode, `S2 |` rows) in the log (m5.f1, review).
+    let call = owned(&RELEASE_LEDGER_TEST);
+    assert_eq!(call[call.len() - 2..], ["--", "--nocapture"]);
+    let stdout = ledger_output(["ok"; 6], LEDGER_OK);
+    // stderr is a separate stream: the guard passes on stdout alone ...
+    assert!(LEDGER_STDERR.contains("S2 | KM-01"));
+    assert_eq!(check_counted_call(&call, &stdout), Ok(()));
+    // ... and also when a console shows both streams, the stderr lines on lines of their own between the tests.
+    let merged = stdout.replace(
+        "test the_emitted_wgsl",
+        &format!("{LEDGER_STDERR}test the_emitted_wgsl"),
+    );
+    assert_eq!(check_counted_call(&call, &merged), Ok(()));
+    // A name line missing from stdout fails by name, however much stderr says: the guard never reads stderr, so a
+    // `test .. ok` text that only the stderr stream carries is not a pass.
+    let missing = LEDGER_NAMES[2];
+    let stdout = stdout.replace(&format!("test {missing} ... ok\n"), "");
+    let stderr = format!("{LEDGER_STDERR}test {missing} ... ok\n");
+    let error = check_counted_call(&call, &stdout).unwrap_err();
+    assert!(error.contains(&format!("`{missing}`")), "{error}");
+    assert!(stderr.contains(missing));
 }
 
 /// The list names exactly the `#[test]` functions of the ledger file: a test added there but not here would be

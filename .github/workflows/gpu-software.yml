@@ -276,7 +276,8 @@ jobs:
         # Full mode makes, xtask RELEASE_LEDGER_TEST). `cargo xtask check-ledger` runs exactly that call and applies the
         # guard of the Full mode: at least one test ran, 0 failed, 0 ignored, and each ledger test named in xtask
         # RELEASE_LEDGER_TESTS reported ok, so an `#[ignore]`d or renamed ledger test turns this step red. xtask gives
-        # every cargo child GUST_PROFILE=dev.
+        # every cargo child GUST_PROFILE=dev. The call has `--nocapture`, so the log below carries the adapter, the
+        # detected overflow mode and the `S2 |` rows; the ledger files carry one line per case.
         if: ${{ !cancelled() && env.GPU_SOFTWARE_NIGHTLY == 'true' }}
         run: |
           set -o pipefail

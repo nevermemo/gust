@@ -1141,6 +1141,12 @@ fn integer_division_by_literal_zero_is_diagnosed() {
         "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = out[id.x] / 0u32; } }",
         "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<int>) { out[id.x] = out[id.x] % 0; } }",
         "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = out[id.x] / -0u32; } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = out[id.x] / (0u32); } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<int>) { out[id.x] = out[id.x] % ((-0)); } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] /= 0u32; } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<int>) { out[id.x] %= 0; } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { let mut t = out[id.x]; t /= (0); out[id.x] = t; } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { if false { out[id.x] %= -0u32; } } }",
     ] {
         assert_rejected(source, Code::DivisionByLiteralZero);
     }
@@ -1151,6 +1157,34 @@ fn integer_division_by_literal_zero_is_diagnosed() {
     )
     .unwrap();
     assert!(ok.contains("(out[id.x] / 0.0)"), "{ok}");
+}
+
+#[test]
+fn a_literal_zero_through_parentheses_or_a_macro_group_is_still_zero() {
+    // `macro_rules!` hands a `$d:expr` over inside an invisible group; the emitter keeps that spelling a plain operator,
+    // so the validator must see it as the zero it is. Build the group, as the parser would not.
+    let parse = |text: &str| crate::diagnostics::testing::parse_str::<syn::Expr>(text).unwrap();
+    let group = |text: &str| {
+        syn::Expr::Group(syn::ExprGroup {
+            attrs: Vec::new(),
+            group_token: syn::token::Group::default(),
+            expr: Box::new(parse(text)),
+        })
+    };
+    for text in ["0", "0u32", "-0", "(0)", "((-0u32))"] {
+        assert!(crate::validate::is_literal_zero(&parse(text)), "{text}");
+        assert!(
+            crate::validate::is_literal_zero(&group(text)),
+            "group of {text}"
+        );
+    }
+    for text in ["1", "(1)", "x", "(x)", "0.0", "(0.0)", "-1"] {
+        assert!(!crate::validate::is_literal_zero(&parse(text)), "{text}");
+        assert!(
+            !crate::validate::is_literal_zero(&group(text)),
+            "group of {text}"
+        );
+    }
 }
 
 // --- T10 atomics ---

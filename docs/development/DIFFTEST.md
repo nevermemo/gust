@@ -189,9 +189,11 @@ was slangc's error E30002). The decoding is unchanged and the acceptance goes ba
 format-3 programs again (`format_5_holds_the_format_3_programs_of_every_seed`), the `Space::Integer` pin has its m5.c1a
 discard counts back, and against format 4 only seed 4 gets different programs (`s4_a26`, the `v2 % v2` that slangc
 refused, is accepted again: 91 discards become 86). Of the 124 `static` discards of seeds 1 to 8 at format 4, 13 were the
-divisor rule's; 111 remain (the closed-constant rules). The spike m6.s1 measured that of the 13, 12 leave the domain
-anyway (a live zero divisor, which the interpreter now meets as `division-by-zero`: 17 in the corpus at format 4, 26
-now) and 1, `s4_a26`, is in it and is kept. The discard total of the corpus goes from 512 to 507.
+divisor rule's; 111 remain (the closed-constant rules). The counts of format 5 equal those of format 3 (a3a7798), label
+for label. Against format 4 the differences are: `division-by-zero` +9 (17 to 26: a live zero divisor the interpreter
+now meets, where the retired rule had discarded it as `static`), seed 5 has one more `comparison-overlap` and one more
+`float-domain`, and seed 4 stops 5 attempts earlier (`s4_a26` is kept; 91 discards become 86). The discard total of
+the corpus goes from 512 to 507.
 
 ## The emitter
 

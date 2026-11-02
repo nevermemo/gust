@@ -120,7 +120,7 @@ describes the intended behaviour and is not evidence.
 - **Language subset.** 32-bit `f32`, `i32`, `u32`, `bool` and module structs of them (README, "Current subset"). Float
   arithmetic is `+ - * /`, comparisons and casts: the validator accepts no other method than `.len()`,
   `.global_id()` and the `Option` / `Result` helpers, so there is no `sqrt`, `fma` or trigonometry to bound.
-  The validator accepts `%` on floats (it rejects only an integer-literal zero as the right operand of `/` and `%`),
+  The validator accepts `%` on floats (it rejects only an integer-literal zero as the right operand of `/`, `%`, `/=` and `%=`),
   and no bound is stated for it.
 - **Independent references stay.** Tests of the translator keep an independent host reference as the expected value
   (D26); the twin is a third party in those tests, never the oracle.

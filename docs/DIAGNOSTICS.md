@@ -117,7 +117,9 @@ which slangc does not fold; the reproducer and the other shapes compile on WGSL 
 SPIR-V (the Slangc-tier test `every_division_shape_slangc_folded_compiles_on_each_target`),
 and the differential generator no longer refuses them (DIFFTEST_FORMAT 5,
 [DIFFTEST](development/DIFFTEST.md)). A divisor that is zero at run time keeps the results
-of D39 and KM-01 to KM-03 in [SEMANTICS](SEMANTICS.md). What stays: a literal zero divisor
+of D39 and KM-01 to KM-03 in [SEMANTICS](SEMANTICS.md); that was measured with divisors read
+from a buffer. A closed zero that is live (`let zero = 0u32; 5 / zero`) goes through the helper and
+compiles, but no test executes it, and the differential generator discards it. What stays: a literal zero divisor
 is GUST's own error E0317 below, and slangc's behaviour for a zero divisor on the SPIR-V
 route is undefined in Slang and was not executed (the WGSL route, which the GPU tests run,
 is defined by WGSL).
@@ -496,7 +498,8 @@ Decision: D02.
 Slang makes integer division by a literal zero a compile error while rustc treats it as
 a runtime panic, so the boundary rejects it. Float division by zero is allowed.
 Reached through `#[gpu]`.
-Rejected: `x / 0u32`, `x % 0`.
+Rejected: `x / 0u32`, `x % 0`, `x /= 0`, `x %= 0`, and the same zeros negated or in parentheses (`x / (0)`,
+`x % -0`), including a zero a `macro_rules!` hands over in an invisible group.
 Write instead: guard the divisor before dividing.
 Decision: D22.
 

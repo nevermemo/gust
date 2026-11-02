@@ -2028,6 +2028,14 @@ fn the_emitted_wgsl_uses_plain_operators_and_conversions() {
         let end = wgsl[start..].find("\n}").expect("the function ends") + start;
         &wgsl[start..end]
     }
+    // The expression a helper assigns to its `ty` local, up to the semicolon: `a_ OP b_` in this order, so a swapped
+    // pair of operands fails here as well as in the grid test.
+    fn expression<'a>(function: &'a str, ty: &str) -> Option<&'a str> {
+        let marker = format!(" : {ty} = ");
+        let start = function.find(&marker)? + marker.len();
+        let length = function[start..].find(';')?;
+        Some(&function[start..start + length])
+    }
     for (kernel, ty) in [
         (&mismatch::udivide::DESCRIPTOR, "u32"),
         (&mismatch::idivide::DESCRIPTOR, "i32"),
@@ -2044,13 +2052,15 @@ fn the_emitted_wgsl_uses_plain_operators_and_conversions() {
         let quotient = function(&divide, "_gust_div_0");
         assert!(quotient.contains(&format!("-> {ty}")), "{quotient}");
         assert!(
-            quotient.contains(&format!(" : {ty} = a_")) && quotient.contains(" / b_"),
+            expression(quotient, ty)
+                .is_some_and(|text| text.starts_with("a_") && text.contains(" / b_")),
             "{quotient}"
         );
         let remainder = function(&divide, "_gust_rem_0");
         assert!(remainder.contains(&format!("-> {ty}")), "{remainder}");
         assert!(
-            remainder.contains(&format!(" : {ty} = a_")) && remainder.contains(" % b_"),
+            expression(remainder, ty)
+                .is_some_and(|text| text.starts_with("a_") && text.contains(" % b_")),
             "{remainder}"
         );
     }

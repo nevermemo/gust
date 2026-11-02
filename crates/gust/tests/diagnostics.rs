@@ -257,6 +257,52 @@ mod vector_division {
     }
 }
 
+#[gust::gpu]
+mod other_vector_rows {
+    #[kernel]
+    pub fn run(
+        id: SV_DispatchThreadID,
+        f: StructuredBuffer<float>,
+        u: StructuredBuffer<uint>,
+        k: StructuredBuffer<int>,
+        mut fout: RWStructuredBuffer<float>,
+        mut uout: RWStructuredBuffer<uint>,
+        mut kout: RWStructuredBuffer<int>,
+    ) {
+        if id.x < fout.len() {
+            let i = id.x;
+            let v2 = Vec2::new(f[i], f[i + 1u32]);
+            let d2 = Vec2::new(f[i + 1u32], f[i]);
+            let v3 = Vec3::new(f[i], f[i + 1u32], f[i + 2u32]);
+            let d3 = Vec3::new(f[i + 2u32], f[i], f[i + 1u32]);
+            let mut w2 = v2 / d2 / v2.x;
+            w2 /= v2;
+            w2 /= v2.y;
+            let mut w3 = v3 / d3 / v3.z;
+            w3 /= v3;
+            w3 /= v3.x;
+            fout[i] = w2.x + w3.y;
+            let u2 = UVec2::new(u[i], u[i + 1u32]);
+            let e2 = UVec2::new(u[i + 1u32], u[i]);
+            let u3 = UVec3::new(u[i], u[i + 1u32], u[i + 2u32]);
+            let e3 = UVec3::new(u[i + 2u32], u[i], u[i + 1u32]);
+            let mut x2 = u2 / e2 / u2.x;
+            x2 /= u2;
+            x2 /= u2.y;
+            let mut x3 = u3 / e3 / u3.z;
+            x3 /= u3;
+            x3 /= u3.x;
+            uout[i] = x2.x + x3.y;
+            let k2 = IVec2::new(k[i], k[i + 1u32]);
+            let l2 = IVec2::new(k[i + 1u32], k[i]);
+            let mut j2 = k2 / l2 / k2.x;
+            j2 /= k2;
+            j2 /= k2.y;
+            kout[i] = j2.x + j2.y;
+        }
+    }
+}
+
 /// Valid on every target: a struct, a helper, a loop and a conditional, so the
 /// directives of the compile copy fall in a struct body, a helper and nested blocks.
 #[gust::gpu]
@@ -800,7 +846,7 @@ fn a_zero_divisor_that_slangc_folded_in_dead_code_compiles_on_each_target() {
 /// validator's E0317, and slangc's own behaviour for a zero divisor on the SPIR-V route is not executed.
 #[test]
 fn every_division_shape_slangc_folded_compiles_on_each_target() {
-    let shapes: [(&str, &KernelDescriptor); 8] = [
+    let shapes: [(&str, &KernelDescriptor); 9] = [
         ("reproducer", &folded_zero_divisor::run::DESCRIPTOR),
         ("zero by product", &zero_by_product::run::DESCRIPTOR),
         ("zero by difference", &zero_by_difference::run::DESCRIPTOR),
@@ -815,6 +861,7 @@ fn every_division_shape_slangc_folded_compiles_on_each_target() {
         ),
         ("live division", &live_division::run::DESCRIPTOR),
         ("vector division", &vector_division::run::DESCRIPTOR),
+        ("other vector rows", &other_vector_rows::run::DESCRIPTOR),
     ];
     let mut failed = Vec::new();
     for (name, kernel) in shapes {

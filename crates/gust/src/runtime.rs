@@ -105,9 +105,15 @@ impl<T> IndexMut<u32> for StorageMut<'_, T> {
     }
 }
 
+/// The read-only view of a uniform (constant buffer) that a kernel's `Uniform<T>` parameter has: `T` is a struct of the
+/// `#[gpu]` module, read one field at a time (`params.scale`). `Deref` gives that on the CPU twin, which passes
+/// `Uniform(copy)` of the bound value.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[repr(transparent)]
 pub struct Uniform<T>(pub T);
+
+/// Slang-shaped spelling for a uniform: `ConstantBuffer<T>` is `Uniform<T>`.
+pub type ConstantBuffer<T> = Uniform<T>;
 
 impl<T> Deref for Uniform<T> {
     type Target = T;

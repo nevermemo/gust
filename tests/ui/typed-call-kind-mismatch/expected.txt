@@ -1,0 +1,11 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). The primary span is the user's call expression in this file; the
+# generated `Kind = ::gust::kind::Storage` bound shows up only as the child note that names
+# `scale::call`. Without that bound the call compiles: a constant buffer of the right element type
+# would be bound where the kernel reads a storage buffer.
+code: E0271
+file: typed-call-kind-mismatch/src/main.rs
+line: 88
+message: type mismatch resolving `<Constant<f32> as Resource>::Kind == Storage`
+message: required by a bound in `scale::call`
+label: Kind == Storage

@@ -68,24 +68,27 @@ describes the intended behaviour and is not evidence.
   - *Evidence.* `cargo xtask check-cpu-target` builds a fixture in release under `cpu`, runs three kernels against
     independent host references, scans the binary for the compiler, the helper and the GPU runtime, and checks the
     refusals. That is `Cpu` evidence, never GPU evidence (D42).
-- **Host uniforms (exists on the host API, m6.u1; the macro's `call` for a `Uniform<T>` parameter is m6.u2).** A
-  uniform is one value in a constant buffer, bound to a `Uniform` parameter through a resource of kind
-  `gust::kind::Uniform` (`GpuUniform<T>` on the GPU, `CpuUniform<T>` on the twin). `Resource::Kind` lets a generated
-  call refuse a uniform where a buffer is expected, or the reverse, at compile time once m6.u2 names `Kind` in its
-  bounds; until then a generated storage parameter accepts a `GpuUniform` at compile time, and that call, like a
-  hand-built one, is refused at submit (`BindingKind`). A uniform is read-only for the kernel and one element long
-  whatever the dispatch's element count.
+- **Uniforms (exist, m6.u1 host API and m6.u2 macro).** A uniform is one value in a constant buffer, bound to a
+  `Uniform<T>` (alias `ConstantBuffer<T>`) parameter through a resource of kind `gust::kind::Uniform` (`GpuUniform<T>`
+  on the GPU, `CpuUniform<T>` on the twin). The generated call names `Resource::Kind` in every bound (`Storage` for a
+  buffer parameter, `Uniform` for a uniform one), so a uniform where a buffer is expected, or the reverse, is a compile
+  error (the `typed-call-kind-mismatch` case of `tests/ui`); a hand-built call is still refused at submit
+  (`BindingKind`). A uniform is read-only for the kernel and one element long whatever the dispatch's element count.
+  `T` is a struct of the same `#[gpu]` module (GUST-E0206), declared `#[repr(C, align(16))]` by the macro with const
+  assertions of its `Std140V1` offsets and size. A struct a uniform reaches is not also a storage element
+  (GUST-E0207), holds no `Mat2` or `bool` (GUST-E0205), and is read one field at a time, never as a whole value
+  (GUST-E0321). The twin runs the kernel with a copy of the value.
   Its ABI is `Std140V1` (`std140-v1` in the generated host text): scalars, 2- and 4-wide vectors, 4x4 matrices and
   structs of them rounded up to 16 bytes. `T` must also be padding-free, because the upload copies the bytes of the
   Rust value and padding is uninitialised: `create_uniform` and `CpuDevice::uniform` refuse a padded `T` with a message
   that names the fix, explicit padding fields, and the twin also refuses a uniform parameter whose rule is not
-  `Std140V1`. A value is replaced by `HeadlessDevice::write_uniform` (`Queue::write_buffer`: after every earlier
-  submission, before the next, so all dispatches of one later submission see the last value) or, ordered among the
-  dispatches of one submission, by the copy node `StagedGraph::write_uniform` (a write of the uniform for the derived
-  edges and the hazard check).
-- **Not executed by the twin.** Kernels with a `Uniform<T>` parameter (their typed call is m6.u2), indirect dispatch
-  and staged graphs stay GPU-only. A kernel can opt out explicitly with `#[kernel(cpu = "unsupported")]` (D26).
-  The examples that use them carry kernel-level twin evidence only (exists, m3.e2): `staged-graph` and
+  `Std140V1`. The macro refuses at compile time a struct whose constant-buffer layout has a gap before a field or a
+  tail (GUST-E0209), naming the explicit padding fields to write. A value is replaced by
+  `HeadlessDevice::write_uniform` (`Queue::write_buffer`: after every earlier submission, before the next, so all
+  dispatches of one later submission see the last value) or, ordered among the dispatches of one submission, by the
+  copy node `StagedGraph::write_uniform` (a write of the uniform for the derived edges and the hazard check).
+- **Not executed by the twin.** Indirect dispatch and staged graphs stay GPU-only. A kernel can opt out explicitly with
+  `#[kernel(cpu = "unsupported")]` (D26). The examples that use them carry kernel-level twin evidence only (exists, m3.e2): `staged-graph` and
   `component-pool` run the twin of each of their kernels on the GPU's inputs to that kernel (read back where an earlier kernel produced them), and
   label each such test "kernel-level twin evidence; graph and indirect dispatch GPU-only". The graph, its derived
   dependency edges, the indirect launch that consumes the arguments and the pool growth are executed on the GPU alone,

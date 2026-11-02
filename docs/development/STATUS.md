@@ -32,7 +32,7 @@ M6 (language breadth I): plan adopted early on 2026-11-01 (owner-delegated) afte
 `__gust_mul` overload table, enabled only in modules that name a `Mat` type; the reflection
 reader accepts schema 1 and 2, and the helper keeps schema 1 for scalar-only programs, so
 committed artifacts stay byte-identical. The keyword and construct spikes and the pure-Rust math
-types ran beside M4; m6.m1 to m6.u2 are merged, and m6.g2, m6.dv, m6.d and m6.x remain. Its decision drafts take
+types ran beside M4; m6.m1 to m6.g2 are merged, and m6.dv, m6.d and m6.x remain. Its decision drafts take
 D55 to D59.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
@@ -80,6 +80,27 @@ D55 to D59.
   output (the stale-binary fix); the Cpu suite is this command. CI runs it as the job `cpu-target` beside `unit`: 61 s
   on the runner, against 2 m 57 s for `unit`. Evidence: Unit, Cpu and Gpu smoke (RTX 5090). Opus keep after one fix
   round.
+- M7 m7.a0 (`e9f67f6`, fix round `3ccadca`, merge `bcb4da4`): runtime prerequisites in gust-wgpu.
+  `DeviceOptions` (adapter choice and `LimitsPolicy`; `DeviceOptions::default()` asks for the adapter's limits,
+  `HeadlessDevice::new()` keeps the WebGPU defaults), `enumerate`, `try_create_typed_buffer` and
+  `create_zeroed_buffer` with a `max_buffer_size` pre-check and, on native, an out-of-memory error scope that
+  resolves without a device wait (measured; wgpu 30's scopes are per thread); `Error::{OutOfMemory, MixedDevices,
+  Extent, DefaultDeviceOpened}`; `BufferPool` size classes with a 1 GiB LRU, zeroed hand-outs cleared and
+  logical-length bindings; `GpuVec<T>`, `DeviceHandle`, `default_device`; the `gust::map::MapHost` trait with
+  `readback_async` on both targets and the blocking `readback` native only (D69). S7.6: the limits rows hold on
+  the RTX 5090 (adapter policy 4 GiB-1, binding 2 GiB-4) and the Radeon 890M (2 GiB, 2 GiB-4), a 1 GiB zeroed
+  buffer is created on both, and 64 GiB, `usize::MAX` and `u32::MAX` elements return `DeviceLimit` before any wgpu
+  call; the out-of-memory row is not shown on hardware (unit test only), and lavapipe is CI's gpu-software run
+  of this commit, which decides whether the adapter policy stays the native default. The raw buffer behind a
+  pooled `GpuVec` is the whole size class (documented); sized bindings in generated host code are m7.p's.
+  Opus merge after one fix round.
+- M6 m6.g2 (`76c998a`, fix round `b71365c`, merge `475e2b1`): GPU evidence for uniforms.
+  `crates/gust-wgpu/tests/uniforms.rs` dispatches, from `#[gpu]` modules on the RTX 5090, the `uniforms` golden,
+  a scalar, a `Vec4`, a non-symmetric `Mat4` and a nested-struct uniform, one `GpuUniform` bound to two kernels,
+  and a `StagedGraph` that calls `write_uniform` between dispatches; each result equals an independent host
+  reference and the twin exactly (the inputs are exact in f32, and the reference asserts it). The reflected
+  `constantBuffer` sizes equal `size_of` (D17). Opus merge after one fix round. m6.g2 and m7.a0 shared one main
+  gate run: 21 steps (the 19 plus wasm32 clippy and `check-web`) at `bcb4da4`, 16:36 to 17:00Z, pin 214/24.
 - M6 m6.u2 (`88cc120`, fix round `33ece37`, merge `1b592a1`): uniforms in the macro. A `Uniform<T>` (or the
   `ConstantBuffer<T>` alias) parameter needs a module struct `T` (E0206); a struct reachable from a uniform and a
   storage element is E0207; `Mat2` in a uniform-reachable struct is E0205; a uniform is read one field at a time,
@@ -409,7 +430,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M6 (m6.g2 and m6.dv, then m6.d, m6.x) beside M7 (m7.a0); see the roadmap's Now and next
+claim: roadmap M6 (m6.dv, then m6.d and m6.x) beside M7 (m7.a0 merged); see the roadmap's Now and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no
 ```

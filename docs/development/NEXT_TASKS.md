@@ -131,6 +131,17 @@ test module; do not mix that mechanical move with behavior changes.
   `crates/gust-wgpu/tests/vectors.rs`); their kernels are checked only where the tests run them (m6.g1).
 - A constant float2x2 or float3x3 (`Mat2::IDENTITY`, `Mat3::IDENTITY`) crashes naga's SPIR-V front end (exit
   139); reduce it to an upstream report or lower such constants another way (m6.g1).
+- `let mut d = 7; d /= y` with `y: u32` emits the local as Slang `int`, so the division is signed: for
+  `y >= 2^31` Rust gives 0 and the GPU does not. Integer literal locals take their type from later use in Rust
+  (found in the m6.dv review; older than m6.dv).
+
+## M7 follow-ups (filed during M7)
+
+- Generated host code binds a buffer with `as_entire_binding()`, so a pooled `GpuVec` passed through
+  `as_buffer().as_wgpu_buffer()` shows its whole size class to the kernel (`arrayLength`, the previous owner's
+  tail): size those bindings in m7.p (m7.a0 review).
+- `#[non_exhaustive]` on the public error enums (gust-wgpu `Error`, `gust::slang::Error`, `gust::reflect::Error`)
+  before the first release (MR).
 
 ## Deferred language/runtime breadth
 

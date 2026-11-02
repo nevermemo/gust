@@ -162,8 +162,11 @@ mod tests {
         assert_eq!(names.len(), MATH_TYPES.len());
     }
 
+    /// The table is checked against itself only (this crate cannot depend on `gust`): sizes are whole alignments and
+    /// the 3-wide types are the ones that are not buffer types. That the numbers equal `size_of` and `align_of` of
+    /// `gust::math` is enforced where the types are used, by the `const` assertions of `gpu_pod_impl`.
     #[test]
-    fn buffer_types_have_the_storage_v2_sizes() {
+    fn table_sizes_are_whole_alignments_and_only_three_wide_types_are_not_buffer_types() {
         for entry in MATH_TYPES {
             if !entry.buffer {
                 assert!(entry.name.contains('3'), "{}", entry.name);

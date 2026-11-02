@@ -336,6 +336,8 @@ Decision: D02.
 Methods other than `.global_id()`, `.len()`, `.is_some()`, `.is_none()`, `.is_ok()`,
 `.is_err()`, `.unwrap_or(default)` and the vector and matrix methods (swizzles `.xy()`..`.wzyx()`, `.dot(v)`, `.mul_vec2/3/4(v)`,
 `.mul_mat2/3/4(m)`, `.transpose()`) have no lowering.
+Limitation (not a rejection): `.dot` on `IVec2/4` or `UVec2/4` lowers, and its WGSL validates, but its SPIR-V needs `Capability DotProduct`,
+which naga's SPIR-V reader refuses (`UnsupportedCapability(DotProduct)`; slangc 2026.13.1 and 2026.20). Use the WGSL route or `Vec2/4` until slice m6.m2.
 Reached through `#[gpu]`.
 Rejected: `x.abs()`, `v.iter()`.
 Write instead: write the operation with operators and helpers.

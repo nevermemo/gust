@@ -959,9 +959,10 @@ fn math_constructor(call: &syn::ExprCall) -> Option<(&'static math_types::MathTy
     math_types::associated_item(&path.path).filter(|(_, member)| *member != "IDENTITY")
 }
 
-/// `Vec4::new(a, b, c, d)` is `float4(a, b, c, d)` and `Vec4::splat(s)` is `float4(s)`. Slang's matrix constructor takes
-/// rows, so `Mat4::from_rows(r0, r1, r2, r3)` is `float4x4(r0, r1, r2, r3)` and `Mat4::from_cols(c0, c1, c2, c3)`, with
-/// the matrices column-major, is the transpose of the same constructor (measured: plan S6.1 (a)).
+/// `Vec4::new(a, b, c, d)` is `float4(a, b, c, d)` and `Vec4::splat(s)` is `float4(s)`. Slang's matrix constructor
+/// takes rows, so `Mat4::from_rows(r0, r1, r2, r3)` is `float4x4(r0, r1, r2, r3)` and
+/// `Mat4::from_cols(c0, c1, c2, c3)`, with the matrices column-major, is the transpose of the same constructor
+/// (measured: plan S6.1 (a)).
 fn emit_math_constructor(call: &syn::ExprCall) -> syn::Result<String> {
     let (math, member) = math_constructor(call).expect("the caller checked the call");
     let arguments = emit_list(call.args.iter())?.join(", ");

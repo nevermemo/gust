@@ -835,8 +835,9 @@ fn parameter_descriptors(
                 None => quote!(None),
             };
             let resource_layout = match element {
-                // StorageV1 when the element is scalars and padding-free structs of them, StorageV2 when it holds vectors
-                // or matrices. The element is named once, so a type that is no `GpuPod` still reports one E0277.
+                // StorageV1 when the element is scalars and padding-free structs of them, StorageV2 when it holds
+                // vectors or matrices. The element is named once, so a type that is no `GpuPod` still reports one
+                // E0277.
                 Some(element) => quote!(Some({
                     const __GUST_ELEMENT: ::gust::TypeLayout = <#element as ::gust::GpuPod>::LAYOUT;
                     if __GUST_ELEMENT.is_storage_v1() {

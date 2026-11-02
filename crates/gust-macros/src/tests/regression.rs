@@ -3267,6 +3267,7 @@ fn three_wide_types_are_e0204_in_struct_fields_and_resource_elements() {
             "Storage",
             "StorageMut",
             "Uniform",
+            "ConstantBuffer",
         ] {
             assert_rejected(
                 &format!(

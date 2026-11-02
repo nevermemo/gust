@@ -11,10 +11,13 @@ struct Particle
 [[vk::binding(0, 0)]] StructuredBuffer<float4> points;
 [[vk::binding(1, 0)]] StructuredBuffer<Particle> particles;
 [[vk::binding(2, 0)]] StructuredBuffer<uint2> counts;
-[[vk::binding(3, 0)]] RWStructuredBuffer<float4> moved;
-[[vk::binding(4, 0)]] RWStructuredBuffer<float> sums;
-[[vk::binding(5, 0)]] RWStructuredBuffer<uint2> cells;
-[[vk::binding(6, 0)]] RWStructuredBuffer<float2> velocities;
+[[vk::binding(3, 0)]] StructuredBuffer<int4> signed_in;
+[[vk::binding(4, 0)]] StructuredBuffer<uint4> wide_in;
+[[vk::binding(5, 0)]] RWStructuredBuffer<float4> moved;
+[[vk::binding(6, 0)]] RWStructuredBuffer<float> sums;
+[[vk::binding(7, 0)]] RWStructuredBuffer<uint2> cells;
+[[vk::binding(8, 0)]] RWStructuredBuffer<float2> velocities;
+[[vk::binding(9, 0)]] RWStructuredBuffer<int4> signed_out;
 
 float3 tint(float3 color, float amount)
 {
@@ -32,6 +35,29 @@ float2 spin(float2 angle, float2 point)
     return mul(mul(float2x2(float2(1.0, 0.0), float2(0.0, 1.0)), turn), point);
 }
 
+int integer_dots(int2 a, int4 b, uint2 c, uint4 d)
+{
+    return ((dot(a, int2(3, (-2))) + dot(b, int4(1))) + int(((dot(c, uint2(2)) + dot(d, uint4(1))))));
+}
+
+int4 integer_mix(uint3 wide, int4 signed)
+{
+    var low = uint2(wide.x, wide.y).yx;
+    var folded = uint3(low.x, low.y, wide.z).zyx;
+    var tail = signed.wzyx;
+    return int4(int(folded.x), int(folded.y), tail.x, signed.xy.y);
+}
+
+float3 matrices(float2 v2, float3 v3)
+{
+    var rows2 = float2x2(v2, v2.yx);
+    var flipped = mul(transpose(rows2), rows2);
+    var cols3 = transpose(float3x3(v3, v3.zyx, v3.yzx));
+    var rows3 = float3x3(v3, v3.yzx, v3.zxy);
+    var product = mul(transpose(cols3), rows3);
+    return mul(product, mul(flipped, v2).xyx);
+}
+
 // @rust kernel: vectors::run
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -46,6 +72,12 @@ void gpu_vectors_run(uint3 id : SV_DispatchThreadID)
     uint __gpu_len_counts;
     uint __gpu_stride_counts;
     counts.GetDimensions(__gpu_len_counts, __gpu_stride_counts);
+    uint __gpu_len_signed_in;
+    uint __gpu_stride_signed_in;
+    signed_in.GetDimensions(__gpu_len_signed_in, __gpu_stride_signed_in);
+    uint __gpu_len_wide_in;
+    uint __gpu_stride_wide_in;
+    wide_in.GetDimensions(__gpu_len_wide_in, __gpu_stride_wide_in);
     uint __gpu_len_moved;
     uint __gpu_stride_moved;
     moved.GetDimensions(__gpu_len_moved, __gpu_stride_moved);
@@ -58,6 +90,9 @@ void gpu_vectors_run(uint3 id : SV_DispatchThreadID)
     uint __gpu_len_velocities;
     uint __gpu_stride_velocities;
     velocities.GetDimensions(__gpu_len_velocities, __gpu_stride_velocities);
+    uint __gpu_len_signed_out;
+    uint __gpu_stride_signed_out;
+    signed_out.GetDimensions(__gpu_len_signed_out, __gpu_stride_signed_out);
     uint i = id.x;
     if ((i < __gpu_len_moved))
     {
@@ -78,5 +113,9 @@ void gpu_vectors_run(uint3 id : SV_DispatchThreadID)
         cells[i] = c.yx;
         var part = particles[i];
         velocities[i] = spin(part.velocity, part.position);
+        var signed = signed_in[i];
+        var wide = wide_in[i];
+        signed_out[i] = integer_mix(wide.xyz, signed);
+        sums[i] = ((sums[i] + (float(integer_dots(signed.xy, signed, wide.xy, wide)))) + matrices(part.position, rgb).x);
     }
 }

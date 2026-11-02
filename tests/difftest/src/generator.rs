@@ -18,8 +18,10 @@ use crate::prng::{Prng, byte_stream};
 /// Bump when a change alters what any seed decodes to, or the emitted text. 2: the program space gained `f32`
 /// (m5.c1a2, R1-4). 3: the condition and literal biases of the float space (m5.c1b): an `if` condition is never a bare
 /// `true` or `false`, it often compares an input element with a value of the data or tests the element index, and a
-/// literal is often a value that the data holds, so that both sides of a condition are taken by some elements.
-pub const DIFFTEST_FORMAT: u32 = 3;
+/// literal is often a value that the data holds, so that both sides of a condition are taken by some elements. 4: no
+/// decoding change, a new refusal (m5.c2): an integer `/` or `%` whose divisor is zero with every loop counter at 0,
+/// live or dead, is discarded as `static`, because slangc folds it and refuses the kernel (E30002).
+pub const DIFFTEST_FORMAT: u32 = 4;
 
 /// Which programs the generator writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1028,16 +1030,20 @@ mod tests {
     #[test]
     fn the_integer_space_decodes_to_the_programs_of_m5_c1a() {
         // The discard counts of the m5.c1a corpus (its seeds.txt at 3bcebaf; the hashes are read with the format stamp
-        // as 1): the integer space must reproduce them, so it is the same program space.
+        // as 1): the integer space must reproduce them, so it is the same program space. Format 4 relabels some
+        // discards (seeds 1, 3, 4, 5, 7 and 8: a program with a divisor that is zero at the first iteration of a loop,
+        // which the interpreter or the closed-constant check used to meet as `division-by-zero`, `overflow` or
+        // `static` and the new rule meets first as `static`); the accepted programs, and so the hashes below, are
+        // those of m5.c1a.
         let expected = [
-            "1 16 57 division-by-zero=3 index=6 no-input-read=3 overflow=34 shift-amount=3 static=8",
+            "1 16 57 division-by-zero=2 index=6 no-input-read=3 overflow=34 shift-amount=3 static=9",
             "2 16 36 division-by-zero=6 index=2 min-over-minus-one=1 overflow=21 static=6",
-            "3 16 38 division-by-zero=8 no-input-read=2 overflow=20 static=8",
-            "4 16 53 division-by-zero=7 index=5 no-input-read=1 overflow=25 shift-amount=1 static=14",
-            "5 16 42 division-by-zero=5 no-input-read=3 overflow=21 shift-amount=3 static=10",
+            "3 16 38 division-by-zero=7 no-input-read=2 overflow=20 static=9",
+            "4 16 53 division-by-zero=5 index=5 no-input-read=1 overflow=25 shift-amount=1 static=16",
+            "5 16 42 division-by-zero=5 no-input-read=3 overflow=20 shift-amount=3 static=11",
             "6 16 36 division-by-zero=1 index=3 no-input-read=1 overflow=25 shift-amount=1 static=5",
-            "7 16 61 division-by-zero=8 index=3 no-input-read=2 overflow=37 shift-amount=1 static=10",
-            "8 16 63 division-by-zero=4 index=1 no-input-read=2 overflow=45 static=11",
+            "7 16 61 division-by-zero=6 index=3 no-input-read=2 overflow=37 shift-amount=1 static=12",
+            "8 16 63 division-by-zero=4 index=1 no-input-read=2 overflow=44 static=12",
         ];
         // The m5.c1a hashes of the same programs: the emitted text and the input data, byte for byte, with the format
         // stamp read as 1 (the stamp is the only difference of format 2 for an integer program).
@@ -1051,7 +1057,8 @@ mod tests {
             0x6155_afa9_9718_9c32,
             0x9a61_7649_d659_8029,
         ];
-        for ((seed, expected), hash) in (1..=8).zip(expected).zip(hashes) {
+        let mut lines = Vec::new();
+        for (seed, hash) in (1..=8).zip(hashes) {
             let batch = generate_batch_in(Space::Integer, seed).unwrap();
             assert_eq!(
                 crate::corpus::batch_hash_as_format(&batch.programs, 1),
@@ -1066,11 +1073,12 @@ mod tests {
             for (reason, count) in &batch.discarded {
                 line.push_str(&format!(" {reason}={count}"));
             }
-            assert_eq!(line, expected);
+            lines.push(line);
             for program in &batch.programs {
                 assert!(!program.has_float());
             }
         }
+        assert_eq!(lines, expected);
     }
 
     #[test]
@@ -1260,6 +1268,24 @@ mod tests {
                 assert_eq!(literal_zero_divisors(&program), 0, "{label}");
             }
         }
+    }
+
+    /// Seed 4, attempt 26 (a `v2 % v2` on the counter of an unrolled loop, in a branch no element takes) was accepted
+    /// until DIFFTEST_FORMAT 3 and made slangc refuse the kernel (E30002, slice m5.c2). The rule of format 4 refuses
+    /// it, and the program of that attempt is the same program (the rule changes acceptance, not decoding).
+    #[test]
+    fn the_seed_4_dead_divisor_of_format_3_is_refused() {
+        let program = generate_attempt(4, 26);
+        let text = crate::emit::emit_module(&program);
+        assert!(text.contains("(v2 % v2)"), "{text}");
+        assert_eq!(discard_reason(&program), Some("static"));
+        assert!(
+            generate_batch(4)
+                .unwrap()
+                .programs
+                .iter()
+                .all(|accepted| accepted.attempt != 26)
+        );
     }
 
     #[test]

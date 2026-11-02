@@ -9,6 +9,7 @@ use std::{
 use crate::{
     arch::check_arch,
     checks::{check_dual, tests_not_ok},
+    difftest::check_difftest_report,
     docs::docs_check,
     lint::lint,
     precompiled::check_precompiled_report,
@@ -114,11 +115,13 @@ pub(crate) enum Integration {
     Skip(&'static str),
 }
 
-/// The integration checks of a mode, in order (plan M4 section 14, item 3). The Full mode runs the whole
-/// `check-precompiled` and the whole `check-web`, with no silent skip: a machine without Chrome or a WebGPU adapter
-/// fails the web check, naming the cause, unless `skip_web` turns it into a recorded [`Integration::Skip`]. The
-/// artifact export and `spirv-val` checks of `check-artifacts` are part of the Full mode's own steps. The other modes
-/// run none of these.
+/// The integration checks of a mode, in order (plan M4 section 14, item 3; plan M5 R1-13). The Full mode runs the
+/// whole `check-precompiled`, the whole `check-web` and, last, `check-difftest` (all eight seeds on the hardware
+/// adapter, plus the `short_circuit` GPU test: m5.c2), with no silent skip: a machine without Chrome or a WebGPU
+/// adapter fails the web check, naming the cause, unless `skip_web` turns it into a recorded [`Integration::Skip`].
+/// The batch comes last because it is the only one of the three whose verdict depends on generated programs, so a
+/// disagreement it finds does not hide whether the other two passed. The artifact export and `spirv-val` checks of
+/// `check-artifacts` are part of the Full mode's own steps. The other modes run none of these.
 pub(crate) fn integration_checks(mode: VerifyMode, skip_web: bool) -> Vec<Integration> {
     if mode != VerifyMode::Full {
         return Vec::new();
@@ -130,6 +133,7 @@ pub(crate) fn integration_checks(mode: VerifyMode, skip_web: bool) -> Vec<Integr
         } else {
             Integration::Run("check-web")
         },
+        Integration::Run("check-difftest"),
     ]
 }
 
@@ -318,6 +322,10 @@ fn verify_inner(
     // Last: the slowest checks, and the ones that need the most (a registry download, Chrome with a WebGPU adapter).
     for step in integration_checks(mode, skip_web) {
         match step {
+            Integration::Run("check-difftest") => {
+                let outcome = check_difftest_report(&[]).map(|summary| format!("{summary}\n"));
+                run_integration(checks, "check-difftest", outcome)?;
+            }
             Integration::Run("check-precompiled") => {
                 let outcome = check_precompiled_report(&[]).map(|summary| format!("{summary}\n"));
                 run_integration(checks, "check-precompiled", outcome)?;

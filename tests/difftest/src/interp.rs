@@ -642,7 +642,9 @@ fn float_constant(value: f32) -> Result<Option<Const>, Violation> {
 /// even when the other operand is not closed. Such a constant is a compile-time error in some shader languages
 /// (const-expression rules), so the generator keeps none, in executed or dead code (labelled `static`). Closed
 /// `f32` constants are folded in `f32` and must be zero or inside `+-[2^-100, 2^100]`; a closed float division by
-/// zero, an integer above `2^24` converted to `f32` and a closed cast out of the integer range count too.
+/// zero, an integer above `2^24` converted to `f32` and a closed cast out of the integer range count too. Since
+/// DIFFTEST_FORMAT 4 an integer divisor that is zero at the first iteration counts as well (see
+/// [`first_iteration_zero_divisor`]).
 pub fn static_violation(program: &Program) -> Option<Violation> {
     fn fold(e: &Expr) -> Result<Option<Const>, Violation> {
         match e {
@@ -750,7 +752,128 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
             found = fold(e).err();
         }
     });
+    if found.is_none() && first_iteration_zero_divisor(program) {
+        found = Some(Violation::DivisionByZero);
+    }
     found
+}
+
+/// Whether some integer `/` or `%` has a divisor that is zero when every enclosing loop counter is 0 (DIFFTEST_FORMAT
+/// 4), live or dead. slangc 2026.20 evaluates such a divisor at compile time with the counters at their initial value
+/// 0 (whatever the trip count), through straight-line locals, and refuses a zero (error E30002) even in a branch that
+/// no element takes, so the corpus keeps none (labelled `static`; the limitation is written up in DIAGNOSTICS). The
+/// walk keeps, per local, its value when it is known: a `let` or an assignment sets it from the divisor-style
+/// evaluation ([`counter_value`]) or forgets it, a loop forgets every local its body assigns before the body (a later
+/// iteration is not the first), and after an `if` only the locals both branches left with the same value stay known.
+fn first_iteration_zero_divisor(program: &Program) -> bool {
+    use std::collections::HashMap;
+
+    type Known = HashMap<u32, u32>;
+
+    /// The value of an integer or `bool` expression made of literals, known locals and loop counters, or `None`
+    /// (an input, an index, a float, or any step that leaves the domain).
+    fn counter_value(e: &Expr, known: &Known) -> Option<u32> {
+        match e {
+            Expr::Lit(Ty::F32, _) => None,
+            Expr::Lit(_, bits) => Some(*bits),
+            Expr::Var(var, _) => known.get(var).copied(),
+            Expr::Gid | Expr::Len(_) | Expr::Input { .. } => None,
+            Expr::Un { op, ty, e } if *ty != Ty::F32 => {
+                unary(*op, *ty, counter_value(e, known)?).ok()
+            }
+            Expr::Bin { op, ty, l, r } if *ty != Ty::F32 => {
+                binary(*op, *ty, counter_value(l, known)?, counter_value(r, known)?).ok()
+            }
+            // Between `u32` and `i32` the bits are unchanged.
+            Expr::Cast { to, e } if *to != Ty::F32 && e.ty() != Ty::F32 => counter_value(e, known),
+            Expr::Un { .. } | Expr::Bin { .. } | Expr::Cast { .. } => None,
+        }
+    }
+
+    fn check(e: &Expr, known: &Known) -> bool {
+        match e {
+            Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) => false,
+            Expr::Input { index, .. } => check(index, known),
+            Expr::Un { e, .. } | Expr::Cast { e, .. } => check(e, known),
+            Expr::Bin { op, ty, l, r } => {
+                (matches!(op, BinOp::Div | BinOp::Rem)
+                    && *ty != Ty::F32
+                    && counter_value(r, known) == Some(0))
+                    || check(l, known)
+                    || check(r, known)
+            }
+        }
+    }
+
+    fn assigned(stmts: &[Stmt], into: &mut Vec<u32>) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Let { var, .. } | Stmt::Assign { var, .. } => into.push(*var),
+                Stmt::If { then, els, .. } => {
+                    assigned(then, into);
+                    assigned(els, into);
+                }
+                Stmt::For { var, body, .. } => {
+                    into.push(*var);
+                    assigned(body, into);
+                }
+            }
+        }
+    }
+
+    fn set(known: &mut Known, var: u32, value: Option<u32>) {
+        match value {
+            Some(value) => known.insert(var, value),
+            None => known.remove(&var),
+        };
+    }
+
+    fn block(stmts: &[Stmt], known: &mut Known) -> bool {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Let { var, init, .. } => {
+                    if check(init, known) {
+                        return true;
+                    }
+                    set(known, *var, counter_value(init, known));
+                }
+                Stmt::Assign { var, value } => {
+                    if check(value, known) {
+                        return true;
+                    }
+                    set(known, *var, counter_value(value, known));
+                }
+                Stmt::If { cond, then, els } => {
+                    if check(cond, known) {
+                        return true;
+                    }
+                    let (mut taken, mut skipped) = (known.clone(), known.clone());
+                    if block(then, &mut taken) || block(els, &mut skipped) {
+                        return true;
+                    }
+                    known.retain(|var, value| {
+                        taken.get(var) == Some(value) && skipped.get(var) == Some(value)
+                    });
+                }
+                Stmt::For { var, body, .. } => {
+                    let mut written = Vec::new();
+                    assigned(body, &mut written);
+                    for written in written {
+                        known.remove(&written);
+                    }
+                    let mut inner = known.clone();
+                    inner.insert(*var, 0);
+                    if block(body, &mut inner) {
+                        return true;
+                    }
+                    known.remove(var);
+                }
+            }
+        }
+        false
+    }
+
+    block(&program.body, &mut Known::new()) || check(&program.result, &Known::new())
 }
 
 #[cfg(test)]
@@ -1295,6 +1418,109 @@ mod tests {
             u(0),
         );
         assert_eq!(static_violation(&in_loop), Some(Violation::Overflow));
+    }
+
+    fn counter(var: u32) -> Expr {
+        Expr::Var(var, Ty::U32)
+    }
+
+    fn let_u32(var: u32, init: Expr) -> Stmt {
+        Stmt::Let {
+            var,
+            ty: Ty::U32,
+            mutable: true,
+            init,
+        }
+    }
+
+    /// `for v0 in 0u32..4u32 { <body> }`, the shape of the seed-4 program (slangc E30002 on a dead `v2 % v2`).
+    fn counted(body: Vec<Stmt>) -> Program {
+        program(
+            &[0],
+            vec![Stmt::For {
+                var: 0,
+                trips: 4,
+                body,
+            }],
+            u(0),
+        )
+    }
+
+    /// `if false { <body> }`: the statement no element runs, which slangc folds all the same.
+    fn dead(body: Vec<Stmt>) -> Stmt {
+        Stmt::If {
+            cond: Expr::Lit(Ty::Bool, 0),
+            then: body,
+            els: Vec::new(),
+        }
+    }
+
+    /// The rule of DIFFTEST_FORMAT 4 (DIFFTEST "The domain filter"): a divisor that is zero with every loop counter at
+    /// 0 is refused, live or dead. Each verdict is the one slangc 2026.20 gave on the same shape in the probes of
+    /// slice m5.c2.
+    #[test]
+    fn a_divisor_that_is_zero_at_the_first_iteration_is_static() {
+        let zero = Some(Violation::DivisionByZero);
+        let rem = |l, r| let_u32(9, bin(BinOp::Rem, l, r));
+        let div = |l, r| let_u32(9, bin(BinOp::Div, l, r));
+        // The counter itself, and `v2 % v2` as in seed 4, in dead code.
+        assert_eq!(
+            static_violation(&counted(vec![div(u(7), counter(0))])),
+            zero
+        );
+        assert_eq!(
+            static_violation(&counted(vec![dead(vec![rem(counter(0), counter(0))])])),
+            zero
+        );
+        // Zero by arithmetic on the counter; `v0 - 3` is zero only in the last iteration, which slangc does not look at.
+        let times_zero = bin(BinOp::Mul, counter(0), u(5));
+        assert_eq!(
+            static_violation(&counted(vec![div(u(7), times_zero)])),
+            zero
+        );
+        let last = bin(BinOp::Sub, counter(0), u(3));
+        assert_eq!(static_violation(&counted(vec![div(u(7), last)])), None);
+        let plus_one = bin(BinOp::Add, counter(0), u(1));
+        assert_eq!(static_violation(&counted(vec![div(u(7), plus_one)])), None);
+        // Straight-line locals carry the value; a conditional assignment, or a loop that assigns, forgets it.
+        let through_local = vec![let_u32(1, counter(0)), div(u(7), counter(1))];
+        assert_eq!(static_violation(&counted(through_local)), zero);
+        let conditional = vec![
+            let_u32(1, counter(0)),
+            Stmt::If {
+                cond: bin(BinOp::Gt, Expr::Gid, u(3)),
+                then: vec![Stmt::Assign {
+                    var: 1,
+                    value: bin(BinOp::Add, counter(1), u(1)),
+                }],
+                els: Vec::new(),
+            },
+            div(u(7), counter(1)),
+        ];
+        assert_eq!(static_violation(&counted(conditional)), None);
+        // Nested loops: the inner counter and the outer one are both 0 at the first iteration.
+        let nested = program(
+            &[0],
+            vec![Stmt::For {
+                var: 0,
+                trips: 4,
+                body: vec![Stmt::For {
+                    var: 1,
+                    trips: 3,
+                    body: vec![div(u(7), bin(BinOp::Mul, counter(0), counter(1)))],
+                }],
+            }],
+            u(0),
+        );
+        assert_eq!(static_violation(&nested), zero);
+        // Not a loop counter: an input element, and the invocation index, are not constants.
+        let from_gid = vec![div(u(7), bin(BinOp::Add, Expr::Gid, counter(0)))];
+        assert_eq!(static_violation(&counted(from_gid)), None);
+        assert_eq!(
+            static_violation(&program(&[0], Vec::new(), u(3))),
+            None,
+            "a program without a loop is untouched"
+        );
     }
 
     // ---- floats (R1-4) ----

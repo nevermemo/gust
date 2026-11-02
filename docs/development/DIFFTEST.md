@@ -77,7 +77,21 @@ even in dead code, in an `if false` branch or the unevaluated side of `&&`; so d
 shift of 32 or more with a non-constant other operand. The reason is the shader compilers: slangc or WGSL
 const-expression rules may refuse such a constant at shader-creation time although rustc, with the crate-level lint
 `allow`, accepts it. Closed sub-expressions are folded eagerly, without short-circuiting, with the interpreter's own
-`binary` and `unary`. Inside the domain the three parties (interpreter, CPU twin,
+`binary` and `unary`.
+
+Since format 4 (slice m5.c2) a divisor can be `static` without being closed: an integer `/` or `%` whose divisor is zero
+when every enclosing loop counter is 0 (`interp::first_iteration_zero_divisor`), live or dead. slangc 2026.20 propagates
+the constant counter of a constant-bound `for` and the straight-line locals, evaluates the divisor at the first
+iteration only, and refuses a zero (error E30002, "divide by zero") even in a branch that no element takes. Probed: the
+divisor `v2`, `v2 % v2`, `v2 - v2`, `v2 * 0`, `v2 & 0`, `(int)v2`, a local set from the counter, and the same under a
+condition on a buffer element all fail; `v2 + 1`, and `v2 - 3` (zero only in the last iteration), and a local that is
+changed under a condition or in an inner loop do not. The rule follows those probes: counters are 0, a `let` or an
+assignment keeps a known value, a loop forgets what its body assigns, an `if` keeps what both branches agree on, and an
+input, an index or a float makes the divisor unknown. It is a model of what slangc folds, held by those probes and by the
+8-seed GPU run, not a proof; a divisor it misses shows up as a `gpu-error` mismatch, a divisor it refuses wrongly costs
+only a program of the corpus. The limitation as users meet it is in [DIAGNOSTICS](../DIAGNOSTICS.md).
+
+Inside the domain the three parties (interpreter, CPU twin,
 GPU) must agree bit for bit, so a program outside it is never asserted, and nothing here writes a ledger row (D39). A
 program that reads no input buffer is discarded as `no-input-read` (it would be a constant).
 
@@ -156,6 +170,14 @@ makes one float-space literal in eight a value that an input holds. The `Space::
 m5.c1a pins still pass). Measured on seeds 1 to 8, format 3: 94 of 100 `if` statements evaluated, 58 of them with both
 sides taken; `&&`/`||` right operands evaluated 8604 times and skipped 4584 times.
 
+Format 4 (slice m5.c2): the decoding is unchanged, the acceptance is not. The divisor rule above discards, as `static`,
+the programs whose integer divisor is zero at the first iteration of its loops, because slangc refuses them. Of
+`seeds.txt`: every hash changes (the stamp is in the emitted text), the discard counts of seeds 2 to 8 change, and
+only seed 4 gets different programs, since only there did a discarded attempt come out of the accepted set (86 discards
+become 91; format 3 had accepted `s4_a26`, the program slangc refused). The Space::Integer pin
+(`the_integer_space_decodes_to_the_programs_of_m5_c1a`) keeps its 8 hashes, so the integer programs that m5.c1a
+accepted are all still accepted; six of its discard lines are relabelled.
+
 ## The emitter
 
 `emit.rs` writes `src/lib.rs` (one documented `#[gust::gpu] pub mod s<seed>_a<attempt>` per program with the kernel
@@ -227,8 +249,8 @@ difftest-run --refresh-lock [--repo-root DIR]
 `--seeds` takes a range, a list or both (`1-4`, `3`, `1,3,5-6`); the report goes to stdout without `--report`. The
 target directory is `--target-dir`, else `CARGO_TARGET_DIR`, else `tests/difftest/target`. Exit status: 0 every program
 agreed, 1 at least one disagreement (the report lists them), 2 the harness itself failed (a build error, a stale template
-lockfile, a result file missing or malformed). A random-seed mode (`--seeds random:N`) is not implemented; the seeds are
-always named, so a failure is reproducible from the report.
+lockfile, a result file missing or malformed). `difftest-run` has no random-seed mode: the seeds are always named, so a failure is reproducible from the report.
+`cargo xtask check-difftest --seeds random:N` draws N seeds itself and passes them on as a list (see Gates).
 
 What a run does:
 
@@ -310,7 +332,7 @@ counted as covered. A run of seeds 1 to 8 at format 3 executes every operator in
 `tests/short_circuit.rs` uses `out[i] = (i < 24) && (a[i + 40] == 7)` (and the `||` twin) over 64 elements with a
 64-element input: for the elements 24 and above, `a[i + 40]` would read out of bounds. The interpreter's domain tracking
 accepts the program only because it skips the right operand; the twin (Rust `&&`) skips it; the GPU run must not fail
-and must give the same values (CPU run: `cargo test`; GPU run: `-- --ignored`). The GPU test is Gpu tier; no gate runs it yet, and m5.c2's `check-difftest` runs it. Measured on the RTX 5090: both programs run,
+and must give the same values (CPU run: `cargo test`; GPU run: `-- --ignored`). The GPU test is Gpu tier; `cargo xtask check-difftest` runs it (without `--cpu-only`). Measured on the RTX 5090: both programs run,
 no GPU error, the 128 outputs agree with the hand-computed values.
 
 A value comparison cannot prove that the GPU skipped the read: wgpu clamps out-of-bounds reads of a storage buffer
@@ -476,6 +498,64 @@ The kill path has its own test, `harness::tests::a_hung_step_is_killed_with_its_
 the test binary runs itself as a sleeping process that starts a sleeping copy of itself, the step returns at its 6 s
 deadline with the output so far, and both processes are gone afterwards. It passed on Windows (the gate) and on
 Linux (WSL Ubuntu 24.04, the process-group path, run by hand with `cargo test --offline`; not part of any gate).
+
+## Gates (slice m5.c2)
+
+`cargo xtask check-difftest` ([VALIDATION](VALIDATION.md), "The differential batch") is how the gates run this crate.
+It runs `difftest-run` (nothing here is reimplemented), reads `report.json` by fields, and fails unless the report has
+the mode and the seeds that were asked for, `programs_executed` equal to `16 x seeds`, no mismatch and, on the GPU
+tier, an adapter. Every failure line starts with `check-difftest:` and names the seed. On the GPU tier it also runs
+`cargo test --locked --manifest-path tests/difftest/Cargo.toml --test short_circuit -- --ignored` and requires the GPU
+test to be reported `ok` by name. Both cargo calls get the cargo target directory of the run in `CARGO_TARGET_DIR`, so
+the generated crate and the short-circuit test build beside the workspace's own artifacts. The report goes to
+`<target>/difftest-report.json` (`--report PATH` moves it; the file is removed before the run, so a stale one cannot
+pass). `--seeds` takes a list, a range or `random:N` (N from 1 to 64): the xtask draws N distinct seeds from the clock
+in 10000 to 1000009999, prints them and runs them as a list, because `difftest-run` itself only takes named seeds;
+rerun a failure with `--seeds <the printed list>`.
+
+| Gate | Command | Seeds | Programs | Parties |
+| --- | --- | --- | --- | --- |
+| Unit suite (local), CI job `difftest` | `check-difftest --cpu-only --seeds 1-4`, after the harness crate's fmt, clippy and tests | 1 to 4 | 64 | interpreter, CPU twin |
+| Gpu suite | `check-difftest` | 1 to 8 | 128 and the `short_circuit` GPU test | interpreter, CPU twin, GPU |
+| `check-full`, last integration check | `check-difftest` | 1 to 8 | 128 and the `short_circuit` GPU test | the same, GPU on the hardware adapter |
+| `gpu-software`, pull request list | `check-difftest --seeds 1-2` | 1 to 2 | 32 and the `short_circuit` GPU test | the same, GPU on lavapipe |
+| `gpu-software`, nightly list | `check-difftest --seeds 1-8` | 1 to 8 | 128 and the `short_circuit` GPU test | the same, GPU on lavapipe |
+
+Measured 2026-11-02 on the development PC (RTX 5090, Vulkan, dev profile), the whole command including the harness's
+cargo build and run: the Unit batch (`--cpu-only --seeds 1-4`) takes 88 s cold (the dependency tree of the generated
+crate, `wgpu` and the rest, not built yet; 78 s of it is the cargo build), 15.5 s when the dependencies are built and
+the crate is new, and 3.3 s when the crate is unchanged. The GPU batch of seeds 1 to 2 with the short-circuit test takes
+36.5 s; the GPU batch of all 8 seeds with the short-circuit test takes 85 s. These are PC numbers; no runner number
+exists until the first CI run of the slice.
+
+The first 8-seed GPU run (format 3) found a real limitation: seeds 1 to 3 and 5 to 8 passed, and seed 4 reported one
+mismatch, program 5 (`s4_a26`), kind `gpu-error`. Slang refused the kernel at compile time with
+`error[E30002]: divide by zero` on a generated `v2 % v2`, where `v2` is the counter of an unrolled `for v2 in 0u32..4u32`
+loop and the statement sits in a branch no element takes. The interpreter accepted the program because the branch is
+dead; slangc unrolled the loop and folded `0 % 0`. It was deterministic (seed 4 alone reproduced it) and the shrinker
+could not reduce it (`--shrink 4:5` says the program "does not fail (1 mismatches without an element)": a compile error
+has no differing element). The fix has two halves (fix round 1 of the slice): the limitation is written up for users
+in [DIAGNOSTICS](../DIAGNOSTICS.md) with its minimal reproducer, probed on slangc 2026.20, and the generator refuses
+the shape (format 4, "The domain filter"), so the corpus does not spend programs on it. `check-difftest` reports any
+such program that is still generated as a `gpu-error` mismatch naming the seed.
+
+The harness crate has gates of its own in the Unit suite (fix round 1; the crate is a workspace of its own, so the
+root's fmt, clippy and test never reached it): `cargo fmt --manifest-path tests/difftest/Cargo.toml -- --check`, `cargo
+clippy --locked --manifest-path tests/difftest/Cargo.toml --all-targets -- -D warnings` and `cargo test --locked
+--manifest-path tests/difftest/Cargo.toml` (the generator, interpreter, emitter, shrinker and corpus tests and the CPU
+`short_circuit` test; the GPU one is `--ignored`). They are Unit steps, next to the CPU-only batch, and the four of
+them are the steps that `cargo xtask test --suite Unit --skip-difftest` leaves out: CI runs them in the job `difftest`,
+beside `unit`, so the `unit` and `slang` jobs keep their time (R4.10). On the development PC, whole commands including
+the wrapper's cargo slot wait and the first compile of the profile: format check 49 s, clippy 55 s, tests 247 s (131
+tests, 9 s of them running).
+
+### The template lockfile went stale once
+
+The first gate run of m5.c2 failed with "template lockfile stale": `tests/difftest/template/Cargo.lock` (m5.c1a)
+predates the lockfile change of m4.g2, which added `serde`, `serde_core`, `serde_derive` and `termcolor` under
+`codespan-reporting`. `difftest-run --refresh-lock` fixed it (60 added lines; line endings kept). The Unit suite now runs
+the batch, so a drift of the root lock fails the Unit gate and CI at once instead of the next time somebody runs the
+harness.
 
 ## Tests
 

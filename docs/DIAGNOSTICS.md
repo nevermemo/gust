@@ -102,6 +102,23 @@ a backslash, a control character or a line break would end that string or the di
 so no such name is ever injected. A file named like the compile copy would also make
 Rust and Slang locations indistinguishable.
 
+**Known limitation: slangc refuses a zero divisor that it can fold, in code that never
+runs** (found by the differential test, slice m5.c2; a limitation, not a defect to fix
+in the translation). slangc 2026.20 evaluates an integer `/` or `%` at compile time when
+its divisor is a constant once the loop is unrolled and the straight-line locals are
+propagated, looking only at the first iteration (the counter of a constant-bound `for`
+is 0), and it rejects a zero with `error[E30002]: divide by zero`, in a branch that no
+invocation takes as well. The error comes through as an ordinary compile error of the
+kernel, mapped to its Rust line, so a valid Rust kernel can fail to compile. The
+smallest reproducer is `for i in 0u32..4u32 { if !true { let r = i % i; } }` (emitted as
+`if (__gust_not(true)) { uint r = (i % i); }` in `for (var i = uint(0); i < end; i++)`
+and refused at the `%`); `let d = i; ... x / d` under any condition fails the same way,
+while the divisors `i + 1` and `i - 3` compile, because the first iteration is the only
+one slangc folds. The workaround is a divisor that cannot fold to zero at the first
+iteration: the counter plus a non-zero offset, or a value read from a buffer. The
+differential generator refuses such programs (DIFFTEST_FORMAT 4,
+[DIFFTEST](development/DIFFTEST.md)).
+
 ## E01xx: module and item shape
 
 ### GUST-E0101 inline module required

@@ -16,7 +16,7 @@ fn args(values: &[&str]) -> Vec<String> {
 }
 
 #[test]
-fn the_full_gate_runs_check_precompiled_and_check_web_and_no_other_mode_does() {
+fn the_full_gate_runs_check_precompiled_check_web_and_check_difftest_and_no_other_mode_does() {
     for mode in ALL_MODES {
         for skip_web in [false, true] {
             let steps = integration_checks(mode, skip_web);
@@ -25,7 +25,8 @@ fn the_full_gate_runs_check_precompiled_and_check_web_and_no_other_mode_does() {
                     steps,
                     [
                         Integration::Run("check-precompiled"),
-                        Integration::Run("check-web")
+                        Integration::Run("check-web"),
+                        Integration::Run("check-difftest")
                     ]
                 );
             } else if mode == VerifyMode::Full {
@@ -33,7 +34,8 @@ fn the_full_gate_runs_check_precompiled_and_check_web_and_no_other_mode_does() {
                     steps,
                     [
                         Integration::Run("check-precompiled"),
-                        Integration::Skip("check-web")
+                        Integration::Skip("check-web"),
+                        Integration::Run("check-difftest")
                     ]
                 );
             } else {
@@ -59,8 +61,9 @@ fn check_web_is_skipped_only_when_the_flag_is_given() {
             .count(),
         1
     );
-    // The precompiled check is never skippable.
+    // The differential batch and the precompiled check are never skippable.
     assert!(with.contains(&Integration::Run("check-precompiled")));
+    assert!(with.contains(&Integration::Run("check-difftest")));
 }
 
 #[test]
@@ -87,7 +90,12 @@ fn verify_inner_runs_the_whole_integration_checks_last() {
     let source = include_str!("../verify.rs").replace("\r\n", "\n");
     let body = &source[source.find("fn verify_inner(").expect("verify_inner")..];
     let body = &body[..body.find("\n}\n").expect("end of verify_inner")];
-    for needle in ["check_precompiled_report(&[])", "check_web_report(&[])"] {
+    // `check_difftest_report(&[])` is the default call: all eight seeds on the adapter, and the short_circuit test.
+    for needle in [
+        "check_difftest_report(&[])",
+        "check_precompiled_report(&[])",
+        "check_web_report(&[])",
+    ] {
         assert!(
             body.contains(needle),
             "verify_inner no longer calls `{needle}`"

@@ -13,6 +13,7 @@ use crate::{
 mod collision_tests;
 pub(crate) mod collisions;
 pub(crate) mod mul_table;
+pub(crate) mod neg_table;
 
 /// The lowerings that depend on what the whole module names (the macro sees syntax and not types, so a module that
 /// names a matrix or an integer vector sends `*` and `.dot` through overloaded helpers; see [`module_lowering`]).
@@ -20,6 +21,8 @@ pub(crate) mod mul_table;
 pub(crate) struct Lowering {
     /// Every `*` is `__gust_mul(a, b)` and every `*=` is `(place = __gust_mul(place, b))` (slice m6.m2).
     pub(crate) mul: bool,
+    /// Every unary `-` on a non-literal is `__gust_neg(a)` (slice m6.n).
+    pub(crate) neg: bool,
     /// Every `.dot(v)` is `__gust_dot(a, b)` (slice m6.m2).
     pub(crate) dot: bool,
 }
@@ -70,9 +73,10 @@ fn count_identifiers(
 
 /// The lowering of a module, computed once from its tokens (slice m6.m2, M6 plan 2.1).
 ///
-/// `mul` is set if any identifier is `Mat2`, `Mat3` or `Mat4`. The gate is exact: E0203 forbids a user type of those
-/// names, E0324 a qualified path to one, and E0102 a `use` item, so the prelude is the only way the name resolves and
-/// a matrix value exists in a module only if one of those tokens does. The other modules keep the verbatim `*`.
+/// `mul` and `neg` are set if any identifier is `Mat2`, `Mat3` or `Mat4`. The gate is exact: E0203 forbids a user
+/// type of those names, E0324 a qualified path to one, and E0102 a `use` item, so the prelude is the only way the name
+/// resolves and a matrix value exists in a module only if one of those tokens does. The other modules keep the verbatim
+/// `*` and `-`.
 ///
 /// `dot` is set if the identifier `dot` occurs. `.dot` is the only route to Slang's `dot` (`emit_math_method`), and the
 /// macro cannot tell an integer vector from a float one (the invocation id is a `UVec3` that needs no type token, and
@@ -84,8 +88,10 @@ fn module_lowering(module: &syn::ItemMod) -> Lowering {
     count_identifiers(module.to_token_stream(), &mut counts);
     let count = |name: &str| counts.get(name).copied().unwrap_or_default();
 
+    let matrix = ["Mat2", "Mat3", "Mat4"].iter().any(|name| count(name) > 0);
     Lowering {
-        mul: ["Mat2", "Mat3", "Mat4"].iter().any(|name| count(name) > 0),
+        mul: matrix,
+        neg: matrix,
         dot: count("dot") > 0,
     }
 }
@@ -386,6 +392,12 @@ pub fn emit_kernel(
     // operand pair of the product table, and slangc resolves each call by the operand types.
     if lowering.mul {
         output.push_str(&mul_table::overload_text());
+    }
+
+    // Unary `-` on a matrix is not valid WGSL in slangc's own lowering (`mat4x4<f32>(0) - m`), so a module that names
+    // a matrix sends every unary `-` through the overloads of `__gust_neg` (see `neg_table`).
+    if lowering.neg {
+        output.push_str(&neg_table::overload_text());
     }
 
     // The integer `dot` as a sum of products (see `dot_overload_text`); `.dot` is `__gust_dot` in such a module.
@@ -1133,6 +1145,15 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         syn::Expr::Unary(unary) if negated_integer_literal(unary).is_some() => {
             let value = negated_integer_literal(unary).expect("guarded by the match arm");
             format!("(-{})", integer_literal(value, true)?)
+        }
+        // A literal operand is a scalar whatever the module names, so it keeps the plain `-` (the integer literal above
+        // has its own arm); every other operand of a unary `-` is `__gust_neg(a)` in a module that names a matrix.
+        syn::Expr::Unary(unary)
+            if lowering().neg
+                && matches!(unary.op, syn::UnOp::Neg(_))
+                && !matches!(unary.expr.as_ref(), syn::Expr::Lit(_)) =>
+        {
+            format!("__gust_neg({})", emit_expression(&unary.expr)?)
         }
         syn::Expr::Unary(unary) => format!(
             "({}{})",

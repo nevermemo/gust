@@ -3945,6 +3945,7 @@ fn the_overloads_appear_only_in_modules_that_name_what_they_serve() {
     ] {
         assert!(!text.contains("__gust_mul"), "{name}");
         assert!(!text.contains("__gust_dot"), "{name}");
+        assert!(!text.contains("__gust_neg"), "{name}");
     }
     // The vectors golden names both, and holds both.
     let golden = include_str!("../../../../tests/fixtures/vectors.slang");
@@ -3954,6 +3955,12 @@ fn the_overloads_appear_only_in_modules_that_name_what_they_serve() {
             .contains(&mul_table::overload_text())
     );
     assert!(golden.contains("__gust_dot(") && golden.contains("__gust_mul("));
+    assert!(
+        golden
+            .replace("\r\n", "\n")
+            .contains(&neg_table::overload_text())
+    );
+    assert!(golden.contains("__gust_neg(angle.y)"));
 }
 
 #[test]
@@ -4115,4 +4122,194 @@ fn the_generated_impls_are_the_table() {
     assert!(text.contains("self . mul_mat2 (rhs)"));
     assert!(text.contains("x : self * rhs . x"));
     assert!(text.contains("x : self . x * rhs . x"));
+}
+
+// ---- unary minus on a matrix (M6, slice m6.n) ----
+
+use crate::slang::neg_table::{self, NEG_ROWS, NegKind};
+
+#[test]
+fn the_negation_table_has_the_pinned_rows() {
+    let operands: Vec<&str> = NEG_ROWS.iter().map(|row| row.operand).collect();
+    assert_eq!(
+        operands,
+        [
+            "f32", "i32", "Vec2", "Vec3", "Vec4", "IVec2", "IVec4", "Mat2", "Mat3", "Mat4"
+        ]
+    );
+    for row in NEG_ROWS {
+        // Only the matrices are scaled; slangc's own `-a` is the scalar and vector lowering.
+        assert_eq!(
+            row.kind == NegKind::Scale,
+            mul_table::is_matrix(row.operand),
+            "{}",
+            row.operand
+        );
+    }
+}
+
+/// The rows of the table are the types `gust::math` has a `Neg` for, read from its source (the three float vectors by
+/// `vector_neg!`, every matrix by `matrix_ops!`), plus `f32`, `i32` and the two integer vectors, whose Slang `-a` the
+/// table also lists so a module lowers a `-` the same with or without a matrix in it.
+#[test]
+fn the_negation_table_covers_every_neg_impl_of_the_math_module() {
+    let math = include_str!("../../../gust/src/math.rs").replace("\r\n", "\n");
+    let mut negated: Vec<String> = math
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("vector_neg!("))
+        .map(|rest| rest.split(';').next().unwrap().to_owned())
+        .collect();
+    assert_eq!(negated, ["Vec2", "Vec3", "Vec4"]);
+    assert!(math.contains("impl Neg for $Mat {"));
+    negated.extend(
+        crate::math_types::MATH_TYPES
+            .iter()
+            .filter(|entry| entry.matrix)
+            .map(|entry| entry.name.to_owned()),
+    );
+    for name in &negated {
+        assert!(
+            NEG_ROWS.iter().any(|row| row.operand == name),
+            "{name} has a `Neg` impl and no row"
+        );
+    }
+    // The vectors without a `Neg` impl (the integer ones) have a row; the unsigned ones have none, because Rust has no
+    // unary minus on them.
+    assert!(!math.contains("vector_neg!(IVec"));
+    for row in NEG_ROWS {
+        assert!(
+            negated.contains(&row.operand.to_owned())
+                || ["f32", "i32", "IVec2", "IVec4"].contains(&row.operand),
+            "{}",
+            row.operand
+        );
+    }
+    assert!(
+        !NEG_ROWS
+            .iter()
+            .any(|row| row.operand.starts_with('U') || row.operand == "u32")
+    );
+}
+
+#[test]
+fn the_negation_overloads_are_pinned() {
+    let text = neg_table::overload_text();
+    assert!(text.ends_with("\n\n"));
+    assert_eq!(text.lines().filter(|line| !line.is_empty()).count(), 10);
+    let expected = [
+        "float __gust_neg(float a) { return -a; }",
+        "int __gust_neg(int a) { return -a; }",
+        "float2 __gust_neg(float2 a) { return -a; }",
+        "float3 __gust_neg(float3 a) { return -a; }",
+        "float4 __gust_neg(float4 a) { return -a; }",
+        "int2 __gust_neg(int2 a) { return -a; }",
+        "int4 __gust_neg(int4 a) { return -a; }",
+        "float2x2 __gust_neg(float2x2 a) { return a * -1.0; }",
+        "float3x3 __gust_neg(float3x3 a) { return a * -1.0; }",
+        "float4x4 __gust_neg(float4x4 a) { return a * -1.0; }",
+    ];
+    let lines: Vec<&str> = text.lines().filter(|line| !line.is_empty()).collect();
+    assert_eq!(lines, expected);
+    // `0.0 - m` turns a `+0` lane into `+0` where the twin's negation gives `-0`, and the matrix `-m` is not valid WGSL
+    // (naga: "cannot cast a {AbstractInt} to a mat4x4<f32>"); a product with `-1.0` is exact and passes both.
+    assert!(!text.contains("0.0 -") && !text.contains("0 -"), "{text}");
+    for row in NEG_ROWS.iter().filter(|row| row.kind == NegKind::Scale) {
+        assert!(neg_table::overload(row).ends_with("return a * -1.0; }"));
+    }
+}
+
+#[test]
+fn a_module_that_names_a_matrix_lowers_unary_minus_to_the_overload() {
+    let source = translate(&matrix_module(
+        "",
+        "let a = 2.0; let b = -a; let c = -Mat4::IDENTITY; let d = -(-a); let e = -a * 3.0; let f = -2.0; \
+         let g = -3; let h = -(a + 1.0); out[i] = b;",
+    ))
+    .unwrap();
+    for expected in [
+        "var b = __gust_neg(a);",
+        "var c = __gust_neg(float4x4(",
+        "var d = __gust_neg((__gust_neg(a)));",
+        "var e = __gust_mul(__gust_neg(a), 3.0);",
+        "var h = __gust_neg(((a + 1.0)));",
+    ] {
+        assert!(source.contains(expected), "missing `{expected}`:\n{source}");
+    }
+    // A literal operand is a scalar whatever the module names: it keeps the plain `-`.
+    assert!(source.contains("var f = (-2.0);"), "{source}");
+    assert!(source.contains("var g = (-3);"), "{source}");
+    assert!(!source.contains("__gust_neg(2.0)") && !source.contains("__gust_neg(3)"));
+    // The table follows the product table, once, before the first declaration.
+    let table = neg_table::overload_text();
+    assert_eq!(source.matches(&table).count(), 1, "{source}");
+    let products = source.find(&mul_table::overload_text()).unwrap();
+    assert!(products + mul_table::overload_text().len() == source.find(&table).unwrap());
+    assert!(source.find(&table).unwrap() < source.find("[[vk::binding").unwrap());
+    // `!` and the other operators are untouched.
+    let source = translate(&matrix_module(
+        "",
+        "let t = true; let u = !t; out[i] = 2.0 - 3.0;",
+    ))
+    .unwrap();
+    assert!(!source.contains("__gust_neg(t)"), "{source}");
+}
+
+#[test]
+fn unary_minus_is_the_plain_operator_in_a_module_that_names_no_matrix() {
+    let source = translate(&vector_module(
+        "fn lift(v: Vec4) -> Vec4 { -v }",
+        "let a = 2.0; let b = -a; let c = -(a + 1.0); out[i] = b + c;",
+    ))
+    .unwrap();
+    assert!(source.contains("var b = (-a);"), "{source}");
+    assert!(source.contains("var c = (-((a + 1.0)));"), "{source}");
+    assert!(source.contains("return (-v);"), "{source}");
+    assert!(!source.contains("__gust_neg"), "{source}");
+    assert!(!source.contains("__gust_mul"), "{source}");
+}
+
+#[test]
+fn a_matrix_token_gates_unary_minus_and_near_misses_do_not() {
+    for items in [
+        "fn lift(m: Mat2) -> Mat2 { m }",
+        "fn lift(m: r#Mat4) -> r#Mat4 { m }",
+        "fn lift(m: Mat3) -> Mat3 { m }",
+    ] {
+        let source = translate(&vector_module(items, "let a = 2.0; out[i] = -a;")).unwrap();
+        assert!(source.contains("= __gust_neg(a);"), "{items}:\n{source}");
+    }
+    for items in ["struct Mat5 { a: f32 }", "fn lift(v: Vec4) -> Vec4 { v }"] {
+        let source = translate(&vector_module(items, "let a = 2.0; out[i] = -a;")).unwrap();
+        assert!(source.contains("= (-a);"), "{items}:\n{source}");
+        assert!(!source.contains("__gust_neg"), "{items}:\n{source}");
+    }
+}
+
+#[test]
+fn the_products_golden_holds_one_negation_per_row_of_the_table() {
+    let golden = include_str!("../../../../tests/fixtures/products.slang").replace("\r\n", "\n");
+    assert!(golden.contains(&neg_table::overload_text()), "{golden}");
+    let name = |rust: &str| match rust {
+        "f32" => "fl",
+        "i32" => "sn",
+        "Vec2" => "v2",
+        "Vec3" => "v3",
+        "Vec4" => "v4",
+        "IVec2" => "i2",
+        "IVec4" => "i4",
+        "Mat2" => "m2",
+        "Mat3" => "m3",
+        "Mat4" => "m4",
+        other => panic!("{other} is not in the table"),
+    };
+    // One `__gust_neg(<parameter>)` per row, in table order, after the table and after the literal products.
+    let mut after =
+        golden.find(&neg_table::overload_text()).unwrap() + neg_table::overload_text().len();
+    for row in NEG_ROWS {
+        let call = format!("__gust_neg({})", name(row.operand));
+        let at = golden[after..]
+            .find(&call)
+            .unwrap_or_else(|| panic!("-{}: no `{call}` after byte {after}", row.operand));
+        after += at + call.len();
+    }
 }

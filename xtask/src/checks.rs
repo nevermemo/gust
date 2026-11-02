@@ -36,6 +36,19 @@ pub(crate) const REFLECTION_TESTS: &[&[&str]] = &[
     ],
 ];
 
+/// The `gust-wgpu` integration tests of `check-feature gpu-semantics`, by file name under crates/gust-wgpu/tests. Kept
+/// as data so a test can pin the list (the scalar coretests of m5.d2 are one of them).
+pub(crate) const GPU_SEMANTICS_TESTS: [&str; 8] = [
+    "semantics",
+    "numeric",
+    "option",
+    "result",
+    "loops",
+    "struct_assignment",
+    "mismatch",
+    "coretests",
+];
+
 /// The cargo calls of `cargo xtask check-cpu` (a step of the Unit suite): the non-ignored,
 /// GPU-free tests of the examples, which run each kernel's CPU twin against its host reference.
 /// Later slices append their examples. Kept as data so a test can require `--locked` on each.
@@ -161,15 +174,7 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
         "wgpu" => verify(VerifyMode::Gpu, false),
         "gpu-smoke" => run_direct(&root, "cargo", &["test", "-p", "gust-wgpu", "--lib"]),
         "gpu-semantics" => {
-            for test in [
-                "semantics",
-                "numeric",
-                "option",
-                "result",
-                "loops",
-                "struct_assignment",
-                "mismatch",
-            ] {
+            for test in GPU_SEMANTICS_TESTS {
                 run_direct(&root, "cargo", &["test", "-p", "gust-wgpu", "--test", test])?;
             }
             Ok(())
@@ -470,7 +475,7 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
         "wgpu" => "wgpu: all runtime/GPU integration tests; about 10s on this machine",
         "gpu-smoke" => "gpu-smoke: wgpu crate unit tests only; cheap runtime/cache sanity",
         "gpu-semantics" => {
-            "gpu-semantics: semantics/numeric/option/loops/struct assignment GPU differential tests and the known-mismatch ledger"
+            "gpu-semantics: semantics/numeric/option/loops/struct assignment GPU differential tests, the known-mismatch ledger and the scalar coretests"
         }
         "gpu-runtime" => {
             "gpu-runtime: reflection gate, cache/runtime mismatch tests, launch-limit checks and buffer layout assertions, typed calls and derived graph edges"

@@ -60,6 +60,10 @@ const CORE_CPU_TESTS: Step =
 /// library tests are carved out by name and counted, as `cpu::tests::` is.
 const CORE_ARTIFACT_TESTS: Step =
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "artifact"]);
+/// The scalar coretests transcription on the CPU twin (m5.d3): every case of docs/development/CORETESTS.md against its
+/// literal, with the id guards. Pure: no slangc, no process, no GPU (the GPU half is `check-feature gpu-semantics`).
+const CORE_CORETESTS_TWIN: Step =
+    Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "coretests_twin"]);
 /// The off state of the `slang-runtime` feature (D44). The workspace build unifies the feature on (the examples and the
 /// self dev-dependencies ask for it), so these two calls, which build `gust` and `gust-wgpu` alone and without default
 /// features, are the only observers of the bridge's cfg attributes: they fail when something the precompiled path needs
@@ -142,7 +146,7 @@ impl Suite {
     pub(crate) fn covers(self) -> &'static str {
         match self {
             Self::Unit => {
-                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), clippy and check of gust and gust-wgpu without default features (the slang-runtime off state); no external tools"
+                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), clippy and check of gust and gust-wgpu without default features (the slang-runtime off state); no external tools"
             }
             Self::Cpu => {
                 "the production CPU target (GUST_PROFILE=cpu) on the fixture tests/cpu-target: the kernels build in release, run on gust::cpu::CpuDevice and equal independent host references; the binary holds no compiler, helper or GPU runtime; gust-wgpu refuses the profile; the cfg(test) and --cfg gust_dual builds keep one impl; the profile flips rebuild correctly; cargo only"
@@ -198,6 +202,7 @@ impl Suite {
             CORE_CPU_TESTS,
             CORE_ARTIFACT_UNIT_TESTS,
             CORE_ARTIFACT_TESTS,
+            CORE_CORETESTS_TWIN,
             OFF_STATE_CLIPPY,
             OFF_STATE_CHECK,
         ];

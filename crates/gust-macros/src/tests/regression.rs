@@ -682,8 +682,93 @@ fn typed_locals_preserve_numeric_type() {
         #[kernel] fn run(id: SV_DispatchThreadID) { let result: uint = quotient(id.x); }
     }").unwrap();
     assert!(source.contains("uint divisor = 2;"), "{source}");
-    assert!(source.contains("uint answer = (x / divisor);"), "{source}");
+    assert!(
+        source.contains("uint answer = __gust_div(x, divisor);"),
+        "{source}"
+    );
     assert!(source.contains("uint result = quotient(id.x);"), "{source}");
+}
+
+/// Slice m6.dv (D74): a divisor that is not a literal goes through `__gust_div` and `__gust_rem`, a literal divisor
+/// (negated, parenthesised or not) stays a plain operator, and each helper family is emitted once and only when used.
+#[test]
+fn division_goes_through_helpers_unless_the_divisor_is_a_literal() {
+    let source = translate(
+        "mod divide {
+        #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<int>, d: StructuredBuffer<int>) {
+            let a: int = out[id.x];
+            let b: int = d[id.x];
+            let mut c: int = a / b;
+            c += a % b;
+            c /= b;
+            c %= b;
+            c += a / 2 + a % 3 + a / (-4) + a / (5);
+            out[id.x] /= b;
+            out[id.x] = c;
+        }
+    }",
+    )
+    .unwrap();
+    for line in [
+        "__gust_div(a, b)",
+        "__gust_rem(a, b)",
+        "__gust_div_assign(c, b)",
+        "__gust_rem_assign(c, b)",
+        "__gust_div_assign(out[id.x], b)",
+        "(a / 2)",
+        "(a % 3)",
+        "(a / ((-4)))",
+        "(a / (5))",
+    ] {
+        assert!(source.contains(line), "missing `{line}`:\n{source}");
+    }
+    assert_eq!(
+        source.matches("int __gust_div(int a, int b)").count(),
+        1,
+        "{source}"
+    );
+    assert_eq!(
+        source.matches("int __gust_rem(int a, int b)").count(),
+        1,
+        "{source}"
+    );
+    assert_eq!(
+        source
+            .matches("float2 __gust_div(float2 a, float b)")
+            .count(),
+        1,
+        "{source}"
+    );
+    assert!(
+        !source.contains("__gust_rem(float2"),
+        "`%` has scalar overloads only:\n{source}"
+    );
+
+    let literal_only = translate(
+        "mod literal {
+        #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+            out[id.x] = out[id.x] / 2 + out[id.x] % 3;
+            out[id.x] /= 4;
+        }
+    }",
+    )
+    .unwrap();
+    assert!(!literal_only.contains("__gust_div"), "{literal_only}");
+    assert!(!literal_only.contains("__gust_rem"), "{literal_only}");
+
+    let only_div = translate(
+        "mod only_div {
+        #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+            out[id.x] = id.x / out[id.x];
+        }
+    }",
+    )
+    .unwrap();
+    assert!(
+        only_div.contains("uint __gust_div(uint a, uint b)"),
+        "{only_div}"
+    );
+    assert!(!only_div.contains("__gust_rem"), "{only_div}");
 }
 
 #[test]
@@ -1056,6 +1141,12 @@ fn integer_division_by_literal_zero_is_diagnosed() {
         "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = out[id.x] / 0u32; } }",
         "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<int>) { out[id.x] = out[id.x] % 0; } }",
         "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = out[id.x] / -0u32; } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = out[id.x] / (0u32); } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<int>) { out[id.x] = out[id.x] % ((-0)); } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] /= 0u32; } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<int>) { out[id.x] %= 0; } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { let mut t = out[id.x]; t /= (0); out[id.x] = t; } }",
+        "mod bad { #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { if false { out[id.x] %= -0u32; } } }",
     ] {
         assert_rejected(source, Code::DivisionByLiteralZero);
     }
@@ -1066,6 +1157,34 @@ fn integer_division_by_literal_zero_is_diagnosed() {
     )
     .unwrap();
     assert!(ok.contains("(out[id.x] / 0.0)"), "{ok}");
+}
+
+#[test]
+fn a_literal_zero_through_parentheses_or_a_macro_group_is_still_zero() {
+    // `macro_rules!` hands a `$d:expr` over inside an invisible group; the emitter keeps that spelling a plain operator,
+    // so the validator must see it as the zero it is. Build the group, as the parser would not.
+    let parse = |text: &str| crate::diagnostics::testing::parse_str::<syn::Expr>(text).unwrap();
+    let group = |text: &str| {
+        syn::Expr::Group(syn::ExprGroup {
+            attrs: Vec::new(),
+            group_token: syn::token::Group::default(),
+            expr: Box::new(parse(text)),
+        })
+    };
+    for text in ["0", "0u32", "-0", "(0)", "((-0u32))"] {
+        assert!(crate::validate::is_literal_zero(&parse(text)), "{text}");
+        assert!(
+            crate::validate::is_literal_zero(&group(text)),
+            "group of {text}"
+        );
+    }
+    for text in ["1", "(1)", "x", "(x)", "0.0", "(0.0)", "-1"] {
+        assert!(!crate::validate::is_literal_zero(&parse(text)), "{text}");
+        assert!(
+            !crate::validate::is_literal_zero(&group(text)),
+            "group of {text}"
+        );
+    }
 }
 
 // --- T10 atomics ---

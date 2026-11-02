@@ -12,6 +12,7 @@ use crate::{
 #[cfg(test)]
 mod collision_tests;
 pub(crate) mod collisions;
+pub(crate) mod div_table;
 pub(crate) mod mul_table;
 pub(crate) mod neg_table;
 
@@ -398,6 +399,17 @@ pub fn emit_kernel(
     // a matrix sends every unary `-` through the overloads of `__gust_neg` (see `neg_table`).
     if lowering.neg {
         output.push_str(&neg_table::overload_text());
+    }
+
+    // slangc folds integer `/` and `%` and refuses a divisor that folds to zero, even in dead code (D74), so every `/`
+    // and `%` with a divisor that is not a literal is a call to `__gust_div` or `__gust_rem` (see `div_table`).
+    let mut division = DivisionUsage::default();
+    division.visit_item_mod(module);
+    if division.div {
+        output.push_str(&div_table::overload_text("div", "/", div_table::DIV_ROWS));
+    }
+    if division.rem {
+        output.push_str(&div_table::overload_text("rem", "%", div_table::REM_ROWS));
     }
 
     // The integer `dot` as a sum of products (see `dot_overload_text`); `.dot` is `__gust_dot` in such a module.
@@ -976,6 +988,16 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             emit_expression(&binary.left)?,
             emit_expression(&binary.right)?
         ),
+        // `/`, `%`, `/=` and `%=` with a divisor that is not a literal go through `__gust_div` and `__gust_rem`.
+        syn::Expr::Binary(binary) if division_helper(binary).is_some() => {
+            let (name, assign) = division_helper(binary).expect("guarded by the match arm");
+            format!(
+                "__gust_{name}{}({}, {})",
+                if assign { "_assign" } else { "" },
+                emit_expression(&binary.left)?,
+                emit_expression(&binary.right)?
+            )
+        }
         // In a module that names a matrix, `*` and `*=` go through the overloads of `__gust_mul`.
         // A product in a future `const` or array length must not take this arm: Slang cannot use a `__gust_mul(..)`
         // call as a size, so the slice that adds constants lowers a product there with the plain `*`.
@@ -1350,6 +1372,51 @@ impl<'ast> Visit<'ast> for NotUsage {
     fn visit_expr_unary(&mut self, expression: &'ast syn::ExprUnary) {
         self.0 |= matches!(expression.op, syn::UnOp::Not(_));
         syn::visit::visit_expr_unary(self, expression);
+    }
+}
+
+/// Whether an expression is a literal operand, possibly negated or parenthesised (`2`, `-1`, `(2.0)`).
+fn is_literal_operand(expression: &syn::Expr) -> bool {
+    match expression {
+        syn::Expr::Lit(_) => true,
+        syn::Expr::Paren(paren) => is_literal_operand(&paren.expr),
+        syn::Expr::Group(group) => is_literal_operand(&group.expr),
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
+            is_literal_operand(&unary.expr)
+        }
+        _ => false,
+    }
+}
+
+/// The helper a `/`, `%`, `/=` or `%=` goes through: its name (`div` or `rem`) and whether it is the `_assign` form.
+/// `None` for a literal divisor (the validator rejects a literal zero, so the plain operator is safe) and for every
+/// other operator.
+fn division_helper(binary: &syn::ExprBinary) -> Option<(&'static str, bool)> {
+    let helper = match binary.op {
+        syn::BinOp::Div(_) => ("div", false),
+        syn::BinOp::Rem(_) => ("rem", false),
+        syn::BinOp::DivAssign(_) => ("div", true),
+        syn::BinOp::RemAssign(_) => ("rem", true),
+        _ => return None,
+    };
+    (!is_literal_operand(&binary.right)).then_some(helper)
+}
+
+/// Which division helpers the module needs: `div` (for `/` and `/=`) and `rem` (for `%` and `%=`).
+#[derive(Default)]
+struct DivisionUsage {
+    div: bool,
+    rem: bool,
+}
+
+impl<'ast> Visit<'ast> for DivisionUsage {
+    fn visit_expr_binary(&mut self, expression: &'ast syn::ExprBinary) {
+        match division_helper(expression) {
+            Some(("div", _)) => self.div = true,
+            Some(_) => self.rem = true,
+            None => {}
+        }
+        syn::visit::visit_expr_binary(self, expression);
     }
 }
 

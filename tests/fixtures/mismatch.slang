@@ -5,6 +5,52 @@ bool __gust_not(bool value) { return !value; }
 int __gust_not(int value) { return ~value; }
 uint __gust_not(uint value) { return ~value; }
 
+float __gust_div(float a, float b) { return a / b; }
+int __gust_div(int a, int b) { return a / b; }
+uint __gust_div(uint a, uint b) { return a / b; }
+float2 __gust_div(float2 a, float2 b) { return a / b; }
+float2 __gust_div(float2 a, float b) { return a / b; }
+float3 __gust_div(float3 a, float3 b) { return a / b; }
+float3 __gust_div(float3 a, float b) { return a / b; }
+float4 __gust_div(float4 a, float4 b) { return a / b; }
+float4 __gust_div(float4 a, float b) { return a / b; }
+int2 __gust_div(int2 a, int2 b) { return a / b; }
+int2 __gust_div(int2 a, int b) { return a / b; }
+int4 __gust_div(int4 a, int4 b) { return a / b; }
+int4 __gust_div(int4 a, int b) { return a / b; }
+uint2 __gust_div(uint2 a, uint2 b) { return a / b; }
+uint2 __gust_div(uint2 a, uint b) { return a / b; }
+uint3 __gust_div(uint3 a, uint3 b) { return a / b; }
+uint3 __gust_div(uint3 a, uint b) { return a / b; }
+uint4 __gust_div(uint4 a, uint4 b) { return a / b; }
+uint4 __gust_div(uint4 a, uint b) { return a / b; }
+void __gust_div_assign(inout float a, float b) { a = a / b; }
+void __gust_div_assign(inout int a, int b) { a = a / b; }
+void __gust_div_assign(inout uint a, uint b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float2 b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float3 b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float4 b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int2 b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int4 b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint2 b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint3 b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint4 b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint b) { a = a / b; }
+
+float __gust_rem(float a, float b) { return a % b; }
+int __gust_rem(int a, int b) { return a % b; }
+uint __gust_rem(uint a, uint b) { return a % b; }
+void __gust_rem_assign(inout float a, float b) { a = a % b; }
+void __gust_rem_assign(inout int a, int b) { a = a % b; }
+void __gust_rem_assign(inout uint a, uint b) { a = a % b; }
+
 [[vk::binding(0, 0)]] StructuredBuffer<uint> op;
 [[vk::binding(1, 0)]] StructuredBuffer<uint> a;
 [[vk::binding(2, 0)]] StructuredBuffer<uint> b;
@@ -56,11 +102,11 @@ void gpu_mismatch_udivide(uint3 id : SV_DispatchThreadID)
     {
         if ((op[i] == uint(0)))
         {
-            out[i] = (a[i] / b[i]);
+            out[i] = __gust_div(a[i], b[i]);
         }
         else
         {
-            out[i] = (a[i] % b[i]);
+            out[i] = __gust_rem(a[i], b[i]);
         }
     }
 }
@@ -70,6 +116,52 @@ void gpu_mismatch_udivide(uint3 id : SV_DispatchThreadID)
 bool __gust_not(bool value) { return !value; }
 int __gust_not(int value) { return ~value; }
 uint __gust_not(uint value) { return ~value; }
+
+float __gust_div(float a, float b) { return a / b; }
+int __gust_div(int a, int b) { return a / b; }
+uint __gust_div(uint a, uint b) { return a / b; }
+float2 __gust_div(float2 a, float2 b) { return a / b; }
+float2 __gust_div(float2 a, float b) { return a / b; }
+float3 __gust_div(float3 a, float3 b) { return a / b; }
+float3 __gust_div(float3 a, float b) { return a / b; }
+float4 __gust_div(float4 a, float4 b) { return a / b; }
+float4 __gust_div(float4 a, float b) { return a / b; }
+int2 __gust_div(int2 a, int2 b) { return a / b; }
+int2 __gust_div(int2 a, int b) { return a / b; }
+int4 __gust_div(int4 a, int4 b) { return a / b; }
+int4 __gust_div(int4 a, int b) { return a / b; }
+uint2 __gust_div(uint2 a, uint2 b) { return a / b; }
+uint2 __gust_div(uint2 a, uint b) { return a / b; }
+uint3 __gust_div(uint3 a, uint3 b) { return a / b; }
+uint3 __gust_div(uint3 a, uint b) { return a / b; }
+uint4 __gust_div(uint4 a, uint4 b) { return a / b; }
+uint4 __gust_div(uint4 a, uint b) { return a / b; }
+void __gust_div_assign(inout float a, float b) { a = a / b; }
+void __gust_div_assign(inout int a, int b) { a = a / b; }
+void __gust_div_assign(inout uint a, uint b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float2 b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float3 b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float4 b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int2 b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int4 b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint2 b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint3 b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint4 b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint b) { a = a / b; }
+
+float __gust_rem(float a, float b) { return a % b; }
+int __gust_rem(int a, int b) { return a % b; }
+uint __gust_rem(uint a, uint b) { return a % b; }
+void __gust_rem_assign(inout float a, float b) { a = a % b; }
+void __gust_rem_assign(inout int a, int b) { a = a % b; }
+void __gust_rem_assign(inout uint a, uint b) { a = a % b; }
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint> op;
 [[vk::binding(1, 0)]] StructuredBuffer<int> a;
@@ -122,11 +214,11 @@ void gpu_mismatch_idivide(uint3 id : SV_DispatchThreadID)
     {
         if ((op[i] == uint(0)))
         {
-            out[i] = (a[i] / b[i]);
+            out[i] = __gust_div(a[i], b[i]);
         }
         else
         {
-            out[i] = (a[i] % b[i]);
+            out[i] = __gust_rem(a[i], b[i]);
         }
     }
 }
@@ -136,6 +228,52 @@ void gpu_mismatch_idivide(uint3 id : SV_DispatchThreadID)
 bool __gust_not(bool value) { return !value; }
 int __gust_not(int value) { return ~value; }
 uint __gust_not(uint value) { return ~value; }
+
+float __gust_div(float a, float b) { return a / b; }
+int __gust_div(int a, int b) { return a / b; }
+uint __gust_div(uint a, uint b) { return a / b; }
+float2 __gust_div(float2 a, float2 b) { return a / b; }
+float2 __gust_div(float2 a, float b) { return a / b; }
+float3 __gust_div(float3 a, float3 b) { return a / b; }
+float3 __gust_div(float3 a, float b) { return a / b; }
+float4 __gust_div(float4 a, float4 b) { return a / b; }
+float4 __gust_div(float4 a, float b) { return a / b; }
+int2 __gust_div(int2 a, int2 b) { return a / b; }
+int2 __gust_div(int2 a, int b) { return a / b; }
+int4 __gust_div(int4 a, int4 b) { return a / b; }
+int4 __gust_div(int4 a, int b) { return a / b; }
+uint2 __gust_div(uint2 a, uint2 b) { return a / b; }
+uint2 __gust_div(uint2 a, uint b) { return a / b; }
+uint3 __gust_div(uint3 a, uint3 b) { return a / b; }
+uint3 __gust_div(uint3 a, uint b) { return a / b; }
+uint4 __gust_div(uint4 a, uint4 b) { return a / b; }
+uint4 __gust_div(uint4 a, uint b) { return a / b; }
+void __gust_div_assign(inout float a, float b) { a = a / b; }
+void __gust_div_assign(inout int a, int b) { a = a / b; }
+void __gust_div_assign(inout uint a, uint b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float2 b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float3 b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float4 b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int2 b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int4 b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint2 b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint3 b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint4 b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint b) { a = a / b; }
+
+float __gust_rem(float a, float b) { return a % b; }
+int __gust_rem(int a, int b) { return a % b; }
+uint __gust_rem(uint a, uint b) { return a % b; }
+void __gust_rem_assign(inout float a, float b) { a = a % b; }
+void __gust_rem_assign(inout int a, int b) { a = a % b; }
+void __gust_rem_assign(inout uint a, uint b) { a = a % b; }
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint> op;
 [[vk::binding(1, 0)]] StructuredBuffer<uint> a;
@@ -203,6 +341,52 @@ bool __gust_not(bool value) { return !value; }
 int __gust_not(int value) { return ~value; }
 uint __gust_not(uint value) { return ~value; }
 
+float __gust_div(float a, float b) { return a / b; }
+int __gust_div(int a, int b) { return a / b; }
+uint __gust_div(uint a, uint b) { return a / b; }
+float2 __gust_div(float2 a, float2 b) { return a / b; }
+float2 __gust_div(float2 a, float b) { return a / b; }
+float3 __gust_div(float3 a, float3 b) { return a / b; }
+float3 __gust_div(float3 a, float b) { return a / b; }
+float4 __gust_div(float4 a, float4 b) { return a / b; }
+float4 __gust_div(float4 a, float b) { return a / b; }
+int2 __gust_div(int2 a, int2 b) { return a / b; }
+int2 __gust_div(int2 a, int b) { return a / b; }
+int4 __gust_div(int4 a, int4 b) { return a / b; }
+int4 __gust_div(int4 a, int b) { return a / b; }
+uint2 __gust_div(uint2 a, uint2 b) { return a / b; }
+uint2 __gust_div(uint2 a, uint b) { return a / b; }
+uint3 __gust_div(uint3 a, uint3 b) { return a / b; }
+uint3 __gust_div(uint3 a, uint b) { return a / b; }
+uint4 __gust_div(uint4 a, uint4 b) { return a / b; }
+uint4 __gust_div(uint4 a, uint b) { return a / b; }
+void __gust_div_assign(inout float a, float b) { a = a / b; }
+void __gust_div_assign(inout int a, int b) { a = a / b; }
+void __gust_div_assign(inout uint a, uint b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float2 b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float3 b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float4 b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int2 b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int4 b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint2 b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint3 b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint4 b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint b) { a = a / b; }
+
+float __gust_rem(float a, float b) { return a % b; }
+int __gust_rem(int a, int b) { return a % b; }
+uint __gust_rem(uint a, uint b) { return a % b; }
+void __gust_rem_assign(inout float a, float b) { a = a % b; }
+void __gust_rem_assign(inout int a, int b) { a = a % b; }
+void __gust_rem_assign(inout uint a, uint b) { a = a % b; }
+
 [[vk::binding(0, 0)]] StructuredBuffer<uint> op;
 [[vk::binding(1, 0)]] StructuredBuffer<int> a;
 [[vk::binding(2, 0)]] StructuredBuffer<uint> n;
@@ -268,6 +452,52 @@ void gpu_mismatch_ishift(uint3 id : SV_DispatchThreadID)
 bool __gust_not(bool value) { return !value; }
 int __gust_not(int value) { return ~value; }
 uint __gust_not(uint value) { return ~value; }
+
+float __gust_div(float a, float b) { return a / b; }
+int __gust_div(int a, int b) { return a / b; }
+uint __gust_div(uint a, uint b) { return a / b; }
+float2 __gust_div(float2 a, float2 b) { return a / b; }
+float2 __gust_div(float2 a, float b) { return a / b; }
+float3 __gust_div(float3 a, float3 b) { return a / b; }
+float3 __gust_div(float3 a, float b) { return a / b; }
+float4 __gust_div(float4 a, float4 b) { return a / b; }
+float4 __gust_div(float4 a, float b) { return a / b; }
+int2 __gust_div(int2 a, int2 b) { return a / b; }
+int2 __gust_div(int2 a, int b) { return a / b; }
+int4 __gust_div(int4 a, int4 b) { return a / b; }
+int4 __gust_div(int4 a, int b) { return a / b; }
+uint2 __gust_div(uint2 a, uint2 b) { return a / b; }
+uint2 __gust_div(uint2 a, uint b) { return a / b; }
+uint3 __gust_div(uint3 a, uint3 b) { return a / b; }
+uint3 __gust_div(uint3 a, uint b) { return a / b; }
+uint4 __gust_div(uint4 a, uint4 b) { return a / b; }
+uint4 __gust_div(uint4 a, uint b) { return a / b; }
+void __gust_div_assign(inout float a, float b) { a = a / b; }
+void __gust_div_assign(inout int a, int b) { a = a / b; }
+void __gust_div_assign(inout uint a, uint b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float2 b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float3 b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float4 b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int2 b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int4 b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint2 b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint3 b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint4 b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint b) { a = a / b; }
+
+float __gust_rem(float a, float b) { return a % b; }
+int __gust_rem(int a, int b) { return a % b; }
+uint __gust_rem(uint a, uint b) { return a % b; }
+void __gust_rem_assign(inout float a, float b) { a = a % b; }
+void __gust_rem_assign(inout int a, int b) { a = a % b; }
+void __gust_rem_assign(inout uint a, uint b) { a = a % b; }
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint> op;
 [[vk::binding(1, 0)]] StructuredBuffer<uint> a;
@@ -338,6 +568,52 @@ void gpu_mismatch_uarith(uint3 id : SV_DispatchThreadID)
 bool __gust_not(bool value) { return !value; }
 int __gust_not(int value) { return ~value; }
 uint __gust_not(uint value) { return ~value; }
+
+float __gust_div(float a, float b) { return a / b; }
+int __gust_div(int a, int b) { return a / b; }
+uint __gust_div(uint a, uint b) { return a / b; }
+float2 __gust_div(float2 a, float2 b) { return a / b; }
+float2 __gust_div(float2 a, float b) { return a / b; }
+float3 __gust_div(float3 a, float3 b) { return a / b; }
+float3 __gust_div(float3 a, float b) { return a / b; }
+float4 __gust_div(float4 a, float4 b) { return a / b; }
+float4 __gust_div(float4 a, float b) { return a / b; }
+int2 __gust_div(int2 a, int2 b) { return a / b; }
+int2 __gust_div(int2 a, int b) { return a / b; }
+int4 __gust_div(int4 a, int4 b) { return a / b; }
+int4 __gust_div(int4 a, int b) { return a / b; }
+uint2 __gust_div(uint2 a, uint2 b) { return a / b; }
+uint2 __gust_div(uint2 a, uint b) { return a / b; }
+uint3 __gust_div(uint3 a, uint3 b) { return a / b; }
+uint3 __gust_div(uint3 a, uint b) { return a / b; }
+uint4 __gust_div(uint4 a, uint4 b) { return a / b; }
+uint4 __gust_div(uint4 a, uint b) { return a / b; }
+void __gust_div_assign(inout float a, float b) { a = a / b; }
+void __gust_div_assign(inout int a, int b) { a = a / b; }
+void __gust_div_assign(inout uint a, uint b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float2 b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float3 b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float4 b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int2 b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int4 b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint2 b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint3 b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint4 b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint b) { a = a / b; }
+
+float __gust_rem(float a, float b) { return a % b; }
+int __gust_rem(int a, int b) { return a % b; }
+uint __gust_rem(uint a, uint b) { return a % b; }
+void __gust_rem_assign(inout float a, float b) { a = a % b; }
+void __gust_rem_assign(inout int a, int b) { a = a % b; }
+void __gust_rem_assign(inout uint a, uint b) { a = a % b; }
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint> op;
 [[vk::binding(1, 0)]] StructuredBuffer<int> a;
@@ -413,6 +689,52 @@ bool __gust_not(bool value) { return !value; }
 int __gust_not(int value) { return ~value; }
 uint __gust_not(uint value) { return ~value; }
 
+float __gust_div(float a, float b) { return a / b; }
+int __gust_div(int a, int b) { return a / b; }
+uint __gust_div(uint a, uint b) { return a / b; }
+float2 __gust_div(float2 a, float2 b) { return a / b; }
+float2 __gust_div(float2 a, float b) { return a / b; }
+float3 __gust_div(float3 a, float3 b) { return a / b; }
+float3 __gust_div(float3 a, float b) { return a / b; }
+float4 __gust_div(float4 a, float4 b) { return a / b; }
+float4 __gust_div(float4 a, float b) { return a / b; }
+int2 __gust_div(int2 a, int2 b) { return a / b; }
+int2 __gust_div(int2 a, int b) { return a / b; }
+int4 __gust_div(int4 a, int4 b) { return a / b; }
+int4 __gust_div(int4 a, int b) { return a / b; }
+uint2 __gust_div(uint2 a, uint2 b) { return a / b; }
+uint2 __gust_div(uint2 a, uint b) { return a / b; }
+uint3 __gust_div(uint3 a, uint3 b) { return a / b; }
+uint3 __gust_div(uint3 a, uint b) { return a / b; }
+uint4 __gust_div(uint4 a, uint4 b) { return a / b; }
+uint4 __gust_div(uint4 a, uint b) { return a / b; }
+void __gust_div_assign(inout float a, float b) { a = a / b; }
+void __gust_div_assign(inout int a, int b) { a = a / b; }
+void __gust_div_assign(inout uint a, uint b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float2 b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float3 b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float4 b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int2 b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int4 b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint2 b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint3 b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint4 b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint b) { a = a / b; }
+
+float __gust_rem(float a, float b) { return a % b; }
+int __gust_rem(int a, int b) { return a % b; }
+uint __gust_rem(uint a, uint b) { return a % b; }
+void __gust_rem_assign(inout float a, float b) { a = a % b; }
+void __gust_rem_assign(inout int a, int b) { a = a % b; }
+void __gust_rem_assign(inout uint a, uint b) { a = a % b; }
+
 [[vk::binding(0, 0)]] StructuredBuffer<float> f;
 [[vk::binding(1, 0)]] RWStructuredBuffer<int> out;
 
@@ -464,6 +786,52 @@ bool __gust_not(bool value) { return !value; }
 int __gust_not(int value) { return ~value; }
 uint __gust_not(uint value) { return ~value; }
 
+float __gust_div(float a, float b) { return a / b; }
+int __gust_div(int a, int b) { return a / b; }
+uint __gust_div(uint a, uint b) { return a / b; }
+float2 __gust_div(float2 a, float2 b) { return a / b; }
+float2 __gust_div(float2 a, float b) { return a / b; }
+float3 __gust_div(float3 a, float3 b) { return a / b; }
+float3 __gust_div(float3 a, float b) { return a / b; }
+float4 __gust_div(float4 a, float4 b) { return a / b; }
+float4 __gust_div(float4 a, float b) { return a / b; }
+int2 __gust_div(int2 a, int2 b) { return a / b; }
+int2 __gust_div(int2 a, int b) { return a / b; }
+int4 __gust_div(int4 a, int4 b) { return a / b; }
+int4 __gust_div(int4 a, int b) { return a / b; }
+uint2 __gust_div(uint2 a, uint2 b) { return a / b; }
+uint2 __gust_div(uint2 a, uint b) { return a / b; }
+uint3 __gust_div(uint3 a, uint3 b) { return a / b; }
+uint3 __gust_div(uint3 a, uint b) { return a / b; }
+uint4 __gust_div(uint4 a, uint4 b) { return a / b; }
+uint4 __gust_div(uint4 a, uint b) { return a / b; }
+void __gust_div_assign(inout float a, float b) { a = a / b; }
+void __gust_div_assign(inout int a, int b) { a = a / b; }
+void __gust_div_assign(inout uint a, uint b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float2 b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float3 b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float4 b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int2 b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int4 b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint2 b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint3 b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint4 b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint b) { a = a / b; }
+
+float __gust_rem(float a, float b) { return a % b; }
+int __gust_rem(int a, int b) { return a % b; }
+uint __gust_rem(uint a, uint b) { return a % b; }
+void __gust_rem_assign(inout float a, float b) { a = a % b; }
+void __gust_rem_assign(inout int a, int b) { a = a % b; }
+void __gust_rem_assign(inout uint a, uint b) { a = a % b; }
+
 [[vk::binding(0, 0)]] StructuredBuffer<float> f;
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint> out;
 
@@ -514,6 +882,52 @@ void gpu_mismatch_cast_uint(uint3 id : SV_DispatchThreadID)
 bool __gust_not(bool value) { return !value; }
 int __gust_not(int value) { return ~value; }
 uint __gust_not(uint value) { return ~value; }
+
+float __gust_div(float a, float b) { return a / b; }
+int __gust_div(int a, int b) { return a / b; }
+uint __gust_div(uint a, uint b) { return a / b; }
+float2 __gust_div(float2 a, float2 b) { return a / b; }
+float2 __gust_div(float2 a, float b) { return a / b; }
+float3 __gust_div(float3 a, float3 b) { return a / b; }
+float3 __gust_div(float3 a, float b) { return a / b; }
+float4 __gust_div(float4 a, float4 b) { return a / b; }
+float4 __gust_div(float4 a, float b) { return a / b; }
+int2 __gust_div(int2 a, int2 b) { return a / b; }
+int2 __gust_div(int2 a, int b) { return a / b; }
+int4 __gust_div(int4 a, int4 b) { return a / b; }
+int4 __gust_div(int4 a, int b) { return a / b; }
+uint2 __gust_div(uint2 a, uint2 b) { return a / b; }
+uint2 __gust_div(uint2 a, uint b) { return a / b; }
+uint3 __gust_div(uint3 a, uint3 b) { return a / b; }
+uint3 __gust_div(uint3 a, uint b) { return a / b; }
+uint4 __gust_div(uint4 a, uint4 b) { return a / b; }
+uint4 __gust_div(uint4 a, uint b) { return a / b; }
+void __gust_div_assign(inout float a, float b) { a = a / b; }
+void __gust_div_assign(inout int a, int b) { a = a / b; }
+void __gust_div_assign(inout uint a, uint b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float2 b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float3 b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float4 b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int2 b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int4 b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint2 b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint3 b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint4 b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint b) { a = a / b; }
+
+float __gust_rem(float a, float b) { return a % b; }
+int __gust_rem(int a, int b) { return a % b; }
+uint __gust_rem(uint a, uint b) { return a % b; }
+void __gust_rem_assign(inout float a, float b) { a = a % b; }
+void __gust_rem_assign(inout int a, int b) { a = a % b; }
+void __gust_rem_assign(inout uint a, uint b) { a = a % b; }
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint> op;
 [[vk::binding(1, 0)]] StructuredBuffer<float> a;
@@ -578,7 +992,7 @@ void gpu_mismatch_float_op(uint3 id : SV_DispatchThreadID)
         }
         else
         {
-            out[i] = (a[i] / b[i]);
+            out[i] = __gust_div(a[i], b[i]);
         }
     }
 }
@@ -588,6 +1002,52 @@ void gpu_mismatch_float_op(uint3 id : SV_DispatchThreadID)
 bool __gust_not(bool value) { return !value; }
 int __gust_not(int value) { return ~value; }
 uint __gust_not(uint value) { return ~value; }
+
+float __gust_div(float a, float b) { return a / b; }
+int __gust_div(int a, int b) { return a / b; }
+uint __gust_div(uint a, uint b) { return a / b; }
+float2 __gust_div(float2 a, float2 b) { return a / b; }
+float2 __gust_div(float2 a, float b) { return a / b; }
+float3 __gust_div(float3 a, float3 b) { return a / b; }
+float3 __gust_div(float3 a, float b) { return a / b; }
+float4 __gust_div(float4 a, float4 b) { return a / b; }
+float4 __gust_div(float4 a, float b) { return a / b; }
+int2 __gust_div(int2 a, int2 b) { return a / b; }
+int2 __gust_div(int2 a, int b) { return a / b; }
+int4 __gust_div(int4 a, int4 b) { return a / b; }
+int4 __gust_div(int4 a, int b) { return a / b; }
+uint2 __gust_div(uint2 a, uint2 b) { return a / b; }
+uint2 __gust_div(uint2 a, uint b) { return a / b; }
+uint3 __gust_div(uint3 a, uint3 b) { return a / b; }
+uint3 __gust_div(uint3 a, uint b) { return a / b; }
+uint4 __gust_div(uint4 a, uint4 b) { return a / b; }
+uint4 __gust_div(uint4 a, uint b) { return a / b; }
+void __gust_div_assign(inout float a, float b) { a = a / b; }
+void __gust_div_assign(inout int a, int b) { a = a / b; }
+void __gust_div_assign(inout uint a, uint b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float2 b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float3 b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float4 b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int2 b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int4 b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint2 b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint3 b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint4 b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint b) { a = a / b; }
+
+float __gust_rem(float a, float b) { return a % b; }
+int __gust_rem(int a, int b) { return a % b; }
+uint __gust_rem(uint a, uint b) { return a % b; }
+void __gust_rem_assign(inout float a, float b) { a = a % b; }
+void __gust_rem_assign(inout int a, int b) { a = a % b; }
+void __gust_rem_assign(inout uint a, uint b) { a = a % b; }
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint> op;
 [[vk::binding(1, 0)]] StructuredBuffer<float> a;
@@ -655,6 +1115,52 @@ bool __gust_not(bool value) { return !value; }
 int __gust_not(int value) { return ~value; }
 uint __gust_not(uint value) { return ~value; }
 
+float __gust_div(float a, float b) { return a / b; }
+int __gust_div(int a, int b) { return a / b; }
+uint __gust_div(uint a, uint b) { return a / b; }
+float2 __gust_div(float2 a, float2 b) { return a / b; }
+float2 __gust_div(float2 a, float b) { return a / b; }
+float3 __gust_div(float3 a, float3 b) { return a / b; }
+float3 __gust_div(float3 a, float b) { return a / b; }
+float4 __gust_div(float4 a, float4 b) { return a / b; }
+float4 __gust_div(float4 a, float b) { return a / b; }
+int2 __gust_div(int2 a, int2 b) { return a / b; }
+int2 __gust_div(int2 a, int b) { return a / b; }
+int4 __gust_div(int4 a, int4 b) { return a / b; }
+int4 __gust_div(int4 a, int b) { return a / b; }
+uint2 __gust_div(uint2 a, uint2 b) { return a / b; }
+uint2 __gust_div(uint2 a, uint b) { return a / b; }
+uint3 __gust_div(uint3 a, uint3 b) { return a / b; }
+uint3 __gust_div(uint3 a, uint b) { return a / b; }
+uint4 __gust_div(uint4 a, uint4 b) { return a / b; }
+uint4 __gust_div(uint4 a, uint b) { return a / b; }
+void __gust_div_assign(inout float a, float b) { a = a / b; }
+void __gust_div_assign(inout int a, int b) { a = a / b; }
+void __gust_div_assign(inout uint a, uint b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float2 b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float3 b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float4 b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int2 b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int4 b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint2 b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint3 b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint4 b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint b) { a = a / b; }
+
+float __gust_rem(float a, float b) { return a % b; }
+int __gust_rem(int a, int b) { return a % b; }
+uint __gust_rem(uint a, uint b) { return a % b; }
+void __gust_rem_assign(inout float a, float b) { a = a % b; }
+void __gust_rem_assign(inout int a, int b) { a = a % b; }
+void __gust_rem_assign(inout uint a, uint b) { a = a % b; }
+
 [[vk::binding(0, 0)]] StructuredBuffer<uint> idx;
 [[vk::binding(1, 0)]] StructuredBuffer<uint> source;
 [[vk::binding(2, 0)]] RWStructuredBuffer<uint> sink;
@@ -716,6 +1222,52 @@ bool __gust_not(bool value) { return !value; }
 int __gust_not(int value) { return ~value; }
 uint __gust_not(uint value) { return ~value; }
 
+float __gust_div(float a, float b) { return a / b; }
+int __gust_div(int a, int b) { return a / b; }
+uint __gust_div(uint a, uint b) { return a / b; }
+float2 __gust_div(float2 a, float2 b) { return a / b; }
+float2 __gust_div(float2 a, float b) { return a / b; }
+float3 __gust_div(float3 a, float3 b) { return a / b; }
+float3 __gust_div(float3 a, float b) { return a / b; }
+float4 __gust_div(float4 a, float4 b) { return a / b; }
+float4 __gust_div(float4 a, float b) { return a / b; }
+int2 __gust_div(int2 a, int2 b) { return a / b; }
+int2 __gust_div(int2 a, int b) { return a / b; }
+int4 __gust_div(int4 a, int4 b) { return a / b; }
+int4 __gust_div(int4 a, int b) { return a / b; }
+uint2 __gust_div(uint2 a, uint2 b) { return a / b; }
+uint2 __gust_div(uint2 a, uint b) { return a / b; }
+uint3 __gust_div(uint3 a, uint3 b) { return a / b; }
+uint3 __gust_div(uint3 a, uint b) { return a / b; }
+uint4 __gust_div(uint4 a, uint4 b) { return a / b; }
+uint4 __gust_div(uint4 a, uint b) { return a / b; }
+void __gust_div_assign(inout float a, float b) { a = a / b; }
+void __gust_div_assign(inout int a, int b) { a = a / b; }
+void __gust_div_assign(inout uint a, uint b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float2 b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float3 b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float4 b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int2 b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int4 b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint2 b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint3 b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint4 b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint b) { a = a / b; }
+
+float __gust_rem(float a, float b) { return a % b; }
+int __gust_rem(int a, int b) { return a % b; }
+uint __gust_rem(uint a, uint b) { return a % b; }
+void __gust_rem_assign(inout float a, float b) { a = a % b; }
+void __gust_rem_assign(inout int a, int b) { a = a % b; }
+void __gust_rem_assign(inout uint a, uint b) { a = a % b; }
+
 [[vk::binding(0, 0)]] RWStructuredBuffer<Atomic<uint>> cell;
 
 bool compare(uint op, float a, float b)
@@ -758,6 +1310,52 @@ void gpu_mismatch_contend_exchange(uint3 id : SV_DispatchThreadID)
 bool __gust_not(bool value) { return !value; }
 int __gust_not(int value) { return ~value; }
 uint __gust_not(uint value) { return ~value; }
+
+float __gust_div(float a, float b) { return a / b; }
+int __gust_div(int a, int b) { return a / b; }
+uint __gust_div(uint a, uint b) { return a / b; }
+float2 __gust_div(float2 a, float2 b) { return a / b; }
+float2 __gust_div(float2 a, float b) { return a / b; }
+float3 __gust_div(float3 a, float3 b) { return a / b; }
+float3 __gust_div(float3 a, float b) { return a / b; }
+float4 __gust_div(float4 a, float4 b) { return a / b; }
+float4 __gust_div(float4 a, float b) { return a / b; }
+int2 __gust_div(int2 a, int2 b) { return a / b; }
+int2 __gust_div(int2 a, int b) { return a / b; }
+int4 __gust_div(int4 a, int4 b) { return a / b; }
+int4 __gust_div(int4 a, int b) { return a / b; }
+uint2 __gust_div(uint2 a, uint2 b) { return a / b; }
+uint2 __gust_div(uint2 a, uint b) { return a / b; }
+uint3 __gust_div(uint3 a, uint3 b) { return a / b; }
+uint3 __gust_div(uint3 a, uint b) { return a / b; }
+uint4 __gust_div(uint4 a, uint4 b) { return a / b; }
+uint4 __gust_div(uint4 a, uint b) { return a / b; }
+void __gust_div_assign(inout float a, float b) { a = a / b; }
+void __gust_div_assign(inout int a, int b) { a = a / b; }
+void __gust_div_assign(inout uint a, uint b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float2 b) { a = a / b; }
+void __gust_div_assign(inout float2 a, float b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float3 b) { a = a / b; }
+void __gust_div_assign(inout float3 a, float b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float4 b) { a = a / b; }
+void __gust_div_assign(inout float4 a, float b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int2 b) { a = a / b; }
+void __gust_div_assign(inout int2 a, int b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int4 b) { a = a / b; }
+void __gust_div_assign(inout int4 a, int b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint2 b) { a = a / b; }
+void __gust_div_assign(inout uint2 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint3 b) { a = a / b; }
+void __gust_div_assign(inout uint3 a, uint b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint4 b) { a = a / b; }
+void __gust_div_assign(inout uint4 a, uint b) { a = a / b; }
+
+float __gust_rem(float a, float b) { return a % b; }
+int __gust_rem(int a, int b) { return a % b; }
+uint __gust_rem(uint a, uint b) { return a % b; }
+void __gust_rem_assign(inout float a, float b) { a = a % b; }
+void __gust_rem_assign(inout int a, int b) { a = a % b; }
+void __gust_rem_assign(inout uint a, uint b) { a = a % b; }
 
 [[vk::binding(0, 0)]] RWStructuredBuffer<Atomic<uint>> cell;
 

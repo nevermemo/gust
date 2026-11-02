@@ -123,11 +123,11 @@ mod tests {
         assert!(text.contains("min-over-minus-one="), "{text}");
     }
 
-    /// Format 4 (m5.c2) only refuses more programs: the seeds that lost none keep their format-3 programs byte for
-    /// byte (the hashes of `seeds.txt` at format 3, read with the stamp as 3), and seed 4, which lost `s4_a26` and
-    /// others, does not.
+    /// Format 4 (m5.c2) refused the programs whose divisor slangc folds to zero, and only seed 4 lost any; format 5
+    /// (m6.dv) takes the refusal back, so every seed holds its format-3 programs again, byte for byte (the hashes of
+    /// `seeds.txt` at format 3, read with the stamp as 3), `s4_a26` among them.
     #[test]
-    fn format_4_keeps_the_format_3_programs_of_every_seed_but_4() {
+    fn format_5_holds_the_format_3_programs_of_every_seed() {
         let format_3 = [
             (1, 0xf156_6491_8988_01a2_u64),
             (2, 0x2bd1_d67b_b246_8d74),
@@ -141,7 +141,7 @@ mod tests {
         for (seed, hash) in format_3 {
             let batch = generate_batch(seed).unwrap();
             let same = batch_hash_as_format(&batch.programs, 3) == hash;
-            assert_eq!(same, seed != 4, "seed {seed}");
+            assert!(same, "seed {seed}");
         }
     }
 }

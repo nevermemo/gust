@@ -102,40 +102,27 @@ a backslash, a control character or a line break would end that string or the di
 so no such name is ever injected. A file named like the compile copy would also make
 Rust and Slang locations indistinguishable.
 
-**Known limitation: slangc refuses a zero divisor that it can fold, in code that never
-runs** (found by the differential test, slice m5.c2; a limitation, not a defect to fix
-in the translation). slangc 2026.20 evaluates an integer `/` or `%` at compile time when
-it can fold the divisor to a constant, and it rejects a zero with
-`error[E30002]: divide by zero`, in a branch that no invocation takes as well. The error
-comes through as an ordinary compile error of the kernel, mapped to its Rust line, so a
-valid Rust kernel can fail to compile. What it folds was measured on the shapes that GUST
-emits (each probe was a division under a branch keyed on a buffer value):
-
-- constants, the counter of a constant-bound `for` at its first iteration only (the
-  counter is 0; `v - 3`, zero only in the last iteration, compiles), and the locals that
-  are set from them, with wrapping arithmetic: `(v - 1) + 1` and `(v + 65536) * 65536`
-  fold to zero, and so do shifts of the counter;
-- a product with a zero factor, whatever the other factor is: `i * 0`, `0 * i` and
-  `int(a[i]) * 0` all fail, so a value read from a buffer does not help;
-- the difference of two identical operands that read no buffer: `i - i`,
-  `(i + 1) - (i + 1)` and `len - len` fail, and they compose (`i * (i - i)`, `0 / (i + 1)`),
-  while `a[i] - a[i]` is not folded;
-- a condition on a known value picks its branch: with `d = 5; if v < 1 { d = 0 }`, the
-  division `7 / d` fails, and `if v < 1 { 7 / v }` fails, but `if v > 0 { 7 / v }` and
-  `d = 5; if v > 0 { d = 0 }` compile;
-- it does not fold `!` and `^` (GUST lowers them to the calls `__gust_not` and
-  `__gust_xor`), `x & 0`, `x ^ x`, `x % 1`, `0 % x`, `i - 1`, `i + (0 - i)`, or anything
-  that is known only through a buffer read.
-
-The smallest reproducer is `for i in 0u32..4u32 { if !true { let r = i % i; } }` (emitted
-as `if (__gust_not(true)) { uint r = (i % i); }` in `for (var i = uint(0); i < end; i++)`
-and refused at the `%`). The workaround is a divisor that is non-zero by construction,
-for example `i % (i | 1)` (probed: it compiles, in the reproducer's own shape and in
-`let d = i; 7 / (d | 1)`), or a non-zero literal. A value read from a buffer is no
-workaround: `int(a[i]) * 0` is folded, and a plain `7 / a[i]` compiles but may be zero
-at run time, which is the integer edge case of D39 and KM-01 in
-[SEMANTICS](SEMANTICS.md). The differential generator refuses the programs that this model
-says slangc folds (DIFFTEST_FORMAT 4, [DIFFTEST](development/DIFFTEST.md)).
+**Retired limitation: slangc refused a zero divisor that it could fold, in code that never
+runs** (found by the differential test, slice m5.c2; cured by slice m6.dv, D74). slangc
+2026.20 evaluates an integer `/` or `%` at compile time when it can fold the divisor to a
+constant, and it rejects a zero with `error[E30002]: divide by zero`, in a branch that no
+invocation takes as well (the counter of an unrolled `for` at its first iteration, a
+product with a zero factor such as `i * 0`, the difference `i - i`, wrapping arithmetic,
+a condition on known values). The smallest reproducer is
+`for i in 0u32..4u32 { if !true { let r = i % i; } }`, which used to be refused at the `%`.
+The macro now lowers every `/` and `%` whose divisor is not a literal to the call
+`__gust_div(a, b)` or `__gust_rem(a, b)` (`/=` and `%=` to `__gust_div_assign` and
+`__gust_rem_assign`, with the place `inout`), a helper whose body is the plain operator and
+which slangc does not fold; the reproducer and the other shapes compile on WGSL and on
+SPIR-V (the Slangc-tier test `every_division_shape_slangc_folded_compiles_on_each_target`),
+and the differential generator no longer refuses them (DIFFTEST_FORMAT 5,
+[DIFFTEST](development/DIFFTEST.md)). A divisor that is zero at run time keeps the results
+of D39 and KM-01 to KM-03 in [SEMANTICS](SEMANTICS.md); that was measured with divisors read
+from a buffer. A closed zero that is live (`let zero = 0u32; 5 / zero`) goes through the helper and
+compiles, but no test executes it, and the differential generator discards it. What stays: a literal zero divisor
+is GUST's own error E0317 below, and slangc's behaviour for a zero divisor on the SPIR-V
+route is undefined in Slang and was not executed (the WGSL route, which the GPU tests run,
+is defined by WGSL).
 
 ## E01xx: module and item shape
 
@@ -511,7 +498,8 @@ Decision: D02.
 Slang makes integer division by a literal zero a compile error while rustc treats it as
 a runtime panic, so the boundary rejects it. Float division by zero is allowed.
 Reached through `#[gpu]`.
-Rejected: `x / 0u32`, `x % 0`.
+Rejected: `x / 0u32`, `x % 0`, `x /= 0`, `x %= 0`, and the same zeros negated or in parentheses (`x / (0)`,
+`x % -0`), including a zero a `macro_rules!` hands over in an invisible group.
 Write instead: guard the divisor before dividing.
 Decision: D22.
 

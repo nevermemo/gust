@@ -25,9 +25,17 @@ describes the intended behaviour and is not evidence.
   driver 610.88, slangc 2026.20, 2026-11-01 (the semantics were first measured on slangc 2026.13.1, 2026-10-24, and the
   Gpu suite passed again on 2026.20). The WGSL specification is the portable reference for this path. The
   contract does not extend to Slang's other targets: Slang itself leaves, for example, integer division by zero
-  undefined. The test `the_emitted_wgsl_uses_plain_operators_and_conversions` checks that division, remainder,
-  shifts, signed subtraction and multiplication, negation and the float-to-integer casts reach the WGSL as plain
-  operators and `i32()` / `u32()` conversions, in modules that name no matrix (a module that names `Mat2`, `Mat3` or
+  undefined. Every `/`, `%`, `/=` and `%=` whose divisor is not a literal lowers to the overloaded helper
+  `__gust_div` or `__gust_rem` (`__gust_div_assign` and `__gust_rem_assign` with the place `inout`, so it is
+  evaluated once), whose body is the plain operator, because slangc folds integer division and refuses a divisor that
+  folds to zero even in code that no invocation runs (D74, cured in slice m6.dv); slangc keeps each helper as a WGSL
+  function, so the WGSL calls `_gust_div_0(..)` and `_gust_rem_0(..)` where the operator stood, a literal divisor
+  stays a plain operator (a literal zero is rejected by the validator, E0317), and the results do not change
+  (`crates/gust-wgpu/tests/division.rs` compares them with a host reference and with KM-01 to KM-03). The test
+  `the_emitted_wgsl_uses_plain_operators_and_conversions` checks that shifts, signed subtraction and multiplication,
+  negation and the float-to-integer casts reach the WGSL as plain operators and `i32()` / `u32()` conversions, and that
+  the bodies of the division helpers are the plain `/` and `%` on the helper's own parameters, in modules that name
+  no matrix (a module that names `Mat2`, `Mat3` or
   `Mat4` lowers every `*` and `*=` to the overloaded helper `__gust_mul`, whose body is the same `*` for scalars and
   component-wise products and `mul` for a matrix product, and every unary `-` on a non-literal to `__gust_neg`, whose
   body is `-a` for scalars and vectors and `a * -1.0` for a matrix, because slangc's own `-m` is WGSL that naga
@@ -35,7 +43,8 @@ describes the intended behaviour and is not evidence.
   (a device that drops the sign of a zero, which Vulkan allows without `SignedZeroInfNanPreserve`, or flushes a
   subnormal in a multiply, may differ from the twin's sign flip: D39, measured in section 4); slangc keeps each
   helper as a WGSL function, so the WGSL of such a module calls `_gust_mul_0(..)` where the plain `*` stood, and the
-  WGSL of every other module is byte-identical; slangc's WGSL for a float vector `-v` is `vec3<f32>(0) - v`, so by
+  WGSL of every other module is byte-identical to what it was before that lowering, apart from the division helpers
+  above; slangc's WGSL for a float vector `-v` is `vec3<f32>(0) - v`, so by
   the IEEE rules a `+0` lane comes out `+0` where the twin gives `-0`, an edge-case difference left as it is (D39;
   not run on a GPU)); it does not check `+`, unsigned arithmetic or the float operators.
 - **CPU twin (exists).** In a test build (`cfg(test)` of the crate that defines the kernel, or `--cfg gust_dual`, D26)
@@ -116,7 +125,7 @@ describes the intended behaviour and is not evidence.
 - **Language subset.** 32-bit `f32`, `i32`, `u32`, `bool` and module structs of them (README, "Current subset"). Float
   arithmetic is `+ - * /`, comparisons and casts: the validator accepts no other method than `.len()`,
   `.global_id()` and the `Option` / `Result` helpers, so there is no `sqrt`, `fma` or trigonometry to bound.
-  The validator accepts `%` on floats (it rejects only an integer-literal zero as the right operand of `/` and `%`),
+  The validator accepts `%` on floats (it rejects only an integer-literal zero as the right operand of `/`, `%`, `/=` and `%=`),
   and no bound is stated for it.
 - **Independent references stay.** Tests of the translator keep an independent host reference as the expected value
   (D26); the twin is a third party in those tests, never the oracle.

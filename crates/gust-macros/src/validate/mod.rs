@@ -246,15 +246,18 @@ fn atomic_operation_name(path: &syn::ExprPath) -> Option<&'static str> {
 }
 
 /// Whether an expression is an integer literal with value zero, including a
-/// unary negation of one. Float zeros are excluded: floating-point division by
+/// unary negation, parentheses and a macro-expanded group around one (the spellings the emitter keeps as a plain
+/// operator, so a zero divisor never reaches slangc). Float zeros are excluded: floating-point division by
 /// zero is defined (it yields infinity/NaN), so only integer div/rem by zero is
 /// a portable-semantic hazard.
-fn is_literal_zero(expression: &syn::Expr) -> bool {
+pub(crate) fn is_literal_zero(expression: &syn::Expr) -> bool {
     match expression {
         syn::Expr::Lit(literal) => matches!(
             &literal.lit,
             syn::Lit::Int(value) if value.base10_digits().bytes().all(|digit| digit == b'0')
         ),
+        syn::Expr::Paren(paren) => is_literal_zero(&paren.expr),
+        syn::Expr::Group(group) => is_literal_zero(&group.expr),
         syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
             is_literal_zero(&unary.expr)
         }
@@ -1237,7 +1240,13 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_binary(&mut self, binary: &'ast syn::ExprBinary) {
-        let is_div_or_rem = matches!(binary.op, syn::BinOp::Div(_) | syn::BinOp::Rem(_));
+        let is_div_or_rem = matches!(
+            binary.op,
+            syn::BinOp::Div(_)
+                | syn::BinOp::Rem(_)
+                | syn::BinOp::DivAssign(_)
+                | syn::BinOp::RemAssign(_)
+        );
         if is_div_or_rem && is_literal_zero(&binary.right) {
             self.reject(
                 Code::DivisionByLiteralZero,

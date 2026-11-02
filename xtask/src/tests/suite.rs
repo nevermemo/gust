@@ -1,12 +1,12 @@
 use super::{Step, Suite};
 use crate::{
-    checks::{CPU_TESTS, REFLECTION_TESTS},
+    checks::{CPU_TESTS, GPU_SEMANTICS_TESTS, REFLECTION_TESTS},
     cpu_target::{Dirs, all_calls},
     verify::{RELEASE_SLANG_TESTS, VerifyMode, cargo_calls as mode_cargo_calls, example_run_args},
     workspace::EXAMPLES,
 };
 
-const UNIT: [Step; 12] = [
+const UNIT: [Step; 13] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
@@ -24,6 +24,7 @@ const UNIT: [Step; 12] = [
         "artifact::tests::",
     ]),
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "artifact"]),
+    Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "coretests_twin"]),
     Step::Cargo(&[
         "clippy",
         "--locked",
@@ -316,4 +317,61 @@ fn the_unit_suite_runs_the_gust_artifact_tests_with_the_count_guard() {
         "cargo test --locked -p gust --test artifact"
     );
     assert!(Suite::Unit.covers().contains("gust::artifact"));
+}
+
+#[test]
+fn the_unit_suite_runs_the_coretests_twin_test() {
+    // Pure (no slangc, no adapter): the transcribed Rust core test cases on the CPU twin against their literals.
+    let step = Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "coretests_twin"]);
+    for suite in [Suite::Unit, Suite::Slangc] {
+        assert_eq!(
+            suite.steps().iter().filter(|s| **s == step).count(),
+            1,
+            "{suite:?}"
+        );
+    }
+    assert_eq!(
+        step.label(),
+        "cargo test --locked -p gust --test coretests_twin"
+    );
+    assert!(Suite::Unit.covers().contains("coretests_twin"));
+    assert!(
+        Suite::Unit
+            .steps()
+            .iter()
+            .all(|s| !matches!(s, Step::RequireTool(_)))
+    );
+}
+
+#[test]
+fn check_feature_gpu_semantics_runs_the_gpu_coretests() {
+    // The GPU half of the coretests (m5.d2) runs where the other differential tests do; the Gpu suite runs every test
+    // file of gust-wgpu anyway, so this list is the only place that names the file for `check-feature`.
+    assert_eq!(
+        GPU_SEMANTICS_TESTS,
+        [
+            "semantics",
+            "numeric",
+            "option",
+            "result",
+            "loops",
+            "struct_assignment",
+            "mismatch",
+            "coretests",
+        ]
+    );
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    for test in GPU_SEMANTICS_TESTS {
+        let file = root
+            .join("crates/gust-wgpu/tests")
+            .join(format!("{test}.rs"));
+        assert!(
+            file.is_file(),
+            "{test}: crates/gust-wgpu/tests/{test}.rs does not exist"
+        );
+    }
+    assert!(
+        crate::checks::explain_check(Some("gpu-semantics")).is_ok(),
+        "gpu-semantics is explained"
+    );
 }

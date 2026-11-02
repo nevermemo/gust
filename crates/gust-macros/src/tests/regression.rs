@@ -3575,3 +3575,20 @@ fn a_struct_with_vector_fields_gets_storage_v2_asserts_and_its_descriptor_picks_
         "{text}"
     );
 }
+
+/// The scalar coretests transcription (m5.d3): the fixture the GPU and CPU-twin tests of m5.d1 and m5.d2 run.
+#[test]
+fn coretests_golden() {
+    let source =
+        translate_every_kernel(include_str!("../../../../tests/fixtures/coretests.rs")).unwrap();
+    assert_eq!(
+        source.matches("// ==== kernel ").count(),
+        5,
+        "the coretests fixture declares 5 kernels"
+    );
+    assert_golden(
+        &source,
+        "coretests.slang",
+        &include_str!("../../../../tests/fixtures/coretests.slang").replace("\r\n", "\n"),
+    );
+}

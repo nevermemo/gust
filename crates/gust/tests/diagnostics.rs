@@ -1554,3 +1554,33 @@ fn the_vectors_golden_compiles_to_wgsl_and_spirv() {
     }
     assert!(capabilities.contains(&6019), "{capabilities:?}");
 }
+
+/// The `coretests` golden compiles with the pinned slangc to both targets (m5.d3). The golden holds every kernel's
+/// source under a `// ==== kernel <name> ====` marker, each with its own prelude (so the whole file is not one
+/// Slang module); each section is compiled on its own for its `gpu_coretests_<name>` entry. The naga halves are
+/// not part of this test: the GPU test of m5.d2 builds the WGSL through wgpu.
+#[test]
+fn the_coretests_golden_compiles_to_wgsl_and_spirv() {
+    let golden = include_str!("../../../tests/fixtures/coretests.slang").replace("\r\n", "\n");
+    let sections: Vec<(&str, &str)> = golden
+        .split("// ==== kernel ")
+        .skip(1)
+        .map(|section| section.split_once(" ====\n").unwrap())
+        .collect();
+    let names: Vec<&str> = sections.iter().map(|(name, _)| *name).collect();
+    assert_eq!(names, ["ints", "uints", "floats", "bools", "casts"]);
+    for (name, section) in &sections {
+        let entry = format!("gpu_coretests_{name}");
+        let wgsl = slang::compile_source(section, &entry, Target::Wgsl).unwrap();
+        let wgsl = String::from_utf8(wgsl).unwrap();
+        assert!(wgsl.contains("@compute"), "{name}: {wgsl}");
+        let spirv = slang::compile_source(section, &entry, Target::Spirv).unwrap();
+        assert!(
+            spirv.len().is_multiple_of(4) && spirv.len() > 20,
+            "{name}: {} bytes",
+            spirv.len()
+        );
+        let magic = u32::from_le_bytes(spirv[..4].try_into().unwrap());
+        assert_eq!(magic, 0x0723_0203, "{name}: not SPIR-V");
+    }
+}

@@ -641,6 +641,14 @@ fn validate_function(
                 }
                 ParameterFlavor::Uniform => {
                     visitor.uniforms.insert(name.ident.to_string());
+                    // A constant buffer is read-only: a `mut` binding would let the twin's copy be written.
+                    if name.mutability.is_some() {
+                        visitor.reject(
+                            Code::UniformWholeValue,
+                            name,
+                            "a uniform parameter is read-only: declare it without `mut`",
+                        );
+                    }
                 }
                 ParameterFlavor::StorageReadWrite => {
                     visitor.resources.insert(name.ident.to_string());
@@ -1352,6 +1360,15 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_expr_field(&mut self, field: &'ast syn::ExprField) {
         // `params.scale` and `params.view.mul_vec4(p)` read one field of a uniform: the base is not a whole-value use.
         if self.is_uniform_parameter(&field.base) {
+            // `u.0` is the wrapper's own field: it reaches the whole struct (and the twin could write through it).
+            if matches!(field.member, syn::Member::Unnamed(_)) {
+                self.reject(
+                    Code::UniformWholeValue,
+                    field,
+                    "a uniform parameter is read one field at a time by name (`params.scale`); `.0` reaches the \
+                     whole struct",
+                );
+            }
             return;
         }
         visit::visit_expr_field(self, field);

@@ -1,8 +1,8 @@
 //! Backend-neutral typed dispatch surface (roadmap M2, slice m2.a).
 //!
-//! A `#[gpu]` kernel handle (a [`Kernel`]) gets generated `call`, `submit` and `dispatch` functions, except a kernel
-//! with a `Uniform<T>`/`ConstantBuffer<T>` parameter, which gets none of the three until the macro learns uniforms
-//! (slice m6.u2; the host types for them are here and in the backends); `call` turns
+//! A `#[gpu]` kernel handle (a [`Kernel`]) gets generated `call`, `submit` and `dispatch` functions, a kernel with a
+//! `Uniform<T>`/`ConstantBuffer<T>` parameter included (slice m6.u2; the host types for the uniform are here and in
+//! the backends); `call` turns
 //! typed buffer references into a [`Call`]: the kernel, the element count and one erased [`TypedDevice::Binding`] per
 //! storage or uniform parameter. This module holds only what that generated code and the backends share:
 //!

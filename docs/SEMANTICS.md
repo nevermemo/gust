@@ -78,29 +78,17 @@ describes the intended behaviour and is not evidence.
   assertions of its `Std140V1` offsets and size. A struct a uniform reaches is not also a storage element
   (GUST-E0207), holds no `Mat2` or `bool` (GUST-E0205), and is read one field at a time, never as a whole value
   (GUST-E0321). The twin runs the kernel with a copy of the value.
-A
-<<'A', <<'B',
-  `Std140V1`. A value is replaced by
-A
-  `Std140V1`. The macro refuses at compile time a struct whose constant-buffer layout has a gap before a field or a
-  tail (GUST-E0209), naming the explicit padding fields to write. A value is replaced by
-A
-<<'A', <<'B',
-- **Not executed by the twin.** Kernels with a `Uniform<T>` parameter (their typed call is m6.u2), indirect dispatch
-  and staged graphs stay GPU-only.
-A
-- **Not executed by the twin.** Indirect dispatch and staged graphs stay GPU-only.
   Its ABI is `Std140V1` (`std140-v1` in the generated host text): scalars, 2- and 4-wide vectors, 4x4 matrices and
   structs of them rounded up to 16 bytes. `T` must also be padding-free, because the upload copies the bytes of the
   Rust value and padding is uninitialised: `create_uniform` and `CpuDevice::uniform` refuse a padded `T` with a message
   that names the fix, explicit padding fields, and the twin also refuses a uniform parameter whose rule is not
-  `Std140V1`. A value is replaced by `HeadlessDevice::write_uniform` (`Queue::write_buffer`: after every earlier
-  submission, before the next, so all dispatches of one later submission see the last value) or, ordered among the
-  dispatches of one submission, by the copy node `StagedGraph::write_uniform` (a write of the uniform for the derived
-  edges and the hazard check).
-- **Not executed by the twin.** Kernels with a `Uniform<T>` parameter (their typed call is m6.u2), indirect dispatch
-  and staged graphs stay GPU-only. A kernel can opt out explicitly with `#[kernel(cpu = "unsupported")]` (D26).
-  The examples that use them carry kernel-level twin evidence only (exists, m3.e2): `staged-graph` and
+  `Std140V1`. The macro refuses at compile time a struct whose constant-buffer layout has a gap before a field or a
+  tail (GUST-E0209), naming the explicit padding fields to write. A value is replaced by
+  `HeadlessDevice::write_uniform` (`Queue::write_buffer`: after every earlier submission, before the next, so all
+  dispatches of one later submission see the last value) or, ordered among the dispatches of one submission, by the
+  copy node `StagedGraph::write_uniform` (a write of the uniform for the derived edges and the hazard check).
+- **Not executed by the twin.** Indirect dispatch and staged graphs stay GPU-only. A kernel can opt out explicitly with
+  `#[kernel(cpu = "unsupported")]` (D26). The examples that use them carry kernel-level twin evidence only (exists, m3.e2): `staged-graph` and
   `component-pool` run the twin of each of their kernels on the GPU's inputs to that kernel (read back where an earlier kernel produced them), and
   label each such test "kernel-level twin evidence; graph and indirect dispatch GPU-only". The graph, its derived
   dependency edges, the indirect launch that consumes the arguments and the pool growth are executed on the GPU alone,

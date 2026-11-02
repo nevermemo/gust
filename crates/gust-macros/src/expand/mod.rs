@@ -1212,7 +1212,8 @@ fn cpu_twin_items(
             }
             ParameterFlavor::Uniform => {
                 // The uniform is read once, by copy, and each invocation gets `Uniform(copy)`: the shadow body cannot
-                // write through it (`Uniform` has `Deref` only), like the GPU's read-only constant buffer.
+                // write through it, like the GPU's read-only constant buffer. `Uniform` has `Deref` only, and the
+                // validator refuses `mut` on the parameter and `.0` on it (GUST-E0321), the two ways around that.
                 let element = crate::slang::wrapper_element_type(&input.ty)?;
                 names.push(name.clone());
                 acquisitions.push(quote! {

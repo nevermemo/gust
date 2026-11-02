@@ -3806,6 +3806,18 @@ fn a_uniform_parameter_is_read_one_field_at_a_time_e0321() {
             Code::UniformWholeValue,
         );
     }
+    // The wrapper's own field `.0` reaches the whole struct (the twin could write through it), and a `mut`
+    // parameter would make the copy writable: both are E0321 too.
+    for body in [
+        "out[i] = u.0.a;",
+        "let p = u.0; out[i] = 1.0;",
+        "u.0.a = 5.0; out[i] = u.a;",
+    ] {
+        assert_rejected(&uniform_module(ok, body), Code::UniformWholeValue);
+    }
+    let mutable = uniform_module(ok, "out[i] = u.a;").replace("u: Uniform<S>", "mut u: Uniform<S>");
+    assert!(mutable.contains("mut u: Uniform<S>"), "{mutable}");
+    assert_rejected(&mutable, Code::UniformWholeValue);
     // `.len()` of a uniform stays E0306, and a local cannot shadow the parameter.
     assert_rejected(
         &uniform_module(ok, "out[i] = u.len() as f32;"),

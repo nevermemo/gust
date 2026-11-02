@@ -68,6 +68,10 @@ const CORE_ARTIFACT_TESTS: Step =
 /// literal, with the id guards. Pure: no slangc, no process, no GPU (the GPU half is `check-feature gpu-semantics`).
 const CORE_CORETESTS_TWIN: Step =
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "coretests_twin"]);
+/// The uniforms fixture (m6.u2) compiled with rustc and run on the CPU twin against a hand reference, with the
+/// `Std140V1` size and offsets of its structs. Pure: no slangc, no process, no GPU.
+const CORE_UNIFORMS_TWIN: Step =
+    Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "uniforms_twin"]);
 /// The off state of the `slang-runtime` feature (D44). The workspace build unifies the feature on (the examples and the
 /// self dev-dependencies ask for it), so these two calls, which build `gust` and `gust-wgpu` alone and without default
 /// features, are the only observers of the bridge's cfg attributes: they fail when something the precompiled path needs
@@ -193,7 +197,7 @@ impl Suite {
     pub(crate) fn covers(self) -> &'static str {
         match self {
             Self::Unit => {
-                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), clippy and check of gust and gust-wgpu without default features (the slang-runtime off state), the format check, clippy and tests of the harness crate tests/difftest (a workspace of its own; CI runs them in the job `difftest`, and `--skip-difftest` leaves them out of the `unit` and `slang` jobs), and the differential batch of seeds 1 to 4 in its CPU-only mode (64 generated kernels: an independent interpreter against the CPU twin, report.json judged by cargo xtask check-difftest); no external tools"
+                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), the uniforms_twin test (the uniforms fixture on the CPU twin against a hand reference), clippy and check of gust and gust-wgpu without default features (the slang-runtime off state), the format check, clippy and tests of the harness crate tests/difftest (a workspace of its own; CI runs them in the job `difftest`, and `--skip-difftest` leaves them out of the `unit` and `slang` jobs), and the differential batch of seeds 1 to 4 in its CPU-only mode (64 generated kernels: an independent interpreter against the CPU twin, report.json judged by cargo xtask check-difftest); no external tools"
             }
             Self::Cpu => {
                 "the production CPU target (GUST_PROFILE=cpu) on the fixture tests/cpu-target: the kernels build in release, run on gust::cpu::CpuDevice and equal independent host references; the binary holds no compiler, helper or GPU runtime; gust-wgpu refuses the profile; the cfg(test) and --cfg gust_dual builds keep one impl; the profile flips rebuild correctly; cargo only"
@@ -252,6 +256,7 @@ impl Suite {
             CORE_ARTIFACT_UNIT_TESTS,
             CORE_ARTIFACT_TESTS,
             CORE_CORETESTS_TWIN,
+            CORE_UNIFORMS_TWIN,
             OFF_STATE_CLIPPY,
             OFF_STATE_CHECK,
             DIFFTEST_FMT,

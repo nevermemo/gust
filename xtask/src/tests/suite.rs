@@ -8,7 +8,7 @@ use crate::{
 };
 use std::path::Path;
 
-const UNIT: [Step; 17] = [
+const UNIT: [Step; 18] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
@@ -27,6 +27,7 @@ const UNIT: [Step; 17] = [
     ]),
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "artifact"]),
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "coretests_twin"]),
+    Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "uniforms_twin"]),
     Step::Cargo(&[
         "clippy",
         "--locked",

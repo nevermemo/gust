@@ -1564,7 +1564,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 21] = [
+const PINNED_FIXTURES: [&str; 22] = [
     "gpupod-missing",
     "gpupod-present",
     "kernel-cpu-bad-value",
@@ -1580,6 +1580,7 @@ const PINNED_FIXTURES: [&str; 21] = [
     "profile-native-no-manifest",
     "profile-unknown",
     "reserved-gust-prefix",
+    "typed-call-buffer-for-uniform",
     "typed-call-cpu-target",
     "typed-call-kind-mismatch",
     "typed-call-mismatch",

@@ -153,6 +153,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "typed-call-buffer-for-uniform"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "typed-call-cpu-target"
 version = "0.0.0"
 dependencies = [

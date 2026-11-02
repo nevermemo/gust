@@ -356,7 +356,7 @@ Decision: D17 (M6 plan R1-A, m6.a1 review).
 ### GUST-E0209 implicit padding in a uniform struct
 
 A struct a uniform reaches has a constant-buffer layout in which every struct is rounded up to 16 bytes (a nested struct also starts at a multiple of 16), so fields that are padding-free in Rust can still leave a gap before a field or a tail. GUST never inserts padding: the upload copies the bytes of the Rust value, and padding bytes are uninitialised. The message names the field or struct and the bytes of explicit padding to write.
-Reached through `#[gpu]`. A gap or tail that `#[repr(C)]` has too is GUST-E0208 first. A struct with a field type the macro cannot see into is left to the `const` assertions of the expansion, which fail compilation instead.
+Reached through `#[gpu]`. A gap that a field's own alignment causes (and so `#[repr(C)]` has too) is GUST-E0208 first, as is a tail past the largest field alignment; a gap caused only by the 16-byte alignment of a nested struct, and a tail that only the rounding up to 16 causes, are GUST-E0209. A struct with a field type the macro cannot see into is left to the `const` assertions of the expansion, which fail compilation instead.
 Rejected: `struct Params { a: f32 }` (ends at byte 4, a constant buffer rounds it up to 16), `struct Params { a: f32, b: f32, c: f32 }`, `struct Params { a: f32, inner: Inner }` where `Inner` is four `f32` (`inner` would sit at byte 16, 12 bytes after `a` ends), each when a `Uniform<Params>` parameter reaches it. The same structs are fine as storage elements.
 Write instead: explicit padding fields, `struct Params { a: f32, pad0: f32, pad1: f32, pad2: f32 }`, or order the fields so that whole 16-byte rows are filled.
 Decision: D17, D40 (M6 plan 2.3, F7).
@@ -543,7 +543,7 @@ Decision: D02.
 
 A uniform parameter is read one field at a time. Copying or passing the whole struct out of a constant buffer is the construct that crashes slangc on WGSL, and the CPU twin would accept what the GPU cannot compile.
 Reached through `#[gpu]`.
-Rejected: `*params`, `let p = params;`, `(params)` alone, `params` as a function argument. `params.len()` is GUST-E0306, and a helper taking a uniform is GUST-E0111.
+Rejected: `*params`, `let p = params;`, `(params)` alone, `params` as a function argument, `params.0` (the wrapper's own field, which reaches the whole struct), and `mut params` (a constant buffer is read-only). `params.len()` is GUST-E0306, and a helper taking a uniform is GUST-E0111.
 Write instead: read the fields, `params.scale`, `params.view.mul_vec4(p)`, or copy a field into a local.
 Decision: D17, D40 (M6 plan 2.3, F7).
 

@@ -1,4 +1,4 @@
-//! Uniform parameters (slice m6.m2's successor m6.u2): which module structs a constant buffer reaches, the `Std140V1`
+//! Uniform parameters (slice m6.u2): which module structs a constant buffer reaches, the `Std140V1`
 //! layout the macro computes for them, and the checks that keep a Rust struct and a Slang constant buffer one layout.
 //!
 //! The macro has no type information, so everything here is by name, like [`crate::math_types`]. A struct is

@@ -106,7 +106,8 @@ Do not wait for Codex during normal local swarm work.
   Test builds may contain both pipelines through `cfg(test)` or `--cfg gust_dual`,
   never through a Cargo feature (D26). Shadow bodies execute only under the
   semantics contract (D22, `docs/SEMANTICS.md`): since M3 they run as CPU twins in
-  test and dual builds, and in no production build. Independent host references stay
+  test and dual builds, and in no production build except the `cpu` target (D51), whose
+  runtime they are. Independent host references stay
   required for semantics fixtures; a twin assertion is added to them and to the GPU
   assertion, never in place of either, and is never GPU evidence.
 - Workflow commands live in `cargo xtask`; do not add shell or PowerShell scripts

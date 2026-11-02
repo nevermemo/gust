@@ -46,7 +46,7 @@ jobs:
       - name: Dual test build
         # `--cfg gust_dual` (D26): fmt and clippy of tests/dual, the workspace built with the cfg, and the cross-crate
         # proof E1-E3. Cargo only; the examples' GPU runs of the full mode stay local.
-        run: cargo xtask check-dual --check-only
+        run: cargo --locked xtask check-dual --check-only
 
   msrv:
     # Measures the declared minimum Rust version (Cargo.toml rust-version, D30): compiles every
@@ -78,7 +78,7 @@ jobs:
       - name: Install Rust
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
       - name: Production CPU target
-        run: cargo xtask check-cpu-target
+        run: cargo --locked xtask check-cpu-target
 
   difftest:
     # The differential test harness (tests/difftest, slice m5.c2, plan M5 R1-13), CPU side: a separate workspace
@@ -246,7 +246,7 @@ jobs:
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy --target wasm32-unknown-unknown
       - name: Feature guard (webgpu is wasm32 only)
         # `cargo tree -e features`: the wgpu `webgpu` feature is on for wasm32 and not for the host (no browser needed).
-        run: cargo xtask check-web --tree-only
+        run: cargo --locked xtask check-web --tree-only
       - name: Clippy on wasm32 (strict web profile)
         env:
           GUST_PROFILE: web

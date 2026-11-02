@@ -1,14 +1,14 @@
 //! Backend-neutral typed dispatch surface (roadmap M2, slice m2.a).
 //!
-//! A `#[gpu]` kernel handle (a [`Kernel`]) gets generated `call`, `submit` and `dispatch` functions, except a kernel
-//! with a `Uniform<T>`/`ConstantBuffer<T>` parameter, which gets none of the three until the macro learns uniforms
-//! (slice m6.u2; the host types for them are here and in the backends); `call` turns
+//! A `#[gpu]` kernel handle (a [`Kernel`]) gets generated `call`, `submit` and `dispatch` functions, a kernel with a
+//! `Uniform<T>`/`ConstantBuffer<T>` parameter included (slice m6.u2; the host types for the uniform are here and in
+//! the backends); `call` turns
 //! typed buffer references into a [`Call`]: the kernel, the element count and one erased [`TypedDevice::Binding`] per
 //! storage or uniform parameter. This module holds only what that generated code and the backends share:
 //!
 //! - [`TypedDevice`]: extension of [`Device`] that names the erased, `Copy` binding of one device. [`Device`] itself is
 //!   unchanged, so existing backends compile as before.
-//! - [`Run<K, N>`]: the executable hook. A device runs kernel `K` (with `N` storage parameters) when it implements
+//! - [`Run<K, N>`]: the executable hook. A device runs kernel `K` (with `N` resource parameters) when it implements
 //!   `Run<K, N>`. A GPU backend implements it once for every `K` (a blanket impl); a CPU backend implements it per
 //!   kernel, next to the body it executes. `K: Kernel` exposes only a descriptor, so generic code cannot reach a body
 //!   through `K` itself.
@@ -504,10 +504,10 @@ impl<K: Kernel, const N: usize> Described<K, N> {
 }
 
 impl KernelDescriptor {
-    /// Number of `Storage` parameters (the ones a typed call binds).
+    /// Number of `Storage` parameters (a typed call binds the uniform parameters too).
     ///
     /// Not part of the stable surface: `#[gpu]` expansions use it in a constant assertion that the generated
-    /// typed call takes as many arguments as the descriptor has storage parameters.
+    /// typed call takes as many arguments as the descriptor has storage and uniform parameters.
     #[doc(hidden)]
     pub const fn storage_parameter_count(&self) -> usize {
         let mut index = 0;
@@ -1655,7 +1655,7 @@ mod tests {
         );
     }
 
-    // N is the storage-parameter count: zero for a kernel without storage parameters.
+    // N is the parameter count (storage and uniform): zero for a kernel without resource parameters.
     #[test]
     fn a_kernel_without_storage_parameters_builds_an_empty_call() {
         let call = Nothing::call::<RecordingDevice>(7);

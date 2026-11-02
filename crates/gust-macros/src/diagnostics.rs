@@ -110,8 +110,17 @@ codes! {
     ReservedTypeName = 203 => "GUST-E0203";
     /// A 3-wide vector or a `Mat3` as a struct field or a resource element.
     ThreeWideInBuffer = 204 => "GUST-E0204";
+    /// A `Mat2` or a `bool` in a struct that a uniform reaches: neither has a constant-buffer layout a Rust type
+    /// matches.
+    UniformFieldType = 205 => "GUST-E0205";
+    /// A `Uniform<T>` or `ConstantBuffer<T>` parameter whose `T` is not a struct of the module.
+    UniformElement = 206 => "GUST-E0206";
+    /// A struct reachable from both a uniform parameter and a storage element.
+    UniformAndStorageStruct = 207 => "GUST-E0207";
     /// A struct whose fields leave implicit padding, so it cannot be a `GpuPod` type.
     ImplicitPadding = 208 => "GUST-E0208";
+    /// A struct that a uniform reaches whose constant-buffer layout has a gap or a tail.
+    UniformPadding = 209 => "GUST-E0209";
 
     // E03xx: expressions and calls.
     /// A CPU-only library or type name.
@@ -154,6 +163,8 @@ codes! {
     LetNeedsIdentifier = 319 => "GUST-E0319";
     /// `let .. else`.
     LetElse = 320 => "GUST-E0320";
+    /// A uniform parameter used as a whole value: `*params`, `let p = params;`, `params` as an argument.
+    UniformWholeValue = 321 => "GUST-E0321";
     /// `*=` on a place that contains a call, in a module that names a matrix (the place would be evaluated twice).
     MulAssignPlace = 323 => "GUST-E0323";
     /// A qualified path to a math type or one of its constructors, such as `super::Mat4` or `gust::math::Vec4::new`.

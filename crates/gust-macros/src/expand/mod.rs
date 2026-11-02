@@ -2,6 +2,7 @@ use std::{collections::HashMap, path::Path};
 
 use proc_macro2::TokenStream;
 use quote::{ToTokens, format_ident, quote, quote_spanned};
+use syn::ext::IdentExt as _;
 
 use crate::{
     diagnostics::{self, Code},
@@ -117,13 +118,36 @@ fn expand_in(
     let mut generated = Vec::new();
     let mut descriptor_paths = Vec::new();
 
+    // The structs a constant buffer reaches are `#[repr(C, align(16))]` and carry the `Std140V1` assertions (D57); the
+    // validator guarantees no struct is also a storage element.
+    let original_items = &original_module
+        .content
+        .as_ref()
+        .expect("validated inline module")
+        .1;
+    let uniform_structs = crate::uniform::reach(original_items)?.uniform;
+    let structs_by_name = crate::uniform::module_structs(original_items);
     for item in items.iter_mut() {
         let syn::Item::Struct(item) = item else {
             continue;
         };
-        item.attrs.push(syn::parse_quote!(#[repr(C)]));
+        let name = item.ident.unraw().to_string();
+        if uniform_structs.contains(&name) {
+            item.attrs.push(syn::parse_quote!(#[repr(C, align(16))]));
+        } else {
+            item.attrs.push(syn::parse_quote!(#[repr(C)]));
+        }
         item.attrs.push(syn::parse_quote!(#[derive(Clone, Copy)]));
-        generated.push(gpu_pod_impl(item)?);
+        let rules = if uniform_structs.contains(&name) {
+            PodRules::Std140(crate::uniform::std140_struct(
+                structs_by_name[&name],
+                &structs_by_name,
+                0,
+            ))
+        } else {
+            PodRules::Storage
+        };
+        generated.push(gpu_pod_impl(item, &rules)?);
     }
 
     for item in items.iter_mut() {
@@ -739,6 +763,8 @@ struct ParameterFacts {
     binding: Option<u32>,
     /// The element type of a storage parameter.
     element: Option<syn::Type>,
+    /// The struct type of a uniform parameter.
+    uniform_element: Option<syn::Type>,
 }
 
 fn parameter_facts(
@@ -782,12 +808,18 @@ fn parameter_facts(
             } else {
                 None
             };
+            let uniform_element = if flavor == ParameterFlavor::Uniform {
+                Some(crate::slang::wrapper_element_type(&input.ty)?.clone())
+            } else {
+                None
+            };
             Ok(ParameterFacts {
                 name: crate::slang::emit_ident(&pattern.ident),
                 rust_type: input.ty.to_token_stream().to_string(),
                 flavor,
                 binding,
                 element,
+                uniform_element,
             })
         })
         .collect()
@@ -805,6 +837,7 @@ fn parameter_descriptors(
                 flavor,
                 binding,
                 element,
+                uniform_element,
             } = fact;
             let (kind, access) = match flavor {
                 ParameterFlavor::Invocation => (
@@ -834,11 +867,11 @@ fn parameter_descriptors(
                 }
                 None => quote!(None),
             };
-            let resource_layout = match element {
+            let resource_layout = match (element, uniform_element) {
                 // StorageV1 when the element is scalars and padding-free structs of them, StorageV2 when it holds
                 // vectors or matrices. The element is named once, so a type that is no `GpuPod` still reports one
                 // E0277.
-                Some(element) => quote!(Some({
+                (Some(element), _) => quote!(Some({
                     const __GUST_ELEMENT: ::gust::TypeLayout = <#element as ::gust::GpuPod>::LAYOUT;
                     if __GUST_ELEMENT.is_storage_v1() {
                         ::gust::ResourceLayout::storage_v1(__GUST_ELEMENT)
@@ -846,7 +879,12 @@ fn parameter_descriptors(
                         ::gust::ResourceLayout::storage_v2(__GUST_ELEMENT)
                     }
                 })),
-                None => quote!(None),
+                // A uniform is `Std140V1` always. Whether the type really is one is asserted next to the descriptor
+                // (`element_layout_assertions`), with the same single E0277 for a type that is no `GpuPod`.
+                (None, Some(element)) => quote!(Some(::gust::ResourceLayout::std140_v1(
+                    <#element as ::gust::GpuPod>::LAYOUT
+                ))),
+                (None, None) => quote!(None),
             };
             Ok(quote! {
                 ::gust::ParameterDescriptor {
@@ -862,31 +900,32 @@ fn parameter_descriptors(
         .collect()
 }
 
-/// One storage parameter of a kernel, as the typed call needs it.
-struct StorageArgument {
+/// One storage or uniform parameter of a kernel, as the typed call needs it.
+struct ResourceArgument {
     name: syn::Ident,
     element: syn::Type,
     access: TokenStream,
+    /// `::gust::kind::Storage` or `::gust::kind::Uniform`: the `Kind` the bound of the generated call names.
+    kind: TokenStream,
 }
 
 /// The typed host API of one kernel (roadmap M2): `call`, `submit` and `dispatch` on the handle, plus a
 /// non-generic constant assertion that the generated argument count equals the descriptor's number of
-/// storage parameters (so `cargo check` catches a mismatch, not only monomorphisation).
+/// storage plus uniform parameters (so `cargo check` catches a mismatch, not only monomorphisation).
 ///
-/// Each storage parameter becomes one `impl Into<Arg<'r, Ri>>` argument, in declaration order, under its
+/// Each storage or uniform parameter becomes one `impl Into<Arg<'r, Ri>>` argument, in declaration order, under its
 /// own name. `Ri` must be a `gust::Resource` of the parameter's element type and of the device of the
-/// first argument; every `Ri` carries `'r` (S0 decision A: `Arg<'r, Ri>` needs `Ri: 'r`, and rustc does not
-/// infer that for a function signature). Generated value names carry the reserved `__gust_` prefix (the
-/// validator rejects it in user code) and the generic parameters carry `__Gust`, so a user parameter named
-/// `element_count` or `device`, or an element type named `R0` or `D`, cannot collide with them.
+/// first argument, and of the parameter's kind: `Kind = ::gust::kind::Storage` for a buffer and `Kind =
+/// ::gust::kind::Uniform` for a uniform (D57), so a `GpuUniform` where a buffer is expected, or the other way round,
+/// is a compile error and not a refusal at submit. Every `Ri` carries `'r` (S0 decision A: `Arg<'r, Ri>` needs
+/// `Ri: 'r`, and rustc does not infer that for a function signature). Generated value names carry the reserved
+/// `__gust_` prefix (the validator rejects it in user code) and the generic parameters carry `__Gust`, so a user
+/// parameter named `element_count` or `device`, or an element type named `R0` or `D`, cannot collide with them.
 ///
-/// A kernel with a `Uniform` parameter gets none of this: the runtime rejects non-storage resources
-/// (`gust_wgpu::Error::UnsupportedParameter`), so a typed call could never run. The handle and its
-/// descriptor are unchanged. A plain value parameter never reaches this function: the emitter rejects it
-/// at expansion (GUST-E0801), so only uniform parameters take that path.
+/// A plain value parameter never reaches this function: the emitter rejects it at expansion (GUST-E0801).
 ///
-/// Returns the doc text for the kernel's handle struct (users read it on `kernel_name`; it states both
-/// rules above for the user) and the items.
+/// Returns the doc text for the kernel's handle struct (users read it on `kernel_name`; it states the rules above
+/// for the user) and the items.
 fn typed_call_items(
     kernel: &syn::Ident,
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
@@ -900,56 +939,69 @@ fn typed_call_items(
         let syn::Pat::Ident(pattern) = input.pat.as_ref() else {
             continue;
         };
-        let access = match crate::slang::parameter_flavor(&input.ty) {
+        let (access, kind) = match crate::slang::parameter_flavor(&input.ty) {
             ParameterFlavor::Invocation => continue,
-            ParameterFlavor::StorageRead => quote!(::gust::Access::ReadOnly),
-            ParameterFlavor::StorageReadWrite => quote!(::gust::Access::ReadWrite),
-            // `Value` is defensive: the emitter rejects a plain value parameter (GUST-E0801) before
-            // this runs, so in practice only a uniform parameter gets here.
-            ParameterFlavor::Uniform | ParameterFlavor::Value => {
+            ParameterFlavor::StorageRead => (
+                quote!(::gust::Access::ReadOnly),
+                quote!(::gust::kind::Storage),
+            ),
+            ParameterFlavor::StorageReadWrite => (
+                quote!(::gust::Access::ReadWrite),
+                quote!(::gust::kind::Storage),
+            ),
+            // A uniform is read-only for the kernel and has the kind `Uniform`: a `GpuUniform` is the only resource
+            // that fits its bound, and a `GpuBuffer` the only one that fits a storage bound.
+            ParameterFlavor::Uniform => (
+                quote!(::gust::Access::ReadOnly),
+                quote!(::gust::kind::Uniform),
+            ),
+            // `Value` is defensive: the emitter rejects a plain value parameter (GUST-E0801) before this runs.
+            ParameterFlavor::Value => {
                 return Ok((
                     format!(
-                        "Handle of the GUST kernel `{kernel}`. It has a uniform parameter, so it has no typed \
-                         `call`, `submit` or `dispatch` (a call such as `{kernel}::call(..)` is error E0599); \
-                         the typed host API covers storage parameters only."
+                        "Handle of the GUST kernel `{kernel}`. It has a plain value parameter, which no Slang compute \
+                         entry point accepts, so it has no typed `call`, `submit` or `dispatch`."
                     ),
                     TokenStream::new(),
                 ));
             }
         };
-        arguments.push(StorageArgument {
+        arguments.push(ResourceArgument {
             name: pattern.ident.clone(),
             element: crate::slang::wrapper_element_type(&input.ty)?.clone(),
             access,
+            kind,
         });
     }
     let total = arguments.len();
     let count = proc_macro2::Literal::usize_unsuffixed(total);
     let count_message = format!(
-        "`{kernel}`: the generated typed call takes a different number of arguments than its descriptor has storage parameters"
+        "`{kernel}`: the generated typed call takes a different number of arguments than its descriptor has storage \
+         plus uniform parameters"
     );
     let names: Vec<String> = arguments.iter().map(|a| a.name.to_string()).collect();
     let order = if names.is_empty() {
-        "no storage arguments".to_owned()
+        "no resource arguments".to_owned()
     } else {
         format!(
-            "then the storage arguments in declaration order: {}",
+            "then the storage and uniform arguments in declaration order: {}",
             names.join(", ")
         )
     };
     let turbofish = if arguments.is_empty() {
-        " The kernel has no storage arguments to infer the device from, so name it: `call::<Device>(..)`."
+        " The kernel has no resource arguments to infer the device from, so name it: `call::<Device>(..)`."
     } else {
         ""
     };
     let call_doc = format!(
-        "Typed call of `{kernel}`: `__gust_element_count`, {order}. Each storage argument is a reference to a \
+        "Typed call of `{kernel}`: `__gust_element_count`, {order}. A storage argument is a reference to a \
          buffer of the kernel's element type, optionally wrapped in `gust::Independent` to let its length \
-         differ from the element count.{turbofish}"
+         differ from the element count; a uniform argument is a reference to a uniform of the kernel's struct \
+         (it has no length).{turbofish}"
     );
     let handle_doc = format!(
         "Handle of the GUST kernel `{kernel}`, with the typed host API `call`, `submit` and `dispatch` \
-         (storage parameters only: a kernel with a uniform parameter has none of them).{turbofish} \
+         (one argument per storage buffer or uniform parameter, in parameter order).{turbofish} \
          Under `cfg(test)` of the crate that defines the kernel, or `--cfg gust_dual`, the kernel also runs on \
          `gust::cpu::CpuDevice` (its CPU twin), unless `#[kernel(cpu = \"unsupported\")]`. Under \
          `GUST_PROFILE=cpu` it runs on `gust::cpu::CpuDevice` in every build of the crate."
@@ -962,7 +1014,9 @@ fn typed_call_items(
 
     let assertion = quote! {
         const _: () = ::core::assert!(
-            <#kernel as ::gust::Kernel>::DESCRIPTOR.storage_parameter_count() == #count,
+            <#kernel as ::gust::Kernel>::DESCRIPTOR.storage_parameter_count()
+                + <#kernel as ::gust::Kernel>::DESCRIPTOR.uniform_parameter_count()
+                == #count,
             #count_message
         );
     };
@@ -1023,14 +1077,14 @@ fn typed_call_items(
         .zip(&resources)
         .enumerate()
         .map(|(index, (argument, resource))| {
-            let element = &argument.element;
+            let (element, kind) = (&argument.element, &argument.kind);
             // Spanned on the parameter, so rustc's "required by this bound" note points at the
             // kernel parameter the bound belongs to, not at `#[gpu]`.
             let span = argument.name.span();
             if index == 0 {
-                quote_spanned!(span=> #resource: ::gust::Resource<Element = #element> + 'r)
+                quote_spanned!(span=> #resource: ::gust::Resource<Element = #element, Kind = #kind> + 'r)
             } else {
-                quote_spanned!(span=> #resource: ::gust::Resource<Element = #element, Device = #device> + 'r)
+                quote_spanned!(span=> #resource: ::gust::Resource<Element = #element, Device = #device, Kind = #kind> + 'r)
             }
         })
         .collect();
@@ -1107,9 +1161,9 @@ fn typed_call_items(
 /// emitted code. `gust/src/cpu.rs` holds a hand-written impl of this exact shape in its tests, which is the
 /// specification.
 ///
-/// Nothing is emitted for `cpu = "unsupported"` and for a kernel with a uniform parameter, which has no typed call
-/// to run (see [`typed_call_items`]). Locals take the user's parameter names (the validator reserves `__gust_`, so
-/// they cannot collide with `__gust_call` and `__gust_id`).
+/// Nothing is emitted for `cpu = "unsupported"`. A uniform parameter is read by copy (`::gust::cpu::read_uniform`) and
+/// passed as `::gust::Uniform(copy)` (D57). Locals take the user's parameter names (the validator reserves `__gust_`,
+/// so they cannot collide with `__gust_call` and `__gust_id`).
 fn cpu_twin_items(
     kernel: &syn::Ident,
     typecheck: &syn::Ident,
@@ -1156,7 +1210,18 @@ fn cpu_twin_items(
                 });
                 arguments.push(quote!(::gust::StorageMut::new(&mut #name)));
             }
-            ParameterFlavor::Uniform | ParameterFlavor::Value => return Ok(TokenStream::new()),
+            ParameterFlavor::Uniform => {
+                // The uniform is read once, by copy, and each invocation gets `Uniform(copy)`: the shadow body cannot
+                // write through it, like the GPU's read-only constant buffer. `Uniform` has `Deref` only, and the
+                // validator refuses `mut` on the parameter and `.0` on it (GUST-E0321), the two ways around that.
+                let element = crate::slang::wrapper_element_type(&input.ty)?;
+                names.push(name.clone());
+                acquisitions.push(quote! {
+                    let #name = ::gust::cpu::read_uniform::<#element>(#name, #label)?;
+                });
+                arguments.push(quote!(::gust::Uniform(#name)));
+            }
+            ParameterFlavor::Value => return Ok(TokenStream::new()),
         }
     }
     let count = proc_macro2::Literal::usize_unsuffixed(names.len());
@@ -1204,10 +1269,10 @@ fn type_text(ty: &syn::Type) -> String {
 /// is the Rust size, so a hand-written `GpuPod` impl that lies is a compile error here. It covers everything the
 /// runtime checks (`create_typed_buffer`, dispatch validation) cover. The assertion reads the
 /// descriptor rather than naming `GpuPod` again, so an element that is no `GpuPod` still reports the one
-/// E0277 the descriptor already gives (the `gpupod-missing` fixture expects exactly one). A kernel with a
-/// uniform parameter is covered too (it has no typed call, but its storage buffers are still created from these
-/// elements). The message is a static string (const panics cannot format) that names the element, the parameter
-/// and the kernel.
+/// E0277 the descriptor already gives (the `gpupod-missing` fixture expects exactly one). A uniform parameter gets the
+/// same assertion for `Std140V1` (its rules, the Rust size and alignment of the struct, and
+/// `TypeLayout::is_std140_v1`). The message is a static string (const panics cannot format) that names the element,
+/// the parameter and the kernel.
 fn element_layout_assertions(
     kernel: &syn::Ident,
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
@@ -1220,9 +1285,12 @@ fn element_layout_assertions(
         let syn::Pat::Ident(pattern) = input.pat.as_ref() else {
             continue;
         };
+        let flavor = crate::slang::parameter_flavor(&input.ty);
         if !matches!(
-            crate::slang::parameter_flavor(&input.ty),
-            ParameterFlavor::StorageRead | ParameterFlavor::StorageReadWrite
+            flavor,
+            ParameterFlavor::StorageRead
+                | ParameterFlavor::StorageReadWrite
+                | ParameterFlavor::Uniform
         ) {
             continue;
         }
@@ -1230,12 +1298,39 @@ fn element_layout_assertions(
         // `assert!` reads its message as a format string.
         let text = type_text(element).replace('{', "{{").replace('}', "}}");
         let parameter = &pattern.ident;
+        // `parameter_descriptors` emits one descriptor per input, in order, so `index` is this parameter's.
+        let index = proc_macro2::Literal::usize_unsuffixed(index);
+        if flavor == ParameterFlavor::Uniform {
+            let message = format!(
+                "GUST Std140V1: uniform element `{text}` layout does not match its Rust representation \
+                 (parameter `{parameter}` of kernel `{kernel}`)"
+            );
+            assertions.push(quote! {
+                const _: () = ::core::assert!(
+                    match <#kernel as ::gust::Kernel>::DESCRIPTOR.parameters[#index].resource_layout {
+                        ::core::option::Option::Some(__gust_layout) => {
+                            ::core::matches!(
+                                __gust_layout.rules,
+                                ::gust::ShaderLayoutRules::Std140V1
+                            ) && __gust_layout.element.size as usize
+                                == ::core::mem::size_of::<#element>()
+                                && __gust_layout.element.alignment as usize
+                                    == ::core::mem::align_of::<#element>()
+                                && __gust_layout.element_stride as usize
+                                    == ::core::mem::size_of::<#element>()
+                                && __gust_layout.element.is_std140_v1()
+                        }
+                        ::core::option::Option::None => false,
+                    },
+                    #message
+                );
+            });
+            continue;
+        }
         let message = format!(
             "GUST StorageV1: element `{text}` layout does not match its Rust representation \
              (parameter `{parameter}` of kernel `{kernel}`)"
         );
-        // `parameter_descriptors` emits one descriptor per input, in order, so `index` is this parameter's.
-        let index = proc_macro2::Literal::usize_unsuffixed(index);
         assertions.push(quote! {
             const _: () = ::core::assert!(
                 match <#kernel as ::gust::Kernel>::DESCRIPTOR.parameters[#index].resource_layout {
@@ -1256,7 +1351,19 @@ fn element_layout_assertions(
     Ok(quote!(#(#assertions)*))
 }
 
-fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
+/// The layout rules the `const` assertions of a struct's `GpuPod` impl check.
+#[derive(Clone, Debug)]
+enum PodRules {
+    /// `StorageV1` or `StorageV2`: `#[repr(C)]`, the largest field alignment, and no padding.
+    Storage,
+    /// `Std140V1` (the struct is reachable from a uniform parameter): `#[repr(C, align(16))]`, alignment and size
+    /// rounded up to 16, and still no padding. The model is the macro's own constant-buffer layout of the struct (the
+    /// validator rejected every module where it has a gap or a tail), `None` when a field type is one the macro cannot
+    /// see into.
+    Std140(Option<crate::uniform::Std140Struct>),
+}
+
+fn gpu_pod_impl(item: &syn::ItemStruct, rules: &PodRules) -> syn::Result<TokenStream> {
     let ident = &item.ident;
     let syn::Fields::Named(fields) = &item.fields else {
         return Err(diagnostics::error(
@@ -1281,14 +1388,39 @@ fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
     // One assertion per field, in declaration order: the field sits at the sum of the sizes of the fields
     // before it. Const panics cannot format, so the message is a static string that names the field.
     let types: Vec<&syn::Type> = fields.named.iter().map(|field| &field.ty).collect();
+    let model = match rules {
+        PodRules::Std140(Some(model)) => Some(model),
+        _ => None,
+    };
     let offset_assertions = fields.named.iter().enumerate().map(|(index, field)| {
         let field_ident = field.ident.as_ref().expect("named field");
         let earlier = &types[..index];
-        let message = format!(
-            // The wording keeps the name `StorageV1` because tests/ui pins it; the rule is StorageV2's (the offset of
-            // a field is the sum of the sizes before it, which a vector's alignment can break).
-            "GUST StorageV1: field `{field_ident}` of `{struct_name}` is not at its padding-free offset"
-        );
+        if let Some(model) = model {
+            // The constant-buffer offset the macro computed, named in the message (const panics cannot format).
+            let offset = model.offsets[index] as usize;
+            let message = format!(
+                "GUST Std140V1: field `{field_ident}` of `{struct_name}` is not at byte {offset} of the \
+                 constant-buffer layout (it is at another offset in Rust)"
+            );
+            return quote! {
+                ::core::assert!(
+                    ::core::mem::offset_of!(#ident, #field_ident) == #offset
+                        && ::core::mem::offset_of!(#ident, #field_ident)
+                            == 0 #( + ::core::mem::size_of::<#earlier>() )*,
+                    #message
+                );
+            };
+        }
+        let message = match rules {
+            PodRules::Storage => format!(
+                // The wording keeps the name `StorageV1` because tests/ui pins it; the rule is StorageV2's (the offset
+                // of a field is the sum of the sizes before it, which a vector's alignment can break).
+                "GUST StorageV1: field `{field_ident}` of `{struct_name}` is not at its padding-free offset"
+            ),
+            PodRules::Std140(_) => format!(
+                "GUST Std140V1: field `{field_ident}` of `{struct_name}` is not at its padding-free offset"
+            ),
+        };
         quote! {
             ::core::assert!(
                 ::core::mem::offset_of!(#ident, #field_ident)
@@ -1297,12 +1429,46 @@ fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
             );
         }
     });
-    let padding_message = format!(
-        "GUST StorageV2: `{struct_name}` has tail padding (its fields do not add up to its size)"
-    );
-    let alignment_message =
-        format!("GUST StorageV2: `{struct_name}` must have the largest alignment of its fields");
-    let storage_message = format!("GUST StorageV2: `{struct_name}` layout is not StorageV2");
+    let (padding_message, alignment_message, storage_message) = match rules {
+        PodRules::Storage => (
+            format!(
+                "GUST StorageV2: `{struct_name}` has tail padding (its fields do not add up to its size)"
+            ),
+            format!(
+                "GUST StorageV2: `{struct_name}` must have the largest alignment of its fields"
+            ),
+            format!("GUST StorageV2: `{struct_name}` layout is not StorageV2"),
+        ),
+        PodRules::Std140(_) => (
+            format!(
+                "GUST Std140V1: `{struct_name}` has padding (its fields do not add up to its size, which a \
+                 constant buffer rounds up to 16): add explicit fields"
+            ),
+            format!(
+                "GUST Std140V1: `{struct_name}` must have alignment 16, or the largest alignment of its fields if that is \
+                 more"
+            ),
+            format!("GUST Std140V1: `{struct_name}` layout is not Std140V1"),
+        ),
+    };
+    // The alignment the struct must have: the largest field alignment, and for a constant buffer at least 16.
+    let floor: usize = match rules {
+        PodRules::Storage => 1,
+        PodRules::Std140(_) => 16,
+    };
+    let layout_check = match rules {
+        PodRules::Storage => quote!(is_storage_v2()),
+        PodRules::Std140(_) => quote!(is_std140_v1()),
+    };
+    let model_size = model.map(|model| {
+        let size = model.size as usize;
+        let message = format!(
+            "GUST Std140V1: `{struct_name}` is not {size} bytes, the size of its constant-buffer layout"
+        );
+        quote! {
+            ::core::assert!(::core::mem::size_of::<#ident>() == #size, #message);
+        }
+    });
     // One block, after the impl whose `LAYOUT` it reads (const items are order-independent), so one cause is one
     // E0080 and the asserts run in this order: the field that is off its offset is named first, then the total,
     // then the alignment (a lying alignment also fails the last one), then the whole layout. Vectors and matrices make
@@ -1329,9 +1495,10 @@ fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
                     == 0 #( + ::core::mem::size_of::<#types>() )*,
                 #padding_message
             );
+            #model_size
             ::core::assert!(
                 ::core::mem::align_of::<#ident>()
-                    == { let mut __gust_alignment = 1_usize; #(
+                    == { let mut __gust_alignment = #floor; #(
                         if ::core::mem::align_of::<#types>() > __gust_alignment {
                             __gust_alignment = ::core::mem::align_of::<#types>();
                         }
@@ -1339,7 +1506,7 @@ fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
                 #alignment_message
             );
             ::core::assert!(
-                <#ident as ::gust::GpuPod>::LAYOUT.is_storage_v2(),
+                <#ident as ::gust::GpuPod>::LAYOUT.#layout_check,
                 #storage_message
             );
         };
@@ -1358,7 +1525,7 @@ mod tests {
     fn pod_struct_without_named_fields_is_coded_when_validation_is_skipped() {
         let item: syn::ItemStruct = syn::parse_quote! { struct P(u32, u32); };
         crate::diagnostics::testing::assert_code(
-            &gpu_pod_impl(&item).unwrap_err(),
+            &gpu_pod_impl(&item, &PodRules::Storage).unwrap_err(),
             Code::PodStructNamedFields,
         );
     }
@@ -1366,7 +1533,7 @@ mod tests {
     #[test]
     fn a_structs_asserts_share_one_const_after_its_impl_in_a_fixed_order() {
         let item: syn::ItemStruct = syn::parse_quote! { struct Holder { a: uint, w: Wide8 } };
-        let text = gpu_pod_impl(&item).unwrap().to_string();
+        let text = gpu_pod_impl(&item, &PodRules::Storage).unwrap().to_string();
         // One block: one cause is one E0080.
         assert_eq!(text.matches("const _").count(), 1, "{text}");
         let at = |needle: &str| {

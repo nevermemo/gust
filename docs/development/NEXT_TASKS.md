@@ -55,7 +55,7 @@ test module; do not mix that mechanical move with behavior changes.
   and the headless runtime rejects them (`Error::UnsupportedParameter`); plain value
   parameters are rejected by the macro. Resolved at M3 close (D40): uniform kernels stay
   without a typed call and without a CPU twin until M6's uniform work, which decides
-  both together.
+  both together. Done in M6: m6.u1 (host side) and m6.u2 (merge `1b592a1`) give them typed calls and twins.
 
 ## M3 follow-ups (filed at M3 close)
 
@@ -67,15 +67,10 @@ test module; do not mix that mechanical move with behavior changes.
   another, so a kernel in which two invocations write one location gives a clean twin
   result and proves nothing about the GPU (SEMANTICS section 5). The checker would
   record the written indices of a call in debug builds and report a repeated one.
-- M5, CPU limits: decide whether the production CPU target emulates the device limits
+- CPU limits (open after M5): decide whether the production CPU target emulates the device limits
   (workgroup count per dimension, invocations per workgroup, storage binding size) or
   keeps documenting the difference; today the CPU backend rejects only a launch above
   2^32 invocations.
-- M5, difftest shape and CI: the form of the differential test (the same kernel source
-  on the CPU target and the GPU, generated inputs with shrinking, comparison under the
-  SEMANTICS domain and tolerances) and a lavapipe CI job labelled `Gpu (software)`. The
-  ledger and the contract exist since M3; M5 adds the production target, lavapipe and
-  the generator.
 - M7, parallel twin execution: run the invocations of a twin on several threads once
   barriers and shared memory exist. A CPU strategy for them is part of M7; until then a
   barrier kernel uses `#[kernel(cpu = "unsupported")]` (SEMANTICS section 5).
@@ -118,12 +113,17 @@ test module; do not mix that mechanical move with behavior changes.
 
 ## M5 follow-ups (filed during M5)
 
-- Lower integer `/` and `%` through `__gust_div`/`__gust_rem` helpers so slangc cannot fold a zero divisor (D74).
-  The helpers compiled in every probed shape (m5.c2); measure run-time semantics and the cost before adopting, then
-  drop the generator's `first_iteration_zero_divisor` filter.
+- Lower integer `/` and `%` through `__gust_div`/`__gust_rem` helpers so slangc cannot fold a zero divisor (D74):
+  taken by M6 slice m6.dv (spike m6.s1 passed its compile, semantics and cost rules). Only 13 of the 124 `static`
+  discards of seeds 1 to 8 come from the divisor rule; report.json and the gate summary should name the class
+  (m6.dv).
 - The StorageV1/StorageV2 wording mix in the struct layout asserts (pinned in xtask ui tests).
-- gpu-software installs Mesa from one Ubuntu snapshot with no apt retry; a snapshot.ubuntu.com outage failed it three
-  times on 2026-11-02. Add `Acquire::Retries` if it recurs.
+- gpu-software installs Mesa from one Ubuntu snapshot; m5.f1 added retries, but a long snapshot.ubuntu.com outage
+  (three failures on 2026-11-02) still stops it. A tested fallback source (wgpu's CI uses `gfx-rs/ci-build`) would
+  need its own identity assertions (D52).
+- Before M8: reconcile D65 (CPU bodies in `dev`, `native` and `web` production builds) with D26 and its fixtures
+  (`typed-call-no-cpu-twin`, check-dual E1 and E3) and with the macro's one process-wide profile read (M5 sanity
+  check; in the M8 row).
 
 ## M6 follow-ups (filed during M6)
 

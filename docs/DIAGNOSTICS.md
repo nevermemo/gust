@@ -321,6 +321,30 @@ Rejected: a struct field `v: Vec3`, `m: Mat3`; a resource element `StructuredBuf
 Write instead: `Vec4` or three scalars in buffers; the 3-wide types stay allowed as locals, helper parameters and helper results.
 Decision: D17 (M6 plan F4, F5).
 
+### GUST-E0205 `Mat2` or `bool` in a uniform struct
+
+A 2x2 matrix has column stride 16 in a constant buffer but 8 in Rust, and a `bool` has no layout a Rust type shares with the GPU's, so a struct a uniform reaches may hold neither.
+Reached through `#[gpu]`.
+Rejected: `struct Params { m: Mat2, v: Vec2 }` or `struct Params { on: bool, .. }` when a kernel has a `Uniform<Params>` parameter, also when the struct is a field of the uniform's struct. The same `Mat2` stays fine as a storage element and in a struct no uniform reaches.
+Write instead: a `Mat4`, a `Vec4` holding the four entries, or a `u32` that is 0 or 1.
+Decision: D17, D40 (M6 plan 2.3, F7).
+
+### GUST-E0206 uniform element is not a module struct
+
+A uniform holds one struct declared in the same `#[gpu]` module, so the macro can compute its constant-buffer layout and declare it `#[repr(C, align(16))]`.
+Reached through `#[gpu]`.
+Rejected: `Uniform<f32>`, `ConstantBuffer<Vec4>`, `Uniform<Mat4>`, `Uniform<super::Outside>`, `Uniform<Missing>`.
+Write instead: a struct of the module with the value as a field, `struct Params { scale: f32, .. }` and `params: Uniform<Params>`.
+Decision: D17, D40 (M6 plan 2.3).
+
+### GUST-E0207 struct used by a uniform and a storage buffer
+
+A struct a uniform reaches (as the parameter's element or as a field of a struct that is) is declared `#[repr(C, align(16))]` with a constant-buffer layout, which differs from the storage layout of the same fields, and copying between the two crashes slangc on WGSL.
+Reached through `#[gpu]`. The check covers every kernel of the module together: one struct may be the uniform of one kernel and the storage element of another.
+Rejected: `Uniform<S>` with `StructuredBuffer<S>`, `Uniform<Params>` with `StructuredBuffer<Inner>` where `Params` has a field `Inner`.
+Write instead: declare a separate struct for each use. Two uniforms may share a struct.
+Decision: D17, D40 (M6 plan 2.3, F7).
+
 ### GUST-E0208 implicit padding in a struct
 
 A struct whose fields leave padding (before a field, or at the tail) cannot be a `GpuPod` type: `pod_slice_as_bytes` would read the padding bytes, which are uninitialised.
@@ -328,6 +352,14 @@ Reached through `#[gpu]`. The check covers scalars, vectors, matrices and the mo
 Rejected: `struct S { a: f32, v: Vec2 }` (`v` would sit at offset 8, after four padding bytes), `struct S { v: Vec2, a: f32 }` (the size is 16, the fields end at 12).
 Write instead: order the fields by decreasing alignment and fill what is left with explicit fields, `struct S { v: Vec2, a: f32, pad: f32 }`.
 Decision: D17 (M6 plan R1-A, m6.a1 review).
+
+### GUST-E0209 implicit padding in a uniform struct
+
+A struct a uniform reaches has a constant-buffer layout in which every struct is rounded up to 16 bytes (a nested struct also starts at a multiple of 16), so fields that are padding-free in Rust can still leave a gap before a field or a tail. GUST never inserts padding: the upload copies the bytes of the Rust value, and padding bytes are uninitialised. The message names the field or struct and the bytes of explicit padding to write.
+Reached through `#[gpu]`. A gap that a field's own alignment causes (and so `#[repr(C)]` has too) is GUST-E0208 first, as is a tail past the largest field alignment; a gap caused only by the 16-byte alignment of a nested struct, and a tail that only the rounding up to 16 causes, are GUST-E0209. A struct with a field type the macro cannot see into is left to the `const` assertions of the expansion, which fail compilation instead.
+Rejected: `struct Params { a: f32 }` (ends at byte 4, a constant buffer rounds it up to 16), `struct Params { a: f32, b: f32, c: f32 }`, `struct Params { a: f32, inner: Inner }` where `Inner` is four `f32` (`inner` would sit at byte 16, 12 bytes after `a` ends), each when a `Uniform<Params>` parameter reaches it. The same structs are fine as storage elements.
+Write instead: explicit padding fields, `struct Params { a: f32, pad0: f32, pad1: f32, pad2: f32 }`, or order the fields so that whole 16-byte rows are filled.
+Decision: D17, D40 (M6 plan 2.3, F7).
 
 ## E03xx: expressions and calls
 
@@ -506,6 +538,14 @@ Reached through `#[gpu]`.
 Rejected: `let v = x else { return; };`. A refutable pattern such as `let Some(x) = o else { .. };` is E0319.
 Write instead: `if let Some(x) = o { .. }`.
 Decision: D02.
+
+### GUST-E0321 uniform used as a whole value
+
+A uniform parameter is read one field at a time. Copying or passing the whole struct out of a constant buffer is the construct that crashes slangc on WGSL, and the CPU twin would accept what the GPU cannot compile.
+Reached through `#[gpu]`.
+Rejected: `*params`, `let p = params;`, `(params)` alone, `params` as a function argument, `params.0` (the wrapper's own field, which reaches the whole struct), and `mut params` (a constant buffer is read-only). `params.len()` is GUST-E0306, and a helper taking a uniform is GUST-E0111.
+Write instead: read the fields, `params.scale`, `params.view.mul_vec4(p)`, or copy a field into a local.
+Decision: D17, D40 (M6 plan 2.3, F7).
 
 ### GUST-E0323 `*=` on a place with a call
 

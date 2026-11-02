@@ -33,9 +33,24 @@ framework, and Hurricane, the game engine (destination in
 
 ## Now and next
 
-**Now: M5, CPU target and evidence breadth** (plan adopted 2026-11-01, owner-delegated, after a Codex review
-(adopt with changes) and one revision; decisions D51 and D52). Slices that share no code or test file with M4's
-remaining chain run beside it now, and the rest wait for the M4 slice named. M5 closes after M4.
+**Now: M6, language breadth I** (plan adopted 2026-11-01, owner-delegated, after an Opus review, one revision and a
+re-check). The keyword and construct spikes (S6.3b, S6.1) are done, and so are the pure-Rust math types (m6.a2,
+`56b5ecd`) and the layout model with the schema-2 reader (m6.a1, `b60fca2`). The collision-only renaming (m6.k,
+`ce17eb2`; a sweep found silent `true` and `false` rebinds, now renamed) is done; reflection schema 2 in the helper
+(m6.r, `fe42f3f`) is done; matrix products are done (m6.m1, merge `6dc36ef`; m6.m2, merge `71ab804`), and so is GPU
+evidence for vectors and matrices (m6.g1, merge `5033b22`); and so is matrix negation (m6.n, merge `86f728c`) and the host side of
+uniforms (m6.u1, merge `8d88b6d`). The macro side is done too (m6.u2, merge `1b592a1`), which ends D40's wait.
+Running: m6.g2 (GPU evidence for uniforms) and m6.dv (integer `/` and `%` through `__gust_div`/`__gust_rem`, D74's cure: spike m6.s1 passed its three
+kill rules); left: m6.d (difftest vectors and matrices, after m6.dv); m6.x;
+then the close.
+
+**Next: M7, GPU concepts in Rust** (plan adopted 2026-11-02, owner-delegated). Its runtime prerequisites (m7.a0)
+run beside M6; the wasm32 `Job` contract (D69) lands before m7.a's `map_async` reaches the browser.
+
+**Done: M5, CPU target and evidence breadth** (closed 2026-11-02, D76). Plan adopted 2026-11-01 (owner-delegated)
+after a Codex review (adopt with changes) and one revision; decisions D51 and D52. Sanity check by Fable and Codex
+(both "proceed with fixes"); the fixes are slice m5.f1, and the first green nightly `gpu-software` list is run
+41442659698.
 
 | Item | Work | Status |
 | --- | --- | --- |
@@ -46,16 +61,10 @@ remaining chain run beside it now, and the rest wait for the M4 slice named. M5 
 | m5.c1a, m5.c1a2, m5.c1b, m5.c1c | Differential generator in `tests/difftest/`: integers, floats v1 (interval bounds), harness, bounded shrinking | m5.c1a done (`3bcebaf`); c1a2 done (`f60f516`); c1b done (harness, S5.3 outcome A; Gpu: RTX 5090; `a3a7798`); c1c done (Gpu: RTX 5090; `a41ba93`) |
 | S5.4 | Spike: expansion-time profile and cached rebuild transitions | done (decision A: both tracking paths suffice on their own) |
 | m5.b | Ledger on two adapters (per-kind observation pins) | done (`236780b`; 18 software pins) |
-| m5.e1, m5.e2 | Production `cpu` profile (D51); `check-cpu-target` and the `Cpu` tier | m5.e1 done (Unit, CPU only; Opus keep after one fix round; `f60c1b4`); m5.e2 done (merge `f9fdd24`) |
+| m5.e1, m5.e2 | Production `cpu` profile (D51); `check-cpu-target` and the `Cpu` tier | m5.e1 done (Unit, CPU only; Opus keep after one fix round; `f60c1b4`); m5.e2 done (Cpu: `check-cpu-target` E-a to E-i in the close gates and CI's `cpu-target` job; merge `f9fdd24`) |
 | m5.c2, m5.a2 | `check-difftest` wiring; `gpu-software` on the Slang manager | m5.a2 done (Gpu (software): lavapipe; Opus merge after one fix round; `e098f2f`); m5.c2 done (`82c59d2`, fix rounds `f2a9410`, merge `68c6f40`; D74) |
-
-**Next: M6, language breadth I** (plan adopted 2026-11-01, owner-delegated, after an Opus review, one revision and a
-re-check). The keyword and construct spikes (S6.3b, S6.1) are done, and so are the pure-Rust math types (m6.a2,
-`56b5ecd`) and the layout model with the schema-2 reader (m6.a1, `b60fca2`). The collision-only renaming (m6.k,
-`ce17eb2`; a sweep found silent `true` and `false` rebinds, now renamed) is done; reflection schema 2 in the helper
-(m6.r, `fe42f3f`) is done; matrix products are done (m6.m1, merge `6dc36ef`; m6.m2, merge `71ab804`), and so is GPU
-evidence for vectors and matrices (m6.g1, merge `5033b22`); and so is matrix negation (m6.n, merge `86f728c`); so is the host side of uniforms (m6.u1, merge `8d88b6d`); the macro side (m6.u2) is running, uniforms (m6.u1, m6.u2) wait for M4 and M5's `cpu`
-profile, and the difftest vector extension (m6.d) is unblocked (m5.c1c merged). M6 closes after M5.
+| m5.f1 | Sanity-check fixes: the release ledger guarded by name in Full and in the new `check-ledger` (the nightly step), the Gpu pin in `test --suite Gpu`, `--locked` on three CI steps, apt retries for the Mesa snapshot | done (Gpu: RTX 5090; Opus merge after one fix round; merge `7dd9c3d`) |
+| M5 close | `check-full` on the RTX 5090; sanity check by Fable and Codex; D76 | done (D76; Fable and Codex: proceed with fixes; `check-full` at `7dd9c3d` after m5.f1, clean tree) |
 
 **Done: M4, build-time targets and distribution** (closed 2026-11-02, D73). Plan adopted 2026-11-01 (owner-delegated) after a Codex review
 (rework), two Opus re-reviews and three revisions; decisions D44 to D47. S1, m4.0 and m4.h run in parallel on disjoint
@@ -166,12 +175,12 @@ coordinator's plan file, and each landed slice is recorded in STATUS.
 | M2 Typed host API | Typed per-kernel dispatch, designed backend-neutral so the same call runs on the GPU or a CPU twin; const `offset_of!`/`size_of` layout assertions; StagedGraph deriving dependencies from typed reads and writes; launch-limit checks | done (D37) |
 | M3 Dual test builds | Executable shadow types under the semantics contract (D22); CPU dispatch; CPU twins emitted under `cfg(test)`; `--cfg gust_dual` for cross-crate tests and benchmarks; per-kernel opt-out (`#[kernel(cpu = "unsupported")]`); existing GPU tests gain CPU-versus-GPU checks while semantics fixtures keep independent host references (D26). From M2 (D34): the CPU backend implements `TypedDevice` once and `Run<K, N>` per kernel, keeps the alias contract, and `#[kernel(cpu = "unsupported")]` is the absence of the `Run` impl | done (D43) |
 | M4 Build-time targets and distribution | Build profiles (target plus capability set) chosen at build time; hash-keyed artifact manifest; D17 at export time for WGSL and SPIR-V; runtime `slangc` behind a development feature; a pinned-Slang manager for crate users; first browser WebGPU run. Note: first spike: choose the build-profile mechanism (build.rs env, `--config`, or a cfg namespace) so it composes with check-dual's `CARGO_ENCODED_RUSTFLAGS` and its refusal; the artifact manifest hashes Slang output only (the twin never enters it or the published crate) | done (closed 2026-11-02, D73; plan D44 to D47; close rows D68 to D72). Capability sets are deferred to M8 (plan); D17 holds at export for describable layouts, and `layout: null` types are exported unchecked and checked at run time (D71) |
-| M5 CPU target and evidence breadth | Production `cpu` build target and runtime; lavapipe CI job labelled `Gpu (software)`; differential program generator with shrinking; scalar `coretests` cases on the GPU. Note: the known-mismatch ledger and the semantics contract exist since M3 and are not new M5 work; M5 adds the production target, lavapipe and the generator | plan adopted (D51, D52); slices beside M4 |
-| M6 Language breadth I | Vectors and matrices (vec3 and mat3 rejected in buffers at first; `m * v` lowers to `mul`); collision-only identifier renaming; uniforms (`ConstantBuffer<T>`). Note: uniform typed calls were decided in M3 (D40): such kernels have no typed call and no CPU twin until this milestone | plan adopted; spikes and m6.a2 beside M4 |
+| M5 CPU target and evidence breadth | Production `cpu` build target and runtime; lavapipe CI job labelled `Gpu (software)`; differential program generator with shrinking; scalar `coretests` cases on the GPU. Note: the known-mismatch ledger and the semantics contract exist since M3 and are not new M5 work; M5 adds the production target, lavapipe and the generator | done (D76; closed 2026-11-02; sanity fixes m5.f1; `check-full` at `7dd9c3d`) |
+| M6 Language breadth I | Vectors and matrices (vec3 and mat3 rejected in buffers at first; `m * v` lowers to `mul`); collision-only identifier renaming; uniforms (`ConstantBuffer<T>`). Note: uniform typed calls were decided in M3 (D40): such kernels have no typed call and no CPU twin until this milestone | now (plan adopted; m6.g2, m6.dv, m6.d, m6.x left) |
 | M7 GPU concepts in Rust | First, m7.a: element-wise calls from a plain scalar `#[gpu] fn` (`name::map` over slices, GPU-resident `GpuVec` values, `map_async` for the browser), owner direction 2026-11-01, D60, spikes m7.s1 and m7.s2 first; `par_for!` reuses its kernel generator. Then `par_for!` SIMT dispatch on both pipelines; workgroup shared memory and barriers, including a CPU strategy; reduce, scan and compaction primitives (T13 lands here). Multi-dimensional dispatch lifts the `max_compute_workgroups_per_dimension` ceiling (D36). Note: `#[kernel(cpu = "unsupported")]` is the opt-out for barrier kernels until a CPU strategy exists; a validator rule rejects a construct with cross-invocation meaning unless the kernel carries `cpu = "unsupported"` or a declared twin strategy (D42) | plan adopted 2026-11-02 (owner-delegated): Codex review (rework), Revision 1, an Opus re-review in the Codex slot (adopt with changes), R1.1; spikes m7.s1, m7.s2 and m7.s3 (CUDA comparison, owner request) done. The wasm32 `Job` contract (D69) lands before m7.a's `map_async` reaches the browser (M4 sanity check) |
 | MX Execution shapes and textures | After M7, before MR (D75). Shapes beyond `grid` (D61 to D63) and textures (D64), in the order of the planning notes: P0, the compute path behind the stage-profile interface of D63 (gate: byte-identical Slang for every fixture); textures as a GUST resource (storage textures for `grid`, render-target outputs for `pixel`, sampled textures with samplers; reflection, D17 and the twin's texture carrier); P1, the `pixel` shape (the same kernel as `grid` and `pixel`, bit-identical on the exact formats of D62, a cross-shape difftest, a per-shape performance test and the attachment bound in the validator; kill rule: `pixel` forces special cases into the emitter core beyond the profile hooks); the shape classifier and the shape pin of D63. Spike X-S1 (outcome A) measured the premise on the RTX 5090 and the 890M. Not in MX: `vertex` and `raster_fragment` (P2, with Breeze's first milestone) and shape inference with routing (P3, with M8's routing) | planned (plan with Fable and Codex at M7's close) |
 | MR First public release | After MX (D75), so publishing does not wait for M8 to M10. Crate names per D48 (`gust-compute`, `gust-compute-macros`, `gust-compute-wgpu`, `cargo-gust`; the macro resolves the imported crate path instead of `::gust::`); the published surface and its pre-1.0 stability promise; README, crate docs and a getting-started path that work from crates.io (the Slang pin and the reflection helper through `cargo-gust`); licence metadata; `cargo publish --dry-run` and a docs.rs-style build for every crate in dependency order, and a consumer built from the packaged crates. The coordinator prepares the release; the owner publishes to crates.io | planned |
-| M8 Capability variants | Capability-keyed variants with platform aliases; exhaustiveness checked against the crate's declared target list, with CPU as a target; one rustc-checked signature; subgroup operations first (D23). Compile-time portable floor for workgroup size and storage counts; `with_limits` is the runtime half (D36). Build-time routing per function tag (D65 to D67) lands alongside, after m7.a | planned |
+| M8 Capability variants | Capability-keyed variants with platform aliases; exhaustiveness checked against the crate's declared target list, with CPU as a target; one rustc-checked signature; subgroup operations first (D23). Compile-time portable floor for workgroup size and storage counts; `with_limits` is the runtime half (D36). Build-time routing per function tag (D65 to D67) lands alongside, after m7.a. Precondition (M5 sanity check): decide how D65's CPU bodies in `dev`, `native` and `web` production builds meet D26 (the `typed-call-no-cpu-twin` fixture, check-dual E1 and E3) and the macro's one process-wide profile read | planned |
 | M9 Language breadth II | Methods in `impl` blocks; user enums with `match`; tuples; fixed-size arrays; non-capturing closures; then traits mapped to Slang interfaces and generics | planned |
 | M10 Publication | Benchmarks against rayon, hand-written WGSL with wgpu, CubeCL and rust-gpu; a "Rust program to GPU" example gallery; docs and a book; the API stability pass toward 1.0; the crates.io releases after MR's first | planned |
 

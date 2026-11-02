@@ -1,0 +1,14 @@
+# Step E-e: keys matched against the one error of `cargo check --locked -p app-with-wgpu --message-format json` under
+#   GUST_PROFILE=cpu
+# (see tests/ui/typed-call-no-cpu-twin/expected.txt for the key format). The error is not in `app-with-wgpu` but in the
+# crate it depends on: `gust-wgpu` evaluates `const _: () = ::gust::profile::require_gpu_target();` (the one item the
+# refusal is), which panics in const evaluation under the `cpu` profile (D21: a build holds one target). The checker
+# judges the diagnostics of the cargo target `gust_wgpu`, and takes the repository root off cargo's absolute paths, so
+# `file` is relative to the repository root. `line: auto` is replaced by the line of that const item in
+# `crates/gust-wgpu/src/lib.rs`, found by the checker, so the item may move without editing this file; a moved or
+# missing item fails the step. The text is `NOT_A_GPU_TARGET` of crates/gust/src/profile.rs.
+code: E0080
+file: crates/gust-wgpu/src/lib.rs
+line: auto
+message: evaluation panicked: gust-wgpu cannot be built under GUST_PROFILE=cpu: a CPU build contains one target
+message: inside `require_gpu_target`

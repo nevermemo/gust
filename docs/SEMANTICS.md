@@ -32,7 +32,32 @@ describes the intended behaviour and is not evidence.
   the macro emits an `impl Run` for `gust::cpu::CpuDevice` that runs the rustc-checked body of each kernel, one
   invocation at a time in ascending `global_id.x`. A production build holds one target (D21): the twin is absent from
   it, which the check-ui fixture `typed-call-no-cpu-twin` proves for the defining crate and the `tests/dual` fixture of
-  `check-dual` proves for a dependent crate (m3.f1). The production CPU target belongs to a later milestone (M5) and is not described here.
+  `check-dual` proves for a dependent crate (m3.f1).
+  Under `GUST_PROFILE=cpu` the twin is the production CPU target (next item).
+- **Production CPU target (exists, m5.e1 and m5.e2, D51).** `GUST_PROFILE=cpu` (never inferred) makes the CPU the one
+  target of a build (D21). The macro emits the twin's `Run` impl for `CpuDevice` in every build and uses no artifact.
+  The build holds no Slang compiler, helper or GPU runtime: the build script of `gust` refuses `slang-runtime`, and
+  `gust-wgpu` fails to compile (`require_gpu_target`). The contract is the twin's, stated once for production:
+  - *Execution.* One thread per dispatch. Invocations run in ascending `global_id.x`, in whole workgroups, as in the
+    twin (sections 5 and 6). A result that is order-dependent on the GPU (a contended exchange or compare-exchange) is
+    the sequential member of the GPU's set. Compare-exchange never fails spuriously here.
+  - *Integers.* The same as the GPU inside the domain (section 3). Outside it the target follows the `overflow-checks`
+    of the crate that defines the kernel (D43). In the default release profile `+ - *`, negation and shift amounts
+    wrap and mask as the GPU does, and in a checked build they panic. Zero divisors and `MIN / -1` panic in every
+    profile. Out-of-range float-to-integer casts saturate. These are the limitations of section 3 (D39).
+  - *Floats.* IEEE 754 binary32, round to nearest even, in the written order, with no fusion (the twin column of
+    section 4). Subnormals are kept, and NaN and infinity propagate. KM-07 and KM-08 differ from the GPU and stay
+    unspecified there.
+  - *Memory.* An out-of-bounds index panics (KM-11). A racy kernel cannot race here, so its CPU result is deterministic
+    and proves nothing about the GPU (section 5).
+  - *Limits.* Only the `u32` id range is enforced. The GPU's workgroup and storage limits are not emulated (section 5).
+  - *Panics.* A panic in a kernel body follows the build's panic strategy. It unwinds out of `dispatch` and `submit`
+    under `panic = "unwind"` and aborts the process under `panic = "abort"`. Nothing catches it.
+  - *Parallelism.* None inside a dispatch. Independent dispatches on independent devices run on any thread the
+    caller owns. A parallel strategy is a later decision (roadmap M7).
+  - *Evidence.* `cargo xtask check-cpu-target` builds a fixture in release under `cpu`, runs three kernels against
+    independent host references, scans the binary for the compiler, the helper and the GPU runtime, and checks the
+    refusals. That is `Cpu` evidence, never GPU evidence (D42).
 - **Not executed by the twin.** Kernels with a `Uniform<T>` parameter (they have no typed call), indirect dispatch
   and staged graphs stay GPU-only. A kernel can opt out explicitly with `#[kernel(cpu = "unsupported")]` (D26).
   The examples that use them carry kernel-level twin evidence only (exists, m3.e2): `staged-graph` and
@@ -136,6 +161,12 @@ What happens outside the domain, in one line each (the table has the exact value
   to the range that both types represent, so the top end differs (`2147483520`, `4294967040`), and NaN is
   indeterminate (section 15.7.6).
 - Out-of-bounds access: the GPU raises a dynamic error and the outcome is open (section 6.5.7); Rust panics.
+
+The production CPU target (`GUST_PROFILE=cpu`, D51) reads the lines above like this. Overflow and shifts follow the
+`overflow-checks` of the crate that defines the kernel (D43): in the default release profile they wrap and mask as
+the GPU does, and in a checked build they panic. Division and remainder by zero and `MIN / -1` panic in every
+profile. Float-to-integer casts saturate, as in Rust. An out-of-bounds access panics. These differences stay
+documented limitations (D39); GUST does not try to match them.
 
 What users should do: keep run-time operands inside the domain by construction, or guard them in the kernel (test a
 divisor before dividing, clamp before casting). A literal zero divisor is rejected at the Rust boundary with a
@@ -312,6 +343,9 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   one invocation at a time would give a clean result that says nothing about the GPU.
 - **Visibility.** The writes of a dispatch are visible after the dispatch completes. Within a dispatch, an invocation
   must not depend on another invocation's non-atomic writes.
+- **Production CPU target (D51).** Under `GUST_PROFILE=cpu` the kernels run on `gust::cpu::CpuDevice` in every build,
+  one thread per dispatch. A racy kernel is still outside the contract: it gives one deterministic result that proves
+  nothing about the GPU. The launch rule below holds as written, and the limits of the GPU are not emulated.
 - **Launch size (CPU backend).** The CPU backend (`gust::cpu`) rejects only a launch whose invocation total, rounded up
   to whole workgroups, is above 2^32 (`DeviceLimit`, because global ids are `u32`). The GPU backend also enforces the
   adapter's `max_compute_workgroups_per_dimension` (and any lower `with_limits` value). For example 5,000,000 elements

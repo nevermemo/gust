@@ -93,9 +93,9 @@ development puts the feature on a `[dev-dependencies]` entry,
 process-spawning compiler. Check that state with
 `cargo check -p gust -p gust-wgpu --no-default-features --lib` (the Unit suite runs it).
 
-Build profiles (D44): the environment variable `GUST_PROFILE` is `dev`, `native` or `web`, and `gust`'s build
-script reads it (any other value, including an empty one, fails the build). `native` and `web` are strict: every
-`#[gpu]` kernel must have a precompiled artifact, or the build fails with a compile error at the kernel, and the
+Build profiles (D44, D51): the environment variable `GUST_PROFILE` is `dev`, `native`, `web` or `cpu`, and
+`gust`'s build script reads it (any other value, including an empty one, fails the build). `native` and `web` are strict:
+every `#[gpu]` kernel must have a precompiled artifact, or the build fails with a compile error at the kernel, and the
 `slang-runtime` feature is refused, so the build holds no run-time Slang compiler. `dev` has neither rule. A release
 build is strict even without the variable: with `GUST_PROFILE` unset, `cargo build --release` of a crate with
 `#[gpu]` kernels is treated as `web` for `wasm32` and `native` for every other target, and prints
@@ -106,6 +106,15 @@ wants the run-time bridge, such as the benchmark examples below, sets `GUST_PROF
 repository's `cargo xtask` commands run their cargo children under `GUST_PROFILE=dev`, whatever the parent
 environment holds (a different value is logged and overridden), which covers `check-full`'s release tests. No
 precompiled artifacts exist before slice m4.c, so until then a strict build of any kernel fails by design.
+
+The `cpu` profile (D21, D51) is the production CPU target. It is never inferred: a release build without the variable
+stays `native`, so choosing the CPU is always explicit (`GUST_PROFILE=cpu cargo build --release`). The `#[gpu]` macro
+then emits each kernel's `Run` impl for `gust::cpu::CpuDevice` in every build and uses no artifact, so a program can
+call `dispatch` on the CPU and run the kernel as plain Rust. A build holds one target: `gust-wgpu` fails to compile
+under `cpu` (a compile error that names the profile), and the `slang-runtime` feature is refused, so the binary
+contains no compiler, helper or GPU runtime. A kernel marked `#[kernel(cpu = "unsupported")]` has no CPU form, and a
+`dispatch` on it does not compile. Kernels run on one thread, in ascending `global_id.x`. `cargo xtask check-cpu-target`
+is the evidence (the `Cpu` tier).
 
 For the full release-readiness check (including ignored example tests, all eight
 examples, and mandatory external validation of all thirteen SPIR-V exports):
@@ -137,8 +146,9 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-ui` | Diagnostic text for misuse (D27) | compiles each crate of the separate `tests/ui` workspace; a crate with `expected.txt` must fail with exactly one error (read from cargo's JSON) that satisfies every listed key (`code`, `file`, `line`, `message`, `label`; `code: none` matches a macro error without a rustc code and needs a `message:`), one without it must compile |
 | `cargo xtask check-cpu` | CPU-twin evidence (no slangc, no GPU) | `--locked` tests of the examples with CPU twins (`vector-add`, `polynomial`, `signal-pipeline`, `particle-step`, `typed-pipeline`, `atomic-counter`, `staged-graph`, `component-pool`), whose non-ignored tests run each macro-emitted CPU twin against its host reference; part of the Unit suite. Each call fails when it reports no passed test (the test-count guard), and when a twin test or derivation-domain guard of the example is not reported `ok` by name |
 | `cargo xtask check-dual [--check-only]` | Cross-crate dual-build evidence; `--check-only` needs no slangc and no GPU | refuses a preset `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` or `CARGO_BUILD_RUSTFLAGS`; checks `tests/dual` with fmt and clippy, builds the workspace with `--cfg gust_dual` (through `CARGO_ENCODED_RUSTFLAGS`) in `<target>/dual`, runs clippy `-D warnings` on vector-add and polynomial with the cfg, then checks the `tests/dual` fixture: without the cfg a dependent's own `cfg(test)` (E1) and a production binary (E3) get no CPU twin of a library kernel (one E0277 each); with it the twin test runs and passes (E2). The full mode (GPU) also runs vector-add and polynomial with the cfg, which must print `CPU twin: matches (N elements, max ULP k)`, and vector-add without it, which must not. CI's `unit` job runs `--check-only`; `check-full` runs the full mode |
+| `cargo xtask check-cpu-target` | Production CPU target evidence (`Cpu` tier; no slangc, no GPU) | builds the fixture `tests/cpu-target` in release under `GUST_PROFILE=cpu` and runs it against host references (E-a); scans the binary for `slangc`, `gust-slang-reflect`, `wgpu` and `vulkan` and reads `cargo tree -e features` (E-b); builds with `--cfg gust_dual` (E-c); checks four refusals (E-d to E-g: the missing twin without the profile, `gust-wgpu` under `cpu`, the bridge feature under `cpu`, an opted-out kernel); flips the profile six times in one target directory (E-h); runs `cargo test -p kernels` under `cpu` (E-i). Stops at the first failing step and names it. CI runs it as the job `cpu-target`, beside `unit` |
 | `cargo xtask bless` | Update reviewed Slang goldens | reruns the golden tests with `BLESS_GOLDEN=1`, which rewrites changed `tests/fixtures/*.slang`, prints a line diff and fails the test; lists changed fixtures with `git diff --stat`. Exits non-zero whenever a fixture changed: review the diff, then run `cargo xtask check-feature macro` |
-| `cargo xtask test --suite Unit\|Slangc\|Spirv\|Reflect\|Gpu\|Full` | One evidence tier as one command | Unit: macro and xtask tests, lint, docs-check, check-arch, check-ui, check-cpu, the `gust::cpu` unit tests. Slangc: Unit plus `gust` library tests. Spirv: `check-artifacts`. Reflect: `check-feature reflection`. Gpu: all `gust-wgpu` tests. Full: `check-full`. Each suite prints what it does not cover; a missing tool or adapter fails it |
+| `cargo xtask test --suite Unit\|Cpu\|Slangc\|Spirv\|Reflect\|Gpu\|Full` | One evidence tier as one command | Unit: macro and xtask tests, lint, docs-check, check-arch, check-ui, check-cpu, the `gust::cpu` unit tests. Cpu: `check-cpu-target`. Slangc: Unit plus `gust` library tests. Spirv: `check-artifacts`. Reflect: `check-feature reflection`. Gpu: all `gust-wgpu` tests. Full: `check-full`. Each suite prints what it does not cover; a missing tool or adapter fails it |
 | `cargo xtask check-fast` | Fast routine confidence | policy lint, docs-check, check-arch, check-ui, helper version check, fmt check, macro tests, core lib tests, wgpu tests (all `--locked`) |
 | `cargo xtask check-workspace` | Default workspace confidence | `--locked` workspace tests with example packages excluded entirely |
 | `cargo xtask check-examples` | Major example behavior confidence | every example test (`-- --include-ignored`, counted: no passed test or an ignored one fails it) plus example binaries |

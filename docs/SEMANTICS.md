@@ -29,8 +29,9 @@ describes the intended behaviour and is not evidence.
   shifts, signed subtraction and multiplication, negation and the float-to-integer casts reach the WGSL as plain
   operators and `i32()` / `u32()` conversions, in modules that name no matrix (a module that names `Mat2`, `Mat3` or
   `Mat4` lowers every `*` and `*=` to the overloaded helper `__gust_mul`, whose body is the same `*` for scalars and
-  component-wise products and `mul` for a matrix product, so the WGSL of a scalar product is unchanged); it does not
-  check `+`, unsigned arithmetic or the float operators.
+  component-wise products and `mul` for a matrix product; slangc keeps the helper as a WGSL function, so the WGSL of
+  such a module calls `_gust_mul_0(..)` where the plain `*` stood, and the WGSL of every other module is
+  byte-identical); it does not check `+`, unsigned arithmetic or the float operators.
 - **CPU twin (exists).** In a test build (`cfg(test)` of the crate that defines the kernel, or `--cfg gust_dual`, D26)
   the macro emits an `impl Run` for `gust::cpu::CpuDevice` that runs the rustc-checked body of each kernel, one
   invocation at a time in ascending `global_id.x`. A production build holds one target (D21): the twin is absent from

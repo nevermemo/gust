@@ -1,9 +1,9 @@
 //! The product table behind `*` and `*=` in a module that names a matrix (slice m6.m2, M6 plan 2.1).
 //!
-//! This file is plain data and string templates with no `crate::` paths, because two crates read it: the macro
-//! (`slang/mod.rs` declares it as a module, and `mul_impls.rs` generates the `Mul` and `MulAssign` impls of
-//! `gust::math` from it) and the Slangc-tier test (`crates/gust/tests/diagnostics.rs` includes it with `#[path]`,
-//! as it does `collisions.rs`). Do not add a dependency.
+//! This file is plain data and string templates. Three things read it: the Slang overload text (`slang/mod.rs`), the
+//! generator of the `Mul` and `MulAssign` impls of `gust::math` (`mul_impls.rs`), and the macro-crate tests, which
+//! check that the `products` golden holds every row (`tests/fixtures/products.rs`, compiled by slangc in
+//! `crates/gust/tests/diagnostics.rs`).
 //!
 //! One row is one operand pair of `lhs * rhs`. The Slang side is the overload `__gust_mul(lhs, rhs)`: a module that
 //! names `Mat2`, `Mat3` or `Mat4` lowers every `*` to that call (the macro sees syntax and not types, and Slang's own

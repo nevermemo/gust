@@ -3191,6 +3191,75 @@ fn vectors_golden() {
 }
 
 #[test]
+fn products_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/products.rs")).unwrap();
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "products.slang",
+        &include_str!("../../../../tests/fixtures/products.slang").replace("\r\n", "\n"),
+    );
+}
+
+/// The `products` golden holds every row of the table, written in Rust as `a * b` or `a *= b` and lowered by the
+/// macro: slangc takes it on both targets (`the_products_golden_compiles_to_wgsl_and_spirv`), so a pair the table lists
+/// and Slang cannot resolve fails there. This test reads the golden for one call per row, in table order.
+#[test]
+fn products_golden_covers_every_row_of_the_table() {
+    let golden = include_str!("../../../../tests/fixtures/products.slang").replace("\r\n", "\n");
+    let name = |rust: &str| match rust {
+        "f32" => "fl",
+        "i32" => "sn",
+        "u32" => "un",
+        "Vec2" => "v2",
+        "Vec3" => "v3",
+        "Vec4" => "v4",
+        "IVec2" => "i2",
+        "IVec4" => "i4",
+        "UVec2" => "u2",
+        "UVec3" => "u3",
+        "UVec4" => "u4",
+        "Mat2" => "m2",
+        "Mat3" => "m3",
+        "Mat4" => "m4",
+        other => panic!("{other} is not in the table"),
+    };
+    // The overloads themselves are in the golden, one line per row.
+    assert!(golden.contains(&mul_table::overload_text()), "{golden}");
+    // Each `a * b` row: a call on the two parameters of the helper, in table order, before the `*=` section.
+    let products = &golden[..golden.find("var s0 = ").expect("the `*=` section")];
+    let mut after = 0;
+    for row in MUL_PAIRS {
+        let call = format!("__gust_mul({}, {})", name(row.left), name(row.right));
+        let at = products[after..].find(&call).unwrap_or_else(|| {
+            panic!(
+                "{} * {}: no `{call}` after byte {after}",
+                row.left, row.right
+            )
+        });
+        after += at + call.len();
+    }
+    // Each `a *= b` row: a copy of the left operand, then the assignment through the overload, in table order.
+    let mut after = 0;
+    let mut assigns = 0;
+    for row in MUL_PAIRS.iter().filter(|row| row.assigns()) {
+        let copy = format!("var s{assigns} = {};", name(row.left));
+        let assignment = format!(
+            "(s{assigns} = __gust_mul(s{assigns}, {}));",
+            name(row.right)
+        );
+        for text in [copy, assignment] {
+            let at = golden[after..]
+                .find(&text)
+                .unwrap_or_else(|| panic!("{} *= {}: no `{text}`", row.left, row.right));
+            after += at + text.len();
+        }
+        assigns += 1;
+    }
+    assert_eq!(assigns, 19);
+    assert!(!golden.contains("*="), "{golden}");
+}
+
+#[test]
 fn every_math_type_maps_to_its_slang_type() {
     for (rust, slang) in [
         ("Vec2", "float2"),
@@ -3833,6 +3902,7 @@ fn star_assign_on_a_place_with_a_call_is_e0323_in_a_matrix_module() {
     }
     let error = translate(&matrix_module(items, "out[pick(i)] *= 2.0;")).unwrap_err();
     assert!(error.to_string().contains("x = x * y"), "{error}");
+    assert!(error.to_string().contains("an `if` or a block"), "{error}");
 }
 
 #[test]
@@ -3943,38 +4013,66 @@ fn dot_is_the_overload_in_a_module_that_names_an_integer_vector() {
     }
     // No matrix in the module: `*` stays verbatim.
     assert!(!source.contains("__gust_mul"), "{source}");
-    // A float-only module keeps Slang's `dot` and has no helper.
+    // A module with no `dot` has no helper, whatever vectors it names.
     let source = translate(&vector_module(
         "",
-        "let f = Vec4::splat(1.0); out[i] = f.dot(f);",
+        "let a = IVec2::new(1, 2); out[i] = a.x as f32;",
     ))
     .unwrap();
-    assert!(
-        source.contains("dot(f, f)") && !source.contains("__gust_dot"),
-        "{source}"
-    );
+    assert!(!source.contains("__gust_dot"), "{source}");
 }
 
 #[test]
-fn a_uvec3_kernel_parameter_alone_does_not_gate_the_integer_dot() {
+fn every_dot_goes_through_the_overload_even_on_the_invocation_id() {
     let kernel = |parameter: &str, body: &str| {
         format!(
             "mod m {{ #[kernel] pub fn run(id: {parameter}, mut out: RWStructuredBuffer<float>) {{ \
              let i = id.x; {body} }} }}"
         )
     };
-    let body = "let v = Vec2::splat(1.0); out[i] = v.dot(v);";
-    for parameter in ["UVec3", "SV_DispatchThreadID"] {
+    // The kernel's own `UVec3` parameter, and a swizzle of it (a `UVec2` with no `UVec2` token), reach `OpUDot` in
+    // SPIR-V unless the module takes the integer overloads.
+    for (parameter, body, expected) in [
+        ("UVec3", "out[i] = id.dot(id) as f32;", "__gust_dot(id, id)"),
+        (
+            "SV_DispatchThreadID",
+            "out[i] = id.xy().dot(id.yz()) as f32;",
+            "__gust_dot(id.xy, id.yz)",
+        ),
+        (
+            "UVec3",
+            "let v = Vec2::splat(1.0); out[i] = v.dot(v);",
+            "__gust_dot(v, v)",
+        ),
+    ] {
         let source = translate(&kernel(parameter, body)).unwrap();
+        assert!(source.contains(expected), "{body}:\n{source}");
         assert!(
-            source.contains("dot(v, v)") && !source.contains("__gust_dot"),
-            "{source}"
+            source.contains("uint __gust_dot(uint3 a, uint3 b)"),
+            "{body}:\n{source}"
         );
     }
-    // The same type used as a value gates it.
-    let body = "let w = UVec3::new(1, 2, 3); out[i] = w.dot(w) as f32;";
-    let source = translate(&kernel("UVec3", body)).unwrap();
-    assert!(source.contains("__gust_dot(w, w)"), "{source}");
+    // No `dot` token: no helper.
+    let source = translate(&kernel("UVec3", "out[i] = 1.0;")).unwrap();
+    assert!(!source.contains("__gust_dot"), "{source}");
+}
+
+#[test]
+fn a_grouped_place_is_as_pure_as_its_contents() {
+    // `macro_rules!` hands a `$p:expr` over inside an invisible group. Build one, as the parser would not.
+    let group = |text: &str| {
+        syn::Expr::Group(syn::ExprGroup {
+            attrs: Vec::new(),
+            group_token: syn::token::Group::default(),
+            expr: Box::new(crate::diagnostics::testing::parse_str(text).unwrap()),
+        })
+    };
+    for text in ["out[i]", "out[i + 1].x", "(out[i])", "v.y"] {
+        assert!(crate::slang::is_pure_place(&group(text)), "{text}");
+    }
+    for text in ["out[pick(i)]", "out[if c { 1 } else { 2 }]", "out[{ 1 }]"] {
+        assert!(!crate::slang::is_pure_place(&group(text)), "{text}");
+    }
 }
 
 #[test]

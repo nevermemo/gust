@@ -336,12 +336,14 @@ Decision: D02.
 Methods other than `.global_id()`, `.len()`, `.is_some()`, `.is_none()`, `.is_ok()`,
 `.is_err()`, `.unwrap_or(default)` and the vector and matrix methods (swizzles `.xy()`..`.wzyx()`, `.dot(v)`, `.mul_vec2/3/4(v)`,
 `.mul_mat2/3/4(m)`, `.transpose()`) have no lowering.
-Integer `.dot` (slice m6.m2): Slang's `dot` on an integer vector is `OpSDot` or `OpUDot` in SPIR-V, which needs `Capability DotProduct`, and naga's SPIR-V reader refuses it
-(`UnsupportedCapability(DotProduct)`; measured on slangc 2026.20). A module whose tokens name `IVec2`, `IVec4`, `UVec2` or `UVec4`, or a `UVec3` that is more than the
-type of a kernel parameter, therefore lowers every `.dot(v)` to the overloaded helper `__gust_dot(a, b)`, whose integer overloads are the sum of the component products in
-written order (the float overloads call Slang's `dot`). Its SPIR-V needs no capability beyond `Shader`: it passes naga's reader with empty capabilities and `spirv-val`. A module that names no
-integer vector keeps the plain `dot`.
-Limitation (not a rejection): `.dot` on the kernel's own `UVec3` parameter (the invocation id) in a module that names no other integer vector still lowers to Slang's `dot`, so its SPIR-V needs the capability; name another integer vector type in the module, or write the products.
+Integer `.dot` (slice m6.m2): Slang's `dot` on an integer vector is `OpSDot` or `OpUDot` in SPIR-V, which needs
+`Capability DotProduct`, and naga's SPIR-V reader refuses it (`UnsupportedCapability(DotProduct)`; measured on
+slangc 2026.20). The macro sees no types (the invocation id is a `UVec3` and `id.xy()` a `UVec2`, neither named by a
+token), so a module that contains a `dot` lowers every `.dot(v)` to the overloaded helper `__gust_dot(a, b)`. Its
+integer overloads are the sum of the component products in written order, and its float overloads call Slang's `dot`
+(the SPIR-V of a float-only module is byte-identical, and the WGSL calls a helper whose body is the plain `dot`). The
+SPIR-V needs no capability beyond `Shader`: it passes naga's reader with empty capabilities and `spirv-val`. A module
+without a `dot` keeps its text unchanged.
 Reached through `#[gpu]`.
 Rejected: `x.abs()`, `v.iter()`.
 Write instead: write the operation with operators and helpers.
@@ -472,9 +474,13 @@ Decision: D02.
 
 ### GUST-E0323 `*=` on a place with a call
 
-In a module that names `Mat2`, `Mat3` or `Mat4`, every `*` is the overloaded product `__gust_mul`, and `x *= y` is written `x = __gust_mul(x, y)`, which names the place twice. Rust evaluates the place of `*=` once, so a place that contains a call (a helper call in an index) could not be lowered without running the call twice, and the macro refuses it. A module that names no matrix keeps the plain `*=` and never meets this code.
+In a module that names `Mat2`, `Mat3` or `Mat4`, every `*` is the overloaded product `__gust_mul`, and `x *= y` is
+written `x = __gust_mul(x, y)`, which names the place twice. Rust evaluates the place of `*=` once, so a place that is
+more than names, fields, literals, indexing, arithmetic, `.global_id()` and `.len()` (a helper call, an `if` or a block
+in an index) could not be lowered without evaluating it twice, and the macro refuses it. A module that names no matrix
+keeps the plain `*=` and never meets this code.
 Reached through `#[gpu]`.
-Rejected: `out[pick(i)] *= m;` in a module that names a matrix, where `pick` is a helper.
+Rejected: `out[pick(i)] *= s;` in a module that names a matrix, where `pick` is a helper and `s` a scalar.
 Write instead: `out[pick(i)] = out[pick(i)] * m;`, or bind the index first: `let j = pick(i); out[j] *= m;`.
 Decision: D17 (M6 plan 2.1, choice 12).
 

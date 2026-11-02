@@ -12,6 +12,186 @@ use crate::{
 #[cfg(test)]
 mod collision_tests;
 pub(crate) mod collisions;
+pub(crate) mod mul_table;
+
+/// The lowerings that depend on what the whole module names (the macro sees syntax and not types, so a module that
+/// names a matrix or an integer vector sends `*` and `.dot` through overloaded helpers; see [`module_lowering`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Lowering {
+    /// Every `*` is `__gust_mul(a, b)` and every `*=` is `(place = __gust_mul(place, b))` (slice m6.m2).
+    pub(crate) mul: bool,
+    /// Every `.dot(v)` is `__gust_dot(a, b)` (slice m6.m2).
+    pub(crate) dot: bool,
+}
+
+thread_local! {
+    /// The lowering of the module being emitted. The emitter is a set of free functions, so the flags live here
+    /// instead of in the signature of each; [`LoweringScope`] sets them for the span of one `emit_kernel`.
+    static LOWERING: std::cell::Cell<Lowering> =
+        const { std::cell::Cell::new(Lowering { mul: false, dot: false }) };
+}
+
+fn lowering() -> Lowering {
+    LOWERING.with(std::cell::Cell::get)
+}
+
+/// Sets the lowering for a scope and restores the previous one when dropped.
+struct LoweringScope(Lowering);
+
+impl LoweringScope {
+    fn enter(next: Lowering) -> Self {
+        Self(LOWERING.with(|cell| cell.replace(next)))
+    }
+}
+
+impl Drop for LoweringScope {
+    fn drop(&mut self) {
+        LOWERING.with(|cell| cell.set(self.0));
+    }
+}
+
+/// How often each identifier occurs in the tokens of a module, after raw stripping (`r#Mat4` counts as `Mat4`).
+fn count_identifiers(
+    stream: proc_macro2::TokenStream,
+    counts: &mut std::collections::HashMap<String, usize>,
+) {
+    for tree in stream {
+        match tree {
+            proc_macro2::TokenTree::Ident(ident) => {
+                *counts.entry(ident.unraw().to_string()).or_default() += 1;
+            }
+            proc_macro2::TokenTree::Group(group) => count_identifiers(group.stream(), counts),
+            _ => {}
+        }
+    }
+}
+
+/// The lowering of a module, computed once from its tokens (slice m6.m2, M6 plan 2.1).
+///
+/// `mul` is set if any identifier is `Mat2`, `Mat3` or `Mat4`. The gate is exact: E0203 forbids a user type of those
+/// names, E0324 a qualified path to one, and E0102 a `use` item, so the prelude is the only way the name resolves and
+/// a matrix value exists in a module only if one of those tokens does. The other modules keep the verbatim `*`.
+///
+/// `dot` is set if any identifier is `IVec2`, `IVec4`, `UVec2` or `UVec4`, or a `UVec3` that is not the whole type of
+/// a kernel parameter (`UVec3` is also a spelling of the invocation id, which says nothing about `.dot`). The integer
+/// `dot` that Slang emits as `OpSDot` or `OpUDot` needs `Capability DotProduct`, which naga's SPIR-V reader refuses.
+fn module_lowering(module: &syn::ItemMod) -> syn::Result<Lowering> {
+    let mut counts = std::collections::HashMap::new();
+    count_identifiers(module.to_token_stream(), &mut counts);
+    let count = |name: &str| counts.get(name).copied().unwrap_or_default();
+
+    let mut invocation_types = 0;
+    for item in module.content.iter().flat_map(|(_, items)| items) {
+        let syn::Item::Fn(function) = item else {
+            continue;
+        };
+        if crate::expand::kernel_options(function)?.is_none() {
+            continue;
+        }
+        invocation_types += function
+            .sig
+            .inputs
+            .iter()
+            .filter(|argument| matches!(argument, syn::FnArg::Typed(typed) if is_bare_name(&typed.ty, "UVec3")))
+            .count();
+    }
+    Ok(Lowering {
+        mul: ["Mat2", "Mat3", "Mat4"].iter().any(|name| count(name) > 0),
+        dot: ["IVec2", "IVec4", "UVec2", "UVec4"]
+            .iter()
+            .any(|name| count(name) > 0)
+            || count("UVec3") > invocation_types,
+    })
+}
+
+/// Whether a type is exactly the path `name`, with no qualification and no arguments.
+fn is_bare_name(ty: &syn::Type, name: &str) -> bool {
+    matches!(ty, syn::Type::Path(path)
+        if path.qself.is_none()
+            && path.path.leading_colon.is_none()
+            && path.path.segments.len() == 1
+            && path.path.segments[0].arguments.is_empty()
+            && path.path.segments[0].ident.unraw() == name)
+}
+
+/// The vector types `__gust_dot` has an overload for: Slang spelling, result type, component count.
+const DOT_OVERLOADS: &[(&str, &str, usize)] = &[
+    ("float2", "float", 2),
+    ("float3", "float", 3),
+    ("float4", "float", 4),
+    ("int2", "int", 2),
+    ("int4", "int", 4),
+    ("uint2", "uint", 2),
+    ("uint3", "uint", 3),
+    ("uint4", "uint", 4),
+];
+
+/// The overloads of `__gust_dot`: Slang's `dot` for the float vectors, and the sum of the component products, grouped
+/// from the left like the twin's `x * x + y * y + ..`, for the integer ones. Slang's `dot` on an integer vector is
+/// `OpSDot` or `OpUDot` in SPIR-V, which needs `Capability DotProduct` (naga's SPIR-V reader refuses it); the sum
+/// is plain multiplications and additions, which pass naga's reader with empty capabilities (measured, slangc 2026.20).
+fn dot_overload_text() -> String {
+    let mut text = String::new();
+    for &(vector, result, width) in DOT_OVERLOADS {
+        let body = if result == "float" {
+            "dot(a, b)".to_owned()
+        } else {
+            let mut sum = "a.x * b.x".to_owned();
+            for field in &["y", "z", "w"][..width - 1] {
+                sum = format!("({sum} + a.{field} * b.{field})");
+            }
+            sum
+        };
+        writeln!(
+            text,
+            "{result} __gust_dot({vector} a, {vector} b) {{ return {body}; }}"
+        )
+        .unwrap();
+    }
+    text.push('\n');
+    text
+}
+
+/// Whether the place of a `*=` can be written twice: an identifier, a field path, or an index whose expression is
+/// built from literals, names, fields, indexing, arithmetic and `.global_id()`/`.len()`. A call may have an effect, and
+/// Rust evaluates the place of `place *= value` once while `place = __gust_mul(place, value)` evaluates it twice.
+fn is_pure_place(place: &syn::Expr) -> bool {
+    match place {
+        syn::Expr::Path(_) | syn::Expr::Lit(_) => true,
+        syn::Expr::Paren(paren) => is_pure_place(&paren.expr),
+        syn::Expr::Field(field) => is_pure_place(&field.base),
+        syn::Expr::Index(index) => is_pure_place(&index.expr) && is_pure_place(&index.index),
+        syn::Expr::Unary(unary) => is_pure_place(&unary.expr),
+        syn::Expr::Cast(cast) => is_pure_place(&cast.expr),
+        syn::Expr::Binary(binary) => {
+            is_pure_place(&binary.left)
+                && is_pure_place(&binary.right)
+                && !is_assignment_operator(&binary.op)
+        }
+        syn::Expr::MethodCall(call) => {
+            call.args.is_empty()
+                && matches!(call.method.to_string().as_str(), "global_id" | "len")
+                && is_pure_place(&call.receiver)
+        }
+        _ => false,
+    }
+}
+
+fn is_assignment_operator(op: &syn::BinOp) -> bool {
+    matches!(
+        op,
+        syn::BinOp::AddAssign(_)
+            | syn::BinOp::SubAssign(_)
+            | syn::BinOp::MulAssign(_)
+            | syn::BinOp::DivAssign(_)
+            | syn::BinOp::RemAssign(_)
+            | syn::BinOp::BitXorAssign(_)
+            | syn::BinOp::BitAndAssign(_)
+            | syn::BinOp::BitOrAssign(_)
+            | syn::BinOp::ShlAssign(_)
+            | syn::BinOp::ShrAssign(_)
+    )
+}
 
 /// The Slang spelling of a user identifier (M6 plan 2.5): a raw prefix is stripped, and a name in the collision table
 /// becomes `__gust_r_<name>`. Every site that writes a user name into Slang, and every descriptor `name:` string, goes
@@ -116,6 +296,8 @@ pub fn emit_kernel(
     options: KernelOptions,
 ) -> syn::Result<EmittedKernel> {
     let (_, items) = module.content.as_ref().expect("validated inline module");
+    let lowering = module_lowering(module)?;
+    let _scope = LoweringScope::enter(lowering);
     let mut output = String::new();
     let mut table = LineTable::default();
     writeln!(
@@ -218,6 +400,18 @@ pub fn emit_kernel(
             "T __gust_unwrap_or<T>(__GustResult<T> result, T fallback) {{ if (result.isOk) {{ return result.value; }} return fallback; }}\n"
         )
         .unwrap();
+    }
+
+    // Rust `*` on a matrix is the matrix product, which Slang's `*` is not, and the macro does not know which operand
+    // is a matrix. A module that names one sends every `*` and `*=` through the overloads of `__gust_mul`, one per
+    // operand pair of the product table, and slangc resolves each call by the operand types.
+    if lowering.mul {
+        output.push_str(&mul_table::overload_text());
+    }
+
+    // The integer `dot` as a sum of products (see `dot_overload_text`); `.dot` is `__gust_dot` in such a module.
+    if lowering.dot {
+        output.push_str(&dot_overload_text());
     }
 
     // Buffers used with atomic operations need `Atomic<T>` element types in Slang
@@ -791,6 +985,31 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             emit_expression(&binary.left)?,
             emit_expression(&binary.right)?
         ),
+        // In a module that names a matrix, `*` and `*=` go through the overloads of `__gust_mul`.
+        syn::Expr::Binary(binary) if lowering().mul && matches!(binary.op, syn::BinOp::Mul(_)) => {
+            format!(
+                "__gust_mul({}, {})",
+                emit_expression(&binary.left)?,
+                emit_expression(&binary.right)?
+            )
+        }
+        syn::Expr::Binary(binary)
+            if lowering().mul && matches!(binary.op, syn::BinOp::MulAssign(_)) =>
+        {
+            if !is_pure_place(&binary.left) {
+                return Err(diagnostics::error(
+                    Code::MulAssignPlace,
+                    binary,
+                    "`*=` on a place that contains a call: Rust evaluates the place once and the lowering writes it \
+                     twice; write `x = x * y` instead",
+                ));
+            }
+            let place = emit_expression(&binary.left)?;
+            format!(
+                "({place} = __gust_mul({place}, {}))",
+                emit_expression(&binary.right)?
+            )
+        }
         syn::Expr::Binary(binary) => format!(
             "({} {} {})",
             emit_expression(&binary.left)?,
@@ -1005,7 +1224,11 @@ fn emit_math_method(call: &syn::ExprMethodCall) -> syn::Result<String> {
     } else if name == "transpose" {
         format!("transpose({receiver})")
     } else {
-        let function = if name == "dot" { "dot" } else { "mul" };
+        let function = match name.as_str() {
+            "dot" if lowering().dot => "__gust_dot",
+            "dot" => "dot",
+            _ => "mul",
+        };
         let arguments = emit_list(call.args.iter())?.join(", ");
         format!("{function}({receiver}, {arguments})")
     })

@@ -336,8 +336,12 @@ Decision: D02.
 Methods other than `.global_id()`, `.len()`, `.is_some()`, `.is_none()`, `.is_ok()`,
 `.is_err()`, `.unwrap_or(default)` and the vector and matrix methods (swizzles `.xy()`..`.wzyx()`, `.dot(v)`, `.mul_vec2/3/4(v)`,
 `.mul_mat2/3/4(m)`, `.transpose()`) have no lowering.
-Limitation (not a rejection): `.dot` on `IVec2/4` or `UVec2/4` lowers, and its WGSL validates, but its SPIR-V needs `Capability DotProduct`,
-which naga's SPIR-V reader refuses (`UnsupportedCapability(DotProduct)`; slangc 2026.13.1 and 2026.20). Use the WGSL route or `Vec2/4` until slice m6.m2.
+Integer `.dot` (slice m6.m2): Slang's `dot` on an integer vector is `OpSDot` or `OpUDot` in SPIR-V, which needs `Capability DotProduct`, and naga's SPIR-V reader refuses it
+(`UnsupportedCapability(DotProduct)`; measured on slangc 2026.20). A module whose tokens name `IVec2`, `IVec4`, `UVec2` or `UVec4`, or a `UVec3` that is more than the
+type of a kernel parameter, therefore lowers every `.dot(v)` to the overloaded helper `__gust_dot(a, b)`, whose integer overloads are the sum of the component products in
+written order (the float overloads call Slang's `dot`). Its SPIR-V needs no capability beyond `Shader`: it passes naga's reader with empty capabilities and `spirv-val`. A module that names no
+integer vector keeps the plain `dot`.
+Limitation (not a rejection): `.dot` on the kernel's own `UVec3` parameter (the invocation id) in a module that names no other integer vector still lowers to Slang's `dot`, so its SPIR-V needs the capability; name another integer vector type in the module, or write the products.
 Reached through `#[gpu]`.
 Rejected: `x.abs()`, `v.iter()`.
 Write instead: write the operation with operators and helpers.
@@ -465,6 +469,14 @@ Reached through `#[gpu]`.
 Rejected: `let v = x else { return; };`. A refutable pattern such as `let Some(x) = o else { .. };` is E0319.
 Write instead: `if let Some(x) = o { .. }`.
 Decision: D02.
+
+### GUST-E0323 `*=` on a place with a call
+
+In a module that names `Mat2`, `Mat3` or `Mat4`, every `*` is the overloaded product `__gust_mul`, and `x *= y` is written `x = __gust_mul(x, y)`, which names the place twice. Rust evaluates the place of `*=` once, so a place that contains a call (a helper call in an index) could not be lowered without running the call twice, and the macro refuses it. A module that names no matrix keeps the plain `*=` and never meets this code.
+Reached through `#[gpu]`.
+Rejected: `out[pick(i)] *= m;` in a module that names a matrix, where `pick` is a helper.
+Write instead: `out[pick(i)] = out[pick(i)] * m;`, or bind the index first: `let j = pick(i); out[j] *= m;`.
+Decision: D17 (M6 plan 2.1, choice 12).
 
 ### GUST-E0324 qualified math path
 

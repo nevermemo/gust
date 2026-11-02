@@ -22,8 +22,9 @@ mod vectors {
         Mat2::IDENTITY.mul_mat2(turn).mul_vec2(point)
     }
 
-    // The integer dot product, kept in its own helper: it is the one form whose SPIR-V needs the `DotProduct`
-    // capability, which naga's SPIR-V reader refuses (docs/DIAGNOSTICS.md, E0305 note). Its WGSL is fine.
+    // The integer dot product, kept in its own helper. This module names integer vectors, so `.dot` is `__gust_dot`,
+    // whose integer overloads are a sum of products: Slang's `dot` on integers needs the SPIR-V `DotProduct`
+    // capability, which naga's SPIR-V reader refuses (docs/DIAGNOSTICS.md, E0305 note).
     fn integer_dots(a: IVec2, b: IVec4, c: UVec2, d: UVec4) -> int {
         a.dot(IVec2::new(3, -2)) + b.dot(IVec4::splat(1)) + (c.dot(UVec2::splat(2)) + d.dot(UVec4::splat(1))) as int
     }
@@ -46,7 +47,20 @@ mod vectors {
         product.mul_vec3(flipped.mul_vec2(v2).xyx())
     }
 
-    // The fixture writes methods only: `*` on a matrix is a later slice (m6.m2).
+    // The operators on a matrix: every `*` and `*=` of a module that names a matrix is `__gust_mul`, which resolves by
+    // the operand types. `s * m` and `m * m` and `m * v` are the three matrix forms, `v * s` and `v *= v` the vector
+    // ones, and `n *= s` scales a matrix in place.
+    fn products(m: Mat4, v: Vec4, s: f32) -> Vec4 {
+        let scaled = s * m;
+        let chained = scaled * m;
+        let mut w = chained * v;
+        w = w * s;
+        w *= v;
+        let mut n = m;
+        n *= s;
+        w + n * v
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn run(
@@ -84,11 +98,11 @@ mod vectors {
                 Vec4::new(0.0, 0.0, 0.0, 1.0),
             );
             let both = by_cols.transpose().mul_mat4(by_rows);
-            moved[i] = both.mul_vec4(Mat4::IDENTITY.mul_vec4(widened));
+            moved[i] = products(both, both.mul_vec4(Mat4::IDENTITY.mul_vec4(widened)), 0.5);
             // Integer vectors, and a vector struct literal (fields are assigned in written order).
             let n = counts[i];
             let c = UVec2 { x: n.x + i, y: n.y };
-            cells[i] = c.yx();
+            cells[i] = (c * 2).yx();
             let part = particles[i];
             velocities[i] = spin(part.velocity, part.position);
             let signed = signed_in[i];

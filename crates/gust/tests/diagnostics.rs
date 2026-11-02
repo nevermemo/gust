@@ -1517,11 +1517,12 @@ fn rust_keywords_outside_the_table_compile_bare_in_every_position() {
 }
 
 /// The `vectors` golden compiles with the pinned slangc to both targets (m6.m1). `compile_source` passes the same
-/// `-matrix-layout-column-major` flag as every compile of a kernel. The golden holds one form, the integer `dot`,
-/// whose SPIR-V needs `Capability DotProduct` (slangc 2026.13.1 and 2026.20 both emit it): naga's SPIR-V reader
-/// refuses that capability, so the SPIR-V is pinned to carry it (a change of Slang or of the lowering shows here).
-/// The naga halves (WGSL with empty capabilities, the SPIR-V reader on the module without the integer `dot`) were
-/// run by hand: they need a `naga` dependency in the manifests, which this slice may not touch.
+/// `-matrix-layout-column-major` flag as every compile of a kernel. The golden holds the integer `dot`, which Slang
+/// emits as `OpSDot` or `OpUDot` with `Capability DotProduct` (slangc 2026.13.1 and 2026.20), and naga's SPIR-V reader
+/// refuses that capability. Since slice m6.m2 the macro lowers `.dot` in such a module to `__gust_dot`, whose integer
+/// overloads are a sum of products, so the SPIR-V is pinned to declare `Shader` and nothing else (a change of Slang
+/// or of the lowering that brings a capability back shows here). The naga halves (WGSL and SPIR-V with empty
+/// capabilities) were run by hand: they need a `naga` dependency in the manifests, which this slice may not touch.
 #[test]
 fn the_vectors_golden_compiles_to_wgsl_and_spirv() {
     let golden = include_str!("../../../tests/fixtures/vectors.slang").replace("\r\n", "\n");
@@ -1541,7 +1542,7 @@ fn the_vectors_golden_compiles_to_wgsl_and_spirv() {
         .map(|word| u32::from_le_bytes(*word))
         .collect();
     assert_eq!(words[0], 0x0723_0203, "not SPIR-V");
-    // OpCapability (opcode 17) with `DotProduct` (6019), found by walking the instructions after the header.
+    // OpCapability (opcode 17), found by walking the instructions after the header.
     let mut capabilities = Vec::new();
     let mut at = 5;
     while at < words.len() {
@@ -1552,7 +1553,113 @@ fn the_vectors_golden_compiles_to_wgsl_and_spirv() {
         }
         at += length;
     }
-    assert!(capabilities.contains(&6019), "{capabilities:?}");
+    // `Shader` is capability 1; `DotProduct` is 6019 and `DotProductInputAll` 6016.
+    assert_eq!(capabilities, [1], "{capabilities:?}");
+}
+
+/// The product table (`mul_table.rs`, as plain data) drives the Slang overloads and the Rust impls (slice m6.m2).
+#[path = "../../gust-macros/src/slang/mul_table.rs"]
+#[allow(dead_code)]
+mod mul_table;
+
+/// A compute shader that multiplies every row of the product table through the overload text a gated module gets,
+/// once with typed variables and then with the literal operands of the plan (S6.1 (f)), and writes one component of
+/// each result so that none of the products is dropped before code generation.
+fn all_pairs_source() -> String {
+    let sample = |name: &str| -> String {
+        let slang = mul_table::slang(name);
+        if mul_table::is_scalar(name) {
+            match name {
+                "f32" => "1.5".to_owned(),
+                "i32" => "-2".to_owned(),
+                _ => "3u".to_owned(),
+            }
+        } else if mul_table::is_matrix(name) {
+            let width = mul_table::width(name);
+            let cells: Vec<&str> = (0..width * width)
+                .map(|cell| if cell % (width + 1) == 0 { "1" } else { "0" })
+                .collect();
+            format!("{slang}({})", cells.join(", "))
+        } else {
+            format!("{slang}({})", ["2"; 4][..mul_table::width(name)].join(", "))
+        }
+    };
+    // One float out of a result of any row: a scalar, a vector component or a matrix cell.
+    let float_of = |name: &str, value: &str| -> String {
+        if mul_table::is_scalar(name) {
+            format!("float({value})")
+        } else if mul_table::is_matrix(name) {
+            format!("float({value}[0][0])")
+        } else {
+            format!("float({value}.x)")
+        }
+    };
+    let mut names: Vec<&str> = mul_table::MUL_PAIRS
+        .iter()
+        .flat_map(|row| [row.left, row.right])
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    let mut source = mul_table::overload_text();
+    source.push_str("[[vk::binding(0, 0)]] RWStructuredBuffer<float> sink;\n");
+    source.push_str("[shader(\"compute\")]\n[numthreads(1, 1, 1)]\n");
+    source.push_str("void gpu_table_run(uint3 id : SV_DispatchThreadID)\n{\n");
+    for name in &names {
+        source.push_str(&format!(
+            "    {} v_{name} = {};\n",
+            mul_table::slang(name),
+            sample(name)
+        ));
+    }
+    let mut index = 0;
+    for row in mul_table::MUL_PAIRS {
+        let call = format!("__gust_mul(v_{}, v_{})", row.left, row.right);
+        source.push_str(&format!(
+            "    sink[{index}] = {};\n",
+            float_of(row.output, &call)
+        ));
+        index += 1;
+    }
+    // Literals next to a typed operand take its type: `3` beside a `uint` is `uint(3)`, `-3` beside an `int` is `int(-3)`.
+    for (call, output) in [
+        ("__gust_mul(v_UVec3, 3)", "UVec3"),
+        ("__gust_mul(-3, v_IVec4)", "IVec4"),
+        ("__gust_mul(2.0, v_Mat4)", "Mat4"),
+        ("__gust_mul(v_Mat2, 0.5)", "Mat2"),
+        ("__gust_mul(v_Mat3, 2.0)", "Mat3"),
+        ("__gust_mul(2, v_UVec2)", "UVec2"),
+        ("__gust_mul(v_Vec3, 2.0)", "Vec3"),
+        ("__gust_mul(v_u32, 3)", "u32"),
+        ("__gust_mul(3, v_u32)", "u32"),
+        ("__gust_mul(v_i32, -2)", "i32"),
+        ("__gust_mul(-2, v_i32)", "i32"),
+        ("__gust_mul(2, 3)", "i32"),
+    ] {
+        source.push_str(&format!(
+            "    sink[{index}] = {};\n",
+            float_of(output, call)
+        ));
+        index += 1;
+    }
+    source.push_str("}\n");
+    source
+}
+
+/// Every row of the product table, and the literal operands, compile on both targets: a pair the table lists but Slang
+/// cannot resolve fails here, before it can be a slangc error in a user kernel (M6 plan 2.1, the coverage test).
+#[test]
+fn every_row_of_the_product_table_compiles_to_wgsl_and_spirv() {
+    let source = all_pairs_source();
+    assert_eq!(
+        source.matches("sink[").count(),
+        mul_table::MUL_PAIRS.len() + 12
+    );
+    let results = run_parallel(&BOTH_TARGETS, |&target| slangc_takes(&source, target));
+    for (target, result) in BOTH_TARGETS.iter().zip(results) {
+        assert_eq!(result, Ok(()), "{target:?}:\n{source}");
+    }
+    let wgsl = slang::compile_source(&source, "gpu_table_run", Target::Wgsl).unwrap();
+    assert!(String::from_utf8(wgsl).unwrap().contains("@compute"));
 }
 
 /// The `coretests` golden compiles with the pinned slangc to both targets (m5.d3). The golden holds every kernel's

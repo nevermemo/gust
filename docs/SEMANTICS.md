@@ -86,7 +86,12 @@ describes the intended behaviour and is not evidence.
   tail (GUST-E0209), naming the explicit padding fields to write. A value is replaced by
   `HeadlessDevice::write_uniform` (`Queue::write_buffer`: after every earlier submission, before the next, so all
   dispatches of one later submission see the last value) or, ordered among the dispatches of one submission, by the
-  copy node `StagedGraph::write_uniform` (a write of the uniform for the derived edges and the hazard check).
+  copy node `StagedGraph::write_uniform` (a write of the uniform for the derived edges and the hazard check). GPU
+  evidence (exists, m6.g2): `gust-wgpu/tests/uniforms.rs` dispatches, on the RTX 5090, `#[gpu]` kernels with scalar,
+  `Vec4`, `Mat4` and nested-struct uniforms, the golden `tests/fixtures/uniforms.rs` kernel, one `GpuUniform` bound to
+  two kernels, and a graph update between two dispatches, each against an independent host reference and the twin. It
+  also checks that the reflected `constantBuffer` size equals Rust's `size_of` of the element (D17; that check has no
+  host reference).
 - **Not executed by the twin.** Indirect dispatch and staged graphs stay GPU-only. A kernel can opt out explicitly with
   `#[kernel(cpu = "unsupported")]` (D26). The examples that use them carry kernel-level twin evidence only (exists, m3.e2): `staged-graph` and
   `component-pool` run the twin of each of their kernels on the GPU's inputs to that kernel (read back where an earlier kernel produced them), and

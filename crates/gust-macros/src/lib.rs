@@ -6,6 +6,7 @@ mod math_types;
 mod mul_impls;
 mod recover;
 mod slang;
+mod uniform;
 mod validate;
 
 use diagnostics::Code;

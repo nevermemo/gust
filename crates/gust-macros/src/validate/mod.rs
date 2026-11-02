@@ -385,11 +385,15 @@ pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
             _ => None,
         })
         .collect();
+    // The shape of the uniform parameters and of the structs they reach comes before the padding checks: a `Mat2` in
+    // a uniform struct is E0205 whatever else is wrong with its layout.
+    crate::uniform::check_parameters(items)?;
     for item in items {
         if let syn::Item::Struct(item) = item {
             check_padding(item, &structs)?;
         }
     }
+    crate::uniform::check_padding(items)?;
     Ok(())
 }
 
@@ -635,6 +639,9 @@ fn validate_function(
                 ParameterFlavor::StorageRead => {
                     visitor.resources.insert(name.ident.to_string());
                 }
+                ParameterFlavor::Uniform => {
+                    visitor.uniforms.insert(name.ident.to_string());
+                }
                 ParameterFlavor::StorageReadWrite => {
                     visitor.resources.insert(name.ident.to_string());
                     if let Some(element) = rw_buffer_element_type(&argument.ty) {
@@ -713,6 +720,9 @@ struct RestrictedVisitor {
     result_values: HashSet<String>,
     resources: HashSet<String>,
     invocations: HashSet<String>,
+    /// Uniform parameters. They are read field by field only (E0321), and are not in `resources` because `.len()` of
+    /// one is E0306.
+    uniforms: HashSet<String>,
     /// Read-write buffer parameters and their element type, for atomic receivers.
     read_write_buffers: HashMap<String, String>,
     /// Buffer parameters used by an atomic operation in this function.
@@ -734,12 +744,36 @@ impl RestrictedVisitor {
             result_values: HashSet::new(),
             resources: HashSet::new(),
             invocations: HashSet::new(),
+            uniforms: HashSet::new(),
             read_write_buffers: HashMap::new(),
             atomic_buffers: HashSet::new(),
             option_forbidden: None,
             result_forbidden: None,
             loop_depth: 0,
             error: None,
+        }
+    }
+
+    /// Whether `name` is a kernel parameter: a local cannot shadow one.
+    fn is_parameter_name(&self, name: &str) -> bool {
+        self.resources.contains(name)
+            || self.invocations.contains(name)
+            || self.uniforms.contains(name)
+    }
+
+    /// Whether `expression` is a bare use of a uniform parameter, possibly in parentheses.
+    fn is_uniform_parameter(&self, expression: &syn::Expr) -> bool {
+        match expression {
+            syn::Expr::Path(path) => {
+                path.qself.is_none()
+                    && path
+                        .path
+                        .get_ident()
+                        .is_some_and(|name| self.uniforms.contains(&name.to_string()))
+            }
+            syn::Expr::Paren(paren) => self.is_uniform_parameter(&paren.expr),
+            syn::Expr::Group(group) => self.is_uniform_parameter(&group.expr),
+            _ => false,
         }
     }
 
@@ -1315,7 +1349,31 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         visit::visit_expr_method_call(self, call);
     }
 
+    fn visit_expr_field(&mut self, field: &'ast syn::ExprField) {
+        // `params.scale` and `params.view.mul_vec4(p)` read one field of a uniform: the base is not a whole-value use.
+        if self.is_uniform_parameter(&field.base) {
+            return;
+        }
+        visit::visit_expr_field(self, field);
+    }
+
     fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        // Any other use of a uniform parameter by name copies or passes the whole struct: slangc crashes on a whole
+        // struct copy out of a constant buffer on WGSL, and the twin would accept what the GPU cannot compile.
+        if path.qself.is_none()
+            && path
+                .path
+                .get_ident()
+                .is_some_and(|name| self.uniforms.contains(&name.to_string()))
+        {
+            self.reject(
+                Code::UniformWholeValue,
+                path,
+                "a uniform parameter is read one field at a time (`params.scale`, `params.view.mul_vec4(p)`); \
+                 copying or passing the whole struct (`*params`, `let p = params;`) is not supported",
+            );
+            return;
+        }
         // A bare path value must be a single identifier (a local variable or
         // parameter). Multi-segment paths are associated constants or foreign
         // items (e.g. `f32::INFINITY`, `u32::MAX`), which have no Slang lowering.
@@ -1361,7 +1419,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         };
         let text = name.ident.to_string();
-        if self.resources.contains(&text) || self.invocations.contains(&text) {
+        if self.is_parameter_name(&text) {
             self.reject(
                 Code::ShadowedParameter,
                 name,
@@ -1464,7 +1522,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         };
         if let Some(variable) = variable {
             let name = variable.ident.to_string();
-            if self.resources.contains(&name) || self.invocations.contains(&name) {
+            if self.is_parameter_name(&name) {
                 self.reject(
                     Code::ShadowedParameter,
                     variable,
@@ -1544,7 +1602,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 }
                 for name in [ok_name, err_name] {
                     let text = name.ident.to_string();
-                    if self.resources.contains(&text) || self.invocations.contains(&text) {
+                    if self.is_parameter_name(&text) {
                         self.reject(
                             Code::ShadowedParameter,
                             name,
@@ -1625,7 +1683,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_local(&mut self, local: &'ast syn::Local) {
         if let Ok((pattern, _)) = crate::slang::local_binding(&local.pat) {
             let name = pattern.ident.to_string();
-            if self.resources.contains(&name) || self.invocations.contains(&name) {
+            if self.is_parameter_name(&name) {
                 self.reject(
                     Code::ShadowedParameter,
                     local,

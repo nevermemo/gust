@@ -300,15 +300,16 @@ fn a_local_named_true_or_false_is_renamed_so_the_literals_keep_their_meaning() {
 #[test]
 fn the_invocation_and_uniform_parameters_are_renamed_like_every_other_name() {
     let text = emit(
-        "mod m { #[kernel] pub fn run(new: SV_DispatchThreadID, class: ConstantBuffer<uint>, \
-         mut This: RWStructuredBuffer<uint>) { This[new.x] = class; } }",
+        "mod m { pub struct Gain { pub v: uint, pub a: uint, pub b: uint, pub c: uint } \
+         #[kernel] pub fn run(new: SV_DispatchThreadID, class: ConstantBuffer<Gain>, \
+         mut This: RWStructuredBuffer<uint>) { This[new.x] = class.v; } }",
     )
     .unwrap();
     for piece in [
-        "ConstantBuffer<uint> __gust_r_class;",
+        "ConstantBuffer<Gain> __gust_r_class;",
         "RWStructuredBuffer<uint> __gust_r_This;",
         "uint3 __gust_r_new : SV_DispatchThreadID",
-        "__gust_r_This[__gust_r_new.x] = __gust_r_class;",
+        "__gust_r_This[__gust_r_new.x] = __gust_r_class.v;",
     ] {
         assert!(text.contains(piece), "missing `{piece}` in\n{text}");
     }
@@ -454,7 +455,7 @@ fn reserved_prefixes_are_rejected_also_when_raw() {
 /// renamed even if someone blesses the new text.
 #[test]
 fn no_rename_fires_in_the_goldens() {
-    let fixtures: [(&str, &str, &str); 10] = [
+    let fixtures: [(&str, &str, &str); 11] = [
         (
             "atomics",
             include_str!("../../../../tests/fixtures/atomics.rs"),
@@ -499,6 +500,11 @@ fn no_rename_fires_in_the_goldens() {
             "semantics",
             include_str!("../../../../tests/fixtures/semantics.rs"),
             include_str!("../../../../tests/fixtures/semantics.slang"),
+        ),
+        (
+            "uniforms",
+            include_str!("../../../../tests/fixtures/uniforms.rs"),
+            include_str!("../../../../tests/fixtures/uniforms.slang"),
         ),
         (
             "vectors",

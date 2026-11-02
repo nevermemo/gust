@@ -1587,6 +1587,18 @@ fn the_vectors_golden_compiles_to_wgsl_and_spirv() {
     assert_eq!(spirv_capabilities(&spirv), [1]);
 }
 
+/// The uniforms golden (m6.u2): a constant buffer with a nested struct, a `Mat4`, vectors and explicit padding compiles
+/// on both targets of the Slangc tier.
+#[test]
+fn the_uniforms_golden_compiles_to_wgsl_and_spirv() {
+    let golden = include_str!("../../../tests/fixtures/uniforms.slang").replace("\r\n", "\n");
+    let wgsl = slang::compile_source(&golden, "gpu_uniforms_run", Target::Wgsl).unwrap();
+    let wgsl = String::from_utf8(wgsl).unwrap();
+    assert!(wgsl.contains("@compute"), "{wgsl}");
+    let spirv = slang::compile_source(&golden, "gpu_uniforms_run", Target::Spirv).unwrap();
+    assert_eq!(spirv_capabilities(&spirv), [1]);
+}
+
 /// The `OpCapability` operands of a SPIR-V module, found by walking the instructions after the header.
 fn spirv_capabilities(spirv: &[u8]) -> Vec<u32> {
     assert!(

@@ -1956,7 +1956,7 @@ fn the_storage_parameter_count_is_asserted_in_a_non_generic_const() {
     };
     assert!(
         constant.contains(
-            "< add as :: gust :: Kernel > :: DESCRIPTOR . storage_parameter_count () == 3 ,"
+            "< add as :: gust :: Kernel > :: DESCRIPTOR . storage_parameter_count () + < add as :: gust :: Kernel > :: DESCRIPTOR . uniform_parameter_count () == 3 ,"
         ),
         "{constant}"
     );
@@ -1983,23 +1983,93 @@ fn a_kernel_without_storage_parameters_takes_the_device_type_as_a_parameter() {
     assert!(
         output
             .to_string()
-            .contains("storage_parameter_count () == 0 ,")
+            .contains("uniform_parameter_count () == 0 ,")
     );
 }
 
+/// A kernel with a uniform struct (four scalars: padding-free in a constant buffer), a storage input and an output.
+const UNIFORM_KERNEL: &str = "mod odd { \
+    pub struct Settings { pub gain: float, pub bias: float, pub pad0: float, pub pad1: float } \
+    #[kernel] \
+    pub fn run(id: SV_DispatchThreadID, settings: Uniform<Settings>, input: StructuredBuffer<float>, \
+               mut out: RWStructuredBuffer<float>) { \
+        let i = id.x; \
+        if i < out.len() { out[i] = input[i] * settings.gain + settings.bias; } \
+    } \
+}";
+
 #[test]
-fn a_kernel_with_a_uniform_parameter_gets_no_typed_call() {
-    let output = expansion(
-        "mod odd { #[kernel] pub fn run(id: SV_DispatchThreadID, settings: Uniform<float>, \
-         mut out: RWStructuredBuffer<float>) { let i = id.x; if i < out.len() {} } }",
+fn a_kernel_with_a_uniform_parameter_gets_a_typed_call_with_one_argument_per_resource() {
+    let output = expansion(UNIFORM_KERNEL);
+    let item = typed_impl(&output, "run").expect("typed impl of `run`");
+    let (call, parameters) = typed_fn(&item, "call");
+    // Parameter order, the uniform in the place it was declared.
+    assert_eq!(
+        parameters,
+        ["__gust_element_count", "settings", "input", "out"]
     );
-    assert!(typed_impl(&output, "run").is_none());
+    let (_, parameters) = typed_fn(&item, "submit");
+    assert_eq!(
+        parameters,
+        [
+            "__gust_device",
+            "__gust_element_count",
+            "settings",
+            "input",
+            "out"
+        ]
+    );
+    // The uniform is bound read-only, with the kind the bound names.
+    assert!(
+        call.contains(":: gust :: Call :: new (__gust_element_count , [")
+            && call.contains("settings) . bind (:: gust :: Access :: ReadOnly)"),
+        "{call}"
+    );
     let text = output.to_string();
-    // The handle and its descriptor are unchanged.
-    assert!(text.contains("impl :: gust :: Kernel for run"));
     assert!(text.contains("ParameterKind :: Uniform"));
-    assert!(!text.contains("fn call"));
-    assert!(!text.contains("storage_parameter_count"));
+    // Three resources: the arity of the call and of the descriptor assertion count storage plus uniform.
+    assert!(call.contains("Self , 3 >"), "{call}");
+}
+
+/// Every generated bound names the kind of its parameter (D57), so a uniform where a buffer is expected, or a buffer
+/// where a uniform is, is a compile error. The `tests/ui` case `typed-call-kind-mismatch` is the compile-level half.
+#[test]
+fn every_generated_bound_names_the_kind_of_its_parameter() {
+    let text = expansion(UNIFORM_KERNEL).to_string();
+    let bound = |element: &str, kind: &str| {
+        format!(
+            "Resource < Element = {element} , Device = < __GustR0 as :: gust :: Resource > :: Device , Kind = :: gust :: kind :: {kind} >"
+        )
+    };
+    assert!(
+        text.contains("__GustR0 : :: gust :: Resource < Element = Settings , Kind = :: gust :: kind :: Uniform >"),
+        "{text}"
+    );
+    assert!(text.contains(&bound("float", "Storage")), "{text}");
+    // Three bounds per function, one function each for `call`, `submit` and `dispatch`: the uniform once, two storage.
+    assert_eq!(count(&text, "kind :: Uniform >"), 3, "{text}");
+    assert_eq!(count(&text, "kind :: Storage >"), 6, "{text}");
+    // No bound without a kind.
+    assert_eq!(count(&text, "Resource < Element ="), 9, "{text}");
+}
+
+#[test]
+fn the_call_arity_assertion_counts_storage_and_uniform_parameters() {
+    let text = expansion(UNIFORM_KERNEL).to_string();
+    assert!(
+        text.contains(
+            "< run as :: gust :: Kernel > :: DESCRIPTOR . storage_parameter_count () + < run as :: gust :: Kernel > :: DESCRIPTOR . uniform_parameter_count () == 3 ,"
+        ),
+        "{text}"
+    );
+    // A kernel with only a uniform: the count is one, and the first resource is the uniform.
+    let only = expansion(
+        "mod odd { pub struct Settings { pub gain: float, pub bias: float, pub pad0: float, pub pad1: float } \
+         #[kernel] pub fn run(id: SV_DispatchThreadID, settings: Uniform<Settings>) { \
+         let i = id.x; if settings.gain > 0.0 && i < 1u32 {} } }",
+    )
+    .to_string();
+    assert!(only.contains("uniform_parameter_count () == 1 ,"), "{only}");
 }
 
 #[test]
@@ -2045,7 +2115,10 @@ fn the_element_type_is_the_type_written_in_the_module() {
     );
     let item = typed_impl(&output, "step").unwrap();
     let (call, _) = typed_fn(&item, "call");
-    assert!(call.contains("Resource < Element = Particle >"), "{call}");
+    assert!(
+        call.contains("Resource < Element = Particle , Kind = :: gust :: kind :: Storage >"),
+        "{call}"
+    );
     assert!(
         call.contains("Resource < Element = super :: Outside ,"),
         "{call}"
@@ -2073,15 +2146,13 @@ fn the_handle_and_its_calls_document_the_rules_users_hit() {
     .to_string();
     assert!(nothing.contains("call::<Device>(..)"), "{nothing}");
 
-    let uniform = expansion(
-        "mod odd { #[kernel] pub fn run(id: SV_DispatchThreadID, settings: Uniform<float>, \
-         mut out: RWStructuredBuffer<float>) { let i = id.x; if i < out.len() {} } }",
-    )
-    .to_string();
+    let uniform = expansion(UNIFORM_KERNEL).to_string();
     assert!(
-        uniform.contains("has a uniform parameter, so it has no typed"),
+        uniform
+            .contains("one argument per storage buffer or uniform parameter, in parameter order"),
         "{uniform}"
     );
+    assert!(!uniform.contains("has no typed"), "{uniform}");
 }
 
 // ---- CPU twin (roadmap M3, slice m3.c): the `impl Run<kernel, N> for gust::cpu::CpuDevice` ----
@@ -2261,15 +2332,35 @@ fn a_kernel_without_storage_parameters_gets_a_twin_over_no_bindings() {
 }
 
 #[test]
-fn a_uniform_kernel_gets_no_twin() {
-    let text = expansion(
-        "mod odd { #[kernel] pub fn run(id: SV_DispatchThreadID, settings: Uniform<float>, \
-         mut out: RWStructuredBuffer<float>) { let i = id.x; if i < out.len() {} } }",
-    )
-    .to_string();
-    assert!(!text.contains("impl :: gust :: Run"), "{text}");
-    assert!(!text.contains("any (test , gust_dual)"), "{text}");
-    assert!(!text.contains("CpuDevice"), "{text}");
+fn a_uniform_kernel_gets_a_twin_that_reads_the_uniform_by_copy() {
+    let text = expansion(UNIFORM_KERNEL).to_string();
+    // Three bindings, the uniform first; it is read once, by copy, and each invocation gets `Uniform(copy)`.
+    assert!(
+        text.contains("impl :: gust :: Run < run , 3 > for :: gust :: cpu :: CpuDevice"),
+        "{text}"
+    );
+    assert!(text.contains(TWIN_CFG), "{text}");
+    assert!(
+        text.contains("let [settings , input , out] = * __gust_call . bindings () ;"),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "let settings = :: gust :: cpu :: read_uniform :: < Settings > (settings , \"settings\") ? ;"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            ":: gust :: cpu :: FromGlobalId > :: from_global_id (__gust_id) , :: gust :: Uniform (settings) , :: gust :: Storage :: new (& input) , :: gust :: StorageMut :: new (& mut out))"
+        ),
+        "{text}"
+    );
+    // The opt-out still removes the twin of a kernel with a uniform.
+    let opted_out =
+        expansion(&UNIFORM_KERNEL.replace("#[kernel]", "#[kernel(cpu = \"unsupported\")]"))
+            .to_string();
+    assert!(!opted_out.contains("impl :: gust :: Run"), "{opted_out}");
 }
 
 // ---- the build profile (roadmap M5, slice m5.e1): `cpu` makes the CPU impl production code ----
@@ -2397,16 +2488,27 @@ fn kernels_without_a_twin_have_none_under_cpu_either() {
             if i < out.len() { out[i] = a[i] + b[i]; } \
         } \
     }";
-    // A uniform parameter: no typed call, so no CPU path until M6 (D40).
-    let uniform = "mod odd { #[kernel] pub fn run(id: SV_DispatchThreadID, settings: Uniform<float>, \
-         mut out: RWStructuredBuffer<float>) { let i = id.x; if i < out.len() {} } }";
-    for source in [opted_out, uniform] {
-        let cpu = expansion_for(source, Profile::Cpu).to_string();
-        let other = expansion_for(source, Profile::Other).to_string();
-        assert!(!cpu.contains("impl :: gust :: Run"), "{cpu}");
-        assert!(!cpu.contains(":: cpu :: CpuDevice"), "{cpu}");
-        assert_eq!(squeezed(&cpu), squeezed(&other));
-    }
+    let cpu = expansion_for(opted_out, Profile::Cpu).to_string();
+    let other = expansion_for(opted_out, Profile::Other).to_string();
+    assert!(!cpu.contains("impl :: gust :: Run"), "{cpu}");
+    assert!(!cpu.contains(":: cpu :: CpuDevice"), "{cpu}");
+    assert_eq!(squeezed(&cpu), squeezed(&other));
+}
+
+/// A uniform parameter is no reason for a kernel to lack a twin since D57: under `cpu` it is the same ungated impl.
+#[test]
+fn a_uniform_kernel_has_an_ungated_twin_under_cpu() {
+    let text = expansion_for(UNIFORM_KERNEL, crate::expand::Profile::Cpu).to_string();
+    assert_eq!(text.matches(UNGATED_IMPL).count(), 1, "{text}");
+    assert!(
+        text.contains("impl :: gust :: Run < run , 3 > for :: gust :: cpu :: CpuDevice"),
+        "{text}"
+    );
+    assert!(
+        text.contains(":: gust :: cpu :: read_uniform :: < Settings >"),
+        "{text}"
+    );
+    assert!(!text.contains(TWIN_CFG), "{text}");
 }
 
 #[test]
@@ -2746,25 +2848,49 @@ fn the_element_asserts_are_non_generic_consts_and_kernels_without_storage_have_n
 }
 
 #[test]
-fn a_kernel_with_a_uniform_parameter_still_asserts_its_storage_elements() {
+fn a_kernel_with_a_uniform_parameter_asserts_its_storage_elements_and_its_uniform() {
     let text = expansion(
-        "mod odd { #[kernel] pub fn run(id: SV_DispatchThreadID, settings: Uniform<float>, \
+        "mod odd { pub struct Settings { pub gain: float, pub bias: float, pub pad0: float, pub pad1: float } \
+         #[kernel] pub fn run(id: SV_DispatchThreadID, settings: Uniform<Settings>, \
          mut out: RWStructuredBuffer<int>) { let i = id.x; if i < out.len() {} } }",
     )
     .to_string();
     assert_eq!(
         count(&text, "layout does not match its Rust representation"),
-        1,
+        2,
         "{text}"
     );
+    // The storage element is parameter 2 and is checked as StorageV2 ...
     assert!(
         text.contains(
             "< run as :: gust :: Kernel > :: DESCRIPTOR . parameters [2] . resource_layout"
         ),
         "{text}"
     );
-    // The uniform parameter is not a storage element.
-    assert!(!text.contains("size_of :: < float > ()"), "{text}");
+    assert!(text.contains("size_of :: < int > ()"), "{text}");
+    // ... and the uniform, parameter 1, as Std140V1.
+    assert!(
+        text.contains(
+            "< run as :: gust :: Kernel > :: DESCRIPTOR . parameters [1] . resource_layout"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "matches ! (__gust_layout . rules , :: gust :: ShaderLayoutRules :: Std140V1)"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("is_std140_v1 ()"), "{text}");
+    assert!(
+        text.contains("GUST Std140V1: uniform element `Settings` layout does not match its Rust representation (parameter `settings` of kernel `run`)"),
+        "{text}"
+    );
+    // The descriptor of the uniform is Std140V1 always.
+    assert!(
+        text.contains("resource_layout : Some (:: gust :: ResourceLayout :: std140_v1 ("),
+        "{text}"
+    );
 }
 
 #[test]
@@ -3422,6 +3548,373 @@ fn implicit_padding_in_a_struct_is_e0208() {
         "out[i] = 1.0;",
     ))
     .unwrap();
+}
+
+// ---- uniforms (M6, slice m6.u2) ----
+
+/// A module with `items` and one kernel `run` that reads the uniform `u: Uniform<S>` into `out` of `float`.
+fn uniform_module(items: &str, body: &str) -> String {
+    format!(
+        "mod m {{ {items} #[kernel] pub fn run(id: SV_DispatchThreadID, u: Uniform<S>, \
+         mut out: RWStructuredBuffer<float>) {{ let i = id.x; {body} }} }}"
+    )
+}
+
+#[test]
+fn a_uniform_element_that_is_not_a_module_struct_is_e0206() {
+    for element in [
+        "float",
+        "uint",
+        "Vec4",
+        "Mat4",
+        "Elsewhere",
+        "super::Outside",
+        "r#float",
+    ] {
+        for wrapper in ["Uniform", "ConstantBuffer"] {
+            assert_rejected(
+                &format!(
+                    "mod m {{ struct S {{ a: f32, b: f32, c: f32, d: f32 }} \
+                     #[kernel] pub fn run(id: SV_DispatchThreadID, u: {wrapper}<{element}>, \
+                     mut out: RWStructuredBuffer<float>) {{ let i = id.x; }} }}"
+                ),
+                Code::UniformElement,
+            );
+        }
+    }
+    // The message names the fix.
+    let message = translate(
+        "mod m { #[kernel] pub fn run(id: SV_DispatchThreadID, u: Uniform<float>, \
+         mut out: RWStructuredBuffer<float>) { let i = id.x; } }",
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(message.contains("`Uniform<Params>`"), "{message}");
+    // A struct of the module, in either spelling, is the one thing that works.
+    for wrapper in ["Uniform", "ConstantBuffer"] {
+        translate(&format!(
+            "mod m {{ struct S {{ a: f32, b: f32, c: f32, d: f32 }} \
+             #[kernel] pub fn run(id: SV_DispatchThreadID, u: {wrapper}<S>, \
+             mut out: RWStructuredBuffer<float>) {{ let i = id.x; out[i] = u.a; }} }}"
+        ))
+        .unwrap();
+    }
+}
+
+#[test]
+fn a_struct_reachable_from_a_uniform_and_a_storage_element_is_e0207() {
+    let four = "a: f32, b: f32, c: f32, d: f32";
+    for (items, kernel) in [
+        // The same struct as the uniform and as a storage element of one kernel.
+        (
+            format!("struct S {{ {four} }}"),
+            "pub fn run(id: SV_DispatchThreadID, u: Uniform<S>, b: StructuredBuffer<S>, mut out: RWStructuredBuffer<float>) { out[id.x] = u.a; }",
+        ),
+        // Through a field of the uniform struct.
+        (
+            format!("struct Inner {{ {four} }} struct S {{ inner: Inner }}"),
+            "pub fn run(id: SV_DispatchThreadID, u: Uniform<S>, b: StructuredBuffer<Inner>, mut out: RWStructuredBuffer<float>) { out[id.x] = u.inner.a; }",
+        ),
+        // Through a field of the storage struct.
+        (
+            format!(
+                "struct Inner {{ {four} }} struct Wrap {{ inner: Inner }} struct S {{ {four} }}"
+            ),
+            "pub fn run(id: SV_DispatchThreadID, u: Uniform<Inner>, b: RWStructuredBuffer<Wrap>) { }",
+        ),
+    ] {
+        let source = format!("mod m {{ {items} #[kernel] {kernel} }}");
+        assert_rejected(&source, Code::UniformAndStorageStruct);
+    }
+    // Two kernels of one module count: the struct is reachable from a uniform in one and a storage element in another.
+    assert_rejected(
+        &format!(
+            "mod m {{ struct S {{ {four} }} \
+             #[kernel] pub fn run(id: SV_DispatchThreadID, u: Uniform<S>, mut out: RWStructuredBuffer<float>) {{ }} \
+             #[kernel] pub fn other(id: SV_DispatchThreadID, b: StructuredBuffer<S>, mut out: RWStructuredBuffer<float>) {{ }} }}"
+        ),
+        Code::UniformAndStorageStruct,
+    );
+    // The message names the struct and the fix.
+    let message = translate(&format!(
+        "mod m {{ struct S {{ {four} }} #[kernel] pub fn run(id: SV_DispatchThreadID, u: Uniform<S>, \
+         b: StructuredBuffer<S>, mut out: RWStructuredBuffer<float>) {{ }} }}"
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(
+        message.contains("`S`") && message.contains("declare a separate struct"),
+        "{message}"
+    );
+    // Separate structs are fine, and so is one struct used by two uniforms.
+    translate(&format!(
+        "mod m {{ struct S {{ {four} }} struct P {{ {four} }} \
+         #[kernel] pub fn run(id: SV_DispatchThreadID, u: Uniform<S>, v: Uniform<S>, b: StructuredBuffer<P>, \
+         mut out: RWStructuredBuffer<float>) {{ out[id.x] = u.a + v.b; }} }}"
+    ))
+    .unwrap();
+}
+
+#[test]
+fn mat2_and_bool_in_a_struct_a_uniform_reaches_are_e0205() {
+    for (items, field) in [
+        ("", "m: Mat2, v: Vec2"),
+        ("", "v: Vec2, m: Mat2"),
+        ("", "a: f32, b: bool, c: f32, d: f32"),
+        // Through a nested module struct.
+        ("struct Inner { m: Mat2, v: Vec2 }", "i: Inner, v: Vec4"),
+        ("struct Inner { m: Mat2, v: Vec2 }", "v: Vec4, i: Inner"),
+    ] {
+        assert_rejected(
+            &uniform_module(&format!("{items} struct S {{ {field} }}"), "out[i] = 1.0;"),
+            Code::UniformFieldType,
+        );
+    }
+    let message = translate(&uniform_module(
+        "struct S { m: Mat2, v: Vec2 }",
+        "out[i] = 1.0;",
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(
+        message.contains("`Mat2`") && message.contains("Mat4"),
+        "{message}"
+    );
+    // As a storage element, or in a struct no uniform reaches, a `Mat2` is fine (StorageV2).
+    translate(
+        "mod m { struct S { m: Mat2, v: Vec2 } #[kernel] pub fn run(id: SV_DispatchThreadID, \
+         b: StructuredBuffer<S>, mut out: RWStructuredBuffer<float>) { out[id.x] = b[id.x].v.x; } }",
+    )
+    .unwrap();
+    // A 4x4 matrix is the matrix a uniform may hold.
+    translate(&uniform_module(
+        "struct S { m: Mat4 }",
+        "out[i] = u.m.mul_vec4(Vec4::splat(1.0)).x;",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn std140_padding_in_a_struct_a_uniform_reaches_is_e0209() {
+    let four = "x: f32, y: f32, z: f32, w: f32";
+    for (items, fields) in [
+        // A tail: the size rounds up to 16 (a struct with a 16-aligned field is E0208 first: Rust pads it too).
+        ("", "a: f32"),
+        ("", "a: Vec2"),
+        ("", "a: f32, b: f32, c: f32"),
+        ("", "a: Vec2, b: Vec2, c: Vec2"),
+        // A gap a nested struct causes (it has alignment 16 in a constant buffer, 4 in Rust).
+        (
+            "struct Inner { x: f32, y: f32, z: f32, w: f32 }",
+            "a: f32, inner: Inner",
+        ),
+        // The nested struct is itself padded.
+        (
+            "struct Inner { x: f32, y: f32, z: f32 }",
+            "inner: Inner, a: f32",
+        ),
+    ] {
+        assert_rejected(
+            &uniform_module(&format!("{items} struct S {{ {fields} }}"), "out[i] = 1.0;"),
+            Code::UniformPadding,
+        );
+    }
+    // The gap message names the field, the offset and the explicit padding to write.
+    let gap = translate(&uniform_module(
+        &format!("struct Inner {{ {four} }} struct S {{ a: f32, inner: Inner }}"),
+        "out[i] = 1.0;",
+    ))
+    .unwrap_err()
+    .to_string();
+    for needle in [
+        "`inner` of `S`",
+        "byte 16",
+        "12 bytes",
+        "ends at byte 4",
+        "3 `f32` fields",
+    ] {
+        assert!(gap.contains(needle), "{needle}: {gap}");
+    }
+    // The tail message names the struct, its rounded size and the padding.
+    let tail = translate(&uniform_module("struct S { a: Vec2 }", "out[i] = 1.0;"))
+        .unwrap_err()
+        .to_string();
+    for needle in [
+        "`S` ends at byte 8",
+        "rounded up to 16 bytes",
+        "8 bytes",
+        "2 `f32` fields",
+    ] {
+        assert!(tail.contains(needle), "{needle}: {tail}");
+    }
+    let one = translate(&uniform_module(
+        "struct S { a: f32, b: f32, c: f32 }",
+        "out[i] = 1.0;",
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(
+        one.contains("4 bytes") && one.contains("one `f32` field"),
+        "{one}"
+    );
+
+    // Padding-free in a constant buffer: whole 16-byte rows, vectors that pack, a nested struct that fills its rows.
+    for (items, fields) in [
+        ("", "a: f32, b: f32, c: f32, d: f32"),
+        ("", "v: Vec4"),
+        ("", "a: Vec2, b: Vec2"),
+        ("", "a: Vec2, b: f32, c: f32"),
+        ("", "m: Mat4, v: Vec4, a: f32, b: u32, c: i32, d: f32"),
+        ("", "a: u32, b: i32, v: IVec2, u: UVec2, c: f32, d: f32"),
+        (
+            "struct Inner { x: f32, y: f32, z: f32, w: f32 }",
+            "inner: Inner, v: Vec4",
+        ),
+        (
+            "struct Inner { x: f32, y: f32, z: f32, w: f32 }",
+            "v: Vec4, inner: Inner, a: Vec2, b: Vec2",
+        ),
+    ] {
+        translate(&uniform_module(
+            &format!("{items} struct S {{ {fields} }}"),
+            "out[i] = 1.0;",
+        ))
+        .unwrap_or_else(|error| panic!("{items} {fields}: {error}"));
+    }
+    // The rule is for structs a uniform reaches: the same padded struct is fine as a storage element, and in a
+    // struct no kernel parameter reaches.
+    translate(
+        "mod m { struct P { a: f32 } struct Q { a: f32, b: f32, c: f32 } \
+         #[kernel] pub fn run(id: SV_DispatchThreadID, b: StructuredBuffer<P>, mut out: RWStructuredBuffer<float>) { \
+         out[id.x] = b[id.x].a; } }",
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_uniform_parameter_is_read_one_field_at_a_time_e0321() {
+    let ok = "struct S { a: f32, b: f32, c: f32, d: f32 }";
+    for body in [
+        "let p = u; out[i] = 1.0;",
+        "let p = *u; out[i] = 1.0;",
+        "out[i] = (*u).a;",
+        "out[i] = (u).a + helper(u);",
+        "let p = (u); out[i] = 1.0;",
+    ] {
+        assert_rejected(
+            &uniform_module(&format!("{ok} fn helper(s: f32) -> f32 {{ s }}"), body),
+            Code::UniformWholeValue,
+        );
+    }
+    // `.len()` of a uniform stays E0306, and a local cannot shadow the parameter.
+    assert_rejected(
+        &uniform_module(ok, "out[i] = u.len() as f32;"),
+        Code::LenReceiver,
+    );
+    assert_rejected(
+        &uniform_module(ok, "let u = 1.0; out[i] = u;"),
+        Code::ShadowedParameter,
+    );
+    // Field reads, nested field reads and method calls on a field are the uses that work.
+    let source = translate(&uniform_module(
+        "struct Inner { m: Mat4 } struct S { inner: Inner, v: Vec4 }",
+        "out[i] = u.inner.m.mul_vec4(u.v).x + (u).v.y;",
+    ))
+    .unwrap();
+    assert!(source.contains("mul(u.inner.m, u.v)"), "{source}");
+    assert!(source.contains("(u).v.y"), "{source}");
+}
+
+#[test]
+fn a_struct_a_uniform_reaches_is_repr_c_align_16_with_std140_asserts() {
+    let text = expansion(UNIFORM_KERNEL).to_string();
+    assert!(
+        text.contains("# [repr (C , align (16))] # [derive (Clone , Copy)] pub struct Settings"),
+        "{text}"
+    );
+    // The model the macro computed is named in each message: offsets 0, 4, 8, 12 and the size 16.
+    for (field, offset) in [("gain", 0), ("bias", 4), ("pad0", 8), ("pad1", 12)] {
+        assert!(
+            text.contains(&format!(
+                "GUST Std140V1: field `{field}` of `Settings` is not at byte {offset} of the constant-buffer layout"
+            )),
+            "{field}: {text}"
+        );
+    }
+    assert!(
+        text.contains(
+            "GUST Std140V1: `Settings` is not 16 bytes, the size of its constant-buffer layout"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("GUST Std140V1: `Settings` layout is not Std140V1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("GUST Std140V1: `Settings` has padding"),
+        "{text}"
+    );
+    assert!(text.contains("is_std140_v1 ()"), "{text}");
+    // The struct is not asserted as StorageV2.
+    assert!(
+        !text.contains("`Settings` layout is not StorageV2"),
+        "{text}"
+    );
+    // A nested struct is reached through its field and gets the same attribute; a storage struct keeps `repr(C)`.
+    let nested = expansion(
+        "mod m { struct Inner { x: f32, y: f32, z: f32, w: f32 } struct S { inner: Inner, v: Vec4 } \
+         struct P { a: f32, b: f32 } \
+         #[kernel] pub fn run(id: SV_DispatchThreadID, u: Uniform<S>, b: StructuredBuffer<P>, \
+         mut out: RWStructuredBuffer<float>) { out[id.x] = u.inner.x + b[id.x].a; } }",
+    )
+    .to_string();
+    for name in ["Inner", "S"] {
+        assert!(
+            nested.contains(&format!(
+                "# [repr (C , align (16))] # [derive (Clone , Copy)] struct {name}"
+            )),
+            "{name}: {nested}"
+        );
+    }
+    assert!(
+        nested.contains("# [repr (C)] # [derive (Clone , Copy)] struct P"),
+        "{nested}"
+    );
+    assert!(nested.contains("`P` layout is not StorageV2"), "{nested}");
+}
+
+#[test]
+fn the_uniforms_golden_expands_with_the_model_offsets() {
+    let text = expansion(include_str!("../../../../tests/fixtures/uniforms.rs")).to_string();
+    // `Frame`: view 0, tint 64, light 80, offset 112, scale 120, count 124, 128 bytes.
+    for (field, offset) in [
+        ("view", 0),
+        ("tint", 64),
+        ("light", 80),
+        ("offset", 112),
+        ("scale", 120),
+        ("count", 124),
+    ] {
+        assert!(
+            text.contains(&format!(
+                "field `{field}` of `Frame` is not at byte {offset} of the constant-buffer layout"
+            )),
+            "{field}: {text}"
+        );
+    }
+    assert!(text.contains("`Frame` is not 128 bytes"), "{text}");
+    assert!(text.contains("`Light` is not 32 bytes"), "{text}");
+}
+
+#[test]
+fn uniforms_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/uniforms.rs")).unwrap();
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "uniforms.slang",
+        &include_str!("../../../../tests/fixtures/uniforms.slang").replace("\r\n", "\n"),
+    );
 }
 
 #[test]

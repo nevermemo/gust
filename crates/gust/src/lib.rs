@@ -167,17 +167,17 @@ pub use reflect::{
     cross_check_pod,
 };
 pub use runtime::{
-    Invocation, RWStructuredBuffer, SV_DispatchThreadID, Storage, StorageMut, StructuredBuffer,
-    UVec3, Uniform, atomic_add, atomic_compare_exchange, atomic_exchange, atomic_max, atomic_min,
-    float, int, uint,
+    ConstantBuffer, Invocation, RWStructuredBuffer, SV_DispatchThreadID, Storage, StorageMut,
+    StructuredBuffer, UVec3, Uniform, atomic_add, atomic_compare_exchange, atomic_exchange,
+    atomic_max, atomic_min, float, int, uint,
 };
 
 /// Names automatically imported into every `#[gpu]` module.
 pub mod prelude {
     pub use crate::math::{IVec2, IVec4, Mat2, Mat3, Mat4, UVec2, UVec4, Vec2, Vec3, Vec4};
     pub use crate::{
-        Invocation, RWStructuredBuffer, SV_DispatchThreadID, Storage, StorageMut, StructuredBuffer,
-        UVec3, Uniform, atomic_add, atomic_compare_exchange, atomic_exchange, atomic_max,
-        atomic_min, float, int, uint,
+        ConstantBuffer, Invocation, RWStructuredBuffer, SV_DispatchThreadID, Storage, StorageMut,
+        StructuredBuffer, UVec3, Uniform, atomic_add, atomic_compare_exchange, atomic_exchange,
+        atomic_max, atomic_min, float, int, uint,
     };
 }

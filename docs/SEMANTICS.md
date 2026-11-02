@@ -323,6 +323,42 @@ third set (scale 0.1, offset 0.3) is the one that rounds. A decision on a float 
 exact only while no value lies within the bound of its threshold; the typed-pipeline test checks that on the data it
 uses, and a different input set could make the targets disagree on `severity`, as the ledger's float rows allow.
 
+**Vectors and matrices (slice m6.g1).** The component-wise operators, `dot`, `mul_vec4` and the matrix products are
+the scalar operations above applied lane by lane, so no new per-operation constant exists: a component-wise `+ - *`
+is one rounding per lane (twin `u`, GPU `2u`, times the result's magnitude), `/` is `u` and `5u`, and negation,
+`transpose`, swizzles, constructors, `from_cols` and `from_rows` move bits and are exact. A dot product and one
+element of a matrix product (`m * v`, `m * m`, `mul_vec4`, `transpose(m) * v`) are sums of N products and take the
+derivation of the doc comment of `crates/gust-wgpu/tests/vectors.rs`, over the worst grouping on the GPU side. The
+test compares the GPU, the twin and an independent `f64` host reference, with integers exact.
+
+| Operation (operands of magnitude at most 1 unless stated) | Derived twin | Derived GPU | Asserted twin, GPU | Observed twin versus GPU |
+| --- | --- | --- | --- | --- |
+| `a + b`, `a - b` per lane, `abs(r)` at most 2.5 | 2.5u | 5u | 2.5u, 5u | 0 |
+| `a * b`, `a * k`, `k * a` per lane, `abs(r)` at most 1.5 | 1.5u | 3u | 1.5u, 3u | 0 |
+| `a / b`, `a / k` per lane, `abs(r)` at most 2 | 2u | 10u | 2u, 10u | 2u |
+| `dot`, `m * v`, `mul_vec4`, one element of `m * m`, N = 4 | 13u | 26u | 14u, 27u | 4u |
+| the same with N = 3 (`Mat3`) | 8u | 16u | 9u, 17u | 4u |
+| the same with N = 2 (`Mat2`, `Vec2` dot) | 4u | 8u | 5u, 9u | 2u |
+| `-v`, `transpose`, swizzles, `from_cols`, `from_rows`, integer vector operators | 0 | 0 | exact | 0 |
+
+The last column is an observation on the RTX 5090 (debug profile, 2026-11-02), printed by `vectors` with
+`--nocapture`; it is not a tolerance. A matrix product through a struct field and the `Vec4`/`Mat4` fields of a
+`#[repr(C)]` struct (112 bytes, no padding) use the same bounds.
+
+**Limitation (D39): constant `Mat2::IDENTITY` and `Mat3::IDENTITY` on the SPIR-V pipeline.** On slangc 2026.20 a
+kernel that multiplies by a compile-time constant `float2x2` or `float3x3` (what `Mat2::IDENTITY` and
+`Mat3::IDENTITY` lower to) emits SPIR-V that crashes the process (segmentation fault, exit 139 in a probe harness
+on the RTX 5090) when wgpu ingests it through naga's SPIR-V front end. The same source is correct as WGSL, correct
+through SPIR-V passthrough, correct with a runtime `float3x3`, and correct for a constant `float4x4`. The executed
+route of `gust-wgpu` is WGSL, which is why the `vectors` test uses the constants. The exported SPIR-V of that module
+is valid (`spirv-val`, vulkan1.2, checked by hand for the six kernels of `vectors`) but must not be dispatched through
+the SPIR-V ingestion path. This is a difference of toolchain behavior, documented and not chased.
+
+**Limitation (D39): matrix negation on the WGSL route.** `-m` for a `Mat4` is emitted by slangc to WGSL as
+`mat4x4(0) - m`, which naga rejects when the module is created. The failure is loud (a pipeline error, no wrong
+result), so it is a limitation and not a mismatch; build the negated matrix with `Mat4::from_cols` from negated
+vectors. The vector negation `-v` is correct on both routes and is tested.
+
 ## 5. Memory preconditions
 
 A kernel is inside the contract only if both of these hold. A sequential CPU twin hides violations of the second.

@@ -156,8 +156,8 @@ pub enum Error {
         extent: [u64; 3],
         reason: &'static str,
     },
-    /// `set_default_options` was called after the default device had been opened (or had been asked for): the
-    /// options can no longer change what it was opened with.
+    /// `set_default_options` was called after the default device had been opened successfully: the options can no
+    /// longer change what it was opened with. (After a failed open they can still be set, and the next call retries.)
     DefaultDeviceOpened,
 }
 

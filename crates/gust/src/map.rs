@@ -1,8 +1,9 @@
 //! The device side of the element-wise map calls (M7, D60): what a backend offers so that one generic algorithm can
 //! upload slices, run a kernel and read the result back, and the error such a call returns.
 //!
-//! [`MapHost`] is implemented by `gust_wgpu::HeadlessDevice` (native) and by [`crate::cpu::CpuDevice`] (the map slice,
-//! m7.a1). It extends [`TypedDevice`] with three things a map call needs and a typed `Run` does not have: allocation
+//! [`MapHost`] is implemented by `gust_wgpu::HeadlessDevice` (native and `wasm32`) and by
+//! [`crate::cpu::CpuDevice`] (the map slice, m7.a1).
+//! It extends [`TypedDevice`] with three things a map call needs and a typed `Run` does not have: allocation
 //! and upload, a zeroed output, and readback. Nothing here names a backend, so `gust` depends on no GPU crate and a
 //! `GUST_PROFILE=cpu` build keeps no GPU API (D21). The trait is generic, not `dyn`: the generated `map_on` is
 //! generic over the device and `map` instantiates it with the build's concrete device type.
@@ -17,10 +18,13 @@ use crate::{GpuPod, Resource, TypedDevice};
 
 /// A device that can hold the buffers of a map call: upload, a zeroed output, readback.
 ///
+/// The backend's error is bounded (`Error + Send + Sync + 'static`) so the generic map calls can box it into
+/// [`Error::Device`] without further where clauses.
+///
 /// The buffer type is the device's own typed resource, so a generated `Run` can bind it without conversion. Lengths
 /// are `u32` because a map call's element count is (a longer slice is [`Error::TooLong`] before the device is
 /// touched).
-pub trait MapHost: TypedDevice {
+pub trait MapHost: TypedDevice<Error: error::Error + Send + Sync + 'static> {
     /// The device's buffer for a vector of `T`: a [`Resource`] of this very device, so a call can take it.
     type Buffer<T: GpuPod>: Resource<Element = T, Device = Self>;
 
@@ -31,8 +35,18 @@ pub trait MapHost: TypedDevice {
     fn zeroed<T: GpuPod>(&self, len: u32) -> Result<Self::Buffer<T>, Self::Error>;
 
     /// Copy the buffer's elements to the host. Blocks until the device is done with every earlier submission that
-    /// wrote the buffer.
+    /// wrote the buffer. Not available on `wasm32`, where nothing may block (D69): use
+    /// [`readback_async`](Self::readback_async).
+    #[cfg(not(target_arch = "wasm32"))]
     fn readback<T: GpuPod>(&self, buffer: &Self::Buffer<T>) -> Result<Vec<T>, Self::Error>;
+
+    /// [`readback`](Self::readback) without blocking, on every target. In the browser a plain `.await` completes it;
+    /// on a native GPU device the future completes only while something polls the device (each poll of the future
+    /// polls it once), so a native caller drives it in a loop.
+    fn readback_async<T: GpuPod>(
+        &self,
+        buffer: &Self::Buffer<T>,
+    ) -> impl core::future::Future<Output = Result<Vec<T>, Self::Error>>;
 }
 
 /// The error of a map call. Profile-stable: every build reports the same variants, whichever device ran.

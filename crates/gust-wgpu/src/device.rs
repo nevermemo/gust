@@ -39,6 +39,12 @@ pub enum AdapterChoice {
 }
 
 /// Which limits [`HeadlessDevice::with_options`] asks the adapter for.
+///
+/// `LimitsPolicy::default()` is [`Default`](Self::Default), wgpu's portable limits. It is not what
+/// `DeviceOptions::default().limits` holds: on native that is [`Adapter`](Self::Adapter), so the process's
+/// [`default_device`] allows storage bindings up to the adapter's size (2 GiB on the adapters measured in S7.6),
+/// where the browser allows 128 MiB. A program that must behave the same on both sets
+/// [`Default`](Self::Default) through [`set_default_options`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub enum LimitsPolicy {
     /// wgpu's default limits (what [`HeadlessDevice::new`] requests): 256 MiB buffers, 128 MiB storage bindings,
@@ -71,7 +77,9 @@ impl LimitsPolicy {
 ///
 /// `DeviceOptions::default()` is what [`default_device`] opens: Vulkan (the browser's WebGPU on `wasm32`), the
 /// high-performance adapter, and on native the adapter's own limits ([`LimitsPolicy::Adapter`], S7.6 outcome A). It
-/// differs from [`HeadlessDevice::new`], which keeps requesting wgpu's default limits.
+/// differs from [`HeadlessDevice::new`], which keeps requesting wgpu's default limits, and from
+/// `LimitsPolicy::default()`, which is [`LimitsPolicy::Default`]: native `default_device()` allows storage bindings
+/// of the adapter's size (2 GiB measured), the browser's only 128 MiB.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceOptions {
     pub backends: wgpu::Backends,
@@ -194,8 +202,9 @@ impl HeadlessDevice {
     /// Create a buffer inside an out-of-memory error scope. The scope is already popped: the returned future
     /// resolves to what it caught. `bytes` is checked against `max_buffer_size` first.
     ///
-    /// The caller completes the future: on native after `device.poll(Wait)` with `pollster::block_on`, on `wasm32`
-    /// by awaiting it (the sync functions of `wasm32` drop it and apply the pre-check only).
+    /// The caller completes the future: on native with [`finish_scope`](Self::finish_scope), on `wasm32` by awaiting
+    /// it. The synchronous functions of `wasm32` do not call this: they push no scope and apply the pre-check only,
+    /// so a browser out-of-memory still reaches the uncaptured-error handler instead of being swallowed.
     pub(crate) fn create_buffer_scoped(
         &self,
         label: &str,
@@ -213,8 +222,17 @@ impl HeadlessDevice {
         Ok((buffer, scope.pop()))
     }
 
-    /// Resolve the error scope of [`create_buffer_scoped`](Self::create_buffer_scoped) on native: the poll is what
-    /// completes it (S7.6), then the future is driven to the end.
+    /// Resolve the error scope of [`create_buffer_scoped`](Self::create_buffer_scoped) on native, without polling
+    /// the device. On wgpu-core the buffer's error is recorded on the creating thread before `create_buffer`
+    /// returns, and `pop_error_scope` hands back an already-resolved future (wgpu 30.0.1 `backend/wgpu_core.rs`:
+    /// `handle_error_or_return_handler` 657-668 records into the scope, `pop_error_scope` 1860-1897 returns
+    /// `ready(scope.error)`), so one poll with a no-op waker completes it. Waiting for the queue here would make every
+    /// allocation, every pool miss included, a full GPU synchronisation (measured by the unit test
+    /// `a_popped_scope_resolves_without_a_device_poll`).
+    ///
+    /// Error scopes are kept per thread inside one device's error sink (`ErrorSinkRaw.scopes`, 634), and a scope only
+    /// catches errors raised on its own thread: concurrent native allocations on other threads can neither land in
+    /// this scope nor be caught by it.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn finish_scope(
         &self,
@@ -222,33 +240,43 @@ impl HeadlessDevice {
         bytes: u64,
         caught: impl Future<Output = Option<wgpu::Error>>,
     ) -> Result<(), Error> {
-        self.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|error| Error::Poll(error.to_string()))?;
-        scope_result(label, bytes, pollster::block_on(caught))
+        let mut caught = std::pin::pin!(caught);
+        match caught
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+        {
+            std::task::Poll::Ready(error) => scope_result(label, bytes, error),
+            std::task::Poll::Pending => Err(Error::Poll(format!(
+                "the error scope of `{label}` did not resolve"
+            ))),
+        }
     }
 
-    /// Allocate one buffer of `size` bytes, checked and scoped, on native or (pre-check only) on `wasm32`.
+    /// Allocate one buffer of `size` bytes: checked, and on native inside an out-of-memory scope. On `wasm32` this
+    /// applies the pre-check only and pushes no scope, because the scope cannot be awaited in a synchronous function.
     pub(crate) fn allocate(
         &self,
         label: &str,
         size: u64,
         usage: wgpu::BufferUsages,
     ) -> Result<wgpu::Buffer, Error> {
-        let (buffer, caught) = self.create_buffer_scoped(
-            label,
-            &wgpu::BufferDescriptor {
-                label: Some(label),
-                size,
-                usage,
-                mapped_at_creation: false,
-            },
-        )?;
+        let descriptor = wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage,
+            mapped_at_creation: false,
+        };
         #[cfg(not(target_arch = "wasm32"))]
-        self.finish_scope(label, size, caught)?;
+        {
+            let (buffer, caught) = self.create_buffer_scoped(label, &descriptor)?;
+            self.finish_scope(label, size, caught)?;
+            Ok(buffer)
+        }
         #[cfg(target_arch = "wasm32")]
-        drop(caught);
-        Ok(buffer)
+        {
+            self.check_buffer_size(label, size)?;
+            Ok(self.device.create_buffer(&descriptor))
+        }
     }
 
     /// Fallible [`create_typed_buffer`](Self::create_typed_buffer): the same buffer, but a request above
@@ -256,7 +284,8 @@ impl HeadlessDevice {
     /// serve is `Error::OutOfMemory` (through an error scope), where the original panics in wgpu's uncaptured-error
     /// handler. The original keeps its signature and its panics.
     ///
-    /// On `wasm32` this applies the pre-check only: the scope cannot be awaited in a synchronous function.
+    /// On `wasm32` this applies the pre-check only and pushes no scope: the scope cannot be awaited in a synchronous
+    /// function, and a scope nobody reads would swallow the error the browser's uncaptured-error handler reports.
     pub fn try_create_typed_buffer<T: GpuPod>(
         &self,
         label: &str,
@@ -267,6 +296,7 @@ impl HeadlessDevice {
         let usage = storage_usage(access);
         let size = u64::from(T::LAYOUT.stride).saturating_mul(values.len().max(1) as u64);
         self.check_buffer_size(label, size)?;
+        #[cfg(not(target_arch = "wasm32"))]
         let scope = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
         let raw = if values.is_empty() {
             self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -282,11 +312,8 @@ impl HeadlessDevice {
                 usage,
             })
         };
-        let caught = scope.pop();
         #[cfg(not(target_arch = "wasm32"))]
-        self.finish_scope(label, size, caught)?;
-        #[cfg(target_arch = "wasm32")]
-        drop(caught);
+        self.finish_scope(label, size, scope.pop())?;
         Ok(self.unpooled(raw, values.len(), access, T::LAYOUT))
     }
 
@@ -563,5 +590,39 @@ mod tests {
         );
         assert_eq!(size_class(1 << 31, (1 << 31) - 1), None);
         assert_eq!(size_class(u64::MAX, u64::MAX), None);
+    }
+    /// SF2 of the m7.a0 review: on wgpu-core a popped error scope is already resolved. The error of a buffer
+    /// creation is recorded before `create_buffer` returns, and polling the scope's future once, with no device
+    /// poll, delivers it. `finish_scope` relies on this, so a regression fails here instead of hanging an allocation.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_popped_scope_resolves_without_a_device_poll() {
+        use std::task::{Context, Poll, Waker};
+
+        let device = HeadlessDevice::new().expect("a Vulkan adapter");
+        let descriptor = |usage| wgpu::BufferDescriptor {
+            label: Some("scope probe"),
+            size: 16,
+            usage,
+            mapped_at_creation: false,
+        };
+        let resolve = |filter, usage| {
+            let scope = device.device.push_error_scope(filter);
+            let _buffer = device.device.create_buffer(&descriptor(usage));
+            let mut caught = std::pin::pin!(scope.pop());
+            caught
+                .as_mut()
+                .poll(&mut Context::from_waker(Waker::noop()))
+        };
+        // A good buffer: nothing caught, and the future was ready on its first poll.
+        assert!(matches!(
+            resolve(wgpu::ErrorFilter::OutOfMemory, wgpu::BufferUsages::STORAGE),
+            Poll::Ready(None)
+        ));
+        // A buffer wgpu refuses (no usage) is caught by a validation scope on the first poll too.
+        assert!(matches!(
+            resolve(wgpu::ErrorFilter::Validation, wgpu::BufferUsages::empty()),
+            Poll::Ready(Some(wgpu::Error::Validation { .. }))
+        ));
     }
 }

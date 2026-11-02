@@ -564,6 +564,13 @@ impl HeadlessDevice {
         fill: Fill<'_, T>,
     ) -> Result<GpuBuffer<T>, Error> {
         crate::assert_pod_matches_storage_layout::<T>();
+        if let Fill::Values(values) = &fill {
+            debug_assert_eq!(
+                values.len(),
+                len,
+                "Fill::Values must hold exactly `len` elements"
+            );
+        }
         let bytes = crate::device::zeroed_size(T::LAYOUT.stride, len);
         let class = self.pooled_class(label, bytes)?;
         let usage = wgpu::BufferUsages::STORAGE

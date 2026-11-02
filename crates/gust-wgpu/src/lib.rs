@@ -74,7 +74,6 @@ mod error;
 mod generated_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod graph;
-#[cfg(not(target_arch = "wasm32"))]
 mod map_host;
 pub mod pool;
 mod vec;
@@ -296,8 +295,16 @@ impl<T> GpuBuffer<T> {
         self.layout
     }
 
-    /// Expose the underlying allocation for generated or advanced wgpu code. A pooled buffer (a [`GpuVec`]'s) may be
-    /// larger than `len()` elements: bind it with `wgpu::BufferBinding { offset: 0, size: Some(len_bytes), .. }`.
+    /// Expose the underlying allocation for generated or advanced wgpu code.
+    ///
+    /// A pooled buffer (a [`GpuVec`]'s) is the full size class, not `len()` elements: its `arrayLength` and the bytes
+    /// past the logical length are not the vector's (they may hold the previous owner's data). Bind it with
+    /// `wgpu::BufferBinding { offset: 0, size: Some(len_bytes), .. }`; `as_entire_binding()` shows a kernel the whole
+    /// class.
+    ///
+    /// The buffer returns to the pool when its owner drops, and the pool clears it for its next owner in a submission
+    /// of its own. Commands you recorded in an encoder of your own and submit after the owner dropped may therefore
+    /// run after that clear (or after the next owner's writes). Submit them before dropping the owner.
     pub fn as_wgpu_buffer(&self) -> &wgpu::Buffer {
         &self.raw
     }

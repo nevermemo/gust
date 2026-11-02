@@ -23,6 +23,12 @@ use crate::{
 /// All `GpuVec` arguments of one call must share one device (compared by [`HeadlessDevice::id`]);
 /// [`check_device`](Self::check_device) is the test, and a mismatch is [`Error::MixedDevices`]. A `GpuVec` is
 /// `Send + Sync` on native; on `wasm32` its device handle is an `Rc`, so it is neither.
+///
+/// The allocation behind a `GpuVec` is a pooled size class, usually larger than `len()` elements. Everything that
+/// takes a `GpuVec` (typed calls, [`to_vec`](Self::to_vec)) sees the logical length only. The raw escape hatch
+/// ([`as_buffer`](Self::as_buffer) and `GpuBuffer::as_wgpu_buffer`) does not: it is the whole class, with the
+/// previous owner's bytes past the logical length, and commands you record in an encoder of your own and submit after
+/// the `GpuVec` dropped may run after the pool has cleared or reused the buffer. Submit them before the drop.
 pub struct GpuVec<T: GpuPod> {
     buffer: GpuBuffer<T>,
     device: DeviceHandle,
@@ -86,7 +92,8 @@ impl<T: GpuPod> GpuVec<T> {
         device.check_same_device(self.device.id())
     }
 
-    /// The vector as the buffer a typed call takes. Its allocation may be larger than `len()` elements.
+    /// The vector as the buffer a typed call takes. Its allocation may be larger than `len()` elements, so the
+    /// raw buffer of the result is the whole size class: see the type's notes on `as_wgpu_buffer`.
     pub const fn as_buffer(&self) -> &GpuBuffer<T> {
         &self.buffer
     }
@@ -143,5 +150,130 @@ impl<T: GpuPod> fmt::Debug for GpuVec<T> {
             .field("len", &self.buffer.len())
             .field("device", &self.device.id())
             .finish()
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    //! The tail of a pooled allocation: a unit test, because reading the raw bytes back needs the wgpu device, which
+    //! `HeadlessDevice` keeps private.
+
+    use std::sync::Arc;
+
+    use gust::{
+        Access, GpuPod, KernelDescriptor, ParameterDescriptor, ParameterKind, ResourceBinding,
+        ResourceLayout, SourceOrigin,
+    };
+
+    use super::GpuVec;
+    use crate::{BufferBinding, HeadlessDevice};
+
+    const fn storage(name: &'static str, access: Access, binding: u32) -> ParameterDescriptor {
+        ParameterDescriptor {
+            name,
+            rust_type: "uint",
+            kind: ParameterKind::Storage,
+            access,
+            resource_layout: Some(ResourceLayout::storage_v1(<u32 as GpuPod>::LAYOUT)),
+            binding: Some(ResourceBinding { group: 0, binding }),
+        }
+    }
+
+    /// `add_one(src: RO, dst: RW)`: `dst[i] = src[i] + 1` for `i < dst.len()` as the kernel sees `dst`.
+    const ADD_ONE: KernelDescriptor = KernelDescriptor {
+        module: "vec_tail_tests",
+        name: "add_one",
+        entry_point: "vec_tail_add_one",
+        workgroup_size: [64, 1, 1],
+        parameters: &[
+            storage("src", Access::ReadOnly, 0),
+            storage("dst", Access::ReadWrite, 1),
+        ],
+        slang_source: r#"
+[[vk::binding(0, 0)]] StructuredBuffer<uint> src;
+[[vk::binding(1, 0)]] RWStructuredBuffer<uint> dst;
+[shader("compute")] [numthreads(64, 1, 1)]
+void vec_tail_add_one(uint3 id : SV_DispatchThreadID)
+{
+    uint n; uint stride; dst.GetDimensions(n, stride);
+    if (id.x < n) { dst[id.x] = src[id.x] + 1u; }
+}
+"#,
+        source: SourceOrigin::UNKNOWN,
+        artifacts: &[],
+    };
+
+    /// Every byte of `buffer`, read back through a staging buffer of the test's own.
+    fn raw_words(device: &HeadlessDevice, buffer: &wgpu::Buffer) -> Vec<u32> {
+        let size = buffer.size();
+        let staging = device.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("raw tail readback"),
+            size,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, size);
+        device.queue.submit([encoder.finish()]);
+        staging.map_async(wgpu::MapMode::Read, .., |result| {
+            result.expect("the staging buffer maps");
+        });
+        device
+            .device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("the device finishes");
+        let view = staging
+            .get_mapped_range(..)
+            .expect("the mapped range of the staging buffer");
+        crate::pod_vec_from_bytes(&view).expect("whole words")
+    }
+
+    /// m7.a0 review SF3: a pooled allocation larger than its vector keeps the previous owner's bytes past the logical
+    /// end (by design; the raw buffer shows them, as documented), and a dispatch over the vector never writes into
+    /// that tail, not even with the invocations of the last workgroup (17 000 elements run as 17 024 invocations).
+    /// Binding the whole class instead of the logical length lets those invocations write, and this test fails.
+    #[test]
+    fn a_dispatch_leaves_the_tail_of_a_recycled_allocation_alone() {
+        const SENTINEL: u32 = 0xDEAD_BEEF;
+        const LOGICAL: usize = 17_000;
+        const CLASS_WORDS: usize = 32_768;
+        let device = Arc::new(HeadlessDevice::new().expect("Vulkan adapter required"));
+
+        // The previous owner fills the 131 072-byte class with a sentinel and goes away.
+        let previous = GpuVec::from_slice_on(&device, &vec![SENTINEL; CLASS_WORDS]).unwrap();
+        assert_eq!(previous.as_buffer().as_wgpu_buffer().size(), 131_072);
+        drop(previous);
+
+        // The next owner gets the same allocation. `from_slice` writes its logical range only.
+        let hits = device.buffer_pool_stats().hits;
+        let values = (0..LOGICAL as u32).collect::<Vec<_>>();
+        let dst = GpuVec::from_slice_on(&device, &values).unwrap();
+        assert_eq!(
+            device.buffer_pool_stats().hits,
+            hits + 1,
+            "the class must be recycled"
+        );
+        let src = GpuVec::from_slice_on(&device, &values).unwrap();
+        device
+            .dispatch_buffers(
+                &ADD_ONE,
+                LOGICAL as u32,
+                &[
+                    BufferBinding::read_only(src.as_buffer()),
+                    BufferBinding::read_write(dst.as_buffer()),
+                ],
+            )
+            .unwrap();
+
+        let words = raw_words(&device, dst.as_buffer().as_wgpu_buffer());
+        assert_eq!(words.len(), CLASS_WORDS);
+        let expected = values.iter().map(|value| value + 1).collect::<Vec<_>>();
+        assert_eq!(&words[..LOGICAL], expected.as_slice(), "the logical range");
+        assert!(
+            words[LOGICAL..].iter().all(|word| *word == SENTINEL),
+            "the tail past the logical length was written by the dispatch"
+        );
     }
 }

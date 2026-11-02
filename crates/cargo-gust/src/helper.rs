@@ -19,6 +19,7 @@ use std::{
 
 use crate::{
     msvc,
+    slang::{slangc_in, slangc_version},
     tools::{self, executable_name, find_on_path},
 };
 
@@ -28,12 +29,17 @@ pub(crate) const HELPER_SOURCE: &str = include_str!("../assets/slang-layout.cpp"
 /// The helper's file name without the platform suffix.
 pub(crate) const HELPER_NAME: &str = "gust-slang-reflect";
 
+/// The reflection schema the packaged source prints (`gust-slang-reflect schema=<n> slang=<tag>`); a test ties it to
+/// the source.
+pub(crate) const HELPER_SCHEMA: &str = "2";
+
 /// The compilers to look for, in order.
 pub(crate) const COMPILER_SEARCH_ORDER: [&str; 4] = ["cl", "clang++", "c++", "g++"];
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct BuildOptions {
-    /// Rebuild even when the helper is newer than its inputs.
+    /// Rebuild even when the helper is current (see [`staleness`]). It overwrites the helper in the output
+    /// directory, which other builds may share, so it is rarely the right fix.
     pub(crate) force: bool,
     /// The Slang SDK (an extracted release or a Vulkan SDK): `include/`, `lib/` and, on Windows, `bin/`.
     pub(crate) sdk_root: Option<PathBuf>,
@@ -153,6 +159,61 @@ fn io_error(path: &Path, error: &std::io::Error) -> String {
     format!("{}: {error}", path.display())
 }
 
+/// Why the helper at `exe` has to be rebuilt for an SDK whose `slangc -version` is `sdk_tag`, or `None` when it is
+/// current. `version_of` runs `<helper> --version` and returns what it printed.
+///
+/// Freshness is judged by content, not by the times of the SDK's libraries: a release ships its libraries with the
+/// times of its own build, so a helper built against an older Slang looked newer than the 2026.20 libraries and was
+/// reported "up to date" (m4.r review, S6). The helper reads its Slang build tag from the library it loads (the copy
+/// beside it), so the smallest sound rule is that it is current when
+///
+/// 1. it is not older than the packaged source (the source file keeps its time while its bytes are unchanged);
+/// 2. it prints the schema of that source ([`HELPER_SCHEMA`]); and
+/// 3. its Slang build tag is the one the SDK's own `slangc -version` prints.
+///
+/// An SDK whose `slangc` cannot report a version is never judged current. Two builds with the same tag but different
+/// library bytes are not told apart; a tag names a build, and `--force` is for that case.
+pub(crate) fn staleness(
+    exe: &Path,
+    source: &Path,
+    sdk_tag: &Result<String, String>,
+    version_of: &dyn Fn(&Path) -> Result<String, String>,
+) -> Result<Option<String>, String> {
+    if !exe.is_file() {
+        return Ok(Some("it is not built yet".to_owned()));
+    }
+    if !newer_than_all(exe, &[source])? {
+        return Ok(Some("it is older than its source".to_owned()));
+    }
+    let sdk_tag = match sdk_tag {
+        Ok(tag) => tag,
+        Err(error) => {
+            return Ok(Some(format!(
+                "the SDK's slangc cannot report its version ({error})"
+            )));
+        }
+    };
+    let output = match version_of(exe) {
+        Ok(output) => output,
+        Err(error) => return Ok(Some(format!("it cannot report its version ({error})"))),
+    };
+    let (schema, tag) = match tools::parse_helper_report(&output) {
+        Ok(report) => report,
+        Err(error) => return Ok(Some(error)),
+    };
+    if schema != HELPER_SCHEMA {
+        return Ok(Some(format!(
+            "it prints schema {schema}, but the source prints schema {HELPER_SCHEMA}"
+        )));
+    }
+    if tag != *sdk_tag {
+        return Ok(Some(format!(
+            "it was built against Slang `{tag}`, but the SDK is Slang `{sdk_tag}`"
+        )));
+    }
+    Ok(None)
+}
+
 /// Whether `output` exists and is not older than any of `inputs`.
 fn newer_than_all(output: &Path, inputs: &[&Path]) -> Result<bool, String> {
     if !output.is_file() {
@@ -187,6 +248,29 @@ fn helper_version(exe: &Path) -> Result<String, String> {
     tools::helper_slang_version(exe)
 }
 
+/// Decide whether the build is skipped: it is, unless `force` is set or [`staleness`] gives a reason. A reason is
+/// printed together with the helper it is about, so a rebuild of a shared directory is never silent.
+fn up_to_date(
+    options: &BuildOptions,
+    exe: &Path,
+    source: &Path,
+    sdk_root: &Path,
+) -> Result<bool, String> {
+    if options.force {
+        return Ok(false);
+    }
+    let sdk_tag = slangc_version(&slangc_in(sdk_root));
+    match staleness(exe, source, &sdk_tag, &tools::helper_version_output)? {
+        None => Ok(true),
+        Some(reason) => {
+            if exe.is_file() {
+                println!("slang: rebuilding {}: {reason}", exe.display());
+            }
+            Ok(false)
+        }
+    }
+}
+
 /// Build the helper. Returns its path and the Slang build tag it reports.
 pub(crate) fn build(options: &BuildOptions) -> Result<(PathBuf, String), String> {
     let sdk_root = options
@@ -202,9 +286,10 @@ pub(crate) fn build(options: &BuildOptions) -> Result<(PathBuf, String), String>
     let source = write_source(out_dir)?;
     let lib_dir = sdk_root.join("lib");
     let exe = out_dir.join(executable_name(HELPER_NAME));
+    let current = up_to_date(options, &exe, &source, sdk_root)?;
     if cfg!(windows) {
         build_windows(
-            options.force,
+            current,
             &source,
             &include,
             &lib_dir,
@@ -213,14 +298,14 @@ pub(crate) fn build(options: &BuildOptions) -> Result<(PathBuf, String), String>
             &exe,
         )?;
     } else {
-        build_unix(options.force, &source, &include, &lib_dir, &exe)?;
+        build_unix(current, &source, &include, &lib_dir, &exe)?;
     }
     let tag = helper_version(&exe)?;
     Ok((exe, tag))
 }
 
 fn build_windows(
-    force: bool,
+    current: bool,
     source: &Path,
     include: &Path,
     lib_dir: &Path,
@@ -246,7 +331,7 @@ fn build_windows(
             dll.display()
         ));
     }
-    if !force && newer_than_all(exe, &[source, &library, &dll])? {
+    if current {
         println!("slang: the helper is up to date");
         return Ok(());
     }
@@ -285,7 +370,7 @@ fn build_windows(
 }
 
 fn build_unix(
-    force: bool,
+    current: bool,
     source: &Path,
     include: &Path,
     lib_dir: &Path,
@@ -304,7 +389,7 @@ fn build_unix(
     .map(|name| lib_dir.join(name))
     .find(|path| path.is_file())
     .ok_or_else(|| format!("No Slang shared library in {}.", lib_dir.display()))?;
-    if !force && newer_than_all(exe, &[source, &library])? {
+    if current {
         println!("slang: the helper is up to date");
         return Ok(());
     }

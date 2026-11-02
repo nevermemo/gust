@@ -1532,7 +1532,7 @@ mod tests {
 
     // The test build of this crate is the calling crate here, so the macro, the function and the profile agree (a
     // workspace-profile fact, as above). That the macro answers for the *caller* when the caller's profile differs
-    // from `gust`'s cannot be shown inside this crate: that proof is m3.f1's cross-crate fixture (planned).
+    // from `gust`'s cannot be shown inside this crate: that proof is m3.f1's cross-crate fixture (`tests/dual`).
     #[test]
     fn the_overflow_macro_agrees_with_the_function_and_the_workspace_profile() {
         let expected = if cfg!(debug_assertions) {

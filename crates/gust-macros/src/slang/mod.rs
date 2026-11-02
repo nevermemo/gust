@@ -1023,6 +1023,14 @@ fn negated_integer_literal(unary: &syn::ExprUnary) -> Option<&syn::LitInt> {
 }
 
 /// The name of the identity helper that keeps a `<` comparison out of a WGSL template list.
+///
+/// Still needed, measured in slice m4.z (2026-11-02, `plans/m4/probe/m4z/keep`): 30 comparison-in-list shapes, each
+/// compiled with and without the wrapper and the WGSL parsed and validated by naga 30.0.1. slangc 2026.20 puts
+/// parentheses around every comparison argument itself (all 60 files validate, and the wrapper only adds the identity
+/// function and its call), but slangc 2026.13.1 does not (13 of the 30 fail to parse without it). `gust::slang` runs
+/// whatever `slangc` is first on `PATH` and checks no version; only `cargo gust` and `cargo xtask` enforce the 2026.20
+/// pin. So the wrapper stays until the library enforces the pin. Removing it changes the WGSL of every kernel that
+/// uses it, which also wants a read-back on the GPU.
 const KEEP_HELPER: &str = "__gust_keep";
 
 /// Whether an expression is a `<` comparison, through parentheses and the right operand of `&&` and `||`.

@@ -8,7 +8,9 @@
 //! other name is emitted unchanged. The prefix is inside the space E0901 denies to users, so a renamed name cannot
 //! collide with a user name, and removing the prefix where an emitted name starts (a word boundary, in front of a name) from a slangc message gives back the Rust spelling.
 //!
-//! An entry is in the table for one or both of two reasons, measured on the pinned slangc (2026.13.1, D46):
+//! An entry is in the table for one or both of two reasons, first measured on slangc 2026.13.1 (D46) and checked again
+//! on the pinned 2026.20 (slice m4.z, 2026-11-02: the table tests of `crates/gust/tests/diagnostics.rs` passed
+//! unchanged, 24 tests):
 //!
 //! - **class 1, `fails_in` not empty:** the bare name makes slangc fail in the listed positions (S6.3, S6.3b:
 //!   `plans/m6/probe/kw/kw_results.json` and `kw_results3.json`, both targets agreeing). The table test compiles the
@@ -266,8 +268,9 @@ pub const MAPPED_TYPE_NAMES: &[&str] = &[
 /// For a class-2 entry, the text of a kernel that declares `spelled` (the bare name to measure the capture, the
 /// renamed one to check that the rename removes it) next to the construct GUST emits with that name. `None` for an
 /// entry that cannot be exercised: `__GustResult`, which E0901 denies to users. Measured 2026-11-01 on slangc
-/// 2026.13.1: with the bare name every one of these fails on both targets, except `true` and `false`, which
-/// compile and mean the other value (see [`SILENT_CAPTURES`]); with the renamed name every one compiles.
+/// 2026.13.1 and again on the pinned 2026.20 on 2026-11-02 (the Slangc-tier capture tests): with the bare name every
+/// one of these fails on both targets, except `true` and `false`, which compile and mean the other value (see
+/// [`SILENT_CAPTURES`]); with the renamed name every one compiles.
 #[cfg(test)]
 #[allow(dead_code)] // the Slangc-tier tests use it, the macro's Unit tests do not
 pub fn capture_source(entry: &str, spelled: &str) -> Option<String> {

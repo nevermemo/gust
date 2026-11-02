@@ -30,7 +30,10 @@ fn the_packaged_helper_source_is_the_probe_source() {
         original.replace("\r\n", "\n"),
         "copy scripts/probes/slang-layout.cpp to crates/cargo-gust/assets/slang-layout.cpp"
     );
-    assert!(HELPER_SOURCE.contains("gust-slang-reflect schema=2 slang="));
+    assert!(
+        HELPER_SOURCE.contains(&format!("gust-slang-reflect schema={HELPER_SCHEMA} slang=")),
+        "HELPER_SCHEMA must be the schema the packaged source prints"
+    );
 }
 
 #[test]
@@ -201,6 +204,115 @@ fn an_output_is_up_to_date_only_when_it_exists_and_no_input_is_newer() {
     fs::write(&input, "y").unwrap();
     assert_eq!(newer_than_all(&output, &[&input]), Ok(false));
     assert!(newer_than_all(&output, &[&scratch.0.join("missing")]).is_err());
+}
+
+/// A scratch directory with a source file and, a moment later, a helper file: the helper is newer than the source.
+fn helper_after_source(name: &str) -> (Scratch, PathBuf, PathBuf) {
+    let scratch = Scratch::new(name);
+    let source = scratch.0.join("gust-slang-reflect.cpp");
+    let exe = scratch.0.join(executable_name(HELPER_NAME));
+    fs::write(&source, "x").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    fs::write(&exe, "x").unwrap();
+    (scratch, source, exe)
+}
+
+fn reports(output: &'static str) -> impl Fn(&Path) -> Result<String, String> {
+    move |_| Ok(output.to_owned())
+}
+
+#[test]
+fn a_helper_is_current_only_when_its_schema_and_slang_tag_are_the_sdks() {
+    let (_scratch, source, exe) = helper_after_source("staleness");
+    let sdk = Ok("2026.20".to_owned());
+    let current = reports("gust-slang-reflect schema=2 slang=2026.20\n");
+    assert_eq!(staleness(&exe, &source, &sdk, &current), Ok(None));
+    // Mutation (a): the helper is newer than the source and than the SDK's libraries (so the old rule, which compared
+    // file times only, said "up to date"), but it reports another Slang. It is stale, and the reason names both tags.
+    let library = source.with_file_name("slang-compiler.lib");
+    fs::write(&library, "x").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&library)
+        .unwrap()
+        .set_modified(fs::metadata(&source).unwrap().modified().unwrap())
+        .unwrap();
+    assert_eq!(newer_than_all(&exe, &[&source, &library]), Ok(true));
+    for old in [
+        "2026.13.1",
+        "2026.13.1-1-g84792eb15",
+        "2026.20-1-g0a1b2c3d4",
+        "2026.2",
+    ] {
+        let output = format!("gust-slang-reflect schema=2 slang={old}\n");
+        let older = move |_: &Path| Ok(output.clone());
+        let reason = staleness(&exe, &source, &sdk, &older).unwrap().unwrap();
+        assert_eq!(
+            reason,
+            format!("it was built against Slang `{old}`, but the SDK is Slang `2026.20`")
+        );
+    }
+}
+
+#[test]
+fn a_helper_with_another_schema_or_no_readable_version_is_stale() {
+    let (_scratch, source, exe) = helper_after_source("staleness-schema");
+    let sdk = Ok("2026.20".to_owned());
+    let reason = |output: &'static str| staleness(&exe, &source, &sdk, &reports(output)).unwrap();
+    assert_eq!(
+        reason("gust-slang-reflect schema=1 slang=2026.20\n"),
+        Some("it prints schema 1, but the source prints schema 2".to_owned())
+    );
+    for unreadable in ["", "slangc 2026.20\n", "gust-slang-reflect schema=2\n"] {
+        let reason = reason(unreadable).unwrap();
+        assert!(
+            reason.contains("--version") || reason.contains("unexpected"),
+            "{unreadable:?}: {reason}"
+        );
+    }
+    let reason = reason("gust-slang-reflect schema=3 slang=2026.20\n").unwrap();
+    assert!(reason.contains("schema 3"), "{reason}");
+    let failing = |_: &Path| Err::<String, String>("exit 3".to_owned());
+    assert_eq!(
+        staleness(&exe, &source, &sdk, &failing),
+        Ok(Some("it cannot report its version (exit 3)".to_owned()))
+    );
+    // An SDK that cannot name its version never makes a helper current.
+    let unknown = Err("no slangc".to_owned());
+    let current = reports("gust-slang-reflect schema=2 slang=2026.20\n");
+    assert_eq!(
+        staleness(&exe, &source, &unknown, &current),
+        Ok(Some(
+            "the SDK's slangc cannot report its version (no slangc)".to_owned()
+        ))
+    );
+}
+
+#[test]
+fn a_missing_or_old_helper_is_stale_without_being_run() {
+    let scratch = Scratch::new("staleness-files");
+    let source = scratch.0.join("gust-slang-reflect.cpp");
+    let exe = scratch.0.join(executable_name(HELPER_NAME));
+    let sdk = Ok("2026.20".to_owned());
+    let never = |_: &Path| -> Result<String, String> { panic!("the helper must not be run") };
+    fs::write(&source, "x").unwrap();
+    assert_eq!(
+        staleness(&exe, &source, &sdk, &never),
+        Ok(Some("it is not built yet".to_owned()))
+    );
+    fs::write(&exe, "x").unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    fs::write(&source, "y").unwrap();
+    assert_eq!(
+        staleness(&exe, &source, &sdk, &never),
+        Ok(Some("it is older than its source".to_owned()))
+    );
+    // `--force` skips the judgement altogether.
+    let options = BuildOptions {
+        force: true,
+        ..BuildOptions::default()
+    };
+    assert_eq!(up_to_date(&options, &exe, &source, &scratch.0), Ok(false));
 }
 
 #[test]

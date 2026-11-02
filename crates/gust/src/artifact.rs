@@ -18,7 +18,7 @@
 //! corruption, truncation, a line-ending rewrite, a swapped or stale file, descriptor drift.
 //! FNV-1a is not collision-resistant, so none of this protects against an adversary who crafts
 //! a colliding artifact, and two different kernels could in principle share a 64-bit key.
-//! Planned (slice m4.d): the export tool rejects two kernels with one key and different clean text, and
+//! The export tool (`cargo gust build`, slice m4.d) rejects two kernels with one key and different clean text, and
 //! its manifest records SHA-256 of the clean text and of each artifact.
 
 use crate::{

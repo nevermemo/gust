@@ -495,7 +495,7 @@ mod tests {
         cpu::{self, CpuDevice, CpuJob, Error as CpuError, FromGlobalId},
     };
 
-    // ---- hand-written kernels, in the exact form the macro will emit (m2.d1) ----
+    // ---- hand-written kernels, in the exact form the macro emits (m2.d1) ----
 
     const fn invocation() -> ParameterDescriptor {
         ParameterDescriptor {

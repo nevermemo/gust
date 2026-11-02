@@ -92,6 +92,10 @@
 //!   `cl`, `clang++`, `c++`, `g++` found (`CXX` overrides), into `<cache>/helper/<version>/` by default. `build`,
 //!   `check --recompile` and `doctor` use that helper when `GUST_SLANG_REFLECT` is not set, and refuse a helper whose
 //!   Slang build tag differs from the located `slangc -version`. `cargo xtask build-slang-reflect` runs this command.
+//!   An existing helper is kept only when it prints the schema of the packaged source and the Slang tag of the SDK's
+//!   own `slangc -version` (and is not older than the source); file times of the SDK's libraries play no part, since a
+//!   release ships them with the times of its own build. Any other helper in the output directory is rebuilt, and the
+//!   build says why. `--force` rebuilds a current helper too.
 //!
 //! # Installing
 //!

@@ -56,8 +56,8 @@ macro_rules! codes {
             }
         }
 
-        /// Every code, in declaration order.
-        #[cfg_attr(not(test), allow(dead_code))]
+        /// Every code, in declaration order (the tests walk it; nothing else reads it).
+        #[cfg(test)]
         pub(crate) const ALL: &[Code] = &[$(Code::$name,)*];
     };
 }

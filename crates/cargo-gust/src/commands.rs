@@ -322,6 +322,11 @@ pub(crate) fn doctor() -> Result<i32, String> {
     let path_var = env.path.clone();
     let helper_found = tools::locate_executable(&candidate, path_var.as_deref());
     let helper_slang = helper_found.as_deref().map(tools::helper_slang_version);
+    let path_slangc = tools::find_on_path(&tools::executable_name("slangc"), path_var.as_deref())
+        .map(|path| {
+            let version = slang::slangc_version(&path);
+            (path, version)
+        });
     let notices = slangc
         .as_ref()
         .ok()
@@ -333,6 +338,7 @@ pub(crate) fn doctor() -> Result<i32, String> {
         pin: SLANG_VERSION.to_owned(),
         slangc,
         notices,
+        path_slangc,
         helper_candidate: candidate,
         helper_found,
         helper_slang,

@@ -67,6 +67,16 @@ D55 to D59.
   output (the stale-binary fix); the Cpu suite is this command. CI runs it as the job `cpu-target` beside `unit`: 61 s
   on the runner, against 2 m 57 s for `unit`. Evidence: Unit, Cpu and Gpu smoke (RTX 5090). Opus keep after one fix
   round.
+- M6 m6.g1 (`118037e`, fix round `a064378`, pin `6130183`, merge `5033b22`): GPU evidence for vectors and
+  matrices. `gust-wgpu` accepts vector and matrix storage buffers: `buffer_resource_layout` gives StorageV1 for
+  scalars and StorageV2 for vectors and matrices, `validate_kernel` refuses a parameter whose layout does not match
+  its element type, and `assert_pod_matches_storage_layout` adds a `const fn` padding-free check, so a padded
+  hand-written `GpuPod` struct is refused instead of uploading uninitialised bytes (CPU unit tests for each rule).
+  `crates/gust-wgpu/tests/vectors.rs` holds seven GPU tests that compare the vector and matrix forms with the CPU
+  twin on the RTX 5090, debug and release; `GPU_SUITE_PIN` is 159 passed over 21 result lines. Known limitations
+  (SEMANTICS §4): a constant float2x2 or float3x3 `IDENTITY` crashes naga's SPIR-V front end (exit 139), so those
+  cases run on WGSL only; `-m` on a matrix does not build on WGSL (m6.n). Opus merge after one fix round; 19 gate
+  steps on main at `5033b22`, including `verify --mode gpu`.
 - M6 m6.m2 (`49f00f9`, fix round `fec79e8`, merge `71ab804`): operator syntax for products. In a module whose
   unrawed tokens name `Mat2`, `Mat3` or `Mat4`, `*` lowers to `__gust_mul(a, b)` and `*=` on a pure place to
   `(p = __gust_mul(p, r))` (E0323 otherwise); one data table (`slang/mul_table.rs`, 39 rows) drives both the
@@ -82,7 +92,7 @@ D55 to D59.
   `transpose(m)`; the struct layout asserts use StorageV2. The golden `tests/fixtures/vectors.{rs,slang}` covers every
   accepted form and a slangc test compiles it. Known limitations: the integer-vector `dot` lowered to
   `OpSDot`/`OpUDot` (capability `DotProduct`), which naga 30 refuses on the SPIR-V route (fixed in m6.m2); a constant `Mat2::IDENTITY` or `Mat3::IDENTITY` hits the known SPIR-V crash for constant
-  float2x2 and float3x3, so m6.g1 must not dispatch the golden on SPIR-V as it is. Evidence: Unit, Slangc (2026.20),
+  float2x2 and float3x3, so m6.g1 runs those cases on WGSL only. Evidence: Unit, Slangc (2026.20),
   check-ui and check-dual; CI green on `6dc36ef`. Opus keep after one fix round.
 - CI timing note: `gpu-software` took 1 m 25 s warm (on `8080320`) against 1 m 42 s cold.
 - M5 S5.4 (spike, local commit only): decision A. A lane-local prototype in which the macro drops
@@ -129,8 +139,8 @@ D55 to D59.
   3-wide types and `Mat3` stay out, and `GpuPod` covers only padding-free layouts. The
   reflection reader keeps schema 1 unchanged and adds schema 2 (vector, matrix,
   `constantBuffer`, mandatory `matrixLayout`); every committed artifact set still verifies.
-  Known limitation until m6.g1: `create_typed_buffer::<Vec4>` now compiles and panics at run time
-  in the StorageV1 check. Opus keep after one fix round; gates on main at `38ebf29`.
+  Until m6.g1, `create_typed_buffer::<Vec4>` compiled and panicked at run time in the StorageV1
+  check (fixed there). Opus keep after one fix round; gates on main at `38ebf29`.
 - M6 m6.k (`ce17eb2`): collision-only identifier renaming. A user identifier that collides with a
   Slang or WGSL keyword, a prelude name or a GUST-reserved spelling is emitted as `__gust_r_<name>`
   at every name site (locals, parameters, fields, structs, invocation and ConstantBuffer sites);

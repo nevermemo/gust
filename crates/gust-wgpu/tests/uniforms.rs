@@ -200,6 +200,18 @@ fn quads(values: &[Vec4]) -> Vec<[f32; 4]> {
 
 /// Independent host references (`f64`; no `gust::math`).
 mod host {
+    /// Narrow an `f64` result to the `f32` the kernel must produce, and fail loudly if that rounds: every input here is
+    /// exact in `f32`, so an inexact result means a later edit left the exact domain (and would fail by design).
+    pub fn narrow(x: f64) -> f32 {
+        let narrowed = x as f32;
+        assert_eq!(
+            f64::from(narrowed),
+            x,
+            "the reference result {x} is not exact in f32"
+        );
+        narrowed
+    }
+
     /// `rows * p` for a matrix given by its rows: `result[r] = sum over c of rows[r][c] * p[c]`.
     pub fn mat_vec(rows: &[[f32; 4]; 4], p: &[f32; 4]) -> [f64; 4] {
         let mut out = [0.0; 4];
@@ -233,10 +245,10 @@ mod host {
                 + f64::from(frame.color[k]) * f64::from(frame.falloff);
         }
         [
-            (lit[0] + f64::from(frame.offset[0])) as f32,
-            (lit[1] + f64::from(frame.offset[1])) as f32,
-            (lit[2] * f64::from(frame.scale)) as f32,
-            (lit[3] + f64::from(frame.count)) as f32,
+            narrow(lit[0] + f64::from(frame.offset[0])),
+            narrow(lit[1] + f64::from(frame.offset[1])),
+            narrow(lit[2] * f64::from(frame.scale)),
+            narrow(lit[3] + f64::from(frame.count)),
         ]
     }
 }
@@ -350,12 +362,12 @@ fn the_golden_uniform_kernel_matches_the_host_reference_and_the_twin() {
 }
 
 #[test]
-fn a_one_field_scalar_struct_uniform_scales_a_buffer() {
+fn a_scalar_field_uniform_scales_a_buffer() {
     let device = device();
     let src = ramp();
     let expected: Vec<f32> = src
         .iter()
-        .map(|x| (f64::from(*x) * f64::from(2.5f32)) as f32)
+        .map(|x| host::narrow(f64::from(*x) * f64::from(2.5f32)))
         .collect();
 
     let (gpu_src, out) = (input(&device, "src", &src), nan_floats(&device, "out", N));
@@ -381,7 +393,7 @@ fn a_vec4_field_uniform_multiplies_component_wise() {
         .map(|p| {
             let mut out = [0.0f32; 4];
             for k in 0..4 {
-                out[k] = (f64::from(p[k]) * f64::from(color[k])) as f32;
+                out[k] = host::narrow(f64::from(p[k]) * f64::from(color[k]));
             }
             out
         })
@@ -423,7 +435,7 @@ fn a_mat4_field_uniform_transforms_vectors_with_the_row_convention() {
     let src = points();
     let expected: Vec<[f32; 4]> = src
         .iter()
-        .map(|p| host::mat_vec(&rows, p).map(|x| x as f32))
+        .map(|p| host::mat_vec(&rows, p).map(host::narrow))
         .collect();
     let row = |r: usize| Vec4::new(rows[r][0], rows[r][1], rows[r][2], rows[r][3]);
     let xform = Xform {
@@ -502,20 +514,27 @@ fn one_uniform_bound_to_two_kernels_and_changed_on_the_host_without_a_write() {
     // The same `GpuUniform<Gain>` as the uniform of two kernels.
     let mut host_value = gain(2.5);
     let uniform = device.create_uniform("gain", &host_value).unwrap();
-    // Changing the host value after `create_uniform` is not a write: the buffer holds the copy made at creation, and
-    // only `write_uniform` (or a graph's) changes it. This is the documented behaviour.
+    // `create_uniform` copies the value at creation and only borrows it, so a later change to the host value cannot
+    // reach the buffer (a type-level guarantee, not a behaviour this test could catch); only `write_uniform` (or a
+    // graph's) changes the buffer. The GPU must see 2.5.
     host_value.gain = 99.0;
+    std::hint::black_box(&host_value);
     let (scale_call, offset_call) = (
         probes::scale::call(N as u32, &uniform, &gpu_src, &scaled),
         probes::offset::call(N as u32, &uniform, &gpu_src, &shifted),
     );
     device.dispatch_call(&scale_call).unwrap();
     device.dispatch_call(&offset_call).unwrap();
-    let times: Vec<f32> = src.iter().map(|x| (f64::from(*x) * 2.5) as f32).collect();
-    let plus: Vec<f32> = src.iter().map(|x| (f64::from(*x) + 2.5) as f32).collect();
+    let times: Vec<f32> = src
+        .iter()
+        .map(|x| host::narrow(f64::from(*x) * 2.5))
+        .collect();
+    let plus: Vec<f32> = src
+        .iter()
+        .map(|x| host::narrow(f64::from(*x) + 2.5))
+        .collect();
     assert_eq!(device.read_typed_buffer(&scaled).unwrap(), times);
     assert_eq!(device.read_typed_buffer(&shifted).unwrap(), plus);
-    assert_eq!(host_value.gain, 99.0);
 
     // Both kernels in one graph on the same uniform, no write: both read 2.5.
     let (scaled_again, shifted_again) = (
@@ -582,13 +601,16 @@ fn a_staged_graph_update_between_two_dispatches_is_seen_by_the_second() {
 
     let times = |k: f32| -> Vec<f32> {
         src.iter()
-            .map(|x| (f64::from(*x) * f64::from(k)) as f32)
+            .map(|x| host::narrow(f64::from(*x) * f64::from(k)))
             .collect()
     };
     // One command buffer, three dispatches: each saw the value its position implies.
     assert_eq!(device.read_typed_buffer(&first).unwrap(), times(2.5));
     assert_eq!(device.read_typed_buffer(&second).unwrap(), times(-4.0));
-    let plus: Vec<f32> = src.iter().map(|x| x - 4.0).collect();
+    let plus: Vec<f32> = src
+        .iter()
+        .map(|x| host::narrow(f64::from(*x) - 4.0))
+        .collect();
     assert_eq!(device.read_typed_buffer(&third).unwrap(), plus);
 
     // The uniform keeps the last value for a later submission.

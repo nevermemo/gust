@@ -504,7 +504,7 @@ impl<K: Kernel, const N: usize> Described<K, N> {
 }
 
 impl KernelDescriptor {
-    /// Number of `Storage` parameters (the ones a typed call binds).
+    /// Number of `Storage` parameters (a typed call binds the uniform parameters too).
     ///
     /// Not part of the stable surface: `#[gpu]` expansions use it in a constant assertion that the generated
     /// typed call takes as many arguments as the descriptor has storage and uniform parameters.
@@ -1655,7 +1655,7 @@ mod tests {
         );
     }
 
-    // N is the parameter count (storage and uniform): zero for a kernel without parameters.
+    // N is the parameter count (storage and uniform): zero for a kernel without resource parameters.
     #[test]
     fn a_kernel_without_storage_parameters_builds_an_empty_call() {
         let call = Nothing::call::<RecordingDevice>(7);

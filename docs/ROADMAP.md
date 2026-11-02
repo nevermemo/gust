@@ -47,7 +47,7 @@ remaining chain run beside it now, and the rest wait for the M4 slice named. M5 
 | S5.4 | Spike: expansion-time profile and cached rebuild transitions | done (decision A: both tracking paths suffice on their own) |
 | m5.b | Ledger on two adapters (per-kind observation pins) | done (`236780b`; 18 software pins) |
 | m5.e1, m5.e2 | Production `cpu` profile (D51); `check-cpu-target` and the `Cpu` tier | m5.e1 done (Unit, CPU only; Opus keep after one fix round; `f60c1b4`); m5.e2 done (merge `f9fdd24`) |
-| m5.c2, m5.a2 | `check-difftest` wiring; `gpu-software` on the Slang manager | m5.a2 done (Gpu (software): lavapipe; Opus merge after one fix round; `e098f2f`); m5.c2 next |
+| m5.c2, m5.a2 | `check-difftest` wiring; `gpu-software` on the Slang manager | m5.a2 done (Gpu (software): lavapipe; Opus merge after one fix round; `e098f2f`); m5.c2 done (`82c59d2`, fix rounds `f2a9410`, merge `68c6f40`; D74) |
 
 **Next: M6, language breadth I** (plan adopted 2026-11-01, owner-delegated, after an Opus review, one revision and a
 re-check). The keyword and construct spikes (S6.3b, S6.1) are done, and so are the pure-Rust math types (m6.a2,

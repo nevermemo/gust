@@ -58,6 +58,18 @@ D55 to D59.
   `__gust_keep` can go behind a GPU read-back); the managed helper has no stamp until `cargo gust slang build-helper`
   runs once more. Evidence: Unit, Slangc, Spirv and Reflect on 2026.20, check-ui, check-dual `--check-only`,
   check-precompiled `--check-only`, check-cpu-target; CPU only. Opus merge after two review rounds.
+- M5 m5.c2 (`82c59d2`, fix round `f2a9410`, merge `68c6f40`): difftest in the gates. `cargo xtask check-difftest
+  [--seeds] [--cpu-only]` runs the harness, checks the report by field (`programs_executed == 16 x seeds`, the
+  per-seed table against the seed list, no mismatches, the harness exit status) and, on the Gpu tier, the
+  `short_circuit` GPU test. The Unit suite runs 4 seeds on the CPU plus the harness's own fmt, clippy and tests; a
+  separate CI job `difftest` runs the same (the `unit` and `slang` jobs use `--skip-difftest`, which prints each
+  skipped step); gpu-software runs 2 seeds per PR and 8 nightly on lavapipe and uploads the report; `check-full`
+  runs 8 seeds on the hardware adapter and the harness checks. Seed 4 found a slangc limitation (D74): slangc
+  folds integer `/` and `%` and refuses a divisor that folds to zero (E30002), even in a dead branch; DIAGNOSTICS
+  lists what folds, the generator discards such programs as `static` (`DIFFTEST_FORMAT` 4), and a Slangc-tier test
+  pins the reproducer. Evidence: 8 seeds, 128 of 128 programs, 0 mismatches on the RTX 5090; 19 gate steps on main
+  at `68c6f40` (11:30-11:58Z), including `verify --mode gpu` and `check-full` with no skips (RTX 5090, driver
+  610.88, the browser run on Chrome 156). Opus merge after fixes; two fix rounds.
 - M5 m5.d3 (merge `d879f33`, feature `e249ae5`): the coretests golden `tests/fixtures/coretests.slang` (blessed) with
   its regression entry and a slangc test of each section; `coretests` joins `check-feature gpu-semantics` and
   `coretests_twin` the Unit suite. `gpu-semantics` passed on the RTX 5090. Opus keep.

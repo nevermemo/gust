@@ -116,6 +116,15 @@ test module; do not mix that mechanical move with behavior changes.
   `doc(cfg)`; registry users see no inferred-profile warning.
 - `xtask/src/bless.rs` hashes only `tests/fixtures/*.slang`, so blessing other goldens reports a false failure.
 
+## M5 follow-ups (filed during M5)
+
+- Lower integer `/` and `%` through `__gust_div`/`__gust_rem` helpers so slangc cannot fold a zero divisor (D74).
+  The helpers compiled in every probed shape (m5.c2); measure run-time semantics and the cost before adopting, then
+  drop the generator's `first_iteration_zero_divisor` filter.
+- The StorageV1/StorageV2 wording mix in the struct layout asserts (pinned in xtask ui tests).
+- gpu-software installs Mesa from one Ubuntu snapshot with no apt retry; a snapshot.ubuntu.com outage failed it three
+  times on 2026-11-02. Add `Acquire::Retries` if it recurs.
+
 ## M6 follow-ups (filed during M6)
 
 - `cargo xtask check-artifacts` does not export the `#[gpu]` modules of integration tests (for example

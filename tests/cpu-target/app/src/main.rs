@@ -12,8 +12,9 @@ use std::{hint::black_box, process::ExitCode, time::Instant};
 use gust::{
     Independent,
     cpu::{CpuDevice, ulps},
+    math::Vec4,
 };
-use kernels::{atomic_counter, polynomial, vector_add};
+use kernels::{atomic_counter, polynomial, vector_add, vector_ops};
 
 /// More than one workgroup (64 and 128 wide) and not a multiple of either, so the kernels' bounds checks matter.
 const ELEMENTS: usize = 1000;
@@ -39,6 +40,7 @@ fn run(bench: bool) -> Result<(), String> {
     check_vector_add()?;
     check_polynomial()?;
     check_atomic_counter()?;
+    check_vector_ops()?;
     println!("CPU target: all kernels match");
     if bench {
         bench_vector_add()?;
@@ -161,6 +163,59 @@ fn check_atomic_counter() -> Result<(), String> {
     println!(
         "CPU target: matches (atomic_counter::increment, {INVOCATIONS} invocations, max ULP 0)"
     );
+    Ok(())
+}
+
+/// The lanes of element `index` of the vector kernel's inputs: small integers and halves, so the kernel's sums and
+/// products are exact in `f32` and the comparison below is exact.
+fn vector_lanes(index: usize, shift: usize) -> [f32; 4] {
+    let i = index + shift;
+    [
+        (i % 7) as f32,
+        (i % 5) as f32 - 2.0,
+        (i % 3) as f32 * 0.5,
+        (i % 11) as f32,
+    ]
+}
+
+/// The vector kernel `vector_ops::blend` of `kernels` (M6), in the production CPU build, against a reference written
+/// lane by lane on plain arrays: `blended = (a + reverse(b)) * 2 + 0.5` and `dot = sum of a * b` in lane order.
+///
+/// The comparison is exact, so the line says `max ULP 0` truthfully; `xtask/src/cpu_target.rs` (`KERNELS`) requires it.
+/// A mismatch fails the run (exit 1, no final line).
+fn check_vector_ops() -> Result<(), String> {
+    let a: Vec<[f32; 4]> = (0..ELEMENTS).map(|index| vector_lanes(index, 0)).collect();
+    let b: Vec<[f32; 4]> = (0..ELEMENTS).map(|index| vector_lanes(index, 3)).collect();
+    let to_vec4 = |lanes: &[f32; 4]| Vec4::new(lanes[0], lanes[1], lanes[2], lanes[3]);
+    let device = CpuDevice::new();
+    let a_buffer = device.buffer(&a.iter().map(to_vec4).collect::<Vec<_>>());
+    let b_buffer = device.buffer(&b.iter().map(to_vec4).collect::<Vec<_>>());
+    let blended = device.buffer(&vec![Vec4::splat(0.0); ELEMENTS]);
+    let dots = device.buffer(&vec![0.0f32; ELEMENTS]);
+    vector_ops::blend::dispatch(
+        &device,
+        ELEMENTS as u32,
+        &a_buffer,
+        &b_buffer,
+        &blended,
+        &dots,
+    )
+    .map_err(|error| format!("vector_ops::blend: {error:?}"))?;
+    let (blended, dots) = (blended.read(), dots.read());
+    for index in 0..ELEMENTS {
+        let (a, b) = (a[index], b[index]);
+        let want: [f32; 4] = std::array::from_fn(|lane| (a[lane] + b[3 - lane]) * 2.0 + 0.5);
+        let want_dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
+        let got = blended[index];
+        if [got.x, got.y, got.z, got.w] != want || dots[index] != want_dot {
+            return Err(format!(
+                "vector_ops::blend element {index}: got {:?} and dot {}, expected {want:?} and dot {want_dot}",
+                [got.x, got.y, got.z, got.w],
+                dots[index]
+            ));
+        }
+    }
+    println!("CPU target: matches (vector_ops::blend, {ELEMENTS} elements, max ULP 0)");
     Ok(())
 }
 

@@ -8,7 +8,7 @@ use std::{
 
 use crate::{
     arch::check_arch,
-    checks::{check_dual, tests_not_ok},
+    checks::{GOLDEN_SPIRV_SETS, check_dual, tests_not_ok},
     difftest::check_difftest_report,
     docs::docs_check,
     lint::lint,
@@ -18,6 +18,7 @@ use crate::{
         run_checked, run_checked_owned, sum_test_results, without_colors,
     },
     reflect::{BuildOptions, build_slang_reflect},
+    shader::{compile_golden_spirv, copy_logical_note},
     suite::DIFFTEST_CARGO_CALLS,
     time::now_utc,
     ui::check_ui,
@@ -299,6 +300,12 @@ fn verify_inner(
             .map(|name| name.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         compare_artifact_names(EXPECTED_SPIRV, &found)?;
+        // The goldens of tests/fixtures (vectors, products, uniforms) are compiled here and validated like the
+        // examples' files: no example uses a vector or a uniform, so nothing else covers their SPIR-V. Their expected
+        // names are kept apart from EXPECTED_SPIRV.
+        for (area, stems, expected) in GOLDEN_SPIRV_SETS {
+            spv.extend(compile_golden_spirv(root, area, stems, expected)?);
+        }
         for artifact in spv {
             let path = artifact.to_string_lossy().into_owned();
             run_checked(
@@ -318,6 +325,7 @@ fn verify_inner(
                 sha256: sha256_hex(&bytes),
             });
             println!("Validated {file}");
+            println!("  {}", copy_logical_note(&artifact));
         }
     }
     // Last: the slowest checks, and the ones that need the most (a registry download, Chrome with a WebGPU adapter).

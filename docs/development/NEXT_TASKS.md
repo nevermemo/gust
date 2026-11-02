@@ -114,9 +114,8 @@ test module; do not mix that mechanical move with behavior changes.
 ## M5 follow-ups (filed during M5)
 
 - Lower integer `/` and `%` through `__gust_div`/`__gust_rem` helpers so slangc cannot fold a zero divisor (D74):
-  taken by M6 slice m6.dv (spike m6.s1 passed its compile, semantics and cost rules). Only 13 of the 124 `static`
-  discards of seeds 1 to 8 come from the divisor rule; report.json and the gate summary should name the class
-  (m6.dv).
+  done in m6.dv (merge `94baab5`, D77). Format 5 keeps no divisor-rule discard (the 13 of format 4 are gone), so
+  no class needs naming.
 - The StorageV1/StorageV2 wording mix in the struct layout asserts (pinned in xtask ui tests).
 - gpu-software installs Mesa from one Ubuntu snapshot; m5.f1 added retries, but a long snapshot.ubuntu.com outage
   (three failures on 2026-11-02) still stops it. A tested fallback source (wgpu's CI uses `gfx-rs/ci-build`) would

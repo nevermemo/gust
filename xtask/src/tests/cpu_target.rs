@@ -44,6 +44,7 @@ fn fixture_file(name: &str) -> String {
 const GOOD: &str = "CPU target: matches (vector_add::add, 1000 elements, max ULP 0)
 CPU target: matches (polynomial::evaluate, 1000 elements, max ULP 0)
 CPU target: matches (atomic_counter::increment, 257 invocations, max ULP 0)
+CPU target: matches (vector_ops::blend, 1000 elements, max ULP 0)
 CPU target: all kernels match
 ";
 
@@ -106,7 +107,7 @@ fn the_output_of_a_good_run_has_no_problem() {
     );
     assert_eq!(
         match_summary(GOOD),
-        "vector_add::add 1000 elements, max ULP 0; polynomial::evaluate 1000 elements, max ULP 0; atomic_counter::increment 257 invocations, max ULP 0"
+        "vector_add::add 1000 elements, max ULP 0; polynomial::evaluate 1000 elements, max ULP 0; atomic_counter::increment 257 invocations, max ULP 0; vector_ops::blend 1000 elements, max ULP 0"
     );
 }
 
@@ -136,6 +137,7 @@ fn a_run_that_stopped_early_names_every_missing_kernel_and_the_final_line() {
         [
             "no `matches` line for the kernel `polynomial::evaluate`".to_owned(),
             "no `matches` line for the kernel `atomic_counter::increment`".to_owned(),
+            "no `matches` line for the kernel `vector_ops::blend`".to_owned(),
             format!("the final line `{FINAL_LINE}` is missing"),
         ]
     );
@@ -1054,7 +1056,7 @@ fn the_fixture_has_every_file_the_calls_name() {
     ] {
         assert!(root.join(name).is_file(), "{name}");
     }
-    // The three kernels the check requires are the ones `app` prints (a rename of one fails here, not in a run).
+    // The kernels the check requires are the ones `app` prints (a rename of one fails here, not in a run).
     let app = fs::read_to_string(root.join("app/src/main.rs")).unwrap();
     for kernel in KERNELS {
         assert!(app.contains(&format!("{kernel}::dispatch")), "{kernel}");

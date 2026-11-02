@@ -503,4 +503,17 @@ fn the_record_names_skipped_checks_and_lists_the_browser_as_untested_unless_it_r
         "{complete}"
     );
     assert!(failed_web.contains("\"untested\": [\"browser WebGPU\", \"Metal\""));
+
+    // `cargo xtask status` must not show a record that left a check out as a plain full one.
+    let line = compact_validation_summary(&skipped_record);
+    assert!(
+        line.contains(" dirty=") && line.ends_with(" skipped=check-web"),
+        "{line}"
+    );
+    assert!(line.contains(" mode=full passed="), "{line}");
+    let line = compact_validation_summary(&complete);
+    assert!(!line.contains("skipped"), "{line}");
+    // A record from before the member existed keeps its line.
+    let old = complete.replace("  \"skipped_checks\": [],\n", "");
+    assert_eq!(compact_validation_summary(&old), line);
 }

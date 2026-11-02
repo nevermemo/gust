@@ -423,6 +423,11 @@ pub(crate) fn compact_validation_summary(text: &str) -> String {
     let passed = field("passed").unwrap_or_else(|| "unknown".to_owned());
     let commit = field("git_commit").unwrap_or_else(|| "unknown".to_owned());
     let dirty = field("git_dirty").unwrap_or_else(|| "unknown".to_owned());
+    // A record of a run that left a check out says so: `mode=full passed=true` alone would look like the full gate.
+    // Older records have no member, and a complete one has an empty list: neither gets the word.
+    let skipped = skipped_names(text)
+        .map(|names| format!(" skipped={}", names.join(",")))
+        .unwrap_or_default();
     // Only a software adapter gets a tier word, appended last: a hardware record, a record without an adapter and
     // a record from before the adapter member keep the line they always had.
     let tier = if field("device_type").as_deref() == Some(SOFTWARE_DEVICE_TYPE) {
@@ -430,7 +435,23 @@ pub(crate) fn compact_validation_summary(text: &str) -> String {
     } else {
         ""
     };
-    format!("finished={finished} mode={mode} passed={passed} commit={commit} dirty={dirty}{tier}")
+    format!(
+        "finished={finished} mode={mode} passed={passed} commit={commit} dirty={dirty}{skipped}{tier}"
+    )
+}
+
+/// The names in the `"skipped_checks"` member, or `None` when it is absent or empty.
+fn skipped_names(text: &str) -> Option<Vec<String>> {
+    let line = text
+        .lines()
+        .find(|line| line.trim_start().starts_with("\"skipped_checks\":"))?;
+    let list = line.split_once('[')?.1.rsplit_once(']')?.0;
+    let names: Vec<String> = list
+        .split(',')
+        .map(|name| name.trim().trim_matches('"').to_owned())
+        .filter(|name| !name.is_empty())
+        .collect();
+    (!names.is_empty()).then_some(names)
 }
 
 /// The `device_type` of the adapter record for a software Vulkan driver such as lavapipe: the `Debug` name of

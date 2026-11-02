@@ -423,3 +423,16 @@ fn a_build_without_an_sdk_or_an_output_directory_says_what_is_missing() {
     .unwrap_err();
     assert!(error.contains("slang.h was not found"), "{error}");
 }
+
+#[test]
+fn a_cl_that_could_not_be_launched_gets_the_vcvars_hint_and_other_errors_stay_as_they_are() {
+    let launch = with_cl_launch_hint("cl", "could not launch cl: not found".to_owned());
+    assert!(
+        launch.starts_with("could not launch cl: not found"),
+        "{launch}"
+    );
+    assert!(launch.contains("Developer prompt"), "{launch}");
+    assert!(launch.contains("unset CXX"), "{launch}");
+    let failed = "cl exited with exit code: 2".to_owned();
+    assert_eq!(with_cl_launch_hint("cl", failed.clone()), failed);
+}

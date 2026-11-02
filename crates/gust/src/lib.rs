@@ -106,7 +106,7 @@
 //!
 //! `cpu` is the production CPU target (D21): the `#[gpu]` macro emits the kernel's `Run` impl for
 //! [`cpu::CpuDevice`](crate::cpu::CpuDevice) in every build, without the test and `gust_dual` gate, uses no
-//! artifact, and the `slang-runtime` feature is refused, so the build holds no compiler or bridge. `gust-wgpu`
+//! artifact, and the `slang-runtime` feature is refused, so the build holds no run-time Slang bridge. `gust-wgpu`
 //! evaluates [`profile::require_gpu_target`], which fails under it, so a crate graph that reaches the GPU runtime does
 //! not build. It is never inferred: a release build without the variable stays `native` (`web` on `wasm32`). The Slang
 //! text that a kernel's descriptor keeps in a `cpu` build is metadata (the identity of the kernel, what `export` and

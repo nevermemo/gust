@@ -150,6 +150,36 @@ pub(crate) fn check_web(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The tools `check-web` needs, found and checked before any build starts.
+struct Tools {
+    wanted: String,
+    bindgen: PathBuf,
+    chrome: PathBuf,
+}
+
+/// The lookups of `check-web` that can fail for a missing tool: the locked `wasm-bindgen` version and a CLI of that
+/// version, Chrome, and the wasm32 standard library. `path_var` is the `PATH` the CLI is looked up in.
+fn find_tools(root: &Path, options: &Options, path_var: Option<OsString>) -> Result<Tools, String> {
+    let wanted = locked_wasm_bindgen_version(
+        &fs::read_to_string(root.join("Cargo.lock"))
+            .map_err(|error| format!("check-web: could not read Cargo.lock: {error}"))?,
+    )?;
+    let bindgen = locate_wasm_bindgen(options, &wanted, path_var)?;
+    let chrome = locate_chrome(options)?;
+    require_wasm_target()?;
+    Ok(Tools {
+        wanted,
+        bindgen,
+        chrome,
+    })
+}
+
+/// The tool lookups of a default `check-web` run, and nothing else: no build, no Chrome. `check-full` calls this
+/// first, so a missing tool fails in seconds and not after the long steps.
+pub(crate) fn preflight_tools() -> Result<(), String> {
+    find_tools(&workspace_root()?, &Options::default(), env::var_os("PATH")).map(|_| ())
+}
+
 /// [`check_web`] that returns its passing summary (empty for `--tree-only`, which has printed its one line) instead of
 /// printing it, so that `check-full` can record it.
 pub(crate) fn check_web_report(args: &[String]) -> Result<String, String> {
@@ -163,12 +193,11 @@ pub(crate) fn check_web_report(args: &[String]) -> Result<String, String> {
         return Ok(String::new());
     }
 
-    let wanted = locked_wasm_bindgen_version(
-        &fs::read_to_string(root.join("Cargo.lock"))
-            .map_err(|error| format!("check-web: could not read Cargo.lock: {error}"))?,
-    )?;
-    let bindgen = locate_wasm_bindgen(&options, &wanted)?;
-    let chrome = locate_chrome(&options)?;
+    let Tools {
+        wanted,
+        bindgen,
+        chrome,
+    } = find_tools(&root, &options, env::var_os("PATH"))?;
     let chrome_version = chrome_version(&chrome);
     println!(
         "check-web: Chrome {} ({}), wasm-bindgen {wanted} ({}), page deadline {} s",
@@ -178,7 +207,6 @@ pub(crate) fn check_web_report(args: &[String]) -> Result<String, String> {
         options.timeout().as_secs(),
     );
 
-    require_wasm_target()?;
     let target_dir = cargo_target_dir(&root);
     let out_dir = target_dir.join("web-check").join("site");
 
@@ -409,10 +437,14 @@ pub(crate) fn find_in_path(name: &str, path: &OsString) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-fn locate_wasm_bindgen(options: &Options, wanted: &str) -> Result<PathBuf, String> {
+fn locate_wasm_bindgen(
+    options: &Options,
+    wanted: &str,
+    path_var: Option<OsString>,
+) -> Result<PathBuf, String> {
     let path = match &options.wasm_bindgen {
         Some(path) => path.clone(),
-        None => env::var_os("PATH")
+        None => path_var
             .and_then(|path| find_in_path("wasm-bindgen", &path))
             .ok_or_else(|| {
                 format!(

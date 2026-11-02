@@ -11,7 +11,7 @@ use crate::{
     checks::{check_dual, tests_not_ok},
     docs::docs_check,
     lint::lint,
-    precompiled::check_precompiled,
+    precompiled::check_precompiled_report,
     process::{
         CheckRecord, report_check, require_command, require_tests_ran, run_checked,
         run_checked_owned, sum_test_results, without_colors,
@@ -20,7 +20,7 @@ use crate::{
     time::now_utc,
     ui::check_ui,
     validation::{AdapterRecord, ArtifactRecord, GitStamp, RunInfo, sha256_hex, write_validation},
-    web::check_web_report,
+    web::{check_web_report, preflight_tools},
     workspace::{EXAMPLES, EXPECTED_SPIRV, SMOKE_EXAMPLES, workspace_root, workspace_test_args},
 };
 
@@ -189,6 +189,24 @@ pub(crate) fn verify_with(mode: VerifyMode, record: bool, skip_web: bool) -> Res
     Ok(())
 }
 
+/// The tools of `check-web` are looked up at the start of a Full run that will run it, with `probe` (check-web's own
+/// lookups). Every other run, including Full with `--skip-web`, does not look: it never runs `check-web`.
+fn web_preflight(
+    mode: VerifyMode,
+    skip_web: bool,
+    probe: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if mode != VerifyMode::Full || skip_web {
+        return Ok(());
+    }
+    probe().map_err(|error| {
+        format!(
+            "{error}\n  check-full runs check-web, which needs this tool; install it, or pass {SKIP_WEB_FLAG} \
+             (the run is then recorded as not the full release record)"
+        )
+    })
+}
+
 /// Run one integration check in process and record it like `check-dual`. On failure the returned error carries the
 /// check's own message (the cause), not the generic "found 1 problem".
 fn run_integration(
@@ -215,6 +233,8 @@ fn verify_inner(
     adapter: &mut Option<AdapterRecord>,
     skipped: &mut Vec<String>,
 ) -> Result<(), String> {
+    // Before anything else: a missing tool of check-web must not show up after the long steps.
+    web_preflight(mode, skip_web, preflight_tools)?;
     // Cheapest checks first; they need only git, and check-ui needs cargo (no slangc, no GPU).
     if matches!(
         mode,
@@ -299,8 +319,7 @@ fn verify_inner(
     for step in integration_checks(mode, skip_web) {
         match step {
             Integration::Run("check-precompiled") => {
-                let outcome = check_precompiled(&[])
-                    .map(|()| "check-precompiled passed (full mode)\n".to_owned());
+                let outcome = check_precompiled_report(&[]).map(|summary| format!("{summary}\n"));
                 run_integration(checks, "check-precompiled", outcome)?;
             }
             Integration::Run("check-web") => {

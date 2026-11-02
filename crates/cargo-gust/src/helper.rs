@@ -5,7 +5,8 @@
 //! tool has it. The logic of `cargo xtask build-slang-reflect` lives here since slice m4.f: xtask runs this command.
 //!
 //! The C++ compiler is the first of `cl`, `clang++`, `c++`, `g++` found on `PATH` (the `CXX` variable, when set, is
-//! used instead). On Windows, when none is on `PATH`, `vcvars64.bat` of the newest Visual Studio with the C++ tools is
+//! used instead; a `CXX` whose file name is `cl` or `cl.exe` gets MSVC arguments, any other gets GCC style ones). On
+//! Windows, when none is on `PATH`, `vcvars64.bat` of the newest Visual Studio with the C++ tools is
 //! run once (see `msvc.rs`) and `cl` is taken from the environment it produces.
 //!
 //! The helper reads the Slang build tag from the library it loads (`--version` prints `slang=<tag>`), so it reports
@@ -418,7 +419,8 @@ fn build_windows(
     )?;
     let obj = out_dir.join("gust-slang-reflect.obj");
     match compiler {
-        Compiler::Cl(program) => run(&program, &msvc_args(include, source, &obj, exe, &library))?,
+        Compiler::Cl(program) => run(&program, &msvc_args(include, source, &obj, exe, &library))
+            .map_err(|error| with_cl_launch_hint(&program, error))?,
         Compiler::ClViaVcvars => {
             let environment = msvc::capture_vcvars_environment(&msvc::find_vcvars64()?)?;
             msvc::run_cl_in_environment(
@@ -479,7 +481,7 @@ fn build_unix(
         // `cl` on a non-Windows host is not something this build can drive with GCC style arguments.
         Compiler::Cl(_) | Compiler::ClViaVcvars => {
             return Err(
-                "found `cl` (on PATH or as CXX), which this platform cannot use; set CXX"
+                "found `cl` (on PATH or as CXX), which this platform cannot use; set CXX to a GCC or Clang style driver"
                     .to_owned(),
             );
         }
@@ -488,6 +490,18 @@ fn build_unix(
         &program,
         &driver_args(include, source, &library, Some(lib_dir), exe),
     )
+}
+
+/// A `cl` that could not even be started (a `CXX` naming it when it is not on `PATH`) gets the way out: `CXX` is
+/// taken as given, so the `vcvars64.bat` fallback only runs when `CXX` is unset.
+fn with_cl_launch_hint(program: &str, error: String) -> String {
+    if error.starts_with("could not launch") {
+        format!(
+            "{error}; run from a Developer prompt (so `{program}` is on PATH), or unset CXX to use the vcvars fallback"
+        )
+    } else {
+        error
+    }
 }
 
 /// Run a compiler with inherited output.

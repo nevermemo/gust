@@ -142,10 +142,11 @@ jobs:
     # refusals, the re-expansion on a changed GUST_EXPORT_DIR, the `cargo package` allow-lists and the relocated
     # registry-style consumer) and skips what needs a GPU (the runs of E1, E3 and E8) or Slang (`cargo gust build`
     # twice, E7). Those stay local, with the full command `cargo xtask check-precompiled` (which `check-full` also
-    # runs). E8 downloads `wgpu` from crates.io. After it, the release `app` that E1 built is run with the Vulkan loader pointed at no driver (R2-4:
-    # "expect NoAdapter"); that proves the consumer reaches the adapter request and ends with the error, not that it
-    # computes anything. Not covered on CI: the runs of E1, E3 and E8, E7b, and a successful dispatch. Runnable locally
-    # in sh form: `cargo --locked xtask check-precompiled --check-only`, then the step below.
+    # runs). E8 downloads `wgpu` from crates.io. After it, the release `app` that E1 built is run with the Vulkan
+    # loader pointed at no driver (R2-4: "expect NoAdapter"); that proves the consumer reaches the adapter request
+    # and ends with the error, not that it computes anything. Not covered on CI: the runs of E1, E3 and E8, E7b, and
+    # a successful dispatch. Runnable locally in sh form: `cargo --locked xtask check-precompiled --check-only`, then
+    # the step below.
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

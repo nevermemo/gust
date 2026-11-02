@@ -1,4 +1,6 @@
-use super::{Integration, SKIP_WEB_FLAG, VerifyCommand, VerifyMode, integration_checks};
+use super::{
+    Integration, SKIP_WEB_FLAG, VerifyCommand, VerifyMode, integration_checks, web_preflight,
+};
 
 const ALL_MODES: [VerifyMode; 6] = [
     VerifyMode::Smoke,
@@ -81,10 +83,11 @@ fn skip_web_is_a_full_mode_flag() {
 /// whole `check-precompiled` (no `--check-only`) and the whole `check-web` (not `--tree-only`), after its own steps.
 #[test]
 fn verify_inner_runs_the_whole_integration_checks_last() {
-    let source = include_str!("../verify.rs");
+    // A checkout with `core.autocrlf=true` has CRLF line ends; the search below looks for LF.
+    let source = include_str!("../verify.rs").replace("\r\n", "\n");
     let body = &source[source.find("fn verify_inner(").expect("verify_inner")..];
     let body = &body[..body.find("\n}\n").expect("end of verify_inner")];
-    for needle in ["check_precompiled(&[])", "check_web_report(&[])"] {
+    for needle in ["check_precompiled_report(&[])", "check_web_report(&[])"] {
         assert!(
             body.contains(needle),
             "verify_inner no longer calls `{needle}`"
@@ -96,4 +99,42 @@ fn verify_inner_runs_the_whole_integration_checks_last() {
         .find("integration_checks(mode, skip_web)")
         .expect("integration loop");
     assert!(artifacts < integration);
+}
+
+/// The preflight is the first thing `verify_inner` does, and it uses check-web's own lookups.
+#[test]
+fn verify_inner_looks_for_the_web_tools_before_any_other_step() {
+    let source = include_str!("../verify.rs").replace("\r\n", "\n");
+    let body = &source[source.find("fn verify_inner(").expect("verify_inner")..];
+    let preflight = body
+        .find("web_preflight(mode, skip_web, preflight_tools)")
+        .expect("verify_inner no longer runs the web preflight");
+    for later in ["lint(root, checks)", "require_command(", "run_checked("] {
+        assert!(
+            preflight < body.find(later).expect(later),
+            "the preflight comes after `{later}`"
+        );
+    }
+}
+
+const MISSING: &str = "check-web: wasm-bindgen is not on PATH";
+
+#[test]
+fn a_full_run_without_a_web_tool_stops_at_once_and_names_the_tool_and_the_flag() {
+    let error = web_preflight(VerifyMode::Full, false, || Err(MISSING.to_owned())).unwrap_err();
+    assert!(error.contains("wasm-bindgen"), "{error}");
+    assert!(error.contains(SKIP_WEB_FLAG), "{error}");
+    assert!(web_preflight(VerifyMode::Full, false, || Ok(())).is_ok());
+}
+
+#[test]
+fn the_preflight_does_not_look_when_check_web_will_not_run() {
+    let never = || -> Result<(), String> { panic!("looked for the web tools") };
+    assert!(web_preflight(VerifyMode::Full, true, never).is_ok());
+    for mode in ALL_MODES
+        .into_iter()
+        .filter(|mode| *mode != VerifyMode::Full)
+    {
+        assert!(web_preflight(mode, false, never).is_ok(), "{mode:?}");
+    }
 }

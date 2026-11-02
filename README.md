@@ -52,7 +52,7 @@ a strict profile needs neither Slang nor the helper, D45):
 - `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.20 (`cargo gust slang install` installs it, and
   `cargo gust doctor` names a `slangc` of another version). `cargo gust` finds its managed install itself (in
   `GUST_SLANG_HOME` when set), but `cargo xtask` and the run-time bridge launch plain `slangc`, so put the install's
-  `bin` directory first on `PATH`)
+  `bin` directory first on `PATH`
 - The native reflection helper, built once with
   `cargo xtask build-slang-reflect`. It needs the Slang
   SDK headers and import library (from `VULKAN_SDK` or `SLANG_SDK`) and a C++
@@ -131,9 +131,10 @@ cargo xtask check-full
 
 It also runs the whole `check-precompiled` (the fixture `tests/precompiled`, with a GPU, Slang and the crates.io
 registry) and the whole `check-web` (the browser WebGPU run: wasm32 target, `wasm-bindgen-cli`, Chrome with a WebGPU
-adapter). Nothing is skipped silently: a missing tool or adapter fails the run and names the cause. On a machine
-without a browser, `cargo xtask check-full --skip-web` leaves out `check-web` only, says so, and records
-`skipped_checks` in the file below.
+adapter). Nothing is skipped silently: a missing tool or adapter fails the run and names the cause, and the tools of
+`check-web` are looked up first, so a missing one fails in seconds. On a machine without a browser,
+`cargo xtask check-full --skip-web` leaves out `check-web` only, says so, and records `skipped_checks` in the file
+below; `cargo xtask status` then shows `skipped=check-web`.
 
 It writes `.ai/VALIDATION.json` with command exit codes, stdout, artifact hashes,
 the skipped checks and explicit untested targets. This is local debug validation, not release benchmark

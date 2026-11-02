@@ -510,6 +510,20 @@ impl Expr {
         found
     }
 
+    /// Whether the expression reads an `f32` input buffer directly: an `f32` `Input` node that no cast sits above.
+    /// A read behind a cast (`(in1[i] * 0u32) as f32`) can fold to a constant, so it does not count.
+    pub fn reads_f32_input_directly(&self) -> bool {
+        match self {
+            Expr::Input { ty, .. } => *ty == Ty::F32,
+            Expr::Cast { .. } => false,
+            _ => {
+                let mut found = false;
+                self.for_each_child(&mut |child| found |= child.reads_f32_input_directly());
+                found
+            }
+        }
+    }
+
     /// The counted name of a vector or matrix operator (`new Vec4`, `* Mat4 Vec4`, `.xy Vec4`, ...), the same string in
     /// `operator_counts` and in the interpreter's coverage; `None` for every other node.
     pub fn aggregate_name(&self) -> Option<String> {
@@ -877,10 +891,12 @@ impl Check {
                     ));
                 }
                 // SEMANTICS section 4: a compile-time constant `Mat2` crashes naga's SPIR-V front end. A matrix whose
-                // constructor reads no input is a candidate for constant folding, so the generator never writes one.
-                if *ty == Ty::Mat(2) && !args.iter().any(Expr::reads_input) {
+                // constructor reads no `f32` input buffer directly (a read behind a cast can fold to a constant) is a
+                // candidate for constant folding, so the generator never writes one.
+                if *ty == Ty::Mat(2) && !args.iter().any(Expr::reads_f32_input_directly) {
                     return Err(
-                        "a `Mat2` built from no input read could be a compile-time constant".into(),
+                        "a `Mat2` with no direct `f32` input read could be a compile-time constant"
+                            .into(),
                     );
                 }
                 Ok(())
@@ -1048,4 +1064,47 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
     block(&program.body, &mut counts);
     expr(&program.result, &mut counts);
     counts
+}
+
+/// Every type a value can have, for the tables below.
+fn value_types() -> Vec<Ty> {
+    let mut types = vec![Ty::U32, Ty::I32, Ty::F32];
+    for lane in [Lane::U32, Lane::I32, Lane::F32] {
+        for n in WIDTHS {
+            types.push(Ty::Vec(lane, n));
+        }
+    }
+    types.extend(WIDTHS.map(Ty::Mat));
+    types
+}
+
+/// The operator names (as `operator_counts` writes them) of every row the generator can write: each `agg_bin_ty` row
+/// with the four arithmetic operators, each negation (`i32` and `f32` vectors, matrices) and each swizzle shape
+/// (a vector of width 2 or 4 read as a vector of width 2 or 4).
+pub fn writable_aggregate_forms() -> BTreeSet<String> {
+    let mut forms = BTreeSet::new();
+    let types = value_types();
+    for op in [BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div] {
+        for &l in &types {
+            for &r in &types {
+                if agg_bin_ty(op, l, r).is_some() {
+                    forms.insert(format!("{} {} {}", op.symbol(), l.name(), r.name()));
+                }
+            }
+        }
+    }
+    for &ty in &types {
+        match ty {
+            Ty::Vec(Lane::I32 | Lane::F32, _) | Ty::Mat(_) => {
+                forms.insert(format!("-{}", ty.name()));
+            }
+            _ => {}
+        }
+        if let Ty::Vec(..) = ty {
+            for width in WIDTHS {
+                forms.insert(format!("swizzle {}->{}", ty.name(), width));
+            }
+        }
+    }
+    forms
 }

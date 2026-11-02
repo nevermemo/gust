@@ -7,6 +7,7 @@
 //! difftest-gen emit-run SEEDS DIR [ROOT]  write the run crate (kernels, test module, data) of SEEDS (e.g. 1-2) into DIR
 //! difftest-gen time SEEDS              generation and interpreter time of SEEDS (milliseconds)
 //! difftest-gen stats SEEDS             attempts and discards by class of SEEDS, the vector part apart
+//! difftest-gen forms                   the vector and matrix operator names the generator can write, one per line
 //! ```
 
 use std::path::PathBuf;
@@ -103,6 +104,11 @@ fn run(args: &[String]) -> Result<(), String> {
                 println!("{key}: {n}");
             }
         }
+        Some("forms") => {
+            for form in difftest::ast::writable_aggregate_forms() {
+                println!("{form}");
+            }
+        }
         Some("time") => {
             let seeds = parse_seeds(args.get(1).ok_or("missing SEEDS")?)?;
             let (mut generate, mut interpret, mut programs) = (0.0, 0.0, 0);
@@ -124,10 +130,11 @@ fn run(args: &[String]) -> Result<(), String> {
             );
         }
         _ => {
-            return Err(
-                "usage: difftest-gen seeds FIRST LAST | show SEED [INDEX] | emit SEED DIR [ROOT] | emit-run SEEDS DIR [ROOT] | time SEEDS | stats SEEDS"
-                    .into(),
-            );
+            return Err(concat!(
+                "usage: difftest-gen seeds FIRST LAST | show SEED [INDEX] | emit SEED DIR [ROOT]",
+                " | emit-run SEEDS DIR [ROOT] | time SEEDS | stats SEEDS | forms"
+            )
+            .into());
         }
     }
     Ok(())

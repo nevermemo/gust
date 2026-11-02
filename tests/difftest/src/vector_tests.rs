@@ -309,6 +309,42 @@ fn a_mat2_without_an_input_read_is_refused_and_a_mat4_is_not() {
     program(&[1.0], Vec::new(), ok4).check().unwrap();
 }
 
+/// The guard wants a direct `f32` read: `(in1[i] * 0u32) as f32` is an input read in the tree, but slangc can fold it
+/// to a constant, so it does not make a `Mat2` safe (review of m6.d, nit 5).
+#[test]
+fn a_mat2_whose_only_input_read_is_behind_a_cast_is_refused() {
+    let folded = Expr::cast(
+        Ty::F32,
+        Expr::bin(BinOp::Mul, Expr::input(1, Ty::U32, Expr::Gid), Expr::u32(0)),
+    );
+    let column = Expr::vec_new(V2, vec![folded, f(2.0)]);
+    let result = Expr::comp(mul(mat2(column, vec2(3.0, 4.0)), vec2(1.0, 0.0)), 0);
+    let mut p = program(&[1.0], Vec::new(), result);
+    p.inputs.push(InputBuf {
+        ty: Ty::U32,
+        data: vec![5],
+    });
+    let message = p.check().unwrap_err();
+    assert!(
+        message.contains("Mat2") && message.contains("direct"),
+        "{message}"
+    );
+    // The same matrix with a direct `f32` read in the other column is accepted.
+    let read = Expr::vec_new(V2, vec![input(), f(2.0)]);
+    let folded = Expr::cast(
+        Ty::F32,
+        Expr::bin(BinOp::Mul, Expr::input(1, Ty::U32, Expr::Gid), Expr::u32(0)),
+    );
+    let column = Expr::vec_new(V2, vec![folded, f(2.0)]);
+    let ok = Expr::comp(mul(mat2(column, read), vec2(1.0, 0.0)), 0);
+    let mut p = program(&[1.0], Vec::new(), ok);
+    p.inputs.push(InputBuf {
+        ty: Ty::U32,
+        data: vec![5],
+    });
+    p.check().unwrap();
+}
+
 #[test]
 fn check_refuses_ill_typed_vector_programs() {
     let int_vec = Ty::Vec(Lane::I32, 2);
@@ -541,8 +577,11 @@ fn the_vector_space_is_deterministic_and_never_writes_a_constant_mat2() {
     );
 }
 
+/// The vector programs of seeds 1 to 8 pass `check` and the domain, and together use 20 named forms and the
+/// prefixes `swizzle `, `transpose ` and `/ `. It does not say that every form is written: see
+/// `the_generator_writes_every_binary_row_...` below.
 #[test]
-fn the_vector_programs_of_a_batch_are_in_the_domain_and_the_corpus_reaches_every_form() {
+fn the_vector_programs_of_a_batch_are_in_the_domain_and_seeds_1_to_8_use_twenty_listed_forms() {
     let mut names = std::collections::BTreeSet::new();
     for seed in 1..=8 {
         let batch = generate_batch(seed).unwrap();
@@ -595,4 +634,33 @@ fn the_float_space_alone_still_writes_no_vectors() {
             assert!(!p.has_aggregate());
         }
     }
+}
+
+/// Seeds `1..=REACH_SEEDS` write every form of [`crate::ast::writable_aggregate_forms`]. Measured 2026-11-02:
+/// seeds 1 to 68 still miss `- Mat4 Mat4`, 72 do not (the bound is a round number just above the first one that
+/// works). Seeds 1 to 8, the gated batch, miss about half of the forms (see DIFFTEST.md, Coverage).
+const REACH_SEEDS: u64 = 72;
+
+/// The coverage the GPU batch of seeds 1 to 8 does not have: CPU only, over the generator alone. If a row of
+/// `agg_bin_ty`, a negation or a swizzle shape becomes unreachable (a weight of zero, a guard that is always false),
+/// this fails and names it.
+#[test]
+fn the_generator_writes_every_binary_row_negation_and_swizzle_shape_within_the_first_seeds() {
+    let mut written = std::collections::BTreeSet::new();
+    for seed in 1..=REACH_SEEDS {
+        for p in
+            &generate_batch(seed).unwrap().programs[crate::generator::SCALAR_PROGRAMS_PER_SEED..]
+        {
+            written.extend(operator_counts(p).into_keys());
+        }
+    }
+    let missing: Vec<String> = crate::ast::writable_aggregate_forms()
+        .difference(&written)
+        .cloned()
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "seeds 1 to {REACH_SEEDS} never write {} of the forms: {missing:?}",
+        missing.len()
+    );
 }

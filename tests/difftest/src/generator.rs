@@ -518,7 +518,7 @@ impl Gen<'_> {
                 let column = Ty::Vec(Lane::F32, n);
                 let rows = self.b.chance(30);
                 let mut args: Vec<Expr> = (0..n).map(|_| self.agg_expr(column, d)).collect();
-                if n == 2 && !args.iter().any(Expr::reads_input) {
+                if n == 2 && !args.iter().any(Expr::reads_f32_input_directly) {
                     args[0] = self.vec2_from_input();
                 }
                 Expr::Make { ty, rows, args }

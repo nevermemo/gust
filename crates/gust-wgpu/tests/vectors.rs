@@ -158,19 +158,19 @@ mod vectors {
 
             let u = ua[i];
             let v = ub[i];
-            uout[i * 12] = u + v;
-            uout[i * 12 + 1] = u - v;
-            uout[i * 12 + 2] = u * v;
-            uout[i * 12 + 3] = u / v;
-            uout[i * 12 + 4] = u * 3;
-            uout[i * 12 + 5] = 3 * u;
-            uout[i * 12 + 6] = u / 3;
-            uout[i * 12 + 7] = u / 3000000000;
+            uout[i * 15] = u + v;
+            uout[i * 15 + 1] = u - v;
+            uout[i * 15 + 2] = u * v;
+            uout[i * 15 + 3] = u / v;
+            uout[i * 15 + 4] = u * 3;
+            uout[i * 15 + 5] = 3 * u;
+            uout[i * 15 + 6] = u / 3;
+            uout[i * 15 + 7] = u / 3000000000;
             let big = UVec4::new(4000000000, 3000000000, 2147483648, 4294967295);
-            uout[i * 12 + 8] = big / v;
+            uout[i * 15 + 8] = big / v;
             let small_u = u / 256;
             let small_v = v / 256;
-            uout[i * 12 + 9] = UVec4::new(
+            uout[i * 15 + 9] = UVec4::new(
                 small_u.dot(small_v),
                 small_u.xy().dot(small_v.xy()),
                 small_u.dot(UVec4::splat(1)),
@@ -181,15 +181,15 @@ mod vectors {
             w *= 2;
             w -= v;
             w /= v;
-            uout[i * 12 + 10] = w;
+            uout[i * 15 + 10] = w;
             let scaled = id * 3;
+            uout[i * 15 + 11] =
+                UVec4::new(scaled.x, scaled.y, scaled.z, UVec2::new(v.w, u.w).yx().x);
             let wide = UVec3::new(u.x, u.y, u.z).zyx();
-            uout[i * 12 + 11] = UVec4::new(
-                scaled.x,
-                scaled.y + scaled.z,
-                wide.x,
-                UVec2::new(v.w, u.w).yx().x,
-            );
+            uout[i * 15 + 12] =
+                UVec4::new(wide.x, wide.y, wide.z, UVec3::new(v.x, v.y, v.z).zyxz().w);
+            uout[i * 15 + 13] = u.wzyx();
+            uout[i * 15 + 14] = v.xxyy();
         }
     }
 
@@ -321,8 +321,9 @@ mod vectors {
     }
 
     // Class-2 capture cases (plan 2.5 (iii)): user locals named like the Slang names GUST emits, next to the
-    // constructs that emit them. A capture would fail to compile or change a result. All values are multiples of
-    // 1/256, so every result is exact.
+    // constructs that emit them. A capture would fail to compile or change a result. All float values are
+    // multiples of 0.25, so every result is exact. The struct-position name `Optional` (a user `struct Optional` next
+    // to an `Option<u32>` local) has no GPU case here: the collision probes of gust-macros compile it (Slangc tier).
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn captures(
         id: SV_DispatchThreadID,
@@ -381,7 +382,11 @@ mod vectors {
             let uint4: uint = i + 4;
             let int: int = int4 + 1;
             let uint: uint = uint4 + 1;
+            // `as uint` emits a `uint(..)` conversion and a `bool`-typed declaration emits the type name, so the
+            // locals `uint` and `bool` must be renamed in the emitted Slang or these two lines do not compile.
+            let wrapped = (int2 + 8) as uint;
             let bool = (i & 1) == 0;
+            let other: bool = (i & 1) == 1;
             let a = IVec2::new(int2, int4);
             let b = IVec4::new(int4, int2, a.y, a.x);
             let c = UVec2::new(uint2, uint3);
@@ -391,9 +396,13 @@ mod vectors {
             if bool {
                 flag = 1;
             }
+            if other {
+                flag += 2;
+            }
             ints[i * 3] = IVec4::new(a.x + int, a.y, b.z, (e.x + uint) as int);
             ints[i * 3 + 1] = IVec4::new((c.x + d.z) as int, (c.y + e.w) as int, flag, b.w);
-            ints[i * 3 + 2] = IVec4::new(d.x as int, d.y as int, d.z as int, e.w as int);
+            ints[i * 3 + 2] =
+                IVec4::new(d.x as int, d.y as int, d.z as int, (wrapped + e.w) as int);
         }
     }
 }
@@ -872,7 +881,7 @@ fn integer_vectors_with_literal_operands_execute_on_gpu() {
     let (gia, gib) = (gpu_in(&gpu, "ia", &ia), gpu_in(&gpu, "ib", &ib));
     let (gua, gub) = (gpu_in(&gpu, "ua", &ua), gpu_in(&gpu, "ub", &ub));
     let giout = gpu_out(&gpu, "iout", N * 12, IVec4::default());
-    let guout = gpu_out(&gpu, "uout", N * 12, UVec4::default());
+    let guout = gpu_out(&gpu, "uout", N * 15, UVec4::default());
     gpu.dispatch_buffers(
         &vectors::integers::DESCRIPTOR,
         N as u32,
@@ -892,7 +901,7 @@ fn integer_vectors_with_literal_operands_execute_on_gpu() {
     let (tia, tib) = (cpu.buffer(&ia), cpu.buffer(&ib));
     let (tua, tub) = (cpu.buffer(&ua), cpu.buffer(&ub));
     let tiout = cpu.buffer(&vec![IVec4::default(); N * 12]);
-    let tuout = cpu.buffer(&vec![UVec4::default(); N * 12]);
+    let tuout = cpu.buffer(&vec![UVec4::default(); N * 15]);
     vectors::integers::dispatch(
         &cpu,
         N as u32,
@@ -961,7 +970,7 @@ fn integer_vectors_with_literal_operands_execute_on_gpu() {
         let (su, sv) = (u.map(|p| p / 256), v.map(|p| p / 256));
         let udot4: i64 = (0..4).map(|l| su[l] * sv[l]).sum();
         let ucompound = [0, 1, 2, 3].map(|l| ((u[l] + v[l]) * 2 - v[l]) / v[l]);
-        let expected: [(&str, [i64; 4]); 12] = [
+        let expected: [(&str, [i64; 4]); 15] = [
             ("add", ueach(&|p, q| p + q)),
             ("sub", ueach(&|p, q| p - q)),
             ("mul", ueach(&|p, q| p * q)),
@@ -981,11 +990,16 @@ fn integer_vectors_with_literal_operands_execute_on_gpu() {
                 ],
             ),
             ("compound", ucompound),
-            // `id * 3` (a `UVec3`), `zyx` of a `UVec3`, and a `yx` swizzle of a `UVec2`.
-            ("id_and_swizzles", [i as i64 * 3, 0, u[2], u[3]]),
+            // `id * 3` (a `UVec3`; the y and z lanes of the invocation id are 0) and a `yx` swizzle of a `UVec2`.
+            ("id_times_3_and_yx", [i as i64 * 3, 0, 0, u[3]]),
+            // `zyx` of a `UVec3` (all three lanes) and the fourth lane of a four-wide `zyxz` of a `UVec3`.
+            ("zyx", [u[2], u[1], u[0], v[2]]),
+            // The four-wide swizzles `wzyx` and `xxyy`, every lane.
+            ("wzyx", [u[3], u[2], u[1], u[0]]),
+            ("xxyy", [v[0], v[0], v[1], v[1]]),
         ];
         for (slot, (name, want)) in expected.iter().enumerate() {
-            let at = i * 12 + slot;
+            let at = i * 15 + slot;
             exact_ints(
                 &format!("uout.{name}"),
                 i,
@@ -1336,7 +1350,10 @@ fn struct_fields_of_vectors_and_matrices_execute_on_gpu() {
 
         // rebuilt: a struct literal of splat, the identity, swizzled and constructed vectors, and copied scalars.
         let mut want = vec![f(b.mass); 4];
-        want.extend(host::widen(&Mat4::IDENTITY.lanes()));
+        let identity = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        want.extend(host::widen(&identity));
         want.extend([f(extra[1]), f(extra[0])]);
         want.extend([f(color[3]), f(color[0])]);
         want.push(f(scale[0]));
@@ -1444,11 +1461,11 @@ fn locals_named_like_emitted_slang_names_do_not_capture_on_gpu() {
         let (int2, int4) = ((p[0] * 4.0) as i32, (p[1] * 4.0) as i32);
         let (uint2, uint3, uint4) = (i as i32 + 2, i as i32 + 3, i as i32 + 4);
         let (int, uint) = (int4 + 1, uint4 + 1);
-        let flag = i32::from(i & 1 == 0);
+        let flag = if i & 1 == 0 { 1 } else { 2 };
         let expected: [[i64; 4]; 3] = [
             [int2 + int, int4, int4, uint4 + uint].map(i64::from),
             [uint2 + uint4, uint3 + i as i32, flag, int2].map(i64::from),
-            [uint2, uint3, uint4, i as i32].map(i64::from),
+            [uint2, uint3, uint4, int2 + 8 + i as i32].map(i64::from),
         ];
         for (slot, want) in expected.iter().enumerate() {
             let at = i * 3 + slot;

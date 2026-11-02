@@ -32,7 +32,7 @@ M6 (language breadth I): plan adopted early on 2026-11-01 (owner-delegated) afte
 `__gust_mul` overload table, enabled only in modules that name a `Mat` type; the reflection
 reader accepts schema 1 and 2, and the helper keeps schema 1 for scalar-only programs, so
 committed artifacts stay byte-identical. The keyword and construct spikes and the pure-Rust math
-types ran beside M4; m6.m1 to m6.g2 are merged, and m6.dv, m6.d and m6.x remain. Its decision drafts take
+types ran beside M4; m6.m1 to m6.dv are merged, and m6.d and m6.x remain. Its decision drafts take
 D55 to D59.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
@@ -65,7 +65,7 @@ D55 to D59.
   `short_circuit` GPU test. The Unit suite runs 4 seeds on the CPU plus the harness's own fmt, clippy and tests; a
   separate CI job `difftest` runs the same (the `unit` and `slang` jobs use `--skip-difftest`, which prints each
   skipped step); gpu-software runs 2 seeds per PR and 8 nightly on lavapipe and uploads the report; `check-full`
-  runs 8 seeds on the hardware adapter and the harness checks. Seed 4 found a slangc limitation (D74): slangc
+  runs 8 seeds on the hardware adapter and the harness checks. Seed 4 found a slangc limitation (D74, retired by m6.dv and D77): slangc
   folds integer `/` and `%` and refuses a divisor that folds to zero (E30002), even in a dead branch; DIAGNOSTICS
   lists what folds, the generator discards such programs as `static` (`DIFFTEST_FORMAT` 4), and a Slangc-tier test
   pins the reproducer. Evidence: 8 seeds, 128 of 128 programs, 0 mismatches on the RTX 5090; 19 gate steps on main
@@ -80,6 +80,16 @@ D55 to D59.
   output (the stale-binary fix); the Cpu suite is this command. CI runs it as the job `cpu-target` beside `unit`: 61 s
   on the runner, against 2 m 57 s for `unit`. Evidence: Unit, Cpu and Gpu smoke (RTX 5090). Opus keep after one fix
   round.
+- M6 m6.dv (`1d5662c`, fix round `f7498c4`, merge `94baab5`): D74's cure (D77). Every `/` and `%` whose divisor is
+  not a literal lowers to `__gust_div`/`__gust_rem` (crates/gust-macros/src/slang/div_table.rs: 19 division and
+  3 scalar remainder overloads with `_assign` forms), emitted once per module that uses them; literal divisors
+  stay plain, and E0317 now sees a literal zero through parentheses, macro groups, `/=` and `%=`. Evidence: the
+  D74 reproducer compiles on WGSL and SPIR-V; a 9-shape Slangc table compiles every emitted overload; the GPU
+  grid `crates/gust-wgpu/tests/division.rs` checks i32 and u32 `/`, `%`, `/=` and `%=` against the host and the
+  KM-01 to KM-03 ledger rows; goldens coretests, mismatch and semantics re-blessed; no committed artifact
+  changed. `DIFFTEST_FORMAT` 5 drops `first_iteration_zero_divisor`: seeds 1 to 8 discard 507 (was 512), the
+  counts equal format 3's label for label, and `s4_a26` runs again. Opus merge after one fix round; 22 gate
+  steps on main at `94baab5` (17:16 to 17:43Z), including the 8-seed difftest on the RTX 5090, pin 216/25.
 - M7 m7.a0 (`e9f67f6`, fix round `3ccadca`, merge `bcb4da4`): runtime prerequisites in gust-wgpu.
   `DeviceOptions` (adapter choice and `LimitsPolicy`; `DeviceOptions::default()` asks for the adapter's limits,
   `HeadlessDevice::new()` keeps the WebGPU defaults), `enumerate`, `try_create_typed_buffer` and
@@ -90,8 +100,8 @@ D55 to D59.
   `readback_async` on both targets and the blocking `readback` native only (D69). S7.6: the limits rows hold on
   the RTX 5090 (adapter policy 4 GiB-1, binding 2 GiB-4) and the Radeon 890M (2 GiB, 2 GiB-4), a 1 GiB zeroed
   buffer is created on both, and 64 GiB, `usize::MAX` and `u32::MAX` elements return `DeviceLimit` before any wgpu
-  call; the out-of-memory row is not shown on hardware (unit test only), and lavapipe is CI's gpu-software run
-  of this commit, which decides whether the adapter policy stays the native default. The raw buffer behind a
+  call; the out-of-memory row is not shown on hardware (unit test only), and on lavapipe CI's gpu-software run
+  of `8befcf6` passed (214/24), so the adapter policy stays the native default. The raw buffer behind a
   pooled `GpuVec` is the whole size class (documented); sized bindings in generated host code are m7.p's.
   Opus merge after one fix round.
 - M6 m6.g2 (`76c998a`, fix round `b71365c`, merge `475e2b1`): GPU evidence for uniforms.
@@ -430,7 +440,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M6 (m6.dv, then m6.d and m6.x) beside M7 (m7.a0 merged); see the roadmap's Now and next
+claim: roadmap M6 (m6.d and m6.x, then the close) beside M7 (m7.a0 merged); see the roadmap's Now and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no
 ```

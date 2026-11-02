@@ -79,33 +79,16 @@ const-expression rules may refuse such a constant at shader-creation time althou
 `allow`, accepts it. Closed sub-expressions are folded eagerly, without short-circuiting, with the interpreter's own
 `binary` and `unary`.
 
-Since format 4 (slice m5.c2) a divisor can be `static` without being closed: an integer `/` or `%` whose divisor slangc
-2026.20 folds to zero (`interp::first_iteration_zero_divisor`), live or dead. slangc refuses such a divisor with error
-E30002, "divide by zero", even in a branch that no element takes. The model is what the probes measured (fix rounds 1
-and 2; every probe is a division under a branch keyed on a buffer value, with the kernel shapes the emitter writes):
-
-- slangc evaluates constants, the counter of a constant-bound `for` at its first iteration (0), and the locals set from
-  them, with wrapping `u32`/`i32` arithmetic: `(v2 - 1) + 1` and `(v2 + 65536) * 65536` are zero and fail, `v2 + 1` and
-  `v2 - 3` (zero only in the last iteration) compile;
-- a product with a zero factor is zero whatever the other factor is (`i * 0`, `0 * i`, `a[i] * (a[i + 1] * 0)`,
-  `int(a[i]) * 0` all fail, so a value read from a buffer is no workaround), and so is the difference of two identical
-  operands that read no buffer (`i - i`, `(i + 1) - (i + 1)`, `len - len`, `i * (i - i)`, `0 / (i + 1)`); `a[i] - a[i]`,
-  `x & 0`, `x ^ x`, `x % 1`, `0 % x` and `i + (0 - i)` are not folded;
-- a condition on known values picks its branch: `d = 5; if v2 < 1 { d = 0 }; 7 / d` fails, `if v2 < 1 { 7 / v2 }` fails,
-  while `if v2 > 0 { 7 / v2 }` and `d = 5; if v2 > 0 { d = 0 }; 7 / d` compile; likewise `v2 > 0 && a[i] > 3` compiles
-  and `v2 < 1 || a[i] > 3` fails (a decisive left operand); `!` and `^` are the calls `__gust_not` and `__gust_xor`, which slangc does not fold, so a condition or a
-  divisor behind them is unknown and both branches count;
-- the divisor `d | 1` is the workaround (`v2 | 1`, `i | 1`, `a[i] | 1` and `(v2 % (v2 | 1))` in the reproducer's shape
-  all compile).
-
-The walk follows exactly that: counters are 0, a `let` or an assignment keeps a known value, a loop forgets what its
-body assigns, an `if` with an unknown condition keeps what both branches agree on, and an input, an index or a float makes
-the value unknown. Each probe shape has a unit test (`the_rule_follows_the_slangc_probes_of_fix_round_2` and
-`a_folded_condition_keeps_only_the_taken_branch`). It is a model of what slangc folds, held by those probes and by the
-8-seed GPU run, not a proof; a divisor it misses shows up as a `gpu-error` mismatch, a divisor it refuses wrongly costs
-only a program of the corpus. Known over-refusal: a condition that is known only through the right operand of `&&`/`||`
-(`i > 3 && v2 > 0`) is treated as unknown, so both branches count; whether slangc folds that was not probed, and a wrong
-guess costs one program. The limitation as users meet it is in [DIAGNOSTICS](../DIAGNOSTICS.md).
+There is no rule for a divisor that slangc folds to zero without being a literal (the first iteration of a loop, `i * 0`,
+`i - i`, a branch that a known condition takes). Format 4 (slice m5.c2) discarded those programs as `static`, because
+slangc 2026.20 refused them with error E30002, "divide by zero", even in a branch that no element takes; since format 5
+(slice m6.dv, D74) the macro lowers every `/` and `%` whose divisor is not a literal to a call of `__gust_div` or
+`__gust_rem`, which slangc compiles in every shape the walk of format 4 modelled, so the programs are kept and the walk
+(`first_iteration_zero_divisor`) and its two unit tests are gone. A literal zero divisor stays a plain operator and a
+discard, as above. No discard remains for slangc folding a divisor, so there is no `compiler-limitation` class; every
+`static` discard is a closed-constant rule. If a later Slang makes a helper call foldable again, `check-difftest` reports
+the program as a `gpu-error` mismatch naming the seed, and the Slangc-tier shape table of
+`crates/gust/tests/diagnostics.rs` fails first.
 
 Inside the domain the three parties (interpreter, CPU twin,
 GPU) must agree bit for bit, so a program outside it is never asserted, and nothing here writes a ledger row (D39). A
@@ -148,9 +131,10 @@ rules (a float constant outside the range rule, a closed float division by zero,
 `f32`, a closed float cast out of the integer range) and discarded under the one label `static`, in dead code too; the
 four labels above are the ones the evaluation itself raises, for values that depend on the input.
 
-The committed corpus (seeds 1 to 8, 128 kept programs, 512 discarded, format 4; m5.c2 regenerated seed 4 only): 33
-of the 128 modules had an `f32` output at format 3 (2 to 8 per seed), and the float discards are `float-domain` 92,
-`unboundable` 31, `comparison-overlap` 14 and `float-construct-not-in-v1` 2 (the per-seed numbers are in `seeds.txt`). Float programs are therefore not rare among
+The committed corpus (seeds 1 to 8, 128 kept programs, 507 discarded, format 5; m6.dv changed seed 4's programs only,
+against format 4): 33 of the 128 modules had an `f32` output at format 3 (2 to 8 per seed), and the float discards are
+`float-domain` 93, `unboundable` 31, `comparison-overlap` 15 and `float-construct-not-in-v1` 2 (the per-seed numbers are
+in `seeds.txt`). Float programs are therefore not rare among
 the kept ones, but the range and width rules reject a visible share of the candidates; that is the price of an
 oracle that never guesses.
 
@@ -186,7 +170,7 @@ makes one float-space literal in eight a value that an input holds. The `Space::
 m5.c1a pins still pass). Measured on seeds 1 to 8, format 3: 94 of 100 `if` statements evaluated, 58 of them with both
 sides taken; `&&`/`||` right operands evaluated 8604 times and skipped 4584 times.
 
-Format 4 (slice m5.c2): the decoding is unchanged, the acceptance is not. The divisor rule above discards, as `static`,
+Format 4 (slice m5.c2): the decoding is unchanged, the acceptance is not. The divisor rule (retired by format 5, below) discards, as `static`,
 the programs whose integer divisor slangc folds to zero (the first iteration of its loops, a zero factor, identical
 operands, the branch that a known condition takes), because slangc refuses them. Of `seeds.txt`: every hash changes
 (the stamp is in the emitted text), the discard counts of seeds 2 to 8 change, and only seed 4 gets different programs,
@@ -197,7 +181,17 @@ hashes before and after the widening (only the discard counts of seed 8 moved, `
 14 to 13, and the pinned integer line of seed 4, `overflow` 25 to 24 and `static` 16 to 17), and format 4 was not
 published before the widening. The Space::Integer pin
 (`the_integer_space_decodes_to_the_programs_of_m5_c1a`) keeps its 8 hashes, so the integer programs that m5.c1a
-accepted are all still accepted; six of its discard lines are relabelled.
+accepted are all still accepted; six of its discard lines were relabelled.
+
+Format 5 (slice m6.dv, D74): the divisor rule of format 4 is gone, because the macro lowers a `/` or `%` with a divisor
+that is not a literal to `__gust_div` and `__gust_rem` and slangc compiles those in every shape (the rule's only reason
+was slangc's error E30002). The decoding is unchanged and the acceptance goes back to format 3's: every seed holds its
+format-3 programs again (`format_5_holds_the_format_3_programs_of_every_seed`), the `Space::Integer` pin has its m5.c1a
+discard counts back, and against format 4 only seed 4 gets different programs (`s4_a26`, the `v2 % v2` that slangc
+refused, is accepted again: 91 discards become 86). Of the 124 `static` discards of seeds 1 to 8 at format 4, 13 were the
+divisor rule's; 111 remain (the closed-constant rules). The spike m6.s1 measured that of the 13, 12 leave the domain
+anyway (a live zero divisor, which the interpreter now meets as `division-by-zero`: 17 in the corpus at format 4, 26
+now) and 1, `s4_a26`, is in it and is kept. The discard total of the corpus goes from 512 to 507.
 
 ## The emitter
 
@@ -555,10 +549,9 @@ mismatch, program 5 (`s4_a26`), kind `gpu-error`. Slang refused the kernel at co
 loop and the statement sits in a branch no element takes. The interpreter accepted the program because the branch is
 dead; slangc unrolled the loop and folded `0 % 0`. It was deterministic (seed 4 alone reproduced it) and the shrinker
 could not reduce it (`--shrink 4:5` says the program "does not fail (1 mismatches without an element)": a compile error
-has no differing element). The fix has two halves (fix round 1 of the slice): the limitation is written up for users
-in [DIAGNOSTICS](../DIAGNOSTICS.md) with its minimal reproducer, probed on slangc 2026.20, and the generator refuses
-the shape (format 4, "The domain filter"), so the corpus does not spend programs on it. `check-difftest` reports any
-such program that is still generated as a `gpu-error` mismatch naming the seed.
+has no differing element). Format 4 (fix round 1 of the slice) refused the shape in the generator and DIAGNOSTICS
+wrote the limitation up; slice m6.dv (D74) cured it in the macro (`__gust_div` and `__gust_rem`) and format 5 took the
+refusal back: `s4_a26` is kept again, and `check-difftest` runs it (seeds 1 to 8 on the GPU, below).
 
 The harness crate has gates of its own in the Unit suite (fix round 1; the crate is a workspace of its own, so the
 root's fmt, clippy and test never reached it): `cargo fmt --manifest-path tests/difftest/Cargo.toml -- --check`, `cargo

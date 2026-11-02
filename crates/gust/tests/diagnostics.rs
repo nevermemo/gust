@@ -78,11 +78,12 @@ mod recursive_helper {
     }
 }
 
-/// The known limitation of DIAGNOSTICS ("slangc refuses a zero divisor that it can fold, in code that never
-/// runs"; found by the differential test, slice m5.c2): valid Rust, accepted by the validator, and slangc 2026.20
-/// unrolls the loop, folds `0 % 0` in the branch that no invocation takes and refuses the kernel with E30002. This is
-/// the minimal reproducer of the document. If a later Slang stops folding it, this test fails and the limitation, the
-/// generator's rule (`first_iteration_zero_divisor` of tests/difftest) and the document are to be retired together.
+/// The former limitation of DIAGNOSTICS ("slangc refuses a zero divisor that it can fold, in code that never
+/// runs"; found by the differential test, slice m5.c2, cured by slice m6.dv, D74): valid Rust, accepted by the
+/// validator, in which slangc 2026.20 unrolls the loop, folds `0 % 0` in the branch that no invocation takes and,
+/// when the macro emitted the plain `%`, refused the kernel with E30002. This is the minimal reproducer. The macro now
+/// lowers the `%` to `__gust_rem`, and the kernel compiles on both targets (see
+/// `a_zero_divisor_that_slangc_folded_in_dead_code_compiles_on_each_target`).
 #[gust::gpu]
 mod folded_zero_divisor {
     #[allow(
@@ -97,11 +98,161 @@ mod folded_zero_divisor {
             let mut total = 0u32;
             for i in 0u32..4u32 {
                 if !true {
-                    let r = i % i; // FAILS: folded zero divisor
+                    let r = i % i; // a dead zero divisor
                     total = total + r;
                 }
             }
             out[id.x] = total;
+        }
+    }
+}
+
+// The other shapes of the same limitation, each of which failed with E30002 under the direct lowering (spike m6.s1,
+// measured on slangc 2026.20), and two that never failed: a live division and the vector overloads.
+#[gust::gpu]
+mod zero_by_product {
+    #[allow(clippy::erasing_op, unconditional_panic)]
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+        if id.x < out.len() {
+            let i = id.x;
+            out[i] = 7u32 / (i * 0u32);
+        }
+    }
+}
+
+#[gust::gpu]
+mod zero_by_difference {
+    #[allow(clippy::eq_op, unconditional_panic)]
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+        if id.x < out.len() {
+            let i = id.x;
+            out[i] = 7u32 / (i - i) + 7u32 % (i - i);
+        }
+    }
+}
+
+#[gust::gpu]
+mod zero_by_buffer_product {
+    #[allow(clippy::erasing_op, unconditional_panic)]
+    #[kernel]
+    pub fn run(
+        id: SV_DispatchThreadID,
+        a: StructuredBuffer<uint>,
+        mut out: RWStructuredBuffer<int>,
+    ) {
+        if id.x < out.len() {
+            let z = (a[id.x] as i32) * 0;
+            out[id.x] = 7 / z;
+        }
+    }
+}
+
+#[gust::gpu]
+mod zero_by_wrapping {
+    #[allow(
+        clippy::nonminimal_bool,
+        clippy::overly_complex_bool_expr,
+        unconditional_panic
+    )]
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+        if id.x < out.len() {
+            let mut total = 0u32;
+            for v in 0u32..4u32 {
+                if !true {
+                    let d = (v - 1u32) + 1u32;
+                    let e = (v + 65536u32) * 65536u32;
+                    total = total + 7u32 / d + 7u32 / e;
+                }
+            }
+            out[id.x] = total;
+        }
+    }
+}
+
+#[gust::gpu]
+mod zero_in_dead_compound_assignments {
+    #[allow(
+        clippy::assign_op_pattern,
+        clippy::eq_op,
+        clippy::nonminimal_bool,
+        clippy::overly_complex_bool_expr,
+        unconditional_panic
+    )]
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+        if id.x < out.len() {
+            let i = id.x;
+            let mut t = 7u32;
+            let z = i - i;
+            if !true {
+                t /= z;
+                t %= z;
+                out[i] = t;
+            }
+            let zero = 0u32;
+            if i > 1_000_000u32 {
+                out[i] = 5u32 / zero;
+            }
+            out[i] = t;
+        }
+    }
+}
+
+#[gust::gpu]
+mod live_division {
+    #[kernel]
+    pub fn run(
+        id: SV_DispatchThreadID,
+        a: StructuredBuffer<int>,
+        b: StructuredBuffer<int>,
+        mut out: RWStructuredBuffer<int>,
+    ) {
+        if id.x < out.len() {
+            let i = id.x;
+            out[i] = a[i] / b[i] + a[i] % b[i];
+        }
+    }
+}
+
+#[gust::gpu]
+mod vector_division {
+    #[allow(
+        clippy::nonminimal_bool,
+        clippy::overly_complex_bool_expr,
+        clippy::too_many_arguments,
+        unconditional_panic
+    )]
+    #[kernel]
+    pub fn run(
+        id: SV_DispatchThreadID,
+        a: StructuredBuffer<IVec4>,
+        b: StructuredBuffer<IVec4>,
+        u: StructuredBuffer<UVec4>,
+        f: StructuredBuffer<Vec4>,
+        mut out: RWStructuredBuffer<IVec4>,
+        mut uout: RWStructuredBuffer<UVec4>,
+        mut fout: RWStructuredBuffer<Vec4>,
+    ) {
+        if id.x < out.len() {
+            let i = id.x;
+            let x = a[i];
+            let y = b[i];
+            out[i] = x / y;
+            let mut t = x;
+            t /= y;
+            t.x /= y.y;
+            t.z %= y.z;
+            out[i + 1u32] = t / y.x;
+            out[i + 3u32].w /= y.w;
+            if !true {
+                let q = IVec2::new(1, 2) / IVec2::new(0, 0);
+                out[i + 2u32] = IVec4::new(q.x, q.y, 0, 0);
+            }
+            uout[i] = u[i] / u[i + 1u32];
+            fout[i] = f[i] / f[i + 1u32] / f[i].x;
         }
     }
 }
@@ -622,29 +773,63 @@ fn a_slang_only_recursion_error_in_a_helper_names_the_rust_line() {
     }
 }
 
-/// The limitation of DIAGNOSTICS stays visible: the minimal reproducer still fails with slangc's `E30002`, on both
-/// targets, at the Rust line of the `%` (the compiler's own location and the appended annotation).
+/// The former limitation of DIAGNOSTICS is cured (slice m6.dv, D74): the minimal reproducer, which slangc 2026.20
+/// refused with `E30002` when the macro emitted a plain `%` (it folded `0 % 0` in the branch that no invocation takes),
+/// compiles on both targets because the `%` is the call `__gust_rem(i, i)`, which slangc leaves alone. The WGSL keeps
+/// the call. If a later Slang folds through the helper again, this test and the shape table below fail, and the
+/// differential test (`check-difftest`) reports the program `s4_a26` as a `gpu-error`.
 #[test]
-fn a_zero_divisor_that_slangc_folds_in_dead_code_still_names_its_rust_line() {
-    let expected = marked_line("folded zero divisor");
-    for target in [Target::Wgsl, Target::Spirv] {
-        let diagnostics = failure(&folded_zero_divisor::run::DESCRIPTOR, target);
-        assert!(
-            diagnostics.contains("E30002") && diagnostics.contains("divide by zero"),
-            "{target:?}: the failure is slangc's constant divide by zero: {diagnostics}"
-        );
-        let (file, line) = rust_source(&diagnostics);
-        assert!(
-            file.ends_with("diagnostics.rs"),
-            "{target:?}: {diagnostics}"
-        );
-        assert_eq!(line, expected, "{target:?}: {diagnostics}");
-        assert_compiler_location(
-            &diagnostics,
-            &folded_zero_divisor::run::DESCRIPTOR,
-            expected,
-        );
+fn a_zero_divisor_that_slangc_folded_in_dead_code_compiles_on_each_target() {
+    let wgsl = slang::compile(&folded_zero_divisor::run::DESCRIPTOR, Target::Wgsl)
+        .unwrap_or_else(|error| panic!("Wgsl: {error:?}"));
+    let wgsl = String::from_utf8(wgsl).unwrap();
+    assert!(wgsl.contains("@compute"), "{wgsl}");
+    assert!(
+        wgsl.contains("_gust_rem"),
+        "the WGSL keeps the helper call:\n{wgsl}"
+    );
+    let spirv = slang::compile(&folded_zero_divisor::run::DESCRIPTOR, Target::Spirv)
+        .unwrap_or_else(|error| panic!("Spirv: {error:?}"));
+    assert_eq!(spirv_capabilities(&spirv), [1]);
+}
+
+/// The shape table of the cure (spike m6.s1, slice m6.dv): the six shapes that failed with `E30002` under the direct
+/// lowering (the reproducer; a zero by `i * 0`; by `i - i`; by a buffer element times `0`; by wrapping arithmetic in a
+/// dead branch; in dead `/=` and `%=`), a live division, and vector division including a dead `IVec2` zero divisor. Each
+/// compiles on WGSL and on SPIR-V. The shapes that stay a limitation are not here: a literal zero divisor is the
+/// validator's E0317, and slangc's own behaviour for a zero divisor on the SPIR-V route is not executed.
+#[test]
+fn every_division_shape_slangc_folded_compiles_on_each_target() {
+    let shapes: [(&str, &KernelDescriptor); 8] = [
+        ("reproducer", &folded_zero_divisor::run::DESCRIPTOR),
+        ("zero by product", &zero_by_product::run::DESCRIPTOR),
+        ("zero by difference", &zero_by_difference::run::DESCRIPTOR),
+        (
+            "zero by buffer product",
+            &zero_by_buffer_product::run::DESCRIPTOR,
+        ),
+        ("zero by wrapping", &zero_by_wrapping::run::DESCRIPTOR),
+        (
+            "dead compound assignments",
+            &zero_in_dead_compound_assignments::run::DESCRIPTOR,
+        ),
+        ("live division", &live_division::run::DESCRIPTOR),
+        ("vector division", &vector_division::run::DESCRIPTOR),
+    ];
+    let mut failed = Vec::new();
+    for (name, kernel) in shapes {
+        for target in BOTH_TARGETS {
+            match slang::compile(kernel, target) {
+                Ok(bytes) => {
+                    if target == Target::Spirv {
+                        assert_eq!(spirv_capabilities(&bytes), [1], "{name}");
+                    }
+                }
+                Err(error) => failed.push(format!("{name} {target:?}: {error:?}")),
+            }
+        }
     }
+    assert!(failed.is_empty(), "{}", failed.join("\n"));
 }
 
 /// Ten deliberate Slang-only failures with the Rust line each must name. The

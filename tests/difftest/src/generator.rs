@@ -21,8 +21,11 @@ use crate::prng::{Prng, byte_stream};
 /// literal is often a value that the data holds, so that both sides of a condition are taken by some elements. 4: no
 /// decoding change, a new refusal (m5.c2): an integer `/` or `%` whose divisor slangc folds to zero (the first
 /// iteration of the loops, a zero factor, identical operands, the branch that a known condition takes), live or dead,
-/// is discarded as `static`, because slangc refuses the kernel (E30002); see `interp::static_violation`.
-pub const DIFFTEST_FORMAT: u32 = 4;
+/// is discarded as `static`, because slangc refuses the kernel (E30002). 5: that refusal is gone (slice m6.dv, D74): the
+/// macro lowers a `/` or `%` with a divisor that is not a literal to `__gust_div` and `__gust_rem`, which slangc
+/// compiles in every shape, so a program is no longer discarded for a divisor slangc would fold; the decoding is
+/// unchanged, the programs that format 4 refused for that reason come back.
+pub const DIFFTEST_FORMAT: u32 = 5;
 
 /// Which programs the generator writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1031,20 +1034,19 @@ mod tests {
     #[test]
     fn the_integer_space_decodes_to_the_programs_of_m5_c1a() {
         // The discard counts of the m5.c1a corpus (its seeds.txt at 3bcebaf; the hashes are read with the format stamp
-        // as 1): the integer space must reproduce them, so it is the same program space. Format 4 relabels some
-        // discards (seeds 1, 3, 4, 5, 7 and 8: a program with a divisor that slangc folds to zero, at the first
-        // iteration of a loop or by a zero factor, which the interpreter or the closed-constant check used to meet as
-        // `division-by-zero`, `overflow` or `static` and the new rule meets first as `static`); the accepted
-        // programs, and so the hashes below, are those of m5.c1a.
+        // as 1): the integer space must reproduce them, so it is the same program space. Format 4 relabelled some
+        // discards (seeds 1, 3, 4, 5, 7 and 8) with a divisor rule for slangc, and format 5 (m6.dv) took the rule
+        // back, so the counts are the m5.c1a counts again, label for label; the accepted programs, and so the hashes
+        // below, are those of m5.c1a in every format.
         let expected = [
-            "1 16 57 division-by-zero=2 index=6 no-input-read=3 overflow=34 shift-amount=3 static=9",
+            "1 16 57 division-by-zero=3 index=6 no-input-read=3 overflow=34 shift-amount=3 static=8",
             "2 16 36 division-by-zero=6 index=2 min-over-minus-one=1 overflow=21 static=6",
-            "3 16 38 division-by-zero=7 no-input-read=2 overflow=20 static=9",
-            "4 16 53 division-by-zero=5 index=5 no-input-read=1 overflow=24 shift-amount=1 static=17",
-            "5 16 42 division-by-zero=5 no-input-read=3 overflow=20 shift-amount=3 static=11",
+            "3 16 38 division-by-zero=8 no-input-read=2 overflow=20 static=8",
+            "4 16 53 division-by-zero=7 index=5 no-input-read=1 overflow=25 shift-amount=1 static=14",
+            "5 16 42 division-by-zero=5 no-input-read=3 overflow=21 shift-amount=3 static=10",
             "6 16 36 division-by-zero=1 index=3 no-input-read=1 overflow=25 shift-amount=1 static=5",
-            "7 16 61 division-by-zero=6 index=3 no-input-read=2 overflow=37 shift-amount=1 static=12",
-            "8 16 63 division-by-zero=4 index=1 no-input-read=2 overflow=44 static=12",
+            "7 16 61 division-by-zero=8 index=3 no-input-read=2 overflow=37 shift-amount=1 static=10",
+            "8 16 63 division-by-zero=4 index=1 no-input-read=2 overflow=45 static=11",
         ];
         // The m5.c1a hashes of the same programs: the emitted text and the input data, byte for byte, with the format
         // stamp read as 1 (the stamp is the only difference of format 2 for an integer program).
@@ -1272,20 +1274,21 @@ mod tests {
     }
 
     /// Seed 4, attempt 26 (a `v2 % v2` on the counter of an unrolled loop, in a branch no element takes) was accepted
-    /// until DIFFTEST_FORMAT 3 and made slangc refuse the kernel (E30002, slice m5.c2). The rule of format 4 refuses
-    /// it, and the program of that attempt is the same program (the rule changes acceptance, not decoding).
+    /// until DIFFTEST_FORMAT 3 and made slangc refuse the kernel (E30002, slice m5.c2); formats 4 refused it. Since
+    /// format 5 the macro lowers that `%` to `__gust_rem`, which slangc compiles, so the program is accepted again
+    /// (the program of that attempt is the same program: the rule changed acceptance, not decoding).
     #[test]
-    fn the_seed_4_dead_divisor_of_format_3_is_refused() {
+    fn the_seed_4_dead_divisor_of_format_3_is_accepted_again() {
         let program = generate_attempt(4, 26);
         let text = crate::emit::emit_module(&program);
         assert!(text.contains("(v2 % v2)"), "{text}");
-        assert_eq!(discard_reason(&program), Some("static"));
+        assert_eq!(discard_reason(&program), None);
         assert!(
             generate_batch(4)
                 .unwrap()
                 .programs
                 .iter()
-                .all(|accepted| accepted.attempt != 26)
+                .any(|accepted| accepted.attempt == 26)
         );
     }
 

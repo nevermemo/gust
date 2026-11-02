@@ -2014,19 +2014,46 @@ fn the_emitted_wgsl_uses_plain_operators_and_conversions() {
     // The enforced KM rows rest on WGSL's defined results (sections 6.2.3, 8.8, 8.10, 15.7.6),
     // which hold for the WGSL that slangc emits only if it keeps the plain operators. Slang's
     // own language leaves integer division by zero undefined, so this is checked, not assumed.
+    //
+    // Since slice m6.dv (D74) a `/` or `%` with a divisor that is not a literal is the call `__gust_div(a, b)` or
+    // `__gust_rem(a, b)`, whose body is the plain operator, and slangc keeps each helper as a WGSL function
+    // (`_gust_div_0`, `_gust_rem_0`): the call stands where the operator stood, and the plain operator is in the
+    // helper's body, on the helper's own parameters.
     let wgsl = |kernel: &KernelDescriptor| gust::slang::compile_wgsl(kernel).unwrap();
-    let divide = wgsl(&mismatch::udivide::DESCRIPTOR);
-    assert!(divide.contains("a_0[i_0] / b_0[i_0]"), "{divide}");
-    assert!(divide.contains("a_0[i_0] % b_0[i_0]"), "{divide}");
-    let signed = wgsl(&mismatch::idivide::DESCRIPTOR);
-    assert!(
-        signed.contains("var _S2 : i32 = a_0[i_0] / b_0[i_0]"),
-        "{signed}"
-    );
-    assert!(
-        signed.contains("var _S3 : i32 = a_0[i_0] % b_0[i_0]"),
-        "{signed}"
-    );
+    // The text of the WGSL function `name`, from its `fn` line to the closing brace.
+    fn function<'a>(wgsl: &'a str, name: &str) -> &'a str {
+        let start = wgsl
+            .find(&format!("fn {name}("))
+            .unwrap_or_else(|| panic!("no function {name} in:\n{wgsl}"));
+        let end = wgsl[start..].find("\n}").expect("the function ends") + start;
+        &wgsl[start..end]
+    }
+    for (kernel, ty) in [
+        (&mismatch::udivide::DESCRIPTOR, "u32"),
+        (&mismatch::idivide::DESCRIPTOR, "i32"),
+    ] {
+        let divide = wgsl(kernel);
+        assert!(
+            divide.contains("_gust_div_0(a_0[i_0], b_0[i_0])"),
+            "{divide}"
+        );
+        assert!(
+            divide.contains("_gust_rem_0(a_0[i_0], b_0[i_0])"),
+            "{divide}"
+        );
+        let quotient = function(&divide, "_gust_div_0");
+        assert!(quotient.contains(&format!("-> {ty}")), "{quotient}");
+        assert!(
+            quotient.contains(&format!(" : {ty} = a_")) && quotient.contains(" / b_"),
+            "{quotient}"
+        );
+        let remainder = function(&divide, "_gust_rem_0");
+        assert!(remainder.contains(&format!("-> {ty}")), "{remainder}");
+        assert!(
+            remainder.contains(&format!(" : {ty} = a_")) && remainder.contains(" % b_"),
+            "{remainder}"
+        );
+    }
     for kernel in [&mismatch::ushift::DESCRIPTOR, &mismatch::ishift::DESCRIPTOR] {
         let shift = wgsl(kernel);
         assert!(shift.contains("a_0[i_0] << (n_0[i_0])"), "{shift}");

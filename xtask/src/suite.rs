@@ -1,6 +1,7 @@
 use crate::{
     arch::check_arch,
     checks::{check_cpu, check_feature},
+    cpu_target::check_cpu_target,
     docs::docs_check,
     lint::lint,
     process::{require_command, run_counted, run_direct},
@@ -13,6 +14,7 @@ use crate::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Suite {
     Unit,
+    Cpu,
     Slangc,
     Spirv,
     Reflect,
@@ -37,6 +39,8 @@ pub(crate) enum Step {
     CheckUi,
     /// `cargo xtask check-cpu`: the examples' CPU-twin tests (`checks::CPU_TESTS`).
     CheckCpu,
+    /// `cargo xtask check-cpu-target`: the production CPU target on the fixture `tests/cpu-target`.
+    CheckCpuTarget,
     /// `cargo xtask check-feature <area>`.
     Feature(&'static str),
     /// `cargo xtask verify --mode <mode>`, recording only when the flag is set.
@@ -95,8 +99,9 @@ const CORE_DIAGNOSTICS_TESTS: Step =
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "diagnostics"]);
 const WGPU_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust-wgpu"]);
 
-const ALL: [Suite; 6] = [
+const ALL: [Suite; 7] = [
     Suite::Unit,
+    Suite::Cpu,
     Suite::Slangc,
     Suite::Spirv,
     Suite::Reflect,
@@ -124,6 +129,7 @@ impl Suite {
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Unit => "Unit",
+            Self::Cpu => "Cpu",
             Self::Slangc => "Slangc",
             Self::Spirv => "Spirv",
             Self::Reflect => "Reflect",
@@ -137,6 +143,9 @@ impl Suite {
         match self {
             Self::Unit => {
                 "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), clippy and check of gust and gust-wgpu without default features (the slang-runtime off state); no external tools"
+            }
+            Self::Cpu => {
+                "the production CPU target (GUST_PROFILE=cpu) on the fixture tests/cpu-target: the kernels build in release, run on gust::cpu::CpuDevice and equal independent host references; the binary holds no compiler, helper or GPU runtime; gust-wgpu refuses the profile; the cfg(test) and --cfg gust_dual builds keep one impl; the profile flips rebuild correctly; cargo only"
             }
             Self::Slangc => {
                 "Unit, plus the gust library tests and the diagnostics integration test, which compile generated Slang with slangc"
@@ -159,6 +168,9 @@ impl Suite {
         match self {
             Self::Unit => {
                 "that generated Slang compiles, SPIR-V validity, reflection layouts, or any GPU execution"
+            }
+            Self::Cpu => {
+                "anything about a GPU or an adapter, the Unit tier's tests, or the shadow-semantics twin under cfg(test); a CPU result is never GPU evidence (D42)"
             }
             Self::Slangc => "SPIR-V validation, the reflection gate, or any GPU execution",
             Self::Spirv => {
@@ -191,6 +203,7 @@ impl Suite {
         ];
         match self {
             Self::Unit => unit.to_vec(),
+            Self::Cpu => vec![Step::CheckCpuTarget],
             Self::Slangc => {
                 let mut steps = vec![Step::RequireTool("slangc")];
                 steps.extend(unit);
@@ -216,6 +229,7 @@ impl Step {
             Self::CheckArch => "cargo xtask check-arch".to_owned(),
             Self::CheckUi => "cargo xtask check-ui".to_owned(),
             Self::CheckCpu => "cargo xtask check-cpu".to_owned(),
+            Self::CheckCpuTarget => "cargo xtask check-cpu-target".to_owned(),
             Self::Feature(area) => format!("cargo xtask check-feature {area}"),
             Self::Verify(mode, _) => format!("cargo xtask verify --mode {}", mode.as_str()),
         }
@@ -232,13 +246,14 @@ impl Step {
             Self::CheckArch => check_arch(&root, &mut Vec::new()),
             Self::CheckUi => check_ui(&root, &mut Vec::new()),
             Self::CheckCpu => check_cpu(),
+            Self::CheckCpuTarget => check_cpu_target(&[]),
             Self::Feature(area) => check_feature(Some(area)),
             Self::Verify(mode, record) => verify(mode, record),
         }
     }
 }
 
-/// `cargo xtask test --suite <Unit|Slangc|Spirv|Reflect|Gpu|Full>`.
+/// `cargo xtask test --suite <Unit|Cpu|Slangc|Spirv|Reflect|Gpu|Full>`.
 pub(crate) fn test_command(args: &[String]) -> Result<(), String> {
     let suite = match args {
         [flag, name] if flag == "--suite" => Suite::parse(name)?,

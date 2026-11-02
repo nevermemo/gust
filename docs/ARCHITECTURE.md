@@ -63,6 +63,16 @@ option GUST-E0710); `CpuDevice` then lacks the `Run` impl and the generated `dis
 on it does not compile, which is also what a production build shows. A kernel with a
 uniform parameter has no typed call and so no twin.
 
+Under `GUST_PROFILE=cpu` (the production CPU target, D21 and D51) the macro emits that
+same `Run` impl in every build, without the `cfg(any(test, gust_dual))` gate, and embeds
+no artifact. The profile is chosen at build time and is never inferred, so a binary holds
+one target. `gust-wgpu` evaluates `const _: () = ::gust::profile::require_gpu_target();`
+and so fails to compile (E0080) under `cpu`, and the build script of `gust` refuses the
+`slang-runtime` feature there. A `cpu` build therefore links no compiler, no helper and
+no GPU runtime. Each dispatch runs on one thread, in ascending `global_id.x`.
+`cargo xtask check-cpu-target` is the evidence (the `Cpu` tier of
+docs/development/VALIDATION.md).
+
 ### `gust`
 
 The core crate owns:
@@ -78,9 +88,10 @@ The core crate owns:
   implement `TypedDevice` and the `Resource` contract in safe Rust (`forbid(unsafe_code)`),
   the hidden functions the macro-emitted twin calls (`validate`, `read`, `write`,
   `invocations`), and `overflow_checks()` with its macro `overflow_checks!()`. It is a
-  testing backend, not a production CPU target (roadmap M5): the macro emits the
-  per-kernel `Run` impls only in test and dual builds, and a call completes inside
-  `submit` on the calling thread.
+  testing backend in test and dual builds, and the production CPU target under
+  `GUST_PROFILE=cpu` (D51). Outside that profile the macro emits the per-kernel `Run`
+  impls only in test and dual builds. A call completes inside `submit` on the calling
+  thread.
 
 The typed call surface is what the macro generates `call`, `submit` and `dispatch`
 against. `Device` is unchanged; the extension trait `TypedDevice: Device` names the
@@ -287,8 +298,9 @@ call surface: the recording mock mirrors a GPU backend and never runs a kernel b
 and the CPU side is the real `gust::cpu::CpuDevice` (since m3.b), on which those tests
 run hand-written test bodies through the same `Call`. The recording mock is not a CPU
 runtime for `#[gpu]` shadow bodies. The macro-emitted CPU twin (the `Run<K, N>` impl for
-`CpuDevice`) exists under `cfg(test)` of the defining crate or `--cfg gust_dual`, never
-in a production build.
+`CpuDevice`) exists under `cfg(test)` of the defining crate, under `--cfg gust_dual`, and
+in every build under `GUST_PROFILE=cpu`. A GPU production build (`native`, `web`) never
+has it.
 
 ## Validation layers
 
@@ -329,8 +341,8 @@ descriptor without a table compiles the clean text as before.
   JSON, re-verified by `gust::artifact::verify_artifact`; the macro still emits `artifacts: &[]` and the Slang text
   stays the source of truth.
 - Providing a CPU interpreter for GPU modules. There is none: the CPU twin is the
-  rustc-compiled shadow body, emitted only in test and dual builds, and a production
-  CPU target is a later milestone (M5).
+  rustc-compiled shadow body, emitted in test and dual builds and in every build under
+  `GUST_PROFILE=cpu` (the production CPU target, D51).
 - Supporting arbitrary Rust control flow or library calls.
 - Claiming complete Slang language or resource coverage.
 - Hiding target artifacts; readable Slang, WGSL, SPIR-V, and host code remain

@@ -76,6 +76,10 @@ pub use generated_host::render_wgpu_source;
 pub use graph::{GraphOutput, GraphReport, NodeId, StagedGraph, TransferDirection, TransferRecord};
 pub use pool::{GpuPool, GrowthRecord};
 
+// A build holds one target (D21): this crate is the GPU runtime, so a build under `GUST_PROFILE=cpu` stops here with
+// a compile error (E0080) that names the profile. Under `dev`, `native` and `web` this does nothing.
+const _: () = ::gust::profile::require_gpu_target();
+
 static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
 
 /// wgpu's default `max_compute_workgroups_per_dimension`: the most workgroups one dispatch may

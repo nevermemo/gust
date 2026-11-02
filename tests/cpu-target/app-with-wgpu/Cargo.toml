@@ -5,8 +5,8 @@ edition = "2024"
 publish = false
 
 # The negative of E-e: a crate graph that reaches the GPU runtime. A build holds one target (D21), so under
-# `GUST_PROFILE=cpu` this must not build (the refusal is `gust::profile::require_gpu_target`, called by `gust-wgpu`
-# from slice m5.e2 on).
+# `GUST_PROFILE=cpu` this must not build (the refusal is `gust::profile::require_gpu_target`, which `gust-wgpu`
+# evaluates in a `const _` item).
 [dependencies]
 gust = { path = "../../../crates/gust", default-features = false }
 gust-wgpu = { path = "../../../crates/gust-wgpu", default-features = false }

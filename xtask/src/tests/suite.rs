@@ -1,6 +1,7 @@
 use super::{Step, Suite};
 use crate::{
     checks::{CPU_TESTS, REFLECTION_TESTS},
+    cpu_target::{Dirs, all_calls},
     verify::{RELEASE_SLANG_TESTS, VerifyMode, cargo_calls as mode_cargo_calls, example_run_args},
     workspace::EXAMPLES,
 };
@@ -52,6 +53,7 @@ const UNIT: [Step; 12] = [
 fn names_parse_case_insensitively_and_unknown_names_list_the_choices() {
     for (text, suite) in [
         ("Unit", Suite::Unit),
+        ("cpu", Suite::Cpu),
         ("slangc", Suite::Slangc),
         ("SPIRV", Suite::Spirv),
         ("Reflect", Suite::Reflect),
@@ -63,7 +65,7 @@ fn names_parse_case_insensitively_and_unknown_names_list_the_choices() {
     }
     let error = Suite::parse("Smoke").unwrap_err();
     assert!(
-        error.contains("Unit|Slangc|Spirv|Reflect|Gpu|Full"),
+        error.contains("Unit|Cpu|Slangc|Spirv|Reflect|Gpu|Full"),
         "{error}"
     );
     assert!(Suite::parse("").is_err());
@@ -97,6 +99,8 @@ fn the_other_tiers_alias_existing_commands() {
         vec![Step::Verify(VerifyMode::Artifacts, false)]
     );
     assert_eq!(Suite::Reflect.steps(), vec![Step::Feature("reflection")]);
+    assert_eq!(Suite::Cpu.steps(), vec![Step::CheckCpuTarget]);
+    assert_eq!(Step::CheckCpuTarget.label(), "cargo xtask check-cpu-target");
     assert_eq!(
         Suite::Gpu.steps(),
         vec![
@@ -119,6 +123,11 @@ fn cargo_calls(step: Step) -> Vec<Vec<String>> {
     match step {
         Step::Cargo(args) | Step::CountedCargo(args) => vec![owned(args)],
         Step::CheckCpu => CPU_TESTS.iter().map(|args| owned(args)).collect(),
+        // The calls of `check-cpu-target` are listed by its own data (and pinned by its own tests).
+        Step::CheckCpuTarget => all_calls(&Dirs::under("TARGET"))
+            .into_iter()
+            .map(|(_, call)| call.args)
+            .collect(),
         Step::Feature("reflection") => REFLECTION_TESTS.iter().map(|args| owned(args)).collect(),
         Step::Verify(VerifyMode::Artifacts, _) => EXAMPLES
             .iter()

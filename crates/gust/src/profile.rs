@@ -24,7 +24,7 @@ pub const NAME: &str = "cpu";
 pub const STRICT: bool = strict_profile(NAME);
 
 /// Whether the effective profile is `cpu`: the build is the CPU target, which holds no GPU runtime (D21; `gust-wgpu`
-/// refuses it from slice m5.e2 on).
+/// refuses it with [`require_gpu_target`]).
 pub const IS_CPU: bool = cpu_profile(NAME);
 
 /// Whether the profile called `name` is strict: `native` and `web`, not `dev` and not `cpu`. A function of the name, so
@@ -61,8 +61,8 @@ const NOT_A_GPU_TARGET: &str =
 /// Fails const evaluation when the profile is `cpu`: a build holds one target (D21), so the GPU runtime cannot be in
 /// a `cpu` build.
 ///
-/// `gust-wgpu` evaluates this in a `const _` item (slice m5.e2), so a crate graph that reaches it under
-/// `GUST_PROFILE=cpu` stops at the compile error, not at run time.
+/// `gust-wgpu` evaluates this in a `const _` item, so a crate graph that reaches it under `GUST_PROFILE=cpu` stops at
+/// the compile error, not at run time.
 pub const fn require_gpu_target() {
     check_gpu_target(IS_CPU);
 }

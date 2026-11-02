@@ -178,7 +178,8 @@ fn median_ms(mut run_once: impl FnMut() -> Result<(), String>) -> Result<f64, St
 
 fn report(kernel: &str, dispatch_ms: f64, hand_ms: f64) {
     println!(
-        "S5.2 {kernel} elements={BENCH_ELEMENTS} runs={RUNS} dispatch_ms={dispatch_ms:.3} hand_loop_ms={hand_ms:.3} ratio={:.2}",
+        "S5.2 {kernel} elements={BENCH_ELEMENTS} runs={RUNS} dispatch_ms={dispatch_ms:.3} \
+         hand_loop_ms={hand_ms:.3} ratio={:.2}",
         dispatch_ms / hand_ms
     );
 }

@@ -570,3 +570,142 @@ unsafe impl GpuPod for LyingArgs {
 fn indirect_buffers_refuse_a_lying_pod() {
     let _ = device().create_indirect_buffer("lying", &[LyingArgs(1)]);
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// m7.a0 / S7.6: `max_buffer_size` is checked before any wgpu call by the fallible buffer functions, real limits are
+// requested on demand, and a zeroed 1 GiB buffer is created where the limit allows it.
+// ---------------------------------------------------------------------------------------------------------------
+
+/// `DeviceLimit` for a buffer: `kernel` carries the buffer's label.
+#[track_caller]
+fn assert_buffer_limit(error: Error, label: &str, requested: u64, maximum: u64) {
+    match error {
+        Error::DeviceLimit {
+            kernel,
+            limit,
+            requested: actual_requested,
+            maximum: actual_maximum,
+        } => assert_eq!(
+            (kernel.as_str(), limit, actual_requested, actual_maximum),
+            (label, "max_buffer_size", requested, maximum)
+        ),
+        other => panic!("expected DeviceLimit for `max_buffer_size`, got {other:?}"),
+    }
+}
+
+fn open(index: usize, limits: gust_wgpu::LimitsPolicy) -> HeadlessDevice {
+    HeadlessDevice::with_options(gust_wgpu::DeviceOptions {
+        backends: wgpu::Backends::VULKAN,
+        adapter: gust_wgpu::AdapterChoice::Index(index),
+        limits,
+    })
+    .expect("the adapter opens")
+}
+
+#[test]
+fn a_zeroed_buffer_above_max_buffer_size_is_a_device_limit_with_default_limits() {
+    let device = device();
+    let maximum = device.limits().max_buffer_size;
+    assert_eq!(maximum, 256 << 20, "wgpu's default max_buffer_size");
+    // 1 GiB of u32.
+    let error = device
+        .create_zeroed_buffer::<u32>("one gib", 1 << 28, GpuBufferAccess::ReadWrite)
+        .err()
+        .expect("1 GiB is above 256 MiB");
+    assert_buffer_limit(error, "one gib", 1 << 30, maximum);
+    // One element above the limit fails, the limit itself succeeds.
+    let error = device
+        .create_zeroed_buffer::<u32>(
+            "just above",
+            (maximum / 4) as usize + 1,
+            GpuBufferAccess::ReadWrite,
+        )
+        .err()
+        .expect("four bytes above the limit");
+    assert_buffer_limit(error, "just above", maximum + 4, maximum);
+    let exact = device
+        .create_zeroed_buffer::<u32>("exact", (maximum / 4) as usize, GpuBufferAccess::ReadWrite)
+        .expect("exactly max_buffer_size is allowed");
+    assert_eq!(exact.len(), (maximum / 4) as usize);
+    drop(exact);
+    // The typed upload has the same pre-check, decided before the upload's staging allocation.
+    let values = vec![7_u32; (maximum / 4) as usize + 1];
+    let error = device
+        .try_create_typed_buffer("upload", &values, GpuBufferAccess::ReadOnly)
+        .err()
+        .expect("one element too many");
+    assert_buffer_limit(error, "upload", maximum + 4, maximum);
+    // `with_limits` lowers the limit the pre-check reads.
+    let device = lowered(device, |limits| limits.max_buffer_size = 1 << 20);
+    let error = device
+        .create_zeroed_buffer::<u32>("lowered", (1 << 18) + 1, GpuBufferAccess::ReadWrite)
+        .err()
+        .expect("above the lowered limit");
+    assert_buffer_limit(error, "lowered", (1 << 20) + 4, 1 << 20);
+}
+
+#[test]
+fn a_64_gib_request_is_a_device_limit_before_any_wgpu_call() {
+    for policy in [
+        gust_wgpu::LimitsPolicy::Default,
+        gust_wgpu::LimitsPolicy::Adapter,
+    ] {
+        let device = open(0, policy);
+        let maximum = device.limits().max_buffer_size;
+        let error = device
+            .create_zeroed_buffer::<u32>("sixty-four gib", 1 << 34, GpuBufferAccess::ReadWrite)
+            .err()
+            .expect("64 GiB is above every max_buffer_size");
+        assert_buffer_limit(error, "sixty-four gib", 1 << 36, maximum);
+        // A length whose byte size overflows `u64` saturates and is refused the same way.
+        let error = device
+            .create_zeroed_buffer::<u32>("overflow", usize::MAX, GpuBufferAccess::ReadWrite)
+            .err()
+            .expect("an absurd length");
+        assert_buffer_limit(error, "overflow", u64::MAX, maximum);
+        // The pooled path decides the same way, before the pool or wgpu is touched: no miss is counted.
+        let handle = std::sync::Arc::new(device);
+        let error = gust_wgpu::GpuVec::<u32>::zeroed_on(&handle, u32::MAX)
+            .expect_err("16 GiB is above every max_buffer_size here");
+        assert_buffer_limit(error, "GpuVec", u64::from(u32::MAX) * 4, maximum);
+        assert_eq!(handle.buffer_pool_stats().misses, 0);
+        assert_eq!(handle.buffer_pool_stats().outstanding, 0);
+        // The device is unharmed: a small buffer still allocates and reads back.
+        let small = handle.create_typed_buffer("small", &[1_u32, 2, 3], GpuBufferAccess::ReadWrite);
+        assert_eq!(handle.read_typed_buffer(&small).unwrap(), [1, 2, 3]);
+    }
+}
+
+/// S7.6: on every adapter of this machine, a 1 GiB `create_zeroed_buffer` succeeds under `LimitsPolicy::Adapter` where
+/// the adapter's `max_buffer_size` allows it, and is `DeviceLimit` (never a panic) where it does not.
+#[test]
+fn a_1_gib_zeroed_buffer_is_created_where_the_adapter_allows_it() {
+    let adapters = HeadlessDevice::enumerate(wgpu::Backends::VULKAN);
+    assert!(!adapters.is_empty(), "a Vulkan adapter is required");
+    for (index, info) in adapters.iter().enumerate() {
+        let device = open(index, gust_wgpu::LimitsPolicy::Adapter);
+        let maximum = device.limits().max_buffer_size;
+        let outcome =
+            device.create_zeroed_buffer::<u32>("one gib", 1 << 28, GpuBufferAccess::ReadWrite);
+        println!(
+            "S7.6 adapter {index} {:?}: max_buffer_size={maximum}; 1 GiB create_zeroed_buffer -> {}",
+            info.name,
+            match &outcome {
+                Ok(buffer) => format!("Ok ({} elements)", buffer.len()),
+                Err(error) => format!("Err({error})"),
+            }
+        );
+        if maximum >= 1 << 30 {
+            let buffer = outcome.expect("1 GiB is inside this adapter's max_buffer_size");
+            assert_eq!(buffer.len(), 1 << 28);
+            assert_eq!(buffer.access(), GpuBufferAccess::ReadWrite);
+        } else {
+            assert_buffer_limit(
+                outcome.err().expect("above the limit"),
+                "one gib",
+                1 << 30,
+                maximum,
+            );
+        }
+    }
+}

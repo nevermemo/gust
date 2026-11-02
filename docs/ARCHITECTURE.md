@@ -32,12 +32,11 @@ handle generation. Translation happens directly from `syn` nodes; there is no
 intermediate instruction graph between the Rust AST and Slang text.
 
 Host handle generation includes the typed `call`, `submit` and `dispatch` functions
-of each kernel that has no uniform parameter (below, under `gust`; a kernel with a
-`Uniform<T>` or `ConstantBuffer<T>` parameter gets its handle and descriptor but none
-of the three, so `K::call(..)` is error E0599 and the headless runtime rejects its
-descriptor with `Error::UnsupportedParameter`) and const assertions, evaluated by rustc, that
+of each kernel (below, under `gust`; since m6.u2 a kernel with a `Uniform<T>` or
+`ConstantBuffer<T>` parameter has them too, and every bound names its parameter's `Kind`) and const assertions, evaluated by rustc, that
 every buffer element type and struct field is a padding-free layout (StorageV1, or StorageV2 where a vector or matrix
-is involved) matching Rust's size and alignment; a failure is error E0080 that names the field
+is involved; Std140V1 for structs a uniform reaches, which get `#[repr(C, align(16))]`) matching Rust's size and
+alignment; a failure is error E0080 that names the field
 or the parameter. The macro still does not reflect: layouts and bindings are
 assigned here and verified against Slang at run time (D17).
 

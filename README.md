@@ -249,18 +249,15 @@ they stay the expected values in tests.
 
 ## Running a kernel: typed calls
 
-Typed calls are the primary dispatch path. For every kernel handle whose resource
-parameters are all storage buffers the macro generates `call`, `submit` and
+Typed calls are the primary dispatch path. For every kernel handle the macro generates `call`, `submit` and
 `dispatch`: `call(element_count, buffers...)`
 builds a reusable `gust::Call`, `submit(device, element_count, buffers...)` starts
 it and returns a job, and `dispatch(device, element_count, buffers...)` runs it and
-waits. The buffers follow the kernel's storage parameters, one reference each, in
-parameter order. The exception is a kernel with a uniform parameter
-(`Uniform<T>` or `ConstantBuffer<T>`): its handle and descriptor exist and its Slang
-is emitted, but it has no `call`, `submit` or `dispatch` (calling one is error
-E0599), and the headless runtime rejects such a kernel on every launch path
-(`Error::UnsupportedParameter`), so no kernel with a uniform parameter runs on it
-today. This is `add_on_gpu` from `examples/vector-add` for the kernel above:
+waits. The resources follow the kernel's storage and uniform parameters, one reference
+each, in parameter order: a buffer for a storage parameter, and a `GpuUniform<T>`
+from `create_uniform` for a `Uniform<T>` or `ConstantBuffer<T>` parameter. Passing
+a buffer where a uniform is expected, or the reverse, is a compile error (E0271).
+This is `add_on_gpu` from `examples/vector-add` for the kernel above:
 
 ```rust
 let a = device.create_f32_buffer("vector add a", a, GpuBufferAccess::ReadOnly);

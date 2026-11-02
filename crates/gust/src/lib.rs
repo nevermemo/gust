@@ -92,7 +92,7 @@
 //!
 //! [`cpu`] runs a kernel's Rust shadow body on the CPU (`CpuDevice`, `CpuBuffer`); the per-kernel twin of the typed
 //! calls that the `#[gpu]` macro emits uses it. The macro emits the twin under `cfg(test)` of the crate that defines
-//! the kernel or under `--cfg gust_dual`, unless the kernel has a uniform parameter or `#[kernel(cpu =
+//! the kernel or under `--cfg gust_dual`, unless the kernel has `#[kernel(cpu =
 //! "unsupported")]`; under `GUST_PROFILE=cpu` it emits the same impl in every build (see "Build profiles"). Nothing of
 //! it is re-exported at the crate root, except the hidden macro behind `cpu::overflow_checks!`.
 //!
@@ -141,6 +141,7 @@ pub mod cpu;
 mod descriptor;
 mod dispatch;
 mod job;
+pub mod map;
 pub mod math;
 pub mod profile;
 pub mod reflect;

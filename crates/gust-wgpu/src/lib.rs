@@ -69,19 +69,27 @@ use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 mod cache;
 mod completion;
+mod device;
 mod error;
 mod generated_host;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod graph;
+mod map_host;
 pub mod pool;
+mod vec;
 pub use cache::PipelineCacheStats;
 use cache::{CachedKernel, KernelCacheKey, PipelineCache};
 use completion::Completion;
+pub use device::{
+    AdapterChoice, DeviceHandle, DeviceOptions, LimitsPolicy, default_device, default_device_async,
+    set_default_options,
+};
 pub use error::Error;
 pub use generated_host::render_wgpu_source;
 #[cfg(not(target_arch = "wasm32"))]
 pub use graph::{GraphOutput, GraphReport, NodeId, StagedGraph, TransferDirection, TransferRecord};
-pub use pool::{GpuPool, GrowthRecord};
+pub use pool::{BufferPool, GpuPool, GrowthRecord, PoolStats};
+pub use vec::GpuVec;
 
 // A build holds one target (D21): this crate is the GPU runtime, so a build under `GUST_PROFILE=cpu` stops here with
 // a compile error (E0080) that names the profile. Under `dev`, `native` and `web` this does nothing.
@@ -263,6 +271,10 @@ pub struct GpuBuffer<T> {
     device_id: u64,
     /// Created with `INDIRECT` usage by `create_indirect_buffer`.
     indirect: bool,
+    /// The pool lease of a pooled buffer (`raw` may be larger than `len` elements; bindings use the logical
+    /// length). Dropping the buffer returns the allocation to its device's pool.
+    #[allow(dead_code)] // held for its `Drop`, which returns the allocation
+    lease: Option<pool::Lease>,
     marker: PhantomData<T>,
 }
 
@@ -284,6 +296,15 @@ impl<T> GpuBuffer<T> {
     }
 
     /// Expose the underlying allocation for generated or advanced wgpu code.
+    ///
+    /// A pooled buffer (a [`GpuVec`]'s) is the full size class, not `len()` elements: its `arrayLength` and the bytes
+    /// past the logical length are not the vector's (they may hold the previous owner's data). Bind it with
+    /// `wgpu::BufferBinding { offset: 0, size: Some(len_bytes), .. }`; `as_entire_binding()` shows a kernel the whole
+    /// class.
+    ///
+    /// The buffer returns to the pool when its owner drops, and the pool clears it for its next owner in a submission
+    /// of its own. Commands you recorded in an encoder of your own and submit after the owner dropped may therefore
+    /// run after that clear (or after the next owner's writes). Submit them before dropping the owner.
     pub fn as_wgpu_buffer(&self) -> &wgpu::Buffer {
         &self.raw
     }
@@ -356,6 +377,9 @@ pub struct BufferBinding<'a> {
     indirect: bool,
     /// Storage buffer or uniform; checked against the parameter's kind before anything else.
     kind: BindingKind,
+    /// The bytes the bind group exposes, from offset 0: the logical length (at least one element, as for an empty
+    /// buffer), which is the whole allocation unless the buffer is pooled and its class is larger.
+    bytes: u64,
 }
 
 impl<'a> BufferBinding<'a> {
@@ -391,6 +415,7 @@ impl<'a> BufferBinding<'a> {
             independent_length: false,
             indirect: buffer.indirect,
             kind: BindingKind::Storage,
+            bytes: logical_bytes(buffer),
         }
     }
 
@@ -407,18 +432,37 @@ impl<'a> BufferBinding<'a> {
             independent_length: true,
             indirect: false,
             kind: BindingKind::Uniform,
+            bytes: uniform.raw.size(),
         }
     }
 
-    /// The bytes and kind the launch limits check this binding with.
+    /// The bytes and kind the launch limits check this binding with: what the bind group exposes.
     pub(crate) fn limit_bytes(&self) -> (u64, BindingKind) {
-        (self.raw.size(), self.kind)
+        (self.bytes, self.kind)
+    }
+
+    /// The binding resource of the bind group: `bytes` from offset 0, so a pooled buffer larger than its logical
+    /// length shows the kernel (`arrayLength`, `.len()`) the logical length only.
+    fn resource(&self) -> wgpu::BindingResource<'a> {
+        wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+            buffer: self.raw,
+            offset: 0,
+            size: std::num::NonZeroU64::new(self.bytes),
+        })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn byte_len(&self) -> u64 {
         self.len as u64 * u64::from(self.layout.stride)
     }
+}
+
+/// The bytes a binding of `buffer` exposes: `len` elements (one element for an empty buffer, whose allocation holds
+/// a placeholder), capped by the allocation. For every buffer that is not pooled this is the whole allocation, which
+/// is what `as_entire_binding` bound before; for a pooled buffer it is the logical length, not the class size.
+fn logical_bytes<T>(buffer: &GpuBuffer<T>) -> u64 {
+    let wanted = (buffer.len.max(1) as u64).saturating_mul(u64::from(buffer.layout.stride));
+    wanted.min(buffer.raw.size())
 }
 
 impl<'a> From<F32BufferBinding<'a>> for BufferBinding<'a> {
@@ -952,6 +996,8 @@ pub struct HeadlessDevice {
     /// Limits every launch check reads: the opened device's, or lower ones installed
     /// by `with_limits`.
     limits: wgpu::Limits,
+    /// Recycles the allocations of [`GpuVec`] and other pooled buffers.
+    pool: BufferPool,
 }
 
 impl HeadlessDevice {
@@ -979,31 +1025,35 @@ impl HeadlessDevice {
     /// attempts. Opening the device completes without anyone polling it: wgpu drives the adapter and device
     /// requests itself, unlike the readbacks.
     pub async fn new_async(backends: wgpu::Backends) -> Result<Self, Error> {
+        Self::new_async_with(DeviceOptions {
+            backends,
+            adapter: AdapterChoice::HighPerformance,
+            limits: LimitsPolicy::Default,
+        })
+        .await
+    }
+
+    /// Open the device `options` describe, with the adapter retry of [`new`](Self::new). Unlike `new`, which is
+    /// fixed to Vulkan, the high-performance adapter and wgpu's default limits, the options choose the backends, the
+    /// adapter and whether the adapter's own buffer limits are requested (see [`DeviceOptions`]).
+    pub async fn new_async_with(options: DeviceOptions) -> Result<Self, Error> {
+        let DeviceOptions {
+            backends,
+            adapter,
+            limits,
+        } = options;
         let adapter = retry_no_adapter(
             ADAPTER_ATTEMPTS,
             &ADAPTER_BACKOFF,
             pause_between_attempts,
             |line| eprintln!("{line}"),
-            || Self::request_adapter(backends),
+            || Self::request_adapter(backends, &adapter),
         )
         .await?;
-        Self::open(adapter).await
+        Self::open(adapter, limits).await
     }
 
-    async fn request_adapter(backends: wgpu::Backends) -> Result<wgpu::Adapter, Error> {
-        let mut instance_descriptor = wgpu::InstanceDescriptor::new_without_display_handle();
-        instance_descriptor.backends = backends;
-        let instance = wgpu::Instance::new(instance_descriptor);
-        instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                ..Default::default()
-            })
-            .await
-            .map_err(|error| Error::NoAdapter(error.to_string()))
-    }
-
-    async fn open(adapter: wgpu::Adapter) -> Result<Self, Error> {
+    async fn open(adapter: wgpu::Adapter, limits_policy: LimitsPolicy) -> Result<Self, Error> {
         let adapter_info = adapter.get_info();
         let timestamp_queries = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let required_features = if timestamp_queries {
@@ -1016,6 +1066,7 @@ impl HeadlessDevice {
                 label: Some("GUST headless device"),
                 required_features: required_features
                     | (adapter.features() & wgpu::Features::MEMORY_DECORATION_COHERENT),
+                required_limits: limits_policy.required_limits(&adapter),
                 ..Default::default()
             })
             .await
@@ -1032,6 +1083,7 @@ impl HeadlessDevice {
             pipeline_cache: Mutex::new(PipelineCache::default()),
             timestamp_profiler,
             limits,
+            pool: BufferPool::new(),
         })
     }
 
@@ -1040,7 +1092,8 @@ impl HeadlessDevice {
     }
 
     /// The limits launches are checked against: those the device was opened with
-    /// (wgpu's defaults, not the adapter's), or the lower ones from `with_limits`.
+    /// (wgpu's defaults for `new`/`new_async`; the adapter's own buffer and dispatch limits under
+    /// [`LimitsPolicy::Adapter`]), or the lower ones from `with_limits`.
     pub fn limits(&self) -> &wgpu::Limits {
         &self.limits
     }
@@ -1060,7 +1113,10 @@ impl HeadlessDevice {
     /// `max_storage_buffer_binding_size`, `max_uniform_buffers_per_shader_stage`,
     /// `max_uniform_buffer_binding_size` and `max_bindings_per_bind_group` (every binding
     /// index of a kernel must be below it). Every other field is accepted if it is not
-    /// raised, but has no effect (`max_buffer_size` is never checked by GUST).
+    /// raised, but has no effect. `max_buffer_size` is read by the fallible buffer functions
+    /// ([`try_create_typed_buffer`](Self::try_create_typed_buffer),
+    /// [`create_zeroed_buffer`](Self::create_zeroed_buffer),
+    /// [`GpuVec`]) and by nothing else; `create_typed_buffer` never checks it.
     pub fn with_limits(mut self, limits: wgpu::Limits) -> Result<Self, Error> {
         let mut raised = None;
         limits.check_limits_with_fail_fn(
@@ -1110,8 +1166,10 @@ impl HeadlessDevice {
     /// Allocate and initialize a persistent storage buffer for any GPU POD type.
     ///
     /// The signature is infallible, so GUST does not check `max_buffer_size` here; an
-    /// allocation above it is wgpu's to reject. Launch limits (workgroup shape, workgroup
-    /// count, storage buffer count and binding size) are checked at dispatch time.
+    /// allocation above it is wgpu's to reject (a panic). Launch limits (workgroup shape, workgroup
+    /// count, storage buffer count and binding size) are checked at dispatch time. Use
+    /// [`try_create_typed_buffer`](Self::try_create_typed_buffer) or
+    /// [`create_zeroed_buffer`](Self::create_zeroed_buffer) for a request that may be too large.
     pub fn create_typed_buffer<T: GpuPod>(
         &self,
         label: &str,
@@ -1144,6 +1202,7 @@ impl HeadlessDevice {
             layout: T::LAYOUT,
             device_id: self.id,
             indirect: false,
+            lease: None,
             marker: PhantomData,
         }
     }
@@ -1948,7 +2007,7 @@ impl HeadlessDevice {
                         .binding
                         .expect("validated resource binding")
                         .binding,
-                    resource: binding.raw.as_entire_binding(),
+                    resource: binding.resource(),
                 })
                 .collect::<Vec<_>>();
             let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {

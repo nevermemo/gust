@@ -976,7 +976,8 @@ fn an_indirect_node_ignores_the_workgroup_count_limit_but_not_the_others() {
 // ---- uniforms in a graph (m6.u1) ----
 //
 // `StagedGraph::write_uniform` is an encoded copy from a staging buffer, so an update falls between the dispatches of
-// one submission. The kernel is hand-written because the macro has no `Uniform<T>` call yet (m6.u2).
+// one submission. The kernel is hand-written for the `edges` and report checks; `uniforms.rs` runs `#[gpu]` kernels in a
+// graph the same way.
 
 use gust::{
     Access, Arg, Call, GpuPod, Kernel, KernelDescriptor, ParameterDescriptor, ParameterKind,

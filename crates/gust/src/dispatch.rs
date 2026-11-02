@@ -8,7 +8,7 @@
 //!
 //! - [`TypedDevice`]: extension of [`Device`] that names the erased, `Copy` binding of one device. [`Device`] itself is
 //!   unchanged, so existing backends compile as before.
-//! - [`Run<K, N>`]: the executable hook. A device runs kernel `K` (with `N` storage parameters) when it implements
+//! - [`Run<K, N>`]: the executable hook. A device runs kernel `K` (with `N` resource parameters) when it implements
 //!   `Run<K, N>`. A GPU backend implements it once for every `K` (a blanket impl); a CPU backend implements it per
 //!   kernel, next to the body it executes. `K: Kernel` exposes only a descriptor, so generic code cannot reach a body
 //!   through `K` itself.
@@ -507,7 +507,7 @@ impl KernelDescriptor {
     /// Number of `Storage` parameters (the ones a typed call binds).
     ///
     /// Not part of the stable surface: `#[gpu]` expansions use it in a constant assertion that the generated
-    /// typed call takes as many arguments as the descriptor has storage parameters.
+    /// typed call takes as many arguments as the descriptor has storage and uniform parameters.
     #[doc(hidden)]
     pub const fn storage_parameter_count(&self) -> usize {
         let mut index = 0;
@@ -1655,7 +1655,7 @@ mod tests {
         );
     }
 
-    // N is the storage-parameter count: zero for a kernel without storage parameters.
+    // N is the parameter count (storage and uniform): zero for a kernel without parameters.
     #[test]
     fn a_kernel_without_storage_parameters_builds_an_empty_call() {
         let call = Nothing::call::<RecordingDevice>(7);

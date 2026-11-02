@@ -956,9 +956,10 @@ fn a_graph_dispatch_node_that_aliases_a_written_buffer_is_rejected() {
 
 // ---- uniforms (m6.u1) ----
 //
-// A uniform parameter is bound to a `GpuUniform`: one `Std140V1` value in a constant buffer. The macro does not yet
-// generate a `call` for a `Uniform<T>` parameter (m6.u2), so the kernels below are hand-written, with a `call`
-// function in the shape the macro will generate (`Kind = gust::kind::Storage` / `gust::kind::Uniform` bounds).
+// A uniform parameter is bound to a `GpuUniform`: one `Std140V1` value in a constant buffer. The macro generates the
+// `call` for a `Uniform<T>` parameter (m6.u2; `uniforms.rs` dispatches such kernels), but the kernels below are
+// hand-written for one property each, with a `call` function in the shape the macro generates (`Kind =
+// gust::kind::Storage` / `gust::kind::Uniform` bounds).
 
 use gust::math::{Mat2, Vec4};
 

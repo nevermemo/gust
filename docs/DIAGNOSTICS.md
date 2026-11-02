@@ -270,6 +270,30 @@ Rejected: `x as f64`, `x as usize`, `x as bool`, `x as Pair`.
 Write instead: cast to `f32`/`float`, `i32`/`int` or `u32`/`uint`.
 Decision: D22 (numeric semantics).
 
+### GUST-E0203 reserved type name
+
+A struct named like a type the dialect maps to a Slang type itself would be emitted as that builtin while rustc resolves the user's struct.
+Reached through `#[gpu]`.
+Rejected: `struct Mat4 { .. }`, `struct r#Vec2 { .. }` (the comparison is on the unraw text), `struct float { .. }`; the reserved names are `bool`, `float`, `int`, `uint`, `Vec2`, `Vec3`, `Vec4`, `IVec2`, `IVec4`, `UVec2`, `UVec3`, `UVec4`, `Mat2`, `Mat3` and `Mat4`.
+Write instead: another name, such as `Transform` or `Particle`.
+Decision: D17, D31 (M6 plan R1.1).
+
+### GUST-E0204 3-wide type in a buffer
+
+`Vec3`, `UVec3` and `Mat3` have stride 16 in a Slang buffer but size 12 (36) in Rust, so no Rust type matches them in every buffer position.
+Reached through `#[gpu]`.
+Rejected: a struct field `v: Vec3`, `m: Mat3`; a resource element `StructuredBuffer<Vec3>`, `RWStructuredBuffer<UVec3>`, `Storage<Mat3>`.
+Write instead: `Vec4` or three scalars in buffers; the 3-wide types stay allowed as locals, helper parameters and helper results.
+Decision: D17 (M6 plan F4, F5).
+
+### GUST-E0208 implicit padding in a struct
+
+A struct whose fields leave padding (before a field, or at the tail) cannot be a `GpuPod` type: `pod_slice_as_bytes` would read the padding bytes, which are uninitialised.
+Reached through `#[gpu]`. The check covers scalars, vectors, matrices and the module's own structs; a struct with a field type the macro cannot see into is left to the `const` assertions of the expansion, which fail compilation instead.
+Rejected: `struct S { a: f32, v: Vec2 }` (`v` would sit at offset 8, after four padding bytes), `struct S { v: Vec2, a: f32 }` (the size is 16, the fields end at 12).
+Write instead: order the fields by decreasing alignment and fill what is left with explicit fields, `struct S { v: Vec2, a: f32, pad: f32 }`.
+Decision: D17 (M6 plan R1-A, m6.a1 review).
+
 ## E03xx: expressions and calls
 
 ### GUST-E0301 CPU-only name
@@ -300,16 +324,18 @@ Decision: D02.
 
 ### GUST-E0304 arguments on a built-in
 
-`.global_id()` and `.len()` take no arguments.
+`.global_id()` and `.len()` take no arguments. A swizzle (`.xy()`) and `.transpose()` take none, `.dot(v)`, `.mul_vecN(v)` and
+`.mul_matN(m)` take one, `Vec4::new(..)` and `Mat4::from_cols(..)` take as many as the type has components or columns, and `splat` takes one.
 Reached through `#[gpu]`.
-Rejected: `out.len(1)`.
-Write instead: `out.len()`.
+Rejected: `out.len(1)`, `v.xy(1)`, `m.transpose(m)`, `Vec4::new(1.0, 2.0)`.
+Write instead: `out.len()`, `v.xy()`, `m.transpose()`, `Vec4::new(1.0, 2.0, 3.0, 4.0)`.
 Decision: D02.
 
 ### GUST-E0305 unsupported method
 
 Methods other than `.global_id()`, `.len()`, `.is_some()`, `.is_none()`, `.is_ok()`,
-`.is_err()` and `.unwrap_or(default)` have no lowering.
+`.is_err()`, `.unwrap_or(default)` and the vector and matrix methods (swizzles `.xy()`..`.wzyx()`, `.dot(v)`, `.mul_vec2/3/4(v)`,
+`.mul_mat2/3/4(m)`, `.transpose()`) have no lowering.
 Reached through `#[gpu]`.
 Rejected: `x.abs()`, `v.iter()`.
 Write instead: write the operation with operators and helpers.
@@ -333,9 +359,9 @@ Decision: D02.
 
 ### GUST-E0308 associated constant or foreign path
 
-A path used as a value must be one local, parameter or helper name.
+A path used as a value must be one local, parameter or helper name, or `Mat2::IDENTITY`, `Mat3::IDENTITY` or `Mat4::IDENTITY`.
 Reached through `#[gpu]`.
-Rejected: `f32::INFINITY`, `u32::MAX`, `core::f32::consts::PI`.
+Rejected: `f32::INFINITY`, `u32::MAX`, `core::f32::consts::PI`, `Vec4::ZERO`.
 Write instead: write the literal, for example `4294967295u32`.
 Decision: D06.
 
@@ -437,6 +463,14 @@ Reached through `#[gpu]`.
 Rejected: `let v = x else { return; };`. A refutable pattern such as `let Some(x) = o else { .. };` is E0319.
 Write instead: `if let Some(x) = o { .. }`.
 Decision: D02.
+
+### GUST-E0324 qualified math path
+
+The vector and matrix types are the prelude's; a module path to one is not mapped by its last segment, so a user type of the same name in another module cannot be mistaken for it.
+Reached through `#[gpu]`.
+Rejected: `super::Mat4`, `crate::Vec2`, `::Mat4`, `gust::math::Vec4::new(..)`, in a type, a struct literal or a call.
+Write instead: the bare name, `Mat4`, `Vec4::new(..)`, `Mat4::IDENTITY`. A `use` item inside the module is still E0102.
+Decision: D17, D31 (M6 plan R1.1-2).
 
 ## E04xx: control flow and loops
 

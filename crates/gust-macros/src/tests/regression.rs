@@ -2624,20 +2624,20 @@ fn every_struct_field_is_asserted_at_its_padding_free_offset() {
 }
 
 #[test]
-fn every_struct_is_asserted_to_have_alignment_four_and_a_storage_v1_layout() {
+fn every_struct_is_asserted_to_have_its_largest_field_alignment_and_a_storage_v2_layout() {
     let text = expansion(LAYOUT_MODULE).to_string();
     for name in ["Pair", "Wide", "Trio"] {
         assert!(
             text.contains(&format!(
-                ":: core :: mem :: align_of :: < {name} > () == 4 , \"GUST StorageV1: `{name}` must have alignment 4\""
+                "\"GUST StorageV2: `{name}` must have the largest alignment of its fields\""
             )),
             "{name}: {text}"
         );
         let storage = format!(
-            "< {name} as :: gust :: GpuPod > :: LAYOUT . is_storage_v1 () , \"GUST StorageV1: `{name}` layout is not StorageV1\""
+            "< {name} as :: gust :: GpuPod > :: LAYOUT . is_storage_v2 () , \"GUST StorageV2: `{name}` layout is not StorageV2\""
         );
         assert_eq!(count(&text, &storage), 1, "{name}: {text}");
-        // The `is_storage_v1` const reads the `LAYOUT` of the impl, so it follows the impl.
+        // The `is_storage_v2` const reads the `LAYOUT` of the impl, so it follows the impl.
         let implementation = text
             .find(&format!(":: gust :: GpuPod for {name} "))
             .unwrap_or_else(|| panic!("no GpuPod impl for {name}: {text}"));
@@ -2646,8 +2646,12 @@ fn every_struct_is_asserted_to_have_alignment_four_and_a_storage_v1_layout() {
             "{name}: {text}"
         );
     }
-    assert_eq!(count(&text, "must have alignment 4"), 3, "{text}");
-    assert_eq!(count(&text, "layout is not StorageV1"), 3, "{text}");
+    assert_eq!(
+        count(&text, "must have the largest alignment of its fields"),
+        3,
+        "{text}"
+    );
+    assert_eq!(count(&text, "layout is not StorageV2"), 3, "{text}");
 }
 
 #[test]
@@ -2667,7 +2671,7 @@ fn every_storage_parameter_element_is_asserted_against_its_rust_representation()
              __gust_layout . element . size as usize == :: core :: mem :: size_of :: < float > () \
              && __gust_layout . element . alignment as usize == :: core :: mem :: align_of :: < float > () \
              && __gust_layout . element_stride as usize == :: core :: mem :: size_of :: < float > () \
-             && __gust_layout . element . is_storage_v1 () }} \
+             && __gust_layout . element . is_storage_v2 () }} \
              :: core :: option :: Option :: None => false , }} ,"
         );
         assert_eq!(count(&text, &shape), 1, "{index}: {text}");
@@ -2780,7 +2784,7 @@ fn an_element_message_with_braces_stays_a_valid_format_string() {
 
 #[test]
 fn the_element_assert_covers_everything_the_runtime_checks() {
-    // Size, alignment, stride and the whole StorageV1 verdict (an honest element of alignment 8 and size 8 passes the
+    // Size, alignment, stride and the whole StorageV2 verdict (an honest element of alignment 8 and size 8 passes the
     // first two and fails the last).
     let text = expansion(VECTOR_ADD).to_string();
     assert_eq!(
@@ -2792,7 +2796,7 @@ fn the_element_assert_covers_everything_the_runtime_checks() {
         "{text}"
     );
     assert_eq!(
-        count(&text, "__gust_layout . element . is_storage_v1 ()"),
+        count(&text, "__gust_layout . element . is_storage_v2 ()"),
         3,
         "{text}"
     );
@@ -3164,4 +3168,409 @@ fn large_unsuffixed_integer_literals_are_spelled_uint() {
     )
     .unwrap();
     assert!(too_large.contains("(out[1] + 5000000000)"), "{too_large}");
+}
+
+// ---- vector and matrix types (M6, slice m6.m1) ----
+
+/// A module with `items` and one kernel `run` that writes `body` with an output buffer `out` of `float`.
+fn vector_module(items: &str, body: &str) -> String {
+    format!(
+        "mod m {{ {items} #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<float>) {{ \
+         let i = id.x; {body} }} }}"
+    )
+}
+
+#[test]
+fn vectors_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/vectors.rs")).unwrap();
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "vectors.slang",
+        &include_str!("../../../../tests/fixtures/vectors.slang").replace("\r\n", "\n"),
+    );
+}
+
+#[test]
+fn every_math_type_maps_to_its_slang_type() {
+    for (rust, slang) in [
+        ("Vec2", "float2"),
+        ("Vec3", "float3"),
+        ("Vec4", "float4"),
+        ("IVec2", "int2"),
+        ("IVec4", "int4"),
+        ("UVec2", "uint2"),
+        ("UVec3", "uint3"),
+        ("UVec4", "uint4"),
+        ("Mat2", "float2x2"),
+        ("Mat3", "float3x3"),
+        ("Mat4", "float4x4"),
+        // The raw spelling is the same name.
+        ("r#Mat4", "float4x4"),
+    ] {
+        let source = translate(&vector_module(
+            &format!("fn pass(x: {rust}) -> {rust} {{ x }}"),
+            "out[i] = 1.0;",
+        ))
+        .unwrap();
+        assert!(
+            source.contains(&format!("{slang} pass({slang} x)")),
+            "{rust}: {source}"
+        );
+    }
+}
+
+#[test]
+fn the_reserved_type_names_are_the_mapped_type_names() {
+    use crate::{math_types::is_reserved_type_name, slang::collisions::MAPPED_TYPE_NAMES};
+    for name in MAPPED_TYPE_NAMES {
+        assert!(is_reserved_type_name(name), "{name}");
+    }
+    for entry in crate::math_types::MATH_TYPES {
+        assert!(MAPPED_TYPE_NAMES.contains(&entry.name), "{}", entry.name);
+    }
+    assert!(!is_reserved_type_name("Mat5"));
+    assert!(!is_reserved_type_name("mat4"));
+    assert!(!is_reserved_type_name("Particle"));
+}
+
+#[test]
+fn a_struct_named_like_a_scalar_vector_or_matrix_is_e0203() {
+    for name in [
+        "bool", "float", "int", "uint", "Vec2", "Vec3", "Vec4", "IVec2", "IVec4", "UVec2", "UVec3",
+        "UVec4", "Mat2", "Mat3", "Mat4", "r#Mat4",
+    ] {
+        assert_rejected(
+            &vector_module(&format!("struct {name} {{ a: f32 }}"), "out[i] = 1.0;"),
+            Code::ReservedTypeName,
+        );
+    }
+    // Near misses are ordinary names.
+    for name in ["Mat5", "IVec3", "Mat4x4", "vec4"] {
+        translate(&vector_module(
+            &format!("struct {name} {{ a: f32 }}"),
+            "out[i] = 1.0;",
+        ))
+        .unwrap();
+    }
+}
+
+#[test]
+fn three_wide_types_are_e0204_in_struct_fields_and_resource_elements() {
+    for ty in ["Vec3", "UVec3", "Mat3", "r#Vec3"] {
+        assert_rejected(
+            &vector_module(&format!("struct S {{ a: f32, v: {ty} }}"), "out[i] = 1.0;"),
+            Code::ThreeWideInBuffer,
+        );
+        for resource in [
+            "StructuredBuffer",
+            "RWStructuredBuffer",
+            "Storage",
+            "StorageMut",
+            "Uniform",
+        ] {
+            assert_rejected(
+                &format!(
+                    "mod m {{ #[kernel] pub fn run(id: SV_DispatchThreadID, v: {resource}<{ty}>) {{ \
+                     let i = id.x; }} }}"
+                ),
+                Code::ThreeWideInBuffer,
+            );
+        }
+    }
+    // A 3-wide type is fine as a local, a helper parameter and a helper result, and the 4-wide forms are fine
+    // in buffers.
+    let source = translate(&vector_module(
+        "fn lift(v: Vec3, m: Mat3) -> Vec3 { m.mul_vec3(v) } struct S { v: Vec4, w: Vec2, a: f32, b: f32 }",
+        "let local = lift(Vec3::splat(1.0), Mat3::IDENTITY); out[i] = local.x;",
+    ))
+    .unwrap();
+    assert!(
+        source.contains("float3 lift(float3 v, float3x3 m)"),
+        "{source}"
+    );
+    assert!(source.contains("float4 v;"), "{source}");
+}
+
+#[test]
+fn implicit_padding_in_a_struct_is_e0208() {
+    for (fields, extra) in [
+        // Padding before a field.
+        ("a: f32, v: Vec2", ""),
+        ("a: f32, v: Vec4", ""),
+        ("a: f32, b: f32, v: Vec2, c: f32, d: f32, e: f32", ""),
+        // Tail padding.
+        ("v: Vec2, a: f32", ""),
+        ("m: Mat4, a: f32", ""),
+        ("m: Mat2, a: f32", ""),
+        // Through a nested module struct.
+        ("i: Inner, v: Vec2", "struct Inner { a: f32 }"),
+        ("v: Vec4, i: Inner", "struct Inner { a: f32 }"),
+    ] {
+        let source = vector_module(&format!("{extra} struct S {{ {fields} }}"), "out[i] = 1.0;");
+        assert_rejected(&source, Code::ImplicitPadding);
+    }
+    // The message names the struct, the field and both offsets.
+    let error = translate(&vector_module(
+        "struct S { a: f32, v: Vec2 }",
+        "out[i] = 1.0;",
+    ))
+    .unwrap_err()
+    .to_string();
+    for needle in ["`v` of `S`", "offset 8", "ends at 4", "4 bytes"] {
+        assert!(error.contains(needle), "{needle}: {error}");
+    }
+    let tail = translate(&vector_module(
+        "struct S { v: Vec2, a: f32 }",
+        "out[i] = 1.0;",
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(
+        tail.contains("ends at byte 12 but its size is 16"),
+        "{tail}"
+    );
+
+    // Padding-free structs of the same pieces pass, and so does a struct with a field the macro cannot see into
+    // (the expansion's const assertions are the check for it).
+    for fields in [
+        "v: Vec2, a: f32, b: f32",
+        "a: f32, b: f32, v: Vec2",
+        "v: Vec4, w: Vec4",
+        "m: Mat4, v: Vec4",
+        "m: Mat2, v: Vec2, a: u32, b: i32",
+        "a: f32, b: f32, c: f32, d: f32, v: Vec4",
+        "v: Vec2, i: Inner, a: f32",
+    ] {
+        translate(&vector_module(
+            &format!("struct Inner {{ x: f32 }} struct S {{ {fields} }}"),
+            "out[i] = 1.0;",
+        ))
+        .unwrap();
+    }
+    translate(&vector_module(
+        "struct S { a: f32, v: Elsewhere }",
+        "out[i] = 1.0;",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn a_qualified_math_path_is_e0324_and_the_prelude_spellings_are_not() {
+    for (items, body) in [
+        ("", "let m = super::Mat4::IDENTITY; out[i] = 1.0;"),
+        (
+            "",
+            "let v = gust::math::Vec4::new(1.0, 2.0, 3.0, 4.0); out[i] = v.x;",
+        ),
+        ("", "let v = crate::Vec4::splat(1.0); out[i] = v.x;"),
+        ("", "let v = ::Vec4::splat(1.0); out[i] = v.x;"),
+        ("fn f(m: super::Mat4) -> f32 { 1.0 }", "out[i] = 1.0;"),
+        ("fn f(m: gust::math::Mat2) -> f32 { 1.0 }", "out[i] = 1.0;"),
+        ("struct S { v: super::Vec2, w: Vec2 }", "out[i] = 1.0;"),
+        ("", "let c = super::UVec2 { x: 1, y: 2 }; out[i] = 1.0;"),
+    ] {
+        assert_rejected(&vector_module(items, body), Code::QualifiedMathPath);
+    }
+    // The prelude form, raw or not, is accepted and emitted as the Slang type.
+    let source = translate(&vector_module(
+        "fn f(m: r#Mat4) -> Vec4 { r#Mat4::IDENTITY.mul_vec4(r#Vec4::splat(1.0)) }",
+        "out[i] = f(Mat4::IDENTITY).x;",
+    ))
+    .unwrap();
+    assert!(source.contains("float4 f(float4x4 m)"), "{source}");
+    // `use` inside the module is still E0102: the names come from the prelude only.
+    assert_rejected(
+        &vector_module("use gust::math::Vec4;", "out[i] = 1.0;"),
+        Code::UnsupportedModuleItem,
+    );
+}
+
+#[test]
+fn only_the_listed_associated_items_are_accepted_and_the_rest_is_e0308_or_e0302() {
+    // A value path that is not `Mat..::IDENTITY`.
+    for body in [
+        "let z = Vec4::ZERO; out[i] = 1.0;",
+        "let z = Vec2::IDENTITY; out[i] = 1.0;",
+        "let z = Mat4::ZERO; out[i] = 1.0;",
+        "let z = Vec4::new; out[i] = 1.0;",
+        "let z = Mat4::from_cols; out[i] = 1.0;",
+        "let z = <Mat4>::IDENTITY; out[i] = 1.0;",
+        "let z = f32::MAX; out[i] = 1.0;",
+    ] {
+        assert_rejected(&vector_module("", body), Code::ForeignPath);
+    }
+    // A call to an associated function the type does not have.
+    for body in [
+        "let z = Mat4::new(1.0); out[i] = 1.0;",
+        "let z = Vec4::from_cols(Vec4::splat(1.0)); out[i] = 1.0;",
+        "let z = Vec4::default(); out[i] = 1.0;",
+        "let z = Mat4::IDENTITY(); out[i] = 1.0;",
+    ] {
+        assert_rejected(&vector_module("", body), Code::UnknownCall);
+    }
+    // Argument counts are the macro's check as well as rustc's: the lowering needs them.
+    for body in [
+        "let z = Vec4::new(1.0, 2.0); out[i] = 1.0;",
+        "let z = Vec2::new(1.0, 2.0, 3.0); out[i] = 1.0;",
+        "let z = Vec4::splat(1.0, 2.0); out[i] = 1.0;",
+        "let z = Mat2::from_cols(Vec2::splat(1.0)); out[i] = 1.0;",
+        "let z = Mat4::from_rows(Vec4::splat(1.0)); out[i] = 1.0;",
+        "let z = Vec3::splat(); out[i] = 1.0;",
+    ] {
+        assert_rejected(&vector_module("", body), Code::BuiltinArguments);
+    }
+}
+
+#[test]
+fn vector_and_matrix_methods_have_fixed_argument_counts_and_nothing_else_is_a_method() {
+    for body in [
+        "let v = Vec4::splat(1.0); let w = v.xy(1.0); out[i] = 1.0;",
+        "let v = Vec4::splat(1.0); out[i] = v.dot(); ",
+        "let v = Vec4::splat(1.0); out[i] = v.dot(v, v);",
+        "let m = Mat4::IDENTITY; let t = m.transpose(m); out[i] = 1.0;",
+        "let m = Mat4::IDENTITY; let t = m.mul_vec4(); out[i] = 1.0;",
+        "let m = Mat4::IDENTITY; let t = m.mul_mat4(m, m); out[i] = 1.0;",
+    ] {
+        assert_rejected(&vector_module("", body), Code::BuiltinArguments);
+    }
+    for body in [
+        "let v = Vec4::splat(1.0); out[i] = v.x();",
+        "let v = Vec4::splat(1.0); let w = v.xyzwx(); out[i] = 1.0;",
+        "let v = Vec4::splat(1.0); let w = v.XY(); out[i] = 1.0;",
+        "let v = Vec4::splat(1.0); let w = v.xr(); out[i] = 1.0;",
+        "let v = Vec4::splat(1.0); out[i] = v.length();",
+        "let v = Vec4::splat(1.0); let w = v.normalize(); out[i] = 1.0;",
+        "let m = Mat4::IDENTITY; let w = m.inverse(); out[i] = 1.0;",
+    ] {
+        assert_rejected(&vector_module("", body), Code::UnsupportedMethod);
+    }
+}
+
+#[test]
+fn constructors_swizzles_and_methods_lower_to_their_slang_spelling() {
+    let source = translate(&vector_module(
+        "",
+        "let p = Vec4::new(1.0, 2.0, 3.0, 4.0); \
+         let s = Vec2::splat(0.5); \
+         let q = p.wzyx(); \
+         let r = (p + q).xy(); \
+         let d = p.dot(q); \
+         let c = Mat2::from_cols(s, r); \
+         let w = Mat2::from_rows(s, r); \
+         let t = c.transpose(); \
+         let v = t.mul_vec2(w.mul_vec2(s)); \
+         let m = Mat4::IDENTITY; \
+         let n = m.mul_mat4(Mat4::from_cols(p, q, p, q)); \
+         let f = n.mul_vec4(p); \
+         let g = Mat3::from_rows(Vec3::splat(1.0), Vec3::splat(2.0), Vec3::splat(3.0)); \
+         let h = IVec2::new(1, -2); \
+         let u = UVec4::splat(7); \
+         out[i] = d + v.x + f.w + g.mul_vec3(Vec3::splat(1.0)).y;",
+    ))
+    .unwrap();
+    for expected in [
+        "var p = float4(1.0, 2.0, 3.0, 4.0);",
+        "var s = float2(0.5);",
+        "var q = p.wzyx;",
+        "var r = ((p + q)).xy;",
+        "var d = dot(p, q);",
+        // Rows build directly; columns build the transpose of the rows constructor.
+        "var c = transpose(float2x2(s, r));",
+        "var w = float2x2(s, r);",
+        "var t = transpose(c);",
+        "var v = mul(t, mul(w, s));",
+        "var m = float4x4(float4(1.0, 0.0, 0.0, 0.0), float4(0.0, 1.0, 0.0, 0.0), float4(0.0, 0.0, 1.0, 0.0), float4(0.0, 0.0, 0.0, 1.0));",
+        "var n = mul(m, transpose(float4x4(p, q, p, q)));",
+        "var f = mul(n, p);",
+        "var g = float3x3(float3(1.0), float3(2.0), float3(3.0));",
+        "var h = int2(1, (-2));",
+        "var u = uint4(7);",
+        "mul(g, float3(1.0)).y",
+    ] {
+        assert!(source.contains(expected), "missing `{expected}`:\n{source}");
+    }
+}
+
+#[test]
+fn identity_matrices_are_emitted_at_their_own_width() {
+    let source = translate(&vector_module(
+        "",
+        "let a = Mat2::IDENTITY; let b = Mat3::IDENTITY; out[i] = 1.0;",
+    ))
+    .unwrap();
+    assert!(
+        source.contains("var a = float2x2(float2(1.0, 0.0), float2(0.0, 1.0));"),
+        "{source}"
+    );
+    assert!(
+        source.contains(
+            "var b = float3x3(float3(1.0, 0.0, 0.0), float3(0.0, 1.0, 0.0), float3(0.0, 0.0, 1.0));"
+        ),
+        "{source}"
+    );
+}
+
+#[test]
+fn a_vector_struct_literal_is_a_struct_value_of_the_slang_vector() {
+    let source = translate(&vector_module(
+        "",
+        "let c = UVec2 { x: 3, y: id.x }; let d = Vec4 { x: 1.0, y: 2.0, z: 3.0, w: 4.0 }; out[i] = d.x + (c.x as f32);",
+    ))
+    .unwrap();
+    for expected in [
+        "uint2 __gust_struct_",
+        "float4 __gust_struct_",
+        ".x = 3;",
+        ".w = 4.0;",
+    ] {
+        assert!(source.contains(expected), "missing `{expected}`:\n{source}");
+    }
+}
+
+#[test]
+fn an_unsuffixed_literal_above_i32_max_next_to_a_vector_is_a_uint() {
+    let source = translate(&vector_module(
+        "",
+        "let a = UVec2::new(3000000000, 1); let b = UVec4::splat(4294967295); out[i] = (a.x + b.y) as f32;",
+    ))
+    .unwrap();
+    assert!(source.contains("uint2(uint(3000000000), 1)"), "{source}");
+    assert!(source.contains("uint4(uint(4294967295))"), "{source}");
+}
+
+#[test]
+fn a_struct_with_vector_fields_gets_storage_v2_asserts_and_its_descriptor_picks_the_rules() {
+    let text = expansion(
+        "mod m { pub struct Particle { pub position: Vec2, pub velocity: Vec2, pub mass: f32, pub tag: u32 } \
+         #[kernel] pub fn run(id: SV_DispatchThreadID, particles: StructuredBuffer<Particle>, \
+         points: StructuredBuffer<Vec4>, mut out: RWStructuredBuffer<float>) { let i = id.x; } }",
+    )
+    .to_string();
+    // The struct asserts the largest field alignment, not 4, and the whole V2 verdict.
+    assert!(
+        text.contains(
+            "\"GUST StorageV2: `Particle` must have the largest alignment of its fields\""
+        ),
+        "{text}"
+    );
+    assert!(!text.contains("must have alignment 4"), "{text}");
+    assert!(
+        text.contains("< Particle as :: gust :: GpuPod > :: LAYOUT . is_storage_v2 ()"),
+        "{text}"
+    );
+    // Each element is named once in its descriptor entry, which picks V1 or V2 from the layout itself.
+    for element in ["Particle", "Vec4", "float"] {
+        let shape = format!(
+            "const __GUST_ELEMENT : :: gust :: TypeLayout = < {element} as :: gust :: GpuPod > :: LAYOUT ;"
+        );
+        assert_eq!(count(&text, &shape), 1, "{element}: {text}");
+    }
+    assert_eq!(
+        count(
+            &text,
+            "if __GUST_ELEMENT . is_storage_v1 () { :: gust :: ResourceLayout :: storage_v1 (__GUST_ELEMENT) } else { :: gust :: ResourceLayout :: storage_v2 (__GUST_ELEMENT) }"
+        ),
+        3,
+        "{text}"
+    );
 }

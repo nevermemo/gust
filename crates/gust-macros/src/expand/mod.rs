@@ -835,9 +835,16 @@ fn parameter_descriptors(
                 None => quote!(None),
             };
             let resource_layout = match element {
-                Some(element) => quote!(Some(::gust::ResourceLayout::storage_v1(
-                    <#element as ::gust::GpuPod>::LAYOUT,
-                ))),
+                // StorageV1 when the element is scalars and padding-free structs of them, StorageV2 when it holds vectors
+                // or matrices. The element is named once, so a type that is no `GpuPod` still reports one E0277.
+                Some(element) => quote!(Some({
+                    const __GUST_ELEMENT: ::gust::TypeLayout = <#element as ::gust::GpuPod>::LAYOUT;
+                    if __GUST_ELEMENT.is_storage_v1() {
+                        ::gust::ResourceLayout::storage_v1(__GUST_ELEMENT)
+                    } else {
+                        ::gust::ResourceLayout::storage_v2(__GUST_ELEMENT)
+                    }
+                })),
                 None => quote!(None),
             };
             Ok(quote! {
@@ -1191,7 +1198,8 @@ fn type_text(ty: &syn::Type) -> String {
 }
 
 /// One `const _` per storage parameter of `kernel`: the element layout recorded in the kernel's descriptor (the
-/// element's `GpuPod::LAYOUT`) has the size and alignment of the Rust type and is a StorageV1 layout whose stride
+/// element's `GpuPod::LAYOUT`) has the size and alignment of the Rust type and is a StorageV2 layout (every StorageV1
+/// layout is one) whose stride
 /// is the Rust size, so a hand-written `GpuPod` impl that lies is a compile error here. It covers everything the
 /// runtime checks (`create_typed_buffer`, dispatch validation) cover. The assertion reads the
 /// descriptor rather than naming `GpuPod` again, so an element that is no `GpuPod` still reports the one
@@ -1236,7 +1244,7 @@ fn element_layout_assertions(
                                 == ::core::mem::align_of::<#element>()
                             && __gust_layout.element_stride as usize
                                 == ::core::mem::size_of::<#element>()
-                            && __gust_layout.element.is_storage_v1()
+                            && __gust_layout.element.is_storage_v2()
                     }
                     ::core::option::Option::None => false,
                 },
@@ -1276,6 +1284,8 @@ fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
         let field_ident = field.ident.as_ref().expect("named field");
         let earlier = &types[..index];
         let message = format!(
+            // The wording keeps the name `StorageV1` because tests/ui pins it; the rule is StorageV2's (the offset of
+            // a field is the sum of the sizes before it, which a vector's alignment can break).
             "GUST StorageV1: field `{field_ident}` of `{struct_name}` is not at its padding-free offset"
         );
         quote! {
@@ -1287,13 +1297,16 @@ fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
         }
     });
     let padding_message = format!(
-        "GUST StorageV1: `{struct_name}` has tail padding (its fields do not add up to its size)"
+        "GUST StorageV2: `{struct_name}` has tail padding (its fields do not add up to its size)"
     );
-    let alignment_message = format!("GUST StorageV1: `{struct_name}` must have alignment 4");
-    let storage_message = format!("GUST StorageV1: `{struct_name}` layout is not StorageV1");
+    let alignment_message =
+        format!("GUST StorageV2: `{struct_name}` must have the largest alignment of its fields");
+    let storage_message = format!("GUST StorageV2: `{struct_name}` layout is not StorageV2");
     // One block, after the impl whose `LAYOUT` it reads (const items are order-independent), so one cause is one
     // E0080 and the asserts run in this order: the field that is off its offset is named first, then the total,
-    // then the alignment (an alignment other than 4 also fails the last one), then the whole layout.
+    // then the alignment (a lying alignment also fails the last one), then the whole layout. Vectors and matrices make
+    // padding possible (`{ a: f32, v: Vec2 }`), and the validator (E0208) rejects what it can see; these asserts are
+    // the check for what it cannot (a field type the macro cannot see into).
     Ok(quote! {
         unsafe impl ::gust::GpuPod for #ident {
             const LAYOUT: ::gust::TypeLayout = ::gust::TypeLayout::structure(
@@ -1315,9 +1328,17 @@ fn gpu_pod_impl(item: &syn::ItemStruct) -> syn::Result<TokenStream> {
                     == 0 #( + ::core::mem::size_of::<#types>() )*,
                 #padding_message
             );
-            ::core::assert!(::core::mem::align_of::<#ident>() == 4, #alignment_message);
             ::core::assert!(
-                <#ident as ::gust::GpuPod>::LAYOUT.is_storage_v1(),
+                ::core::mem::align_of::<#ident>()
+                    == { let mut __gust_alignment = 1_usize; #(
+                        if ::core::mem::align_of::<#types>() > __gust_alignment {
+                            __gust_alignment = ::core::mem::align_of::<#types>();
+                        }
+                    )* __gust_alignment },
+                #alignment_message
+            );
+            ::core::assert!(
+                <#ident as ::gust::GpuPod>::LAYOUT.is_storage_v2(),
                 #storage_message
             );
         };
@@ -1357,8 +1378,8 @@ mod tests {
             "field `a` of `Holder` is not at its padding-free offset",
             "field `w` of `Holder` is not at its padding-free offset",
             "`Holder` has tail padding",
-            "`Holder` must have alignment 4",
-            "`Holder` layout is not StorageV1",
+            "`Holder` must have the largest alignment of its fields",
+            "`Holder` layout is not StorageV2",
         ];
         let positions: Vec<usize> = order.iter().map(|needle| at(needle)).collect();
         assert!(
@@ -1367,7 +1388,7 @@ mod tests {
         );
         // The unnamed size-sum assert carries a message too, so no bare `assertion failed` can reach a user.
         assert!(
-            text.contains("== 0 + :: core :: mem :: size_of :: < uint > () + :: core :: mem :: size_of :: < Wide8 > () , \"GUST StorageV1: `Holder` has tail padding"),
+            text.contains("== 0 + :: core :: mem :: size_of :: < uint > () + :: core :: mem :: size_of :: < Wide8 > () , \"GUST StorageV2: `Holder` has tail padding"),
             "{text}"
         );
         assert!(!text.contains("u32 :: MAX as usize ) ;"), "{text}");

@@ -252,13 +252,16 @@ pub fn position_source(position: Position, name: &str) -> String {
     }
 }
 
-/// The Rust names that `emit_type` maps to Slang's builtin scalars before it falls back to `emit_name`. A user struct of
-/// one of these names is declared under the renamed spelling (`struct __gust_r_float`), but every use of it in a type
-/// position emits the scalar instead, so the struct cannot be used (slangc then fails loudly); the struct position of
-/// these names is therefore not exercised end to end.
+/// The Rust names that `emit_type` maps to Slang types (the scalars, the vectors and the matrices) before it falls back
+/// to `emit_name`. E0203 rejects a user struct of one of these names (before m6.m1 such a struct was declared under the
+/// renamed spelling but every use of it emitted the builtin, which slangc refused), so the struct position of these
+/// names is not reachable and not exercised end to end.
 #[cfg(test)]
 #[allow(dead_code)] // the macro's Unit tests use it, the Slangc-tier tests do not
-pub const MAPPED_TYPE_NAMES: &[&str] = &["bool", "float", "int", "uint"];
+pub const MAPPED_TYPE_NAMES: &[&str] = &[
+    "bool", "float", "int", "uint", "Vec2", "Vec3", "Vec4", "IVec2", "IVec4", "UVec2", "UVec3",
+    "UVec4", "Mat2", "Mat3", "Mat4",
+];
 
 /// For a class-2 entry, the text of a kernel that declares `spelled` (the bare name to measure the capture, the
 /// renamed one to check that the rename removes it) next to the construct GUST emits with that name. `None` for an

@@ -6,6 +6,7 @@ use syn::{ext::IdentExt as _, spanned::Spanned, visit::Visit};
 use crate::{
     diagnostics::{self, Code},
     expand::KernelOptions,
+    math_types,
 };
 
 #[cfg(test)]
@@ -844,6 +845,7 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
                 args.join(", ")
             )
         }
+        syn::Expr::Call(call) if math_constructor(call).is_some() => emit_math_constructor(call)?,
         syn::Expr::Call(call) => format!(
             "{}({})",
             emit_expression(&call.func)?,
@@ -867,6 +869,7 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             emit_expression(&index.index)?
         ),
         syn::Expr::Lit(literal) => emit_literal(&literal.lit)?,
+        syn::Expr::MethodCall(call) if is_math_method(call) => emit_math_method(call)?,
         syn::Expr::MethodCall(call) if call.method == "global_id" => {
             emit_expression(&call.receiver)?
         }
@@ -895,6 +898,17 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         }
         syn::Expr::Paren(paren) => format!("({})", emit_expression(&paren.expr)?),
         syn::Expr::Path(path) if path.path.is_ident("None") => "none".to_owned(),
+        syn::Expr::Path(path)
+            if path.qself.is_none()
+                && matches!(
+                    math_types::associated_item(&path.path),
+                    Some((_, "IDENTITY"))
+                ) =>
+        {
+            let (math, _) =
+                math_types::associated_item(&path.path).expect("guarded by the match arm");
+            identity_matrix(math)
+        }
         // A single-segment path is a value name (a local, a parameter or a helper), so it is renamed like its
         // declaration. A longer path names a type or module first and is emitted as written.
         syn::Expr::Path(path) if path.path.get_ident().is_some() && path.qself.is_none() => {
@@ -931,6 +945,68 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
                 "this Rust expression is not in the Rust-to-Slang subset yet",
             ));
         }
+    })
+}
+
+/// The math type and member of a call to a constructor of `gust::math` (`Vec4::new`, `Mat4::from_cols`, ..).
+fn math_constructor(call: &syn::ExprCall) -> Option<(&'static math_types::MathType, &'static str)> {
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return None;
+    };
+    if path.qself.is_some() {
+        return None;
+    }
+    math_types::associated_item(&path.path).filter(|(_, member)| *member != "IDENTITY")
+}
+
+/// `Vec4::new(a, b, c, d)` is `float4(a, b, c, d)` and `Vec4::splat(s)` is `float4(s)`. Slang's matrix constructor takes
+/// rows, so `Mat4::from_rows(r0, r1, r2, r3)` is `float4x4(r0, r1, r2, r3)` and `Mat4::from_cols(c0, c1, c2, c3)`, with
+/// the matrices column-major, is the transpose of the same constructor (measured: plan S6.1 (a)).
+fn emit_math_constructor(call: &syn::ExprCall) -> syn::Result<String> {
+    let (math, member) = math_constructor(call).expect("the caller checked the call");
+    let arguments = emit_list(call.args.iter())?.join(", ");
+    Ok(match member {
+        "from_cols" => format!("transpose({}({arguments}))", math.slang),
+        _ => format!("{}({arguments})", math.slang),
+    })
+}
+
+/// `Mat4::IDENTITY` as a constructor call: Slang has no such constant.
+fn identity_matrix(math: &math_types::MathType) -> String {
+    let width = math_types::width(math);
+    let row_type = format!("float{width}");
+    let rows: Vec<String> = (0..width)
+        .map(|row| {
+            let components: Vec<&str> = (0..width)
+                .map(|column| if column == row { "1.0" } else { "0.0" })
+                .collect();
+            format!("{row_type}({})", components.join(", "))
+        })
+        .collect();
+    format!("{}({})", math.slang, rows.join(", "))
+}
+
+/// Whether a method call is one of the vector and matrix methods: a swizzle, `dot`, `mul_vecN`, `mul_matN` or
+/// `transpose`.
+fn is_math_method(call: &syn::ExprMethodCall) -> bool {
+    let name = call.method.to_string();
+    math_types::is_swizzle(&name)
+        || math_types::method_arity(&name).is_some_and(|arity| arity == call.args.len())
+}
+
+/// `v.xy()` is `v.xy`, `a.dot(b)` is `dot(a, b)`, `m.mul_vec4(v)` and `a.mul_mat4(b)` are `mul(m, v)` and `mul(a, b)`,
+/// and `m.transpose()` is `transpose(m)`.
+fn emit_math_method(call: &syn::ExprMethodCall) -> syn::Result<String> {
+    let name = call.method.to_string();
+    let receiver = emit_expression(&call.receiver)?;
+    Ok(if math_types::is_swizzle(&name) {
+        format!("{receiver}.{name}")
+    } else if name == "transpose" {
+        format!("transpose({receiver})")
+    } else {
+        let function = if name == "dot" { "dot" } else { "mul" };
+        let arguments = emit_list(call.args.iter())?.join(", ");
+        format!("{function}({receiver}, {arguments})")
     })
 }
 
@@ -1264,7 +1340,11 @@ fn emit_type(ty: &syn::Type) -> syn::Result<String> {
         "bool" => "bool".to_owned(),
         "Option" => "Optional".to_owned(),
         "Result" => "__GustResult".to_owned(),
-        "UVec3" | "SV_DispatchThreadID" => "uint3".to_owned(),
+        "SV_DispatchThreadID" => "uint3".to_owned(),
+        name if math_types::math_type(name).is_some() => math_types::math_type(name)
+            .expect("guarded by the match arm")
+            .slang
+            .to_owned(),
         // Any other type name is a struct of the module, so it is renamed exactly like its declaration.
         name => collisions::emit_name(name).into_owned(),
     };

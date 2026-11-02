@@ -2,6 +2,7 @@ use proc_macro::TokenStream;
 
 mod diagnostics;
 mod expand;
+mod math_types;
 mod recover;
 mod slang;
 mod validate;

@@ -149,8 +149,8 @@ pub mod slang;
 pub mod spirv;
 
 pub use abi::{
-    GpuPod, ResourceLayout, ScalarKind, ShaderLayoutRules, StructFieldLayout, TypeLayout,
-    TypeLayoutKind, pod_slice_as_bytes,
+    GpuPod, MATRIX_LAYOUT, MatrixLayout, ResourceLayout, ScalarKind, ShaderLayoutRules,
+    StructFieldLayout, TypeLayout, TypeLayoutKind, pod_slice_as_bytes,
 };
 pub use artifact::{Artifact, Format};
 pub use descriptor::{

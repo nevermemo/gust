@@ -59,6 +59,22 @@ jobs:
       - name: Check on the minimum version
         run: cargo check --workspace --all-targets --locked
 
+  cpu-target:
+    # The production CPU target (D21, D51; slice m5.e2): `GUST_PROFILE=cpu` builds the fixture tests/cpu-target in
+    # release and runs it on the CPU against host references, scans its binary, checks the refusals (`gust-wgpu` under
+    # cpu, the bridge feature, the missing twin without the profile, an opted-out kernel) and the profile flips in one
+    # target directory. A job of its own because its fixture builds from nothing on a runner (no cache; the other jobs
+    # use none either), which would lengthen `unit` past its budget; it runs beside `unit`. Cargo only: no slangc and
+    # no GPU. This is the Cpu evidence tier (`cargo xtask test --suite Cpu` runs the same command).
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+      - name: Production CPU target
+        run: cargo xtask check-cpu-target
+
   slang:
     # The pinned-Slang manager end to end (D46, R4.8, slice m4.f). `cargo gust slang install` downloads the pinned Slang
     # (version and archive hashes: crates/cargo-gust/src/slang.rs, the one place they live) from Slang's own GitHub

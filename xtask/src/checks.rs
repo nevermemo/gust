@@ -509,14 +509,17 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
         "check-dual" => {
             "check-dual: the dual test build (`--cfg gust_dual`, D26) and its cross-crate proof, with its own target directory <target>/dual: tests/dual is formatted (`cargo fmt --check`) and passes clippy with -D warnings (the root fmt and CI clippy do not reach that workspace), as do vector-add and polynomial with the cfg (CI's clippy compiles their dual code out); the workspace builds with the cfg; in tests/dual a consumer's test (E1) and production binary (E3) each fail with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib` without the cfg, and with it (E2) the test passes. Without `--check-only` it then runs `cargo run` of vector-add and polynomial with the cfg, which must print the `CPU twin: matches (N elements, max ULP k)` line (polynomial also the twin's time beside run_cpu's), and of vector-add without the cfg, which must not mention the twin; that part needs a Vulkan GPU, and `check-full` runs it. Refuses to run while RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS or CARGO_BUILD_RUSTFLAGS is set (it delivers the cfg through CARGO_ENCODED_RUSTFLAGS). `--check-only` is the CPU-only mode CI runs; it needs cargo only"
         }
+        "check-cpu-target" => {
+            "check-cpu-target: the production CPU target (D21, D51) on the fixture workspace tests/cpu-target, with cargo only (no slangc, no GPU), in <target>/cpu-target, cpu-target-dual and cpu-target-flip: E-a builds `app` in release under GUST_PROFILE=cpu and runs it (one `CPU target: matches` line per kernel, the final line); E-b scans that binary for slangc, gust-slang-reflect, wgpu and vulkan (any letter case, with a control string) and reads `cargo tree -e features -p app`; E-c builds and runs it under cpu with --cfg gust_dual; E-d to E-g judge the four refusals on tests/cpu-target/e-*-expected.txt (E-e is the E0080 of gust-wgpu's require_gpu_target); E-h flips the profile cpu, unset, cpu, unset, cpu, unset in one directory; E-i runs cargo test -p kernels under cpu. Stops at the first failing step and names it. The Cpu suite is this command; CI's unit job runs it"
+        }
         "bless" => {
             "bless: reruns the Slang golden tests with BLESS_GOLDEN=1, which rewrites changed fixtures and fails with the diff; review before committing"
         }
         "test" => {
-            "test: `cargo xtask test --suite Unit|Slangc|Spirv|Reflect|Gpu|Full` runs one evidence tier of VALIDATION.md"
+            "test: `cargo xtask test --suite Unit|Cpu|Slangc|Spirv|Reflect|Gpu|Full` runs one evidence tier of VALIDATION.md"
         }
         "all" => {
-            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, examples, artifacts, full, changed, workspace, format, lints, lint, docs-check, check-arch, check-ui, check-cpu, check-dual, bless, test"
+            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, examples, artifacts, full, changed, workspace, format, lints, lint, docs-check, check-arch, check-ui, check-cpu, check-dual, check-cpu-target, bless, test"
         }
         _ => return Err(format!("unknown check area `{area}`")),
     };

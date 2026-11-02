@@ -106,13 +106,13 @@
 //!
 //! `cpu` is the production CPU target (D21): the `#[gpu]` macro emits the kernel's `Run` impl for
 //! [`cpu::CpuDevice`](crate::cpu::CpuDevice) in every build, without the test and `gust_dual` gate, uses no
-//! artifact, and the `slang-runtime` feature is refused, so the build holds no compiler or bridge. From slice m5.e2 on
-//! a GPU runtime crate evaluates [`profile::require_gpu_target`], which fails under it; until then nothing calls it.
-//! It is never inferred: a release build without the variable stays `native` (`web` on `wasm32`). The Slang text that
-//! a kernel's descriptor keeps in a `cpu` build is metadata (the identity of the kernel, what `export` and
-//! diagnostics show), not a second target: nothing in the build can turn it into a pipeline. A panic in a kernel
-//! body follows the build's panic strategy: it unwinds out of `dispatch` and `submit` under `panic = "unwind"` and
-//! aborts the process under `panic = "abort"`; nothing catches it.
+//! artifact, and the `slang-runtime` feature is refused, so the build holds no compiler or bridge. `gust-wgpu`
+//! evaluates [`profile::require_gpu_target`], which fails under it, so a crate graph that reaches the GPU runtime does
+//! not build. It is never inferred: a release build without the variable stays `native` (`web` on `wasm32`). The Slang
+//! text that a kernel's descriptor keeps in a `cpu` build is metadata (the identity of the kernel, what `export` and
+//! diagnostics show), not a second target: nothing in the build can turn it into a pipeline. A panic in a kernel body
+//! follows the build's panic strategy: it unwinds out of `dispatch` and `submit` under `panic = "unwind"` and aborts
+//! the process under `panic = "abort"`; nothing catches it.
 //!
 //! A release build is strict even without the variable: when `GUST_PROFILE` is not set and Cargo builds `gust` with
 //! `PROFILE=release`, the profile is `web` for `wasm32` and `native` for every other target, and the build prints

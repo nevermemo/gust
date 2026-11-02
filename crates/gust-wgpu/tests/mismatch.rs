@@ -166,6 +166,8 @@ enum Kind {
     IShift,
     UArith,
     IArith,
+    UWrap,
+    IWrap,
     CastInt,
     CastUint,
     FloatOp,
@@ -718,6 +720,161 @@ fn cases() -> Vec<Case> {
         v(i(i32::MIN)),
         |m| m.pick(p(NEG_OVERFLOW), v(i(i32::MIN))),
     ));
+
+    // ---- the wrapping forms of KM-10 (slice m7.w): inside the domain for every input ----
+    // `wrapping_add`, `wrapping_sub`, `wrapping_mul` and `wrapping_neg` give the same wrapped value on the GPU, in
+    // plain Rust and on the twin, with checks on and with checks off, so every row is a `DOMAIN` control. The
+    // expected values are written out; `rust_observed` computes each one again with Rust's own `wrapping_*`.
+    macro_rules! wrapping_row {
+        ($kind:ident, $what:expr, $op:expr, $a:expr, $b:expr, $want:expr) => {
+            add(case(
+                "DOMAIN",
+                $what,
+                $kind,
+                ($op, $a, $b),
+                v($want),
+                |_| v($want),
+            ))
+        };
+    }
+    wrapping_row!(UWrap, "u32 2.wrapping_add(3)", 0, 2, 3, 5);
+    wrapping_row!(UWrap, "u32 MAX.wrapping_add(1)", 0, u32::MAX, 1, 0);
+    wrapping_row!(
+        UWrap,
+        "u32 MAX.wrapping_add(MAX)",
+        0,
+        u32::MAX,
+        u32::MAX,
+        u32::MAX - 1
+    );
+    wrapping_row!(UWrap, "u32 0.wrapping_sub(1)", 1, 0, 1, u32::MAX);
+    wrapping_row!(UWrap, "u32 0.wrapping_sub(MAX)", 1, 0, u32::MAX, 1);
+    wrapping_row!(UWrap, "u32 MAX.wrapping_sub(MAX)", 1, u32::MAX, u32::MAX, 0);
+    wrapping_row!(
+        UWrap,
+        "u32 MAX.wrapping_mul(2)",
+        2,
+        u32::MAX,
+        2,
+        u32::MAX - 1
+    );
+    wrapping_row!(UWrap, "u32 MAX.wrapping_mul(MAX)", 2, u32::MAX, u32::MAX, 1);
+    wrapping_row!(UWrap, "u32 0.wrapping_mul(MAX)", 2, 0, u32::MAX, 0);
+    wrapping_row!(UWrap, "u32 65536.wrapping_mul(65536)", 2, 65_536, 65_536, 0);
+    wrapping_row!(UWrap, "u32 0.wrapping_neg()", 3, 0, 0, 0);
+    wrapping_row!(UWrap, "u32 1.wrapping_neg()", 3, 1, 0, u32::MAX);
+    wrapping_row!(UWrap, "u32 MAX.wrapping_neg()", 3, u32::MAX, 0, 1);
+    wrapping_row!(
+        UWrap,
+        "u32 2^31.wrapping_neg()",
+        3,
+        0x8000_0000,
+        0,
+        0x8000_0000
+    );
+    wrapping_row!(IWrap, "i32 -2.wrapping_add(-3)", 0, i(-2), i(-3), i(-5));
+    wrapping_row!(
+        IWrap,
+        "i32 MAX.wrapping_add(1)",
+        0,
+        i(i32::MAX),
+        1,
+        i(i32::MIN)
+    );
+    wrapping_row!(
+        IWrap,
+        "i32 MIN.wrapping_add(-1)",
+        0,
+        i(i32::MIN),
+        i(-1),
+        i(i32::MAX)
+    );
+    wrapping_row!(
+        IWrap,
+        "i32 MIN.wrapping_add(MIN)",
+        0,
+        i(i32::MIN),
+        i(i32::MIN),
+        0
+    );
+    wrapping_row!(IWrap, "i32 -1.wrapping_add(-1)", 0, i(-1), i(-1), i(-2));
+    wrapping_row!(
+        IWrap,
+        "i32 MIN.wrapping_sub(1)",
+        1,
+        i(i32::MIN),
+        1,
+        i(i32::MAX)
+    );
+    wrapping_row!(
+        IWrap,
+        "i32 0.wrapping_sub(MIN)",
+        1,
+        0,
+        i(i32::MIN),
+        i(i32::MIN)
+    );
+    wrapping_row!(
+        IWrap,
+        "i32 MAX.wrapping_sub(-1)",
+        1,
+        i(i32::MAX),
+        i(-1),
+        i(i32::MIN)
+    );
+    wrapping_row!(
+        IWrap,
+        "i32 MIN.wrapping_sub(MAX)",
+        1,
+        i(i32::MIN),
+        i(i32::MAX),
+        1
+    );
+    wrapping_row!(IWrap, "i32 MAX.wrapping_mul(2)", 2, i(i32::MAX), 2, i(-2));
+    wrapping_row!(
+        IWrap,
+        "i32 MIN.wrapping_mul(-1)",
+        2,
+        i(i32::MIN),
+        i(-1),
+        i(i32::MIN)
+    );
+    wrapping_row!(
+        IWrap,
+        "i32 MIN.wrapping_mul(MIN)",
+        2,
+        i(i32::MIN),
+        i(i32::MIN),
+        0
+    );
+    wrapping_row!(
+        IWrap,
+        "i32 MAX.wrapping_mul(MAX)",
+        2,
+        i(i32::MAX),
+        i(i32::MAX),
+        1
+    );
+    wrapping_row!(IWrap, "i32 -1.wrapping_mul(-1)", 2, i(-1), i(-1), 1);
+    wrapping_row!(IWrap, "i32 MIN.wrapping_mul(2)", 2, i(i32::MIN), 2, 0);
+    wrapping_row!(
+        IWrap,
+        "i32 MIN.wrapping_neg()",
+        3,
+        i(i32::MIN),
+        0,
+        i(i32::MIN)
+    );
+    wrapping_row!(IWrap, "i32 0.wrapping_neg()", 3, 0, 0, 0);
+    wrapping_row!(IWrap, "i32 -1.wrapping_neg()", 3, i(-1), 0, 1);
+    wrapping_row!(
+        IWrap,
+        "i32 MAX.wrapping_neg()",
+        3,
+        i(i32::MAX),
+        0,
+        i(i32::MIN) + 1
+    );
 
     // ---- DOMAIN controls (floats): exactly representable values, normal results ----
     add(case(
@@ -1300,6 +1457,21 @@ fn rust_observed(case: &Case) -> Observed {
                     _ => -a,
                 }) as u32
             }
+            Kind::UWrap => match op {
+                0 => a.wrapping_add(b),
+                1 => a.wrapping_sub(b),
+                2 => a.wrapping_mul(b),
+                _ => a.wrapping_neg(),
+            },
+            Kind::IWrap => {
+                let (a, b) = (a as i32, b as i32);
+                (match op {
+                    0 => a.wrapping_add(b),
+                    1 => a.wrapping_sub(b),
+                    2 => a.wrapping_mul(b),
+                    _ => a.wrapping_neg(),
+                }) as u32
+            }
             Kind::CastInt => (f32::from_bits(a) as i32) as u32,
             Kind::CastUint => f32::from_bits(a) as u32,
             Kind::FloatOp => {
@@ -1460,6 +1632,12 @@ fn twin_observed(case: &Case) -> Observed {
             }),
             Kind::IArith => twin_ops::<i32, i32, i32>(operands, |d, op, a, b, out| {
                 mismatch::iarith::dispatch(d, 1, op, a, b, out)
+            }),
+            Kind::UWrap => twin_ops::<u32, u32, u32>(operands, |d, op, a, b, out| {
+                mismatch::uwrap::dispatch(d, 1, op, a, b, out)
+            }),
+            Kind::IWrap => twin_ops::<i32, i32, i32>(operands, |d, op, a, b, out| {
+                mismatch::iwrap::dispatch(d, 1, op, a, b, out)
             }),
             Kind::CastInt => twin_casts::<i32>(operands.1, |d, f, out| {
                 mismatch::cast_int::dispatch(d, 1, f, out)
@@ -1695,6 +1873,16 @@ fn gpu_observed(device: &HeadlessDevice, cases: &[Case]) -> Vec<Vec<u32>> {
     put(
         &n,
         run_ops::<i32, i32, i32>(device, &mismatch::iarith::DESCRIPTOR, &pick(&n)),
+    );
+    let n = of_kind(Kind::UWrap);
+    put(
+        &n,
+        run_ops::<u32, u32, u32>(device, &mismatch::uwrap::DESCRIPTOR, &pick(&n)),
+    );
+    let n = of_kind(Kind::IWrap);
+    put(
+        &n,
+        run_ops::<i32, i32, i32>(device, &mismatch::iwrap::DESCRIPTOR, &pick(&n)),
     );
     let n = of_kind(Kind::CastInt);
     put(
@@ -1971,6 +2159,8 @@ fn known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome() {
         failures.len(),
         failures.join("\n")
     );
+
+    wrapping_edge_grid(&device);
 }
 
 /// The ids of the table rows of `docs/SEMANTICS.md`: lines that start with `| KM-nn |`.
@@ -2006,6 +2196,58 @@ fn every_pinned_ledger_id_is_documented_and_every_documented_id_is_pinned() {
             id.len() == 5 && id[3..].chars().all(|c| c.is_ascii_digit()),
             "{id}"
         );
+    }
+}
+
+/// The wrapping methods over a grid of edge values (slice m7.w): every operation on every pair of {0, 1, 2, MAX - 1,
+/// MAX, 2^31 - 1, 2^31} for `u32` and {MIN, MIN + 1, -2, -1, 0, 1, MAX} for `i32`, so that sums, differences and
+/// products wrap in both directions. The GPU, the twin and Rust's own `wrapping_*` (the plain Rust column) must give
+/// one value, and so must an oracle that shares nothing with them: exact integer arithmetic in `i128` reduced
+/// modulo 2^32. Part of the ledger test, so it runs in both overflow modes of that test and in the release ledger
+/// (`check-ledger`) without a ledger name of its own to register.
+fn wrapping_edge_grid(device: &HeadlessDevice) {
+    let unsigned_edges = [0, 1, 2, u32::MAX - 1, u32::MAX, 0x7fff_ffff, 0x8000_0000];
+    let signed_edges = [i32::MIN, i32::MIN + 1, -2, -1, 0, 1, i32::MAX].map(i);
+    for (kind, edges, signed) in [
+        (Kind::UWrap, unsigned_edges, false),
+        (Kind::IWrap, signed_edges, true),
+    ] {
+        let mut grid = Vec::new();
+        for op in 0..4 {
+            for &a in &edges {
+                for &b in &edges {
+                    grid.push(case("DOMAIN", "edge grid", kind, (op, a, b), v(0), |_| {
+                        v(0)
+                    }));
+                }
+            }
+        }
+        assert_eq!(grid.len(), 4 * 7 * 7);
+        let refs: Vec<&Case> = grid.iter().collect();
+        let gpu = if signed {
+            run_ops::<i32, i32, i32>(device, &mismatch::iwrap::DESCRIPTOR, &refs)
+        } else {
+            run_ops::<u32, u32, u32>(device, &mismatch::uwrap::DESCRIPTOR, &refs)
+        };
+        for (case, gpu) in grid.iter().zip(gpu) {
+            let (op, a, b) = case.operands;
+            let (x, y) = if signed {
+                (i128::from(a as i32), i128::from(b as i32))
+            } else {
+                (i128::from(a), i128::from(b))
+            };
+            let exact = match op {
+                0 => x + y,
+                1 => x - y,
+                2 => x * y,
+                _ => -x,
+            };
+            let oracle = exact.rem_euclid(1 << 32) as u32;
+            let what = format!("{kind:?} op {op} on 0x{a:08x} and 0x{b:08x}");
+            assert_eq!(Observed::Value(gpu), rust_observed(case), "GPU, {what}");
+            assert_eq!(twin_observed(case), rust_observed(case), "twin, {what}");
+            assert_eq!(gpu, oracle, "exact oracle, {what}");
+        }
     }
 }
 
@@ -2075,6 +2317,22 @@ fn the_emitted_wgsl_uses_plain_operators_and_conversions() {
     assert!(signed_arithmetic.contains("a_0[i_0] - b_0[i_0]"));
     assert!(signed_arithmetic.contains("a_0[i_0] * b_0[i_0]"));
     assert!(signed_arithmetic.contains("- a_0[i_0]"));
+    // The wrapping methods (slice m7.w) are the same plain operators; the negation is `0 - a`, because WGSL has no
+    // negation of a `u32` and the macro sees no types.
+    for (kernel, ty) in [
+        (&mismatch::uwrap::DESCRIPTOR, "u32"),
+        (&mismatch::iwrap::DESCRIPTOR, "i32"),
+    ] {
+        let wrapping = wgsl(kernel);
+        assert!(wrapping.contains("a_0[i_0] + b_0[i_0]"), "{wrapping}");
+        assert!(wrapping.contains("a_0[i_0] - b_0[i_0]"), "{wrapping}");
+        assert!(wrapping.contains("a_0[i_0] * b_0[i_0]"), "{wrapping}");
+        assert!(
+            wrapping.contains(&format!("{ty}(0) - a_0[i_0]")),
+            "{wrapping}"
+        );
+        assert!(!wrapping.contains("_gust_"), "{wrapping}");
+    }
 }
 
 /// The mode that the ledger keys on comes from the consumer-side macro and is this workspace's profile for this

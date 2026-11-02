@@ -169,6 +169,8 @@ codes! {
     MulAssignPlace = 323 => "GUST-E0323";
     /// A qualified path to a math type or one of its constructors, such as `super::Mat4` or `gust::math::Vec4::new`.
     QualifiedMathPath = 324 => "GUST-E0324";
+    /// A method call with arguments whose name is not in the dialect (the accepted methods are listed in the text).
+    MethodNotInDialect = 325 => "GUST-E0325";
 
     // E04xx: control flow and loops.
     /// A `loop` expression.

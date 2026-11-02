@@ -380,16 +380,23 @@ Decision: D02.
 
 `.global_id()` and `.len()` take no arguments. A swizzle (`.xy()`) and `.transpose()` take none, `.dot(v)`, `.mul_vecN(v)` and
 `.mul_matN(m)` take one, `Vec4::new(..)` and `Mat4::from_cols(..)` take as many as the type has components or columns, and `splat` takes one.
+`.wrapping_add(b)`, `.wrapping_sub(b)` and `.wrapping_mul(b)` take one argument and `.wrapping_neg()` takes none
+(slice m7.w). A method that is not a built-in at all is not this code: with arguments it is E0325, without
+arguments E0305.
 Reached through `#[gpu]`.
-Rejected: `out.len(1)`, `v.xy(1)`, `m.transpose(m)`, `Vec4::new(1.0, 2.0)`.
-Write instead: `out.len()`, `v.xy()`, `m.transpose()`, `Vec4::new(1.0, 2.0, 3.0, 4.0)`.
+Rejected: `out.len(1)`, `v.xy(1)`, `m.transpose(m)`, `Vec4::new(1.0, 2.0)`, `x.wrapping_add()`, `x.wrapping_neg(1)`.
+Write instead: `out.len()`, `v.xy()`, `m.transpose()`, `Vec4::new(1.0, 2.0, 3.0, 4.0)`, `x.wrapping_add(y)`,
+`x.wrapping_neg()`.
 Decision: D02.
 
 ### GUST-E0305 unsupported method
 
 Methods other than `.global_id()`, `.len()`, `.is_some()`, `.is_none()`, `.is_ok()`,
-`.is_err()`, `.unwrap_or(default)` and the vector and matrix methods (swizzles `.xy()`..`.wzyx()`, `.dot(v)`, `.mul_vec2/3/4(v)`,
-`.mul_mat2/3/4(m)`, `.transpose()`) have no lowering.
+`.is_err()`, `.unwrap_or(default)`, the wrapping integer methods (`.wrapping_add(b)`, `.wrapping_sub(b)`,
+`.wrapping_mul(b)`, `.wrapping_neg()`; slice m7.w) and the vector and matrix methods (swizzles `.xy()`..`.wzyx()`,
+`.dot(v)`, `.mul_vec2/3/4(v)`,
+`.mul_mat2/3/4(m)`, `.transpose()`) have no lowering. This code is the one for a method called without arguments;
+the same unknown method called with arguments is E0325. The message lists the accepted methods.
 Integer `.dot` (slice m6.m2): Slang's `dot` on an integer vector is `OpSDot` or `OpUDot` in SPIR-V, which needs
 `Capability DotProduct`, and naga's SPIR-V reader refuses it (`UnsupportedCapability(DotProduct)`; measured on
 slangc 2026.20). The macro sees no types (the invocation id is a `UVec3` and `id.xy()` a `UVec2`, neither named by a
@@ -554,6 +561,21 @@ Reached through `#[gpu]`.
 Rejected: `super::Mat4`, `crate::Vec2`, `::Mat4`, `gust::math::Vec4::new(..)`, in a type, a struct literal or a call.
 Write instead: the bare name, `Mat4`, `Vec4::new(..)`, `Mat4::IDENTITY`. A `use` item inside the module is still E0102.
 Decision: D17, D31 (M6 plan R1.1-2).
+
+### GUST-E0325 method is not in the dialect
+
+A method call with arguments whose name is not one the dialect accepts. The message names the method and lists the
+accepted ones: `.global_id()` and `.len()`, the Option and Result methods (`.is_some()`, `.is_none()`, `.is_ok()`,
+`.is_err()`, `.unwrap_or(default)`), the wrapping integer methods `.wrapping_add(b)`, `.wrapping_sub(b)`,
+`.wrapping_mul(b)` and `.wrapping_neg()`, and the vector and matrix methods. Before slice m7.w this case was E0304 with
+the text "GPU built-ins do not accept arguments or type arguments", which blamed a built-in that was never called.
+`wrapping_div` and `wrapping_rem` are deliberately absent: a divisor of zero (and `MIN / -1`) has no wrapped result, so
+a "wrapping" division would still leave the domain (KM-01 to KM-03 in [SEMANTICS](SEMANTICS.md)). The same unknown
+method called without arguments is E0305; a built-in called with arguments it does not take is E0304.
+Reached through `#[gpu]`.
+Rejected: `x.wrapping_div(y)`, `x.wrapping_rem(y)`, `x.pow(2)`, `x.min(y)`, `x.checked_add(y)`, `x.saturating_sub(y)`.
+Write instead: the operator or an `if` (`if y != 0 { x / y } else { 0 }`), or one of the accepted methods.
+Decision: D22, D38 (M7 plan 2.4).
 
 ## E04xx: control flow and loops
 

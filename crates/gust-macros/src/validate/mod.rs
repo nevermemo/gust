@@ -32,6 +32,24 @@ const BANNED_NAMES: &[&str] = &[
 /// Numeric conversions with a proven Slang lowering and GPU-verified semantics.
 const CAST_TARGETS: &[&str] = &["f32", "float", "i32", "int", "u32", "uint"];
 
+/// The wrapping integer methods (slice m7.w) with their argument counts: `a.wrapping_add(b)` is the plain Slang `+`,
+/// which wraps modulo 2^32 on the GPU (WGSL section 6.2.3), and the twin calls Rust's own method, so the result is
+/// inside the domain for every input. `wrapping_div` and `wrapping_rem` are deliberately absent: a divisor of zero
+/// has no wrapped result.
+pub(crate) fn wrapping_arity(name: &str) -> Option<usize> {
+    match name {
+        "wrapping_add" | "wrapping_sub" | "wrapping_mul" => Some(1),
+        "wrapping_neg" => Some(0),
+        _ => None,
+    }
+}
+
+/// The accepted methods, spelled out in the text of E0305 and E0325.
+const ACCEPTED_METHODS: &str = "the accepted methods are `.global_id()` and `.len()`, the Option/Result methods \
+`.is_some()`, `.is_none()`, `.is_ok()`, `.is_err()` and `.unwrap_or(default)`, the wrapping integer methods \
+`.wrapping_add(b)`, `.wrapping_sub(b)`, `.wrapping_mul(b)` and `.wrapping_neg()`, and the vector and matrix methods \
+(swizzles such as `.xy()`, `.dot(v)`, `.mul_vec4(v)`, `.mul_mat4(m)`, `.transpose()`)";
+
 /// Rust primitives outside the four-byte scalar subset. They are not shadowed by
 /// the prelude, so rustc accepts them, and `emit_type` would pass the Rust
 /// spelling through to Slang unchanged.
@@ -1320,19 +1338,42 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             visit::visit_expr_method_call(self, call);
             return;
         }
-        if !call.args.is_empty() {
-            self.reject(
-                Code::BuiltinArguments,
-                call,
-                "GPU built-ins do not accept arguments or type arguments",
-            );
+        if let Some(arity) = wrapping_arity(&method) {
+            if call.args.len() != arity {
+                self.reject(
+                    Code::BuiltinArguments,
+                    call,
+                    &format!("`.{method}()` takes exactly {arity} argument(s)"),
+                );
+                return;
+            }
+            visit::visit_expr_method_call(self, call);
             return;
         }
-        if !matches!(method.as_str(), "global_id" | "len") {
+        let compatibility_builtin = matches!(method.as_str(), "global_id" | "len");
+        if !call.args.is_empty() {
+            if compatibility_builtin {
+                self.reject(
+                    Code::BuiltinArguments,
+                    call,
+                    &format!("`.{method}()` takes no arguments"),
+                );
+            } else {
+                self.reject(
+                    Code::MethodNotInDialect,
+                    call,
+                    &format!(
+                        "the method `.{method}(..)` is not in the dialect; {ACCEPTED_METHODS}"
+                    ),
+                );
+            }
+            return;
+        }
+        if !compatibility_builtin {
             self.reject(
                 Code::UnsupportedMethod,
                 call,
-                "only the compatibility built-ins `.global_id()` and `.len()`, the Option/Result methods `.is_some()`, `.is_none()`, `.is_ok()`, `.is_err()`, `.unwrap_or(default)`, and the vector and matrix methods (swizzles such as `.xy()`, `.dot(v)`, `.mul_vec4(v)`, `.mul_mat4(m)`, `.transpose()`) are supported",
+                &format!("`.{method}()` has no lowering; {ACCEPTED_METHODS}"),
             );
             return;
         }

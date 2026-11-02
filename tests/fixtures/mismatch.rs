@@ -128,6 +128,53 @@ mod mismatch {
         }
     }
 
+    // The wrapping forms of KM-10 (slice m7.w), inside the domain for every input: op 0 is `a.wrapping_add(b)`,
+    // 1 is `a.wrapping_sub(b)`, 2 is `a.wrapping_mul(b)`, anything else `a.wrapping_neg()`.
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn uwrap(
+        id: SV_DispatchThreadID,
+        op: StructuredBuffer<uint>,
+        a: StructuredBuffer<uint>,
+        b: StructuredBuffer<uint>,
+        mut out: RWStructuredBuffer<uint>,
+    ) {
+        let i: uint = id.x;
+        if i < out.len() {
+            if op[i] == 0u32 {
+                out[i] = a[i].wrapping_add(b[i]);
+            } else if op[i] == 1u32 {
+                out[i] = a[i].wrapping_sub(b[i]);
+            } else if op[i] == 2u32 {
+                out[i] = a[i].wrapping_mul(b[i]);
+            } else {
+                out[i] = a[i].wrapping_neg();
+            }
+        }
+    }
+
+    // As `uwrap` for `i32`.
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn iwrap(
+        id: SV_DispatchThreadID,
+        op: StructuredBuffer<uint>,
+        a: StructuredBuffer<int>,
+        b: StructuredBuffer<int>,
+        mut out: RWStructuredBuffer<int>,
+    ) {
+        let i: uint = id.x;
+        if i < out.len() {
+            if op[i] == 0u32 {
+                out[i] = a[i].wrapping_add(b[i]);
+            } else if op[i] == 1u32 {
+                out[i] = a[i].wrapping_sub(b[i]);
+            } else if op[i] == 2u32 {
+                out[i] = a[i].wrapping_mul(b[i]);
+            } else {
+                out[i] = a[i].wrapping_neg();
+            }
+        }
+    }
+
     // KM-05: `f as i32`.
     #[kernel(workgroup_size(64, 1, 1))]
     pub fn cast_int(

@@ -124,7 +124,8 @@ describes the intended behaviour and is not evidence.
     produced. All four kernels have a twin, and none uses the opt-out.
 - **Language subset.** 32-bit `f32`, `i32`, `u32`, `bool` and module structs of them (README, "Current subset"). Float
   arithmetic is `+ - * /`, comparisons and casts: the validator accepts no other method than `.len()`,
-  `.global_id()` and the `Option` / `Result` helpers, so there is no `sqrt`, `fma` or trigonometry to bound.
+  `.global_id()`, the `Option` / `Result` helpers, the vector and matrix methods and the integer-only `wrapping_*`
+  methods (section 3, slice m7.w), so there is no `sqrt`, `fma` or trigonometry to bound.
   The validator accepts `%` on floats (it rejects only an integer-literal zero as the right operand of `/`, `%`, `/=` and `%=`),
   and no bound is stated for it.
 - **Independent references stay.** Tests of the translator keep an independent host reference as the expected value
@@ -182,7 +183,9 @@ does not depend on the order and is identical; a cell that receives different ki
 The outcome of a contended `atomic_exchange` and of any `atomic_compare_exchange`, contended or not, is set-valued
 on the GPU (it may fail spuriously, section 6; KM-09). The float rules of section 4 apply. The domain is:
 
-1. `+`, `-`, `*` and unary `-` on `u32` and `i32` give a result that fits the type (KM-10).
+1. `+`, `-`, `*` and unary `-` on `u32` and `i32` give a result that fits the type (KM-10). The methods `wrapping_add`,
+   `wrapping_sub`, `wrapping_mul` and `wrapping_neg` have no such condition: their result is inside the domain for
+   every input.
 2. Divisors are not zero, and `i32::MIN / -1` and `i32::MIN % -1` do not occur (KM-01 to KM-03).
 3. Shift amounts are below 32 (KM-04). Bits shifted out by an in-range amount, such as `1u32 << 31`, are lost on
    both targets and are inside the domain.
@@ -212,9 +215,14 @@ documented limitations (D39); GUST does not try to match them.
 
 What users should do: keep run-time operands inside the domain by construction, or guard them in the kernel (test a
 divisor before dividing, clamp before casting). A literal zero divisor is rejected at the Rust boundary with a
-diagnostic; a run-time zero is not. There are no explicit `wrapping_*` operations in the dialect; they may become a
-language feature of their own, not a way to close this gap. Do not rely on the twin to detect overflow on the GPU
-path: the GPU wraps silently whatever the twin does.
+diagnostic; a run-time zero is not. Where wrapping is what the program means (hashes, random number generators,
+counters), write `a.wrapping_add(b)`, `a.wrapping_sub(b)`, `a.wrapping_mul(b)` or `a.wrapping_neg()` on `u32` and
+`i32`, as in Rust (slice m7.w). The lowering emits the plain Slang operator, which wraps modulo 2^32 (WGSL section
+6.2.3; `wrapping_neg` is `0 - a`), and the twin calls Rust's own method, so the result is the same on the GPU, on the
+twin and in plain Rust, with checks on and with checks off. There is no `wrapping_div` or `wrapping_rem`: a zero
+divisor, or `MIN / -1`, has no wrapped result (GUST-E0325 names the accepted methods). The plain operators keep their
+meaning, so an overflow that is a mistake still wraps silently on the GPU and panics in a checked twin. Do not rely on
+the twin to detect overflow on the GPU path: the GPU wraps silently whatever the twin does.
 
 **Limitation: arithmetic inside `gust` follows `gust`'s own overflow mode.** Rust fixes overflow behaviour when a
 crate is compiled. An integer operation that the shadow body writes is compiled in the crate that defines the kernel
@@ -226,6 +234,13 @@ function or type provided by the library, as opposed to the kernel's own `+`) is
 `atomic_add`. It never panics on overflow, not even in a checked twin, unlike the kernel's own `+`: it wraps modulo
 2^32 in every build, exactly as the GPU does (the other atomic functions cannot overflow). So the case does not arise
 for atomics. This is documented, not fixed (D39).
+
+**Limitation (until slice m6.z2): an unannotated `let` with an integer-literal initializer is `int` in Slang.** The
+lowering emits it as Slang `var`, which is `int`, while rustc types the local from its later uses. `let mut d = 7;
+d /= y` with `y: u32` divides signed, so for `y >= 2^31` Rust gives 0 and the GPU `0xFFFFFFF9` (measured, m6.dv
+review). Signed comparisons, `>>` and casts of such a local are inferred, not measured. Write a suffix (`7u32`) or an
+annotation (`let d: u32 = 7`). Slice m6.z2 makes the lowering infer the type from its uses or refuse the `let` (a
+diagnostic asking for a suffix or an annotation); this entry is removed or rewritten when it lands.
 
 **Limitation: vector operations follow two overflow modes.** The integer vector operations of `gust::math` (the
 lane-wise arithmetic operators and `dot` on `u32` and `i32` lanes) are `#[inline]` functions in `gust`, so each crate
@@ -390,9 +405,12 @@ lanes), so this device shows no difference in either; another device or driver m
 **Limitation (D39): constant `Mat2::IDENTITY` and `Mat3::IDENTITY` on the SPIR-V pipeline.** On slangc 2026.20 a
 kernel that multiplies by a compile-time constant `float2x2` or `float3x3` (what `Mat2::IDENTITY` and
 `Mat3::IDENTITY` lower to) emits SPIR-V that crashes the process (segmentation fault, exit 139 in a probe harness
-on the RTX 5090) when wgpu ingests it through naga's SPIR-V front end. The same source is correct as WGSL, correct
+on the RTX 5090) when its SPIR-V is handed to wgpu (the faulting layer is not isolated: the probe notes say naga's
+module creation passed and `create_compute_pipeline` crashed). The same source is correct as WGSL, correct
 through SPIR-V passthrough, correct with a runtime `float3x3`, and correct for a constant `float4x4`. The executed
-route of `gust-wgpu` is WGSL, which is why the `vectors` test uses the constants. The exported SPIR-V of that module
+route of `gust-wgpu` is WGSL, which is why the `vectors` test uses the constants. No M6 GPU case executes SPIR-V (the
+Spirv tier is `spirv-val` of the exported modules), so the matrix and uniform layout decorations of the SPIR-V have
+never been executed. The exported SPIR-V of that module
 is valid (`spirv-val`, vulkan1.2, checked by hand for the six kernels of `vectors`) but must not be dispatched through
 the SPIR-V ingestion path. This is a difference of toolchain behavior, documented and not chased.
 
@@ -518,7 +536,7 @@ difference, and the proven label needs the two targets to agree.
 | KM-07 | NaN and infinity through arithmetic and comparison | IEEE 754: NaN propagates, `NaN != NaN` is true, ordered comparisons with NaN are false, `1.0 / 0.0` is `+inf`. | Unspecified (an operation that would produce NaN or infinity may give an indeterminate value; comparisons with NaN are not guaranteed to be unordered). Observed: NaN and infinity propagate and compare as in IEEE for every case except `NaN != NaN`, which is false. The sign and payload of a NaN are not preserved either: the GPU produced `0x7fffffff` in every case, Rust produces `0x7fc00000` or `0xffc00000`. Division by a divisor above 2^126 is also outside WGSL's division accuracy range: `3.0e38 / 3.0e38` gave 0 on the GPU, Rust gives 1. | unspecified, measured |
 | KM-08 | Denormal (subnormal) `f32` operands and results | Kept: `1.0e-40 * 1.0` is `1.0e-40`, `1.0e-40 == 0.0` is false. | Unspecified (flushing to zero is allowed). Observed: operands and results flushed to zero (`1.0e-40 * 1.0`, `+ 0.0`, `* 2.0`, `/ 2.0` and `4.0e-38 / 4.0` give 0), and `1.0e-40 == 0.0` is true. | unspecified, measured |
 | KM-09 | Contended `atomic_exchange` and `atomic_compare_exchange` (257 invocations, one cell), and the uncontended `atomic_compare_exchange` (one invocation) | Sequential, ascending invocation id: the exchange ends at 256; the compare-exchange from 999 to `id + 1` ends at 1. | Set-valued: the exchange ends at some id in 0 to 256, the compare-exchange at some value in 1 to 257, or at 999 (unchanged) because the weak compare-exchange may fail spuriously (WGSL section 17.8.5); the test accepts all of that set. The uncontended case (one invocation, `compare-exchange(cell, 999, id + 1)`) is set-valued too: the cell ends at 1 or stays 999 (WGSL section 17.8.5, D47), and the Rust and twin columns end at 1. Observed over 32 dispatches per run, three runs: 1 to 10 distinct final values per run, and, in the contended cases, never the sequential result (the exchange ended between 1 and 251, the compare-exchange between 7 and 137). The uncontended case ended at 1, the sequential result, in every dispatch, in both overflow modes. | spec-allowed (the set), measured |
-| KM-10 | Overflow of `+`, `-`, `*` and unary `-` on `u32` and `i32` | Checks on: panics ("attempt to add with overflow" and so on). Checks off: wraps modulo 2^32. | Wraps modulo 2^32 (WGSL section 6.2.3): `u32::MAX + 1 == 0`, `i32::MAX + 1 == i32::MIN`, `0u32 - 1 == u32::MAX`, `-i32::MIN == i32::MIN`. | spec-allowed, measured |
+| KM-10 | Overflow of the plain operators `+`, `-`, `*` and unary `-` on `u32` and `i32`. The methods `wrapping_add`, `wrapping_sub`, `wrapping_mul` and `wrapping_neg` are the way to ask for the wrapped result (slice m7.w): they are `DOMAIN` controls in the ledger test, not part of this row | Checks on: panics ("attempt to add with overflow" and so on). Checks off: wraps modulo 2^32. The `wrapping_*` methods wrap in every profile. | Wraps modulo 2^32 (WGSL section 6.2.3): `u32::MAX + 1 == 0`, `i32::MAX + 1 == i32::MIN`, `0u32 - 1 == u32::MAX`, `-i32::MIN == i32::MIN`. The `wrapping_*` methods lower to the same plain operators (`wrapping_neg` is `0 - a`) and give these values. | spec-allowed, measured |
 | KM-11 | Out-of-bounds index equal to the buffer length | Panics "index out of bounds" in every profile. | Unspecified (a dynamic error, WGSL section 6.5.7). Observed with index 4: a load from a 4-element buffer returned 0, and a store into a 4-element buffer was dropped (the buffer was unchanged); the store is measured alone, with a longer `source` so that the kernel's own load is in bounds, and the twin's store row panics at the store because its load is in bounds. | unspecified, measured |
 
 Reading the table: the Rust column and every GPU value that the specification fixes (labelled spec-allowed) are
@@ -562,6 +580,13 @@ adapter in section 1.
   compare-exchange, and signed `atomic_add` and `atomic_exchange`. Not proven: the succeeding compare-exchange (single
   and signed), because a weak compare-exchange may fail spuriously on the GPU (section 6), and the contended
   exchange and compare-exchange, where the targets are allowed to differ (KM-09).
+- **The wrapping methods** (slice m7.w): `wrapping_add`, `wrapping_sub`, `wrapping_mul` and `wrapping_neg` on `u32` and
+  `i32`, asserted equal on the GPU, on the twin, in plain Rust's own `wrapping_*` and against exact `i128` arithmetic
+  reduced modulo 2^32, over every operation on every pair of seven edge values per type, including `u32::MAX`,
+  `i32::MIN`, `i32::MAX`, 0 and -1 (`wrapping_edge_grid`, run at the end of the ledger test in `mismatch.rs`), in
+  both overflow modes through the `DOMAIN` rows of that test; and the helpers `scramble` and `step` of the
+  `numeric` fixture (hash and congruential step, whose products overflow for most elements). Wrapping modulo 2^32 is
+  the WGSL result (section 6.2.3), so the set the specification allows contains the pinned value.
 - **Exact example kernels** (m3.c to m3.e2), each asserted equal on the GPU, on the twin and against a host reference:
   `vector-add` `add` on inputs whose sums are exact in `f32` (`twin_matches_reference_and_gpu`, counts 4, 65 and
   200); `atomic-counter` `increment`, a contended `atomic_add` of 1 whose sum does not depend on the order

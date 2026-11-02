@@ -3076,8 +3076,8 @@ fn mismatch_golden() {
         translate_every_kernel(include_str!("../../../../tests/fixtures/mismatch.rs")).unwrap();
     assert_eq!(
         source.matches("// ==== kernel ").count(),
-        13,
-        "the mismatch fixture declares 13 kernels"
+        15,
+        "the mismatch fixture declares 15 kernels"
     );
     assert_golden(
         &source,
@@ -4952,4 +4952,149 @@ fn the_products_golden_holds_one_negation_per_row_of_the_table() {
             .unwrap_or_else(|| panic!("-{}: no `{call}` after byte {after}", row.operand));
         after += at + call.len();
     }
+}
+
+#[test]
+fn wrapping_methods_lower_to_the_plain_operators_even_in_a_matrix_module() {
+    // The macro sees no types, so `wrapping_neg` is `0 - a` (WGSL has no negation of a `u32`; slangc types the literal
+    // as the operand's own type). A plain `*` in the same module goes through the overloads, the wrapping form never.
+    let source = translate(&matrix_module(
+        "",
+        "let a = i.wrapping_mul(7u32); let b = i.wrapping_add(a).wrapping_sub(1u32); let c = a.wrapping_neg(); \
+         let d = a * b; out[i] = 1.0;",
+    ))
+    .unwrap();
+    for expected in [
+        "var a = (i * uint(7));",
+        "var b = ((i + a) - uint(1));",
+        "var c = (0 - a);",
+        "var d = __gust_mul(a, b);",
+    ] {
+        assert!(source.contains(expected), "missing `{expected}`:\n{source}");
+    }
+    // Without a matrix in the module, the same methods give the same text.
+    let source = translate(&vector_module(
+        "",
+        "let a = i.wrapping_mul(7u32); let c = a.wrapping_neg().wrapping_add(2u32); out[i] = 1.0;",
+    ))
+    .unwrap();
+    for expected in ["var a = (i * uint(7));", "var c = ((0 - a) + uint(2));"] {
+        assert!(source.contains(expected), "missing `{expected}`:\n{source}");
+    }
+    assert!(!source.contains("__gust_"), "{source}");
+}
+
+#[test]
+fn wrapping_methods_are_checked_by_name_and_argument_count() {
+    for body in [
+        "let y = x.wrapping_add(1u32);",
+        "let y = x.wrapping_sub(out[0u32]);",
+        "let y = x.wrapping_mul(x).wrapping_mul(3u32);",
+        "let y = x.wrapping_neg();",
+        "let y = 5u32.wrapping_neg().wrapping_add(x);",
+    ] {
+        translate(&kernel_with_body(body)).unwrap_or_else(|error| panic!("{body}: {error}"));
+    }
+    // A wrong argument count is E0304, like the vector and matrix methods.
+    for body in [
+        "let y = x.wrapping_add();",
+        "let y = x.wrapping_add(1u32, 2u32);",
+        "let y = x.wrapping_neg(1u32);",
+        "let y = x.wrapping_mul();",
+    ] {
+        assert_rejected(&kernel_with_body(body), Code::BuiltinArguments);
+    }
+    assert_rejected(
+        &kernel_with_body("let y = x.wrapping_add::<u32>(1u32);"),
+        Code::BuiltinTypeArguments,
+    );
+    // Division has no wrapped result for a zero divisor, so neither method exists; nor does anything else with
+    // arguments. With no arguments the old code stays.
+    for body in [
+        "let y = x.wrapping_div(1u32);",
+        "let y = x.wrapping_rem(1u32);",
+        "let y = x.pow(2u32);",
+        "let y = x.min(3u32);",
+        "let y = x.checked_add(1u32);",
+        "let y = x.saturating_sub(1u32);",
+    ] {
+        assert_rejected(&kernel_with_body(body), Code::MethodNotInDialect);
+    }
+    for body in [
+        "let y = x.abs();",
+        "let y = x.wrapping_abs();",
+        "let y = x.count_ones();",
+    ] {
+        assert_rejected(&kernel_with_body(body), Code::UnsupportedMethod);
+    }
+    // A built-in with arguments is still E0304, not "not in the dialect".
+    assert_rejected(
+        &kernel_with_body("let y = out.len(1u32);"),
+        Code::BuiltinArguments,
+    );
+    assert_rejected(
+        &kernel_with_body("let y = id.global_id(1u32);"),
+        Code::BuiltinArguments,
+    );
+}
+
+#[test]
+fn the_not_in_the_dialect_text_lists_the_accepted_methods() {
+    let error = translate(&kernel_with_body("let y = x.wrapping_div(2u32);")).unwrap_err();
+    let text = error.to_string();
+    assert!(text.contains("[GUST-E0325]"), "{text}");
+    assert!(
+        text.contains("`.wrapping_div(..)` is not in the dialect"),
+        "{text}"
+    );
+    for accepted in [
+        ".global_id()",
+        ".len()",
+        ".is_some()",
+        ".unwrap_or(default)",
+        ".wrapping_add(b)",
+        ".wrapping_sub(b)",
+        ".wrapping_mul(b)",
+        ".wrapping_neg()",
+        ".dot(v)",
+        ".transpose()",
+    ] {
+        assert!(text.contains(accepted), "missing `{accepted}`: {text}");
+    }
+    // The old text said built-ins "do not accept arguments"; that is no longer the message for a non-built-in.
+    assert!(!text.contains("do not accept arguments"), "{text}");
+    // E0305 lists the same methods.
+    let text = translate(&kernel_with_body("let y = x.abs();"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        text.contains("[GUST-E0305]") && text.contains(".wrapping_mul(b)"),
+        "{text}"
+    );
+}
+
+#[test]
+fn star_assign_on_a_place_with_a_wrapping_method_is_not_a_call_in_a_matrix_module() {
+    // `wrapping_*` is arithmetic on its operands, like `+`, so the place is evaluated once either way.
+    let source = translate(&matrix_module(
+        "",
+        "out[i.wrapping_add(1u32)] *= 2.0; out[i.wrapping_neg()] *= 2.0;",
+    ))
+    .unwrap();
+    assert!(
+        source.contains("(out[(i + uint(1))] = __gust_mul(out[(i + uint(1))], 2.0));"),
+        "{source}"
+    );
+    assert!(
+        source.contains("(out[(0 - i)] = __gust_mul(out[(0 - i)], 2.0));"),
+        "{source}"
+    );
+    // A call to a helper in the same place is still E0323.
+    assert_rejected(
+        &matrix_module(
+            "fn pick(k: u32) -> u32 { k }",
+            "out[pick(i).wrapping_add(1u32)] *= 2.0;",
+        ),
+        Code::MulAssignPlace,
+    );
 }

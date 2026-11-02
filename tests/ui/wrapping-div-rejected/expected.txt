@@ -1,0 +1,9 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). A macro error is a `compile_error!` and has no rustc code, so `code: none`
+# requires `"code": null` and at least one `message:`. The macro's own text carries its GUST code
+# (docs/DIAGNOSTICS.md, E0325) and lists the accepted methods; the line is the call.
+code: none
+file: wrapping-div-rejected/src/main.rs
+line: 11
+message: [GUST-E0325] the method `.wrapping_div(..)` is not in the dialect
+message: `.wrapping_add(b)`, `.wrapping_sub(b)`, `.wrapping_mul(b)` and `.wrapping_neg()`

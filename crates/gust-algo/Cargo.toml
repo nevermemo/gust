@@ -1,0 +1,26 @@
+[package]
+name = "gust-algo"
+description = "Device-resident algorithms (reduce) built on GUST kernels and gust-wgpu's GpuVec"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+exclude = ["tests/"]
+
+[features]
+# Compile the kernels at run time through gust-wgpu's `slang-runtime` (the native reflection helper and slangc), the one
+# way v0 gets a pipeline (D44): the crate ships no precompiled artifacts yet, so without the feature a reduction returns
+# the backend's "run-time compile unavailable" error. The tests turn it on through the dev-dependency below.
+slang-runtime = ["gust-wgpu/slang-runtime"]
+
+[dependencies]
+gust.workspace = true
+gust-wgpu.workspace = true
+
+# Cargo unifies a dev-dependency's features into the test builds only, so `cargo test -p gust-algo` compiles the kernels
+# at run time while a dependent crate chooses for itself.
+[dev-dependencies]
+gust-wgpu = { workspace = true, features = ["slang-runtime"] }
+
+[lints]
+workspace = true

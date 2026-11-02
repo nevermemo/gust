@@ -4,6 +4,7 @@ members = [
     "crates/gust-macros",
     "crates/gust-wgpu",
     "crates/cargo-gust",
+    "crates/gust-algo",
     "examples/atomic-counter",
     "examples/component-pool",
     "examples/polynomial",

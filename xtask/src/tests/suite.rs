@@ -12,7 +12,7 @@ use crate::{
 };
 use std::{cell::RefCell, path::Path};
 
-const UNIT: [Step; 18] = [
+const UNIT: [Step; 19] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
@@ -32,6 +32,16 @@ const UNIT: [Step; 18] = [
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "artifact"]),
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "coretests_twin"]),
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "uniforms_twin"]),
+    Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-algo",
+        "--lib",
+        "--",
+        "--skip",
+        "gpu::",
+    ]),
     Step::Cargo(&[
         "clippy",
         "--locked",
@@ -400,6 +410,7 @@ fn the_other_tiers_alias_existing_commands() {
         vec![
             Step::RequireTool("slangc"),
             Step::GpuSuite,
+            Step::CountedCargo(&["test", "--locked", "-p", "gust-algo"]),
             Step::CheckDifftest(&[])
         ]
     );

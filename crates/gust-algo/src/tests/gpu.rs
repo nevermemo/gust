@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice, default_device};
 
 use super::common::{
-    Backend, GPU_C, LENGTHS, assert_f32_sum, empty_cases, float_min_max_cases, float_sum_cases,
-    integer_cases, tie_ladder,
+    Backend, GPU_C, LENGTHS, Shape, assert_f32_sum, empty_cases, f32_input, float_min_max_cases,
+    float_sum_cases, integer_cases, tie_ladder,
 };
 use crate::{
     Error,
@@ -15,9 +15,10 @@ use crate::{
 };
 
 /// One GPU test at a time. Once, in a Gpu-suite run, the blocking readback of a result failed with
-/// `Error::Map("mapping not complete after poll(Wait)")` while other tests read back on the same device. That is
-/// `gust-wgpu` code (its readbacks are not serialised in its own tests either): a finding for that crate, reported
-/// with this slice, and not something to retry around in `gust-algo`. The tests take turns until it is looked at.
+/// `Error::Map("mapping not complete after poll(Wait)")` while other tests read back on the same device. The mechanism
+/// (Opus review, read from wgpu-core): `Device::poll` fires only the callbacks its own `maintain` collected, so a
+/// concurrent poll on another thread can take this thread's map callback, and this thread's single poll then sees the
+/// mapping still pending. It is `gust-wgpu` code, slice m7.rb; this mutex goes when m7.rb lands (NEXT_TASKS).
 fn serial() -> MutexGuard<'static, ()> {
     static LOCK: Mutex<()> = Mutex::new(());
     LOCK.lock().unwrap_or_else(PoisonError::into_inner)
@@ -121,6 +122,10 @@ fn gpu_runs_the_deepest_schedule() {
     values[12_345_678] = 9_000;
     assert_eq!(gpu.min(&values), Some(-7));
     assert_eq!(gpu.max(&values), Some(9_000));
+    // A float sum over four dispatches stays within the bound of the deepest schedule.
+    let floats = f32_input(Shape::Uniform, n, 0xF00D);
+    let check = assert_f32_sum("2^24 + 1 uniform", &floats, gpu.sum(&floats), GPU_C);
+    eprintln!("gpu f32 sum n = {n}: ratio {:.4}", check.ratio());
 }
 
 #[test]
@@ -172,6 +177,16 @@ fn gpu_sum_on_device_keeps_the_result_resident() {
         reduce::sum_on_device(&empty).unwrap().to_vec().unwrap(),
         vec![0]
     );
+}
+
+/// The documented wrap of an integer sum past the domain, pinned on the adapter (the debug twin panics instead, as
+/// every `+` of the dialect does).
+#[test]
+fn gpu_integer_sums_past_the_domain_wrap() {
+    let _serial = serial();
+    let gpu = Gpu(device());
+    assert_eq!(gpu.sum(&[u32::MAX, 1u32]), 0);
+    assert_eq!(gpu.sum(&[i32::MAX, 1i32]), i32::MIN);
 }
 
 #[test]

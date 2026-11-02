@@ -5,14 +5,14 @@ use crate::{
     difftest::{DifftestStep, Mode, Options, batch_args, short_circuit_args, steps},
     process::{TestTotals, sum_test_results},
     verify::{
-        GPU_SUITE_CALL, GPU_SUITE_PIN, RELEASE_SLANG_TESTS, VerifyMode,
-        cargo_calls as mode_cargo_calls, example_run_args,
+        ALGO_GPU_CALL, ALGO_GPU_TESTS, GPU_SUITE_CALL, GPU_SUITE_PIN, RELEASE_SLANG_TESTS,
+        VerifyMode, cargo_calls as mode_cargo_calls, example_run_args, judges_algo_gpu,
     },
     workspace::EXAMPLES,
 };
 use std::{cell::RefCell, path::Path};
 
-const UNIT: [Step; 19] = [
+const UNIT: [Step; 18] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
@@ -32,16 +32,6 @@ const UNIT: [Step; 19] = [
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "artifact"]),
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "coretests_twin"]),
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "uniforms_twin"]),
-    Step::CountedCargo(&[
-        "test",
-        "--locked",
-        "-p",
-        "gust-algo",
-        "--lib",
-        "--",
-        "--skip",
-        "gpu::",
-    ]),
     Step::Cargo(&[
         "clippy",
         "--locked",
@@ -410,7 +400,7 @@ fn the_other_tiers_alias_existing_commands() {
         vec![
             Step::RequireTool("slangc"),
             Step::GpuSuite,
-            Step::CountedCargo(&["test", "--locked", "-p", "gust-algo"]),
+            Step::AlgoGpuSuite,
             Step::CheckDifftest(&[])
         ]
     );
@@ -420,10 +410,32 @@ fn the_other_tiers_alias_existing_commands() {
         cargo_calls(Step::GpuSuite),
         vec![
             mode_cargo_calls(VerifyMode::Gpu)
-                .pop()
-                .expect("the Gpu mode makes one call")
+                .first()
+                .expect("the Gpu mode makes the wgpu call first")
+                .clone()
         ]
     );
+    // The algorithms step is the Gpu mode's second call (m7.r1), judged by name; it is not a Unit step (R4.10).
+    assert_eq!(
+        Step::AlgoGpuSuite.label(),
+        "cargo test --locked -p gust-algo"
+    );
+    assert_eq!(
+        mode_cargo_calls(VerifyMode::Gpu),
+        vec![
+            owned_call(&GPU_SUITE_CALL),
+            cargo_calls(Step::AlgoGpuSuite).remove(0)
+        ]
+    );
+    assert!(!Suite::Unit.steps().contains(&Step::AlgoGpuSuite));
+    assert!(judges_algo_gpu(
+        VerifyMode::Gpu,
+        &owned_call(&ALGO_GPU_CALL)
+    ));
+    assert!(!judges_algo_gpu(
+        VerifyMode::Fast,
+        &owned_call(&ALGO_GPU_CALL)
+    ));
     assert_eq!(
         Suite::Full.steps(),
         vec![Step::Verify(VerifyMode::Full, true)]
@@ -498,6 +510,7 @@ fn cargo_calls(step: Step) -> Vec<Vec<String>> {
     match step {
         Step::Cargo(args) | Step::CountedCargo(args) => vec![owned(args)],
         Step::GpuSuite => vec![owned(&GPU_SUITE_CALL)],
+        Step::AlgoGpuSuite => vec![owned(&ALGO_GPU_CALL)],
         Step::CheckCpu => CPU_TESTS.iter().map(|args| owned(args)).collect(),
         // The calls of `check-cpu-target` are listed by its own data (and pinned by its own tests).
         Step::CheckCpuTarget => all_calls(&Dirs::under("TARGET"))
@@ -825,4 +838,62 @@ fn the_tiers_wire_the_difftest_batch_in() {
         );
     }
     assert!(Suite::Full.covers().contains("check-difftest"));
+}
+
+fn owned_call(args: &[&str]) -> Vec<String> {
+    args.iter().map(|arg| (*arg).to_owned()).collect()
+}
+
+/// Libtest output of the gust-algo call: the twins, then the `gpu::` tests named in `gpu`, each `ok`.
+fn algo_output(gpu: &[&str]) -> String {
+    let mut text = String::from("test tests::twin::twin_empty_inputs ... ok\n");
+    for name in gpu {
+        text.push_str(&format!("test {name} ... ok\n"));
+    }
+    text.push_str("test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.0s\n");
+    text
+}
+
+/// The algorithms step is judged by name (m7.r1, review): a deleted `gpu::` test leaves the twins to satisfy a plain
+/// "a test ran", so the guard names every adapter test and counts them.
+#[test]
+fn the_algo_gpu_step_requires_every_adapter_test_by_name_and_no_other() {
+    let root = Path::new("ROOT");
+    let calls = RefCell::new(Vec::new());
+    let all = algo_output(&ALGO_GPU_TESTS);
+    assert_eq!(
+        Step::AlgoGpuSuite.run_in(root, &recording_runner(&calls, all)),
+        Ok(())
+    );
+    assert_eq!(*calls.borrow(), vec![owned_call(&ALGO_GPU_CALL)]);
+    // One adapter test deleted: the twins alone would pass a plain count.
+    let error = Step::AlgoGpuSuite
+        .run_in(
+            root,
+            &recording_runner(&calls, algo_output(&ALGO_GPU_TESTS[1..])),
+        )
+        .unwrap_err();
+    assert!(
+        error.contains(ALGO_GPU_TESTS[0]) && error.contains("ALGO_GPU_TESTS"),
+        "{error}"
+    );
+    // No adapter test at all.
+    assert!(
+        Step::AlgoGpuSuite
+            .run_in(root, &recording_runner(&calls, algo_output(&[])))
+            .is_err()
+    );
+    // One more than pinned: the list must change in the same commit.
+    let mut more = ALGO_GPU_TESTS.to_vec();
+    more.push("tests::gpu::gpu_a_new_test");
+    let error = Step::AlgoGpuSuite
+        .run_in(root, &recording_runner(&calls, algo_output(&more)))
+        .unwrap_err();
+    assert!(error.contains("the pinned number"), "{error}");
+    // Nothing ran at all.
+    assert!(
+        Step::AlgoGpuSuite
+            .run_in(root, &recording_runner(&calls, String::new()))
+            .is_err()
+    );
 }

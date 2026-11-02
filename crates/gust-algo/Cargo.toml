@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 exclude = ["tests/"]
+# `kernels.rs` includes `tests/fixtures/reduce.rs`, outside this package: it cannot be packaged until M10 moves the
+# kernels in or ships precompiled artifacts.
+publish = false
 
 [features]
 # Compile the kernels at run time through gust-wgpu's `slang-runtime` (the native reflection helper and slangc), the one

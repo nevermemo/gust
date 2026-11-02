@@ -244,7 +244,12 @@ fn only_the_gpu_mode_makes_the_pinned_call() {
             .collect::<Vec<_>>();
         if mode == VerifyMode::Gpu {
             assert_eq!(pinned, vec![call()], "{mode:?}");
-            assert_eq!(cargo_calls(mode), vec![call()], "{mode:?}");
+            // The algorithms call follows (m7.r1); it is judged by name, not by the wgpu pin.
+            assert_eq!(
+                cargo_calls(mode),
+                vec![call(), owned(&["test", "--locked", "-p", "gust-algo"])],
+                "{mode:?}"
+            );
         } else {
             assert!(pinned.is_empty(), "{mode:?}");
         }

@@ -2,6 +2,7 @@ use std::fmt;
 
 /// Why a `gust-algo` call failed.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// `min` or `max` of an empty input: there is no value to return. (`sum` of an empty input is the identity.)
     Empty,

@@ -1,3 +1,4 @@
+#![forbid(unsafe_code)]
 //! Device-resident algorithms on GUST kernels (roadmap M7, slice m7.r1: `reduce`).
 //!
 //! The functions take a [`GpuVec`](gust_wgpu::GpuVec) and run on the device that holds it: no host round trip except

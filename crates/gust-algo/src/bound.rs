@@ -3,12 +3,13 @@
 //!
 //! Model. Every addition the kernels evaluate rounds with a relative error of at most `c`: `c = 2^-24` for Rust's
 //! round-to-nearest (the CPU twin), `c = 2^-23` for the GPU, which `docs/SEMANTICS.md` section 4 allows to round to
-//! either neighbour ("correctly rounded", within 1 ULP). The kernels never add more than
-//! [`CHAIN`](crate::schedule::CHAIN) terms in one statement sequence, and WGSL reassociates only inside one
-//! expression, never across a store, an invocation or a pass, so the longest chain any permitted grouping can form is
-//! the lane's own sequence. Each value
-//! passes through at most `K = sum over the levels of (longest chain - 1)` additions (a lane starts from `0.0`, whose
-//! first addition is exact). The classical bound for such a depth is `|computed - exact| <= gamma_K * S` with
+//! either neighbour ("correctly rounded", within 1 ULP). A lane adds at most
+//! [`CHAIN`](crate::schedule::CHAIN) terms. The spec lets an implementation regroup a sum freely (`docs/SEMANTICS.md`
+//! section 4), but any regrouping of the `m` terms of one lane is a tree of depth at most `m - 1`, so it costs a term
+//! no more roundings than the lane's own left-to-right chain; the levels are separate dispatches, so no grouping spans
+//! two of them; and the fixture has no product, so no fused multiply-add can form. Each value passes through at
+//! most `K = sum over the levels of (longest chain - 1)` additions (a lane starts from `0.0`, whose first addition is
+//! exact). The classical bound for such a depth is `|computed - exact| <= gamma_K * S` with
 //! `gamma_K = K * c / (1 - K * c)` and `S` the sum of the absolute values of the inputs (Higham, "Accuracy and
 //! Stability of Numerical Algorithms", section 4.2, applied to the tree of chains). For the four-level schedule of an
 //! input up to 2^29 elements `K <= 1 020` (the plan's ceiling; the real value is 796 at 2^29, see

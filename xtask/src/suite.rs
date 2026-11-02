@@ -7,7 +7,10 @@ use crate::{
     lint::lint,
     process::{TestTotals, require_command, run_cargo_test_captured, run_counted, run_direct},
     ui::check_ui,
-    verify::{GPU_SUITE_CALL, GPU_SUITE_PIN, VerifyMode, check_gpu_suite_counts, verify},
+    verify::{
+        ALGO_GPU_CALL, GPU_SUITE_CALL, GPU_SUITE_PIN, VerifyMode, check_algo_gpu_counts,
+        check_gpu_suite_counts, verify,
+    },
     workspace::workspace_root,
 };
 use std::path::Path;
@@ -39,6 +42,9 @@ pub(crate) enum Step {
     /// [`GPU_SUITE_CALL`] with the `test result:` lines checked against [`GPU_SUITE_PIN`], as `verify --mode gpu`
     /// does (m5.f1): the same guard, so `test --suite Gpu` cannot pass with a dropped Gpu test file.
     GpuSuite,
+    /// [`ALGO_GPU_CALL`], every test of `gust-algo`, with its `gpu::` tests required by name (`ALGO_GPU_TESTS` in
+    /// verify.rs), as `verify --mode gpu` does (m7.r1). Not a Unit step: the `unit` CI job stays free of wgpu (R4.10).
+    AlgoGpuSuite,
     /// A tool on `PATH`; a missing tool fails the suite by name.
     RequireTool(&'static str),
     Lint,
@@ -80,21 +86,6 @@ const CORE_CORETESTS_TWIN: Step =
 /// `Std140V1` size and offsets of its structs. Pure: no slangc, no process, no GPU.
 const CORE_UNIFORMS_TWIN: Step =
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "uniforms_twin"]);
-/// The gust-algo library tests (m7.r1): the schedule and bound arithmetic, the reduce golden and the CPU twins against
-/// independent references. The `gpu::` tests need an adapter, so they are carved out by name here and run in the
-/// Gpu suite.
-const ALGO_UNIT_TESTS: Step = Step::CountedCargo(&[
-    "test",
-    "--locked",
-    "-p",
-    "gust-algo",
-    "--lib",
-    "--",
-    "--skip",
-    "gpu::",
-]);
-/// Every gust-algo test, the `gpu::` ones included, on the first Vulkan adapter wgpu finds.
-const ALGO_GPU_TESTS: Step = Step::CountedCargo(&["test", "--locked", "-p", "gust-algo"]);
 /// The off state of the `slang-runtime` feature (D44). The workspace build unifies the feature on (the examples and the
 /// self dev-dependencies ask for it), so these two calls, which build `gust` and `gust-wgpu` alone and without default
 /// features, are the only observers of the bridge's cfg attributes: they fail when something the precompiled path needs
@@ -219,7 +210,7 @@ impl Suite {
     pub(crate) fn covers(self) -> &'static str {
         match self {
             Self::Unit => {
-                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), the uniforms_twin test (the uniforms fixture on the CPU twin against a hand reference), the gust-algo library tests without the adapter ones (schedule, bound, golden and the reduce CPU twins), clippy and check of gust and gust-wgpu without default features (the slang-runtime off state), the format check, clippy and tests of the harness crate tests/difftest (a workspace of its own; CI runs them in the job `difftest`, and `--skip-difftest` leaves them out of the `unit` and `slang` jobs), and the differential batch of seeds 1 to 4 in its CPU-only mode (64 generated kernels: an independent interpreter against the CPU twin, report.json judged by cargo xtask check-difftest); no external tools"
+                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), the uniforms_twin test (the uniforms fixture on the CPU twin against a hand reference), clippy and check of gust and gust-wgpu without default features (the slang-runtime off state), the format check, clippy and tests of the harness crate tests/difftest (a workspace of its own; CI runs them in the job `difftest`, and `--skip-difftest` leaves them out of the `unit` and `slang` jobs), and the differential batch of seeds 1 to 4 in its CPU-only mode (64 generated kernels: an independent interpreter against the CPU twin, report.json judged by cargo xtask check-difftest); no external tools"
             }
             Self::Cpu => {
                 "the production CPU target (GUST_PROFILE=cpu) on the fixture tests/cpu-target: the kernels build in release, run on gust::cpu::CpuDevice and equal independent host references; the binary holds no compiler, helper or GPU runtime; gust-wgpu refuses the profile; the cfg(test) and --cfg gust_dual builds keep one impl; the profile flips rebuild correctly; cargo only"
@@ -234,7 +225,7 @@ impl Suite {
                 "the D17 layout gate: native reflection helper, core and wgpu reflection tests"
             }
             Self::Gpu => {
-                "all gust-wgpu tests on the first Vulkan adapter wgpu finds (their `test result:` lines checked against GPU_SUITE_PIN, as in verify --mode gpu), then all gust-algo tests (the reduce calls and their bound on the adapter), then the differential batch of all 8 seeds (128 generated kernels: interpreter, CPU twin and GPU compared; report.json judged by cargo xtask check-difftest) and the short_circuit GPU test of tests/difftest"
+                "all gust-wgpu tests on the first Vulkan adapter wgpu finds (their `test result:` lines checked against GPU_SUITE_PIN, as in verify --mode gpu), then all gust-algo tests (the reduce calls and their bound on the adapter; its `gpu::` tests are pinned by name), then the differential batch of all 8 seeds (128 generated kernels: interpreter, CPU twin and GPU compared; report.json judged by cargo xtask check-difftest) and the short_circuit GPU test of tests/difftest"
             }
             Self::Full => {
                 "the release gate: lint, fmt, clippy, workspace tests, the fmt, clippy and tests of the harness crate tests/difftest, the release-profile Slang tests of the gust library and the release-profile known-mismatch ledger, examples, artifacts and SPIR-V validation, check-dual in full mode, then the whole check-precompiled, the whole check-web (Chrome with a WebGPU adapter; a missing one fails the suite, only `cargo xtask check-full --skip-web` goes without, and records that) and, last, check-difftest (all 8 seeds on the adapter and the short_circuit GPU test); writes .ai/VALIDATION.json"
@@ -279,7 +270,6 @@ impl Suite {
             CORE_ARTIFACT_TESTS,
             CORE_CORETESTS_TWIN,
             CORE_UNIFORMS_TWIN,
-            ALGO_UNIT_TESTS,
             OFF_STATE_CLIPPY,
             OFF_STATE_CHECK,
             DIFFTEST_FMT,
@@ -302,7 +292,7 @@ impl Suite {
             Self::Gpu => vec![
                 Step::RequireTool("slangc"),
                 Step::GpuSuite,
-                ALGO_GPU_TESTS,
+                Step::AlgoGpuSuite,
                 DIFFTEST_GPU,
             ],
             Self::Full => vec![Step::Verify(VerifyMode::Full, true)],
@@ -315,6 +305,7 @@ impl Step {
         match self {
             Self::Cargo(args) | Self::CountedCargo(args) => format!("cargo {}", args.join(" ")),
             Self::GpuSuite => format!("cargo {}", GPU_SUITE_CALL.join(" ")),
+            Self::AlgoGpuSuite => format!("cargo {}", ALGO_GPU_CALL.join(" ")),
             Self::RequireTool(tool) => format!("require {tool} on PATH"),
             Self::Lint => "cargo xtask lint".to_owned(),
             Self::DocsCheck => "cargo xtask docs-check".to_owned(),
@@ -345,6 +336,11 @@ impl Step {
                 let call = GPU_SUITE_CALL.map(str::to_owned);
                 let (_, stdout) = test_runner(&root, &call)?;
                 check_gpu_suite_counts(&call, &stdout, GPU_SUITE_PIN)
+            }
+            Self::AlgoGpuSuite => {
+                let call = ALGO_GPU_CALL.map(str::to_owned);
+                let (_, stdout) = test_runner(&root, &call)?;
+                check_algo_gpu_counts(&call, &stdout)
             }
             Self::RequireTool(tool) => require_command(tool),
             Self::Lint => lint(&root, &mut Vec::new()),

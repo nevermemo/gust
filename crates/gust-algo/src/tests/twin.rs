@@ -107,6 +107,15 @@ fn twin_runs_the_deepest_schedule() {
     values[12_345_678] = 9_000;
     assert_eq!(cpu::min(&values).unwrap(), Some(7));
     assert_eq!(cpu::max(&values).unwrap(), Some(9_000));
+    // A float sum over four dispatches stays within the bound of the deepest schedule.
+    let floats = f32_input(Shape::Uniform, n, 0xF00D);
+    let check = assert_f32_sum(
+        "2^24 + 1 uniform",
+        &floats,
+        cpu::sum(&floats).unwrap(),
+        CPU_C,
+    );
+    eprintln!("twin f32 sum n = {n}: ratio {:.4}", check.ratio());
 }
 
 /// Mutation (a) of the slice, as a test: a pass whose last partial is dropped, or a batch whose passes run out of

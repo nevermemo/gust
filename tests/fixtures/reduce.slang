@@ -535,7 +535,7 @@ void gpu_reduce_min_f32_pass(uint3 id : SV_DispatchThreadID)
     {
         var n = __gpu_len_input;
         var first = ((((i / uint(256))) * uint(65536)) + (i % uint(256)));
-        var acc = float(3.4028235e38);
+        var acc = input[uint(0)];
         var __gust_end_3 = uint(256);
         for (var k = uint(0); k < __gust_end_3; k++)
         {
@@ -573,7 +573,7 @@ void gpu_reduce_min_f32_final(uint3 id : SV_DispatchThreadID)
     if ((id.x == uint(0)))
     {
         var n = __gpu_len_input;
-        var acc = float(3.4028235e38);
+        var acc = input[uint(0)];
         var __gust_end_2 = uint(256);
         for (var index = uint(0); index < __gust_end_2; index++)
         {
@@ -612,7 +612,7 @@ void gpu_reduce_max_f32_pass(uint3 id : SV_DispatchThreadID)
     {
         var n = __gpu_len_input;
         var first = ((((i / uint(256))) * uint(65536)) + (i % uint(256)));
-        var acc = (-float(3.4028235e38));
+        var acc = input[uint(0)];
         var __gust_end_3 = uint(256);
         for (var k = uint(0); k < __gust_end_3; k++)
         {
@@ -650,7 +650,7 @@ void gpu_reduce_max_f32_final(uint3 id : SV_DispatchThreadID)
     if ((id.x == uint(0)))
     {
         var n = __gpu_len_input;
-        var acc = (-float(3.4028235e38));
+        var acc = input[uint(0)];
         var __gust_end_2 = uint(256);
         for (var index = uint(0); index < __gust_end_2; index++)
         {

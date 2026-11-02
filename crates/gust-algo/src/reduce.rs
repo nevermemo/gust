@@ -226,6 +226,8 @@ fn reduce_on_device<T: Element>(op: Op, input: &GpuVec<T>) -> Result<GpuVec<T>, 
     let schedule = Schedule::new(input.len()).expect("the input is not empty");
     let device = input.device();
     check_limits(device, &schedule, input.len(), size_of::<T>())?;
+    // Every lane writes its slot, so the zero fill is not needed for correctness; `GpuVec` has no public constructor
+    // without it (a recycled buffer costs one clearing submission), and `gust-wgpu` is not this slice's to change.
     let partials = schedule
         .passes()
         .iter()

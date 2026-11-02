@@ -276,6 +276,33 @@ pub(super) fn float_min_max_cases<B: Backend>(backend: &B, lengths: &[usize]) {
             Some(f32::MIN),
             "f32 max of all MIN, n = {n}"
         );
+        // Infinities are inside the domain: a lane without an element starts from `input[0]`, not from `f32::MAX`.
+        assert_eq!(
+            backend.min(&vec![f32::INFINITY; n]),
+            Some(f32::INFINITY),
+            "f32 min of all +inf, n = {n}"
+        );
+        assert_eq!(
+            backend.max(&vec![f32::NEG_INFINITY; n]),
+            Some(f32::NEG_INFINITY),
+            "f32 max of all -inf, n = {n}"
+        );
+        if n == 1 {
+            continue;
+        }
+        let mut with_infinities = positive.clone();
+        with_infinities[n - 1] = f32::NEG_INFINITY;
+        with_infinities[0] = f32::INFINITY;
+        assert_eq!(
+            backend.min(&with_infinities),
+            Some(f32::NEG_INFINITY),
+            "f32 min with -inf last, n = {n}"
+        );
+        assert_eq!(
+            backend.max(&with_infinities),
+            Some(f32::INFINITY),
+            "f32 max with +inf first, n = {n}"
+        );
     }
 }
 

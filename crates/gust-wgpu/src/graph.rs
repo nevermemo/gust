@@ -9,7 +9,8 @@
 //! actually create, and runs nodes in insertion order.
 //! Uploads are encoded as buffer copies so they stay ordered relative to the
 //! dispatches around them; `Queue::write_buffer` would run before the whole
-//! submission.
+//! submission. A uniform is updated the same way ([`StagedGraph::write_uniform`]): the copy node is a write of the
+//! uniform, so a dispatch that reads it, and a later update of it, are ordered around it.
 
 use std::{
     sync::mpsc,
@@ -20,7 +21,7 @@ use gust::{Access, Call, GpuPod, Kernel, TypeLayout, pod_slice_as_bytes};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::{
-    BufferBinding, BufferDispatch, Error, GpuBuffer, GpuBufferAccess, HeadlessDevice,
+    BufferBinding, BufferDispatch, Error, GpuBuffer, GpuBufferAccess, GpuUniform, HeadlessDevice,
     error::INDIRECT_ARGUMENTS, pod_vec_from_bytes, same_buffer,
 };
 
@@ -100,6 +101,14 @@ fn upload_kind<'a, T: GpuPod>(buffer: &'a GpuBuffer<T>, values: &'a [T]) -> Node
         target: BufferBinding::new(buffer, Access::ReadWrite),
         bytes: pod_slice_as_bytes(values),
         element_count: values.len(),
+    }
+}
+
+fn uniform_upload_kind<'a, T: GpuPod>(uniform: &'a GpuUniform<T>, value: &'a T) -> NodeKind<'a> {
+    NodeKind::Upload {
+        target: BufferBinding::new_uniform(uniform, Access::ReadWrite),
+        bytes: pod_slice_as_bytes(std::slice::from_ref(value)),
+        element_count: 1,
     }
 }
 
@@ -185,6 +194,17 @@ impl<'a> StagedGraph<'a> {
     /// Typed twin of [`upload`](Self::upload): the edges are derived, not declared.
     pub fn write<T: GpuPod>(&mut self, buffer: &'a GpuBuffer<T>, values: &'a [T]) -> NodeId {
         self.push_derived(upload_kind(buffer, values))
+    }
+
+    /// Replace the value of a uniform, ordered with the dispatches around it, with derived edges.
+    ///
+    /// The value is copied from a staging buffer by a command in the graph's one command buffer, so a dispatch
+    /// added before this node reads the old value and one added after it reads the new one. `Queue::write_buffer`
+    /// would run before the whole submission and make every dispatch see the last value. The node counts as a write
+    /// of the uniform for the edges: it waits for the earlier dispatches that read it and the later ones wait for it.
+    /// `value` must outlive the graph, which records its bytes.
+    pub fn write_uniform<T: GpuPod>(&mut self, uniform: &'a GpuUniform<T>, value: &'a T) -> NodeId {
+        self.push_derived(uniform_upload_kind(uniform, value))
     }
 
     /// Typed twin of [`dispatch`](Self::dispatch): run a typed [`Call`], with derived edges. The call
@@ -376,7 +396,7 @@ impl<'a> StagedGraph<'a> {
                         dispatch.kernel,
                         dispatch.element_count,
                         &resources,
-                        dispatch.bindings.iter().map(|binding| binding.raw.size()),
+                        dispatch.bindings.iter().map(BufferBinding::limit_bytes),
                     )?;
                 }
                 NodeKind::DispatchIndirect { dispatch, args } => {
@@ -421,7 +441,7 @@ impl<'a> StagedGraph<'a> {
                     device.check_indirect_launch(
                         dispatch.kernel,
                         &resources,
-                        dispatch.bindings.iter().map(|binding| binding.raw.size()),
+                        dispatch.bindings.iter().map(BufferBinding::limit_bytes),
                     )?;
                 }
                 NodeKind::Readback { source, .. } => {

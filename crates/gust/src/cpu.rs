@@ -42,8 +42,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::{
-    Access, Call, Device, GpuPod, Invocation, Job, JobStatus, Kernel, KernelDescriptor, LengthRule,
-    ParameterKind, Resource, TypeLayout, TypedDevice, UVec3,
+    Access, BindingKind, Call, Device, GpuPod, Invocation, Job, JobStatus, Kernel,
+    KernelDescriptor, LengthRule, ParameterKind, Resource, ResourceLayout, TypeLayout,
+    TypeLayoutKind, TypedDevice, UVec3, kind,
 };
 
 static NEXT_DEVICE: AtomicU32 = AtomicU32::new(1);
@@ -72,6 +73,83 @@ impl CpuDevice {
             cells: RefCell::new(values.to_vec()),
         }
     }
+
+    /// A uniform of this device holding `value`.
+    ///
+    /// `T` follows the rule of `gust_wgpu::HeadlessDevice::create_uniform`: a padding-free `Std140V1` type with
+    /// Rust's size and alignment. Anything else is [`Error::InvalidUniformType`] with the same wording, so a program
+    /// that the GPU refuses is refused here too. The descriptor's `Std140V1` layout of the parameter is compared
+    /// with `T::LAYOUT` at submit, as for a buffer.
+    pub fn uniform<T: GpuPod>(&self, value: T) -> Result<CpuUniform<T>, Error> {
+        if let Some(reason) = uniform_type_refusal(T::LAYOUT, size_of::<T>(), align_of::<T>()) {
+            return Err(Error::InvalidUniformType {
+                type_name: T::LAYOUT.name,
+                reason,
+            });
+        }
+        Ok(CpuUniform {
+            owner: self.id,
+            cell: UniformCell(RefCell::new(value)),
+        })
+    }
+}
+
+/// Whether `layout` has no padding byte anywhere (the rule of `gust_wgpu`'s `padding_free`).
+const fn padding_free(layout: TypeLayout) -> bool {
+    match layout.kind {
+        TypeLayoutKind::Scalar(_) | TypeLayoutKind::Vector { .. } => true,
+        TypeLayoutKind::Matrix {
+            rows,
+            cols,
+            column_stride,
+            ..
+        } => column_stride == rows * 4 && column_stride * cols == layout.size,
+        TypeLayoutKind::Struct(fields) => {
+            let mut sum = 0_u32;
+            let mut index = 0;
+            while index < fields.len() {
+                let field = fields[index].ty;
+                let Some(next) = sum.checked_add(field.size) else {
+                    return false;
+                };
+                if !padding_free(field) {
+                    return false;
+                }
+                sum = next;
+                index += 1;
+            }
+            sum == layout.size
+        }
+    }
+}
+
+/// Why a type of `layout`, `rust_size` and `rust_align` cannot be a uniform, or `None` when it can. The wording is
+/// `gust_wgpu::check_uniform_type`'s, which the GPU backend applies in `create_uniform`.
+fn uniform_type_refusal(
+    layout: TypeLayout,
+    rust_size: usize,
+    rust_align: usize,
+) -> Option<&'static str> {
+    if !layout.is_std140_v1() {
+        return Some(
+            "its layout is not Std140V1 (a constant buffer takes scalars, 2- and 4-wide vectors, 4x4 matrices and \
+             structs of them, each struct rounded up to 16 bytes; 3-wide vectors and 2x2 matrices do not qualify)",
+        );
+    }
+    if layout.size as usize != rust_size || layout.alignment as usize != rust_align {
+        return Some(
+            "its Std140V1 size or alignment differs from the Rust type's; a struct is rounded up to 16 bytes in a \
+             constant buffer, so add explicit padding fields (and `repr(C, align(16))` if needed) until the Rust size \
+             is the Std140V1 size",
+        );
+    }
+    if !padding_free(layout) {
+        return Some(
+            "it has padding bytes, which Rust leaves uninitialised; add explicit padding fields so that the fields \
+             fill the whole struct (a Std140V1 struct is rounded up to 16 bytes)",
+        );
+    }
+    None
 }
 
 impl Default for CpuDevice {
@@ -83,8 +161,21 @@ impl Default for CpuDevice {
 /// What the erased binding points at: the cell, its element type and its current length.
 trait CpuData {
     fn as_any(&self) -> &dyn Any;
-    /// The length right now; `None` while the cell is mutably borrowed outside this call.
+    /// The length right now (a uniform holds one value); `None` while the cell is mutably borrowed outside this call.
     fn current_len(&self) -> Option<usize>;
+}
+
+/// The cell of a [`CpuUniform`]: its own type, so that it cannot be mistaken for the cell of a buffer.
+struct UniformCell<T>(RefCell<T>);
+
+impl<T: GpuPod> CpuData for UniformCell<T> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn current_len(&self) -> Option<usize> {
+        self.0.try_borrow().ok().map(|_| 1)
+    }
 }
 
 impl<T: GpuPod> CpuData for RefCell<Vec<T>> {
@@ -152,7 +243,52 @@ impl<T: GpuPod> CpuBuffer<T> {
     }
 }
 
-/// Erased view of one bound [`CpuBuffer`]. It records no length: the backend measures it at submit.
+/// A typed uniform of one [`CpuDevice`]: one value that a kernel reads by copy.
+///
+/// The counterpart of `gust_wgpu::GpuUniform`: it is a [`Resource`] of kind [`kind::Uniform`], so a call takes it where
+/// a kernel has a `Uniform<T>` parameter and rejects it where the kernel has a buffer. It has no element count, so it
+/// is bound with an independent length whatever the argument says.
+pub struct CpuUniform<T: GpuPod> {
+    owner: u32,
+    cell: UniformCell<T>,
+}
+
+impl<T: GpuPod> CpuUniform<T> {
+    /// A copy of the current value.
+    ///
+    /// The cell is borrowed mutably only inside [`write`](Self::write), which returns before anything else can run,
+    /// and a kernel call copies the value under a shared borrow, so this does not panic.
+    pub fn read(&self) -> T {
+        *self.cell.0.borrow()
+    }
+
+    /// Replace the value. [`Error::Borrowed`] (naming `value`) when it is borrowed elsewhere; untouched then.
+    pub fn write(&self, value: T) -> Result<(), Error> {
+        *self
+            .cell
+            .0
+            .try_borrow_mut()
+            .map_err(|_| Error::Borrowed { parameter: "value" })? = value;
+        Ok(())
+    }
+
+    /// The cell itself, for tests that borrow it from outside a call.
+    #[cfg(test)]
+    pub(crate) fn cell(&self) -> &RefCell<T> {
+        &self.cell.0
+    }
+}
+
+impl<T: GpuPod + fmt::Debug> fmt::Debug for CpuUniform<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CpuUniform")
+            .field("owner", &self.owner)
+            .field("value", &self.cell.0)
+            .finish()
+    }
+}
+
+/// Erased view of one bound [`CpuBuffer`] or [`CpuUniform`]. It records no length: the backend measures it at submit.
 #[derive(Clone, Copy)]
 pub struct CpuBinding<'r> {
     data: &'r dyn CpuData,
@@ -160,11 +296,13 @@ pub struct CpuBinding<'r> {
     length: LengthRule,
     layout: TypeLayout,
     owner: u32,
+    kind: BindingKind,
 }
 
 impl fmt::Debug for CpuBinding<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CpuBinding")
+            .field("kind", &self.kind)
             .field("access", &self.access)
             .field("length", &self.length)
             .field("layout", &self.layout)
@@ -207,6 +345,29 @@ impl Job for CpuJob {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
+    /// The binding's kind (storage buffer or uniform) is not the one the descriptor declares for the parameter.
+    BindingKind {
+        /// The kernel parameter.
+        parameter: &'static str,
+        /// The kind the descriptor declares.
+        expected: BindingKind,
+        /// The kind the binding carries.
+        actual: BindingKind,
+    },
+    /// A uniform parameter's resource layout is not `Std140V1` of an element that satisfies it; the counterpart of
+    /// `gust_wgpu::Error::InvalidResourceLayout` for a uniform.
+    InvalidResourceLayout {
+        /// The kernel parameter.
+        parameter: &'static str,
+    },
+    /// [`CpuDevice::uniform`] refused the type: it is not a padding-free `Std140V1` type. `reason` names what is
+    /// wrong and the fix; the wording is `gust_wgpu::Error::InvalidUniformType`'s.
+    InvalidUniformType {
+        /// The type's layout name.
+        type_name: &'static str,
+        /// What is wrong with it.
+        reason: &'static str,
+    },
     /// The binding's element layout (or type) is not the parameter's.
     ElementType {
         /// The kernel parameter.
@@ -279,6 +440,21 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::BindingKind {
+                parameter,
+                expected,
+                actual,
+            } => write!(
+                f,
+                "parameter `{parameter}` expects a {expected:?} binding, got a {actual:?} one"
+            ),
+            Self::InvalidResourceLayout { parameter } => write!(
+                f,
+                "parameter `{parameter}` requires a valid Std140V1 resource layout for a uniform"
+            ),
+            Self::InvalidUniformType { type_name, reason } => {
+                write!(f, "`{type_name}` cannot be a uniform: {reason}")
+            }
             Self::ElementType { parameter } => write!(
                 f,
                 "parameter `{parameter}` is bound to a buffer of another element type"
@@ -357,6 +533,7 @@ impl TypedDevice for CpuDevice {
 impl<T: GpuPod> Resource for CpuBuffer<T> {
     type Element = T;
     type Device = CpuDevice;
+    type Kind = kind::Storage;
 
     // Never borrows the cell, so it cannot panic while the buffer is borrowed.
     fn bind<'r>(&'r self, access: Access, length: LengthRule) -> CpuBinding<'r> {
@@ -366,6 +543,26 @@ impl<T: GpuPod> Resource for CpuBuffer<T> {
             length,
             layout: T::LAYOUT,
             owner: self.owner,
+            kind: BindingKind::Storage,
+        }
+    }
+}
+
+impl<T: GpuPod> Resource for CpuUniform<T> {
+    type Element = T;
+    type Device = CpuDevice;
+    type Kind = kind::Uniform;
+
+    // Never borrows the cell. A uniform has no element count, so the length rule is `Independent` whatever the
+    // argument says (the rule would otherwise demand `element_count` elements of a single value).
+    fn bind<'r>(&'r self, access: Access, _length: LengthRule) -> CpuBinding<'r> {
+        CpuBinding {
+            data: &self.cell,
+            access,
+            length: LengthRule::Independent,
+            layout: T::LAYOUT,
+            owner: self.owner,
+            kind: BindingKind::Uniform,
         }
     }
 }
@@ -401,14 +598,35 @@ pub fn validate<K: Kernel, const N: usize>(
     let parameters: Vec<_> = kernel
         .parameters
         .iter()
-        .filter(|parameter| parameter.kind == ParameterKind::Storage)
+        .filter(|parameter| BindingKind::of(parameter.kind).is_some())
         .collect();
-    // `Run<K, N>` makes a mismatch unreachable (`Call::new` asserts `N` equals the storage-parameter count at
-    // compile time); a hand-built `Call` cannot differ either. The assertion documents that the zip below is total.
+    // `Run<K, N>` makes a mismatch unreachable (`Call::new` asserts `N` equals the storage plus uniform parameter
+    // count at compile time); a hand-built `Call` cannot differ either. The assertion documents that the zip below is
+    // total.
     debug_assert_eq!(parameters.len(), N);
     let expected = call.element_count() as usize;
     for (parameter, binding) in parameters.iter().zip(call.bindings().iter().copied()) {
         let name = parameter.name;
+        // The kind comes first: the layout rule of a uniform differs from a buffer's, so everything after it assumes
+        // the right kind of binding.
+        if let Some(wanted) = BindingKind::of(parameter.kind)
+            && binding.kind != wanted
+        {
+            return Err(Error::BindingKind {
+                parameter: name,
+                expected: wanted,
+                actual: binding.kind,
+            });
+        }
+        // A uniform is a constant buffer: its rule is `Std140V1` of an element that satisfies it (the check of
+        // gust-wgpu's `validate_kernel`).
+        if parameter.kind == ParameterKind::Uniform
+            && !parameter.resource_layout.is_some_and(|layout| {
+                layout.element.is_std140_v1() && layout == ResourceLayout::std140_v1(layout.element)
+            })
+        {
+            return Err(Error::InvalidResourceLayout { parameter: name });
+        }
         if Some(binding.layout) != parameter.resource_layout.map(|layout| layout.element) {
             return Err(Error::ElementType { parameter: name });
         }
@@ -426,7 +644,9 @@ pub fn validate<K: Kernel, const N: usize>(
             .data
             .current_len()
             .ok_or(Error::Borrowed { parameter: name })?;
+        // A uniform has no element count; its one value is never empty, so only the borrow above applies.
         match binding.length {
+            _ if binding.kind == BindingKind::Uniform => {}
             LengthRule::Shared if len != expected => {
                 return Err(Error::BufferLength {
                     parameter: name,
@@ -481,6 +701,7 @@ pub fn read<'b, T: GpuPod>(
     binding: CpuBinding<'b>,
     parameter: &'static str,
 ) -> Result<Ref<'b, Vec<T>>, Error> {
+    require_kind(&binding, BindingKind::Storage, parameter)?;
     let cells = binding
         .data
         .as_any()
@@ -505,6 +726,7 @@ pub fn write<'b, T: GpuPod>(
     binding: CpuBinding<'b>,
     parameter: &'static str,
 ) -> Result<RefMut<'b, Vec<T>>, Error> {
+    require_kind(&binding, BindingKind::Storage, parameter)?;
     let cells = binding
         .data
         .as_any()
@@ -520,6 +742,53 @@ pub fn write<'b, T: GpuPod>(
     cells
         .try_borrow_mut()
         .map_err(|_| Error::Borrowed { parameter })
+}
+
+/// Read the bound uniform by copy.
+///
+/// The kind must be [`BindingKind::Uniform`] ([`Error::BindingKind`] otherwise, checked first), the value type is
+/// decided by `TypeId` like [`read`] ([`Error::ElementType`]), the binding's access must be read-only
+/// ([`Error::Access`]), and the uniform must not be mutably borrowed ([`Error::Borrowed`]). The shadow body receives
+/// the copy as `Uniform(value)`, so it cannot write through it. Macro support.
+#[doc(hidden)]
+pub fn read_uniform<T: GpuPod>(
+    binding: CpuBinding<'_>,
+    parameter: &'static str,
+) -> Result<T, Error> {
+    require_kind(&binding, BindingKind::Uniform, parameter)?;
+    let cell = binding
+        .data
+        .as_any()
+        .downcast_ref::<UniformCell<T>>()
+        .ok_or(Error::ElementType { parameter })?;
+    if binding.access != Access::ReadOnly {
+        return Err(Error::Access {
+            parameter,
+            expected: Access::ReadOnly,
+            actual: binding.access,
+        });
+    }
+    cell.0
+        .try_borrow()
+        .map(|value| *value)
+        .map_err(|_| Error::Borrowed { parameter })
+}
+
+/// The binding must be of kind `wanted`.
+fn require_kind(
+    binding: &CpuBinding<'_>,
+    wanted: BindingKind,
+    parameter: &'static str,
+) -> Result<(), Error> {
+    if binding.kind == wanted {
+        Ok(())
+    } else {
+        Err(Error::BindingKind {
+            parameter,
+            expected: wanted,
+            actual: binding.kind,
+        })
+    }
 }
 
 /// Global invocation ids in x for whole workgroups, like the GPU: `element_count` rounded up to a multiple of the
@@ -694,8 +963,8 @@ pub fn __no_hook() {}
 mod tests {
     use super::*;
     use crate::{
-        Arg, Independent, ParameterDescriptor, ResourceBinding, ResourceLayout, Run,
-        SV_DispatchThreadID, SourceOrigin, Storage, StorageMut,
+        Arg, Independent, ParameterDescriptor, ParameterKind, ResourceBinding, ResourceLayout, Run,
+        SV_DispatchThreadID, SourceOrigin, Storage, StorageMut, Uniform, math::Vec4,
     };
 
     // ---- two hand-written kernels in the form the macro emits (this module is the macro's specification) ----
@@ -775,6 +1044,83 @@ mod tests {
         );
     }
 
+    const fn uniform(name: &'static str, binding: u32, element: TypeLayout) -> ParameterDescriptor {
+        ParameterDescriptor {
+            name,
+            rust_type: "float",
+            kind: ParameterKind::Uniform,
+            access: Access::ReadOnly,
+            resource_layout: Some(ResourceLayout::std140_v1(element)),
+            binding: Some(ResourceBinding { group: 0, binding }),
+        }
+    }
+
+    /// `shade(id: Invocation, a: RO, factor: Uniform<f32>, out: RW)`, workgroup 64: two storage parameters and one
+    /// uniform, so `N` is 3.
+    struct Shade;
+    impl Kernel for Shade {
+        const DESCRIPTOR: KernelDescriptor = descriptor(
+            "shade",
+            [64, 1, 1],
+            &[
+                invocation("Invocation"),
+                storage("a", Access::ReadOnly, 0, F32),
+                uniform("factor", 1, F32),
+                storage("out", Access::ReadWrite, 2, F32),
+            ],
+        );
+    }
+
+    /// `tint(id: Invocation, color: Uniform<Vec4>, out: RW)`: the uniform is a vector, the buffer holds `f32`.
+    struct Tint;
+    impl Kernel for Tint {
+        const DESCRIPTOR: KernelDescriptor = descriptor(
+            "tint",
+            [64, 1, 1],
+            &[
+                invocation("Invocation"),
+                uniform("color", 0, <Vec4 as GpuPod>::LAYOUT),
+                storage("out", Access::ReadWrite, 1, F32),
+            ],
+        );
+    }
+
+    /// `tint` with its uniform labelled `StorageV2`: valid for the element but not for a constant buffer.
+    struct TintStorageRule;
+    impl Kernel for TintStorageRule {
+        const DESCRIPTOR: KernelDescriptor = descriptor(
+            "tint_storage_rule",
+            [64, 1, 1],
+            &[
+                invocation("Invocation"),
+                ParameterDescriptor {
+                    resource_layout: Some(ResourceLayout::storage_v2(<Vec4 as GpuPod>::LAYOUT)),
+                    ..uniform("color", 0, <Vec4 as GpuPod>::LAYOUT)
+                },
+                storage("out", Access::ReadWrite, 1, F32),
+            ],
+        );
+    }
+
+    fn shade_body(
+        id: Invocation,
+        a: Storage<'_, f32>,
+        factor: Uniform<f32>,
+        mut out: StorageMut<'_, f32>,
+    ) {
+        let x = id.global_id().x;
+        if x < out.len() {
+            out[x] = a[x] * *factor;
+        }
+    }
+
+    fn tint_body(id: Invocation, color: Uniform<Vec4>, mut out: StorageMut<'_, f32>) {
+        let x = id.global_id().x;
+        if x < out.len() {
+            out[x] = color.x + color.w;
+        }
+    }
+
     fn scale_body(
         id: Invocation,
         a: Storage<'_, f32>,
@@ -817,6 +1163,43 @@ mod tests {
         }
     }
 
+    // The shape the macro will emit for a uniform (slice m6.u2): `read_uniform` by copy, wrapped in `Uniform`.
+    impl Run<Shade, 3> for CpuDevice {
+        fn submit_call(&self, call: &Call<'_, Self, Shade, 3>) -> Result<CpuJob, Error> {
+            validate(self, call)?;
+            let [a, factor, out] = *call.bindings();
+            let a = read::<f32>(a, "a")?;
+            let factor = Uniform(read_uniform::<f32>(factor, "factor")?);
+            let mut out = write::<f32>(out, "out")?;
+            for id in invocations(call.kernel(), call.element_count()) {
+                shade_body(
+                    <Invocation as FromGlobalId>::from_global_id(id),
+                    Storage::new(&a),
+                    factor,
+                    StorageMut::new(&mut out),
+                );
+            }
+            Ok(CpuJob::complete())
+        }
+    }
+
+    impl Run<Tint, 2> for CpuDevice {
+        fn submit_call(&self, call: &Call<'_, Self, Tint, 2>) -> Result<CpuJob, Error> {
+            validate(self, call)?;
+            let [color, out] = *call.bindings();
+            let color = Uniform(read_uniform::<Vec4>(color, "color")?);
+            let mut out = write::<f32>(out, "out")?;
+            for id in invocations(call.kernel(), call.element_count()) {
+                tint_body(
+                    <Invocation as FromGlobalId>::from_global_id(id),
+                    color,
+                    StorageMut::new(&mut out),
+                );
+            }
+            Ok(CpuJob::complete())
+        }
+    }
+
     impl Run<Swap, 2> for CpuDevice {
         fn submit_call(&self, call: &Call<'_, Self, Swap, 2>) -> Result<CpuJob, Error> {
             validate(self, call)?;
@@ -847,6 +1230,26 @@ mod tests {
             [
                 a.into().bind(Access::ReadOnly),
                 settings.into().bind(Access::ReadOnly),
+                out.into().bind(Access::ReadWrite),
+            ],
+        )
+    }
+
+    /// The call the macro will generate for `Shade`: a uniform takes `Resource<Kind = Uniform>`.
+    fn shade_call<'r, U>(
+        count: u32,
+        a: impl Into<Arg<'r, F32Buffer>>,
+        factor: impl Into<Arg<'r, U>>,
+        out: impl Into<Arg<'r, F32Buffer>>,
+    ) -> Call<'r, CpuDevice, Shade, 3>
+    where
+        U: Resource<Element = f32, Device = CpuDevice, Kind = kind::Uniform> + 'r,
+    {
+        Call::new(
+            count,
+            [
+                a.into().bind(Access::ReadOnly),
+                factor.into().bind(Access::ReadOnly),
                 out.into().bind(Access::ReadWrite),
             ],
         )
@@ -1772,5 +2175,309 @@ mod tests {
         assert_eq!(buffer.read(), vec![1.0, 2.0]);
         buffer.write(&[5.0, 6.0]).unwrap();
         assert_eq!(buffer.read(), vec![5.0, 6.0]);
+    }
+
+    // ---- uniforms (slice m6.u1) ----
+
+    // The shadow body reads the value by copy; an update between two dispatches is seen by the second one only.
+    #[test]
+    fn a_uniform_is_read_by_copy_and_an_update_is_seen_by_the_next_dispatch() {
+        let cpu = CpuDevice::new();
+        let a = cpu.buffer(&[1.0f32, 2.0, 3.0]);
+        let out = cpu.buffer(&[0.0f32; 3]);
+        let factor = cpu.uniform(10.0f32).unwrap();
+        let call = shade_call(3, &a, &factor, &out);
+        cpu.dispatch_call(&call).unwrap();
+        assert_eq!(out.read(), vec![10.0, 20.0, 30.0]);
+        factor.write(0.5).unwrap();
+        assert_eq!(factor.read(), 0.5);
+        cpu.dispatch_call(&call).unwrap();
+        assert_eq!(out.read(), vec![0.5, 1.0, 1.5]);
+    }
+
+    // A uniform has no element count: whatever length rule the argument names, one value serves every element.
+    #[test]
+    fn a_uniform_is_independent_of_the_element_count_whatever_the_argument_says() {
+        let cpu = CpuDevice::new();
+        let a = cpu.buffer(&[1.0f32; 5]);
+        let out = cpu.buffer(&[0.0f32; 5]);
+        let factor = cpu.uniform(2.0f32).unwrap();
+        let shared = Arg::from(&factor);
+        assert_eq!(
+            shared.length,
+            LengthRule::Shared,
+            "the argument says Shared"
+        );
+        assert_eq!(
+            shared.bind(Access::ReadOnly).length,
+            LengthRule::Independent
+        );
+        cpu.dispatch_call(&shade_call(5, &a, &factor, &out))
+            .unwrap();
+        assert_eq!(out.read(), vec![2.0; 5]);
+        cpu.dispatch_call(&shade_call(5, &a, Independent(&factor), &out))
+            .unwrap();
+        // A launch of no elements is fine too, and a uniform is never "empty".
+        let (none_in, none_out) = (cpu.buffer::<f32>(&[]), cpu.buffer::<f32>(&[]));
+        cpu.dispatch_call(&shade_call(0, &none_in, &factor, &none_out))
+            .unwrap();
+    }
+
+    // A vector uniform: the element layout of the binding must be the descriptor's (Vec4, not f32).
+    #[test]
+    fn a_vector_uniform_is_checked_against_the_descriptor_layout() {
+        let cpu = CpuDevice::new();
+        let out = cpu.buffer(&[0.0f32; 2]);
+        let color = cpu.uniform(Vec4::new(1.0, 2.0, 3.0, 4.0)).unwrap();
+        let call = Call::<CpuDevice, Tint, 2>::new(
+            2,
+            [
+                color.bind(Access::ReadOnly, LengthRule::Shared),
+                out.bind(Access::ReadWrite, LengthRule::Shared),
+            ],
+        );
+        cpu.dispatch_call(&call).unwrap();
+        assert_eq!(out.read(), vec![5.0, 5.0]);
+        let wrong = cpu.uniform(7.0f32).unwrap();
+        let call = Call::<CpuDevice, Tint, 2>::new(
+            2,
+            [
+                wrong.bind(Access::ReadOnly, LengthRule::Shared),
+                out.bind(Access::ReadWrite, LengthRule::Shared),
+            ],
+        );
+        assert_eq!(
+            cpu.dispatch_call(&call),
+            Err(Error::ElementType { parameter: "color" })
+        );
+    }
+
+    // The twin refuses the uniform types the GPU refuses (`create_uniform`), with the same wording. `unsafe_code` is
+    // forbidden in this module, so the padded case is a layout: no safe type has padding and a Std140V1 layout.
+    #[test]
+    fn a_uniform_type_must_be_a_padding_free_std140_v1_type() {
+        use crate::math::{Mat2, Vec2};
+        let cpu = CpuDevice::new();
+        assert!(cpu.uniform(1.0f32).is_ok());
+        assert!(cpu.uniform(Vec4::splat(1.0)).is_ok());
+        // A 2x2 matrix is a storage type with no constant-buffer layout.
+        let matrix = Mat2::from_cols(Vec2::new(1.0, 0.0), Vec2::new(0.0, 1.0));
+        match cpu.uniform(matrix) {
+            Err(Error::InvalidUniformType { type_name, reason }) => {
+                assert_eq!(type_name, <Mat2 as GpuPod>::LAYOUT.name);
+                assert!(reason.contains("not Std140V1"), "{reason}");
+            }
+            other => panic!("expected InvalidUniformType, got {:?}", other.map(|_| ())),
+        }
+        // A padded layout with honest Std140V1 numbers: a `Vec4` then one `f32`, bytes 20 to 31 are padding.
+        const PADDED: TypeLayout = TypeLayout::structure(
+            "Padded",
+            32,
+            16,
+            &[
+                crate::StructFieldLayout {
+                    name: "v",
+                    offset: 0,
+                    ty: <Vec4 as GpuPod>::LAYOUT,
+                },
+                crate::StructFieldLayout {
+                    name: "a",
+                    offset: 16,
+                    ty: <f32 as GpuPod>::LAYOUT,
+                },
+            ],
+        );
+        assert!(PADDED.is_std140_v1());
+        let reason = uniform_type_refusal(PADDED, 32, 16).expect("padding is refused");
+        assert!(reason.contains("padding bytes"), "{reason}");
+        assert!(reason.contains("explicit padding fields"), "{reason}");
+        let size = uniform_type_refusal(PADDED, 20, 4).expect("a size that differs is refused");
+        assert!(size.contains("size or alignment"), "{size}");
+        assert_eq!(uniform_type_refusal(<Vec4 as GpuPod>::LAYOUT, 16, 16), None);
+        let error = Error::InvalidUniformType {
+            type_name: "Padded",
+            reason,
+        };
+        assert!(
+            error
+                .to_string()
+                .starts_with("`Padded` cannot be a uniform: it has padding bytes"),
+            "{error}"
+        );
+    }
+
+    // The parameter's rule must be Std140V1 too: a uniform labelled with the storage rule is refused by `validate`,
+    // as gust-wgpu's `validate_kernel` refuses it, before the element comparison.
+    #[test]
+    fn a_uniform_parameter_with_the_storage_rule_is_refused_by_the_twin() {
+        let cpu = CpuDevice::new();
+        let out = cpu.buffer(&[0.0f32; 2]);
+        let color = cpu.uniform(Vec4::splat(1.0)).unwrap();
+        let call = Call::<CpuDevice, TintStorageRule, 2>::new(
+            2,
+            [
+                color.bind(Access::ReadOnly, LengthRule::Shared),
+                out.bind(Access::ReadWrite, LengthRule::Shared),
+            ],
+        );
+        assert_eq!(
+            validate(&cpu, &call),
+            Err(Error::InvalidResourceLayout { parameter: "color" })
+        );
+        // The control: the same call under the right rule validates.
+        let call = Call::<CpuDevice, Tint, 2>::new(
+            2,
+            [
+                color.bind(Access::ReadOnly, LengthRule::Shared),
+                out.bind(Access::ReadWrite, LengthRule::Shared),
+            ],
+        );
+        assert_eq!(validate(&cpu, &call), Ok(()));
+    }
+
+    // A hand-built `Call` can put a buffer where the kernel has a uniform and the other way round: the kind is the
+    // first thing `validate` compares, and it names the parameter and both kinds.
+    #[test]
+    fn a_hand_built_call_with_the_wrong_kind_is_rejected_first() {
+        let cpu = CpuDevice::new();
+        let a = cpu.buffer(&[1.0f32]);
+        let out = cpu.buffer(&[0.0f32]);
+        let one = cpu.buffer(&[3.0f32]);
+        let factor = cpu.uniform(3.0f32).unwrap();
+        let (ro, rw, shared) = (Access::ReadOnly, Access::ReadWrite, LengthRule::Shared);
+        // A buffer in the uniform parameter (same element, same length, same access).
+        let call = Call::<CpuDevice, Shade, 3>::new(
+            1,
+            [
+                a.bind(ro, shared),
+                one.bind(ro, shared),
+                out.bind(rw, shared),
+            ],
+        );
+        assert_eq!(
+            cpu.dispatch_call(&call),
+            Err(Error::BindingKind {
+                parameter: "factor",
+                expected: BindingKind::Uniform,
+                actual: BindingKind::Storage,
+            })
+        );
+        // A uniform in the first storage parameter.
+        let call = Call::<CpuDevice, Shade, 3>::new(
+            1,
+            [
+                factor.bind(ro, shared),
+                factor.bind(ro, shared),
+                out.bind(rw, shared),
+            ],
+        );
+        let rejected = cpu.dispatch_call(&call).unwrap_err();
+        assert_eq!(
+            rejected,
+            Error::BindingKind {
+                parameter: "a",
+                expected: BindingKind::Storage,
+                actual: BindingKind::Uniform,
+            }
+        );
+        assert_eq!(
+            rejected.to_string(),
+            "parameter `a` expects a Storage binding, got a Uniform one"
+        );
+        assert_eq!(out.read(), vec![0.0], "rejected calls wrote nothing");
+    }
+
+    // The macro-support readers repeat the kind and access checks for a call site that acquires a parameter wrongly.
+    #[test]
+    fn read_uniform_checks_kind_type_access_and_borrow() {
+        let cpu = CpuDevice::new();
+        let factor = cpu.uniform(3.0f32).unwrap();
+        let buffer = cpu.buffer(&[3.0f32]);
+        let uniform_binding = |access| factor.bind(access, LengthRule::Independent);
+        assert_eq!(
+            read_uniform::<f32>(uniform_binding(Access::ReadOnly), "f"),
+            Ok(3.0)
+        );
+        assert_eq!(
+            read_uniform::<u32>(uniform_binding(Access::ReadOnly), "f"),
+            Err(Error::ElementType { parameter: "f" })
+        );
+        assert_eq!(
+            read_uniform::<f32>(uniform_binding(Access::ReadWrite), "f"),
+            Err(Error::Access {
+                parameter: "f",
+                expected: Access::ReadOnly,
+                actual: Access::ReadWrite,
+            })
+        );
+        assert_eq!(
+            read_uniform::<f32>(buffer.bind(Access::ReadOnly, LengthRule::Shared), "f"),
+            Err(Error::BindingKind {
+                parameter: "f",
+                expected: BindingKind::Uniform,
+                actual: BindingKind::Storage,
+            })
+        );
+        // The storage readers refuse a uniform with the same error instead of an element-type one.
+        let wrong_kind = Error::BindingKind {
+            parameter: "p",
+            expected: BindingKind::Storage,
+            actual: BindingKind::Uniform,
+        };
+        assert_eq!(
+            read::<f32>(uniform_binding(Access::ReadOnly), "p").err(),
+            Some(wrong_kind.clone())
+        );
+        assert_eq!(
+            write::<f32>(uniform_binding(Access::ReadWrite), "p").err(),
+            Some(wrong_kind)
+        );
+        {
+            let _held = factor.cell().borrow_mut();
+            assert_eq!(
+                read_uniform::<f32>(uniform_binding(Access::ReadOnly), "f"),
+                Err(Error::Borrowed { parameter: "f" })
+            );
+            assert_eq!(
+                factor.write(1.0),
+                Err(Error::Borrowed { parameter: "value" })
+            );
+        }
+        assert_eq!(factor.read(), 3.0, "the rejected write changed nothing");
+    }
+
+    // An outside borrow of the uniform is the same `Borrowed` error as for a buffer, and nothing was written.
+    #[test]
+    fn a_borrowed_uniform_rejects_the_call_before_any_write() {
+        let cpu = CpuDevice::new();
+        let a = cpu.buffer(&[1.0f32]);
+        let out = cpu.buffer(&[9.0f32]);
+        let factor = cpu.uniform(2.0f32).unwrap();
+        {
+            let _held = factor.cell().borrow_mut();
+            assert_eq!(
+                cpu.dispatch_call(&shade_call(1, &a, &factor, &out)),
+                Err(Error::Borrowed {
+                    parameter: "factor"
+                })
+            );
+        }
+        assert_eq!(out.read(), vec![9.0]);
+    }
+
+    // A uniform of another device instance is the same `WrongDevice` error as for a buffer.
+    #[test]
+    fn a_uniform_of_another_device_instance_is_rejected() {
+        let cpu = CpuDevice::new();
+        let a = cpu.buffer(&[1.0f32]);
+        let out = cpu.buffer(&[9.0f32]);
+        let foreign = CpuDevice::new().uniform(2.0f32).unwrap();
+        assert_eq!(
+            cpu.dispatch_call(&shade_call(1, &a, &foreign, &out)),
+            Err(Error::WrongDevice {
+                parameter: "factor"
+            })
+        );
+        assert_eq!(out.read(), vec![9.0]);
     }
 }

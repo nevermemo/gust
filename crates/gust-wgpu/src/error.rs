@@ -138,6 +138,27 @@ pub enum Error {
     },
     Poll(String),
     Map(String),
+    /// A buffer allocation failed inside an out-of-memory error scope: the request was within `max_buffer_size`, but
+    /// the adapter had no memory for it. `label` names the buffer and `bytes` is the size asked for. Where a device
+    /// cannot report this through its scope and is lost instead, S7.6 outcome B maps it to [`Error::Poll`].
+    OutOfMemory {
+        label: String,
+        bytes: u64,
+    },
+    /// Two resident buffers of one operation belong to different devices (compared by `HeadlessDevice::id`).
+    MixedDevices {
+        first: u64,
+        second: u64,
+    },
+    /// A dispatch extent is unusable: a product overflowed, so no launch can be described. `reason` names the
+    /// failing step.
+    Extent {
+        extent: [u64; 3],
+        reason: &'static str,
+    },
+    /// `set_default_options` was called after the default device had been opened successfully: the options can no
+    /// longer change what it was opened with. (After a failed open they can still be set, and the next call retries.)
+    DefaultDeviceOpened,
 }
 
 impl fmt::Display for Error {
@@ -299,9 +320,15 @@ impl fmt::Display for Error {
                 requested,
                 maximum,
             } => {
+                // A buffer allocation reports its label in `kernel` (the pre-check of the fallible buffer functions).
+                let what = if *limit == "max_buffer_size" {
+                    "buffer"
+                } else {
+                    "kernel"
+                };
                 write!(
                     formatter,
-                    "kernel `{kernel}` needs {requested} for `{limit}`, the limit is {maximum}"
+                    "{what} `{kernel}` needs {requested} for `{limit}`, the limit is {maximum}"
                 )?;
                 if *limit == "max_compute_workgroups_per_dimension" {
                     write!(
@@ -321,6 +348,24 @@ impl fmt::Display for Error {
             ),
             Self::Poll(error) => write!(formatter, "GPU synchronization failed: {error}"),
             Self::Map(error) => write!(formatter, "GPU readback failed: {error}"),
+            Self::OutOfMemory { label, bytes } => write!(
+                formatter,
+                "the adapter is out of memory allocating buffer `{label}` ({bytes} bytes)",
+            ),
+            Self::MixedDevices { first, second } => write!(
+                formatter,
+                "resident buffers of devices {first} and {second} cannot be used together; every resident argument of one operation must share one device",
+            ),
+            Self::Extent { extent, reason } => {
+                write!(
+                    formatter,
+                    "dispatch extent {extent:?} is unusable: {reason}"
+                )
+            }
+            Self::DefaultDeviceOpened => write!(
+                formatter,
+                "the default device is already open; call `set_default_options` before the first `default_device()`",
+            ),
         }
     }
 }

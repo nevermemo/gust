@@ -141,6 +141,7 @@ pub mod cpu;
 mod descriptor;
 mod dispatch;
 mod job;
+pub mod map;
 pub mod math;
 pub mod profile;
 pub mod reflect;

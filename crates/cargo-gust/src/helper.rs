@@ -50,8 +50,9 @@ pub(crate) struct BuildOptions {
 /// The compiler a build will use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Compiler {
-    /// `cl.exe` found on `PATH`.
-    Cl,
+    /// MSVC `cl`, as the program to launch: `cl` when it was found on `PATH`, or the value of `CXX` (a bare name or a
+    /// path) whose file stem is `cl`.
+    Cl(String),
     /// `cl.exe` from the environment `vcvars64.bat` produces (Windows, nothing on `PATH`).
     ClViaVcvars,
     /// A GCC or Clang style driver, by program name or path.
@@ -66,7 +67,13 @@ pub(crate) fn choose_compiler(
     windows: bool,
 ) -> Result<Compiler, String> {
     if let Some(cxx) = cxx.filter(|cxx| !cxx.is_empty()) {
-        return Ok(Compiler::Driver(cxx.to_owned()));
+        // `cl` takes MSVC style arguments; every other `CXX` is taken for a GCC or Clang style driver (`clang-cl`
+        // included: it is a different file stem, and it also accepts the driver arguments).
+        return Ok(if is_cl_program(cxx) {
+            Compiler::Cl(cxx.to_owned())
+        } else {
+            Compiler::Driver(cxx.to_owned())
+        });
     }
     for name in COMPILER_SEARCH_ORDER {
         // A MinGW `c++` or `g++` cannot link the MSVC import library of the Slang release, so Windows takes only
@@ -76,7 +83,7 @@ pub(crate) fn choose_compiler(
         }
         if find_on_path(&executable_name(name), path_var).is_some() {
             return Ok(if name == "cl" {
-                Compiler::Cl
+                Compiler::Cl("cl".to_owned())
             } else {
                 Compiler::Driver(name.to_owned())
             });
@@ -90,6 +97,21 @@ pub(crate) fn choose_compiler(
             COMPILER_SEARCH_ORDER.join(", ")
         ))
     }
+}
+
+/// Whether a `CXX` value names MSVC `cl`: its file stem is `cl`, in any case, with or without `.exe`, bare or after a
+/// path. Both separators count on every platform, so that a Windows path is judged the same way everywhere.
+fn is_cl_program(program: &str) -> bool {
+    let name = program.rsplit(['/', '\\']).next().unwrap_or(program);
+    let stem = match name.len().checked_sub(4) {
+        Some(split)
+            if name.is_char_boundary(split) && name[split..].eq_ignore_ascii_case(".exe") =>
+        {
+            &name[..split]
+        }
+        _ => name,
+    };
+    stem.eq_ignore_ascii_case("cl")
 }
 
 /// The `cl` command line (after the program name).
@@ -396,7 +418,7 @@ fn build_windows(
     )?;
     let obj = out_dir.join("gust-slang-reflect.obj");
     match compiler {
-        Compiler::Cl => run("cl", &msvc_args(include, source, &obj, exe, &library))?,
+        Compiler::Cl(program) => run(&program, &msvc_args(include, source, &obj, exe, &library))?,
         Compiler::ClViaVcvars => {
             let environment = msvc::capture_vcvars_environment(&msvc::find_vcvars64()?)?;
             msvc::run_cl_in_environment(
@@ -454,9 +476,12 @@ fn build_unix(
     )?;
     let program = match compiler {
         Compiler::Driver(program) => program,
-        // `cl` on PATH of a non-Windows host is not something this build can drive with GCC style arguments.
-        Compiler::Cl | Compiler::ClViaVcvars => {
-            return Err("found `cl` on PATH, which this platform cannot use; set CXX".to_owned());
+        // `cl` on a non-Windows host is not something this build can drive with GCC style arguments.
+        Compiler::Cl(_) | Compiler::ClViaVcvars => {
+            return Err(
+                "found `cl` (on PATH or as CXX), which this platform cannot use; set CXX"
+                    .to_owned(),
+            );
         }
     };
     run(

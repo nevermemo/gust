@@ -44,12 +44,15 @@ shader module, bind-group layout, pipeline layout, and compute pipeline.
 
 ## Try it
 
-Requirements:
+Requirements (for authors and for this repository's checks; a crate that builds with committed `gust-artifacts/` under
+a strict profile needs neither Slang nor the helper, D45):
 
 - The stable Rust toolchain (this checkout was validated with Rust 1.98.0;
   the manifest's older minimum is not independently verified)
 - `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.20 (`cargo gust slang install` installs it, and
-  `cargo gust doctor` names a `slangc` of another version)
+  `cargo gust doctor` names a `slangc` of another version). `cargo gust` finds its managed install itself (in
+  `GUST_SLANG_HOME` when set), but `cargo xtask` and the run-time bridge launch plain `slangc`, so put the install's
+  `bin` directory first on `PATH`)
 - The native reflection helper, built once with
   `cargo xtask build-slang-reflect`. It needs the Slang
   SDK headers and import library (from `VULKAN_SDK` or `SLANG_SDK`) and a C++
@@ -97,7 +100,8 @@ process-spawning compiler. Check that state with
 Build profiles (D44, D51): the environment variable `GUST_PROFILE` is `dev`, `native`, `web` or `cpu`, and
 `gust`'s build script reads it (any other value, including an empty one, fails the build). `native` and `web` are strict:
 every `#[gpu]` kernel must have a precompiled artifact, or the build fails with a compile error at the kernel, and the
-`slang-runtime` feature is refused, so the build holds no run-time Slang compiler. `dev` has neither rule. A release
+`slang-runtime` feature is refused, so the build holds no run-time Slang bridge (wgpu and the driver still compile
+the shipped WGSL or SPIR-V when the pipeline is created). `dev` has neither rule. A release
 build is strict even without the variable: with `GUST_PROFILE` unset, `cargo build --release` of a crate with
 `#[gpu]` kernels is treated as `web` for `wasm32` and `native` for every other target, and prints
 `warning: gust@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`;
@@ -114,7 +118,7 @@ stays `native`, so choosing the CPU is always explicit (`GUST_PROFILE=cpu cargo 
 then emits each kernel's `Run` impl for `gust::cpu::CpuDevice` in every build and uses no artifact, so a program can
 call `dispatch` on the CPU and run the kernel as plain Rust. A build holds one target: `gust-wgpu` fails to compile
 under `cpu` (a compile error that names the profile), and the `slang-runtime` feature is refused, so the binary
-contains no compiler, helper or GPU runtime. A kernel marked `#[kernel(cpu = "unsupported")]` has no CPU form, and a
+contains no Slang bridge, helper or GPU runtime. A kernel marked `#[kernel(cpu = "unsupported")]` has no CPU form, and a
 `dispatch` on it does not compile. Kernels run on one thread, in ascending `global_id.x`. `cargo xtask check-cpu-target`
 is the evidence (the `Cpu` tier).
 
@@ -125,8 +129,14 @@ examples, and mandatory external validation of all thirteen SPIR-V exports):
 cargo xtask check-full
 ```
 
+It also runs the whole `check-precompiled` (the fixture `tests/precompiled`, with a GPU, Slang and the crates.io
+registry) and the whole `check-web` (the browser WebGPU run: wasm32 target, `wasm-bindgen-cli`, Chrome with a WebGPU
+adapter). Nothing is skipped silently: a missing tool or adapter fails the run and names the cause. On a machine
+without a browser, `cargo xtask check-full --skip-web` leaves out `check-web` only, says so, and records
+`skipped_checks` in the file below.
+
 It writes `.ai/VALIDATION.json` with command exit codes, stdout, artifact hashes,
-and explicit untested targets. This is local debug validation, not release benchmark
+the skipped checks and explicit untested targets. This is local debug validation, not release benchmark
 evidence or cross-platform certification.
 
 Purpose-built check commands keep the inner loop honest:
@@ -155,7 +165,7 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-workspace` | Default workspace confidence | `--locked` workspace tests with example packages excluded entirely |
 | `cargo xtask check-examples` | Major example behavior confidence | every example test (`-- --include-ignored`, counted: no passed test or an ignored one fails it) plus example binaries |
 | `cargo xtask check-artifacts` | Artifact/export confidence | example binaries plus external SPIR-V validation |
-| `cargo xtask check-full` | Release confidence | full staged verification |
+| `cargo xtask check-full [--skip-web]` | Release confidence | full staged verification, then the whole `check-precompiled` and `check-web`; `--skip-web` leaves out `check-web` only and records it |
 | `cargo xtask status` | Resume context | git status, active claim, validation summary, suggested check |
 | `cargo xtask doctor` | Environment readiness | required tools and reflection helper status; exits non-zero when cargo, rustc, slangc or the helper is missing |
 | `cargo xtask doctor --smoke` | Toolchain smoke test | doctor, then a hand-written Slang kernel compiled to WGSL and SPIR-V in a fresh target directory and the SPIR-V validated; the Rust frontend and GPU execution are not run |

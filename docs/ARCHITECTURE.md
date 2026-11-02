@@ -14,7 +14,9 @@ compiler core. The macro's job is intentionally smaller:
    checking (it also runs as the CPU twin in test and dual builds).
 3. Translate the original `syn` syntax tree directly to readable Slang.
 4. Attach that source and resource metadata to a host descriptor.
-5. Let Slang produce backend artifacts.
+5. Let Slang produce backend artifacts: at author time `cargo gust build` compiles the Slang to WGSL (and SPIR-V),
+   verifies the layouts and commits the result in `gust-artifacts/`, and the macro embeds it into the descriptor
+   (D45, M4). Only a `dev` build with the `slang-runtime` feature compiles at run time.
 
 This matches the desired ownership boundary. Rust provides familiar syntax,
 tooling, modules, and diagnostics for the surface language. Slang provides the
@@ -68,7 +70,7 @@ same `Run` impl in every build, without the `cfg(any(test, gust_dual))` gate, an
 no artifact. The profile is chosen at build time and is never inferred, so a binary holds
 one target. `gust-wgpu` evaluates `const _: () = ::gust::profile::require_gpu_target();`
 and so fails to compile (E0080) under `cpu`, and the build script of `gust` refuses the
-`slang-runtime` feature there. A `cpu` build therefore links no compiler, no helper and
+`slang-runtime` feature there. A `cpu` build therefore links no Slang bridge, no helper and
 no GPU runtime. Each dispatch runs on one thread, in ascending `global_id.x`.
 `cargo xtask check-cpu-target` is the evidence (the `Cpu` tier of
 docs/development/VALIDATION.md).
@@ -114,7 +116,9 @@ error, and argument order among buffers of one element type is not checked at al
 Generated names use the reserved `__gust_` prefix so that no user parameter name
 can collide.
 
-`KernelDescriptor::slang_source` is the source of executable shader artifacts.
+`KernelDescriptor::slang_source` is the source of truth of executable shader artifacts; the precompiled ones
+(`KernelDescriptor::artifacts`, embedded by the macro from the crate's `gust-artifacts/` when the pair for the
+kernel's content key exists, m4.c, D45) are what a strict profile executes, and what `dev` prefers when present.
 `KernelDescriptor::entry_point` is separate from the Rust-facing kernel name so
 the generated symbol can avoid Slang intrinsic collisions and target-language
 reserved identifiers.
@@ -122,9 +126,11 @@ reserved identifiers.
 ### `gust-wgpu`
 
 The wgpu crate validates host bindings against descriptors, manages typed GPU
-buffers, and owns the per-device pipeline cache. On a cache miss it asks Slang for
-WGSL and creates the shader module and pipeline. On a cache hit no compiler process
-or pipeline creation occurs. `HeadlessDevice::new` retries a missing Vulkan adapter
+buffers, and owns the per-device pipeline cache. On a cache miss it takes the kernel's
+embedded WGSL artifact, verified against the descriptor (D17), or, for a kernel without
+one in a build with the `slang-runtime` feature, asks Slang for WGSL, and creates the
+shader module and pipeline (wgpu and the driver still compile that WGSL). On a cache hit
+no compiler process or pipeline creation occurs. `HeadlessDevice::new` retries a missing Vulkan adapter
 up to three times with a short backoff, then returns `NoAdapter` with the attempt
 count; it never skips a test and GUST never falls back to a CPU path. Adapter
 selection prefers high performance but does not exclude a software Vulkan driver;
@@ -196,8 +202,9 @@ and UNC paths; any other (GLOBALROOT, `Volume{GUID}`, device) is an absolute pat
 that is reduced to its file name. Adding the field is a
 public API change: hand-written `KernelDescriptor` literals add
 `source: SourceOrigin::UNKNOWN`, and the derived equality now includes the source
-metadata. The same holds for `artifacts: &[]` (M4, D45): a hand-written literal adds it and
-the derived equality compares it.
+metadata. The same holds for `artifacts` (M4, D45): a hand-written literal adds it (`&[]` for none) and the
+derived equality compares it. The macro fills it with the embedded artifact pair of each kernel whose
+`gust-artifacts/` files exist (m4.c), and with `&[]` for a kernel that has none.
 
 ## Struct ABI
 
@@ -269,8 +276,11 @@ silently execute each other's kernels. Concurrent first misses can still duplica
 compilation work; the cache does not yet implement single-flight compilation.
 
 This keeps the prototype small and lets the installed Slang version be upgraded
-independently. Production work should add compiler-version discovery, deterministic
-option records, dependency tracking, and a content-addressed disk cache.
+independently. Since M4 this bridge is a `dev` convenience behind the `slang-runtime` feature (D44); production
+builds hold none of it and execute committed artifacts. Compiler-version discovery and the content-addressed store
+exist in `cargo gust` (the pinned-Slang manager and the content key of D45), outside this crate: `gust::slang`
+itself still runs whatever `slangc` is first on `PATH` and checks no version. Deterministic option records and
+dependency tracking beyond the content key remain future work.
 
 ## CPU comparison policy
 
@@ -341,8 +351,8 @@ descriptor without a table compiles the clean text as before.
 - Recreating Slang IR or optimization in Rust.
 - Treating generated WGSL or SPIR-V as compile-time constants in descriptors. D45 (M4) supersedes this for
   precompiled output only: `KernelDescriptor::artifacts` can hold compiler output plus the helper's raw reflection
-  JSON, re-verified by `gust::artifact::verify_artifact`; the macro still emits `artifacts: &[]` and the Slang text
-  stays the source of truth.
+  JSON, re-verified by `gust::artifact::verify_artifact`; the macro embeds the committed files (m4.c) and the Slang
+  text stays the source of truth.
 - Providing a CPU interpreter for GPU modules. There is none: the CPU twin is the
   rustc-compiled shadow body, emitted in test and dual builds and in every build under
   `GUST_PROFILE=cpu` (the production CPU target, D51).
@@ -359,7 +369,8 @@ core boundary:
 - extend the existing native reflection gate as new resource/layout contracts are proven;
 - add vectors, matrices, textures, samplers, and constant buffers;
 - map Slang errors back to Rust spans;
-- cache Slang artifacts by content hash and compiler identity;
+- enforce the Slang pin in `gust::slang` (the content-hash artifact set of D45 already caches compiler output for
+  WGSL and SPIR-V; the follow-up is in NEXT_TASKS);
 - select WGSL, SPIR-V, DXIL, or Metal targets per backend;
 - expose controlled Slang escape hatches for features that do not map cleanly to
   Rust syntax.

@@ -128,9 +128,9 @@ jobs:
           gust check -p vector-add --recompile
       - name: Committed artifacts match the pinned Slang
         # A pin bump without a re-bless fails here: `check --recompile` rebuilds the kernels of tests/precompiled with
-        # the pinned slangc and compares them with the committed set. Only the web copy of that set is byte-checked
-        # (xtask/src/tests/web.rs); the other copies pass verify_artifact only. Measured locally, warm, on the
-        # 2026.20 install: 36 s.
+        # the pinned slangc and compares them with the committed set. The Unit suite also byte-compares all five
+        # committed copies of that set with it (xtask/src/tests/web.rs: the web example's, the two UI fixtures' and
+        # the fixtures of gust and gust-wgpu). Measured locally, warm, on the 2026.20 install: 36 s.
         run: >-
           cargo run --locked --quiet -p cargo-gust --
           check -p kernels --manifest-path tests/precompiled/Cargo.toml --recompile
@@ -141,8 +141,8 @@ jobs:
     # build, the binary scan and `cargo tree`, the mutated and missing artifacts, strict plus dual, the build-script
     # refusals, the re-expansion on a changed GUST_EXPORT_DIR, the `cargo package` allow-lists and the relocated
     # registry-style consumer) and skips what needs a GPU (the runs of E1, E3 and E8) or Slang (`cargo gust build`
-    # twice, E7). Those stay local, with the full command `cargo xtask check-precompiled`. E8 downloads `wgpu` from
-    # crates.io. After it, the release `app` that E1 built is run with the Vulkan loader pointed at no driver (R2-4:
+    # twice, E7). Those stay local, with the full command `cargo xtask check-precompiled` (which `check-full` also
+    # runs). E8 downloads `wgpu` from crates.io. After it, the release `app` that E1 built is run with the Vulkan loader pointed at no driver (R2-4:
     # "expect NoAdapter"); that proves the consumer reaches the adapter request and ends with the error, not that it
     # computes anything. Not covered on CI: the runs of E1, E3 and E8, E7b, and a successful dispatch. Runnable locally
     # in sh form: `cargo --locked xtask check-precompiled --check-only`, then the step below.
@@ -158,9 +158,14 @@ jobs:
           cargo clippy --locked --manifest-path tests/precompiled/Cargo.toml --workspace --all-targets -- -D warnings
       - name: Precompiled checks E1 to E8
         run: cargo --locked xtask check-precompiled --check-only
+      - name: Consumer error messages (unit test)
+        # The app prints "no GPU adapter" only for gust-wgpu's NoAdapter error and "GPU initialization failed" for any
+        # other error of HeadlessDevice::new; this test pins that, so the grep of the next step means what it says.
+        run: cargo test --locked --manifest-path tests/precompiled/Cargo.toml -p app
       - name: Consumer without an adapter (NoAdapter)
         # The consumer asks for Vulkan only, and with no driver file it finds no adapter, also on a runner that has a
-        # software Vulkan driver installed. The binary is the release `app` that E1 built.
+        # software Vulkan driver installed. The binary is the release `app` that E1 built. The line it greps for is
+        # printed for the NoAdapter error variant only (tests/precompiled/app/src/main.rs), not for any failure.
         run: |
           set +e
           VK_DRIVER_FILES=/nonexistent VK_ICD_FILENAMES=/nonexistent target/precompiled/release/app > run.out 2> run.err
@@ -180,7 +185,7 @@ jobs:
     # only a browser run does.
     # This job does not run anything in a browser: `cargo xtask check-web` needs Chrome with a WebGPU adapter and
     # stays local Gpu evidence. Whether a software adapter (SwiftShader) can earn `Gpu (software)` on a hosted runner is
-    # slice S4 of the plan, not decided yet.
+    # slice S4 of the plan, deferred (D69).
     # The MSRV job does not build the wasm32-only dependencies, so nothing checks them against the minimum Rust version.
     runs-on: ubuntu-latest
     timeout-minutes: 30

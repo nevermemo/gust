@@ -162,7 +162,7 @@ impl Suite {
             }
             Self::Gpu => "all gust-wgpu tests on the first Vulkan adapter wgpu finds",
             Self::Full => {
-                "the release gate: lint, fmt, clippy, workspace tests, the release-profile Slang tests of the gust library and the release-profile known-mismatch ledger, examples, artifacts and SPIR-V validation; writes .ai/VALIDATION.json"
+                "the release gate: lint, fmt, clippy, workspace tests, the release-profile Slang tests of the gust library and the release-profile known-mismatch ledger, examples, artifacts and SPIR-V validation, check-dual in full mode, then the whole check-precompiled and the whole check-web (Chrome with a WebGPU adapter; a missing one fails the suite, only `cargo xtask check-full --skip-web` goes without, and records that); writes .ai/VALIDATION.json"
             }
         }
     }

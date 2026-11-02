@@ -84,6 +84,42 @@ pub(crate) struct RunInfo<'a> {
     /// The adapter the run's GPU steps used; `None` ("null" in the record) when the run failed before the adapter
     /// step could say.
     pub(crate) adapter: Option<&'a AdapterRecord>,
+    /// Checks the run was asked to leave out (`check-full --skip-web` names `check-web`); empty for a complete run.
+    pub(crate) skipped: &'a [String],
+}
+
+/// The subcommand of a recorded `cargo xtask <name>` check that exited 0 (`check-web` for the browser run).
+fn passed_xtask_check(checks: &[CheckRecord], name: &str) -> bool {
+    checks.iter().any(|check| {
+        check.exit_code == Some(0)
+            && check
+                .arguments
+                .iter()
+                .map(String::as_str)
+                .eq(["xtask", name])
+    })
+}
+
+/// The `"untested"` member: what this record gives no evidence for. The browser is listed unless a recorded
+/// `check-web` passed.
+fn untested_json(checks: &[CheckRecord]) -> String {
+    let mut items = Vec::new();
+    if !passed_xtask_check(checks, "check-web") {
+        items.push("\"browser WebGPU\"");
+    }
+    items.extend([
+        "\"Metal\"",
+        "\"DXIL\"",
+        "\"other GPU vendors\"",
+        "\"declared minimum Rust version\"",
+    ]);
+    format!("  \"untested\": [{}],\n", items.join(", "))
+}
+
+/// The `"skipped_checks"` member.
+fn skipped_json(skipped: &[String]) -> String {
+    let names: Vec<String> = skipped.iter().map(|name| json_string(name)).collect();
+    format!("  \"skipped_checks\": [{}],\n", names.join(", "))
 }
 
 /// The Vulkan adapter `HeadlessDevice` selected, as `crates/gust-wgpu/examples/adapter_info.rs` printed it. Any
@@ -229,7 +265,8 @@ fn write_validation_with_home(
         None => json.push_str("  \"failure\": null,\n"),
     }
     json.push_str("  \"scope\": \"Debug native Vulkan wgpu execution of Slang-generated WGSL; SPIR-V export validation is separate.\",\n");
-    json.push_str("  \"untested\": [\"browser WebGPU\", \"Metal\", \"DXIL\", \"other GPU vendors\", \"declared minimum Rust version\"],\n");
+    json.push_str(&skipped_json(run.skipped));
+    json.push_str(&untested_json(checks));
     json.push_str("  \"checks\": [\n");
     for (index, check) in checks.iter().enumerate() {
         if index != 0 {

@@ -41,7 +41,10 @@ fn the_compiler_is_the_first_of_cl_clang_c_plus_plus_and_g_plus_plus_on_path() {
     assert_eq!(COMPILER_SEARCH_ORDER, ["cl", "clang++", "c++", "g++"]);
     let scratch = Scratch::new("compiler-order");
     let all = path_with(&scratch, &[&["g++", "c++"], &["clang++"], &["cl"]]);
-    assert_eq!(choose_compiler(None, Some(&all), false), Ok(Compiler::Cl));
+    assert_eq!(
+        choose_compiler(None, Some(&all), false),
+        Ok(Compiler::Cl("cl".to_owned()))
+    );
     let no_cl = path_with(&scratch, &[&["g++", "c++"], &["clang++"]]);
     assert_eq!(
         choose_compiler(None, Some(&no_cl), false),
@@ -69,8 +72,65 @@ fn cxx_overrides_the_search_and_an_empty_one_is_ignored() {
     );
     assert_eq!(
         choose_compiler(Some(""), Some(&path), false),
-        Ok(Compiler::Cl)
+        Ok(Compiler::Cl("cl".to_owned()))
     );
+}
+
+#[test]
+fn a_cxx_whose_file_stem_is_cl_selects_msvc_and_keeps_its_path() {
+    // PATH holds clang++ only, so an MSVC choice can come from CXX alone.
+    let scratch = Scratch::new("compiler-cxx-cl");
+    let path = path_with(&scratch, &[&["clang++"]]);
+    for cxx in [
+        "cl",
+        "CL",
+        "Cl",
+        "cl.exe",
+        "CL.EXE",
+        "cl.Exe",
+        "C:\\Program Files\\MSVC\\bin\\Hostx64\\x64\\cl.exe",
+        "C:\\msvc\\bin\\CL",
+        "C:/msvc/bin/cl.exe",
+        "/opt/msvc/bin/cl",
+        "bin\\x64/cl.exe",
+    ] {
+        for windows in [false, true] {
+            assert_eq!(
+                choose_compiler(Some(cxx), Some(&path), windows),
+                Ok(Compiler::Cl(cxx.to_owned())),
+                "CXX={cxx} windows={windows}"
+            );
+        }
+    }
+}
+
+#[test]
+fn clang_cl_and_other_cxx_values_stay_drivers() {
+    let scratch = Scratch::new("compiler-cxx-driver");
+    let path = path_with(&scratch, &[&["cl"]]);
+    for cxx in [
+        "clang-cl",
+        "clang-cl.exe",
+        "C:\\LLVM\\bin\\clang-cl.exe",
+        "clang++",
+        "C:\\LLVM\\bin\\clang++.exe",
+        "/usr/bin/g++",
+        "cl.exe.bak",
+        "cl.com",
+        "mycl",
+        "xcl.exe",
+        "C:\\cl\\clang++.exe",
+        "C:\\tools\\cl\\",
+        "cl\\",
+        ".exe",
+        "x.exe",
+    ] {
+        assert_eq!(
+            choose_compiler(Some(cxx), Some(&path), true),
+            Ok(Compiler::Driver(cxx.to_owned())),
+            "CXX={cxx}"
+        );
+    }
 }
 
 #[test]

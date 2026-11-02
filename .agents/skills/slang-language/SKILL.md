@@ -7,7 +7,7 @@ description: "Write or debug generated Slang compute shaders, resource bindings,
 
 Preserve restricted Rust GPU module -> validated syn AST -> direct Slang emission -> slangc -> WGSL/SPIR-V. Slang's internal compiler IR is outside this project's frontend architecture.
 
-1. Inspect the failing emitted shader, binding metadata, command, and installed slangc version. Reduce the shader before changing the Rust emitter.
+1. Inspect the failing emitted shader, binding metadata, command, and installed slangc version (the project pins one release: `cargo gust slang install` puts it in `GUST_SLANG_HOME` or the default cache, `cargo gust slang locate` prints it, `cargo gust doctor` names a `slangc` of another version; `cargo xtask` and the run-time bridge launch plain `slangc` from `PATH`). Reduce the shader before changing the Rust emitter.
 2. Keep entry point, compute stage, workgroup dimensions, resource access and bindings explicit. Match the host ABI.
 3. Compile each requested target independently. Success for SPIR-V does not establish WGSL compatibility or runtime correctness.
 4. Return the smallest shader/emitter fix, exact command and target-specific result.

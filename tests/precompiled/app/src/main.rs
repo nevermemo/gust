@@ -5,7 +5,7 @@
 
 use std::process::ExitCode;
 
-use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{Error, GpuBufferAccess, HeadlessDevice};
 use kernels::vector_add;
 
 /// More than one workgroup (64) and not a multiple of it, so the kernel's bounds check matters.
@@ -18,6 +18,16 @@ fn main() -> ExitCode {
             eprintln!("error: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// The message for a failed `HeadlessDevice::new`. Only the no-adapter variant says "no GPU adapter": CI runs this
+/// binary with no Vulkan driver and requires exactly that prefix, so any other initialisation failure (a refused
+/// device request, say) must not be able to satisfy it.
+fn initialization_message(error: &Error) -> String {
+    match error {
+        Error::NoAdapter(_) => format!("no GPU adapter: {error}"),
+        _ => format!("GPU initialization failed: {error}"),
     }
 }
 
@@ -40,7 +50,7 @@ fn run() -> Result<(), String> {
         );
     }
 
-    let device = HeadlessDevice::new().map_err(|error| format!("no GPU adapter: {error}"))?;
+    let device = HeadlessDevice::new().map_err(|error| initialization_message(&error))?;
     println!("adapter: {}", device.adapter_info().name);
     let a = device.create_f32_buffer("precompiled a", &a, GpuBufferAccess::ReadOnly);
     let b = device.create_f32_buffer("precompiled b", &b, GpuBufferAccess::ReadOnly);
@@ -65,4 +75,27 @@ fn run() -> Result<(), String> {
     }
     println!("verified: GPU result equals the host reference for {LENGTH} elements");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_the_no_adapter_error_is_reported_as_no_gpu_adapter() {
+        let none = initialization_message(&Error::NoAdapter("no driver".to_owned()));
+        assert_eq!(
+            none,
+            "no GPU adapter: no Vulkan compute adapter is available: no driver"
+        );
+        let request = initialization_message(&Error::RequestDevice("device lost".to_owned()));
+        assert_eq!(
+            request,
+            "GPU initialization failed: could not open the GPU device: device lost"
+        );
+        let poll = initialization_message(&Error::Poll("timeout".to_owned()));
+        assert!(poll.starts_with("GPU initialization failed: "), "{poll}");
+        // The CI step greps for this prefix on the start of the line `error: ` adds.
+        assert!(!request.contains("no GPU adapter") && !poll.contains("no GPU adapter"));
+    }
 }

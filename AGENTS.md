@@ -149,9 +149,11 @@ cargo xtask check-fast
 cargo xtask check-workspace
 ```
 
-Use stable Rust, `slangc` on PATH, and a Vulkan adapter. For release evidence run
-`cargo xtask check-full`: it requires SPIRV-Tools, runs every example, and validates
-all exported SPIR-V files. Missing tools are blockers, not passes. Baseline versions
+Use stable Rust, the pinned `slangc` on PATH (`cargo gust slang install` installs it;
+`GUST_SLANG_HOME` moves that install), and a Vulkan adapter. For release evidence run
+`cargo xtask check-full`: it requires SPIRV-Tools, runs every example, validates
+all exported SPIR-V files, and runs the whole `check-precompiled` and `check-web`
+(`--skip-web` leaves out the browser run and is recorded). Missing tools are blockers, not passes. Baseline versions
 and actual results belong in `docs/development/STATUS.md`; commands alone are not evidence.
 The command overwrites `.ai/VALIDATION.json` with the latest pass/failure record;
 inspect its timestamp and scope before using it as evidence. That file is local and

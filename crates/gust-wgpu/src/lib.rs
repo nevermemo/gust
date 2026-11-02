@@ -15,7 +15,7 @@
 //!    A check that fails is an error (`Error::Reflection`), never a reason to compile the Slang instead.
 //! 2. With the `slang-runtime` feature (off by default, D44, which enables `gust/slang-runtime`): compile the
 //!    descriptor's Slang at run time through the native helper.
-//! 3. Otherwise `Error::NoArtifact`: the crate holds no process-spawning compiler. `cargo gust build` writes the
+//! 3. Otherwise `Error::NoArtifact`: the crate holds no run-time Slang bridge. `cargo gust build` writes the
 //!    artifact.
 //!
 //! The backend-neutral typed surface of `gust` is implemented here: `GpuBuffer<T>` is a
@@ -1809,7 +1809,7 @@ impl HeadlessDevice {
         Ok(compiled)
     }
 
-    /// Without `slang-runtime` this crate holds no compiler: the only kernels it can run are the ones whose
+    /// Without `slang-runtime` this crate holds no run-time Slang bridge: the only kernels it can run are the ones whose
     /// precompiled artifact it verifies. `select_shader_source` never sends a kernel here in this build (it
     /// answers `NoArtifact` first); the same error is returned in case a caller does.
     #[cfg(not(feature = "slang-runtime"))]

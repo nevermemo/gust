@@ -23,6 +23,8 @@ COMMANDS:
              WGSL is always built; --format spirv adds SPIR-V (checked with spirv-val when it is on PATH)
     check    fail unless gust-artifacts/ is exactly what a build of the current sources gives
              --recompile also recompiles and compares the bytes; --allow-slang-mismatch accepts another Slang build
+             a plain check compares the manifest's Slang build with the helper's and does not run slangc; build and
+             check --recompile require the pinned slangc and a helper of the same build
     doctor   show Slang, the native helper, the build profile and how to install this tool
     slang    manage the pinned Slang (the authors who export need it; consumers and production builds do not)
                install       download the pinned release, verify its SHA-256 and unpack it into the cache

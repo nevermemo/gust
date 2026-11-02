@@ -39,6 +39,11 @@
 //! (`std::time::Instant` panics in the browser), `dispatch_f32`/`dispatch_u32` and the timestamp readback (one-shot
 //! channels), the `graph` module and `HeadlessDevice::pool_read`. A call to one of them fails to
 //! compile. The one exception to "nothing blocks" is [`WgpuJob::wait`], which cannot be removed (see there).
+//!
+//! `clippy.toml` bans `std::thread::sleep` and `std::time::Instant::now` for the browser; native code may call them,
+//! hence the crate-level allow below.
+
+#![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
 
 use std::{
     future::Future,

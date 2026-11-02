@@ -1102,10 +1102,10 @@ fn typed_call_items(
 /// The CPU twin of one kernel (roadmap M3): `impl Run<Kernel, N> for ::gust::cpu::CpuDevice` under
 /// `cfg(any(test, gust_dual))`, or ungated under [`Profile::Cpu`] (the production CPU target, D21: the same impl with
 /// no `cfg` copy, so `cpu` plus `cfg(test)` or `--cfg gust_dual` still has exactly one). It calls the shadow body (the
-/// renamed typecheck function) as written, once per invocation,
-/// and reaches the bindings only through `::gust::cpu::{validate, read, write, invocations}`: no body
-/// copy, no rewrite, no IR and no downcast in the emitted code. `gust/src/cpu.rs` holds a hand-written impl of this
-/// exact shape in its tests, which is the specification.
+/// renamed typecheck function) as written, once per invocation, and reaches the bindings only through
+/// `::gust::cpu::{validate, read, write, invocations}`: no body copy, no rewrite, no IR and no downcast in the
+/// emitted code. `gust/src/cpu.rs` holds a hand-written impl of this exact shape in its tests, which is the
+/// specification.
 ///
 /// Nothing is emitted for `cpu = "unsupported"` and for a kernel with a uniform parameter, which has no typed call
 /// to run (see [`typed_call_items`]). Locals take the user's parameter names (the validator reserves `__gust_`, so

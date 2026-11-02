@@ -324,9 +324,12 @@ pub(crate) fn check_helper_pin(
     let pin = &rule.pin;
     if !rule.admits(tag) {
         return Err(format!(
-            "{which} was built against Slang `{tag}`, but the pin is `{pin}`; build one against the pinned install \
-             (`cargo gust slang install`, then `cargo gust slang build-helper`) and name it with {HELPER_VARIABLE}, with \
-             SLANG_SDK pointing at that install when xtask builds the helper itself"
+            "{which} was built against Slang `{tag}`, but the pin is `{pin}`; use the helper of the managed install, \
+             `<root>/helper/{pin}/gust-slang-reflect{suffix}` (`cargo gust slang install`, then `cargo gust slang \
+             build-helper`; the root is GUST_SLANG_HOME, by default `<CARGO_HOME or ~/.cargo>/gust/slang`), and \
+             name it with {HELPER_VARIABLE}, with SLANG_SDK pointing at that install when xtask builds the helper \
+             itself; do not overwrite a helper that other builds share",
+            suffix = env::consts::EXE_SUFFIX
         ));
     }
     let schema = helper_output

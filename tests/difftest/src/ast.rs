@@ -40,10 +40,6 @@ impl Ty {
     pub fn is_int(self) -> bool {
         matches!(self, Ty::U32 | Ty::I32)
     }
-
-    pub fn is_float(self) -> bool {
-        self == Ty::F32
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

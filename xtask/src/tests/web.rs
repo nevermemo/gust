@@ -658,6 +658,48 @@ fn join_within_waits_for_a_thread_that_ends_and_gives_up_on_one_that_does_not() 
 // ---------------------------------------------------------------------------------------------------------------
 // The committed artifacts of the example
 
+/// The five committed copies of the kernels fixture's artifact, the web example's among them (its own test below also
+/// compares its manifest and file set). Each holds the kernel's WGSL and reflection under the same file names; the
+/// manifests of the others are not compared here, because the crate fixtures and the UI sets keep a manifest of their
+/// own.
+const ARTIFACT_COPIES: [&str; 5] = [
+    "examples/web-vector-add/gust-artifacts",
+    "tests/ui/profile-native-artifact/gust-artifacts",
+    "tests/ui/profile-native-no-manifest/gust-artifacts",
+    "crates/gust/tests/fixtures/precompiled",
+    "crates/gust-wgpu/tests/fixtures/precompiled",
+];
+
+#[test]
+fn all_five_committed_copies_of_the_precompiled_artifact_are_byte_copies_of_the_kernels_fixture() {
+    // m4.r re-blessed every set and only the web copy was byte-checked, so a copy left stale passed
+    // `verify_artifact` (which reads its own pair of files) until a test happened to use it. One source, five copies:
+    // a stale one fails here and names itself.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let source = root.join("tests/precompiled/kernels/gust-artifacts");
+    let mut artifact_files: Vec<String> = fs::read_dir(&source)
+        .unwrap_or_else(|error| panic!("{}: {error}", source.display()))
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name != "manifest.json")
+        .collect();
+    artifact_files.sort();
+    assert_eq!(
+        artifact_files.len(),
+        2,
+        "the kernels fixture holds one WGSL and one reflection file: {artifact_files:?}"
+    );
+    for copy in ARTIFACT_COPIES {
+        for name in &artifact_files {
+            let path = root.join(copy).join(name);
+            let bytes = fs::read(&path).unwrap_or_else(|error| panic!("{copy}/{name}: {error}"));
+            assert!(
+                bytes == fs::read(source.join(name)).unwrap(),
+                "{copy}/{name} differs from tests/precompiled/kernels/gust-artifacts/{name}: re-copy it from there"
+            );
+        }
+    }
+}
+
 #[test]
 fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
     // The example cannot regenerate them (a browser build never runs Slang, and on the host the crate is empty), so the

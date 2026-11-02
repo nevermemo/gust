@@ -34,8 +34,8 @@ of each kernel that has no uniform parameter (below, under `gust`; a kernel with
 `Uniform<T>` or `ConstantBuffer<T>` parameter gets its handle and descriptor but none
 of the three, so `K::call(..)` is error E0599 and the headless runtime rejects its
 descriptor with `Error::UnsupportedParameter`) and const assertions, evaluated by rustc, that
-every buffer element type and struct field is a padding-free StorageV1 layout
-matching Rust's size and alignment; a failure is error E0080 that names the field
+every buffer element type and struct field is a padding-free layout (StorageV1, or StorageV2 where a vector or matrix
+is involved) matching Rust's size and alignment; a failure is error E0080 that names the field
 or the parameter. The macro still does not reflect: layouts and bindings are
 assigned here and verified against Slang at run time (D17).
 
@@ -213,14 +213,17 @@ It is a narrow executable bridge whose every claim is checked by the compiler.
 (`scripts/probes/slang-layout.cpp`, built by `cargo xtask build-slang-reflect`
 against the installed Slang SDK). The helper links one entry point for one target
 through the Slang API, emits the artifact, and walks the *same linked program's*
-`TypeLayoutReflection` to write a schema-1 JSON record: compiler build tag, target,
+`TypeLayoutReflection` to write a JSON record (schema 1; schema 2, with a top-level `matrixLayout`, only when a
+resource holds a vector, matrix or constant buffer): compiler build tag, target,
 entry point, source and artifact FNV-1a fingerprints, compute workgroup size, and for
 every global structured buffer its name, descriptor slot and space, access, element
 stride, and the element type with size, alignment, stride, scalar kind, and nested
-fields (name, offset, size, type). Anything outside StorageV1 (vectors, matrices,
-non-32-bit scalars, arrays, counters, entry-point resources, uniform parameters,
-binding arrays) makes the helper fail with a message instead of emitting a partial
-record. `CompiledReflection::from_output` re-derives both fingerprints, rejects
+fields (name, offset, size, type), and for a vector, matrix or constant buffer the scalar type, element count, rows,
+columns and layout; matrices are column-major. Anything else (non-32-bit scalars,
+arrays, counters, entry-point resources and uniform bindings, binding arrays) makes the helper fail with a message
+instead of emitting a partial record. The helper is rebuilt only when it is stale, judged by content: a build stamp
+beside it holds the SHA-256 of the C++ source, and its `--version` must give the Slang tag of the SDK (`cargo gust
+slang build-helper`). `CompiledReflection::from_output` re-derives both fingerprints, rejects
 identity or schema mismatches, decodes SPIR-V structurally, and requires every layout
 field to be present.
 

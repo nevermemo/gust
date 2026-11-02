@@ -34,6 +34,40 @@ committed artifacts stay byte-identical. The keyword and construct spikes and th
 types run beside M4; the keyword renaming follows the bool `^` fix; the rest waits for m4.e1, m5.c1c and M4. Its decision drafts take
 D55 to D59.
 
+- M4 m4.z (`fa3f9a1`; fix round 1 and the prose pass on top of the merge `d7344b6`): the cleanup slice, with no change
+  to compiler output (bless: 0 changed goldens). Helper freshness is judged by content: a build stamp beside the helper
+  holds the SHA-256 of the packaged probe source and the schema and Slang tag, and no file time plays a part, so a
+  helper built against an older Slang is rebuilt (the m4.r S6 gap) and two cargo-gust versions with the same probe
+  source leave each other's helper alone. `cargo gust doctor` names both versions and the fix when the `slangc` first
+  on `PATH` is not the pin. A byte test compares all five committed copies of the precompiled artifact set with the
+  kernels fixture.
+  The `__gust_keep` wrapper stays (measured on 30 comparison-in-list shapes: 2026.20 validates all in naga without it,
+  13.1 fails 13, and `gust::slang` runs any `slangc` on `PATH`). `crates/gust-wgpu/clippy.toml` bans
+  `std::thread::sleep` and `Instant::now` for wasm32 (the CI wasm32 clippy command; native code is allowed by a
+  crate-level `cfg_attr` allow in `lib.rs` and `tests/async_readback.rs`); the crates `gust` and `web-vector-add` have
+  no such ban yet (a follow-up). The slice entries of M1 to M4 moved to `history/STATUS-M1-M4.md`; the unused
+  `Ty::is_float` went. Known gaps: `gust::slang` does not check `slangc -version` against the pin (then
+  `__gust_keep` can go behind a GPU read-back); the managed helper has no stamp until `cargo gust slang build-helper`
+  runs once more. Evidence: Unit, Slangc, Spirv and Reflect on 2026.20, check-ui, check-dual `--check-only`,
+  check-precompiled `--check-only`, check-cpu-target; CPU only. Opus merge after two review rounds.
+- M5 m5.d3 (merge `d879f33`, feature `e249ae5`): the coretests golden `tests/fixtures/coretests.slang` (blessed) with
+  its regression entry and a slangc test of each section; `coretests` joins `check-feature gpu-semantics` and
+  `coretests_twin` the Unit suite. `gpu-semantics` passed on the RTX 5090. Opus keep.
+- M5 m5.e2 (`ea386f3`, merge `f9fdd24`): gust-wgpu refuses the `cpu` profile. It evaluates
+  `gust::profile::require_gpu_target()` in a const item, so a `GUST_PROFILE=cpu` build that links it fails with E0080
+  (E-e). `cargo xtask check-cpu-target` runs E-a to E-i on `tests/cpu-target` and takes each binary from cargo's JSON
+  output (the stale-binary fix); the Cpu suite is this command. CI runs it as the job `cpu-target` beside `unit`: 61 s
+  on the runner, against 2 m 57 s for `unit`. Evidence: Unit, Cpu and Gpu smoke (RTX 5090). Opus keep after one fix
+  round.
+- M6 m6.m1 (`31e6e99`, merge `6dc36ef`): vector and matrix types in `#[gpu]` code, column-major. `from_cols` lowers to
+  `transpose(floatNxN(..))`, `from_rows` to `floatNxN(..)`, `mul_vecN` and `mul_matN` to `mul(m, x)`, `transpose` to
+  `transpose(m)`; the struct layout asserts use StorageV2. The golden `tests/fixtures/vectors.{rs,slang}` covers every
+  accepted form and a slangc test compiles it. Known limitations: the integer-vector `dot` lowers to
+  `OpSDot`/`OpUDot` (capability `DotProduct`), which naga 30 refuses on the SPIR-V route (WGSL passes; the fix is
+  m6.m2's overload table); a constant `Mat2::IDENTITY` or `Mat3::IDENTITY` hits the known SPIR-V crash for constant
+  float2x2 and float3x3, so m6.g1 must not dispatch the golden on SPIR-V as it is. Evidence: Unit, Slangc (2026.20),
+  check-ui and check-dual; CI green on `6dc36ef`. Opus keep after one fix round.
+- CI timing note: `gpu-software` took 1 m 25 s warm (on `8080320`) against 1 m 42 s cold.
 - M5 S5.4 (spike, local commit only): decision A. A lane-local prototype in which the macro drops
   the twin's cfg gate under `GUST_PROFILE=cpu` ran a non-test binary on `CpuDevice` with the host
   result, built with `--cfg gust_dual` without a duplicate impl, and passed `cargo test` under
@@ -41,90 +75,6 @@ D55 to D59.
   correct by behaviour. Each tracking path suffices alone: the macro's `option_env!` line
   (kernel crate and dependents rebuild) or `gust`'s `rerun-if-env-changed` (`gust` rebuilds
   too); with both removed, expansions went stale. m5.e1 keeps both and guards them.
-- M4 S1 (spike, local commit only): decision A. With no Slang reachable (PATH stripped,
-  `GUST_SLANG_REFLECT` unset, `where slangc` failing), a consumer built with the Slang bridge
-  compiled out ran a precompiled vector-add whose embedded WGSL and helper reflection JSON were
-  re-verified through D17's functions, and the RTX 5090 result equalled the host reference.
-  Flipped, truncated or CRLF bytes, a replaced source hash, a renamed entry point and changed
-  bindings are all rejected by the existing checks (the identity error does not name the field;
-  m4.a improves it). Clean and `#line` WGSL are byte-identical. Toggling `GUST_EXPORT_DIR` or
-  `GUST_PROFILE` through `option_env!` re-expands only the kernel crate and its consumer.
-  `core.autocrlf` would convert committed WGSL, so `**/gust-artifacts/** -text` is required.
-- M4 m4.0 (`8d49412`): weak compare-exchange per D47. The GPU checks for uncontended success
-  accept exactly the value pair WGSL allows (`{7, 11}`, `{-5, 11}`) through two check
-  functions that a GPU-free test feeds the spurious, success and bad readbacks; the twin stays
-  pinned; failures stay exact; KM-09 gains an uncontended case (one invocation, `{1, 999}`).
-  A GPU-side no-op compare-exchange is not detected by a GPU test (the emission is pinned by
-  the gust-macros regression tests). No signed ledger case (it needs a new fixture kernel).
-  Opus keep after one fix round; gates on main at `64922ad`.
-- M4 S2 (spike, local commit only): decision A. The compile-time refusal (E0080) fires in all
-  three native-setting cases; Cargo re-runs on a `GUST_PROFILE` change through `gust`'s build
-  script alone; a release build without a profile becomes native and `GUST_PROFILE=dev` is the
-  escape. `check-dual` children inherit the variable, so xtask must set `dev` for the dual
-  fixture. The wasm32-to-web inference is not measured yet (m4.g2).
-- M4 m4.h (`b26bccd`): `check-artifacts` and `check-full` empty `generated-wgpu/` before the
-  examples run, so a stale SPIR-V file cannot validate. Every verify mode runs the
-  `adapter_info` example before its first GPU step and records the adapter (name, backend,
-  driver) in `VALIDATION.json`; a missing or malformed adapter line fails the mode and records
-  `"adapter": null`. The call order is pinned by a source test (the steps need cargo, slangc and
-  a GPU). Opus keep after one fix round; gates on main at `72bd6bf`.
-- M4 m4.a (`2dcb9e3`): `gust::artifact` (D45) adds `Format`, `Artifact`, `content_key` (FNV-1a 64
-  of the entry point, a NUL and the clean Slang, with no line-ending normalization) and
-  `verify_artifact`. That function runs D17's identity check and the reflection cross-check and
-  returns `Verified`. `KernelDescriptor` gains `artifacts`; the macro emits an empty slice, and
-  17 full literals were updated. The identity error now names each differing value (target,
-  entry point, source hash, artifact hash). S1's vector-add is the positive fixture, kept
-  byte-exact under `core.autocrlf` by a root `.gitattributes`, which was proved in a scratch
-  clone. 16 negative and positive tests and 4 unit tests run in the Unit suite. The fixture
-  manifest is S1's interim shape, not D45's schema-1 manifest (m4.d). Opus keep after one fix
-  round; gates on main at `6d04248`.
-- M4 m4.b1 (`cbbf35a`): the Slang bridge in `gust` and `gust-wgpu` sits behind the
-  `slang-runtime` feature, which is off by default. Artifact verification (`Target`, `Error`,
-  `decode_spirv`, `compile_copy`) stays outside the feature. With the feature off, a run-time
-  compile returns an `Unsupported` error that names the feature; m4.e1's `NoArtifact` replaces
-  it. Each crate's own tests turn the feature on through a self dev-dependency. That was
-  measured: without it the tests fail with E0425. check-arch admits it (D50). The Unit suite
-  runs `--no-default-features` clippy and check of both crates. Every xtask cargo child,
-  check-ui's included, runs with `GUST_PROFILE=dev`; a preset value is logged and overridden.
-  No test yet runs the feature-off code, so m4.e2's fixture is the first that will. Opus keep
-  after one fix round; gates on main at `69c0c1c` (Gpu 110 tests).
-- M4 m4.b2 (`41b6ff9`): `gust`'s build script computes the effective profile (D44). It uses
-  `GUST_PROFILE` when set (`dev`, `native` or `web`; anything else is refused). Otherwise a
-  release build infers `web` on wasm32 and `native` elsewhere and prints a warning, which cargo
-  shows only for path and workspace packages or with `-vv`. Every other build is `dev`. Under a
-  strict profile the `slang-runtime` feature is refused with a pinned message naming the
-  `GUST_PROFILE=dev` escape. `gust::profile::require_artifact` turns a kernel without an
-  artifact into E0080 at the user's kernel line. The macro emits it with `false` until m4.c,
-  plus `option_env!` tracking of `GUST_PROFILE` and `GUST_EXPORT_DIR`. check-ui gains
-  per-case `env.txt` and build-failure expectations, with five `profile-*` cases. A plain
-  `cargo install cargo-gust` will need `GUST_PROFILE=dev` (m4.d and M10 notes). Opus keep after
-  one fix round; gates on main at `edac8b2`.
-- M4 m4.g1 (`671b3dd`): the completion model (R4.9) in native form. `gust-wgpu` has a
-  std-only `Completion` future, `HeadlessDevice::new_async` and `read_typed_buffer_async`.
-  The blocking readbacks are native-only wrappers: they call `poll(Wait)` and poll once, and
-  return `Error::Map` instead of parking if the mapping is not done. `pollster` is native-only.
-  Four Gpu tests prove a readback that is pending and then ready on a busy device (warm
-  pipeline, three attempts). Opus keep after one fix round; gates on main at `8640cac` (Gpu
-  122 tests). wasm32 is m4.g2.
-- M4 m4.c (`dba0e97`): the macro computes the content key over the clean kernel text, byte-exact
-  with `gust::artifact::content_key` (golden vectors shared by both crates), and embeds a
-  committed `gust-artifacts/` pair with `require_artifact(true)`. Each module with a pair also
-  checks the manifest once, so a strict build without one fails with E0080. Export mode
-  (`GUST_EXPORT_DIR`) writes `<dir>/<pkg>/<key>.{slang,kernel.json}` (schema 1: parameters with
-  the full layout tree, source file and line table); element types the macro cannot lay out
-  are written as `layout: null` for `cargo gust` to fill from reflection (m4.d). A half pair is
-  E0711 outside export mode and absent inside it, so the build tool repairs it; E0712 and E0713
-  cover export write failures (including the twin-text guard) and a missing package name. Two
-  `profile-native-*` ui cases. Opus keep after one fix round; gates on main at `349a084`.
-- M4 m4.d (`e7dd73d`): new crate `cargo-gust` with `init`, `build`, `check` and `doctor`.
-  `build` collects kernels in an isolated export-mode build (`GUST_EXPORT_DIR`), fills
-  `layout: null` from reflection, applies D17 at export to WGSL and SPIR-V, then writes each
-  pair and the manifest atomically and prunes strays. `check` verifies the committed artifacts
-  without writing; `doctor` reports the toolchain. The export write refuses a differing
-  overwrite of the same key (E0712, making R4.4 real) and copies when hard links are
-  unavailable. End to end on a vector-add copy: rebuild identical, about 55 s cold. Manifest
-  field names differ from the plan's draft; the D45 amendment records them at the M4 close.
-  Opus keep after two fix rounds; gates on main at `29f8f6f`.
 - Fix fx.bxor (`7463405`, found by the m5.d1 corpus): WGSL has no `^` on bool, so bool `^`
   and `^=` now lower through `__gust_xor` and `__gust_xor_assign` overloads (bool `!=`,
   integer `^`; the place is evaluated once), emitted only in modules that use them. A GPU test
@@ -164,30 +114,6 @@ D55 to D59.
   `constantBuffer`, mandatory `matrixLayout`); every committed artifact set still verifies.
   Known limitation until m6.g1: `create_typed_buffer::<Vec4>` now compiles and panics at run time
   in the StorageV1 check. Opus keep after one fix round; gates on main at `38ebf29`.
-- M4 m4.f (`9b42958`): the pinned-Slang manager in `cargo-gust`. `cargo gust slang install`
-  downloads the pinned release (2026.13.1) for this platform, checks its SHA-256 (taken from the
-  GitHub release and cross-checked against the audit archives) before extraction, and renames a
-  partial directory into the cache; `locate` takes the cache (`GUST_SLANG_HOME` when set) and
-  accepts a `PATH` slangc only at the exact pin or a listed validated build;
-  `build-helper` builds `gust-slang-reflect` from a shipped copy of `slang-layout.cpp`, and
-  `doctor` and `build` refuse a helper built against another Slang. `xtask build-slang-reflect`
-  delegates to it. Measured on Windows: a scratch install, the helper, the Slangc and Reflect
-  tiers, and two byte-identical exports (S3). The CI `slang` job (Linux, g++) had not run before
-  the merge. Known gap (resolved by m4.r): the committed artifact sets carry the local build tag
-  `2026.13.1-1-g84792eb15`, so `cargo gust check` of them fails with the release Slang until a
-  re-bless slice after m4.e2b. Opus keep after one fix round; gates on main at `6b064dc`.
-- M4 m4.e2b (`3c95f8a`): the packaged-consumer proof without Slang. `check-precompiled` gains E5
-  (strict plus dual; the app asserts the `native` profile), E6 (build-script refusals judged on
-  exact messages), E7 (re-expansion on a changed `GUST_EXPORT_DIR`; `cargo gust build` from
-  deleted artifacts writes 3 files, then 0, byte-identical to the committed set) and E8 (`cargo
-  package` allow-lists for the three crates, packaged in one multi-package call; a relocated
-  registry-style consumer resolves them through `[patch.crates-io]`, R2-4 mechanism 1, and a
-  `cargo metadata` walk proves no `default` feature reaches `slang-runtime`). crates.io holds an
-  unrelated `gust` 0.1.0; the consumer's pin, patch and three guards keep it out. Root path
-  dependencies gain versions; packages exclude tests, examples and benches. Evidence: Gpu (RTX
-  5090), full `check-precompiled` rc 0 on the merged tree (640 s). CI's `precompiled` job runs
-  `--check-only` plus a NoAdapter run of the release consumer; the runs of E1, E3 and E8 and E7b
-  stay local. Opus keep after one fix round.
 - M6 m6.k (`ce17eb2`): collision-only identifier renaming. A user identifier that collides with a
   Slang or WGSL keyword, a prelude name or a GUST-reserved spelling is emitted as `__gust_r_<name>`
   at every name site (locals, parameters, fields, structs, invocation and ConstantBuffer sites);
@@ -198,36 +124,12 @@ D55 to D59.
   renamed, and `var` (loud, E30060) joined the table. The `__gust` prefix is reserved (new UI
   case). Bless: 0 changed goldens. Evidence: Unit, Slangc and Reflect on main. Deferred to m6.m1:
   raw `r#` kernel and module names (`gpu_m_r#k`, loud). Opus keep after three fix rounds.
-- M4 m4.g2 (`4e096f5`): wasm32 and the first browser WebGPU run (D45). On wasm32 everything that
-  blocks or reads a clock is gated out (the typed host `dispatch*`, the `*_timed` family,
-  `wait_for_submission`, the timestamp reader, `pool_read`, `graph`); `WgpuJob::wait` is a
-  documented no-op there. `examples/web-vector-add` runs the real gust-wgpu vector-add (1000
-  elements) in the browser and checks it against a host reference. `cargo xtask check-web` builds
-  it in release under `GUST_PROFILE=web`, serves it on a loopback port and drives headless Chrome
-  with a fresh profile. Evidence: Gpu (WebGPU, Chrome 156.0.8078.74, nvidia blackwell; vendor and
-  architecture from a second high-performance requestAdapter, same adapter assumed), check-web rc
-  0 on the merged tree. CI's `wasm` job compiles only (`check-web --tree-only`, wasm32 clippy).
-  Deferred to the M4 close: a wasm-aware `gust::Job` contract and clippy disallowed-methods for
-  `Instant::now` and `std::thread::sleep`. Opus keep after two fix rounds.
 - M5 m5.c1c (`a41ba93`): bounded shrinking for difftest. `difftest-run --shrink` reduces a failing
   program with an AST reducer; one clock started after the original run bounds the search and
   each candidate's cargo steps, and no candidate starts with under 1 s left. Measured on the RTX
   5090: one literal fault shrank in 119.0 s over 17 candidates (mean 6.58 s), 0 mismatches in both
   batches; the no-fault check exits 1. An interrupted `--shrink` can leave cargo running on Unix
   (DIFFTEST.md). Evidence: Gpu (RTX 5090). Opus merge after three rounds.
-- M4 m4.r (`12ab066`): Slang pinned at v2026.20 (fixes the WGSL template-list bug, shader-slang/slang
-  13566); the URLs and sha256 of all three platforms match the release's published digests, and
-  `VALIDATED_BUILDS` ships empty. Every committed artifact set is re-blessed: WGSL and reflection
-  byte-identical across the five copies, content keys unchanged (D45 keys the entry point and the
-  clean Slang; the compiler is recorded in the manifest and the reflection's `artifactHash`).
-  Particle-step SPIR-V from 13.1 and from 2026.20 gives byte-identical read-backs on the RTX 5090.
-  xtask judges the helper (schema 2 required) and `slangc -version` against the pin on every path,
-  with cargo-gust's rule, so a 13.1 `slangc` first on `PATH` is refused. CI's `slang` job
-  recompiles `tests/precompiled` with the pinned Slang (36 s locally; its first Linux run is
-  CI's). Known gaps, for m4.z: helper freshness is judged by file times; only the web copy of
-  the artifact set is byte-checked. Evidence: Gpu (RTX 5090), Slangc, Spirv, Reflect, check-web,
-  check-artifacts and check-precompiled on 2026.20; main gates green on the merge. Opus merge
-  after one fix round.
 - M5 m5.e1 (`f60c1b4`): the production `cpu` target (D51). `GUST_PROFILE=cpu` is a fourth profile:
   never inferred, not strict, refuses `slang-runtime`, does no artifact lookup (`IS_CPU`; `STRICT`
   stays `native` or `web`). Under `cpu` the macro emits one ungated `impl Run<K, N>` for
@@ -271,14 +173,6 @@ D55 to D59.
   seeds 1-2 on the RTX 5090, 32 of 32 with 0 mismatches; seeds 1-8 CPU-only, 128 of 128. S5.3
   outcome A: a batch of 32 takes about 26 s warm and 101 s cold. Opus keep after one fix round;
   gates on main at `63c8e25`.
-- M4 m4.e2a (`29cfc58`): the fixture workspace `tests/precompiled` (a `kernels` crate with
-  committed artifacts and an `app` on `gust-wgpu` without `slang-runtime`, with its own lock) and
-  `cargo xtask check-precompiled` E1 to E4. E1 builds the workspace crates from clean and runs the
-  release `app` on the RTX 5090 in a child environment with every Slang route removed: the first
-  "no Slang on the machine" record. E2 finds none of the gated Slang markers in that binary,
-  while a `dev` control build holds them all. E3: a mutated artifact gives the identity error.
-  E4: a missing artifact under `native` gives one E0080 at the kernel line. Not yet in a suite or
-  CI (m4.e2b). Opus keep after one fix round; gates on main at `2324485`.
 - M5 m5.d1 (`d2378ce`): 84 scalar cases transcribed from Rust 1.98.0's coretests
   (`library/coretests/tests/num`) into `docs/development/CORETESTS.md`, with acceptance sets
   (exact integers in the domain, WGSL's 2.5 ULP for float `/`) and exclusions; five `#[gpu]`
@@ -312,340 +206,118 @@ D55 to D59.
   the kernel ends, so one async test skips only its pending-path check there (VALIDATION.md).
   Runs: 1m52s cold, 1m27s warm. Any slice that adds Gpu tests bumps the two pins. Opus keep after
   two CI fix rounds; gates on main at `00ad885`.
-- M4 m4.e1 (`894ab0e`): `gust-wgpu` prefers the verified precompiled artifact over runtime
-  Slang (D17, D45). The embedded artifact passes `verify_artifact` before use; a kernel with no
-  artifact and no `slang-runtime` gives `Error::NoArtifact`. The pipeline cache key includes the
-  content key, and a cache hit leaves `entries` and `misses` unchanged. A test on the artifact
-  bytes catches a mutation that the identity check alone missed. The `gpu-software` pins are 140
-  passed over 18 result lines. Opus keep after one fix round; gates on main at `a91cb49`.
 - M6 m6.a2 (`56b5ecd`): `gust::math` vector and matrix types in pure Rust (§2.1 of the M6 plan),
   with swizzles, and dual kernels that use them in `tests/dual`. Integer vector operations are
   `#[inline]`, so in incremental dev and test builds they panic on overflow only when both `gust`
   and the compiling crate have checks on (measured over nine profile runs); SEMANTICS §3 records
   it as a limitation (D39). The struct-literal dual kernels emit Slang that nothing compiles yet;
   m6.m1 makes them compile. Opus keep after one fix round; gates on main at `76c83d5`.
-M3's record: plan adopted 2026-10-24; D38 narrows D22's integer guarantee to a defined domain (the owner
-confirmed it in D39: edge-case differences are documented limitations, not to be matched);
-spike S1 passed (decision A); m3.a1 (ledger), m3.a2 (contract text), m3.b (`gust::cpu`),
-m3.c (macro twins), m3.c2 (check-cpu), m3.d (atomics, fixture twins), m3.e1 (four example
-twins), m3.e2 (graph example twins), m3.f1 (`check-dual --check-only`), m3.f2 (check-cfg
-lints, dual mains, full `check-dual`, CI step) and m3.g (gates that cannot pass by skipping)
-done; the close-out docs and D40 to D42 are in; `check-full` passed on a clean tree at `96e4b9d`
-(RTX 5090, 2026-11-01 05:36-05:43Z: 13 SPIR-V modules validated, `check-dual` full mode, every
-example test with `--include-ignored`, both release-only tests by name); the M3 sanity check (Fable and Codex,
-both "proceed with fixes") followed, and slice m3.h applied its fixes.
 
-- M3 m3.h (`a169bec`, merge `5971c12`): the sanity fixes. The KM-11 out-of-bounds store rows
-  use an 8-element `source`, so the load is in bounds and the twin's panic is the store's (a
-  GPU-free test pins the store line, with an in-bounds control). tests/dual's consumer gains
-  `twin_overflow` (under `cfg(all(test, gust_dual))`, so E1's single error stays on line 23):
-  the twin of kernel-lib's kernel panics on `u32::MAX + 1` because kernel-lib builds with
-  checks on, and a kernel the consumer defines wraps under the consumer's checks-off override,
-  so a twin follows the crate that defines the kernel (D43 corrects D38's wording); both tests
-  are required by name in `check-dual`. `check-cpu` requires every example's twin and
-  derivation-domain tests by name (`CPU_REQUIRED_TESTS`, pinned against the example sources).
-  Docs: SEMANTICS excludes float-derived decisions and order-dependent atomic results from
-  the identical-results claim, ARCHITECTURE matches D39, VALIDATION and DIAGNOSTICS updated.
-  Mutations killed: an in-bounds store index, the consumer's mode expected for the
-  dependency's twin, a renamed twin test. Opus keep after one fix round; gates 13 of 13 in
-  the worktree; `check-full` PASS at `5971c12`.
+### Done slices of M1 to M4 (summary); M4 closes after m4.z
 
-- M3 m3.g (`95c5514`): a read-only audit (plan Revision 7) found no gate that skips through
-  an early return, a missing tool or a CI condition, but six holes, now closed: `check-full`
-  and `verify --mode examples` ran the examples with `--ignored` only (now
-  `--include-ignored`, so the twin-versus-host and guard tests run there too); a cargo test
-  call that ran zero tests passed (a test-count guard now fails it, and also fails a failed or,
-  under `--include-ignored`, an ignored test, for check-cpu, the examples, the release `--lib`
-  call and the filtered check-feature calls); the release call now also runs the `gust::cpu`
-  id-range test and requires both release-only tests by name; six examples' max-error folds
-  turned a NaN into 0 (now propagated, with a NaN unit test each); the check-ui fixtures are
-  pinned by name; and the 30 `gust::cpu` unit tests, which need neither slangc nor a GPU, are
-  a Unit step, so CI runs them. Known limitation, in NEXT_TASKS: the guard counts per call,
-  not per test. Evidence: fmt, clippy, xtask tests, check-cpu, Unit, check-ui, check-fast,
-  check-examples (GPU, all eight examples with `--include-ignored`), docs-check, lint; the
-  release call by hand (both release-only tests ok); five mutations killed.
+The slice entries of M1 to M4 moved verbatim to [history/STATUS-M1-M4.md](history/STATUS-M1-M4.md) on 2026-11-02
+(slice m4.z); ROADMAP.md and DECISIONS.md hold the decisions and the per-item evidence. This summary keeps what
+landed, the evidence tier, the commits, the numbers later work cites and every gap that is still open.
 
-- M3 m3.f2 (`98acabc`): the root manifest declares `cfg(gust_dual)` through
-  `[workspace.lints.rust] unexpected_cfgs`, and every crate except the proc-macro crate
-  gust-macros opts in with `[lints] workspace = true`. The gust-macros guard now allows exactly
-  that root table and still rejects any lints table in its own manifest, however spaced or
-  quoted. Under `--cfg gust_dual`, vector-add and polynomial run the twin on `main`'s inputs and
-  print "CPU twin: matches (N elements, max ULP k)", asserting against the derived bound;
-  normal builds print nothing new. `check-dual` gains fmt and clippy for `tests/dual`, clippy
-  with the cfg on the two examples, and a full mode (GPU) that requires the line with the cfg
-  and its absence without; `check-full` runs the full mode, and CI's `unit` job ends with
-  `check-dual --check-only` (local: 9 s warm, 74 s for the first dual build; on the CI runner
-  82 s, inside R5's 5-minute budget). Evidence: fmt,
-  clippy, xtask and gust-macros tests, check-dual in both modes, check-ui, both examples' tests
-  with and without `--ignored` (GPU), Unit suite, check-fast, docs-check, lint, and the same
-  again on the merge plus check-cpu; four mutations killed.
+**M1, diagnostics.** Closed 2026-10-23 (D33), after a Fable and Opus sanity check. Tier: Unit, Slangc, Reflect; full
+validation at `a6cbb8f`.
+- Landed: `#line` directives on the compile-time copy only, never in exported `.slang` (M1.3; 10 of 10 deliberate
+  failures land on the right Rust line on WGSL and SPIR-V, bytes identical with and without directives for three
+  fixtures; `8fcf944`, `7007827`); a rejected `#[gpu]` module returned beside `compile_error!` (M1.4; `e01b82c`,
+  `f507ab4`); 111 stable codes `[GUST-E0401]`, one DIAGNOSTICS.md section each, every code asserted or listed as
+  unreachable (M1.5, D31; `df07122`, `6e195bc`, `f20d313`); clippy `disallowed-methods` confined to `diagnostics.rs`
+  (M1.6; `1f961fc`); carry-overs (`fb257c9`); the `typed-pipeline` and `staged-graph` release sizes became `1 << 21`
+  because 65 536 workgroups exceed wgpu's default of 65 535 (`5c34e22`).
+- Open: columns stay Slang columns and only the first error is attributed; the editor benefit of M1.4 is not measured
+  (one rustc error before and after, the same message); seven codes are unreachable through `#[gpu]`.
 
-- M3 m3.e2 (`00127a4`): every kernel of staged-graph and component-pool has CPU-twin
-  assertions; none opts out. Each twin is fed the GPU's inputs to that kernel (read back where
-  an earlier kernel produced them), and each test carries the label "kernel-level twin
-  evidence; graph and indirect dispatch GPU-only": the graph, its dependency edges, the
-  indirect launch and the pool growth run on the GPU alone. Integer and struct outputs are
-  exact, including `prepare_dispatch`'s indirect arguments, which also match a host formula.
-  Float bounds are derived per kernel (staged-graph `transform` 193u, `summarize` total 3886u;
-  component-pool `integrate` 19u to 73u per field); every observed maximum on the RTX 5090 is
-  inside its bound and none is used as a tolerance. A guard asserts that no host intermediate
-  lies within the bound of staged-graph's f32 threshold. Both examples add non-ignored CPU-only
-  tests to `check-cpu`. Evidence: fmt, clippy, both examples' tests with and without
-  `--ignored` (GPU), check-cpu, check-examples, check-artifacts, xtask tests, Unit suite,
-  check-fast, docs-check, lint, and the same test, check-cpu and Unit steps again on the merge;
-  five mutations killed.
+**M2, typed host API.** Closed 2026-10-24 (D37), after a Fable and Codex sanity check. Tier: Gpu (RTX 5090);
+`check-full` at `634a50e` (05:44Z). Decisions D34 to D36.
+- Landed (m2.a to m2.g, close-out `009f86a`, sanity fixes `2d1880b`): the typed call surface in `gust` (`TypedDevice`,
+  `Resource`, `Arg`, `Independent`, `LengthRule`, `Call`, `Run<K, N>`; `3060072`); launch-limit checks returning
+  `Error::DeviceLimit` on every dispatch path (`151ef56`; measured before: workgroup size 512 panicked at pipeline
+  creation and 65 536 workgroups at dispatch); `gust-wgpu` implements it and rejects one buffer bound twice when
+  either binding is read-write, `Error::AliasedBinding` (`119ece3`); `check-ui` judged by the keys `code`, `file`,
+  `line`, `message` and `label` (`a8b074f`); generated `call`, `submit` and `dispatch` per kernel, a wrong element
+  type is E0271 (`a83a96e`); const layout assertions, so a `#[gpu]` struct with an outside `GpuPod` field of
+  alignment 8 is E0080 (`adeb7be`); `StagedGraph` derives dependencies from typed calls (RAW, WAW, WAR; `229bfbf`),
+  and staged-graph and component-pool derive exactly `[[], [0], [0, 1], [2]]` and `[[], [0], [0, 1], [1]]`; the
+  examples dispatch through typed calls (`ef52d86`, `2a4f3f6`); a hand-written descriptor's slangc error lands on the
+  marked Rust line (`c6571d5`); `DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION` is pinned to
+  `wgpu::Limits::default()`, and one runtime StorageV1 assertion guards typed, pool and indirect-argument buffers.
+- Open: the dispatch of `render_wgpu_source` and buffers above `max_buffer_size` are not limit-checked (D36);
+  indirect counts are known only on the GPU, and wgpu zeroes over-limit counts silently (under its default instance
+  flags only), so `with_limits` does not apply to them; a kernel with a `Uniform<T>` or `ConstantBuffer<T>` parameter
+  has no typed call (`UnsupportedParameter` at run time); the `Into` and `Run` `on_unimplemented` notes still point at
+  `#[gust::gpu]`; a non-GUST argument gives two E0277 and has no fixture; without `// @rust kernel:` markers
+  `slang::compile` names no kernel, while `reflect` and the helper add `originating Rust kernel`; the "GPU end-to-end"
+  figure of polynomial and signal-pipeline waits twice since m2.f1 and no before and after number was measured.
 
-- M3 m3.e1 (`41b4d0e`): every kernel with a typed call in signal-pipeline, particle-step,
-  typed-pipeline and atomic-counter has CPU-twin assertions; none opts out. The twin equals
-  the host reference exactly. Against the GPU, integer and struct outputs are exact and float
-  outputs stay within absolute bounds derived per kernel by the SEMANTICS.md Â§4 procedure and
-  written in each test's doc comment (signal-pipeline `transform` 900u, u = 2^-24; particle-step
-  `step` 3u to 98u per field; typed-pipeline `calibrate` up to 172u, `classify` 63u, `finalize`
-  14u); every observed maximum on the RTX 5090 is inside its bound and none is used as a
-  tolerance. typed-pipeline feeds each kernel's twin the GPU's intermediate buffers, and
-  `classify`'s severity is compared after an asserted guard that no score lies within the
-  bound of an f32 threshold. Each example adds non-ignored CPU-only tests to `check-cpu`.
-  SEMANTICS.md gains a derived-kernels table and lists the exact example kernels as proven.
-  Evidence: fmt, clippy, the four examples' tests with and without `--ignored` (GPU),
-  check-cpu, check-examples, check-artifacts (spirv-val green, same `.spv` names), xtask
-  tests, Unit suite, check-fast, docs-check, lint, and clippy, xtask tests, check-cpu,
-  check-dual and Unit again on the merge; five mutations killed.
+**M3, dual test builds.** Closed 2026-11-01 (D43), after a Fable and Codex sanity check (both "proceed with fixes"),
+the fixes of m3.h (`a169bec`, merge `5971c12`) and `check-full` on a clean tree at `5971c12` (RTX 5090, 06:28 to
+06:31Z; the run before it was `96e4b9d`, 05:36 to 05:43Z: 13 SPIR-V modules validated, `check-dual` in full mode,
+every example test with `--include-ignored`, both release-only tests by name). Decisions D38 to D43; D39: edge-case
+differences are documented limitations, not to be matched. Tier: Unit, plus Gpu (RTX 5090) for the twin-versus-GPU
+checks.
+- Landed: the known-mismatch ledger (`96ec90b`: 13 kernels and a blessed golden; spike S2: 33 in-domain controls agree;
+  outcomes that WGSL defines are enforced, while NaN, infinities, subnormals, `NaN != NaN` and out-of-bounds access are
+  recorded one-adapter observations; `verify --mode full` adds a `--release` pass); `docs/SEMANTICS.md` (`cc88b1a`);
+  `gust::cpu` (`a7dcb95`, `#![forbid(unsafe_code)]`, no new dependencies); the macro-emitted CPU twin for every
+  typed-call kernel (`732c774`: vector-add equals the host and the GPU exactly; polynomial equals `run_cpu` bit for
+  bit and stays within the derived `48 * 2^-24` of the GPU, observed 2.38e-7, the worked bound being 46u); `check-cpu`
+  and `code: none` in `check-ui` (`35eb2a5`); the five atomics on the twin in ascending invocation order (`0f2ff27`);
+  `check-dual --check-only` and `tests/dual` (`5c5a9ad`: first dual build 76 s, no-change rerun 11 s, dual target
+  directory about 8 GB); twin assertions for every typed-call kernel of eight examples (`41b4d0e`, `00127a4`), with
+  bounds derived per kernel and written in each test (signal-pipeline `transform` 900u; particle-step `step` 3u to
+  98u; typed-pipeline `calibrate` up to 172u, `classify` 63u, `finalize` 14u; staged-graph `transform` 193u,
+  `summarize` 3886u; component-pool `integrate` 19u to 73u per field; u = 2^-24; every observed maximum inside its
+  bound and none used as a tolerance); `cfg(gust_dual)` declared through `[workspace.lints.rust] unexpected_cfgs` and
+  the full `check-dual` mode in `check-full` (`98acabc`; CI 82 s, inside the 5-minute budget); gates that cannot pass
+  by skipping (`95c5514`: `--include-ignored`, a zero-test guard, NaN-propagating max-error folds, the 30 `gust::cpu`
+  unit tests in the Unit suite); m3.h: the KM-11 store rows, a twin follows the crate that defines the kernel (D43),
+  required test names in `check-dual` and `check-cpu`. Spike S1 (`dc2ad87`, a local branch, not merged) proved the
+  twin at counts 1, 63, 64, 65 and 257.
+- Cost numbers: `check-cpu` 7 to 8 s warm and 67 s cold locally; the CI Unit step went from 12 s to 41 s.
+- Open: the test-count guard counts per call, not per test (NEXT_TASKS); the zero-storage twin is only
+  expansion-tested; MSRV is checked by CI only; the root `fmt` and CI clippy did not reach `tests/ui` when m3.f1
+  landed (m3.f2 added `tests/dual`).
 
-- M3 m3.f1 (`5c5a9ad`): `cargo xtask check-dual --check-only` and the `tests/dual` fixture
-  workspace (`kernel-lib` with one `#[gust::gpu]` kernel; `consumer` with a `cfg(test)` twin
-  test and a production binary). It refuses a preset `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` or
-  `CARGO_BUILD_RUSTFLAGS`, builds the workspace with `--cfg gust_dual` through
-  `CARGO_ENCODED_RUSTFLAGS` in `<target>/dual`, and checks that without the cfg a dependent's
-  own `cfg(test)` (E1) and a production binary (E3) get no twin of a library kernel (exactly one
-  E0277 each, matched per target by `ui::judge`'s new target parameter), while with it the twin
-  test compiles and passes (E2). E2 also shows `gust::cpu::overflow_checks!()` reports the
-  calling crate's per-package overflow mode (Revision 5). S3: first dual build 76 s, no-change
-  rerun 11 s; a no-change main build afterwards compiles nothing; the dual target directory is
-  about 8 GB. Not yet in a suite or CI (m3.f2). Not covered: root fmt and CI clippy do not reach
-  `tests/dual` (nor `tests/ui`). Evidence: fmt, clippy (workspace and `tests/dual` with and
-  without the cfg), xtask tests (183), check-dual, check-ui, Unit suite, check-fast, docs-check,
-  lint, and check-dual, xtask tests and Unit again on the merge with m3.d; four mutations killed.
-
-- M3 m3.d (`0f2ff27`): the five `gust::runtime` atomics (u32 and i32) run for real on the CPU
-  twin, sequentially in ascending invocation order (a valid ordering of the GPU semantics);
-  `atomic_add` wraps in every build and never panics. The semantics, numeric, option, result,
-  loops, struct_assignment and atomics fixture tests dispatch the twin with the same call as
-  the GPU and assert twin == host reference and twin == GPU wherever the spec defines one
-  result; for contended exchange and compare-exchange the GPU may land anywhere in the spec
-  set (including 999 for the weak compare-exchange, KM-09) and the twin is pinned to its own
-  value. The known-mismatch ledger has a twin column keyed on `gust::cpu::overflow_checks!()`
-  (debug: Checked, release: Wrapping). A zero-storage kernel's twin runs and panics as plain
-  Rust does. SEMANTICS.md gains the D39 limitation for arithmetic inside `gust` and a list of
-  proven statements. Evidence: fmt, clippy, gust lib, gpu-semantics, the eight GPU fixture
-  tests (RTX 5090), the ledger in release, Unit suite, check-fast, docs-check, lint; four
-  mutations killed (one shows the ledger twin column fails on a reordered twin).
-- M3 m3.c2 (`35eb2a5`): `cargo xtask check-cpu` runs the `--locked`, GPU-free tests of the
-  vector-add and polynomial examples, so their macro-emitted CPU twins are checked against the
-  host references; it is a step of the Unit suite and so of the CI `unit` job. check-ui gains
-  `code: none` for macro errors without a rustc code (it needs a `message:` line and still
-  pins file and line), with the fixtures `kernel-cpu-bad-value` (E0709) and
-  `kernel-cpu-duplicate` (E0710). Cost: 7 to 8 s warm and 67 s cold locally; on the CI runner
-  the Unit step went from 12 s to 41 s (plan R5 budget: five minutes). Evidence: fmt, clippy, xtask tests
-  (161), check-ui, check-cpu, Unit suite, check-fast, docs-check, lint; three mutations
-  killed. Opus keep, no must-fix.
-- M3 m3.c (`732c774`): for every kernel with a typed call, the `#[gpu]` macro emits
-  `#[cfg(any(test, gust_dual))] impl Run<K, N> for gust::cpu::CpuDevice`, which runs the
-  shadow body as written. It matches m3.b's hand-written impl token for token. Uniform kernels
-  and `#[kernel(cpu = "unsupported")]` get none; E0709 and E0710 reject bad `cpu` options.
-  `gust::cpu::read`/`write` refuse a binding of the other access. The check-ui fixture
-  `typed-call-no-cpu-twin` proves the twin is absent from a build without `cfg(test)`.
-  vector-add's twin equals the host reference and the GPU exactly. polynomial's twin equals
-  `run_cpu` bit for bit and stays within the derived bound `48 * 2^-24` of the GPU (S4,
-  RTX 5090: max abs 2.38e-7 observed). CPU-only twin tests run without a GPU. Compile time
-  is unchanged (`-p gust-wgpu --no-run`, warm, 18 s). Not covered: E0709/E0710 have unit
-  tests but no check-ui fixture (macro errors carry no rustc code; m3.c2 added the mode and both fixtures), and
-  the zero-storage twin is only expansion-tested. MSRV is checked by CI only. Evidence: fmt,
-  clippy, gust-macros, gust lib and doctests, rustdoc `-D warnings`, check-ui, bless
-  (unchanged), Unit suite, check-fast, docs-check, both examples with `--ignored`,
-  check-examples; three mutations killed.
-
-- M3 m3.b (`a7dcb95`): `gust::cpu`, the CPU backend the macro twin will use (m3.c, planned).
-  It is `#![forbid(unsafe_code)]` with no new dependencies, and the erased-binding downcast is
-  confined to `read`/`write`. Public items: `CpuDevice`, `CpuBuffer<T>`, `CpuBinding`,
-  `CpuJob`, a non-exhaustive `Error`, and `ulps`. The `#[doc(hidden)]` macro support is
-  `validate`, `read`, `write`, `invocations` and `FromGlobalId`. `validate` follows
-  gust-wgpu's check order (aliasing last) and returns `DeviceLimit` above 2^32 invocations.
-  Overflow mode: `overflow_checks()` reports `gust`'s own build, and `overflow_checks!()`
-  reports the calling crate's (plan Revision 5; the cross-crate proof is due in m3.f1). The
-  `dispatch.rs` tests run on `gust::cpu` instead of a mock. Evidence: fmt, clippy, `gust` lib
-  and doctests (debug and release), check-feature core, check-arch, Unit suite, check-fast,
-  docs-check, rustdoc `-D warnings`; 8 mutations killed.
-- M3 m3.a2 (`cc88b1a`, docs only): `docs/SEMANTICS.md` is the executable-semantics
-  contract. It states the scope, the labels (spec-allowed, measured, proven; nothing is
-  proven yet), the defined domain with D22's narrowing (D38, D39), WGSL float rules quoted by
-  section (15.7.2 to 15.7.6), a per-operation bound table with input domains, reassociation
-  as a limitation, and the tolerance method. Worked polynomial bound: 46u, asserted at 48u in
-  m3.c. Also covered: memory preconditions (a sequential twin hides races), the atomics rule
-  (the weak compare-exchange may fail spuriously, so the atomics test is narrower than the
-  spec; m3.d revisits it), and the ledger as limitations. The review corrected the plan's
-  float bounds (correctly rounded allows either neighbour; 2.5 ULP is up to 5u). No test
-  exercises float rounding yet, and none covers `f32 as u32` in range. Evidence: docs-check,
-  lint, ledger test green.
-- M3 m3.a1 (`96ec90b`): known-mismatch ledger. `tests/fixtures/mismatch.rs` (13 kernels,
-  blessed golden) and `crates/gust-wgpu/tests/mismatch.rs` pin, per row, the GPU outcome and
-  the plain-Rust outcome; the Rust column follows the run-time `overflow-checks` mode (debug
-  run: checked; `--release` run: wrapping). GPU values that WGSL defines are enforced: division
-  and remainder by zero, `MIN / -1`, shift-amount masking, wrapping, and finite out-of-range
-  float-to-int casts (WGSL 15.7.6: 2147483520, 4294967040, `-1e20 -> i32::MIN`). NaN,
-  infinities, subnormals (flushed on the RTX 5090), `NaN != NaN` (false on the GPU) and
-  out-of-bounds access are recorded as unspecified one-adapter observations, not enforced
-  (D39). `docs/SEMANTICS.md` lists them as limitations; an id guard keeps doc and test in step;
-  `verify --mode full` adds a `--release` ledger pass. Spike S2 record: 33 in-domain controls
-  agree; six cast outcomes differed from the body's pre-registration and are listed. Evidence:
-  fmt, clippy, ledger debug and release, docs-check, lint, Unit suite, check-fast green.
-- M3 spike S1 (pre-registered, decision A): a minimal `gust::cpu` (module-level
-  `#![forbid(unsafe_code)]`, the erased-binding downcast confined to `gust::cpu::read`
-  and `write`) plus a macro-emitted `#[cfg(any(test, gust_dual))] impl Run<K, N> for
-  gust::cpu::CpuDevice` runs vector-add's shadow body on the CPU. The twin equals the host
-  reference and the GPU exactly at counts 1, 63, 64, 65 and 257 (RTX 5090); no kill rule
-  fired, no manifest changed, clippy and check-fast green. The spike stays on a local branch
-  (`dc2ad87`, not merged); m3.b and m3.c rebuild it with tests.
-- M2 sanity-check fixes (`2d1880b`, D37): indirect launches check everything except the
-  workgroup count on both the validation and the execution path, so `with_limits` with a
-  lower `max_compute_workgroups_per_dimension` no longer rejects them through a placeholder
-  count (new graph test fails before the fix; three mutations caught); the `DeviceLimit`
-  doc says `validate` checks every node before any compile; a kernel with a
-  `Uniform<T>`/`ConstantBuffer<T>` parameter has no generated typed call and is rejected
-  by the runtime (`UnsupportedParameter`), now said in every doc that claimed "every
-  kernel"; wgpu zeroes over-limit indirect counts only under its default instance flags.
-  Evidence: fmt, clippy, gust-wgpu tests, check-ui, docs-check, lint, Unit suite, check-fast
-  green after two review rounds (Opus: keep after fixes).
-- M2 close-out (code and user docs, `009f86a`): `gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION`
-  is pinned to `wgpu::Limits::default()` by a unit test and to the opened device by a GPU test, and replaces
-  the examples' seven copies of 65 535. One runtime StorageV1 and size assertion now guards typed, pool and
-  indirect-argument buffers (unit tests per clause, a GPU test per allocation path, mutations caught).
-  `StagedGraph::dependency_indices` replaces the examples' copies. README, ARCHITECTURE, EXECUTION_GRAPH and
-  VALIDATION describe the M2 code; decisions D34 (typed call surface, alias contract), D35 (derived edges)
-  and D36 (launch limits and what stays unchecked). Evidence: fmt, clippy, gust-wgpu tests, docs-check, lint,
-  Unit suite and check-fast green after the review fix round (Opus: keep after fixes); `check-full`
-  passed at `634a50e` (2026-10-24T05:44:34Z, RTX 5090).
-- M2 m2.f2: particle-step and typed-pipeline batch typed calls; staged-graph and
-  component-pool build every frame with `StagedGraph::write/run/run_indirect/read`, so all
-  edges are derived, and they assert the derived sets (`[[], [0], [0, 1], [2]]` and
-  `[[], [0], [0, 1], [1]]`; the pool readback depends on `prepare`, the last writer of
-  `active`). Rejection tests keep the explicit API. Release runs of all four pass on the
-  RTX 5090; swapping `calibration` and `readings` in typed-pipeline is E0271 (`2a4f3f6`).
-- M2 m2.f1: vector-add, atomic-counter, polynomial and signal-pipeline dispatch through the
-  generated typed calls (`<kernel>::dispatch`, `BufferDispatch::from(&call)` batches,
-  `Independent(&buffer)`); host references, tolerances and export code are unchanged, and
-  the release runs of polynomial and signal-pipeline pass on the RTX 5090. The one-shot
-  "GPU end-to-end" figure in polynomial and signal-pipeline now waits twice (dispatch, then
-  readback) instead of once; no before/after number was measured. Release workgroup counts
-  are pinned by unit tests against a copied 65 535 (a shared constant follows in the M2
-  close-out) (`ef52d86`).
-- M2 m2.g: a hand-written `KernelDescriptor` whose Slang uses an undeclared identifier
-  fails in slangc with the error on its marked Rust line, through `slang::compile`, both
-  reflect paths and the native reflection helper (`#line`, not the table lookup); with an
-  empty line table the Slang line is reported and no Rust source. The fixture never
-  passes through `#[gpu]`, so later validator work cannot remove it (M1 risk 5, D33).
-  Known difference: without `// @rust kernel:` markers, `slang::compile` names no kernel,
-  while `reflect` and the helper add `originating Rust kernel` (`c6571d5`).
-- M2 m2.e: `StagedGraph` derives dependencies from typed calls. `write`, `run`,
-  `run_indirect` and `read` record the latest earlier writer of every buffer a node
-  touches (RAW, WAW) and, for a writing node, every reader since that writer (WAR); the
-  set is conservative and still validated, and execution stays in insertion order. Mixed
-  graphs work. Measured (spike S4): staged-graph and component-pool derive exactly the
-  pre-registered sets, with GPU readbacks equal to the declared graphs. `validate` now
-  checks device limits for every node before anything compiles (closing the m2.b gap)
-  and rejects an indirect node whose arguments buffer is also bound read-write (measured:
-  a wgpu usage-conflict panic). Indirect counts are known only on the GPU: wgpu zeroes
-  over-limit counts silently and checks the real device limits, so a limit lowered with
-  `with_limits` does not apply to them. `GraphReport` counts derived and declared edges and
-  is `#[non_exhaustive]` (`229bfbf`).
-- M2 m2.d2: const layout assertions. Every `#[gpu]` struct asserts, in one const block,
-  each field at its padding-free offset (the message names the field), no tail padding,
-  alignment 4 and `LAYOUT.is_storage_v1()`; every kernel asserts per storage parameter
-  that the element layout is StorageV1 and matches its Rust size, alignment and stride.
-  `cargo check` now reports what only the runtime asserts caught. The plan's premise that
-  no accepted struct could fail was false: a `#[gpu]` struct with a hand-written outside
-  `GpuPod` field of alignment 8 passes the validator; it is now E0080 at compile time
-  (fixtures `layout-outside-field`, `layout-outside-element`). check-ui follows a primary
-  span's macro expansion to the outermost site inside the case (const-eval panics point
-  into core). Open for m2.f2: pool buffers (`gust-wgpu/src/pool.rs`) skip the runtime
-  layout assert that `create_typed_buffer` has (`adeb7be`).
-- M2 m2.d1: `#[gpu]` generates `call`, `submit` and `dispatch` on every kernel handle:
-  one argument per storage parameter in declaration order, element and device pinned by
-  `Resource` bounds (each spanned on its parameter), access from the parameter. A
-  per-kernel const assert pins the storage count against `DESCRIPTOR`, so `cargo check`
-  catches a mismatch. Kernels with a `Uniform` parameter get no typed call; kernels with
-  no storage parameters take the device type (`call::<D>(..)`). Measured: component-pool's
-  five-parameter kernel infers without turbofish (spike S3); a wrong element type is
-  E0271 on the user's line; a device without `Run` shows `Run`'s `on_unimplemented` text.
-  A non-GUST argument gives two E0277 errors, so it has no fixture. Known limits: the
-  `__Gust` prefix of generated generics is not reserved; the `Into` and `Run` notes still
-  point at `#[gust::gpu]` (`a83a96e`).
-- M2 m2.d0: `check-ui` reads `cargo check --message-format json` and judges only the
-  case's own diagnostics; a failing case must produce exactly one error. `expected.txt`
-  pins it by keys: `code`, `file` and `line` (exact, on one primary span), `message`
-  (substring of the message or a child note) and `label` (substring of that span's label,
-  where `on_unimplemented`'s label lands, measured on real runs). Editing the label text in
-  `gust` now fails check-ui. Open for m2.d1: spans inside macro-generated code may need
-  `expansion` followed, and one error per case may be tight for two-error fixtures
-  (`a8b074f`).
-- M2 m2.c: `gust-wgpu` implements the typed surface. `HeadlessDevice` is a
-  `TypedDevice` with a `Run<K, N>` for every kernel, and `GpuBuffer<T>` is a `Resource`;
-  every typed call goes through the existing persistent-binding validation (layout,
-  device, access, current length) before any wgpu object. One buffer bound to two
-  parameters is now rejected as `Error::AliasedBinding` when either binding is
-  read-write, on typed, untyped and graph paths (measured before: read-only plus
-  read-write panicked in wgpu, read-write twice ran with the last writer winning; no
-  example binds a buffer twice, and check-examples passes). Binding indices are checked
-  against `max_bindings_per_bind_group` on every dispatch path. 19 GPU tests in
-  `tests/typed.rs`. The `_` arm on the `#[non_exhaustive]` `LengthRule` binds any
-  rule this crate does not know with the strictest one (`Shared`), by design (decided at
-  M2 close, D37); the indirect-arguments alias is checked since m2.e (`119ece3`).
-- M2 m2.a: typed call surface in `gust` (`dispatch.rs`). `TypedDevice` extends
-  `Device` (unchanged) with a `Binding<'r>` type; `Resource`, `Arg`, `Independent`,
-  `LengthRule` and `Call` describe one typed launch, and `Run<K, N>` submits it.
-  `Call::new` takes the descriptor from the kernel type and asserts the binding count
-  at monomorphisation; order, access, element and device are checked by generated
-  calls (types) and by each backend at submit (contract). Only test mocks implement it
-  so far (a recording mock and a CPU-shaped `RefCell` mock); `gust-wgpu` follows in
-  m2.c, the macro in m2.d1 (`3060072`).
-- M2 m2.b: launch-limit checks. Every dispatch path checks the kernel and its bindings
-  against the opened device's limits before any compile or cache lookup and returns
-  `Error::DeviceLimit`; before, wgpu panicked (measured: workgroup size 512 at pipeline
-  creation, 65 536 workgroups at dispatch). The opened RTX 5090 device carries wgpu's
-  default limits, not the adapter's. `HeadlessDevice::with_limits` only lowers limits
-  (five fields at the time; six since m2.c added the binding index). Known gaps: the
-  dispatch emitted by `render_wgpu_source` and buffers above `max_buffer_size` are not
-  checked (D36); the multi-node graph gap of this slice was closed by m2.e, whose
-  `validate` runs the limit pass for every node before any compile (`151ef56`).
-
-- M1.6: sanity-check fixes. Clippy `disallowed-methods`/`disallowed-macros` replace the
-  hand-written uncoded-error scanner, and the exception is confined to `diagnostics.rs`
-  by a test; a code counts as tested only when an assertion passed for it; `#line`
-  paths follow the macro's path rule, including Unicode letters (slangc echoes UTF-8
-  names); `resolver = "3"` with unchanged lockfiles. Unit, Slangc and Reflect passed on
-  the merged tree (`1f961fc`).
-
-- M1.3: the compile-time copy carries `#line` directives on `slang::compile*` and both
-  reflection paths; exported `.slang` never does. The native helper honours them, and
-  the sidecar records `line_directives`. 10 of 10 deliberate failures land on the right
-  Rust line on WGSL and SPIR-V; WGSL/SPIR-V bytes are identical with and without
-  directives for three fixtures. Columns stay Slang columns; only the first error is
-  attributed (`8fcf944`, `7007827`).
-- M1.4: a rejected `#[gpu]` module is returned beside `compile_error!` with `#[kernel]`
-  removed, kernel fns renamed and private as on the success path, and the prelude
-  imported; `mod m;` gets the error alone. Measured on `vector-add` with one rejection
-  inside the referenced kernel (rustc 1.98): one error before and after, the same
-  message; the editor benefit is not measured (`e01b82c`, `f507ab4`).
-- M1.5: every `#[gpu]` rejection carries a stable code (`[GUST-E0401] message`, D31);
-  111 codes, one `docs/DIAGNOSTICS.md` section each with its reachability. Every code is
-  asserted by a test or listed as unreachable through `#[gpu]` (seven codes). Guards:
-  unique codes, doc and enum agree, and a source scan for uncoded `syn` errors whose
-  limits the doc states (`df07122`, `6e195bc`, `f20d313`).
-- M1 carry-overs: check-ui matches each expectation within one rustc diagnostic; the
-  `on_unimplemented` text no longer claims exclusivity; the vcvars capture refuses
-  inherited multi-line values that could forge a variable (`fb257c9`).
-- Bug fix: the `typed-pipeline` and `staged-graph` release runs dispatched 65 536
-  workgroups against wgpu's default limit of 65 535 and panicked; release sizes are now
-  `1 << 21` with a test per example, and both release runs complete (`5c34e22`).
+**M4, build-time targets and distribution.** The code chain is merged through m4.r; the cleanup slice m4.z (entry above)
+is merged, and the M4 sanity check (Fable and Codex) follows. Plan adopted 2026-11-01; D44 to D47 (profiles,
+committed and re-verified artifacts, `cargo-gust` and the Slang pin, weak compare-exchange).
+Tier: Gpu (RTX 5090) except where noted.
+- Landed: spike S1 (local commit): with no Slang reachable, a precompiled vector-add verified through D17 and equal to
+  the host reference on the RTX 5090; spike S2: the compile-time refusal (E0080) fires in all three native-setting
+  cases, and a release build without a profile becomes native, with `GUST_PROFILE=dev` as the escape; m4.0 weak
+  compare-exchange (`8d49412`); m4.h `check-artifacts` empties `generated-wgpu/` and every verify mode records the
+  adapter (`b26bccd`); m4.a `gust::artifact` (`2dcb9e3`); m4.b1 the `slang-runtime` feature, off by default
+  (`cbbf35a`); m4.b2 profiles through `GUST_PROFILE` and `require_artifact` (`41b6ff9`); m4.g1 the completion model in
+  native form (`671b3dd`); m4.c content key and embedded artifacts (`dba0e97`); m4.d `cargo-gust` with `init`,
+  `build`, `check` and `doctor` (`e7dd73d`; rebuild identical, about 55 s cold); m4.e1 gust-wgpu prefers the verified
+  artifact (`894ab0e`); m4.e2a `tests/precompiled` and E1 to E4 (`29cfc58`); m4.f the pinned-Slang manager
+  (`9b42958`); m4.e2b E5 to E8 (`3c95f8a`; full `check-precompiled` rc 0 on the merged tree, 640 s); m4.g2 wasm32 and
+  the first browser WebGPU run (`4e096f5`; Chrome 156.0.8078.74, nvidia blackwell); m4.r Slang pinned at v2026.20
+  with every committed set re-blessed (`12ab066`). `**/gust-artifacts/** -text` is required, because
+  `core.autocrlf` would convert committed WGSL.
+- Numbers later work cites: with 2026.20, particle-step SPIR-V read-backs equal those of 13.1 byte for byte on the
+  RTX 5090; the CI `slang` job recompiles `tests/precompiled` in 36 s locally, and its recompile step has run on Linux
+  (the job was green on `af0c2b6`, the step took 5 s); the `gpu-software` pins were 140 passed over 18 result lines at
+  m4.e1 and live in `GPU_SUITE_PIN` of `xtask/src/verify.rs` since m5.a2.
+- Slang 2026.20 fixes the WGSL template-list bug (shader-slang/slang 13566). The `__gust_keep` wrapper of Fix fx.wgsl
+  is therefore redundant under 2026.20 (slice m4.z, 2026-11-02: 30 comparison-in-list shapes all validate in naga
+  without it) but needed under 13.1 (13 of the 30 fail), and `gust::slang` runs whatever `slangc` is on `PATH`, so it
+  stays until the library enforces the pin.
+- Open (the first two are for the M4 close): the manifest field names differ from the plan's draft, so D45 is amended;
+  `gust::Job` needs a wasm-aware contract (`WgpuJob::wait` is a documented no-op on wasm32 and `status` reports
+  `Complete` early); the wasm32 clippy ban on `std::thread::sleep` and `Instant::now` covers `gust-wgpu` only (m4.z),
+  not `gust` or `web-vector-add`; a plain
+  `cargo install cargo-gust` needs `GUST_PROFILE=dev`; CI's `precompiled` job runs `--check-only` plus a NoAdapter run
+  of the release consumer, and E1, E3, E8 and E7b stay local; a GPU-side no-op compare-exchange is not detected by a
+  GPU test and there is no signed ledger case (m4.0); S2 did not measure the wasm32-to-web inference (m4.g2 builds
+  under an explicit `GUST_PROFILE=web`).
+- Closed by m4.z: helper freshness judged by a source-hash stamp and the Slang tag, and a byte check of all five copies
+  of the committed artifact set (the m4.r known gaps), a `cargo gust doctor` warning for a `PATH` `slangc` of another
+  version, and the wasm32 clippy guard of `gust-wgpu`.
 
 T13 remains deferred by owner; its work in progress is the git stash
 `WIP T13 active count deferred`, not the working tree. Do not apply, continue,
@@ -653,7 +325,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M3 sanity-check fixes (slice m3.h), then M4 (see the roadmap's Now and next)
+claim: roadmap M4 close (slice m4.z fix round, then the M4 sanity check); see the roadmap's Now and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no
 ```
@@ -722,4 +394,5 @@ full_check_needed_before_commit: no
 ## Archive
 
 Completed task reports and superseded ownership records are preserved in
-[history/STATUS-2026-09-09.md](history/STATUS-2026-09-09.md).
+[history/STATUS-2026-09-09.md](history/STATUS-2026-09-09.md). The slice entries of M1 to M4
+are in [history/STATUS-M1-M4.md](history/STATUS-M1-M4.md).

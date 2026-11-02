@@ -36,8 +36,8 @@ use std::fmt::Display;
 
 use quote::ToTokens;
 
-/// Declares [`Code`], its stable text and [`ALL`] from one list, so a code cannot be
-/// added to the enum without being listed.
+/// Declares [`Code`], its stable text and `ALL` (a list of every code, compiled for tests only) from one list, so a
+/// code cannot be added to the enum without being listed.
 macro_rules! codes {
     ($($(#[$doc:meta])* $name:ident = $number:literal => $text:literal;)*) => {
         /// A stable diagnostic code. The discriminant is the number in the text.
@@ -56,8 +56,8 @@ macro_rules! codes {
             }
         }
 
-        /// Every code, in declaration order.
-        #[cfg_attr(not(test), allow(dead_code))]
+        /// Every code, in declaration order (the tests walk it; nothing else reads it).
+        #[cfg(test)]
         pub(crate) const ALL: &[Code] = &[$(Code::$name,)*];
     };
 }

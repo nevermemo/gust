@@ -53,6 +53,12 @@ pub(crate) fn helper_hint() -> &'static str {
 /// Read the Slang build tag from the output of `gust-slang-reflect --version`:
 /// `gust-slang-reflect schema=<1|2> slang=<tag>` (the highest reflection schema the helper writes).
 pub(crate) fn parse_helper_version(output: &str) -> Result<String, String> {
+    parse_helper_report(output).map(|(_, tag)| tag)
+}
+
+/// The schema and the Slang build tag of the output of `gust-slang-reflect --version`, with the refusals of
+/// [`parse_helper_version`].
+pub(crate) fn parse_helper_report(output: &str) -> Result<(String, String), String> {
     let line = output.lines().next().unwrap_or_default().trim();
     let mut words = line.split_whitespace();
     if words.next() != Some("gust-slang-reflect") {
@@ -70,7 +76,9 @@ pub(crate) fn parse_helper_version(output: &str) -> Result<String, String> {
         }
     }
     match (schema, slang) {
-        (Some("1" | "2"), Some(tag)) if !tag.is_empty() => Ok(tag.to_owned()),
+        (Some(schema @ ("1" | "2")), Some(tag)) if !tag.is_empty() => {
+            Ok((schema.to_owned(), tag.to_owned()))
+        }
         (Some(other), _) if other != "1" && other != "2" => Err(format!(
             "the helper reports schema {other}; this tool reads schemas 1 and 2"
         )),
@@ -82,6 +90,11 @@ pub(crate) fn parse_helper_version(output: &str) -> Result<String, String> {
 
 /// Run `<helper> --version` and read the Slang build tag.
 pub(crate) fn helper_slang_version(helper: &Path) -> Result<String, String> {
+    parse_helper_version(&helper_version_output(helper)?)
+}
+
+/// Run `<helper> --version` and return what it printed on standard output.
+pub(crate) fn helper_version_output(helper: &Path) -> Result<String, String> {
     let output = Command::new(helper)
         .arg("--version")
         .output()
@@ -93,7 +106,7 @@ pub(crate) fn helper_slang_version(helper: &Path) -> Result<String, String> {
             String::from_utf8_lossy(&output.stderr).trim()
         ));
     }
-    parse_helper_version(&String::from_utf8_lossy(&output.stdout))
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 #[cfg(test)]

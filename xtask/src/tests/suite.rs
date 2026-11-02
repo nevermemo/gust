@@ -370,8 +370,10 @@ fn check_feature_gpu_semantics_runs_the_gpu_coretests() {
             "{test}: crates/gust-wgpu/tests/{test}.rs does not exist"
         );
     }
+    let explained =
+        crate::checks::explanation(Some("gpu-semantics")).expect("gpu-semantics is explained");
     assert!(
-        crate::checks::explain_check(Some("gpu-semantics")).is_ok(),
-        "gpu-semantics is explained"
+        explained.contains("coretests"),
+        "the gpu-semantics explanation names the coretests: {explained}"
     );
 }

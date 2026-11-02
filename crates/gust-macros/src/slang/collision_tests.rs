@@ -1,5 +1,5 @@
 //! Collision-only identifier renaming (M6 plan 2.5): the table, the pure rename function, the six name positions, the
-//! reserved prefixes and the seven goldens. These are Unit-tier tests (no slangc); the Slangc-tier table test in
+//! reserved prefixes and the goldens. These are Unit-tier tests (no slangc); the Slangc-tier table test in
 //! `crates/gust/tests/diagnostics.rs` compiles the same table.
 
 use std::collections::BTreeSet;
@@ -449,16 +449,21 @@ fn reserved_prefixes_are_rejected_also_when_raw() {
     assert!(emit(&local("_Gust")).is_ok());
 }
 
-/// No rename fires in the seven goldens, so `bless` stays unchanged for them. The goldens' own tests compare the
-/// emitted text byte for byte; this one names the property, and fails when a name in them starts to be renamed even
-/// if someone blesses the new text.
+/// No rename fires in the goldens of `tests/fixtures`, so `bless` stays unchanged for them. The goldens' own tests
+/// compare the emitted text byte for byte; this one names the property, and fails when a name in them starts to be
+/// renamed even if someone blesses the new text.
 #[test]
-fn no_rename_fires_in_the_seven_goldens() {
-    let fixtures: [(&str, &str, &str); 7] = [
+fn no_rename_fires_in_the_goldens() {
+    let fixtures: [(&str, &str, &str); 9] = [
         (
             "atomics",
             include_str!("../../../../tests/fixtures/atomics.rs"),
             include_str!("../../../../tests/fixtures/atomics.slang"),
+        ),
+        (
+            "coretests",
+            include_str!("../../../../tests/fixtures/coretests.rs"),
+            include_str!("../../../../tests/fixtures/coretests.slang"),
         ),
         (
             "loops",
@@ -489,6 +494,11 @@ fn no_rename_fires_in_the_seven_goldens() {
             "semantics",
             include_str!("../../../../tests/fixtures/semantics.rs"),
             include_str!("../../../../tests/fixtures/semantics.slang"),
+        ),
+        (
+            "vectors",
+            include_str!("../../../../tests/fixtures/vectors.rs"),
+            include_str!("../../../../tests/fixtures/vectors.slang"),
         ),
     ];
     for (name, rust, golden) in fixtures {

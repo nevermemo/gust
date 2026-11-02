@@ -5,7 +5,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-exclude = ["tests/", "examples/", "benches/"]
+exclude = ["tests/", "examples/", "benches/", "clippy.toml"]
 
 [features]
 # Compile a kernel at run time through `gust/slang-runtime` (the native reflection helper). Off by default (D44):

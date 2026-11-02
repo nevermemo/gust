@@ -7,7 +7,7 @@
 //! the real one; if the macro's output ever drifts from the fixture, the key test fails first.
 //!
 //! `manifest.json` in the fixture directory is spike S1's interim shape (kernel name and key only), pinned
-//! verbatim below; it is not the schema-1 manifest of D45, which the export tool (m4.d) will define.
+//! verbatim below; it is not the schema-1 manifest of D45, which the export tool (m4.d) writes.
 
 use gust::{
     Access, KernelDescriptor, ParameterDescriptor, ResourceBinding, ResourceLayout, ScalarKind,

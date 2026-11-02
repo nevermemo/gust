@@ -10,7 +10,7 @@
 use std::path::PathBuf;
 
 use crate::{
-    slang::{Located, Source},
+    slang::{Located, Source, VALIDATED_BUILDS, matches_pin},
     toolchain::check_compatible,
     tools::helper_hint,
 };
@@ -59,6 +59,8 @@ pub(crate) struct Facts {
     pub(crate) slangc: Result<Located, String>,
     /// The licence and notice files beside the binaries of a managed install.
     pub(crate) notices: Vec<PathBuf>,
+    /// The first `slangc` on `PATH` and what its `-version` gave (or why it gave none); `None` without one.
+    pub(crate) path_slangc: Option<(PathBuf, Result<String, String>)>,
     /// The helper path `gust` resolved (`GUST_SLANG_REFLECT`, the repository's `target/slang-reflect`, or a bare name).
     pub(crate) helper_candidate: PathBuf,
     /// Where the helper was found, if it was.
@@ -68,6 +70,34 @@ pub(crate) struct Facts {
     pub(crate) spirv_val: Option<PathBuf>,
     /// `GUST_PROFILE` as the environment holds it.
     pub(crate) gust_profile: Option<String>,
+}
+
+/// The warning for a managed install that a different `slangc` on `PATH` shadows, or `None`. `cargo gust` runs the
+/// managed `slangc`, but `cargo xtask` and other tools take the first one on `PATH`, so the session would mix two
+/// Slang versions. A `slangc` that `locate` took from `PATH` needs no warning (it is the one reported above), and a
+/// failed `locate` already names the `PATH` version and the install command in its own message. The fix is the managed
+/// `bin` directory first on `PATH`.
+fn path_slangc_warning(facts: &Facts) -> Option<String> {
+    let located = facts.slangc.as_ref().ok()?;
+    if located.source == Source::Path {
+        return None;
+    }
+    let (path, version) = facts.path_slangc.as_ref()?;
+    let managed = located.slangc.parent().unwrap_or(&located.slangc);
+    let cause = match version {
+        Ok(version) if matches_pin(&facts.pin, version, VALIDATED_BUILDS) => return None,
+        Ok(version) => format!("is Slang `{version}`, not the pin {}", facts.pin),
+        Err(error) => format!(
+            "cannot report its version ({error}); the pin is {}",
+            facts.pin
+        ),
+    };
+    Some(format!(
+        "warning: the first slangc on PATH ({}) {cause}; cargo gust uses the managed install, but other tools \
+         (cargo xtask) take PATH and would mix versions: put {} first on PATH",
+        path.display(),
+        managed.display()
+    ))
 }
 
 /// The report, one entry per line, and whether everything `cargo gust build` needs is in place.
@@ -109,6 +139,9 @@ pub(crate) fn lines(facts: &Facts) -> (Vec<String>, bool) {
                 facts.pin
             ));
         }
+    }
+    if let Some(warning) = path_slangc_warning(facts) {
+        out.push(warning);
     }
     match (&facts.helper_found, &facts.helper_slang) {
         (Some(path), slang) => {
@@ -189,6 +222,12 @@ pub(crate) fn lines(facts: &Facts) -> (Vec<String>, bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        slang::{self, Env},
+        store::tests::Scratch,
+        tools::executable_name,
+    };
+    use std::fs;
 
     #[test]
     fn the_profile_rule_matches_the_build_script_of_gust() {
@@ -220,22 +259,23 @@ mod tests {
     fn facts() -> Facts {
         Facts {
             version: "0.1.0".to_owned(),
-            pin: "2026.13.1".to_owned(),
+            pin: "2026.20".to_owned(),
             slangc: Ok(Located {
-                slangc: PathBuf::from("/slang/2026.13.1/bin/slangc"),
-                version: "2026.13.1-1-g84792eb15".to_owned(),
+                slangc: PathBuf::from("/slang/2026.20/bin/slangc"),
+                version: "2026.20".to_owned(),
                 source: Source::Cache,
                 pinned: true,
                 root: Some(PathBuf::from("/slang")),
             }),
             notices: vec![
-                PathBuf::from("/slang/2026.13.1/LICENSE"),
-                PathBuf::from("/slang/2026.13.1/LICENSES"),
-                PathBuf::from("/slang/2026.13.1/third-party-notices"),
+                PathBuf::from("/slang/2026.20/LICENSE"),
+                PathBuf::from("/slang/2026.20/LICENSES"),
+                PathBuf::from("/slang/2026.20/third-party-notices"),
             ],
+            path_slangc: None,
             helper_candidate: PathBuf::from("gust-slang-reflect"),
             helper_found: Some(PathBuf::from("/tools/gust-slang-reflect")),
-            helper_slang: Some(Ok("2026.13.1-1-g84792eb15".to_owned())),
+            helper_slang: Some(Ok("2026.20".to_owned())),
             spirv_val: Some(PathBuf::from("/tools/spirv-val")),
             gust_profile: None,
         }
@@ -250,14 +290,12 @@ mod tests {
             text.contains(&"helper: found at /tools/gust-slang-reflect".to_owned()),
             "{text:?}"
         );
-        assert!(text.contains(&"  Slang build: 2026.13.1-1-g84792eb15".to_owned()));
-        assert!(text.contains(&"slangc: found at /slang/2026.13.1/bin/slangc".to_owned()));
-        assert!(text.contains(
-            &"  Slang 2026.13.1-1-g84792eb15 (cargo cache); the pin is 2026.13.1".to_owned()
-        ));
+        assert!(text.contains(&"  Slang build: 2026.20".to_owned()));
+        assert!(text.contains(&"slangc: found at /slang/2026.20/bin/slangc".to_owned()));
+        assert!(text.contains(&"  Slang 2026.20 (cargo cache); the pin is 2026.20".to_owned()));
         for notice in ["LICENSE", "LICENSES", "third-party-notices"] {
             assert!(
-                text.contains(&format!("  licence notice: /slang/2026.13.1/{notice}")),
+                text.contains(&format!("  licence notice: /slang/2026.20/{notice}")),
                 "{notice}: {text:?}"
             );
         }
@@ -341,28 +379,112 @@ mod tests {
             .unwrap_or_else(|| panic!("{text:?}"));
         assert!(
             refused.contains("built against Slang `2025.1.0`")
-                && refused.contains("is Slang `2026.13.1-1-g84792eb15`")
+                && refused.contains("is Slang `2026.20`")
                 && refused.contains("cargo gust slang build-helper"),
             "{refused}"
         );
         // The pin matching is not enough: two builds of the pinned version still differ.
         let mut other_build = facts();
-        other_build.helper_slang = Some(Ok("2026.13.1".to_owned()));
+        other_build.helper_slang = Some(Ok("2026.20-1-g0a1b2c3d4".to_owned()));
         assert!(!lines(&other_build).1);
+    }
+
+    fn warning_of(facts: &Facts) -> Option<String> {
+        lines(facts)
+            .0
+            .into_iter()
+            .find(|line| line.starts_with("warning: the first slangc on PATH"))
+    }
+
+    #[test]
+    fn a_path_slangc_of_another_version_is_named_with_both_versions_and_the_managed_fix() {
+        // Mutation (b): the managed 2026.20 is found, but the first slangc on PATH reports another version.
+        let mut shadowed = facts();
+        shadowed.path_slangc = Some((
+            PathBuf::from("/vulkan/Bin/slangc"),
+            Ok("2026.13.1".to_owned()),
+        ));
+        let (text, healthy) = lines(&shadowed);
+        // cargo gust itself runs the managed slangc, so the build is possible; the report still says what is wrong.
+        assert!(healthy);
+        let warning = warning_of(&shadowed).unwrap_or_else(|| panic!("{text:?}"));
+        assert_eq!(
+            warning,
+            "warning: the first slangc on PATH (/vulkan/Bin/slangc) is Slang `2026.13.1`, not the pin 2026.20; cargo \
+             gust uses the managed install, but other tools (cargo xtask) take PATH and would mix versions: put \
+             /slang/2026.20/bin first on PATH"
+        );
+        // A PATH slangc that cannot report its version is named too.
+        shadowed.path_slangc = Some((
+            PathBuf::from("/vulkan/Bin/slangc"),
+            Err("exit 3".to_owned()),
+        ));
+        assert!(
+            warning_of(&shadowed)
+                .unwrap()
+                .contains("cannot report its version (exit 3); the pin is 2026.20")
+        );
+        // The pin on PATH, no slangc on PATH, or the located slangc being the PATH one: nothing to add.
+        shadowed.path_slangc = Some((PathBuf::from("/other/slangc"), Ok("2026.20".to_owned())));
+        assert_eq!(warning_of(&shadowed), None);
+        shadowed.path_slangc = None;
+        assert_eq!(warning_of(&shadowed), None);
+        let mut on_path = facts();
+        if let Ok(located) = &mut on_path.slangc {
+            located.source = Source::Path;
+            located.root = None;
+        }
+        on_path.path_slangc = Some((PathBuf::from("/p/slangc"), Ok("2026.20".to_owned())));
+        assert_eq!(warning_of(&on_path), None);
+    }
+
+    #[test]
+    fn without_an_install_a_mismatched_path_slangc_is_refused_naming_both_versions_and_the_install()
+    {
+        // The same machine without a managed install: `locate` refuses the PATH slangc, and doctor carries its words.
+        let scratch = Scratch::new("doctor-path-slangc");
+        let bin = scratch.0.join("bin");
+        fs::create_dir_all(&bin).unwrap();
+        fs::write(bin.join(executable_name("slangc")), "x").unwrap();
+        let env = Env {
+            slang_home: Some(scratch.0.join("home").into_os_string()),
+            path: Some(std::env::join_paths([&bin]).unwrap()),
+            ..Env::default()
+        };
+        let error = slang::locate(&env, false, &|_| Ok("2026.13.1".to_owned())).unwrap_err();
+        let mut missing = facts();
+        missing.slangc = Err(error);
+        let (text, healthy) = lines(&missing);
+        assert!(!healthy);
+        let line = text
+            .iter()
+            .find(|line| line.starts_with("slangc: NOT found as the pinned Slang 2026.20"))
+            .unwrap_or_else(|| panic!("{text:?}"));
+        assert!(
+            line.contains("is Slang `2026.13.1`, not 2026.20")
+                && line.contains("run `cargo gust slang install`"),
+            "{line}"
+        );
+        // The error already says it all, so no second line is added for it.
+        missing.path_slangc = Some((bin.join("slangc"), Ok("2026.13.1".to_owned())));
+        assert_eq!(warning_of(&missing), None);
     }
 
     #[test]
     fn a_missing_pinned_slangc_is_not_healthy_and_carries_the_locate_error() {
         let mut missing = facts();
         missing.slangc =
-            Err("Slang 2026.13.1 was not found: run `cargo gust slang install`".to_owned());
+            Err("Slang 2026.20 was not found: run `cargo gust slang install`".to_owned());
         missing.notices.clear();
         let (text, healthy) = lines(&missing);
         assert!(!healthy);
         assert!(
             text.contains(
-                &"slangc: NOT found as the pinned Slang 2026.13.1: Slang 2026.13.1 was not found: run `cargo gust slang install`"
-                    .to_owned()
+                &concat!(
+                    "slangc: NOT found as the pinned Slang 2026.20: ",
+                    "Slang 2026.20 was not found: run `cargo gust slang install`"
+                )
+                .to_owned()
             ),
             "{text:?}"
         );

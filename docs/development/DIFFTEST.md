@@ -148,9 +148,9 @@ rules (a float constant outside the range rule, a closed float division by zero,
 `f32`, a closed float cast out of the integer range) and discarded under the one label `static`, in dead code too; the
 four labels above are the ones the evaluation itself raises, for values that depend on the input.
 
-The committed corpus (seeds 1 to 8, 128 kept programs, 507 discarded, format 3): 33 of the 128 modules have an `f32`
-output (2 to 8 per seed), and the float discards are `float-domain` 93, `unboundable` 31, `comparison-overlap` 15 and
-`float-construct-not-in-v1` 2 (the per-seed numbers are in `seeds.txt`). Float programs are therefore not rare among
+The committed corpus (seeds 1 to 8, 128 kept programs, 512 discarded, format 4; m5.c2 regenerated seed 4 only): 33
+of the 128 modules had an `f32` output at format 3 (2 to 8 per seed), and the float discards are `float-domain` 92,
+`unboundable` 31, `comparison-overlap` 14 and `float-construct-not-in-v1` 2 (the per-seed numbers are in `seeds.txt`). Float programs are therefore not rare among
 the kept ones, but the range and width rules reject a visible share of the candidates; that is the price of an
 oracle that never guesses.
 

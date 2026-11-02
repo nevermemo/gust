@@ -1,6 +1,6 @@
 # Current status
 
-## Active: roadmap M5 (2026-11-02)
+## Active: roadmap M6 (2026-11-02)
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done; M0.15
@@ -18,8 +18,9 @@ and D47 (weak compare-exchange). M4 closed on 2026-11-02 (D73; close rows D68 to
 check by Fable and Codex (both "proceed with fixes"), the fixes in slice m4.i and `check-full` at `27b342b`.
 M5 (CPU target and evidence breadth): plan adopted early on 2026-11-01 (owner-delegated) after a
 Codex review (adopt with changes) and one revision. D51 makes `cpu` a production profile with a
-sequential contract, and D52 sets the rules for software-adapter evidence. Slices that share no
-code or test file with M4 run beside it, and M5 closes after M4. The M6 layout spike V1 (decision
+sequential contract, and D52 sets the rules for software-adapter evidence. M5 closed on
+2026-11-02 (D76) after a sanity check by Fable and Codex (both "proceed with fixes"), the fixes in slice m5.f1 and
+`check-full` at `7dd9c3d`. The M6 layout spike V1 (decision
 C, a scratch probe on the RTX 5090) found:
 - vec3 must be rejected in buffers;
 - the matrix layout defaults differ between Slang's CLI and its API, so M6 pins column-major;
@@ -31,7 +32,7 @@ M6 (language breadth I): plan adopted early on 2026-11-01 (owner-delegated) afte
 `__gust_mul` overload table, enabled only in modules that name a `Mat` type; the reflection
 reader accepts schema 1 and 2, and the helper keeps schema 1 for scalar-only programs, so
 committed artifacts stay byte-identical. The keyword and construct spikes and the pure-Rust math
-types run beside M4; the keyword renaming follows the bool `^` fix; the rest waits for m4.e1, m5.c1c and M4. Its decision drafts take
+types ran beside M4; m6.m1 to m6.u1 are merged, m6.u2 runs, and m6.g2, m6.dv, m6.d and m6.x remain. Its decision drafts take
 D55 to D59.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
@@ -79,6 +80,28 @@ D55 to D59.
   output (the stale-binary fix); the Cpu suite is this command. CI runs it as the job `cpu-target` beside `unit`: 61 s
   on the runner, against 2 m 57 s for `unit`. Evidence: Unit, Cpu and Gpu smoke (RTX 5090). Opus keep after one fix
   round.
+- M5 m5.f1 (`c988328`, fix round `e76f61a`, merge `7dd9c3d`): the M5 sanity-check fixes. The release-profile
+  ledger call names its 6 tests (`RELEASE_LEDGER_TESTS`) and must run them all, with 0 failed and 0 ignored,
+  in Full and in the new `cargo xtask check-ledger`, which the gpu-software nightly list now calls; it keeps
+  `--nocapture`, so the step log shows the detected overflow mode. `cargo xtask test --suite Gpu` enforces
+  `GPU_SUITE_PIN` as `verify --mode gpu` does. ci.yml's check-dual, check-cpu-target and check-web steps run
+  `--locked`; the Mesa install retries (`Acquire::Retries=5`, timeouts, the install once more after 60 s) with the
+  snapshot and the identity assertions unchanged (D52). Evidence: Gpu (RTX 5090) through the 21 close gates and
+  `check-full` at `7dd9c3d`. Opus merge after one fix round.
+- M6 m6.u1 (`ff6e188`, fix round `82ed0b5`, pin `896571d`, merge `8d88b6d`): uniforms, host side. `gust` gains
+  `BindingKind`, the markers `kind::{Storage, Uniform}` and `Resource::Kind` (every implementer names its kind),
+  `Call::new` counting storage plus uniform parameters, `CpuUniform<T>` and `cpu::read_uniform`. `gust-wgpu` gains
+  `GpuUniform<T>` (`create_uniform`), `BufferBindingType::Uniform` entries, the two uniform launch limits, and
+  `StagedGraph::write_uniform`, an encoded copy from a staging buffer, so two updates between two dispatches are
+  observed in order (D15, D35); the immediate `HeadlessDevice::write_uniform` is a `Queue::write_buffer`, so every
+  dispatch of one later submission sees the last value written. A uniform type must be Std140V1, padding-free and
+  match Rust's size and alignment on both the GPU path and the twin, so no uninitialised byte is uploaded; users
+  write explicit padding fields. A uniform passed where a buffer is expected becomes a compile error once m6.u2
+  names `Kind` in the generated bounds; until then `BindingKind` refuses it at submit. Evidence: typed and graph
+  tests on the RTX 5090 dispatch an `f32` uniform and a struct of a `Vec4` and four `f32` through `create_uniform`;
+  a lone `Vec4` or `Mat4` uniform reached the GPU only in the raw-wgpu probe (m6.g2 dispatches them);
+  `GPU_SUITE_PIN` is 180 passed over 21 lines. Opus merge after one
+  fix round; 19 gate steps on main at `8d88b6d`.
 - M6 m6.n (`f7a8e4f`, fix round `f88de7a`, pin `f8644ce`, merge `86f728c`): matrix negation. slangc emitted
   `matN(0) - m` for `-m`, which naga refuses on WGSL. In a module the m6.m2 gate marks, unary `-` on a non-literal
   lowers to `__gust_neg(x)` from one data table (`slang/neg_table.rs`, 10 rows): scalars and vectors as `-a`,
@@ -374,7 +397,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M5 (m5.c2, then the M5 close) beside M6 (m6.m2); see the roadmap's Now and next
+claim: roadmap M6 (m6.u2, then m6.g2, m6.dv, m6.d, m6.x) beside M7 (m7.a0); see the roadmap's Now and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no
 ```
@@ -383,12 +406,14 @@ full_check_needed_before_commit: no
 
 - Branch: `main`
 - Last complete compiler feature: T12, statement-only `match Result<T, T>`
-- Last full validation: `cargo xtask check-full` passed at `27b342b` (M4 close after m4.i, 2026-11-02, NVIDIA
-  GeForce RTX 5090 / Vulkan, driver 610.88, Slang v2026.20, 07:11 to 07:23Z; no tracked change, one untracked log
-  file; since m4.i it includes the whole `check-precompiled` and `check-web`, and no check was skipped), through the
+- Last full validation: `cargo xtask check-full` passed at `7dd9c3d` (M5 close after m5.f1, 2026-11-02, NVIDIA
+  GeForce RTX 5090 / Vulkan, driver 610.88, Slang v2026.20, 13:49 to 14:01Z; clean tree, nothing untracked; it includes
+  the whole `check-precompiled` and `check-web`, the 8-seed difftest and the release ledger guarded by name, and no
+  check was skipped), through the
   shared cargo slot wrapper: workspace tests, the release-only tests required by name, every
   example test with `--include-ignored`, `check-dual` in full mode, and 13 SPIR-V artifacts
-  through `spirv-val`. The run before it was at `c964222` (2026-11-02, before the M4 sanity
+  through `spirv-val`. The runs before it were at `68c6f40` (m5.c2, 2026-11-02, one untracked log file), `27b342b` (M4 close after
+  m4.i) and `c964222` (2026-11-02, before the M4 sanity
   fixes), then `5971c12` (M3 close, 2026-11-01, clean tree),
   then `96e4b9d` (2026-11-01, before the M3 sanity fixes), then `634a50e` (M2 close, 2026-10-24) and the one before that (M1) at `a6cbb8f`, together with the Slangc
   and Reflect suites. The local `.ai/VALIDATION.json` record stamps the commit and dirty

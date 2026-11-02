@@ -1,6 +1,6 @@
 # Current status
 
-## Active: roadmap M4 (2026-11-01)
+## Active: roadmap M5 (2026-11-02)
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done; M0.15
@@ -14,8 +14,8 @@ fixes in slice m3.h and `check-full` on a clean tree at `5971c12` (RTX 5090, 06:
 M4 (build-time targets and distribution): plan adopted 2026-11-01 (owner-delegated) after a
 Codex review (rework), two Opus re-reviews and three revisions; D44 (build profiles through
 `GUST_PROFILE`), D45 (committed, re-verified artifacts), D46 (`cargo-gust` and the Slang pin)
-and D47 (weak compare-exchange). M4 is closing: `check-full` passed at `c964222`, the close rows
-are D68 to D72, and the sanity check (Fable and Codex: proceed with fixes) is fixed in slice m4.i.
+and D47 (weak compare-exchange). M4 closed on 2026-11-02 (D73; close rows D68 to D72) after a sanity
+check by Fable and Codex (both "proceed with fixes"), the fixes in slice m4.i and `check-full` at `27b342b`.
 M5 (CPU target and evidence breadth): plan adopted early on 2026-11-01 (owner-delegated) after a
 Codex review (adopt with changes) and one revision. D51 makes `cpu` a production profile with a
 sequential contract, and D52 sets the rules for software-adapter evidence. Slices that share no
@@ -34,6 +34,14 @@ committed artifacts stay byte-identical. The keyword and construct spikes and th
 types run beside M4; the keyword renaming follows the bool `^` fix; the rest waits for m4.e1, m5.c1c and M4. Its decision drafts take
 D55 to D59.
 
+- M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
+  is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so
+  CI's NoAdapter step discriminates, and CI runs the consumer's unit test. `check-full` now runs the whole
+  `check-precompiled` and `check-web` after its old steps, checks check-web's tools first and fails without them
+  unless `--skip-web`, which is printed, recorded in `skipped_checks` and shown by `cargo xtask status`; the record
+  holds check-precompiled's summary. Prose fixed in VALIDATION, CI, ARCHITECTURE, HANDOFF, README, AGENTS,
+  cargo-gust `--help` and three skills. Evidence: Gpu (RTX 5090) and Gpu (WebGPU, Chrome 156.0.8078.74, nvidia
+  blackwell) through `check-full` at `27b342b`. Opus merge after one fix round.
 - M4 m4.z (`fa3f9a1`; fix round 1 and the prose pass on top of the merge `d7344b6`): the cleanup slice, with no change
   to compiler output (bless: 0 changed goldens). Helper freshness is judged by content: a build stamp beside the helper
   holds the SHA-256 of the packaged probe source and the schema and Slang tag, and no file time plays a part, so a
@@ -283,8 +291,8 @@ checks.
   landed (m3.f2 added `tests/dual`).
 
 **M4, build-time targets and distribution.** The code chain is merged through m4.r; the cleanup slice m4.z (entry above)
-is merged, `check-full` passed at `c964222` (2026-11-02), the close rows are D68 to D72, and the M4 sanity check
-(Fable and Codex) runs. Plan adopted 2026-11-01; D44 to D47 (profiles,
+is merged, and M4 closed on 2026-11-02 (D73) after the sanity check and its fixes (m4.i, entry above).
+Plan adopted 2026-11-01; D44 to D47 (profiles,
 committed and re-verified artifacts, `cargo-gust` and the Slang pin, weak compare-exchange).
 Tier: Gpu (RTX 5090) except where noted.
 - Landed: spike S1 (local commit): with no Slang reachable, a precompiled vector-add verified through D17 and equal to
@@ -326,7 +334,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M4 close (the M4 sanity check by Fable and Codex); see the roadmap's Now and next
+claim: roadmap M5 (m5.c2, then the M5 close) beside M6 (m6.m2); see the roadmap's Now and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no
 ```
@@ -335,11 +343,13 @@ full_check_needed_before_commit: no
 
 - Branch: `main`
 - Last complete compiler feature: T12, statement-only `match Result<T, T>`
-- Last full validation: `cargo xtask check-full` passed at `c964222` (M4 close, 2026-11-02, NVIDIA GeForce
-  RTX 5090 / Vulkan, Slang v2026.20, 04:59 to 05:06Z; no tracked change, one untracked log file), through the
+- Last full validation: `cargo xtask check-full` passed at `27b342b` (M4 close after m4.i, 2026-11-02, NVIDIA
+  GeForce RTX 5090 / Vulkan, driver 610.88, Slang v2026.20, 07:11 to 07:23Z; no tracked change, one untracked log
+  file; since m4.i it includes the whole `check-precompiled` and `check-web`, and no check was skipped), through the
   shared cargo slot wrapper: workspace tests, the release-only tests required by name, every
   example test with `--include-ignored`, `check-dual` in full mode, and 13 SPIR-V artifacts
-  through `spirv-val`. The run before it was at `5971c12` (M3 close, 2026-11-01, clean tree),
+  through `spirv-val`. The run before it was at `c964222` (2026-11-02, before the M4 sanity
+  fixes), then `5971c12` (M3 close, 2026-11-01, clean tree),
   then `96e4b9d` (2026-11-01, before the M3 sanity fixes), then `634a50e` (M2 close, 2026-10-24) and the one before that (M1) at `a6cbb8f`, together with the Slangc
   and Reflect suites. The local `.ai/VALIDATION.json` record stamps the commit and dirty
   state and contains no machine paths.

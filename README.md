@@ -502,14 +502,16 @@ The direct syntax translator currently supports:
   [DIAGNOSTICS](docs/DIAGNOSTICS.md)). Typed buffers of them (`Vec2`, `Vec4`, `Mat2`, `Mat4` and padding-free
   structs of these) are created, dispatched on the GPU and checked against the CPU twin (M6 m6.g1, StorageV2);
   3-wide vectors and `Mat3` are locals and helper values only. Limitations: the constants `Mat2::IDENTITY` and
-  `Mat3::IDENTITY` crash the SPIR-V ingestion of wgpu on slangc 2026.20 (the executed WGSL route is fine); see
+  `Mat3::IDENTITY` crash the runner when their SPIR-V is handed to wgpu on slangc 2026.20 (the faulting layer is not
+  isolated; the executed WGSL route is fine, and no M6 GPU case executes SPIR-V); see
   [SEMANTICS](docs/SEMANTICS.md) section 4;
 - uniform parameters, `Uniform<T>` or its alias `ConstantBuffer<T>`, whose `T` is a struct of the module: read one
   field at a time and laid out `Std140V1` with explicit padding (M6 m6.u2; E0205 to E0209 and E0321 in
   [DIAGNOSTICS](docs/DIAGNOSTICS.md)). The host creates them with `create_uniform`, updates them with
   `write_uniform` (also as a `StagedGraph` node) and binds them in parameter order (m6.u1, m6.g2);
 - a user name that collides with a Slang or WGSL keyword, a prelude name or a spelling GUST emits is renamed to
-  `__gust_r_<name>` in the Slang text only; descriptors and host names keep the Rust spelling (m6.k);
+  `__gust_r_<name>` in the Slang text and in the descriptors (`ParameterDescriptor.name`, `StructFieldLayout.name`),
+  which carry the emitted names; `rust_type` and your Rust source keep the spelling you wrote (m6.k, D17);
 - statement-only atomics on `RWStructuredBuffer<u32/i32>` elements: `atomic_add`,
   `atomic_exchange`, and `atomic_compare_exchange`, plus unsigned-only
   `atomic_min`/`atomic_max` (T10);

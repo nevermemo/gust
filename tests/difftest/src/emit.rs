@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 
-use crate::ast::{Expr, Program, Stmt, Ty, UnOp};
+use crate::ast::{COMPONENT_LETTERS, Expr, Program, Stmt, Ty, UnOp};
 use crate::generator::DIFFTEST_FORMAT;
 
 /// The lockfile every generated crate is built with (`--locked`). It is generated from `template/Cargo.toml`,
@@ -114,6 +114,7 @@ fn literal(ty: Ty, bits: u32) -> String {
                 format!("{value}i32")
             }
         }
+        Ty::Vec(..) | Ty::Mat(_) => unreachable!("{} has no literal", ty.name()),
     }
 }
 
@@ -123,7 +124,19 @@ fn is_atom(expr: &Expr) -> bool {
         Expr::Lit(Ty::I32, bits) => (*bits as i32) >= 0,
         Expr::Lit(Ty::F32, bits) => bits >> 31 == 0,
         Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Input { .. } => true,
-        Expr::Un { .. } | Expr::Bin { .. } | Expr::Cast { .. } => false,
+        // A constructor is a call and a component, swizzle, `dot` or `transpose` a postfix: both bind tighter than any
+        // operator, so they are operands as they stand.
+        Expr::Make { .. }
+        | Expr::Splat { .. }
+        | Expr::Comp { .. }
+        | Expr::Swizzle { .. }
+        | Expr::Dot { .. }
+        | Expr::Transpose { .. } => true,
+        Expr::Un { .. }
+        | Expr::Bin { .. }
+        | Expr::Cast { .. }
+        | Expr::AggBin { .. }
+        | Expr::AggNeg { .. } => false,
     }
 }
 
@@ -152,6 +165,30 @@ pub fn emit_expr(expr: &Expr) -> String {
         }
         Expr::Bin { op, l, r, .. } => format!("{} {} {}", operand(l), op.symbol(), operand(r)),
         Expr::Cast { to, e } => format!("{} as {}", operand(e), to.name()),
+        Expr::Make { ty, rows, args } => {
+            let constructor = match (ty, rows) {
+                (Ty::Mat(_), true) => "from_rows",
+                (Ty::Mat(_), false) => "from_cols",
+                _ => "new",
+            };
+            let args: Vec<String> = args.iter().map(emit_expr).collect();
+            format!("{}::{constructor}({})", ty.name(), args.join(", "))
+        }
+        Expr::Splat { ty, e } => format!("{}::splat({})", ty.name(), emit_expr(e)),
+        Expr::Comp { e, index } => {
+            format!("{}.{}", operand(e), COMPONENT_LETTERS[usize::from(*index)])
+        }
+        Expr::Swizzle { e, lanes } => {
+            let letters: String = lanes
+                .iter()
+                .map(|&k| COMPONENT_LETTERS[usize::from(k)])
+                .collect();
+            format!("{}.{letters}()", operand(e))
+        }
+        Expr::Dot { l, r } => format!("{}.dot({})", operand(l), emit_expr(r)),
+        Expr::Transpose { e } => format!("{}.transpose()", operand(e)),
+        Expr::AggBin { op, l, r, .. } => format!("{} {} {}", operand(l), op.symbol(), operand(r)),
+        Expr::AggNeg { e } => format!("-{}", operand(e)),
     }
 }
 
@@ -174,6 +211,10 @@ fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
         }
         Stmt::Assign { var, value } => {
             let _ = writeln!(out, "{pad}v{var} = {};", emit_expr(value));
+        }
+        Stmt::AssignComp { var, index, value } => {
+            let letter = COMPONENT_LETTERS[usize::from(*index)];
+            let _ = writeln!(out, "{pad}v{var}.{letter} = {};", emit_expr(value));
         }
         Stmt::If { cond, then, els } => {
             let _ = writeln!(out, "{pad}if {} {{", emit_expr(cond));

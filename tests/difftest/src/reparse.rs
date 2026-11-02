@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast::{BinOp, Expr, InputBuf, Stmt, Ty, UnOp};
+use crate::ast::{BinOp, COMPONENT_LETTERS, Expr, InputBuf, Lane, Stmt, Ty, UnOp};
 use crate::emit::BUFFER_NAMES;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -163,7 +163,7 @@ impl Parser {
             "i32" => Ok(Ty::I32),
             "bool" => Ok(Ty::Bool),
             "f32" => Ok(Ty::F32),
-            other => Err(format!("unknown type {other}")),
+            other => aggregate_ty(other).ok_or_else(|| format!("unknown type {other}")),
         }
     }
 
@@ -183,7 +183,11 @@ impl Parser {
             }
             self.pos += 1;
             let rhs = self.expr(prec + 1)?;
-            lhs = Expr::bin(op, lhs, rhs);
+            lhs = if lhs.ty().is_aggregate() || rhs.ty().is_aggregate() {
+                Expr::agg_bin(op, lhs, rhs)
+            } else {
+                Expr::bin(op, lhs, rhs)
+            };
             if op.is_comparison() && self.binop().is_some_and(BinOp::is_comparison) {
                 return Err("chained comparison".into());
             }
@@ -217,6 +221,9 @@ impl Parser {
                 return Ok(Expr::i32(-(value as i32)));
             }
             let e = self.unary()?;
+            if e.ty().is_aggregate() {
+                return Ok(Expr::AggNeg { e: Box::new(e) });
+            }
             return Ok(Expr::Un {
                 op: UnOp::Neg,
                 ty: e.ty(),
@@ -226,7 +233,73 @@ impl Parser {
         if self.eat_punct("!") {
             return Ok(Expr::inverted(self.unary()?));
         }
-        self.atom()
+        self.postfix()
+    }
+
+    /// An atom and the `.x`, `.xy()`, `.dot(e)` and `.transpose()` that follow it.
+    fn postfix(&mut self) -> Res<Expr> {
+        let mut e = self.atom()?;
+        while self.eat_punct(".") {
+            let name = self.ident()?;
+            let letters: Option<Vec<u8>> = name
+                .chars()
+                .map(|c| {
+                    COMPONENT_LETTERS
+                        .iter()
+                        .position(|&l| l == c)
+                        .map(|k| k as u8)
+                })
+                .collect();
+            if self.eat_punct("(") {
+                e = match (name.as_str(), letters) {
+                    ("dot", _) => {
+                        let other = self.expr(0)?;
+                        Expr::dot(e, other)
+                    }
+                    ("transpose", _) => Expr::Transpose { e: Box::new(e) },
+                    (_, Some(lanes)) => Expr::swizzle(e, lanes),
+                    (other, None) => return Err(format!("unknown method {other}")),
+                };
+                self.expect_punct(")")?;
+            } else {
+                match letters.as_deref() {
+                    Some([index]) => e = Expr::comp(e, *index),
+                    _ => return Err(format!("unknown field {name}")),
+                }
+            }
+        }
+        Ok(e)
+    }
+
+    /// `Vec4::new(..)`, `Vec4::splat(..)`, `Mat4::from_cols(..)` or `Mat4::from_rows(..)` after its type name.
+    fn constructor(&mut self, ty: Ty) -> Res<Expr> {
+        self.expect_punct("::")?;
+        let function = self.ident()?;
+        self.expect_punct("(")?;
+        let mut args = Vec::new();
+        while !self.eat_punct(")") {
+            if !args.is_empty() {
+                self.expect_punct(",")?;
+            }
+            args.push(self.expr(0)?);
+        }
+        match function.as_str() {
+            "new" | "from_cols" => Ok(Expr::Make {
+                ty,
+                rows: false,
+                args,
+            }),
+            "from_rows" => Ok(Expr::Make {
+                ty,
+                rows: true,
+                args,
+            }),
+            "splat" if args.len() == 1 => Ok(Expr::Splat {
+                ty,
+                e: Box::new(args.remove(0)),
+            }),
+            other => Err(format!("unknown constructor {other}")),
+        }
     }
 
     fn atom(&mut self) -> Res<Expr> {
@@ -249,6 +322,10 @@ impl Parser {
                 "true" => Ok(Expr::bool(true)),
                 "false" => Ok(Expr::bool(false)),
                 "i" => Ok(Expr::Gid),
+                _ if aggregate_ty(&name).is_some() => {
+                    let ty = aggregate_ty(&name).expect("checked");
+                    self.constructor(ty)
+                }
                 _ => {
                     if let Some(buf) = BUFFER_NAMES.iter().position(|n| *n == name) {
                         let ty = *self
@@ -346,11 +423,35 @@ impl Parser {
         } else {
             Self::var_id(&name).ok_or_else(|| format!("bad statement start {name}"))?
         };
+        if var != OUT && self.eat_punct(".") {
+            let letter = self.ident()?;
+            let index = COMPONENT_LETTERS
+                .iter()
+                .position(|&l| letter.len() == 1 && letter.starts_with(l))
+                .ok_or_else(|| format!("bad component {letter}"))?;
+            self.expect_punct("=")?;
+            let value = self.expr(0)?;
+            self.expect_punct(";")?;
+            return Ok(Stmt::AssignComp {
+                var,
+                index: index as u8,
+                value,
+            });
+        }
         self.expect_punct("=")?;
         let value = self.expr(0)?;
         self.expect_punct(";")?;
         Ok(Stmt::Assign { var, value })
     }
+}
+
+/// The vector or matrix type that a name spells.
+fn aggregate_ty(name: &str) -> Option<Ty> {
+    let all = [Lane::F32, Lane::I32, Lane::U32]
+        .into_iter()
+        .flat_map(|lane| [2, 4].map(|n| Ty::Vec(lane, n)))
+        .chain([Ty::Mat(2), Ty::Mat(4)]);
+    all.into_iter().find(|ty| ty.name() == name)
 }
 
 /// Parses the kernel body of an emitted module back into `(body, result)`; `inputs` supplies the buffer types.

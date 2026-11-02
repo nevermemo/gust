@@ -13,7 +13,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use crate::ast::{BinOp, Expr, Program, Stmt, Ty, UnOp};
+use crate::agg::{self, Agg, Scalar};
+use crate::ast::{ASSIGN_COMP, BinOp, Expr, Program, Stmt, Ty, UnOp};
 use crate::float::{self, Fl};
 
 /// A way to leave the defined domain: the integer conditions of D38 and the float conditions of R1-4.
@@ -139,25 +140,58 @@ pub fn unary(op: UnOp, ty: Ty, e: u32) -> Result<u32, Violation> {
     }
 }
 
-/// A value of the machine: an integer or `bool` pattern, or an `f32` with its reference value and its interval.
+/// A value of the machine: an integer or `bool` pattern, an `f32` with its reference value and its interval, or a
+/// vector or matrix of such components (`agg.rs`).
+// A `Val` is copied by value on every read of a variable: boxing the aggregate would allocate per vector operation.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Copy, Debug)]
 enum Val {
     I(u32),
     F(f32, Fl),
+    A(Agg),
 }
 
 impl Val {
     fn int(self) -> u32 {
         match self {
             Val::I(bits) => bits,
-            Val::F(..) => unreachable!("a float where the program is typed to hold an integer"),
+            Val::F(..) | Val::A(_) => {
+                unreachable!("a float or aggregate where the program is typed to hold an integer")
+            }
         }
     }
 
     fn float(self) -> (f32, Fl) {
         match self {
             Val::F(reference, fl) => (reference, fl),
-            Val::I(_) => unreachable!("an integer where the program is typed to hold a float"),
+            Val::I(_) | Val::A(_) => {
+                unreachable!("an integer or aggregate where the program is typed to hold a float")
+            }
+        }
+    }
+
+    fn agg(self) -> Agg {
+        match self {
+            Val::A(agg) => agg,
+            _ => unreachable!("a scalar where the program is typed to hold a vector or matrix"),
+        }
+    }
+
+    /// The components of a value as a slice-able array: a scalar is one component.
+    fn scalar(self) -> Scalar {
+        match self {
+            Val::I(bits) => Scalar::I(bits),
+            Val::F(reference, fl) => Scalar::F(reference, fl),
+            Val::A(_) => unreachable!("an aggregate where the program is typed to hold a scalar"),
+        }
+    }
+}
+
+impl From<Scalar> for Val {
+    fn from(scalar: Scalar) -> Val {
+        match scalar {
+            Scalar::I(bits) => Val::I(bits),
+            Scalar::F(reference, fl) => Val::F(reference, fl),
         }
     }
 }
@@ -184,7 +218,7 @@ fn checked_value(reference: f32, fl: Fl) -> Val {
 }
 
 /// `f32` arithmetic of the written operation, in `f32` (round to nearest even, no fusion).
-fn float_binary(op: BinOp, a: (f32, Fl), b: (f32, Fl)) -> Result<Val, Violation> {
+pub(crate) fn float_binary(op: BinOp, a: (f32, Fl), b: (f32, Fl)) -> Result<Scalar, Violation> {
     let (fa, fb) = (a.1, b.1);
     let (reference, fl) = match op {
         BinOp::Add => (a.0 + b.0, fa.plus(fb)),
@@ -193,7 +227,10 @@ fn float_binary(op: BinOp, a: (f32, Fl), b: (f32, Fl)) -> Result<Val, Violation>
         BinOp::Div => (a.0 / b.0, fa.over(fb)?),
         other => unreachable!("float operator {}", other.symbol()),
     };
-    Ok(checked_value(reference, in_domain(fl)?))
+    match checked_value(reference, in_domain(fl)?) {
+        Val::F(reference, fl) => Ok(Scalar::F(reference, fl)),
+        _ => unreachable!("a checked float value is a float"),
+    }
 }
 
 /// The truncated integer of the float interval `[lo, hi]`, if every value in it converts to the same one.
@@ -230,6 +267,8 @@ struct Machine<'a> {
 struct Counting {
     /// (kind, head, tail) -> evaluations; see `operator_name`.
     operators: BTreeMap<(u8, &'static str, &'static str), u64>,
+    /// Vector and matrix operators and component assignments by their counted name (`Expr::aggregate_name`).
+    named: BTreeMap<String, u64>,
     /// `if` statement (by address) -> (evaluations that took the then branch, evaluations that took the else branch).
     branches: HashMap<usize, (u64, u64)>,
     /// `&&` and `||` evaluations whose right operand was evaluated, and whose right operand was skipped.
@@ -260,18 +299,110 @@ impl Machine<'_> {
         }
     }
 
-    /// Evaluates `expr` and, for `observed_values`, remembers the first value each node takes.
+    /// Counts a vector or matrix operator by its name (only `run_covered` pays for the string).
+    fn count_aggregate(&mut self, expr: &Expr) {
+        if let Some(counting) = &mut self.coverage
+            && let Some(name) = expr.aggregate_name()
+        {
+            *counting.named.entry(name).or_default() += 1;
+        }
+    }
+
+    /// Evaluates `expr` and, for `observed_values`, remembers the first value each node takes (a scalar's pattern; a
+    /// vector or matrix has no single pattern and is not remembered).
     fn expr(&mut self, expr: &Expr) -> Result<Val, Violation> {
         let value = self.eval(expr)?;
         if let Some(seen) = &mut self.observed {
             let bits = match value {
-                Val::I(bits) => bits,
-                Val::F(reference, _) => reference.to_bits(),
+                Val::I(bits) => Some(bits),
+                Val::F(reference, _) => Some(reference.to_bits()),
+                Val::A(_) => None,
             };
-            seen.entry(std::ptr::from_ref(expr) as usize)
-                .or_insert(bits);
+            if let Some(bits) = bits {
+                seen.entry(std::ptr::from_ref(expr) as usize)
+                    .or_insert(bits);
+            }
         }
         Ok(value)
+    }
+
+    /// The components of an operand: a scalar is one, an aggregate its own.
+    fn lanes(value: Val) -> Agg {
+        match value {
+            Val::A(agg) => agg,
+            scalar => Agg::new(&[scalar.scalar()]),
+        }
+    }
+
+    /// The aggregate operators (`AggBin` and the nodes that build, read or rearrange vectors and matrices).
+    fn eval_aggregate(&mut self, expr: &Expr) -> Result<Val, Violation> {
+        self.count_aggregate(expr);
+        match expr {
+            Expr::Make { ty, rows, args } => {
+                let mut parts = Vec::with_capacity(ty.lanes());
+                for arg in args {
+                    let value = self.expr(arg)?;
+                    match value {
+                        Val::A(agg) => parts.extend_from_slice(agg.lanes()),
+                        scalar => parts.push(scalar.scalar()),
+                    }
+                }
+                if *rows {
+                    let Ty::Mat(n) = ty else {
+                        unreachable!("from_rows of {}", ty.name())
+                    };
+                    parts = agg::from_rows(usize::from(*n), &parts);
+                }
+                Ok(Val::A(Agg::new(&parts)))
+            }
+            Expr::Splat { ty, e } => {
+                let value = self.expr(e)?.scalar();
+                Ok(Val::A(Agg::new(&vec![value; ty.lanes()])))
+            }
+            Expr::Comp { e, index } => {
+                let agg = self.expr(e)?.agg();
+                Ok(agg.c[usize::from(*index)].into())
+            }
+            Expr::Swizzle { e, lanes } => {
+                let agg = self.expr(e)?.agg();
+                let picked: Vec<Scalar> = lanes.iter().map(|&k| agg.c[usize::from(k)]).collect();
+                Ok(Val::A(Agg::new(&picked)))
+            }
+            Expr::Dot { l, r } => {
+                let lane = l.ty().scalar();
+                let left = self.expr(l)?.agg();
+                let right = self.expr(r)?.agg();
+                Ok(agg::dot(lane, left.lanes(), right.lanes())?.into())
+            }
+            Expr::Transpose { e } => {
+                let Ty::Mat(n) = e.ty() else {
+                    unreachable!("transpose of a non-matrix")
+                };
+                let agg = self.expr(e)?.agg();
+                Ok(Val::A(Agg::new(&agg::transpose(
+                    usize::from(n),
+                    agg.lanes(),
+                ))))
+            }
+            Expr::AggNeg { e } => {
+                let lane = e.ty().scalar();
+                let agg = self.expr(e)?.agg();
+                Ok(Val::A(agg::negate(lane, agg.lanes())?))
+            }
+            Expr::AggBin { op, ty, l, r } => {
+                let types = (l.ty(), r.ty());
+                let left = Self::lanes(self.expr(l)?);
+                let right = Self::lanes(self.expr(r)?);
+                Ok(Val::A(agg::binary_op(
+                    *op,
+                    *ty,
+                    types,
+                    left.lanes(),
+                    right.lanes(),
+                )?))
+            }
+            other => unreachable!("not an aggregate operator: {other:?}"),
+        }
     }
 
     fn eval(&mut self, expr: &Expr) -> Result<Val, Violation> {
@@ -363,8 +494,16 @@ impl Machine<'_> {
                     );
                     return Ok(Val::I(u32::from(truth)));
                 }
-                float_binary(*op, left, right)
+                float_binary(*op, left, right).map(Val::from)
             }
+            Expr::Make { .. }
+            | Expr::Splat { .. }
+            | Expr::Comp { .. }
+            | Expr::Swizzle { .. }
+            | Expr::Dot { .. }
+            | Expr::Transpose { .. }
+            | Expr::AggBin { .. }
+            | Expr::AggNeg { .. } => self.eval_aggregate(expr),
             Expr::Bin { op, ty, l, r } => {
                 self.count(KIND_BINARY, op.symbol(), ty.name());
                 let left = self.expr(l)?.int();
@@ -414,6 +553,17 @@ impl Machine<'_> {
                     let value = self.expr(value)?;
                     self.vars[*var as usize] = value;
                 }
+                Stmt::AssignComp { var, index, value } => {
+                    if let Some(counting) = &mut self.coverage {
+                        *counting.named.entry(ASSIGN_COMP.to_string()).or_default() += 1;
+                    }
+                    let value = self.expr(value)?.scalar();
+                    let Val::A(mut agg) = self.vars[*var as usize] else {
+                        unreachable!("a component assignment to a scalar")
+                    };
+                    agg.c[usize::from(*index)] = value;
+                    self.vars[*var as usize] = Val::A(agg);
+                }
                 Stmt::If { cond, then, els } => {
                     let taken = self.expr(cond)?.int() != 0;
                     if let Some(counting) = &mut self.coverage {
@@ -451,7 +601,10 @@ fn variable_slots(program: &Program) -> usize {
     fn block(stmts: &[Stmt], max: &mut usize) {
         for stmt in stmts {
             match stmt {
-                Stmt::Let { var, .. } | Stmt::Assign { var, .. } | Stmt::For { var, .. } => {
+                Stmt::Let { var, .. }
+                | Stmt::Assign { var, .. }
+                | Stmt::AssignComp { var, .. }
+                | Stmt::For { var, .. } => {
                     *max = (*max).max(*var as usize + 1);
                 }
                 Stmt::If { .. } => {}
@@ -552,6 +705,7 @@ fn run_machine(program: &Program, covered: bool) -> Result<(Run, Option<Coverage
                     }
                     Ok((reference.to_bits(), Some((lo, hi))))
                 }
+                Val::A(_) => unreachable!("Program::check rejects an aggregate result"),
             })
             .map_err(|violation| Failure { element, violation })?;
         values.push(result.0);
@@ -569,6 +723,7 @@ fn run_machine(program: &Program, covered: bool) -> Result<(Run, Option<Coverage
                 .operators
                 .insert(operator_name(kind, head, tail), n);
         }
+        coverage.operators.extend(counting.named);
         for (then_taken, else_taken) in counting.branches.values() {
             coverage.if_evaluated += 1;
             coverage.if_then_taken += u64::from(*then_taken > 0);
@@ -604,24 +759,60 @@ pub fn run(program: &Program) -> Result<Vec<u32>, Failure> {
 }
 
 /// A constant of the static check.
+#[allow(clippy::large_enum_variant)] // as `Val`: copied by value, folded once per node
 #[derive(Clone, Copy)]
 enum Const {
     I(u32),
     F(f32),
+    /// A closed vector or matrix; its `f32` components carry exact intervals and are folded with the interpreter's
+    /// own arithmetic (`agg`), so a closed aggregate that would leave the domain when run is a static violation too.
+    A(Agg),
 }
 
 impl Const {
     fn int(self) -> u32 {
         match self {
             Const::I(bits) => bits,
-            Const::F(_) => unreachable!("typed program"),
+            Const::F(_) | Const::A(_) => unreachable!("typed program"),
         }
     }
 
     fn float(self) -> f32 {
         match self {
             Const::F(value) => value,
-            Const::I(_) => unreachable!("typed program"),
+            Const::I(_) | Const::A(_) => unreachable!("typed program"),
+        }
+    }
+
+    fn agg(self) -> Agg {
+        match self {
+            Const::A(agg) => agg,
+            Const::I(_) | Const::F(_) => unreachable!("typed program"),
+        }
+    }
+
+    /// This constant as a component of an aggregate (a float with the exact interval of its value).
+    fn scalar(self) -> Scalar {
+        match self {
+            Const::I(bits) => Scalar::I(bits),
+            Const::F(value) => Scalar::F(value, Fl::exact(value)),
+            Const::A(_) => unreachable!("typed program"),
+        }
+    }
+
+    /// The constant that a component of an aggregate is (a float as its reference value).
+    fn of(scalar: Scalar) -> Const {
+        match scalar {
+            Scalar::I(bits) => Const::I(bits),
+            Scalar::F(reference, _) => Const::F(reference),
+        }
+    }
+
+    /// The components of an operand of `AggBin`, `Dot` and the like: a scalar is one component.
+    fn lanes(self) -> Agg {
+        match self {
+            Const::A(agg) => agg,
+            scalar => Agg::new(&[scalar.scalar()]),
         }
     }
 }
@@ -705,6 +896,89 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
                     }
                     _ => Ok(None),
                 }
+            }
+            Expr::Make { ty, rows, args } => {
+                let mut parts = Vec::with_capacity(ty.lanes());
+                let mut closed = true;
+                for arg in args {
+                    match fold(arg)? {
+                        Some(Const::A(agg)) => parts.extend_from_slice(agg.lanes()),
+                        Some(scalar) => parts.push(scalar.scalar()),
+                        None => closed = false,
+                    }
+                }
+                if !closed {
+                    return Ok(None);
+                }
+                if *rows {
+                    let Ty::Mat(n) = ty else {
+                        unreachable!("from_rows of {}", ty.name())
+                    };
+                    parts = agg::from_rows(usize::from(*n), &parts);
+                }
+                Ok(Some(Const::A(Agg::new(&parts))))
+            }
+            Expr::Splat { ty, e } => {
+                Ok(fold(e)?.map(|value| Const::A(Agg::new(&vec![value.scalar(); ty.lanes()]))))
+            }
+            Expr::Comp { e, index } => {
+                Ok(fold(e)?.map(|value| Const::of(value.agg().c[usize::from(*index)])))
+            }
+            Expr::Swizzle { e, lanes } => Ok(fold(e)?.map(|value| {
+                let agg = value.agg();
+                let picked: Vec<Scalar> = lanes.iter().map(|&k| agg.c[usize::from(k)]).collect();
+                Const::A(Agg::new(&picked))
+            })),
+            Expr::Dot { l, r } => {
+                let (left, right) = (fold(l)?, fold(r)?);
+                let (Some(a), Some(b)) = (left, right) else {
+                    return Ok(None);
+                };
+                let sum = agg::dot(l.ty().scalar(), a.agg().lanes(), b.agg().lanes())?;
+                Ok(Some(Const::of(sum)))
+            }
+            Expr::Transpose { e } => {
+                let Ty::Mat(n) = e.ty() else {
+                    unreachable!("transpose of a non-matrix")
+                };
+                Ok(fold(e)?.map(|value| {
+                    Const::A(Agg::new(&agg::transpose(
+                        usize::from(n),
+                        value.agg().lanes(),
+                    )))
+                }))
+            }
+            Expr::AggNeg { e } => match fold(e)? {
+                Some(value) => Ok(Some(Const::A(agg::negate(
+                    e.ty().scalar(),
+                    value.agg().lanes(),
+                )?))),
+                None => Ok(None),
+            },
+            Expr::AggBin { op, ty, l, r } => {
+                let types = (l.ty(), r.ty());
+                let (left, right) = (fold(l)?, fold(r)?);
+                if matches!(op, BinOp::Div | BinOp::Rem)
+                    && right.is_some_and(|divisor| {
+                        divisor.lanes().lanes().iter().any(|part| match *part {
+                            Scalar::I(bits) => bits == 0,
+                            Scalar::F(value, _) => value == 0.0,
+                        })
+                    })
+                {
+                    return Err(Violation::DivisionByZero);
+                }
+                let (Some(a), Some(b)) = (left, right) else {
+                    return Ok(None);
+                };
+                let (a, b) = (a.lanes(), b.lanes());
+                Ok(Some(Const::A(agg::binary_op(
+                    *op,
+                    *ty,
+                    types,
+                    a.lanes(),
+                    b.lanes(),
+                )?)))
             }
             Expr::Cast { to, e } => {
                 let from = e.ty();

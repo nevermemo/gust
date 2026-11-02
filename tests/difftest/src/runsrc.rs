@@ -58,6 +58,7 @@ fn rust_ty(ty: Ty) -> &'static str {
         Ty::U32 | Ty::Bool => "u32",
         Ty::I32 => "i32",
         Ty::F32 => "f32",
+        Ty::Vec(..) | Ty::Mat(_) => unreachable!("no vector or matrix buffer"),
     }
 }
 
@@ -67,6 +68,7 @@ fn from_word(ty: Ty, word: &str) -> String {
         Ty::U32 | Ty::Bool => word.to_owned(),
         Ty::I32 => format!("{word} as i32"),
         Ty::F32 => format!("f32::from_bits({word})"),
+        Ty::Vec(..) | Ty::Mat(_) => unreachable!("no vector or matrix buffer"),
     }
 }
 
@@ -76,6 +78,7 @@ fn to_word(ty: Ty, value: &str) -> String {
         Ty::U32 | Ty::Bool => value.to_owned(),
         Ty::I32 => format!("{value} as u32"),
         Ty::F32 => format!("{value}.to_bits()"),
+        Ty::Vec(..) | Ty::Mat(_) => unreachable!("no vector or matrix buffer"),
     }
 }
 
@@ -84,6 +87,7 @@ fn zero(ty: Ty) -> &'static str {
         Ty::U32 | Ty::Bool => "0u32",
         Ty::I32 => "0i32",
         Ty::F32 => "0.0f32",
+        Ty::Vec(..) | Ty::Mat(_) => unreachable!("no vector or matrix buffer"),
     }
 }
 

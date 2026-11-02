@@ -11,18 +11,19 @@ use crate::ast::Ty;
 use crate::json::{self, Json};
 use crate::runsrc::Planned;
 
-/// The four discard classes of R1-4 and the generator's one extra reason, in report order. The `domain` class is the
+/// The four discard classes of R1-4 and the generator's two extra reasons, in report order. The `domain` class is the
 /// integer labels (`overflow`, `division-by-zero`, `min-over-minus-one`, `shift-amount`, `index`) plus `float-domain`
 /// plus `static`.
-pub const CLASSES: [&str; 5] = [
+pub const CLASSES: [&str; 6] = [
     "domain",
     "comparison-overlap",
     "unboundable",
     "float-construct-not-in-v1",
     "no-input-read",
+    "no-aggregate",
 ];
 
-/// The class of a discard reason (a `Violation::label`, `static` or `no-input-read`).
+/// The class of a discard reason (a `Violation::label`, `static`, `no-input-read` or `no-aggregate`).
 pub fn discard_class(reason: &str) -> &'static str {
     match reason {
         "overflow" | "division-by-zero" | "min-over-minus-one" | "shift-amount" | "index"
@@ -31,6 +32,7 @@ pub fn discard_class(reason: &str) -> &'static str {
         "unboundable" => "unboundable",
         "float-construct-not-in-v1" => "float-construct-not-in-v1",
         "no-input-read" => "no-input-read",
+        "no-aggregate" => "no-aggregate",
         // A label this table does not know is a new violation: it must be classified here on purpose.
         other => panic!("discard reason {other:?} has no class"),
     }
@@ -48,6 +50,7 @@ pub fn element_text(ty: Ty, bits: u32) -> String {
         Ty::F32 => format!("{:?} (0x{bits:08x})", f32::from_bits(bits)),
         Ty::I32 => format!("{}", bits as i32),
         Ty::Bool | Ty::U32 => format!("{bits}"),
+        Ty::Vec(..) | Ty::Mat(_) => unreachable!("the output buffer is scalar"),
     }
 }
 
@@ -418,7 +421,7 @@ mod tests {
             let class = discard_class(violation.label());
             assert!(CLASSES.contains(&class), "{violation:?}");
         }
-        for reason in ["static", "no-input-read"] {
+        for reason in ["static", "no-input-read", "no-aggregate"] {
             assert!(CLASSES.contains(&discard_class(reason)));
         }
     }
@@ -443,6 +446,7 @@ mod tests {
             "float-construct-not-in-v1"
         );
         assert_eq!(discard_class("no-input-read"), "no-input-read");
+        assert_eq!(discard_class("no-aggregate"), "no-aggregate");
     }
 
     #[test]

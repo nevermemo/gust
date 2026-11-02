@@ -1,8 +1,10 @@
 # Differential program generator (`tests/difftest`)
 
 Status: slices m5.c1a (the integer core), m5.c1a2 (floats v1, the exact-interval subset of R1-4), m5.c1b (the
-batch runner `difftest-run`) and m5.c1c (the shrinker). The crate generates scalar integer, boolean and `f32`
-kernels from a seed, evaluates them with an independent interpreter that tracks the defined domain (and, for floats,
+batch runner `difftest-run`), m5.c1c (the shrinker) and m6.d (vectors and matrices, DIFFTEST_FORMAT 6). The crate
+generates integer, boolean and `f32` kernels from a seed, and (since format 6) kernels that compute with the
+`gust::math` vectors and matrices as locals and intermediates (buffers and results stay scalar), evaluates them with an
+independent interpreter that tracks the defined domain (and, for floats,
 an interval of every value a conforming WGSL implementation may hold), writes them as a `#[gust::gpu]` crate, and
 `difftest-run` builds a batch of them, runs every program on the interpreter, the CPU twin and the GPU, and reports
 what disagreed. The crate itself is std only and has no GPU code: the GPU code lives in the generated run crate,
@@ -55,6 +57,38 @@ Types `u32`, `i32`, `bool`, and (since format 2) `f32`. One to three read-only i
 of the m5.c1a seeds.txt: formats 2 and 3 change the stamp (and, in the float space, the programs), not the integer programs.
 - No structs, helpers, `Option` or atomics.
 
+### Vectors and matrices (format 6, slice m6.d)
+
+A batch is 16 programs per seed: the first ten in-domain programs of the float space (the programs of format 5, in the
+same order and byte for byte) and six of the vector space (`Space::Vector`, attempt numbers from
+`VECTOR_ATTEMPT_BASE = 1_000_000`; the attempt number alone selects the space, so the reducer and the shrinker
+re-decode a vector program without being told). The vector space is the float space plus these, as locals and
+intermediates only; an input buffer, the output and `out_ty` stay scalar (`Program::check` refuses a vector result or
+buffer), so the result file, the classifier and the shrinker see scalars.
+
+- Types: `Vec2`/`Vec4`, `IVec2`/`IVec4`, `UVec2`/`UVec4` and `Mat2`/`Mat4` (square, column-major, `Mat4 { cols: [Vec4; 4] }`
+  layout). The 3-wide types are not generated: they have no buffer layout, and the 2- and 4-wide types are the ones the
+  GPU runner can read back. A mutable vector local may be assigned a component (`v.x = e;`).
+- Constructors: `Vec4::new(a, b, c, d)`, `Vec4::splat(s)`, `Mat4::from_cols(c0, c1, c2, c3)` and `Mat4::from_rows(..)`.
+  Operators: the component-wise `+ - * /` of two vectors of one type, a vector with a scalar (`v * s`, `s * v`, `v / s`),
+  unary `-` on `Vec` and `IVec` and on matrices, matrix `+ - *` and `m * s`, `s * m`, `m * v`, `m * m` (the `Mul` impls of
+  `crates/gust/src/math.rs`; `Div` for integer vectors is the component-wise `/`). Reads back: `.x .y .z .w`, the
+  swizzles `.xy()`, `.xyxy()`, `.wzyx()` (2 or 4 letters, from either width), `a.dot(b)`, `m.transpose()`. These have
+  their own AST nodes (`Make`, `Splat`, `Comp`, `Swizzle`, `Dot`, `Transpose`, `AggBin`, `AggNeg`, `Stmt::AssignComp`),
+  so every pattern over `Bin` and `Un` still sees scalars only; `ast::operator_counts` and the interpreter's coverage
+  name them alike (`new Vec4`, `splat Vec4`, `comp Vec4`, `swizzle Vec4->2`, `dot Vec4`, `* Mat4 Vec4`, `-Vec4`,
+  `from_cols Mat4`, `transpose Mat2`, `assign comp`, ...).
+- A vector or matrix local is initialised at depth 3 (a scalar at depth 5): their products multiply the bounds of the
+  operands. A top-level vector local is folded into the result through a component (or, for `f32`, `dot(v, v)`), a
+  matrix through a component of its product with a fresh vector, so that the values are live. A vector-space program
+  without any vector or matrix operation is discarded as `no-aggregate` (its own class in the report) because it tests
+  nothing new.
+- **`Mat2` is never a compile-time constant.** SEMANTICS section 4: a constant `Mat2` or `Mat3` crashes naga's SPIR-V
+  front end (the harness runs the WGSL path, which does not, but the generator must hold on every path). `Program::check`
+  refuses a `Mat2` constructor with no input read in its arguments, and the generator puts one in (`vec2_from_input`)
+  whenever the columns it drew read none. A constant `Mat4` is allowed. The guard is syntactic ("an `Input` read below
+  the constructor") because the question that matters is whether a front end can fold the expression.
+
 ## The domain filter
 
 The interpreter (`interp.rs`) evaluates the AST with checked operations, in Rust's evaluation order and with
@@ -90,6 +124,16 @@ discard, as above. No discard remains for slangc folding a divisor, so there is 
 the program as a `gpu-error` mismatch naming the seed, and the Slangc-tier shape table of
 `crates/gust/tests/diagnostics.rs` fails first.
 
+The vector operators inherit the domain component by component (`agg.rs`): the interpreter does each component with the
+scalar `binary`, `unary` and `float_binary`, in the order the CPU twin performs them, so the first violation is that of the
+lowest component and a vector is outside the domain as soon as one component is (`UVec2::new(1, u32::MAX) + UVec2::splat(1)`
+is an `overflow`, `IVec2::new(4, MIN) / IVec2::new(2, -1)` a `min-over-minus-one`). `a.dot(b)` is `p0 + p1 + ...` with
+`pk = a_k * b_k`, summed left to right (`Vec4::dot`), `(m * v)[i]` is `c0[i] * v[0] + c1[i] * v[1] + ...` (`Mat4::mul_vec4`)
+and `(a * b).cols[j]` is `a * b.cols[j]` (`Mat4::mul_mat4`); an integer `dot` therefore overflows where one of its products
+or partial sums does. `static_violation` folds a closed vector or matrix expression with the same arithmetic (a closed
+`UVec2::splat(u32::MAX) + UVec2::splat(1)` in dead code is `static`), and a closed zero component in the divisor of a
+vector quotient is `static` even when the dividend is not closed, as for a scalar.
+
 Inside the domain the three parties (interpreter, CPU twin,
 GPU) must agree bit for bit, so a program outside it is never asserted, and nothing here writes a ledger row (D39). A
 program that reads no input buffer is discarded as `no-input-read` (it would be a constant).
@@ -115,6 +159,7 @@ the line numbers are `docs/SEMANTICS.md` and the section numbers are the WGSL sp
 | Every float intermediate must be exactly `[0, 0]` or inside `+-[2^-100, 2^100]` on one side of zero. Then no subnormal (which an implementation may flush) and no infinity or NaN (indeterminate) occurs on any party, and an interval that straddles zero is refused. | SEMANTICS.md:199; WGSL 15.7.2 |
 | The relative width of the output interval must be at most `2^-10`; a wider one is "unboundable", because the comparison would not mean anything. | R1-4 (a choice of this oracle) |
 | Float `%`, `bool` buffers, and inputs outside the bounded set (magnitudes in `[2^-20, 2^20]` or exactly zero, no negative zero) are never generated. | SEMANTICS.md:198 (float `%` has no stated bound) |
+| Vectors and matrices (format 6): every component is a float intermediate under the rows above. A component-wise `+ - * /` is the scalar operation per component. `dot` of `N` components, `(m * v)[i]` and `(m * m)[i][j]` are a sum of `N` products composed in the twin's written order, so they are one `+` chain of `N` product terms: widened by `N - 1` roundings of `S'` (the rule above), where each product is itself within 1 ULP of its exact value. A GPU that fuses (`fma`) or regroups inside the sum stays inside that interval, as for a scalar chain; there is no separate bound for vectors, the chain rule is the bound. An aggregate `+`/`-` chain keeps the 4-term limit per component. | SEMANTICS.md:193, 194 and section 4 "Vectors and matrices"; WGSL 15.7.5 |
 
 Discard labels of the float rules, counted per seed beside the integer ones in `seeds.txt`:
 
@@ -131,8 +176,9 @@ rules (a float constant outside the range rule, a closed float division by zero,
 `f32`, a closed float cast out of the integer range) and discarded under the one label `static`, in dead code too; the
 four labels above are the ones the evaluation itself raises, for values that depend on the input.
 
-The committed corpus (seeds 1 to 8, 128 kept programs, 507 discarded, format 5; m6.dv changed seed 4's programs only,
-against format 4): 33 of the 128 modules had an `f32` output at format 3 (2 to 8 per seed), and the float discards are
+The float-space numbers that follow are those of format 5 (the committed corpus then: seeds 1 to 8, 128 kept programs,
+507 discarded; m6.dv changed seed 4's programs only, against format 4; format 6 keeps the float space and its first ten
+programs per seed, see Format 6 below for today's totals): 33 of the 128 modules had an `f32` output at format 3 (2 to 8 per seed), and the float discards are
 `float-domain` 93, `unboundable` 31, `comparison-overlap` 15 and `float-construct-not-in-v1` 2 (the per-seed numbers are
 in `seeds.txt`). Float programs are therefore not rare among
 the kept ones, but the range and width rules reject a visible share of the candidates; that is the price of an
@@ -149,7 +195,10 @@ against an adversarial CPU model, not against hardware.
 A program is a pure function of `(seed, attempt)`: `prng.rs` (xorshift64* seeded through SplitMix64) writes 4096 bytes,
 and `generator.rs` decodes them into the AST; bytes past the end read as zero, which selects the first option of every
 choice, so a truncated stream is still a valid, smaller program (the last pass of the shrinker relies on that).
-`generate_batch` walks attempts 0, 1, 2, ... and keeps the in-domain programs until it has 16.
+`generate_batch` walks attempts 0, 1, 2, ... and keeps the in-domain programs until it has ten (the float space), then
+walks attempts 1 000 000, 1 000 001, ... of the vector space until it has six more (16 in all; `Batch.vector_attempts`
+and `Batch.vector_discarded` count the second walk apart, and `difftest-gen stats SEEDS` prints them). Before format 6 it
+kept sixteen programs of the float space.
 
 `seeds.txt` pins seeds 1 to 8 (R1-13: 8 seeds, 16 programs each, 128 programs): per line `seed programs discarded
 reason=count... hash=`, where the hash is FNV-1a 64 of the emitted `src/lib.rs` followed by the input data of every
@@ -186,7 +235,7 @@ accepted are all still accepted; six of its discard lines were relabelled.
 Format 5 (slice m6.dv, D74): the divisor rule of format 4 is gone, because the macro lowers a `/` or `%` with a divisor
 that is not a literal to `__gust_div` and `__gust_rem` and slangc compiles those in every shape (the rule's only reason
 was slangc's error E30002). The decoding is unchanged and the acceptance goes back to format 3's: every seed holds its
-format-3 programs again (`format_5_holds_the_format_3_programs_of_every_seed`), the `Space::Integer` pin has its m5.c1a
+format-3 programs again (`the_float_space_still_holds_the_format_3_programs_of_every_seed` today), the `Space::Integer` pin has its m5.c1a
 discard counts back, and against format 4 only seed 4 gets different programs (`s4_a26`, the `v2 % v2` that slangc
 refused, is accepted again: 91 discards become 86). Of the 124 `static` discards of seeds 1 to 8 at format 4, 13 were the
 divisor rule's; 111 remain (the closed-constant rules). The counts of format 5 equal those of format 3 (a3a7798), label
@@ -194,6 +243,28 @@ for label. Against format 4 the differences are: `division-by-zero` +9 (17 to 26
 now meets, where the retired rule had discarded it as `static`), seed 5 has one more `comparison-overlap` and one more
 `float-domain`, and seed 4 stops 5 attempts earlier (`s4_a26` is kept; 91 discards become 86). The discard total of
 the corpus goes from 512 to 507.
+
+Format 6 (slice m6.d): vectors and matrices. A batch is now ten float-space programs and six vector-space programs
+(see Program space). The float space is untouched: its draws, and so the first ten programs of every seed, are those of
+format 5 byte for byte (`a_batch_is_ten_float_programs_then_six_vector_programs` compares them with
+`generate_batch_in(Space::Float, seed)`, and `the_float_space_still_holds_the_format_3_programs_of_every_seed` keeps the
+format-3 hashes of that space), and the emitted text of a scalar program is unchanged. What changes, for all eight seeds,
+is the last six programs of each: the old programs 11 to 16 (float-space attempts) are replaced by vector-space ones, so
+every line of `seeds.txt` changes (programs 16, as before; the discard counts, the reasons and the hash; the stamp is in
+the emitted text anyway). The corpus has 128 programs and 587 discards at format 6 (507 at format 5): 306 are float-space
+discards, of the 80 scalar programs kept, and 281 are vector-space discards, of the 48 vector programs kept (329 vector
+attempts, 14.6 % kept). The new reason `no-aggregate` (31) is a vector-space program with no vector or matrix operation.
+The vector space has its own byte reads (`Space::Vector`: input types weighted towards `f32` with at least one `f32`
+buffer, aggregate types in `pick_ty`, the vector draws in `expr`, `float_expr` and `assign`), selected by the attempt
+number, so a later change to it never moves a float-space program.
+
+Measured at format 6 (2026-11-02, RTX 5090, NVIDIA 610.88, Vulkan; seeds 1 to 8): `check-difftest --seeds 1-8`
+(GPU) executed 128 of 128 programs with 0 mismatches in 116.1 s (cargo build 27.0 s, run 60.9 s; first dispatch 0.43 s
+mean, 0.61 s max; warm dispatch 2.6 ms max), and `--cpu-only` executed 128 of 128 with 0 mismatches in 5.6 s. Discards
+by class, both batches (the same generation): `domain` 464, `comparison-overlap` 16, `unboundable` 45,
+`float-construct-not-in-v1` 3, `no-input-read` 28, `no-aggregate` 31. The 48 vector programs include every product
+(`* Mat2 Vec2`, `* Mat4 Vec4`, `* Mat2 Mat2`, `* Mat4 Mat4`), `dot` on five types, and the other forms of the coverage
+table, except `transpose Mat4` (see Coverage).
 
 ## The emitter
 
@@ -212,6 +283,13 @@ the corpus goes from 512 to 507.
   literal of the corpus with Rust's `str::parse::<f32>`, and the dialect's own check is the round-trip `cargo check`.
   A negative literal is not an atom (`(-0.5f32)` is parenthesised where it is an operand). A negative zero has no
   literal and is never generated.
+- Vector forms (format 6) are written as the `gust::math` API spells them: `Vec4::new(a, b, c, d)`, `Vec4::splat(s)`,
+  `Mat4::from_cols(..)`, `Mat4::from_rows(..)`, `v.x`, `v.xy()`, `v.wzyx()`, `a.dot(b)`, `m.transpose()`, and `v.x = e;`
+  for a component assignment. A constructor, a component, a swizzle, `dot` and `transpose` are atoms (a call or a
+  postfix binds tighter than any operator, so `-v0.x` is `-(v0.x)` and `(-v0).x` keeps its parentheses because `-v0` is
+  an operation); the operators of two aggregates are parenthesised like the scalar ones. The emitted text of a scalar
+  program is byte for byte what it was. `reparse.rs` reads every vector form back with Rust's own precedence
+  (`the_emitted_text_of_every_vector_form_reads_back_as_the_same_program`, and the round trip over the corpus).
 - The crate allows `arithmetic_overflow` and `unconditional_panic`: rustc denies by default an overflowing operation it
   can see statically even in a branch no input reaches, while the filter is per input.
 - Text uses `\n` on every platform. The manifest and a path are written through `path_for_toml`.
@@ -326,9 +404,10 @@ Keys: `tool`, `format`, `mode` (`gpu` or `cpu-only`), `passed`, `seeds`, `progra
 cargo build and run seconds, twin and GPU first and warm dispatch times).
 
 `discards` lists `total`, `by_reason` (the labels of the tables above, per run, summed over the seeds) and `by_class`,
-which maps the labels to the four classes of R1-4 plus one: `domain` (the integer labels, `float-domain` and `static`),
-`comparison-overlap`, `unboundable`, `float-construct-not-in-v1`, and `no-input-read` (a fifth class, which the plan does
-not name; a program without an input read is a constant, and the generator discards it). A label the classifier does
+which maps the labels to the four classes of R1-4 plus two: `domain` (the integer labels, `float-domain` and `static`),
+`comparison-overlap`, `unboundable`, `float-construct-not-in-v1`, `no-input-read` (a fifth class, which the plan does
+not name; a program without an input read is a constant, and the generator discards it) and `no-aggregate` (a sixth,
+from format 6: a vector-space program with no vector or matrix operation in it). A label the classifier does
 not know makes the run fail, so a new label cannot be silently counted under another class.
 
 A `report.json` is deterministic for given seeds and mode except for `timing` and `adapter`; compare fields, not files.
@@ -341,7 +420,12 @@ programs that contain it in the text, the number of programs in which it is eval
 of evaluations; the operators that appear in the text of some program but were never executed (`never_executed`); the `if` statements (in the
 text, with a constant condition, evaluated, taken, with the else side taken, and with both sides taken by some element);
 and how often the right operand of `&&`/`||` was evaluated and skipped. A written operator in dead code is not
-counted as covered. A run of seeds 1 to 8 at format 3 executes every operator in its text (`never_executed` is empty).
+counted as covered. A run of seeds 1 to 8 at format 3 executes every operator in its text (`never_executed` is empty). At format 6 the
+vector operators have names of their own (`* Mat4 Vec4`, `dot Vec2`, `swizzle Vec4->2`, `new Vec4`, `comp UVec2`,
+`transpose Mat2`, `assign comp`, ...); seeds 1 to 8 execute all but two of the operators in their text
+(`never_executed` is `* Vec2 Vec2` and `- Vec4 Vec4`: written in a branch or a chain that no element reaches), and
+the corpus has no `transpose Mat4` and one `transpose Mat2`: the vector space reaches these forms, but eight seeds
+reach them rarely (see the unit tests of `vector_tests.rs` for the exact values).
 
 ### Short circuit
 
@@ -397,6 +481,13 @@ permanent tests that fail for the same reason (the second was re-run against the
 | a wrong literal in the emitter (`u32` literals plus 2), in a `--cpu-only` batch | 8 of the 16 programs of seed 1 reported (`twin-vs-interpreter`, `twin-error`), each named, exit 1 | `emit::tests` (exact text, re-parse), `corpus::tests`, the integer-space pin |
 | compare the GPU `f32` by bits (or the twin by value) | the `-0.0` tests fail | `classify::tests::the_gpu_f32_is_held_by_value...`, `the_twin_is_compared_bit_for_bit...` |
 | one package name for different batches | the uniqueness tests fail | `harness::tests::every_distinct_batch...`, `two_crate_dirs_with_one_package_name_are_refused` |
+| m6.d (a): swap the operands of `m * v` in the interpreter (`agg::mat_vec` reads the matrix row-major) | 3 of the 18 `vector_tests` fail; a `--cpu-only` batch of seeds 1 to 8 reports 5 `twin-vs-interpreter` mismatches, each with its seed (s3_a1000019, s6_a1000057, s6_a1000058, s7_a1000038, s7_a1000048), exit 1 | `vector_tests::a_matrix_times_a_vector_uses_the_columns`, `a_matrix_times_a_matrix_multiplies_each_column`, `from_rows_and_transpose_swap_rows_and_columns` |
+| m6.d (b): zero tolerance in `Fl::interval` (`w = 0`) | the batch stops before any program runs: the interpreter's own soundness check (`checked_value`) panics, "reference -85.83885 outside its interval (-85.83884811401367, -85.83884811401367)"; class: a bound (the interval is too narrow for the reference itself), not a program | `interp::checked_value` (debug build), the interval tests of `float.rs` |
+| m6.d (c): the generator stops giving a `Mat2` an input read (a constant `Mat2` reaches the SPIR-V path) | 2 tests fail: the guard of `Program::check` refuses it ("a `Mat2` built from no input read could be a compile-time constant", seed 1 attempt 1000021), and the corpus pin is stale | `vector_tests::the_vector_space_is_deterministic_and_never_writes_a_constant_mat2`, `a_mat2_without_an_input_read_is_refused...` |
+
+The m6.d mutations were restored with `cp backup file && touch file` and compared with `cmp` before the gates. The (b)
+row is not a GPU-side finding: with zero tolerance the reference cannot sit inside its own interval, so the interpreter
+refuses before any party runs; a GPU-side narrowing is what the `gpu-outside-interval` tests of `classify.rs` cover.
 
 ## Shrinking (slice m5.c1c)
 
@@ -620,6 +711,15 @@ harness.
   truncated stream is well typed, operator coverage of the corpus for both types, no literal zero divisor in 20000 decoded
   programs, no static constant outside the domain and no literal shift of 32 or more in the 1600 accepted programs of
   seeds 1 to 100, the static discard being live.
+- `vector_tests` (slice m6.d, 18 tests; the arithmetic is `agg.rs`): hand-computed `dot`, `m * v`, `m * m`, `from_rows`
+  and `transpose` (a product is the columns, not the rows), a 4-wide product equal to the scalar sum of its row,
+  swizzles, scalar operands and the order of a quotient, the integer domain per component, the float range rule per
+  component, a component assignment, the `Mat2` guard (refused without an input read, a `Mat4` is not), ill-typed
+  programs refused by `check`, a closed vector expression outside the domain is `static` also in dead code, operator
+  names in the coverage, the emit/reparse round trip of every vector form, determinism of 600 vector attempts with
+  `check()` on each and no constant `Mat2`, the corpus reaching every form, and the float space alone writing no
+  vector. The generator tests of the older space (`the_float_space_still_holds_the_format_3_programs_of_every_seed`,
+  `a_batch_is_ten_float_programs_then_six_vector_programs`) pin that the scalar programs did not move.
 - `emit` and `reparse`: exact text of a module, parenthesisation table, re-parse equality for every program of the
   corpus, the template manifest, the template lock against the root lock.
 - `corpus`: FNV reference vectors, the committed `seeds.txt`, the hash covering the input data, the `MIN / -1` discard

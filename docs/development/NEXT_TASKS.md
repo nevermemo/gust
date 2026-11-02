@@ -129,11 +129,49 @@ test module; do not mix that mechanical move with behavior changes.
 - `cargo xtask check-artifacts` does not export the `#[gpu]` modules of integration tests (for example
   `crates/gust-wgpu/tests/vectors.rs`); their kernels are checked only where the tests run them (m6.g1). Done
   in m6.x for the three golden modules (products, vectors, uniforms); other test modules are still unexported.
-- A constant float2x2 or float3x3 (`Mat2::IDENTITY`, `Mat3::IDENTITY`) crashes naga's SPIR-V front end (exit
-  139); reduce it to an upstream report or lower such constants another way (m6.g1).
-- `let mut d = 7; d /= y` with `y: u32` emits the local as Slang `int`, so the division is signed: for
-  `y >= 2^31` Rust gives 0 and the GPU does not. Integer literal locals take their type from later use in Rust
-  (found in the m6.dv review; older than m6.dv).
+- A constant float2x2 or float3x3 (`Mat2::IDENTITY`, `Mat3::IDENTITY`) crashes the runner when its SPIR-V is
+  handed to wgpu (exit 139). The faulting layer is **not isolated**: the M6 probe notes say naga's module creation
+  passed and `create_compute_pipeline` crashed, so "naga's SPIR-V front end" is not established. Isolate the layer,
+  then reduce it to an upstream report (naga, wgpu or the driver) or lower such constants another way (m6.g1;
+  sanity-fable and sanity-opus, 2026-11-02, both asked for "not isolated").
+- **Literal-local typing bug, to be fixed by slice m6.z2** (before m7.a1; ruling in the M6 close rulings). An
+  unannotated `let` whose initializer is an integer literal is emitted as Slang `var x = 7`, which is `int`, whereas
+  rustc types the local from its later uses. Measured: `let mut d = 7; d /= y` with `y: u32` divides signed, so for
+  `y >= 2^31` Rust gives 0 and the GPU gives `0xFFFFFFF9` (found in the m6.dv review; older than m6.dv). Signed
+  comparisons (`d < y`), `>>` and casts of such a local very likely go wrong the same way; that part is inferred from
+  the lowering (`slang/mod.rs` emits `var` for every unannotated local), **not measured**. It is a silent
+  difference inside D22's domain, not a D39 edge case. The difftest emitter always annotates its `let`s
+  (`tests/difftest/src/emit.rs:207`), so no gate sees this class. Decided approach: type the local from its uses
+  when they agree, otherwise a compile error asking for a suffix or an annotation; a GPU regression case for
+  `d /= y` with `y >= 2^31`, a signed comparison and `>>`; the difftest emitter writes some unannotated lets
+  (sanity-opus, widened and made a blocker for m7.a; sanity-fable, scheduled before MR; 2026-11-02).
+- shader-slang/slang#14198 (open, opened by the owner on 2026-11-02): WGSL emits `^` on `bool` and `vecN<bool>`
+  operands, which WGSL does not define; the PR makes it `!=`. Once it is in a Slang release the pin adopts, the bool
+  overloads of `__gust_xor` and `__gust_xor_assign` can go (a pin bump with the usual re-bless; D46). Until then the
+  overloads stay. Recorded here because the repository did not mention it (sanity-fable and sanity-opus, 2026-11-02).
+- SPIR-V is never executed by any M6 case: the Spirv tier of M6 is `spirv-val` of the exported modules, and
+  `gust-wgpu` runs WGSL. The matrix layout decorations of the SPIR-V goldens and Std140 uniforms in SPIR-V have never
+  been dispatched, yet MR ships SPIR-V to Vulkan users. Dispatch the three goldens (vectors and products, uniforms)
+  through SPIR-V passthrough on the RTX 5090; this is input to the MX/MR planning, not an M6 task (sanity-opus,
+  2026-11-02; ruling 4).
+- Gate the layouts of the emitted WGSL with naga's validator and `proc::Layouter` (wgpu's default capabilities),
+  which would replace m6.m2's by-hand naga run and catch a disagreement between reflection and the emitted WGSL for
+  every kernel, not only the tested layouts. naga is already in the tree through wgpu, but `check-arch`'s D02
+  allow-list would need a deliberate change, so it needs a decision first. Input to the MX/MR planning (sanity-opus
+  and sanity-fable, 2026-11-02; ruling 4).
+- `encase` or `crevice` (MIT OR Apache-2.0, licence not yet checked) as an independent Std140V1/StorageV2 oracle for
+  the macro's computed offsets, and `bytemuck`'s `Pod` derive to replace the hand-written padding check behind
+  `pod_slice_as_bytes` (the m6.g1 must-fix patched it by hand). Both dev-dependencies only, never in a production
+  edge (D02), and a licence check first. Follow-ups, not M6 (sanity-fable and sanity-opus, 2026-11-02).
+- "Default limits" has two meanings since m7.a0: `HeadlessDevice::new()` keeps wgpu's portable defaults
+  (`LimitsPolicy::Default`), while `DeviceOptions::default()` and so `default_device()` take the adapter's own limits
+  on native (`LimitsPolicy::Adapter`; `crates/gust-wgpu/src/device.rs:43-95`). A kernel validated through one entry
+  point can exceed the other's limits, for example in a browser. Decide whether the two should agree or be named
+  differently before MR, and keep it in M8's portable-floor work (sanity-fable and sanity-opus, 2026-11-02).
+- The crate-path question before m7.p: the macro writes `::gust::` in about 90 places
+  (`crates/gust-macros/src`, tests excluded), MR renames the crates (D48) and m7.p adds more generated paths.
+  Decide between `[lib] name = "gust"` on the renamed crate and a macro that resolves the imported crate path (the ROADMAP's MR row
+  says the latter), before m7.p writes more of them (sanity-opus, 2026-11-02).
 
 ## M7 follow-ups (filed during M7)
 

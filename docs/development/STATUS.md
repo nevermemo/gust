@@ -32,8 +32,8 @@ M6 (language breadth I): plan adopted early on 2026-11-01 (owner-delegated) afte
 `__gust_mul` overload table, enabled only in modules that name a `Mat` type; the reflection
 reader accepts schema 1 and 2, and the helper keeps schema 1 for scalar-only programs, so
 committed artifacts stay byte-identical. The keyword and construct spikes and the pure-Rust math
-types ran beside M4; every M6 slice is merged (m6.m1 to m6.x), and the close waits for its
-sanity checks. Its decision drafts take D55 to D59.
+types ran beside M4; M6 closed on 2026-11-02 (D86) after two sanity checks; its decisions are
+D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so
@@ -64,7 +64,7 @@ sanity checks. Its decision drafts take D55 to D59.
   per-seed table against the seed list, no mismatches, the harness exit status) and, on the Gpu tier, the
   `short_circuit` GPU test. The Unit suite runs 4 seeds on the CPU plus the harness's own fmt, clippy and tests; a
   separate CI job `difftest` runs the same (the `unit` and `slang` jobs use `--skip-difftest`, which prints each
-  skipped step); gpu-software runs 2 seeds per PR and 8 nightly on lavapipe and uploads the report; `check-full`
+  skipped step); gpu-software runs 2 seeds per PR and 72 nightly on lavapipe and uploads the report; `check-full`
   runs 8 seeds on the hardware adapter and the harness checks. Seed 4 found a slangc limitation (D74, retired by m6.dv and D77): slangc
   folds integer `/` and `%` and refuses a divisor that folds to zero (E30002), even in a dead branch; DIAGNOSTICS
   lists what folds, the generator discards such programs as `static` (`DIFFTEST_FORMAT` 4), and a Slangc-tier test
@@ -80,6 +80,15 @@ sanity checks. Its decision drafts take D55 to D59.
   output (the stale-binary fix); the Cpu suite is this command. CI runs it as the job `cpu-target` beside `unit`: 61 s
   on the runner, against 2 m 57 s for `unit`. Evidence: Unit, Cpu and Gpu smoke (RTX 5090). Opus keep after one fix
   round.
+- M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
+  2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
+  close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
+  `gpu-verify` re-run green on `b5b87e3` at 20:35Z (216 passed over 25 lines).
+- M6 m6.z1 (`cd707b7`, merge `c8799b3`): the record fixes. Descriptor names (README, this file's m6.k entry), no M6
+  GPU case executes SPIR-V (VALIDATION, ARCHITECTURE, DIFFTEST), the two meanings of the default limits
+  (ARCHITECTURE, D84), NEXT_TASKS follow-ups (shader-slang/slang#14198, SPIR-V execution, a naga layout gate,
+  encase/bytemuck oracles, the crate path before m7.p), the nightly `gpu-software` difftest on seeds 1 to 72
+  (seeds 1 to 8 took 45.5 s of `difftest-run` on the runner), and decision rows D78 to D86. docs-check and lint.
 - M6 m6.x (`0d5fc4c`, fix round `1b878d9`, merge `8f069fb`): M6 wiring. `check-feature vectors` and `uniforms`;
   `vectors`, `uniforms` and `map` in `FEATURE_AREAS` with a test that reads the real accepted set; the golden
   modules (products, vectors, uniforms) are compiled and spirv-val'd by `check-artifacts`, the Spirv suite and
@@ -181,8 +190,9 @@ sanity checks. Its decision drafts take D55 to D59.
   hand-written `GpuPod` struct is refused instead of uploading uninitialised bytes (CPU unit tests for each rule).
   `crates/gust-wgpu/tests/vectors.rs` holds seven GPU tests that compare the vector and matrix forms with the CPU
   twin on the RTX 5090, debug and release; `GPU_SUITE_PIN` is 159 passed over 21 result lines. Known limitations
-  (SEMANTICS §4): a constant float2x2 or float3x3 `IDENTITY` crashes naga's SPIR-V front end (exit 139), so those
-  cases run on WGSL only; `-m` on a matrix did not build on WGSL until m6.n. Opus merge after one fix round; 19 gate
+  (SEMANTICS §4): a constant float2x2 or float3x3 `IDENTITY` crashes the runner when its SPIR-V
+  is handed to wgpu (exit 139, layer not isolated); no M6 GPU case executes SPIR-V;
+  `-m` on a matrix did not build on WGSL until m6.n. Opus merge after one fix round; 19 gate
   steps on main at `5033b22`, including `verify --mode gpu`.
 - M6 m6.m2 (`49f00f9`, fix round `fec79e8`, merge `71ab804`): operator syntax for products. In a module whose
   unrawed tokens name `Mat2`, `Mat3` or `Mat4`, `*` lowers to `__gust_mul(a, b)` and `*=` on a pure place to
@@ -199,7 +209,7 @@ sanity checks. Its decision drafts take D55 to D59.
   `transpose(m)`; the struct layout asserts use StorageV2. The golden `tests/fixtures/vectors.{rs,slang}` covers every
   accepted form and a slangc test compiles it. Known limitations: the integer-vector `dot` lowered to
   `OpSDot`/`OpUDot` (capability `DotProduct`), which naga 30 refuses on the SPIR-V route (fixed in m6.m2); a constant `Mat2::IDENTITY` or `Mat3::IDENTITY` hits the known SPIR-V crash for constant
-  float2x2 and float3x3, so m6.g1 runs those cases on WGSL only. Evidence: Unit, Slangc (2026.20),
+  float2x2 and float3x3, and no M6 GPU case executes SPIR-V (m6.g1 runs on WGSL). Evidence: Unit, Slangc (2026.20),
   check-ui and check-dual; CI green on `6dc36ef`. Opus keep after one fix round.
 - CI timing note: `gpu-software` took 1 m 25 s warm (on `8080320`) against 1 m 42 s cold.
 - M5 S5.4 (spike, local commit only): decision A. A lane-local prototype in which the macro drops
@@ -251,9 +261,11 @@ sanity checks. Its decision drafts take D55 to D59.
 - M6 m6.k (`ce17eb2`): collision-only identifier renaming. A user identifier that collides with a
   Slang or WGSL keyword, a prelude name or a GUST-reserved spelling is emitted as `__gust_r_<name>`
   at every name site (locals, parameters, fields, structs, invocation and ConstantBuffer sites);
-  `annotate_diagnostics` strips the prefix from slangc messages at a word boundary, and
-  descriptors and host names keep the Rust spelling (D17, checked in the Reflect tier on `class`,
-  `new`, `This` and `operator`). A sweep of about 156 words in four positions found that a local
+  `annotate_diagnostics` strips the prefix from slangc messages at a word boundary, and descriptors
+  carry the emitted names (`ParameterDescriptor.name` and `StructFieldLayout.name` hold `__gust_r_<name>`, which the
+  D17 cross-check compares; `rust_type` and the Rust source keep the Rust spelling; checked in the Reflect tier on
+  `class`, `new`, `This` and `operator`; corrected in m6.z1, D81).
+  A sweep of about 156 words in four positions found that a local
   named `true` or `false` silently rebinds the literal (`true ? 7u : 9u` stored 9); both are now
   renamed, and `var` (loud, E30060) joined the table. The `__gust` prefix is reserved (new UI
   case). Bless: 0 changed goldens. Evidence: Unit, Slangc and Reflect on main. Deferred to m6.m1:
@@ -460,7 +472,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M6 close (the Fable and Codex sanity checks) beside M7 (m7.a0 merged); see the roadmap's Now and next
+claim: roadmap M7 (m7.w and m7.r1 running; m6.z2 after m7.w) after the M6 close (D86); see the roadmap's Now and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no
 ```

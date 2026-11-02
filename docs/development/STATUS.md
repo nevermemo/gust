@@ -79,6 +79,20 @@ D55 to D59.
   output (the stale-binary fix); the Cpu suite is this command. CI runs it as the job `cpu-target` beside `unit`: 61 s
   on the runner, against 2 m 57 s for `unit`. Evidence: Unit, Cpu and Gpu smoke (RTX 5090). Opus keep after one fix
   round.
+- M6 m6.u1 (`ff6e188`, fix round `82ed0b5`, pin `896571d`, merge `8d88b6d`): uniforms, host side. `gust` gains
+  `BindingKind`, the markers `kind::{Storage, Uniform}` and `Resource::Kind` (every implementer names its kind),
+  `Call::new` counting storage plus uniform parameters, `CpuUniform<T>` and `cpu::read_uniform`. `gust-wgpu` gains
+  `GpuUniform<T>` (`create_uniform`), `BufferBindingType::Uniform` entries, the two uniform launch limits, and
+  `StagedGraph::write_uniform`, an encoded copy from a staging buffer, so two updates between two dispatches are
+  observed in order (D15, D35); the immediate `HeadlessDevice::write_uniform` is a `Queue::write_buffer`, so every
+  dispatch of one later submission sees the last value written. A uniform type must be Std140V1, padding-free and
+  match Rust's size and alignment on both the GPU path and the twin, so no uninitialised byte is uploaded; users
+  write explicit padding fields. A uniform passed where a buffer is expected becomes a compile error once m6.u2
+  names `Kind` in the generated bounds; until then `BindingKind` refuses it at submit. Evidence: typed and graph
+  tests on the RTX 5090 dispatch an `f32` uniform and a struct of a `Vec4` and four `f32` through `create_uniform`;
+  a lone `Vec4` or `Mat4` uniform reached the GPU only in the raw-wgpu probe (m6.g2 dispatches them);
+  `GPU_SUITE_PIN` is 180 passed over 21 lines. Opus merge after one
+  fix round; 19 gate steps on main at `8d88b6d`.
 - M6 m6.n (`f7a8e4f`, fix round `f88de7a`, pin `f8644ce`, merge `86f728c`): matrix negation. slangc emitted
   `matN(0) - m` for `-m`, which naga refuses on WGSL. In a module the m6.m2 gate marks, unary `-` on a non-literal
   lowers to `__gust_neg(x)` from one data table (`slang/neg_table.rs`, 10 rows): scalars and vectors as `-a`,

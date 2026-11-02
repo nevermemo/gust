@@ -95,12 +95,13 @@ static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
 /// `wgpu::Limits::default()` by a unit test and to the opened device by the `limits` test.
 pub const DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
 
-/// Panic unless `T`'s `GpuPod::LAYOUT` is StorageV1 and agrees with Rust's size and alignment.
+/// Panic unless `T`'s `GpuPod::LAYOUT` is StorageV2 (StorageV1 is its scalar sub-case) and agrees with Rust's size and
+/// alignment. The message keeps the StorageV1 wording that tests pin.
 /// Every typed allocation (`create_typed_buffer`, pool buffers) runs it first, so a hand-written
 /// `GpuPod` that lies is refused at creation instead of failing later in wgpu or at dispatch.
 pub(crate) fn assert_storage_v1_pod<T: GpuPod>() {
     assert!(
-        T::LAYOUT.is_storage_v1()
+        T::LAYOUT.is_storage_v2()
             && T::LAYOUT.size as usize == size_of::<T>()
             && T::LAYOUT.alignment as usize == align_of::<T>(),
         "GpuPod implementation must match the Rust StorageV1 representation"
@@ -2090,6 +2091,16 @@ fn check_binding_size(
     Ok(())
 }
 
+/// The resource layout a typed buffer of element layout `element` presents: `StorageV1` when the element is a scalar
+/// or a struct of scalars (the macro describes those parameters as `StorageV1`), else `StorageV2` (vectors, matrices).
+fn buffer_resource_layout(element: gust::TypeLayout) -> ResourceLayout {
+    if element.is_storage_v1() {
+        ResourceLayout::storage_v1(element)
+    } else {
+        ResourceLayout::storage_v2(element)
+    }
+}
+
 fn validate_binding_layout(
     parameter: &ParameterDescriptor,
     actual: ResourceLayout,
@@ -2194,7 +2205,7 @@ fn validate_persistent_dispatch(
     }
     for (parameter, binding) in resources.iter().copied().zip(bindings.iter().copied()) {
         let buffer = binding;
-        validate_binding_layout(parameter, ResourceLayout::storage_v1(buffer.layout))?;
+        validate_binding_layout(parameter, buffer_resource_layout(buffer.layout))?;
         if buffer.device_id != device_id {
             return Err(Error::ForeignPersistentBuffer);
         }
@@ -2272,7 +2283,7 @@ pub(crate) fn validate_kernel(
             });
         }
         if !parameter.resource_layout.is_some_and(|layout| {
-            layout.element.is_storage_v1() && layout.element_stride == layout.element.stride
+            layout.element.is_storage_v2() && layout.element_stride == layout.element.stride
         }) {
             return Err(Error::InvalidResourceLayout {
                 parameter: parameter.name.to_owned(),

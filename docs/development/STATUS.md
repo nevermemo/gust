@@ -14,8 +14,8 @@ fixes in slice m3.h and `check-full` on a clean tree at `5971c12` (RTX 5090, 06:
 M4 (build-time targets and distribution): plan adopted 2026-11-01 (owner-delegated) after a
 Codex review (rework), two Opus re-reviews and three revisions; D44 (build profiles through
 `GUST_PROFILE`), D45 (committed, re-verified artifacts), D46 (`cargo-gust` and the Slang pin)
-and D47 (weak compare-exchange). First: spike S1 (one precompiled, reflection-verified kernel
-running without Slang installed) in parallel with slices m4.0 and m4.h.
+and D47 (weak compare-exchange). M4 is closing: `check-full` passed at `c964222`, the close rows
+are D68 to D72, and the sanity check (Fable and Codex: proceed with fixes) is fixed in slice m4.i.
 M5 (CPU target and evidence breadth): plan adopted early on 2026-11-01 (owner-delegated) after a
 Codex review (adopt with changes) and one revision. D51 makes `cpu` a production profile with a
 sequential contract, and D52 sets the rules for software-adapter evidence. Slices that share no

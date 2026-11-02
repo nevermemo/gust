@@ -214,6 +214,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gust-algo"
+version = "0.1.0"
+dependencies = [
+ "gust",
+ "gust-wgpu",
+]
+
+[[package]]
 name = "gust-macros"
 version = "0.1.0"
 dependencies = [

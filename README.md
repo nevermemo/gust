@@ -500,7 +500,7 @@ The direct syntax translator currently supports:
   see [DIAGNOSTICS](docs/DIAGNOSTICS.md)). Typed buffers of them (`Vec2`, `Vec4`, `Mat2`, `Mat4` and padding-free
   structs of these) are created, dispatched on the GPU and checked against the CPU twin (M6 m6.g1, StorageV2).
   Limitations: the constants `Mat2::IDENTITY` and `Mat3::IDENTITY` crash the SPIR-V ingestion of wgpu on slangc
-  2026.20 (the executed WGSL route is fine), and `-m` on a matrix does not build on WGSL; both in
+  2026.20 (the executed WGSL route is fine); see
   [SEMANTICS](docs/SEMANTICS.md) section 4;
 - statement-only atomics on `RWStructuredBuffer<u32/i32>` elements: `atomic_add`,
   `atomic_exchange`, and `atomic_compare_exchange`, plus unsigned-only

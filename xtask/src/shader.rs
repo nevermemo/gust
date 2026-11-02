@@ -16,7 +16,7 @@ const SMOKE_SOURCE: &str = ".agents/skills/slang-language/assets/vector-add.slan
 const SMOKE_ENTRY: &str = "computeMain";
 const SMOKE_TARGET_ENV: &str = "vulkan1.2";
 
-/// The matrix layout GUST compiles with (D55): column-major, named instead of left to the default, because the command
+/// The matrix layout GUST compiles with: column-major, named instead of left to the default, because the command
 /// line of slangc defaults to column-major today and the native API to row-major (M6 spike V1). The compile paths of
 /// `gust` (`slang::slangc_command`, `reflect::slangc_reflection_command`) pass the same text; the native helper sets
 /// `defaultMatrixLayoutMode`. A test compares this constant with their source.
@@ -359,7 +359,7 @@ pub(crate) fn count_copy_logical(disassembly: &str) -> usize {
 
 /// The informational line about the `OpCopyLogical` count of one SPIR-V file. It never fails: a missing or failing
 /// `spirv-dis` is said in the line instead, and the count decides nothing (GUST's SPIR-V targets Vulkan drivers;
-/// feeding it to naga is unsupported, D59).
+/// feeding it to naga is unsupported).
 pub(crate) fn copy_logical_note(file: &Path) -> String {
     let output = Command::new("spirv-dis")
         .arg("--no-color")
@@ -445,16 +445,14 @@ pub(crate) fn compare_golden_names(expected: &[&str], found: &[String]) -> Resul
 
 /// Compiles every compute entry of `tests/fixtures/<stem>.slang`, for each stem, to SPIR-V in a fresh directory under
 /// the cargo target directory (with the column-major matrix layout and Slang's entry-point names, as GUST compiles a
-/// kernel), requires the file names to equal `expected` and validates each file for Vulkan 1.2 (the validator prints
-/// the informational `OpCopyLogical` count). `check-artifacts` does not export these modules (no example uses a
-/// vector or uniform type), so `check-feature vectors` and `check-feature uniforms` do.
-pub(crate) fn export_golden_spirv(
+/// kernel) and requires the file names to equal `expected`. Returns the files, sorted by name. The golden lists are
+/// kept apart from `EXPECTED_SPIRV`, which names what the examples write to `generated-wgpu`.
+pub(crate) fn compile_golden_spirv(
     root: &Path,
     area: &str,
     stems: &[&str],
     expected: &[&str],
-) -> Result<(), String> {
-    require_command("spirv-val")?;
+) -> Result<Vec<PathBuf>, String> {
     let directory = cargo_target_dir(root).join("golden-spirv").join(area);
     match fs::remove_dir_all(&directory) {
         Ok(()) => {}
@@ -488,9 +486,22 @@ pub(crate) fn export_golden_spirv(
     }
     compare_golden_names(expected, &found)?;
     found.sort_unstable();
-    for file in &found {
+    Ok(found.iter().map(|file| directory.join(file)).collect())
+}
+
+/// [`compile_golden_spirv`], then `spirv-val` for Vulkan 1.2 on each file (which prints the informational
+/// `OpCopyLogical` count). `check-feature vectors` and `check-feature uniforms` call this; `verify` (`check-artifacts`,
+/// the Spirv suite, `check-full`) compiles the same files and validates them as recorded runs.
+pub(crate) fn export_golden_spirv(
+    root: &Path,
+    area: &str,
+    stems: &[&str],
+    expected: &[&str],
+) -> Result<(), String> {
+    require_command("spirv-val")?;
+    for file in compile_golden_spirv(root, area, stems, expected)? {
         spirv_val(&SpirvValOptions {
-            file: directory.join(file),
+            file,
             target_env: SMOKE_TARGET_ENV.to_owned(),
         })?;
     }

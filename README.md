@@ -168,7 +168,7 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-fast` | Fast routine confidence | policy lint, docs-check, check-arch, check-ui, helper version check, fmt check, macro tests, core lib tests, wgpu tests (all `--locked`) |
 | `cargo xtask check-workspace` | Default workspace confidence | `--locked` workspace tests with example packages excluded entirely |
 | `cargo xtask check-examples` | Major example behavior confidence | every example test (`-- --include-ignored`, counted: no passed test or an ignored one fails it) plus example binaries |
-| `cargo xtask check-artifacts` | Artifact/export confidence | example binaries plus external SPIR-V validation |
+| `cargo xtask check-artifacts` | Artifact/export confidence | example binaries plus external SPIR-V validation of their files and of the vectors, products and uniforms goldens, with an `OpCopyLogical` count each |
 | `cargo xtask check-full [--skip-web]` | Release confidence | full staged verification, then the whole `check-precompiled` and `check-web`, then `check-difftest`; `--skip-web` leaves out `check-web` only and records it |
 | `cargo xtask status` | Resume context | git status, active claim, validation summary, suggested check |
 | `cargo xtask doctor` | Environment readiness | required tools and reflection helper status; exits non-zero when cargo, rustc, slangc or the helper is missing |
@@ -613,7 +613,7 @@ Golden Slang and a real-GPU semantics fixture live in `tests/fixtures/`; update
 expected output only after reviewing the change and testing both target compilers.
 The [roadmap](docs/ROADMAP.md) prioritizes correctness, actionable diagnostics ([stable codes](docs/DIAGNOSTICS.md)),
 ABI/capability evidence, and then a small explicit staged-execution proof.
-Slang reflection now gates every pipeline for the StorageV1 subset (D17); broader
+Slang reflection now gates every pipeline for the StorageV1, StorageV2 and Std140V1 layouts (D17); broader
 resource layouts need the same compiler evidence before they enter the runtime.
 New ECS work starts with a small GPU-resident component pool, not a full engine rewrite.
 

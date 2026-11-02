@@ -32,7 +32,7 @@ Gpu the device).
 | Unit | Macro validation, translation, and xtask logic pass without external tools; the declared minimum Rust version compiles every workspace target | `cargo test -p gust-macros`, `cargo test -p xtask`, `cargo xtask lint` (CI), `cargo xtask check-ui`, `cargo xtask check-cpu`, `cargo test --locked -p gust --lib cpu::tests::`, `cargo test --locked -p gust --lib artifact::tests::`, `cargo test --locked -p gust --test artifact`, `cargo xtask check-dual --check-only` (a separate step of the CI `unit` job, not of the Unit suite), `cargo xtask check-difftest --cpu-only --seeds 1-4` (a step of the Unit suite), CI job `msrv` |
 | Cpu | The production CPU target (`GUST_PROFILE=cpu`) executes a kernel (scalar kernels and, since m6.x, a `Vec4` kernel) and its output equals an independent host reference; it needs no external tool and no adapter, and the binary holds no Slang bridge, helper or GPU runtime | `cargo xtask check-cpu-target` (the Cpu suite is this command; CI runs it as the job `cpu-target`, not in the Unit suite) |
 | Slangc | The generated Slang compiles to the target | WGSL compile smoke tests, `cargo xtask check-fast` |
-| Spirv | Exported SPIR-V passes `spirv-val --target-env vulkan1.2` | `cargo xtask check-artifacts`, `cargo xtask spirv-val <file.spv> --target-env vulkan1.2`, and `cargo xtask check-feature vectors` / `uniforms` for the goldens that no example exports (below) |
+| Spirv | Exported SPIR-V passes `spirv-val --target-env vulkan1.2` | `cargo xtask check-artifacts` (the examples' files and the compiled goldens; below), `cargo xtask spirv-val <file.spv> --target-env vulkan1.2`, and `cargo xtask check-feature vectors` / `uniforms` for one golden area |
 | Reflect | The D17 layout gate matches the descriptor | `cargo xtask check-feature reflection` |
 | Gpu | Readback on a device equals an independent host reference | GPU tests, `cargo xtask check-difftest` (generated kernels on the interpreter, the twin and the GPU), `cargo xtask check-full` |
 
@@ -44,26 +44,27 @@ Label format: `done (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.20, <comm
 `done (Cpu: <commit>)`. It is distinct from Unit, whose twin runs under `cfg(test)` (shadow-semantics evidence), and it
 is never GPU evidence (D42): a CPU result proves nothing about an adapter.
 
-**Vectors, uniforms and SPIR-V (slice m6.x).** `check-artifacts` and the Full mode export and validate what the
-examples export, and no example uses a vector, a matrix or a uniform. `cargo xtask check-feature vectors` and
-`cargo xtask check-feature uniforms` therefore compile the goldens in `tests/fixtures` (`vectors` and `products`;
-`uniforms`) to SPIR-V into `<target>/golden-spirv/<area>/` with the pinned `slangc`, `-matrix-layout-column-major` and
+**Vectors, uniforms and SPIR-V (slices m6.x, m6.x fix round 1).** The examples export SPIR-V, and no example uses a
+vector, a matrix or a uniform, so `check-artifacts`, the Spirv suite and `check-full` (the Artifacts and Full modes of
+`verify`) also compile the goldens in `tests/fixtures` (`vectors` and `products`; `uniforms`) to SPIR-V into
+`<target>/golden-spirv/<area>/` with the pinned `slangc`, `-matrix-layout-column-major` and
 `-fvk-use-entrypoint-name`, require exactly the file names pinned in `xtask/src/checks.rs` (`products__run.spv`,
-`vectors__run.spv`, `uniforms__run.spv`; a golden that gains a kernel changes the list in the same commit) and run
-`spirv-val --target-env vulkan1.2` on each. That is Spirv-tier evidence for those modules; `check-artifacts` and
-`check-full` do not cover them (wiring them in needs `xtask/src/verify.rs`), although `check-full` runs the Slangc-tier
-tests that compile the same goldens. Each area then runs the GPU tests of its feature, so its Gpu claim is the RTX 5090
-(or whichever adapter) named in the run record.
+`vectors__run.spv`, `uniforms__run.spv`; a golden that gains a kernel changes the list in the same commit, and the
+list is kept apart from `EXPECTED_SPIRV`, which names the examples' files) and run `spirv-val --target-env vulkan1.2` on
+each, recorded in the run like the examples' files. That is Spirv-tier evidence for those modules.
+`cargo xtask check-feature vectors` and `uniforms` make and validate the same files for one area, then run the GPU
+tests of the feature, so its Gpu claim is the RTX 5090 (or whichever adapter) named in the run record.
 
-`cargo xtask spirv-val` and `cargo xtask check-feature artifacts` print an informational `OpCopyLogical` count per
-module, read from `spirv-dis` (a missing `spirv-dis` is said in the line); it is never a failure. Slang emits that
+`cargo xtask spirv-val`, `check-artifacts`, the Spirv suite, `check-full` and the `check-feature` areas that validate
+SPIR-V print an informational `OpCopyLogical` count per module, read from `spirv-dis` (a missing `spirv-dis` is said in the line); it is never a failure. Slang emits that
 instruction for copies between aggregates of different layouts, and naga's SPIR-V front end refuses it, which is the
 whole reason the count exists: GUST's SPIR-V targets Vulkan drivers, and feeding it to naga is unsupported. The
 executed route is WGSL. WGSL of the M6 constructs is judged by wgpu's own module creation in the GPU tests (wgpu's
 default capabilities), not by a naga run with every capability enabled, which passed WGSL that wgpu refuses. Known
 limit: a constant `Mat2` or `Mat3` on the SPIR-V GPU path crashes the pipeline creation of the runner, so the GPU
 tests run those cases on WGSL only (SEMANTICS section 4). `cargo xtask slangc` compiles with the same matrix flag
-as `gust` (a unit test compares the text with the two call sites in `gust`).
+as `gust`: a unit test reads the bodies of `gust`'s `slangc_command` and `slangc_reflection_command` and requires the
+flag in each (the whole argument lists of those two are pinned by their own tests in `gust`).
 
 **The Slang pin (D46, slice m4.r).** `cargo gust` is pinned to the Slang 2026.20 release, and `VALIDATED_BUILDS` ships
 empty. The pin was validated on Windows with the release archive itself: every committed artifact set was re-blessed

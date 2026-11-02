@@ -150,26 +150,53 @@ fn the_matrix_layout_flag_is_column_major_and_in_the_arguments_of_both_targets()
     }
 }
 
+/// The text of the free function that starts with `signature`: up to the first line that is a closing brace at the
+/// start of a line. Panics when the function is gone, so a rename fails the test that reads it.
+fn function_body<'a>(source: &'a str, signature: &str) -> &'a str {
+    let start = source
+        .find(signature)
+        .unwrap_or_else(|| panic!("`{signature}` is gone from the source"));
+    let rest = &source[start..];
+    let end = rest.find("\n}").unwrap_or(rest.len());
+    &rest[..end]
+}
+
 #[test]
 fn the_flag_is_the_text_the_compile_paths_of_gust_pass() {
     // `gust::slang::slangc_command` and `gust::reflect::slangc_reflection_command` each pass the flag as one string
-    // literal (their own tests pin the whole argument lists); the xtask command must name the same layout.
+    // literal; the xtask command must name the same layout. Only the bodies of the two functions are read, so a flag
+    // deleted from either one fails here (each file also repeats the literal in its own unit test, which would
+    // otherwise satisfy a search of the whole file).
     let literal = format!("\"{MATRIX_LAYOUT_FLAG}\"");
-    for (path, source) in [
+    for (path, source, signature) in [
         (
             "crates/gust/src/slang/mod.rs",
             include_str!("../../../crates/gust/src/slang/mod.rs"),
+            "fn slangc_command(",
         ),
         (
             "crates/gust/src/reflect/mod.rs",
             include_str!("../../../crates/gust/src/reflect/mod.rs"),
+            "fn slangc_reflection_command(",
         ),
     ] {
+        let body = function_body(source, signature);
         assert!(
-            source.contains(&literal),
-            "{path} no longer passes {MATRIX_LAYOUT_FLAG}"
+            body.contains(&literal),
+            "{path}: `{signature}` no longer passes {MATRIX_LAYOUT_FLAG}"
         );
     }
+}
+
+#[test]
+fn function_body_stops_at_the_closing_brace_of_the_function() {
+    let source = "fn a() {\n    let x = \"flag\";\n}\n\nfn b() {\n    }\n}\n";
+    assert_eq!(
+        function_body(source, "fn a("),
+        "fn a() {\n    let x = \"flag\";"
+    );
+    assert!(!function_body(source, "fn a(").contains("fn b"));
+    assert!(function_body(source, "fn b(").contains("    }"));
 }
 
 // ---- OpCopyLogical (m6.x) ----

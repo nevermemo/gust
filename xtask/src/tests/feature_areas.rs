@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use super::{
-    UNIFORM_GOLDEN_SPIRV, UNIFORM_GOLDEN_STEMS, UNIFORM_MACRO_FILTERS, VECTOR_GOLDEN_SPIRV,
-    VECTOR_GOLDEN_STEMS, VECTOR_MACRO_FILTERS, explanation,
+    GOLDEN_SPIRV_SETS, UNIFORM_GOLDEN_SPIRV, UNIFORM_GOLDEN_STEMS, UNIFORM_MACRO_FILTERS,
+    VECTOR_GOLDEN_SPIRV, VECTOR_GOLDEN_STEMS, VECTOR_MACRO_FILTERS, explanation,
 };
 use crate::{
     shader::{compute_entries, golden_file_name},
@@ -23,15 +23,56 @@ fn accepted_areas() -> Vec<String> {
     // The function ends at the first closing brace in column 0.
     let body = body.split_once("\n}\n").expect("check_feature ends").0;
     body.lines()
-        .filter_map(|line| {
-            let rest = line.strip_prefix("        \"")?;
-            let (name, after) = rest.split_once('"')?;
-            let is_name = !name.is_empty()
-                && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'-')
-                && after.trim_start().starts_with("=>");
-            is_name.then(|| name.to_owned())
+        .filter_map(|line| match parse_arm(line) {
+            Ok(name) => name,
+            Err(error) => panic!("{error}"),
         })
         .collect()
+}
+
+/// The area an arm line names: `Ok(Some(name))` for `        "name" =>`, `Ok(None)` for any other line, and an error
+/// for an arm that lists alternatives (`"a" | "b" =>`), which this reader would otherwise skip silently and so miss
+/// an accepted area.
+fn parse_arm(line: &str) -> Result<Option<String>, String> {
+    let Some(rest) = line.strip_prefix("        \"") else {
+        return Ok(None);
+    };
+    let Some((name, after)) = rest.split_once('"') else {
+        return Ok(None);
+    };
+    let is_name = !name.is_empty() && name.bytes().all(|b| b.is_ascii_lowercase() || b == b'-');
+    if !is_name {
+        return Ok(None);
+    }
+    let after = after.trim_start();
+    if after.starts_with("=>") {
+        Ok(Some(name.to_owned()))
+    } else if after.starts_with('|') {
+        Err(format!(
+            "check_feature has an arm with alternatives (`{line}`): write one arm per area or teach accepted_areas"
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
+#[test]
+fn an_arm_with_alternatives_is_refused_instead_of_skipped() {
+    assert_eq!(
+        parse_arm("        \"loops\" => run(),"),
+        Ok(Some("loops".to_owned()))
+    );
+    assert_eq!(
+        parse_arm("        \"gpu-smoke\" => {"),
+        Ok(Some("gpu-smoke".to_owned()))
+    );
+    let error = parse_arm("        \"a\" | \"b\" => run(),").unwrap_err();
+    assert!(error.contains("alternatives"), "{error}");
+    // Not arms: another indentation, a string that is not a name, a call argument.
+    assert_eq!(parse_arm("            \"loops\" => 1,"), Ok(None));
+    assert_eq!(parse_arm("        \"Not A Name\" => 1,"), Ok(None));
+    assert_eq!(parse_arm("        \"unknown feature area\","), Ok(None));
+    assert_eq!(parse_arm("        \"loops\","), Ok(None));
 }
 
 #[test]
@@ -117,6 +158,12 @@ fn names_of(stems: &[&str]) -> Vec<String> {
 fn the_pinned_golden_spirv_names_are_the_ones_the_goldens_produce() {
     assert_eq!(names_of(&VECTOR_GOLDEN_STEMS), VECTOR_GOLDEN_SPIRV);
     assert_eq!(names_of(&UNIFORM_GOLDEN_STEMS), UNIFORM_GOLDEN_SPIRV);
+    // The sets `verify` (check-artifacts, the Spirv suite, check-full) exports are these two, and no others.
+    let areas: Vec<&str> = GOLDEN_SPIRV_SETS.iter().map(|(area, _, _)| *area).collect();
+    assert_eq!(areas, ["vectors", "uniforms"]);
+    for (_, stems, expected) in GOLDEN_SPIRV_SETS {
+        assert_eq!(names_of(stems), expected);
+    }
     for expected in [&VECTOR_GOLDEN_SPIRV[..], &UNIFORM_GOLDEN_SPIRV[..]] {
         assert!(expected.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(expected.iter().all(|name| name.ends_with(".spv")));

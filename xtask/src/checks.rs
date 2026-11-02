@@ -15,7 +15,7 @@ use crate::{
         run_counted_captured, run_direct, run_direct_args, set_workspace_profile, without_colors,
         workspace_command,
     },
-    shader::{copy_logical_note, doctor_smoke, export_golden_spirv},
+    shader::{doctor_smoke, export_golden_spirv},
     ui::{Expectation, judge, parse_expected},
     validation::{compact_validation_summary, json_string},
     verify::{VerifyMode, prepare_helper, verify},
@@ -62,9 +62,10 @@ pub(crate) const VECTOR_MACRO_FILTERS: [&str; 8] = [
     "dot_is",
 ];
 
-/// The goldens of `tests/fixtures` that `check-feature vectors` compiles to SPIR-V, and the names of the files that
-/// must come out of them (`<golden>__<kernel>.spv`, sorted). `check-artifacts` does not export these modules, because
-/// no example uses a vector or a uniform; a golden that gains a kernel changes this list in the same commit.
+/// The goldens of `tests/fixtures` that `check-feature vectors` and `verify` (`check-artifacts`, the Spirv suite,
+/// `check-full`) compile to SPIR-V, and the names of the files that must come out of them (`<golden>__<kernel>.spv`,
+/// sorted). They are kept apart from `EXPECTED_SPIRV`, which names what the examples write to `generated-wgpu`; a
+/// golden that gains a kernel changes its list in the same commit.
 pub(crate) const VECTOR_GOLDEN_STEMS: [&str; 2] = ["vectors", "products"];
 pub(crate) const VECTOR_GOLDEN_SPIRV: [&str; 2] = ["products__run.spv", "vectors__run.spv"];
 
@@ -75,6 +76,13 @@ pub(crate) const UNIFORM_MACRO_FILTERS: [&str; 3] = ["uniform", "std140", "const
 /// The golden of `check-feature uniforms` and its SPIR-V name, as [`VECTOR_GOLDEN_STEMS`].
 pub(crate) const UNIFORM_GOLDEN_STEMS: [&str; 1] = ["uniforms"];
 pub(crate) const UNIFORM_GOLDEN_SPIRV: [&str; 1] = ["uniforms__run.spv"];
+
+/// Every golden set `verify` exports and validates after the examples' SPIR-V: the area (the directory under the
+/// target directory's `golden-spirv`), the fixture stems and the expected file names.
+pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 2] = [
+    ("vectors", &VECTOR_GOLDEN_STEMS, &VECTOR_GOLDEN_SPIRV),
+    ("uniforms", &UNIFORM_GOLDEN_STEMS, &UNIFORM_GOLDEN_SPIRV),
+];
 
 /// The cargo calls of `cargo xtask check-cpu` (a step of the Unit suite): the non-ignored,
 /// GPU-free tests of the examples, which run each kernel's CPU twin against its host reference.
@@ -283,11 +291,7 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                 ],
             )?;
             export_golden_spirv(&root, "vectors", &VECTOR_GOLDEN_STEMS, &VECTOR_GOLDEN_SPIRV)?;
-            run_direct(
-                &root,
-                "cargo",
-                &["test", "-p", "gust-wgpu", "--test", "vectors"],
-            )
+            run_counted(&root, &["test", "-p", "gust-wgpu", "--test", "vectors"]).map(drop)
         }
         "uniforms" => {
             let mut macros = vec!["test", "-p", "gust-macros", "--"];
@@ -312,15 +316,10 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                 &UNIFORM_GOLDEN_STEMS,
                 &UNIFORM_GOLDEN_SPIRV,
             )?;
-            run_direct(
-                &root,
-                "cargo",
-                &["test", "-p", "gust-wgpu", "--test", "uniforms"],
-            )?;
+            run_counted(&root, &["test", "-p", "gust-wgpu", "--test", "uniforms"])?;
             // The uniform cases of the typed-call and graph tests (m6.u1): their names say `uniform`.
-            run_direct(
+            run_counted(
                 &root,
-                "cargo",
                 &[
                     "test",
                     "-p",
@@ -333,36 +332,13 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                     "uniform",
                 ],
             )
+            .map(drop)
         }
         "examples" => verify(VerifyMode::Examples, false),
-        "artifacts" => {
-            verify(VerifyMode::Artifacts, false)?;
-            report_copy_logical(&root)
-        }
+        "artifacts" => verify(VerifyMode::Artifacts, false),
         "full" => verify(VerifyMode::Full, true),
         _ => Err(format!("unknown feature area `{area}`")),
     }
-}
-
-/// Prints the informational `OpCopyLogical` count of every SPIR-V file the examples exported to `generated-wgpu`
-/// (`check-feature artifacts`, after the validation of `verify`). It never fails because of a count; only a directory
-/// that cannot be read fails.
-fn report_copy_logical(root: &Path) -> Result<(), String> {
-    let directory = root.join("generated-wgpu");
-    let mut files = fs::read_dir(&directory)
-        .map_err(|error| format!("could not read generated-wgpu: {error}"))?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|extension| extension == "spv"))
-        .collect::<Vec<_>>();
-    files.sort();
-    for file in files {
-        let name = file
-            .file_name()
-            .map_or_else(String::new, |name| name.to_string_lossy().into_owned());
-        println!("{name}: {}", copy_logical_note(&file));
-    }
-    Ok(())
 }
 
 pub(crate) fn check_workspace() -> Result<(), String> {
@@ -638,7 +614,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "map: the device side of the map calls: gust::map unit tests, then GpuVec and the buffer pool, device options and adapter choice, and the launch and buffer limits on the GPU"
         }
         "vectors" => {
-            "vectors: the vector and matrix types (M6): the gust-macros tests of the types, products and negation, the gust::math unit tests, the vectors and products goldens on slangc, their SPIR-V (made here, since no example uses a vector) validated with spirv-val for Vulkan 1.2 with an informational OpCopyLogical count, then the GPU tests of crates/gust-wgpu/tests/vectors.rs"
+            "vectors: the vector and matrix types (M6): the gust-macros tests of the types, products and negation, the gust::math unit tests, the vectors and products goldens on slangc, their SPIR-V (made here from the goldens, since no example uses a vector) validated with spirv-val for Vulkan 1.2 with an informational OpCopyLogical count, as check-artifacts does too; then the GPU tests of crates/gust-wgpu/tests/vectors.rs"
         }
         "uniforms" => {
             "uniforms: the uniform parameters (M6): the gust-macros tests of Uniform<T>, Std140 and ConstantBuffer, the uniforms_twin test, the uniforms golden on slangc and its SPIR-V validated as for vectors, then the GPU tests of crates/gust-wgpu/tests/uniforms.rs and the uniform cases of the typed and graph tests"
@@ -647,7 +623,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "examples: every example test (ordinary and ignored, `--include-ignored`; a package that runs no test fails) and example binaries; use for major behavior confidence"
         }
         "artifacts" => {
-            "artifacts: example binaries plus exported SPIR-V validation, then an informational OpCopyLogical count per exported module (never a failure)"
+            "artifacts: example binaries plus exported SPIR-V validation (the examples' files and the vectors and uniforms goldens, compiled here), each module with an informational OpCopyLogical count (never a failure)"
         }
         "full" => {
             "full: release evidence (the Full mode of verify, as `cargo xtask check-full [--skip-web]`): everything above, check-dual in full mode, the artifact export with spirv-val, then the whole check-precompiled and check-web; writes .ai/VALIDATION.json, with `skipped_checks` naming a check that --skip-web left out"

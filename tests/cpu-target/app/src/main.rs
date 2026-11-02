@@ -181,9 +181,8 @@ fn vector_lanes(index: usize, shift: usize) -> [f32; 4] {
 /// The vector kernel `vector_ops::blend` of `kernels` (M6), in the production CPU build, against a reference written
 /// lane by lane on plain arrays: `blended = (a + reverse(b)) * 2 + 0.5` and `dot = sum of a * b` in lane order.
 ///
-/// The line is not a `CPU target: matches (..)` line: `xtask/src/cpu_target.rs` (`KERNELS`) requires exactly one of
-/// those per listed kernel and rejects a kernel it does not list, and that file is outside the slice that added this
-/// kernel. A mismatch fails the run (exit 1, no final line) all the same.
+/// The comparison is exact, so the line says `max ULP 0` truthfully; `xtask/src/cpu_target.rs` (`KERNELS`) requires it.
+/// A mismatch fails the run (exit 1, no final line).
 fn check_vector_ops() -> Result<(), String> {
     let a: Vec<[f32; 4]> = (0..ELEMENTS).map(|index| vector_lanes(index, 0)).collect();
     let b: Vec<[f32; 4]> = (0..ELEMENTS).map(|index| vector_lanes(index, 3)).collect();
@@ -216,7 +215,7 @@ fn check_vector_ops() -> Result<(), String> {
             ));
         }
     }
-    println!("CPU target: vector kernel exact (vector_ops::blend, {ELEMENTS} elements)");
+    println!("CPU target: matches (vector_ops::blend, {ELEMENTS} elements, max ULP 0)");
     Ok(())
 }
 

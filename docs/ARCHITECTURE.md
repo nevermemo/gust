@@ -98,7 +98,7 @@ The core crate owns:
 The typed call surface is what the macro generates `call`, `submit` and `dispatch`
 against. `Device` is unchanged; the extension trait `TypedDevice: Device` names the
 erased, `Copy` binding of one device, and `Run<K, N>: TypedDevice` is the executable
-hook for one kernel `K` with `N` storage parameters. A GPU backend can implement `Run`
+hook for one kernel `K` with `N` storage and uniform parameters. A GPU backend can implement `Run`
 once for every kernel (one blanket impl; a kernel with a uniform parameter has the impl and,
 since m6.u2, the generated `call`, `submit` and `dispatch` that reach it); a backend that cannot run a kernel simply
 lacks the impl, and a generated `submit` or `dispatch` for it does not compile.
@@ -182,7 +182,7 @@ The current macro assigns bindings deterministically in resource-parameter order
 The macro still *assigns* this contract; since T06 the runtime *verifies* it against
 the compiler before creating a pipeline (see "Struct ABI"). Runtime descriptors and
 bind groups are not derived from reflection. Compiler-authoritative layout validation
-now exists for the StorageV1 subset only; textures, samplers, parameter blocks,
+now exists for the StorageV1 and StorageV2 buffers and the Std140V1 uniforms; textures, samplers, parameter blocks,
 multiple groups, and specialization still need their own evidence before entering the
 runtime contract. A `Uniform<T>` or `ConstantBuffer<T>` parameter takes the next binding in the same order
 (`ConstantBuffer<T>` in Slang, `BufferBindingType::Uniform` in the bind group layout), and the compiler resource
@@ -348,10 +348,11 @@ not one sequential backend path: WGSL execution and SPIR-V validation are branch
 3. `slangc` checks the generated shader and produces WGSL/SPIR-V.
 4. The core SPIR-V helper checks binary structure.
 5. `spirv-val --target-env vulkan1.2` performs external semantic validation of
-   exported modules in artifact/full checks; a missing tool fails those checks. GUST's SPIR-V targets Vulkan drivers;
+   exported modules in artifact/full checks (the examples' files and the vectors, products and uniforms goldens, which
+   those checks compile); a missing tool fails those checks. GUST's SPIR-V targets Vulkan drivers;
    feeding it to naga is unsupported, because Slang can emit `OpCopyLogical` (a copy between aggregates of different
-   layouts), which naga's SPIR-V front end refuses. The checks print an informational `OpCopyLogical` count per
-   module (never a failure): 0 in all three golden modules and all 13 example modules (2026-11-02).
+   layouts), which naga's SPIR-V front end refuses. `check-artifacts`, the Spirv suite, `check-full`, `spirv-val` and the
+   `check-feature` areas that validate SPIR-V print an informational `OpCopyLogical` count per module (never a failure): 0 in all three golden modules and all 13 example modules (2026-11-02).
 6. wgpu validates the generated WGSL, bind-group layout, pipeline, and dispatch.
 7. Integration tests compare readback values with independent CPU references. In test
    and dual builds the same typed call also runs on the CPU twin, and its result is
@@ -526,6 +527,6 @@ for a valid result on the GPU (set-valued, D47) and exactly on the twin.
 The syn translator still lacks rustc-resolved semantics. Inferred integer types,
 overflow, casts outside their safe input domain, evaluation ordering for effectful
 expressions, resource aliases, and comprehensive identifier hygiene need further
-proofs or restrictions. Uniform emission is not an executable wgpu binding contract.
+proofs or restrictions. A uniform parameter is an executable binding on wgpu (Std140V1; see "Struct ABI").
 Do not infer arbitrary Rust support from successful parsing or shadow typechecking.
 The ranked work list is in [next tasks](development/NEXT_TASKS.md).

@@ -1123,7 +1123,10 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
                     let operator = match name {
                         "wrapping_add" => '+',
                         "wrapping_sub" => '-',
-                        _ => '*',
+                        "wrapping_mul" => '*',
+                        other => unreachable!(
+                            "`{other}` is accepted by `wrapping_arity` but has no emitter arm"
+                        ),
                     };
                     format!(
                         "({receiver} {operator} {})",

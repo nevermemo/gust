@@ -2153,14 +2153,14 @@ fn known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome() {
     );
     eprintln!("S2 ledger file: {} lines in {path}", cases.len());
 
+    wrapping_edge_grid(&device, &mut failures);
+
     assert!(
         failures.is_empty(),
         "{} ledger expectation(s) failed:\n{}",
         failures.len(),
         failures.join("\n")
     );
-
-    wrapping_edge_grid(&device);
 }
 
 /// The ids of the table rows of `docs/SEMANTICS.md`: lines that start with `| KM-nn |`.
@@ -2204,8 +2204,9 @@ fn every_pinned_ledger_id_is_documented_and_every_documented_id_is_pinned() {
 /// products wrap in both directions. The GPU, the twin and Rust's own `wrapping_*` (the plain Rust column) must give
 /// one value, and so must an oracle that shares nothing with them: exact integer arithmetic in `i128` reduced
 /// modulo 2^32. Part of the ledger test, so it runs in both overflow modes of that test and in the release ledger
-/// (`check-ledger`) without a ledger name of its own to register.
-fn wrapping_edge_grid(device: &HeadlessDevice) {
+/// (`check-ledger`) without a ledger name of its own to register. A disagreement goes into the ledger's `failures`,
+/// so the test reports a count and the KM rows are still checked.
+fn wrapping_edge_grid(device: &HeadlessDevice, failures: &mut Vec<String>) {
     let unsigned_edges = [0, 1, 2, u32::MAX - 1, u32::MAX, 0x7fff_ffff, 0x8000_0000];
     let signed_edges = [i32::MIN, i32::MIN + 1, -2, -1, 0, 1, i32::MAX].map(i);
     for (kind, edges, signed) in [
@@ -2244,9 +2245,24 @@ fn wrapping_edge_grid(device: &HeadlessDevice) {
             };
             let oracle = exact.rem_euclid(1 << 32) as u32;
             let what = format!("{kind:?} op {op} on 0x{a:08x} and 0x{b:08x}");
-            assert_eq!(Observed::Value(gpu), rust_observed(case), "GPU, {what}");
-            assert_eq!(twin_observed(case), rust_observed(case), "twin, {what}");
-            assert_eq!(gpu, oracle, "exact oracle, {what}");
+            let rust = rust_observed(case);
+            if Observed::Value(gpu) != rust {
+                failures.push(format!(
+                    "GPU, {what}: {:?} vs {rust:?}",
+                    Observed::Value(gpu)
+                ));
+            }
+            if twin_observed(case) != rust {
+                failures.push(format!(
+                    "twin, {what}: {:?} vs {rust:?}",
+                    twin_observed(case)
+                ));
+            }
+            if gpu != oracle {
+                failures.push(format!(
+                    "exact oracle, {what}: 0x{gpu:08x} vs 0x{oracle:08x}"
+                ));
+            }
         }
     }
 }

@@ -1277,7 +1277,23 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        if call.turbofish.is_some() {
+        let method = call.method.to_string();
+        let in_dialect = matches!(
+            method.as_str(),
+            "global_id"
+                | "len"
+                | "is_some"
+                | "is_none"
+                | "is_ok"
+                | "is_err"
+                | "unwrap_or"
+                | "unwrap"
+                | "expect"
+        ) || wrapping_arity(&method).is_some()
+            || math_types::is_swizzle(&method)
+            || math_types::method_arity(&method).is_some();
+        // A type argument on a method outside the dialect is that method's problem (E0305, E0325), not a built-in's.
+        if call.turbofish.is_some() && in_dialect {
             self.reject(
                 Code::BuiltinTypeArguments,
                 call,
@@ -1285,7 +1301,6 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             );
             return;
         }
-        let method = call.method.to_string();
         match method.as_str() {
             "is_some" | "is_none" | "is_ok" | "is_err" if call.args.is_empty() => {
                 visit::visit_expr_method_call(self, call);

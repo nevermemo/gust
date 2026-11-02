@@ -5073,6 +5073,78 @@ fn the_not_in_the_dialect_text_lists_the_accepted_methods() {
     );
 }
 
+/// The quoted names in the `match` arms of one function of a source file, found by the function's signature.
+fn names_in_fn(source: &str, signature: &str) -> Vec<String> {
+    let start = source
+        .find(signature)
+        .unwrap_or_else(|| panic!("no `{signature}`"));
+    let body = &source[start..];
+    let end = body.find("\n}").expect("the function ends");
+    let mut names = Vec::new();
+    for line in body[..end].lines().skip(1) {
+        let mut parts = line.split('"');
+        while let (Some(_), Some(name)) = (parts.next(), parts.next()) {
+            names.push(name.to_string());
+        }
+    }
+    assert!(!names.is_empty(), "`{signature}` names nothing");
+    names
+}
+
+#[test]
+fn every_method_table_name_has_an_emitter_arm_and_is_in_the_accepted_text() {
+    let validate = include_str!("../validate/mod.rs");
+    let math = include_str!("../math_types.rs");
+    let accepted = translate(&kernel_with_body("let y = x.abs();"))
+        .unwrap_err()
+        .to_string();
+    let wrapping = names_in_fn(validate, "pub(crate) fn wrapping_arity");
+    assert!(wrapping.len() >= 4, "{wrapping:?}");
+    for name in &wrapping {
+        // `wrapping_arity` knows the name, so the emitter must lower it: an arm missing there would panic.
+        let arity = crate::validate::wrapping_arity(name).expect("a table name has an arity");
+        let arguments = if arity == 0 { "" } else { "1u32" };
+        let body = format!("let y = x.{name}({arguments});");
+        let source =
+            translate(&kernel_with_body(&body)).unwrap_or_else(|error| panic!("{body}: {error}"));
+        assert!(source.contains("var y = ("), "{name}: {source}");
+        assert!(
+            accepted.contains(&format!(".{name}(")),
+            "`.{name}(` is missing from the accepted text: {accepted}"
+        );
+    }
+    // The vector and matrix methods are listed by example (`.mul_vec4(v)`, `.mul_mat4(m)`), so check the stems.
+    for name in names_in_fn(math, "pub(crate) fn method_arity") {
+        let stem = name.trim_end_matches(|c: char| c.is_ascii_digit());
+        assert!(
+            accepted.contains(&format!(".{stem}")),
+            "`.{name}` is missing from the accepted text: {accepted}"
+        );
+    }
+}
+
+#[test]
+fn a_type_argument_on_a_method_outside_the_dialect_reports_the_method() {
+    // A name outside the dialect is E0325 (with arguments) or E0305 (without), never the built-ins' E0303.
+    assert_rejected(
+        &kernel_with_body("let y = x.checked_add::<u32>(1u32);"),
+        Code::MethodNotInDialect,
+    );
+    assert_rejected(
+        &kernel_with_body("let y = x.abs::<u32>();"),
+        Code::UnsupportedMethod,
+    );
+    let text = translate(&kernel_with_body("let y = x.checked_add::<u32>(1u32);"))
+        .unwrap_err()
+        .to_string();
+    assert!(!text.contains("built-ins"), "{text}");
+    // A dialect method keeps E0303.
+    assert_rejected(
+        &kernel_with_body("let y = x.wrapping_neg::<u32>();"),
+        Code::BuiltinTypeArguments,
+    );
+}
+
 #[test]
 fn star_assign_on_a_place_with_a_wrapping_method_is_not_a_call_in_a_matrix_module() {
     // `wrapping_*` is arithmetic on its operands, like `+`, so the place is evaluated once either way.

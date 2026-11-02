@@ -394,8 +394,7 @@ Decision: D02.
 Methods other than `.global_id()`, `.len()`, `.is_some()`, `.is_none()`, `.is_ok()`,
 `.is_err()`, `.unwrap_or(default)`, the wrapping integer methods (`.wrapping_add(b)`, `.wrapping_sub(b)`,
 `.wrapping_mul(b)`, `.wrapping_neg()`; slice m7.w) and the vector and matrix methods (swizzles `.xy()`..`.wzyx()`,
-`.dot(v)`, `.mul_vec2/3/4(v)`,
-`.mul_mat2/3/4(m)`, `.transpose()`) have no lowering. This code is the one for a method called without arguments;
+`.dot(v)`, `.mul_vec2/3/4(v)`, `.mul_mat2/3/4(m)`, `.transpose()`) have no lowering. This code is the one for a method called without arguments;
 the same unknown method called with arguments is E0325. The message lists the accepted methods.
 Integer `.dot` (slice m6.m2): Slang's `dot` on an integer vector is `OpSDot` or `OpUDot` in SPIR-V, which needs
 `Capability DotProduct`, and naga's SPIR-V reader refuses it (`UnsupportedCapability(DotProduct)`; measured on
@@ -571,11 +570,12 @@ accepted ones: `.global_id()` and `.len()`, the Option and Result methods (`.is_
 the text "GPU built-ins do not accept arguments or type arguments", which blamed a built-in that was never called.
 `wrapping_div` and `wrapping_rem` are deliberately absent: a divisor of zero (and `MIN / -1`) has no wrapped result, so
 a "wrapping" division would still leave the domain (KM-01 to KM-03 in [SEMANTICS](SEMANTICS.md)). The same unknown
-method called without arguments is E0305; a built-in called with arguments it does not take is E0304.
+method called without arguments is E0305; a built-in called with arguments it does not take is E0304. A type
+argument on such a name (`x.checked_add::<u32>(y)`) is this code as well, not E0303.
 Reached through `#[gpu]`.
 Rejected: `x.wrapping_div(y)`, `x.wrapping_rem(y)`, `x.pow(2)`, `x.min(y)`, `x.checked_add(y)`, `x.saturating_sub(y)`.
 Write instead: the operator or an `if` (`if y != 0 { x / y } else { 0 }`), or one of the accepted methods.
-Decision: D22, D38 (M7 plan 2.4).
+Decision: D22 (the dialect boundary), D87 (the wrapping methods and this code).
 
 ## E04xx: control flow and loops
 

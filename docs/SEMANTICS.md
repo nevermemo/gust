@@ -584,7 +584,8 @@ adapter in section 1.
   `i32`, asserted equal on the GPU, on the twin, in plain Rust's own `wrapping_*` and against exact `i128` arithmetic
   reduced modulo 2^32, over every operation on every pair of seven edge values per type, including `u32::MAX`,
   `i32::MIN`, `i32::MAX`, 0 and -1 (`wrapping_edge_grid`, run at the end of the ledger test in `mismatch.rs`), in
-  both overflow modes through the `DOMAIN` rows of that test; and the helpers `scramble` and `step` of the
+  both overflow modes: the dev run of that test and `cargo xtask check-ledger` (the release ledger, checks off); and
+  the helpers `scramble` and `step` of the
   `numeric` fixture (hash and congruential step, whose products overflow for most elements). Wrapping modulo 2^32 is
   the WGSL result (section 6.2.3), so the set the specification allows contains the pinned value.
 - **Exact example kernels** (m3.c to m3.e2), each asserted equal on the GPU, on the twin and against a host reference:

@@ -95,15 +95,50 @@ static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
 /// `wgpu::Limits::default()` by a unit test and to the opened device by the `limits` test.
 pub const DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
 
-/// Panic unless `T`'s `GpuPod::LAYOUT` is StorageV1 and agrees with Rust's size and alignment.
+/// Whether `layout` has no padding byte anywhere: a struct's field sizes add up to its size (recursively), a matrix's
+/// columns are packed. [`gust::TypeLayout::is_storage_v2`] accepts padded structs, which are not `GpuPod` types:
+/// `pod_slice_as_bytes` would read their uninitialised padding.
+const fn padding_free(layout: gust::TypeLayout) -> bool {
+    match layout.kind {
+        gust::TypeLayoutKind::Scalar(_) | gust::TypeLayoutKind::Vector { .. } => true,
+        gust::TypeLayoutKind::Matrix {
+            rows,
+            cols,
+            column_stride,
+            ..
+        } => column_stride == rows * 4 && column_stride * cols == layout.size,
+        gust::TypeLayoutKind::Struct(fields) => {
+            let mut sum = 0_u32;
+            let mut index = 0;
+            while index < fields.len() {
+                let field = fields[index].ty;
+                let Some(next) = sum.checked_add(field.size) else {
+                    return false;
+                };
+                if !padding_free(field) {
+                    return false;
+                }
+                sum = next;
+                index += 1;
+            }
+            sum == layout.size
+        }
+    }
+}
+
+/// Panic unless `T`'s `GpuPod::LAYOUT` is StorageV2 (StorageV1 is its scalar sub-case), has no padding, and agrees
+/// with Rust's size and alignment. The message keeps the StorageV1 wording that tests pin.
 /// Every typed allocation (`create_typed_buffer`, pool buffers) runs it first, so a hand-written
-/// `GpuPod` that lies is refused at creation instead of failing later in wgpu or at dispatch.
-pub(crate) fn assert_storage_v1_pod<T: GpuPod>() {
+/// `GpuPod` that lies, or that describes padding, is refused at creation instead of failing later in wgpu or at
+/// dispatch (or uploading uninitialised bytes).
+pub(crate) fn assert_pod_matches_storage_layout<T: GpuPod>() {
     assert!(
-        T::LAYOUT.is_storage_v1()
+        T::LAYOUT.is_storage_v2()
+            && padding_free(T::LAYOUT)
             && T::LAYOUT.size as usize == size_of::<T>()
             && T::LAYOUT.alignment as usize == align_of::<T>(),
-        "GpuPod implementation must match the Rust StorageV1 representation"
+        "GpuPod implementation must match the Rust StorageV1 representation \
+         (StorageV2 for vectors and matrices, without padding)"
     );
 }
 
@@ -920,7 +955,7 @@ impl HeadlessDevice {
         values: &[T],
         access: GpuBufferAccess,
     ) -> GpuBuffer<T> {
-        assert_storage_v1_pod::<T>();
+        assert_pod_matches_storage_layout::<T>();
         let mut usage = wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST;
         if access == GpuBufferAccess::ReadWrite {
             usage |= wgpu::BufferUsages::COPY_SRC;
@@ -2090,6 +2125,16 @@ fn check_binding_size(
     Ok(())
 }
 
+/// The resource layout a typed buffer of element layout `element` presents: `StorageV1` when the element is a scalar
+/// or a struct of scalars (the macro describes those parameters as `StorageV1`), else `StorageV2` (vectors, matrices).
+fn buffer_resource_layout(element: gust::TypeLayout) -> ResourceLayout {
+    if element.is_storage_v1() {
+        ResourceLayout::storage_v1(element)
+    } else {
+        ResourceLayout::storage_v2(element)
+    }
+}
+
 fn validate_binding_layout(
     parameter: &ParameterDescriptor,
     actual: ResourceLayout,
@@ -2194,7 +2239,7 @@ fn validate_persistent_dispatch(
     }
     for (parameter, binding) in resources.iter().copied().zip(bindings.iter().copied()) {
         let buffer = binding;
-        validate_binding_layout(parameter, ResourceLayout::storage_v1(buffer.layout))?;
+        validate_binding_layout(parameter, buffer_resource_layout(buffer.layout))?;
         if buffer.device_id != device_id {
             return Err(Error::ForeignPersistentBuffer);
         }
@@ -2271,8 +2316,10 @@ pub(crate) fn validate_kernel(
                 kind: parameter.kind,
             });
         }
+        // The rule is a function of the element (`buffer_resource_layout`): a `Vec4` labelled StorageV1, or a storage
+        // parameter under the Std140V1 rule, is refused here and not only later at the persistent dispatch.
         if !parameter.resource_layout.is_some_and(|layout| {
-            layout.element.is_storage_v1() && layout.element_stride == layout.element.stride
+            layout.element.is_storage_v2() && layout == buffer_resource_layout(layout.element)
         }) {
             return Err(Error::InvalidResourceLayout {
                 parameter: parameter.name.to_owned(),
@@ -2836,14 +2883,14 @@ mod tests {
 
     #[test]
     fn the_layout_assertion_accepts_honest_types() {
-        assert_storage_v1_pod::<u32>();
-        assert_storage_v1_pod::<f32>();
+        assert_pod_matches_storage_layout::<u32>();
+        assert_pod_matches_storage_layout::<f32>();
     }
 
     #[test]
     #[should_panic(expected = "GpuPod implementation must match the Rust StorageV1 representation")]
     fn the_layout_assertion_refuses_a_layout_that_is_not_storage_v1() {
-        assert_storage_v1_pod::<LyingAlignment>();
+        assert_pod_matches_storage_layout::<LyingAlignment>();
     }
 
     #[test]
@@ -2855,14 +2902,210 @@ mod tests {
             align_of::<LyingOffset>()
         );
         assert!(!LyingOffset::LAYOUT.is_storage_v1());
-        assert_storage_v1_pod::<LyingOffset>();
+        assert_pod_matches_storage_layout::<LyingOffset>();
     }
 
     #[test]
     #[should_panic(expected = "GpuPod implementation must match the Rust StorageV1 representation")]
     fn the_layout_assertion_refuses_a_size_that_differs_from_rust() {
         assert!(LyingSize::LAYOUT.is_storage_v1());
-        assert_storage_v1_pod::<LyingSize>();
+        assert_pod_matches_storage_layout::<LyingSize>();
+    }
+
+    /// An honest hand-written `GpuPod` over vectors: `Vec4` (16, align 16) then two `Vec2` at 16 and 24, size 32, no
+    /// padding.
+    #[derive(Clone, Copy)]
+    #[repr(C)]
+    struct HonestBody {
+        a: gust::math::Vec4,
+        b: gust::math::Vec2,
+        c: gust::math::Vec2,
+    }
+
+    // SAFETY: `repr(C)` over three `repr(C)` vector types, no padding (16 + 8 + 8 = 32), offsets 0, 16, 24.
+    unsafe impl GpuPod for HonestBody {
+        const LAYOUT: gust::TypeLayout = gust::TypeLayout::structure(
+            "HonestBody",
+            32,
+            16,
+            &[
+                gust::StructFieldLayout {
+                    name: "a",
+                    offset: 0,
+                    ty: <gust::math::Vec4 as GpuPod>::LAYOUT,
+                },
+                gust::StructFieldLayout {
+                    name: "b",
+                    offset: 16,
+                    ty: <gust::math::Vec2 as GpuPod>::LAYOUT,
+                },
+                gust::StructFieldLayout {
+                    name: "c",
+                    offset: 24,
+                    ty: <gust::math::Vec2 as GpuPod>::LAYOUT,
+                },
+            ],
+        );
+    }
+
+    /// A hand-written `GpuPod` that honestly describes padding: a `u32` then a `Vec2` (align 8) at offset 8, so
+    /// bytes 4 to 7 are padding. Size 16 and alignment 8 are what Rust reports and what `is_storage_v2` accepts.
+    #[derive(Clone, Copy)]
+    #[repr(C)]
+    struct PaddedPair {
+        a: u32,
+        b: gust::math::Vec2,
+    }
+
+    // SAFETY: deliberately breaks the no-padding rule, to exercise the runtime assertion; it is never uploaded.
+    unsafe impl GpuPod for PaddedPair {
+        const LAYOUT: gust::TypeLayout = gust::TypeLayout::structure(
+            "PaddedPair",
+            16,
+            8,
+            &[
+                gust::StructFieldLayout {
+                    name: "a",
+                    offset: 0,
+                    ty: gust::TypeLayout::scalar("u32", gust::ScalarKind::U32),
+                },
+                gust::StructFieldLayout {
+                    name: "b",
+                    offset: 8,
+                    ty: <gust::math::Vec2 as GpuPod>::LAYOUT,
+                },
+            ],
+        );
+    }
+
+    #[test]
+    fn the_layout_assertion_accepts_vectors_matrices_and_a_padding_free_struct_of_vectors() {
+        assert_pod_matches_storage_layout::<gust::math::Vec2>();
+        assert_pod_matches_storage_layout::<gust::math::Vec4>();
+        assert_pod_matches_storage_layout::<gust::math::Mat2>();
+        assert_pod_matches_storage_layout::<gust::math::Mat4>();
+        assert_pod_matches_storage_layout::<HonestBody>();
+    }
+
+    #[test]
+    #[should_panic(expected = "GpuPod implementation must match the Rust StorageV1 representation")]
+    fn the_layout_assertion_refuses_a_struct_with_padding_even_when_the_layout_is_storage_v2() {
+        assert!(PaddedPair::LAYOUT.is_storage_v2());
+        assert_eq!(PaddedPair::LAYOUT.size as usize, size_of::<PaddedPair>());
+        assert_eq!(
+            PaddedPair::LAYOUT.alignment as usize,
+            align_of::<PaddedPair>()
+        );
+        assert!(!padding_free(PaddedPair::LAYOUT));
+        assert_pod_matches_storage_layout::<PaddedPair>();
+    }
+
+    #[test]
+    fn the_resource_rule_follows_the_element() {
+        use gust::math::{Mat2, Mat4, Vec2, Vec4};
+        let scalar_struct = gust::TypeLayout::structure(
+            "Pair",
+            8,
+            4,
+            &[
+                gust::StructFieldLayout {
+                    name: "a",
+                    offset: 0,
+                    ty: <u32 as GpuPod>::LAYOUT,
+                },
+                gust::StructFieldLayout {
+                    name: "b",
+                    offset: 4,
+                    ty: <f32 as GpuPod>::LAYOUT,
+                },
+            ],
+        );
+        for element in [
+            <f32 as GpuPod>::LAYOUT,
+            <u32 as GpuPod>::LAYOUT,
+            scalar_struct,
+        ] {
+            assert_eq!(
+                buffer_resource_layout(element),
+                ResourceLayout::storage_v1(element),
+                "{}",
+                element.name
+            );
+        }
+        for element in [
+            <Vec2 as GpuPod>::LAYOUT,
+            <Vec4 as GpuPod>::LAYOUT,
+            <Mat2 as GpuPod>::LAYOUT,
+            <Mat4 as GpuPod>::LAYOUT,
+            <HonestBody as GpuPod>::LAYOUT,
+        ] {
+            assert_eq!(
+                buffer_resource_layout(element),
+                ResourceLayout::storage_v2(element),
+                "{}",
+                element.name
+            );
+        }
+    }
+
+    /// `DESCRIPTOR` with its one storage parameter relabelled.
+    fn descriptor_with(resource_layout: ResourceLayout) -> KernelDescriptor {
+        let parameters = Box::leak(Box::new([ParameterDescriptor {
+            resource_layout: Some(resource_layout),
+            ..PARAMETERS[0]
+        }]));
+        KernelDescriptor {
+            parameters,
+            ..DESCRIPTOR
+        }
+    }
+
+    #[test]
+    fn a_kernel_is_valid_only_with_the_rule_that_its_element_implies() {
+        use gust::math::{Mat4, Vec4};
+        for (label, valid) in [
+            (ResourceLayout::storage_v1(<f32 as GpuPod>::LAYOUT), true),
+            (ResourceLayout::storage_v2(<Vec4 as GpuPod>::LAYOUT), true),
+            (ResourceLayout::storage_v2(<Mat4 as GpuPod>::LAYOUT), true),
+            // A V2 claim on a scalar, a V1 claim on a vector and a constant-buffer rule on a storage parameter.
+            (ResourceLayout::storage_v2(<f32 as GpuPod>::LAYOUT), false),
+            (ResourceLayout::storage_v1(<Vec4 as GpuPod>::LAYOUT), false),
+            (ResourceLayout::std140_v1(<Vec4 as GpuPod>::LAYOUT), false),
+            (ResourceLayout::std140_v1(<f32 as GpuPod>::LAYOUT), false),
+        ] {
+            let result = validate_kernel(&descriptor_with(label));
+            if valid {
+                assert!(result.is_ok(), "{label:?}");
+            } else {
+                assert!(
+                    matches!(result, Err(Error::InvalidResourceLayout { .. })),
+                    "{label:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_vector_buffer_does_not_match_the_f32_backend() {
+        let descriptor = descriptor_with(ResourceLayout::storage_v2(
+            <gust::math::Vec4 as GpuPod>::LAYOUT,
+        ));
+        assert!(matches!(
+            validate_dispatch(&descriptor, 0, &[F32Binding::ReadWrite(&[])]),
+            Err(Error::UnsupportedResourceLayout { parameter, .. }) if parameter == "out"
+        ));
+    }
+
+    #[test]
+    fn the_generated_host_text_names_the_storage_v2_rule_of_a_vector_buffer() {
+        let descriptor = descriptor_with(ResourceLayout::storage_v2(
+            <gust::math::Vec4 as GpuPod>::LAYOUT,
+        ));
+        let source = render_wgpu_source(&descriptor).expect("source should render");
+        assert!(
+            source.contains("out: Vec4 [storage-v2; size=16, align=16, stride=16]"),
+            "{source}"
+        );
     }
 
     #[test]

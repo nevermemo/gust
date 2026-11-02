@@ -497,7 +497,11 @@ The direct syntax translator currently supports:
 - the vector and matrix types of `gust::math` (`Vec2` to `Vec4`, `IVec2` to `IVec4`, `UVec2` to `UVec4`, `Mat2` to
   `Mat4`) in `#[gpu]` code, with swizzles, `dot`, `from_cols`, `from_rows`, `mul_vecN`, `mul_matN` and `transpose`,
   lowered to Slang vector and matrix operations, column-major (M6 m6.m1; the integer `dot` fails on the SPIR-V route,
-  see [DIAGNOSTICS](docs/DIAGNOSTICS.md)). Creating a typed buffer of them compiles but panics at run time until m6.g1;
+  see [DIAGNOSTICS](docs/DIAGNOSTICS.md)). Typed buffers of them (`Vec2`, `Vec4`, `Mat2`, `Mat4` and padding-free
+  structs of these) are created, dispatched on the GPU and checked against the CPU twin (M6 m6.g1, StorageV2).
+  Limitations: the constants `Mat2::IDENTITY` and `Mat3::IDENTITY` crash the SPIR-V ingestion of wgpu on slangc
+  2026.20 (the executed WGSL route is fine), and `-m` on a matrix does not build on WGSL; both in
+  [SEMANTICS](docs/SEMANTICS.md) section 4;
 - statement-only atomics on `RWStructuredBuffer<u32/i32>` elements: `atomic_add`,
   `atomic_exchange`, and `atomic_compare_exchange`, plus unsigned-only
   `atomic_min`/`atomic_max` (T10);

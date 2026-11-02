@@ -176,7 +176,9 @@ macro_rules! vector_impl {
     };
 }
 
-/// Unary minus of a float vector.
+/// Unary minus of a signed vector, lane by lane: `-self.x` on an `f32` lane flips the sign, on an `i32` lane it follows
+/// the overflow mode of the defining crate like a scalar `-x` (a panic on `i32::MIN` with checks on, a wrap without,
+/// D38 and D43; the function is `#[inline]` for the same reason as the operators).
 macro_rules! vector_neg {
     ($Ty:ident; $($f:ident),+) => {
         impl Neg for $Ty {
@@ -201,6 +203,8 @@ vector_impl!(UVec4, u32; x, y, z, w);
 vector_neg!(Vec2; x, y);
 vector_neg!(Vec3; x, y, z);
 vector_neg!(Vec4; x, y, z, w);
+vector_neg!(IVec2; x, y);
+vector_neg!(IVec4; x, y, z, w);
 
 /// Addition, subtraction, negation and their assignment forms of a matrix, column by column.
 macro_rules! matrix_ops {
@@ -549,6 +553,38 @@ mod tests {
         let id: crate::SV_DispatchThreadID = UVec3 { x: 1, y: 2, z: 3 };
         assert_eq!(id, crate::UVec3::new(1, 2, 3));
         assert_eq!(UVec3::default(), UVec3::splat(0));
+    }
+
+    #[test]
+    fn negation_of_signed_vectors_is_lane_by_lane() {
+        assert_eq!(v2(-Vec2::new(1.5, -2.0)), [-1.5, 2.0]);
+        assert_eq!(v3(-Vec3::new(1.0, -2.0, 0.0)), [-1.0, 2.0, -0.0]);
+        let negated = -Vec4::new(0.0, -0.0, 3.0, -4.0);
+        assert_eq!(v4(negated), [-0.0, 0.0, -3.0, 4.0]);
+        // The sign of a zero lane flips (`-0.0 == 0.0`, so compare bits).
+        assert_eq!(negated.x.to_bits(), (-0.0f32).to_bits());
+        assert_eq!(negated.y.to_bits(), 0.0f32.to_bits());
+        let i = -IVec4::new(1, -2, 0, i32::MAX);
+        assert_eq!([i.x, i.y, i.z, i.w], [-1, 2, 0, -i32::MAX]);
+        let j = -IVec2::new(-7, 8);
+        assert_eq!([j.x, j.y], [7, -8]);
+    }
+
+    /// `-i32::MIN` follows the overflow mode of the crate that compiles the function, exactly like the scalar `-x`:
+    /// the vector panics where the scalar panics and wraps where the scalar wraps (D38, D43).
+    #[test]
+    fn negation_of_an_integer_vector_follows_the_overflow_mode_of_a_scalar() {
+        use std::{hint::black_box, panic::catch_unwind};
+
+        let scalar = catch_unwind(|| -black_box(i32::MIN));
+        let vector = catch_unwind(|| {
+            let v = -black_box(IVec2::new(i32::MIN, 1));
+            (v.x, v.y)
+        });
+        assert_eq!(scalar.is_err(), vector.is_err());
+        if let (Ok(s), Ok(v)) = (scalar, vector) {
+            assert_eq!((s, 1), v);
+        }
     }
 
     #[test]

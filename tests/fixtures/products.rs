@@ -134,8 +134,7 @@ mod products {
         total += (2 * 3) as f32;
 
         // Unary minus (slice m6.n): one operand per row of `neg_table.rs`, in table order, then a negation inside a
-        // product, a double negation and a float literal (which keeps the plain `-`). `gust::math` has no `Neg` for
-        // `IVec2` and `IVec4` yet; slangc compiles this golden, rustc does not.
+        // product, a double negation and a float literal (which keeps the plain `-`).
         total += -fl;
         total += (-sn) as f32;
         total += (-v2).x;

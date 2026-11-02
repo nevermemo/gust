@@ -1578,6 +1578,8 @@ fn the_products_golden_compiles_to_wgsl_and_spirv() {
     for size in [
         "2x2<f32>(-1.0f, -1.0f, -1.0f, -1.0f)",
         "3x3<f32>(-1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f)",
+        "4x4<f32>(-1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, \
+         -1.0f, -1.0f)",
     ] {
         assert!(wgsl.contains(&format!("mat{size}")), "{wgsl}");
     }

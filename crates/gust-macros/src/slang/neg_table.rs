@@ -5,15 +5,18 @@
 //! overloads follow `__gust_mul`'s. The macro sees syntax and not types, and slangc's WGSL for `-m` on a matrix is
 //! `mat4x4<f32>(0) - m`, which naga refuses (the m6.g1 review, finding 6): so a matrix is negated as `m * -1.0` (WGSL:
 //! `m[0] * v[0]` per column against a matrix of `-1.0`; SPIR-V: `OpVectorTimesScalar` by `-1.0` per column; both pass
-//! naga and `spirv-val`, probed in `plans/m6/probe/m6n`). A product with `-1.0` is bit-identical to negation for every
-//! non-NaN value, `-0` included, which `0.0 - m` is not (`0.0 - 0.0` is `+0`).
+//! naga and `spirv-val`, probed in `plans/m6/probe/m6n`). Under IEEE arithmetic a product with `-1.0` is bit-identical
+//! to negation for every non-NaN value, `-0` included, which `0.0 - m` is not (`0.0 - 0.0` is `+0`). A device that
+//! drops the sign of a zero (Vulkan does not promise it without `SignedZeroInfNanPreserve`) or flushes a subnormal in
+//! a multiply gives a different lane than the twin's sign flip (D39); `vectors.rs` of `gust-wgpu` records what the
+//! RTX 5090 does.
 //!
 //! The scalar and vector rows are Slang's own `-a`. Slangc's WGSL for a vector `-v` is `vec3<f32>(0) - v` (it passes
 //! naga; by the IEEE rules a `+0` lane comes out `+0` where the twin has `-0`, an edge-case difference left as it is,
-//! D39; not run on a GPU), the SPIR-V is `OpFNegate`.
+//! D39; `-v` means the same in every module, so it is not scaled), the SPIR-V is `OpFNegate`.
 //!
-//! `gust::math` has a hand-written `Neg` for `Vec2`, `Vec3`, `Vec4` and the three matrices (not for the integer
-//! vectors, which have a row here so a module lowers the same with or without a matrix in it).
+//! `gust::math` has a `Neg` for `Vec2`, `Vec3`, `Vec4`, `IVec2`, `IVec4` and the three matrices (`vector_neg!` and
+//! `matrix_ops!`; the unsigned vectors have none, as Rust has no unary minus on `u32`), and every one has a row here.
 
 /// How a row is computed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

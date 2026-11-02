@@ -4148,9 +4148,8 @@ fn the_negation_table_has_the_pinned_rows() {
     }
 }
 
-/// The rows of the table are the types `gust::math` has a `Neg` for, read from its source (the three float vectors by
-/// `vector_neg!`, every matrix by `matrix_ops!`), plus `f32`, `i32` and the two integer vectors, whose Slang `-a` the
-/// table also lists so a module lowers a `-` the same with or without a matrix in it.
+/// The rows of the table are the types `gust::math` has a `Neg` for, read from its source (the three float vectors and
+/// the two signed integer vectors by `vector_neg!`, every matrix by `matrix_ops!`), plus `f32` and `i32`.
 #[test]
 fn the_negation_table_covers_every_neg_impl_of_the_math_module() {
     let math = include_str!("../../../gust/src/math.rs").replace("\r\n", "\n");
@@ -4159,7 +4158,7 @@ fn the_negation_table_covers_every_neg_impl_of_the_math_module() {
         .filter_map(|line| line.trim().strip_prefix("vector_neg!("))
         .map(|rest| rest.split(';').next().unwrap().to_owned())
         .collect();
-    assert_eq!(negated, ["Vec2", "Vec3", "Vec4"]);
+    assert_eq!(negated, ["Vec2", "Vec3", "Vec4", "IVec2", "IVec4"]);
     assert!(math.contains("impl Neg for $Mat {"));
     negated.extend(
         crate::math_types::MATH_TYPES
@@ -4173,13 +4172,13 @@ fn the_negation_table_covers_every_neg_impl_of_the_math_module() {
             "{name} has a `Neg` impl and no row"
         );
     }
-    // The vectors without a `Neg` impl (the integer ones) have a row; the unsigned ones have none, because Rust has no
-    // unary minus on them.
-    assert!(!math.contains("vector_neg!(IVec"));
+    // The signed integer vectors have an impl and a row; the unsigned ones have neither, because Rust has no unary
+    // minus on them.
+    assert!(math.contains("vector_neg!(IVec2;") && math.contains("vector_neg!(IVec4;"));
+    assert!(!math.contains("vector_neg!(UVec"));
     for row in NEG_ROWS {
         assert!(
-            negated.contains(&row.operand.to_owned())
-                || ["f32", "i32", "IVec2", "IVec4"].contains(&row.operand),
+            negated.contains(&row.operand.to_owned()) || ["f32", "i32"].contains(&row.operand),
             "{}",
             row.operand
         );
@@ -4235,7 +4234,8 @@ fn a_module_that_names_a_matrix_lowers_unary_minus_to_the_overload() {
     ] {
         assert!(source.contains(expected), "missing `{expected}`:\n{source}");
     }
-    // A literal operand is a scalar whatever the module names: it keeps the plain `-`.
+    // A literal operand is a scalar whatever the module names: it keeps the plain `-`. A parenthesised literal is not
+    // a literal to the emitter, so it takes the overload, which slangc resolves by the operand type (probed).
     assert!(source.contains("var f = (-2.0);"), "{source}");
     assert!(source.contains("var g = (-3);"), "{source}");
     assert!(!source.contains("__gust_neg(2.0)") && !source.contains("__gust_neg(3)"));
@@ -4252,6 +4252,22 @@ fn a_module_that_names_a_matrix_lowers_unary_minus_to_the_overload() {
     ))
     .unwrap();
     assert!(!source.contains("__gust_neg(t)"), "{source}");
+}
+
+/// A parenthesised literal is not a literal to the emitter: it takes the overload, which slangc resolves by the operand
+/// type (`-(2147483648)` is the `int` overload, probed in the m6.n review: it wraps to `i32::MIN` as in Rust).
+#[test]
+fn a_parenthesised_literal_takes_the_overload_in_a_matrix_module() {
+    let source = translate(&matrix_module(
+        "",
+        "let p = -(2.0); let q = -(2147483648); out[i] = p;",
+    ))
+    .unwrap();
+    assert!(source.contains("var p = __gust_neg((2.0));"), "{source}");
+    assert!(
+        source.contains("var q = __gust_neg((uint(2147483648)));"),
+        "{source}"
+    );
 }
 
 #[test]

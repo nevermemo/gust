@@ -145,11 +145,13 @@ prints them and runs them as a list, so a failure is reproduced by naming that l
 | `gpu-software`, pull request list | `cargo xtask check-difftest --seeds 1-2 --report <artifact directory>` | Gpu (software), lavapipe | 32, and the `short_circuit` GPU test |
 | `gpu-software`, nightly list | `cargo xtask check-difftest --seeds 1-8 --report <artifact directory>` | Gpu (software), lavapipe | 128, and the `short_circuit` GPU test |
 
-What a pass proves: for the generated programs of those seeds, which are in-domain scalar `u32`, `i32`, `bool` and `f32`
-kernels of the operator set of DIFFTEST (R1-4), the GPU output equals the interpreter's output (integers and booleans
-exactly, floats inside the interval the interpreter derived), the CPU twin equals it bit for bit, and the harness
-executed every planned program. What it does not prove: anything about programs outside the generator's space (no
-loops over runtime bounds, no atomics, no structs, no vectors), anything about a seed that was not run, anything about
+What a pass proves: for the generated programs of those seeds, which are in-domain kernels over scalar `u32`, `i32`,
+`bool` and `f32` buffers (with vector and matrix locals since DIFFTEST_FORMAT 6) of the operator set of DIFFTEST
+(R1-4), the GPU output equals the interpreter's output (integers and booleans exactly, floats inside the interval
+the interpreter derived), the CPU twin equals it bit for bit, and the harness executed every planned program. What
+it does not prove: anything about programs outside the generator's space (no loops over runtime bounds, no atomics,
+no structs, no vector or matrix buffers or results, and none of the vector and matrix forms DIFFTEST lists as
+never written by the seeds run), anything about a seed that was not run, anything about
 another driver than the one named in the report, or, for the `--cpu-only` run, anything about a GPU at all. The Unit
 run cannot see a Slang or driver fault; a program the interpreter rejects is discarded and counted in the report, not
 run. That includes the programs discarded as `static` (a constant the shader compilers may refuse at shader-creation

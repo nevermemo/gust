@@ -127,7 +127,8 @@ test module; do not mix that mechanical move with behavior changes.
 ## M6 follow-ups (filed during M6)
 
 - `cargo xtask check-artifacts` does not export the `#[gpu]` modules of integration tests (for example
-  `crates/gust-wgpu/tests/vectors.rs`); their kernels are checked only where the tests run them (m6.g1).
+  `crates/gust-wgpu/tests/vectors.rs`); their kernels are checked only where the tests run them (m6.g1). Done
+  in m6.x for the three golden modules (products, vectors, uniforms); other test modules are still unexported.
 - A constant float2x2 or float3x3 (`Mat2::IDENTITY`, `Mat3::IDENTITY`) crashes naga's SPIR-V front end (exit
   139); reduce it to an upstream report or lower such constants another way (m6.g1).
 - `let mut d = 7; d /= y` with `y: u32` emits the local as Slang `int`, so the division is signed: for
@@ -141,6 +142,9 @@ test module; do not mix that mechanical move with behavior changes.
   tail): size those bindings in m7.p (m7.a0 review).
 - `#[non_exhaustive]` on the public error enums (gust-wgpu `Error`, `gust::slang::Error`, `gust::reflect::Error`)
   before the first release (MR).
+- `HeadlessDevice::enumerate(Backends::VULKAN)` returned no adapter once (the M6 close gates, `gpu-verify` at
+  `f452a37`), then passed in `check-full` of the same run and 20 of 20 reruns. Find out whether an empty
+  enumeration is transient on this driver, and whether `enumerate` or the test should report or retry it (m7.a1).
 
 ## Deferred language/runtime breadth
 

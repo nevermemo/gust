@@ -32,8 +32,8 @@ M6 (language breadth I): plan adopted early on 2026-11-01 (owner-delegated) afte
 `__gust_mul` overload table, enabled only in modules that name a `Mat` type; the reflection
 reader accepts schema 1 and 2, and the helper keeps schema 1 for scalar-only programs, so
 committed artifacts stay byte-identical. The keyword and construct spikes and the pure-Rust math
-types ran beside M4; m6.m1 to m6.dv are merged, and m6.d and m6.x remain. Its decision drafts take
-D55 to D59.
+types ran beside M4; every M6 slice is merged (m6.m1 to m6.x), and the close waits for its
+sanity checks. Its decision drafts take D55 to D59.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so
@@ -80,6 +80,26 @@ D55 to D59.
   output (the stale-binary fix); the Cpu suite is this command. CI runs it as the job `cpu-target` beside `unit`: 61 s
   on the runner, against 2 m 57 s for `unit`. Evidence: Unit, Cpu and Gpu smoke (RTX 5090). Opus keep after one fix
   round.
+- M6 m6.x (`0d5fc4c`, fix round `1b878d9`, merge `8f069fb`): M6 wiring. `check-feature vectors` and `uniforms`;
+  `vectors`, `uniforms` and `map` in `FEATURE_AREAS` with a test that reads the real accepted set; the golden
+  modules (products, vectors, uniforms) are compiled and spirv-val'd by `check-artifacts`, the Spirv suite and
+  `check-full`; every SPIR-V check prints an informational `OpCopyLogical` count (0 in all 16 modules); a test
+  pins the matrix-layout flag in the two shared slangc command builders; `vector_ops::blend` in tests/cpu-target
+  is a required `matches` line; README, ARCHITECTURE, VALIDATION and three skills updated, stale uniform text
+  and the typed-call `on_unimplemented` label corrected. Opus merge after one fix round.
+- M6 m6.d (`b5e8744`, fix round `e02be45`, merge `f452a37`): vectors and matrices in the difftest space
+  (`DIFFTEST_FORMAT` 6). Each seed writes 10 float programs (format 5's, byte for byte) and 6 vector programs;
+  dot, `m * v` and `m * m` are left-to-right chains under the existing bound; a `Mat2` needs a direct f32 input
+  read. Seeds 1 to 8: 128 of 128 on the RTX 5090 and on `--cpu-only`, 0 mismatches; they write 34 of the 72
+  aggregate forms (the 38 others are listed in DIFFTEST). Seeds 1 to 64 on the GPU: 1024 of 1024, 0 mismatches,
+  71 forms written. A CPU test proves the generator writes every form within 72 seeds. With the float intervals
+  narrowed to the reference point the GPU batch fails (561 of 8589 f32 elements differ), so the comparison has
+  load on this device. Opus merge after one fix round.
+- M6 close gates: 27 steps on main at `f452a37` (19:32 to 20:12Z, RTX 5090, driver 610.88,
+  Slang v2026.20). 26 are green, including `check-full` (rc 0), the 8-seed difftest and `check-feature
+  vectors|uniforms`. `gpu-verify` failed once in `device_options::enumerate_lists_the_vulkan_adapters` (the
+  Vulkan adapter list came back empty); the test passed inside `check-full` of the same run and in 20 of 20
+  reruns alone (NEXT_TASKS, M7 follow-ups). Pin 216/25 unchanged.
 - M6 m6.dv (`1d5662c`, fix round `f7498c4`, merge `94baab5`): D74's cure (D77). Every `/` and `%` whose divisor is
   not a literal lowers to `__gust_div`/`__gust_rem` (crates/gust-macros/src/slang/div_table.rs: 19 division and
   3 scalar remainder overloads with `_assign` forms), emitted once per module that uses them; literal divisors
@@ -440,7 +460,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M6 (m6.d and m6.x, then the close) beside M7 (m7.a0 merged); see the roadmap's Now and next
+claim: roadmap M6 close (the Fable and Codex sanity checks) beside M7 (m7.a0 merged); see the roadmap's Now and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no
 ```

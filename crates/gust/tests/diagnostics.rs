@@ -1515,3 +1515,42 @@ fn rust_keywords_outside_the_table_compile_bare_in_every_position() {
         .collect();
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// The `vectors` golden compiles with the pinned slangc to both targets (m6.m1). `compile_source` passes the same
+/// `-matrix-layout-column-major` flag as every compile of a kernel. The golden holds one form, the integer `dot`,
+/// whose SPIR-V needs `Capability DotProduct` (slangc 2026.13.1 and 2026.20 both emit it): naga's SPIR-V reader
+/// refuses that capability, so the SPIR-V is pinned to carry it (a change of Slang or of the lowering shows here).
+/// The naga halves (WGSL with empty capabilities, the SPIR-V reader on the module without the integer `dot`) were
+/// run by hand: they need a `naga` dependency in the manifests, which this slice may not touch.
+#[test]
+fn the_vectors_golden_compiles_to_wgsl_and_spirv() {
+    let golden = include_str!("../../../tests/fixtures/vectors.slang").replace("\r\n", "\n");
+    let wgsl = slang::compile_source(&golden, "gpu_vectors_run", Target::Wgsl).unwrap();
+    let wgsl = String::from_utf8(wgsl).unwrap();
+    assert!(wgsl.contains("@compute"), "{wgsl}");
+    let spirv = slang::compile_source(&golden, "gpu_vectors_run", Target::Spirv).unwrap();
+    assert!(
+        spirv.len().is_multiple_of(4) && spirv.len() > 20,
+        "{} bytes",
+        spirv.len()
+    );
+    let words: Vec<u32> = spirv
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|word| u32::from_le_bytes(*word))
+        .collect();
+    assert_eq!(words[0], 0x0723_0203, "not SPIR-V");
+    // OpCapability (opcode 17) with `DotProduct` (6019), found by walking the instructions after the header.
+    let mut capabilities = Vec::new();
+    let mut at = 5;
+    while at < words.len() {
+        let (opcode, length) = (words[at] & 0xffff, (words[at] >> 16) as usize);
+        assert!(length > 0, "malformed SPIR-V at word {at}");
+        if opcode == 17 {
+            capabilities.push(words[at + 1]);
+        }
+        at += length;
+    }
+    assert!(capabilities.contains(&6019), "{capabilities:?}");
+}

@@ -5,6 +5,7 @@ use syn::ext::IdentExt as _;
 use syn::visit::{self, Visit};
 
 use crate::diagnostics::{self, Code};
+use crate::math_types;
 
 const BANNED_NAMES: &[&str] = &[
     "std",
@@ -377,10 +378,133 @@ pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
             }
         }
     }
+    let structs: HashMap<String, &syn::ItemStruct> = items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Struct(item) => Some((item.ident.unraw().to_string(), item)),
+            _ => None,
+        })
+        .collect();
+    for item in items {
+        if let syn::Item::Struct(item) = item {
+            check_padding(item, &structs)?;
+        }
+    }
+    Ok(())
+}
+
+/// The size and alignment of a field type the macro can compute from names alone: a scalar, a vector, a matrix or a
+/// struct of the module whose fields are all such types. `None` when any part is unknown (a type the macro cannot see
+/// into), so the `const` assertions the expansion emits stay the check for it.
+fn field_layout(
+    ty: &syn::Type,
+    structs: &HashMap<String, &syn::ItemStruct>,
+    depth: usize,
+) -> Option<(u32, u32)> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    if path.qself.is_some() || path.path.leading_colon.is_some() {
+        return None;
+    }
+    let ident = path.path.get_ident()?;
+    let name = ident.unraw().to_string();
+    if let Some(layout) = math_types::known_layout(&name) {
+        return Some(layout);
+    }
+    // A struct cannot contain itself, but the guard keeps a malformed module from recursing.
+    if depth > 16 {
+        return None;
+    }
+    struct_layout(structs.get(&name)?, structs, depth + 1)
+        .map(|(size, alignment, _)| (size, alignment))
+}
+
+/// A struct's `#[repr(C)]` size, alignment and the offsets of its fields, when every field has a known layout.
+fn struct_layout(
+    item: &syn::ItemStruct,
+    structs: &HashMap<String, &syn::ItemStruct>,
+    depth: usize,
+) -> Option<(u32, u32, Vec<u32>)> {
+    let syn::Fields::Named(fields) = &item.fields else {
+        return None;
+    };
+    let mut offset = 0_u32;
+    let mut alignment = 1_u32;
+    let mut offsets = Vec::new();
+    for field in &fields.named {
+        let (size, field_alignment) = field_layout(&field.ty, structs, depth)?;
+        offset = offset.checked_next_multiple_of(field_alignment)?;
+        offsets.push(offset);
+        offset = offset.checked_add(size)?;
+        alignment = alignment.max(field_alignment);
+    }
+    Some((
+        offset.checked_next_multiple_of(alignment)?,
+        alignment,
+        offsets,
+    ))
+}
+
+/// E0208: a struct whose layout has implicit padding is not a `GpuPod` type (`pod_slice_as_bytes` would read the
+/// padding bytes, which are uninitialised). The model covers scalars, vectors, matrices and the module's structs;
+/// anything else is left to the expansion's `const` assertions.
+fn check_padding(
+    item: &syn::ItemStruct,
+    structs: &HashMap<String, &syn::ItemStruct>,
+) -> syn::Result<()> {
+    let syn::Fields::Named(fields) = &item.fields else {
+        return Ok(());
+    };
+    let Some((size, _, offsets)) = struct_layout(item, structs, 0) else {
+        return Ok(());
+    };
+    let mut end = 0_u32;
+    for (field, offset) in fields.named.iter().zip(offsets) {
+        let Some((field_size, _)) = field_layout(&field.ty, structs, 0) else {
+            return Ok(());
+        };
+        let name = field
+            .ident
+            .as_ref()
+            .map_or_else(String::new, ToString::to_string);
+        if offset != end {
+            return Err(diagnostics::error(
+                Code::ImplicitPadding,
+                field,
+                format!(
+                    "field `{name}` of `{}` would sit at offset {offset}, {} bytes after the previous field ends at {end}: GPU structs may not contain implicit padding; order the fields by decreasing alignment, or fill the gap with an explicit field",
+                    item.ident,
+                    offset - end,
+                ),
+            ));
+        }
+        end = offset + field_size;
+    }
+    if size != end {
+        return Err(diagnostics::error(
+            Code::ImplicitPadding,
+            &item.ident,
+            format!(
+                "`{}` ends at byte {end} but its size is {size}: GPU structs may not contain implicit tail padding; add explicit fields up to a multiple of the largest field alignment",
+                item.ident,
+            ),
+        ));
+    }
     Ok(())
 }
 
 fn validate_struct(item: &syn::ItemStruct) -> syn::Result<()> {
+    let struct_name = item.ident.unraw().to_string();
+    if math_types::is_reserved_type_name(&struct_name) {
+        return Err(diagnostics::error(
+            Code::ReservedTypeName,
+            &item.ident,
+            format!(
+                "`{struct_name}` is a type the dialect maps to a Slang type itself, so a struct cannot be named that; choose another name"
+            ),
+        ));
+    }
     if !item.generics.params.is_empty() || item.generics.where_clause.is_some() {
         return Err(diagnostics::error(
             Code::GenericStruct,
@@ -557,6 +681,30 @@ impl<'ast> Visit<'ast> for AtomicBufferUsage {
         }
         visit::visit_expr_call(self, call);
     }
+}
+
+const QUALIFIED_MATH_PATH: &str = "math types are the prelude's: write `Vec4`, `Mat4` and their constructors without a module path (`Vec4::new`, `Mat4::IDENTITY`)";
+
+/// Whether `path` reaches a math type through a module path (`super::Mat4`, `gust::math::Vec4::new`, `::Mat4`) instead
+/// of by the prelude name. `Vec4::new` and `Mat4::IDENTITY` are the prelude form and are not qualified.
+fn is_qualified_math_path(path: &syn::Path) -> bool {
+    let names_math_type = path
+        .segments
+        .iter()
+        .any(|segment| math_types::math_type(&segment.ident.unraw().to_string()).is_some());
+    if !names_math_type {
+        return false;
+    }
+    if path.leading_colon.is_some() {
+        return true;
+    }
+    if path.segments.len() == 1 {
+        return false;
+    }
+    // Two segments whose first is the math type are the prelude form, whatever the second is (a member the type does
+    // not have is the caller's error, not a qualification).
+    !(path.segments.len() == 2
+        && math_types::math_type(&path.segments[0].ident.unraw().to_string()).is_some())
 }
 
 struct RestrictedVisitor {
@@ -794,6 +942,10 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 return;
             }
         }
+        if is_qualified_math_path(path) {
+            self.reject(Code::QualifiedMathPath, path, QUALIFIED_MATH_PATH);
+            return;
+        }
         visit::visit_path(self, path);
     }
 
@@ -857,6 +1009,21 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 return;
             }
             visit::visit_type_path(self, ty);
+            return;
+        }
+        if self.option_forbidden.is_some()
+            && let Some(ident) = ty.path.get_ident()
+            && let Some(math) = math_types::math_type(&ident.unraw().to_string())
+            && !math.buffer
+        {
+            self.reject(
+                Code::ThreeWideInBuffer,
+                ty,
+                &format!(
+                    "`{}` cannot be a struct field or a resource element: 3-wide types have stride 16 in a buffer and no Rust layout that matches in every position; use the 4-wide type or scalars in buffers (`{}` stays fine as a local, a helper parameter or a helper result)",
+                    math.name, math.name
+                ),
+            );
             return;
         }
         if let Some(ident) = ty.path.get_ident() {
@@ -931,6 +1098,10 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 );
                 return;
             }
+            if is_qualified_math_path(&path.path) {
+                self.reject(Code::QualifiedMathPath, path, QUALIFIED_MATH_PATH);
+                return;
+            }
             if path.path.is_ident("Some") {
                 if call.args.len() != 1 {
                     self.reject(
@@ -962,6 +1133,31 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                     call,
                     &format!("`{op}` is supported only as a statement, not as a value"),
                 );
+                return;
+            }
+            if let Some((math, member)) = math_types::associated_item(&path.path)
+                && path.qself.is_none()
+                && member != "IDENTITY"
+            {
+                let expected = match member {
+                    "splat" => 1,
+                    _ => math_types::width(math),
+                };
+                if call.args.len() != expected {
+                    self.reject(
+                        Code::BuiltinArguments,
+                        call,
+                        &format!(
+                            "`{}::{member}` takes exactly {expected} argument(s) here",
+                            math.name
+                        ),
+                    );
+                    return;
+                }
+                // The callee is the prelude constructor, not a bare path value.
+                for argument in &call.args {
+                    self.visit_expr(argument);
+                }
                 return;
             }
         }
@@ -1056,6 +1252,23 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             }
             _ => {}
         }
+        let math_arity = if math_types::is_swizzle(&method) {
+            Some(0)
+        } else {
+            math_types::method_arity(&method)
+        };
+        if let Some(arity) = math_arity {
+            if call.args.len() != arity {
+                self.reject(
+                    Code::BuiltinArguments,
+                    call,
+                    &format!("`.{method}()` takes exactly {arity} argument(s)"),
+                );
+                return;
+            }
+            visit::visit_expr_method_call(self, call);
+            return;
+        }
         if !call.args.is_empty() {
             self.reject(
                 Code::BuiltinArguments,
@@ -1068,7 +1281,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             self.reject(
                 Code::UnsupportedMethod,
                 call,
-                "only the compatibility built-ins `.global_id()` and `.len()` and the Option/Result methods `.is_some()`, `.is_none()`, `.is_ok()`, `.is_err()`, `.unwrap_or(default)` are supported",
+                "only the compatibility built-ins `.global_id()` and `.len()`, the Option/Result methods `.is_some()`, `.is_none()`, `.is_ok()`, `.is_err()`, `.unwrap_or(default)`, and the vector and matrix methods (swizzles such as `.xy()`, `.dot(v)`, `.mul_vec4(v)`, `.mul_mat4(m)`, `.transpose()`) are supported",
             );
             return;
         }
@@ -1108,7 +1321,14 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         // items (e.g. `f32::INFINITY`, `u32::MAX`), which have no Slang lowering.
         // Callee paths are handled by `visit_expr_call`, which only descends for
         // single-identifier helpers, so this fires only for bare values.
-        if path.path.get_ident().is_none() {
+        if path.qself.is_none()
+            && let Some((_, "IDENTITY")) = math_types::associated_item(&path.path)
+        {
+            return;
+        }
+        if is_qualified_math_path(&path.path) {
+            self.reject(Code::QualifiedMathPath, path, QUALIFIED_MATH_PATH);
+        } else if path.path.get_ident().is_none() {
             self.reject(
                 Code::ForeignPath,
                 path,

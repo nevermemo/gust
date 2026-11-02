@@ -106,6 +106,12 @@ codes! {
     UnsupportedPrimitive = 201 => "GUST-E0201";
     /// A cast to a type other than `f32`, `i32` or `u32` (or their aliases).
     UnsupportedCastTarget = 202 => "GUST-E0202";
+    /// A struct named like a type the dialect maps itself: a scalar, a vector or a matrix.
+    ReservedTypeName = 203 => "GUST-E0203";
+    /// A 3-wide vector or a `Mat3` as a struct field or a resource element.
+    ThreeWideInBuffer = 204 => "GUST-E0204";
+    /// A struct whose fields leave implicit padding, so it cannot be a `GpuPod` type.
+    ImplicitPadding = 208 => "GUST-E0208";
 
     // E03xx: expressions and calls.
     /// A CPU-only library or type name.
@@ -148,6 +154,8 @@ codes! {
     LetNeedsIdentifier = 319 => "GUST-E0319";
     /// `let .. else`.
     LetElse = 320 => "GUST-E0320";
+    /// A qualified path to a math type or one of its constructors, such as `super::Mat4` or `gust::math::Vec4::new`.
+    QualifiedMathPath = 324 => "GUST-E0324";
 
     // E04xx: control flow and loops.
     /// A `loop` expression.

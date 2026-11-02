@@ -1067,13 +1067,15 @@ mod tests {
         assert_eq!(m3(h), m3(g));
     }
 
-    /// No `Mul` or `MulAssign` is written in this file (m6.m2 generates them), and the types carry no `PartialEq`.
+    /// No `Mul` or `MulAssign` is written in this file (m6.m2 generates them), and the types carry no `PartialEq` and
+    /// no `PartialOrd` (a derived ordering would compare vectors field by field, which GPU code cannot do).
     #[test]
     fn this_file_writes_no_products_and_no_equality() {
         // The needles are assembled so that this test does not match itself. A comment line is not code; any other
-        // line that mentions equality is rejected whatever the path (`PartialEq`, `core::cmp::PartialEq`, a derive),
-        // and so is any `impl` line that mentions a product trait, qualified or not.
+        // line that mentions equality or ordering is rejected whatever the path (`PartialEq`, `core::cmp::PartialEq`,
+        // a derive), and so is any `impl` line that mentions a product trait, qualified or not.
         let equality = ["Partial", "Eq"].concat();
+        let ordering = ["Partial", "Ord"].concat();
         let product = ["M", "ul"].concat();
         let implementation = ["im", "pl"].concat();
         for (file, source) in [
@@ -1085,6 +1087,7 @@ mod tests {
                     continue;
                 }
                 assert!(!line.contains(&equality), "{file}:{}: {line}", number + 1);
+                assert!(!line.contains(&ordering), "{file}:{}: {line}", number + 1);
                 assert!(
                     !(line.contains(&implementation) && line.contains(&product)),
                     "{file}:{}: {line}",

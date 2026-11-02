@@ -54,7 +54,7 @@ re-check). The keyword and construct spikes (S6.3b, S6.1) are done, and so are t
 `56b5ecd`) and the layout model with the schema-2 reader (m6.a1, `b60fca2`). The collision-only renaming (m6.k,
 `ce17eb2`; a sweep found silent `true` and `false` rebinds, now renamed) is done; reflection schema 2 in the helper
 (m6.r, `fe42f3f`) is done; matrix products are done (m6.m1, merge `6dc36ef`; m6.m2, merge `71ab804`), and so is GPU
-evidence for vectors and matrices (m6.g1, merge `5033b22`); matrix negation (m6.n) is in its fix round, uniforms (m6.u1, m6.u2) wait for M4 and M5's `cpu`
+evidence for vectors and matrices (m6.g1, merge `5033b22`); and so is matrix negation (m6.n, merge `86f728c`); the host side of uniforms (m6.u1) is running, uniforms (m6.u1, m6.u2) wait for M4 and M5's `cpu`
 profile, and the difftest vector extension (m6.d) is unblocked (m5.c1c merged). M6 closes after M5.
 
 **Done: M4, build-time targets and distribution** (closed 2026-11-02, D73). Plan adopted 2026-11-01 (owner-delegated) after a Codex review

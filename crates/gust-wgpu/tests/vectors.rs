@@ -284,6 +284,30 @@ mod vectors {
         }
     }
 
+    // Matrix negation (slice m6.n): `-m` of a `Mat2`, a `Mat4` and a `Mat3` (a `Mat3` is no buffer element, so it is
+    // built from three `Vec4` columns and read back as `-m * e0`), and `-v` of a `Vec4`.
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn negations(
+        id: SV_DispatchThreadID,
+        m2: StructuredBuffer<Mat2>,
+        m4: StructuredBuffer<Mat4>,
+        q: StructuredBuffer<Vec4>,
+        mut o2: RWStructuredBuffer<Mat2>,
+        mut o3: RWStructuredBuffer<Vec4>,
+        mut o4: RWStructuredBuffer<Mat4>,
+        mut ov: RWStructuredBuffer<Vec4>,
+    ) {
+        let i: uint = id.x;
+        if i < m2.len() {
+            o2[i] = -m2[i];
+            o4[i] = -m4[i];
+            let m3 = Mat3::from_cols(q[i * 3].xyz(), q[i * 3 + 1].xyz(), q[i * 3 + 2].xyz());
+            let r = -m3 * Vec3::new(1.0, 0.0, 0.0);
+            o3[i] = Vec4::new(r.x, r.y, r.z, 0.0);
+            ov[i] = -q[i * 3];
+        }
+    }
+
     // Vector and matrix fields of a struct read from a buffer, assigned through nested places, rebuilt with a struct
     // literal, and written back.
     #[kernel(workgroup_size(64, 1, 1))]
@@ -1252,6 +1276,196 @@ fn small_matrices_and_identities_execute_on_gpu() {
         }
     }
     check.report("small_matrices");
+}
+
+/// One matrix of the negation test: its name, then the GPU lanes, the twin lanes and the exact negation.
+type NegationCase = (&'static str, Vec<f32>, Vec<f32>, Vec<f32>);
+
+/// Zeros of both signs, subnormals of both signs, the smallest normal and two ordinary values, by bit pattern.
+const NEGATION_LANES: [u32; 9] = [
+    0x0000_0000,
+    0x8000_0000,
+    0x0000_0001,
+    0x0040_0000,
+    0x8000_0001,
+    0x007f_ffff,
+    0x0080_0000,
+    0x3fc0_0000,
+    0xc010_0000,
+];
+
+/// Lane `lane` of case `i`: the patterns rotate, so every lane position sees every pattern.
+fn negation_lane(i: usize, lane: usize) -> f32 {
+    f32::from_bits(NEGATION_LANES[(i + lane) % NEGATION_LANES.len()])
+}
+
+/// `-m` of a matrix (m6.n): the macro lowers it to `m * -1.0` (`__gust_neg`), which is exact under IEEE arithmetic, `-0`
+/// and subnormals included. The GPU and the twin are compared with the exact value bit for bit, so a device that drops
+/// the sign of a zero or flushes a subnormal in the multiply fails here (D39 would apply: record it, do not widen).
+/// `-v` of a `Vec4` is slangc's own `vec(0) - v` on WGSL: the nonzero lanes are exact, and a zero lane is only required
+/// to be a zero (the sign of a negated `+0` is the D39 difference; it is printed as an observation).
+#[test]
+fn matrix_negation_keeps_signed_zeros_and_subnormals_on_gpu() {
+    let Rig { gpu, cpu } = rig();
+    let m2: Vec<Mat2> = (0..N)
+        .map(|i| mat2(&(0..4).map(|l| negation_lane(i, l)).collect::<Vec<_>>()))
+        .collect();
+    let m4: Vec<Mat4> = (0..N)
+        .map(|i| mat4(&(0..16).map(|l| negation_lane(i, l)).collect::<Vec<_>>()))
+        .collect();
+    // Column 0 of the `Mat3` and the vector is the pattern; columns 1 and 2 are ones, so `-m * e0` is column 0 negated
+    // plus two products with `+0` of negative numbers (`-0`), which keeps the sign of a `-0` lane and loses nothing.
+    let q: Vec<Vec4> = (0..N)
+        .flat_map(|i| {
+            let first: Vec<f32> = (0..4).map(|l| negation_lane(i, l)).collect();
+            [vec4(&first), Vec4::splat(1.0), Vec4::splat(1.0)]
+        })
+        .collect();
+
+    let (gm2, gm4, gq) = (
+        gpu_in(&gpu, "n_m2", &m2),
+        gpu_in(&gpu, "n_m4", &m4),
+        gpu_in(&gpu, "n_q", &q),
+    );
+    let go2 = gpu_out(&gpu, "n_o2", N, Mat2::IDENTITY);
+    let go3 = gpu_out(&gpu, "n_o3", N, Vec4::default());
+    let go4 = gpu_out(&gpu, "n_o4", N, Mat4::IDENTITY);
+    let gov = gpu_out(&gpu, "n_ov", N, Vec4::default());
+    gpu.dispatch_buffers(
+        &vectors::negations::DESCRIPTOR,
+        N as u32,
+        &[
+            BufferBinding::read_only(&gm2),
+            BufferBinding::read_only(&gm4),
+            BufferBinding::read_only(&gq).independent_length(),
+            BufferBinding::read_write(&go2).independent_length(),
+            BufferBinding::read_write(&go3).independent_length(),
+            BufferBinding::read_write(&go4).independent_length(),
+            BufferBinding::read_write(&gov).independent_length(),
+        ],
+    )
+    .unwrap();
+    let (go2, go3) = (
+        gpu.read_typed_buffer(&go2).unwrap(),
+        gpu.read_typed_buffer(&go3).unwrap(),
+    );
+    let (go4, gov) = (
+        gpu.read_typed_buffer(&go4).unwrap(),
+        gpu.read_typed_buffer(&gov).unwrap(),
+    );
+
+    let (tm2, tm4, tq) = (cpu.buffer(&m2), cpu.buffer(&m4), cpu.buffer(&q));
+    let to2 = cpu.buffer(&vec![Mat2::IDENTITY; N]);
+    let to3 = cpu.buffer(&vec![Vec4::default(); N]);
+    let to4 = cpu.buffer(&vec![Mat4::IDENTITY; N]);
+    let tov = cpu.buffer(&vec![Vec4::default(); N]);
+    vectors::negations::dispatch(
+        &cpu,
+        N as u32,
+        &tm2,
+        &tm4,
+        Independent(&tq),
+        Independent(&to2),
+        Independent(&to3),
+        Independent(&to4),
+        Independent(&tov),
+    )
+    .unwrap();
+    let (to2, to3, to4, tov) = (to2.read(), to3.read(), to4.read(), tov.read());
+
+    let mut matrix_misses = Vec::new();
+    let mut vector_zero_signs = BTreeMap::<(u32, u32), usize>::new();
+    for i in 0..N {
+        // The exact negation of a lane is its bit pattern with the sign flipped.
+        let flip = |x: f32| f32::from_bits(x.to_bits() ^ 0x8000_0000);
+        let cases: [NegationCase; 3] = [
+            (
+                "mat2",
+                go2[i].lanes(),
+                to2[i].lanes(),
+                (0..4).map(|l| flip(negation_lane(i, l))).collect(),
+            ),
+            (
+                "mat4",
+                go4[i].lanes(),
+                to4[i].lanes(),
+                (0..16).map(|l| flip(negation_lane(i, l))).collect(),
+            ),
+            (
+                // Lanes 0..3 are column 0 negated; the fourth is the constant `0.0` of the kernel.
+                "mat3_column_0",
+                go3[i].lanes(),
+                to3[i].lanes(),
+                (0..4)
+                    .map(|l| {
+                        if l < 3 {
+                            flip(negation_lane(i, l))
+                        } else {
+                            0.0
+                        }
+                    })
+                    .collect(),
+            ),
+        ];
+        for (name, got, twin, want) in cases {
+            for lane in 0..want.len() {
+                assert_eq!(
+                    twin[lane].to_bits(),
+                    want[lane].to_bits(),
+                    "the twin, {name}, case {i}, lane {lane}"
+                );
+                if got[lane].to_bits() != want[lane].to_bits() {
+                    matrix_misses.push(format!(
+                        "{name} case {i} lane {lane}: input {:#010x}, gpu {:#010x}, exact {:#010x}",
+                        negation_lane(i, lane).to_bits(),
+                        got[lane].to_bits(),
+                        want[lane].to_bits()
+                    ));
+                }
+            }
+        }
+        // The vector.
+        let (got, twin) = (gov[i].lanes(), tov[i].lanes());
+        for lane in 0..4 {
+            let input = negation_lane(i, lane);
+            let want = flip(input);
+            assert_eq!(
+                twin[lane].to_bits(),
+                want.to_bits(),
+                "the twin, vec4, case {i}"
+            );
+            if input == 0.0 {
+                assert_eq!(
+                    got[lane], 0.0,
+                    "-v of a zero is a zero: case {i}, lane {lane}"
+                );
+                *vector_zero_signs
+                    .entry((input.to_bits(), got[lane].to_bits()))
+                    .or_default() += 1;
+            } else if got[lane].to_bits() != want.to_bits() {
+                matrix_misses.push(format!(
+                    "vec4 case {i} lane {lane}: input {:#010x}, gpu {:#010x}, exact {:#010x}",
+                    input.to_bits(),
+                    got[lane].to_bits(),
+                    want.to_bits()
+                ));
+            }
+        }
+    }
+    for ((input, got), count) in &vector_zero_signs {
+        eprintln!(
+            "observation: -v of the zero {input:#010x} gave {got:#010x} on the GPU ({count} lanes)"
+        );
+    }
+    eprintln!(
+        "observation: {} lane(s) of -m and -v differ from the exact negation on the GPU",
+        matrix_misses.len()
+    );
+    assert!(
+        matrix_misses.is_empty(),
+        "negation differs from the exact value (D39: record it):\n{}",
+        matrix_misses.join("\n")
+    );
 }
 
 fn body_lanes(body: &vectors::Body) -> Vec<f32> {

@@ -40,6 +40,17 @@ float4 __gust_mul(float4x4 a, float4 b) { return mul(a, b); }
 float4x4 __gust_mul(float4x4 a, float b) { return a * b; }
 float4x4 __gust_mul(float a, float4x4 b) { return a * b; }
 
+float __gust_neg(float a) { return -a; }
+int __gust_neg(int a) { return -a; }
+float2 __gust_neg(float2 a) { return -a; }
+float3 __gust_neg(float3 a) { return -a; }
+float4 __gust_neg(float4 a) { return -a; }
+int2 __gust_neg(int2 a) { return -a; }
+int4 __gust_neg(int4 a) { return -a; }
+float2x2 __gust_neg(float2x2 a) { return a * -1.0; }
+float3x3 __gust_neg(float3x3 a) { return a * -1.0; }
+float4x4 __gust_neg(float4x4 a) { return a * -1.0; }
+
 float __gust_dot(float2 a, float2 b) { return dot(a, b); }
 float __gust_dot(float3 a, float3 b) { return dot(a, b); }
 float __gust_dot(float4 a, float4 b) { return dot(a, b); }
@@ -80,7 +91,7 @@ float3 tilt(float3 direction)
 
 float2 spin(float2 angle, float2 point)
 {
-    var turn = transpose(float2x2(float2(angle.x, angle.y), float2((-angle.y), angle.x)));
+    var turn = transpose(float2x2(float2(angle.x, angle.y), float2(__gust_neg(angle.y), angle.x)));
     return mul(mul(float2x2(float2(1.0, 0.0), float2(0.0, 1.0)), turn), point);
 }
 

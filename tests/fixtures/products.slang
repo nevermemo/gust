@@ -40,6 +40,17 @@ float4 __gust_mul(float4x4 a, float4 b) { return mul(a, b); }
 float4x4 __gust_mul(float4x4 a, float b) { return a * b; }
 float4x4 __gust_mul(float a, float4x4 b) { return a * b; }
 
+float __gust_neg(float a) { return -a; }
+int __gust_neg(int a) { return -a; }
+float2 __gust_neg(float2 a) { return -a; }
+float3 __gust_neg(float3 a) { return -a; }
+float4 __gust_neg(float4 a) { return -a; }
+int2 __gust_neg(int2 a) { return -a; }
+int4 __gust_neg(int4 a) { return -a; }
+float2x2 __gust_neg(float2x2 a) { return a * -1.0; }
+float3x3 __gust_neg(float3x3 a) { return a * -1.0; }
+float4x4 __gust_neg(float4x4 a) { return a * -1.0; }
+
 [[vk::binding(0, 0)]] RWStructuredBuffer<float> out;
 
 float products(float fl, int sn, uint un, float2 v2, float3 v3, float4 v4, int2 i2, int4 i4, uint2 u2, uint3 u3, uint4 u4, float2x2 m2, float3x3 m3, float4x4 m4)
@@ -153,6 +164,19 @@ float products(float fl, int sn, uint un, float2 v2, float3 v3, float4 v4, int2 
     (total += float((__gust_mul(sn, (-2)))));
     (total += float((__gust_mul((-2), sn))));
     (total += float((__gust_mul(2, 3))));
+    (total += __gust_neg(fl));
+    (total += float((__gust_neg(sn))));
+    (total += (__gust_neg(v2)).x);
+    (total += (__gust_neg(v3)).x);
+    (total += (__gust_neg(v4)).x);
+    (total += float((__gust_neg(i2)).x));
+    (total += float((__gust_neg(i4)).x));
+    (total += mul((__gust_neg(m2)), float2(1.0)).x);
+    (total += mul((__gust_neg(m3)), float3(1.0)).x);
+    (total += mul((__gust_neg(m4)), float4(1.0)).x);
+    (total += (__gust_mul(__gust_neg(m4), v4)).x);
+    (total += __gust_neg((__gust_neg(fl))));
+    (total += __gust_mul((-2.0), fl));
     return total;
 }
 

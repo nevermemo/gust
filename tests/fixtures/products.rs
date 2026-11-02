@@ -1,8 +1,9 @@
 #[gust::gpu]
 mod products {
     // Every operand pair of `crates/gust-macros/src/slang/mul_table.rs` written as `a * b`, then the `*=` rows, then
-    // the literal operands, through the macro. A test pins that each pair of the table appears in the golden, and that
-    // slangc takes the golden on WGSL and SPIR-V. Each result is read through one component so none is dropped.
+    // the literal operands, then every operand type of `neg_table.rs` written as `-a`, through the macro. A test pins
+    // that each row of both tables appears in the golden, and that slangc takes the golden on WGSL and SPIR-V. Each
+    // result is read through one component so none is dropped.
     #[allow(clippy::too_many_arguments)]
     fn products(
         fl: f32,
@@ -131,6 +132,22 @@ mod products {
         total += (sn * -2) as f32;
         total += (-2 * sn) as f32;
         total += (2 * 3) as f32;
+
+        // Unary minus (slice m6.n): one operand per row of `neg_table.rs`, in table order, then a negation inside a
+        // product, a double negation and a float literal (which keeps the plain `-`).
+        total += -fl;
+        total += (-sn) as f32;
+        total += (-v2).x;
+        total += (-v3).x;
+        total += (-v4).x;
+        total += (-i2).x as f32;
+        total += (-i4).x as f32;
+        total += (-m2).mul_vec2(Vec2::splat(1.0)).x;
+        total += (-m3).mul_vec3(Vec3::splat(1.0)).x;
+        total += (-m4).mul_vec4(Vec4::splat(1.0)).x;
+        total += (-m4 * v4).x;
+        total += -(-fl);
+        total += -2.0 * fl;
         total
     }
 

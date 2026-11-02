@@ -29,9 +29,15 @@ describes the intended behaviour and is not evidence.
   shifts, signed subtraction and multiplication, negation and the float-to-integer casts reach the WGSL as plain
   operators and `i32()` / `u32()` conversions, in modules that name no matrix (a module that names `Mat2`, `Mat3` or
   `Mat4` lowers every `*` and `*=` to the overloaded helper `__gust_mul`, whose body is the same `*` for scalars and
-  component-wise products and `mul` for a matrix product; slangc keeps the helper as a WGSL function, so the WGSL of
-  such a module calls `_gust_mul_0(..)` where the plain `*` stood, and the WGSL of every other module is
-  byte-identical); it does not check `+`, unsigned arithmetic or the float operators.
+  component-wise products and `mul` for a matrix product, and every unary `-` on a non-literal to `__gust_neg`, whose
+  body is `-a` for scalars and vectors and `a * -1.0` for a matrix, because slangc's own `-m` is WGSL that naga
+  refuses (`mat4x4<f32>(0) - m`) and `m * -1.0` equals negation bit for bit under IEEE arithmetic for every value but NaN
+  (a device that drops the sign of a zero, which Vulkan allows without `SignedZeroInfNanPreserve`, or flushes a
+  subnormal in a multiply, may differ from the twin's sign flip: D39, measured in section 4); slangc keeps each
+  helper as a WGSL function, so the WGSL of such a module calls `_gust_mul_0(..)` where the plain `*` stood, and the
+  WGSL of every other module is byte-identical; slangc's WGSL for a float vector `-v` is `vec3<f32>(0) - v`, so by
+  the IEEE rules a `+0` lane comes out `+0` where the twin gives `-0`, an edge-case difference left as it is (D39;
+  not run on a GPU)); it does not check `+`, unsigned arithmetic or the float operators.
 - **CPU twin (exists).** In a test build (`cfg(test)` of the crate that defines the kernel, or `--cfg gust_dual`, D26)
   the macro emits an `impl Run` for `gust::cpu::CpuDevice` that runs the rustc-checked body of each kernel, one
   invocation at a time in ascending `global_id.x`. A production build holds one target (D21): the twin is absent from
@@ -335,11 +341,19 @@ test compares the GPU, the twin and an independent `f64` host reference, with in
 | `dot`, `m * v`, `mul_vec4`, one element of `m * m`, N = 4 | 13u | 26u | 14u, 27u | 4u |
 | the same with N = 3 (`Mat3`) | 8u | 16u | 9u, 17u | 4u |
 | the same with N = 2 (`Mat2`, `Vec2` dot) | 4u | 8u | 5u, 9u | 2u |
-| `-v`, `transpose`, swizzles, `from_cols`, `from_rows`, integer vector operators | 0 | 0 | exact | 0 |
+| `-v`, `-m`: exact except the sign of a zero lane on WGSL (§1, D39); `transpose`, swizzles, `from_cols`, `from_rows`, integer vector operators | 0 | 0 | exact | 0 |
 
 The last column is an observation on the RTX 5090 (debug profile, 2026-11-02), printed by `vectors` with
 `--nocapture`; it is not a tolerance. A matrix product through a struct field and the `Vec4`/`Mat4` fields of a
 `#[repr(C)]` struct (112 bytes, no padding) use the same bounds.
+
+**Negation and the sign of zero (D39).** A module that names a matrix lowers `-m` to `m * -1.0` (section 1), which is the
+twin's sign flip under IEEE arithmetic; `-v` is slangc's `vec(0) - v` on WGSL, which by IEEE would turn a `+0` lane into
+`+0`. The test `matrix_negation_keeps_signed_zeros_and_subnormals_on_gpu` negates `Mat2`, `Mat4`, a `Mat3` column and a
+`Vec4` whose lanes are zeros of both signs, subnormals of both signs, the smallest normal and ordinary values, and
+compares bit for bit. Measured on the RTX 5090 (Vulkan, driver 610.88, slangc 2026.20, 2026-11-02, debug and release):
+every `-m` lane equals the twin's sign flip, subnormals kept, and `-v` of `+0` gave `-0` and of `-0` gave `+0` (115
+lanes), so this device shows no difference in either; another device or driver may.
 
 **Limitation (D39): constant `Mat2::IDENTITY` and `Mat3::IDENTITY` on the SPIR-V pipeline.** On slangc 2026.20 a
 kernel that multiplies by a compile-time constant `float2x2` or `float3x3` (what `Mat2::IDENTITY` and
@@ -349,11 +363,6 @@ through SPIR-V passthrough, correct with a runtime `float3x3`, and correct for a
 route of `gust-wgpu` is WGSL, which is why the `vectors` test uses the constants. The exported SPIR-V of that module
 is valid (`spirv-val`, vulkan1.2, checked by hand for the six kernels of `vectors`) but must not be dispatched through
 the SPIR-V ingestion path. This is a difference of toolchain behavior, documented and not chased.
-
-**Limitation (D39): matrix negation on the WGSL route.** `-m` for a `Mat4` is emitted by slangc to WGSL as
-`mat4x4(0) - m`, which naga rejects when the module is created. The failure is loud (a pipeline error, no wrong
-result), so it is a limitation and not a mismatch; build the negated matrix with `Mat4::from_cols` from negated
-vectors. The vector negation `-v` is correct on both routes and is tested.
 
 ## 5. Memory preconditions
 

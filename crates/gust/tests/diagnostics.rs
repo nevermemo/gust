@@ -1624,7 +1624,21 @@ fn spirv_capabilities(spirv: &[u8]) -> Vec<u32> {
 fn the_products_golden_compiles_to_wgsl_and_spirv() {
     let golden = include_str!("../../../tests/fixtures/products.slang").replace("\r\n", "\n");
     let wgsl = slang::compile_source(&golden, "gpu_products_run", Target::Wgsl).unwrap();
-    assert!(String::from_utf8(wgsl).unwrap().contains("@compute"));
+    let wgsl = String::from_utf8(wgsl).unwrap();
+    assert!(wgsl.contains("@compute"));
+    // Matrix negation is a product with a matrix of `-1.0` (`m * -1.0`, exact for `-0`), not slangc's own `-m`,
+    // which is `mat4x4<f32>(0) - m` and which naga refuses (m6.n; the naga halves were run by hand).
+    for size in [
+        "2x2<f32>(-1.0f, -1.0f, -1.0f, -1.0f)",
+        "3x3<f32>(-1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f)",
+        "4x4<f32>(-1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, \
+         -1.0f, -1.0f)",
+    ] {
+        assert!(wgsl.contains(&format!("mat{size}")), "{wgsl}");
+    }
+    for size in ["2x2", "3x3", "4x4"] {
+        assert!(!wgsl.contains(&format!("mat{size}<f32>(0) - ")), "{wgsl}");
+    }
     let spirv = slang::compile_source(&golden, "gpu_products_run", Target::Spirv).unwrap();
     assert_eq!(spirv_capabilities(&spirv), [1]);
 }

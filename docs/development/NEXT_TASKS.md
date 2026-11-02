@@ -116,6 +116,13 @@ test module; do not mix that mechanical move with behavior changes.
   `doc(cfg)`; registry users see no inferred-profile warning.
 - `xtask/src/bless.rs` hashes only `tests/fixtures/*.slang`, so blessing other goldens reports a false failure.
 
+## M6 follow-ups (filed during M6)
+
+- `cargo xtask check-artifacts` does not export the `#[gpu]` modules of integration tests (for example
+  `crates/gust-wgpu/tests/vectors.rs`); their kernels are checked only where the tests run them (m6.g1).
+- A constant float2x2 or float3x3 (`Mat2::IDENTITY`, `Mat3::IDENTITY`) crashes naga's SPIR-V front end (exit
+  139); reduce it to an upstream report or lower such constants another way (m6.g1).
+
 ## Deferred language/runtime breadth
 
 Vectors/matrices, uniforms, textures, samplers, additional binding groups, and

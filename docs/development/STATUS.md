@@ -67,12 +67,21 @@ D55 to D59.
   output (the stale-binary fix); the Cpu suite is this command. CI runs it as the job `cpu-target` beside `unit`: 61 s
   on the runner, against 2 m 57 s for `unit`. Evidence: Unit, Cpu and Gpu smoke (RTX 5090). Opus keep after one fix
   round.
+- M6 m6.m2 (`49f00f9`, fix round `fec79e8`, merge `71ab804`): operator syntax for products. In a module whose
+  unrawed tokens name `Mat2`, `Mat3` or `Mat4`, `*` lowers to `__gust_mul(a, b)` and `*=` on a pure place to
+  `(p = __gust_mul(p, r))` (E0323 otherwise); one data table (`slang/mul_table.rs`, 39 rows) drives both the
+  prepended Slang overloads and the hidden `gust_mul_impls!` that generates every `Mul`/`MulAssign` impl of
+  `gust::math`. A module with any `dot` gets `__gust_dot`, a component sum for the integer vectors, so integer
+  `dot` no longer needs `Capability DotProduct` (its SPIR-V is Shader-only and passes naga spv-in with empty
+  capabilities; float `dot` SPIR-V is byte-identical). The golden `tests/fixtures/products.{rs,slang}` writes every
+  table pair as `a * b` and slangc compiles it on WGSL and SPIR-V; the seven ungated goldens are byte-identical.
+  Naga was run by hand (no naga dependency). Evidence: Unit, Slangc (2026.20), check-ui, check-dual. Opus merge
+  after one fix round. Open: the StorageV1/StorageV2 wording mix in the struct asserts (pinned in xtask ui tests).
 - M6 m6.m1 (`31e6e99`, merge `6dc36ef`): vector and matrix types in `#[gpu]` code, column-major. `from_cols` lowers to
   `transpose(floatNxN(..))`, `from_rows` to `floatNxN(..)`, `mul_vecN` and `mul_matN` to `mul(m, x)`, `transpose` to
   `transpose(m)`; the struct layout asserts use StorageV2. The golden `tests/fixtures/vectors.{rs,slang}` covers every
-  accepted form and a slangc test compiles it. Known limitations: the integer-vector `dot` lowers to
-  `OpSDot`/`OpUDot` (capability `DotProduct`), which naga 30 refuses on the SPIR-V route (WGSL passes; the fix is
-  m6.m2's overload table); a constant `Mat2::IDENTITY` or `Mat3::IDENTITY` hits the known SPIR-V crash for constant
+  accepted form and a slangc test compiles it. Known limitations: the integer-vector `dot` lowered to
+  `OpSDot`/`OpUDot` (capability `DotProduct`), which naga 30 refuses on the SPIR-V route (fixed in m6.m2); a constant `Mat2::IDENTITY` or `Mat3::IDENTITY` hits the known SPIR-V crash for constant
   float2x2 and float3x3, so m6.g1 must not dispatch the golden on SPIR-V as it is. Evidence: Unit, Slangc (2026.20),
   check-ui and check-dual; CI green on `6dc36ef`. Opus keep after one fix round.
 - CI timing note: `gpu-software` took 1 m 25 s warm (on `8080320`) against 1 m 42 s cold.

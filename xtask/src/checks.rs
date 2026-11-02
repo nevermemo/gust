@@ -219,6 +219,24 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                 &["test", "-p", "gust-wgpu", "--test", "result"],
             )
         }
+        "map" => {
+            run_direct(&root, "cargo", &["test", "-p", "gust", "--lib", "map::"])?;
+            run_direct(
+                &root,
+                "cargo",
+                &[
+                    "test",
+                    "-p",
+                    "gust-wgpu",
+                    "--test",
+                    "gpu_vec",
+                    "--test",
+                    "device_options",
+                    "--test",
+                    "limits",
+                ],
+            )
+        }
         "examples" => verify(VerifyMode::Examples, false),
         "artifacts" => verify(VerifyMode::Artifacts, false),
         "full" => verify(VerifyMode::Full, true),
@@ -490,6 +508,9 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
         "loops" => "loops: bounded-loop golden/rejection test plus real-GPU loop differential test",
         "result" => {
             "result: Result lowering/match regressions plus WGSL, SPIR-V, and real-GPU Result tests"
+        }
+        "map" => {
+            "map: the device side of the map calls: gust::map unit tests, then GpuVec and the buffer pool, device options and adapter choice, and the launch and buffer limits on the GPU"
         }
         "examples" => {
             "examples: every example test (ordinary and ignored, `--include-ignored`; a package that runs no test fails) and example binaries; use for major behavior confidence"

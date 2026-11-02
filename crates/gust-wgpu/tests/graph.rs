@@ -972,3 +972,183 @@ fn an_indirect_node_ignores_the_workgroup_count_limit_but_not_the_others() {
         other => panic!("expected DeviceLimit, got {other:?}"),
     }
 }
+
+// ---- uniforms in a graph (m6.u1) ----
+//
+// `StagedGraph::write_uniform` is an encoded copy from a staging buffer, so an update falls between the dispatches of
+// one submission. The kernel is hand-written because the macro has no `Uniform<T>` call yet (m6.u2).
+
+use gust::{
+    Access, Arg, Call, GpuPod, Kernel, KernelDescriptor, ParameterDescriptor, ParameterKind,
+    Resource, ResourceBinding, ResourceLayout, SourceOrigin,
+};
+
+const fn graph_storage(name: &'static str, access: Access, binding: u32) -> ParameterDescriptor {
+    ParameterDescriptor {
+        name,
+        rust_type: "float",
+        kind: ParameterKind::Storage,
+        access,
+        resource_layout: Some(ResourceLayout::storage_v1(<f32 as GpuPod>::LAYOUT)),
+        binding: Some(ResourceBinding { group: 0, binding }),
+    }
+}
+
+/// `shade(src: RO, factor: Uniform<f32>, dst: RW)`: `dst[i] = src[i] * factor`.
+struct Shade;
+impl Kernel for Shade {
+    const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+        module: "graph_tests",
+        name: "shade",
+        entry_point: "graph_shade",
+        workgroup_size: [64, 1, 1],
+        parameters: &[
+            graph_storage("src", Access::ReadOnly, 0),
+            ParameterDescriptor {
+                name: "factor",
+                rust_type: "float",
+                kind: ParameterKind::Uniform,
+                access: Access::ReadOnly,
+                resource_layout: Some(ResourceLayout::std140_v1(<f32 as GpuPod>::LAYOUT)),
+                binding: Some(ResourceBinding {
+                    group: 0,
+                    binding: 1,
+                }),
+            },
+            graph_storage("dst", Access::ReadWrite, 2),
+        ],
+        slang_source: r#"
+[[vk::binding(0, 0)]] StructuredBuffer<float> src;
+[[vk::binding(1, 0)]] ConstantBuffer<float> factor;
+[[vk::binding(2, 0)]] RWStructuredBuffer<float> dst;
+[shader("compute")] [numthreads(64, 1, 1)]
+void graph_shade(uint3 id : SV_DispatchThreadID)
+{
+    uint n; uint stride; dst.GetDimensions(n, stride);
+    if (id.x < n) { dst[id.x] = src[id.x] * factor; }
+}
+"#,
+        source: SourceOrigin::UNKNOWN,
+        artifacts: &[],
+    };
+}
+
+fn shade_call<'r, R0, R1, R2>(
+    __gust_element_count: u32,
+    src: impl Into<Arg<'r, R0>>,
+    factor: impl Into<Arg<'r, R1>>,
+    dst: impl Into<Arg<'r, R2>>,
+) -> Call<'r, <R0 as Resource>::Device, Shade, 3>
+where
+    R0: Resource<Element = f32, Kind = gust::kind::Storage> + 'r,
+    R1: Resource<Element = f32, Device = <R0 as Resource>::Device, Kind = gust::kind::Uniform> + 'r,
+    R2: Resource<Element = f32, Device = <R0 as Resource>::Device, Kind = gust::kind::Storage> + 'r,
+{
+    Call::new(
+        __gust_element_count,
+        [
+            src.into().bind(Access::ReadOnly),
+            factor.into().bind(Access::ReadOnly),
+            dst.into().bind(Access::ReadWrite),
+        ],
+    )
+}
+
+fn scaled(factor: f32) -> Vec<f32> {
+    ramp(1.0).iter().map(|x| x * factor).collect()
+}
+
+#[test]
+fn two_uniform_updates_between_dispatches_are_observed_in_order() {
+    let device = device();
+    let src = floats(&device, "src", &ramp(1.0));
+    let (out_one, out_two, out_three) = (
+        floats(&device, "one", &vec![0.0; COUNT]),
+        floats(&device, "two", &vec![0.0; COUNT]),
+        floats(&device, "three", &vec![0.0; COUNT]),
+    );
+    let factor = device.create_uniform("factor", &1.0f32).unwrap();
+    let (two, three) = (2.0f32, 3.0f32);
+    let (call_one, call_two, call_three) = (
+        shade_call(COUNT as u32, &src, &factor, &out_one),
+        shade_call(COUNT as u32, &src, &factor, &out_two),
+        shade_call(COUNT as u32, &src, &factor, &out_three),
+    );
+
+    let mut graph = StagedGraph::new();
+    let first = graph.run(&call_one);
+    let set_two = graph.write_uniform(&factor, &two);
+    let second = graph.run(&call_two);
+    let set_three = graph.write_uniform(&factor, &three);
+    let third = graph.run(&call_three);
+    // Written down before the first run. A write of the uniform waits for the dispatches that read the old value
+    // (WAR) and the one before it (WAW); a dispatch waits for the write it reads.
+    assert_eq!(edges(&graph, first), Vec::<usize>::new());
+    assert_eq!(edges(&graph, set_two), [0]);
+    assert_eq!(edges(&graph, second), [1]);
+    assert_eq!(edges(&graph, set_three), [1, 2]);
+    assert_eq!(edges(&graph, third), [3]);
+    assert!(graph.is_derived(set_two));
+
+    let output = device.execute_graph(&graph).unwrap();
+    // All three dispatches are in one command buffer, so each saw the value its position implies: with
+    // `Queue::write_buffer` they would all have seen the last one.
+    assert_eq!(device.read_typed_buffer(&out_one).unwrap(), scaled(1.0));
+    assert_eq!(device.read_typed_buffer(&out_two).unwrap(), scaled(2.0));
+    assert_eq!(device.read_typed_buffer(&out_three).unwrap(), scaled(3.0));
+    assert_eq!(output.report.dispatches, 3);
+    assert_eq!(output.report.upload_bytes, 8);
+    assert_eq!(output.report.derived_edges, 5);
+
+    // The uniform keeps the last value for the next submission.
+    let mut again = StagedGraph::new();
+    again.run(&call_one);
+    device.execute_graph(&again).unwrap();
+    assert_eq!(device.read_typed_buffer(&out_one).unwrap(), scaled(3.0));
+}
+
+#[test]
+fn a_dispatch_that_reads_a_uniform_must_declare_its_edge_to_the_write() {
+    let device = device();
+    let src = floats(&device, "src", &ramp(1.0));
+    let out = floats(&device, "out", &vec![0.0; COUNT]);
+    let factor = device.create_uniform("factor", &1.0f32).unwrap();
+    let four = 4.0f32;
+    let call = shade_call(COUNT as u32, &src, &factor, &out);
+
+    // The write is a write of the uniform for the hazard check, like an upload of a buffer: an explicit dispatch
+    // that reads the uniform after it, with no edge, is rejected.
+    let mut missing = StagedGraph::new();
+    missing.write_uniform(&factor, &four);
+    missing.dispatch((&call).into(), &[]);
+    match device
+        .execute_graph(&missing)
+        .err()
+        .expect("the edge is missing")
+    {
+        Error::GraphMissingDependency { node, producer } => assert_eq!((node, producer), (1, 0)),
+        other => panic!("expected GraphMissingDependency, got {other:?}"),
+    }
+    assert_eq!(device.read_typed_buffer(&out).unwrap(), vec![0.0; COUNT]);
+
+    // The control declares it.
+    let mut declared = StagedGraph::new();
+    let write = declared.write_uniform(&factor, &four);
+    declared.dispatch((&call).into(), &[write]);
+    device.execute_graph(&declared).unwrap();
+    assert_eq!(device.read_typed_buffer(&out).unwrap(), scaled(4.0));
+}
+
+#[test]
+fn a_uniform_of_another_device_cannot_be_written_in_a_graph() {
+    let device = device();
+    let other = HeadlessDevice::new().expect("a second device");
+    let foreign = other.create_uniform("foreign", &1.0f32).unwrap();
+    let value = 2.0f32;
+    let mut graph = StagedGraph::new();
+    graph.write_uniform(&foreign, &value);
+    assert!(matches!(
+        device.execute_graph(&graph).err().expect("foreign uniform"),
+        Error::ForeignPersistentBuffer
+    ));
+}

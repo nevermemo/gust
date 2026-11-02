@@ -1,6 +1,6 @@
 use std::{fmt, fmt::Write as _};
 
-use gust::{Access, KernelDescriptor};
+use gust::{Access, KernelDescriptor, ParameterKind};
 
 use crate::{Error, validate_kernel};
 
@@ -109,13 +109,17 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
         );
         source.push_str("                visibility: wgpu::ShaderStages::COMPUTE,\n");
         source.push_str("                ty: wgpu::BindingType::Buffer {\n");
-        write_line(
-            &mut source,
-            format_args!(
-                "                    ty: wgpu::BufferBindingType::Storage {{ read_only: {} }},",
-                parameter.access == Access::ReadOnly
-            ),
-        );
+        if parameter.kind == ParameterKind::Uniform {
+            source.push_str("                    ty: wgpu::BufferBindingType::Uniform,\n");
+        } else {
+            write_line(
+                &mut source,
+                format_args!(
+                    "                    ty: wgpu::BufferBindingType::Storage {{ read_only: {} }},",
+                    parameter.access == Access::ReadOnly
+                ),
+            );
+        }
         source.push_str("                    has_dynamic_offset: false,\n");
         source.push_str("                    min_binding_size: None,\n");
         source.push_str("                },\n");

@@ -953,3 +953,535 @@ fn a_graph_dispatch_node_that_aliases_a_written_buffer_is_rejected() {
     assert_aliased(error, "typed_tests::fill", "x", "y");
     assert_eq!(device.read_typed_buffer(&shared).unwrap(), values);
 }
+
+// ---- uniforms (m6.u1) ----
+//
+// A uniform parameter is bound to a `GpuUniform`: one `Std140V1` value in a constant buffer. The macro does not yet
+// generate a `call` for a `Uniform<T>` parameter (m6.u2), so the kernels below are hand-written, with a `call`
+// function in the shape the macro will generate (`Kind = gust::kind::Storage` / `gust::kind::Uniform` bounds).
+
+use gust::math::{Mat2, Vec4};
+
+const fn uniform(
+    name: &'static str,
+    rust_type: &'static str,
+    element: gust::TypeLayout,
+    binding: u32,
+) -> ParameterDescriptor {
+    ParameterDescriptor {
+        name,
+        rust_type,
+        kind: ParameterKind::Uniform,
+        access: Access::ReadOnly,
+        resource_layout: Some(ResourceLayout::std140_v1(element)),
+        binding: Some(ResourceBinding { group: 0, binding }),
+    }
+}
+
+/// `shade(src: RO, factor: Uniform<f32>, dst: RW)`: `dst[i] = src[i] * factor`.
+struct Shade;
+impl Kernel for Shade {
+    const DESCRIPTOR: KernelDescriptor = descriptor(
+        "shade",
+        "typed_shade",
+        &[
+            storage("src", Access::ReadOnly, 0),
+            uniform("factor", "float", <f32 as GpuPod>::LAYOUT, 1),
+            storage("dst", Access::ReadWrite, 2),
+        ],
+        r#"
+[[vk::binding(0, 0)]] StructuredBuffer<float> src;
+[[vk::binding(1, 0)]] ConstantBuffer<float> factor;
+[[vk::binding(2, 0)]] RWStructuredBuffer<float> dst;
+[shader("compute")] [numthreads(64, 1, 1)]
+void typed_shade(uint3 id : SV_DispatchThreadID)
+{
+    uint n; uint stride; dst.GetDimensions(n, stride);
+    if (id.x < n) { dst[id.x] = src[id.x] * factor; }
+}
+"#,
+    );
+}
+
+/// A padding-free `Std140V1` struct: a `Vec4` then four `f32`, size 32, alignment 16.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct Packed {
+    v: Vec4,
+    a: f32,
+    b: f32,
+    c: f32,
+    d: f32,
+}
+
+// SAFETY: `repr(C)`, a `Vec4` (16 bytes, align 16) then four `f32` at 16, 20, 24 and 28: no padding, size 32.
+unsafe impl GpuPod for Packed {
+    const LAYOUT: gust::TypeLayout = gust::TypeLayout::structure(
+        "Packed",
+        32,
+        16,
+        &[
+            gust::StructFieldLayout {
+                name: "v",
+                offset: 0,
+                ty: <Vec4 as GpuPod>::LAYOUT,
+            },
+            gust::StructFieldLayout {
+                name: "a",
+                offset: 16,
+                ty: <f32 as GpuPod>::LAYOUT,
+            },
+            gust::StructFieldLayout {
+                name: "b",
+                offset: 20,
+                ty: <f32 as GpuPod>::LAYOUT,
+            },
+            gust::StructFieldLayout {
+                name: "c",
+                offset: 24,
+                ty: <f32 as GpuPod>::LAYOUT,
+            },
+            gust::StructFieldLayout {
+                name: "d",
+                offset: 28,
+                ty: <f32 as GpuPod>::LAYOUT,
+            },
+        ],
+    );
+}
+
+/// A `Std140V1` struct with an honest layout and Rust size that is nevertheless padded: a `Vec4` then one `f32`, so
+/// bytes 20 to 31 are padding that Rust leaves uninitialised.
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct Padded {
+    v: Vec4,
+    a: f32,
+}
+
+// SAFETY: deliberately breaks the no-padding rule, to show that `create_uniform` refuses it; it is never uploaded.
+unsafe impl GpuPod for Padded {
+    const LAYOUT: gust::TypeLayout = gust::TypeLayout::structure(
+        "Padded",
+        32,
+        16,
+        &[
+            gust::StructFieldLayout {
+                name: "v",
+                offset: 0,
+                ty: <Vec4 as GpuPod>::LAYOUT,
+            },
+            gust::StructFieldLayout {
+                name: "a",
+                offset: 16,
+                ty: <f32 as GpuPod>::LAYOUT,
+            },
+        ],
+    );
+}
+
+/// `unpack(p: Uniform<Packed>, dst: RW)`: `dst[0..8] = [p.v.x, p.v.y, p.v.z, p.v.w, p.a, p.b, p.c, p.d]`.
+struct Unpack;
+impl Kernel for Unpack {
+    const DESCRIPTOR: KernelDescriptor = descriptor(
+        "unpack",
+        "typed_unpack",
+        &[
+            uniform("p", "Packed", <Packed as GpuPod>::LAYOUT, 0),
+            storage("dst", Access::ReadWrite, 1),
+        ],
+        r#"
+struct Packed { float4 v; float a; float b; float c; float d; };
+[[vk::binding(0, 0)]] ConstantBuffer<Packed> p;
+[[vk::binding(1, 0)]] RWStructuredBuffer<float> dst;
+[shader("compute")] [numthreads(64, 1, 1)]
+void typed_unpack(uint3 id : SV_DispatchThreadID)
+{
+    float all[8] = { p.v.x, p.v.y, p.v.z, p.v.w, p.a, p.b, p.c, p.d };
+    uint n; uint stride; dst.GetDimensions(n, stride);
+    if (id.x < n && id.x < 8) { dst[id.x] = all[id.x]; }
+}
+"#,
+    );
+}
+
+/// The `Shade` kernel with its uniform labelled `StorageV2`: valid for the element but not for a constant buffer.
+struct ShadeStorageRule;
+impl Kernel for ShadeStorageRule {
+    const DESCRIPTOR: KernelDescriptor = descriptor(
+        "shade_storage_rule",
+        "typed_shade",
+        &[
+            storage("src", Access::ReadOnly, 0),
+            ParameterDescriptor {
+                resource_layout: Some(ResourceLayout::storage_v2(<Vec4 as GpuPod>::LAYOUT)),
+                ..uniform("factor", "float4", <Vec4 as GpuPod>::LAYOUT, 1)
+            },
+            storage("dst", Access::ReadWrite, 2),
+        ],
+        Shade::DESCRIPTOR.slang_source,
+    );
+}
+
+fn shade_call<'r, R0, R1, R2>(
+    __gust_element_count: u32,
+    src: impl Into<Arg<'r, R0>>,
+    factor: impl Into<Arg<'r, R1>>,
+    dst: impl Into<Arg<'r, R2>>,
+) -> Call<'r, <R0 as Resource>::Device, Shade, 3>
+where
+    R0: Resource<Element = f32, Kind = gust::kind::Storage> + 'r,
+    R1: Resource<Element = f32, Device = <R0 as Resource>::Device, Kind = gust::kind::Uniform> + 'r,
+    R2: Resource<Element = f32, Device = <R0 as Resource>::Device, Kind = gust::kind::Storage> + 'r,
+{
+    Call::new(
+        __gust_element_count,
+        [
+            src.into().bind(Access::ReadOnly),
+            factor.into().bind(Access::ReadOnly),
+            dst.into().bind(Access::ReadWrite),
+        ],
+    )
+}
+
+fn unpack_call<'r, R0, R1>(
+    __gust_element_count: u32,
+    p: impl Into<Arg<'r, R0>>,
+    dst: impl Into<Arg<'r, R1>>,
+) -> Call<'r, <R0 as Resource>::Device, Unpack, 2>
+where
+    R0: Resource<Element = Packed, Kind = gust::kind::Uniform> + 'r,
+    R1: Resource<Element = f32, Device = <R0 as Resource>::Device, Kind = gust::kind::Storage> + 'r,
+{
+    Call::new(
+        __gust_element_count,
+        [
+            p.into().bind(Access::ReadOnly),
+            dst.into().bind(Access::ReadWrite),
+        ],
+    )
+}
+
+fn zeros(device: &HeadlessDevice, label: &str, count: usize) -> GpuBuffer<f32> {
+    buffer(device, label, &vec![0.0; count], GpuBufferAccess::ReadWrite)
+}
+
+#[test]
+fn a_uniform_is_read_by_a_kernel() {
+    let device = device();
+    let src = buffer(&device, "src", &ramp(), GpuBufferAccess::ReadOnly);
+    let dst = zeros(&device, "dst", COUNT);
+    let factor = device.create_uniform("factor", &2.5f32).unwrap();
+    // The uniform holds one value while the dispatch covers `COUNT` elements: it is `Independent` by construction.
+    let call = shade_call(COUNT as u32, &src, &factor, &dst);
+    assert_eq!(call.bindings().len(), 3);
+    device.dispatch_call(&call).unwrap();
+    let expected: Vec<f32> = ramp().iter().map(|x| x * 2.5).collect();
+    assert_eq!(device.read_typed_buffer(&dst).unwrap(), expected);
+}
+
+#[test]
+fn a_uniform_written_between_two_calls_is_seen_by_the_second() {
+    let device = device();
+    let src = buffer(&device, "src", &ramp(), GpuBufferAccess::ReadOnly);
+    let first = zeros(&device, "first", COUNT);
+    let second = zeros(&device, "second", COUNT);
+    let factor = device.create_uniform("factor", &2.0f32).unwrap();
+    device
+        .dispatch_call(&shade_call(COUNT as u32, &src, &factor, &first))
+        .unwrap();
+    device.write_uniform(&factor, &-3.0f32).unwrap();
+    device
+        .dispatch_call(&shade_call(COUNT as u32, &src, &factor, &second))
+        .unwrap();
+    let doubled: Vec<f32> = ramp().iter().map(|x| x * 2.0).collect();
+    let negated: Vec<f32> = ramp().iter().map(|x| x * -3.0).collect();
+    assert_eq!(device.read_typed_buffer(&first).unwrap(), doubled);
+    assert_eq!(device.read_typed_buffer(&second).unwrap(), negated);
+}
+
+#[test]
+fn a_struct_uniform_keeps_its_std140_offsets() {
+    let device = device();
+    let packed = Packed {
+        v: Vec4::new(1.0, 2.0, 3.0, 4.0),
+        a: 5.0,
+        b: 6.0,
+        c: 7.0,
+        d: 8.0,
+    };
+    let uniform = device.create_uniform("packed", &packed).unwrap();
+    assert_eq!(uniform.layout(), <Packed as GpuPod>::LAYOUT);
+    // Eight elements against a uniform of length one.
+    let dst = zeros(&device, "dst", 8);
+    device
+        .dispatch_call(&unpack_call(8, &uniform, &dst))
+        .unwrap();
+    assert_eq!(
+        device.read_typed_buffer(&dst).unwrap(),
+        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+    );
+}
+
+#[test]
+fn a_padded_or_non_std140_type_is_refused_with_the_fix_named() {
+    let device = device();
+    let padded = Padded {
+        v: Vec4::splat(1.0),
+        a: 2.0,
+    };
+    match device.create_uniform("padded", &padded) {
+        Err(Error::InvalidUniformType { type_name, reason }) => {
+            assert_eq!(type_name, "Padded");
+            assert!(reason.contains("padding bytes"), "{reason}");
+            assert!(reason.contains("explicit padding fields"), "{reason}");
+        }
+        Err(other) => panic!("expected InvalidUniformType, got {other:?}"),
+        Ok(_) => panic!("a padded type must be refused"),
+    }
+    // A 2x2 matrix is a storage type but has no constant-buffer layout.
+    match device.create_uniform(
+        "matrix",
+        &Mat2::from_cols(
+            gust::math::Vec2::new(1.0, 0.0),
+            gust::math::Vec2::new(0.0, 1.0),
+        ),
+    ) {
+        Err(Error::InvalidUniformType { type_name, reason }) => {
+            assert_eq!(type_name, Mat2::LAYOUT.name);
+            assert!(reason.contains("not Std140V1"), "{reason}");
+        }
+        Err(other) => panic!("expected InvalidUniformType, got {other:?}"),
+        Ok(_) => panic!("a 2x2 matrix must be refused"),
+    }
+}
+
+#[test]
+fn a_resource_of_the_other_kind_is_refused_before_anything_else() {
+    let device = device();
+    let src = buffer(&device, "src", &ramp(), GpuBufferAccess::ReadOnly);
+    let dst = zeros(&device, "dst", COUNT);
+    let factor = device.create_uniform("factor", &2.0f32).unwrap();
+    let vector =
+        device.create_typed_buffer("vector", &[Vec4::splat(1.0)], GpuBufferAccess::ReadOnly);
+
+    // A storage buffer in the uniform slot. `Call::new` takes the bindings as they are: the typed `call` would not
+    // compile, so a hand-built call is what reaches the runtime check.
+    let storage_for_uniform: Call<'_, HeadlessDevice, Shade, 3> = Call::new(
+        COUNT as u32,
+        [
+            src.bind(Access::ReadOnly, LengthRule::Shared),
+            vector.bind(Access::ReadOnly, LengthRule::Independent),
+            dst.bind(Access::ReadWrite, LengthRule::Shared),
+        ],
+    );
+    match device.dispatch_call(&storage_for_uniform).unwrap_err() {
+        Error::BindingKind {
+            parameter,
+            expected,
+            actual,
+        } => assert_eq!(
+            (parameter.as_str(), expected, actual),
+            (
+                "factor",
+                gust::BindingKind::Uniform,
+                gust::BindingKind::Storage
+            )
+        ),
+        other => panic!("expected BindingKind, got {other:?}"),
+    }
+
+    // A uniform in the storage slot: the kind is checked before the layout (a `f32` uniform would also differ in the
+    // rule it presents, `Std140V1` against `StorageV1`).
+    let uniform_for_storage: Call<'_, HeadlessDevice, Shade, 3> = Call::new(
+        COUNT as u32,
+        [
+            factor.bind(Access::ReadOnly, LengthRule::Independent),
+            factor.bind(Access::ReadOnly, LengthRule::Independent),
+            dst.bind(Access::ReadWrite, LengthRule::Shared),
+        ],
+    );
+    match device.dispatch_call(&uniform_for_storage).unwrap_err() {
+        Error::BindingKind {
+            parameter,
+            expected,
+            actual,
+        } => assert_eq!(
+            (parameter.as_str(), expected, actual),
+            (
+                "src",
+                gust::BindingKind::Storage,
+                gust::BindingKind::Uniform
+            )
+        ),
+        other => panic!("expected BindingKind, got {other:?}"),
+    }
+    assert_eq!(stats(&device), (0, 0, 0), "refused before any compilation");
+
+    // A uniform is read-only: a read-write binding of it is an access error, however the call was built.
+    let writable: Call<'_, HeadlessDevice, Shade, 3> = Call::new(
+        COUNT as u32,
+        [
+            src.bind(Access::ReadOnly, LengthRule::Shared),
+            factor.bind(Access::ReadWrite, LengthRule::Independent),
+            dst.bind(Access::ReadWrite, LengthRule::Shared),
+        ],
+    );
+    match device.dispatch_call(&writable).unwrap_err() {
+        Error::BindingAccess {
+            parameter,
+            expected,
+            actual,
+        } => assert_eq!(
+            (parameter.as_str(), expected, actual),
+            ("factor", Access::ReadOnly, Access::ReadWrite)
+        ),
+        other => panic!("expected BindingAccess, got {other:?}"),
+    }
+    assert_eq!(stats(&device), (0, 0, 0));
+}
+
+#[test]
+fn a_std140_layout_mismatch_is_refused() {
+    let device = device();
+    let src = buffer(&device, "src", &ramp(), GpuBufferAccess::ReadOnly);
+    let dst = zeros(&device, "dst", COUNT);
+
+    // The kernel declares `Uniform<f32>` and the uniform holds a `Vec4`: same kind, different element.
+    let vector = device.create_uniform("vector", &Vec4::splat(1.0)).unwrap();
+    let wrong_element: Call<'_, HeadlessDevice, Shade, 3> = Call::new(
+        COUNT as u32,
+        [
+            src.bind(Access::ReadOnly, LengthRule::Shared),
+            vector.bind(Access::ReadOnly, LengthRule::Independent),
+            dst.bind(Access::ReadWrite, LengthRule::Shared),
+        ],
+    );
+    match device.dispatch_call(&wrong_element).unwrap_err() {
+        Error::UnsupportedResourceLayout {
+            parameter,
+            expected,
+            actual,
+        } => {
+            assert_eq!(parameter, "factor");
+            assert_eq!(
+                *expected,
+                ResourceLayout::std140_v1(<f32 as GpuPod>::LAYOUT)
+            );
+            assert_eq!(
+                actual.as_deref(),
+                Some(&ResourceLayout::std140_v1(<Vec4 as GpuPod>::LAYOUT))
+            );
+        }
+        other => panic!("expected UnsupportedResourceLayout, got {other:?}"),
+    }
+
+    // The descriptor itself claims the storage rule for a uniform.
+    let factor = device.create_uniform("factor", &Vec4::splat(1.0)).unwrap();
+    let error = device
+        .dispatch_buffers(
+            &ShadeStorageRule::DESCRIPTOR,
+            COUNT as u32,
+            &[
+                BufferBinding::read_only(&src),
+                factor.bind(Access::ReadOnly, LengthRule::Independent),
+                BufferBinding::read_write(&dst),
+            ],
+        )
+        .unwrap_err();
+    match error {
+        Error::InvalidResourceLayout { parameter, .. } => assert_eq!(parameter, "factor"),
+        other => panic!("expected InvalidResourceLayout, got {other:?}"),
+    }
+    assert_eq!(stats(&device), (0, 0, 0), "refused before any compilation");
+}
+
+#[test]
+fn a_uniform_of_another_device_is_refused() {
+    let device = device();
+    let other = HeadlessDevice::new().expect("a second device");
+    let src = buffer(&device, "src", &ramp(), GpuBufferAccess::ReadOnly);
+    let dst = zeros(&device, "dst", COUNT);
+    let foreign = other.create_uniform("foreign", &2.0f32).unwrap();
+    let error = device
+        .dispatch_call(&shade_call(COUNT as u32, &src, &foreign, &dst))
+        .unwrap_err();
+    assert!(matches!(error, Error::ForeignPersistentBuffer), "{error:?}");
+    assert!(matches!(
+        device.write_uniform(&foreign, &1.0f32),
+        Err(Error::ForeignPersistentBuffer)
+    ));
+}
+
+#[test]
+fn the_uniform_launch_limits_apply_before_any_compilation() {
+    // The uniform count: a kernel with one uniform on a device that allows none.
+    let device = device();
+    let mut limits = device.limits().clone();
+    limits.max_uniform_buffers_per_shader_stage = 0;
+    let device = device.with_limits(limits).unwrap();
+    let src = buffer(&device, "src", &ramp(), GpuBufferAccess::ReadOnly);
+    let dst = zeros(&device, "dst", COUNT);
+    let factor = device.create_uniform("factor", &2.0f32).unwrap();
+    match device
+        .dispatch_call(&shade_call(COUNT as u32, &src, &factor, &dst))
+        .unwrap_err()
+    {
+        Error::DeviceLimit {
+            kernel,
+            limit,
+            requested,
+            maximum,
+        } => assert_eq!(
+            (kernel.as_str(), limit, requested, maximum),
+            (
+                "typed_tests::shade",
+                "max_uniform_buffers_per_shader_stage",
+                1,
+                0
+            )
+        ),
+        other => panic!("expected DeviceLimit, got {other:?}"),
+    }
+    assert_eq!(stats(&device), (0, 0, 0));
+
+    // The binding size: the 32-byte `Packed` against a limit of 16.
+    let device = self::device();
+    let mut limits = device.limits().clone();
+    limits.max_uniform_buffer_binding_size = 16;
+    let device = device.with_limits(limits).unwrap();
+    let packed = device
+        .create_uniform(
+            "packed",
+            &Packed {
+                v: Vec4::splat(0.0),
+                a: 0.0,
+                b: 0.0,
+                c: 0.0,
+                d: 0.0,
+            },
+        )
+        .unwrap();
+    let dst = zeros(&device, "dst", 8);
+    match device
+        .dispatch_call(&unpack_call(8, &packed, &dst))
+        .unwrap_err()
+    {
+        Error::DeviceLimit {
+            kernel,
+            limit,
+            requested,
+            maximum,
+        } => assert_eq!(
+            (kernel.as_str(), limit, requested, maximum),
+            (
+                "typed_tests::unpack",
+                "max_uniform_buffer_binding_size",
+                32,
+                16
+            )
+        ),
+        other => panic!("expected DeviceLimit, got {other:?}"),
+    }
+    assert_eq!(stats(&device), (0, 0, 0));
+}

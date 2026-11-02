@@ -7,4 +7,4 @@ code: E0277
 file: typed-call-no-cpu-twin/src/main.rs
 line: 30
 message: `CpuDevice` cannot run the kernel `scale`
-label: this device has no executable form of the kernel; GPU devices run every kernel that has a typed call (not one with a uniform parameter), CPU twins only those emitted for them
+label: this device has no executable form of the kernel; GPU devices run every kernel that has a typed call, CPU twins only those emitted for them

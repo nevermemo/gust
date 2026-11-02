@@ -168,7 +168,7 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-fast` | Fast routine confidence | policy lint, docs-check, check-arch, check-ui, helper version check, fmt check, macro tests, core lib tests, wgpu tests (all `--locked`) |
 | `cargo xtask check-workspace` | Default workspace confidence | `--locked` workspace tests with example packages excluded entirely |
 | `cargo xtask check-examples` | Major example behavior confidence | every example test (`-- --include-ignored`, counted: no passed test or an ignored one fails it) plus example binaries |
-| `cargo xtask check-artifacts` | Artifact/export confidence | example binaries plus external SPIR-V validation |
+| `cargo xtask check-artifacts` | Artifact/export confidence | example binaries plus external SPIR-V validation of their files and of the vectors, products and uniforms goldens, with an `OpCopyLogical` count each |
 | `cargo xtask check-full [--skip-web]` | Release confidence | full staged verification, then the whole `check-precompiled` and `check-web`, then `check-difftest`; `--skip-web` leaves out `check-web` only and records it |
 | `cargo xtask status` | Resume context | git status, active claim, validation summary, suggested check |
 | `cargo xtask doctor` | Environment readiness | required tools and reflection helper status; exits non-zero when cargo, rustc, slangc or the helper is missing |
@@ -496,12 +496,20 @@ The direct syntax translator currently supports:
   a statement-only `match` with `Ok(x)`/`Err(e)` block arms (D14);
 - the vector and matrix types of `gust::math` (`Vec2` to `Vec4`, `IVec2` to `IVec4`, `UVec2` to `UVec4`, `Mat2` to
   `Mat4`) in `#[gpu]` code, with swizzles, `dot`, `from_cols`, `from_rows`, `mul_vecN`, `mul_matN` and `transpose`,
-  lowered to Slang vector and matrix operations, column-major (M6 m6.m1; the integer `dot` fails on the SPIR-V route,
-  see [DIAGNOSTICS](docs/DIAGNOSTICS.md)). Typed buffers of them (`Vec2`, `Vec4`, `Mat2`, `Mat4` and padding-free
-  structs of these) are created, dispatched on the GPU and checked against the CPU twin (M6 m6.g1, StorageV2).
-  Limitations: the constants `Mat2::IDENTITY` and `Mat3::IDENTITY` crash the SPIR-V ingestion of wgpu on slangc
-  2026.20 (the executed WGSL route is fine); see
+  lowered to Slang vector and matrix operations, column-major (M6 m6.m1). In a module that names a matrix type, `*`
+  and `*=` between matrices, vectors and scalars lower to one overloaded Slang helper, so `m * v` is the matrix times
+  the vector as on the CPU side, and unary `-` works on matrices (m6.m2, m6.n; E0323 and E0324 in
+  [DIAGNOSTICS](docs/DIAGNOSTICS.md)). Typed buffers of them (`Vec2`, `Vec4`, `Mat2`, `Mat4` and padding-free
+  structs of these) are created, dispatched on the GPU and checked against the CPU twin (M6 m6.g1, StorageV2);
+  3-wide vectors and `Mat3` are locals and helper values only. Limitations: the constants `Mat2::IDENTITY` and
+  `Mat3::IDENTITY` crash the SPIR-V ingestion of wgpu on slangc 2026.20 (the executed WGSL route is fine); see
   [SEMANTICS](docs/SEMANTICS.md) section 4;
+- uniform parameters, `Uniform<T>` or its alias `ConstantBuffer<T>`, whose `T` is a struct of the module: read one
+  field at a time and laid out `Std140V1` with explicit padding (M6 m6.u2; E0205 to E0209 and E0321 in
+  [DIAGNOSTICS](docs/DIAGNOSTICS.md)). The host creates them with `create_uniform`, updates them with
+  `write_uniform` (also as a `StagedGraph` node) and binds them in parameter order (m6.u1, m6.g2);
+- a user name that collides with a Slang or WGSL keyword, a prelude name or a spelling GUST emits is renamed to
+  `__gust_r_<name>` in the Slang text only; descriptors and host names keep the Rust spelling (m6.k);
 - statement-only atomics on `RWStructuredBuffer<u32/i32>` elements: `atomic_add`,
   `atomic_exchange`, and `atomic_compare_exchange`, plus unsigned-only
   `atomic_min`/`atomic_max` (T10);
@@ -520,17 +528,18 @@ limits of Slang itself.
 Struct literals in other expression positions, nested struct literals, and record
 update syntax (`..base`) are rejected; whole-struct buffer copies and field updates
 work. Option and Result values cannot be struct fields or buffer elements.
-Booleans are expression values, not host-shareable `GpuPod` fields. Only padding-free 32-bit scalar/nested-struct
-storage layouts are executable today. Constant-buffer syntax is not yet supported
-by the headless runtime. See [architecture](docs/ARCHITECTURE.md) for known semantic
+Booleans are expression values, not host-shareable `GpuPod` fields. Only padding-free storage layouts are
+executable today (32-bit scalars, 2- and 4-wide vectors, 2x2 and 4x4 matrices and nested structs of these), plus
+`Std140V1` structs for uniforms; arrays and 3-wide buffer elements are not. See
+[architecture](docs/ARCHITECTURE.md) for known semantic
 gaps (and [SEMANTICS](docs/SEMANTICS.md) for limits); successful Rust checking does not prove equivalence to Slang inference.
 
 Around the translator, the host side currently provides:
 
-- generated typed `call`, `submit` and `dispatch` per kernel without a uniform
-  parameter (a kernel with one has none), implemented for the
+- generated typed `call`, `submit` and `dispatch` per kernel (a kernel with a
+  uniform parameter takes one uniform resource per such parameter), implemented for the
   headless wgpu device only; compile-time checks of element type, device type and
-  storage-argument count, and run-time checks of access, layout, device instance,
+  resource count, and run-time checks of access, layout, device instance,
   length and aliasing (see "Running a kernel");
 - compile-time assertions emitted with `#[gpu]` that every buffer element type and
   struct field is a padding-free layout (StorageV1, or StorageV2 where a vector or matrix is involved) matching Rust's
@@ -604,7 +613,7 @@ Golden Slang and a real-GPU semantics fixture live in `tests/fixtures/`; update
 expected output only after reviewing the change and testing both target compilers.
 The [roadmap](docs/ROADMAP.md) prioritizes correctness, actionable diagnostics ([stable codes](docs/DIAGNOSTICS.md)),
 ABI/capability evidence, and then a small explicit staged-execution proof.
-Slang reflection now gates every pipeline for the StorageV1 subset (D17); broader
+Slang reflection now gates every pipeline for the StorageV1, StorageV2 and Std140V1 layouts (D17); broader
 resource layouts need the same compiler evidence before they enter the runtime.
 New ECS work starts with a small GPU-resident component pool, not a full engine rewrite.
 

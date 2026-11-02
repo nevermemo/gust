@@ -1,6 +1,6 @@
 # Current status
 
-## Active: roadmap M6 (2026-11-02)
+## Active: roadmap M7 (2026-11-03)
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done; M0.15
@@ -80,6 +80,17 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   output (the stale-binary fix); the Cpu suite is this command. CI runs it as the job `cpu-target` beside `unit`: 61 s
   on the runner, against 2 m 57 s for `unit`. Evidence: Unit, Cpu and Gpu smoke (RTX 5090). Opus keep after one fix
   round.
+- M7 m7.w (`389d263`, fix round `70e09fd`, merge `4797013`): wrapping arithmetic and GUST-E0325 (D87).
+  `wrapping_add/sub/mul/neg` on `u32`/`i32` lower to the plain operator (`wrapping_neg` as `(0 - a)`); the twin
+  calls Rust's `wrapping_*`. Fixtures numeric (scramble, step) and mismatch (uwrap, iwrap: 15 kernels); a 7×7 edge
+  grid per op and type inside the ledger test (GPU against host `wrapping_*` and an `i128` oracle; failures
+  counted with the ledger's), green in the dev run and in `check-ledger`; 36 DOMAIN ledger rows; check-ui
+  fixtures `wrapping-ok` and `wrapping-div-rejected` (pinned fixtures 22 to 24). Pin 216/25 unchanged (no new test
+  fn). Mutations: `wrapping_mul` as `+` fails 195 ledger expectations and the WGSL text test; accepting
+  `wrapping_div` fails check-ui; the old E0304 text fails `wrapping-div-rejected`. Opus merge after one fix round.
+  Main: 22 gate steps green on `4797013` (from 22:11Z, RTX 5090), including `gpu-verify` and `check-difftest`.
+  One more empty Vulkan adapter list in the fix round (`an_adapter_that_does_not_exist_is_no_adapter`, check-fast;
+  green on rerun): the second sighting of the M6 enumerate flake (NEXT_TASKS).
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).

@@ -454,7 +454,7 @@ fn reserved_prefixes_are_rejected_also_when_raw() {
 /// renamed even if someone blesses the new text.
 #[test]
 fn no_rename_fires_in_the_goldens() {
-    let fixtures: [(&str, &str, &str); 9] = [
+    let fixtures: [(&str, &str, &str); 10] = [
         (
             "atomics",
             include_str!("../../../../tests/fixtures/atomics.rs"),
@@ -489,6 +489,11 @@ fn no_rename_fires_in_the_goldens() {
             "result",
             include_str!("../../../../tests/fixtures/result.rs"),
             include_str!("../../../../tests/fixtures/result.slang"),
+        ),
+        (
+            "products",
+            include_str!("../../../../tests/fixtures/products.rs"),
+            include_str!("../../../../tests/fixtures/products.slang"),
         ),
         (
             "semantics",

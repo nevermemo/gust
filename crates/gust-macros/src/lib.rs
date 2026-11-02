@@ -3,6 +3,7 @@ use proc_macro::TokenStream;
 mod diagnostics;
 mod expand;
 mod math_types;
+mod mul_impls;
 mod recover;
 mod slang;
 mod validate;
@@ -26,6 +27,17 @@ pub fn gpu(attribute: TokenStream, item: TokenStream) -> TokenStream {
     let value = std::env::var("GUST_PROFILE").ok();
     let profile = expand::Profile::from_value(value.as_deref());
     gpu_impl_with(attribute.into(), item.into(), profile).into()
+}
+
+/// The `Mul` and `MulAssign` impls of `gust::math`, generated from the product table that also drives the Slang
+/// overloads `__gust_mul` (slice m6.m2). Only `crates/gust/src/math.rs` invokes it, once and with no argument.
+#[doc(hidden)]
+#[proc_macro]
+pub fn gust_mul_impls(input: TokenStream) -> TokenStream {
+    if !input.is_empty() {
+        return quote::quote!(compile_error!("gust_mul_impls! takes no arguments");).into();
+    }
+    mul_impls::mul_impls().into()
 }
 
 /// [`gpu_impl_with`] for a caller that has no profile: the `Other` path, which keeps the CPU twin behind

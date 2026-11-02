@@ -3191,6 +3191,75 @@ fn vectors_golden() {
 }
 
 #[test]
+fn products_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/products.rs")).unwrap();
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "products.slang",
+        &include_str!("../../../../tests/fixtures/products.slang").replace("\r\n", "\n"),
+    );
+}
+
+/// The `products` golden holds every row of the table, written in Rust as `a * b` or `a *= b` and lowered by the
+/// macro: slangc takes it on both targets (`the_products_golden_compiles_to_wgsl_and_spirv`), so a pair the table lists
+/// and Slang cannot resolve fails there. This test reads the golden for one call per row, in table order.
+#[test]
+fn products_golden_covers_every_row_of_the_table() {
+    let golden = include_str!("../../../../tests/fixtures/products.slang").replace("\r\n", "\n");
+    let name = |rust: &str| match rust {
+        "f32" => "fl",
+        "i32" => "sn",
+        "u32" => "un",
+        "Vec2" => "v2",
+        "Vec3" => "v3",
+        "Vec4" => "v4",
+        "IVec2" => "i2",
+        "IVec4" => "i4",
+        "UVec2" => "u2",
+        "UVec3" => "u3",
+        "UVec4" => "u4",
+        "Mat2" => "m2",
+        "Mat3" => "m3",
+        "Mat4" => "m4",
+        other => panic!("{other} is not in the table"),
+    };
+    // The overloads themselves are in the golden, one line per row.
+    assert!(golden.contains(&mul_table::overload_text()), "{golden}");
+    // Each `a * b` row: a call on the two parameters of the helper, in table order, before the `*=` section.
+    let products = &golden[..golden.find("var s0 = ").expect("the `*=` section")];
+    let mut after = 0;
+    for row in MUL_PAIRS {
+        let call = format!("__gust_mul({}, {})", name(row.left), name(row.right));
+        let at = products[after..].find(&call).unwrap_or_else(|| {
+            panic!(
+                "{} * {}: no `{call}` after byte {after}",
+                row.left, row.right
+            )
+        });
+        after += at + call.len();
+    }
+    // Each `a *= b` row: a copy of the left operand, then the assignment through the overload, in table order.
+    let mut after = 0;
+    let mut assigns = 0;
+    for row in MUL_PAIRS.iter().filter(|row| row.assigns()) {
+        let copy = format!("var s{assigns} = {};", name(row.left));
+        let assignment = format!(
+            "(s{assigns} = __gust_mul(s{assigns}, {}));",
+            name(row.right)
+        );
+        for text in [copy, assignment] {
+            let at = golden[after..]
+                .find(&text)
+                .unwrap_or_else(|| panic!("{} *= {}: no `{text}`", row.left, row.right));
+            after += at + text.len();
+        }
+        assigns += 1;
+    }
+    assert_eq!(assigns, 19);
+    assert!(!golden.contains("*="), "{golden}");
+}
+
+#[test]
 fn every_math_type_maps_to_its_slang_type() {
     for (rust, slang) in [
         ("Vec2", "float2"),
@@ -3474,7 +3543,7 @@ fn constructors_swizzles_and_methods_lower_to_their_slang_spelling() {
         "var s = float2(0.5);",
         "var q = p.wzyx;",
         "var r = ((p + q)).xy;",
-        "var d = dot(p, q);",
+        "var d = __gust_dot(p, q);",
         // Rows build directly; columns build the transpose of the rows constructor.
         "var c = transpose(float2x2(s, r));",
         "var w = float2x2(s, r);",
@@ -3591,4 +3660,459 @@ fn coretests_golden() {
         "coretests.slang",
         &include_str!("../../../../tests/fixtures/coretests.slang").replace("\r\n", "\n"),
     );
+}
+
+// ---- operator syntax for products (M6, slice m6.m2) ----
+
+use crate::slang::mul_table::{self, Kind, MUL_PAIRS};
+
+/// A module that names a matrix (so `*` is `__gust_mul`) with `body` in the kernel.
+fn matrix_module(items: &str, body: &str) -> String {
+    vector_module(&format!("fn keep(m: Mat4) -> Mat4 {{ m }} {items}"), body)
+}
+
+#[test]
+fn the_product_table_has_the_pinned_rows() {
+    assert_eq!(MUL_PAIRS.len(), 39);
+    let rows_of = |kind: Kind| -> Vec<String> {
+        MUL_PAIRS
+            .iter()
+            .filter(|row| row.kind == kind)
+            .map(|row| format!("{} * {} = {}", row.left, row.right, row.output))
+            .collect()
+    };
+    assert_eq!(
+        rows_of(Kind::Scalar),
+        ["f32 * f32 = f32", "i32 * i32 = i32", "u32 * u32 = u32"]
+    );
+    assert_eq!(
+        rows_of(Kind::MatMul),
+        [
+            "Mat2 * Mat2 = Mat2",
+            "Mat2 * Vec2 = Vec2",
+            "Mat3 * Mat3 = Mat3",
+            "Mat3 * Vec3 = Vec3",
+            "Mat4 * Mat4 = Mat4",
+            "Mat4 * Vec4 = Vec4",
+        ]
+    );
+    assert_eq!(rows_of(Kind::Ew).len(), 30);
+    // `MulAssign` rows: the output is the left type and the row is neither scalar nor a matrix product.
+    let assigns: Vec<String> = MUL_PAIRS
+        .iter()
+        .filter(|row| row.assigns())
+        .map(|row| format!("{} *= {}", row.left, row.right))
+        .collect();
+    assert_eq!(assigns.len(), 19, "{assigns:?}");
+    assert!(assigns.contains(&"Mat4 *= f32".to_owned()));
+    assert!(assigns.contains(&"UVec3 *= UVec3".to_owned()));
+    assert!(!assigns.iter().any(|row| row.contains("f32 *= ")));
+    assert!(
+        !assigns
+            .iter()
+            .any(|row| row.starts_with("Mat") && !row.ends_with("f32"))
+    );
+}
+
+#[test]
+fn the_product_table_is_complete_and_agrees_with_the_math_types() {
+    for name in ["f32", "i32", "u32"] {
+        assert!(
+            MUL_PAIRS
+                .iter()
+                .any(|row| row.left == name && row.right == name)
+        );
+    }
+    for entry in crate::math_types::MATH_TYPES {
+        assert_eq!(mul_table::slang(entry.name), entry.slang, "{}", entry.name);
+        assert_eq!(
+            mul_table::is_matrix(entry.name),
+            entry.matrix,
+            "{}",
+            entry.name
+        );
+        assert_eq!(
+            mul_table::width(entry.name),
+            crate::math_types::width(entry),
+            "{}",
+            entry.name
+        );
+        let left = MUL_PAIRS
+            .iter()
+            .filter(|row| row.left == entry.name)
+            .count();
+        let right = MUL_PAIRS
+            .iter()
+            .filter(|row| row.right == entry.name)
+            .count();
+        // A vector pairs with itself and with its scalar on both sides (2 rows with it on the left, 2 on the right),
+        // and a float vector is also the right operand of the matrix of its width; a matrix pairs with itself, its
+        // vector and the scalar on the left (3 rows) and with itself and the scalar on the right (2).
+        let matrix_partner = usize::from(["Vec2", "Vec3", "Vec4"].contains(&entry.name));
+        let (expected_left, expected_right) = if entry.matrix {
+            (3, 2)
+        } else {
+            (2, 2 + matrix_partner)
+        };
+        assert_eq!(
+            (left, right),
+            (expected_left, expected_right),
+            "{}",
+            entry.name
+        );
+    }
+    for row in MUL_PAIRS {
+        // The output is the matrix or vector operand; a matrix product has the right operand's type (`m * v` is a
+        // vector, `m * m` a matrix).
+        let operand = if row.kind == Kind::MatMul || mul_table::is_scalar(row.left) {
+            row.right
+        } else {
+            row.left
+        };
+        assert_eq!(row.output, operand, "{} * {}", row.left, row.right);
+    }
+}
+
+#[test]
+fn the_overload_text_has_one_line_per_row() {
+    let text = mul_table::overload_text();
+    assert_eq!(text.lines().filter(|line| !line.is_empty()).count(), 39);
+    assert!(text.ends_with("\n\n"));
+    for expected in [
+        "float __gust_mul(float a, float b) { return a * b; }",
+        "uint3 __gust_mul(uint a, uint3 b) { return a * b; }",
+        "float4x4 __gust_mul(float4x4 a, float4x4 b) { return mul(a, b); }",
+        "float4 __gust_mul(float4x4 a, float4 b) { return mul(a, b); }",
+        "float3x3 __gust_mul(float a, float3x3 b) { return a * b; }",
+        "float2x2 __gust_mul(float2x2 a, float b) { return a * b; }",
+    ] {
+        assert!(text.lines().any(|line| line == expected), "{expected}");
+    }
+    // Only the two matrix products use `mul`.
+    assert_eq!(text.matches("mul(a, b)").count(), 6);
+}
+
+#[test]
+fn a_module_that_names_a_matrix_lowers_every_star_to_the_overload() {
+    let source = translate(&matrix_module(
+        "",
+        "let a = 2.0; let b = a * 3.0; let c = Mat4::IDENTITY * Mat4::IDENTITY; let d = 3 * i; \
+         let e = (a * b) * (a * 2.0); out[i * 2] = b * a;",
+    ))
+    .unwrap();
+    for expected in [
+        "var b = __gust_mul(a, 3.0);",
+        "var c = __gust_mul(float4x4(",
+        "var d = __gust_mul(3, i);",
+        "var e = __gust_mul((__gust_mul(a, b)), (__gust_mul(a, 2.0)));",
+        "out[__gust_mul(i, 2)] = __gust_mul(b, a);",
+    ] {
+        assert!(source.contains(expected), "missing `{expected}`:\n{source}");
+    }
+    // The overload table comes once, before the first declaration, and holds every row.
+    assert_eq!(
+        source.matches("float __gust_mul(float a, float b)").count(),
+        1,
+        "{source}"
+    );
+    let table = mul_table::overload_text();
+    assert!(source.contains(&table), "{source}");
+    assert!(source.find(&table).unwrap() < source.find("[[vk::binding").unwrap());
+    // The other operators are untouched.
+    let source = translate(&matrix_module("", "out[i] = (1.0 + 2.0) - 3.0 / 4.0;")).unwrap();
+    assert!(
+        source.contains("(1.0 + 2.0)") && source.contains("(3.0 / 4.0)"),
+        "{source}"
+    );
+    assert!(!source.contains("__gust_mul(1.0"), "{source}");
+}
+
+#[test]
+fn every_row_of_the_table_lowers_to_its_overload_call() {
+    // One parameter per table type, named after it, and one product per non-scalar row.
+    let mut names: Vec<&str> = MUL_PAIRS
+        .iter()
+        .flat_map(|row| [row.left, row.right])
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    let parameters: Vec<String> = names
+        .iter()
+        .map(|name| format!("p_{name}: {name}"))
+        .collect();
+    let statements: Vec<String> = MUL_PAIRS
+        .iter()
+        .enumerate()
+        .map(|(index, row)| format!("let r{index} = p_{} * p_{};", row.left, row.right))
+        .collect();
+    let source = translate(&vector_module(
+        &format!(
+            "fn all({}) {{ {} }}",
+            parameters.join(", "),
+            statements.join(" ")
+        ),
+        "out[i] = 1.0;",
+    ))
+    .unwrap();
+    for (index, row) in MUL_PAIRS.iter().enumerate() {
+        let call = format!(
+            "var r{index} = __gust_mul(p_{}, p_{});",
+            row.left, row.right
+        );
+        assert!(
+            source.contains(&call),
+            "{} * {}: missing `{call}`",
+            row.left,
+            row.right
+        );
+    }
+}
+
+#[test]
+fn star_assign_in_a_matrix_module_writes_the_place_through_the_overload() {
+    let source = translate(&matrix_module(
+        "",
+        "let mut v = Vec2::new(1.0, 2.0); v.x *= 2.0; v *= Vec2::splat(2.0); \
+         let mut m = Mat4::IDENTITY; m *= 0.5; out[i] *= 2.0; out[i * 2 + 1] *= v.y; \
+         let mut a = 1; a *= 3;",
+    ))
+    .unwrap();
+    for expected in [
+        "(v.x = __gust_mul(v.x, 2.0));",
+        "(v = __gust_mul(v, float2(2.0)));",
+        "(m = __gust_mul(m, 0.5));",
+        "(out[i] = __gust_mul(out[i], 2.0));",
+        "(out[(__gust_mul(i, 2) + 1)] = __gust_mul(out[(__gust_mul(i, 2) + 1)], v.y));",
+        "(a = __gust_mul(a, 3));",
+    ] {
+        assert!(source.contains(expected), "missing `{expected}`:\n{source}");
+    }
+    assert!(!source.contains("*="), "{source}");
+}
+
+#[test]
+fn star_assign_on_a_place_with_a_call_is_e0323_in_a_matrix_module() {
+    let items = "fn pick(k: u32) -> u32 { k }";
+    for place in ["out[pick(i)]", "out[pick(i) + 1]", "out[(i + pick(1)) * 2]"] {
+        let body = format!("{place} *= 2.0;");
+        assert_rejected(&matrix_module(items, &body), Code::MulAssignPlace);
+        // Without a matrix in the module, the same statement stays verbatim.
+        let source = translate(&vector_module(items, &body)).unwrap();
+        assert!(source.contains(" *= 2.0);"), "{source}");
+    }
+    let error = translate(&matrix_module(items, "out[pick(i)] *= 2.0;")).unwrap_err();
+    assert!(error.to_string().contains("x = x * y"), "{error}");
+    assert!(error.to_string().contains("an `if` or a block"), "{error}");
+}
+
+#[test]
+fn the_overloads_appear_only_in_modules_that_name_what_they_serve() {
+    // The reviewed goldens of modules with no matrix and no integer vector hold neither helper, so their text did not
+    // change when the helpers arrived (the golden tests compare them byte for byte).
+    for (name, text) in [
+        (
+            "atomics.slang",
+            include_str!("../../../../tests/fixtures/atomics.slang"),
+        ),
+        (
+            "coretests.slang",
+            include_str!("../../../../tests/fixtures/coretests.slang"),
+        ),
+        (
+            "loops.slang",
+            include_str!("../../../../tests/fixtures/loops.slang"),
+        ),
+        (
+            "mismatch.slang",
+            include_str!("../../../../tests/fixtures/mismatch.slang"),
+        ),
+        (
+            "numeric.slang",
+            include_str!("../../../../tests/fixtures/numeric.slang"),
+        ),
+        (
+            "option.slang",
+            include_str!("../../../../tests/fixtures/option.slang"),
+        ),
+        (
+            "result.slang",
+            include_str!("../../../../tests/fixtures/result.slang"),
+        ),
+        (
+            "semantics.slang",
+            include_str!("../../../../tests/fixtures/semantics.slang"),
+        ),
+    ] {
+        assert!(!text.contains("__gust_mul"), "{name}");
+        assert!(!text.contains("__gust_dot"), "{name}");
+    }
+    // The vectors golden names both, and holds both.
+    let golden = include_str!("../../../../tests/fixtures/vectors.slang");
+    assert!(
+        golden
+            .replace("\r\n", "\n")
+            .contains(&mul_table::overload_text())
+    );
+    assert!(golden.contains("__gust_dot(") && golden.contains("__gust_mul("));
+}
+
+#[test]
+fn a_matrix_token_anywhere_gates_the_module_and_near_misses_do_not() {
+    for items in [
+        "fn lift(m: Mat2) -> Mat2 { m }",
+        "fn lift(m: Mat3) -> Mat3 { m }",
+        "fn lift(m: r#Mat4) -> r#Mat4 { m }",
+        "fn lift() -> Vec2 { Mat2::IDENTITY.mul_vec2(Vec2::splat(1.0)) }",
+        "struct S { m: Mat4 }",
+    ] {
+        let source = translate(&vector_module(items, "out[i] = 2.0 * 3.0;")).unwrap();
+        assert!(
+            source.contains("__gust_mul(2.0, 3.0)"),
+            "{items}:\n{source}"
+        );
+    }
+    for items in [
+        "struct Mat5 { a: f32 }",
+        "struct Mat4x4 { a: f32 }",
+        "fn mat4(a: f32) -> f32 { a }",
+        "fn lift(v: Vec4) -> Vec4 { v }",
+    ] {
+        // A near miss is an ordinary name; only the table spellings gate.
+        let source = translate(&vector_module(items, "out[i] = 2.0 * 3.0;")).unwrap();
+        assert!(!source.contains("__gust_mul"), "{items}:\n{source}");
+        assert!(source.contains("(2.0 * 3.0)"), "{items}:\n{source}");
+    }
+}
+
+#[test]
+fn dot_is_the_overload_in_a_module_that_names_an_integer_vector() {
+    let body = "let a = IVec2::new(1, 2); let b = UVec4::splat(2); let f = Vec4::splat(1.0); \
+                out[i] = (a.dot(a) + b.dot(b) as int) as f32 + f.dot(f);";
+    let source = translate(&vector_module("", body)).unwrap();
+    for expected in [
+        "float __gust_dot(float2 a, float2 b) { return dot(a, b); }",
+        "float __gust_dot(float3 a, float3 b) { return dot(a, b); }",
+        "float __gust_dot(float4 a, float4 b) { return dot(a, b); }",
+        "int __gust_dot(int2 a, int2 b) { return (a.x * b.x + a.y * b.y); }",
+        "int __gust_dot(int4 a, int4 b) { return (((a.x * b.x + a.y * b.y) + a.z * b.z) + a.w * b.w); }",
+        "uint __gust_dot(uint2 a, uint2 b) { return (a.x * b.x + a.y * b.y); }",
+        "uint __gust_dot(uint3 a, uint3 b) { return ((a.x * b.x + a.y * b.y) + a.z * b.z); }",
+        "uint __gust_dot(uint4 a, uint4 b) { return (((a.x * b.x + a.y * b.y) + a.z * b.z) + a.w * b.w); }",
+        "__gust_dot(a, a)",
+        "__gust_dot(b, b)",
+        "__gust_dot(f, f)",
+    ] {
+        assert!(source.contains(expected), "missing `{expected}`:\n{source}");
+    }
+    // The integer overloads never call Slang's `dot`, which is `OpSDot` or `OpUDot` in SPIR-V.
+    for line in source
+        .lines()
+        .filter(|line| line.contains("__gust_dot(") && line.contains("int"))
+    {
+        assert!(!line.contains("dot(a, b)"), "{line}");
+    }
+    // No matrix in the module: `*` stays verbatim.
+    assert!(!source.contains("__gust_mul"), "{source}");
+    // A module with no `dot` has no helper, whatever vectors it names.
+    let source = translate(&vector_module(
+        "",
+        "let a = IVec2::new(1, 2); out[i] = a.x as f32;",
+    ))
+    .unwrap();
+    assert!(!source.contains("__gust_dot"), "{source}");
+}
+
+#[test]
+fn every_dot_goes_through_the_overload_even_on_the_invocation_id() {
+    let kernel = |parameter: &str, body: &str| {
+        format!(
+            "mod m {{ #[kernel] pub fn run(id: {parameter}, mut out: RWStructuredBuffer<float>) {{ \
+             let i = id.x; {body} }} }}"
+        )
+    };
+    // The kernel's own `UVec3` parameter, and a swizzle of it (a `UVec2` with no `UVec2` token), reach `OpUDot` in
+    // SPIR-V unless the module takes the integer overloads.
+    for (parameter, body, expected) in [
+        ("UVec3", "out[i] = id.dot(id) as f32;", "__gust_dot(id, id)"),
+        (
+            "SV_DispatchThreadID",
+            "out[i] = id.xy().dot(id.yz()) as f32;",
+            "__gust_dot(id.xy, id.yz)",
+        ),
+        (
+            "UVec3",
+            "let v = Vec2::splat(1.0); out[i] = v.dot(v);",
+            "__gust_dot(v, v)",
+        ),
+    ] {
+        let source = translate(&kernel(parameter, body)).unwrap();
+        assert!(source.contains(expected), "{body}:\n{source}");
+        assert!(
+            source.contains("uint __gust_dot(uint3 a, uint3 b)"),
+            "{body}:\n{source}"
+        );
+    }
+    // No `dot` token: no helper.
+    let source = translate(&kernel("UVec3", "out[i] = 1.0;")).unwrap();
+    assert!(!source.contains("__gust_dot"), "{source}");
+}
+
+#[test]
+fn a_grouped_place_is_as_pure_as_its_contents() {
+    // `macro_rules!` hands a `$p:expr` over inside an invisible group. Build one, as the parser would not.
+    let group = |text: &str| {
+        syn::Expr::Group(syn::ExprGroup {
+            attrs: Vec::new(),
+            group_token: syn::token::Group::default(),
+            expr: Box::new(crate::diagnostics::testing::parse_str(text).unwrap()),
+        })
+    };
+    for text in ["out[i]", "out[i + 1].x", "(out[i])", "v.y"] {
+        assert!(crate::slang::is_pure_place(&group(text)), "{text}");
+    }
+    for text in ["out[pick(i)]", "out[if c { 1 } else { 2 }]", "out[{ 1 }]"] {
+        assert!(!crate::slang::is_pure_place(&group(text)), "{text}");
+    }
+}
+
+#[test]
+fn the_generated_impls_are_the_table() {
+    let text = crate::mul_impls::mul_impls().to_string();
+    // 36 products (the 3 scalar rows are Rust's own) and 19 assignments, every function `#[inline]`.
+    assert_eq!(text.matches("impl :: core :: ops :: Mul <").count(), 36);
+    assert_eq!(
+        text.matches("impl :: core :: ops :: MulAssign <").count(),
+        19
+    );
+    assert_eq!(
+        text.matches("fn mul (").count() + text.matches("fn mul_assign (").count(),
+        55
+    );
+    assert_eq!(
+        text.matches("# [inline] fn ").count(),
+        55,
+        "every function is #[inline]"
+    );
+    for row in MUL_PAIRS {
+        let product = format!(
+            "impl :: core :: ops :: Mul < {} > for {} {{",
+            row.right, row.left
+        );
+        let assign = format!(
+            "impl :: core :: ops :: MulAssign < {} > for {} {{",
+            row.right, row.left
+        );
+        assert_eq!(
+            text.contains(&product),
+            row.kind != Kind::Scalar,
+            "{}",
+            product
+        );
+        assert_eq!(text.contains(&assign), row.assigns(), "{}", assign);
+    }
+    // Spot checks of the bodies: the products are the methods of the same meaning.
+    assert!(text.contains("self . mul_vec4 (rhs)"));
+    assert!(text.contains("self . mul_mat2 (rhs)"));
+    assert!(text.contains("x : self * rhs . x"));
+    assert!(text.contains("x : self . x * rhs . x"));
 }

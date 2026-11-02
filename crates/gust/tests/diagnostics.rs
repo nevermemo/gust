@@ -1517,11 +1517,12 @@ fn rust_keywords_outside_the_table_compile_bare_in_every_position() {
 }
 
 /// The `vectors` golden compiles with the pinned slangc to both targets (m6.m1). `compile_source` passes the same
-/// `-matrix-layout-column-major` flag as every compile of a kernel. The golden holds one form, the integer `dot`,
-/// whose SPIR-V needs `Capability DotProduct` (slangc 2026.13.1 and 2026.20 both emit it): naga's SPIR-V reader
-/// refuses that capability, so the SPIR-V is pinned to carry it (a change of Slang or of the lowering shows here).
-/// The naga halves (WGSL with empty capabilities, the SPIR-V reader on the module without the integer `dot`) were
-/// run by hand: they need a `naga` dependency in the manifests, which this slice may not touch.
+/// `-matrix-layout-column-major` flag as every compile of a kernel. The golden holds the integer `dot`, which Slang
+/// emits as `OpSDot` or `OpUDot` with `Capability DotProduct` (slangc 2026.13.1 and 2026.20), and naga's SPIR-V reader
+/// refuses that capability. Since slice m6.m2 the macro lowers `.dot` in such a module to `__gust_dot`, whose integer
+/// overloads are a sum of products, so the SPIR-V is pinned to declare `Shader` and nothing else (a change of Slang
+/// or of the lowering that brings a capability back shows here). The naga halves (WGSL and SPIR-V with empty
+/// capabilities) were run by hand: they need a `naga` dependency in the manifests, which this slice may not touch.
 #[test]
 fn the_vectors_golden_compiles_to_wgsl_and_spirv() {
     let golden = include_str!("../../../tests/fixtures/vectors.slang").replace("\r\n", "\n");
@@ -1529,6 +1530,12 @@ fn the_vectors_golden_compiles_to_wgsl_and_spirv() {
     let wgsl = String::from_utf8(wgsl).unwrap();
     assert!(wgsl.contains("@compute"), "{wgsl}");
     let spirv = slang::compile_source(&golden, "gpu_vectors_run", Target::Spirv).unwrap();
+    // `Shader` is capability 1; `DotProduct` is 6019 and `DotProductInputAll` 6016.
+    assert_eq!(spirv_capabilities(&spirv), [1]);
+}
+
+/// The `OpCapability` operands of a SPIR-V module, found by walking the instructions after the header.
+fn spirv_capabilities(spirv: &[u8]) -> Vec<u32> {
     assert!(
         spirv.len().is_multiple_of(4) && spirv.len() > 20,
         "{} bytes",
@@ -1541,7 +1548,6 @@ fn the_vectors_golden_compiles_to_wgsl_and_spirv() {
         .map(|word| u32::from_le_bytes(*word))
         .collect();
     assert_eq!(words[0], 0x0723_0203, "not SPIR-V");
-    // OpCapability (opcode 17) with `DotProduct` (6019), found by walking the instructions after the header.
     let mut capabilities = Vec::new();
     let mut at = 5;
     while at < words.len() {
@@ -1552,7 +1558,22 @@ fn the_vectors_golden_compiles_to_wgsl_and_spirv() {
         }
         at += length;
     }
-    assert!(capabilities.contains(&6019), "{capabilities:?}");
+    capabilities
+}
+
+/// The `products` golden (every operand pair of the product table written as `a * b`, the `*=` rows, and the literal
+/// operands, lowered by the macro) compiles with the pinned slangc to both targets, and its SPIR-V declares `Shader`
+/// and nothing else. A pair the table lists but Slang cannot resolve fails here, before it can be a slangc error in a
+/// user kernel (M6 plan 2.1, the coverage test); `products_golden_covers_every_row_of_the_table` in the macro
+/// crate pins that the golden holds every row.
+/// The naga halves were run by hand (no `naga` dependency in the manifests).
+#[test]
+fn the_products_golden_compiles_to_wgsl_and_spirv() {
+    let golden = include_str!("../../../tests/fixtures/products.slang").replace("\r\n", "\n");
+    let wgsl = slang::compile_source(&golden, "gpu_products_run", Target::Wgsl).unwrap();
+    assert!(String::from_utf8(wgsl).unwrap().contains("@compute"));
+    let spirv = slang::compile_source(&golden, "gpu_products_run", Target::Spirv).unwrap();
+    assert_eq!(spirv_capabilities(&spirv), [1]);
 }
 
 /// The `coretests` golden compiles with the pinned slangc to both targets (m5.d3). The golden holds every kernel's

@@ -154,6 +154,8 @@ codes! {
     LetNeedsIdentifier = 319 => "GUST-E0319";
     /// `let .. else`.
     LetElse = 320 => "GUST-E0320";
+    /// `*=` on a place that contains a call, in a module that names a matrix (the place would be evaluated twice).
+    MulAssignPlace = 323 => "GUST-E0323";
     /// A qualified path to a math type or one of its constructors, such as `super::Mat4` or `gust::math::Vec4::new`.
     QualifiedMathPath = 324 => "GUST-E0324";
 

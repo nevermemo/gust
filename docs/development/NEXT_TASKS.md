@@ -55,7 +55,7 @@ test module; do not mix that mechanical move with behavior changes.
   and the headless runtime rejects them (`Error::UnsupportedParameter`); plain value
   parameters are rejected by the macro. Resolved at M3 close (D40): uniform kernels stay
   without a typed call and without a CPU twin until M6's uniform work, which decides
-  both together.
+  both together. Done in M6: m6.u1 (host side) and m6.u2 (merge `1b592a1`) give them typed calls and twins.
 
 ## M3 follow-ups (filed at M3 close)
 

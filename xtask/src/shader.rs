@@ -16,6 +16,12 @@ const SMOKE_SOURCE: &str = ".agents/skills/slang-language/assets/vector-add.slan
 const SMOKE_ENTRY: &str = "computeMain";
 const SMOKE_TARGET_ENV: &str = "vulkan1.2";
 
+/// The matrix layout GUST compiles with (D55): column-major, named instead of left to the default, because the command
+/// line of slangc defaults to column-major today and the native API to row-major (M6 spike V1). The compile paths of
+/// `gust` (`slang::slangc_command`, `reflect::slangc_reflection_command`) pass the same text; the native helper sets
+/// `defaultMatrixLayoutMode`. A test compares this constant with their source.
+pub(crate) const MATRIX_LAYOUT_FLAG: &str = "-matrix-layout-column-major";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ShaderTarget {
     Wgsl,
@@ -92,7 +98,8 @@ impl SlangcOptions {
         })
     }
 
-    /// The exact arguments handed to `slangc`: the entry point and compute stage are explicit.
+    /// The exact arguments handed to `slangc`: the entry point and compute stage are explicit, and so is the matrix
+    /// layout ([`MATRIX_LAYOUT_FLAG`]), for both targets. Extra arguments come last.
     fn compiler_args(&self) -> Vec<String> {
         let mut args = vec![
             self.source.display().to_string(),
@@ -104,6 +111,7 @@ impl SlangcOptions {
             self.target.as_str().to_owned(),
             "-o".to_owned(),
             self.out.display().to_string(),
+            MATRIX_LAYOUT_FLAG.to_owned(),
         ];
         args.extend(self.extra.iter().cloned());
         args
@@ -329,6 +337,163 @@ pub(crate) fn spirv_val(options: &SpirvValOptions) -> Result<(), String> {
         options.target_env,
         version.lines().next().unwrap_or("unknown")
     );
+    println!("  {}", copy_logical_note(&options.file));
+    Ok(())
+}
+
+/// How many `OpCopyLogical` instructions the text printed by `spirv-dis` holds. The instruction copies between two
+/// aggregates of different layouts and is the reason naga's SPIR-V front end refuses some modules (M6 plan, 2.6). A
+/// match needs the shape `%id = OpCopyLogical ...`, so a name or string that merely contains the word does not count.
+pub(crate) fn count_copy_logical(disassembly: &str) -> usize {
+    disassembly
+        .lines()
+        .filter(|line| {
+            let mut words = line.split_whitespace();
+            matches!(
+                (words.next(), words.next(), words.next()),
+                (Some(id), Some("="), Some("OpCopyLogical")) if id.starts_with('%')
+            )
+        })
+        .count()
+}
+
+/// The informational line about the `OpCopyLogical` count of one SPIR-V file. It never fails: a missing or failing
+/// `spirv-dis` is said in the line instead, and the count decides nothing (GUST's SPIR-V targets Vulkan drivers;
+/// feeding it to naga is unsupported, D59).
+pub(crate) fn copy_logical_note(file: &Path) -> String {
+    let output = Command::new("spirv-dis")
+        .arg("--no-color")
+        .arg(file)
+        .output();
+    match output {
+        Ok(output) if output.status.success() => format!(
+            "OpCopyLogical: {} (informational, never a failure)",
+            count_copy_logical(&String::from_utf8_lossy(&output.stdout))
+        ),
+        Ok(output) => format!(
+            "OpCopyLogical: not counted (spirv-dis exited {})",
+            output.status.code().unwrap_or(-1)
+        ),
+        Err(error) => format!("OpCopyLogical: not counted (could not launch spirv-dis: {error})"),
+    }
+}
+
+/// The compute entry points of a Slang text: the name after each `[shader("compute")]` attribute line, taken from the
+/// next line that starts with `void`.
+pub(crate) fn compute_entries(slang: &str) -> Vec<String> {
+    let mut entries = Vec::new();
+    let mut pending = false;
+    for line in slang.lines().map(str::trim) {
+        if line == "[shader(\"compute\")]" {
+            pending = true;
+        } else if pending && let Some(rest) = line.strip_prefix("void ") {
+            if let Some((name, _)) = rest.split_once('(') {
+                entries.push(name.trim().to_owned());
+            }
+            pending = false;
+        }
+    }
+    entries
+}
+
+/// `<stem>__<kernel>.spv` for the entry `gpu_<stem>_<kernel>` of the golden `<stem>.slang`, the spelling of the files
+/// the examples export (`<module>__<kernel>.spv`).
+pub(crate) fn golden_file_name(stem: &str, entry: &str) -> Result<String, String> {
+    let prefix = format!("gpu_{stem}_");
+    match entry.strip_prefix(&prefix) {
+        Some(kernel) if !kernel.is_empty() => Ok(format!("{stem}__{kernel}.spv")),
+        _ => Err(format!(
+            "the entry `{entry}` of tests/fixtures/{stem}.slang does not start with `{prefix}`"
+        )),
+    }
+}
+
+/// Compares the SPIR-V files made from the goldens with the expected names and names the differences separately,
+/// like the comparison of the exported examples: a renamed kernel is one missing and one unexpected file.
+pub(crate) fn compare_golden_names(expected: &[&str], found: &[String]) -> Result<(), String> {
+    let mut missing = expected
+        .iter()
+        .copied()
+        .filter(|name| !found.iter().any(|found| found == name))
+        .collect::<Vec<_>>();
+    let mut unexpected = found
+        .iter()
+        .map(String::as_str)
+        .filter(|name| !expected.contains(name))
+        .collect::<Vec<_>>();
+    if missing.is_empty() && unexpected.is_empty() {
+        return Ok(());
+    }
+    missing.sort_unstable();
+    unexpected.sort_unstable();
+    let mut message = format!(
+        "The SPIR-V made from the goldens differs from the {} expected names ({} found).",
+        expected.len(),
+        found.len()
+    );
+    if !missing.is_empty() {
+        message.push_str(&format!(" Missing: {}.", missing.join(", ")));
+    }
+    if !unexpected.is_empty() {
+        message.push_str(&format!(" Unexpected: {}.", unexpected.join(", ")));
+    }
+    message.push_str(
+        " Update the expected names in xtask/src/checks.rs deliberately when a golden gains or loses a kernel.",
+    );
+    Err(message)
+}
+
+/// Compiles every compute entry of `tests/fixtures/<stem>.slang`, for each stem, to SPIR-V in a fresh directory under
+/// the cargo target directory (with the column-major matrix layout and Slang's entry-point names, as GUST compiles a
+/// kernel), requires the file names to equal `expected` and validates each file for Vulkan 1.2 (the validator prints
+/// the informational `OpCopyLogical` count). `check-artifacts` does not export these modules (no example uses a
+/// vector or uniform type), so `check-feature vectors` and `check-feature uniforms` do.
+pub(crate) fn export_golden_spirv(
+    root: &Path,
+    area: &str,
+    stems: &[&str],
+    expected: &[&str],
+) -> Result<(), String> {
+    require_command("spirv-val")?;
+    let directory = cargo_target_dir(root).join("golden-spirv").join(area);
+    match fs::remove_dir_all(&directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("could not clear {}: {error}", directory.display())),
+    }
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let fixtures = root.join("tests").join("fixtures");
+    let mut found = Vec::new();
+    for stem in stems {
+        let source = fixtures.join(format!("{stem}.slang"));
+        let text = fs::read_to_string(&source)
+            .map_err(|error| format!("could not read {}: {error}", source.display()))?;
+        let entries = compute_entries(&text);
+        if entries.is_empty() {
+            return Err(format!(
+                "tests/fixtures/{stem}.slang has no compute entry point"
+            ));
+        }
+        for entry in entries {
+            let file = golden_file_name(stem, &entry)?;
+            slangc(&SlangcOptions {
+                source: source.clone(),
+                entry,
+                target: ShaderTarget::Spirv,
+                out: directory.join(&file),
+                extra: vec!["-fvk-use-entrypoint-name".to_owned()],
+            })?;
+            found.push(file);
+        }
+    }
+    compare_golden_names(expected, &found)?;
+    found.sort_unstable();
+    for file in &found {
+        spirv_val(&SpirvValOptions {
+            file: directory.join(file),
+            target_env: SMOKE_TARGET_ENV.to_owned(),
+        })?;
+    }
     Ok(())
 }
 

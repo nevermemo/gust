@@ -11,6 +11,9 @@ Validation is layered. Choose the cheapest command that can falsify the current 
 | Semantics contract change (SEMANTICS.md, a ledger row, twin behaviour, `gust::cpu`) | `cargo xtask check-cpu` and `cargo test --locked -p gust --lib cpu` | `cargo xtask check-feature gpu-semantics` (it runs the ledger test `mismatch`) and `cargo xtask check-dual --check-only` | `cargo xtask check-full` (adds the release ledger run and `check-dual` in full mode) |
 | Loop dialect change | `cargo xtask check-feature loops` | `cargo xtask check-feature gpu-semantics` | `cargo xtask check-full` |
 | Result lowering/match | `cargo xtask check-feature result` | `cargo xtask check-feature gpu-semantics` | `cargo xtask check-full` |
+| Vector/matrix change (the `gust::math` types, swizzles, products, negation, the `vectors` and `products` goldens, StorageV2 buffers) | `cargo xtask check-feature vectors` (needs slangc, `spirv-val`, the reflection helper and an adapter) | `cargo xtask check-feature gpu-semantics` | `cargo xtask check-full` |
+| Uniform change (`Uniform<T>`, `ConstantBuffer<T>`, Std140, `write_uniform`, the `uniforms` golden) | `cargo xtask check-feature uniforms` (as for vectors) | `cargo xtask check-feature gpu-runtime` | `cargo xtask check-full` |
+| Map/device options/buffer pool change (`gust::map`, `GpuVec`, adapter choice, limits) | `cargo xtask check-feature map` | `cargo xtask check-feature gpu-runtime` | `cargo xtask check-full` |
 | Diagnostic sidecar maps | `cargo xtask check-feature core` | `cargo xtask check-workspace` | `cargo xtask check-full` |
 | wgpu runtime/cache/buffer change | `cargo xtask check-feature gpu-smoke` or `gpu-runtime` | `cargo xtask check-feature wgpu` | `cargo xtask check-full` |
 | GPU semantic feature | focused macro/golden test + one GPU feature test | `cargo xtask check-feature gpu-semantics` | `cargo xtask check-full` |
@@ -27,9 +30,9 @@ Gpu the device).
 | Tier | Claim | Typical command |
 | --- | --- | --- |
 | Unit | Macro validation, translation, and xtask logic pass without external tools; the declared minimum Rust version compiles every workspace target | `cargo test -p gust-macros`, `cargo test -p xtask`, `cargo xtask lint` (CI), `cargo xtask check-ui`, `cargo xtask check-cpu`, `cargo test --locked -p gust --lib cpu::tests::`, `cargo test --locked -p gust --lib artifact::tests::`, `cargo test --locked -p gust --test artifact`, `cargo xtask check-dual --check-only` (a separate step of the CI `unit` job, not of the Unit suite), `cargo xtask check-difftest --cpu-only --seeds 1-4` (a step of the Unit suite), CI job `msrv` |
-| Cpu | The production CPU target (`GUST_PROFILE=cpu`) executes a kernel and its output equals an independent host reference; it needs no external tool and no adapter, and the binary holds no Slang bridge, helper or GPU runtime | `cargo xtask check-cpu-target` (the Cpu suite is this command; CI runs it as the job `cpu-target`, not in the Unit suite) |
+| Cpu | The production CPU target (`GUST_PROFILE=cpu`) executes a kernel (scalar kernels and, since m6.x, a `Vec4` kernel) and its output equals an independent host reference; it needs no external tool and no adapter, and the binary holds no Slang bridge, helper or GPU runtime | `cargo xtask check-cpu-target` (the Cpu suite is this command; CI runs it as the job `cpu-target`, not in the Unit suite) |
 | Slangc | The generated Slang compiles to the target | WGSL compile smoke tests, `cargo xtask check-fast` |
-| Spirv | Exported SPIR-V passes `spirv-val --target-env vulkan1.2` | `cargo xtask check-artifacts`, `cargo xtask spirv-val <file.spv> --target-env vulkan1.2` |
+| Spirv | Exported SPIR-V passes `spirv-val --target-env vulkan1.2` | `cargo xtask check-artifacts`, `cargo xtask spirv-val <file.spv> --target-env vulkan1.2`, and `cargo xtask check-feature vectors` / `uniforms` for the goldens that no example exports (below) |
 | Reflect | The D17 layout gate matches the descriptor | `cargo xtask check-feature reflection` |
 | Gpu | Readback on a device equals an independent host reference | GPU tests, `cargo xtask check-difftest` (generated kernels on the interpreter, the twin and the GPU), `cargo xtask check-full` |
 
@@ -40,6 +43,27 @@ The run-time Slang bridge is the `slang-runtime` feature of `gust` and `gust-wgp
 Label format: `done (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.20, <commit>)`. The `Cpu` tier is labelled
 `done (Cpu: <commit>)`. It is distinct from Unit, whose twin runs under `cfg(test)` (shadow-semantics evidence), and it
 is never GPU evidence (D42): a CPU result proves nothing about an adapter.
+
+**Vectors, uniforms and SPIR-V (slice m6.x).** `check-artifacts` and the Full mode export and validate what the
+examples export, and no example uses a vector, a matrix or a uniform. `cargo xtask check-feature vectors` and
+`cargo xtask check-feature uniforms` therefore compile the goldens in `tests/fixtures` (`vectors` and `products`;
+`uniforms`) to SPIR-V into `<target>/golden-spirv/<area>/` with the pinned `slangc`, `-matrix-layout-column-major` and
+`-fvk-use-entrypoint-name`, require exactly the file names pinned in `xtask/src/checks.rs` (`products__run.spv`,
+`vectors__run.spv`, `uniforms__run.spv`; a golden that gains a kernel changes the list in the same commit) and run
+`spirv-val --target-env vulkan1.2` on each. That is Spirv-tier evidence for those modules; `check-artifacts` and
+`check-full` do not cover them (wiring them in needs `xtask/src/verify.rs`), although `check-full` runs the Slangc-tier
+tests that compile the same goldens. Each area then runs the GPU tests of its feature, so its Gpu claim is the RTX 5090
+(or whichever adapter) named in the run record.
+
+`cargo xtask spirv-val` and `cargo xtask check-feature artifacts` print an informational `OpCopyLogical` count per
+module, read from `spirv-dis` (a missing `spirv-dis` is said in the line); it is never a failure. Slang emits that
+instruction for copies between aggregates of different layouts, and naga's SPIR-V front end refuses it, which is the
+whole reason the count exists: GUST's SPIR-V targets Vulkan drivers, and feeding it to naga is unsupported. The
+executed route is WGSL. WGSL of the M6 constructs is judged by wgpu's own module creation in the GPU tests (wgpu's
+default capabilities), not by a naga run with every capability enabled, which passed WGSL that wgpu refuses. Known
+limit: a constant `Mat2` or `Mat3` on the SPIR-V GPU path crashes the pipeline creation of the runner, so the GPU
+tests run those cases on WGSL only (SEMANTICS section 4). `cargo xtask slangc` compiles with the same matrix flag
+as `gust` (a unit test compares the text with the two call sites in `gust`).
 
 **The Slang pin (D46, slice m4.r).** `cargo gust` is pinned to the Slang 2026.20 release, and `VALIDATED_BUILDS` ships
 empty. The pin was validated on Windows with the release archive itself: every committed artifact set was re-blessed

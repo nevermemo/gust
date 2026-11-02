@@ -62,7 +62,8 @@ emits no downcast or IR. A kernel opts out with `#[kernel(cpu = "unsupported")]`
 (parsed with the other `#[kernel]` options; a wrong value is GUST-E0709 and a repeated
 option GUST-E0710); `CpuDevice` then lacks the `Run` impl and the generated `dispatch`
 on it does not compile, which is also what a production build shows. A kernel with a
-uniform parameter has no typed call and so no twin.
+uniform parameter has a typed call and a twin since m6.u2: the twin reads the uniform by copy
+(`::gust::Uniform(read_uniform::<T>(..))`), so it cannot write through it.
 
 Under `GUST_PROFILE=cpu` (the production CPU target, D21 and D51) the macro emits that
 same `Run` impl in every build, without the `cfg(any(test, gust_dual))` gate, and embeds
@@ -98,8 +99,8 @@ The typed call surface is what the macro generates `call`, `submit` and `dispatc
 against. `Device` is unchanged; the extension trait `TypedDevice: Device` names the
 erased, `Copy` binding of one device, and `Run<K, N>: TypedDevice` is the executable
 hook for one kernel `K` with `N` storage parameters. A GPU backend can implement `Run`
-once for every kernel (one blanket impl; a kernel with a uniform parameter has the impl
-but no generated `call`, `submit` or `dispatch` to reach it); a backend that cannot run a kernel simply
+once for every kernel (one blanket impl; a kernel with a uniform parameter has the impl and,
+since m6.u2, the generated `call`, `submit` and `dispatch` that reach it); a backend that cannot run a kernel simply
 lacks the impl, and a generated `submit` or `dispatch` for it does not compile.
 `Resource` is the trait of anything a call can bind (a buffer type of a backend);
 its `Element` and `Device` associated types make a wrong element type or device type
@@ -183,7 +184,9 @@ the compiler before creating a pipeline (see "Struct ABI"). Runtime descriptors 
 bind groups are not derived from reflection. Compiler-authoritative layout validation
 now exists for the StorageV1 subset only; textures, samplers, parameter blocks,
 multiple groups, and specialization still need their own evidence before entering the
-runtime contract.
+runtime contract. A `Uniform<T>` or `ConstantBuffer<T>` parameter takes the next binding in the same order
+(`ConstantBuffer<T>` in Slang, `BufferBindingType::Uniform` in the bind group layout), and the compiler resource
+it is checked against is a `constantBuffer` whose element has the `Std140V1` layout.
 
 `KernelDescriptor::source` (a `SourceOrigin`, new in M1.1) is diagnostic metadata
 only (the Rust file and a Slang-to-Rust line table) and never affects the emitted
@@ -209,8 +212,25 @@ derived equality compares it. The macro fills it with the embedded artifact pair
 
 The runtime still needs a concrete agreement for uploading Rust values. Annotated
 named-field structs therefore receive `repr(C)`, `Clone`, `Copy`, and a generated
-`GpuPod` layout description. The accepted v1 storage ABI is deliberately narrow:
-32-bit scalar fields and recursively padding-free structs with four-byte alignment.
+`GpuPod` layout description. The accepted ABIs are deliberately narrow, three sets of rules in `gust::abi`:
+
+- `StorageV1`: 32-bit scalar fields and recursively padding-free structs with four-byte alignment.
+- `StorageV2` (M6): `StorageV1` plus the 2- and 4-wide vectors (`Vec2`/`Vec4` and the integer forms) and the 2x2 and
+  4x4 matrices of `gust::math`, each with its natural alignment (8 or 16); a struct may carry the padding that
+  alignment implies, but a `GpuPod` type is only the padding-free subset, so no uninitialised byte is uploaded.
+- `Std140V1` (M6) for `Uniform<T>` and `ConstantBuffer<T>`: `StorageV2` with structs rounded up to a multiple of 16 and
+  no 2x2 matrix. The macro marks a struct a uniform reaches `#[repr(C, align(16))]` and const-asserts the offsets;
+  padding is explicit, written by the user as fields (E0208, E0209), and the same struct cannot also be a storage
+  element (E0207).
+
+3-wide vectors and `Mat3` are locals, helper parameters and results only: no buffer element, storage field or uniform
+field may be one (E0204). Matrices are column-major (`abi::MATRIX_LAYOUT`): each column is contiguous with a stride of
+8 or 16 bytes, so a Rust matrix of vector columns has the same bytes. That pin has three homes that change together:
+`-matrix-layout-column-major` at both `slangc` call sites (`slang::slangc_command` and
+`reflect::slangc_reflection_command`; `cargo xtask slangc` passes the same flag), `defaultMatrixLayoutMode` in the
+reflection helper, and `matrixLayout` in the reflection JSON. The command line of `slangc` defaults to column-major
+today and its native API to row-major (the M6 spike V1), so no path may rely on a default. Tests pin the argument
+lists and compare the bytes the CLI path and the helper produce for a matrix kernel.
 
 This host transfer ABI is not intended to reimplement Slang's full layout system.
 It is a narrow executable bridge whose every claim is checked by the compiler.
@@ -225,17 +245,21 @@ entry point, source and artifact FNV-1a fingerprints, compute workgroup size, an
 every global structured buffer its name, descriptor slot and space, access, element
 stride, and the element type with size, alignment, stride, scalar kind, and nested
 fields (name, offset, size, type), and for a vector, matrix or constant buffer the scalar type, element count, rows,
-columns and layout; matrices are column-major. Anything else (non-32-bit scalars,
-arrays, counters, entry-point resources and uniform bindings, binding arrays) makes the helper fail with a message
-instead of emitting a partial record. The helper is rebuilt only when it is stale, judged by content: a build stamp
-beside it holds the SHA-256 of the C++ source, and its `--version` must give the Slang tag of the SDK (`cargo gust
+columns and layout; matrices are column-major. The helper reports what Slang computes and refuses what it cannot
+describe completely, with a message instead of a partial record: non-32-bit scalars, arrays and other kinds of element
+or field, an empty struct, a field that does not sit at a plain byte offset, a counter, entry-point resources and
+uniform bindings, binding arrays, and a global parameter that is neither an individual structured buffer nor an
+individual constant buffer in one descriptor slot. What a storage buffer may hold is a separate rule, enforced by
+`is_storage_v1`/`is_storage_v2`, the macro's layouts and `gust-wgpu`'s binding checks, so the helper reporting a padded
+`float3` field does not make it acceptable. The helper is rebuilt only when it is stale, judged by content: a build
+stamp beside it holds the SHA-256 of the C++ source, and its `--version` must give the Slang tag of the SDK (`cargo gust
 slang build-helper`). `CompiledReflection::from_output` re-derives both fingerprints, rejects
 identity or schema mismatches, decodes SPIR-V structurally, and requires every layout
 field to be present.
 
 `Reflection::cross_check_kernel` then compares the descriptor with that evidence:
-no duplicate names or slots on either side, one compiler resource per storage
-parameter and none left over, equal group/binding/access, and
+no duplicate names or slots on either side, one compiler resource per storage or
+uniform parameter and none left over, equal group/binding/access, and
 `cross_check_pod`-style recursive equality of field identity, offset, size,
 alignment, and stride down to scalars. The private `HeadlessDevice::compile_kernel`
 (reached through `cached_kernel`) calls both on every pipeline-cache miss and refuses
@@ -324,7 +348,10 @@ not one sequential backend path: WGSL execution and SPIR-V validation are branch
 3. `slangc` checks the generated shader and produces WGSL/SPIR-V.
 4. The core SPIR-V helper checks binary structure.
 5. `spirv-val --target-env vulkan1.2` performs external semantic validation of
-   exported modules in artifact/full checks; a missing tool fails those checks.
+   exported modules in artifact/full checks; a missing tool fails those checks. GUST's SPIR-V targets Vulkan drivers;
+   feeding it to naga is unsupported, because Slang can emit `OpCopyLogical` (a copy between aggregates of different
+   layouts), which naga's SPIR-V front end refuses. The checks print an informational `OpCopyLogical` count per
+   module (never a failure): 0 in all three golden modules and all 13 example modules (2026-11-02).
 6. wgpu validates the generated WGSL, bind-group layout, pipeline, and dispatch.
 7. Integration tests compare readback values with independent CPU references. In test
    and dual builds the same typed call also runs on the CPU twin, and its result is

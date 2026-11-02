@@ -47,6 +47,30 @@ fn example_runs(examples: &[&str]) -> Vec<Vec<String>> {
 fn the_full_gate_is_fmt_clippy_workspace_tests_release_slang_and_ledger_tests_examples_and_runs_in_order()
  {
     let mut expected = vec![owned(&FMT), owned(&CLIPPY), workspace_test_args()];
+    // The harness crate (tests/difftest) is a workspace of its own: its fmt, clippy and tests (m5.c2, fix round 2).
+    expected.push(owned(&[
+        "fmt",
+        "--manifest-path",
+        "tests/difftest/Cargo.toml",
+        "--",
+        "--check",
+    ]));
+    expected.push(owned(&[
+        "clippy",
+        "--locked",
+        "--manifest-path",
+        "tests/difftest/Cargo.toml",
+        "--all-targets",
+        "--",
+        "-D",
+        "warnings",
+    ]));
+    expected.push(owned(&[
+        "test",
+        "--locked",
+        "--manifest-path",
+        "tests/difftest/Cargo.toml",
+    ]));
     expected.push(owned(&[
         "test",
         "--locked",

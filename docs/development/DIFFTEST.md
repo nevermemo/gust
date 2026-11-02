@@ -79,17 +79,33 @@ const-expression rules may refuse such a constant at shader-creation time althou
 `allow`, accepts it. Closed sub-expressions are folded eagerly, without short-circuiting, with the interpreter's own
 `binary` and `unary`.
 
-Since format 4 (slice m5.c2) a divisor can be `static` without being closed: an integer `/` or `%` whose divisor is zero
-when every enclosing loop counter is 0 (`interp::first_iteration_zero_divisor`), live or dead. slangc 2026.20 propagates
-the constant counter of a constant-bound `for` and the straight-line locals, evaluates the divisor at the first
-iteration only, and refuses a zero (error E30002, "divide by zero") even in a branch that no element takes. Probed: the
-divisor `v2`, `v2 % v2`, `v2 - v2`, `v2 * 0`, `v2 & 0`, `(int)v2`, a local set from the counter, and the same under a
-condition on a buffer element all fail; `v2 + 1`, and `v2 - 3` (zero only in the last iteration), and a local that is
-changed under a condition or in an inner loop do not. The rule follows those probes: counters are 0, a `let` or an
-assignment keeps a known value, a loop forgets what its body assigns, an `if` keeps what both branches agree on, and an
-input, an index or a float makes the divisor unknown. It is a model of what slangc folds, held by those probes and by the
+Since format 4 (slice m5.c2) a divisor can be `static` without being closed: an integer `/` or `%` whose divisor slangc
+2026.20 folds to zero (`interp::first_iteration_zero_divisor`), live or dead. slangc refuses such a divisor with error
+E30002, "divide by zero", even in a branch that no element takes. The model is what the probes measured (fix rounds 1
+and 2; every probe is a division under a branch keyed on a buffer value, with the kernel shapes the emitter writes):
+
+- slangc evaluates constants, the counter of a constant-bound `for` at its first iteration (0), and the locals set from
+  them, with wrapping `u32`/`i32` arithmetic: `(v2 - 1) + 1` and `(v2 + 65536) * 65536` are zero and fail, `v2 + 1` and
+  `v2 - 3` (zero only in the last iteration) compile;
+- a product with a zero factor is zero whatever the other factor is (`i * 0`, `0 * i`, `a[i] * (a[i + 1] * 0)`,
+  `int(a[i]) * 0` all fail, so a value read from a buffer is no workaround), and so is the difference of two identical
+  operands that read no buffer (`i - i`, `(i + 1) - (i + 1)`, `len - len`, `i * (i - i)`, `0 / (i + 1)`); `a[i] - a[i]`,
+  `x & 0`, `x ^ x`, `x % 1`, `0 % x` and `i + (0 - i)` are not folded;
+- a condition on known values picks its branch: `d = 5; if v2 < 1 { d = 0 }; 7 / d` fails, `if v2 < 1 { 7 / v2 }` fails,
+  while `if v2 > 0 { 7 / v2 }` and `d = 5; if v2 > 0 { d = 0 }; 7 / d` compile; likewise `v2 > 0 && a[i] > 3` compiles
+  and `v2 < 1 || a[i] > 3` fails (a decisive left operand); `!` and `^` are the calls `__gust_not` and `__gust_xor`, which slangc does not fold, so a condition or a
+  divisor behind them is unknown and both branches count;
+- the divisor `d | 1` is the workaround (`v2 | 1`, `i | 1`, `a[i] | 1` and `(v2 % (v2 | 1))` in the reproducer's shape
+  all compile).
+
+The walk follows exactly that: counters are 0, a `let` or an assignment keeps a known value, a loop forgets what its
+body assigns, an `if` with an unknown condition keeps what both branches agree on, and an input, an index or a float makes
+the value unknown. Each probe shape has a unit test (`the_rule_follows_the_slangc_probes_of_fix_round_2` and
+`a_folded_condition_keeps_only_the_taken_branch`). It is a model of what slangc folds, held by those probes and by the
 8-seed GPU run, not a proof; a divisor it misses shows up as a `gpu-error` mismatch, a divisor it refuses wrongly costs
-only a program of the corpus. The limitation as users meet it is in [DIAGNOSTICS](../DIAGNOSTICS.md).
+only a program of the corpus. Known over-refusal: a condition that is known only through the right operand of `&&`/`||`
+(`i > 3 && v2 > 0`) is treated as unknown, so both branches count; whether slangc folds that was not probed, and a wrong
+guess costs one program. The limitation as users meet it is in [DIAGNOSTICS](../DIAGNOSTICS.md).
 
 Inside the domain the three parties (interpreter, CPU twin,
 GPU) must agree bit for bit, so a program outside it is never asserted, and nothing here writes a ledger row (D39). A
@@ -171,10 +187,15 @@ m5.c1a pins still pass). Measured on seeds 1 to 8, format 3: 94 of 100 `if` stat
 sides taken; `&&`/`||` right operands evaluated 8604 times and skipped 4584 times.
 
 Format 4 (slice m5.c2): the decoding is unchanged, the acceptance is not. The divisor rule above discards, as `static`,
-the programs whose integer divisor is zero at the first iteration of its loops, because slangc refuses them. Of
-`seeds.txt`: every hash changes (the stamp is in the emitted text), the discard counts of seeds 2 to 8 change, and
-only seed 4 gets different programs, since only there did a discarded attempt come out of the accepted set (86 discards
-become 91; format 3 had accepted `s4_a26`, the program slangc refused). The Space::Integer pin
+the programs whose integer divisor slangc folds to zero (the first iteration of its loops, a zero factor, identical
+operands, the branch that a known condition takes), because slangc refuses them. Of `seeds.txt`: every hash changes
+(the stamp is in the emitted text), the discard counts of seeds 2 to 8 change, and only seed 4 gets different programs,
+since only there did a discarded attempt come out of the accepted set (86 discards become 91; format 3 had accepted
+`s4_a26`, the program slangc refused). Fix round 2 widened the rule (zero factor, identical operands, known conditions,
+wrapping arithmetic, `!` and `^` opaque) and kept the format: the 16 programs of each of the 8 seeds have the same
+hashes before and after the widening (only the discard counts of seed 8 moved, `division-by-zero` 1 to 2 and `static`
+14 to 13, and the pinned integer line of seed 4, `overflow` 25 to 24 and `static` 16 to 17), and format 4 was not
+published before the widening. The Space::Integer pin
 (`the_integer_space_decodes_to_the_programs_of_m5_c1a`) keeps its 8 hashes, so the integer programs that m5.c1a
 accepted are all still accepted; six of its discard lines are relabelled.
 
@@ -548,6 +569,15 @@ them are the steps that `cargo xtask test --suite Unit --skip-difftest` leaves o
 beside `unit`, so the `unit` and `slang` jobs keep their time (R4.10). On the development PC, whole commands including
 the wrapper's cargo slot wait and the first compile of the profile: format check 49 s, clippy 55 s, tests 247 s (131
 tests, 9 s of them running).
+
+Fix round 2 added the same three cargo calls to `check-full` (`DIFFTEST_CARGO_CALLS` in `xtask/src/suite.rs`, run by
+the Full mode of `verify` after the workspace tests, with a test of the exact list in `tests/verify_steps.rs`), so the
+release gate reaches the harness crate's own fmt, clippy and tests as well. The CI job `difftest` sets one
+`CARGO_TARGET_DIR` for the job and caches it (`actions/cache`, as gpu-software does, with `tests/difftest/**/Cargo.lock`
+in the key): the xtask, the harness build, the `short_circuit` test (it reads the variable) and the run crate of the
+batch (`difftest-run --target-dir`, which the xtask points at the same directory) build `wgpu` once there; the
+round-trip test keeps its own nested directory under `<target>/tmp` on purpose (a nested cargo must not share the
+directory of the cargo test that runs it). The first runner times, cold and warm, are not known until the job has run.
 
 ### The template lockfile went stale once
 

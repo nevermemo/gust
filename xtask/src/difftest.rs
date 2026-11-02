@@ -445,6 +445,16 @@ pub(crate) fn report_problems(report: &Report, options: &Options) -> Vec<String>
             seed_list(&options.seeds)
         ));
     }
+    // One entry per seed that ran, in that order: a table that names other seeds, or one twice, proves nothing about
+    // the seeds that were asked for even when its counts add up.
+    let table_seeds: Vec<u64> = report.per_seed.iter().map(|entry| entry.0).collect();
+    if table_seeds != report.seeds {
+        problems.push(format!(
+            "per_seed names seeds [{}] but the report ran seeds [{}]",
+            seed_list(&table_seeds),
+            seed_list(&report.seeds)
+        ));
+    }
     for (seed, programs, _, _) in &report.per_seed {
         if *programs != PROGRAMS_PER_SEED {
             problems.push(format!(

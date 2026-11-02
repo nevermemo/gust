@@ -19,8 +19,9 @@ use crate::prng::{Prng, byte_stream};
 /// (m5.c1a2, R1-4). 3: the condition and literal biases of the float space (m5.c1b): an `if` condition is never a bare
 /// `true` or `false`, it often compares an input element with a value of the data or tests the element index, and a
 /// literal is often a value that the data holds, so that both sides of a condition are taken by some elements. 4: no
-/// decoding change, a new refusal (m5.c2): an integer `/` or `%` whose divisor is zero with every loop counter at 0,
-/// live or dead, is discarded as `static`, because slangc folds it and refuses the kernel (E30002).
+/// decoding change, a new refusal (m5.c2): an integer `/` or `%` whose divisor slangc folds to zero (the first
+/// iteration of the loops, a zero factor, identical operands, the branch that a known condition takes), live or dead,
+/// is discarded as `static`, because slangc refuses the kernel (E30002); see `interp::static_violation`.
 pub const DIFFTEST_FORMAT: u32 = 4;
 
 /// Which programs the generator writes.
@@ -1031,15 +1032,15 @@ mod tests {
     fn the_integer_space_decodes_to_the_programs_of_m5_c1a() {
         // The discard counts of the m5.c1a corpus (its seeds.txt at 3bcebaf; the hashes are read with the format stamp
         // as 1): the integer space must reproduce them, so it is the same program space. Format 4 relabels some
-        // discards (seeds 1, 3, 4, 5, 7 and 8: a program with a divisor that is zero at the first iteration of a loop,
-        // which the interpreter or the closed-constant check used to meet as `division-by-zero`, `overflow` or
-        // `static` and the new rule meets first as `static`); the accepted programs, and so the hashes below, are
-        // those of m5.c1a.
+        // discards (seeds 1, 3, 4, 5, 7 and 8: a program with a divisor that slangc folds to zero, at the first
+        // iteration of a loop or by a zero factor, which the interpreter or the closed-constant check used to meet as
+        // `division-by-zero`, `overflow` or `static` and the new rule meets first as `static`); the accepted
+        // programs, and so the hashes below, are those of m5.c1a.
         let expected = [
             "1 16 57 division-by-zero=2 index=6 no-input-read=3 overflow=34 shift-amount=3 static=9",
             "2 16 36 division-by-zero=6 index=2 min-over-minus-one=1 overflow=21 static=6",
             "3 16 38 division-by-zero=7 no-input-read=2 overflow=20 static=9",
-            "4 16 53 division-by-zero=5 index=5 no-input-read=1 overflow=25 shift-amount=1 static=16",
+            "4 16 53 division-by-zero=5 index=5 no-input-read=1 overflow=24 shift-amount=1 static=17",
             "5 16 42 division-by-zero=5 no-input-read=3 overflow=20 shift-amount=3 static=11",
             "6 16 36 division-by-zero=1 index=3 no-input-read=1 overflow=25 shift-amount=1 static=5",
             "7 16 61 division-by-zero=6 index=3 no-input-read=2 overflow=37 shift-amount=1 static=12",

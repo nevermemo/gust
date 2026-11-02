@@ -129,11 +129,12 @@ examples, and mandatory external validation of all thirteen SPIR-V exports):
 cargo xtask check-full
 ```
 
-It also runs the whole `check-precompiled` (the fixture `tests/precompiled`, with a GPU, Slang and the crates.io
+It also runs the format check, clippy and tests of the differential-test harness (`tests/difftest`, a workspace of
+its own), the whole `check-precompiled` (the fixture `tests/precompiled`, with a GPU, Slang and the crates.io
 registry), the whole `check-web` (the browser WebGPU run: wasm32 target, `wasm-bindgen-cli`, Chrome with a WebGPU
 adapter) and, last, `check-difftest` (generated kernels on an interpreter, the CPU twin and the GPU: all 8 seeds, 128
-programs, and the `short_circuit` GPU test). Nothing is skipped silently: a missing tool or adapter fails the run and names the cause, and the tools of
-`check-web` are looked up first, so a missing one fails in seconds. On a machine without a browser,
+programs, and the `short_circuit` GPU test). Nothing is skipped silently: a missing tool or adapter fails the run and
+names the cause, and the tools of `check-web` are looked up first, so a missing one fails in seconds. On a machine without a browser,
 `cargo xtask check-full --skip-web` leaves out `check-web` only, says so, and records `skipped_checks` in the file
 below; `cargo xtask status` then shows `skipped=check-web`.
 

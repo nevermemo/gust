@@ -215,6 +215,16 @@ fn ci_runs_the_harness_steps_in_a_job_of_their_own_and_the_unit_jobs_skip_them()
         assert!(text.contains(command), "{job}: {text}");
     }
     let difftest = job_text(&ci, "difftest");
+    // One target directory for the job and a cache keyed on the harness lockfiles as well (fix round 2).
+    assert!(
+        difftest.contains("      CARGO_TARGET_DIR: ${{ github.workspace }}/target\n"),
+        "{difftest}"
+    );
+    assert!(difftest.contains("uses: actions/cache@"), "{difftest}");
+    assert!(
+        difftest.contains("hashFiles('Cargo.lock', 'tests/difftest/**/Cargo.lock')"),
+        "{difftest}"
+    );
     for step in DIFFTEST_UNIT_STEPS {
         let label = step.label();
         // `cargo xtask check-difftest ...` is written in the workflow as `cargo --locked xtask check-difftest ...`.
@@ -227,6 +237,55 @@ fn ci_runs_the_harness_steps_in_a_job_of_their_own_and_the_unit_jobs_skip_them()
             "{line}: {difftest}"
         );
     }
+}
+
+/// The text of the step `name` of a workflow job: from its `- name:` line to the next step.
+fn step_text(job: &str, name: &str) -> String {
+    let header = format!("      - name: {name}");
+    let mut text = String::new();
+    let mut found = false;
+    for line in job.lines() {
+        if found && line.starts_with("      - ") {
+            break;
+        }
+        found |= line == header;
+        if found {
+            text.push_str(line);
+            text.push('\n');
+        }
+    }
+    assert!(found, "no step {name} in the job");
+    text
+}
+
+/// A failing differential test in gpu-software must not skip the nightly evidence behind it (fix round 2, review of
+/// m5.c2): the steps after it say `!cancelled()` and not the implicit `success()`, and the expression form is needed
+/// because a bare `!` starts a YAML tag. The difftest step itself keeps the default, so the job still fails.
+#[test]
+fn gpu_software_runs_the_nightly_evidence_after_a_difftest_failure() {
+    let workflow = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../.github/workflows/gpu-software.yml"),
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    let job = job_text(&workflow, "gpu-software");
+    for name in [
+        "Examples on lavapipe (nightly list)",
+        "Mismatch ledger in the release profile (nightly list)",
+    ] {
+        let step = step_text(&job, name);
+        assert!(
+            step.contains(
+                "        if: ${{ !cancelled() && env.GPU_SOFTWARE_NIGHTLY == 'true' }}\n"
+            ),
+            "{step}"
+        );
+    }
+    let difftest = step_text(
+        &job,
+        "Differential test (2 seeds; all 8 in the nightly list)",
+    );
+    assert!(!difftest.contains("        if:"), "{difftest}");
 }
 
 #[test]

@@ -7,4 +7,4 @@
 5 16 90 comparison-overlap=2 division-by-zero=3 float-domain=14 index=8 no-input-read=8 overflow=25 shift-amount=1 static=19 unboundable=10 hash=eafd98d6def240c0
 6 16 56 comparison-overlap=2 division-by-zero=3 float-construct-not-in-v1=1 float-domain=7 index=3 no-input-read=2 overflow=20 shift-amount=2 static=14 unboundable=2 hash=170e3bc1abcaa627
 7 16 85 comparison-overlap=2 division-by-zero=4 float-domain=14 index=5 no-input-read=6 overflow=25 shift-amount=1 static=25 unboundable=3 hash=a2253ad3fcc7c4c1
-8 16 57 comparison-overlap=1 division-by-zero=1 float-domain=10 index=4 no-input-read=3 overflow=20 shift-amount=1 static=14 unboundable=3 hash=8b1c6bfc090a7c42
+8 16 57 comparison-overlap=1 division-by-zero=2 float-domain=10 index=4 no-input-read=3 overflow=20 shift-amount=1 static=13 unboundable=3 hash=8b1c6bfc090a7c42

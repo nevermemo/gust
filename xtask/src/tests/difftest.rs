@@ -395,6 +395,28 @@ fn one_program_fewer_fails_and_names_the_count() {
             .iter()
             .any(|p| p.contains("per_seed holds 25 programs but programs_executed is 32")),
     );
+    // And it has to name the seeds that ran, one entry each: the counts alone add up in all of these.
+    let first = "{\"seed\":1,\"programs\":16,\"attempts\":40,\"discarded\":24}";
+    let second = first.replace("\"seed\":1", "\"seed\":2");
+    let table = format!("\"per_seed\":[{first},{second}]");
+    assert!(good("gpu", &[1, 2]).contains(&table));
+    for (label, wrong) in [
+        ("another seed", table.replace("\"seed\":2", "\"seed\":3")),
+        ("a seed twice", table.replace("\"seed\":2", "\"seed\":1")),
+        (
+            "the seeds swapped",
+            format!("\"per_seed\":[{second},{first}]"),
+        ),
+    ] {
+        let report = good("gpu", &[1, 2]).replace(&table, &wrong);
+        let found = problems(&options, Some(0), Ok(report));
+        assert!(
+            found
+                .iter()
+                .any(|p| p.starts_with("per_seed names seeds [")),
+            "{label}: {found:?}"
+        );
+    }
 }
 
 /// Mutation (b): one mismatch in the report fails and names the seed, the program and the kind.
@@ -591,7 +613,8 @@ const REAL_CPU_ONLY: &str = include_str!("difftest_report_cpu_only.json");
 const REAL_GPU: &str = include_str!("difftest_report_gpu.json");
 
 /// Two reports `difftest-run` wrote (seeds 1 to 4 `--cpu-only`; seeds 1 and 2 on the RTX 5090), with the
-/// pretty-printing and the number formats of the real tool, parse into the fields this command judges and pass its rules.
+/// pretty-printing and the number formats of the real tool, parse into the fields this command judges and pass its
+/// rules.
 #[test]
 fn reports_written_by_the_real_harness_parse_and_pass() {
     let cpu = parse_report(REAL_CPU_ONLY).unwrap();

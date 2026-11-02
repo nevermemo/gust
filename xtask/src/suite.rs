@@ -112,14 +112,14 @@ const DIFFTEST_CPU: Step = Step::CheckDifftest(&["--cpu-only", "--seeds", "1-4"]
 /// The harness crate `tests/difftest` is a workspace of its own, so the root's `cargo fmt`, `clippy` and `test` never
 /// reach it: its own format check, clippy (all targets, warnings denied) and tests (the generator, interpreter, emitter
 /// and shrinker unit tests, the corpus pin and the CPU `short_circuit` test) are Unit steps of their own (m5.c2).
-const DIFFTEST_FMT: Step = Step::Cargo(&[
+const DIFFTEST_FMT_ARGS: &[&str] = &[
     "fmt",
     "--manifest-path",
     "tests/difftest/Cargo.toml",
     "--",
     "--check",
-]);
-const DIFFTEST_CLIPPY: Step = Step::Cargo(&[
+];
+const DIFFTEST_CLIPPY_ARGS: &[&str] = &[
     "clippy",
     "--locked",
     "--manifest-path",
@@ -128,13 +128,20 @@ const DIFFTEST_CLIPPY: Step = Step::Cargo(&[
     "--",
     "-D",
     "warnings",
-]);
-const DIFFTEST_TESTS: Step = Step::Cargo(&[
+];
+const DIFFTEST_TESTS_ARGS: &[&str] = &[
     "test",
     "--locked",
     "--manifest-path",
     "tests/difftest/Cargo.toml",
-]);
+];
+const DIFFTEST_FMT: Step = Step::Cargo(DIFFTEST_FMT_ARGS);
+const DIFFTEST_CLIPPY: Step = Step::Cargo(DIFFTEST_CLIPPY_ARGS);
+const DIFFTEST_TESTS: Step = Step::Cargo(DIFFTEST_TESTS_ARGS);
+/// The three cargo calls of the harness crate (its own workspace, which the root's fmt, clippy and test never reach),
+/// as the Full mode of `verify` (`check-full`) runs them after the workspace tests.
+pub(crate) const DIFFTEST_CARGO_CALLS: [&[&str]; 3] =
+    [DIFFTEST_FMT_ARGS, DIFFTEST_CLIPPY_ARGS, DIFFTEST_TESTS_ARGS];
 /// The steps of the harness crate in the Unit and Slangc suites, in order. The CI job `difftest` runs them as steps of
 /// its own, so the `unit` and `slang` jobs pass `--skip-difftest` and keep their time (R4.10); a local run of the
 /// suite runs them all.
@@ -204,7 +211,7 @@ impl Suite {
                 "all gust-wgpu tests on the first Vulkan adapter wgpu finds, then the differential batch of all 8 seeds (128 generated kernels: interpreter, CPU twin and GPU compared; report.json judged by cargo xtask check-difftest) and the short_circuit GPU test of tests/difftest"
             }
             Self::Full => {
-                "the release gate: lint, fmt, clippy, workspace tests, the release-profile Slang tests of the gust library and the release-profile known-mismatch ledger, examples, artifacts and SPIR-V validation, check-dual in full mode, then the whole check-precompiled, the whole check-web (Chrome with a WebGPU adapter; a missing one fails the suite, only `cargo xtask check-full --skip-web` goes without, and records that) and, last, check-difftest (all 8 seeds on the adapter and the short_circuit GPU test); writes .ai/VALIDATION.json"
+                "the release gate: lint, fmt, clippy, workspace tests, the fmt, clippy and tests of the harness crate tests/difftest, the release-profile Slang tests of the gust library and the release-profile known-mismatch ledger, examples, artifacts and SPIR-V validation, check-dual in full mode, then the whole check-precompiled, the whole check-web (Chrome with a WebGPU adapter; a missing one fails the suite, only `cargo xtask check-full --skip-web` goes without, and records that) and, last, check-difftest (all 8 seeds on the adapter and the short_circuit GPU test); writes .ai/VALIDATION.json"
             }
         }
     }
@@ -373,8 +380,8 @@ fn run_suite(suite: Suite, skip_difftest: bool) -> Result<(), String> {
         );
     } else {
         println!(
-            "Suite {name} passed with {} step(s) skipped by --skip-difftest, which this run does not cover. It does not \
-             cover {}.",
+            "Suite {name} passed with {} step(s) skipped by --skip-difftest, which this run does not cover. \
+             It does not cover {}.",
             skipped.len(),
             suite.not_covered()
         );

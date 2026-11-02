@@ -81,20 +81,40 @@ jobs:
         run: cargo xtask check-cpu-target
 
   difftest:
-    # The differential test harness (tests/difftest, slice m5.c2, plan M5 R1-13), CPU side: a separate workspace that the
-    # root's fmt, clippy and test never reach, so its own format check, clippy (all targets, warnings denied) and tests
-    # run here, then the batch `check-difftest --cpu-only --seeds 1-4` (64 generated programs, the interpreter against
-    # the CPU twin; report.json judged by the xtask). A job of its own because the batch builds the generated crate with
-    # `wgpu` from nothing on a runner (no cache; 88 s cold on the development PC), which would lengthen `unit` past its
-    # budget (R4.10); it runs beside `unit`, and `unit` and `slang` pass `--skip-difftest` (a test pins that these four
-    # steps are the ones `cargo xtask test --suite Unit` skips). Cargo only: no slangc and no GPU, so this is the Unit
-    # tier (an interpreter and a twin agreeing is never GPU evidence); the GPU side is in gpu-software.
+    # The differential test harness (tests/difftest, slice m5.c2, plan M5 R1-13), CPU side: a separate workspace
+    # that the root's fmt, clippy and test never reach, so its own format check, clippy (all targets, warnings denied)
+    # and tests run here, then the batch `check-difftest --cpu-only --seeds 1-4` (64 generated programs, the
+    # interpreter against the CPU twin; report.json judged by the xtask). A job of its own because the batch builds
+    # the generated crate with `wgpu` from nothing (88 s cold on the development PC), which would lengthen `unit` past
+    # its budget (R4.10); it runs beside `unit`, and `unit` and `slang` pass `--skip-difftest` (a test pins that these
+    # four steps are the ones `cargo xtask test --suite Unit` skips). Cargo only: no slangc and no GPU, so this is the
+    # Unit tier (an interpreter and a twin agreeing is never GPU evidence); the GPU side is in gpu-software.
+    # One target directory for the job: the xtask, the harness's own build, the short_circuit test (it reads
+    # CARGO_TARGET_DIR) and the run crate of the batch (`difftest-run --target-dir`, which the xtask points at the same
+    # directory) build `wgpu` once there, and the cache below keeps it between runs. The round-trip test builds its
+    # crates with its own CARGO_TARGET_DIR on purpose (a nested cargo must not share the directory of the cargo test
+    # that runs it) and so keeps `<target>/tmp/difftest/target`, inside the same cached directory.
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+      - name: Cache cargo and the target directory
+        # Same step as gpu-software; the key also covers the harness lockfiles (tests/difftest/Cargo.lock and the
+        # template lock of the generated crates), which the root Cargo.lock does not.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: difftest-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'tests/difftest/**/Cargo.lock') }}
+          restore-keys: |
+            difftest-${{ env.RUSTUP_TOOLCHAIN }}-
       - name: Harness format
         run: cargo fmt --manifest-path tests/difftest/Cargo.toml -- --check
       - name: Harness clippy

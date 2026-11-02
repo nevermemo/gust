@@ -18,6 +18,7 @@ use crate::{
         run_checked_owned, sum_test_results, without_colors,
     },
     reflect::{BuildOptions, build_slang_reflect},
+    suite::DIFFTEST_CARGO_CALLS,
     time::now_utc,
     ui::check_ui,
     validation::{AdapterRecord, ArtifactRecord, GitStamp, RunInfo, sha256_hex, write_validation},
@@ -766,6 +767,8 @@ pub(crate) fn cargo_calls(mode: VerifyMode) -> Vec<Vec<String>> {
         VerifyMode::Smoke => calls.push(workspace_test_args()),
         VerifyMode::Full => {
             calls.push(workspace_test_args());
+            // The harness crate is a workspace of its own: format, clippy and its tests (m5.c2, fix round 2).
+            calls.extend(DIFFTEST_CARGO_CALLS.iter().map(|args| owned(args)));
             calls.push(owned(&RELEASE_SLANG_TESTS));
             calls.push(owned(&RELEASE_LEDGER_TEST));
         }

@@ -15,7 +15,8 @@
 # and runs the differential test on all 8 seeds (128 programs) in place of the 2. Slices that grow the nightly list add
 # steps behind the same condition. Moving a step to the pull request list is deleting its `if:` line, and it is allowed
 # only while the measured warm job time of a pull request stays at five minutes or less (the budget rule; STATUS names
-# each list and its measured time).
+# each list and its measured time). The nightly steps after the differential test carry `!cancelled() &&` in that
+# line, so that a failing differential test does not skip them; the job still fails.
 name: gpu-software
 
 on:
@@ -247,7 +248,10 @@ jobs:
             mv -f "$file" "$RUNNER_TEMP/gpu-software-artifact/debug-$(basename "$file")"
           done
       - name: Examples on lavapipe (nightly list)
-        if: env.GPU_SOFTWARE_NIGHTLY == 'true'
+        # `!cancelled()` and not the implicit `success()`: a red differential test must not skip the nightly evidence
+        # below (the job still fails, because the difftest step did). The expression form, because a bare `!` starts
+        # a YAML tag.
+        if: ${{ !cancelled() && env.GPU_SOFTWARE_NIGHTLY == 'true' }}
         run: |
           set -o pipefail
           cargo --locked xtask check-examples 2>&1 | tee "$RUNNER_TEMP/check-examples.log"
@@ -255,7 +259,7 @@ jobs:
         # The ledger asserts the plain-Rust outcome of its mode-keyed rows for the `overflow-checks` mode it detects at
         # run time (D38); the Gpu suite above is the debug run, this is the release run (the second of the two that the
         # Full mode makes, xtask RELEASE_LEDGER_TEST). GUST_PROFILE=dev is what every xtask cargo child gets.
-        if: env.GPU_SOFTWARE_NIGHTLY == 'true'
+        if: ${{ !cancelled() && env.GPU_SOFTWARE_NIGHTLY == 'true' }}
         env:
           GUST_PROFILE: dev
         run: |

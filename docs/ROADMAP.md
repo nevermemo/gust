@@ -47,14 +47,14 @@ remaining chain run beside it now, and the rest wait for the M4 slice named. M5 
 | S5.4 | Spike: expansion-time profile and cached rebuild transitions | done (decision A: both tracking paths suffice on their own) |
 | m5.b | Ledger on two adapters (per-kind observation pins) | done (`236780b`; 18 software pins) |
 | m5.e1, m5.e2 | Production `cpu` profile (D51); `check-cpu-target` and the `Cpu` tier | m5.e1 done (Unit, CPU only; Opus keep after one fix round; `f60c1b4`); m5.e2 done (merge `f9fdd24`) |
-| m5.c2, m5.a2 | `check-difftest` wiring; `gpu-software` on the Slang manager | m5.a2 done (Gpu (software): lavapipe; Opus merge after one fix round; `e098f2f`); m5.c2 next |
+| m5.c2, m5.a2 | `check-difftest` wiring; `gpu-software` on the Slang manager | m5.a2 done (Gpu (software): lavapipe; Opus merge after one fix round; `e098f2f`); m5.c2 done (`82c59d2`, fix rounds `f2a9410`, merge `68c6f40`; D74) |
 
 **Next: M6, language breadth I** (plan adopted 2026-11-01, owner-delegated, after an Opus review, one revision and a
 re-check). The keyword and construct spikes (S6.3b, S6.1) are done, and so are the pure-Rust math types (m6.a2,
 `56b5ecd`) and the layout model with the schema-2 reader (m6.a1, `b60fca2`). The collision-only renaming (m6.k,
 `ce17eb2`; a sweep found silent `true` and `false` rebinds, now renamed) is done; reflection schema 2 in the helper
 (m6.r, `fe42f3f`) is done; matrix products are done (m6.m1, merge `6dc36ef`; m6.m2, merge `71ab804`), and so is GPU
-evidence for vectors and matrices (m6.g1, merge `5033b22`); matrix negation (m6.n) is in its fix round, uniforms (m6.u1, m6.u2) wait for M4 and M5's `cpu`
+evidence for vectors and matrices (m6.g1, merge `5033b22`); and so is matrix negation (m6.n, merge `86f728c`); the host side of uniforms (m6.u1) is running, uniforms (m6.u1, m6.u2) wait for M4 and M5's `cpu`
 profile, and the difftest vector extension (m6.d) is unblocked (m5.c1c merged). M6 closes after M5.
 
 **Done: M4, build-time targets and distribution** (closed 2026-11-02, D73). Plan adopted 2026-11-01 (owner-delegated) after a Codex review

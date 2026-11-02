@@ -36,8 +36,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
       - name: Unit suite
-        # macro and xtask tests, lint, docs-check, check-arch, check-ui, check-cpu, the gust::cpu and gust::artifact tests
-        run: cargo --locked xtask test --suite Unit
+        # macro and xtask tests, lint, docs-check, check-arch, check-ui, check-cpu, the gust::cpu and gust::artifact
+        # tests. `--skip-difftest` leaves out the four steps of the differential test harness (fmt, clippy and tests of
+        # tests/difftest, and the batch `check-difftest --cpu-only --seeds 1-4`): the job `difftest` below runs them
+        # beside this one, because the batch builds the generated crate with `wgpu` and `gust-wgpu` (88 s cold on the
+        # development PC) and this job keeps its time (R4.10). The suite prints each skipped step; a local run of
+        # `cargo xtask test --suite Unit` runs them.
+        run: cargo --locked xtask test --suite Unit --skip-difftest
       - name: Dual test build
         # `--cfg gust_dual` (D26): fmt and clippy of tests/dual, the workspace built with the cfg, and the cross-crate
         # proof E1-E3. Cargo only; the examples' GPU runs of the full mode stay local.
@@ -74,6 +79,50 @@ jobs:
         run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
       - name: Production CPU target
         run: cargo xtask check-cpu-target
+
+  difftest:
+    # The differential test harness (tests/difftest, slice m5.c2, plan M5 R1-13), CPU side: a separate workspace
+    # that the root's fmt, clippy and test never reach, so its own format check, clippy (all targets, warnings denied)
+    # and tests run here, then the batch `check-difftest --cpu-only --seeds 1-4` (64 generated programs, the
+    # interpreter against the CPU twin; report.json judged by the xtask). A job of its own because the batch builds
+    # the generated crate with `wgpu` from nothing (88 s cold on the development PC), which would lengthen `unit` past
+    # its budget (R4.10); it runs beside `unit`, and `unit` and `slang` pass `--skip-difftest` (a test pins that these
+    # four steps are the ones `cargo xtask test --suite Unit` skips). Cargo only: no slangc and no GPU, so this is the
+    # Unit tier (an interpreter and a twin agreeing is never GPU evidence); the GPU side is in gpu-software.
+    # One target directory for the job: the xtask, the harness's own build, the short_circuit test (it reads
+    # CARGO_TARGET_DIR) and the run crate of the batch (`difftest-run --target-dir`, which the xtask points at the same
+    # directory) build `wgpu` once there, and the cache below keeps it between runs. The round-trip test builds its
+    # crates with its own CARGO_TARGET_DIR on purpose (a nested cargo must not share the directory of the cargo test
+    # that runs it) and so keeps `<target>/tmp/difftest/target`, inside the same cached directory.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
+      - name: Cache cargo and the target directory
+        # Same step as gpu-software; the key also covers the harness lockfiles (tests/difftest/Cargo.lock and the
+        # template lock of the generated crates), which the root Cargo.lock does not.
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            target
+          key: difftest-${{ env.RUSTUP_TOOLCHAIN }}-${{ hashFiles('Cargo.lock', 'tests/difftest/**/Cargo.lock') }}
+          restore-keys: |
+            difftest-${{ env.RUSTUP_TOOLCHAIN }}-
+      - name: Harness format
+        run: cargo fmt --manifest-path tests/difftest/Cargo.toml -- --check
+      - name: Harness clippy
+        run: cargo clippy --locked --manifest-path tests/difftest/Cargo.toml --all-targets -- -D warnings
+      - name: Harness tests
+        run: cargo test --locked --manifest-path tests/difftest/Cargo.toml
+      - name: Differential batch (CPU only)
+        run: cargo --locked xtask check-difftest --cpu-only --seeds 1-4
 
   slang:
     # The pinned-Slang manager end to end (D46, R4.8, slice m4.f). `cargo gust slang install` downloads the pinned Slang
@@ -116,7 +165,8 @@ jobs:
           slangc -version
           cargo run --locked --quiet -p cargo-gust -- doctor
       - name: Slangc tier
-        run: cargo --locked xtask test --suite Slangc
+        # `--skip-difftest`: the harness steps of the Unit part run in the job `difftest` (printed as skipped).
+        run: cargo --locked xtask test --suite Slangc --skip-difftest
       - name: S3 reproducibility (cargo gust build twice)
         run: |
           gust() { cargo run --locked --quiet -p cargo-gust -- "$@"; }

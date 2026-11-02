@@ -78,6 +78,34 @@ mod recursive_helper {
     }
 }
 
+/// The known limitation of DIAGNOSTICS ("slangc refuses a zero divisor that it can fold, in code that never
+/// runs"; found by the differential test, slice m5.c2): valid Rust, accepted by the validator, and slangc 2026.20
+/// unrolls the loop, folds `0 % 0` in the branch that no invocation takes and refuses the kernel with E30002. This is
+/// the minimal reproducer of the document. If a later Slang stops folding it, this test fails and the limitation, the
+/// generator's rule (`first_iteration_zero_divisor` of tests/difftest) and the document are to be retired together.
+#[gust::gpu]
+mod folded_zero_divisor {
+    #[allow(
+        clippy::assign_op_pattern,
+        clippy::eq_op,
+        clippy::nonminimal_bool,
+        clippy::overly_complex_bool_expr
+    )]
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {
+        if id.x < out.len() {
+            let mut total = 0u32;
+            for i in 0u32..4u32 {
+                if !true {
+                    let r = i % i; // FAILS: folded zero divisor
+                    total = total + r;
+                }
+            }
+            out[id.x] = total;
+        }
+    }
+}
+
 /// Valid on every target: a struct, a helper, a loop and a conditional, so the
 /// directives of the compile copy fall in a struct body, a helper and nested blocks.
 #[gust::gpu]
@@ -591,6 +619,31 @@ fn a_slang_only_recursion_error_in_a_helper_names_the_rust_line() {
         );
         assert_eq!(line, expected, "{target:?}: {diagnostics}");
         assert_compiler_location(&diagnostics, &recursive_helper::run::DESCRIPTOR, expected);
+    }
+}
+
+/// The limitation of DIAGNOSTICS stays visible: the minimal reproducer still fails with slangc's `E30002`, on both
+/// targets, at the Rust line of the `%` (the compiler's own location and the appended annotation).
+#[test]
+fn a_zero_divisor_that_slangc_folds_in_dead_code_still_names_its_rust_line() {
+    let expected = marked_line("folded zero divisor");
+    for target in [Target::Wgsl, Target::Spirv] {
+        let diagnostics = failure(&folded_zero_divisor::run::DESCRIPTOR, target);
+        assert!(
+            diagnostics.contains("E30002") && diagnostics.contains("divide by zero"),
+            "{target:?}: the failure is slangc's constant divide by zero: {diagnostics}"
+        );
+        let (file, line) = rust_source(&diagnostics);
+        assert!(
+            file.ends_with("diagnostics.rs"),
+            "{target:?}: {diagnostics}"
+        );
+        assert_eq!(line, expected, "{target:?}: {diagnostics}");
+        assert_compiler_location(
+            &diagnostics,
+            &folded_zero_divisor::run::DESCRIPTOR,
+            expected,
+        );
     }
 }
 

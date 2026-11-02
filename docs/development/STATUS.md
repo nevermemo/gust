@@ -67,6 +67,15 @@ D55 to D59.
   output (the stale-binary fix); the Cpu suite is this command. CI runs it as the job `cpu-target` beside `unit`: 61 s
   on the runner, against 2 m 57 s for `unit`. Evidence: Unit, Cpu and Gpu smoke (RTX 5090). Opus keep after one fix
   round.
+- M6 m6.n (`f7a8e4f`, fix round `f88de7a`, pin `f8644ce`, merge `86f728c`): matrix negation. slangc emitted
+  `matN(0) - m` for `-m`, which naga refuses on WGSL. In a module the m6.m2 gate marks, unary `-` on a non-literal
+  lowers to `__gust_neg(x)` from one data table (`slang/neg_table.rs`, 10 rows): scalars and vectors as `-a`,
+  matrices as `a * -1.0`, bit-identical to negation under IEEE (D39 notes where Vulkan or WGSL may differ for a
+  zero or a subnormal). `gust::math` gains `Neg` for `IVec2` and `IVec4` (lane by lane, the crate's overflow mode),
+  so the products golden holds only code rustc accepts. A new GPU test negates matrices and a vector over signed
+  zeros, subnormals and the smallest normal: on the RTX 5090 every lane equals the twin's sign flip, debug and
+  release. `GPU_SUITE_PIN` is 160 passed over 21 lines. Ungated goldens are byte-identical. Opus merge after one
+  fix round; 19 gate steps on main at `86f728c`.
 - M6 m6.g1 (`118037e`, fix round `a064378`, pin `6130183`, merge `5033b22`): GPU evidence for vectors and
   matrices. `gust-wgpu` accepts vector and matrix storage buffers: `buffer_resource_layout` gives StorageV1 for
   scalars and StorageV2 for vectors and matrices, `validate_kernel` refuses a parameter whose layout does not match
@@ -75,7 +84,7 @@ D55 to D59.
   `crates/gust-wgpu/tests/vectors.rs` holds seven GPU tests that compare the vector and matrix forms with the CPU
   twin on the RTX 5090, debug and release; `GPU_SUITE_PIN` is 159 passed over 21 result lines. Known limitations
   (SEMANTICS §4): a constant float2x2 or float3x3 `IDENTITY` crashes naga's SPIR-V front end (exit 139), so those
-  cases run on WGSL only; `-m` on a matrix does not build on WGSL (m6.n). Opus merge after one fix round; 19 gate
+  cases run on WGSL only; `-m` on a matrix did not build on WGSL until m6.n. Opus merge after one fix round; 19 gate
   steps on main at `5033b22`, including `verify --mode gpu`.
 - M6 m6.m2 (`49f00f9`, fix round `fec79e8`, merge `71ab804`): operator syntax for products. In a module whose
   unrawed tokens name `Mat2`, `Mat3` or `Mat4`, `*` lowers to `__gust_mul(a, b)` and `*=` on a pure place to

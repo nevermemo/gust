@@ -642,7 +642,9 @@ fn float_constant(value: f32) -> Result<Option<Const>, Violation> {
 /// even when the other operand is not closed. Such a constant is a compile-time error in some shader languages
 /// (const-expression rules), so the generator keeps none, in executed or dead code (labelled `static`). Closed
 /// `f32` constants are folded in `f32` and must be zero or inside `+-[2^-100, 2^100]`; a closed float division by
-/// zero, an integer above `2^24` converted to `f32` and a closed cast out of the integer range count too.
+/// zero, an integer above `2^24` converted to `f32` and a closed cast out of the integer range count too. Since
+/// DIFFTEST_FORMAT 4 an integer divisor that slangc folds to zero counts as well (see
+/// [`first_iteration_zero_divisor`]).
 pub fn static_violation(program: &Program) -> Option<Violation> {
     fn fold(e: &Expr) -> Result<Option<Const>, Violation> {
         match e {
@@ -750,7 +752,189 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
             found = fold(e).err();
         }
     });
+    if found.is_none() && first_iteration_zero_divisor(program) {
+        found = Some(Violation::DivisionByZero);
+    }
     found
+}
+
+/// Whether some integer `/` or `%` has a divisor that slangc 2026.20 folds to zero, live or dead (DIFFTEST_FORMAT 4;
+/// the kernel is then refused with error E30002, "divide by zero", even where no invocation runs the division, so the
+/// corpus keeps none: labelled `static`; the limitation is written up in DIAGNOSTICS). What slangc folds was measured
+/// by probes (slice m5.c2, fix rounds 1 and 2; DIFFTEST "The domain filter"), and the walk models exactly that:
+///
+/// - constants, the counter of a constant-bound `for` (its first iteration, 0), and the straight-line locals set from
+///   them, evaluated with wrapping arithmetic (`(v - 1) + 1`, `(v + 65536) * 65536`);
+/// - a product with a zero factor, whatever the other factor is (an input element included), the difference of two
+///   identical operands that read no buffer (`i - i`, `(i + 1) - (i + 1)`, `len - len`) and `0 / x` are zero, and
+///   they compose with the rest; `0 % x`, `x & 0` and a difference of two separate buffer reads are not folded;
+/// - an `if` whose condition is a comparison, or `&&`/`||`, of known values keeps only the branch that is taken, as
+///   slangc does; the calls `__gust_not` (`!`) and `__gust_xor` (`^`) are opaque to it, so a condition or a divisor
+///   behind them is unknown and both branches count;
+/// - a loop forgets every local its body assigns before the body (a later iteration is not the first), and after an
+///   `if` with an unknown condition only the locals both branches left with the same value stay known.
+///
+/// The model is held by the probes and by the 8-seed GPU run, not a proof: a divisor it misses shows up as a
+/// `gpu-error` mismatch, a divisor it refuses wrongly costs only a program of the corpus.
+fn first_iteration_zero_divisor(program: &Program) -> bool {
+    use std::collections::HashMap;
+
+    type Known = HashMap<u32, u32>;
+
+    /// `l op r` on known operands with wrapping arithmetic (what slangc folds); `None` where it would not fold to a
+    /// defined value (a zero divisor, a shift by 32 or more) or where the operator is a call slangc leaves alone.
+    fn wrapping(op: BinOp, ty: Ty, l: u32, r: u32) -> Option<u32> {
+        let (a, b) = (l as i32, r as i32);
+        let signed = ty == Ty::I32;
+        Some(match op {
+            BinOp::Add => l.wrapping_add(r),
+            BinOp::Sub => l.wrapping_sub(r),
+            BinOp::Mul => l.wrapping_mul(r),
+            BinOp::Div | BinOp::Rem if r == 0 => return None,
+            BinOp::Div if signed => a.wrapping_div(b) as u32,
+            BinOp::Rem if signed => a.wrapping_rem(b) as u32,
+            BinOp::Div => l / r,
+            BinOp::Rem => l % r,
+            BinOp::BitAnd => l & r,
+            BinOp::BitOr => l | r,
+            BinOp::BitXor => return None,
+            BinOp::Shl | BinOp::Shr if r >= 32 => return None,
+            BinOp::Shl => l << r,
+            BinOp::Shr if signed => (a >> r) as u32,
+            BinOp::Shr => l >> r,
+            BinOp::Eq => u32::from(l == r),
+            BinOp::Ne => u32::from(l != r),
+            BinOp::Lt => u32::from(if signed { a < b } else { l < r }),
+            BinOp::Le => u32::from(if signed { a <= b } else { l <= r }),
+            BinOp::Gt => u32::from(if signed { a > b } else { l > r }),
+            BinOp::Ge => u32::from(if signed { a >= b } else { l >= r }),
+            BinOp::And => u32::from(l != 0 && r != 0),
+            BinOp::Or => u32::from(l != 0 || r != 0),
+        })
+    }
+
+    /// The value of an integer or `bool` expression when slangc folds it, or `None`.
+    fn folded(e: &Expr, known: &Known) -> Option<u32> {
+        match e {
+            Expr::Lit(Ty::F32, _) | Expr::Gid | Expr::Len(_) | Expr::Input { .. } => None,
+            Expr::Lit(_, bits) => Some(*bits),
+            Expr::Var(var, _) => known.get(var).copied(),
+            // `!` lowers to the call `__gust_not`, which slangc does not fold (probed).
+            Expr::Un { op: UnOp::Not, .. } => None,
+            Expr::Un { ty, e, .. } if *ty != Ty::F32 => {
+                folded(e, known).map(|v| (v as i32).wrapping_neg() as u32)
+            }
+            Expr::Bin { op, ty, l, r } if *ty != Ty::F32 => {
+                let (left, right) = (folded(l, known), folded(r, known));
+                match op {
+                    // A zero factor decides the product, whatever the other factor is.
+                    BinOp::Mul if left == Some(0) || right == Some(0) => return Some(0),
+                    // Two identical operands that read no buffer are the same value for slangc.
+                    BinOp::Sub if l == r && !l.reads_input() => return Some(0),
+                    BinOp::Div if left == Some(0) => return Some(0),
+                    BinOp::And if left == Some(0) => return Some(0),
+                    BinOp::Or if left == Some(1) => return Some(1),
+                    _ => {}
+                }
+                wrapping(*op, *ty, left?, right?)
+            }
+            // Between `u32` and `i32` the bits are unchanged.
+            Expr::Cast { to, e } if *to != Ty::F32 && e.ty() != Ty::F32 => folded(e, known),
+            Expr::Un { .. } | Expr::Bin { .. } | Expr::Cast { .. } => None,
+        }
+    }
+
+    fn check(e: &Expr, known: &Known) -> bool {
+        match e {
+            Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) => false,
+            Expr::Input { index, .. } => check(index, known),
+            Expr::Un { e, .. } | Expr::Cast { e, .. } => check(e, known),
+            Expr::Bin { op, ty, l, r } => {
+                (matches!(op, BinOp::Div | BinOp::Rem)
+                    && *ty != Ty::F32
+                    && folded(r, known) == Some(0))
+                    || check(l, known)
+                    || check(r, known)
+            }
+        }
+    }
+
+    fn assigned(stmts: &[Stmt], into: &mut Vec<u32>) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Let { var, .. } | Stmt::Assign { var, .. } => into.push(*var),
+                Stmt::If { then, els, .. } => {
+                    assigned(then, into);
+                    assigned(els, into);
+                }
+                Stmt::For { var, body, .. } => {
+                    into.push(*var);
+                    assigned(body, into);
+                }
+            }
+        }
+    }
+
+    fn set(known: &mut Known, var: u32, value: Option<u32>) {
+        match value {
+            Some(value) => known.insert(var, value),
+            None => known.remove(&var),
+        };
+    }
+
+    fn block(stmts: &[Stmt], known: &mut Known) -> bool {
+        for stmt in stmts {
+            match stmt {
+                Stmt::Let { var, init, .. } => {
+                    if check(init, known) {
+                        return true;
+                    }
+                    set(known, *var, folded(init, known));
+                }
+                Stmt::Assign { var, value } => {
+                    if check(value, known) {
+                        return true;
+                    }
+                    set(known, *var, folded(value, known));
+                }
+                Stmt::If { cond, then, els } => {
+                    if check(cond, known) {
+                        return true;
+                    }
+                    // A condition slangc folds keeps only the branch that is taken.
+                    if let Some(taken) = folded(cond, known) {
+                        if block(if taken != 0 { then } else { els }, known) {
+                            return true;
+                        }
+                        continue;
+                    }
+                    let (mut taken, mut skipped) = (known.clone(), known.clone());
+                    if block(then, &mut taken) || block(els, &mut skipped) {
+                        return true;
+                    }
+                    known.retain(|var, value| {
+                        taken.get(var) == Some(value) && skipped.get(var) == Some(value)
+                    });
+                }
+                Stmt::For { var, body, .. } => {
+                    let mut written = Vec::new();
+                    assigned(body, &mut written);
+                    for written in written {
+                        known.remove(&written);
+                    }
+                    let mut inner = known.clone();
+                    inner.insert(*var, 0);
+                    if block(body, &mut inner) {
+                        return true;
+                    }
+                    known.remove(var);
+                }
+            }
+        }
+        false
+    }
+
+    block(&program.body, &mut Known::new()) || check(&program.result, &Known::new())
 }
 
 #[cfg(test)]
@@ -1295,6 +1479,314 @@ mod tests {
             u(0),
         );
         assert_eq!(static_violation(&in_loop), Some(Violation::Overflow));
+    }
+
+    fn counter(var: u32) -> Expr {
+        Expr::Var(var, Ty::U32)
+    }
+
+    fn let_u32(var: u32, init: Expr) -> Stmt {
+        Stmt::Let {
+            var,
+            ty: Ty::U32,
+            mutable: true,
+            init,
+        }
+    }
+
+    /// `for v0 in 0u32..4u32 { <body> }`, the shape of the seed-4 program (slangc E30002 on a dead `v2 % v2`).
+    fn counted(body: Vec<Stmt>) -> Program {
+        program(
+            &[0],
+            vec![Stmt::For {
+                var: 0,
+                trips: 4,
+                body,
+            }],
+            u(0),
+        )
+    }
+
+    fn div_stmt(divisor: Expr) -> Stmt {
+        let_u32(9, bin(BinOp::Div, u(7), divisor))
+    }
+
+    fn read() -> Expr {
+        Expr::Input {
+            buf: 0,
+            ty: Ty::U32,
+            index: Box::new(Expr::Gid),
+        }
+    }
+
+    fn flat(body: Vec<Stmt>) -> Program {
+        program(&[0], body, u(0))
+    }
+
+    fn not(e: Expr) -> Expr {
+        Expr::Un {
+            op: UnOp::Not,
+            ty: e.ty(),
+            e: Box::new(e),
+        }
+    }
+
+    fn if_then_else(cond: Expr, then: Vec<Stmt>, els: Vec<Stmt>) -> Stmt {
+        Stmt::If { cond, then, els }
+    }
+
+    fn assign(var: u32, value: Expr) -> Stmt {
+        Stmt::Assign { var, value }
+    }
+
+    /// Each shape is one slangc 2026.20 probe of slice m5.c2 (fix round 2), run as the divisor of a division in a
+    /// branch keyed on a buffer value: `true` is a shape that slangc refused with E30002, `false` one that it compiled.
+    /// The first group has no loop, the second divides by the counter `v0` of `for v0 in 0u32..4u32`.
+    #[test]
+    fn the_rule_follows_the_slangc_probes_of_fix_round_2() {
+        let zero = |divisor: Expr| flat(vec![div_stmt(divisor)]);
+        let looped = |divisor: Expr| counted(vec![div_stmt(divisor)]);
+        let (v, one) = (counter(0), u(1));
+        let sub = |l: Expr, r: Expr| bin(BinOp::Sub, l, r);
+        let mul = |l: Expr, r: Expr| bin(BinOp::Mul, l, r);
+        let add = |l: Expr, r: Expr| bin(BinOp::Add, l, r);
+        let gid_plus_one = add(Expr::Gid, one.clone());
+        let signed_read = Expr::Cast {
+            to: Ty::I32,
+            e: Box::new(read()),
+        };
+        let cases: Vec<(&str, Program, bool)> = vec![
+            // A product with a zero factor, whatever the other factor is.
+            ("i * 0", zero(mul(Expr::Gid, u(0))), true),
+            ("0 * i", zero(mul(u(0), Expr::Gid)), true),
+            (
+                "int(a[i]) * 0",
+                zero(Expr::Cast {
+                    to: Ty::U32,
+                    e: Box::new(mul(signed_read, Expr::i32(0))),
+                }),
+                true,
+            ),
+            // The difference of identical operands that read no buffer.
+            ("i - i", zero(sub(Expr::Gid, Expr::Gid)), true),
+            (
+                "(i + 1) - (i + 1)",
+                zero(sub(gid_plus_one.clone(), gid_plus_one.clone())),
+                true,
+            ),
+            ("len - len", zero(sub(Expr::Len(0), Expr::Len(0))), true),
+            (
+                "i * (i - i)",
+                zero(mul(Expr::Gid, sub(Expr::Gid, Expr::Gid))),
+                true,
+            ),
+            (
+                "0 / (i + 1)",
+                zero(bin(BinOp::Div, u(0), gid_plus_one.clone())),
+                true,
+            ),
+            // Not folded: remainder of zero, masks, xor, other differences, a nonzero by construction.
+            (
+                "0 % (i + 1)",
+                zero(bin(BinOp::Rem, u(0), gid_plus_one.clone())),
+                false,
+            ),
+            ("i & 0", zero(bin(BinOp::BitAnd, Expr::Gid, u(0))), false),
+            (
+                "i ^ i",
+                zero(bin(BinOp::BitXor, Expr::Gid, Expr::Gid)),
+                false,
+            ),
+            ("i % 1", zero(bin(BinOp::Rem, Expr::Gid, u(1))), false),
+            ("a[i] - a[i]", zero(sub(read(), read())), false),
+            ("i - 1", zero(sub(Expr::Gid, u(1))), false),
+            ("i | 1", zero(bin(BinOp::BitOr, Expr::Gid, u(1))), false),
+            (
+                "(i - i) | 1",
+                zero(bin(BinOp::BitOr, sub(Expr::Gid, Expr::Gid), u(1))),
+                false,
+            ),
+            ("(i * 0) + 1", zero(add(mul(Expr::Gid, u(0)), u(1))), false),
+            // The counter at its first iteration, with wrapping arithmetic.
+            ("v", looped(v.clone()), true),
+            (
+                "(v - 1) + 1",
+                looped(add(sub(v.clone(), one.clone()), one.clone())),
+                true,
+            ),
+            (
+                "(v + 65536) * 65536",
+                looped(mul(add(v.clone(), u(65536)), u(65536))),
+                true,
+            ),
+            ("v << 3", looped(bin(BinOp::Shl, v.clone(), u(3))), true),
+            ("v >> 3", looped(bin(BinOp::Shr, v.clone(), u(3))), true),
+            ("v + 1", looped(add(v.clone(), one.clone())), false),
+            ("v - 3", looped(sub(v.clone(), u(3))), false),
+            (
+                "v | 1",
+                looped(bin(BinOp::BitOr, v.clone(), one.clone())),
+                false,
+            ),
+            (
+                "v ^ v",
+                looped(bin(BinOp::BitXor, v.clone(), v.clone())),
+                false,
+            ),
+            (
+                "!(u32::MAX - v)",
+                looped(not(sub(u(u32::MAX), v.clone()))),
+                false,
+            ),
+        ];
+        for (label, program, refused) in cases {
+            let found = static_violation(&program);
+            assert_eq!(found.is_some(), refused, "{label}: {found:?}");
+        }
+    }
+
+    /// The conditions of the same probes: a condition slangc folds keeps only the taken branch; `!` and `^` are
+    /// calls (`__gust_not`, `__gust_xor`) that it leaves alone, so a condition behind them is unknown and both
+    /// branches count.
+    #[test]
+    fn a_folded_condition_keeps_only_the_taken_branch() {
+        let (v, one) = (counter(0), u(1));
+        let lt_one = bin(BinOp::Lt, v.clone(), one.clone());
+        let gt_zero = bin(BinOp::Gt, v.clone(), u(0));
+        let gid_gt = bin(BinOp::Gt, Expr::Gid, u(3));
+        let divide = || vec![div_stmt(v.clone())];
+        let through_d = |cond: Expr| {
+            counted(vec![
+                let_u32(1, u(5)),
+                if_then_else(cond, vec![assign(1, u(0))], Vec::new()),
+                div_stmt(counter(1)),
+            ])
+        };
+        let cases: Vec<(&str, Program, bool)> = vec![
+            // `d = 5; if v < 1 { d = 0 }; 7 / d` is zero at the first iteration; with `v > 0` the assignment is
+            // skipped.
+            ("d, v < 1", through_d(lt_one.clone()), true),
+            ("d, v > 0", through_d(gt_zero.clone()), false),
+            (
+                "if v > 0 { 7 / v }",
+                counted(vec![if_then_else(gt_zero.clone(), divide(), Vec::new())]),
+                false,
+            ),
+            (
+                "if v < 1 { } else { 7 / v }",
+                counted(vec![if_then_else(lt_one.clone(), Vec::new(), divide())]),
+                false,
+            ),
+            (
+                "if v < 1 { 7 / v }",
+                counted(vec![if_then_else(lt_one.clone(), divide(), Vec::new())]),
+                true,
+            ),
+            (
+                "if !(v < 1) { 7 / v }",
+                counted(vec![if_then_else(
+                    not(lt_one.clone()),
+                    divide(),
+                    Vec::new(),
+                )]),
+                true,
+            ),
+            (
+                "if !true { 7 / v } (seed 4)",
+                counted(vec![if_then_else(
+                    not(Expr::Lit(Ty::Bool, 1)),
+                    divide(),
+                    Vec::new(),
+                )]),
+                true,
+            ),
+            (
+                "if v > 0 && i > 3 { 7 / v }",
+                counted(vec![if_then_else(
+                    bin(BinOp::And, gt_zero.clone(), gid_gt.clone()),
+                    divide(),
+                    Vec::new(),
+                )]),
+                false,
+            ),
+            (
+                "if v < 1 || i > 3 { 7 / v }",
+                counted(vec![if_then_else(
+                    bin(BinOp::Or, lt_one.clone(), gid_gt.clone()),
+                    divide(),
+                    Vec::new(),
+                )]),
+                true,
+            ),
+            (
+                "if i > 3 { 7 / v }",
+                counted(vec![if_then_else(gid_gt.clone(), divide(), Vec::new())]),
+                true,
+            ),
+        ];
+        for (label, program, refused) in cases {
+            let found = static_violation(&program);
+            assert_eq!(found.is_some(), refused, "{label}: {found:?}");
+        }
+    }
+
+    /// Locals, nested loops and the unknown values, with the verdicts of the probes of slice m5.c2.
+    #[test]
+    fn locals_nested_loops_and_unknown_values_follow_the_first_iteration() {
+        let zero = Some(Violation::DivisionByZero);
+        let div = |l, r| let_u32(9, bin(BinOp::Div, l, r));
+        // Straight-line locals carry the value; a conditional assignment, or a loop that assigns, forgets it.
+        let through_local = vec![let_u32(1, counter(0)), div(u(7), counter(1))];
+        assert_eq!(static_violation(&counted(through_local)), zero);
+        let conditional = vec![
+            let_u32(1, counter(0)),
+            Stmt::If {
+                cond: bin(BinOp::Gt, Expr::Gid, u(3)),
+                then: vec![Stmt::Assign {
+                    var: 1,
+                    value: bin(BinOp::Add, counter(1), u(1)),
+                }],
+                els: Vec::new(),
+            },
+            div(u(7), counter(1)),
+        ];
+        assert_eq!(static_violation(&counted(conditional)), None);
+        let looped_local = vec![
+            let_u32(1, u(0)),
+            Stmt::For {
+                var: 2,
+                trips: 2,
+                body: vec![Stmt::Assign {
+                    var: 1,
+                    value: bin(BinOp::Add, counter(1), u(1)),
+                }],
+            },
+            div(u(7), counter(1)),
+        ];
+        assert_eq!(static_violation(&counted(looped_local)), None);
+        // Nested loops: the inner counter and the outer one are both 0 at the first iteration.
+        let nested = program(
+            &[0],
+            vec![Stmt::For {
+                var: 0,
+                trips: 4,
+                body: vec![Stmt::For {
+                    var: 1,
+                    trips: 3,
+                    body: vec![div(u(7), bin(BinOp::Mul, counter(0), counter(1)))],
+                }],
+            }],
+            u(0),
+        );
+        assert_eq!(static_violation(&nested), zero);
+        // Not a loop counter: an input element, and the invocation index, are not constants.
+        let from_gid = vec![div(u(7), bin(BinOp::Add, Expr::Gid, counter(0)))];
+        assert_eq!(static_violation(&counted(from_gid)), None);
+        assert_eq!(
+            static_violation(&program(&[0], Vec::new(), u(3))),
+            None,
+            "a program without a loop is untouched"
+        );
     }
 
     // ---- floats (R1-4) ----

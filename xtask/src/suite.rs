@@ -2,6 +2,7 @@ use crate::{
     arch::check_arch,
     checks::{check_cpu, check_feature},
     cpu_target::check_cpu_target,
+    difftest::check_difftest,
     docs::docs_check,
     lint::lint,
     process::{require_command, run_counted, run_direct},
@@ -41,6 +42,9 @@ pub(crate) enum Step {
     CheckCpu,
     /// `cargo xtask check-cpu-target`: the production CPU target on the fixture `tests/cpu-target`.
     CheckCpuTarget,
+    /// `cargo xtask check-difftest <args>`: the differential test harness (m5.c2). Without `--cpu-only` it needs an
+    /// adapter and Slang.
+    CheckDifftest(&'static [&'static str]),
     /// `cargo xtask check-feature <area>`.
     Feature(&'static str),
     /// `cargo xtask verify --mode <mode>`, recording only when the flag is set.
@@ -102,6 +106,49 @@ const CORE_ARTIFACT_UNIT_TESTS: Step = Step::CountedCargo(&[
 const CORE_DIAGNOSTICS_TESTS: Step =
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "diagnostics"]);
 const WGPU_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust-wgpu"]);
+/// The Unit tier's differential batch (R1-13): seeds 1 to 4, 64 programs, the interpreter against the CPU twin. No
+/// adapter and no Slang; it builds the generated crate (`gust` and `gust-wgpu`) with cargo.
+const DIFFTEST_CPU: Step = Step::CheckDifftest(&["--cpu-only", "--seeds", "1-4"]);
+/// The harness crate `tests/difftest` is a workspace of its own, so the root's `cargo fmt`, `clippy` and `test` never
+/// reach it: its own format check, clippy (all targets, warnings denied) and tests (the generator, interpreter, emitter
+/// and shrinker unit tests, the corpus pin and the CPU `short_circuit` test) are Unit steps of their own (m5.c2).
+const DIFFTEST_FMT_ARGS: &[&str] = &[
+    "fmt",
+    "--manifest-path",
+    "tests/difftest/Cargo.toml",
+    "--",
+    "--check",
+];
+const DIFFTEST_CLIPPY_ARGS: &[&str] = &[
+    "clippy",
+    "--locked",
+    "--manifest-path",
+    "tests/difftest/Cargo.toml",
+    "--all-targets",
+    "--",
+    "-D",
+    "warnings",
+];
+const DIFFTEST_TESTS_ARGS: &[&str] = &[
+    "test",
+    "--locked",
+    "--manifest-path",
+    "tests/difftest/Cargo.toml",
+];
+const DIFFTEST_FMT: Step = Step::Cargo(DIFFTEST_FMT_ARGS);
+const DIFFTEST_CLIPPY: Step = Step::Cargo(DIFFTEST_CLIPPY_ARGS);
+const DIFFTEST_TESTS: Step = Step::Cargo(DIFFTEST_TESTS_ARGS);
+/// The three cargo calls of the harness crate (its own workspace, which the root's fmt, clippy and test never reach),
+/// as the Full mode of `verify` (`check-full`) runs them after the workspace tests.
+pub(crate) const DIFFTEST_CARGO_CALLS: [&[&str]; 3] =
+    [DIFFTEST_FMT_ARGS, DIFFTEST_CLIPPY_ARGS, DIFFTEST_TESTS_ARGS];
+/// The steps of the harness crate in the Unit and Slangc suites, in order. The CI job `difftest` runs them as steps of
+/// its own, so the `unit` and `slang` jobs pass `--skip-difftest` and keep their time (R4.10); a local run of the
+/// suite runs them all.
+pub(crate) const DIFFTEST_UNIT_STEPS: [Step; 4] =
+    [DIFFTEST_FMT, DIFFTEST_CLIPPY, DIFFTEST_TESTS, DIFFTEST_CPU];
+/// The Gpu tier's differential batch: all eight seeds on the first adapter, and the `short_circuit` GPU test.
+const DIFFTEST_GPU: Step = Step::CheckDifftest(&[]);
 
 const ALL: [Suite; 7] = [
     Suite::Unit,
@@ -146,7 +193,7 @@ impl Suite {
     pub(crate) fn covers(self) -> &'static str {
         match self {
             Self::Unit => {
-                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), clippy and check of gust and gust-wgpu without default features (the slang-runtime off state); no external tools"
+                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), clippy and check of gust and gust-wgpu without default features (the slang-runtime off state), the format check, clippy and tests of the harness crate tests/difftest (a workspace of its own; CI runs them in the job `difftest`, and `--skip-difftest` leaves them out of the `unit` and `slang` jobs), and the differential batch of seeds 1 to 4 in its CPU-only mode (64 generated kernels: an independent interpreter against the CPU twin, report.json judged by cargo xtask check-difftest); no external tools"
             }
             Self::Cpu => {
                 "the production CPU target (GUST_PROFILE=cpu) on the fixture tests/cpu-target: the kernels build in release, run on gust::cpu::CpuDevice and equal independent host references; the binary holds no compiler, helper or GPU runtime; gust-wgpu refuses the profile; the cfg(test) and --cfg gust_dual builds keep one impl; the profile flips rebuild correctly; cargo only"
@@ -160,9 +207,11 @@ impl Suite {
             Self::Reflect => {
                 "the D17 layout gate: native reflection helper, core and wgpu reflection tests"
             }
-            Self::Gpu => "all gust-wgpu tests on the first Vulkan adapter wgpu finds",
+            Self::Gpu => {
+                "all gust-wgpu tests on the first Vulkan adapter wgpu finds, then the differential batch of all 8 seeds (128 generated kernels: interpreter, CPU twin and GPU compared; report.json judged by cargo xtask check-difftest) and the short_circuit GPU test of tests/difftest"
+            }
             Self::Full => {
-                "the release gate: lint, fmt, clippy, workspace tests, the release-profile Slang tests of the gust library and the release-profile known-mismatch ledger, examples, artifacts and SPIR-V validation, check-dual in full mode, then the whole check-precompiled and the whole check-web (Chrome with a WebGPU adapter; a missing one fails the suite, only `cargo xtask check-full --skip-web` goes without, and records that); writes .ai/VALIDATION.json"
+                "the release gate: lint, fmt, clippy, workspace tests, the fmt, clippy and tests of the harness crate tests/difftest, the release-profile Slang tests of the gust library and the release-profile known-mismatch ledger, examples, artifacts and SPIR-V validation, check-dual in full mode, then the whole check-precompiled, the whole check-web (Chrome with a WebGPU adapter; a missing one fails the suite, only `cargo xtask check-full --skip-web` goes without, and records that) and, last, check-difftest (all 8 seeds on the adapter and the short_circuit GPU test); writes .ai/VALIDATION.json"
             }
         }
     }
@@ -171,7 +220,7 @@ impl Suite {
     pub(crate) fn not_covered(self) -> &'static str {
         match self {
             Self::Unit => {
-                "that generated Slang compiles, SPIR-V validity, reflection layouts, or any GPU execution"
+                "that generated Slang compiles, SPIR-V validity, reflection layouts, or any GPU execution (the differential batch runs CPU-only here: the interpreter and the twin agreeing says nothing about an adapter)"
             }
             Self::Cpu => {
                 "anything about a GPU or an adapter, the Unit tier's tests, or the shadow-semantics twin under cfg(test); a CPU result is never GPU evidence (D42)"
@@ -205,6 +254,10 @@ impl Suite {
             CORE_CORETESTS_TWIN,
             OFF_STATE_CLIPPY,
             OFF_STATE_CHECK,
+            DIFFTEST_FMT,
+            DIFFTEST_CLIPPY,
+            DIFFTEST_TESTS,
+            DIFFTEST_CPU,
         ];
         match self {
             Self::Unit => unit.to_vec(),
@@ -218,7 +271,7 @@ impl Suite {
             }
             Self::Spirv => vec![Step::Verify(VerifyMode::Artifacts, false)],
             Self::Reflect => vec![Step::Feature("reflection")],
-            Self::Gpu => vec![Step::RequireTool("slangc"), WGPU_TESTS],
+            Self::Gpu => vec![Step::RequireTool("slangc"), WGPU_TESTS, DIFFTEST_GPU],
             Self::Full => vec![Step::Verify(VerifyMode::Full, true)],
         }
     }
@@ -235,6 +288,8 @@ impl Step {
             Self::CheckUi => "cargo xtask check-ui".to_owned(),
             Self::CheckCpu => "cargo xtask check-cpu".to_owned(),
             Self::CheckCpuTarget => "cargo xtask check-cpu-target".to_owned(),
+            Self::CheckDifftest([]) => "cargo xtask check-difftest".to_owned(),
+            Self::CheckDifftest(args) => format!("cargo xtask check-difftest {}", args.join(" ")),
             Self::Feature(area) => format!("cargo xtask check-feature {area}"),
             Self::Verify(mode, _) => format!("cargo xtask verify --mode {}", mode.as_str()),
         }
@@ -252,40 +307,85 @@ impl Step {
             Self::CheckUi => check_ui(&root, &mut Vec::new()),
             Self::CheckCpu => check_cpu(),
             Self::CheckCpuTarget => check_cpu_target(&[]),
+            Self::CheckDifftest(args) => {
+                check_difftest(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>())
+            }
             Self::Feature(area) => check_feature(Some(area)),
             Self::Verify(mode, record) => verify(mode, record),
         }
     }
 }
 
-/// `cargo xtask test --suite <Unit|Cpu|Slangc|Spirv|Reflect|Gpu|Full>`.
+/// `cargo xtask test --suite <Unit|Cpu|Slangc|Spirv|Reflect|Gpu|Full> [--skip-difftest]`.
 pub(crate) fn test_command(args: &[String]) -> Result<(), String> {
-    let suite = match args {
-        [flag, name] if flag == "--suite" => Suite::parse(name)?,
-        _ => {
-            return Err(format!(
-                "usage: cargo xtask test --suite {}",
-                Suite::names().join("|")
-            ));
-        }
+    let usage = || {
+        format!(
+            "usage: cargo xtask test --suite {} [--skip-difftest]",
+            Suite::names().join("|")
+        )
     };
-    run_suite(suite)
+    let (suite, skip_difftest) = match args {
+        [flag, name] if flag == "--suite" => (Suite::parse(name)?, false),
+        [flag, name, skip] if flag == "--suite" && skip == "--skip-difftest" => {
+            (Suite::parse(name)?, true)
+        }
+        _ => return Err(usage()),
+    };
+    run_suite(suite, skip_difftest)
 }
 
-fn run_suite(suite: Suite) -> Result<(), String> {
+/// The steps a run executes and the steps `--skip-difftest` leaves out (those of [`DIFFTEST_UNIT_STEPS`]). The flag on
+/// a suite that has none of them is an error, so it can never be a silent no-op.
+pub(crate) fn plan_suite(
+    suite: Suite,
+    skip_difftest: bool,
+) -> Result<(Vec<Step>, Vec<Step>), String> {
+    let steps = suite.steps();
+    if !skip_difftest {
+        return Ok((steps, Vec::new()));
+    }
+    let (skipped, run): (Vec<Step>, Vec<Step>) = steps
+        .into_iter()
+        .partition(|step| DIFFTEST_UNIT_STEPS.contains(step));
+    if skipped.is_empty() {
+        return Err(format!(
+            "--skip-difftest: suite {} has no differential-test step to skip (only Unit and Slangc have)",
+            suite.name()
+        ));
+    }
+    Ok((run, skipped))
+}
+
+fn run_suite(suite: Suite, skip_difftest: bool) -> Result<(), String> {
     let name = suite.name();
+    let (steps, skipped) = plan_suite(suite, skip_difftest)?;
     println!("== suite {name}");
     println!("   covers: {}", suite.covers());
     println!("   does not cover: {}", suite.not_covered());
-    for step in suite.steps() {
+    for step in &skipped {
+        println!(
+            "-- SKIPPED by --skip-difftest (left to the CI job `difftest`): {}",
+            step.label()
+        );
+    }
+    for step in steps {
         println!("-- {}", step.label());
         step.run()
             .map_err(|error| format!("suite {name} failed at `{}`: {error}", step.label()))?;
     }
-    println!(
-        "Suite {name} passed. It does not cover {}.",
-        suite.not_covered()
-    );
+    if skipped.is_empty() {
+        println!(
+            "Suite {name} passed. It does not cover {}.",
+            suite.not_covered()
+        );
+    } else {
+        println!(
+            "Suite {name} passed with {} step(s) skipped by --skip-difftest, which this run does not cover. \
+             It does not cover {}.",
+            skipped.len(),
+            suite.not_covered()
+        );
+    }
     Ok(())
 }
 

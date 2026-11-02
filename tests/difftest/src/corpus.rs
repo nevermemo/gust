@@ -122,4 +122,26 @@ mod tests {
         let text = corpus_text(1, 8).unwrap();
         assert!(text.contains("min-over-minus-one="), "{text}");
     }
+
+    /// Format 4 (m5.c2) only refuses more programs: the seeds that lost none keep their format-3 programs byte for
+    /// byte (the hashes of `seeds.txt` at format 3, read with the stamp as 3), and seed 4, which lost `s4_a26` and
+    /// others, does not.
+    #[test]
+    fn format_4_keeps_the_format_3_programs_of_every_seed_but_4() {
+        let format_3 = [
+            (1, 0xf156_6491_8988_01a2_u64),
+            (2, 0x2bd1_d67b_b246_8d74),
+            (3, 0x89eb_84af_5f29_8ca7),
+            (4, 0xdcc8_2882_5b74_22bd),
+            (5, 0xb700_977e_985a_cc91),
+            (6, 0x5d96_2c93_e516_88ba),
+            (7, 0x5673_ba1f_bd44_28a0),
+            (8, 0x5fc5_0da8_5029_1f4f),
+        ];
+        for (seed, hash) in format_3 {
+            let batch = generate_batch(seed).unwrap();
+            let same = batch_hash_as_format(&batch.programs, 3) == hash;
+            assert_eq!(same, seed != 4, "seed {seed}");
+        }
+    }
 }

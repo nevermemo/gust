@@ -1,0 +1,416 @@
+{
+  "tool": "difftest-run",
+  "format": 3,
+  "mode": "cpu-only",
+  "passed": true,
+  "seeds": [1, 2, 3, 4],
+  "programs_requested": 64,
+  "programs_executed": 64,
+  "adapter": null,
+  "per_seed": [
+    {
+      "seed": 1,
+      "programs": 16,
+      "attempts": 67,
+      "discarded": 51
+    },
+    {
+      "seed": 2,
+      "programs": 16,
+      "attempts": 51,
+      "discarded": 35
+    },
+    {
+      "seed": 3,
+      "programs": 16,
+      "attempts": 63,
+      "discarded": 47
+    },
+    {
+      "seed": 4,
+      "programs": 16,
+      "attempts": 102,
+      "discarded": 86
+    }
+  ],
+  "discards": {
+    "total": 219,
+    "by_class": {
+      "domain": 182,
+      "comparison-overlap": 7,
+      "unboundable": 13,
+      "float-construct-not-in-v1": 1,
+      "no-input-read": 16
+    },
+    "by_reason": {
+      "comparison-overlap": 7,
+      "division-by-zero": 9,
+      "float-construct-not-in-v1": 1,
+      "float-domain": 47,
+      "index": 8,
+      "min-over-minus-one": 1,
+      "no-input-read": 16,
+      "overflow": 69,
+      "shift-amount": 1,
+      "static": 47,
+      "unboundable": 13
+    }
+  },
+  "mismatch_count": 0,
+  "mismatches": [],
+  "coverage": {
+    "programs": 64,
+    "operators": [
+      {
+        "operator": "!= bool",
+        "programs_in_text": 2,
+        "programs_executing": 2,
+        "evaluations": 64
+      },
+      {
+        "operator": "!= f32",
+        "programs_in_text": 2,
+        "programs_executing": 2,
+        "evaluations": 195
+      },
+      {
+        "operator": "!= i32",
+        "programs_in_text": 8,
+        "programs_executing": 6,
+        "evaluations": 310
+      },
+      {
+        "operator": "!= u32",
+        "programs_in_text": 11,
+        "programs_executing": 9,
+        "evaluations": 1077
+      },
+      {
+        "operator": "!bool",
+        "programs_in_text": 3,
+        "programs_executing": 3,
+        "evaluations": 70
+      },
+      {
+        "operator": "!i32",
+        "programs_in_text": 8,
+        "programs_executing": 8,
+        "evaluations": 3277
+      },
+      {
+        "operator": "!u32",
+        "programs_in_text": 9,
+        "programs_executing": 8,
+        "evaluations": 8540
+      },
+      {
+        "operator": "% i32",
+        "programs_in_text": 16,
+        "programs_executing": 14,
+        "evaluations": 3175
+      },
+      {
+        "operator": "% u32",
+        "programs_in_text": 31,
+        "programs_executing": 29,
+        "evaluations": 23860
+      },
+      {
+        "operator": "& i32",
+        "programs_in_text": 41,
+        "programs_executing": 41,
+        "evaluations": 89110
+      },
+      {
+        "operator": "& u32",
+        "programs_in_text": 46,
+        "programs_executing": 44,
+        "evaluations": 66163
+      },
+      {
+        "operator": "&& bool",
+        "programs_in_text": 11,
+        "programs_executing": 11,
+        "evaluations": 3779
+      },
+      {
+        "operator": "* f32",
+        "programs_in_text": 28,
+        "programs_executing": 25,
+        "evaluations": 20824
+      },
+      {
+        "operator": "* i32",
+        "programs_in_text": 18,
+        "programs_executing": 16,
+        "evaluations": 14537
+      },
+      {
+        "operator": "* u32",
+        "programs_in_text": 18,
+        "programs_executing": 16,
+        "evaluations": 11569
+      },
+      {
+        "operator": "+ f32",
+        "programs_in_text": 36,
+        "programs_executing": 35,
+        "evaluations": 78378
+      },
+      {
+        "operator": "+ i32",
+        "programs_in_text": 23,
+        "programs_executing": 23,
+        "evaluations": 30421
+      },
+      {
+        "operator": "+ u32",
+        "programs_in_text": 25,
+        "programs_executing": 23,
+        "evaluations": 10192
+      },
+      {
+        "operator": "-",
+        "programs_in_text": 10,
+        "programs_executing": 9,
+        "evaluations": 4986
+      },
+      {
+        "operator": "- f32",
+        "programs_in_text": 29,
+        "programs_executing": 26,
+        "evaluations": 15589
+      },
+      {
+        "operator": "- i32",
+        "programs_in_text": 30,
+        "programs_executing": 29,
+        "evaluations": 11816
+      },
+      {
+        "operator": "- u32",
+        "programs_in_text": 21,
+        "programs_executing": 20,
+        "evaluations": 17175
+      },
+      {
+        "operator": "-f32",
+        "programs_in_text": 12,
+        "programs_executing": 11,
+        "evaluations": 2715
+      },
+      {
+        "operator": "/ f32",
+        "programs_in_text": 22,
+        "programs_executing": 20,
+        "evaluations": 15327
+      },
+      {
+        "operator": "/ i32",
+        "programs_in_text": 16,
+        "programs_executing": 15,
+        "evaluations": 12565
+      },
+      {
+        "operator": "/ u32",
+        "programs_in_text": 18,
+        "programs_executing": 16,
+        "evaluations": 4443
+      },
+      {
+        "operator": "< f32",
+        "programs_in_text": 2,
+        "programs_executing": 1,
+        "evaluations": 257
+      },
+      {
+        "operator": "< i32",
+        "programs_in_text": 3,
+        "programs_executing": 3,
+        "evaluations": 2911
+      },
+      {
+        "operator": "< u32",
+        "programs_in_text": 10,
+        "programs_executing": 9,
+        "evaluations": 6956
+      },
+      {
+        "operator": "<< i32",
+        "programs_in_text": 17,
+        "programs_executing": 16,
+        "evaluations": 1353
+      },
+      {
+        "operator": "<< u32",
+        "programs_in_text": 12,
+        "programs_executing": 10,
+        "evaluations": 2253
+      },
+      {
+        "operator": "<= f32",
+        "programs_in_text": 2,
+        "programs_executing": 2,
+        "evaluations": 151
+      },
+      {
+        "operator": "<= i32",
+        "programs_in_text": 2,
+        "programs_executing": 2,
+        "evaluations": 159
+      },
+      {
+        "operator": "<= u32",
+        "programs_in_text": 4,
+        "programs_executing": 4,
+        "evaluations": 3581
+      },
+      {
+        "operator": "== f32",
+        "programs_in_text": 2,
+        "programs_executing": 2,
+        "evaluations": 126
+      },
+      {
+        "operator": "== i32",
+        "programs_in_text": 4,
+        "programs_executing": 4,
+        "evaluations": 77
+      },
+      {
+        "operator": "== u32",
+        "programs_in_text": 10,
+        "programs_executing": 10,
+        "evaluations": 2844
+      },
+      {
+        "operator": "> f32",
+        "programs_in_text": 2,
+        "programs_executing": 2,
+        "evaluations": 126
+      },
+      {
+        "operator": "> i32",
+        "programs_in_text": 3,
+        "programs_executing": 3,
+        "evaluations": 131
+      },
+      {
+        "operator": "> u32",
+        "programs_in_text": 1,
+        "programs_executing": 1,
+        "evaluations": 64
+      },
+      {
+        "operator": ">= f32",
+        "programs_in_text": 2,
+        "programs_executing": 1,
+        "evaluations": 1
+      },
+      {
+        "operator": ">= i32",
+        "programs_in_text": 3,
+        "programs_executing": 1,
+        "evaluations": 1
+      },
+      {
+        "operator": ">= u32",
+        "programs_in_text": 5,
+        "programs_executing": 3,
+        "evaluations": 384
+      },
+      {
+        "operator": ">> i32",
+        "programs_in_text": 17,
+        "programs_executing": 17,
+        "evaluations": 5108
+      },
+      {
+        "operator": ">> u32",
+        "programs_in_text": 17,
+        "programs_executing": 16,
+        "evaluations": 7012
+      },
+      {
+        "operator": "^ i32",
+        "programs_in_text": 26,
+        "programs_executing": 26,
+        "evaluations": 20176
+      },
+      {
+        "operator": "^ u32",
+        "programs_in_text": 20,
+        "programs_executing": 18,
+        "evaluations": 15206
+      },
+      {
+        "operator": "as f32",
+        "programs_in_text": 23,
+        "programs_executing": 21,
+        "evaluations": 20189
+      },
+      {
+        "operator": "as i32",
+        "programs_in_text": 23,
+        "programs_executing": 22,
+        "evaluations": 4585
+      },
+      {
+        "operator": "as u32",
+        "programs_in_text": 26,
+        "programs_executing": 25,
+        "evaluations": 18117
+      },
+      {
+        "operator": "for",
+        "programs_in_text": 32,
+        "programs_executing": 31,
+        "evaluations": 13861
+      },
+      {
+        "operator": "| i32",
+        "programs_in_text": 21,
+        "programs_executing": 21,
+        "evaluations": 2944
+      },
+      {
+        "operator": "| u32",
+        "programs_in_text": 19,
+        "programs_executing": 17,
+        "evaluations": 9386
+      },
+      {
+        "operator": "|| bool",
+        "programs_in_text": 9,
+        "programs_executing": 8,
+        "evaluations": 4197
+      }
+    ],
+    "never_executed": [],
+    "if_statements": {
+      "in_text": 47,
+      "constant_condition": 0,
+      "evaluated": 43,
+      "then_taken": 36,
+      "else_taken": 34,
+      "both_sides": 27
+    },
+    "logical_operators": {
+      "right_operand_evaluated": 4444,
+      "right_operand_skipped": 3532
+    }
+  },
+  "timing": {
+    "generation_ms": 50.0369,
+    "interpreter_ms": 35.6576,
+    "cargo_build_s": 78.283461,
+    "cargo_run_s": 2.9905114,
+    "twin_ms_total": 6.1042,
+    "twin_ms_max": 0.9911,
+    "gpu_first_dispatch_ms_total": 0.0,
+    "gpu_first_dispatch_ms_mean": 0.0,
+    "gpu_first_dispatch_ms_max": 0.0,
+    "gpu_warm_dispatch_ms_total": 0.0,
+    "gpu_warm_dispatch_ms_max": 0.0
+  }
+}

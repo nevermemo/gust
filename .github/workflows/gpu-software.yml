@@ -9,11 +9,14 @@
 # xtask/src/verify.rs), then assertions on the record.
 #
 # One job, two lists (plan M5 R1-10). The list of a pull request, a push to main and a dispatch without `extended` is
-# everything above. The nightly list (`schedule`, 03:00 UTC, and a dispatch with `extended`, the default) adds the steps
-# marked "nightly list": `cargo xtask check-examples` and the release-profile mismatch ledger. Slices that grow the
-# nightly list (the difftest seeds of m5.c2) add steps behind the same condition. Moving a step to the pull request list
-# is deleting its `if:` line, and it is allowed only while the measured warm job time of a pull request stays at five
-# minutes or less (the budget rule; STATUS names each list and its measured time).
+# everything above, plus the differential test on 2 seeds (32 generated programs on three parties: the interpreter, the
+# CPU twin and the lavapipe GPU; R1-13). The nightly list (`schedule`, 03:00 UTC, and a dispatch with `extended`, the
+# default) adds the steps marked "nightly list": `cargo xtask check-examples` and the release-profile mismatch ledger,
+# and runs the differential test on all 8 seeds (128 programs) in place of the 2. Slices that grow the nightly list add
+# steps behind the same condition. Moving a step to the pull request list is deleting its `if:` line, and it is allowed
+# only while the measured warm job time of a pull request stays at five minutes or less (the budget rule; STATUS names
+# each list and its measured time). The nightly steps after the differential test carry `!cancelled() &&` in that
+# line, so that a failing differential test does not skip them; the job still fails.
 name: gpu-software
 
 on:
@@ -25,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       extended:
-        description: "Also run the nightly list (check-examples, the release ledger)"
+        description: "Also run the nightly list (check-examples, the release ledger, all 8 difftest seeds)"
         type: boolean
         default: true
 
@@ -217,6 +220,25 @@ jobs:
           grep -Fq '"device_type": "Cpu"' "$record"
           grep -Eq '^ *"name": "[^"]*llvmpipe' "$record"
           grep -Fq "\"driver_info\": \"$MESA_DRIVER_INFO\"" "$record"
+      - name: Differential test (2 seeds; all 8 in the nightly list)
+        id: difftest
+        # `cargo xtask check-difftest` (m5.c2) runs `difftest-run` on lavapipe, reads its report.json, and fails unless
+        # `programs_executed` is 16 times the seeds, nothing disagreed and an adapter is named; it also runs the
+        # short_circuit GPU test of tests/difftest. Every failure line starts with `check-difftest:` and names the
+        # seed (the next step turns those lines into annotations). The report goes straight into the artifact
+        # directory, which is uploaded even when this step fails. Same Slang, helper and VK_DRIVER_FILES as the Gpu
+        # suite above. Pull request list: seeds 1-2 (32 programs); nightly list: 1-8 (128 programs).
+        run: |
+          set -o pipefail
+          seeds=1-2
+          if [ "$GPU_SOFTWARE_NIGHTLY" = "true" ]; then seeds=1-8; fi
+          echo "difftest seeds: $seeds"
+          cargo --locked xtask check-difftest --seeds "$seeds" \
+            --report "$RUNNER_TEMP/gpu-software-artifact/difftest-report.json" 2>&1 | tee "$RUNNER_TEMP/difftest.log"
+      - name: Name the failing seeds
+        if: failure() && steps.difftest.outcome == 'failure'
+        run: |
+          grep -E '^check-difftest: ' "$RUNNER_TEMP/difftest.log" | sed 's/^/::error::/' || true
       - name: Keep the ledger lines of the debug run
         # The release run below writes the same file names, so the debug run's are moved aside first.
         if: always()
@@ -226,7 +248,10 @@ jobs:
             mv -f "$file" "$RUNNER_TEMP/gpu-software-artifact/debug-$(basename "$file")"
           done
       - name: Examples on lavapipe (nightly list)
-        if: env.GPU_SOFTWARE_NIGHTLY == 'true'
+        # `!cancelled()` and not the implicit `success()`: a red differential test must not skip the nightly evidence
+        # below (the job still fails, because the difftest step did). The expression form, because a bare `!` starts
+        # a YAML tag.
+        if: ${{ !cancelled() && env.GPU_SOFTWARE_NIGHTLY == 'true' }}
         run: |
           set -o pipefail
           cargo --locked xtask check-examples 2>&1 | tee "$RUNNER_TEMP/check-examples.log"
@@ -234,7 +259,7 @@ jobs:
         # The ledger asserts the plain-Rust outcome of its mode-keyed rows for the `overflow-checks` mode it detects at
         # run time (D38); the Gpu suite above is the debug run, this is the release run (the second of the two that the
         # Full mode makes, xtask RELEASE_LEDGER_TEST). GUST_PROFILE=dev is what every xtask cargo child gets.
-        if: env.GPU_SOFTWARE_NIGHTLY == 'true'
+        if: ${{ !cancelled() && env.GPU_SOFTWARE_NIGHTLY == 'true' }}
         env:
           GUST_PROFILE: dev
         run: |
@@ -246,6 +271,7 @@ jobs:
         run: |
           cp -f .ai/VALIDATION.json "$RUNNER_TEMP/gpu-software-artifact/" || true
           cp -f "$RUNNER_TEMP/gpu-suite.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
+          cp -f "$RUNNER_TEMP/difftest.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
           cp -f "$RUNNER_TEMP/check-examples.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
           cp -f "$RUNNER_TEMP/ledger-release.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
           # Only the release run can have written these now: the debug run's were moved aside.

@@ -102,6 +102,41 @@ a backslash, a control character or a line break would end that string or the di
 so no such name is ever injected. A file named like the compile copy would also make
 Rust and Slang locations indistinguishable.
 
+**Known limitation: slangc refuses a zero divisor that it can fold, in code that never
+runs** (found by the differential test, slice m5.c2; a limitation, not a defect to fix
+in the translation). slangc 2026.20 evaluates an integer `/` or `%` at compile time when
+it can fold the divisor to a constant, and it rejects a zero with
+`error[E30002]: divide by zero`, in a branch that no invocation takes as well. The error
+comes through as an ordinary compile error of the kernel, mapped to its Rust line, so a
+valid Rust kernel can fail to compile. What it folds was measured on the shapes that GUST
+emits (each probe was a division under a branch keyed on a buffer value):
+
+- constants, the counter of a constant-bound `for` at its first iteration only (the
+  counter is 0; `v - 3`, zero only in the last iteration, compiles), and the locals that
+  are set from them, with wrapping arithmetic: `(v - 1) + 1` and `(v + 65536) * 65536`
+  fold to zero, and so do shifts of the counter;
+- a product with a zero factor, whatever the other factor is: `i * 0`, `0 * i` and
+  `int(a[i]) * 0` all fail, so a value read from a buffer does not help;
+- the difference of two identical operands that read no buffer: `i - i`,
+  `(i + 1) - (i + 1)` and `len - len` fail, and they compose (`i * (i - i)`, `0 / (i + 1)`),
+  while `a[i] - a[i]` is not folded;
+- a condition on a known value picks its branch: with `d = 5; if v < 1 { d = 0 }`, the
+  division `7 / d` fails, and `if v < 1 { 7 / v }` fails, but `if v > 0 { 7 / v }` and
+  `d = 5; if v > 0 { d = 0 }` compile;
+- it does not fold `!` and `^` (GUST lowers them to the calls `__gust_not` and
+  `__gust_xor`), `x & 0`, `x ^ x`, `x % 1`, `0 % x`, `i - 1`, `i + (0 - i)`, or anything
+  that is known only through a buffer read.
+
+The smallest reproducer is `for i in 0u32..4u32 { if !true { let r = i % i; } }` (emitted
+as `if (__gust_not(true)) { uint r = (i % i); }` in `for (var i = uint(0); i < end; i++)`
+and refused at the `%`). The workaround is a divisor that is non-zero by construction,
+for example `i % (i | 1)` (probed: it compiles, in the reproducer's own shape and in
+`let d = i; 7 / (d | 1)`), or a non-zero literal. A value read from a buffer is no
+workaround: `int(a[i]) * 0` is folded, and a plain `7 / a[i]` compiles but may be zero
+at run time, which is the integer edge case of D39 and KM-01 in
+[SEMANTICS](SEMANTICS.md). The differential generator refuses the programs that this model
+says slangc folds (DIFFTEST_FORMAT 4, [DIFFTEST](development/DIFFTEST.md)).
+
 ## E01xx: module and item shape
 
 ### GUST-E0101 inline module required

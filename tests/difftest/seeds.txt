@@ -1,10 +1,10 @@
-# DIFFTEST_FORMAT 3
+# DIFFTEST_FORMAT 4
 # seed programs discarded [reason=count ...] hash=<fnv1a64 of the emitted lib.rs and the input data>
-1 16 51 comparison-overlap=2 division-by-zero=2 float-domain=10 index=1 min-over-minus-one=1 no-input-read=3 overflow=19 static=9 unboundable=4 hash=f1566491898801a2
-2 16 35 division-by-zero=2 float-domain=11 no-input-read=3 overflow=7 static=7 unboundable=5 hash=2bd1d67bb2468d74
-3 16 47 division-by-zero=3 float-domain=11 index=3 no-input-read=2 overflow=14 shift-amount=1 static=11 unboundable=2 hash=89eb84af5f298ca7
-4 16 86 comparison-overlap=5 division-by-zero=2 float-construct-not-in-v1=1 float-domain=15 index=4 no-input-read=8 overflow=29 static=20 unboundable=2 hash=dcc828825b7422bd
-5 16 90 comparison-overlap=3 division-by-zero=4 float-domain=15 index=8 no-input-read=8 overflow=25 shift-amount=1 static=16 unboundable=10 hash=b700977e985acc91
-6 16 56 comparison-overlap=2 division-by-zero=4 float-construct-not-in-v1=1 float-domain=7 index=3 no-input-read=2 overflow=20 shift-amount=2 static=13 unboundable=2 hash=5d962c93e51688ba
-7 16 85 comparison-overlap=2 division-by-zero=5 float-domain=14 index=5 no-input-read=6 overflow=25 shift-amount=1 static=24 unboundable=3 hash=5673ba1fbd4428a0
-8 16 57 comparison-overlap=1 division-by-zero=4 float-domain=10 index=4 no-input-read=3 overflow=20 shift-amount=1 static=11 unboundable=3 hash=5fc50da850291f4f
+1 16 51 comparison-overlap=2 division-by-zero=2 float-domain=10 index=1 min-over-minus-one=1 no-input-read=3 overflow=19 static=9 unboundable=4 hash=c3b0a54178fdf84f
+2 16 35 division-by-zero=1 float-domain=11 no-input-read=3 overflow=7 static=8 unboundable=5 hash=67d853e66ed3edcf
+3 16 47 division-by-zero=1 float-domain=11 index=3 no-input-read=2 overflow=14 shift-amount=1 static=13 unboundable=2 hash=b467a8f2459504f6
+4 16 91 comparison-overlap=5 division-by-zero=1 float-construct-not-in-v1=1 float-domain=15 index=5 no-input-read=9 overflow=30 static=23 unboundable=2 hash=0f7cbfb3ac67358d
+5 16 90 comparison-overlap=2 division-by-zero=3 float-domain=14 index=8 no-input-read=8 overflow=25 shift-amount=1 static=19 unboundable=10 hash=eafd98d6def240c0
+6 16 56 comparison-overlap=2 division-by-zero=3 float-construct-not-in-v1=1 float-domain=7 index=3 no-input-read=2 overflow=20 shift-amount=2 static=14 unboundable=2 hash=170e3bc1abcaa627
+7 16 85 comparison-overlap=2 division-by-zero=4 float-domain=14 index=5 no-input-read=6 overflow=25 shift-amount=1 static=25 unboundable=3 hash=a2253ad3fcc7c4c1
+8 16 57 comparison-overlap=1 division-by-zero=2 float-domain=10 index=4 no-input-read=3 overflow=20 shift-amount=1 static=13 unboundable=3 hash=8b1c6bfc090a7c42

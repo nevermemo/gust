@@ -1089,7 +1089,7 @@ fn ci_runs_check_dual_check_only_in_the_unit_job() {
     let unit = ci.split("\n  msrv:").next().unwrap();
     let name = unit.find("      - name: Dual test build\n").expect(unit);
     let run = unit
-        .find("        run: cargo xtask check-dual --check-only\n")
+        .find("        run: cargo --locked xtask check-dual --check-only\n")
         .expect(unit);
     assert!(name < run, "{unit}");
     // The step is the last of the job ...

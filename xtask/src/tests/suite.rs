@@ -3,10 +3,14 @@ use crate::{
     checks::{CPU_TESTS, GPU_SEMANTICS_TESTS, REFLECTION_TESTS},
     cpu_target::{Dirs, all_calls},
     difftest::{DifftestStep, Mode, Options, batch_args, short_circuit_args, steps},
-    verify::{RELEASE_SLANG_TESTS, VerifyMode, cargo_calls as mode_cargo_calls, example_run_args},
+    process::{TestTotals, sum_test_results},
+    verify::{
+        GPU_SUITE_CALL, GPU_SUITE_PIN, RELEASE_SLANG_TESTS, VerifyMode,
+        cargo_calls as mode_cargo_calls, example_run_args,
+    },
     workspace::EXAMPLES,
 };
-use std::path::Path;
+use std::{cell::RefCell, path::Path};
 
 const UNIT: [Step; 17] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-macros"]),
@@ -288,6 +292,99 @@ fn gpu_software_runs_the_nightly_evidence_after_a_difftest_failure() {
     assert!(!difftest.contains("        if:"), "{difftest}");
 }
 
+/// The text of a workflow under `.github/workflows`, with LF line ends.
+fn workflow_text(file: &str) -> String {
+    std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../.github/workflows/{file}")),
+    )
+    .unwrap()
+    .replace("\r\n", "\n")
+}
+
+/// The nightly ledger step shares the guard of the Full mode (m5.f1): it runs `cargo xtask check-ledger`, which makes
+/// exactly the `RELEASE_LEDGER_TEST` call and judges it with `check_counted_call`, and not a cargo call of its own
+/// that an `#[ignore]`d ledger test would leave green.
+#[test]
+fn gpu_software_runs_the_ledger_through_the_guarded_xtask_command() {
+    let workflow = workflow_text("gpu-software.yml");
+    let job = job_text(&workflow, "gpu-software");
+    let step = step_text(
+        &job,
+        "Mismatch ledger in the release profile (nightly list)",
+    );
+    // The nightly list only: the ledger is not a step of the pull request list.
+    assert!(
+        step.contains("        if: ${{ !cancelled() && env.GPU_SOFTWARE_NIGHTLY == 'true' }}\n"),
+        "{step}"
+    );
+    let call = "          cargo --locked xtask check-ledger 2>&1 | tee ";
+    assert!(
+        step.contains(&format!("{call}\"$RUNNER_TEMP/ledger-release.log\"\n")),
+        "{step}"
+    );
+    let commands = step
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(!commands.contains("--test mismatch"), "{step}");
+    assert!(!commands.contains("cargo --locked test"), "{step}");
+    // Nothing else in the workflow runs the ledger by a cargo call of its own.
+    assert_eq!(workflow.matches("--test mismatch").count(), 0);
+}
+
+/// The Mesa install survives a short outage of the snapshot service (m5.f1) without changing what is installed: the
+/// retry options sit in `apt_get`, the whole install is tried once more after 60 s, and the pinned snapshot, the
+/// package list and the identity checks of the next step are the ones of D52.
+#[test]
+fn gpu_software_retries_the_mesa_install_and_keeps_the_pin() {
+    let workflow = workflow_text("gpu-software.yml");
+    let job = job_text(&workflow, "gpu-software");
+    let step = step_text(&job, "Install Mesa and the tools from the Ubuntu snapshot");
+    for needed in [
+        "apt-get -o Acquire::Retries=5 -o Acquire::http::Timeout=30 \\\n",
+        "-o Acquire::https::Timeout=30 \"$@\"",
+        "install_mesa() {\n",
+        "if ! install_mesa; then\n",
+        "            sleep 60\n            install_mesa\n          fi\n",
+        "URIs: https://snapshot.ubuntu.com/ubuntu/$SNAPSHOT_ID/\n",
+        "packages=(\"mesa-vulkan-drivers=$MESA_VERSION\" vulkan-tools build-essential pkg-config spirv-tools)\n",
+    ] {
+        assert!(step.contains(needed), "{needed}: {step}");
+    }
+    // The retry is bounded: a second failure fails the step (`set -e` is on and the second call is not a condition).
+    assert!(step.contains("          set -euo pipefail\n"), "{step}");
+    assert_eq!(step.matches("install_mesa\n").count(), 1, "{step}");
+    let check = step_text(
+        &job,
+        "Check that Mesa did not drift, and that lavapipe is the device",
+    );
+    assert!(
+        check.contains("\"$installed\" != \"$MESA_VERSION\""),
+        "{check}"
+    );
+}
+
+/// Every call of the xtask in a workflow is locked (m5.f1): `cargo --locked xtask ...`, as the Unit suite's lines are.
+#[test]
+fn every_xtask_call_in_the_workflows_is_locked() {
+    let mut seen = 0;
+    for file in ["ci.yml", "gpu-software.yml"] {
+        for line in workflow_text(file).lines() {
+            let command = line.trim_start();
+            if command.starts_with('#') {
+                continue;
+            }
+            assert!(!command.contains("cargo xtask"), "{file}: {line}");
+            if command.contains("--locked xtask") {
+                seen += 1;
+            }
+        }
+    }
+    // ci.yml: Unit, dual, cpu-target, difftest, Slangc, precompiled, web; gpu-software: gpu, difftest, examples, ledger.
+    assert!(seen >= 10, "{seen}");
+}
+
 #[test]
 fn the_other_tiers_alias_existing_commands() {
     assert_eq!(
@@ -301,13 +398,82 @@ fn the_other_tiers_alias_existing_commands() {
         Suite::Gpu.steps(),
         vec![
             Step::RequireTool("slangc"),
-            Step::Cargo(&["test", "--locked", "-p", "gust-wgpu"]),
+            Step::GpuSuite,
             Step::CheckDifftest(&[])
+        ]
+    );
+    // The step makes the call of `verify --mode gpu` and, like it, judges the output against GPU_SUITE_PIN (m5.f1).
+    assert_eq!(Step::GpuSuite.label(), "cargo test --locked -p gust-wgpu");
+    assert_eq!(
+        cargo_calls(Step::GpuSuite),
+        vec![
+            mode_cargo_calls(VerifyMode::Gpu)
+                .pop()
+                .expect("the Gpu mode makes one call")
         ]
     );
     assert_eq!(
         Suite::Full.steps(),
         vec![Step::Verify(VerifyMode::Full, true)]
+    );
+}
+
+/// Output of the Gpu suite call with `passed` tests over `lines` result lines, as libtest prints it.
+fn gpu_suite_output(passed: u64, lines: u64) -> String {
+    let mut text = format!(
+        "test result: ok. {passed} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.0s\n"
+    );
+    for _ in 1..lines {
+        text.push_str(
+            "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.0s\n",
+        );
+    }
+    text
+}
+
+/// A test runner that records the calls it gets and answers each with `output`.
+fn recording_runner(
+    calls: &RefCell<Vec<Vec<String>>>,
+    output: String,
+) -> impl Fn(&Path, &[String]) -> Result<(TestTotals, String), String> + '_ {
+    move |_, args| {
+        calls.borrow_mut().push(args.to_vec());
+        Ok((sum_test_results(&output), output.clone()))
+    }
+}
+
+/// The Gpu step runs the call through the captured-output runner and judges it against `GPU_SUITE_PIN` (m5.f1,
+/// review): a `run_direct` in its arm would never ask the runner, and the first assertion below would fail.
+#[test]
+fn the_gpu_suite_step_runs_the_captured_runner_and_fails_on_a_drifted_count() {
+    let calls = RefCell::new(Vec::new());
+    let pinned = gpu_suite_output(GPU_SUITE_PIN.passed, GPU_SUITE_PIN.result_lines);
+    let root = Path::new("ROOT");
+    assert_eq!(
+        Step::GpuSuite.run_in(root, &recording_runner(&calls, pinned)),
+        Ok(())
+    );
+    let expected = GPU_SUITE_CALL.map(str::to_owned).to_vec();
+    assert_eq!(*calls.borrow(), vec![expected]);
+    // One test more, one fewer, and one result line fewer all fail, naming the pin.
+    for (passed, lines) in [
+        (GPU_SUITE_PIN.passed + 1, GPU_SUITE_PIN.result_lines),
+        (GPU_SUITE_PIN.passed - 1, GPU_SUITE_PIN.result_lines),
+        (GPU_SUITE_PIN.passed, GPU_SUITE_PIN.result_lines - 1),
+    ] {
+        let error = Step::GpuSuite
+            .run_in(
+                root,
+                &recording_runner(&calls, gpu_suite_output(passed, lines)),
+            )
+            .unwrap_err();
+        assert!(error.contains("GPU_SUITE_PIN"), "{passed} {lines}: {error}");
+    }
+    // The runner's own failure (cargo failed, nothing ran) passes through.
+    let failing = |_: &Path, _: &[String]| Err("cargo failed".to_owned());
+    assert_eq!(
+        Step::GpuSuite.run_in(root, &failing),
+        Err("cargo failed".to_owned())
     );
 }
 
@@ -319,6 +485,7 @@ fn cargo_calls(step: Step) -> Vec<Vec<String>> {
     let owned = |args: &[&str]| args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>();
     match step {
         Step::Cargo(args) | Step::CountedCargo(args) => vec![owned(args)],
+        Step::GpuSuite => vec![owned(&GPU_SUITE_CALL)],
         Step::CheckCpu => CPU_TESTS.iter().map(|args| owned(args)).collect(),
         // The calls of `check-cpu-target` are listed by its own data (and pinned by its own tests).
         Step::CheckCpuTarget => all_calls(&Dirs::under("TARGET"))

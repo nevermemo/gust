@@ -14,8 +14,8 @@ use crate::{
     lint::lint,
     precompiled::check_precompiled_report,
     process::{
-        CheckRecord, report_check, require_command, require_tests_ran, run_checked,
-        run_checked_owned, sum_test_results, without_colors,
+        CheckRecord, report_check, require_command, require_tests_ran, run_cargo_test_captured,
+        run_checked, run_checked_owned, sum_test_results, without_colors,
     },
     reflect::{BuildOptions, build_slang_reflect},
     suite::DIFFTEST_CARGO_CALLS,
@@ -724,7 +724,10 @@ pub(crate) const RELEASE_SLANG_TESTS: [&str; 9] = [
 /// The known-mismatch ledger in the release profile (the Full mode). The ledger asserts the plain-Rust outcome
 /// of every row for the `overflow-checks` mode it detects at run time (D38); the debug run (Gpu suite) covers
 /// checks on, this run covers checks off, so both branches of every mode-keyed row run on every full gate.
-pub(crate) const RELEASE_LEDGER_TEST: [&str; 7] = [
+/// `--nocapture` (m5.f1, review) lets the run print, on stderr, the adapter, the detected overflow mode and the `S2 |`
+/// rows of the ledger: that is the release evidence in the log. The tests print to stderr only, so the `test .. ok`
+/// lines of standard output, which the guard reads ([`check_counted_call`]), stay whole.
+pub(crate) const RELEASE_LEDGER_TEST: [&str; 9] = [
     "test",
     "--locked",
     "--release",
@@ -732,6 +735,21 @@ pub(crate) const RELEASE_LEDGER_TEST: [&str; 7] = [
     "gust-wgpu",
     "--test",
     "mismatch",
+    "--",
+    "--nocapture",
+];
+
+/// The tests of `crates/gust-wgpu/tests/mismatch.rs`, all of which the release ledger call must report `ok`. A count
+/// alone would pass with one of them `#[ignore]`d, renamed or deleted, because the others still run; the guard
+/// ([`check_counted_call`]) therefore also requires `0 ignored` and each of these names (m5.f1, sanity checks of M5).
+/// Adding, renaming or removing a test of that file changes this list in the same commit.
+pub(crate) const RELEASE_LEDGER_TESTS: [&str; 6] = [
+    "known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome",
+    "every_pinned_ledger_id_is_documented_and_every_documented_id_is_pinned",
+    "the_emitted_wgsl_uses_plain_operators_and_conversions",
+    "the_ledger_mode_is_the_overflow_mode_of_this_crate",
+    "the_out_of_bounds_store_twin_stops_at_the_store_after_a_load_that_succeeded",
+    "a_kernel_without_storage_parameters_runs_on_the_twin",
 ];
 
 /// Every cargo call a mode makes after its prerequisite checks, in order, as the arguments
@@ -799,11 +817,45 @@ pub(crate) fn runs_check_dual(mode: VerifyMode) -> bool {
 }
 
 /// Whether a cargo call of a mode must run at least one test: the examples' tests (`--include-ignored`, which
-/// also must leave nothing ignored) and the name-filtered release Slang tests. The unfiltered package and
-/// integration-target calls are not counted here; they have no filter that can match nothing.
+/// also must leave nothing ignored), the name-filtered release Slang tests and the release ledger (`0 ignored` and
+/// every name of [`RELEASE_LEDGER_TESTS`]). The unfiltered package and the other integration-target calls are not
+/// counted here; they have no filter that can match nothing.
 fn counts_tests(call: &[String]) -> bool {
     call.iter().any(|arg| arg == "--include-ignored")
         || call.iter().map(String::as_str).eq(RELEASE_SLANG_TESTS)
+        || is_release_ledger(call)
+}
+
+/// Whether `call` is [`RELEASE_LEDGER_TEST`].
+fn is_release_ledger(call: &[String]) -> bool {
+    call.iter().map(String::as_str).eq(RELEASE_LEDGER_TEST)
+}
+
+/// `cargo xtask check-ledger`: runs exactly [`RELEASE_LEDGER_TEST`] and judges its output with the guard of the Full
+/// mode ([`check_counted_call`]), so that the release gate and the nightly list of the `gpu-software` workflow share
+/// one guard. Needs `slangc`, the reflection helper (prepared as `verify` does) and a Vulkan adapter, and is
+/// evidence only for the adapter the ledger lines name.
+pub(crate) fn check_ledger(args: &[String]) -> Result<(), String> {
+    if !args.is_empty() {
+        return Err("check-ledger takes no arguments".to_owned());
+    }
+    require_command("slangc")?;
+    let root = workspace_root()?;
+    // As `verify` does before its first GPU step: the helper named by `GUST_SLANG_REFLECT` must match the Slang on
+    // `PATH`, or is built when the variable is unset.
+    prepare_helper(&root, None)?;
+    let call = owned_args(&RELEASE_LEDGER_TEST);
+    let (_, stdout) = run_cargo_test_captured(&root, &call)?;
+    check_counted_call(&call, &stdout)?;
+    println!(
+        "check-ledger passed: the release ledger ran {} named tests, 0 ignored",
+        RELEASE_LEDGER_TESTS.len()
+    );
+    Ok(())
+}
+
+fn owned_args(args: &[&str]) -> Vec<String> {
+    args.iter().map(|arg| (*arg).to_owned()).collect()
 }
 
 /// The cargo call of the Gpu mode: every test of `gust-wgpu`, the unit tests of the library, each integration test
@@ -818,8 +870,9 @@ pub(crate) struct GpuSuitePin {
     pub(crate) result_lines: u64,
 }
 
-/// The pinned shape of [`GPU_SUITE_CALL`]'s output (D52, plan M5 R1-6), checked in the Gpu mode on every adapter.
-/// Every `test result:` line must also read `ok` with `0 failed; 0 ignored`.
+/// The pinned shape of [`GPU_SUITE_CALL`]'s output (D52, plan M5 R1-6), checked in the Gpu mode on every adapter and by
+/// the Gpu suite (`cargo xtask test --suite Gpu`, m5.f1). Every `test result:` line must also read `ok` with
+/// `0 failed; 0 ignored`.
 ///
 /// This is the only place the numbers live (the `gpu-software` workflow only calls `verify --mode gpu`). Every
 /// slice that adds or removes a Gpu test or test file bumps them in the same commit; drift fails loudly, by
@@ -840,7 +893,8 @@ pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu
-/// mode. The Fast mode makes the same call, but it is not the evidence the pin belongs to.
+/// mode. The Fast mode makes the same call, but it is not the evidence the pin belongs to; the Gpu suite has its
+/// own step ([`crate::suite::Step::GpuSuite`]) that applies the same check.
 pub(crate) fn pins_gpu_counts(mode: VerifyMode, call: &[String]) -> bool {
     mode == VerifyMode::Gpu && call.iter().map(String::as_str).eq(GPU_SUITE_CALL)
 }
@@ -922,9 +976,29 @@ pub(crate) const RELEASE_ONLY_CPU_TEST: &str =
 pub(crate) const RELEASE_ONLY_TESTS: [&str; 2] = [RELEASE_ONLY_SLANG_TEST, RELEASE_ONLY_CPU_TEST];
 
 /// The guard for a call of [`counts_tests`] on its captured `stdout`: tests ran, and the release call also
-/// reported every one of [`RELEASE_ONLY_TESTS`] as `ok`.
+/// reported every one of [`RELEASE_ONLY_TESTS`] as `ok`; the ledger call reported `0 ignored` and every one of
+/// [`RELEASE_LEDGER_TESTS`] as `ok`.
 fn check_counted_call(call: &[String], stdout: &str) -> Result<(), String> {
-    require_tests_ran(call, &sum_test_results(stdout))?;
+    let totals = sum_test_results(stdout);
+    require_tests_ran(call, &totals)?;
+    if is_release_ledger(call) {
+        if totals.ignored > 0 {
+            return Err(format!(
+                "cargo {}: {} test(s) reported ignored; the release ledger runs every test of its file",
+                call.join(" "),
+                totals.ignored
+            ));
+        }
+        let missing = tests_not_ok(stdout, &RELEASE_LEDGER_TESTS);
+        if !missing.is_empty() {
+            return Err(format!(
+                "cargo {}: the ledger test(s) `{}` did not run and pass (ignored, renamed, removed, or filtered out? \
+                 RELEASE_LEDGER_TESTS in xtask/src/verify.rs names them)",
+                call.join(" "),
+                missing.join("`, `")
+            ));
+        }
+    }
     if call.iter().map(String::as_str).eq(RELEASE_SLANG_TESTS) {
         let missing = tests_not_ok(stdout, &RELEASE_ONLY_TESTS);
         if !missing.is_empty() {

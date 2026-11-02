@@ -1,7 +1,7 @@
 use super::{
-    RELEASE_LEDGER_TEST, RELEASE_ONLY_CPU_TEST, RELEASE_ONLY_SLANG_TEST, RELEASE_ONLY_TESTS,
-    RELEASE_SLANG_TESTS, VerifyMode, cargo_calls, check_counted_call, counts_tests,
-    example_run_args,
+    RELEASE_LEDGER_TEST, RELEASE_LEDGER_TESTS, RELEASE_ONLY_CPU_TEST, RELEASE_ONLY_SLANG_TEST,
+    RELEASE_ONLY_TESTS, RELEASE_SLANG_TESTS, VerifyMode, cargo_calls, check_counted_call,
+    check_ledger, counts_tests, example_run_args,
 };
 use crate::workspace::{EXAMPLES, SMOKE_EXAMPLES, workspace_test_args};
 
@@ -90,6 +90,8 @@ fn the_full_gate_is_fmt_clippy_workspace_tests_release_slang_and_ledger_tests_ex
         "gust-wgpu",
         "--test",
         "mismatch",
+        "--",
+        "--nocapture",
     ]));
     expected.extend(example_tests());
     expected.extend(example_runs(EXAMPLES));
@@ -129,7 +131,9 @@ fn only_the_full_gate_runs_the_release_ledger_and_exactly_once() {
             "-p",
             "gust-wgpu",
             "--test",
-            "mismatch"
+            "mismatch",
+            "--",
+            "--nocapture"
         ])
     );
     for mode in ALL_MODES {
@@ -196,6 +200,7 @@ fn the_examples_tests_and_the_filtered_release_slang_tests_must_run_a_test() {
         if matches!(mode, VerifyMode::Examples | VerifyMode::Full) {
             if mode == VerifyMode::Full {
                 expected.push(owned(&RELEASE_SLANG_TESTS));
+                expected.push(owned(&RELEASE_LEDGER_TEST));
             }
             expected.extend(example_tests());
         }
@@ -207,7 +212,155 @@ fn the_examples_tests_and_the_filtered_release_slang_tests_must_run_a_test() {
         "-p",
         "gust-wgpu"
     ])));
-    assert!(!counts_tests(&owned(&RELEASE_LEDGER_TEST)));
+    // The release ledger is counted too (m5.f1): `check_counted_call` judges it by name below.
+    assert!(counts_tests(&owned(&RELEASE_LEDGER_TEST)));
+}
+
+/// The tests of `crates/gust-wgpu/tests/mismatch.rs`, named as literals here: renaming a constant alone must not make
+/// the guard follow it.
+const LEDGER_NAMES: [&str; 6] = [
+    "known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome",
+    "every_pinned_ledger_id_is_documented_and_every_documented_id_is_pinned",
+    "the_emitted_wgsl_uses_plain_operators_and_conversions",
+    "the_ledger_mode_is_the_overflow_mode_of_this_crate",
+    "the_out_of_bounds_store_twin_stops_at_the_store_after_a_load_that_succeeded",
+    "a_kernel_without_storage_parameters_runs_on_the_twin",
+];
+
+/// Captured output of the ledger call: one line per test with its outcome, then the summary line.
+fn ledger_output(outcomes: [&str; 6], summary: &str) -> String {
+    let mut text = String::from("\nrunning 6 tests\n");
+    for (name, outcome) in LEDGER_NAMES.iter().zip(outcomes) {
+        text.push_str(&format!("test {name} ... {outcome}\n"));
+    }
+    text.push_str(&format!("\n{summary}\n"));
+    text
+}
+
+const LEDGER_OK: &str =
+    "test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.1s";
+
+#[test]
+fn the_release_ledger_call_must_report_every_ledger_test_ok_and_none_ignored() {
+    assert_eq!(RELEASE_LEDGER_TESTS, LEDGER_NAMES);
+    let call = owned(&RELEASE_LEDGER_TEST);
+    let good = ledger_output(["ok"; 6], LEDGER_OK);
+    assert_eq!(check_counted_call(&call, &good), Ok(()));
+    // Colour sequences (CI forces colour) do not hide an `ok`.
+    let coloured = good.replace("... ok", "... \u{1b}[32mok\u{1b}[0m");
+    assert_eq!(check_counted_call(&call, &coloured), Ok(()));
+    // One test `#[ignore]`d: the summary says so.
+    let mut outcomes = ["ok"; 6];
+    outcomes[3] = "ignored";
+    let ignored = ledger_output(
+        outcomes,
+        "test result: ok. 5 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 9.1s",
+    );
+    let error = check_counted_call(&call, &ignored).unwrap_err();
+    assert!(error.contains("1 test(s) reported ignored"), "{error}");
+    // The same lines under a summary that says nothing about it still fail, and by name.
+    let error = check_counted_call(&call, &ledger_output(outcomes, LEDGER_OK)).unwrap_err();
+    assert!(
+        error.contains(&format!("`{}`", LEDGER_NAMES[3])) && !error.contains(LEDGER_NAMES[0]),
+        "{error}"
+    );
+    // A failed test, a missing summary and a run of nothing.
+    outcomes[3] = "FAILED";
+    let failed = ledger_output(
+        outcomes,
+        "test result: FAILED. 5 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 9.1s",
+    );
+    assert!(check_counted_call(&call, &failed).is_err());
+    assert!(check_counted_call(&call, &good.replace(LEDGER_OK, "")).is_err());
+    let nothing = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out\n";
+    assert!(check_counted_call(&call, nothing).is_err());
+}
+
+#[test]
+fn a_renamed_removed_or_filtered_out_ledger_test_fails_by_name() {
+    let call = owned(&RELEASE_LEDGER_TEST);
+    for name in LEDGER_NAMES {
+        // The test is absent from the output (deleted, renamed, or filtered out); five others still pass.
+        let lines =
+            ledger_output(["ok"; 6], LEDGER_OK).replace(&format!("test {name} ... ok\n"), "");
+        let error = check_counted_call(&call, &lines).unwrap_err();
+        assert!(error.contains(&format!("`{name}`")), "{name}: {error}");
+        for other in LEDGER_NAMES.iter().filter(|other| **other != name) {
+            assert!(!error.contains(other), "{name}: {error}");
+        }
+        assert!(error.contains("RELEASE_LEDGER_TESTS"), "{error}");
+    }
+    // A name inside a module is not the file's test of that name.
+    let renamed = ledger_output(["ok"; 6], LEDGER_OK).replace(
+        "test a_kernel_without_storage",
+        "test tests::a_kernel_without_storage",
+    );
+    assert!(check_counted_call(&call, &renamed).is_err());
+}
+
+/// What the ledger tests print on stderr with `--nocapture` (mismatch.rs `eprintln!`): the adapter, the detected
+/// overflow mode and the per-case rows.
+const LEDGER_STDERR: &str = "S2 adapter: name=NVIDIA GeForce RTX 5090 device_type=DiscreteGpu\n\
+    S2 overflow checks detected in this build: Wrapping\n\
+    S2 | KM-01 | gpu=1 | rust=2 | twin=2\n\
+    S2 ledger file: 132 lines in target/tmp/ledger-hardware.txt\n";
+
+#[test]
+fn the_release_ledger_runs_with_nocapture_and_the_guard_reads_stdout_only() {
+    // The release run keeps its stderr evidence (adapter, overflow mode, `S2 |` rows) in the log (m5.f1, review).
+    let call = owned(&RELEASE_LEDGER_TEST);
+    assert_eq!(call[call.len() - 2..], ["--", "--nocapture"]);
+    let stdout = ledger_output(["ok"; 6], LEDGER_OK);
+    // stderr is a separate stream: the guard passes on stdout alone ...
+    assert!(LEDGER_STDERR.contains("S2 | KM-01"));
+    assert_eq!(check_counted_call(&call, &stdout), Ok(()));
+    // ... and also when a console shows both streams, the stderr lines on lines of their own between the tests.
+    let merged = stdout.replace(
+        "test the_emitted_wgsl",
+        &format!("{LEDGER_STDERR}test the_emitted_wgsl"),
+    );
+    assert_eq!(check_counted_call(&call, &merged), Ok(()));
+    // A name line missing from stdout fails by name, however much stderr says: the guard never reads stderr, so a
+    // `test .. ok` text that only the stderr stream carries is not a pass.
+    let missing = LEDGER_NAMES[2];
+    let stdout = stdout.replace(&format!("test {missing} ... ok\n"), "");
+    let stderr = format!("{LEDGER_STDERR}test {missing} ... ok\n");
+    let error = check_counted_call(&call, &stdout).unwrap_err();
+    assert!(error.contains(&format!("`{missing}`")), "{error}");
+    assert!(stderr.contains(missing));
+}
+
+/// The list names exactly the `#[test]` functions of the ledger file: a test added there but not here would be
+/// unguarded, one removed there but still named here would fail the gate.
+#[test]
+fn the_ledger_names_are_the_test_functions_of_the_ledger_file() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../crates/gust-wgpu/tests/mismatch.rs");
+    let source = std::fs::read_to_string(path).unwrap().replace("\r\n", "\n");
+    assert!(!source.contains("#[ignore"), "an ignored ledger test");
+    let mut found = Vec::new();
+    let mut lines = source.lines();
+    while let Some(line) = lines.next() {
+        if line.trim() == "#[test]" {
+            // Other attributes (`#[cfg(..)]`, `#[should_panic]`) may sit between the marker and the function.
+            let name = lines
+                .by_ref()
+                .find_map(|next| next.strip_prefix("fn "))
+                .and_then(|rest| rest.split('(').next())
+                .expect("a `#[test]` without a function after it");
+            found.push(name.to_owned());
+        }
+    }
+    assert_eq!(found, LEDGER_NAMES);
+}
+
+#[test]
+fn check_ledger_makes_the_call_of_the_full_mode_and_takes_no_arguments() {
+    assert!(cargo_calls(VerifyMode::Full).contains(&owned(&RELEASE_LEDGER_TEST)));
+    assert_eq!(
+        check_ledger(&owned(&["extra"])),
+        Err("check-ledger takes no arguments".to_owned())
+    );
 }
 
 #[test]

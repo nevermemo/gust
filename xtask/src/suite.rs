@@ -5,11 +5,12 @@ use crate::{
     difftest::check_difftest,
     docs::docs_check,
     lint::lint,
-    process::{require_command, run_counted, run_direct},
+    process::{TestTotals, require_command, run_cargo_test_captured, run_counted, run_direct},
     ui::check_ui,
-    verify::{VerifyMode, verify},
+    verify::{GPU_SUITE_CALL, GPU_SUITE_PIN, VerifyMode, check_gpu_suite_counts, verify},
     workspace::workspace_root,
 };
+use std::path::Path;
 
 /// An evidence tier of docs/development/VALIDATION.md, runnable as one command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +24,10 @@ pub(crate) enum Suite {
     Full,
 }
 
+/// Runs a `cargo test` call in a directory and returns its totals and captured standard output
+/// ([`run_cargo_test_captured`]).
+type TestRunner<'a> = dyn Fn(&Path, &[String]) -> Result<(TestTotals, String), String> + 'a;
+
 /// One step of a suite. Every step is an existing command or a `cargo test` call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Step {
@@ -31,6 +36,9 @@ pub(crate) enum Step {
     /// `cargo test <filter>` in the workspace root that must run at least one test (a filter that
     /// matches nothing exits 0 in cargo).
     CountedCargo(&'static [&'static str]),
+    /// [`GPU_SUITE_CALL`] with the `test result:` lines checked against [`GPU_SUITE_PIN`], as `verify --mode gpu`
+    /// does (m5.f1): the same guard, so `test --suite Gpu` cannot pass with a dropped Gpu test file.
+    GpuSuite,
     /// A tool on `PATH`; a missing tool fails the suite by name.
     RequireTool(&'static str),
     Lint,
@@ -105,7 +113,6 @@ const CORE_ARTIFACT_UNIT_TESTS: Step = Step::CountedCargo(&[
 ]);
 const CORE_DIAGNOSTICS_TESTS: Step =
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "diagnostics"]);
-const WGPU_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust-wgpu"]);
 /// The Unit tier's differential batch (R1-13): seeds 1 to 4, 64 programs, the interpreter against the CPU twin. No
 /// adapter and no Slang; it builds the generated crate (`gust` and `gust-wgpu`) with cargo.
 const DIFFTEST_CPU: Step = Step::CheckDifftest(&["--cpu-only", "--seeds", "1-4"]);
@@ -208,7 +215,7 @@ impl Suite {
                 "the D17 layout gate: native reflection helper, core and wgpu reflection tests"
             }
             Self::Gpu => {
-                "all gust-wgpu tests on the first Vulkan adapter wgpu finds, then the differential batch of all 8 seeds (128 generated kernels: interpreter, CPU twin and GPU compared; report.json judged by cargo xtask check-difftest) and the short_circuit GPU test of tests/difftest"
+                "all gust-wgpu tests on the first Vulkan adapter wgpu finds (their `test result:` lines checked against GPU_SUITE_PIN, as in verify --mode gpu), then the differential batch of all 8 seeds (128 generated kernels: interpreter, CPU twin and GPU compared; report.json judged by cargo xtask check-difftest) and the short_circuit GPU test of tests/difftest"
             }
             Self::Full => {
                 "the release gate: lint, fmt, clippy, workspace tests, the fmt, clippy and tests of the harness crate tests/difftest, the release-profile Slang tests of the gust library and the release-profile known-mismatch ledger, examples, artifacts and SPIR-V validation, check-dual in full mode, then the whole check-precompiled, the whole check-web (Chrome with a WebGPU adapter; a missing one fails the suite, only `cargo xtask check-full --skip-web` goes without, and records that) and, last, check-difftest (all 8 seeds on the adapter and the short_circuit GPU test); writes .ai/VALIDATION.json"
@@ -271,7 +278,7 @@ impl Suite {
             }
             Self::Spirv => vec![Step::Verify(VerifyMode::Artifacts, false)],
             Self::Reflect => vec![Step::Feature("reflection")],
-            Self::Gpu => vec![Step::RequireTool("slangc"), WGPU_TESTS, DIFFTEST_GPU],
+            Self::Gpu => vec![Step::RequireTool("slangc"), Step::GpuSuite, DIFFTEST_GPU],
             Self::Full => vec![Step::Verify(VerifyMode::Full, true)],
         }
     }
@@ -281,6 +288,7 @@ impl Step {
     fn label(self) -> String {
         match self {
             Self::Cargo(args) | Self::CountedCargo(args) => format!("cargo {}", args.join(" ")),
+            Self::GpuSuite => format!("cargo {}", GPU_SUITE_CALL.join(" ")),
             Self::RequireTool(tool) => format!("require {tool} on PATH"),
             Self::Lint => "cargo xtask lint".to_owned(),
             Self::DocsCheck => "cargo xtask docs-check".to_owned(),
@@ -297,9 +305,21 @@ impl Step {
 
     fn run(self) -> Result<(), String> {
         let root = workspace_root()?;
+        self.run_in(&root, &run_cargo_test_captured)
+    }
+
+    /// [`Step::run`] in `root`, with the runner of the steps that judge a captured `cargo test` output (the Gpu
+    /// suite) given, so that a test can show which of them a step uses.
+    fn run_in(self, root: &Path, test_runner: &TestRunner<'_>) -> Result<(), String> {
+        let root = root.to_path_buf();
         match self {
             Self::Cargo(args) => run_direct(&root, "cargo", args),
             Self::CountedCargo(args) => run_counted(&root, args).map(|_| ()),
+            Self::GpuSuite => {
+                let call = GPU_SUITE_CALL.map(str::to_owned);
+                let (_, stdout) = test_runner(&root, &call)?;
+                check_gpu_suite_counts(&call, &stdout, GPU_SUITE_PIN)
+            }
             Self::RequireTool(tool) => require_command(tool),
             Self::Lint => lint(&root, &mut Vec::new()),
             Self::DocsCheck => docs_check(&root, &mut Vec::new()),

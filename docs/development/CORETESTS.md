@@ -310,8 +310,10 @@ Each exclusion has its reason. "Dialect" means `docs/SEMANTICS.md` section 1, "L
   `from_le`, `from_be`, `checked_*`, `saturating_*`, `isolate_*`, `highest_one`, `lowest_one`, `from_str*`, `pow`,
   `isqrt`, `div_floor`, `div_ceil`, `next_multiple_of`, `carrying_*`, `borrowing_sub`, `midpoint`, `unbounded_*`,
   `div_exact`).
-- `uint_macros.rs:12`, `(MIN + MAX).wrapping_add(1) == 0`: `wrapping_add` is a method and `MAX + 1` wraps, which is
-  outside the domain (the ledger holds that case, KM-10).
+- `uint_macros.rs:12`, `(MIN + MAX).wrapping_add(1) == 0`: left out when the corpus was transcribed, because
+  `wrapping_add` was a method then and a plain `MAX + 1` wraps, which is outside the domain (KM-10). Since slice m7.w
+  (D87) `wrapping_add` on `u32` and `i32` is in the dialect and inside the domain, so this case could now be
+  transcribed.
 - `i32.rs:7-8`: `assert_eq!(a, 10)` compares a variable with its own literal; there is no operation.
 - `i32.rs:21, 22, 26-29`: both sides are the same expression, so the source states no expected value to transcribe.
 - `i32.rs`, `isize` operands: transcribed to `i32`, every value fits (the largest is 368640 and 0x30303030).

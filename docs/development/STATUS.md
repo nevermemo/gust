@@ -34,6 +34,40 @@ committed artifacts stay byte-identical. The keyword and construct spikes and th
 types run beside M4; the keyword renaming follows the bool `^` fix; the rest waits for m4.e1, m5.c1c and M4. Its decision drafts take
 D55 to D59.
 
+- M4 m4.z (`fa3f9a1`; fix round 1 and the prose pass on top of the merge `d7344b6`): the cleanup slice, with no change
+  to compiler output (bless: 0 changed goldens). Helper freshness is judged by content: a build stamp beside the helper
+  holds the SHA-256 of the packaged probe source and the schema and Slang tag, and no file time plays a part, so a
+  helper built against an older Slang is rebuilt (the m4.r S6 gap) and two cargo-gust versions with the same probe
+  source leave each other's helper alone. `cargo gust doctor` names both versions and the fix when the `slangc` first
+  on `PATH` is not the pin. A byte test compares all five committed copies of the precompiled artifact set with the
+  kernels fixture.
+  The `__gust_keep` wrapper stays (measured on 30 comparison-in-list shapes: 2026.20 validates all in naga without it,
+  13.1 fails 13, and `gust::slang` runs any `slangc` on `PATH`). `crates/gust-wgpu/clippy.toml` bans
+  `std::thread::sleep` and `Instant::now` for wasm32 (the CI wasm32 clippy command; native code is allowed by a
+  crate-level `cfg_attr` allow in `lib.rs` and `tests/async_readback.rs`); the crates `gust` and `web-vector-add` have
+  no such ban yet (a follow-up). The slice entries of M1 to M4 moved to `history/STATUS-M1-M4.md`; the unused
+  `Ty::is_float` went. Known gaps: `gust::slang` does not check `slangc -version` against the pin (then
+  `__gust_keep` can go behind a GPU read-back); the managed helper has no stamp until `cargo gust slang build-helper`
+  runs once more. Evidence: Unit, Slangc, Spirv and Reflect on 2026.20, check-ui, check-dual `--check-only`,
+  check-precompiled `--check-only`, check-cpu-target; CPU only. Opus merge after two review rounds.
+- M5 m5.d3 (merge `d879f33`, feature `e249ae5`): the coretests golden `tests/fixtures/coretests.slang` (blessed) with
+  its regression entry and a slangc test of each section; `coretests` joins `check-feature gpu-semantics` and
+  `coretests_twin` the Unit suite. `gpu-semantics` passed on the RTX 5090. Opus keep.
+- M5 m5.e2 (`ea386f3`, merge `f9fdd24`): gust-wgpu refuses the `cpu` profile. It evaluates
+  `gust::profile::require_gpu_target()` in a const item, so a `GUST_PROFILE=cpu` build that links it fails with E0080
+  (E-e). `cargo xtask check-cpu-target` runs E-a to E-i on `tests/cpu-target` and takes each binary from cargo's JSON
+  output (the stale-binary fix); the Cpu suite is this command. CI runs it as the job `cpu-target` beside `unit`: 61 s
+  on the runner, against 2 m 57 s for `unit`. Evidence: Unit, Cpu and Gpu smoke (RTX 5090). Opus keep after one fix
+  round.
+- M6 m6.m1 (`31e6e99`, merge `6dc36ef`): vector and matrix types in `#[gpu]` code, column-major. `from_cols` lowers to
+  `transpose(floatNxN(..))`, `from_rows` to `floatNxN(..)`, `mul_vecN` and `mul_matN` to `mul(m, x)`, `transpose` to
+  `transpose(m)`; the struct layout asserts use StorageV2. The golden `tests/fixtures/vectors.{rs,slang}` covers every
+  accepted form and a slangc test compiles it. Known limitations: the integer-vector `dot` lowers to
+  `OpSDot`/`OpUDot` (capability `DotProduct`), which naga 30 refuses on the SPIR-V route (WGSL passes; the fix is
+  m6.m2's overload table); a constant `Mat2::IDENTITY` or `Mat3::IDENTITY` hits the known SPIR-V crash for constant
+  float2x2 and float3x3, so m6.g1 must not dispatch the golden on SPIR-V as it is. Evidence: Unit, Slangc (2026.20),
+  check-ui and check-dual; CI green on `6dc36ef`. Opus keep after one fix round.
+- CI timing note: `gpu-software` took 1 m 25 s warm (on `8080320`) against 1 m 42 s cold.
 - M5 S5.4 (spike, local commit only): decision A. A lane-local prototype in which the macro drops
   the twin's cfg gate under `GUST_PROFILE=cpu` ran a non-test binary on `CpuDevice` with the host
   result, built with `--cfg gust_dual` without a duplicate impl, and passed `cargo test` under
@@ -179,7 +213,7 @@ D55 to D59.
   it as a limitation (D39). The struct-literal dual kernels emit Slang that nothing compiles yet;
   m6.m1 makes them compile. Opus keep after one fix round; gates on main at `76c83d5`.
 
-### Closed milestones M1 to M4 (summary)
+### Done slices of M1 to M4 (summary); M4 closes after m4.z
 
 The slice entries of M1 to M4 moved verbatim to [history/STATUS-M1-M4.md](history/STATUS-M1-M4.md) on 2026-11-02
 (slice m4.z); ROADMAP.md and DECISIONS.md hold the decisions and the per-item evidence. This summary keeps what
@@ -248,9 +282,10 @@ checks.
   expansion-tested; MSRV is checked by CI only; the root `fmt` and CI clippy did not reach `tests/ui` when m3.f1
   landed (m3.f2 added `tests/dual`).
 
-**M4, build-time targets and distribution.** The code chain is merged through m4.r; the cleanup slice m4.z and the M4
-sanity check (Fable and Codex) remain. Plan adopted 2026-11-01; D44 to D47 (profiles, committed and re-verified
-artifacts, `cargo-gust` and the Slang pin, weak compare-exchange). Tier: Gpu (RTX 5090) except where noted.
+**M4, build-time targets and distribution.** The code chain is merged through m4.r; the cleanup slice m4.z (entry above)
+is merged, and the M4 sanity check (Fable and Codex) follows. Plan adopted 2026-11-01; D44 to D47 (profiles,
+committed and re-verified artifacts, `cargo-gust` and the Slang pin, weak compare-exchange).
+Tier: Gpu (RTX 5090) except where noted.
 - Landed: spike S1 (local commit): with no Slang reachable, a precompiled vector-add verified through D17 and equal to
   the host reference on the RTX 5090; spike S2: the compile-time refusal (E0080) fires in all three native-setting
   cases, and a release build without a profile becomes native, with `GUST_PROFILE=dev` as the escape; m4.0 weak
@@ -265,22 +300,24 @@ artifacts, `cargo-gust` and the Slang pin, weak compare-exchange). Tier: Gpu (RT
   with every committed set re-blessed (`12ab066`). `**/gust-artifacts/** -text` is required, because
   `core.autocrlf` would convert committed WGSL.
 - Numbers later work cites: with 2026.20, particle-step SPIR-V read-backs equal those of 13.1 byte for byte on the
-  RTX 5090; the CI `slang` job recompiles `tests/precompiled` in 36 s locally; the `gpu-software` pins were 140 passed
-  over 18 result lines at m4.e1 and live in `GPU_SUITE_PIN` of `xtask/src/verify.rs` since m5.a2.
+  RTX 5090; the CI `slang` job recompiles `tests/precompiled` in 36 s locally, and its recompile step has run on Linux
+  (the job was green on `af0c2b6`, the step took 5 s); the `gpu-software` pins were 140 passed over 18 result lines at
+  m4.e1 and live in `GPU_SUITE_PIN` of `xtask/src/verify.rs` since m5.a2.
 - Slang 2026.20 fixes the WGSL template-list bug (shader-slang/slang 13566). The `__gust_keep` wrapper of Fix fx.wgsl
   is therefore redundant under 2026.20 (slice m4.z, 2026-11-02: 30 comparison-in-list shapes all validate in naga
   without it) but needed under 13.1 (13 of the 30 fail), and `gust::slang` runs whatever `slangc` is on `PATH`, so it
   stays until the library enforces the pin.
 - Open (the first two are for the M4 close): the manifest field names differ from the plan's draft, so D45 is amended;
   `gust::Job` needs a wasm-aware contract (`WgpuJob::wait` is a documented no-op on wasm32 and `status` reports
-  `Complete` early); the `crates/gust-wgpu/clippy.toml` guard against `std::thread::sleep` and `Instant::now` on
-  wasm32 needs one `allow` in `crates/gust-wgpu/src/lib.rs` (slice m4.z item 6, after m5.e2); a plain
+  `Complete` early); the wasm32 clippy ban on `std::thread::sleep` and `Instant::now` covers `gust-wgpu` only (m4.z),
+  not `gust` or `web-vector-add`; a plain
   `cargo install cargo-gust` needs `GUST_PROFILE=dev`; CI's `precompiled` job runs `--check-only` plus a NoAdapter run
   of the release consumer, and E1, E3, E8 and E7b stay local; a GPU-side no-op compare-exchange is not detected by a
   GPU test and there is no signed ledger case (m4.0); S2 did not measure the wasm32-to-web inference (m4.g2 builds
   under an explicit `GUST_PROFILE=web`).
-- Closed by m4.z stage 1: helper freshness judged by content and a byte check of all five copies of the committed
-  artifact set (the m4.r known gaps), and a `cargo gust doctor` warning for a `PATH` `slangc` of another version.
+- Closed by m4.z: helper freshness judged by a source-hash stamp and the Slang tag, and a byte check of all five copies
+  of the committed artifact set (the m4.r known gaps), a `cargo gust doctor` warning for a `PATH` `slangc` of another
+  version, and the wasm32 clippy guard of `gust-wgpu`.
 
 T13 remains deferred by owner; its work in progress is the git stash
 `WIP T13 active count deferred`, not the working tree. Do not apply, continue,
@@ -288,7 +325,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M3 sanity-check fixes (slice m3.h), then M4 (see the roadmap's Now and next)
+claim: roadmap M4 close (slice m4.z fix round, then the M4 sanity check); see the roadmap's Now and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no
 ```

@@ -466,6 +466,12 @@ pub(crate) fn list_tests() -> Result<(), String> {
 }
 
 pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
+    println!("{}", explanation(area)?);
+    Ok(())
+}
+
+/// The text `explain-check` prints for `area`, or the refusal for an unknown one.
+pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
     let area = area.unwrap_or("all");
     let message = match area {
         "macro" => "macro: validator/emitter/golden changes; fastest compiler-front-end proof",
@@ -528,8 +534,7 @@ pub(crate) fn explain_check(area: Option<&str>) -> Result<(), String> {
         }
         _ => return Err(format!("unknown check area `{area}`")),
     };
-    println!("{message}");
-    Ok(())
+    Ok(message)
 }
 
 pub(crate) fn export_artifacts() -> Result<(), String> {

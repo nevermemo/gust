@@ -48,9 +48,10 @@ particle-step SPIR-V modules that changed with the bump were executed on the ada
 2026.13.1 ones. The Linux archive (`slang-2026.20-linux-x86_64.tar.gz`) and the macOS archive were never executed
 before this slice: CI, whose `slang` job installs the pin with the manager, builds the helper with g++, runs the
 Slangc tier and re-checks the committed `tests/precompiled` artifacts with `cargo gust check --recompile` (so a pin
-bump without a re-bless fails there), and whose gpu-software job does the same on lavapipe, is the first run of the
-Linux archive. Its result is the evidence for that platform, and a red CI run there is a finding about the archive,
-not about this slice's Windows evidence. The macOS archive has no CI job and stays unexecuted.
+bump without a re-bless fails there), and whose gpu-software job does the same on lavapipe, has run the Linux archive:
+the `slang` job was green on `af0c2b6`, and its recompile step took 5 s. That run is the evidence for that platform,
+and a red run there would have been a finding about the archive, not about the Windows evidence. The macOS archive has
+no CI job and stays unexecuted.
 
 **The reflection helper in `cargo xtask` (slice m4.r).** `verify` (the Spirv suite), `check-feature reflection` (the
 Reflect suite) and `doctor` use the helper that `GUST_SLANG_REFLECT` names when it is set to a file other than this
@@ -59,7 +60,11 @@ in `crates/cargo-gust/src/slang.rs` (and, for `verify`, the output of `slangc -v
 such as one built on 2026.13.1, is refused with a message that names both tags. When the variable is unset, the helper
 is built from `SLANG_SDK` or `VULKAN_SDK` as before, and the result must carry the pin as well, so an SDK of another
 version is refused instead of being used silently (a VulkanSDK that ships 2026.13.1 therefore needs `SLANG_SDK` to
-name the managed 2026.20 install).
+name the managed 2026.20 install). `cargo gust slang build-helper` (which `cargo xtask build-slang-reflect` runs)
+keeps a helper only when a build stamp beside it holds the SHA-256 of the packaged C++ source and the helper prints
+the Slang tag of the SDK's own `slangc -version`; no file time plays a part (slice m4.z). Any other helper in the
+output directory is rebuilt, and the build says why. A helper built before the stamp existed is rebuilt once.
+`cargo gust doctor` warns when the first `slangc` on `PATH` is not the pin, naming both versions.
 A software Vulkan driver such as lavapipe counts as `Gpu (software)`, never as
 hardware evidence. Expected values come from an independent host reference, never from
 the shadow bodies (D04). A missing tool or adapter is a failure for its tier, not a skip.

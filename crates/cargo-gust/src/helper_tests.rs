@@ -180,41 +180,37 @@ fn the_source_is_rewritten_only_when_its_bytes_differ() {
     let scratch = Scratch::new("source");
     let path = write_source(&scratch.0).unwrap();
     assert_eq!(fs::read(&path).unwrap(), HELPER_SOURCE.as_bytes());
-    // A stale copy is replaced; a current one is not touched (its time stays the time of the last change).
+    // A stale copy is replaced.
     fs::write(&path, "stale").unwrap();
     write_source(&scratch.0).unwrap();
     assert_eq!(fs::read(&path).unwrap(), HELPER_SOURCE.as_bytes());
-    let before = fs::metadata(&path).unwrap().modified().unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(30));
+    // A current copy is not written at all: a read-only file is left alone without an error.
+    let mut permissions = fs::metadata(&path).unwrap().permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(&path, permissions.clone()).unwrap();
     write_source(&scratch.0).unwrap();
-    assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), before);
+    #[allow(clippy::permissions_set_readonly_false)]
+    permissions.set_readonly(false);
+    fs::set_permissions(&path, permissions).unwrap();
 }
 
 #[test]
-fn an_output_is_up_to_date_only_when_it_exists_and_no_input_is_newer() {
-    let scratch = Scratch::new("newer");
-    let output = scratch.0.join("out");
-    let input = scratch.0.join("in");
-    fs::write(&input, "x").unwrap();
-    assert_eq!(newer_than_all(&output, &[&input]), Ok(false));
-    std::thread::sleep(std::time::Duration::from_millis(30));
-    fs::write(&output, "x").unwrap();
-    assert_eq!(newer_than_all(&output, &[&input]), Ok(true));
-    std::thread::sleep(std::time::Duration::from_millis(30));
-    fs::write(&input, "y").unwrap();
-    assert_eq!(newer_than_all(&output, &[&input]), Ok(false));
-    assert!(newer_than_all(&output, &[&scratch.0.join("missing")]).is_err());
+fn the_source_hash_is_a_sha256_of_the_source_with_unix_line_endings() {
+    let hash = source_sha256();
+    assert_eq!(hash.len(), 64);
+    assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()), "{hash}");
+    let unix = HELPER_SOURCE.replace("\r\n", "\n");
+    assert_eq!(hash, sha256_hex(unix.as_bytes()));
 }
 
-/// A scratch directory with a source file and, a moment later, a helper file: the helper is newer than the source.
-fn helper_after_source(name: &str) -> (Scratch, PathBuf, PathBuf) {
+/// A scratch directory with a helper file and the build stamp a good build of this tool's probe source would leave.
+fn stamped_helper(name: &str, schema: &str, tag: &str) -> (Scratch, PathBuf, PathBuf) {
     let scratch = Scratch::new(name);
-    let source = scratch.0.join("gust-slang-reflect.cpp");
+    let stamp = scratch.0.join(HELPER_STAMP);
     let exe = scratch.0.join(executable_name(HELPER_NAME));
-    fs::write(&source, "x").unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(30));
     fs::write(&exe, "x").unwrap();
-    (scratch, source, exe)
+    fs::write(&stamp, stamp_text(schema, tag)).unwrap();
+    (scratch, exe, stamp)
 }
 
 fn reports(output: &'static str) -> impl Fn(&Path) -> Result<String, String> {
@@ -222,22 +218,12 @@ fn reports(output: &'static str) -> impl Fn(&Path) -> Result<String, String> {
 }
 
 #[test]
-fn a_helper_is_current_only_when_its_schema_and_slang_tag_are_the_sdks() {
-    let (_scratch, source, exe) = helper_after_source("staleness");
+fn a_helper_is_current_only_when_its_stamp_schema_and_slang_tag_are_this_tools_and_the_sdks() {
+    let (_scratch, exe, stamp) = stamped_helper("staleness", "2", "2026.20");
     let sdk = Ok("2026.20".to_owned());
     let current = reports("gust-slang-reflect schema=2 slang=2026.20\n");
-    assert_eq!(staleness(&exe, &source, &sdk, &current), Ok(None));
-    // Mutation (a): the helper is newer than the source and than the SDK's libraries (so the old rule, which compared
-    // file times only, said "up to date"), but it reports another Slang. It is stale, and the reason names both tags.
-    let library = source.with_file_name("slang-compiler.lib");
-    fs::write(&library, "x").unwrap();
-    fs::File::options()
-        .write(true)
-        .open(&library)
-        .unwrap()
-        .set_modified(fs::metadata(&source).unwrap().modified().unwrap())
-        .unwrap();
-    assert_eq!(newer_than_all(&exe, &[&source, &library]), Ok(true));
+    assert_eq!(staleness(&exe, &stamp, &sdk, &current), Ok(None));
+    // A helper built against another Slang is stale whatever the times of its files say; the reason names both tags.
     for old in [
         "2026.13.1",
         "2026.13.1-1-g84792eb15",
@@ -246,7 +232,7 @@ fn a_helper_is_current_only_when_its_schema_and_slang_tag_are_the_sdks() {
     ] {
         let output = format!("gust-slang-reflect schema=2 slang={old}\n");
         let older = move |_: &Path| Ok(output.clone());
-        let reason = staleness(&exe, &source, &sdk, &older).unwrap().unwrap();
+        let reason = staleness(&exe, &stamp, &sdk, &older).unwrap().unwrap();
         assert_eq!(
             reason,
             format!("it was built against Slang `{old}`, but the SDK is Slang `2026.20`")
@@ -255,10 +241,57 @@ fn a_helper_is_current_only_when_its_schema_and_slang_tag_are_the_sdks() {
 }
 
 #[test]
-fn a_helper_with_another_schema_or_no_readable_version_is_stale() {
-    let (_scratch, source, exe) = helper_after_source("staleness-schema");
+fn a_helper_without_this_sources_stamp_is_stale() {
+    let (_scratch, exe, stamp) = stamped_helper("staleness-stamp", "2", "2026.20");
     let sdk = Ok("2026.20".to_owned());
-    let reason = |output: &'static str| staleness(&exe, &source, &sdk, &reports(output)).unwrap();
+    let current = reports("gust-slang-reflect schema=2 slang=2026.20\n");
+    assert_eq!(staleness(&exe, &stamp, &sdk, &current), Ok(None));
+    // A stamp of another probe source (a helper built by a tool with a different source) is stale.
+    let other = stamp_text("2", "2026.20").replace(&source_sha256(), &"0".repeat(64));
+    fs::write(&stamp, other).unwrap();
+    let reason = staleness(&exe, &stamp, &sdk, &current).unwrap().unwrap();
+    assert!(
+        reason.starts_with("it was built from another probe source"),
+        "{reason}"
+    );
+    assert!(reason.contains("0000000000000000"), "{reason}");
+    // No stamp, or one that cannot be read, is stale too.
+    fs::write(&stamp, "garbage\n").unwrap();
+    let reason = staleness(&exe, &stamp, &sdk, &current).unwrap().unwrap();
+    assert!(reason.contains("cannot be read"), "{reason}");
+    fs::remove_file(&stamp).unwrap();
+    let reason = staleness(&exe, &stamp, &sdk, &current).unwrap().unwrap();
+    assert!(reason.starts_with("it has no build stamp"), "{reason}");
+    // A helper replaced after its build (the stamp names another tag than the helper prints) is stale.
+    fs::write(&stamp, stamp_text("2", "2026.19")).unwrap();
+    let reason = staleness(&exe, &stamp, &sdk, &current).unwrap().unwrap();
+    assert!(reason.contains("replaced after the build"), "{reason}");
+}
+
+#[test]
+fn a_stamp_does_not_depend_on_which_tool_wrote_it() {
+    // Two cargo-gust versions with the same probe source write byte-identical stamps for the same helper, so neither
+    // rebuilds the other's helper.
+    assert_eq!(
+        stamp_text("2", "2026.20"),
+        format!(
+            "gust-slang-reflect build stamp\nsource-sha256={}\nschema=2\nslang=2026.20\n",
+            source_sha256()
+        )
+    );
+    assert_eq!(
+        parse_stamp(&stamp_text("2", "2026.20")),
+        Some((source_sha256(), "2".to_owned(), "2026.20".to_owned()))
+    );
+    assert_eq!(parse_stamp("schema=2\nslang=x\n"), None);
+    assert_eq!(parse_stamp("source-sha256=\nschema=2\nslang=x\n"), None);
+}
+
+#[test]
+fn a_helper_with_another_schema_or_no_readable_version_is_stale() {
+    let (_scratch, exe, stamp) = stamped_helper("staleness-schema", "2", "2026.20");
+    let sdk = Ok("2026.20".to_owned());
+    let reason = |output: &'static str| staleness(&exe, &stamp, &sdk, &reports(output)).unwrap();
     assert_eq!(
         reason("gust-slang-reflect schema=1 slang=2026.20\n"),
         Some("it prints schema 1, but the source prints schema 2".to_owned())
@@ -274,14 +307,14 @@ fn a_helper_with_another_schema_or_no_readable_version_is_stale() {
     assert!(reason.contains("schema 3"), "{reason}");
     let failing = |_: &Path| Err::<String, String>("exit 3".to_owned());
     assert_eq!(
-        staleness(&exe, &source, &sdk, &failing),
+        staleness(&exe, &stamp, &sdk, &failing),
         Ok(Some("it cannot report its version (exit 3)".to_owned()))
     );
     // An SDK that cannot name its version never makes a helper current.
     let unknown = Err("no slangc".to_owned());
     let current = reports("gust-slang-reflect schema=2 slang=2026.20\n");
     assert_eq!(
-        staleness(&exe, &source, &unknown, &current),
+        staleness(&exe, &stamp, &unknown, &current),
         Ok(Some(
             "the SDK's slangc cannot report its version (no slangc)".to_owned()
         ))
@@ -289,30 +322,26 @@ fn a_helper_with_another_schema_or_no_readable_version_is_stale() {
 }
 
 #[test]
-fn a_missing_or_old_helper_is_stale_without_being_run() {
+fn a_missing_helper_is_stale_without_being_run_and_force_skips_the_judgement() {
     let scratch = Scratch::new("staleness-files");
-    let source = scratch.0.join("gust-slang-reflect.cpp");
+    let stamp = scratch.0.join(HELPER_STAMP);
     let exe = scratch.0.join(executable_name(HELPER_NAME));
     let sdk = Ok("2026.20".to_owned());
     let never = |_: &Path| -> Result<String, String> { panic!("the helper must not be run") };
-    fs::write(&source, "x").unwrap();
     assert_eq!(
-        staleness(&exe, &source, &sdk, &never),
+        staleness(&exe, &stamp, &sdk, &never),
         Ok(Some("it is not built yet".to_owned()))
     );
+    // A helper without a stamp is judged before it is run.
     fs::write(&exe, "x").unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(30));
-    fs::write(&source, "y").unwrap();
-    assert_eq!(
-        staleness(&exe, &source, &sdk, &never),
-        Ok(Some("it is older than its source".to_owned()))
-    );
+    let reason = staleness(&exe, &stamp, &sdk, &never).unwrap().unwrap();
+    assert!(reason.starts_with("it has no build stamp"), "{reason}");
     // `--force` skips the judgement altogether.
     let options = BuildOptions {
         force: true,
         ..BuildOptions::default()
     };
-    assert_eq!(up_to_date(&options, &exe, &source, &scratch.0), Ok(false));
+    assert_eq!(up_to_date(&options, &exe, &stamp, &scratch.0), Ok(false));
 }
 
 #[test]

@@ -48,7 +48,8 @@ Requirements:
 
 - The stable Rust toolchain (this checkout was validated with Rust 1.98.0;
   the manifest's older minimum is not independently verified)
-- `slangc` on `PATH` (tested with Slang 2026.20)
+- `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.20 (`cargo gust slang install` installs it, and
+  `cargo gust doctor` names a `slangc` of another version)
 - The native reflection helper, built once with
   `cargo xtask build-slang-reflect`. It needs the Slang
   SDK headers and import library (from `VULKAN_SDK` or `SLANG_SDK`) and a C++
@@ -104,8 +105,9 @@ cargo shows a build script's warning only for path and workspace packages, or wi
 wants the run-time bridge, such as the benchmark examples below, sets `GUST_PROFILE=dev` explicitly
 (`GUST_PROFILE=dev cargo run --release -p polynomial`; in PowerShell `$env:GUST_PROFILE = "dev"` first). The
 repository's `cargo xtask` commands run their cargo children under `GUST_PROFILE=dev`, whatever the parent
-environment holds (a different value is logged and overridden), which covers `check-full`'s release tests. No
-precompiled artifacts exist before slice m4.c, so until then a strict build of any kernel fails by design.
+environment holds (a different value is logged and overridden), which covers `check-full`'s release tests. A strict
+build needs the artifacts of its kernels, committed in `gust-artifacts/` (written by `cargo gust build` and re-checked
+by `cargo gust check`, D45); without them the build fails at the kernel by design.
 
 The `cpu` profile (D21, D51) is the production CPU target. It is never inferred: a release build without the variable
 stays `native`, so choosing the CPU is always explicit (`GUST_PROFILE=cpu cargo build --release`). The `#[gpu]` macro
@@ -167,8 +169,9 @@ Purpose-built check commands keep the inner loop honest:
 `cargo xtask verify --mode fast|gpu|examples|artifacts|full` exposes the same staged
 checks. Routine verify modes do not rewrite `.ai/VALIDATION.json` unless passed
 `--record`; `check-full` and `verify --mode full` record by default. The native
-reflection helper build is timestamp-gated and still runs `--version`, so repeated
-checks do not relink unchanged C++ code.
+reflection helper build is gated by content: a stamp beside the helper holds the hash of its C++ source, and
+the helper's `--version` must give the Slang tag of the SDK, so repeated checks do not relink an unchanged helper
+and a helper built against another Slang is rebuilt.
 
 CI also runs the Gpu suite on Mesa lavapipe (`.github/workflows/gpu-software.yml`): `Gpu (software)` evidence, never hardware evidence and never a required check ([VALIDATION](docs/development/VALIDATION.md)).
 
@@ -480,6 +483,10 @@ The direct syntax translator currently supports:
 - struct literals as a `let` initializer or the right side of an assignment (D07);
 - `Option<T>` and `Result<T, T>` as local and helper values, including `if let` and
   a statement-only `match` with `Ok(x)`/`Err(e)` block arms (D14);
+- the vector and matrix types of `gust::math` (`Vec2` to `Vec4`, `IVec2` to `IVec4`, `UVec2` to `UVec4`, `Mat2` to
+  `Mat4`) in `#[gpu]` code, with swizzles, `dot`, `from_cols`, `from_rows`, `mul_vecN`, `mul_matN` and `transpose`,
+  lowered to Slang vector and matrix operations, column-major (M6 m6.m1; the integer `dot` fails on the SPIR-V route,
+  see [DIAGNOSTICS](docs/DIAGNOSTICS.md)). Creating a typed buffer of them compiles but panics at run time until m6.g1;
 - statement-only atomics on `RWStructuredBuffer<u32/i32>` elements: `atomic_add`,
   `atomic_exchange`, and `atomic_compare_exchange`, plus unsigned-only
   `atomic_min`/`atomic_max` (T10);
@@ -511,9 +518,9 @@ Around the translator, the host side currently provides:
   storage-argument count, and run-time checks of access, layout, device instance,
   length and aliasing (see "Running a kernel");
 - compile-time assertions emitted with `#[gpu]` that every buffer element type and
-  struct field is a padding-free StorageV1 layout matching Rust's size and
-  alignment (a failing one is rustc error E0080 that names the field or the
-  parameter), and a run-time assertion with the same meaning when a typed buffer,
+  struct field is a padding-free layout (StorageV1, or StorageV2 where a vector or matrix is involved) matching Rust's
+  size and alignment (a failing one is rustc error E0080 that names the field or the
+  parameter), and a run-time StorageV1 assertion when a typed buffer,
   pool buffer or indirect-arguments buffer is created for a hand-written `GpuPod`;
 - launch-limit checks (`Error::DeviceLimit`) against the opened device's limits or
   lower ones from `with_limits`, before compilation and encoding;
@@ -524,9 +531,9 @@ Around the translator, the host side currently provides:
   host does not check.
 
 Its CPU backend, `gust::cpu`, runs the Rust body of each kernel that has a typed call, unless it opts out with
-`#[kernel(cpu = "unsupported")]`, as a test-only twin (emitted under
-`cfg(test)` or `--cfg gust_dual`, never in a production build; a production CPU target is
-roadmap M5). The twin is test evidence next to the GPU and the independent host
+`#[kernel(cpu = "unsupported")]`: as a test twin (emitted under
+`cfg(test)` or `--cfg gust_dual`) and, under `GUST_PROFILE=cpu`, as the production CPU target described above.
+The twin is test evidence next to the GPU and the independent host
 reference, never in place of them, and never GPU evidence; where it may differ from the
 GPU, [SEMANTICS](docs/SEMANTICS.md) lists the limitation. It does not yet provide multi-dimensional dispatch
 (roadmap M7), a compile-time portable limit floor (roadmap M8), fallible buffer

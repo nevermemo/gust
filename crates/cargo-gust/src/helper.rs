@@ -19,6 +19,7 @@ use std::{
 
 use crate::{
     msvc,
+    sha256::sha256_hex,
     slang::{slangc_in, slangc_version},
     tools::{self, executable_name, find_on_path},
 };
@@ -159,31 +160,86 @@ fn io_error(path: &Path, error: &std::io::Error) -> String {
     format!("{}: {error}", path.display())
 }
 
+/// The build stamp, written next to the helper after a good build.
+pub(crate) const HELPER_STAMP: &str = "gust-slang-reflect.stamp";
+
+/// SHA-256 of the packaged probe source, with line endings normalised (a Windows checkout may convert the file), so
+/// that every cargo-gust built from the same probe source computes the same hash.
+pub(crate) fn source_sha256() -> String {
+    sha256_hex(HELPER_SOURCE.replace("\r\n", "\n").as_bytes())
+}
+
+/// The text of a build stamp: the hash of the probe source, and the schema and Slang tag the helper reported.
+pub(crate) fn stamp_text(schema: &str, tag: &str) -> String {
+    format!(
+        "gust-slang-reflect build stamp\nsource-sha256={}\nschema={schema}\nslang={tag}\n",
+        source_sha256()
+    )
+}
+
+/// The three values of a stamp: the source hash, the schema and the Slang tag.
+fn parse_stamp(text: &str) -> Option<(String, String, String)> {
+    let value = |key: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(key))
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    Some((
+        value("source-sha256=")?,
+        value("schema=")?,
+        value("slang=")?,
+    ))
+}
+
 /// Why the helper at `exe` has to be rebuilt for an SDK whose `slangc -version` is `sdk_tag`, or `None` when it is
-/// current. `version_of` runs `<helper> --version` and returns what it printed.
+/// current. `stamp` is the build stamp beside it; `version_of` runs `<helper> --version` and returns what it printed.
 ///
-/// Freshness is judged by content, not by the times of the SDK's libraries: a release ships its libraries with the
-/// times of its own build, so a helper built against an older Slang looked newer than the 2026.20 libraries and was
-/// reported "up to date" (m4.r review, S6). The helper reads its Slang build tag from the library it loads (the copy
-/// beside it), so the smallest sound rule is that it is current when
+/// Freshness is judged by content, and no file time plays a part: a release ships its libraries with the times of its
+/// own build, so a helper built against an older Slang looked newer than the 2026.20 libraries and was reported "up to
+/// date" (m4.r review, S6), and a copied probe source or helper carries a time that says nothing about its bytes. The
+/// helper is current when
 ///
-/// 1. it is not older than the packaged source (the source file keeps its time while its bytes are unchanged);
-/// 2. it prints the schema of that source ([`HELPER_SCHEMA`]); and
-/// 3. its Slang build tag is the one the SDK's own `slangc -version` prints.
+/// 1. the stamp written after its build holds the SHA-256 of the packaged probe source, so it was built from this
+///    source (a missing or unreadable stamp means the source it came from is unknown);
+/// 2. it prints the schema of that source ([`HELPER_SCHEMA`]);
+/// 3. its Slang build tag, which it reads from the library it loads (the copy beside it), is the one the SDK's own
+///    `slangc -version` prints; and
+/// 4. the stamp and the helper agree on schema and tag, so a replacement that prints another schema or tag is
+///    rebuilt (one that prints the same schema and tag, say a copied-in helper or a rebuild by an older
+///    cargo-gust that left the stamp in place, is not told apart).
 ///
-/// An SDK whose `slangc` cannot report a version is never judged current. Two builds with the same tag but different
-/// library bytes are not told apart; a tag names a build, and `--force` is for that case.
+/// Two cargo-gust versions with the same probe source therefore leave each other's helper alone. An SDK whose
+/// `slangc` cannot report a version is never judged current. Two builds with the same tag but different library bytes
+/// are not told apart; a tag names a build, and `--force` is for that case.
 pub(crate) fn staleness(
     exe: &Path,
-    source: &Path,
+    stamp: &Path,
     sdk_tag: &Result<String, String>,
     version_of: &dyn Fn(&Path) -> Result<String, String>,
 ) -> Result<Option<String>, String> {
     if !exe.is_file() {
         return Ok(Some("it is not built yet".to_owned()));
     }
-    if !newer_than_all(exe, &[source])? {
-        return Ok(Some("it is older than its source".to_owned()));
+    let Ok(stamp_text) = fs::read_to_string(stamp) else {
+        return Ok(Some(format!(
+            "it has no build stamp ({}), so the probe source it was built from is unknown",
+            stamp.display()
+        )));
+    };
+    let Some((stamped_source, stamped_schema, stamped_tag)) = parse_stamp(&stamp_text) else {
+        return Ok(Some(format!(
+            "its build stamp ({}) cannot be read",
+            stamp.display()
+        )));
+    };
+    let source = source_sha256();
+    if stamped_source != source {
+        return Ok(Some(format!(
+            "it was built from another probe source (stamp {}, this tool {})",
+            stamped_source.get(..16).unwrap_or(&stamped_source),
+            source.get(..16).unwrap_or(&source)
+        )));
     }
     let sdk_tag = match sdk_tag {
         Ok(tag) => tag,
@@ -211,30 +267,16 @@ pub(crate) fn staleness(
             "it was built against Slang `{tag}`, but the SDK is Slang `{sdk_tag}`"
         )));
     }
+    if stamped_schema != schema || stamped_tag != tag {
+        return Ok(Some(format!(
+            "its build stamp says schema {stamped_schema} and Slang `{stamped_tag}`, but it prints schema {schema} \
+             and Slang `{tag}`: it was replaced after the build"
+        )));
+    }
     Ok(None)
 }
 
-/// Whether `output` exists and is not older than any of `inputs`.
-fn newer_than_all(output: &Path, inputs: &[&Path]) -> Result<bool, String> {
-    if !output.is_file() {
-        return Ok(false);
-    }
-    let modified = |path: &Path| {
-        fs::metadata(path)
-            .and_then(|metadata| metadata.modified())
-            .map_err(|error| io_error(path, &error))
-    };
-    let output_time = modified(output)?;
-    for input in inputs {
-        if output_time < modified(input)? {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
-/// Write the packaged source into `dir` and return its path. An existing file with the same bytes is left alone, so
-/// its modification time keeps meaning "when the source last changed".
+/// Write the packaged source into `dir` and return its path. An existing file with the same bytes is left alone.
 fn write_source(dir: &Path) -> Result<PathBuf, String> {
     let path = dir.join("gust-slang-reflect.cpp");
     if fs::read(&path).ok().as_deref() != Some(HELPER_SOURCE.as_bytes()) {
@@ -243,9 +285,9 @@ fn write_source(dir: &Path) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Run `<exe> --version` and return the Slang build tag it reports.
-fn helper_version(exe: &Path) -> Result<String, String> {
-    tools::helper_slang_version(exe)
+/// Run `<exe> --version` and return the schema and the Slang build tag it reports.
+fn helper_report(exe: &Path) -> Result<(String, String), String> {
+    tools::parse_helper_report(&tools::helper_version_output(exe)?)
 }
 
 /// Decide whether the build is skipped: it is, unless `force` is set or [`staleness`] gives a reason. A reason is
@@ -253,14 +295,14 @@ fn helper_version(exe: &Path) -> Result<String, String> {
 fn up_to_date(
     options: &BuildOptions,
     exe: &Path,
-    source: &Path,
+    stamp: &Path,
     sdk_root: &Path,
 ) -> Result<bool, String> {
     if options.force {
         return Ok(false);
     }
     let sdk_tag = slangc_version(&slangc_in(sdk_root));
-    match staleness(exe, source, &sdk_tag, &tools::helper_version_output)? {
+    match staleness(exe, stamp, &sdk_tag, &tools::helper_version_output)? {
         None => Ok(true),
         Some(reason) => {
             if exe.is_file() {
@@ -286,7 +328,16 @@ pub(crate) fn build(options: &BuildOptions) -> Result<(PathBuf, String), String>
     let source = write_source(out_dir)?;
     let lib_dir = sdk_root.join("lib");
     let exe = out_dir.join(executable_name(HELPER_NAME));
-    let current = up_to_date(options, &exe, &source, sdk_root)?;
+    let stamp = out_dir.join(HELPER_STAMP);
+    let current = up_to_date(options, &exe, &stamp, sdk_root)?;
+    if !current {
+        // A rebuild starts without a stamp, so a build that fails half way never leaves one that vouches for it.
+        match fs::remove_file(&stamp) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error(&stamp, &error)),
+        }
+    }
     if cfg!(windows) {
         build_windows(
             current,
@@ -300,7 +351,10 @@ pub(crate) fn build(options: &BuildOptions) -> Result<(PathBuf, String), String>
     } else {
         build_unix(current, &source, &include, &lib_dir, &exe)?;
     }
-    let tag = helper_version(&exe)?;
+    let (schema, tag) = helper_report(&exe)?;
+    if !current {
+        fs::write(&stamp, stamp_text(&schema, &tag)).map_err(|error| io_error(&stamp, &error))?;
+    }
     Ok((exe, tag))
 }
 

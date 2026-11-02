@@ -658,9 +658,10 @@ fn join_within_waits_for_a_thread_that_ends_and_gives_up_on_one_that_does_not() 
 // ---------------------------------------------------------------------------------------------------------------
 // The committed artifacts of the example
 
-/// The committed copies of the kernels fixture's artifact, besides the web example (which has a test of its own
-/// below). Each holds the kernel's WGSL and reflection under the same file names; the manifests are not compared
-/// here, because the crate fixtures and the UI sets keep a manifest of their own.
+/// The five committed copies of the kernels fixture's artifact, the web example's among them (its own test below also
+/// compares its manifest and file set). Each holds the kernel's WGSL and reflection under the same file names; the
+/// manifests of the others are not compared here, because the crate fixtures and the UI sets keep a manifest of their
+/// own.
 const ARTIFACT_COPIES: [&str; 5] = [
     "examples/web-vector-add/gust-artifacts",
     "tests/ui/profile-native-artifact/gust-artifacts",

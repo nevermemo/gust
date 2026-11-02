@@ -17,6 +17,8 @@
 //! The step is not affine on purpose: an affine recurrence (`x * a + c`) is folded into a closed form by the shader
 //! compiler and ran in 2.5 ms for 2^25 iterations, too short to keep the device busy.
 
+#![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
+
 use std::{
     future::Future,
     pin::pin,

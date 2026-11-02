@@ -495,10 +495,11 @@ adapter in section 1.
   that consume the arguments are GPU-only.
 - **Scalar coretests** (`tests/fixtures/coretests.rs`, slice m5.d1): the scalar integer, `bool` and float cases
   transcribed from the Rust core tests, one per row in `docs/development/CORETESTS.md`, which also holds the pin, the
-  exclusions and the acceptance of each row. Not yet proven: until slice m5.d2 has run the same kernels on the GPU,
-  the rows only show that the CPU twin equals the literal (`coretests_twin`). A row becomes a statement of this
-  section when its GPU half exists, and a float row only under the acceptance that page gives (the 2.5 ULP set of
-  `/`, the two-neighbour set of `i32 as f32` beyond +/-2^24).
+  exclusions and the acceptance of each row. Slice m5.d2 runs the same kernels on the GPU
+  (`crates/gust-wgpu/tests/coretests.rs`, part of `check-feature gpu-semantics`): all 84 cases equal their literal on
+  the CPU twin and on the GPU, on the RTX 5090 and on Mesa lavapipe (llvmpipe). A row is a statement of this section
+  under the acceptance that page gives: exact integers, the 2.5 ULP set of float `/`, and the two-neighbour set of
+  `i32 as f32` beyond +/-2^24.
 
 Everything else on this page stays **spec-allowed**, **unspecified**, **measured** or **planned**. The floats of
 section 4 remain derived and measured on the examples listed under "Derived kernels" (polynomial, signal-pipeline,

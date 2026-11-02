@@ -848,8 +848,9 @@ fn the_packaged_crates_carry_versions_on_their_path_dependencies() {
                 .join("Cargo.toml"),
         )
         .unwrap();
+        // `gust-wgpu` also keeps its `clippy.toml` out of the package (it only configures this workspace's lint).
         assert!(
-            manifest.contains("exclude = [\"tests/\", \"examples/\", \"benches/\"]"),
+            manifest.contains("exclude = [\"tests/\", \"examples/\", \"benches/\""),
             "{name}"
         );
     }

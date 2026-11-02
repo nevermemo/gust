@@ -1,9 +1,10 @@
 //! Backend-neutral typed dispatch surface (roadmap M2, slice m2.a).
 //!
 //! A `#[gpu]` kernel handle (a [`Kernel`]) gets generated `call`, `submit` and `dispatch` functions, except a kernel
-//! with a `Uniform<T>`/`ConstantBuffer<T>` parameter, which gets none of the three; `call` turns
+//! with a `Uniform<T>`/`ConstantBuffer<T>` parameter, which gets none of the three until the macro learns uniforms
+//! (slice m6.u2; the host types for them are here and in the backends); `call` turns
 //! typed buffer references into a [`Call`]: the kernel, the element count and one erased [`TypedDevice::Binding`] per
-//! storage parameter. This module holds only what that generated code and the backends share:
+//! storage or uniform parameter. This module holds only what that generated code and the backends share:
 //!
 //! - [`TypedDevice`]: extension of [`Device`] that names the erased, `Copy` binding of one device. [`Device`] itself is
 //!   unchanged, so existing backends compile as before.
@@ -23,7 +24,8 @@
 //! # Contract for every backend
 //!
 //! - **The backend checks every binding against `call.kernel()` at submit**, and does not trust the binding or the
-//!   generated code: the binding's access equals the descriptor's access for that parameter, its element layout equals
+//!   generated code: the binding's kind ([`BindingKind`]) is the parameter's, the binding's access equals the
+//!   descriptor's access for that parameter, its element layout equals
 //!   the parameter's layout, it belongs to this device *instance* (two devices of one type share a `Binding` type), and
 //!   its length obeys the rule below, measured at submit and not when the call was built. A hand-built `Call` can have
 //!   the right count and still the wrong order, access, element or device.
@@ -31,7 +33,8 @@
 //!   [`Access::ReadWrite`] the backend rejects the call at run time with an error that names both parameters, before
 //!   it writes anything (S0 decision A; `gust-wgpu` implements this in m2.c).
 //! - `LengthRule::Shared` bindings must hold exactly `element_count` elements; `LengthRule::Independent` ones only
-//!   need to be non-empty when `element_count` is non-zero (the rules of the existing runtime checks).
+//!   need to be non-empty when `element_count` is non-zero (the rules of the existing runtime checks). A uniform
+//!   holds one value and has no element count: it is `Independent` whatever the argument says, and never empty.
 //!
 //! # What the tests in this file are
 //!
@@ -47,6 +50,69 @@ use core::marker::PhantomData;
 
 use crate::{Access, Device, GpuPod, Kernel, KernelDescriptor, ParameterKind};
 
+/// What a binding of a typed call binds: a storage buffer or a uniform (constant) buffer.
+///
+/// Every backend binding carries its kind, and the backend checks it against the kind of the descriptor parameter it
+/// is bound to ([`BindingKind::of`]) before anything else, so a hand-built [`Call`] that puts a storage buffer in a
+/// uniform parameter is rejected at run time. The typed surface rules that out at compile time through
+/// [`Resource::Kind`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum BindingKind {
+    /// A storage buffer: [`ParameterKind::Storage`].
+    Storage,
+    /// A uniform (constant) buffer holding exactly one value: [`ParameterKind::Uniform`].
+    Uniform,
+}
+
+impl BindingKind {
+    /// The binding kind a parameter of `kind` takes; `None` for a parameter that is not bound as a resource.
+    pub const fn of(kind: ParameterKind) -> Option<Self> {
+        match kind {
+            ParameterKind::Storage => Some(Self::Storage),
+            ParameterKind::Uniform => Some(Self::Uniform),
+            ParameterKind::Invocation | ParameterKind::Value => None,
+        }
+    }
+}
+
+/// The marker types of [`Resource::Kind`].
+///
+/// They are named by path (`gust::kind::Storage`, `gust::kind::Uniform`) because `gust::Storage` and `gust::Uniform`
+/// are the kernel-side parameter types. The trait is sealed: the two kinds are the only ones a binding can have.
+pub mod kind {
+    use super::BindingKind;
+
+    mod sealed {
+        pub trait Sealed {}
+    }
+
+    /// The kind of a [`Resource`](super::Resource): [`Storage`] or [`Uniform`].
+    pub trait ResourceKind: sealed::Sealed + 'static {
+        /// The [`BindingKind`] a binding of this resource carries.
+        const BINDING: BindingKind;
+    }
+
+    /// Marker: the resource is a storage buffer (many elements, every length rule applies).
+    #[derive(Clone, Copy, Debug)]
+    pub enum Storage {}
+
+    /// Marker: the resource is a uniform buffer (one value, always `Independent` for the length rule).
+    #[derive(Clone, Copy, Debug)]
+    pub enum Uniform {}
+
+    impl sealed::Sealed for Storage {}
+    impl sealed::Sealed for Uniform {}
+
+    impl ResourceKind for Storage {
+        const BINDING: BindingKind = BindingKind::Storage;
+    }
+
+    impl ResourceKind for Uniform {
+        const BINDING: BindingKind = BindingKind::Uniform;
+    }
+}
+
 /// Extension of [`Device`] for typed calls (implemented by `gust-wgpu` in m2.c).
 ///
 /// [`Device`] is not modified: the binding type lives here so a backend that has no typed surface yet keeps compiling.
@@ -55,7 +121,7 @@ pub trait TypedDevice: Device {
     type Binding<'r>: Copy;
 }
 
-/// A device that can run kernel `K`, which has `N` storage parameters.
+/// A device that can run kernel `K`, which has `N` storage and uniform parameters.
 ///
 /// GPU backends implement this for every `K`; a CPU backend implements it per kernel, next to the body it executes
 /// (M3). Generated `submit` and `dispatch` functions require the device of their first buffer to implement
@@ -127,6 +193,7 @@ pub enum LengthRule {
 /// # impl<const ID: u8, T: GpuPod> Resource for Buf<ID, T> {
 /// #     type Element = T;
 /// #     type Device = Dev<ID>;
+/// #     type Kind = gust::kind::Storage;
 /// #     fn bind<'r>(&'r self, _: Access, _: LengthRule) {}
 /// # }
 /// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
@@ -176,6 +243,7 @@ pub enum LengthRule {
 /// # impl<const ID: u8, T: GpuPod> Resource for Buf<ID, T> {
 /// #     type Element = T;
 /// #     type Device = Dev<ID>;
+/// #     type Kind = gust::kind::Storage;
 /// #     fn bind<'r>(&'r self, _: Access, _: LengthRule) {}
 /// # }
 /// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
@@ -225,6 +293,7 @@ pub enum LengthRule {
 /// # impl<const ID: u8, T: GpuPod> Resource for Buf<ID, T> {
 /// #     type Element = T;
 /// #     type Device = Dev<ID>;
+/// #     type Kind = gust::kind::Storage;
 /// #     fn bind<'r>(&'r self, _: Access, _: LengthRule) {}
 /// # }
 /// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
@@ -251,6 +320,108 @@ pub enum LengthRule {
 /// assert_eq!(built.element_count(), 1);
 /// assert_eq!(built.kernel().name, "probe");
 /// ```
+///
+/// A uniform where a storage buffer is expected does not compile ([`Resource::Kind`]; a generated call names
+/// `Kind = gust::kind::Storage` for a buffer parameter and `Kind = gust::kind::Uniform` for a uniform one):
+///
+/// ```compile_fail
+/// # use gust::*;
+/// # use core::{marker::PhantomData, time::Duration};
+/// # struct Dev;
+/// # struct Done;
+/// # impl Job for Done {
+/// #     type Error = ();
+/// #     fn status(&self) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait_timeout(&self, _: Duration) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait(&self) -> Result<(), ()> { Ok(()) }
+/// # }
+/// # impl Device for Dev {
+/// #     type Error = ();
+/// #     type Dispatch<'r> = ();
+/// #     type Job<'d> = Done where Self: 'd;
+/// #     fn submit<'d, 'r>(&'d self, _: &[()]) -> Result<Done, ()> { Ok(Done) }
+/// # }
+/// # impl TypedDevice for Dev { type Binding<'r> = (); }
+/// # struct Buf<K, T>(PhantomData<(K, T)>);
+/// # impl<K: gust::kind::ResourceKind, T: GpuPod> Resource for Buf<K, T> {
+/// #     type Element = T;
+/// #     type Device = Dev;
+/// #     type Kind = K;
+/// #     fn bind<'r>(&'r self, _: Access, _: LengthRule) {}
+/// # }
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+/// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+/// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
+/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
+/// #     };
+/// # }
+/// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, Dev, Probe, 2>
+/// # where
+/// #     R0: Resource<Element = f32, Device = Dev, Kind = gust::kind::Storage> + 'r,
+/// #     R1: Resource<Element = f32, Device = Dev, Kind = gust::kind::Storage> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadOnly), b.into().bind(Access::ReadWrite)])
+/// # }
+/// let a = Buf::<gust::kind::Storage, f32>(PhantomData);
+/// let b = Buf::<gust::kind::Uniform, f32>(PhantomData);
+/// let _ = call(1, &a, &b);
+/// ```
+///
+/// The control differs in exactly one place (the kind of `b`):
+///
+/// ```
+/// # use gust::*;
+/// # use core::{marker::PhantomData, time::Duration};
+/// # struct Dev;
+/// # struct Done;
+/// # impl Job for Done {
+/// #     type Error = ();
+/// #     fn status(&self) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait_timeout(&self, _: Duration) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+/// #     fn wait(&self) -> Result<(), ()> { Ok(()) }
+/// # }
+/// # impl Device for Dev {
+/// #     type Error = ();
+/// #     type Dispatch<'r> = ();
+/// #     type Job<'d> = Done where Self: 'd;
+/// #     fn submit<'d, 'r>(&'d self, _: &[()]) -> Result<Done, ()> { Ok(Done) }
+/// # }
+/// # impl TypedDevice for Dev { type Binding<'r> = (); }
+/// # struct Buf<K, T>(PhantomData<(K, T)>);
+/// # impl<K: gust::kind::ResourceKind, T: GpuPod> Resource for Buf<K, T> {
+/// #     type Element = T;
+/// #     type Device = Dev;
+/// #     type Kind = K;
+/// #     fn bind<'r>(&'r self, _: Access, _: LengthRule) {}
+/// # }
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+/// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+/// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
+/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
+/// #     };
+/// # }
+/// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, Dev, Probe, 2>
+/// # where
+/// #     R0: Resource<Element = f32, Device = Dev, Kind = gust::kind::Storage> + 'r,
+/// #     R1: Resource<Element = f32, Device = Dev, Kind = gust::kind::Storage> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadOnly), b.into().bind(Access::ReadWrite)])
+/// # }
+/// let a = Buf::<gust::kind::Storage, f32>(PhantomData);
+/// let b = Buf::<gust::kind::Storage, f32>(PhantomData);
+/// let built = call(1, &a, &b);
+/// assert_eq!(built.kernel().name, "probe");
+/// ```
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a GUST buffer of a typed device",
     label = "typed calls take the buffer type of a GUST backend; wrap or allocate the data through that backend"
@@ -260,6 +431,11 @@ pub trait Resource {
     type Element: GpuPod;
     /// The device type this buffer belongs to; every argument of one generated call must name the same device type.
     type Device: TypedDevice;
+    /// [`kind::Storage`] for a buffer of many elements, [`kind::Uniform`] for a uniform buffer holding one value.
+    /// A generated call names the kind of each parameter, so a uniform where a buffer is expected, or the other way
+    /// round, is a compile error. The binding carries the same kind ([`BindingKind`]) and the backend checks it again
+    /// at submit, for a hand-built [`Call`].
+    type Kind: kind::ResourceKind;
 
     /// The erased binding of this buffer for one dispatch.
     fn bind<'r>(
@@ -318,10 +494,10 @@ impl<K: Kernel, const N: usize> Described<K, N> {
     /// caller needs constant promotion of an associated constant (plan F12).
     const DESCRIPTOR: &'static KernelDescriptor = &K::DESCRIPTOR;
 
-    /// Evaluated whenever `Call::new` is instantiated: the kernel's storage-parameter count must be `N`.
-    const STORAGE_PARAMETERS_MATCH: () = assert!(
-        K::DESCRIPTOR.storage_parameter_count() == N,
-        "Call<_, K, N>: N must equal the number of storage parameters of K::DESCRIPTOR"
+    /// Evaluated whenever `Call::new` is instantiated: the kernel's storage plus uniform parameters must number `N`.
+    const BOUND_PARAMETERS_MATCH: () = assert!(
+        K::DESCRIPTOR.storage_parameter_count() + K::DESCRIPTOR.uniform_parameter_count() == N,
+        "Call<_, K, N>: N must equal the number of storage plus uniform parameters of K::DESCRIPTOR"
     );
 }
 
@@ -342,13 +518,29 @@ impl KernelDescriptor {
         }
         count
     }
+
+    /// Number of `Uniform` parameters (the other ones a typed call binds).
+    ///
+    /// Not part of the stable surface, like [`KernelDescriptor::storage_parameter_count`].
+    #[doc(hidden)]
+    pub const fn uniform_parameter_count(&self) -> usize {
+        let mut index = 0;
+        let mut count = 0;
+        while index < self.parameters.len() {
+            if matches!(self.parameters[index].kind, ParameterKind::Uniform) {
+                count += 1;
+            }
+            index += 1;
+        }
+        count
+    }
 }
 
-/// A typed kernel call: the kernel, the element count and one binding per storage parameter.
+/// A typed kernel call: the kernel, the element count and one binding per storage or uniform parameter.
 ///
 /// It is a plain value (build once, submit as often as needed) and what the generated `call` returns, what
 /// [`Run::submit_call`] consumes and what the staged graph records. The descriptor is `K::DESCRIPTOR` and `N` is
-/// the kernel's storage-parameter count: [`Call::new`] takes neither as an argument.
+/// the kernel's number of storage plus uniform parameters: [`Call::new`] takes neither as an argument.
 #[must_use = "a `Call` does nothing until a device runs it"]
 pub struct Call<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> {
     kernel: &'static KernelDescriptor,
@@ -358,12 +550,12 @@ pub struct Call<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> {
 }
 
 impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
-    /// Build the call of kernel `K`: `bindings` are its storage parameters in declaration order.
+    /// Build the call of kernel `K`: `bindings` are its storage and uniform parameters in declaration order.
     ///
     /// The descriptor is `K::DESCRIPTOR`, so the public metadata cannot disagree with the kernel type, and `N` must
-    /// equal the number of `Storage` parameters of that descriptor. A mismatch is a compile error when the call is
-    /// instantiated (a failed constant assertion). That is after monomorphisation: `cargo check`, clippy and
-    /// rust-analyzer do not report it, and it never fires for a `call` nothing uses. This is therefore a backstop;
+    /// equal the number of `Storage` plus `Uniform` parameters of that descriptor. A mismatch is a compile error
+    /// when the call is instantiated (a failed constant assertion). That is after monomorphisation: `cargo check`,
+    /// clippy and rust-analyzer do not report it, and it never fires for a `call` nothing uses. This is a backstop;
     /// the `#[gpu]` macro also emits a non-generic `const _: () = assert!(..)` per kernel. The count is the only
     /// property of `bindings` that is checked here: order, access, element and device are the generated code's
     /// and the backend's business.
@@ -441,8 +633,85 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// let call = build::<2>();
     /// assert_eq!(call.kernel().name, "probe");
     /// ```
+    ///
+    /// A uniform parameter counts: a kernel with one storage and one uniform parameter takes `N = 2`, and `N = 1`
+    /// (the storage count alone) does not compile.
+    ///
+    /// ```compile_fail
+    /// # use gust::*;
+    /// # use core::time::Duration;
+    /// # struct Dev;
+    /// # struct Done;
+    /// # impl Job for Done {
+    /// #     type Error = ();
+    /// #     fn status(&self) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+    /// #     fn wait_timeout(&self, _: Duration) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+    /// #     fn wait(&self) -> Result<(), ()> { Ok(()) }
+    /// # }
+    /// # impl Device for Dev {
+    /// #     type Error = ();
+    /// #     type Dispatch<'r> = ();
+    /// #     type Job<'d> = Done where Self: 'd;
+    /// #     fn submit<'d, 'r>(&'d self, _: &[()]) -> Result<Done, ()> { Ok(Done) }
+    /// # }
+    /// # impl TypedDevice for Dev { type Binding<'r> = (); }
+    /// # const fn p(name: &'static str, kind: ParameterKind) -> ParameterDescriptor {
+    /// #     ParameterDescriptor { name, rust_type: "f32", kind, access: Access::ReadOnly, resource_layout: None, binding: None }
+    /// # }
+    /// # struct Probe;
+    /// # impl Kernel for Probe {
+    /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+    /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+    /// #         parameters: &[p("a", ParameterKind::Storage), p("u", ParameterKind::Uniform)],
+    /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
+    /// #     };
+    /// # }
+    /// # fn build<const N: usize>() -> Call<'static, Dev, Probe, N> {
+    /// #     Call::new(1, [(); N])
+    /// # }
+    /// let _ = build::<1>();
+    /// ```
+    ///
+    /// The control differs in exactly one place (the count):
+    ///
+    /// ```
+    /// # use gust::*;
+    /// # use core::time::Duration;
+    /// # struct Dev;
+    /// # struct Done;
+    /// # impl Job for Done {
+    /// #     type Error = ();
+    /// #     fn status(&self) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+    /// #     fn wait_timeout(&self, _: Duration) -> Result<JobStatus, ()> { Ok(JobStatus::Complete) }
+    /// #     fn wait(&self) -> Result<(), ()> { Ok(()) }
+    /// # }
+    /// # impl Device for Dev {
+    /// #     type Error = ();
+    /// #     type Dispatch<'r> = ();
+    /// #     type Job<'d> = Done where Self: 'd;
+    /// #     fn submit<'d, 'r>(&'d self, _: &[()]) -> Result<Done, ()> { Ok(Done) }
+    /// # }
+    /// # impl TypedDevice for Dev { type Binding<'r> = (); }
+    /// # const fn p(name: &'static str, kind: ParameterKind) -> ParameterDescriptor {
+    /// #     ParameterDescriptor { name, rust_type: "f32", kind, access: Access::ReadOnly, resource_layout: None, binding: None }
+    /// # }
+    /// # struct Probe;
+    /// # impl Kernel for Probe {
+    /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+    /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+    /// #         parameters: &[p("a", ParameterKind::Storage), p("u", ParameterKind::Uniform)],
+    /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
+    /// #     };
+    /// # }
+    /// # fn build<const N: usize>() -> Call<'static, Dev, Probe, N> {
+    /// #     Call::new(1, [(); N])
+    /// # }
+    /// let call = build::<2>();
+    /// assert_eq!(call.kernel().storage_parameter_count(), 1);
+    /// assert_eq!(call.kernel().uniform_parameter_count(), 1);
+    /// ```
     pub const fn new(element_count: u32, bindings: [D::Binding<'r>; N]) -> Self {
-        let () = Described::<K, N>::STORAGE_PARAMETERS_MATCH;
+        let () = Described::<K, N>::BOUND_PARAMETERS_MATCH;
         Self {
             kernel: Described::<K, N>::DESCRIPTOR,
             element_count,
@@ -461,7 +730,7 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
         self.element_count
     }
 
-    /// One binding per storage parameter, in declaration order.
+    /// One binding per storage or uniform parameter, in declaration order.
     pub const fn bindings(&self) -> &[D::Binding<'r>; N] {
         &self.bindings
     }
@@ -572,6 +841,30 @@ mod tests {
                 invocation(),
                 storage("x", Access::ReadWrite, 0),
                 storage("y", Access::ReadWrite, 1),
+            ],
+        );
+    }
+
+    /// `shade(id, a: RO, factor: Uniform<f32>, out: RW)`: two storage parameters and one uniform, so `N` is 3.
+    struct Shade;
+    impl Kernel for Shade {
+        const DESCRIPTOR: KernelDescriptor = descriptor(
+            "shade",
+            &[
+                invocation(),
+                storage("a", Access::ReadOnly, 0),
+                ParameterDescriptor {
+                    name: "factor",
+                    rust_type: "float",
+                    kind: ParameterKind::Uniform,
+                    access: Access::ReadOnly,
+                    resource_layout: Some(ResourceLayout::std140_v1(<f32 as GpuPod>::LAYOUT)),
+                    binding: Some(ResourceBinding {
+                        group: 0,
+                        binding: 1,
+                    }),
+                },
+                storage("out", Access::ReadWrite, 2),
             ],
         );
     }
@@ -710,6 +1003,30 @@ mod tests {
         }
     }
 
+    impl Shade {
+        /// The `call` the macro will generate: `Kind = Storage` for the buffers, `Kind = Uniform` for the uniform.
+        fn call<'r, R0, R1, R2>(
+            __gust_element_count: u32,
+            a: impl Into<Arg<'r, R0>>,
+            factor: impl Into<Arg<'r, R1>>,
+            out: impl Into<Arg<'r, R2>>,
+        ) -> Call<'r, R0::Device, Self, 3>
+        where
+            R0: Resource<Element = f32, Kind = kind::Storage> + 'r,
+            R1: Resource<Element = f32, Device = R0::Device, Kind = kind::Uniform> + 'r,
+            R2: Resource<Element = f32, Device = R0::Device, Kind = kind::Storage> + 'r,
+        {
+            Call::new(
+                __gust_element_count,
+                [
+                    a.into().bind(Access::ReadOnly),
+                    factor.into().bind(Access::ReadOnly),
+                    out.into().bind(Access::ReadWrite),
+                ],
+            )
+        }
+    }
+
     impl Nothing {
         fn call<'r, D: TypedDevice>(__gust_element_count: u32) -> Call<'r, D, Self, 0> {
             Call::new(__gust_element_count, [])
@@ -804,6 +1121,7 @@ mod tests {
         layout: TypeLayout,
         access: Access,
         length: LengthRule,
+        kind: BindingKind,
         _buffer: PhantomData<&'r ()>,
     }
 
@@ -813,6 +1131,7 @@ mod tests {
         element_count: u32,
         bindings: Vec<(usize, usize, Access, LengthRule)>,
         layouts: Vec<TypeLayout>,
+        kinds: Vec<BindingKind>,
     }
 
     #[derive(Default)]
@@ -840,6 +1159,7 @@ mod tests {
     impl<T: GpuPod> Resource for RecBuffer<T> {
         type Element = T;
         type Device = RecordingDevice;
+        type Kind = kind::Storage;
 
         fn bind<'r>(&'r self, access: Access, length: LengthRule) -> RecBinding<'r> {
             RecBinding {
@@ -848,6 +1168,40 @@ mod tests {
                 layout: T::LAYOUT,
                 access,
                 length,
+                kind: BindingKind::Storage,
+                _buffer: PhantomData,
+            }
+        }
+    }
+
+    /// A uniform of the recording device: one value, `Independent` whatever the argument says.
+    struct RecUniform<T> {
+        id: usize,
+        _value: T,
+    }
+
+    impl<T> RecUniform<T> {
+        fn new(value: T) -> Self {
+            Self {
+                id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
+                _value: value,
+            }
+        }
+    }
+
+    impl<T: GpuPod> Resource for RecUniform<T> {
+        type Element = T;
+        type Device = RecordingDevice;
+        type Kind = kind::Uniform;
+
+        fn bind<'r>(&'r self, access: Access, _length: LengthRule) -> RecBinding<'r> {
+            RecBinding {
+                id: self.id,
+                len: 1,
+                layout: T::LAYOUT,
+                access,
+                length: LengthRule::Independent,
+                kind: BindingKind::Uniform,
                 _buffer: PhantomData,
             }
         }
@@ -864,6 +1218,7 @@ mod tests {
                     .map(|b| (b.id, b.len, b.access, b.length))
                     .collect(),
                 layouts: call.bindings().iter().map(|b| b.layout).collect(),
+                kinds: call.bindings().iter().map(|b| b.kind).collect(),
             });
             Ok(Done::new())
         }
@@ -1199,6 +1554,7 @@ mod tests {
                     (out.id, 4, Access::ReadWrite, LengthRule::Shared),
                 ],
                 layouts: vec![<f32 as GpuPod>::LAYOUT; 3],
+                kinds: vec![BindingKind::Storage; 3],
             }]
         );
         assert_eq!(
@@ -1314,6 +1670,68 @@ mod tests {
         assert_eq!(Scale::DESCRIPTOR.storage_parameter_count(), 3);
         assert_eq!(Swap2::DESCRIPTOR.storage_parameter_count(), 2);
         assert_eq!(Nothing::DESCRIPTOR.storage_parameter_count(), 0);
+        assert_eq!(Shade::DESCRIPTOR.storage_parameter_count(), 2);
+    }
+
+    #[test]
+    fn uniform_parameter_count_counts_only_uniform_kind() {
+        assert_eq!(Shade::DESCRIPTOR.uniform_parameter_count(), 1);
+        assert_eq!(Scale::DESCRIPTOR.uniform_parameter_count(), 0);
+        assert_eq!(Nothing::DESCRIPTOR.uniform_parameter_count(), 0);
+    }
+
+    #[test]
+    fn a_binding_kind_follows_the_parameter_kind() {
+        assert_eq!(
+            BindingKind::of(ParameterKind::Storage),
+            Some(BindingKind::Storage)
+        );
+        assert_eq!(
+            BindingKind::of(ParameterKind::Uniform),
+            Some(BindingKind::Uniform)
+        );
+        assert_eq!(BindingKind::of(ParameterKind::Invocation), None);
+        assert_eq!(BindingKind::of(ParameterKind::Value), None);
+        assert_eq!(
+            <kind::Storage as kind::ResourceKind>::BINDING,
+            BindingKind::Storage
+        );
+        assert_eq!(
+            <kind::Uniform as kind::ResourceKind>::BINDING,
+            BindingKind::Uniform
+        );
+    }
+
+    // `N` counts storage plus uniform parameters: three bindings for `Shade`, in parameter order, each with its kind.
+    // The uniform is passed as a plain reference (a `Shared` argument) and still records `Independent`.
+    #[test]
+    fn a_call_counts_storage_plus_uniform_parameters_and_records_the_kinds() {
+        let rec = RecordingDevice::default();
+        let a = RecBuffer::new(vec![1.0f32, 2.0, 3.0, 4.0]);
+        let factor = RecUniform::new(0.5f32);
+        let out = RecBuffer::new(vec![0.0f32; 4]);
+        let call = Shade::call(4, &a, &factor, &out);
+        assert_eq!(call.bindings().len(), 3);
+        assert_eq!(call.kernel().name, "shade");
+        rec.dispatch_call(&call).unwrap();
+        assert_eq!(
+            *rec.calls.borrow(),
+            vec![Recorded {
+                kernel: "shade",
+                element_count: 4,
+                bindings: vec![
+                    (a.id, 4, Access::ReadOnly, LengthRule::Shared),
+                    (factor.id, 1, Access::ReadOnly, LengthRule::Independent),
+                    (out.id, 4, Access::ReadWrite, LengthRule::Shared),
+                ],
+                layouts: vec![<f32 as GpuPod>::LAYOUT; 3],
+                kinds: vec![
+                    BindingKind::Storage,
+                    BindingKind::Uniform,
+                    BindingKind::Storage
+                ],
+            }]
+        );
     }
 
     #[test]

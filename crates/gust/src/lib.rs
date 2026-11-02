@@ -157,7 +157,9 @@ pub use descriptor::{
     Access, Kernel, KernelDescriptor, LineSpan, ModuleDescriptor, ParameterDescriptor,
     ParameterKind, ResourceBinding, SourceOrigin,
 };
-pub use dispatch::{Arg, Call, Independent, LengthRule, Resource, Run, TypedDevice};
+pub use dispatch::{
+    Arg, BindingKind, Call, Independent, LengthRule, Resource, Run, TypedDevice, kind,
+};
 pub use gust_macros::gpu;
 pub use job::{Device, Job, JobStatus};
 pub use reflect::{

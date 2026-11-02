@@ -1,6 +1,7 @@
 //! Headless Vulkan/wgpu execution for GUST kernel descriptors.
 //!
-//! Storage buffers support 32-bit scalars and nested GPU POD structs.
+//! Storage buffers support 32-bit scalars and nested GPU POD structs. A uniform parameter is bound to a
+//! [`GpuUniform`]: one padding-free `Std140V1` value in a constant buffer (see there).
 //! It reflects the descriptor's group-0 bindings, uploads the supplied data,
 //! takes the WGSL of a precompiled artifact or compiles descriptor Slang source to WGSL, dispatches it, and reads
 //! writable buffers back. A persistent typed-buffer path separates allocation, upload, dispatch, and
@@ -60,8 +61,9 @@ use std::{
 use std::{sync::mpsc, time::Instant};
 
 use gust::{
-    Access, Call, GpuPod, JobStatus, Kernel, KernelDescriptor, LengthRule, ParameterDescriptor,
-    ParameterKind, Resource, ResourceLayout, Run, TypedDevice, pod_slice_as_bytes,
+    Access, BindingKind, Call, GpuPod, JobStatus, Kernel, KernelDescriptor, LengthRule,
+    ParameterDescriptor, ParameterKind, Resource, ResourceLayout, Run, TypedDevice,
+    pod_slice_as_bytes,
 };
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
@@ -140,6 +142,42 @@ pub(crate) fn assert_pod_matches_storage_layout<T: GpuPod>() {
         "GpuPod implementation must match the Rust StorageV1 representation \
          (StorageV2 for vectors and matrices, without padding)"
     );
+}
+
+/// Whether `T` can be a uniform: a `GpuPod` type whose layout is `Std140V1`, agrees with Rust's size and alignment, and
+/// has no padding byte. The padding rule is the one that keeps `pod_slice_as_bytes` sound: a `Std140V1` struct is
+/// rounded up to 16 bytes, so a struct whose fields do not already fill a multiple of 16 has trailing padding that
+/// Rust leaves uninitialised, and the upload would read it. The remedy is in the message: spell the padding out as
+/// fields. (Copying the value into a zeroed buffer and skipping the gaps would also be sound; it is not done, so that
+/// the bytes on the GPU are exactly the bytes of the Rust value.)
+pub(crate) fn check_uniform_type<T: GpuPod>() -> Result<(), Error> {
+    let layout = T::LAYOUT;
+    let refuse = |reason: &'static str| {
+        Err(Error::InvalidUniformType {
+            type_name: layout.name,
+            reason,
+        })
+    };
+    if !layout.is_std140_v1() {
+        return refuse(
+            "its layout is not Std140V1 (a constant buffer takes scalars, 2- and 4-wide vectors, 4x4 matrices and \
+             structs of them, each struct rounded up to 16 bytes; 3-wide vectors and 2x2 matrices do not qualify)",
+        );
+    }
+    if layout.size as usize != size_of::<T>() || layout.alignment as usize != align_of::<T>() {
+        return refuse(
+            "its Std140V1 size or alignment differs from the Rust type's; a struct is rounded up to 16 bytes in a \
+             constant buffer, so add explicit padding fields (and `repr(C, align(16))` if needed) until the Rust size \
+             is the Std140V1 size",
+        );
+    }
+    if !padding_free(layout) {
+        return refuse(
+            "it has padding bytes, which Rust leaves uninitialised; add explicit padding fields so that the fields \
+             fill the whole struct (a Std140V1 struct is rounded up to 16 bytes)",
+        );
+    }
+    Ok(())
 }
 
 /// Whether `layout` is exactly `wgpu::util::DispatchIndirectArgs`: three `u32`s.
@@ -251,6 +289,34 @@ impl<T> GpuBuffer<T> {
     }
 }
 
+/// A device-owned uniform: one `T` in a constant buffer, bound to a `Uniform` parameter of a kernel.
+///
+/// `T` is a padding-free [`GpuPod`] type with a `Std140V1` layout ([`HeadlessDevice::create_uniform`] refuses any
+/// other and names the fix). It is a [`gust::Resource`] of kind [`gust::kind::Uniform`], so a typed call takes it
+/// only where the kernel declares a uniform, and a [`GpuBuffer`] only where it declares a storage buffer; swapping
+/// them does not compile. A uniform is always read-only for the kernel and has length one whatever the dispatch
+/// element count.
+///
+/// Update it with [`HeadlessDevice::write_uniform`] (immediate) or, ordered with the dispatches around it, with
+/// `StagedGraph::write_uniform`.
+pub struct GpuUniform<T> {
+    raw: wgpu::Buffer,
+    layout: gust::TypeLayout,
+    device_id: u64,
+    marker: PhantomData<T>,
+}
+
+impl<T> GpuUniform<T> {
+    pub const fn layout(&self) -> gust::TypeLayout {
+        self.layout
+    }
+
+    /// Expose the underlying allocation for advanced wgpu code.
+    pub fn as_wgpu_buffer(&self) -> &wgpu::Buffer {
+        &self.raw
+    }
+}
+
 /// One persistent buffer bound to an `f32` storage parameter.
 #[derive(Clone, Copy)]
 pub enum F32BufferBinding<'a> {
@@ -286,6 +352,8 @@ pub struct BufferBinding<'a> {
     independent_length: bool,
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     indirect: bool,
+    /// Storage buffer or uniform; checked against the parameter's kind before anything else.
+    kind: BindingKind,
 }
 
 impl<'a> BufferBinding<'a> {
@@ -320,7 +388,29 @@ impl<'a> BufferBinding<'a> {
             device_id: buffer.device_id,
             independent_length: false,
             indirect: buffer.indirect,
+            kind: BindingKind::Storage,
         }
+    }
+
+    /// A uniform binding: one element, and independent of the dispatch's element count by construction.
+    /// `access` is `ReadOnly` for a kernel's parameter and `ReadWrite` for the copy node of a staged graph.
+    pub(crate) fn new_uniform<T: GpuPod>(uniform: &'a GpuUniform<T>, access: Access) -> Self {
+        Self {
+            raw: &uniform.raw,
+            len: 1,
+            layout: uniform.layout,
+            buffer_access: GpuBufferAccess::ReadOnly,
+            access,
+            device_id: uniform.device_id,
+            independent_length: true,
+            indirect: false,
+            kind: BindingKind::Uniform,
+        }
+    }
+
+    /// The bytes and kind the launch limits check this binding with.
+    pub(crate) fn limit_bytes(&self) -> (u64, BindingKind) {
+        (self.raw.size(), self.kind)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -504,8 +594,8 @@ impl TypedDevice for HeadlessDevice {
     type Binding<'resources> = BufferBinding<'resources>;
 }
 
-/// One blanket implementation for every kernel type. A kernel with a uniform parameter has no generated
-/// `call` to reach it, and the runtime rejects its descriptor with `Error::UnsupportedParameter`. The
+/// One blanket implementation for every kernel type. A uniform parameter takes a [`GpuUniform`]; a parameter of
+/// any other non-storage kind (`Value`) is rejected with `Error::UnsupportedParameter`. The
 /// call goes through `submit_batch`, so
 /// `validate_persistent_dispatch` checks each binding against `call.kernel()` (access, layout, device
 /// instance, length, aliasing), then the launch limits and the pipeline cache take over, exactly as for
@@ -591,6 +681,7 @@ impl<'call, 'resources: 'call, K: Kernel, const N: usize>
 impl<T: GpuPod> Resource for GpuBuffer<T> {
     type Element = T;
     type Device = HeadlessDevice;
+    type Kind = gust::kind::Storage;
 
     fn bind<'resources>(
         &'resources self,
@@ -604,6 +695,75 @@ impl<T: GpuPod> Resource for GpuBuffer<T> {
             // elements) is the safe reading of one this crate does not know.
             _ => binding,
         }
+    }
+}
+
+/// A uniform is a typed resource of [`HeadlessDevice`] of kind [`kind::Uniform`]. In a generated `call` it is accepted
+/// only for a uniform parameter: it is read-only, one element long whatever the dispatch's element count (the length
+/// rule is ignored), and a `GpuUniform` where a storage buffer is expected does not compile.
+///
+/// ```compile_fail
+/// # use gust::*;
+/// # use gust_wgpu::GpuUniform;
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+/// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+/// #         parameters: &[p("a", Access::ReadOnly)],
+/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
+/// #     };
+/// # }
+/// # fn call<'r, R0>(n: u32, a: impl Into<Arg<'r, R0>>) -> Call<'r, R0::Device, Probe, 1>
+/// # where
+/// #     R0: Resource<Element = f32, Kind = kind::Storage> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadOnly)])
+/// # }
+/// fn wrong(a: &GpuUniform<f32>) {
+///     let _ = call(1, a);
+/// }
+/// ```
+///
+/// The control differs in exactly one place (a buffer instead of a uniform):
+///
+/// ```
+/// # use gust::*;
+/// # use gust_wgpu::GpuBuffer;
+/// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
+/// #     ParameterDescriptor { name, rust_type: "f32", kind: ParameterKind::Storage, access, resource_layout: None, binding: None }
+/// # }
+/// # struct Probe;
+/// # impl Kernel for Probe {
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+/// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+/// #         parameters: &[p("a", Access::ReadOnly)],
+/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
+/// #     };
+/// # }
+/// # fn call<'r, R0>(n: u32, a: impl Into<Arg<'r, R0>>) -> Call<'r, R0::Device, Probe, 1>
+/// # where
+/// #     R0: Resource<Element = f32, Kind = kind::Storage> + 'r,
+/// # {
+/// #     Call::new(n, [a.into().bind(Access::ReadOnly)])
+/// # }
+/// fn right(a: &GpuBuffer<f32>) {
+///     let _ = call(1, a);
+/// }
+/// ```
+impl<T: GpuPod> Resource for GpuUniform<T> {
+    type Element = T;
+    type Device = HeadlessDevice;
+    type Kind = gust::kind::Uniform;
+
+    fn bind<'resources>(
+        &'resources self,
+        access: Access,
+        _length: LengthRule,
+    ) -> BufferBinding<'resources> {
+        BufferBinding::new_uniform(self, access)
     }
 }
 
@@ -895,7 +1055,8 @@ impl HeadlessDevice {
     /// Only these fields are honoured by the launch checks:
     /// `max_compute_workgroup_size_x`, `max_compute_invocations_per_workgroup`,
     /// `max_compute_workgroups_per_dimension`, `max_storage_buffers_per_shader_stage`,
-    /// `max_storage_buffer_binding_size` and `max_bindings_per_bind_group` (every binding
+    /// `max_storage_buffer_binding_size`, `max_uniform_buffers_per_shader_stage`,
+    /// `max_uniform_buffer_binding_size` and `max_bindings_per_bind_group` (every binding
     /// index of a kernel must be below it). Every other field is accepted if it is not
     /// raised, but has no effect (`max_buffer_size` is never checked by GUST).
     pub fn with_limits(mut self, limits: wgpu::Limits) -> Result<Self, Error> {
@@ -992,6 +1153,52 @@ impl HeadlessDevice {
         access: GpuBufferAccess,
     ) -> GpuBuffer<f32> {
         self.create_typed_buffer(label, values, access)
+    }
+
+    /// Allocate a uniform (a constant buffer of one `T`) holding `value`.
+    ///
+    /// `T` must be a padding-free `Std140V1` type with Rust's size and alignment: scalars, 2- and 4-wide vectors, 4x4
+    /// matrices and structs of them whose fields fill a multiple of 16 bytes. Anything else is an
+    /// `Error::InvalidUniformType` whose message names the fix (spell the padding out as fields), because a padded
+    /// struct would upload uninitialised bytes. The buffer is created with `UNIFORM | COPY_DST | COPY_SRC`.
+    pub fn create_uniform<T: GpuPod>(
+        &self,
+        label: &str,
+        value: &T,
+    ) -> Result<GpuUniform<T>, Error> {
+        check_uniform_type::<T>()?;
+        let raw = self.device.create_buffer_init(&BufferInitDescriptor {
+            label: Some(label),
+            contents: pod_slice_as_bytes(std::slice::from_ref(value)),
+            usage: wgpu::BufferUsages::UNIFORM
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+        });
+        Ok(GpuUniform {
+            raw,
+            layout: T::LAYOUT,
+            device_id: self.id,
+            marker: PhantomData,
+        })
+    }
+
+    /// Replace the value of a uniform now (`Queue::write_buffer`): work already submitted and not yet run on the
+    /// queue sees the new value, so use `StagedGraph::write_uniform` when the update must fall between two dispatches
+    /// of one submission.
+    pub fn write_uniform<T: GpuPod>(
+        &self,
+        uniform: &GpuUniform<T>,
+        value: &T,
+    ) -> Result<(), Error> {
+        if uniform.device_id != self.id {
+            return Err(Error::ForeignPersistentBuffer);
+        }
+        self.queue.write_buffer(
+            &uniform.raw,
+            0,
+            pod_slice_as_bytes(std::slice::from_ref(value)),
+        );
+        Ok(())
     }
 
     /// Replace the complete contents of an existing persistent POD buffer.
@@ -1421,7 +1628,7 @@ impl HeadlessDevice {
             &resources,
             bindings
                 .iter()
-                .map(|binding| size_of_val(binding.values()) as u64),
+                .map(|binding| (size_of_val(binding.values()) as u64, BindingKind::Storage)),
         )?;
         let label = kernel.qualified_name().to_string();
         let cached_kernel = self.cached_kernel(kernel, &resources)?;
@@ -1562,7 +1769,7 @@ impl HeadlessDevice {
             &resources,
             bindings
                 .iter()
-                .map(|binding| size_of_val(binding.values()) as u64),
+                .map(|binding| (size_of_val(binding.values()) as u64, BindingKind::Storage)),
         )?;
         let label = kernel.qualified_name().to_string();
         let cached_kernel = self.cached_kernel(kernel, &resources)?;
@@ -1706,7 +1913,7 @@ impl HeadlessDevice {
                     dispatch.element_count,
                     dispatch.bindings,
                 )?;
-                let binding_bytes = dispatch.bindings.iter().map(|binding| binding.raw.size());
+                let binding_bytes = dispatch.bindings.iter().map(BufferBinding::limit_bytes);
                 let workgroup_count = if indirect {
                     self.check_indirect_launch(dispatch.kernel, &resources, binding_bytes)?;
                     0
@@ -1763,7 +1970,7 @@ impl HeadlessDevice {
         kernel: &KernelDescriptor,
         element_count: u32,
         resources: &[&ParameterDescriptor],
-        binding_bytes: impl IntoIterator<Item = u64>,
+        binding_bytes: impl IntoIterator<Item = (u64, BindingKind)>,
     ) -> Result<u32, Error> {
         if element_count == 0 {
             return Ok(0);
@@ -1778,7 +1985,7 @@ impl HeadlessDevice {
         &self,
         kernel: &KernelDescriptor,
         resources: &[&ParameterDescriptor],
-        binding_bytes: impl IntoIterator<Item = u64>,
+        binding_bytes: impl IntoIterator<Item = (u64, BindingKind)>,
     ) -> Result<(), Error> {
         self.check_launch_limits(kernel, None, resources, binding_bytes)
             .map(|_| ())
@@ -1791,16 +1998,20 @@ impl HeadlessDevice {
         kernel: &KernelDescriptor,
         element_count: Option<u32>,
         resources: &[&ParameterDescriptor],
-        binding_bytes: impl IntoIterator<Item = u64>,
+        binding_bytes: impl IntoIterator<Item = (u64, BindingKind)>,
     ) -> Result<u32, Error> {
-        check_kernel_limits(&self.limits, kernel, resources.len())?;
+        let uniforms = resources
+            .iter()
+            .filter(|parameter| parameter.kind == ParameterKind::Uniform)
+            .count();
+        check_kernel_limits(&self.limits, kernel, resources.len() - uniforms, uniforms)?;
         check_binding_indices(&self.limits, kernel, resources)?;
         let workgroup_count = match element_count {
             Some(count) => workgroup_count(&self.limits, kernel, count)?,
             None => 0,
         };
-        for bytes in binding_bytes {
-            check_binding_size(&self.limits, kernel, bytes)?;
+        for (bytes, kind) in binding_bytes {
+            check_binding_size(&self.limits, kernel, bytes, kind)?;
         }
         Ok(workgroup_count)
     }
@@ -1880,8 +2091,12 @@ impl HeadlessDevice {
                     .binding,
                 visibility: wgpu::ShaderStages::COMPUTE,
                 ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Storage {
-                        read_only: parameter.access == Access::ReadOnly,
+                    ty: if parameter.kind == ParameterKind::Uniform {
+                        wgpu::BufferBindingType::Uniform
+                    } else {
+                        wgpu::BufferBindingType::Storage {
+                            read_only: parameter.access == Access::ReadOnly,
+                        }
                     },
                     has_dynamic_offset: false,
                     min_binding_size: None,
@@ -2031,6 +2246,7 @@ fn check_kernel_limits(
     limits: &wgpu::Limits,
     kernel: &KernelDescriptor,
     storage_buffers: usize,
+    uniform_buffers: usize,
 ) -> Result<(), Error> {
     let width = u64::from(kernel.workgroup_size[0]);
     let invocations = kernel
@@ -2053,6 +2269,11 @@ fn check_kernel_limits(
             "max_storage_buffers_per_shader_stage",
             storage_buffers as u64,
             u64::from(limits.max_storage_buffers_per_shader_stage),
+        ),
+        (
+            "max_uniform_buffers_per_shader_stage",
+            uniform_buffers as u64,
+            u64::from(limits.max_uniform_buffers_per_shader_stage),
         ),
     ] {
         if requested > maximum {
@@ -2107,20 +2328,27 @@ fn workgroup_count(
     Ok(count)
 }
 
-/// One storage binding of `bytes` bytes against `max_storage_buffer_binding_size`.
+/// One binding of `bytes` bytes against `max_storage_buffer_binding_size`, or `max_uniform_buffer_binding_size` for a
+/// uniform.
 fn check_binding_size(
     limits: &wgpu::Limits,
     kernel: &KernelDescriptor,
     bytes: u64,
+    kind: BindingKind,
 ) -> Result<(), Error> {
-    let maximum = limits.max_storage_buffer_binding_size;
-    if bytes > maximum {
-        return Err(device_limit(
-            kernel,
+    let (limit, maximum) = if kind == BindingKind::Uniform {
+        (
+            "max_uniform_buffer_binding_size",
+            limits.max_uniform_buffer_binding_size,
+        )
+    } else {
+        (
             "max_storage_buffer_binding_size",
-            bytes,
-            maximum,
-        ));
+            limits.max_storage_buffer_binding_size,
+        )
+    };
+    if bytes > maximum {
+        return Err(device_limit(kernel, limit, bytes, maximum));
     }
     Ok(())
 }
@@ -2132,6 +2360,16 @@ fn buffer_resource_layout(element: gust::TypeLayout) -> ResourceLayout {
         ResourceLayout::storage_v1(element)
     } else {
         ResourceLayout::storage_v2(element)
+    }
+}
+
+/// The resource layout a binding of `kind` and element layout `element` presents: a storage buffer's
+/// (`buffer_resource_layout`), or `Std140V1` for a uniform.
+fn binding_resource_layout(kind: BindingKind, element: gust::TypeLayout) -> ResourceLayout {
+    if kind == BindingKind::Uniform {
+        ResourceLayout::std140_v1(element)
+    } else {
+        buffer_resource_layout(element)
     }
 }
 
@@ -2239,7 +2477,19 @@ fn validate_persistent_dispatch(
     }
     for (parameter, binding) in resources.iter().copied().zip(bindings.iter().copied()) {
         let buffer = binding;
-        validate_binding_layout(parameter, buffer_resource_layout(buffer.layout))?;
+        let expected_kind =
+            BindingKind::of(parameter.kind).expect("validate_kernel keeps only bound parameters");
+        if buffer.kind != expected_kind {
+            return Err(Error::BindingKind {
+                parameter: parameter.name.to_owned(),
+                expected: expected_kind,
+                actual: buffer.kind,
+            });
+        }
+        validate_binding_layout(
+            parameter,
+            binding_resource_layout(buffer.kind, buffer.layout),
+        )?;
         if buffer.device_id != device_id {
             return Err(Error::ForeignPersistentBuffer);
         }
@@ -2310,17 +2560,35 @@ pub(crate) fn validate_kernel(
         .filter(|parameter| parameter.binding.is_some())
         .collect::<Vec<_>>();
     for parameter in resources.iter().copied() {
-        if parameter.kind != ParameterKind::Storage {
-            return Err(Error::UnsupportedParameter {
-                name: parameter.name.to_owned(),
-                kind: parameter.kind,
-            });
-        }
-        // The rule is a function of the element (`buffer_resource_layout`): a `Vec4` labelled StorageV1, or a storage
-        // parameter under the Std140V1 rule, is refused here and not only later at the persistent dispatch.
-        if !parameter.resource_layout.is_some_and(|layout| {
-            layout.element.is_storage_v2() && layout == buffer_resource_layout(layout.element)
-        }) {
+        // The rule is a function of the element (`binding_resource_layout`): a `Vec4` labelled StorageV1, or a storage
+        // parameter under the Std140V1 rule, is refused here and not only later at the persistent dispatch. A uniform
+        // is a constant buffer: read-only, and `Std140V1` with an element that satisfies it.
+        let layout_ok = match parameter.kind {
+            ParameterKind::Storage => parameter.resource_layout.is_some_and(|layout| {
+                layout.element.is_storage_v2()
+                    && layout == binding_resource_layout(BindingKind::Storage, layout.element)
+            }),
+            ParameterKind::Uniform => {
+                if parameter.access != Access::ReadOnly {
+                    return Err(Error::BindingAccess {
+                        parameter: parameter.name.to_owned(),
+                        expected: Access::ReadOnly,
+                        actual: parameter.access,
+                    });
+                }
+                parameter.resource_layout.is_some_and(|layout| {
+                    layout.element.is_std140_v1()
+                        && layout == binding_resource_layout(BindingKind::Uniform, layout.element)
+                })
+            }
+            _ => {
+                return Err(Error::UnsupportedParameter {
+                    name: parameter.name.to_owned(),
+                    kind: parameter.kind,
+                });
+            }
+        };
+        if !layout_ok {
             return Err(Error::InvalidResourceLayout {
                 parameter: parameter.name.to_owned(),
                 actual: parameter.resource_layout.map(Box::new),
@@ -3108,15 +3376,281 @@ mod tests {
         );
     }
 
+    /// `DESCRIPTOR` with its one parameter replaced by a uniform of the given access and layout.
+    fn uniform_descriptor(access: Access, resource_layout: ResourceLayout) -> KernelDescriptor {
+        let parameters = Box::leak(Box::new([ParameterDescriptor {
+            name: "factor",
+            rust_type: "Uniform<Vec4>",
+            kind: ParameterKind::Uniform,
+            access,
+            resource_layout: Some(resource_layout),
+            binding: Some(ResourceBinding {
+                group: 0,
+                binding: 0,
+            }),
+        }]));
+        KernelDescriptor {
+            parameters,
+            ..DESCRIPTOR
+        }
+    }
+
+    #[test]
+    fn a_uniform_parameter_is_valid_only_as_a_read_only_std140_v1_constant_buffer() {
+        use gust::math::{Mat2, Mat4, Vec4};
+        for (label, valid) in [
+            (ResourceLayout::std140_v1(<Vec4 as GpuPod>::LAYOUT), true),
+            (ResourceLayout::std140_v1(<Mat4 as GpuPod>::LAYOUT), true),
+            (ResourceLayout::std140_v1(<f32 as GpuPod>::LAYOUT), true),
+            // The storage rules on a uniform, even for an element that is valid under both.
+            (ResourceLayout::storage_v2(<Vec4 as GpuPod>::LAYOUT), false),
+            (ResourceLayout::storage_v1(<f32 as GpuPod>::LAYOUT), false),
+            // A constant buffer has no 2x2 matrix.
+            (ResourceLayout::std140_v1(<Mat2 as GpuPod>::LAYOUT), false),
+        ] {
+            let result = validate_kernel(&uniform_descriptor(Access::ReadOnly, label));
+            if valid {
+                assert!(result.is_ok(), "{label:?}");
+            } else {
+                assert!(
+                    matches!(result, Err(Error::InvalidResourceLayout { .. })),
+                    "{label:?}"
+                );
+            }
+        }
+        assert!(matches!(
+            validate_kernel(&uniform_descriptor(
+                Access::ReadWrite,
+                ResourceLayout::std140_v1(<Vec4 as GpuPod>::LAYOUT)
+            )),
+            Err(Error::BindingAccess {
+                parameter,
+                expected: Access::ReadOnly,
+                actual: Access::ReadWrite,
+            }) if parameter == "factor"
+        ));
+    }
+
+    #[test]
+    fn a_parameter_that_is_neither_storage_nor_uniform_is_still_unsupported() {
+        let parameters = Box::leak(Box::new([ParameterDescriptor {
+            kind: ParameterKind::Value,
+            ..PARAMETERS[0]
+        }]));
+        let descriptor = KernelDescriptor {
+            parameters,
+            ..DESCRIPTOR
+        };
+        assert!(matches!(
+            validate_kernel(&descriptor),
+            Err(Error::UnsupportedParameter { name, kind: ParameterKind::Value }) if name == "out"
+        ));
+    }
+
+    #[test]
+    fn the_generated_host_text_names_the_std140_rule_and_the_uniform_binding_of_a_uniform() {
+        let descriptor = uniform_descriptor(
+            Access::ReadOnly,
+            ResourceLayout::std140_v1(<gust::math::Vec4 as GpuPod>::LAYOUT),
+        );
+        let source = render_wgpu_source(&descriptor).expect("source should render");
+        assert!(
+            source.contains("factor: Vec4 [std140-v1; size=16, align=16, stride=16]"),
+            "{source}"
+        );
+        assert!(
+            source.contains("ty: wgpu::BufferBindingType::Uniform,"),
+            "{source}"
+        );
+        assert!(!source.contains("BufferBindingType::Storage"), "{source}");
+    }
+
+    /// A padding-free `Std140V1` struct: `Vec4` then three `f32`s and one `f32` of explicit padding, size 32.
+    #[derive(Clone, Copy)]
+    #[repr(C)]
+    struct FullStd140 {
+        a: gust::math::Vec4,
+        b: [f32; 4],
+    }
+
+    // SAFETY: `repr(C)`, a `Vec4` (16 bytes, align 16) then four `f32`s at 16, 20, 24 and 28: no padding, size 32.
+    unsafe impl GpuPod for FullStd140 {
+        const LAYOUT: gust::TypeLayout = gust::TypeLayout::structure(
+            "FullStd140",
+            32,
+            16,
+            &[
+                gust::StructFieldLayout {
+                    name: "a",
+                    offset: 0,
+                    ty: <gust::math::Vec4 as GpuPod>::LAYOUT,
+                },
+                gust::StructFieldLayout {
+                    name: "b0",
+                    offset: 16,
+                    ty: gust::TypeLayout::scalar("f32", gust::ScalarKind::F32),
+                },
+                gust::StructFieldLayout {
+                    name: "b1",
+                    offset: 20,
+                    ty: gust::TypeLayout::scalar("f32", gust::ScalarKind::F32),
+                },
+                gust::StructFieldLayout {
+                    name: "b2",
+                    offset: 24,
+                    ty: gust::TypeLayout::scalar("f32", gust::ScalarKind::F32),
+                },
+                gust::StructFieldLayout {
+                    name: "b3",
+                    offset: 28,
+                    ty: gust::TypeLayout::scalar("f32", gust::ScalarKind::F32),
+                },
+            ],
+        );
+    }
+
+    /// An honest `Std140V1` layout and honest Rust size and alignment, but padded: a `Vec4` then one `f32`, so bytes 20
+    /// to 31 are padding.
+    #[derive(Clone, Copy)]
+    #[repr(C)]
+    struct PaddedStd140 {
+        a: gust::math::Vec4,
+        b: f32,
+    }
+
+    // SAFETY: deliberately breaks the no-padding rule, to exercise the uniform check; it is never uploaded.
+    unsafe impl GpuPod for PaddedStd140 {
+        const LAYOUT: gust::TypeLayout = gust::TypeLayout::structure(
+            "PaddedStd140",
+            32,
+            16,
+            &[
+                gust::StructFieldLayout {
+                    name: "a",
+                    offset: 0,
+                    ty: <gust::math::Vec4 as GpuPod>::LAYOUT,
+                },
+                gust::StructFieldLayout {
+                    name: "b",
+                    offset: 16,
+                    ty: gust::TypeLayout::scalar("f32", gust::ScalarKind::F32),
+                },
+            ],
+        );
+    }
+
+    /// A struct of one `f32`: its `Std140V1` size is 16 but Rust's is 4.
+    #[derive(Clone, Copy)]
+    #[repr(C)]
+    struct OneFloat {
+        a: f32,
+    }
+
+    // SAFETY: deliberately dishonest about the size, to exercise the uniform check; it is never uploaded.
+    unsafe impl GpuPod for OneFloat {
+        const LAYOUT: gust::TypeLayout = gust::TypeLayout::structure(
+            "OneFloat",
+            16,
+            16,
+            &[gust::StructFieldLayout {
+                name: "a",
+                offset: 0,
+                ty: gust::TypeLayout::scalar("f32", gust::ScalarKind::F32),
+            }],
+        );
+    }
+
+    fn uniform_refusal<T: GpuPod>() -> (&'static str, &'static str) {
+        match check_uniform_type::<T>() {
+            Err(Error::InvalidUniformType { type_name, reason }) => (type_name, reason),
+            other => panic!("expected an InvalidUniformType error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_uniform_type_is_a_padding_free_std140_v1_type_with_rusts_size_and_alignment() {
+        use gust::math::{Mat4, Vec2, Vec4};
+        assert!(check_uniform_type::<f32>().is_ok());
+        assert!(check_uniform_type::<Vec2>().is_ok());
+        assert!(check_uniform_type::<Vec4>().is_ok());
+        assert!(check_uniform_type::<Mat4>().is_ok());
+        assert!(check_uniform_type::<FullStd140>().is_ok());
+        assert!(check_uniform_type::<HonestBody>().is_ok());
+    }
+
+    #[test]
+    fn a_padded_uniform_type_is_refused_with_the_fix_in_the_message() {
+        let (name, reason) = uniform_refusal::<PaddedStd140>();
+        assert_eq!(name, "PaddedStd140");
+        assert!(reason.contains("padding bytes"), "{reason}");
+        assert!(reason.contains("explicit padding fields"), "{reason}");
+        let text = check_uniform_type::<PaddedStd140>()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            text.starts_with("`PaddedStd140` cannot be a uniform: "),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_uniform_type_whose_layout_is_not_std140_v1_or_not_rusts_is_refused() {
+        use gust::math::Mat2;
+        // StorageV2 only: a 2x2 matrix, a 4-aligned struct of scalars (not rounded to 16), a padded storage struct.
+        for (name, reason) in [
+            uniform_refusal::<Mat2>(),
+            uniform_refusal::<LyingSize>(),
+            uniform_refusal::<PaddedPair>(),
+        ] {
+            assert!(reason.contains("not Std140V1"), "{name}: {reason}");
+        }
+        let (name, reason) = uniform_refusal::<OneFloat>();
+        assert_eq!(name, "OneFloat");
+        assert!(reason.contains("size or alignment"), "{reason}");
+    }
+
+    #[test]
+    fn uniform_limits_are_checked_under_their_own_names() {
+        let limits = wgpu::Limits {
+            max_uniform_buffer_binding_size: 64,
+            max_uniform_buffers_per_shader_stage: 2,
+            ..wgpu::Limits::default()
+        };
+        assert!(check_binding_size(&limits, &DESCRIPTOR, 64, BindingKind::Uniform).is_ok());
+        assert!(matches!(
+            check_binding_size(&limits, &DESCRIPTOR, 65, BindingKind::Uniform),
+            Err(Error::DeviceLimit {
+                limit: "max_uniform_buffer_binding_size",
+                requested: 65,
+                maximum: 64,
+                ..
+            })
+        ));
+        // The same bytes as a storage binding are within the (much larger) storage limit.
+        assert!(check_binding_size(&limits, &DESCRIPTOR, 65, BindingKind::Storage).is_ok());
+        assert!(check_kernel_limits(&limits, &DESCRIPTOR, 1, 2).is_ok());
+        assert!(matches!(
+            check_kernel_limits(&limits, &DESCRIPTOR, 1, 3),
+            Err(Error::DeviceLimit {
+                limit: "max_uniform_buffers_per_shader_stage",
+                requested: 3,
+                maximum: 2,
+                ..
+            })
+        ));
+        // A uniform does not count against the storage buffer limit.
+        assert!(check_kernel_limits(&limits, &DESCRIPTOR, 8, 2).is_ok());
+    }
+
     #[test]
     fn binding_size_is_checked_against_the_stored_limit() {
         let limits = wgpu::Limits {
             max_storage_buffer_binding_size: 16,
             ..wgpu::Limits::default()
         };
-        assert!(check_binding_size(&limits, &DESCRIPTOR, 16).is_ok());
+        assert!(check_binding_size(&limits, &DESCRIPTOR, 16, BindingKind::Storage).is_ok());
         assert!(matches!(
-            check_binding_size(&limits, &DESCRIPTOR, 17),
+            check_binding_size(&limits, &DESCRIPTOR, 17, BindingKind::Storage),
             Err(Error::DeviceLimit {
                 kernel,
                 limit: "max_storage_buffer_binding_size",
@@ -3149,9 +3683,9 @@ mod tests {
     #[test]
     fn kernel_limits_name_the_first_exceeded_limit() {
         let mut limits = wgpu::Limits::default();
-        assert!(check_kernel_limits(&limits, &DESCRIPTOR, 8).is_ok());
+        assert!(check_kernel_limits(&limits, &DESCRIPTOR, 8, 0).is_ok());
         assert!(matches!(
-            check_kernel_limits(&limits, &DESCRIPTOR, 9),
+            check_kernel_limits(&limits, &DESCRIPTOR, 9, 0),
             Err(Error::DeviceLimit {
                 limit: "max_storage_buffers_per_shader_stage",
                 requested: 9,
@@ -3161,7 +3695,7 @@ mod tests {
         ));
         limits.max_compute_invocations_per_workgroup = 32;
         assert!(matches!(
-            check_kernel_limits(&limits, &DESCRIPTOR, 1),
+            check_kernel_limits(&limits, &DESCRIPTOR, 1, 0),
             Err(Error::DeviceLimit {
                 limit: "max_compute_invocations_per_workgroup",
                 requested: 64,
@@ -3171,7 +3705,7 @@ mod tests {
         ));
         limits.max_compute_workgroup_size_x = 32;
         assert!(matches!(
-            check_kernel_limits(&limits, &DESCRIPTOR, 1),
+            check_kernel_limits(&limits, &DESCRIPTOR, 1, 0),
             Err(Error::DeviceLimit {
                 limit: "max_compute_workgroup_size_x",
                 requested: 64,

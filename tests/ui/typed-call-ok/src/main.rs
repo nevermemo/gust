@@ -45,7 +45,7 @@ struct Buffer<T>(PhantomData<T>);
 
 impl<T: GpuPod> Resource for Buffer<T> {
     type Element = T;
-    type Device = Mock;
+    type Device = Mock; type Kind = ::gust::kind::Storage;
     fn bind<'r>(&'r self, access: Access, length: LengthRule) -> (Access, LengthRule) {
         (access, length)
     }

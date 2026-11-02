@@ -1,6 +1,6 @@
 use std::{error, fmt};
 
-use gust::{Access, ParameterKind, ResourceLayout};
+use gust::{Access, BindingKind, ParameterKind, ResourceLayout};
 
 use crate::GpuBufferAccess;
 
@@ -31,6 +31,19 @@ pub enum Error {
     InvalidResourceLayout {
         parameter: String,
         actual: Option<Box<ResourceLayout>>,
+    },
+    /// A resource of one kind was bound to a parameter of the other: a storage buffer to a uniform parameter, or a
+    /// uniform to a storage one. The typed `call` rules this out at compile time; a hand-built `Call` is caught here.
+    BindingKind {
+        parameter: String,
+        expected: BindingKind,
+        actual: BindingKind,
+    },
+    /// `HeadlessDevice::create_uniform` refused the element type: it is not a padding-free `Std140V1` type. `reason`
+    /// names what is wrong and the fix.
+    InvalidUniformType {
+        type_name: &'static str,
+        reason: &'static str,
     },
     UnsupportedResourceLayout {
         parameter: String,
@@ -161,8 +174,19 @@ impl fmt::Display for Error {
             }
             Self::InvalidResourceLayout { parameter, actual } => write!(
                 formatter,
-                "parameter `{parameter}` requires a valid StorageV1 resource layout, got {actual:?}"
+                "parameter `{parameter}` requires a valid resource layout for its kind (StorageV1 or StorageV2 for a storage buffer, Std140V1 for a uniform), got {actual:?}"
             ),
+            Self::BindingKind {
+                parameter,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "parameter `{parameter}` expects a {expected:?} binding, got a {actual:?} one",
+            ),
+            Self::InvalidUniformType { type_name, reason } => {
+                write!(formatter, "`{type_name}` cannot be a uniform: {reason}",)
+            }
             Self::UnsupportedResourceLayout {
                 parameter,
                 expected,

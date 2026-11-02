@@ -18,6 +18,25 @@ fn reference(a: i32, b: u32, f: f32) -> (i32, u32, i32, u32, u32) {
     (signed, unsigned, cast, pair_first, pair_second)
 }
 
+/// Independent reference of `scramble` and `step` (slice m7.w): Rust's own `wrapping_*`, cross-checked against exact
+/// 64-bit arithmetic reduced modulo 2^32, which shares nothing with either.
+fn wrapping_reference(a: i32, b: u32) -> (u32, i32) {
+    let hash = b.wrapping_mul(2_654_435_761).wrapping_add(2_654_435_769);
+    let exact_hash = (u64::from(b) * 2_654_435_761 + 2_654_435_769) % (1 << 32);
+    assert_eq!(u64::from(hash), exact_hash, "hash reference, b = {b}");
+    let step = a
+        .wrapping_neg()
+        .wrapping_mul(1_103_515_245)
+        .wrapping_sub(12_345);
+    let exact_step = (-i64::from(a) * 1_103_515_245 - 12_345).rem_euclid(1 << 32);
+    assert_eq!(
+        i64::from(step as u32),
+        exact_step,
+        "step reference, a = {a}"
+    );
+    (hash, step)
+}
+
 #[test]
 fn numeric_semantics_and_struct_construction_execute_on_gpu() {
     let device =
@@ -68,6 +87,11 @@ fn numeric_semantics_and_struct_construction_execute_on_gpu() {
             ],
             GpuBufferAccess::ReadWrite,
         );
+        let wrap_out = device.create_typed_buffer(
+            "numeric wrapped",
+            &vec![numeric::Wrapped { hash: 0, step: 0 }; count],
+            GpuBufferAccess::ReadWrite,
+        );
 
         device
             .dispatch_buffers(
@@ -81,6 +105,7 @@ fn numeric_semantics_and_struct_construction_execute_on_gpu() {
                     BufferBinding::read_write(&unsigned_out),
                     BufferBinding::read_write(&cast_out),
                     BufferBinding::read_write(&pair_out),
+                    BufferBinding::read_write(&wrap_out),
                 ],
             )
             .unwrap();
@@ -89,6 +114,7 @@ fn numeric_semantics_and_struct_construction_execute_on_gpu() {
         let actual_unsigned = device.read_typed_buffer(&unsigned_out).unwrap();
         let actual_cast = device.read_typed_buffer(&cast_out).unwrap();
         let actual_pair = device.read_typed_buffer(&pair_out).unwrap();
+        let actual_wrapped = device.read_typed_buffer(&wrap_out).unwrap();
 
         // The CPU twin: the same typed call with the device swapped (macro-emitted under `cfg(test)`).
         let cpu = CpuDevice::new();
@@ -105,6 +131,7 @@ fn numeric_semantics_and_struct_construction_execute_on_gpu() {
             };
             count
         ]);
+        let twin_wrapped = cpu.buffer(&vec![numeric::Wrapped { hash: 0, step: 0 }; count]);
         numeric::run::dispatch(
             &cpu,
             count as u32,
@@ -115,12 +142,14 @@ fn numeric_semantics_and_struct_construction_execute_on_gpu() {
             &twin_unsigned,
             &twin_cast,
             &twin_pair,
+            &twin_wrapped,
         )
         .unwrap();
         let twin_signed = twin_signed.read();
         let twin_unsigned = twin_unsigned.read();
         let twin_cast = twin_cast.read();
         let twin_pair = twin_pair.read();
+        let twin_wrapped = twin_wrapped.read();
         assert_eq!(twin_signed, actual_signed, "twin signed, count {count}");
         assert_eq!(
             twin_unsigned, actual_unsigned,
@@ -151,6 +180,12 @@ fn numeric_semantics_and_struct_construction_execute_on_gpu() {
             assert_eq!(twin_cast[i], exp_cast, "twin cast[{i}]");
             assert_eq!(twin_pair[i].first, exp_first, "twin pair.first[{i}]");
             assert_eq!(twin_pair[i].second, exp_second, "twin pair.second[{i}]");
+            // The wrapping helpers: the products overflow for most elements, and the result is in the domain anyway.
+            let (exp_hash, exp_step) = wrapping_reference(a[i], b[i]);
+            assert_eq!(actual_wrapped[i].hash, exp_hash, "hash[{i}]");
+            assert_eq!(actual_wrapped[i].step, exp_step, "step[{i}]");
+            assert_eq!(twin_wrapped[i].hash, exp_hash, "twin hash[{i}]");
+            assert_eq!(twin_wrapped[i].step, exp_step, "twin step[{i}]");
         }
     }
 }

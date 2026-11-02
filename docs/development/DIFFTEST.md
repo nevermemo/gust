@@ -84,8 +84,8 @@ buffer), so the result file, the classifier and the shrinker see scalars.
   without any vector or matrix operation is discarded as `no-aggregate` (its own class in the report) because it tests
   nothing new. That test runs before the domain filter: a vector-space attempt with no aggregate is counted as
   `no-aggregate` even when it would also have left the domain, so its domain label is not counted.
-- **`Mat2` is never a compile-time constant.** SEMANTICS section 4: a constant `Mat2` or `Mat3` crashes naga's SPIR-V
-  front end (the harness runs the WGSL path, which does not, but the generator must hold on every path).
+- **`Mat2` is never a compile-time constant.** SEMANTICS section 4: a constant `Mat2` or `Mat3` crashes on the SPIR-V
+  route, layer not isolated (the harness runs the WGSL path, which does not, but the generator must hold on every path).
   `Program::check` refuses a `Mat2` constructor with no direct `f32` input read in its arguments (an `f32` `Input` node
   with no cast above it), and the generator puts one in (`vec2_from_input`) whenever the columns it drew have none. A
   constant `Mat4` is allowed. The guard is syntactic ("a direct `f32` `Input` read below the constructor") because the
@@ -494,8 +494,9 @@ same seeds through `difftest-run` is in the last column, from the saved report-g
 
 Outcome A: every figure is at or below the plan's estimate and the largest batch figure is a third of the 5-minute line
 of outcome C. In the units of R1-13: `unit` keeps 4 seeds CPU-only, `gpu-software` per pull request keeps 2 seeds, the
-nightly `gpu-software` and `check-full` keep all 8 seeds, and shrinking stays local. Not measured, so not claimed: the
-GitHub runner and lavapipe (slangc time will dominate there too: 8 seeds are 128 kernels, about 68 s of slangc here), the
+`check-full` gate keeps all 8 seeds, the nightly `gpu-software` list runs seeds 1 to 72 (since m6.z1), and shrinking
+stays local. On the GitHub runner, seeds 1 to 8 took 45.5 s of `difftest-run` on lavapipe (run 41442659698, format
+5). Not measured, so not claimed: the
 `unit` job's cold build on a runner. The shrink half of S5.3 is measured under Shrinking below.
 
 ### Mutation checks
@@ -661,7 +662,7 @@ rerun a failure with `--seeds <the printed list>`.
 | Gpu suite | `check-difftest` | 1 to 8 | 128 and the `short_circuit` GPU test | interpreter, CPU twin, GPU |
 | `check-full`, last integration check | `check-difftest` | 1 to 8 | 128 and the `short_circuit` GPU test | the same, GPU on the hardware adapter |
 | `gpu-software`, pull request list | `check-difftest --seeds 1-2` | 1 to 2 | 32 and the `short_circuit` GPU test | the same, GPU on lavapipe |
-| `gpu-software`, nightly list | `check-difftest --seeds 1-8` | 1 to 8 | 128 and the `short_circuit` GPU test | the same, GPU on lavapipe |
+| `gpu-software`, nightly list | `check-difftest --seeds 1-72` | 1 to 72 | 1152 and the `short_circuit` GPU test | the same, GPU on lavapipe |
 
 Measured 2026-11-02 on the development PC (RTX 5090, Vulkan, dev profile), the whole command including the harness's
 cargo build and run: the Unit batch (`--cpu-only --seeds 1-4`) takes 88 s cold (the dependency tree of the generated

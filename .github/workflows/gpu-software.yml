@@ -15,7 +15,8 @@
 # CPU twin and the lavapipe GPU; R1-13). The nightly list (`schedule`, 03:00 UTC, and a dispatch with `extended`, the
 # default) adds the steps marked "nightly list": `cargo xtask check-examples` and the release-profile mismatch ledger
 # (`cargo xtask check-ledger`, guarded as the Full mode is: no ignored test, every ledger test named), and runs the
-# differential test on all 8 seeds (128 programs) in place of the 2. Slices that grow the nightly list add
+# differential test on seeds 1-72 (1152 programs: the reach of the CPU test that proves the generator writes every
+# aggregate form, DIFFTEST) in place of the 2. Slices that grow the nightly list add
 # steps behind the same condition. Moving a step to the pull request list is deleting its `if:` line, and it is allowed
 # only while the measured warm job time of a pull request stays at five minutes or less (the budget rule; STATUS names
 # each list and its measured time). The nightly steps after the differential test carry `!cancelled() &&` in that
@@ -31,7 +32,7 @@ on:
   workflow_dispatch:
     inputs:
       extended:
-        description: "Also run the nightly list (check-examples, the release ledger, all 8 difftest seeds)"
+        description: "Also run the nightly list (check-examples, the release ledger, difftest seeds 1-72)"
         type: boolean
         default: true
 
@@ -242,11 +243,14 @@ jobs:
         # short_circuit GPU test of tests/difftest. Every failure line starts with `check-difftest:` and names the
         # seed (the next step turns those lines into annotations). The report goes straight into the artifact
         # directory, which is uploaded even when this step fails. Same Slang, helper and VK_DRIVER_FILES as the Gpu
-        # suite above. Pull request list: seeds 1-2 (32 programs); nightly list: 1-8 (128 programs).
+        # suite above. Pull request list: seeds 1-2 (32 programs); nightly list: 1-72 (1152 programs). Measured on this
+        # job (run 41442659698, seeds 1-8: 45.5 s of `difftest-run` for 128 programs; run 41518009197 at format 6, seeds
+        # 1-2: 9.2 s for 32), 72 seeds are expected to take 5 to 7 minutes of the nightly job's 40-minute timeout. The
+        # step name is pinned by a test in xtask/src/tests/suite.rs and still says "all 8".
         run: |
           set -o pipefail
           seeds=1-2
-          if [ "$GPU_SOFTWARE_NIGHTLY" = "true" ]; then seeds=1-8; fi
+          if [ "$GPU_SOFTWARE_NIGHTLY" = "true" ]; then seeds=1-72; fi
           echo "difftest seeds: $seeds"
           cargo --locked xtask check-difftest --seeds "$seeds" \
             --report "$RUNNER_TEMP/gpu-software-artifact/difftest-report.json" 2>&1 | tee "$RUNNER_TEMP/difftest.log"

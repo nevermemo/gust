@@ -6,6 +6,12 @@ struct Pair
     uint second;
 };
 
+struct Wrapped
+{
+    uint hash;
+    int step;
+};
+
 [[vk::binding(0, 0)]] StructuredBuffer<int> a;
 [[vk::binding(1, 0)]] StructuredBuffer<uint> b;
 [[vk::binding(2, 0)]] StructuredBuffer<float> f;
@@ -13,6 +19,17 @@ struct Pair
 [[vk::binding(4, 0)]] RWStructuredBuffer<uint> unsigned_out;
 [[vk::binding(5, 0)]] RWStructuredBuffer<int> cast_out;
 [[vk::binding(6, 0)]] RWStructuredBuffer<Pair> pair_out;
+[[vk::binding(7, 0)]] RWStructuredBuffer<Wrapped> wrap_out;
+
+uint scramble(uint x)
+{
+    return ((x * uint(2654435761)) + uint(2654435769));
+}
+
+int step(int x)
+{
+    return (((0 - x) * int(1103515245)) - int(12345));
+}
 
 // @rust kernel: numeric::run
 [shader("compute")]
@@ -40,6 +57,9 @@ void gpu_numeric_run(uint3 id : SV_DispatchThreadID)
     uint __gpu_len_pair_out;
     uint __gpu_stride_pair_out;
     pair_out.GetDimensions(__gpu_len_pair_out, __gpu_stride_pair_out);
+    uint __gpu_len_wrap_out;
+    uint __gpu_stride_wrap_out;
+    wrap_out.GetDimensions(__gpu_len_wrap_out, __gpu_stride_wrap_out);
     uint i = id.x;
     if ((i < __gpu_len_signed_out))
     {
@@ -56,5 +76,9 @@ void gpu_numeric_run(uint3 id : SV_DispatchThreadID)
         __gust_struct_6.first = p.first;
         __gust_struct_6.second = p.second;
         pair_out[i] = __gust_struct_6;
+        Wrapped __gust_struct_7;
+        __gust_struct_7.hash = scramble(b[i]);
+        __gust_struct_7.step = step(a[i]);
+        wrap_out[i] = __gust_struct_7;
     }
 }

@@ -155,9 +155,12 @@ pub(crate) fn is_pure_place(place: &syn::Expr) -> bool {
                 && !is_assignment_operator(&binary.op)
         }
         syn::Expr::MethodCall(call) => {
-            call.args.is_empty()
-                && matches!(call.method.to_string().as_str(), "global_id" | "len")
-                && is_pure_place(&call.receiver)
+            let name = call.method.to_string();
+            let builtin = call.args.is_empty() && matches!(name.as_str(), "global_id" | "len");
+            // The wrapping methods are arithmetic on their operands, like `+` and `-` above.
+            let wrapping = crate::validate::wrapping_arity(&name) == Some(call.args.len())
+                && call.args.iter().all(is_pure_place);
+            (builtin || wrapping) && is_pure_place(&call.receiver)
         }
         _ => false,
     }
@@ -1105,6 +1108,33 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         ),
         syn::Expr::Lit(literal) => emit_literal(&literal.lit)?,
         syn::Expr::MethodCall(call) if is_math_method(call) => emit_math_method(call)?,
+        // The wrapping methods are the plain operators, even in a module that names a matrix (where `*` is
+        // `__gust_mul`): WGSL integer arithmetic wraps modulo 2^32 (section 6.2.3). The macro sees no types, so a
+        // negation is `0 - a`, which slangc types as the operand's own type and lowers without a unary minus
+        // (WGSL has no negation of a `u32`).
+        syn::Expr::MethodCall(call)
+            if crate::validate::wrapping_arity(&call.method.to_string())
+                .is_some_and(|arity| arity == call.args.len()) =>
+        {
+            let receiver = emit_expression(&call.receiver)?;
+            match call.method.to_string().as_str() {
+                "wrapping_neg" => format!("(0 - {receiver})"),
+                name => {
+                    let operator = match name {
+                        "wrapping_add" => '+',
+                        "wrapping_sub" => '-',
+                        "wrapping_mul" => '*',
+                        other => unreachable!(
+                            "`{other}` is accepted by `wrapping_arity` but has no emitter arm"
+                        ),
+                    };
+                    format!(
+                        "({receiver} {operator} {})",
+                        emit_expression(&call.args[0])?
+                    )
+                }
+            }
+        }
         syn::Expr::MethodCall(call) if call.method == "global_id" => {
             emit_expression(&call.receiver)?
         }

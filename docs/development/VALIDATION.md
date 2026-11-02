@@ -153,11 +153,11 @@ loops over runtime bounds, no atomics, no structs, no vectors), anything about a
 another driver than the one named in the report, or, for the `--cpu-only` run, anything about a GPU at all. The Unit
 run cannot see a Slang or driver fault; a program the interpreter rejects is discarded and counted in the report, not
 run. That includes the programs discarded as `static` (a constant the shader compilers may refuse at shader-creation
-time, and since DIFFTEST_FORMAT 4 an integer divisor that slangc folds to zero, in code that runs or not): the corpus
-keeps none, so the batch says nothing about what the compilers do with them, and a valid kernel of that shape fails to
-compile with E30002, a known limitation written up in [DIAGNOSTICS](../DIAGNOSTICS.md) that no run of the batch can
-show. A harness failure (exit 2: a build error, a stale template lockfile, a result file missing) fails the command as
-well and is never reported as a pass; a report left by an earlier run cannot pass the next one (the file is removed
+time): the corpus keeps none, so the batch says nothing about what the compilers do with them. Since DIFFTEST_FORMAT 5
+a non-literal divisor goes through `__gust_div`/`__gust_rem`, which slangc does not fold (D77), so a zero divisor in a
+dead branch no longer fails with E30002; a literal zero divisor is E0317, and the remaining limits are in
+[DIAGNOSTICS](../DIAGNOSTICS.md). A harness failure (exit 2: a build error, a stale template lockfile, a result
+file missing) fails the command as well and is never reported as a pass; a report left by an earlier run cannot pass the next one (the file is removed
 first). Measured costs are in DIFFTEST, "Gates".
 
 ## Single-stage commands

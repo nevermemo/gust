@@ -107,8 +107,9 @@ jobs:
           test -f "$VK_DRIVER_FILES"
           vulkaninfo --summary 2>&1 | tee -a "$env_file"
       - name: Cache cargo and the target directory
-        # `target/slang-reflect` is left out: a helper restored from an older cache is judged up to date by its file
-        # times and then fails to load the Slang library of another install (m5.a2 run 41346473154). The helper of
+        # `target/slang-reflect` is left out: a helper restored from an older cache was judged up to date by its file
+        # times and then failed to load the Slang library of another install (m5.a2 run 41346473154; since m4.z
+        # freshness is a source-hash stamp, but the helper still need not outlive the job). The helper of
         # this job is the manager's, built every run (GUST_SLANG_REFLECT).
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:

@@ -441,6 +441,13 @@ pub(crate) fn parse_args(args: &[String]) -> Result<Options, String> {
 
 /// `cargo xtask check-precompiled [--check-only] [--work-dir PATH]`.
 pub(crate) fn check_precompiled(args: &[String]) -> Result<(), String> {
+    println!("{}", check_precompiled_report(args)?);
+    Ok(())
+}
+
+/// [`check_precompiled`] returning the pass summary (the E steps and the adapter they ran on) instead of printing
+/// it, so `verify --mode full` can record it.
+pub(crate) fn check_precompiled_report(args: &[String]) -> Result<String, String> {
     let options = parse_args(args)?;
     let root = workspace_root()?;
     let fixture = Fixture::new(&root);
@@ -464,10 +471,9 @@ pub(crate) fn check_precompiled(args: &[String]) -> Result<(), String> {
     let reproducible = e7_build_twice(&fixture, options.check_only)?;
     let distribution = e8_distribution(&fixture, &options)?;
 
-    println!(
+    Ok(format!(
         "check-precompiled passed: E1 {report}. E2 {binary}. E3 {identity}. E4 (E6f) {located}. E5 {strict_dual}. E6a to E6e {refusals}. E7 {reexpanded}. E7 {reproducible}. E8 {distribution}. The fixture is tests/precompiled; every child ran under {PROFILE_VARIABLE}={STRICT_PROFILE} except the E2 control and E6e ({PROFILE_VARIABLE}={CONTROL_PROFILE}), the profile-free builds of E6c and E6d, and cargo gust of E7."
-    );
-    Ok(())
+    ))
 }
 
 // ---------------------------------------------------------------------------------------------------------------

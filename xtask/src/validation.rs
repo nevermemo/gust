@@ -84,6 +84,42 @@ pub(crate) struct RunInfo<'a> {
     /// The adapter the run's GPU steps used; `None` ("null" in the record) when the run failed before the adapter
     /// step could say.
     pub(crate) adapter: Option<&'a AdapterRecord>,
+    /// Checks the run was asked to leave out (`check-full --skip-web` names `check-web`); empty for a complete run.
+    pub(crate) skipped: &'a [String],
+}
+
+/// The subcommand of a recorded `cargo xtask <name>` check that exited 0 (`check-web` for the browser run).
+fn passed_xtask_check(checks: &[CheckRecord], name: &str) -> bool {
+    checks.iter().any(|check| {
+        check.exit_code == Some(0)
+            && check
+                .arguments
+                .iter()
+                .map(String::as_str)
+                .eq(["xtask", name])
+    })
+}
+
+/// The `"untested"` member: what this record gives no evidence for. The browser is listed unless a recorded
+/// `check-web` passed.
+fn untested_json(checks: &[CheckRecord]) -> String {
+    let mut items = Vec::new();
+    if !passed_xtask_check(checks, "check-web") {
+        items.push("\"browser WebGPU\"");
+    }
+    items.extend([
+        "\"Metal\"",
+        "\"DXIL\"",
+        "\"other GPU vendors\"",
+        "\"declared minimum Rust version\"",
+    ]);
+    format!("  \"untested\": [{}],\n", items.join(", "))
+}
+
+/// The `"skipped_checks"` member.
+fn skipped_json(skipped: &[String]) -> String {
+    let names: Vec<String> = skipped.iter().map(|name| json_string(name)).collect();
+    format!("  \"skipped_checks\": [{}],\n", names.join(", "))
 }
 
 /// The Vulkan adapter `HeadlessDevice` selected, as `crates/gust-wgpu/examples/adapter_info.rs` printed it. Any
@@ -229,7 +265,8 @@ fn write_validation_with_home(
         None => json.push_str("  \"failure\": null,\n"),
     }
     json.push_str("  \"scope\": \"Debug native Vulkan wgpu execution of Slang-generated WGSL; SPIR-V export validation is separate.\",\n");
-    json.push_str("  \"untested\": [\"browser WebGPU\", \"Metal\", \"DXIL\", \"other GPU vendors\", \"declared minimum Rust version\"],\n");
+    json.push_str(&skipped_json(run.skipped));
+    json.push_str(&untested_json(checks));
     json.push_str("  \"checks\": [\n");
     for (index, check) in checks.iter().enumerate() {
         if index != 0 {
@@ -386,6 +423,11 @@ pub(crate) fn compact_validation_summary(text: &str) -> String {
     let passed = field("passed").unwrap_or_else(|| "unknown".to_owned());
     let commit = field("git_commit").unwrap_or_else(|| "unknown".to_owned());
     let dirty = field("git_dirty").unwrap_or_else(|| "unknown".to_owned());
+    // A record of a run that left a check out says so: `mode=full passed=true` alone would look like the full gate.
+    // Older records have no member, and a complete one has an empty list: neither gets the word.
+    let skipped = skipped_names(text)
+        .map(|names| format!(" skipped={}", names.join(",")))
+        .unwrap_or_default();
     // Only a software adapter gets a tier word, appended last: a hardware record, a record without an adapter and
     // a record from before the adapter member keep the line they always had.
     let tier = if field("device_type").as_deref() == Some(SOFTWARE_DEVICE_TYPE) {
@@ -393,7 +435,23 @@ pub(crate) fn compact_validation_summary(text: &str) -> String {
     } else {
         ""
     };
-    format!("finished={finished} mode={mode} passed={passed} commit={commit} dirty={dirty}{tier}")
+    format!(
+        "finished={finished} mode={mode} passed={passed} commit={commit} dirty={dirty}{skipped}{tier}"
+    )
+}
+
+/// The names in the `"skipped_checks"` member, or `None` when it is absent or empty.
+fn skipped_names(text: &str) -> Option<Vec<String>> {
+    let line = text
+        .lines()
+        .find(|line| line.trim_start().starts_with("\"skipped_checks\":"))?;
+    let list = line.split_once('[')?.1.rsplit_once(']')?.0;
+    let names: Vec<String> = list
+        .split(',')
+        .map(|name| name.trim().trim_matches('"').to_owned())
+        .filter(|name| !name.is_empty())
+        .collect();
+    (!names.is_empty()).then_some(names)
 }
 
 /// The `device_type` of the adapter record for a software Vulkan driver such as lavapipe: the `Debug` name of

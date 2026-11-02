@@ -35,7 +35,9 @@
 //!   exactly what a build would give: every collected key has its files, every manifest entry and every file is a
 //!   collected key (orphans fail), the SHA-256 values match, the stored artifacts verify as a program would verify
 //!   them, and the manifest's Slang build is the installed helper's. `--recompile` also recompiles and compares the
-//!   bytes (S3). It prints one line per problem; the exit code is 1 when there is one.
+//!   bytes (S3). It prints one line per problem; the exit code is 1 when there is one. A plain `check` does not run
+//!   `slangc -version`: it compares the helper's tag with the manifest's, so a matching older Slang passes. Only
+//!   `build` and `check --recompile` require the pinned `slangc` and a helper of the same build.
 //! - `cargo gust doctor` shows the located Slang and where its licence notices are, the helper (refused when it was
 //!   built against another Slang than the located `slangc`), `spirv-val`, the profile a build here would get and the
 //!   install command.
@@ -73,7 +75,7 @@
 //!
 //! Authors who export need Slang; consumers and production builds never call these commands (D46, section 2.5 of the
 //! M4 plan). The pin is the version the M4 Slang bump (m4.r) validated with the GPU, Slangc, Spirv and Reflect
-//! suites, check-artifacts, check-precompiled and check-web; check-full runs at the M4 close.
+//! suites, check-artifacts, check-precompiled and check-web; check-full ran at the M4 close (c964222).
 //!
 //! - `cargo gust slang install` downloads the release archive for this platform from Slang's GitHub release with
 //!   `curl -fsSL`, checks its SHA-256 before anything is extracted, extracts it with `tar -xf` into

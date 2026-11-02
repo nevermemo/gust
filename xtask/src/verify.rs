@@ -11,6 +11,7 @@ use crate::{
     checks::{check_dual, tests_not_ok},
     docs::docs_check,
     lint::lint,
+    precompiled::check_precompiled_report,
     process::{
         CheckRecord, report_check, require_command, require_tests_ran, run_checked,
         run_checked_owned, sum_test_results, without_colors,
@@ -19,6 +20,7 @@ use crate::{
     time::now_utc,
     ui::check_ui,
     validation::{AdapterRecord, ArtifactRecord, GitStamp, RunInfo, sha256_hex, write_validation},
+    web::{check_web_report, preflight_tools},
     workspace::{EXAMPLES, EXPECTED_SPIRV, SMOKE_EXAMPLES, workspace_root, workspace_test_args},
 };
 
@@ -60,15 +62,22 @@ impl VerifyMode {
 pub(crate) struct VerifyCommand {
     pub(crate) mode: VerifyMode,
     pub(crate) record: bool,
+    /// `--skip-web`: the Full mode leaves out `check-web` (see [`integration_checks`]).
+    pub(crate) skip_web: bool,
 }
+
+/// The flag that lets the Full mode go without the browser run, on a machine that has no Chrome or no WebGPU adapter.
+pub(crate) const SKIP_WEB_FLAG: &str = "--skip-web";
 
 impl VerifyCommand {
     pub(crate) fn parse(args: &[String]) -> Result<Self, String> {
         let mut mode = VerifyMode::Smoke;
         let mut record = None;
+        let mut skip_web = false;
         let mut index = 0;
         while index < args.len() {
             match args[index].as_str() {
+                SKIP_WEB_FLAG => skip_web = true,
                 "--full" | "-Full" | "--Full" => mode = VerifyMode::Full,
                 "--mode" | "-Mode" => {
                     index += 1;
@@ -83,14 +92,64 @@ impl VerifyCommand {
             }
             index += 1;
         }
+        if skip_web && mode != VerifyMode::Full {
+            return Err(format!(
+                "{SKIP_WEB_FLAG} applies to the full mode only (the other modes never run check-web)"
+            ));
+        }
         Ok(Self {
             mode,
             record: record.unwrap_or(mode == VerifyMode::Full),
+            skip_web,
         })
     }
 }
 
+/// One of the integration checks that the Full mode runs after its own steps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Integration {
+    /// Run `cargo xtask <name>` in process and record it.
+    Run(&'static str),
+    /// Leave it out because the caller asked to (`--skip-web`); the skip is printed and recorded.
+    Skip(&'static str),
+}
+
+/// The integration checks of a mode, in order (plan M4 section 14, item 3). The Full mode runs the whole
+/// `check-precompiled` and the whole `check-web`, with no silent skip: a machine without Chrome or a WebGPU adapter
+/// fails the web check, naming the cause, unless `skip_web` turns it into a recorded [`Integration::Skip`]. The
+/// artifact export and `spirv-val` checks of `check-artifacts` are part of the Full mode's own steps. The other modes
+/// run none of these.
+pub(crate) fn integration_checks(mode: VerifyMode, skip_web: bool) -> Vec<Integration> {
+    if mode != VerifyMode::Full {
+        return Vec::new();
+    }
+    vec![
+        Integration::Run("check-precompiled"),
+        if skip_web {
+            Integration::Skip("check-web")
+        } else {
+            Integration::Run("check-web")
+        },
+    ]
+}
+
+/// `cargo xtask check-full [--skip-web]`: the Full mode, always recorded.
+pub(crate) fn check_full(args: &[String]) -> Result<(), String> {
+    match args {
+        [] => verify(VerifyMode::Full, true),
+        [flag] if flag == SKIP_WEB_FLAG => verify_with(VerifyMode::Full, true, true),
+        _ => Err(format!(
+            "check-full takes no argument except {SKIP_WEB_FLAG}"
+        )),
+    }
+}
+
 pub(crate) fn verify(mode: VerifyMode, record: bool) -> Result<(), String> {
+    verify_with(mode, record, false)
+}
+
+/// [`verify`] with `--skip-web`. Only the Full mode takes it ([`VerifyCommand::parse`] refuses it elsewhere).
+pub(crate) fn verify_with(mode: VerifyMode, record: bool, skip_web: bool) -> Result<(), String> {
     let root = workspace_root()?;
     let started = now_utc();
     // Taken before the checks run: the record names the tree they ran against.
@@ -98,28 +157,84 @@ pub(crate) fn verify(mode: VerifyMode, record: bool) -> Result<(), String> {
     let mut checks = Vec::new();
     let mut artifacts = Vec::new();
     let mut adapter = None;
-    let result = verify_inner(&root, mode, &mut checks, &mut artifacts, &mut adapter);
+    let mut skipped = Vec::new();
+    let result = verify_inner(
+        &root,
+        mode,
+        skip_web,
+        &mut checks,
+        &mut artifacts,
+        &mut adapter,
+        &mut skipped,
+    );
     if record {
         let run = RunInfo {
             mode,
             started: &started,
             git: &git,
             adapter: adapter.as_ref(),
+            skipped: &skipped,
         };
         write_validation(&root, &run, result.as_ref().err(), &checks, &artifacts)?;
     }
     result?;
-    println!("GUST verification passed.");
+    if skipped.is_empty() {
+        println!("GUST verification passed.");
+    } else {
+        println!(
+            "GUST verification passed, with {} skipped on request: this is not the full release record.",
+            skipped.join(", ")
+        );
+    }
     Ok(())
+}
+
+/// The tools of `check-web` are looked up at the start of a Full run that will run it, with `probe` (check-web's own
+/// lookups). Every other run, including Full with `--skip-web`, does not look: it never runs `check-web`.
+fn web_preflight(
+    mode: VerifyMode,
+    skip_web: bool,
+    probe: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    if mode != VerifyMode::Full || skip_web {
+        return Ok(());
+    }
+    probe().map_err(|error| {
+        format!(
+            "{error}\n  check-full runs check-web, which needs this tool; install it, or pass {SKIP_WEB_FLAG} \
+             (the run is then recorded as not the full release record)"
+        )
+    })
+}
+
+/// Run one integration check in process and record it like `check-dual`. On failure the returned error carries the
+/// check's own message (the cause), not the generic "found 1 problem".
+fn run_integration(
+    checks: &mut Vec<CheckRecord>,
+    name: &'static str,
+    outcome: Result<String, String>,
+) -> Result<(), String> {
+    let cause = outcome.as_ref().err().cloned();
+    report_check(checks, name, outcome.map_err(|error| vec![error])).map_err(
+        |generic| match cause {
+            Some(cause) if cause.starts_with(name) => cause,
+            Some(cause) => format!("{name} failed: {cause}"),
+            None => generic,
+        },
+    )
 }
 
 fn verify_inner(
     root: &Path,
     mode: VerifyMode,
+    skip_web: bool,
     checks: &mut Vec<CheckRecord>,
     artifacts: &mut Vec<ArtifactRecord>,
     adapter: &mut Option<AdapterRecord>,
+    skipped: &mut Vec<String>,
 ) -> Result<(), String> {
+    // Before anything else: a missing tool of check-web must not show up after the long steps.
+    web_preflight(mode, skip_web, preflight_tools)?;
     // Cheapest checks first; they need only git, and check-ui needs cargo (no slangc, no GPU).
     if matches!(
         mode,
@@ -198,6 +313,27 @@ fn verify_inner(
                 sha256: sha256_hex(&bytes),
             });
             println!("Validated {file}");
+        }
+    }
+    // Last: the slowest checks, and the ones that need the most (a registry download, Chrome with a WebGPU adapter).
+    for step in integration_checks(mode, skip_web) {
+        match step {
+            Integration::Run("check-precompiled") => {
+                let outcome = check_precompiled_report(&[]).map(|summary| format!("{summary}\n"));
+                run_integration(checks, "check-precompiled", outcome)?;
+            }
+            Integration::Run("check-web") => {
+                let outcome = check_web_report(&[]).map(|summary| format!("{summary}\n"));
+                run_integration(checks, "check-web", outcome)?;
+            }
+            Integration::Run(other) => return Err(format!("unknown integration check `{other}`")),
+            Integration::Skip(name) => {
+                println!(
+                    "{name}: SKIPPED on request ({SKIP_WEB_FLAG}); this run is not the full release record, \
+                     and VALIDATION.json says so"
+                );
+                skipped.push(name.to_owned());
+            }
         }
     }
     Ok(())
@@ -838,6 +974,10 @@ mod artifact_names_tests;
 #[cfg(test)]
 #[path = "tests/gpu_counts.rs"]
 mod gpu_counts_tests;
+
+#[cfg(test)]
+#[path = "tests/verify_integration.rs"]
+mod verify_integration_tests;
 
 #[cfg(test)]
 #[path = "tests/verify_generated.rs"]

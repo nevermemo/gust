@@ -17,6 +17,7 @@ fn run(mode: VerifyMode, git: &GitStamp) -> RunInfo<'_> {
         started: "2026-10-23T00:00:00Z",
         git,
         adapter: None,
+        skipped: &[],
     }
 }
 
@@ -445,4 +446,74 @@ fn the_adapter_text_is_redacted_like_the_rest_of_the_record() {
         json.contains(r#""driver_info": "<workspace>\\icd.json and ~\\driver""#),
         "{json}"
     );
+}
+
+fn xtask_check(name: &str, exit_code: i32) -> CheckRecord {
+    CheckRecord {
+        program: "cargo".to_owned(),
+        arguments: vec!["xtask".to_owned(), name.to_owned()],
+        exit_code: Some(exit_code),
+        stdout: String::new(),
+        stderr: String::new(),
+    }
+}
+
+/// The record of `check-full --skip-web` names the skipped check and keeps the browser in `untested`; a passed
+/// `check-web` removes it from `untested`, and a failed one does not.
+#[test]
+fn the_record_names_skipped_checks_and_lists_the_browser_as_untested_unless_it_ran() {
+    let root = temp_root();
+    let git = GitStamp::UNKNOWN;
+    let skipped = ["check-web".to_owned()];
+    let write = |run: &RunInfo, checks: &[CheckRecord]| {
+        write_validation_with_home(&root, HOME, run, None, checks, &[]).unwrap();
+        fs::read_to_string(root.join(".ai/VALIDATION.json")).unwrap()
+    };
+    let precompiled = xtask_check("check-precompiled", 0);
+
+    let skipping = RunInfo {
+        skipped: &skipped,
+        ..run(VerifyMode::Full, &git)
+    };
+    let skipped_record = write(&skipping, std::slice::from_ref(&precompiled));
+    let complete = write(
+        &run(VerifyMode::Full, &git),
+        &[
+            xtask_check("check-precompiled", 0),
+            xtask_check("check-web", 0),
+        ],
+    );
+    let failed_web = write(
+        &run(VerifyMode::Full, &git),
+        &[precompiled, xtask_check("check-web", 1)],
+    );
+    let _ = fs::remove_dir_all(&root);
+
+    assert!(
+        skipped_record.contains("  \"skipped_checks\": [\"check-web\"],\n"),
+        "{skipped_record}"
+    );
+    assert!(skipped_record.contains("\"untested\": [\"browser WebGPU\", \"Metal\""));
+    assert!(
+        complete.contains("  \"skipped_checks\": [],\n"),
+        "{complete}"
+    );
+    assert!(
+        complete.contains("\"untested\": [\"Metal\", \"DXIL\""),
+        "{complete}"
+    );
+    assert!(failed_web.contains("\"untested\": [\"browser WebGPU\", \"Metal\""));
+
+    // `cargo xtask status` must not show a record that left a check out as a plain full one.
+    let line = compact_validation_summary(&skipped_record);
+    assert!(
+        line.contains(" dirty=") && line.ends_with(" skipped=check-web"),
+        "{line}"
+    );
+    assert!(line.contains(" mode=full passed="), "{line}");
+    let line = compact_validation_summary(&complete);
+    assert!(!line.contains("skipped"), "{line}");
+    // A record from before the member existed keeps its line.
+    let old = complete.replace("  \"skipped_checks\": [],\n", "");
+    assert_eq!(compact_validation_summary(&old), line);
 }

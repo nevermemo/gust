@@ -13,8 +13,8 @@ use std::{
 use super::{
     Options, PageResult, Platform, Server, WaitEnd, chrome_candidates, content_type,
     evidence_label, feature_scope_problems, find_in_path, join_within, kill_tree,
-    locked_wasm_bindgen_version, parse_chrome_version, parse_cli_version, parse_console_line,
-    resolve_target, tree_enables_webgpu, wait_for_result,
+    locate_wasm_bindgen, locked_wasm_bindgen_version, parse_chrome_version, parse_cli_version,
+    parse_console_line, resolve_target, tree_enables_webgpu, wait_for_result,
 };
 
 fn strings(items: &[&str]) -> Vec<String> {
@@ -729,4 +729,16 @@ fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
             "{name} differs: re-copy tests/precompiled/kernels/gust-artifacts/* into examples/web-vector-add/gust-artifacts/"
         );
     }
+}
+
+#[test]
+fn a_wasm_bindgen_that_is_not_on_path_is_refused_with_the_install_command() {
+    let empty = scratch("no-wasm-bindgen");
+    let path = env::join_paths([empty.as_path()]).unwrap();
+    let error = locate_wasm_bindgen(&Options::default(), "0.2.99", Some(path)).unwrap_err();
+    assert!(error.contains("wasm-bindgen is not on PATH"), "{error}");
+    assert!(error.contains("--version 0.2.99"), "{error}");
+    let unset = locate_wasm_bindgen(&Options::default(), "0.2.99", None).unwrap_err();
+    assert!(unset.contains("wasm-bindgen is not on PATH"), "{unset}");
+    let _ = fs::remove_dir_all(empty);
 }

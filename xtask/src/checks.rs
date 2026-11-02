@@ -495,7 +495,9 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "examples: every example test (ordinary and ignored, `--include-ignored`; a package that runs no test fails) and example binaries; use for major behavior confidence"
         }
         "artifacts" => "artifacts: example binaries plus exported SPIR-V validation",
-        "full" => "full: release evidence; writes .ai/VALIDATION.json",
+        "full" => {
+            "full: release evidence (the Full mode of verify, as `cargo xtask check-full [--skip-web]`): everything above, check-dual in full mode, the artifact export with spirv-val, then the whole check-precompiled and check-web; writes .ai/VALIDATION.json, with `skipped_checks` naming a check that --skip-web left out"
+        }
         "changed" => "changed: route dirty files to the cheapest likely sufficient check",
         "workspace" => {
             "workspace: non-example workspace tests via --exclude; example tests stay in check-examples"

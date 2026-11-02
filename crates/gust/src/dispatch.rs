@@ -322,9 +322,11 @@ pub enum LengthRule {
 /// ```
 ///
 /// A uniform where a storage buffer is expected does not compile ([`Resource::Kind`]; a generated call names
-/// `Kind = gust::kind::Storage` for a buffer parameter and `Kind = gust::kind::Uniform` for a uniform one):
+/// `Kind = gust::kind::Storage` for a buffer parameter and `Kind = gust::kind::Uniform` for a uniform one; the error
+/// code is documentation only, because stable rustdoc accepts a `compile_fail` code and does not check it, which a
+/// wrong code in a scratch run confirmed):
 ///
-/// ```compile_fail
+/// ```compile_fail,E0271
 /// # use gust::*;
 /// # use core::{marker::PhantomData, time::Duration};
 /// # struct Dev;
@@ -637,7 +639,7 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// A uniform parameter counts: a kernel with one storage and one uniform parameter takes `N = 2`, and `N = 1`
     /// (the storage count alone) does not compile.
     ///
-    /// ```compile_fail
+    /// ```compile_fail,E0080
     /// # use gust::*;
     /// # use core::time::Duration;
     /// # struct Dev;

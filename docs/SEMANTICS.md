@@ -70,13 +70,17 @@ describes the intended behaviour and is not evidence.
     refusals. That is `Cpu` evidence, never GPU evidence (D42).
 - **Host uniforms (exists on the host API, m6.u1; the macro's `call` for a `Uniform<T>` parameter is m6.u2).** A
   uniform is one value in a constant buffer, bound to a `Uniform` parameter through a resource of kind
-  `gust::kind::Uniform` (`GpuUniform<T>` on the GPU, `CpuUniform<T>` on the twin). A storage buffer where a uniform is
-  expected, or the reverse, does not compile in a typed call, and a hand-built call is refused at run time
-  (`BindingKind`). A uniform is read-only for the kernel and one element long whatever the dispatch's element count.
+  `gust::kind::Uniform` (`GpuUniform<T>` on the GPU, `CpuUniform<T>` on the twin). `Resource::Kind` lets a generated
+  call refuse a uniform where a buffer is expected, or the reverse, at compile time once m6.u2 names `Kind` in its
+  bounds; until then a generated storage parameter accepts a `GpuUniform` at compile time, and that call, like a
+  hand-built one, is refused at submit (`BindingKind`). A uniform is read-only for the kernel and one element long
+  whatever the dispatch's element count.
   Its ABI is `Std140V1` (`std140-v1` in the generated host text): scalars, 2- and 4-wide vectors, 4x4 matrices and
   structs of them rounded up to 16 bytes. `T` must also be padding-free, because the upload copies the bytes of the
-  Rust value and padding is uninitialised: `create_uniform` refuses a padded `T` with a message that names the fix,
-  explicit padding fields. A value is replaced by `HeadlessDevice::write_uniform` (immediately) or, ordered among the
+  Rust value and padding is uninitialised: `create_uniform` and `CpuDevice::uniform` refuse a padded `T` with a message
+  that names the fix, explicit padding fields, and the twin also refuses a uniform parameter whose rule is not
+  `Std140V1`. A value is replaced by `HeadlessDevice::write_uniform` (`Queue::write_buffer`: after every earlier
+  submission, before the next, so all dispatches of one later submission see the last value) or, ordered among the
   dispatches of one submission, by the copy node `StagedGraph::write_uniform` (a write of the uniform for the derived
   edges and the hazard check).
 - **Not executed by the twin.** Kernels with a `Uniform<T>` parameter (their typed call is m6.u2), indirect dispatch

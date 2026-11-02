@@ -297,8 +297,10 @@ impl<T> GpuBuffer<T> {
 /// them does not compile. A uniform is always read-only for the kernel and has length one whatever the dispatch
 /// element count.
 ///
-/// Update it with [`HeadlessDevice::write_uniform`] (immediate) or, ordered with the dispatches around it, with
-/// `StagedGraph::write_uniform`.
+/// Update it with [`HeadlessDevice::write_uniform`] (a `Queue::write_buffer`: ordered after every earlier submission
+/// and before the next one, so every dispatch of one later submission, a `submit_batch` or a graph, sees the last
+/// value written) or, between the dispatches of one submission, with `StagedGraph::write_uniform`, which encodes a
+/// copy in the command stream.
 pub struct GpuUniform<T> {
     raw: wgpu::Buffer,
     layout: gust::TypeLayout,
@@ -702,7 +704,7 @@ impl<T: GpuPod> Resource for GpuBuffer<T> {
 /// only for a uniform parameter: it is read-only, one element long whatever the dispatch's element count (the length
 /// rule is ignored), and a `GpuUniform` where a storage buffer is expected does not compile.
 ///
-/// ```compile_fail
+/// ```compile_fail,E0271
 /// # use gust::*;
 /// # use gust_wgpu::GpuUniform;
 /// # const fn p(name: &'static str, access: Access) -> ParameterDescriptor {
@@ -1182,9 +1184,11 @@ impl HeadlessDevice {
         })
     }
 
-    /// Replace the value of a uniform now (`Queue::write_buffer`): work already submitted and not yet run on the
-    /// queue sees the new value, so use `StagedGraph::write_uniform` when the update must fall between two dispatches
-    /// of one submission.
+    /// Replace the value of a uniform with `Queue::write_buffer`: the write is ordered after every earlier submission
+    /// and before the next one, so work already submitted sees the old value. Every dispatch of one later submission
+    /// (a `submit_batch` or a graph) sees the last value written, whatever the order they were recorded in; use
+    /// `StagedGraph::write_uniform`, which encodes a copy in the command stream, when an update must fall between two
+    /// dispatches of one submission.
     pub fn write_uniform<T: GpuPod>(
         &self,
         uniform: &GpuUniform<T>,

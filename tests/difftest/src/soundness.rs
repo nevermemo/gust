@@ -88,6 +88,7 @@ fn unroll(program: &Program) -> Expr {
                 r: Box::new(subst(r, env)),
             },
             Expr::Cast { to, e } => Expr::cast(*to, subst(e, env)),
+            _ => panic!("the soundness programs are scalar: {e:?}"),
         }
     }
     fn exec(stmts: &[Stmt], env: &mut BTreeMap<u32, Expr>) {
@@ -108,6 +109,7 @@ fn unroll(program: &Program) -> Expr {
                     }
                 }
                 Stmt::If { .. } => panic!("the soundness programs have no branches"),
+                Stmt::AssignComp { .. } => panic!("the soundness programs have no vectors"),
             }
         }
     }

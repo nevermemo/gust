@@ -153,20 +153,14 @@ fn at_node(p: &mut Program, target: usize, f: &mut dyn FnMut(&mut Expr)) {
         if *n - 1 == target {
             return f(e);
         }
-        match e {
-            Expr::Input { index, .. } => go(index, n, target, f),
-            Expr::Un { e, .. } | Expr::Cast { e, .. } => go(e, n, target, f),
-            Expr::Bin { l, r, .. } => {
-                go(l, n, target, f);
-                go(r, n, target, f);
-            }
-            _ => {}
-        }
+        e.for_each_child_mut(&mut |child| go(child, n, target, f));
     }
     fn block(stmts: &mut [Stmt], n: &mut usize, target: usize, f: &mut dyn FnMut(&mut Expr)) {
         for stmt in stmts {
             match stmt {
-                Stmt::Let { init: e, .. } | Stmt::Assign { value: e, .. } => go(e, n, target, f),
+                Stmt::Let { init: e, .. }
+                | Stmt::Assign { value: e, .. }
+                | Stmt::AssignComp { value: e, .. } => go(e, n, target, f),
                 Stmt::If { cond, then, els } => {
                     go(cond, n, target, f);
                     block(then, n, target, f);

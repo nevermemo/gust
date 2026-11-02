@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast::{BinOp, Expr, InputBuf, MAX_TRIPS, Program, Stmt, Ty, chain_terms};
+use crate::ast::{BinOp, Expr, InputBuf, Lane, MAX_TRIPS, Program, Stmt, Ty, WIDTHS, chain_terms};
 use crate::interp;
 use crate::prng::{Prng, byte_stream};
 
@@ -24,8 +24,11 @@ use crate::prng::{Prng, byte_stream};
 /// is discarded as `static`, because slangc refuses the kernel (E30002). 5: that refusal is gone (slice m6.dv, D74): the
 /// macro lowers a `/` or `%` with a divisor that is not a literal to `__gust_div` and `__gust_rem`, which slangc
 /// compiles in every shape, so a program is no longer discarded for a divisor slangc would fold; the decoding is
-/// unchanged, the programs that format 4 refused for that reason come back.
-pub const DIFFTEST_FORMAT: u32 = 5;
+/// unchanged, the programs that format 4 refused for that reason come back. 6: the vector programs (slice m6.d): a
+/// seed's batch is its first ten in-domain programs of the float space (the same programs as in format 5, in the same
+/// order) followed by six in-domain programs of the vector space, drawn from the attempt numbers
+/// `VECTOR_ATTEMPT_BASE..`; the scalar decoding is unchanged, the last six programs of every seed are new.
+pub const DIFFTEST_FORMAT: u32 = 6;
 
 /// Which programs the generator writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,8 +36,29 @@ pub enum Space {
     /// Integers and booleans only. Reads exactly the bytes, and makes exactly the choices, that DIFFTEST_FORMAT 1 did,
     /// so the programs are those of m5.c1a (a unit test pins their discard counts).
     Integer,
-    /// Integers, booleans and `f32` (the exact-interval subset of R1-4). The default.
+    /// Integers, booleans and `f32` (the exact-interval subset of R1-4). The scalar part of a batch.
     Float,
+    /// The float space plus `gust::math` vectors and matrices (slice m6.d): `Vec2`/`Vec4`, `IVec2`/`IVec4`,
+    /// `UVec2`/`UVec4`, `Mat2`/`Mat4` as locals and intermediates, read back through components, `dot`, and
+    /// `Mat * Vec`. The vector part of a batch; selected by an attempt number of `VECTOR_ATTEMPT_BASE` or more.
+    Vector,
+}
+
+/// The first attempt number of the vector space. A program is a pure function of `(seed, attempt)`, and the attempt
+/// number alone says which space decodes it, so the reducer and the shrinker re-decode a vector program without being
+/// told. The scalar part of a batch never gets near it (`MAX_ATTEMPTS` is 100 000).
+pub const VECTOR_ATTEMPT_BASE: u64 = 1_000_000;
+/// In-domain programs of a seed's batch that are scalar (the float space), then vector (`PROGRAMS_PER_SEED` in all).
+pub const SCALAR_PROGRAMS_PER_SEED: usize = 10;
+pub const VECTOR_PROGRAMS_PER_SEED: usize = PROGRAMS_PER_SEED - SCALAR_PROGRAMS_PER_SEED;
+
+/// The space whose decoder reads the program of this attempt number.
+pub fn space_of_attempt(attempt: u64) -> Space {
+    if attempt >= VECTOR_ATTEMPT_BASE {
+        Space::Vector
+    } else {
+        Space::Float
+    }
 }
 /// Bytes of the stream one program may consume; the decoder reads zeros beyond.
 pub const BYTES_PER_PROGRAM: usize = 4096;
@@ -93,6 +117,8 @@ impl Bytes<'_> {
 struct Gen<'a> {
     b: Bytes<'a>,
     floats: bool,
+    /// The vector space: vectors and matrices as locals and intermediates (implies `floats`).
+    vectors: bool,
     inputs: Vec<Ty>,
     /// The data of each input buffer (same order as `inputs`); the float space draws literals and conditions from it.
     data: Vec<Vec<u32>>,
@@ -139,7 +165,22 @@ impl Gen<'_> {
             .collect()
     }
 
+    /// The type of a local: a scalar, or in the vector space often a vector or a matrix.
     fn pick_ty(&mut self) -> Ty {
+        if self.vectors {
+            return match self.b.weighted(&[18, 18, 8, 16, 40]) {
+                0 => Ty::U32,
+                1 => Ty::I32,
+                2 => Ty::Bool,
+                3 => Ty::F32,
+                _ => self.agg_ty(),
+            };
+        }
+        self.scalar_ty()
+    }
+
+    /// The type of a result: always a scalar (the output buffer is scalar).
+    fn scalar_ty(&mut self) -> Ty {
         if self.floats {
             return [Ty::U32, Ty::I32, Ty::Bool, Ty::F32][self.b.weighted(&[30, 30, 15, 25])];
         }
@@ -172,6 +213,7 @@ impl Gen<'_> {
             return literal;
         }
         match ty {
+            Ty::Vec(..) | Ty::Mat(_) => unreachable!("a vector or matrix has no literal"),
             Ty::F32 => self.float_literal(),
             Ty::Bool => Expr::bool(self.b.below(2) == 1),
             Ty::U32 => Expr::u32(match self.b.weighted(&[55, 12, 8, 8, 12, 5]) {
@@ -221,6 +263,9 @@ impl Gen<'_> {
     }
 
     fn leaf(&mut self, ty: Ty) -> Expr {
+        if ty.is_aggregate() {
+            return self.agg_leaf(ty);
+        }
         let vars = self.vars(ty);
         let inputs = self.inputs_of(ty);
         // 0 literal, 1 variable, 2 input read, 3 gid, 4 len.
@@ -304,6 +349,9 @@ impl Gen<'_> {
     }
 
     fn expr(&mut self, ty: Ty, depth: u32) -> Expr {
+        if ty.is_aggregate() {
+            return self.agg_expr(ty, depth);
+        }
         let leaf_chance = if depth == 0 {
             100
         } else {
@@ -324,6 +372,9 @@ impl Gen<'_> {
         let mut weights = vec![14, 9, 8, 6, 6, 7, 5, 5, 5, 6, neg_weight, 3, 6];
         if self.floats {
             weights.push(5);
+        }
+        if self.vectors {
+            weights.push(8);
         }
         match self.b.weighted(&weights) {
             0 => self.arithmetic(BinOp::Add, ty, depth),
@@ -367,14 +418,20 @@ impl Gen<'_> {
                 let other = if ty == Ty::U32 { Ty::I32 } else { Ty::U32 };
                 Expr::cast(ty, self.expr(other, d))
             }
-            _ => Expr::cast(ty, self.expr(Ty::F32, d)),
+            13 => Expr::cast(ty, self.expr(Ty::F32, d)),
+            _ => self.agg_readout(ty, d),
         }
     }
 
     /// An `f32` expression (R1-4): `+ - * /`, unary `-`, and casts from integers. A `+`/`-` chain has at most four
     /// written terms; a divisor is mostly kept away from zero by construction.
     fn float_expr(&mut self, d: u32) -> Expr {
-        match self.b.weighted(&[16, 10, 14, 8, 6, 8]) {
+        let weights: &[u32] = if self.vectors {
+            &[16, 10, 14, 8, 6, 8, 14]
+        } else {
+            &[16, 10, 14, 8, 6, 8]
+        };
+        match self.b.weighted(weights) {
             kind @ (0 | 1) => {
                 let op = if kind == 0 { BinOp::Add } else { BinOp::Sub };
                 let l = self.expr(Ty::F32, d);
@@ -393,6 +450,7 @@ impl Gen<'_> {
                 Expr::bin(BinOp::Div, l, r)
             }
             4 => Expr::negated(self.expr(Ty::F32, d)),
+            6 => self.agg_readout(Ty::F32, d),
             _ => {
                 let ty = self.int_ty();
                 let e = self.expr(ty, d);
@@ -411,12 +469,251 @@ impl Gen<'_> {
     fn fit_chain(&mut self, mut l: Expr, mut r: Expr, max: usize) -> (Expr, Expr) {
         while chain_terms(&l) + chain_terms(&r) > max {
             if chain_terms(&l) >= chain_terms(&r) {
-                l = self.leaf(Ty::F32);
+                l = self.leaf(l.ty());
             } else {
-                r = self.leaf(Ty::F32);
+                r = self.leaf(r.ty());
             }
         }
         (l, r)
+    }
+
+    /// The type of a vector or matrix local: mostly `f32` vectors and matrices, which carry the interval bounds.
+    fn agg_ty(&mut self) -> Ty {
+        const TYS: [Ty; 8] = [
+            Ty::Vec(Lane::F32, 2),
+            Ty::Vec(Lane::F32, 4),
+            Ty::Vec(Lane::I32, 2),
+            Ty::Vec(Lane::I32, 4),
+            Ty::Vec(Lane::U32, 2),
+            Ty::Vec(Lane::U32, 4),
+            Ty::Mat(2),
+            Ty::Mat(4),
+        ];
+        TYS[self.b.weighted(&[20, 24, 7, 7, 7, 7, 10, 18])]
+    }
+
+    /// A vector or matrix leaf: a local of the type, or a fresh construction from scalar leaves.
+    fn agg_leaf(&mut self, ty: Ty) -> Expr {
+        let vars = self.vars(ty);
+        if !vars.is_empty() && self.b.chance(65) {
+            return Expr::Var(vars[self.b.below(vars.len() as u32) as usize], ty);
+        }
+        self.build(ty, 1)
+    }
+
+    /// `Vec4::new(..)`, `Vec4::splat(..)`, `Mat4::from_cols(..)` or `Mat4::from_rows(..)` of operands of depth `d`. A
+    /// `Mat2` always has an input read among its columns (SEMANTICS section 4: a constant `Mat2` crashes naga's SPIR-V
+    /// front end, so the generator never writes one).
+    fn build(&mut self, ty: Ty, d: u32) -> Expr {
+        match ty {
+            Ty::Vec(lane, n) => {
+                if self.b.chance(15) {
+                    let e = self.expr(lane.ty(), d);
+                    return Expr::Splat { ty, e: Box::new(e) };
+                }
+                let args = (0..n).map(|_| self.expr(lane.ty(), d)).collect();
+                Expr::vec_new(ty, args)
+            }
+            Ty::Mat(n) => {
+                let column = Ty::Vec(Lane::F32, n);
+                let rows = self.b.chance(30);
+                let mut args: Vec<Expr> = (0..n).map(|_| self.agg_expr(column, d)).collect();
+                if n == 2 && !args.iter().any(Expr::reads_f32_input_directly) {
+                    args[0] = self.vec2_from_input();
+                }
+                Expr::Make { ty, rows, args }
+            }
+            other => unreachable!("build of {}", other.name()),
+        }
+    }
+
+    /// A `Vec2` that reads an `f32` input buffer (the vector space always has one).
+    fn vec2_from_input(&mut self) -> Expr {
+        let buffers = self.inputs_of(Ty::F32);
+        let buf = buffers[self.b.below(buffers.len() as u32) as usize];
+        let x = self.input_read(buf, Ty::F32);
+        let y = self.float_literal();
+        Expr::vec_new(Ty::Vec(Lane::F32, 2), vec![x, y])
+    }
+
+    /// A scalar read out of a vector: a component, or the `dot` of two vectors of one type.
+    fn agg_readout(&mut self, ty: Ty, d: u32) -> Expr {
+        let lane = match ty {
+            Ty::U32 => Lane::U32,
+            Ty::I32 => Lane::I32,
+            _ => Lane::F32,
+        };
+        let n = WIDTHS[self.b.below(2) as usize];
+        let vector = Ty::Vec(lane, n);
+        let first = self.agg_expr(vector, d);
+        if self.b.chance(40) {
+            let second = self.agg_expr(vector, d);
+            Expr::dot(first, second)
+        } else {
+            let index = self.b.below(u32::from(n)) as u8;
+            Expr::comp(first, index)
+        }
+    }
+
+    /// A divisor for one lane of a vector: never a literal zero.
+    fn lane_divisor(&mut self, lane: Lane, d: u32) -> Expr {
+        if lane == Lane::F32 {
+            self.float_divisor(d)
+        } else {
+            self.divisor(lane.ty(), d)
+        }
+    }
+
+    fn agg_expr(&mut self, ty: Ty, depth: u32) -> Expr {
+        let leaf_chance = if depth == 0 {
+            100
+        } else {
+            15 + (MAX_DEPTH - depth.min(MAX_DEPTH)) * 12
+        };
+        if self.b.chance(leaf_chance) {
+            return self.agg_leaf(ty);
+        }
+        let d = depth - 1;
+        match ty {
+            Ty::Vec(lane, n) => self.vec_expr(ty, lane, n, d),
+            Ty::Mat(n) => self.mat_expr(ty, n, d),
+            other => unreachable!("agg_expr of {}", other.name()),
+        }
+    }
+
+    fn vec_expr(&mut self, ty: Ty, lane: Lane, n: u8, d: u32) -> Expr {
+        let float = lane == Lane::F32;
+        let weights = [
+            14,
+            8,
+            5,
+            if lane == Lane::U32 { 0 } else { 5 },
+            8,
+            8,
+            4,
+            if float { 10 } else { 0 },
+        ];
+        match self.b.weighted(&weights) {
+            0 => {
+                let op = [BinOp::Add, BinOp::Sub, BinOp::Mul, BinOp::Div]
+                    [self.b.weighted(&[10, 8, 10, 5])];
+                let l = self.agg_expr(ty, d);
+                if op == BinOp::Div {
+                    let args = (0..n).map(|_| self.lane_divisor(lane, d)).collect();
+                    return Expr::agg_bin(op, l, Expr::vec_new(ty, args));
+                }
+                let r = self.agg_expr(ty, d);
+                let (l, r) = if float && matches!(op, BinOp::Add | BinOp::Sub) {
+                    self.fit_chain(l, r, 4)
+                } else {
+                    (l, r)
+                };
+                Expr::agg_bin(op, l, r)
+            }
+            1 => {
+                let op = if self.b.below(2) == 0 {
+                    BinOp::Mul
+                } else {
+                    BinOp::Div
+                };
+                let l = self.agg_expr(ty, d);
+                let r = if op == BinOp::Div {
+                    self.lane_divisor(lane, d)
+                } else {
+                    self.expr(lane.ty(), d)
+                };
+                Expr::agg_bin(op, l, r)
+            }
+            2 => {
+                let s = self.expr(lane.ty(), d);
+                let v = self.agg_expr(ty, d);
+                Expr::agg_bin(BinOp::Mul, s, v)
+            }
+            3 => Expr::AggNeg {
+                e: Box::new(self.agg_expr(ty, d)),
+            },
+            4 => {
+                let width = WIDTHS[self.b.below(2) as usize];
+                let source = self.agg_expr(Ty::Vec(lane, width), d);
+                let lanes = (0..n)
+                    .map(|_| self.b.below(u32::from(width)) as u8)
+                    .collect();
+                Expr::swizzle(source, lanes)
+            }
+            5 => self.build(ty, d),
+            6 => {
+                let e = self.expr(lane.ty(), d);
+                Expr::Splat { ty, e: Box::new(e) }
+            }
+            _ => {
+                let m = self.agg_expr(Ty::Mat(n), d);
+                let v = self.agg_expr(ty, d);
+                Expr::agg_bin(BinOp::Mul, m, v)
+            }
+        }
+    }
+
+    fn mat_expr(&mut self, ty: Ty, n: u8, d: u32) -> Expr {
+        match self.b.weighted(&[8, 10, 14, 8, 6, 4]) {
+            0 => self.build(ty, d),
+            1 => {
+                let op = if self.b.below(2) == 0 {
+                    BinOp::Add
+                } else {
+                    BinOp::Sub
+                };
+                let l = self.agg_expr(ty, d);
+                let r = self.agg_expr(ty, d);
+                let (l, r) = self.fit_chain(l, r, 4);
+                Expr::agg_bin(op, l, r)
+            }
+            2 => {
+                let l = self.agg_expr(ty, d);
+                let r = self.agg_expr(ty, d);
+                Expr::agg_bin(BinOp::Mul, l, r)
+            }
+            3 => {
+                let m = self.agg_expr(ty, d);
+                let s = self.expr(Ty::F32, d);
+                if self.b.below(2) == 0 {
+                    Expr::agg_bin(BinOp::Mul, m, s)
+                } else {
+                    Expr::agg_bin(BinOp::Mul, s, m)
+                }
+            }
+            4 => Expr::Transpose {
+                e: Box::new(self.agg_expr(Ty::Mat(n), d)),
+            },
+            _ => Expr::AggNeg {
+                e: Box::new(self.agg_expr(ty, d)),
+            },
+        }
+    }
+
+    /// An assignment to a mutable vector or matrix local: one component, the accumulating form, or a fresh value.
+    fn assign_agg(&mut self, var: u32, ty: Ty) -> Stmt {
+        if let Ty::Vec(lane, n) = ty
+            && self.b.chance(40)
+        {
+            let index = self.b.below(u32::from(n)) as u8;
+            let value = self.expr(lane.ty(), 3);
+            return Stmt::AssignComp { var, index, value };
+        }
+        let value = if self.b.chance(45) {
+            let current = Expr::Var(var, ty);
+            let rhs = self.agg_expr(ty, 2);
+            let op = [BinOp::Add, BinOp::Add, BinOp::Sub, BinOp::Mul][self.b.below(4) as usize];
+            let (current, rhs) = if matches!(op, BinOp::Add | BinOp::Sub) && ty.scalar() == Ty::F32
+            {
+                self.fit_chain(current, rhs, 4)
+            } else {
+                (current, rhs)
+            };
+            Expr::agg_bin(op, current, rhs)
+        } else {
+            self.agg_expr(ty, 3)
+        };
+        Stmt::Assign { var, value }
     }
 
     fn float_divisor(&mut self, d: u32) -> Expr {
@@ -606,7 +903,8 @@ impl Gen<'_> {
             match kind {
                 0 => {
                     let ty = self.pick_ty();
-                    let init = self.expr(ty, MAX_DEPTH - 1);
+                    // A vector or matrix initialiser is shallower: its products multiply the bounds of its operands.
+                    let init = self.expr(ty, if ty.is_aggregate() { 3 } else { MAX_DEPTH - 1 });
                     let var = self.fresh();
                     let mutable = self.b.chance(55);
                     self.scope.push((var, ty, mutable));
@@ -676,6 +974,9 @@ impl Gen<'_> {
             .map(|&(id, ty, _)| (id, ty))
             .collect();
         let (var, ty) = mutable[self.b.below(mutable.len() as u32) as usize];
+        if ty.is_aggregate() {
+            return self.assign_agg(var, ty);
+        }
         let value = if self.b.chance(45) {
             // The accumulating form: the target is one operand.
             let current = Expr::Var(var, ty);
@@ -800,10 +1101,10 @@ fn input_data(ty: Ty, class: usize, count: u32, sub_seed: u64) -> Vec<u32> {
         .collect()
 }
 
-/// Decodes one program of the default (`Space::Float`) space from a byte stream. Pure: the same bytes give the
-/// same program.
+/// Decodes one program from a byte stream, in the space that its attempt number selects (`space_of_attempt`). Pure:
+/// the same bytes give the same program.
 pub fn decode(bytes: &[u8], seed: u64, attempt: u64) -> Program {
-    decode_in(Space::Float, bytes, seed, attempt)
+    decode_in(space_of_attempt(attempt), bytes, seed, attempt)
 }
 
 /// Decodes one program of `space` from a byte stream.
@@ -813,7 +1114,8 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
             data: bytes,
             pos: 0,
         },
-        floats: space == Space::Float,
+        floats: space != Space::Integer,
+        vectors: space == Space::Vector,
         inputs: Vec::new(),
         data: Vec::new(),
         count: 1,
@@ -827,8 +1129,16 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
     g.count = count;
     let input_count = 1 + g.b.below(3);
     let mut inputs = Vec::new();
-    for _ in 0..input_count {
-        let ty = if g.floats {
+    for k in 0..input_count {
+        let ty = if g.vectors {
+            // Mostly `f32` (the vectors are mostly `f32`), and at least one `f32` buffer: a `Mat2` reads one.
+            let ty = [Ty::U32, Ty::I32, Ty::F32][g.b.weighted(&[25, 25, 50])];
+            if k + 1 == input_count && !g.inputs.contains(&Ty::F32) {
+                Ty::F32
+            } else {
+                ty
+            }
+        } else if g.floats {
             [Ty::U32, Ty::I32, Ty::F32][g.b.weighted(&[35, 35, 30])]
         } else {
             g.int_ty()
@@ -841,7 +1151,7 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         inputs.push(InputBuf { ty, data });
     }
     let body = g.block(0, 2, 7);
-    let ty = g.pick_ty();
+    let ty = g.scalar_ty();
     let mut result = g.expr(ty, MAX_DEPTH);
     // Fold the final value of up to two top-level locals into the result, so that the computed values are live.
     let live: Vec<(u32, Ty)> = body
@@ -851,12 +1161,31 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
             _ => None,
         })
         .collect();
-    for _ in 0..2 {
-        if live.is_empty() || !g.b.chance(60) {
+    let (folds, fold_chance) = if g.vectors { (3, 85) } else { (2, 60) };
+    for _ in 0..folds {
+        if live.is_empty() || !g.b.chance(fold_chance) {
             continue;
         }
         let (var, var_ty) = live[g.b.below(live.len() as u32) as usize];
-        result = fold_in(result, Expr::Var(var, var_ty));
+        let local = match var_ty {
+            // A vector local joins the result through a component or (`f32`) its squared length; a matrix through a
+            // component of its product with a fresh vector.
+            Ty::Vec(lane, n) => {
+                let vector = Expr::Var(var, var_ty);
+                if lane == Lane::F32 && g.b.chance(35) {
+                    Expr::dot(vector.clone(), vector)
+                } else {
+                    Expr::comp(vector, g.b.below(u32::from(n)) as u8)
+                }
+            }
+            Ty::Mat(n) => {
+                let column = g.build(Ty::Vec(Lane::F32, n), 1);
+                let product = Expr::agg_bin(BinOp::Mul, Expr::Var(var, var_ty), column);
+                Expr::comp(product, g.b.below(u32::from(n)) as u8)
+            }
+            _ => Expr::Var(var, var_ty),
+        };
+        result = fold_in(result, local);
     }
     Program {
         seed,
@@ -887,9 +1216,10 @@ fn fold_in(result: Expr, local: Expr) -> Expr {
     }
 }
 
-/// The program of `seed` at `attempt` in the default (`Space::Float`) space, whether or not it is in the domain.
+/// The program of `seed` at `attempt`, whether or not it is in the domain, in the space that the attempt number
+/// selects (`space_of_attempt`).
 pub fn generate_attempt(seed: u64, attempt: u64) -> Program {
-    generate_attempt_in(Space::Float, seed, attempt)
+    generate_attempt_in(space_of_attempt(attempt), seed, attempt)
 }
 
 /// The program of `seed` at `attempt` in `space`, whether or not it is in the domain.
@@ -907,10 +1237,14 @@ pub fn generate_attempt_in(space: Space, seed: u64, attempt: u64) -> Program {
 pub struct Batch {
     pub seed: u64,
     pub programs: Vec<Program>,
-    /// Attempts made, accepted or not.
+    /// Attempts made, accepted or not (both parts of the batch).
     pub attempts: u64,
-    /// Discarded attempts by reason (`Violation::label`, `static` or `no-input-read`).
+    /// Discarded attempts by reason (`Violation::label`, `static`, `no-input-read` or, in the vector part,
+    /// `no-aggregate`), both parts of the batch.
     pub discarded: BTreeMap<&'static str, u32>,
+    /// Of `attempts`, the attempts of the vector part, and of `discarded`, the discards of the vector part.
+    pub vector_attempts: u64,
+    pub vector_discarded: BTreeMap<&'static str, u32>,
 }
 
 impl Batch {
@@ -933,33 +1267,68 @@ pub fn discard_reason(program: &Program) -> Option<&'static str> {
         .map(|failure| failure.violation.label())
 }
 
-/// Generates the `PROGRAMS_PER_SEED` in-domain programs of `seed`, in attempt order, in the default
-/// (`Space::Float`) space.
+/// Generates the `PROGRAMS_PER_SEED` in-domain programs of `seed`: the first `SCALAR_PROGRAMS_PER_SEED` of the float
+/// space (attempts `0..`, the programs of DIFFTEST_FORMAT 5), then `VECTOR_PROGRAMS_PER_SEED` of the vector space
+/// (attempts `VECTOR_ATTEMPT_BASE..`).
 pub fn generate_batch(seed: u64) -> Result<Batch, String> {
-    generate_batch_in(Space::Float, seed)
+    let mut batch = empty_batch(seed);
+    fill(&mut batch, Space::Float, SCALAR_PROGRAMS_PER_SEED)?;
+    fill(&mut batch, Space::Vector, VECTOR_PROGRAMS_PER_SEED)?;
+    Ok(batch)
 }
 
-/// Generates the `PROGRAMS_PER_SEED` in-domain programs of `seed` in `space`, in attempt order.
+/// Generates the `PROGRAMS_PER_SEED` in-domain programs of `seed` all in `space`, in attempt order.
 pub fn generate_batch_in(space: Space, seed: u64) -> Result<Batch, String> {
-    let mut batch = Batch {
+    let mut batch = empty_batch(seed);
+    fill(&mut batch, space, PROGRAMS_PER_SEED)?;
+    Ok(batch)
+}
+
+fn empty_batch(seed: u64) -> Batch {
+    Batch {
         seed,
         programs: Vec::new(),
         attempts: 0,
         discarded: BTreeMap::new(),
+        vector_attempts: 0,
+        vector_discarded: BTreeMap::new(),
+    }
+}
+
+/// Adds `want` more in-domain programs of `space` to `batch`, from the first attempt number of the space.
+fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
+    let first = if space == Space::Vector {
+        VECTOR_ATTEMPT_BASE
+    } else {
+        0
     };
-    for attempt in 0..MAX_ATTEMPTS {
-        batch.attempts = attempt + 1;
-        let program = generate_attempt_in(space, seed, attempt);
-        match discard_reason(&program) {
-            Some(reason) => *batch.discarded.entry(reason).or_default() += 1,
+    let target = batch.programs.len() + want;
+    for attempt in first..first + MAX_ATTEMPTS {
+        batch.attempts += 1;
+        batch.vector_attempts += u64::from(space == Space::Vector);
+        let program = generate_attempt_in(space, batch.seed, attempt);
+        // A vector program that came out scalar tests nothing new.
+        let reason = if space == Space::Vector && !program.has_aggregate() {
+            Some("no-aggregate")
+        } else {
+            discard_reason(&program)
+        };
+        match reason {
+            Some(reason) => {
+                *batch.discarded.entry(reason).or_default() += 1;
+                if space == Space::Vector {
+                    *batch.vector_discarded.entry(reason).or_default() += 1;
+                }
+            }
             None => batch.programs.push(program),
         }
-        if batch.programs.len() == PROGRAMS_PER_SEED {
-            return Ok(batch);
+        if batch.programs.len() == target {
+            return Ok(());
         }
     }
     Err(format!(
-        "seed {seed}: only {} in-domain programs in {MAX_ATTEMPTS} attempts",
+        "seed {}: only {} in-domain programs of {space:?} in {MAX_ATTEMPTS} attempts",
+        batch.seed,
         batch.programs.len()
     ))
 }

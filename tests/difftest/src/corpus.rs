@@ -80,6 +80,9 @@ pub fn corpus_text(first: u64, last: u64) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::generator::{
+        PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space, VECTOR_ATTEMPT_BASE, generate_batch_in,
+    };
 
     #[test]
     fn fnv1a64_matches_the_published_vectors() {
@@ -125,9 +128,10 @@ mod tests {
 
     /// Format 4 (m5.c2) refused the programs whose divisor slangc folds to zero, and only seed 4 lost any; format 5
     /// (m6.dv) takes the refusal back, so every seed holds its format-3 programs again, byte for byte (the hashes of
-    /// `seeds.txt` at format 3, read with the stamp as 3), `s4_a26` among them.
+    /// `seeds.txt` at format 3, read with the stamp as 3), `s4_a26` among them. Format 6 (m6.d) leaves the float space
+    /// as it was: this is still `generate_batch_in(Space::Float, ..)`, whose programs are the scalar part of a batch.
     #[test]
-    fn format_5_holds_the_format_3_programs_of_every_seed() {
+    fn the_float_space_still_holds_the_format_3_programs_of_every_seed() {
         let format_3 = [
             (1, 0xf156_6491_8988_01a2_u64),
             (2, 0x2bd1_d67b_b246_8d74),
@@ -139,9 +143,35 @@ mod tests {
             (8, 0x5fc5_0da8_5029_1f4f),
         ];
         for (seed, hash) in format_3 {
-            let batch = generate_batch(seed).unwrap();
+            let batch = generate_batch_in(Space::Float, seed).unwrap();
             let same = batch_hash_as_format(&batch.programs, 3) == hash;
             assert!(same, "seed {seed}");
+        }
+    }
+
+    /// A batch is the first ten programs of the float space and six of the vector space, so the scalar decoding of
+    /// every seed is byte for byte what format 5 wrote, and the vector programs are new.
+    #[test]
+    fn a_batch_is_ten_float_programs_then_six_vector_programs() {
+        for seed in 1..=8 {
+            let batch = generate_batch(seed).unwrap();
+            let float = generate_batch_in(Space::Float, seed).unwrap();
+            assert_eq!(batch.programs.len(), PROGRAMS_PER_SEED);
+            for k in 0..SCALAR_PROGRAMS_PER_SEED {
+                assert_eq!(
+                    batch.programs[k], float.programs[k],
+                    "seed {seed} program {k}"
+                );
+                assert!(!batch.programs[k].has_aggregate());
+            }
+            for program in &batch.programs[SCALAR_PROGRAMS_PER_SEED..] {
+                assert!(program.attempt >= VECTOR_ATTEMPT_BASE, "seed {seed}");
+                assert!(
+                    program.has_aggregate(),
+                    "seed {seed} attempt {}",
+                    program.attempt
+                );
+            }
         }
     }
 }

@@ -6,6 +6,8 @@
 //! difftest-gen emit SEED DIR [ROOT]    write the generated crate of SEED into DIR (ROOT: repository root, default ../..)
 //! difftest-gen emit-run SEEDS DIR [ROOT]  write the run crate (kernels, test module, data) of SEEDS (e.g. 1-2) into DIR
 //! difftest-gen time SEEDS              generation and interpreter time of SEEDS (milliseconds)
+//! difftest-gen stats SEEDS             attempts and discards by class of SEEDS, the vector part apart
+//! difftest-gen forms                   the vector and matrix operator names the generator can write, one per line
 //! ```
 
 use std::path::PathBuf;
@@ -69,6 +71,44 @@ fn run(args: &[String]) -> Result<(), String> {
             write_run_crate(&dir, &package, &plan, &root).map_err(|e| e.to_string())?;
             println!("wrote {} programs to {}", plan.len(), dir.display());
         }
+        Some("stats") => {
+            let seeds = parse_seeds(args.get(1).ok_or("missing SEEDS")?)?;
+            let mut totals: std::collections::BTreeMap<String, u64> =
+                std::collections::BTreeMap::new();
+            let mut add = |key: String, n: u64| *totals.entry(key).or_default() += n;
+            for seed in &seeds {
+                let batch = generate_batch(*seed)?;
+                add("programs".into(), batch.programs.len() as u64);
+                add("attempts".into(), batch.attempts);
+                add("vector-attempts".into(), batch.vector_attempts);
+                for (reason, n) in &batch.discarded {
+                    add(format!("discard {reason}"), u64::from(*n));
+                }
+                for (reason, n) in &batch.vector_discarded {
+                    add(format!("vector-discard {reason}"), u64::from(*n));
+                }
+                let aggregate = batch.programs.iter().filter(|p| p.has_aggregate()).count();
+                add("programs-with-an-aggregate".into(), aggregate as u64);
+                for program in &batch.programs {
+                    for (name, n) in difftest::ast::operator_counts(program) {
+                        if name.contains("Vec")
+                            || name.contains("Mat")
+                            || name == difftest::ast::ASSIGN_COMP
+                        {
+                            add(format!("operator {name}"), n as u64);
+                        }
+                    }
+                }
+            }
+            for (key, n) in totals {
+                println!("{key}: {n}");
+            }
+        }
+        Some("forms") => {
+            for form in difftest::ast::writable_aggregate_forms() {
+                println!("{form}");
+            }
+        }
         Some("time") => {
             let seeds = parse_seeds(args.get(1).ok_or("missing SEEDS")?)?;
             let (mut generate, mut interpret, mut programs) = (0.0, 0.0, 0);
@@ -90,10 +130,11 @@ fn run(args: &[String]) -> Result<(), String> {
             );
         }
         _ => {
-            return Err(
-                "usage: difftest-gen seeds FIRST LAST | show SEED [INDEX] | emit SEED DIR [ROOT] | emit-run SEEDS DIR [ROOT] | time SEEDS"
-                    .into(),
-            );
+            return Err(concat!(
+                "usage: difftest-gen seeds FIRST LAST | show SEED [INDEX] | emit SEED DIR [ROOT]",
+                " | emit-run SEEDS DIR [ROOT] | time SEEDS | stats SEEDS | forms"
+            )
+            .into());
         }
     }
     Ok(())

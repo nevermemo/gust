@@ -305,9 +305,13 @@ fn bounded() -> Limits {
 }
 
 fn start_program() -> Program {
+    // The scalar part of a batch: the programs these passes were written for (the vector programs have their own test).
     let mut all: Vec<Program> = (1..=2)
-        .flat_map(|s| plan_seed(s).unwrap())
-        .map(|p| p.program)
+        .flat_map(|s| {
+            crate::generator::generate_batch_in(crate::generator::Space::Float, s)
+                .unwrap()
+                .programs
+        })
         .collect();
     all.sort_by_key(size);
     all.pop().unwrap()
@@ -395,4 +399,32 @@ fn no_candidate_is_started_with_less_than_the_minimum_step_left() {
         Some(0)
     });
     assert_eq!((calls, r.tried, r.stop), (0, 0, Stop::Time));
+}
+
+/// A vector program reduces like a scalar one: every candidate is type-valid (the `Mat2` guard included), inside the
+/// domain and strictly smaller, and the search reaches a fixed point. The reducer's passes walk vector nodes with the
+/// shared child traversal, so a node's number is the same in `visit_exprs` and in the edit.
+#[test]
+fn a_vector_program_reduces_to_a_smaller_valid_program_at_a_fixed_point() {
+    let start = (1..=4)
+        .flat_map(|s| {
+            let batch = crate::generator::generate_batch(s).unwrap();
+            batch.programs[crate::generator::SCALAR_PROGRAMS_PER_SEED..].to_vec()
+        })
+        .max_by_key(|p| size(p).1)
+        .unwrap();
+    assert!(start.has_aggregate());
+    let before = size(&start);
+    let found = reduce(&start, 0, bounded(), |candidate| {
+        assert!(candidate.check().is_ok(), "{:?}", candidate.check());
+        assert!(discard_reason(candidate).is_none());
+        Some(0)
+    });
+    assert_eq!(found.stop, Stop::FixedPoint);
+    assert!(
+        size(&found.program) < before,
+        "{:?} is not below {before:?}",
+        size(&found.program)
+    );
+    assert!(found.program.check().is_ok() && discard_reason(&found.program).is_none());
 }

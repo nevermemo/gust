@@ -41,3 +41,25 @@ fn macro_changes_do_not_mask_ignored_example_tests() {
         ]
     );
 }
+
+#[test]
+fn macro_changes_with_the_workgroup_fixture_select_the_macro_suite_and_workgroup() {
+    assert_eq!(
+        select(&[
+            "crates/gust-macros/src/validate/barrier.rs",
+            "tests/fixtures/workgroup.rs"
+        ]),
+        vec![
+            ChangedCheck::Feature("workgroup"),
+            ChangedCheck::Feature("macro")
+        ]
+    );
+}
+
+#[test]
+fn a_fixture_alone_selects_only_its_feature() {
+    assert_eq!(
+        select(&["tests/fixtures/workgroup.slang"]),
+        vec![ChangedCheck::Feature("workgroup")]
+    );
+}

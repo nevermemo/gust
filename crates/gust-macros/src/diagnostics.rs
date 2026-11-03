@@ -100,6 +100,8 @@ codes! {
     ParameterNeedsIdentifier = 117 => "GUST-E0117";
     /// A POD struct without named fields, found while generating the host side.
     PodStructNamedFields = 118 => "GUST-E0118";
+    /// A `Workgroup<..>` parameter on a function that is not a kernel.
+    WorkgroupParameterOnHelper = 119 => "GUST-E0119";
 
     // E02xx: types.
     /// A primitive type outside the 32-bit scalar subset.
@@ -121,6 +123,9 @@ codes! {
     ImplicitPadding = 208 => "GUST-E0208";
     /// A struct that a uniform reaches whose constant-buffer layout has a gap or a tail.
     UniformPadding = 209 => "GUST-E0209";
+    /// A `Workgroup<..>` that is not `Workgroup<[T; N]>` with a supported `T` and a nonzero literal `N`, or that
+    /// is used anywhere but as a kernel parameter type.
+    WorkgroupShape = 210 => "GUST-E0210";
 
     // E03xx: expressions and calls.
     /// A CPU-only library or type name.
@@ -173,6 +178,8 @@ codes! {
     MethodNotInDialect = 325 => "GUST-E0325";
     /// An unannotated `let` whose initializer is only unsuffixed integer literals (`let x = 0;`, `let y = -(1 + 2);`).
     UnsuffixedLiteralLet = 326 => "GUST-E0326";
+    /// `workgroup_barrier(..)` with arguments, or anywhere but a statement of its own.
+    BarrierForm = 327 => "GUST-E0327";
 
     // E04xx: control flow and loops.
     /// A `loop` expression.
@@ -201,6 +208,13 @@ codes! {
     UnsuffixedLoopBound = 412 => "GUST-E0412";
     /// A range used outside the iterable of a `for` loop.
     RangeAsValue = 413 => "GUST-E0413";
+    /// `workgroup_barrier()` at a position that not every invocation of the workgroup reaches the same number of
+    /// times.
+    BarrierPosition = 414 => "GUST-E0414";
+    /// `return` in a kernel that uses workgroup memory or a barrier.
+    ReturnInBarrierKernel = 415 => "GUST-E0415";
+    /// `break` or `continue` in a loop that contains a barrier.
+    JumpInBarrierLoop = 416 => "GUST-E0416";
 
     // E05xx: Option and Result.
     /// `Option` in a struct field or resource element type.
@@ -303,6 +317,10 @@ codes! {
     MapNameCollision = 715 => "GUST-E0715";
     /// `#[gpu]` on a function inside a `#[gpu]` module.
     NestedGpuFunction = 716 => "GUST-E0716";
+    /// A kernel with workgroup memory or a barrier that does not say `cpu = "unsupported"`.
+    BarrierKernelCpu = 717 => "GUST-E0717";
+    /// Workgroup memory of a kernel that adds up to more than 16 KiB.
+    WorkgroupMemoryLimit = 718 => "GUST-E0718";
 
     // E08xx: rejections only the emitter makes, after validation passed.
     /// A kernel parameter that is neither a resource nor the dispatch thread.
@@ -1165,6 +1183,7 @@ mod tests {
         let file = file.replace('\\', "/");
         file.ends_with("src/tests/regression.rs")
             || file.ends_with("src/tests/map.rs")
+            || file.ends_with("src/tests/workgroup.rs")
             || file.ends_with("src/validate/mod.rs")
     }
 

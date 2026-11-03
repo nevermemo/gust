@@ -41,9 +41,10 @@ fn a_renamed_kernel_is_one_missing_and_one_unexpected_file() {
 }
 
 #[test]
-fn the_expected_list_is_seventeen_sorted_unique_spirv_names() {
-    // 14 before m7.a2; map-chain adds the three kernels of its `#[gpu] fn` maps (`<function>__map_kernel`).
-    assert_eq!(EXPECTED_SPIRV.len(), 17);
+fn the_expected_list_is_twenty_sorted_unique_spirv_names() {
+    // 14 before m7.t14 and m7.a2; component-pool's compaction adds three, and map-chain adds the three kernels of its
+    // `#[gpu] fn` maps (`<function>__map_kernel`).
+    assert_eq!(EXPECTED_SPIRV.len(), 20);
     for map_kernel in ["curve", "damp", "rescale"] {
         assert!(
             EXPECTED_SPIRV.contains(&format!("{map_kernel}__map_kernel.spv").as_str()),

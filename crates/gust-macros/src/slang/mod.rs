@@ -260,10 +260,26 @@ impl LineTable {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParameterFlavor {
     Invocation,
+    /// `LocalId` or `SV_GroupThreadID` (slice m7.g1): `uint3` derived from the dispatch-thread id and the workgroup
+    /// size, not an entry-point parameter and not in the descriptor.
+    LocalId,
+    /// `GroupId` or `SV_GroupID` (slice m7.g1): derived like [`ParameterFlavor::LocalId`].
+    GroupId,
+    /// `Workgroup<[T; N]>` (slice m7.g1): a module-scope `groupshared` array, not a resource and not in the
+    /// descriptor.
+    Workgroup,
     StorageRead,
     StorageReadWrite,
     Uniform,
     Value,
+}
+
+impl ParameterFlavor {
+    /// Whether the parameter is part of the kernel's host contract (the descriptor, the export record and the typed
+    /// call): the dispatch-thread id and the resources. The derived ids and the workgroup arrays are the body's own.
+    pub(crate) fn in_descriptor(self) -> bool {
+        !matches!(self, Self::LocalId | Self::GroupId | Self::Workgroup)
+    }
 }
 
 pub fn parameter_flavor(ty: &syn::Type) -> ParameterFlavor {
@@ -272,6 +288,9 @@ pub fn parameter_flavor(ty: &syn::Type) -> ParameterFlavor {
     };
     match name.as_str() {
         "Invocation" | "SV_DispatchThreadID" | "UVec3" => ParameterFlavor::Invocation,
+        "LocalId" | "SV_GroupThreadID" => ParameterFlavor::LocalId,
+        "GroupId" | "SV_GroupID" => ParameterFlavor::GroupId,
+        "Workgroup" => ParameterFlavor::Workgroup,
         "Storage" | "StructuredBuffer" => ParameterFlavor::StorageRead,
         "StorageMut" | "RWStructuredBuffer" => ParameterFlavor::StorageReadWrite,
         "Uniform" | "ConstantBuffer" => ParameterFlavor::Uniform,
@@ -434,11 +453,25 @@ pub fn emit_kernel(
     let mut binding = 0_u32;
     let mut resources = Vec::new();
     let mut invocation = None;
+    // The ids derived from the dispatch-thread id (name, whether it is the group id), in parameter order.
+    let mut derived_ids: Vec<(String, bool)> = Vec::new();
     for argument in &kernel.sig.inputs {
         let (name, ty) = typed_argument(argument)?;
         let name = emit_ident(name);
         match parameter_flavor(ty) {
             ParameterFlavor::Invocation => invocation = Some(name),
+            ParameterFlavor::LocalId => derived_ids.push((name, false)),
+            ParameterFlavor::GroupId => derived_ids.push((name, true)),
+            ParameterFlavor::Workgroup => {
+                let (element, length) = crate::validate::workgroup_array(ty)
+                    .map_err(|message| diagnostics::error(Code::WorkgroupShape, ty, message))?;
+                writeln!(
+                    output,
+                    "groupshared {} {name}[{length}];",
+                    emit_type(element)?
+                )
+                .unwrap();
+            }
             ParameterFlavor::StorageRead | ParameterFlavor::StorageReadWrite => {
                 let element = wrapper_element_type(ty)?;
                 let wrapper = if parameter_flavor(ty) == ParameterFlavor::StorageRead {
@@ -521,6 +554,18 @@ pub fn emit_kernel(
         writeln!(
             output,
             "    {resource}.GetDimensions(__gpu_len_{resource}, __gpu_stride_{resource});"
+        )
+        .unwrap();
+    }
+    // `LocalId` and `GroupId` come from the dispatch-thread id and the workgroup size: a dispatch-thread id is
+    // `group * size + local` in every dimension, so `id % size` and `id / size` are the local and the group id.
+    // The entry point keeps its one semantic parameter, so the reflection and the descriptor stay as they are.
+    for (name, group) in &derived_ids {
+        let operator = if *group { '/' } else { '%' };
+        writeln!(
+            output,
+            "    uint3 {name} = uint3({invocation}.x {operator} {x}u, {invocation}.y {operator} {y}u, \
+             {invocation}.z {operator} {z}u);"
         )
         .unwrap();
     }
@@ -1084,6 +1129,10 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             )
         }
         syn::Expr::Call(call) if math_constructor(call).is_some() => emit_math_constructor(call)?,
+        // The validator admits the barrier as a statement with no arguments only.
+        syn::Expr::Call(call) if crate::validate::is_barrier_call(call) => {
+            "GroupMemoryBarrierWithGroupSync()".to_owned()
+        }
         syn::Expr::Call(call) => format!(
             "{}({})",
             emit_expression(&call.func)?,
@@ -1672,7 +1721,9 @@ fn emit_type(ty: &syn::Type) -> syn::Result<String> {
         "bool" => "bool".to_owned(),
         "Option" => "Optional".to_owned(),
         "Result" => "__GustResult".to_owned(),
-        "SV_DispatchThreadID" => "uint3".to_owned(),
+        "SV_DispatchThreadID" | "LocalId" | "GroupId" | "SV_GroupThreadID" | "SV_GroupID" => {
+            "uint3".to_owned()
+        }
         name if math_types::math_type(name).is_some() => math_types::math_type(name)
             .expect("guarded by the match arm")
             .slang

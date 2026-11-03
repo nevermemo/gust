@@ -167,7 +167,10 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
         &[
             "app::tests::the_derivation_domain_holds_for_the_settings_and_the_spawned_particles",
             "app::tests::twin_classify_counts_the_spawned_live_slots",
+            "app::tests::twin_compacting_frames_match_host_reference",
             "app::tests::twin_frames_match_host_reference",
+            "app::tests::twin_gather_and_scatter_follow_the_compaction_indices",
+            "app::tests::twin_mark_live_flags_the_spawned_unretired_slots",
         ],
     ),
     (
@@ -303,6 +306,15 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                     "--test",
                     "limits",
                 ],
+            )
+        }
+        "workgroup" => {
+            run_counted(&root, &["test", "-p", "gust-macros", "--lib", "workgroup"])?;
+            run_counted(&root, &["test", "-p", "gust", "--lib", "workgroup"])?;
+            run_direct(
+                &root,
+                "cargo",
+                &["test", "-p", "gust-wgpu", "--test", "workgroup"],
             )
         }
         "algo" => run_counted(&root, &["test", "-p", "gust-algo"]).map(drop),
@@ -467,9 +479,13 @@ fn select_changed_checks(paths: &[String]) -> Vec<ChangedCheck> {
     if any(&["tests/fixtures/loops", "crates/gust-wgpu/tests/loops.rs"]) {
         checks.push(ChangedCheck::Feature("loops"));
     }
-    if (has("crates/gust-macros/") || has("tests/fixtures/"))
-        && !checks.contains(&ChangedCheck::Feature("loops"))
-    {
+    if any(&[
+        "tests/fixtures/workgroup",
+        "crates/gust-wgpu/tests/workgroup.rs",
+    ]) {
+        checks.push(ChangedCheck::Feature("workgroup"));
+    }
+    if has("crates/gust-macros/") || (has("tests/fixtures/") && checks.is_empty()) {
         checks.push(ChangedCheck::Feature("macro"));
     }
     if any(&[
@@ -649,6 +665,9 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
         "map" => {
             "map: the map calls of `#[gpu]` on a function and their device side: gust::map unit tests, the gust-macros map tests (expansion, diagnostics and the golden of the generated kernels), the map calls on the GPU against their CPU twins (crates/gust-wgpu/tests/map.rs), then GpuVec and the buffer pool, device options and adapter choice, and the launch and buffer limits on the GPU"
         }
+        "workgroup" => {
+            "workgroup: workgroup shared memory, the workgroup barrier and the local and group ids (m7.g1): the gust-macros workgroup tests (validator rules, expansion, the golden of the generated kernels, one rejection per diagnostic), the gust unit tests of the Workgroup runtime type, then crates/gust-wgpu/tests/workgroup.rs on the first Vulkan adapter (a block reduce against an independent host sum, the derived ids, the barrier in the SPIR-V validated with spirv-val and in the WGSL)"
+        }
         "algo" => {
             "algo: the device-resident algorithms of gust-algo (m7.r1 reduce, m7.r2 scan and sum_wrapping, m7.r3 compaction): the schedule and bound arithmetic, the goldens of the reduce, scan and compact kernels and the CPU twins against independent references (no adapter needed), then the same cases on the first Vulkan adapter with the per-level float bound asserted, the dispatch counts of a scan and of a compaction, the empty and over-limit inputs and the pooled buffers"
         }
@@ -701,7 +720,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "test: `cargo xtask test --suite Unit|Cpu|Slangc|Spirv|Reflect|Gpu|Full` runs one evidence tier of VALIDATION.md"
         }
         "all" => {
-            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, result, vectors, uniforms, map, algo, examples, artifacts, full, changed, workspace, format, lints, lint, docs-check, check-arch, check-ui, check-cpu, check-dual, check-cpu-target, bless, test"
+            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, result, vectors, uniforms, map, workgroup, algo, examples, artifacts, full, changed, workspace, format, lints, lint, docs-check, check-arch, check-ui, check-cpu, check-dual, check-cpu-target, bless, test"
         }
         _ => return Err(format!("unknown check area `{area}`")),
     };

@@ -193,7 +193,7 @@ Decision: D02.
 
 ### GUST-E0109 kernel dispatch parameter
 
-A `#[kernel]` function takes exactly one dispatch-thread parameter.
+A `#[kernel]` function takes exactly one dispatch-thread parameter. A kernel that takes `LocalId` or `GroupId` needs it too, since those ids are derived from the dispatch id and the workgroup size.
 Reached through `#[gpu]`.
 Rejected: `#[kernel] fn run() {}` and a kernel with two `SV_DispatchThreadID` parameters.
 Write instead: `#[kernel] fn run(id: SV_DispatchThreadID) { ... }`.
@@ -273,6 +273,14 @@ Rejected: `struct P(u32, u32);`.
 Write instead: `struct P { a: u32, b: u32 }`.
 Decision: D02.
 
+### GUST-E0119 `Workgroup` parameter on a helper
+
+Workgroup memory belongs to a kernel: a kernel's `Workgroup<[T; N]>` parameter becomes a `groupshared` array of its entry point, and a helper (or a map function) may be called under a condition, so it can neither declare the array nor receive it.
+Reached through `#[gpu]`.
+Rejected: `fn helper(mut s: Workgroup<[f32; 64]>) { .. }`.
+Write instead: declare the array on the kernel and pass the helper the values it needs, `helper(s[lid.x])`.
+Decision: D42 (M7 plan 4.2 rule 4, slice m7.g1).
+
 ## E02xx: types
 
 ### GUST-E0201 unsupported primitive type
@@ -347,6 +355,14 @@ Reached through `#[gpu]`. A gap that a field's own alignment causes (and so `#[r
 Rejected: `struct Params { a: f32 }` (ends at byte 4, a constant buffer rounds it up to 16), `struct Params { a: f32, b: f32, c: f32 }`, `struct Params { a: f32, inner: Inner }` where `Inner` is four `f32` (`inner` would sit at byte 16, 12 bytes after `a` ends), each when a `Uniform<Params>` parameter reaches it. The same structs are fine as storage elements.
 Write instead: explicit padding fields, `struct Params { a: f32, pad0: f32, pad1: f32, pad2: f32 }`, or order the fields so that whole 16-byte rows are filled.
 Decision: D17, D40 (M6 plan 2.3, F7).
+
+### GUST-E0210 malformed `Workgroup` type
+
+`Workgroup<[T; N]>` is the type of a kernel parameter and declares `N` elements of workgroup memory (`groupshared` in Slang) that every invocation of one workgroup shares. `N` is a nonzero integer literal, so the size is known when the macro runs, and `T` is `f32`, `i32`, `u32`, `bool` or a vector type (`Vec2`, `Vec3`, `Vec4`, `IVec2`, `IVec4`, `UVec2`, `UVec3`, `UVec4`); a matrix, a struct and a nested array are not accepted. The type stands nowhere but as the type of a kernel parameter: not as a local, a field, a helper parameter or a result. The macro sees no types, so `Workgroup`, `LocalId`, `GroupId`, `SV_GroupThreadID` and `SV_GroupID` are taken by their spelling, as `UVec3` is: a user type of one of these names is read as the dialect's type.
+Reached through `#[gpu]`.
+Rejected: `Workgroup<f32>`, `Workgroup<[f32; 0]>`, `Workgroup<[f32; LEN]>`, `Workgroup<[f64; 4]>`, `Workgroup<[Mat4; 4]>`, `Workgroup<[Item; 4]>`, `let s: Workgroup<[f32; 4]> = ..;`, `fn f() -> Workgroup<[f32; 4]>`.
+Write instead: `mut scratch: Workgroup<[f32; 256]>` as a kernel parameter, with a literal length and a supported element.
+Decision: D42 (M7 plan 4.1, slice m7.g1).
 
 ## E03xx: expressions and calls
 
@@ -601,6 +617,14 @@ Rejected: `let mut acc = 0;`, `let x = -1;`, `let x = 1 + 2;`, `let x = 1 << 3;`
 Write instead: `let mut acc = 0u32;`, `let mut acc: u32 = 0;`, `let x: i32 = -1;`.
 Decision: D86.
 
+### GUST-E0327 `workgroup_barrier` is a statement with no arguments
+
+`workgroup_barrier();` makes every invocation of the workgroup wait until all of them have reached it, and makes the workgroup memory they wrote visible to the others (`GroupMemoryBarrierWithGroupSync()` in Slang, `workgroupBarrier()` in WGSL, `OpControlBarrier` in SPIR-V). It is called as a statement of its own, ending in `;`, with no arguments; it is not a value, a function pointer or part of an expression.
+Reached through `#[gpu]`.
+Rejected: `workgroup_barrier(1u32);`, `let x = workgroup_barrier();`, `let f = workgroup_barrier;`, `if c { workgroup_barrier() }` (no `;`).
+Write instead: `workgroup_barrier();`. Where the barrier may stand is GUST-E0414.
+Decision: D42 (M7 plan 4.1, slice m7.g1).
+
 ## E04xx: control flow and loops
 
 A GPU thread must always terminate and must never wait on another workgroup, so the
@@ -710,6 +734,33 @@ Reached through `#[gpu]`.
 Rejected: `let r = 0u32..4u32;`.
 Write instead: use the bounds directly.
 Decision: D18.
+
+### GUST-E0414 barrier at a position not every invocation reaches
+
+A control barrier is undefined unless every invocation of the workgroup reaches it the same number of times. The dialect cannot prove that for arbitrary control flow, so it admits two positions in a kernel that uses workgroup memory or a barrier: a statement of the kernel body, and a statement of the body of a `for` loop that is itself a statement of the kernel body and whose range is two integer literals (`for round in 0u32..8u32`). Every invocation runs that loop for the same trip count. A barrier anywhere else is rejected: in an `if` or a block, in a loop whose bounds are not two literals, in a loop nested in another loop, and in a helper or a map function (a helper may be called under a condition). `while` and `loop` are rejected for their own sake (GUST-E0402, GUST-E0401), so a barrier in one is reported by that code and not by this one.
+Reached through `#[gpu]`. The check runs when the rest of the function has been accepted, so a function holds one report, not two.
+Rejected: `if lid.x < 8u32 { workgroup_barrier(); }`, `for r in 0u32..4u32 { if r == 1u32 { workgroup_barrier(); } }`, `for r in 0u32..4u32 { for q in 0u32..4u32 { workgroup_barrier(); } }`, `for r in 0u32..n { workgroup_barrier(); }`, `fn sync() { workgroup_barrier(); }`.
+Fixture: `tests/ui/barrier-in-if`, `tests/ui/barrier-in-nested-for`, `tests/ui/barrier-in-helper`, and `tests/ui/barrier-in-while` (GUST-E0402; the `while` is rejected first) (`cargo xtask check-ui`, `code: none` plus the message).
+Write instead: do the guarded work in an `if` and call the barrier after it, at the top level of the kernel body or of a literal-range loop.
+Decision: D42 (M7 plan 4.2 rule 1, slice m7.g1).
+
+### GUST-E0415 `return` in a kernel with workgroup memory or a barrier
+
+An invocation that returns early never reaches the barriers the others wait at, so a kernel that uses workgroup memory or a barrier has no `return`: its body ends by falling off the end. A `return` in a helper that such a kernel calls is fine; the helper contains no barrier. The `?` operator is an early exit too, so the barrier pass also rejects it in such a kernel with this code; today GUST-E0311 rejects `?` in every function first, so the pass is the default that holds if a later slice admits `?` (tested by calling the pass directly).
+Reached through `#[gpu]`.
+Rejected: `workgroup_barrier(); return;`, `if lid.x == 0u32 { return; }` in a kernel that has a `Workgroup` parameter.
+Fixture: `tests/ui/return-in-barrier-kernel` (`cargo xtask check-ui`, `code: none` plus the message).
+Write instead: guard the rest of the work with `if`.
+Decision: D42 (M7 plan 4.2 rule 2, slice m7.g1).
+
+### GUST-E0416 `break` or `continue` in a loop that holds a barrier
+
+A `break` or `continue` lets some invocations leave a loop, or skip the rest of an iteration, while the others wait at a barrier inside it. The rule covers every unlabelled `break` and `continue`, conditional or not, whose innermost loop contains a `workgroup_barrier()`. A loop without a barrier may use its own `break` and `continue`. A labelled `break` or `continue` is rejected in a kernel with workgroup memory or a barrier by the barrier pass with this code, whichever loop holds the barrier; today a loop label is GUST-E0403 in every kernel and that error comes first, so the pass is the default that holds if a later slice admits labels (tested by calling the pass directly). The `?` operator is GUST-E0415 in such a kernel and GUST-E0311 in every function; no second report is made.
+Reached through `#[gpu]`.
+Rejected: `for r in 0u32..4u32 { if r == 2u32 { break; } workgroup_barrier(); }`, `for r in 0u32..4u32 { if r == 2u32 { continue; } workgroup_barrier(); }`.
+Fixture: `tests/ui/break-in-barrier-loop`, `tests/ui/continue-in-barrier-loop`, `tests/ui/labelled-break-in-barrier-kernel` (GUST-E0403) and `tests/ui/question-mark-in-barrier-kernel` (GUST-E0311) (`cargo xtask check-ui`, `code: none` plus the message).
+Write instead: run the loop to its end and guard the work in each iteration with `if`.
+Decision: D42 (M7 plan 4.2 rule 2, slice m7.g1).
 
 ## E05xx: Option and Result
 
@@ -1049,10 +1100,11 @@ Decision: D02.
 ### GUST-E0709 unknown `cpu` value
 
 `cpu` opts a kernel out of its CPU twin, which the macro otherwise emits under `cfg(test)` or
-`--cfg gust_dual`. The only value is `"unsupported"`.
+`--cfg gust_dual`. The only value is `"unsupported"`. `"lockstep"` is the name of the CPU twin that runs a barrier
+kernel one workgroup at a time on scoped threads; it does not exist yet, and the message says so.
 Reached through `#[gpu]`.
-Rejected: `#[kernel(cpu = "off")]`.
-Fixture: `tests/ui/kernel-cpu-bad-value` (`cargo xtask check-ui`, `code: none` plus the message).
+Rejected: `#[kernel(cpu = "off")]`, `#[kernel(cpu = "lockstep")]`.
+Fixture: `tests/ui/kernel-cpu-bad-value` and `tests/ui/kernel-cpu-lockstep` (`cargo xtask check-ui`, `code: none` plus the message).
 Write instead: `#[kernel(cpu = "unsupported")]`, or no `cpu` option to keep the twin.
 Decision: D26, D40.
 
@@ -1121,6 +1173,24 @@ Reached through `#[gpu]`.
 Rejected: `#[gpu] mod m { #[gpu] pub fn f(x: f32) -> f32 { x } }`, also spelled `#[gust::gpu]`.
 Write instead: put the function outside the module (a map function is plain Rust that the generated kernel calls), or drop the inner attribute and use it as a helper.
 Decision: D60.
+
+### GUST-E0717 barrier kernel without `cpu = "unsupported"`
+
+A kernel that declares `Workgroup<[T; N]>` memory or calls `workgroup_barrier()` cannot run on the CPU twin of this release: the twin runs the invocations one after the other, and a barrier needs all of them in flight together. The kernel therefore says so, with `cpu = "unsupported"`. It then has no `Run` impl for `CpuDevice` in any profile, so under `GUST_PROFILE=cpu` it behaves like every other unsupported kernel. A lockstep twin is a later slice; until it exists `cpu = "lockstep"` is GUST-E0709. The message names the construct and the fix.
+Reached through `#[gpu]`.
+Rejected: `#[kernel(workgroup_size(256, 1, 1))]` on a kernel with a `Workgroup` parameter or a `workgroup_barrier();` call.
+Fixture: `tests/ui/barrier-kernel-no-cpu-strategy` (`cargo xtask check-ui`, `code: none` plus the message).
+Write instead: `#[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]`.
+Decision: D42 (M7 plan 4.2 rule 5, slice m7.g1).
+
+### GUST-E0718 workgroup memory over the limit
+
+All `Workgroup` parameters of one kernel together may take 16384 bytes (16 KiB), the WebGPU default limit of `maxComputeWorkgroupStorageSize`. An element takes 4 bytes for a scalar or a `bool`, 8 for a 2-wide vector and 16 for a 3-wide or 4-wide one (the 3-wide types take 16 in workgroup memory). The macro adds the sizes up, so the check runs when the module expands, not at pipeline creation. A device with a smaller limit is a runtime question and not this code's.
+Reached through `#[gpu]`.
+Rejected: `Workgroup<[f32; 4097]>`, `Workgroup<[Vec4; 1025]>`, `Workgroup<[f32; 4096]>` with a second `Workgroup<[u32; 1]>`.
+Fixture: `tests/ui/workgroup-over-16kib` (`cargo xtask check-ui`, `code: none` plus the message).
+Write instead: shorter arrays, a smaller element type, or fewer arrays; 16384 bytes exactly is accepted.
+Decision: D42 (M7 plan 4.1, slice m7.g1).
 
 ## E08xx: emitter-only rejections
 

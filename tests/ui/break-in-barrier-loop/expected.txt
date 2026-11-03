@@ -1,0 +1,8 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). A macro error is a `compile_error!` and has no rustc code, so `code: none`
+# requires `"code": null` and at least one `message:`. The macro's own text carries its GUST code
+# (docs/DIAGNOSTICS.md, E0416); the line is the `break`.
+code: none
+file: break-in-barrier-loop/src/main.rs
+line: 18
+message: [GUST-E0416] `break` in a loop that holds a `workgroup_barrier()`

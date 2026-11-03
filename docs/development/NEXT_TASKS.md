@@ -205,6 +205,11 @@ test module; do not mix that mechanical move with behavior changes.
   non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p). The scan's `out` is
   zero-filled the same way (one clear of n elements per call, 2 GiB at 2^29; m7.r2 review), and so is the map's
   output (`map_on`, `map_gpu`; m7.a1 review N2: name it in m7.a2's timing conditions).
+- m7.lv (uniform and vector layouts in the export record, after m6.u2f): the macro writes no layout for a uniform
+  or a `Vec`/`Mat` element (`LayoutKindRecord` has only scalar and struct kinds), so `Vec4` and `Mat4` elements fail
+  `cargo gust build` for storage and uniforms ("unsupported element type `vector`", fill.rs), including the kernels
+  of the m6.g2 `uniforms` golden; and uniforms skip the export-side check without an `export_unchecked` entry or a
+  note (D104). Files: gust-macros expand/artifact.rs, cargo-gust record.rs, fill.rs, check.rs, the manifest docs.
 - m7.p follow-ups: `doctor` and `check` list only a `par_for!` kernel's origin site (`Record.sites` holds them all);
   the naga layout gate skips `par_for!` kernels (take their descriptors through the hidden `descriptor;` form, or
   delete it); the over-cap error is `map::Error::Device`, not an extent variant (needs `Extent` in

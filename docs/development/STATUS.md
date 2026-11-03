@@ -293,6 +293,19 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   because the racing `+ 1` writes all store 1. Pin 270/30 to 296/31. Not yet: `doctor`/`check` list only the
   origin site, the naga layout gate skips `par_for!` kernels, the over-cap error is `map::Error::Device`, and
   `cargo gust build` cannot export a `par_for!` kernel until m6.u2f. Opus merge after one fix round.
+- M6 m6.u2f (`9dc3169`, fix round `e596bb7`, merge `bee193a`; D104): `cargo gust build` on uniform kernels.
+  Before it, every kernel with a `Uniform<T>` failed the export with "missing descriptor element layout" (found by
+  the m7.p builder, reproduced on a plain `#[gpu]` kernel): the macro writes no uniform layout and cargo-gust filled
+  only storage ones. cargo-gust now fills a uniform from the reflection's `constantBuffer` element as `Std140V1`
+  (fill.rs, export.rs), for `build` and `check`. Evidence: stored helper output for a uniform kernel and a nested
+  one with padding builds through the export path, and the filled layouts equal the macro's descriptor layouts; bad
+  offset, size, nested alignment, field name, rules and resource kind are refused; a std140-valid rename passes the
+  export and fails `verify_artifact`; a probe crate ran `build`, `check`, `check --recompile` and a SPIR-V build.
+  Mutations a and b fail tests. Not yet: vector and matrix elements (`Vec4`, `Mat4`) still fail `cargo gust build`
+  for storage and uniforms ("unsupported element type `vector`"), and uniforms are not listed in `export_unchecked`
+  (D104). Opus merge after one fix round.
+  Main: 23 gate steps green on `bee193a` (17:40 to 18:12Z, RTX 5090; pins 296/31 and gust-algo 49) and
+  check-examples green.
   Main: 23 gate steps green on `910ee1c` (16:55 to 17:33Z, RTX 5090; pins 296/31 and gust-algo 49) and
   check-examples green.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until

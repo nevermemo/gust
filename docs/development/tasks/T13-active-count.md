@@ -66,9 +66,9 @@ compaction landed in m7.t14 (the last section below). On the T13 path (`run_fram
 particles form a prefix of the pool. The emitter spawns in slot order and the host reference asserts it (`step_cpu`,
 `the_emitter_reference_spawns_a_prefix`). On that path the invariant is still enforced on the host only: nothing on
 the GPU checks it, so a push that released slots out of order would make `integrate` step the wrong particles
-silently. The compacting path (`run_compacting_frame`) closes the gap for the dispatch: it does not rely on the
-invariant, because it builds the dense prefix itself every frame. The regressions live in the example's tests, not in
-`crates/gust-wgpu/tests/`, because the existing typed graph and pool APIs express the proof.
+silently. The compacting path (`run_compacting_frame`) does not rely on the invariant, because it builds the dense
+prefix itself every frame; it is the only path whose dispatch the gap does not affect. The regressions live in the
+example's tests, not in `crates/gust-wgpu/tests/`, because the existing typed graph and pool APIs express the proof.
 
 The stash's `active_count` entry in `check-feature gpu-semantics` is not added. It names
 `crates/gust-wgpu/tests/active_count.rs`, which does not exist (the stash never had it, and gust-wgpu was out of this
@@ -97,8 +97,10 @@ slice), so the feature would run no T13 test. The real gates are `check-examples
 ### Retirement and compaction (slice m7.t14, 2026-11-03)
 
 Status: landed in m7.t14, in `examples/component-pool` (a path dependency on `gust-algo`; `check-arch` accepts it).
-The prefix-invariant gap of the T13 path is closed for the compacting path, which does not need the invariant and
-is checked on the GPU; the T13 path and its tests are unchanged.
+The compacting path does not need the prefix invariant and is checked on the GPU. The gap is not closed beyond it:
+the T13 path (`run_frame_traced`) and its tests are unchanged, so it is still valid only on emitter-ordered pools in
+which no particle retires, with the prefix invariant enforced on the host only. The two paths must not share one
+pool: `classify` ignores `lifetime`, so the T13 path on a pool that has retired particles would integrate them.
 
 - Retirement rule: a particle retires once its `steps` counter (its age) reaches a lifetime, `steps >= lifetime`,
   with the lifetime in a one-element buffer (`Frame::lifetime`, written by every compacting frame). The T13 state
@@ -113,14 +115,17 @@ is checked on the GPU; the T13 path and its tests are unchanged.
   active count. Retired and unspawned slots are never read by `integrate` and never written. No readback decides
   work (the host reads `active` for the demo and the tests). Explicit edges: graph 1 `mark_live` after both uploads;
   graph 2 `gather` (none), `prepare` after `gather`, `integrate` after `prepare`, `scatter` after `integrate`,
-  readback after `integrate`. The library's own passes are ordered by the device queue between the two graphs
-  (they are not graph nodes); the graph cannot span them because `compact::indices` submits its own batches.
+  readback after `integrate`. No graph edge orders the compaction before `prepare`: `compact::indices` runs outside
+  both graphs (it submits its own batches, so the graph cannot span it), and that order rests on the blocking
+  `dispatch_batch` and `execute_graph` waits of each call. A non-blocking submission there would remove it silently,
+  and no test would catch it.
 - An empty pool (length 0) returns `None` and submits nothing: the host owns the length, and an empty binding is
   refused.
 - GPU tests (`cargo xtask check-examples`, RTX 5090):
-  `compaction_keeps_the_prefix_and_never_integrates_retired_particles` (pool sizes 1, 63, 64, 65 and 257; retirement of none,
-  the first, the last, a middle slot, all, alternate and scattered slots; everything released at once and an emitter at three per frame; budgets 1000 and 40; every
-  frame until the particles retire), `compaction_at_one_past_65536_slots_matches_the_reference` (65 537 slots),
+  `compaction_keeps_the_prefix_and_never_integrates_retired_particles` (pool sizes 1, 63, 64, 65 and 257;
+  retirement of none, the first, the last, a middle slot, all, alternate and scattered slots; everything released
+  at once and an emitter at three per frame; budgets 1000 and 40; every frame until the particles retire),
+  `compaction_at_one_past_65536_slots_matches_the_reference` (65 537 slots),
   `compaction_does_not_depend_on_the_order_particles_are_released` (the spawned particles are a suffix),
   `an_empty_pool_has_nothing_to_compact` (size 0) and `the_graph_refuses_a_compaction_pass_without_its_declared_edge`.
   Every frame reads the GPU's flags, count, indices and dense buffer back and asserts: the flags equal the rule, the
@@ -135,7 +140,9 @@ is checked on the GPU; the T13 path and its tests are unchanged.
   both large GPU tests on the first frame in which particles have retired out of order; gathering from
   `indices[j] + 1` fails the twin gather test and both GPU tests; dropping the `gather` to `prepare_dispatch` edge
   makes the graph refuse the frame with `GraphMissingDependency { node: 1, producer: 0 }`; dropping
-  `steps < lifetime` from `mark_live` (retired particles integrated) fails both GPU tests.
+  `steps < lifetime` from `mark_live` (retired particles integrated) fails both GPU tests. The dropped edge is a
+  resource-hazard edge (`prepare_dispatch` reads `dense.len()`); it is not an edge between compaction and
+  `prepare_dispatch`, which does not exist (see above).
 - Exported kernels 14 to 17 (`pool__mark_live.spv`, `pool__gather_particles.spv`, `pool__scatter_particles.spv`;
   `EXPECTED_SPIRV`, `the_expected_list_is_seventeen_sorted_unique_spirv_names`). The example still has no committed
   `gust-artifacts/`, so there is nothing to regenerate; its exports go to the ignored `generated-wgpu/`

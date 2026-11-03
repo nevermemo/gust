@@ -16,7 +16,10 @@
 //! frame), so on the T13 path (`run_frame_traced`) the active particles always
 //! form a prefix of the pool and the indirect consumer's `i < active` guard
 //! covers exactly them. That path is unchanged, and it is only as good as the
-//! prefix invariant: nothing on the GPU checks it.
+//! prefix invariant: nothing on the GPU checks it. It is valid only on
+//! emitter-ordered pools in which no particle retires (the invariant is still
+//! enforced on the host only), and it must not share a pool with the compacting
+//! path: `classify` ignores `lifetime`, so it would integrate retired particles.
 //!
 //! The compacting path (`run_compacting_frame`, m7.t14) does not depend on slot
 //! order. Particles retire (`steps >= lifetime`, the age counter every particle
@@ -211,7 +214,7 @@ mod pool {
         let first = (i / 256u32) * 65536u32 + i % 256u32;
         for k in 0u32..256u32 {
             let j = first + k * 256u32;
-            if j >= n || j >= live {
+            if j >= n || j >= live || j >= indices.len() {
                 break;
             }
             let source = indices[j];
@@ -467,7 +470,8 @@ pub struct CompactedFrame {
     /// The compacted copy of the live particles after the frame: the first `count` are the live particles in slot
     /// order (the first `active` of them integrated), every slot after that is zero.
     pub dense: GpuVec<Particle>,
-    /// `compact::indices`: the first `count` elements are the increasing pool slots of the live particles, the rest `0`.
+    /// `compact::indices`: the first `count` elements are the increasing pool slots of the live particles, the rest
+    /// `0`.
     pub indices: GpuVec<u32>,
     /// `compact::indices`: the number of live particles, one element, never read back by the frame.
     pub count: GpuVec<u32>,
@@ -483,8 +487,10 @@ pub struct CompactedFrame {
 /// nothing to mark or compact, and an empty binding would be refused.
 ///
 /// The passes, in submission order: the marking graph (settings and lifetime writes, then `mark_live`), then
-/// `gust_algo::compact::indices` over the flags (the library submits its own passes; the device queue orders them after
-/// the marking graph and before the next), then the compacted graph: `gather_particles` into a dense prefix,
+/// `gust_algo::compact::indices` over the flags (the library submits its own passes outside both graphs; no graph edge
+/// orders them. The order rests on each call waiting on the host: `execute_graph` and the library's `dispatch_batch`
+/// block until their submission completes, so a non-blocking submission here would remove it silently), then the
+/// compacted graph: `gather_particles` into a dense prefix,
 /// `prepare_dispatch` from the compaction's count, the indirect `integrate` over the dense prefix, `scatter_particles`
 /// back to the particles' own slots, and the readback of the active count. The edges of both graphs are declared
 /// (`upload`, `dispatch`, `dispatch_indirect`, `readback` take their dependencies) and the graph refuses a missing one;
@@ -2037,8 +2043,8 @@ mod tests {
         }
     }
 
-    // The compacting path: the prefix invariant and the retirement order, on the GPU, at the boundary sizes, against the
-    // independent host reference.
+    // The compacting path: the prefix invariant and the retirement order, on the GPU, at the boundary sizes, against
+    // the independent host reference.
     #[test]
     #[ignore = "example validation runs only in full verification"]
     fn compaction_keeps_the_prefix_and_never_integrates_retired_particles() {
@@ -2047,7 +2053,8 @@ mod tests {
         for n in [1usize, 63, 64, 65, 257] {
             for pattern in PATTERNS {
                 // Everything released at frame 0, and an emitter releasing three per frame (so unspawned slots follow
-                // the live ones). Enough frames for the particles to retire; a budget that clamps and one that does not.
+                // the live ones). Enough frames for the particles to retire; a budget that clamps and one that
+                // does not.
                 for (emit, frames) in [(n, 0..LIFETIME + 2), (3, 0..LIFETIME + 7)] {
                     for budget in [1000, 40] {
                         run_and_check_frames(

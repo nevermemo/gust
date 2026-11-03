@@ -37,8 +37,9 @@ framework, and Hurricane, the game engine (destination in
 (m7.a0, merge `bcb4da4`: device options, adapter limits, fallible buffers, the buffer pool, `GpuVec`, `MapHost`).
 Done: m7.w (wrapping arithmetic and GUST-E0325, D87, merge `4797013`) and m7.r1 (reduce v0 in the new crate
 `gust-algo`, merge `b5d2c68`), m6.z2 (GUST-E0326 for an unsuffixed literal `let`, D96, merge `a496968`) and
-m7.rb (blocking readbacks wait for their own completion, D97, merge `893d959`). Running: m7.a1 (the map API),
-m7.r2 (scan v0) and m7.t13 (T13 active count). The
+m7.rb (blocking readbacks wait for their own completion, D97, merge `893d959`), m7.t13 (T13 active count, merge
+`b88bfb0`) and m7.r2 (scan v0, merge `09203ae`). Running: m7.a1 (the map API). Next: m7.r3 (gust-algo's GPU tests
+without their mutex). The
 wasm32 `Job` contract (D69) lands before m7.a's `map_async` reaches the browser. The MX plan is adopted (D88 to
 D95).
 

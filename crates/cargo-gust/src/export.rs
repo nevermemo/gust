@@ -11,8 +11,8 @@
 use std::{fs, path::PathBuf, process::Command};
 
 use gust::{
-    Artifact, Format, KernelDescriptor, PodCrossCheck, artifact::verify_artifact,
-    reflect::Reflection,
+    Artifact, Format, KernelDescriptor, ParameterKind, PodCrossCheck, ShaderLayoutRules,
+    artifact::verify_artifact, reflect::Reflection,
 };
 
 use crate::{
@@ -217,7 +217,7 @@ pub(crate) fn verify_stored(
     bytes: &[u8],
     reflection_json: &str,
 ) -> Result<String, String> {
-    let kernel = record.completed(reflection_json)?.descriptor();
+    let kernel = completed_descriptor(record, reflection_json)?;
     let artifact = Artifact {
         format,
         key: leak_str(&record.key),
@@ -227,6 +227,41 @@ pub(crate) fn verify_stored(
     verify_artifact(&kernel, &artifact)
         .map(|verified| verified.compiled.compiler_version)
         .map_err(|error| error.to_string())
+}
+
+/// The record's descriptor with every `layout: null` parameter filled from the reflection: the storage parameters by
+/// [`Record::completed`] (`StorageV1`), the uniform parameters here (`Std140V1`, D80).
+///
+/// The record schema has no uniform layout (the macro writes one for storage elements only), so a uniform's layout
+/// always comes from the reflection's constant buffer. [`Record::descriptor`] declares every layout `StorageV1`, so the
+/// filled uniforms are re-declared `Std140V1` afterwards; a uniform whose record does carry a layout is left as the
+/// record says, and the cross-check refuses it when its rules do not fit a constant buffer. Nothing is accepted on the
+/// strength of the fill alone: the descriptor goes through the same cross-check as any other, which holds a
+/// constant buffer to std140 and to the reflection.
+fn completed_descriptor(
+    record: &Record,
+    reflection_json: &str,
+) -> Result<KernelDescriptor, String> {
+    let mut filled = record.clone();
+    let mut std140 = Vec::new();
+    for (index, parameter) in filled.parameters.iter_mut().enumerate() {
+        if parameter.kind == ParameterKind::Uniform && parameter.layout.is_none() {
+            parameter.layout = Some(
+                crate::fill::reflected_uniform_layout(reflection_json, &parameter.name)
+                    .map_err(|error| format!("{}: {error}", record.qualified_name()))?,
+            );
+            std140.push(index);
+        }
+    }
+    let mut kernel = filled.completed(reflection_json)?.descriptor();
+    let mut parameters = kernel.parameters.to_vec();
+    for index in std140 {
+        if let Some(layout) = parameters[index].resource_layout.as_mut() {
+            layout.rules = ShaderLayoutRules::Std140V1;
+        }
+    }
+    kernel.parameters = Box::leak(parameters.into_boxed_slice());
+    Ok(kernel)
 }
 
 /// D17 at export time: the helper's reflection against the record's descriptor, resource by resource.
@@ -240,7 +275,7 @@ pub(crate) fn cross_check_completed(
     reflection: &Reflection,
     reflection_json: &str,
 ) -> Result<Vec<PodCrossCheck>, String> {
-    let completed = record.completed(reflection_json)?.descriptor();
+    let completed = completed_descriptor(record, reflection_json)?;
     reflection
         .cross_check_kernel(&completed)
         .map_err(|error| error.to_string())
@@ -525,3 +560,7 @@ pub(crate) mod tests {
 #[cfg(test)]
 #[path = "export_unchecked_tests.rs"]
 mod unchecked_tests;
+
+#[cfg(test)]
+#[path = "export_uniform_tests.rs"]
+mod uniform_tests;

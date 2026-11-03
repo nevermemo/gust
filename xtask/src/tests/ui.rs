@@ -1550,9 +1550,11 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
     for name in [
         "par-for-binding",
         "par-for-body-error",
+        "par-for-bool-buffer",
         "par-for-form",
         "par-for-ok",
         "par-for-reserved-name",
+        "par-for-three-wide",
     ] {
         assert_eq!(find(name).env, variable("cpu"), "{name}");
     }
@@ -1571,9 +1573,11 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "map-u32-for-bool",
             "par-for-binding",
             "par-for-body-error",
+            "par-for-bool-buffer",
             "par-for-form",
             "par-for-ok",
             "par-for-reserved-name",
+            "par-for-three-wide",
             "profile-dev-no-artifact",
             "profile-empty",
             "profile-native-artifact",
@@ -1589,7 +1593,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 52] = [
+const PINNED_FIXTURES: [&str; 54] = [
     "barrier-in-helper",
     "barrier-in-if",
     "barrier-in-nested-for",
@@ -1618,9 +1622,11 @@ const PINNED_FIXTURES: [&str; 52] = [
     "map-u32-for-bool",
     "par-for-binding",
     "par-for-body-error",
+    "par-for-bool-buffer",
     "par-for-form",
     "par-for-ok",
     "par-for-reserved-name",
+    "par-for-three-wide",
     "profile-dev-no-artifact",
     "profile-empty",
     "profile-native-artifact",

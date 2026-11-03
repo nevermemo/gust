@@ -123,7 +123,7 @@ contains no Slang bridge, helper or GPU runtime. A kernel marked `#[kernel(cpu =
 is the evidence (the `Cpu` tier).
 
 For the full release-readiness check (including ignored example tests, all eight
-examples, and mandatory external validation of all fourteen SPIR-V exports):
+examples, and mandatory external validation of all seventeen SPIR-V exports):
 
 ```sh
 cargo xtask check-full

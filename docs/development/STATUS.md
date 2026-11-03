@@ -91,6 +91,16 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   Main: 22 gate steps green on `4797013` (from 22:11Z, RTX 5090), including `gpu-verify` and `check-difftest`.
   One more empty Vulkan adapter list in the fix round (`an_adapter_that_does_not_exist_is_no_adapter`, check-fast;
   green on rerun): the second sighting of the M6 enumerate flake (NEXT_TASKS).
+- M7 m7.r1 (`978a65c`, fix round `874b7ed`, merge `b5d2c68`): reduce v0 in the new crate `gust-algo`.
+  `reduce::{sum, min, max}` and `sum_on_device` for `u32`, `i32` and `f32` over a `GpuVec` (block-strided
+  per-invocation partials, one pooled buffer per pass, at most 4 passes in one batch), twins on `CpuDevice`, an `f64`
+  and `i128` reference, the per-level float bound asserted; f32 `min`/`max` padding lanes copy `input[0]`; integer
+  sums wrap past the domain (tested). 18 kernels in `tests/fixtures/reduce.*`. S7.7 on the RTX 5090 and the Radeon
+  890M: every case inside the per-level bound, including a 2^24 + 1 uniform sum on the twin and the GPU. gust-algo
+  is not in the Unit suite (its CI job stays free of wgpu); its 12 GPU tests run in the Gpu suite and in
+  `verify --mode gpu` with their own pin. Its GPU tests share one device behind a mutex until m7.rb (a readback
+  race under concurrent polls, found in review) lands. Opus merge after one fix round. Main: 22 gate steps green on
+  `b5d2c68` (from 23:42Z, RTX 5090).
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
@@ -483,7 +493,8 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M7 (m7.w and m7.r1 running; m6.z2 after m7.w) after the M6 close (D86); see the roadmap's Now and next
+claim: roadmap M7 (m7.rb, m6.z2, m7.r2, m7.t13 and mx.t0a running) after the M6 close (D86); see the roadmap's Now
+and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no
 ```

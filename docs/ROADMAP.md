@@ -35,9 +35,10 @@ framework, and Hurricane, the game engine (destination in
 
 **Now: M7, GPU concepts in Rust** (plan adopted 2026-11-02, owner-delegated). Its runtime prerequisites are done
 (m7.a0, merge `bcb4da4`: device options, adapter limits, fallible buffers, the buffer pool, `GpuVec`, `MapHost`).
-Done: m7.w (wrapping arithmetic and GUST-E0325, D87, merge `4797013`). Running: m7.r1 (reduce v0 in a new crate;
-in review) and m6.z2 (the literal-local typing bug, D86: the compile error alone; inference is filed).
-Next: m7.a1 (the map API); the
+Done: m7.w (wrapping arithmetic and GUST-E0325, D87, merge `4797013`) and m7.r1 (reduce v0 in the new crate
+`gust-algo`, merge `b5d2c68`). Running: m7.rb (a readback race under concurrent polls, found in m7.r1's review),
+m6.z2 (the literal-local typing bug, D86: the compile error alone; inference is filed), m7.r2 (scan v0) and m7.t13
+(T13 active count). Next: m7.a1 (the map API) after m7.rb and m6.z2; the
 wasm32 `Job` contract (D69) lands before m7.a's `map_async` reaches the browser. The MX plan is adopted (D88 to
 D95).
 

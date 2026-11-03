@@ -181,9 +181,16 @@ test module; do not mix that mechanical move with behavior changes.
 - `HeadlessDevice::enumerate(Backends::VULKAN)` returned no adapter once (the M6 close gates, `gpu-verify` at
   `f452a37`), then passed in `check-full` of the same run and 20 of 20 reruns. Seen again in m7.w's fix round
   (`an_adapter_that_does_not_exist_is_no_adapter` in check-fast, "index 0 is one past the adapters"; green on
-  rerun), and m7.r1's first gate round saw `Error::Map("mapping not complete after poll(Wait)")` with GPU tests
-  running in parallel on the shared default device. Find out whether an empty enumeration is transient on this
-  driver under concurrent load, and whether `enumerate` or the test should report or retry it (m7.a1).
+  rerun). Find out whether an empty enumeration is transient on this driver under concurrent load, and whether
+  `enumerate` or the test should report or retry it (m7.a1). (The `Error::Map` m7.r1 saw is a separate readback
+  race, fixed in m7.rb.)
+- Remove the mutex that serialises gust-algo's GPU tests (`crates/gust-algo/src/tests/gpu.rs`) once m7.rb's
+  readback fix is on `main`, and run them in parallel once (m7.r2).
+- `reduce` zero-clears its partials buffers although every lane writes its slot; skipping the clear needs a
+  non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p).
+- M8: naga 30 rejects an `i32` lane id in `subgroupShuffle`, `subgroupBroadcast` and `quadBroadcast`, which WGSL
+  allows and Slang emits; filed by the owner as https://github.com/gfx-rs/wgpu/issues/10818. The M8-S1 workaround
+  rewrites the id to `u32` in the exported WGSL; drop it when a fixed naga is pinned.
 - Type inference for an unannotated integer-literal `let` from its uses (M6 close ruling 3): m6.z2 ships the
   compile error alone because no kernel, fixture or example has such a let and inference needs a typer the
   lowering does not have (estimated 600 to 800 lines; plans m6/z2-measure, 2026-11-02).

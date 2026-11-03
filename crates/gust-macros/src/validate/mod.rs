@@ -410,6 +410,15 @@ pub fn range_bounds(iterable: &syn::Expr) -> Result<(&syn::Expr, &syn::Expr), Re
     }
 }
 
+/// `#[gpu]`, `#[gust::gpu]` or `#[::gust::gpu]`: a path that ends in `gpu`.
+pub(crate) fn is_gpu_attribute(attribute: &syn::Attribute) -> bool {
+    attribute
+        .path()
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "gpu")
+}
+
 pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
     let Some((_, items)) = &module.content else {
         return Err(diagnostics::error(
@@ -449,6 +458,18 @@ pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
     for item in items {
         match item {
             syn::Item::Fn(function) => {
+                if let Some(attribute) = function
+                    .attrs
+                    .iter()
+                    .find(|attribute| is_gpu_attribute(attribute))
+                {
+                    return Err(diagnostics::error(
+                        Code::NestedGpuFunction,
+                        attribute,
+                        "`#[gpu]` on a function goes on a free function outside any `#[gpu]` module: a module \
+                         already is GPU code, and its functions are helpers or `#[kernel]`s",
+                    ));
+                }
                 validate_function(function, &function_names, &result_helpers)?
             }
             syn::Item::Struct(item) => validate_struct(item)?,

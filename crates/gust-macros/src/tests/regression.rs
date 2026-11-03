@@ -17,7 +17,7 @@ const BLESS_VARIABLE: &str = "BLESS_GOLDEN";
 
 /// Compares emitted Slang with the reviewed fixture `tests/fixtures/<fixture>`. Both texts are
 /// already normalised to `\n` by the caller. Without `BLESS_GOLDEN=1` this is `assert_eq!`.
-fn assert_golden(actual: &str, fixture: &str, expected: &str) {
+pub(crate) fn assert_golden(actual: &str, fixture: &str, expected: &str) {
     if actual == expected {
         return;
     }
@@ -1968,12 +1968,12 @@ fn attribute_arguments_error_keeps_the_module() {
 
 #[test]
 fn non_module_item_is_returned_unchanged_beside_the_error() {
-    let item: proc_macro2::TokenStream = "fn f() {}".parse().unwrap();
+    let item: proc_macro2::TokenStream = "struct S;".parse().unwrap();
     let items = output_items(crate::gpu_impl(proc_macro2::TokenStream::new(), item));
     assert_eq!(items.len(), 2);
     assert_leading_compile_error(&items, Some(Code::ItemNotModule));
     let expected: syn::Item = syn::parse_quote!(
-        fn f() {}
+        struct S;
     );
     assert_eq!(items[1], expected);
 }

@@ -1,0 +1,4 @@
+code: none
+file: map-name-collision/src/main.rs
+line: 5
+message: [GUST-E0715] the module `map` that `#[gpu]` generates for this function would define `map` twice

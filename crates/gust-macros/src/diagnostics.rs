@@ -295,6 +295,14 @@ codes! {
     ExportWriteFailed = 712 => "GUST-E0712";
     /// Export mode with a `CARGO_PKG_NAME` that cannot name the record directory.
     ExportPackageName = 713 => "GUST-E0713";
+    /// `#[gpu]` on a function that is not a map function: no parameter, a return type or a parameter type that is not
+    /// a buffer element, or a `#[kernel]` on it.
+    MapSignature = 714 => "GUST-E0714";
+    /// A map function whose name, or one of whose parameters' names, collides with a name the generated module
+    /// defines.
+    MapNameCollision = 715 => "GUST-E0715";
+    /// `#[gpu]` on a function inside a `#[gpu]` module.
+    NestedGpuFunction = 716 => "GUST-E0716";
 
     // E08xx: rejections only the emitter makes, after validation passed.
     /// A kernel parameter that is neither a resource nor the dispatch thread.
@@ -1152,10 +1160,12 @@ mod tests {
     }
 
     /// Whether an assertion in `file` exercises the validator and emitter together as `#[gpu]`
-    /// does (the regression tests, and the validator's own tests).
+    /// does (the regression tests, the map tests, and the validator's own tests).
     fn is_pipeline_test_file(file: &str) -> bool {
         let file = file.replace('\\', "/");
-        file.ends_with("src/tests/regression.rs") || file.ends_with("src/validate/mod.rs")
+        file.ends_with("src/tests/regression.rs")
+            || file.ends_with("src/tests/map.rs")
+            || file.ends_with("src/validate/mod.rs")
     }
 
     /// The problems with `recorded`, the (code text, calling file) pairs that

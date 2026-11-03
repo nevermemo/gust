@@ -13,3 +13,5 @@ Validate the whole GPU module before direct syn AST -> Slang emission. Read curr
 4. Emit a spanned diagnostic, not a panic or silently omitted shader code. Add a positive fixture and a targeted rejection fixture.
 
 Read [validation contract](references/validation-contract.md) for traversal and semantic pitfalls. For diagnostic fixtures load `compiler-testing`; do not load lowering/runtime references for a validator-only change.
+
+Map functions (M7, m7.a1, D60): `#[gpu]` on a free function has one validator, `validate_module`. The generator checks the signature itself (GUST-E0714, GUST-E0715, and GUST-E0204 for a 3-wide parameter or result) and validates the user's function as a helper of a one-function module with its attributes cleared, so every body rule is the helper rule and the 3-wide types stay legal as locals. `#[gpu]` or `#[gust::gpu]` on a function inside a `#[gpu]` module is GUST-E0716 (`is_gpu_attribute`); a rejected module goes back beside the error without those attributes (`without_nested_gpu` in `lib.rs`), so the inner attribute does not expand by itself and add follow-on errors. Fixtures: `tests/ui/map-*`.

@@ -340,7 +340,7 @@ fn the_descriptor_is_the_generated_kernels() {
     assert_eq!(descriptor.entry_point, "gpu_saxpy_map_kernel");
     assert_eq!(descriptor.workgroup_size, [256, 1, 1]);
     let names: Vec<&str> = descriptor.parameters.iter().map(|p| p.name).collect();
-    assert_eq!(names, ["__gust_id", "a", "x", "y", "__gust_out"]);
+    assert_eq!(names, ["__gust_gid", "a", "x", "y", "__gust_out"]);
     assert_eq!(saxpy::MODULE_DESCRIPTOR.name, "saxpy");
     const { assert!(saxpy::OWN_INDEX) };
     assert_eq!(CEILING, 65_535 * 256);

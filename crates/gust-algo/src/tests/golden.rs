@@ -96,15 +96,18 @@ fn compact_golden() {
 
 #[test]
 fn the_golden_holds_every_kernel_once() {
-    // 3 element types x (sum, min, max) x (pass, final), then the wrapping `u32` sum (pass, final).
-    assert_eq!(kernels::MODULE_DESCRIPTOR.kernels.len(), 20);
+    // 3 element types x (sum, min, max) x (pass, final), then the wrapping `u32` sum (pass, final), then the v1 block
+    // kernels: 3 element types x (sum, min, max) and the wrapping `u32` sum (m7.r4).
+    assert_eq!(kernels::MODULE_DESCRIPTOR.kernels.len(), 30);
     assert_each_kernel_once(&kernels::MODULE_DESCRIPTOR);
 }
 
 #[test]
 fn the_scan_golden_holds_every_kernel_once() {
-    // The level-0 scan, the scan of totals, the top scan, the add-back into totals and the two final add-backs.
-    assert_eq!(scan_kernels::MODULE_DESCRIPTOR.kernels.len(), 6);
+    // The level-0 scan, the scan of totals, the top scan, the add-back into totals and the two final add-backs, then
+    // the v1 kernels (m7.r4): the inclusive and the exclusive tile scan, the tile scan of totals, the top tile scan and
+    // the add-back of a carry.
+    assert_eq!(scan_kernels::MODULE_DESCRIPTOR.kernels.len(), 11);
     assert_each_kernel_once(&scan_kernels::MODULE_DESCRIPTOR);
 }
 
@@ -116,20 +119,42 @@ fn the_compact_golden_holds_every_kernel_once() {
 }
 
 /// The Slang cannot tell `wrapping_add` from `+` (SEMANTICS KM-10: it lowers to the plain operator), and a release
-/// build of the twin wraps either way, so this reads the source: both `sum_wrapping_u32_*` kernels must add with
-/// `wrapping_add` and never with a plain `+` or `+=`.
+/// build of the twin wraps either way, so this reads the source: the `sum_wrapping_u32_*` kernels (pass, final, and the
+/// v1 block kernel, whose tree also adds lane values) must add with `wrapping_add` and never with a plain `+` or `+=`.
 #[test]
 fn the_wrapping_sum_kernels_add_with_wrapping_add() {
     let source = include_str!("../../../../tests/fixtures/reduce.rs").replace("\r\n", "\n");
-    let wrapping = &source[source.find("pub fn sum_wrapping_u32_pass").unwrap()..];
+    // The text of one kernel: from its `pub fn` to the next `#[kernel` (or the end of the module).
+    let kernel = |name: &str| {
+        let from = source.find(&format!("pub fn {name}(")).unwrap();
+        let rest = &source[from..];
+        rest[..rest.find("#[kernel").unwrap_or(rest.len())].to_owned()
+    };
+    for name in ["sum_wrapping_u32_pass", "sum_wrapping_u32_final"] {
+        let text = kernel(name);
+        assert_eq!(
+            text.matches("acc = acc.wrapping_add(input[index]);")
+                .count(),
+            1,
+            "{name}"
+        );
+        assert!(!text.contains("acc +"), "a plain addition in {name}");
+    }
+    let block = kernel("sum_wrapping_u32_block");
     assert_eq!(
-        wrapping
+        block
             .matches("acc = acc.wrapping_add(input[index]);")
             .count(),
-        2
+        1
+    );
+    assert_eq!(
+        block
+            .matches("scratch[lid.x] = scratch[lid.x].wrapping_add(scratch[lid.x + s]);")
+            .count(),
+        1
     );
     assert!(
-        !wrapping.contains("acc +"),
-        "a plain addition in a wrapping kernel"
+        !block.contains("acc +") && !block.contains("scratch[lid.x] +="),
+        "a plain addition in the wrapping block kernel"
     );
 }

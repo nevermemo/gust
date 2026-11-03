@@ -7,21 +7,22 @@
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice, default_device};
+use gust_wgpu::{DeviceHandle, DeviceOptions, GpuVec, HeadlessDevice, default_device};
 
 use super::common::{
-    Backend, COMPACT_LENGTHS, GPU_C, LENGTHS, SCAN_LENGTHS, Shape, assert_f32_sum, assert_same,
-    compact_cases, deep_compact_cases, deep_scan_cases, empty_cases, f32_input,
-    float_min_max_cases, float_sum_cases, gather_edge_cases, integer_cases,
+    Backend, COMPACT_LENGTHS, GPU_C, LENGTHS, SCAN_LENGTHS, Shape, assert_f32_sum,
+    assert_f32_sum_by, assert_same, compact_cases, deep_compact_cases, deep_scan_cases,
+    empty_cases, f32_input, float_min_max_cases, float_sum_cases, gather_edge_cases, integer_cases,
     out_of_range_index_cases, reference_indices, reference_scan, scan_cases, tie_ladder,
     wrapping_cases,
 };
 use super::struct_gather::{particles, population, reference};
 use crate::{
-    Error, compact,
+    Error, Variant, bound, compact,
     reduce::{self, Element},
     scan,
-    schedule::{Pass, ScanSchedule, Schedule},
+    schedule::{BlockSchedule, Pass, ScanSchedule, Schedule, TileSchedule},
+    variant::{Operation, shipped},
 };
 
 /// The lock of the heavy tests: those with 2^24 or more elements, or a buffer at the binding limit (128 MiB), each
@@ -33,8 +34,8 @@ fn heavy() -> MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// A device of the test's own, for the heavy tests: its pool is not the process-wide one, so the hundreds of MiB the test
-/// took go back to the driver when the test ends instead of staying in the shared pool for the rest of the run.
+/// A device of the test's own, for the heavy tests: its pool is not the process-wide one, so the hundreds of MiB the
+/// test took go back to the driver when the test ends instead of staying in the shared pool for the rest of the run.
 fn own_device() -> DeviceHandle {
     Arc::new(
         HeadlessDevice::new()
@@ -198,7 +199,8 @@ fn gpu_float_sum_of_the_tie_ladder_is_within_the_bound() {
 #[test]
 fn gpu_runs_the_deepest_schedule() {
     let _heavy = heavy();
-    // 2^24 + 1 elements: three passes and the terminal kernel (four dispatches), as the twin test.
+    // 2^24 + 1 elements on the shipped v1: two block passes (2049 workgroups, then one). The four-dispatch v0 form of
+    // this input is `gpu_v0_runs_the_deepest_schedules` and the twin test.
     let gpu = Gpu(own_device());
     let n = (1usize << 24) + 1;
     assert_eq!(gpu.sum(&vec![1u32; n]) as usize, n);
@@ -207,7 +209,7 @@ fn gpu_runs_the_deepest_schedule() {
     values[12_345_678] = 9_000;
     assert_eq!(gpu.min(&values), Some(-7));
     assert_eq!(gpu.max(&values), Some(9_000));
-    // A float sum over four dispatches stays within the bound of the deepest schedule.
+    // A float sum over the two v1 passes stays within the v1 bound (the v0 four-dispatch sum is in the v0 test).
     let floats = f32_input(Shape::Uniform, n, 0xF00D);
     let check = assert_f32_sum("2^24 + 1 uniform", &floats, gpu.sum(&floats), GPU_C);
     eprintln!("gpu f32 sum n = {n}: ratio {:.4}", check.ratio());
@@ -374,17 +376,19 @@ fn gpu_scans_are_exact_at_every_boundary() {
     scan_cases(&Gpu(device()), &SCAN_LENGTHS);
 }
 
-/// 2^24 elements are five dispatches and 2^24 + 1 are seven (a third level of totals, the add-back through it).
+/// On the shipped v1, 2^24 elements are three dispatches and 2^24 + 1 are five (a second level of totals, the add-back
+/// through it); the v0 counts are five and seven (`gpu_v0_runs_the_deepest_schedules`).
 #[test]
 fn gpu_runs_the_deepest_scans() {
     let _heavy = heavy();
     deep_scan_cases(&Gpu(own_device()));
 }
 
-/// The dispatch count of a scan, measured: every dispatch of a batch takes one pipeline from the device's cache (a hit
-/// or a miss), so the counters of a device of its own move by the number of dispatches. 3 up to 65 536 elements, 5 up
-/// to 2^24, 7 above (the level-3 path); `exclusive` costs the same as `inclusive`, and an empty input dispatches
-/// nothing.
+/// The dispatch count of a v0 scan, measured: every dispatch of a batch takes one pipeline from the device's cache (a
+/// hit or a miss), so the counters of a device of its own move by the number of dispatches. 3 up to 65 536 elements, 5
+/// up to 2^24, 7 above (the level-3 path); `exclusive` costs the same as `inclusive`, and an empty input dispatches
+/// nothing. v0 is pinned with `Variant::V0` because it is the fallback and the form under `GUST_PROFILE=cpu`; the v1
+/// counts are in `gpu_v1_dispatch_counts_follow_the_schedules`.
 #[test]
 fn gpu_a_scan_is_one_batch_of_three_five_or_seven_dispatches() {
     let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
@@ -410,9 +414,9 @@ fn gpu_a_scan_is_one_batch_of_three_five_or_seven_dispatches() {
         for exclusive in [false, true] {
             let before = touched(&device);
             let out = if exclusive {
-                scan::exclusive(&input)
+                scan::exclusive_with(Variant::V0, &input)
             } else {
-                scan::inclusive(&input)
+                scan::inclusive_with(Variant::V0, &input)
             }
             .unwrap();
             assert_eq!(
@@ -427,8 +431,16 @@ fn gpu_a_scan_is_one_batch_of_three_five_or_seven_dispatches() {
     }
     let empty = GpuVec::<u32>::zeroed_on(&device, 0).unwrap();
     let before = touched(&device);
-    assert!(scan::inclusive(&empty).unwrap().is_empty());
-    assert!(scan::exclusive(&empty).unwrap().is_empty());
+    assert!(
+        scan::inclusive_with(Variant::V0, &empty)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        scan::exclusive_with(Variant::V0, &empty)
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(touched(&device), before, "an empty scan dispatches nothing");
 }
 
@@ -521,8 +533,8 @@ fn gpu_a_scan_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch
         (after.hits, after.misses, after.outstanding),
         (pool.hits, pool.misses, pool.outstanding)
     );
-    // One element fewer is inside the limit and scans: ones, so the values at the top of the range (the seven-dispatch
-    // path at 2^25 elements) are checked too.
+    // One element fewer is inside the limit and scans: ones, so the values at the top of the range (the five-dispatch
+    // v1 path at 2^25 elements; seven dispatches in v0) are checked too.
     drop(input);
     let inside = GpuVec::from_slice_on(&device, &vec![1u32; (len - 1) as usize]).unwrap();
     let out = scan::inclusive(&inside).unwrap();
@@ -581,7 +593,7 @@ fn gpu_compaction_is_exact_at_every_boundary() {
 }
 
 /// `2^24 + 1` flags: 257 workgroups of the block-strided mask and scatter launches (an invocation per element would be
-/// 65 537 workgroups, past the 65 535 ceiling), and a scan of seven dispatches.
+/// 65 537 workgroups, past the 65 535 ceiling), and a scan of five dispatches (v1; v0 takes seven).
 #[test]
 fn gpu_runs_the_deepest_compaction() {
     let _heavy = heavy();
@@ -677,8 +689,15 @@ fn gpu_compaction_dispatch_counts_are_the_mask_the_reduction_the_scan_and_the_sc
         stats.hits + stats.misses
     };
     for n in [1usize, 256, 257, 65_537] {
-        let reduction = Schedule::new(n as u32).unwrap().dispatches() as u64;
-        let scan = ScanSchedule::new(n as u32).unwrap().dispatches() as u64;
+        // The schedules of the variants the public functions ship (`variant::shipped`).
+        let reduction = match shipped(Operation::Sum) {
+            Variant::V0 => Schedule::new(n as u32).unwrap().dispatches(),
+            Variant::V1 => BlockSchedule::new(n as u32).unwrap().dispatches(),
+        } as u64;
+        let scan = match shipped(Operation::Exclusive) {
+            Variant::V0 => ScanSchedule::new(n as u32).unwrap().dispatches(),
+            Variant::V1 => TileSchedule::new(n as u32).unwrap().dispatches(),
+        } as u64;
         let flags = GpuVec::<u32>::from_slice_on(&device, &vec![1u32; n]).unwrap();
         let before = touched(&device);
         let count = compact::count(&flags).unwrap();
@@ -946,4 +965,447 @@ fn gpu_a_user_kernel_gathers_structs_by_the_compaction_indices() {
             &format!("n = {n}"),
         );
     }
+}
+
+// ---- m7.r4: the v1 kernels (shared memory and barriers) against the same references ----
+
+/// Lengths around the boundaries of the v1 block reduce (a workgroup owns 8192 elements; 256 lanes add up to 32 terms
+/// each) and of the v1 scan (a workgroup owns 16 tiles of 256 elements, a span of 4096), besides the v0 ones.
+const V1_LENGTHS: [usize; 16] = [
+    1, 2, 255, 256, 257, 4_095, 4_096, 4_097, 8_191, 8_192, 8_193, 16_385, 65_537, 131_073,
+    999_983, 1_000_003,
+];
+
+/// [`SCAN_LENGTHS`] and the span boundaries of the v1 scan.
+const V1_SCAN_LENGTHS: [usize; 25] = [
+    0, 1, 2, 3, 255, 256, 257, 511, 512, 513, 4_095, 4_096, 4_097, 8_191, 8_192, 8_193, 16_385,
+    65_535, 65_536, 65_537, 65_793, 131_073, 999_983, 1_000_003, 1_048_576,
+];
+
+/// The reductions and scans of one variant, whatever the public functions ship: the case tables run on this to hold
+/// v0 and v1 to the same references. Compaction is the shipped path.
+struct Pinned(DeviceHandle, Variant);
+
+impl Pinned {
+    fn v1() -> Self {
+        Self(device(), Variant::V1)
+    }
+}
+
+impl Backend for Pinned {
+    const C: f64 = GPU_C;
+
+    fn sum_bound(&self, n: u32, c: f64, s: f64) -> f64 {
+        match self.1 {
+            Variant::V0 => bound::f32_sum_bound(n, c, s),
+            Variant::V1 => bound::f32_sum_bound_v1(n, c, s),
+        }
+    }
+
+    fn sum<T: Element>(&self, values: &[T]) -> T {
+        let input = GpuVec::from_slice_on(&self.0, values).unwrap();
+        reduce::sum_with(self.1, &input).unwrap()
+    }
+
+    fn min<T: Element>(&self, values: &[T]) -> Option<T> {
+        let input = GpuVec::from_slice_on(&self.0, values).unwrap();
+        match reduce::min_with(self.1, &input) {
+            Ok(value) => Some(value),
+            Err(Error::Empty) => None,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    fn max<T: Element>(&self, values: &[T]) -> Option<T> {
+        let input = GpuVec::from_slice_on(&self.0, values).unwrap();
+        match reduce::max_with(self.1, &input) {
+            Ok(value) => Some(value),
+            Err(Error::Empty) => None,
+            Err(error) => panic!("{error}"),
+        }
+    }
+
+    fn sum_wrapping(&self, values: &[u32]) -> u32 {
+        let input = GpuVec::from_slice_on(&self.0, values).unwrap();
+        reduce::sum_wrapping_with(self.1, &input).unwrap()
+    }
+
+    fn inclusive(&self, values: &[u32]) -> Vec<u32> {
+        let input = GpuVec::from_slice_on(&self.0, values).unwrap();
+        let out = scan::inclusive_with(self.1, &input).unwrap();
+        assert_eq!(out.len() as usize, values.len());
+        out.to_vec().unwrap()
+    }
+
+    fn exclusive(&self, values: &[u32]) -> Vec<u32> {
+        let input = GpuVec::from_slice_on(&self.0, values).unwrap();
+        let out = scan::exclusive_with(self.1, &input).unwrap();
+        assert_eq!(out.len() as usize, values.len());
+        out.to_vec().unwrap()
+    }
+
+    fn compact_count(&self, flags: &[u32]) -> u32 {
+        Gpu(self.0.clone()).compact_count(flags)
+    }
+
+    fn compact_indices(&self, flags: &[u32]) -> (Vec<u32>, u32) {
+        Gpu(self.0.clone()).compact_indices(flags)
+    }
+
+    fn gather_u32(&self, values: &[u32], indices: &[u32], count: u32) -> Vec<u32> {
+        Gpu(self.0.clone()).gather_u32(values, indices, count)
+    }
+
+    fn gather_i32(&self, values: &[i32], indices: &[u32], count: u32) -> Vec<i32> {
+        Gpu(self.0.clone()).gather_i32(values, indices, count)
+    }
+
+    fn gather_f32(&self, values: &[f32], indices: &[u32], count: u32) -> Vec<f32> {
+        Gpu(self.0.clone()).gather_f32(values, indices, count)
+    }
+}
+
+#[test]
+fn gpu_v1_integer_sums_min_and_max_are_exact_at_every_boundary() {
+    integer_cases(&Pinned::v1(), &V1_LENGTHS);
+}
+
+#[test]
+fn gpu_v1_float_min_and_max_are_exact() {
+    float_min_max_cases(&Pinned::v1(), &V1_LENGTHS);
+}
+
+#[test]
+fn gpu_v1_empty_inputs() {
+    empty_cases(&Pinned::v1());
+}
+
+#[test]
+fn gpu_v1_float_sums_are_within_the_per_level_bound() {
+    let gpu = Pinned::v1();
+    for n in [1, 255, 257, 8_193, 65_537, 1_000_000] {
+        for (shape, check) in float_sum_cases(&gpu, n) {
+            eprintln!(
+                "gpu v1 f32 sum n = {n} {shape:?}: distance {:e}, bound {:e}, ratio {:.4}",
+                check.distance,
+                check.bound,
+                check.ratio()
+            );
+        }
+    }
+}
+
+/// The tie ladder on the adapter against the (tighter) bound of the v1 schedule.
+#[test]
+fn gpu_v1_float_sum_of_the_tie_ladder_is_within_the_bound() {
+    let _heavy = heavy();
+    let gpu = Pinned(own_device(), Variant::V1);
+    let values = tie_ladder(1 << 24);
+    let actual = gpu.sum(&values);
+    let check = assert_f32_sum_by(
+        "v1 tie ladder",
+        &values,
+        actual,
+        GPU_C,
+        bound::f32_sum_bound_v1,
+    );
+    eprintln!(
+        "gpu v1 tie ladder: result {actual}, distance {:e}, bound {:e}, ratio {:.4}",
+        check.distance,
+        check.bound,
+        check.ratio()
+    );
+}
+
+#[test]
+fn gpu_v1_wrapping_sums_are_defined_modulo_2_32_for_every_input() {
+    wrapping_cases(&Pinned::v1(), &V1_LENGTHS);
+}
+
+#[test]
+fn gpu_v1_scans_are_exact_at_every_boundary() {
+    scan_cases(&Pinned::v1(), &V1_SCAN_LENGTHS);
+}
+
+/// The deepest v1 schedules: a reduction of 2^26 + 1 elements takes three block passes (the second level holds 8193
+/// values, one more than a workgroup owns), and the scans of 2^24 (one level of totals, 4096 of them) and 2^24 + 1 (a
+/// second level, the add-back through it).
+#[test]
+fn gpu_v1_runs_the_deepest_schedules() {
+    let _heavy = heavy();
+    // The adapter's own limits: 2^26 + 1 four-byte elements are past the 256 MiB buffers of the portable ones.
+    let device = Arc::new(
+        HeadlessDevice::with_options(DeviceOptions::default())
+            .expect("a Vulkan adapter is required; this test must not silently skip"),
+    );
+    let gpu = Pinned(device, Variant::V1);
+    let n = (1usize << 26) + 1;
+    assert_eq!(BlockSchedule::new(n as u32).unwrap().dispatches(), 3);
+    assert_eq!(gpu.sum(&vec![1u32; n]) as usize, n);
+    let mut values = vec![5_000i32; n];
+    values[n - 1] = -7;
+    values[12_345_678] = 9_000;
+    assert_eq!(gpu.min(&values), Some(-7));
+    assert_eq!(gpu.max(&values), Some(9_000));
+    drop(values);
+    let floats = f32_input(Shape::Uniform, n, 0xF00D);
+    let check = assert_f32_sum_by(
+        "v1 2^26 + 1 uniform",
+        &floats,
+        gpu.sum(&floats),
+        GPU_C,
+        bound::f32_sum_bound_v1,
+    );
+    eprintln!("gpu v1 f32 sum n = {n}: ratio {:.4}", check.ratio());
+    drop(floats);
+    deep_scan_cases(&gpu);
+}
+
+/// The dispatch counts of the v1 schedules, measured as in the v0 test: one dispatch while the input fits a workgroup
+/// (a block reduce) or a span (a scan), then one block pass per level for a reduction and `2k + 1` for a scan.
+#[test]
+fn gpu_v1_dispatch_counts_follow_the_schedules() {
+    let _heavy = heavy();
+    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    let touched = |device: &HeadlessDevice| {
+        let stats = device.pipeline_cache_stats();
+        stats.hits + stats.misses
+    };
+    for (n, dispatches) in [(1usize, 1usize), (8_192, 1), (8_193, 2), (1 << 20, 2)] {
+        assert_eq!(
+            BlockSchedule::new(n as u32).unwrap().dispatches(),
+            dispatches
+        );
+        let input = GpuVec::<u32>::from_slice_on(&device, &vec![1u32; n]).unwrap();
+        let before = touched(&device);
+        assert_eq!(reduce::sum_with(Variant::V1, &input).unwrap() as usize, n);
+        assert_eq!(touched(&device) - before, dispatches as u64, "sum, n = {n}");
+        let before = touched(&device);
+        assert_eq!(reduce::max_with(Variant::V1, &input).unwrap(), 1);
+        assert_eq!(touched(&device) - before, dispatches as u64, "max, n = {n}");
+        let before = touched(&device);
+        assert_eq!(
+            reduce::sum_wrapping_with(Variant::V1, &input).unwrap() as usize,
+            n
+        );
+        assert_eq!(
+            touched(&device) - before,
+            dispatches as u64,
+            "sum_wrapping, n = {n}"
+        );
+    }
+    for (n, dispatches) in [
+        (1usize, 1usize),
+        (4_096, 1),
+        (4_097, 3),
+        (1 << 24, 3),
+        ((1 << 24) + 1, 5),
+    ] {
+        assert_eq!(
+            TileSchedule::new(n as u32).unwrap().dispatches(),
+            dispatches
+        );
+        let input = GpuVec::<u32>::from_slice_on(&device, &vec![1u32; n]).unwrap();
+        for exclusive in [false, true] {
+            let before = touched(&device);
+            let out = if exclusive {
+                scan::exclusive_with(Variant::V1, &input)
+            } else {
+                scan::inclusive_with(Variant::V1, &input)
+            }
+            .unwrap();
+            assert_eq!(
+                touched(&device) - before,
+                dispatches as u64,
+                "dispatches of the {} scan, n = {n}",
+                if exclusive { "exclusive" } else { "inclusive" }
+            );
+            let last = out.to_vec().unwrap()[n - 1];
+            assert_eq!(last as usize, if exclusive { n - 1 } else { n }, "n = {n}");
+        }
+    }
+    let empty = GpuVec::<u32>::zeroed_on(&device, 0).unwrap();
+    let before = touched(&device);
+    assert!(
+        scan::inclusive_with(Variant::V1, &empty)
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(reduce::sum_with(Variant::V1, &empty).unwrap(), 0);
+    assert_eq!(
+        touched(&device),
+        before,
+        "an empty input dispatches nothing"
+    );
+}
+
+#[test]
+fn gpu_variants_leave_the_input_alone_and_return_their_buffers() {
+    for variant in [Variant::V0, Variant::V1] {
+        // A device of its own: the pool counters of the process-wide default device move with every parallel test.
+        let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+        let values: Vec<u32> = (0..70_001).map(|index| index % 100).collect();
+        let total = values.iter().map(|v| *v as usize).sum::<usize>();
+        let input = GpuVec::from_slice_on(&device, &values).unwrap();
+        let before = device.buffer_pool_stats();
+        let round = || {
+            assert_eq!(reduce::sum_with(variant, &input).unwrap() as usize, total);
+            assert_eq!(reduce::min_with(variant, &input).unwrap(), 0);
+            assert_eq!(reduce::max_with(variant, &input).unwrap(), 99);
+            let inclusive = scan::inclusive_with(variant, &input).unwrap();
+            let exclusive = scan::exclusive_with(variant, &input).unwrap();
+            assert_same(
+                &inclusive.to_vec().unwrap(),
+                &reference_scan(&values, false),
+                &format!("{variant:?} inclusive"),
+            );
+            assert_same(
+                &exclusive.to_vec().unwrap(),
+                &reference_scan(&values, true),
+                &format!("{variant:?} exclusive"),
+            );
+        };
+        round();
+        assert_same(
+            &input.to_vec().unwrap(),
+            &values,
+            "the input after the calls",
+        );
+        let after = device.buffer_pool_stats();
+        assert_eq!(
+            after.outstanding, before.outstanding,
+            "{variant:?}: the partials, the totals and the results went back to the pool"
+        );
+        // A second round is served from the pool: no new allocation.
+        round();
+        assert_eq!(
+            device.buffer_pool_stats().misses,
+            after.misses,
+            "{variant:?}: the second round allocated"
+        );
+    }
+}
+
+/// A v1 request whose launch does not fit the device runs v0 instead, and v0 answers (or refuses) as it always did:
+/// with 3 workgroups allowed, a reduction of 100 000 elements would take 13 v1 workgroups but v0 takes 2, and a scan
+/// of the same would take 25 v1 spans but v0 launches 2 workgroups; beyond v0's own limit the call is a `DeviceLimit`
+/// error before any dispatch. A device with less workgroup memory than the v1 kernels declare runs v0 as well.
+#[test]
+fn gpu_v1_falls_back_to_v0_where_its_launch_does_not_fit() {
+    let adapter = HeadlessDevice::new().expect("a Vulkan adapter is required");
+    let mut limits = adapter.limits().clone();
+    limits.max_compute_workgroups_per_dimension = 3;
+    let device = Arc::new(adapter.with_limits(limits).unwrap());
+    let touched = |device: &HeadlessDevice| {
+        let stats = device.pipeline_cache_stats();
+        stats.hits + stats.misses
+    };
+    let n = 100_000usize;
+    let input = GpuVec::from_slice_on(&device, &vec![1u32; n]).unwrap();
+    let before = touched(&device);
+    assert_eq!(reduce::sum_with(Variant::V1, &input).unwrap() as usize, n);
+    // v0: two passes and the terminal kernel (v1 would be two dispatches, and does not fit).
+    assert_eq!(touched(&device) - before, 3);
+    let before = touched(&device);
+    let inclusive = scan::inclusive_with(Variant::V1, &input).unwrap();
+    assert_eq!(inclusive.to_vec().unwrap()[n - 1] as usize, n);
+    // v0: 391 chunks, two totals, so five dispatches (a v1 scan of 100 000 elements is three).
+    assert_eq!(touched(&device) - before, 5);
+    // Inside the v1 limit (3 workgroups of 4096 elements) the v1 kernels run.
+    let fits = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 4_096]).unwrap();
+    let before = touched(&device);
+    assert_eq!(reduce::sum_with(Variant::V1, &fits).unwrap(), 3 * 4_096);
+    assert_eq!(touched(&device) - before, 2);
+    let before = touched(&device);
+    let _ = scan::inclusive_with(Variant::V1, &fits).unwrap();
+    assert_eq!(touched(&device) - before, 3);
+    // Past v0's limit as well: the v0 error, before any dispatch.
+    let outside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 65_536 + 1]).unwrap();
+    let cache = device.pipeline_cache_stats();
+    for result in [
+        reduce::sum_with(Variant::V1, &outside).map(drop),
+        scan::exclusive_with(Variant::V1, &outside).map(drop),
+    ] {
+        assert!(
+            matches!(
+                result,
+                Err(Error::Device(gust_wgpu::Error::DeviceLimit {
+                    limit: "max_compute_workgroups_per_dimension",
+                    ..
+                }))
+            ),
+            "{result:?}"
+        );
+    }
+    assert_eq!(device.pipeline_cache_stats(), cache);
+    // A device with less workgroup memory than the v1 kernels declare (3072 bytes) runs v0 for any size, however small.
+    let adapter = HeadlessDevice::new().expect("a Vulkan adapter is required");
+    let mut limits = adapter.limits().clone();
+    limits.max_compute_workgroup_storage_size = 2_048;
+    let small = Arc::new(adapter.with_limits(limits).unwrap());
+    let input = GpuVec::from_slice_on(&small, &vec![1u32; 5_000]).unwrap();
+    let before = touched(&small);
+    assert_eq!(reduce::sum_with(Variant::V1, &input).unwrap(), 5_000);
+    // v0: one pass and the terminal kernel (v1 would be one dispatch).
+    assert_eq!(touched(&small) - before, 2);
+    let before = touched(&small);
+    let inclusive = scan::inclusive_with(Variant::V1, &input).unwrap();
+    assert_eq!(inclusive.to_vec().unwrap()[4_999], 5_000);
+    // v0: 20 chunks and the top scan, so three dispatches (v1 would be one).
+    assert_eq!(touched(&small) - before, 3);
+}
+
+// ---- m7.r4: v0 stays pinned. The public functions ship v1 (`variant::shipped`), and v0 is the fallback for an input
+// the v1 launch cannot take and the only form without barriers, so its tables run on `Pinned(.., Variant::V0)` ----
+
+#[test]
+fn gpu_v0_integer_sums_min_and_max_are_exact_at_every_boundary() {
+    integer_cases(&Pinned(device(), Variant::V0), &LENGTHS);
+}
+
+#[test]
+fn gpu_v0_float_min_and_max_are_exact() {
+    float_min_max_cases(&Pinned(device(), Variant::V0), &LENGTHS);
+}
+
+#[test]
+fn gpu_v0_float_sums_are_within_the_per_level_bound() {
+    let gpu = Pinned(device(), Variant::V0);
+    for n in [1, 255, 257, 65_537, 1_000_000] {
+        float_sum_cases(&gpu, n);
+    }
+}
+
+#[test]
+fn gpu_v0_wrapping_sums_are_defined_modulo_2_32_for_every_input() {
+    wrapping_cases(&Pinned(device(), Variant::V0), &LENGTHS);
+}
+
+#[test]
+fn gpu_v0_scans_are_exact_at_every_boundary() {
+    scan_cases(&Pinned(device(), Variant::V0), &SCAN_LENGTHS);
+}
+
+/// The v0 schedules at their deepest: four dispatches for a reduction of 2^24 + 1 elements (the tie ladder of 2^24 too,
+/// against the v0 bound) and seven for the scan of 2^24 + 1.
+#[test]
+fn gpu_v0_runs_the_deepest_schedules() {
+    let _heavy = heavy();
+    let gpu = Pinned(own_device(), Variant::V0);
+    let n = (1usize << 24) + 1;
+    assert_eq!(Schedule::new(n as u32).unwrap().dispatches(), 4);
+    assert_eq!(gpu.sum(&vec![1u32; n]) as usize, n);
+    let mut values = vec![5_000i32; n];
+    values[n - 1] = -7;
+    values[12_345_678] = 9_000;
+    assert_eq!(gpu.min(&values), Some(-7));
+    assert_eq!(gpu.max(&values), Some(9_000));
+    drop(values);
+    let floats = f32_input(Shape::Uniform, n, 0xF00D);
+    assert_f32_sum("v0 2^24 + 1 uniform", &floats, gpu.sum(&floats), GPU_C);
+    drop(floats);
+    let ladder = tie_ladder(1 << 24);
+    assert_f32_sum("v0 tie ladder", &ladder, gpu.sum(&ladder), GPU_C);
+    drop(ladder);
+    deep_scan_cases(&gpu);
 }

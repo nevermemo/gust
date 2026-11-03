@@ -116,6 +116,7 @@ pub(crate) const CPU_TESTS: &[&[&str]] = &[
     &["test", "--locked", "-p", "atomic-counter"],
     &["test", "--locked", "-p", "staged-graph"],
     &["test", "--locked", "-p", "component-pool"],
+    &["test", "--locked", "-p", "map-chain"],
 ];
 
 /// The tests that `cargo xtask check-cpu` requires to be reported `ok` by name, per package of [`CPU_TESTS`] (same
@@ -170,6 +171,14 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
             "app::tests::twin_frames_match_host_reference",
             "app::tests::twin_gather_and_scatter_follow_the_compaction_indices",
             "app::tests::twin_mark_live_flags_the_spawned_unretired_slots",
+        ],
+    ),
+    (
+        "map-chain",
+        &[
+            "app::tests::inputs_stay_inside_the_derivation_domain",
+            "app::tests::twin_chain_matches_host_reference",
+            "app::tests::twin_steps_run_in_order",
         ],
     ),
 ];
@@ -696,7 +705,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "check-ui: cargo check of each tests/ui fixture crate; a crate with an expected.txt must fail with exactly one error satisfying every key (`code: none` names a macro error without a rustc code and needs a `message:`), or, with `build-error:` lines instead, must fail in the build script of gust with those texts in cargo's stderr; an env.txt gives a fixture its own environment variables (for example GUST_PROFILE=native, set after the workspace's dev); also part of check-fast and the Unit suite"
         }
         "check-cpu" => {
-            "check-cpu: `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial, signal-pipeline, particle-step, typed-pipeline, atomic-counter, staged-graph, component-pool), running the non-ignored twin tests against the host references (a package that runs no test fails, and each package's twin tests and derivation-domain guard must be reported `ok` by name); needs neither slangc nor a GPU; a step of the Unit suite"
+            "check-cpu: `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial, signal-pipeline, particle-step, typed-pipeline, atomic-counter, staged-graph, component-pool, map-chain), running the non-ignored twin tests against the host references (a package that runs no test fails, and each package's twin tests and derivation-domain guard must be reported `ok` by name); needs neither slangc nor a GPU; a step of the Unit suite"
         }
         "check-dual" => {
             "check-dual: the dual test build (`--cfg gust_dual`, D26) and its cross-crate proof, with its own target directory <target>/dual: tests/dual is formatted (`cargo fmt --check`) and passes clippy with -D warnings (the root fmt and CI clippy do not reach that workspace), as do vector-add and polynomial with the cfg (CI's clippy compiles their dual code out); the workspace builds with the cfg; in tests/dual a consumer's test (E1) and production binary (E3) each fail with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib` without the cfg, and with it (E2) the test passes. Without `--check-only` it then runs `cargo run` of vector-add and polynomial with the cfg, which must print the `CPU twin: matches (N elements, max ULP k)` line (polynomial also the twin's time beside run_cpu's), and of vector-add without the cfg, which must not mention the twin; that part needs a Vulkan GPU, and `check-full` runs it. Refuses to run while RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS or CARGO_BUILD_RUSTFLAGS is set (it delivers the cfg through CARGO_ENCODED_RUSTFLAGS). `--check-only` is the CPU-only mode CI runs; it needs cargo only"

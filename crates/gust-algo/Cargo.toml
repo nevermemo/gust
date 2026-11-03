@@ -12,8 +12,8 @@ publish = false
 
 [features]
 # Compile the kernels at run time through gust-wgpu's `slang-runtime` (the native reflection helper and slangc), the one
-# way v0 gets a pipeline (D44): the crate ships no precompiled artifacts yet, so without the feature a reduction returns
-# the backend's "run-time compile unavailable" error. The tests turn it on through the dev-dependency below.
+# way a kernel gets a pipeline (D44): the crate ships no precompiled artifacts yet, so without the feature a reduction
+# returns the backend's "run-time compile unavailable" error. The tests turn it on through the dev-dependency below.
 slang-runtime = ["gust-wgpu/slang-runtime"]
 
 [dependencies]

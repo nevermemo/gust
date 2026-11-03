@@ -189,6 +189,9 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   it); a skipped length check, a missing E0715 and a broadcast reading index i each fail tests. `TooLong` is
   unit-tested only (a real call needs more than 2^32 elements). Pin 232/27 to 244/28. Opus merge after two fix
   rounds and a re-review.
+  Erratum (m7.a2): the map kernel named its dispatch id `__gust_id`, a reserved CPU-twin marker of the export
+  guard, so from `5609536` until m7.a2 `cargo gust build` refused every `#[gpu] fn` (E0712). m7.a1's tests and
+  its wasm32 build never ran export mode.
   Main: 23 gate steps green on `5609536` (06:06 to 06:42Z, RTX 5090); pins 244/28 and gust-algo 32.
 - M7 m7.t14 (`c08e560`, fix round `dc7fc43`, merge `f96aff1`): retirement and compaction in component-pool. A
   particle retires when `steps >= lifetime` (a one-element device buffer), judged per slot, so in any slot order.
@@ -222,6 +225,38 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   `modulo_one` in user crates). One adapter. Pin 244/28 to 249/29. Opus merge after one fix round.
   Main: 23 gate steps green on `1516c94` (08:57 to 09:32Z, RTX 5090); pins 249/29 and gust-algo 32;
   check-examples green after the merge (the validator now runs on every example kernel).
+- M7 m7.a2 (`6afbd36` and `126363c`, coordinator merges `218c06e` and `2285111`, fix round `ab7097e`, merge
+  `44299e5`): map examples and evidence. `examples/map-chain` runs three `#[gpu] fn` maps as a resident chain
+  (`GpuVec` and `map_gpu_on`, one upload and one read-back counted as the device pool's hand-outs; a read-back that
+  bypasses the pool would not be counted) and as host-slice calls, both against an independent `f64` reference
+  within a derived 9u bound; tests from 0 to 65 537 elements and one large size. web-vector-add gains a `map_async`
+  path behind `default_device_async` (compiled for wasm32 and checked by check-web's tree guard; not run in a
+  browser). Committed artifacts for both examples; the web byte-copy test now accepts a superset manifest and still
+  compares the shared kernels, `schema` and `slang`. It fixes the m7.a1 map kernel id (renamed `__gust_gid`, with a
+  regression test over the exported `.slang` and record). Exported kernels 20 (m7.t14 and m7.a2 three each). The
+  README map table is provisional: a smoke run on the shared RTX 5090, labelled with its conditions and with what
+  it checked; map over host slices is 0.49 to 1.05 of a hand-written dispatch, and a cheap function never beat the
+  CPU at the sizes measured. The published run waits for a quiet window. Under `native` a `#[gpu] fn` cannot run
+  from an artifact yet (the workspace profile pin requires `slang-runtime` on every example). Mutations: a
+  read-back between steps, swapped steps, a deleted artifact and the old id name each fail. Opus merge after one
+  fix round.
+  Main: 23 gate steps green on `44299e5` (10:23 to 10:57Z, RTX 5090); pins 249/29 and gust-algo 32;
+  check-examples green.
+- M7 m7.r4 (`0c5d456`, fix round `b945ab0`, merge `d6b425f`): gust-algo v1 with shared memory. Block reduce (sum,
+  min, max over u32/i32/f32 and the wrapping u32 sum) and tile scan (u32 inclusive and exclusive) with
+  `Workgroup<[T; 256]>` and barriers, `cpu = "unsupported"` (D101); v0 stays the CPU form and the fallback
+  (`limits::admits` picks v0 where a v1 launch or its 3072 bytes of workgroup memory do not fit). Public signatures
+  unchanged; f32 sums now differ bit-wise from v0 (another grouping) within the bound of the variant that ran, and a
+  caller may assert the larger of the two bounds. Measured end to end on the shared RTX 5090 (interleaved, 5
+  warm-ups, 3 to 5 runs): median v0/v1 1.16 to 1.38 for reduce and 1.52 to 3.76 for scan at 1e6, 1e7 and 1e8, so
+  `variant::shipped` picks v1 for all six operations. The choice is provisional: the statistic (median of per-run
+  medians) was chosen after the runs, the lowest single run was 1.085 (min f32, 1e8), the small-size win is mostly
+  one dispatch and one pooled zeroing fewer, and the Radeon 890M half of plan §5.5 is owed. The builder's own VRAM
+  reached 4.3 GB at 1e8, over the slice's 1 GB limit (no other work was disturbed). component-pool's ignored GPU
+  tests pass on v1. Mutations: a dropped barrier (17 tests fail), a dropped scan guard (8 fail; the validator
+  accepts it), a flipped shipped variant (the observer test fails). Pin gust-algo 32 to 49; naga_layout goldens 67
+  to 82. Opus merge after one fix round.
+  Main: 23 gate steps green on `d6b425f` (12:15 to 12:46Z, RTX 5090); pins 249/29 and gust-algo 49.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
@@ -614,7 +649,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M7 (m7.a2 running) after the M6 close (D86); see the roadmap's Now
+claim: roadmap M7 (m7.d running) after the M6 close (D86); see the roadmap's Now
 and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no

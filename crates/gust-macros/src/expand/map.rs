@@ -12,7 +12,7 @@
 //! pub mod saxpy {
 //!     fn saxpy(a: f32, x: f32, y: f32) -> f32 { a * x + y }   // the lowered copy (the user's tokens)
 //!     #[kernel(workgroup_size(256, 1, 1))]
-//!     pub fn map_kernel(__gust_id, a: StructuredBuffer<f32>, .., mut __gust_out: RWStructuredBuffer<f32>) { .. }
+//!     pub fn map_kernel(__gust_gid, a: StructuredBuffer<f32>, .., mut __gust_out: RWStructuredBuffer<f32>) { .. }
 //!     pub const DESCRIPTOR: KernelDescriptor = ..;
 //!     pub fn map(..) / map_on(..) / map_gpu(..) / map_gpu_on(..) / map_async(..) / map_on_async(..)
 //! }
@@ -398,14 +398,14 @@ fn build(
 
             #[kernel(workgroup_size(256, 1, 1))]
             pub fn #kernel(
-                __gust_id: SV_DispatchThreadID,
+                __gust_gid: SV_DispatchThreadID,
                 #(#kernel_parameters,)*
                 mut __gust_out: RWStructuredBuffer<#result_element>,
             ) {
                 let __gust_n = __gust_out.len();
                 let __gust_rounds = __gust_n / #ceiling + (__gust_n % #ceiling != 0u32) as u32;
                 for __gust_round in 0u32..__gust_rounds {
-                    let __gust_j = __gust_id.x + __gust_round * #ceiling;
+                    let __gust_j = __gust_gid.x + __gust_round * #ceiling;
                     if __gust_j < __gust_n {
                         #(#indices)*
                         #(#values)*
@@ -838,5 +838,45 @@ fn cpu_chunk(signature: &Signature) -> TokenStream {
                 __gust_chunk[(__gust_i - __gust_lo) as usize] = #store;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::expand::artifact::{TWIN_TEXT, tests::Scratch};
+
+    /// The export records of a `#[gpu] fn` hold no CPU twin text (GUST-E0712): the map kernel's dispatch id is not
+    /// spelled `__gust_id`, the marker the guard reserves for the twin, so `cargo gust build` can export a map.
+    #[test]
+    fn the_export_records_of_a_gpu_fn_pass_the_twin_text_guard() {
+        let function: syn::ItemFn = crate::diagnostics::testing::parse_str(
+            "pub fn saxpy(a: f32, x: f32, y: f32) -> f32 { a * x + y }",
+        )
+        .unwrap();
+        let scratch = Scratch::new("map-records");
+        let records = scratch.0.join("records");
+        let environment = Environment {
+            manifest_dir: None,
+            export_dir: Some(records.clone()),
+            package: Some("demo-crate".to_owned()),
+            reported_file: None,
+        };
+        let expanded = expand_map_in(function, &environment, Profile::Other)
+            .unwrap_or_else(|error| panic!("a map must export: {error}"));
+        // A record with twin text is refused (GUST-E0712) as a `compile_error!` beside the item, not as an `Err`, so
+        // the failure names the code instead of a missing directory.
+        let text = expanded.to_string();
+        assert!(!text.contains("compile_error"), "{text}");
+        assert!(text.contains("map_kernel"));
+        let mut checked = 0;
+        for entry in std::fs::read_dir(records.join("demo-crate")).unwrap() {
+            let record = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            for marker in TWIN_TEXT {
+                assert!(!record.contains(marker), "{marker} in {record}");
+            }
+            checked += 1;
+        }
+        assert_eq!(checked, 2, "one .slang and one .kernel.json");
     }
 }

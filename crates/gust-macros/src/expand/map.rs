@@ -64,7 +64,8 @@ const GENERATED_NAMES: [&str; 10] = [
 /// pins to this number).
 const CEILING: u32 = 65_535 * 256;
 
-/// One scalar type of a map signature.
+/// The types one element type is spelled with: the result of the lookup `element_types`, which the map generator (a
+/// parameter or result of a map function) and `par_for!` (a buffer binding) share.
 #[derive(Clone)]
 pub(crate) struct ElementTypes {
     /// The element type as the kernel spells it (a plain name of the dialect): `bool` is `u32` there.
@@ -73,7 +74,8 @@ pub(crate) struct ElementTypes {
     pub(crate) buffer: TokenStream,
     /// The type of the value in host code: `bool` stays `bool`.
     pub(crate) host: TokenStream,
-    /// Whether the function's type is `bool`.
+    /// Whether the type looked up is `bool`. A map function takes it; `par_for!` has no `bool` buffer element and
+    /// refuses it at its own site (a `bool` there is a scalar binding).
     pub(crate) boolean: bool,
 }
 

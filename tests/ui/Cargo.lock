@@ -3,6 +3,62 @@
 version = 4
 
 [[package]]
+name = "barrier-in-helper"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "barrier-in-if"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "barrier-in-nested-for"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "barrier-in-while"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "barrier-kernel-no-cpu-strategy"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "barrier-ok"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "break-in-barrier-loop"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "continue-in-barrier-loop"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "gpupod-missing"
 version = "0.0.0"
 dependencies = [
@@ -47,7 +103,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "kernel-cpu-lockstep"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "kernel-missing"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "labelled-break-in-barrier-kernel"
 version = "0.0.0"
 dependencies = [
  "gust",
@@ -189,6 +259,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "question-mark-in-barrier-kernel"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "quote"
 version = "1.0.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -199,6 +276,13 @@ dependencies = [
 
 [[package]]
 name = "reserved-gust-prefix"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "return-in-barrier-kernel"
 version = "0.0.0"
 dependencies = [
  "gust",
@@ -269,6 +353,13 @@ name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6e4313cd5fcd3dad5cafa179702e2b244f760991f45397d14d4ebf38247da75"
+
+[[package]]
+name = "workgroup-over-16kib"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
 
 [[package]]
 name = "wrapping-div-rejected"

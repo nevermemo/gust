@@ -1,0 +1,8 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). A macro error is a `compile_error!` and has no rustc code, so `code: none`
+# requires `"code": null` and at least one `message:`. The macro's own text carries its GUST code
+# (docs/DIAGNOSTICS.md, E0311); the line is the `?` (rejected for its own sake, so no second error).
+code: none
+file: question-mark-in-barrier-kernel/src/main.rs
+line: 13
+message: [GUST-E0311] the `?` operator is not in the Rust-to-Slang subset

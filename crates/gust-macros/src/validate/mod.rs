@@ -7,6 +7,10 @@ use syn::visit::{self, Visit};
 use crate::diagnostics::{self, Code};
 use crate::math_types;
 
+mod barrier;
+
+pub(crate) use barrier::{is_barrier_call, workgroup_array};
+
 const BANNED_NAMES: &[&str] = &[
     "std",
     "core",
@@ -682,6 +686,17 @@ fn validate_function(
     use crate::slang::{ParameterFlavor, parameter_flavor};
 
     let is_kernel = crate::expand::kernel_options(function)?.is_some();
+    if !is_kernel
+        && let Some(argument) = function.sig.inputs.iter().find(|argument| matches!(argument,
+            syn::FnArg::Typed(argument) if parameter_flavor(&argument.ty) == ParameterFlavor::Workgroup))
+    {
+        return Err(diagnostics::error(
+            Code::WorkgroupParameterOnHelper,
+            argument,
+            "`Workgroup<[T; N]>` memory belongs to a kernel: a helper cannot take it as a parameter; declare the \
+             array on the kernel and pass the helper the values it needs",
+        ));
+    }
     let invocations = function.sig.inputs.iter().filter(|argument| matches!(argument,
         syn::FnArg::Typed(argument) if parameter_flavor(&argument.ty) == ParameterFlavor::Invocation)).count();
     if is_kernel {
@@ -689,7 +704,8 @@ fn validate_function(
             return Err(diagnostics::error(
                 Code::KernelDispatchParameter,
                 &function.sig,
-                "a GPU kernel requires exactly one dispatch-thread parameter",
+                "a GPU kernel requires exactly one dispatch-thread parameter (`LocalId` and `GroupId` are derived \
+                 from it, so a kernel that takes either needs it)",
             ));
         }
         if !matches!(&function.sig.output, syn::ReturnType::Default)
@@ -740,6 +756,20 @@ fn validate_function(
                 ParameterFlavor::Invocation => {
                     visitor.invocations.insert(name.ident.to_string());
                 }
+                ParameterFlavor::LocalId | ParameterFlavor::GroupId => {
+                    visitor.derived_ids.insert(name.ident.to_string());
+                }
+                ParameterFlavor::Workgroup => {
+                    visitor.derived_ids.insert(name.ident.to_string());
+                    if let syn::Type::Path(path) = argument.ty.as_ref() {
+                        visitor
+                            .workgroup_types
+                            .insert(std::ptr::from_ref(path) as usize);
+                    }
+                    if let Err(message) = workgroup_array(&argument.ty) {
+                        visitor.reject(Code::WorkgroupShape, &argument.ty, &message);
+                    }
+                }
                 ParameterFlavor::StorageRead => {
                     visitor.resources.insert(name.ident.to_string());
                 }
@@ -771,7 +801,56 @@ fn validate_function(
         }
     }
     visitor.visit_item_fn(function);
-    visitor.finish()
+    visitor.finish()?;
+    check_workgroup_rules(function, is_kernel)
+}
+
+/// The workgroup rules of a function the generic validation accepted (see `barrier`): the barrier positions (E0414),
+/// no `return` (E0415) and no `break` or `continue` in a barrier loop (E0416), then the CPU strategy (E0717) and the
+/// memory limit (E0718) of a kernel that uses workgroup memory or a barrier.
+fn check_workgroup_rules(function: &syn::ItemFn, is_kernel: bool) -> syn::Result<()> {
+    use crate::slang::{ParameterFlavor, parameter_flavor};
+
+    let has_memory = function.sig.inputs.iter().any(|argument| {
+        matches!(argument, syn::FnArg::Typed(argument)
+            if parameter_flavor(&argument.ty) == ParameterFlavor::Workgroup)
+    });
+    let barrier_kernel = is_kernel && (has_memory || barrier::has_barrier(function));
+    barrier::check(function, is_kernel, barrier_kernel)?;
+    if !barrier_kernel {
+        return Ok(());
+    }
+    let bytes = barrier::workgroup_bytes(function);
+    if bytes > barrier::WORKGROUP_MEMORY_LIMIT {
+        return Err(diagnostics::error(
+            Code::WorkgroupMemoryLimit,
+            &function.sig,
+            format!(
+                "the `Workgroup` arrays of this kernel take {bytes} bytes, over the limit of {} bytes (16 KiB, the \
+                 WebGPU default): a scalar or `bool` element takes 4 bytes, a 2-wide vector 8 and a 3-wide or \
+                 4-wide one 16; shorten the arrays",
+                barrier::WORKGROUP_MEMORY_LIMIT
+            ),
+        ));
+    }
+    let twin = crate::expand::kernel_attribute(function)?.map(|(_, twin)| twin);
+    if !matches!(twin, Some(crate::expand::CpuTwin::Unsupported)) {
+        let construct = if has_memory {
+            "`Workgroup<[T; N]>` memory"
+        } else {
+            "`workgroup_barrier()`"
+        };
+        return Err(diagnostics::error(
+            Code::BarrierKernelCpu,
+            &function.sig,
+            format!(
+                "kernel `{}` uses {construct}, which has no CPU twin yet: say so with `cpu = \"unsupported\"`, as in \
+                 `#[kernel(workgroup_size(256, 1, 1), cpu = \"unsupported\")]`",
+                function.sig.ident
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn atomic_buffer_names(function: &syn::ItemFn) -> HashSet<String> {
@@ -832,6 +911,10 @@ struct RestrictedVisitor {
     result_values: HashSet<String>,
     resources: HashSet<String>,
     invocations: HashSet<String>,
+    /// `LocalId`, `GroupId` and `Workgroup` parameters: locals cannot shadow them, and `.global_id()` is not theirs.
+    derived_ids: HashSet<String>,
+    /// The `Workgroup<..>` parameter types of the kernel, by address: the only place the type may stand (E0210).
+    workgroup_types: HashSet<usize>,
     /// Uniform parameters. They are read field by field only (E0321), and are not in `resources` because `.len()` of
     /// one is E0306.
     uniforms: HashSet<String>,
@@ -856,6 +939,8 @@ impl RestrictedVisitor {
             result_values: HashSet::new(),
             resources: HashSet::new(),
             invocations: HashSet::new(),
+            derived_ids: HashSet::new(),
+            workgroup_types: HashSet::new(),
             uniforms: HashSet::new(),
             read_write_buffers: HashMap::new(),
             atomic_buffers: HashSet::new(),
@@ -870,6 +955,7 @@ impl RestrictedVisitor {
     fn is_parameter_name(&self, name: &str) -> bool {
         self.resources.contains(name)
             || self.invocations.contains(name)
+            || self.derived_ids.contains(name)
             || self.uniforms.contains(name)
     }
 
@@ -1098,6 +1184,27 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
         use crate::slang::{ParameterFlavor, parameter_flavor};
 
+        // `Workgroup<[T; N]>` stands only as a kernel parameter type, and `validate_function` checked its shape.
+        if ty.qself.is_none()
+            && ty
+                .path
+                .segments
+                .last()
+                .is_some_and(|segment| segment.ident == "Workgroup")
+        {
+            if !self
+                .workgroup_types
+                .contains(&(std::ptr::from_ref(ty) as usize))
+            {
+                self.reject(
+                    Code::WorkgroupShape,
+                    ty,
+                    "`Workgroup<[T; N]>` is the type of a kernel parameter only: not a local, a field, a helper \
+                     parameter or a result",
+                );
+            }
+            return;
+        }
         if let Some(payload) = option_payload(ty) {
             if let Some(context) = self.option_forbidden {
                 self.reject(
@@ -1271,6 +1378,16 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                     return;
                 }
                 self.visit_expr(&call.args[0]);
+                return;
+            }
+            if is_barrier_call(call) {
+                // The statement form is taken in `visit_stmt`; a call that reaches here is part of an expression.
+                self.reject(
+                    Code::BarrierForm,
+                    call,
+                    "`workgroup_barrier()` is a statement of its own (`workgroup_barrier();`), not a value or part of \
+                     an expression",
+                );
                 return;
             }
             if let Some(op) = atomic_operation_name(path) {
@@ -1549,7 +1666,13 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         {
             return;
         }
-        if is_qualified_math_path(&path.path) {
+        if path.qself.is_none() && path.path.is_ident("workgroup_barrier") {
+            self.reject(
+                Code::BarrierForm,
+                path,
+                "`workgroup_barrier` is called as a statement (`workgroup_barrier();`), not used as a value",
+            );
+        } else if is_qualified_math_path(&path.path) {
             self.reject(Code::QualifiedMathPath, path, QUALIFIED_MATH_PATH);
         } else if path.path.get_ident().is_none() {
             self.reject(
@@ -1795,6 +1918,15 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                         unreachable!("result_match_arms checked block bodies");
                     };
                     self.visit_block(&body.block);
+                }
+            }
+            syn::Stmt::Expr(syn::Expr::Call(call), semicolon) if is_barrier_call(call) => {
+                if !call.args.is_empty() || semicolon.is_none() {
+                    self.reject(
+                        Code::BarrierForm,
+                        call,
+                        "`workgroup_barrier()` takes no arguments and is a statement ending in `;`",
+                    );
                 }
             }
             syn::Stmt::Expr(syn::Expr::Call(call), _) => {

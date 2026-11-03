@@ -1,0 +1,8 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). A macro error is a `compile_error!` and has no rustc code, so `code: none`
+# requires `"code": null` and at least one `message:`. The macro's own text carries its GUST code
+# (docs/DIAGNOSTICS.md, E0414); the line is the barrier.
+code: none
+file: barrier-in-if/src/main.rs
+line: 17
+message: [GUST-E0414] `workgroup_barrier()` is allowed only as a statement of the kernel body

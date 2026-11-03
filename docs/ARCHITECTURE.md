@@ -208,6 +208,9 @@ SV_DispatchThreadID id      Invocation, no binding        uint3 : SV_DispatchThr
 StructuredBuffer<float> a   Storage RO, group 0 binding 0 StructuredBuffer<float>
 StructuredBuffer<float> b   Storage RO, group 0 binding 1 StructuredBuffer<float>
 RWStructuredBuffer<float> o Storage RW, group 0 binding 2 RWStructuredBuffer<float>
+LocalId lid                 Derived from id, no binding   uint3 lid = id % workgroup size
+GroupId gid                 Derived from id, no binding   uint3 gid = id / workgroup size
+Workgroup<[f32; 256]> s     Not in the descriptor         groupshared float s[256]; (module scope)
 ```
 
 The current macro assigns bindings deterministically in resource-parameter order.

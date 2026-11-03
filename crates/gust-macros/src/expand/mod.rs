@@ -237,6 +237,7 @@ fn expand_validated(
             &original_name,
             &typecheck_name,
             &function.sig.inputs,
+            options.workgroup_size,
             cpu,
             profile,
         )?;
@@ -372,6 +373,11 @@ fn parameter_records(
                 ParameterFlavor::StorageReadWrite => ("storage", "read_write"),
                 ParameterFlavor::Uniform => ("uniform", "read_only"),
                 ParameterFlavor::Value => ("value", "not_applicable"),
+                ParameterFlavor::LocalId
+                | ParameterFlavor::GroupId
+                | ParameterFlavor::Workgroup => {
+                    unreachable!("`parameter_facts` leaves out what is not in the descriptor")
+                }
             };
             let layout = fact
                 .element
@@ -748,6 +754,14 @@ pub fn kernel_attribute(function: &syn::ItemFn) -> syn::Result<Option<(KernelOpt
                 ));
             }
             let value: syn::LitStr = meta.value()?.parse()?;
+            if value.value() == "lockstep" {
+                return Err(diagnostics::meta_error(
+                    &meta,
+                    Code::UnknownCpuValue,
+                    "`cpu = \"lockstep\"` is not available yet (the lockstep CPU twin of a barrier kernel is a later \
+                     slice); the only value is `\"unsupported\"`",
+                ));
+            }
             if value.value() != "unsupported" {
                 return Err(diagnostics::meta_error(
                     &meta,
@@ -809,6 +823,11 @@ fn parameter_facts(
                 ));
             };
             let flavor = crate::slang::parameter_flavor(&input.ty);
+            // The ids derived from the dispatch-thread id and the workgroup memory are no parameter of the entry
+            // point: neither the descriptor nor the export record lists them.
+            if !flavor.in_descriptor() {
+                return Ok(None);
+            }
             let is_resource = matches!(
                 flavor,
                 ParameterFlavor::StorageRead
@@ -833,15 +852,16 @@ fn parameter_facts(
             } else {
                 None
             };
-            Ok(ParameterFacts {
+            Ok(Some(ParameterFacts {
                 name: crate::slang::emit_ident(&pattern.ident),
                 rust_type: input.ty.to_token_stream().to_string(),
                 flavor,
                 binding,
                 element,
                 uniform_element,
-            })
+            }))
         })
+        .filter_map(Result::transpose)
         .collect()
 }
 
@@ -880,6 +900,11 @@ fn parameter_descriptors(
                     quote!(::gust::ParameterKind::Value),
                     quote!(::gust::Access::NotApplicable),
                 ),
+                ParameterFlavor::LocalId
+                | ParameterFlavor::GroupId
+                | ParameterFlavor::Workgroup => {
+                    unreachable!("`parameter_facts` leaves out what is not in the descriptor")
+                }
             };
             let binding = match binding {
                 Some(binding) => {
@@ -960,7 +985,11 @@ fn typed_call_items(
             continue;
         };
         let (access, kind) = match crate::slang::parameter_flavor(&input.ty) {
-            ParameterFlavor::Invocation => continue,
+            // The derived ids and the workgroup memory are not arguments of a call: no buffer stands for them.
+            ParameterFlavor::Invocation
+            | ParameterFlavor::LocalId
+            | ParameterFlavor::GroupId
+            | ParameterFlavor::Workgroup => continue,
             ParameterFlavor::StorageRead => (
                 quote!(::gust::Access::ReadOnly),
                 quote!(::gust::kind::Storage),
@@ -1188,6 +1217,7 @@ fn cpu_twin_items(
     kernel: &syn::Ident,
     typecheck: &syn::Ident,
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
+    workgroup_size: [u32; 3],
     cpu: CpuTwin,
     profile: Profile,
 ) -> syn::Result<TokenStream> {
@@ -1214,6 +1244,39 @@ fn cpu_twin_items(
                     <#ty as ::gust::cpu::FromGlobalId>::from_global_id(__gust_id)
                 });
             }
+            // The local and the group id of the invocation, as the GPU derives them from the dispatch-thread id and
+            // the workgroup size (slice m7.g1). A kernel with workgroup memory has no twin, so this serves a kernel
+            // that only reads the ids.
+            ParameterFlavor::LocalId | ParameterFlavor::GroupId => {
+                let [x, y, z] = workgroup_size;
+                let is_group =
+                    crate::slang::parameter_flavor(&input.ty) == ParameterFlavor::GroupId;
+                // An axis of size 1 is spelled out (`id % 1` is 0, `id / 1` is `id`): clippy denies `modulo_one`
+                // in the generated twin, and the default size is `64, 1, 1`.
+                let axis = |component: TokenStream, size: u32| {
+                    if size == 1 {
+                        if is_group { component } else { quote!(0u32) }
+                    } else if is_group {
+                        quote!(#component / #size)
+                    } else {
+                        quote!(#component % #size)
+                    }
+                };
+                let (ax, ay, az) = (
+                    axis(quote!(__gust_id.x), x),
+                    axis(quote!(__gust_id.y), y),
+                    axis(quote!(__gust_id.z), z),
+                );
+                arguments.push(quote! {
+                    ::gust::UVec3 {
+                        x: #ax,
+                        y: #ay,
+                        z: #az,
+                    }
+                });
+            }
+            // Validation requires `cpu = "unsupported"` of a kernel with workgroup memory, so this is not reached.
+            ParameterFlavor::Workgroup => return Ok(TokenStream::new()),
             ParameterFlavor::StorageRead => {
                 let element = crate::slang::wrapper_element_type(&input.ty)?;
                 names.push(name.clone());
@@ -1298,7 +1361,9 @@ fn element_layout_assertions(
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
 ) -> syn::Result<TokenStream> {
     let mut assertions = Vec::new();
-    for (index, input) in inputs.iter().enumerate() {
+    // The position in the descriptor: the derived ids and the workgroup memory take none.
+    let mut position = 0_usize;
+    for input in inputs {
         let syn::FnArg::Typed(input) = input else {
             continue;
         };
@@ -1306,6 +1371,11 @@ fn element_layout_assertions(
             continue;
         };
         let flavor = crate::slang::parameter_flavor(&input.ty);
+        if !flavor.in_descriptor() {
+            continue;
+        }
+        let index = position;
+        position += 1;
         if !matches!(
             flavor,
             ParameterFlavor::StorageRead

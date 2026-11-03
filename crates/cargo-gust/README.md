@@ -8,7 +8,7 @@ GUST is an experimental Rust to Slang compute subsystem. It is pre-1.0: expect t
 between 0.x releases.
 
 ```sh
-cargo install cargo-gust --locked --version "~0.1"
+cargo install cargo-gust --locked
 cargo gust doctor            # reports the Slang install and the native reflection helper
 cargo gust slang install     # installs the pinned Slang release
 cargo gust build             # writes gust-artifacts/ for the kernels of this crate

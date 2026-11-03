@@ -9,7 +9,7 @@ repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 documentation = "https://docs.rs/gust-compute-macros"
-exclude = ["tests/", "examples/", "benches/"]
+exclude = ["tests/", "examples/", "benches/", "src/slang/collision_tests.rs"]
 
 [lib]
 proc-macro = true

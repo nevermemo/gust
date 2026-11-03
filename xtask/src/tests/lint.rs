@@ -649,7 +649,32 @@ note = { version = \"1\", features = [\"path = x\"] }
 
 #[test]
 fn a_dependency_table_over_several_lines_is_reported_instead_of_skipped() {
-    let fixture = "[dependencies]\ngust = {\n    path = \"../../../crates/gust\",\n}\n";
+    for first in [
+        "gust = { path = \"../../../crates/gust\",",
+        "gust = { package = \"gust-compute\",",
+        "gust = { version = \"1\", path = \"../../../crates/gust\",",
+    ] {
+        let fixture = format!("[dependencies]\n{first}\n    features = [\"a\"] }}\n");
+        let problems = path_dependency_problems(&manifests_with("gust-compute", &fixture));
+        assert_eq!(problems.len(), 1, "{first}: {problems:?}");
+        assert!(
+            problems[0].starts_with("tests/ui/case/Cargo.toml:2: "),
+            "{}",
+            problems[0]
+        );
+    }
+    // A table that names neither `path` nor `package` on its first line is not refused.
+    for first in [
+        "other = {",
+        "other = { version = \"1\",",
+        "other = { features = [\"path = x\"],",
+    ] {
+        let fixture = format!("[dependencies]\n{first}\n    default-features = false }}\n");
+        let problems = path_dependency_problems(&manifests_with("gust-compute", &fixture));
+        assert!(problems.is_empty(), "{first}: {problems:?}");
+    }
+    let fixture =
+        "[dependencies]\ngust = { path = \"../../../crates/gust\",\n    features = [\"a\"] }\n";
     let problems = path_dependency_problems(&manifests_with("gust-compute", fixture));
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(

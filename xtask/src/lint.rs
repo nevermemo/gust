@@ -686,7 +686,16 @@ fn path_dependencies(text: &str) -> (Vec<PathDependency>, Vec<usize>) {
                     .collect();
                 match parts.as_slice() {
                     [name] if value.starts_with('{') => match inline_body(value) {
-                        None => unsupported.push(number),
+                        // Refused only when the first line already names a field the rule reads: a table that
+                        // names neither is a dependency the rule does not concern as far as can be seen.
+                        None => {
+                            if split_top(&value[1..], ',').into_iter().any(|pair| {
+                                split_key_value(pair.trim())
+                                    .is_some_and(|(field, _)| field == "path" || field == "package")
+                            }) {
+                                unsupported.push(number);
+                            }
+                        }
                         Some(body) => {
                             let (mut path, mut package) = (None, None);
                             for pair in split_top(body, ',') {

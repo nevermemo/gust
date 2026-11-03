@@ -148,11 +148,9 @@ test module; do not mix that mechanical move with behavior changes.
   been dispatched, yet MR ships SPIR-V to Vulkan users. Dispatch the three goldens (vectors and products, uniforms)
   through SPIR-V passthrough on the RTX 5090; this is input to the MX/MR planning, not an M6 task (sanity-opus,
   2026-11-02; ruling 4).
-- Gate the layouts of the emitted WGSL with naga's validator and `proc::Layouter` (wgpu's default capabilities),
-  which would replace m6.m2's by-hand naga run and catch a disagreement between reflection and the emitted WGSL for
-  every kernel, not only the tested layouts. naga is already in the tree through wgpu, but `check-arch`'s D02
-  allow-list would need a deliberate change, so it needs a decision first. Input to the MX/MR planning (sanity-opus
-  and sanity-fable, 2026-11-02; ruling 4).
+- Gate the layouts of the emitted WGSL with naga's validator and `proc::Layouter`: done in mx.n (merge `4d4dafe`,
+  D98), through `wgpu::naga`, so the D02 allow-list is unchanged; it replaces m6.m2's by-hand run. Left: exported
+  WGSL (`compile_reflected_clean`) is gated only through the one committed precompiled file.
 - `encase` or `crevice` (MIT OR Apache-2.0, licence not yet checked) as an independent Std140V1/StorageV2 oracle for
   the macro's computed offsets, and `bytemuck`'s `Pod` derive to replace the hand-written padding check behind
   `pod_slice_as_bytes` (the m6.g1 must-fix patched it by hand). Both dev-dependencies only, never in a production

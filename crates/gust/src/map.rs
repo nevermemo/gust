@@ -168,15 +168,35 @@ impl<T: GpuPod> Resident for crate::cpu::CpuBuffer<T> {
     }
 }
 
-/// One argument of a generated map call, for a kernel parameter of element type `E` on device `D`.
+/// The host type of a map function's parameter or result, and the type of the elements of its buffer.
+///
+/// Every [`GpuPod`] type stands for itself; `bool` is held as a `u32` word (0 or 1) in a buffer. A [`MapArg`] is keyed
+/// on the host type, not on the element, so a `bool` parameter takes `bool`s and a `u32` parameter takes `u32`s (Rust
+/// would refuse the other call too). Macro support.
+#[doc(hidden)]
+pub trait MapElement: Copy + 'static {
+    /// The element of the buffer that holds values of this type.
+    type Element: GpuPod;
+}
+
+impl<T: GpuPod> MapElement for T {
+    type Element = T;
+}
+
+impl MapElement for bool {
+    type Element = u32;
+}
+
+/// One argument of a generated map call, for a function parameter of host type `H` on device `D`.
 ///
 /// Implemented for host slices (`&[T]`, `&Vec<T>`, `&[T; N]`: uploaded through the device), for [`Broadcast<T>`] (a
 /// one-element upload) and for `&R` of every [`Resident`] buffer of the device (bound directly). A `bool` parameter
-/// has the element type `u32`: `&[bool]`, `&Vec<bool>`, `&[bool; N]` and `Broadcast<bool>` are converted to 0/1
-/// words, and a resident 0/1 vector is a `GpuVec<u32>`.
-pub trait MapArg<E: GpuPod, D: MapHost> {
+/// takes `&[bool]`, `&Vec<bool>`, `&[bool; N]` and `Broadcast<bool>` (converted to 0/1 words) and never the `u32`
+/// forms of those; a resident 0/1 vector is a `GpuVec<u32>`, the buffer element of `bool` (a resident buffer is typed
+/// by its element, so it serves a `bool` and a `u32` parameter alike).
+pub trait MapArg<H: MapElement, D: MapHost> {
     /// The typed resource the kernel is called with.
-    type Res: Resource<Element = E, Device = D, Kind = crate::kind::Storage>;
+    type Res: Resource<Element = H::Element, Device = D, Kind = crate::kind::Storage>;
     /// What [`bind`](Self::bind) returns and keeps alive for the call: the uploaded buffer, or a borrowed resident one.
     type Bound: Borrow<Self::Res>;
 
@@ -251,7 +271,7 @@ impl<T: GpuPod, D: MapHost> MapArg<T, D> for Broadcast<T> {
     }
 }
 
-impl<D: MapHost> MapArg<u32, D> for &[bool] {
+impl<D: MapHost> MapArg<bool, D> for &[bool] {
     type Res = D::Buffer<u32>;
     type Bound = D::Buffer<u32>;
 
@@ -264,7 +284,7 @@ impl<D: MapHost> MapArg<u32, D> for &[bool] {
     }
 }
 
-impl<D: MapHost> MapArg<u32, D> for &Vec<bool> {
+impl<D: MapHost> MapArg<bool, D> for &Vec<bool> {
     type Res = D::Buffer<u32>;
     type Bound = D::Buffer<u32>;
 
@@ -277,7 +297,7 @@ impl<D: MapHost> MapArg<u32, D> for &Vec<bool> {
     }
 }
 
-impl<D: MapHost, const N: usize> MapArg<u32, D> for &[bool; N] {
+impl<D: MapHost, const N: usize> MapArg<bool, D> for &[bool; N] {
     type Res = D::Buffer<u32>;
     type Bound = D::Buffer<u32>;
 
@@ -290,7 +310,7 @@ impl<D: MapHost, const N: usize> MapArg<u32, D> for &[bool; N] {
     }
 }
 
-impl<D: MapHost> MapArg<u32, D> for Broadcast<bool> {
+impl<D: MapHost> MapArg<bool, D> for Broadcast<bool> {
     type Res = D::Buffer<u32>;
     type Bound = D::Buffer<u32>;
 
@@ -303,9 +323,9 @@ impl<D: MapHost> MapArg<u32, D> for Broadcast<bool> {
     }
 }
 
-impl<'a, E: GpuPod, D: MapHost, R> MapArg<E, D> for &'a R
+impl<'a, H: MapElement, D: MapHost, R> MapArg<H, D> for &'a R
 where
-    R: Resident + Resource<Element = E, Device = D>,
+    R: Resident + Resource<Element = H::Element, Device = D>,
 {
     type Res = R;
     type Bound = &'a R;
@@ -348,7 +368,7 @@ pub fn element_count(shapes: &[(&'static str, Option<usize>)]) -> Result<u32, Er
 
 /// The typed resource behind a bound argument. Macro support.
 #[doc(hidden)]
-pub fn resource<E: GpuPod, D: MapHost, A: MapArg<E, D>>(bound: &A::Bound) -> &A::Res {
+pub fn resource<H: MapElement, D: MapHost, A: MapArg<H, D>>(bound: &A::Bound) -> &A::Res {
     bound.borrow()
 }
 
@@ -550,14 +570,14 @@ mod tests {
         type Cpu = crate::cpu::CpuDevice;
         let device = Cpu::new();
         let flags = [true, false, true];
-        assert_eq!(MapArg::<u32, Cpu>::shape(&&flags[..]), Some(3));
-        let bound = MapArg::<u32, Cpu>::bind(&flags[..], &device).unwrap();
+        assert_eq!(MapArg::<bool, Cpu>::shape(&&flags[..]), Some(3));
+        let bound = MapArg::<bool, Cpu>::bind(&flags[..], &device).unwrap();
         assert_eq!(bound.read(), [1, 0, 1]);
-        let bound = MapArg::<u32, Cpu>::bind(Broadcast(true), &device).unwrap();
+        let bound = MapArg::<bool, Cpu>::bind(Broadcast(true), &device).unwrap();
         assert_eq!(bound.read(), [1]);
-        let bound = MapArg::<u32, Cpu>::bind(&vec![false, true], &device).unwrap();
+        let bound = MapArg::<bool, Cpu>::bind(&vec![false, true], &device).unwrap();
         assert_eq!(bound.read(), [0, 1]);
-        let bound = MapArg::<u32, Cpu>::bind(&[true; 2], &device).unwrap();
+        let bound = MapArg::<bool, Cpu>::bind(&[true; 2], &device).unwrap();
         assert_eq!(bound.read(), [1, 1]);
     }
 

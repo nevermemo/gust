@@ -1103,6 +1103,7 @@ Decision: D45, D46.
 Reached through `#[gpu]`.
 Rejected: `#[gpu] fn f() -> f32`, `#[gpu] fn f(x: f32)` (no result), `x: f64`, `x: &f32`, `x: Option<f32>`, a tuple or array, a result of `()`, `#[gpu] #[kernel] fn ..`.
 Write instead: a function from scalars and vectors to one value; write a `#[kernel]` inside `#[gpu] mod name { .. }` for anything else. A 3-wide type is GUST-E0204.
+Related, not a GUST code: under a GPU profile (`dev`, `native`, ..) the generated `map`, `map_on`, `map_gpu`, `map_gpu_on`, `map_async` and `map_on_async` name `::gust_wgpu`, so the crate that writes `#[gpu]` on a function must depend on `gust-wgpu` directly. Without it rustc reports E0433 (failed to resolve: use of unresolved module or unlinked crate `gust_wgpu`) at the attribute. Add `gust-wgpu` to that crate's dependencies. Under `GUST_PROFILE=cpu` the functions name only `::gust::cpu`, nothing GPU is named and no `gust-wgpu` is needed. An argument is also typed by the function's own parameter: a `bool` parameter takes `bool`s and a `u32` parameter takes `u32`s, so passing one for the other is rustc's E0277 (the trait bound `MapArg<u32, ..>` or `MapArg<bool, ..>` is not satisfied).
 Decision: D60.
 
 ### GUST-E0715 map function name collides with the generated module

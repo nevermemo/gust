@@ -316,6 +316,23 @@ fn the_async_calls_do_not_block() {
     ));
 }
 
+// A parameter called `id` is a plain input (the kernel's dispatch id has a reserved name).
+#[gust::gpu]
+pub fn hash(id: u32, salt: u32) -> u32 {
+    (id + salt) * 3u32
+}
+
+#[test]
+fn a_parameter_named_id_is_an_ordinary_input() {
+    let ids: Vec<u32> = (0..700).collect();
+    let expected: Vec<u32> = ids.iter().map(|id| (id + 9) * 3).collect();
+    assert_eq!(hash::map(&ids, Broadcast(9)).unwrap(), expected);
+    assert_eq!(
+        hash::map_on(&CpuDevice::new(), &ids, Broadcast(9)).unwrap(),
+        expected
+    );
+}
+
 #[test]
 fn the_descriptor_is_the_generated_kernels() {
     let descriptor = saxpy::DESCRIPTOR;
@@ -323,7 +340,7 @@ fn the_descriptor_is_the_generated_kernels() {
     assert_eq!(descriptor.entry_point, "gpu_saxpy_map_kernel");
     assert_eq!(descriptor.workgroup_size, [256, 1, 1]);
     let names: Vec<&str> = descriptor.parameters.iter().map(|p| p.name).collect();
-    assert_eq!(names, ["id", "a", "x", "y", "__gust_out"]);
+    assert_eq!(names, ["__gust_id", "a", "x", "y", "__gust_out"]);
     assert_eq!(saxpy::MODULE_DESCRIPTOR.name, "saxpy");
     const { assert!(saxpy::OWN_INDEX) };
     assert_eq!(CEILING, 65_535 * 256);

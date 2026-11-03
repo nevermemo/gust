@@ -277,6 +277,7 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
         }
         "map" => {
             run_direct(&root, "cargo", &["test", "-p", "gust", "--lib", "map::"])?;
+            run_counted(&root, &["test", "-p", "gust-macros", "--lib", "map_tests"])?;
             run_direct(
                 &root,
                 "cargo",
@@ -284,6 +285,8 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                     "test",
                     "-p",
                     "gust-wgpu",
+                    "--test",
+                    "map",
                     "--test",
                     "gpu_vec",
                     "--test",
@@ -635,7 +638,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "result: Result lowering/match regressions plus WGSL, SPIR-V, and real-GPU Result tests"
         }
         "map" => {
-            "map: the device side of the map calls: gust::map unit tests, then GpuVec and the buffer pool, device options and adapter choice, and the launch and buffer limits on the GPU"
+            "map: the map calls of `#[gpu]` on a function and their device side: gust::map unit tests, the gust-macros map tests (expansion, diagnostics and the golden of the generated kernels), the map calls on the GPU against their CPU twins (crates/gust-wgpu/tests/map.rs), then GpuVec and the buffer pool, device options and adapter choice, and the launch and buffer limits on the GPU"
         }
         "algo" => {
             "algo: the device-resident algorithms of gust-algo (m7.r1 reduce, m7.r2 scan and sum_wrapping): the schedule and bound arithmetic, the goldens of the reduce and scan kernels and the CPU twins against independent references (no adapter needed), then the same cases on the first Vulkan adapter with the per-level float bound asserted, the dispatch counts of a scan, the empty and over-limit inputs and the pooled buffers"

@@ -1540,9 +1540,12 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
         manifest.contains("features = [\"slang-runtime\"]"),
         "{manifest}"
     );
-    // The map functions build under the cpu profile, where nothing names a GPU API (m7.a1).
+    // The map functions build under the cpu profile, where nothing names a GPU API (m7.a1); so do the two fixtures
+    // that pin the argument-type errors, which would otherwise add E0433 for the missing `gust-wgpu`.
     assert_eq!(find("map-ok").env, variable("cpu"));
     assert_eq!(find("map-ok").expectation, Expectation::Compiles);
+    assert_eq!(find("map-bool-for-u32").env, variable("cpu"));
+    assert_eq!(find("map-u32-for-bool").env, variable("cpu"));
     // No other fixture has variables of its own.
     let with_env: Vec<&str> = cases
         .iter()
@@ -1552,7 +1555,9 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
     assert_eq!(
         with_env,
         [
+            "map-bool-for-u32",
             "map-ok",
+            "map-u32-for-bool",
             "profile-dev-no-artifact",
             "profile-empty",
             "profile-native-artifact",
@@ -1568,7 +1573,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 31] = [
+const PINNED_FIXTURES: [&str; 33] = [
     "gpupod-missing",
     "gpupod-present",
     "kernel-cpu-bad-value",
@@ -1578,11 +1583,13 @@ const PINNED_FIXTURES: [&str; 31] = [
     "layout-outside-field",
     "literal-let-ok",
     "literal-let-rejected",
+    "map-bool-for-u32",
     "map-name-collision",
     "map-nested",
     "map-ok",
     "map-signature",
     "map-three-wide",
+    "map-u32-for-bool",
     "profile-dev-no-artifact",
     "profile-empty",
     "profile-native-artifact",

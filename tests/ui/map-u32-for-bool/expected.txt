@@ -1,0 +1,4 @@
+code: E0277
+file: map-u32-for-bool/src/main.rs
+line: 11
+message: the trait bound `&[u32; 2]: MapArg<bool, CpuDevice>` is not satisfied

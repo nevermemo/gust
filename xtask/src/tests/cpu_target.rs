@@ -4,11 +4,11 @@ use std::{
 };
 
 use super::{
-    CPU_PROFILE, CPU_TARGET_DIR, Call, Dirs, FINAL_LINE, FLIPS, FORBIDDEN, KERNELS, Profile,
-    REFUSAL_FILE, REFUSAL_ITEM, SCAN_CONTROL, STEPS, all_calls, e_a_build, e_b_tree, e_c_build,
-    e_d_check, e_e_check, e_f_check, e_g_check, e_h_build, e_i_test, executable_of, judge_run,
-    match_problems, match_summary, parse_match_line, passed_tests, refusal_line, relative_to, scan,
-    scan_problems, tree_problems, with_located_line,
+    CPU_PROFILE, CPU_TARGET_DIR, Call, Dirs, FINAL_LINE, FLIPS, FORBIDDEN, KERNELS,
+    MAP_LINE_PREFIX, Profile, REFUSAL_FILE, REFUSAL_ITEM, SCAN_CONTROL, STEPS, all_calls,
+    e_a_build, e_b_tree, e_c_build, e_d_check, e_e_check, e_f_check, e_g_check, e_h_build,
+    e_i_test, executable_of, judge_run, match_problems, match_summary, parse_match_line,
+    passed_tests, refusal_line, relative_to, scan, scan_problems, tree_problems, with_located_line,
 };
 use crate::{
     checks::{DUAL_RUSTFLAGS, DUAL_RUSTFLAGS_VARIABLE, RUSTFLAGS_VARIABLES},
@@ -45,6 +45,7 @@ const GOOD: &str = "CPU target: matches (vector_add::add, 1000 elements, max ULP
 CPU target: matches (polynomial::evaluate, 1000 elements, max ULP 0)
 CPU target: matches (atomic_counter::increment, 257 invocations, max ULP 0)
 CPU target: matches (vector_ops::blend, 1000 elements, max ULP 0)
+CPU target: map calls match (scale_add, pick, 1000 elements)
 CPU target: all kernels match
 ";
 
@@ -138,10 +139,37 @@ fn a_run_that_stopped_early_names_every_missing_kernel_and_the_final_line() {
             "no `matches` line for the kernel `polynomial::evaluate`".to_owned(),
             "no `matches` line for the kernel `atomic_counter::increment`".to_owned(),
             "no `matches` line for the kernel `vector_ops::blend`".to_owned(),
+            format!("the map case did not run: the line `{MAP_LINE_PREFIX}..` is missing"),
             format!("the final line `{FINAL_LINE}` is missing"),
         ]
     );
-    assert_eq!(match_problems("").len(), KERNELS.len() + 1);
+    assert_eq!(match_problems("").len(), KERNELS.len() + 2);
+}
+
+#[test]
+fn a_run_without_the_map_line_or_with_it_twice_is_a_problem() {
+    // The non-cpu stub of the map case is an error, but even an app that skipped the case and still printed the final
+    // line must not pass: the line that only the real case prints is required.
+    let without: String = GOOD
+        .lines()
+        .filter(|line| !line.starts_with(MAP_LINE_PREFIX))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(
+        match_problems(&without),
+        [format!(
+            "the map case did not run: the line `{MAP_LINE_PREFIX}..` is missing"
+        )]
+    );
+    let twice = format!("{GOOD}CPU target: map calls match (scale_add, pick, 1000 elements)\n");
+    assert_eq!(
+        match_problems(&twice),
+        [format!(
+            "the line `{MAP_LINE_PREFIX}..` occurs 2 times, expected one"
+        )]
+    );
+    // A `matches` line of the map case is not a kernel line, and the prefixes do not overlap.
+    assert!(!MAP_LINE_PREFIX.starts_with("CPU target: matches"));
 }
 
 #[test]

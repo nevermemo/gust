@@ -185,9 +185,14 @@ fn cpu_profile_names_no_gpu_api_and_has_the_chunk_body() {
 fn elements_are_the_buffer_types_and_bool_is_a_u32_word() {
     let text = expanded(SAXPY, Profile::Other);
     assert!(text.contains("MapArg<::core::primitive::f32,__GustD>"));
+    // The argument bound is keyed on the host type: a `bool` parameter takes `bool`s, never `u32`s.
     assert!(
-        text.contains("MapArg<::core::primitive::u32,__GustD>"),
-        "bool arguments are u32 words"
+        text.contains("MapArg<::core::primitive::bool,__GustD>"),
+        "bool arguments are keyed on bool"
+    );
+    assert!(
+        !text.contains("MapArg<::core::primitive::u32,__GustD>"),
+        "a bool argument is not a u32 argument"
     );
     assert!(text.contains("Result<::std::vec::Vec<::core::primitive::f32>,::gust::map::Error>"));
     let boolean = expanded(
@@ -198,6 +203,26 @@ fn elements_are_the_buffer_types_and_bool_is_a_u32_word() {
         boolean.contains("Result<::std::vec::Vec<::core::primitive::bool>,::gust::map::Error>")
     );
     assert!(boolean.contains("::<::core::primitive::u32>(__gust_device,&__gust_out)"));
+}
+
+#[test]
+fn a_parameter_named_id_does_not_meet_the_dispatch_id() {
+    // The kernel's own dispatch-id parameter has a reserved name, so the user's `id` is just a buffer name.
+    let function: syn::ItemFn =
+        parse_str("pub fn hash(id: u32, salt: u32) -> u32 { (id + salt) * 3u32 }").unwrap();
+    let slang = kernel_slang(&function);
+    assert!(slang.contains("StructuredBuffer<uint> id;"), "{slang}");
+    assert!(
+        slang.contains("uint3 __gust_id : SV_DispatchThreadID"),
+        "{slang}"
+    );
+    assert!(slang.contains("__gust_id.x"), "{slang}");
+    let text = expansion(
+        "pub fn hash(id: u32, salt: u32) -> u32 { (id + salt) * 3u32 }",
+        Profile::Other,
+    )
+    .to_string();
+    assert!(!text.contains("compile_error"), "{text}");
 }
 
 #[test]

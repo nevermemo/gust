@@ -12,7 +12,7 @@
 //! pub mod saxpy {
 //!     fn saxpy(a: f32, x: f32, y: f32) -> f32 { a * x + y }   // the lowered copy (the user's tokens)
 //!     #[kernel(workgroup_size(256, 1, 1))]
-//!     pub fn map_kernel(id, a: StructuredBuffer<f32>, x: .., y: .., mut __gust_out: RWStructuredBuffer<f32>) { .. }
+//!     pub fn map_kernel(__gust_id, a: StructuredBuffer<f32>, .., mut __gust_out: RWStructuredBuffer<f32>) { .. }
 //!     pub const DESCRIPTOR: KernelDescriptor = ..;
 //!     pub fn map(..) / map_on(..) / map_gpu(..) / map_gpu_on(..) / map_async(..) / map_on_async(..)
 //! }
@@ -398,14 +398,14 @@ fn build(
 
             #[kernel(workgroup_size(256, 1, 1))]
             pub fn #kernel(
-                id: SV_DispatchThreadID,
+                __gust_id: SV_DispatchThreadID,
                 #(#kernel_parameters,)*
                 mut __gust_out: RWStructuredBuffer<#result_element>,
             ) {
                 let __gust_n = __gust_out.len();
                 let __gust_rounds = __gust_n / #ceiling + (__gust_n % #ceiling != 0u32) as u32;
                 for __gust_round in 0u32..__gust_rounds {
-                    let __gust_j = id.x + __gust_round * #ceiling;
+                    let __gust_j = __gust_id.x + __gust_round * #ceiling;
                     if __gust_j < __gust_n {
                         #(#indices)*
                         #(#values)*
@@ -444,7 +444,7 @@ fn shape(signature: &Signature, device: &TokenStream) -> Shape {
     let mut bounds = Vec::new();
     let mut names = Vec::new();
     for (parameter, argument) in signature.parameters.iter().zip(&argument_types) {
-        let (name, element) = (&parameter.name, &parameter.element.buffer);
+        let (name, element) = (&parameter.name, &parameter.element.host);
         parameters.push(quote!(#name: #argument));
         bounds.push(quote!(#argument: ::gust::map::MapArg<#element, #device>));
         names.push(name.clone());
@@ -475,7 +475,7 @@ fn call_body(
         .zip(&shape.argument_types)
         .map(|(parameter, _)| {
             let (name, label) = (&parameter.name, parameter.name.unraw().to_string());
-            let element = &parameter.element.buffer;
+            let element = &parameter.element.host;
             quote!((#label, ::gust::map::MapArg::<#element, #device_type>::shape(&#name)))
         })
         .collect();
@@ -487,7 +487,7 @@ fn call_body(
         .iter()
         .zip(&bound)
         .map(|(parameter, local)| {
-            let (name, element) = (&parameter.name, &parameter.element.buffer);
+            let (name, element) = (&parameter.name, &parameter.element.host);
             quote! {
                 let #local = ::gust::map::MapArg::<#element, #device_type>::bind(#name, #device)?;
             }
@@ -498,7 +498,7 @@ fn call_body(
         .zip(&bound)
         .zip(&shape.argument_types)
         .map(|((parameter, local), argument)| {
-            let element = &parameter.element.buffer;
+            let element = &parameter.element.host;
             quote!(::gust::Independent(
                 ::gust::map::resource::<#element, #device_type, #argument>(&#local)
             ))
@@ -727,14 +727,17 @@ fn host_items(signature: &Signature, profile: Profile) -> TokenStream {
             Finish::GpuVec,
         );
         let doc_gpu = format!(
-            "[`{name}`] over the arguments on the default GPU device, leaving the results there as a \
-             `gust_wgpu::GpuVec` (no read-back: pass it to the next call)."
+            "[`{name}`] over the arguments on the default GPU device (`gust_wgpu::default_device`), leaving the \
+             results there as a `gust_wgpu::GpuVec` (no read-back: pass it to the next call). Every resident \
+             argument must live on the default device too (`gust::map::Error::MixedDevices` otherwise); for \
+             another device use [`map_gpu_on`]. In the browser (wasm32) `default_device` is `NoAdapter` until \
+             `gust_wgpu::default_device_async` has run, so open the device first or call [`map_async`]."
         );
-        let doc_gpu_on = "[`map_gpu`] on `device`, which must be the device of every resident argument \
-             (`gust::map::Error::MixedDevices` otherwise).";
+        let doc_gpu_on = "[`map_gpu`] on another device: `__gust_handle`, which must be the device of every \
+             resident argument (`gust::map::Error::MixedDevices` otherwise).";
         let doc_map_async = format!(
             "[`{name}`] over the arguments on the default GPU device without blocking: the device opens on the \
-             first call (in the browser too), and the results are awaited."
+             first call (in the browser too, through `gust_wgpu::default_device_async`), and the results are awaited."
         );
         items.extend(quote! {
             #[doc = #doc_gpu_on]

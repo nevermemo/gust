@@ -82,6 +82,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "map-bool-for-u32"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "map-name-collision"
 version = "0.0.0"
 dependencies = [
@@ -111,6 +118,13 @@ dependencies = [
 
 [[package]]
 name = "map-three-wide"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "map-u32-for-bool"
 version = "0.0.0"
 dependencies = [
  "gust",

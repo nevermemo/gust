@@ -9,18 +9,18 @@
 //!
 //! The WGSL set (the test names its size and fails on drift):
 //!
-//! - the 13 Slang goldens of `tests/fixtures/*.slang`, which are all of the goldens (the test
+//! - the 14 Slang goldens of `tests/fixtures/*.slang`, which are all of the goldens (the test
 //!   `the_goldens_are_the_fixtures_directory` pins the file list against the directory, and the fixture `.rs` list
 //!   with it). Each golden is split at its `// ==== kernel <name> ====` markers where it has them, and each
 //!   `[shader("compute")]` entry of each section is compiled to WGSL with the `slangc` command line through
-//!   `gust::slang::compile_source`: 55 entries. The descriptor of an entry comes from the fixture's Rust source,
+//!   `gust::slang::compile_source`: 60 entries. The descriptor of an entry comes from the fixture's Rust source,
 //!   included below the way the other test files include it;
-//! - every fixture kernel, 65 in all (the 55 above and the 10 that no golden holds: `atomics.slang` keeps only the
+//! - every fixture kernel, 70 in all (the 60 above and the 10 that no golden holds: `atomics.slang` keeps only the
 //!   first of the ten kernels of `atomics.rs`, and `numeric.slang` only the first of the two of `numeric.rs`),
 //!   compiled from its descriptor's own Slang through the native reflection helper, `gust::reflect::compile_reflected`.
 //!   That is the route `HeadlessDevice` takes at run time, so these are the bytes a device is handed when it compiles
 //!   at run time. `export` takes `compile_reflected_clean` (the same helper on input without `#line` directives), so
-//!   exported WGSL is gated only through the committed precompiled file below. The helper needs no adapter. 120 WGSL
+//!   exported WGSL is gated only through the committed precompiled file below. The helper needs no adapter. 130 WGSL
 //!   modules in all;
 //! - the committed precompiled WGSL (`tests/fixtures/precompiled/52e85c5f03f72272.wgsl`), which is the only WGSL file
 //!   the repository commits; its five other copies are required to be byte-identical to it.
@@ -68,6 +68,21 @@ macro_rules! fixture {
     };
 }
 
+// `map.rs` holds five `#[gpu]` functions (m7.a1), so it is five modules of one kernel each and no single
+// `MODULE_DESCRIPTOR`: this second form names the functions and joins their descriptors in file order, which is the
+// order of the sections of `map.slang`. `Vec2` is the one name the functions use from the prelude of the file.
+macro_rules! fixture_functions {
+    ($name:ident, $path:literal, [$($function:ident),+]) => {
+        #[allow(dead_code)]
+        mod $name {
+            use gust::math::Vec2;
+            include!($path);
+            $(const _: () = assert!($function::MODULE_DESCRIPTOR.kernels.len() == 1);)+
+            pub const KERNELS: &[gust::KernelDescriptor] = &[$($function::MODULE_DESCRIPTOR.kernels[0]),+];
+        }
+    };
+}
+
 fixture!(f_atomics, atomics, "../../../tests/fixtures/atomics.rs");
 fixture!(
     f_coretests,
@@ -75,6 +90,11 @@ fixture!(
     "../../../tests/fixtures/coretests.rs"
 );
 fixture!(f_loops, loops, "../../../tests/fixtures/loops.rs");
+fixture_functions!(
+    f_map,
+    "../../../tests/fixtures/map.rs",
+    [saxpy, clamp_signed, even_and, mirror, add_one]
+);
 fixture!(f_mismatch, mismatch, "../../../tests/fixtures/mismatch.rs");
 fixture!(f_numeric, numeric, "../../../tests/fixtures/numeric.rs");
 fixture!(f_option, optional, "../../../tests/fixtures/option.rs");
@@ -99,7 +119,7 @@ struct Golden {
     kernels: &'static [KernelDescriptor],
 }
 
-fn goldens() -> [Golden; 13] {
+fn goldens() -> [Golden; 14] {
     [
         Golden {
             file: "atomics.slang",
@@ -118,6 +138,12 @@ fn goldens() -> [Golden; 13] {
             text: include_str!("../../../tests/fixtures/loops.slang"),
             entries: 1,
             kernels: f_loops::KERNELS,
+        },
+        Golden {
+            file: "map.slang",
+            text: include_str!("../../../tests/fixtures/map.slang"),
+            entries: 5,
+            kernels: f_map::KERNELS,
         },
         Golden {
             file: "mismatch.slang",
@@ -570,8 +596,8 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
     problems
 }
 
-/// The compute entries the thirteen goldens hold in all (pinned per golden in [`goldens`]).
-const GOLDEN_ENTRIES: usize = 55;
+/// The compute entries the fourteen goldens hold in all (pinned per golden in [`goldens`]).
+const GOLDEN_ENTRIES: usize = 60;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`
 /// (`atomics.slang` has one entry for the ten kernels of the module) and of `numeric.rs` (one of two).

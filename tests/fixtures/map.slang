@@ -14,7 +14,7 @@ float saxpy(float a, float x, float y)
 // @rust kernel: saxpy::map_kernel
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void gpu_saxpy_map_kernel(uint3 id : SV_DispatchThreadID)
+void gpu_saxpy_map_kernel(uint3 __gust_id : SV_DispatchThreadID)
 {
     uint __gpu_len_a;
     uint __gpu_stride_a;
@@ -33,7 +33,7 @@ void gpu_saxpy_map_kernel(uint3 id : SV_DispatchThreadID)
     var __gust_end_2 = __gust_rounds;
     for (var __gust_round = uint(0); __gust_round < __gust_end_2; __gust_round++)
     {
-        var __gust_j = (id.x + (__gust_round * uint(16776960)));
+        var __gust_j = (__gust_id.x + (__gust_round * uint(16776960)));
         if ((__gust_j < __gust_n))
         {
             var __gust_i0 = __gust_j;
@@ -87,7 +87,7 @@ int clamp_signed(int x, int low, int high)
 // @rust kernel: clamp_signed::map_kernel
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void gpu_clamp_signed_map_kernel(uint3 id : SV_DispatchThreadID)
+void gpu_clamp_signed_map_kernel(uint3 __gust_id : SV_DispatchThreadID)
 {
     uint __gpu_len_x;
     uint __gpu_stride_x;
@@ -106,7 +106,7 @@ void gpu_clamp_signed_map_kernel(uint3 id : SV_DispatchThreadID)
     var __gust_end_2 = __gust_rounds;
     for (var __gust_round = uint(0); __gust_round < __gust_end_2; __gust_round++)
     {
-        var __gust_j = (id.x + (__gust_round * uint(16776960)));
+        var __gust_j = (__gust_id.x + (__gust_round * uint(16776960)));
         if ((__gust_j < __gust_n))
         {
             var __gust_i0 = __gust_j;
@@ -148,7 +148,7 @@ bool even_and(uint n, bool flag)
 // @rust kernel: even_and::map_kernel
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void gpu_even_and_map_kernel(uint3 id : SV_DispatchThreadID)
+void gpu_even_and_map_kernel(uint3 __gust_id : SV_DispatchThreadID)
 {
     uint __gpu_len_n;
     uint __gpu_stride_n;
@@ -164,7 +164,7 @@ void gpu_even_and_map_kernel(uint3 id : SV_DispatchThreadID)
     var __gust_end_2 = __gust_rounds;
     for (var __gust_round = uint(0); __gust_round < __gust_end_2; __gust_round++)
     {
-        var __gust_j = (id.x + (__gust_round * uint(16776960)));
+        var __gust_j = (__gust_id.x + (__gust_round * uint(16776960)));
         if ((__gust_j < __gust_n))
         {
             var __gust_i0 = __gust_j;
@@ -200,7 +200,7 @@ float2 mirror(float2 v, float s)
 // @rust kernel: mirror::map_kernel
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void gpu_mirror_map_kernel(uint3 id : SV_DispatchThreadID)
+void gpu_mirror_map_kernel(uint3 __gust_id : SV_DispatchThreadID)
 {
     uint __gpu_len_v;
     uint __gpu_stride_v;
@@ -216,7 +216,7 @@ void gpu_mirror_map_kernel(uint3 id : SV_DispatchThreadID)
     var __gust_end_2 = __gust_rounds;
     for (var __gust_round = uint(0); __gust_round < __gust_end_2; __gust_round++)
     {
-        var __gust_j = (id.x + (__gust_round * uint(16776960)));
+        var __gust_j = (__gust_id.x + (__gust_round * uint(16776960)));
         if ((__gust_j < __gust_n))
         {
             var __gust_i0 = __gust_j;
@@ -251,7 +251,7 @@ uint add_one(uint x)
 // @rust kernel: add_one::map_kernel
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void gpu_add_one_map_kernel(uint3 id : SV_DispatchThreadID)
+void gpu_add_one_map_kernel(uint3 __gust_id : SV_DispatchThreadID)
 {
     uint __gpu_len_x;
     uint __gpu_stride_x;
@@ -264,7 +264,7 @@ void gpu_add_one_map_kernel(uint3 id : SV_DispatchThreadID)
     var __gust_end_2 = __gust_rounds;
     for (var __gust_round = uint(0); __gust_round < __gust_end_2; __gust_round++)
     {
-        var __gust_j = (id.x + (__gust_round * uint(16776960)));
+        var __gust_j = (__gust_id.x + (__gust_round * uint(16776960)));
         if ((__gust_j < __gust_n))
         {
             var __gust_i0 = __gust_j;

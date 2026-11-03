@@ -33,9 +33,10 @@ use std::{
 };
 
 use toolchain::{
-    Env, HELPER_VARIABLE, HOME_VARIABLE, SLANG_PIN, VersionError, cache_root, cache_root_in,
-    check_slangc_version, checkout_helper, executable_name, find_on_path, helper_path_in,
-    lookup_root_in, managed_helper, managed_slangc, parse_version_output, slangc_path_in,
+    Env, HELPER_VARIABLE, HOME_VARIABLE, SLANG_PIN, VALIDATED_BUILDS, VersionError, cache_root,
+    cache_root_in, check_slangc_version, check_slangc_version_in, checkout_helper, executable_name,
+    find_on_path, helper_path_in, lookup_root_in, managed_helper, managed_slangc, matches_pin,
+    parse_version_output, slangc_path_in,
 };
 
 /// An absolute path that exists on no machine: `C:\gust-synthetic\<name>` on Windows, `/gust-synthetic/<name>`
@@ -386,6 +387,52 @@ fn the_checkout_helper_needs_the_xtask_marker_beside_the_manifest_directory() {
     assert_eq!(checkout_helper(&directory.manifest), None);
 }
 
+/// A manifest directory somewhere that is not `<top>/crates/gust`, with a foreign `xtask/Cargo.toml` and a helper
+/// at `<top>` where a checkout would keep them: `<top>` is `<manifest>/../..`.
+fn foreign_tree(name: &str, manifest_below_top: &[&str]) -> (Scratch, PathBuf) {
+    let scratch = Scratch::new(name);
+    let top = scratch.0.clone();
+    touch(&top.join("xtask").join("Cargo.toml"), "");
+    touch(
+        &top.join("target")
+            .join("slang-reflect")
+            .join(executable_name("gust-slang-reflect")),
+        "",
+    );
+    let mut manifest = top;
+    for part in manifest_below_top {
+        manifest.push(part);
+    }
+    fs::create_dir_all(&manifest).unwrap();
+    (scratch, manifest)
+}
+
+#[test]
+fn the_checkout_helper_also_needs_the_manifest_directory_to_be_crates_gust_of_that_tree() {
+    // `cargo vendor`: `<project>/vendor/gust`, in a project with its own `xtask` and `target`.
+    let (_project, vendored) = foreign_tree("vendor", &["vendor", "gust"]);
+    assert_eq!(checkout_helper(&vendored), None);
+    // An unpacked crate in a work directory inside a repository checkout (`<repo>/w/gust-0.1.0`), which also has a
+    // real `crates/gust`: the marker and the helper are the repository's, the manifest directory is not.
+    let (repo, unpacked) = foreign_tree("nested", &["w", "gust-0.1.0"]);
+    fs::create_dir_all(repo.0.join("crates").join("gust")).unwrap();
+    assert_eq!(checkout_helper(&unpacked), None);
+    // The real layout still gives the path.
+    let checkout = tree("real-layout", true, true);
+    assert_eq!(
+        checkout_helper(&checkout.manifest),
+        Some(checkout.helper.clone())
+    );
+    // The same through the whole rule, with nothing before it to answer.
+    let env = env_with(None, None, None, None);
+    assert_eq!(helper_path_in(&env, &vendored), Ok(None));
+    assert_eq!(helper_path_in(&env, &unpacked), Ok(None));
+    assert_eq!(
+        helper_path_in(&env, &checkout.manifest),
+        Ok(Some(checkout.helper.clone()))
+    );
+}
+
 #[test]
 fn the_helper_order_is_the_variable_then_the_managed_cache_then_the_checkout() {
     let checkout = tree("helper-order", true, true);
@@ -409,14 +456,30 @@ fn the_helper_order_is_the_variable_then_the_managed_cache_then_the_checkout() {
     // GUST_SLANG_REFLECT beats both, and is returned as given, whether or not the file exists.
     let explicit = synthetic("explicit").join("helper");
     env.helper = os(&explicit);
-    assert_eq!(ask(&env), Ok(Some(explicit)));
+    assert_eq!(ask(&env), Ok(Some(explicit.clone())));
     // An empty GUST_SLANG_REFLECT is refused, not treated as unset.
     env.helper = Some(OsString::new());
     assert!(ask(&env).unwrap_err().contains(HELPER_VARIABLE));
+    // A relative value is refused, like a relative GUST_SLANG_HOME: it would be looked up in the current directory.
+    for relative in [
+        "given",
+        "gust-slang-reflect",
+        "./gust-slang-reflect",
+        "rel/helper",
+    ] {
+        env.helper = Some(OsString::from(relative));
+        let error = ask(&env).unwrap_err();
+        assert!(
+            error.contains(HELPER_VARIABLE)
+                && error.contains("absolute")
+                && error.contains(relative),
+            "{relative}: {error}"
+        );
+    }
     // GUST_SLANG_REFLECT is read before the root, so an unusable GUST_SLANG_HOME does not hide it ...
-    env.helper = os(Path::new("given"));
+    env.helper = os(&explicit);
     env.slang_home = Some(OsString::from("relative/dir"));
-    assert_eq!(ask(&env), Ok(Some(PathBuf::from("given"))));
+    assert_eq!(ask(&env), Ok(Some(explicit.clone())));
     // ... but without it that home is an error, not a fall-through to the checkout.
     env.helper = None;
     assert!(ask(&env).unwrap_err().contains(HOME_VARIABLE));
@@ -460,11 +523,52 @@ fn the_version_output_table_of_cargo_gust() {
     }
 }
 
+/// A `git describe` tag that no Slang prints, listed as a validated build only by the tests of the mechanism.
+const SYNTHETIC_BUILD: &str = "2026.20-1-g0a1b2c3d4";
+
+#[test]
+fn the_pin_rule_is_exactly_the_one_of_cargo_gust() {
+    // slang_tests.rs:104-169 (`matches_pin`), with the pin fixed.
+    let validated = [SYNTHETIC_BUILD];
+    for reported in ["2026.20", SYNTHETIC_BUILD] {
+        assert!(matches_pin(reported, &validated), "{reported}");
+    }
+    assert!(matches_pin("2026.20", &[]));
+    assert!(!matches_pin(SYNTHETIC_BUILD, &[]));
+    assert!(!matches_pin(SYNTHETIC_BUILD, VALIDATED_BUILDS));
+    for reported in [
+        "",
+        "2026.2",
+        "2026.200",
+        "2026.21",
+        "2026.20-",
+        "2026.20-rc1",
+        "2026.20-1",
+        "2026.20-g0a1b2c3d4",
+        "2026.20-1-g0a1b2c3d4-dirty",
+        "2026.20-2-gdeadbee",
+        "2026.20-1-g0a1b2c3d5",
+        "2026.20 ",
+        "v2026.20",
+        "2026.19-1-g0a1b2c3d4",
+        "12026.20",
+    ] {
+        assert!(!matches_pin(reported, &validated), "{reported:?}");
+    }
+    // A listed tag that does not extend the pin is not the pin.
+    assert!(!matches_pin(
+        "2026.21-1-g0a1b2c3d4",
+        &["2026.21-1-g0a1b2c3d4"]
+    ));
+}
+
 /// Serialises the tests that start a process: a script written just before it runs can otherwise be inherited, still
 /// open for writing, by a child another thread forks (`ETXTBSY` on Linux).
 static SPAWN: Mutex<()> = Mutex::new(());
 
 /// A fake `slangc` whose `-version` prints `stdout` and `stderr` (single words, no quotes) and exits with `code`.
+/// The scripts live under the temp directory and are executed there, so a `noexec` temp directory (a hardened `/tmp`
+/// or `TMPDIR`) makes the tests that run them fail with a permission error, not the code under test.
 fn fake_slangc(dir: &Path, stdout: &str, stderr: &str, code: i32) -> PathBuf {
     fs::create_dir_all(dir).unwrap();
     let mut script = String::new();
@@ -509,9 +613,9 @@ fn the_version_check_accepts_exactly_the_pin_and_names_both_otherwise() {
         check_slangc_version(&fake_slangc(&scratch.0.join(name), stdout, stderr, code))
     };
 
-    assert_eq!(case("pin", "2026.20", "", 0), Ok("2026.20".to_owned()));
+    assert_eq!(case("pin", "2026.20", "", 0), Ok(()));
     // The version on stderr when stdout is empty.
-    assert_eq!(case("stderr", "", "2026.20", 0), Ok("2026.20".to_owned()));
+    assert_eq!(case("stderr", "", "2026.20", 0), Ok(()));
 
     // Anything but the exact pin is a mismatch that names the executable, what it printed and the pin.
     for found in [
@@ -537,6 +641,15 @@ fn the_version_check_accepts_exactly_the_pin_and_names_both_otherwise() {
         assert!(text.contains("not the pinned 2026.20"), "{text}");
         assert!(text.contains("cargo gust slang install"), "{text}");
     }
+
+    // The listed-build mechanism, with a synthetic list (the shipped one is empty): a listed tag that extends the pin
+    // passes; without the listing, with the shipped list, or with another tag listed, it does not.
+    assert!(VALIDATED_BUILDS.is_empty(), "{VALIDATED_BUILDS:?}");
+    let build = fake_slangc(&scratch.0.join("listed"), SYNTHETIC_BUILD, "", 0);
+    assert_eq!(check_slangc_version_in(&build, &[SYNTHETIC_BUILD]), Ok(()));
+    assert!(check_slangc_version_in(&build, &[]).is_err());
+    assert!(check_slangc_version(&build).is_err());
+    assert!(check_slangc_version_in(&build, &["2026.20-2-gdeadbee"]).is_err());
 
     // Output that is not a version, a failing run and a missing executable are their own errors.
     let error = case("garbage", "error:", "", 0).unwrap_err();

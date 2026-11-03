@@ -19,16 +19,26 @@
 //! `slangc`: `<root>/<pin>/bin/slangc` when that file exists, else the first `slangc` in an absolute `PATH` entry.
 //! When `GUST_SLANG_HOME` is set it is the only root. The pin is not judged here; [`check_slangc_version`] does that.
 //!
-//! The helper: `GUST_SLANG_REFLECT` when set, else `<root>/helper/<pin>/gust-slang-reflect`, else the repository
-//! checkout's `target/slang-reflect/gust-slang-reflect`, which is looked at only when `xtask/Cargo.toml` exists two
-//! directories above the crate's compile-time manifest directory (a registry build has no `xtask` there, so it never
-//! looks at a path that belongs to someone else's tree).
+//! The helper: `GUST_SLANG_REFLECT` when set (an absolute path), else `<root>/helper/<pin>/gust-slang-reflect`, else
+//! the repository checkout's `target/slang-reflect/gust-slang-reflect`. The checkout is looked at only when the crate's
+//! compile-time manifest directory really is `<top>/crates/gust` of a tree that has `<top>/xtask/Cargo.toml` (the
+//! manifest directory two levels up must hold both, and `<top>/crates/gust` must be that directory again). A registry
+//! build, a `cargo vendor` copy (`<project>/vendor/gust`) and an unpacked crate in a work directory inside some
+//! repository fail that test, so none of them looks at a path that belongs to someone else's tree.
+//!
+//! The managed helper is used whenever a cache root can be named, whichever `slangc` was chosen. That differs from
+//! `cargo-gust` today (its `toolchain.rs` reads `<root>/helper/<pin>` only when the located `slangc` is a managed
+//! one), so a `GUST_SLANG_HOME` without the pin, a `slangc` from `PATH` and a stale `<home>/helper/<pin>` now give
+//! that helper where the checkout's or none was found before.
+//!
+//! The version rule: the pin, or a build listed in [`VALIDATED_BUILDS`] (empty, as D72 ships it: the release archive
+//! prints the bare pin). The list is a plain array of string literals so that `cargo xtask` can read it from source.
 //!
 //! # No current-directory lookup
 //!
-//! Nothing here resolves a relative path against the current directory: a relative `GUST_SLANG_HOME` or `CARGO_HOME`
-//! is refused or ignored, and an empty or relative `PATH` entry is skipped (an empty entry means the current
-//! directory to many shells and loaders).
+//! Nothing here resolves a relative path against the current directory: a relative `GUST_SLANG_HOME` or
+//! `GUST_SLANG_REFLECT` is refused, a relative `CARGO_HOME` is ignored, and an empty or relative `PATH` entry is
+//! skipped (an empty entry means the current directory to many shells and loaders).
 #![doc(hidden)]
 
 use std::{
@@ -36,7 +46,7 @@ use std::{
     env::consts::EXE_SUFFIX,
     error::Error,
     ffi::{OsStr, OsString},
-    fmt,
+    fmt, fs,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -51,6 +61,11 @@ pub const HOME_VARIABLE: &str = "GUST_SLANG_HOME";
 pub const HELPER_VARIABLE: &str = "GUST_SLANG_REFLECT";
 
 const HELPER_NAME: &str = "gust-slang-reflect";
+
+/// Other `slangc -version` tags that count as the pin: validated source builds (`git describe` tags that extend the
+/// pin). Ships empty (D72): 2026.20 was validated with the release archive, which prints the bare pin. Adding a tag
+/// is a decision, like moving the pin. Keep it a plain array of string literals.
+pub const VALIDATED_BUILDS: &[&str] = &[];
 
 /// The part of the process environment the rules read. Tests build it by hand, so they never touch the real one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -172,10 +187,16 @@ pub fn find_on_path(file_name: &str, path_var: Option<&OsStr>) -> Option<PathBuf
 }
 
 /// The repository checkout's helper, `<manifest_dir>/../../target/slang-reflect/gust-slang-reflect`, when this
-/// really is a checkout: `<manifest_dir>/../../xtask/Cargo.toml` must exist, so a crate unpacked from the registry
-/// never looks at a path beside it. `None` when the marker or the helper is missing.
+/// really is a checkout: `<manifest_dir>/../../xtask/Cargo.toml` must exist, and `<manifest_dir>/../../crates/gust`
+/// must be `manifest_dir` itself (both canonicalized), so a crate unpacked from the registry, vendored into
+/// `<project>/vendor/gust` or unpacked into a work directory inside a repository never looks at a path beside it.
+/// `None` when the marker, the layout or the helper is missing.
 pub fn checkout_helper(manifest_dir: &Path) -> Option<PathBuf> {
     if !manifest_dir.join("../../xtask/Cargo.toml").is_file() {
+        return None;
+    }
+    let here = fs::canonicalize(manifest_dir).ok()?;
+    if fs::canonicalize(manifest_dir.join("../../crates/gust")).ok()? != here {
         return None;
     }
     let helper = manifest_dir
@@ -204,10 +225,10 @@ pub fn slangc_path() -> Result<Option<PathBuf>, String> {
     slangc_path_in(&Env::from_process())
 }
 
-/// The native helper to run: `GUST_SLANG_REFLECT` (as given, even when the file is missing, so a typo is reported
-/// with that path), else the managed helper for the pin, else the checkout's ([`checkout_helper`], with
-/// `manifest_dir` the compile-time manifest directory of the crate); `Ok(None)` when there is none. `Err` for an
-/// empty `GUST_SLANG_REFLECT` or an unusable `GUST_SLANG_HOME`.
+/// The native helper to run: `GUST_SLANG_REFLECT` (an absolute path, returned as given even when the file is missing,
+/// so a typo is reported with that path), else the managed helper for the pin, else the checkout's
+/// ([`checkout_helper`], with `manifest_dir` the compile-time manifest directory of the crate); `Ok(None)` when there
+/// is none. `Err` for an empty or relative `GUST_SLANG_REFLECT` or an unusable `GUST_SLANG_HOME`.
 pub fn helper_path_in(env: &Env, manifest_dir: &Path) -> Result<Option<PathBuf>, String> {
     if let Some(value) = &env.helper {
         if value.is_empty() {
@@ -215,7 +236,14 @@ pub fn helper_path_in(env: &Env, manifest_dir: &Path) -> Result<Option<PathBuf>,
                 "{HELPER_VARIABLE} is set but empty; give the helper executable or unset it"
             ));
         }
-        return Ok(Some(PathBuf::from(value)));
+        let path = PathBuf::from(value);
+        if !path.is_absolute() {
+            return Err(format!(
+                "{HELPER_VARIABLE} must be an absolute path, not `{}`",
+                path.display()
+            ));
+        }
+        return Ok(Some(path));
     }
     if let Some(root) = lookup_root_in(env)? {
         let managed = managed_helper(&root);
@@ -306,12 +334,23 @@ pub fn slangc_version(slangc: &Path) -> Result<String, VersionError> {
     parse_version_output(&text)
 }
 
-/// `Ok(version)` when `slangc -version` prints exactly [`SLANG_PIN`]; otherwise a [`VersionError`] that names the
-/// executable, what it printed and the pin. Only the exact pin passes (D72: no listed build, no prefix match).
-pub fn check_slangc_version(slangc: &Path) -> Result<String, VersionError> {
+/// Whether the version `slangc -version` printed is the pin: exact equality, or a tag in `validated` that extends the
+/// pin. The same rule as `matches_pin` of `cargo-gust` and `PinRule::admits` of `cargo xtask`, which mr.t2 points here.
+pub fn matches_pin(reported: &str, validated: &[&str]) -> bool {
+    reported == SLANG_PIN || (reported.starts_with(SLANG_PIN) && validated.contains(&reported))
+}
+
+/// `Ok(())` when `slangc -version` prints the pin or a build in [`VALIDATED_BUILDS`]; otherwise a [`VersionError`]
+/// that names the executable, what it printed and the pin. No other tag passes: not a prefix, not an unlisted build.
+pub fn check_slangc_version(slangc: &Path) -> Result<(), VersionError> {
+    check_slangc_version_in(slangc, VALIDATED_BUILDS)
+}
+
+/// [`check_slangc_version`] with the validated builds given, so tests exercise the mechanism with a synthetic tag.
+pub fn check_slangc_version_in(slangc: &Path, validated: &[&str]) -> Result<(), VersionError> {
     let found = slangc_version(slangc)?;
-    if found == SLANG_PIN {
-        Ok(found)
+    if matches_pin(&found, validated) {
+        Ok(())
     } else {
         Err(VersionError::Mismatch {
             slangc: slangc.to_path_buf(),

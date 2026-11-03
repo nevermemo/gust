@@ -261,10 +261,23 @@ entry point, source and artifact FNV-1a fingerprints, compute workgroup size, an
 every global structured buffer its name, descriptor slot and space, access, element
 stride, and the element type with size, alignment, stride, scalar kind, and nested
 fields (name, offset, size, type), and for a vector, matrix or constant buffer the scalar type, element count, rows,
-columns and layout; matrices are column-major. The helper reports what Slang computes and refuses what it cannot
-describe completely, with a message instead of a partial record: non-32-bit scalars, arrays and other kinds of element
-or field, an empty struct, a field that does not sit at a plain byte offset, a counter, entry-point resources and
-uniform bindings, binding arrays, and a global parameter that is neither an individual structured buffer nor an
+columns and layout; matrices are column-major. Schema 3 (slice mx.t0a, D91; `--version` prints `schema=3`) is schema
+2's grammar plus a top-level `stage` and is written only when the program holds a 2D texture or a sampler or the
+entry's stage is not compute, so every document of a compute kernel over buffers is byte-identical to before. The stage
+is the optional seventh argument of the helper (`compute` by default, or `fragment`): it is the caller's expectation of
+the entry point and the helper refuses an entry of another stage. A texture is `{"kind":"texture","shape":"2d",
+"access":"read"|"readWrite"|"write","result":<scalar or vector, no byte layout>,"format":"<name>"}` in one descriptor
+slot; `format` is the storage format (`r32ui`, `rgba32f`, ...) of a read-write or write-only texture, declared with
+`[format(..)]` or inferred by Slang (`RWTexture2D<uint>` is `r32ui`), and the fixed word `unknown` for a sampled texture
+(access `read`), whatever the API reports for it (it says `r32ui` for a `Texture2D<uint>` and `unknown` for a
+`Texture2D<float4>`, and the command line omits both format and access). A sampler is `{"kind":"sampler"}`. A fragment
+entry has no `workgroupSize`; it has `targets`, `[{"index":n,"type":<scalar or vector>}]` in `SV_Target` order, and may
+take `SV_Position`. Refused, each with a message that names it: a texture that is not a plain 2D one (1D, 3D, cube,
+array, multisampled, combined `Sampler2D`), a comparison sampler (`SamplerComparisonState`), other fragment outputs, and
+a storage texture with no declared or inferred format (`RWTexture2D<float4>`). The helper reports what Slang computes
+and refuses what it cannot describe completely, with a message instead of a partial record: non-32-bit scalars, arrays
+and other kinds of element or field, an empty struct, a field that does not sit at a plain byte offset, a counter,
+entry-point resources and uniform bindings, binding arrays, and a global parameter that is neither an individual structured buffer nor an
 individual constant buffer in one descriptor slot. What a storage buffer may hold is a separate rule, enforced by
 `is_storage_v1`/`is_storage_v2`, the macro's layouts and `gust-wgpu`'s binding checks, so the helper reporting a padded
 `float3` field does not make it acceptable. The helper is rebuilt only when it is stale, judged by content: a build

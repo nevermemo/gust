@@ -8,7 +8,14 @@
 //! (`tests/fixtures/reduce.rs`, included as [`kernels`], `tests/fixtures/scan.rs`, included as [`scan_kernels`], and
 //! `tests/fixtures/compact.rs`, included as [`compact_kernels`]); the host code only chooses the schedule
 //! ([`schedule::Schedule`] for a reduction, [`schedule::ScanSchedule`] for a scan), takes one pooled `GpuVec` per level
-//! and submits all dispatches in one `dispatch_batch`.
+//! and submits all dispatches in one `dispatch_batch`. These are the v0 kernels, block-strided and with CPU twins.
+//!
+//! Slice m7.r4 adds the v1 kernels (`Workgroup<[T; 256]>` and barriers, `cpu = "unsupported"`, D101) of the reduce
+//! and the scan beside them ([`variant`]): the same results, fewer and wider dispatches. **The public functions run
+//! v1** (`variant::shipped` is `V1` for every operation: the measurement of the slice put it at least 15 % ahead of v0
+//! at 1e6, 1e7 and 1e8 elements on the RTX 5090). v0 stays the fallback, for an input whose v1 launch exceeds the
+//! device's workgroup limit, and the only form with CPU twins (the `cpu` module, `GUST_PROFILE=cpu`). The `*_with`
+//! functions run either on request.
 //!
 //! What is promised (plan section 5.1): integer sums and scans are exact and inside the domain only when no partial sum
 //! (or prefix) overflows, and [`reduce::sum_wrapping`] is defined modulo 2^32 for every input; `min` and `max` are
@@ -17,7 +24,7 @@
 //! dual builds ([`cpu`]); a twin result is never GPU evidence.
 //!
 //! Kernels are compiled at run time through gust-wgpu's `slang-runtime` feature (enable this crate's feature of the
-//! same name); the crate ships no precompiled artifacts in v0.
+//! same name); the crate ships no precompiled artifacts.
 
 pub mod bound;
 pub mod compact;
@@ -31,8 +38,10 @@ pub mod reduce;
 pub mod scan;
 pub mod scan_kernels;
 pub mod schedule;
+pub mod variant;
 
 pub use error::Error;
+pub use variant::Variant;
 
 #[cfg(test)]
 mod tests;

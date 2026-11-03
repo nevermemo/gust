@@ -139,4 +139,370 @@ mod scan {
             }
         }
     }
+
+    // m7.r4: the v1 kernels (plan section 5.5), `cpu = "unsupported"` (D101) except `add_carry_u32`. One workgroup of
+    // 256 lanes owns a span of 4096 elements, 16 tiles of 256 taken one after the other. Per tile every lane loads one
+    // element (coalesced), eight rounds of an inclusive scan (stride 1, 2, 4 ... 128, a barrier after the load and
+    // after every round; the rounds alternate between `ping` and `pong` and the last writes `last`, so no cell is
+    // read while another lane writes it and `last` is never rewritten before every lane has read it), and every lane
+    // writes `carry + last[lid]` (the exclusive form subtracts its own element) to its own index; the carry then grows
+    // by the tile total `last[255]`, which every lane reads alike. The span total is written to `sums[gid]`.
+    //
+    //   scan_tiles_inclusive_u32 / scan_tiles_exclusive_u32  level 0: input -> out and the span totals -> sums;
+    //   scan_tiles_sums_u32   the same in place over a level of totals, one level further up;
+    //   scan_tiles_top_u32    one workgroup scans the last (at most 4096) totals in place: now they are real prefixes;
+    //   add_carry_u32         back down, one level per dispatch: the elements of span g gain `sums[g - 1]` (g >= 1).
+    //                         It has no barrier and no workgroup memory, so it keeps its CPU twin.
+    //
+    // A span of 4096 keeps the first dispatch at ceil(n / 4096) workgroups: 65 535 workgroups cover 268 million
+    // elements. The sum of the exclusive form's `carry + last - value` is the exclusive prefix, in the domain while no
+    // inclusive prefix overflows, as v0.
+
+    #[allow(clippy::too_many_arguments)]
+    #[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]
+    pub fn scan_tiles_inclusive_u32(
+        _id: SV_DispatchThreadID,
+        lid: LocalId,
+        gid: GroupId,
+        input: StructuredBuffer<uint>,
+        mut out: RWStructuredBuffer<uint>,
+        mut sums: RWStructuredBuffer<uint>,
+        mut ping: Workgroup<[u32; 256]>,
+        mut pong: Workgroup<[u32; 256]>,
+        mut last: Workgroup<[u32; 256]>,
+    ) {
+        let n = input.len();
+        let first = gid.x * 4096u32;
+        let mut carry = 0u32;
+        for tile in 0u32..16u32 {
+            let index = first + tile * 256u32 + lid.x;
+            let mut value = 0u32;
+            if index < n {
+                value = input[index];
+            }
+            ping[lid.x] = value;
+            workgroup_barrier();
+            let mut x1 = ping[lid.x];
+            if lid.x >= 1u32 {
+                x1 += ping[lid.x - 1u32];
+            }
+            pong[lid.x] = x1;
+            workgroup_barrier();
+            let mut x2 = pong[lid.x];
+            if lid.x >= 2u32 {
+                x2 += pong[lid.x - 2u32];
+            }
+            ping[lid.x] = x2;
+            workgroup_barrier();
+            let mut x3 = ping[lid.x];
+            if lid.x >= 4u32 {
+                x3 += ping[lid.x - 4u32];
+            }
+            pong[lid.x] = x3;
+            workgroup_barrier();
+            let mut x4 = pong[lid.x];
+            if lid.x >= 8u32 {
+                x4 += pong[lid.x - 8u32];
+            }
+            ping[lid.x] = x4;
+            workgroup_barrier();
+            let mut x5 = ping[lid.x];
+            if lid.x >= 16u32 {
+                x5 += ping[lid.x - 16u32];
+            }
+            pong[lid.x] = x5;
+            workgroup_barrier();
+            let mut x6 = pong[lid.x];
+            if lid.x >= 32u32 {
+                x6 += pong[lid.x - 32u32];
+            }
+            ping[lid.x] = x6;
+            workgroup_barrier();
+            let mut x7 = ping[lid.x];
+            if lid.x >= 64u32 {
+                x7 += ping[lid.x - 64u32];
+            }
+            pong[lid.x] = x7;
+            workgroup_barrier();
+            let mut x8 = pong[lid.x];
+            if lid.x >= 128u32 {
+                x8 += pong[lid.x - 128u32];
+            }
+            last[lid.x] = x8;
+            workgroup_barrier();
+            let inclusive = carry + last[lid.x];
+            if index < n {
+                out[index] = inclusive;
+            }
+            carry += last[255u32];
+        }
+        if lid.x == 0u32 {
+            sums[gid.x] = carry;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]
+    pub fn scan_tiles_exclusive_u32(
+        _id: SV_DispatchThreadID,
+        lid: LocalId,
+        gid: GroupId,
+        input: StructuredBuffer<uint>,
+        mut out: RWStructuredBuffer<uint>,
+        mut sums: RWStructuredBuffer<uint>,
+        mut ping: Workgroup<[u32; 256]>,
+        mut pong: Workgroup<[u32; 256]>,
+        mut last: Workgroup<[u32; 256]>,
+    ) {
+        let n = input.len();
+        let first = gid.x * 4096u32;
+        let mut carry = 0u32;
+        for tile in 0u32..16u32 {
+            let index = first + tile * 256u32 + lid.x;
+            let mut value = 0u32;
+            if index < n {
+                value = input[index];
+            }
+            ping[lid.x] = value;
+            workgroup_barrier();
+            let mut x1 = ping[lid.x];
+            if lid.x >= 1u32 {
+                x1 += ping[lid.x - 1u32];
+            }
+            pong[lid.x] = x1;
+            workgroup_barrier();
+            let mut x2 = pong[lid.x];
+            if lid.x >= 2u32 {
+                x2 += pong[lid.x - 2u32];
+            }
+            ping[lid.x] = x2;
+            workgroup_barrier();
+            let mut x3 = ping[lid.x];
+            if lid.x >= 4u32 {
+                x3 += ping[lid.x - 4u32];
+            }
+            pong[lid.x] = x3;
+            workgroup_barrier();
+            let mut x4 = pong[lid.x];
+            if lid.x >= 8u32 {
+                x4 += pong[lid.x - 8u32];
+            }
+            ping[lid.x] = x4;
+            workgroup_barrier();
+            let mut x5 = ping[lid.x];
+            if lid.x >= 16u32 {
+                x5 += ping[lid.x - 16u32];
+            }
+            pong[lid.x] = x5;
+            workgroup_barrier();
+            let mut x6 = pong[lid.x];
+            if lid.x >= 32u32 {
+                x6 += pong[lid.x - 32u32];
+            }
+            ping[lid.x] = x6;
+            workgroup_barrier();
+            let mut x7 = ping[lid.x];
+            if lid.x >= 64u32 {
+                x7 += ping[lid.x - 64u32];
+            }
+            pong[lid.x] = x7;
+            workgroup_barrier();
+            let mut x8 = pong[lid.x];
+            if lid.x >= 128u32 {
+                x8 += pong[lid.x - 128u32];
+            }
+            last[lid.x] = x8;
+            workgroup_barrier();
+            let inclusive = carry + last[lid.x];
+            if index < n {
+                out[index] = inclusive - value;
+            }
+            carry += last[255u32];
+        }
+        if lid.x == 0u32 {
+            sums[gid.x] = carry;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]
+    pub fn scan_tiles_sums_u32(
+        _id: SV_DispatchThreadID,
+        lid: LocalId,
+        gid: GroupId,
+        mut data: RWStructuredBuffer<uint>,
+        mut sums: RWStructuredBuffer<uint>,
+        mut ping: Workgroup<[u32; 256]>,
+        mut pong: Workgroup<[u32; 256]>,
+        mut last: Workgroup<[u32; 256]>,
+    ) {
+        let n = data.len();
+        let first = gid.x * 4096u32;
+        let mut carry = 0u32;
+        for tile in 0u32..16u32 {
+            let index = first + tile * 256u32 + lid.x;
+            let mut value = 0u32;
+            if index < n {
+                value = data[index];
+            }
+            ping[lid.x] = value;
+            workgroup_barrier();
+            let mut x1 = ping[lid.x];
+            if lid.x >= 1u32 {
+                x1 += ping[lid.x - 1u32];
+            }
+            pong[lid.x] = x1;
+            workgroup_barrier();
+            let mut x2 = pong[lid.x];
+            if lid.x >= 2u32 {
+                x2 += pong[lid.x - 2u32];
+            }
+            ping[lid.x] = x2;
+            workgroup_barrier();
+            let mut x3 = ping[lid.x];
+            if lid.x >= 4u32 {
+                x3 += ping[lid.x - 4u32];
+            }
+            pong[lid.x] = x3;
+            workgroup_barrier();
+            let mut x4 = pong[lid.x];
+            if lid.x >= 8u32 {
+                x4 += pong[lid.x - 8u32];
+            }
+            ping[lid.x] = x4;
+            workgroup_barrier();
+            let mut x5 = ping[lid.x];
+            if lid.x >= 16u32 {
+                x5 += ping[lid.x - 16u32];
+            }
+            pong[lid.x] = x5;
+            workgroup_barrier();
+            let mut x6 = pong[lid.x];
+            if lid.x >= 32u32 {
+                x6 += pong[lid.x - 32u32];
+            }
+            ping[lid.x] = x6;
+            workgroup_barrier();
+            let mut x7 = ping[lid.x];
+            if lid.x >= 64u32 {
+                x7 += ping[lid.x - 64u32];
+            }
+            pong[lid.x] = x7;
+            workgroup_barrier();
+            let mut x8 = pong[lid.x];
+            if lid.x >= 128u32 {
+                x8 += pong[lid.x - 128u32];
+            }
+            last[lid.x] = x8;
+            workgroup_barrier();
+            let inclusive = carry + last[lid.x];
+            if index < n {
+                data[index] = inclusive;
+            }
+            carry += last[255u32];
+        }
+        if lid.x == 0u32 {
+            sums[gid.x] = carry;
+        }
+    }
+
+    #[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]
+    pub fn scan_tiles_top_u32(
+        _id: SV_DispatchThreadID,
+        lid: LocalId,
+        gid: GroupId,
+        mut data: RWStructuredBuffer<uint>,
+        mut ping: Workgroup<[u32; 256]>,
+        mut pong: Workgroup<[u32; 256]>,
+        mut last: Workgroup<[u32; 256]>,
+    ) {
+        let n = data.len();
+        let first = gid.x * 4096u32;
+        let mut carry = 0u32;
+        for tile in 0u32..16u32 {
+            let index = first + tile * 256u32 + lid.x;
+            let mut value = 0u32;
+            if index < n {
+                value = data[index];
+            }
+            ping[lid.x] = value;
+            workgroup_barrier();
+            let mut x1 = ping[lid.x];
+            if lid.x >= 1u32 {
+                x1 += ping[lid.x - 1u32];
+            }
+            pong[lid.x] = x1;
+            workgroup_barrier();
+            let mut x2 = pong[lid.x];
+            if lid.x >= 2u32 {
+                x2 += pong[lid.x - 2u32];
+            }
+            ping[lid.x] = x2;
+            workgroup_barrier();
+            let mut x3 = ping[lid.x];
+            if lid.x >= 4u32 {
+                x3 += ping[lid.x - 4u32];
+            }
+            pong[lid.x] = x3;
+            workgroup_barrier();
+            let mut x4 = pong[lid.x];
+            if lid.x >= 8u32 {
+                x4 += pong[lid.x - 8u32];
+            }
+            ping[lid.x] = x4;
+            workgroup_barrier();
+            let mut x5 = ping[lid.x];
+            if lid.x >= 16u32 {
+                x5 += ping[lid.x - 16u32];
+            }
+            pong[lid.x] = x5;
+            workgroup_barrier();
+            let mut x6 = pong[lid.x];
+            if lid.x >= 32u32 {
+                x6 += pong[lid.x - 32u32];
+            }
+            ping[lid.x] = x6;
+            workgroup_barrier();
+            let mut x7 = ping[lid.x];
+            if lid.x >= 64u32 {
+                x7 += ping[lid.x - 64u32];
+            }
+            pong[lid.x] = x7;
+            workgroup_barrier();
+            let mut x8 = pong[lid.x];
+            if lid.x >= 128u32 {
+                x8 += pong[lid.x - 128u32];
+            }
+            last[lid.x] = x8;
+            workgroup_barrier();
+            let inclusive = carry + last[lid.x];
+            if index < n {
+                data[index] = inclusive;
+            }
+            carry += last[255u32];
+        }
+
+    }
+
+    #[kernel(workgroup_size(256, 1, 1))]
+    pub fn add_carry_u32(
+        _id: SV_DispatchThreadID,
+        lid: LocalId,
+        gid: GroupId,
+        sums: StructuredBuffer<uint>,
+        mut out: RWStructuredBuffer<uint>,
+    ) {
+        if gid.x > 0u32 && gid.x <= sums.len() {
+            let carry = sums[gid.x - 1u32];
+            let n = out.len();
+            let first = gid.x * 4096u32 + lid.x;
+            for k in 0u32..16u32 {
+                let index = first + k * 256u32;
+                if index >= n {
+                    break;
+                }
+                out[index] += carry;
+            }
+        }
+    }
 }

@@ -886,7 +886,7 @@ pub(crate) const ALGO_GPU_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-alg
 /// The `gpu::` tests of `gust-algo`, by name: each must be reported `ok`, and no other `tests::gpu::` test may exist
 /// ([`check_algo_gpu_counts`]), so a deleted or an unpinned adapter test fails the gate. The twins would still satisfy
 /// a plain "at least one test ran". Adding or removing a `gpu::` test changes this list in the same commit.
-pub(crate) const ALGO_GPU_TESTS: [&str; 32] = [
+pub(crate) const ALGO_GPU_TESTS: [&str; 49] = [
     "tests::gpu::gpu_a_compaction_chain_runs_on_the_device_with_the_device_count",
     "tests::gpu::gpu_a_compaction_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch",
     "tests::gpu::gpu_a_compaction_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch",
@@ -918,6 +918,23 @@ pub(crate) const ALGO_GPU_TESTS: [&str; 32] = [
     "tests::gpu::gpu_scans_leave_the_input_alone_and_return_their_buffers",
     "tests::gpu::gpu_scans_past_the_domain_wrap",
     "tests::gpu::gpu_sum_on_device_keeps_the_result_resident",
+    "tests::gpu::gpu_v0_float_min_and_max_are_exact",
+    "tests::gpu::gpu_v0_float_sums_are_within_the_per_level_bound",
+    "tests::gpu::gpu_v0_integer_sums_min_and_max_are_exact_at_every_boundary",
+    "tests::gpu::gpu_v0_runs_the_deepest_schedules",
+    "tests::gpu::gpu_v0_scans_are_exact_at_every_boundary",
+    "tests::gpu::gpu_v0_wrapping_sums_are_defined_modulo_2_32_for_every_input",
+    "tests::gpu::gpu_v1_dispatch_counts_follow_the_schedules",
+    "tests::gpu::gpu_v1_empty_inputs",
+    "tests::gpu::gpu_v1_falls_back_to_v0_where_its_launch_does_not_fit",
+    "tests::gpu::gpu_v1_float_min_and_max_are_exact",
+    "tests::gpu::gpu_v1_float_sum_of_the_tie_ladder_is_within_the_bound",
+    "tests::gpu::gpu_v1_float_sums_are_within_the_per_level_bound",
+    "tests::gpu::gpu_v1_integer_sums_min_and_max_are_exact_at_every_boundary",
+    "tests::gpu::gpu_v1_runs_the_deepest_schedules",
+    "tests::gpu::gpu_v1_scans_are_exact_at_every_boundary",
+    "tests::gpu::gpu_v1_wrapping_sums_are_defined_modulo_2_32_for_every_input",
+    "tests::gpu::gpu_variants_leave_the_input_alone_and_return_their_buffers",
     "tests::gpu::gpu_wrapping_sums_are_defined_modulo_2_32_for_every_input",
 ];
 

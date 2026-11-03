@@ -7,6 +7,10 @@
 //! A pass over `N` elements launches `W = ceil(N / BLOCK)` workgroups of [`LANES`] lanes and writes `LANES * W`
 //! partials, one per lane; a remaining `N <= LANES` is reduced by the terminal kernel, one invocation, into the result.
 //! So `n <= 256` is a single dispatch, `n <= 65 536` two, and an input of 2^29 elements (a 2 GiB binding) four.
+//!
+//! These are the v0 schedules, the fallback and the CPU form. The v1 schedules, which the public functions run
+//! (plan section 5.5), are [`BlockSchedule`] (a workgroup owns 8192 elements and leaves one partial) and
+//! [`TileSchedule`] (a workgroup owns a span of 4096 elements of a scan).
 
 /// Lanes of a workgroup of the pass kernels.
 pub const LANES: u32 = 256;
@@ -151,5 +155,136 @@ impl ScanSchedule {
     /// device's per-dimension workgroup limit has to admit.
     pub fn workgroups(&self) -> u32 {
         self.sums[0].div_ceil(LANES)
+    }
+}
+
+/// Elements a workgroup of the v1 block reduce owns: lane `t` of workgroup `g` reads `g * V1_BLOCK + t + LANES * k` for
+/// `k` in `0..V1_CHAIN`.
+pub const V1_BLOCK: u32 = LANES * V1_CHAIN;
+/// Most terms one lane of a v1 block pass adds before the tree.
+pub const V1_CHAIN: u32 = 32;
+/// Rounds of the tree that combines the 256 lane values of a workgroup (`log2(LANES)`).
+pub const TREE_DEPTH: u32 = 8;
+
+/// One v1 block pass (plan section 5.5): `ceil(input_len / V1_BLOCK)` workgroups, one partial each.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockPass {
+    /// Elements the pass reads (the length of its input).
+    pub input_len: u32,
+    /// Workgroups of [`LANES`] lanes it launches, which is also the number of values it writes.
+    pub workgroups: u32,
+}
+
+impl BlockPass {
+    /// Invocations of the dispatch: a whole number of workgroups.
+    pub const fn invocations(self) -> u32 {
+        self.workgroups * LANES
+    }
+
+    /// The most terms any lane of the pass adds, as for [`Pass::longest_chain`] with the shorter lane chain of v1.
+    pub const fn longest_chain(self) -> u32 {
+        let terms = self.input_len.div_ceil(LANES);
+        if terms < V1_CHAIN { terms } else { V1_CHAIN }
+    }
+}
+
+/// The dispatches of one v1 reduction: block passes until one workgroup is left, and that pass writes the result. So
+/// `n <= 8192` is one dispatch, `n <= 8192^2` (67 million) two, and an input of 2^29 elements three.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockSchedule {
+    passes: Vec<BlockPass>,
+}
+
+impl BlockSchedule {
+    /// The schedule for `n` elements, or `None` for `n == 0`.
+    pub fn new(n: u32) -> Option<Self> {
+        if n == 0 {
+            return None;
+        }
+        let mut passes = Vec::new();
+        let mut remaining = n;
+        loop {
+            let workgroups = remaining.div_ceil(V1_BLOCK);
+            passes.push(BlockPass {
+                input_len: remaining,
+                workgroups,
+            });
+            if workgroups == 1 {
+                break;
+            }
+            remaining = workgroups;
+        }
+        Some(Self { passes })
+    }
+
+    /// The block passes, in order; the last one has one workgroup and writes the result.
+    pub fn passes(&self) -> &[BlockPass] {
+        &self.passes
+    }
+
+    /// Dispatches of the batch.
+    pub fn dispatches(&self) -> usize {
+        self.passes.len()
+    }
+
+    /// The most additions any value passes through at each level: the longest lane chain minus one (a lane starts from
+    /// `0.0`, whose first addition is exact) plus the [`TREE_DEPTH`] rounds of the tree.
+    pub fn chains(&self) -> Vec<u32> {
+        self.passes
+            .iter()
+            .map(|pass| pass.longest_chain().saturating_sub(1) + TREE_DEPTH)
+            .collect()
+    }
+}
+
+/// Elements one workgroup of a v1 scan kernel owns: [`SPAN_TILES`] tiles of [`LANES`] elements, taken one after the
+/// other.
+pub const SPAN: u32 = LANES * SPAN_TILES;
+/// Tiles of [`LANES`] elements a workgroup of a v1 scan kernel scans in turn.
+pub const SPAN_TILES: u32 = 16;
+
+/// The levels of one v1 scan (plan section 5.5): the input is cut into spans of [`SPAN`] elements, one workgroup each,
+/// and the span totals are scanned the same way until at most [`SPAN`] are left, which one workgroup scans in place.
+///
+/// `sums()[j]` is the length of the totals buffer of level `j + 1`, as in [`ScanSchedule`] with [`SPAN`] for the chunk.
+/// With `k` levels the batch is the level-0 scan, `k - 1` scans of totals, the top scan, `k - 1` add-backs into totals
+/// and the final add-back: `2k + 1` dispatches, and a single one when the input fits one span (no totals to scan).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TileSchedule {
+    sums: Vec<u32>,
+}
+
+impl TileSchedule {
+    /// The schedule for `n` elements, or `None` for `n == 0`.
+    pub fn new(n: u32) -> Option<Self> {
+        if n == 0 {
+            return None;
+        }
+        let mut sums = vec![n.div_ceil(SPAN)];
+        while sums[sums.len() - 1] > SPAN {
+            sums.push(sums[sums.len() - 1].div_ceil(SPAN));
+        }
+        Some(Self { sums })
+    }
+
+    /// The lengths of the totals buffers, level 1 first. The first is also the workgroup count of the level-0 scan and
+    /// of the final add-back.
+    pub fn sums(&self) -> &[u32] {
+        &self.sums
+    }
+
+    /// Dispatches of the batch: one when a single span holds the input, else `2k + 1` for `k` levels of totals.
+    pub fn dispatches(&self) -> usize {
+        if self.sums[0] == 1 {
+            1
+        } else {
+            2 * self.sums.len() + 1
+        }
+    }
+
+    /// The workgroups of the widest dispatch (level 0 and the final add-back): the number a device's per-dimension
+    /// workgroup limit has to admit.
+    pub fn workgroups(&self) -> u32 {
+        self.sums[0]
     }
 }

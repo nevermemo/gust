@@ -24,7 +24,7 @@
 //! zero (a subnormal operand may be flushed on the GPU), and no partial overflowing. The grouped CPU form
 //! ([`sum_grouped`]) is supplementary: recorded, never asserted equal.
 
-use crate::schedule::{CHAIN, LANES, Schedule};
+use crate::schedule::{BlockSchedule, CHAIN, LANES, Schedule};
 
 /// The per-addition relative error of the GPU: 1 ULP of the result, `2^-23`.
 pub const C_GPU: f64 = 1.0 / 8_388_608.0;
@@ -50,7 +50,35 @@ pub fn f32_sum_bound(n: u32, c: f64, abs_sum: f64) -> f64 {
     let Some(schedule) = Schedule::new(n) else {
         return 0.0;
     };
-    let steps = depth(&schedule) as f64 * c;
+    gamma_bound(depth(&schedule), c, abs_sum)
+}
+
+/// `K` of the v1 block reduce: the additions on the longest path, summed over the levels of `schedule` (each level: the
+/// lane chain of at most 32 terms, one addition fewer than terms, and the 8 rounds of the tree).
+pub fn depth_v1(schedule: &BlockSchedule) -> u64 {
+    schedule
+        .chains()
+        .iter()
+        .map(|steps| u64::from(*steps))
+        .sum()
+}
+
+/// [`f32_sum_bound`] for the v1 block reduce (plan section 5.5): the same form `gamma_K * S` with the `K` of
+/// [`depth_v1`], at most 39 per level and 86 for the levels of an input of 2^29 elements, against the 796 of v0.
+/// The tree adds 256 values of one level in a balanced shape, so a value passes through 8 additions in it, not 255.
+///
+/// # Panics
+///
+/// If `K * c >= 1`, outside any schedule this crate produces.
+pub fn f32_sum_bound_v1(n: u32, c: f64, abs_sum: f64) -> f64 {
+    let Some(schedule) = BlockSchedule::new(n) else {
+        return 0.0;
+    };
+    gamma_bound(depth_v1(&schedule), c, abs_sum)
+}
+
+fn gamma_bound(depth: u64, c: f64, abs_sum: f64) -> f64 {
+    let steps = depth as f64 * c;
     assert!(
         steps < 1.0,
         "the depth of the schedule is outside the bound"

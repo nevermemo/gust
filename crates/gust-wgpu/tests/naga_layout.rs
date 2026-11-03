@@ -366,20 +366,24 @@ impl Comparison<'_> {
                 },
                 TypeInner::Struct { members, .. },
             ) if self.uniform => {
+                // A `let` chain in an `if`, not an `if let` match guard: the guard form needs a newer Rust than the
+                // workspace's `rust-version`.
                 let columns = match members.as_slice() {
-                    [member]
-                        if member.offset == 0
-                            && let TypeInner::Array {
-                                base,
-                                size: ArraySize::Constant(length),
-                                stride,
-                            } = self.module.types[member.ty].inner
+                    [member] if member.offset == 0 => {
+                        if let TypeInner::Array {
+                            base,
+                            size: ArraySize::Constant(length),
+                            stride,
+                        } = self.module.types[member.ty].inner
                             && let TypeInner::Vector {
                                 size: column,
                                 scalar: wgsl_scalar,
-                            } = self.module.types[base].inner =>
-                    {
-                        Some((length.get(), stride, column as u32, wgsl_scalar))
+                            } = self.module.types[base].inner
+                        {
+                            Some((length.get(), stride, column as u32, wgsl_scalar))
+                        } else {
+                            None
+                        }
                     }
                     _ => None,
                 };

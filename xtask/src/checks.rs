@@ -155,6 +155,7 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
         "component-pool",
         &[
             "app::tests::the_derivation_domain_holds_for_the_settings_and_the_spawned_particles",
+            "app::tests::twin_classify_counts_the_spawned_live_slots",
             "app::tests::twin_frames_match_host_reference",
         ],
     ),

@@ -91,6 +91,164 @@ impl<T> Future for Completion<T> {
     }
 }
 
+/// The wait of the blocking readbacks (native only: the browser cannot block, and its readbacks are awaited).
+///
+/// `Device::poll` runs the `map_async` callbacks that its own `maintain` collected, and `maintain` collects those of
+/// every finished submission, whoever requested them. When another thread's poll collects this thread's callback,
+/// this thread's `poll(Wait)` returns before the callback has run, so one device poll followed by one check of the
+/// result is a race. A blocking readback therefore waits on the completion itself, which the callback signals from
+/// whichever thread runs it.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod blocking {
+    use std::{
+        future::Future,
+        pin::pin,
+        sync::{Arc, mpsc},
+        task::{Context, Poll, Wake, Waker},
+        thread,
+        time::{Duration, Instant},
+    };
+
+    use crate::Error;
+
+    /// How long a blocking readback waits for its callback after the device wait returned. The GPU work is done by
+    /// then, so a callback that does not arrive in this time is lost; the readback fails with `Error::Map`.
+    pub(crate) const MAPPING_WAIT: Duration = Duration::from_secs(30);
+
+    /// How long the thread parks before it polls the device again, in case no callback is in flight at all.
+    const REPOLL: Duration = Duration::from_millis(10);
+
+    struct ThreadWake(thread::Thread);
+
+    impl Wake for ThreadWake {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    /// Drive `future` on this thread: poll it, park until it wakes the thread (or [`REPOLL`] passes, which polls the
+    /// device again), and give up after `limit` with `None`. A readback future polls the device on every poll, so a
+    /// callback that sits unfired in this device's queue is run here.
+    pub(crate) fn block_on_for<F: Future>(future: F, limit: Duration) -> Option<F::Output> {
+        let mut future = pin!(future);
+        let waker = Waker::from(Arc::new(ThreadWake(thread::current())));
+        let mut context = Context::from_waker(&waker);
+        let deadline = Instant::now() + limit;
+        loop {
+            if let Poll::Ready(output) = future.as_mut().poll(&mut context) {
+                return Some(output);
+            }
+            let remaining = deadline.checked_duration_since(Instant::now())?;
+            thread::park_timeout(remaining.min(REPOLL));
+        }
+    }
+
+    /// The error of a mapping whose callback did not arrive within [`MAPPING_WAIT`].
+    pub(crate) fn mapping_timeout() -> Error {
+        Error::Map(format!(
+            "mapping not complete {} s after the device wait",
+            MAPPING_WAIT.as_secs()
+        ))
+    }
+
+    /// Drive a readback future to its result, or `Error::Map` when it is still pending after [`MAPPING_WAIT`].
+    pub(crate) fn block_on_mapping<T>(
+        future: impl Future<Output = Result<T, Error>>,
+    ) -> Result<T, Error> {
+        block_on_for(future, MAPPING_WAIT).unwrap_or_else(|| Err(mapping_timeout()))
+    }
+
+    /// The result of a `map_async` callback that sends on a channel, waiting at most [`MAPPING_WAIT`].
+    pub(crate) fn recv_mapping(receiver: &mpsc::Receiver<Result<(), String>>) -> Result<(), Error> {
+        match receiver.recv_timeout(MAPPING_WAIT) {
+            Ok(result) => result.map_err(Error::Map),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(mapping_timeout()),
+            Err(error @ mpsc::RecvTimeoutError::Disconnected) => Err(Error::Map(error.to_string())),
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        use super::*;
+        use crate::completion::Completion;
+
+        #[test]
+        fn a_ready_future_returns_at_once() {
+            assert_eq!(block_on_for(std::future::ready(5), Duration::ZERO), Some(5));
+        }
+
+        #[test]
+        fn a_completion_finished_by_another_thread_ends_the_blocked_wait() {
+            let completion = Completion::new();
+            let callback = completion.clone();
+            let started = Instant::now();
+            let sender = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(100));
+                let _ = callback.complete("late");
+            });
+            // The limit is far above the delay, so it is the callback's wake that ends the wait.
+            assert_eq!(
+                block_on_for(completion, Duration::from_secs(20)),
+                Some("late")
+            );
+            assert!(started.elapsed() < Duration::from_secs(10));
+            sender.join().unwrap();
+        }
+
+        #[test]
+        fn a_completion_that_never_arrives_times_out_instead_of_hanging() {
+            let completion = Completion::<()>::new();
+            let started = Instant::now();
+            assert_eq!(block_on_for(completion, Duration::from_millis(60)), None);
+            let waited = started.elapsed();
+            assert!(
+                waited >= Duration::from_millis(60),
+                "gave up early: {waited:?}"
+            );
+            assert!(
+                waited < Duration::from_secs(10),
+                "waited too long: {waited:?}"
+            );
+        }
+
+        #[test]
+        fn a_timed_out_mapping_is_a_map_error_that_names_the_wait() {
+            let error = mapping_timeout();
+            assert!(
+                matches!(&error, Error::Map(text) if text == "mapping not complete 30 s after the device wait"),
+                "{error}"
+            );
+        }
+
+        #[test]
+        fn a_channel_result_arrives_from_another_thread_and_errors_are_kept() {
+            let (sender, receiver) = mpsc::channel();
+            let flag = Arc::new(AtomicBool::new(false));
+            let seen = Arc::clone(&flag);
+            let worker = thread::spawn(move || {
+                thread::sleep(Duration::from_millis(50));
+                seen.store(true, Ordering::SeqCst);
+                let _ = sender.send(Err("device lost".to_owned()));
+            });
+            let result = recv_mapping(&receiver);
+            assert!(
+                flag.load(Ordering::SeqCst),
+                "returned before the sender ran"
+            );
+            assert!(matches!(result, Err(Error::Map(text)) if text == "device lost"));
+            worker.join().unwrap();
+            // The sender is gone and nothing is queued: a disconnect, not a hang.
+            assert!(matches!(recv_mapping(&receiver), Err(Error::Map(_))));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{

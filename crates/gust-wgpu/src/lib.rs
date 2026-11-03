@@ -29,8 +29,10 @@
 //! `read_typed_buffer_async` and `HeadlessDevice::new_async` are the async core (R4.9); a std-only `Completion` future
 //! sits above wgpu's `map_async` callback. On native the blocking functions (`new`, `read_typed_buffer`) keep their
 //! names and wrap the async functions (`new` with `pollster::block_on`); a readback wrapper waits with `poll(Wait)`
-//! first and then polls the finished future once, because on native the callback runs only while something polls the
-//! device. They do not exist on `wasm32`.
+//! first and then waits for the mapping's own completion (it parks until the callback wakes it, polls the device
+//! again every 10 ms, and gives up with `Error::Map` after 30 s). On native the callback runs inside a device poll,
+//! and the poll that runs it may be another thread's, so one poll and one check would be a race. They do not exist on
+//! `wasm32`.
 //!
 //! # The `wasm32` surface
 //!
@@ -80,6 +82,8 @@ mod vec;
 pub use cache::PipelineCacheStats;
 use cache::{CachedKernel, KernelCacheKey, PipelineCache};
 use completion::Completion;
+#[cfg(not(target_arch = "wasm32"))]
+use completion::blocking::{block_on_mapping, recv_mapping};
 pub use device::{
     AdapterChoice, DeviceHandle, DeviceOptions, LimitsPolicy, default_device, default_device_async,
     set_default_options,
@@ -935,9 +939,10 @@ struct TypedReadback<T> {
 }
 
 impl<T: GpuPod> TypedReadback<T> {
-    /// Block until the device has run every pending callback, which includes this mapping's. The native blocking
-    /// wrappers call it before they drive `finish`; without it `finish` would wait for a device poll that no one
-    /// makes.
+    /// Block until the device has finished the submitted work. This does not mean this mapping's callback has run:
+    /// another thread's poll may have collected it and not fired it yet. The native blocking wrappers call it before
+    /// they wait for the completion in `finish` (`block_on_mapping`), so that the wait is short; the completion is
+    /// what they rely on.
     #[cfg(not(target_arch = "wasm32"))]
     fn wait(&self, device: &wgpu::Device) -> Result<(), Error> {
         if self.mapping.is_some() {
@@ -1342,9 +1347,10 @@ impl HeadlessDevice {
     /// wgpu runs the `map_async` callback inside a device poll, and on native nothing polls the device in the
     /// background. This future never wakes itself, so awaiting it on an executor that re-polls only after a wake
     /// hangs, unless another thread keeps polling the device. The blocking [`read_typed_buffer`](Self::read_typed_buffer)
-    /// does it correctly: it starts the copy, waits with `poll(Wait)`, then polls the finished future once
-    /// (an error if it is still pending). On `wasm32` the browser runs the callback from its event loop, which wakes the task,
-    /// so a plain `.await` suffices there (measured in Chrome by `cargo xtask check-web`).
+    /// does it correctly: it starts the copy, waits with `poll(Wait)`, then waits on the finished future itself, because
+    /// another thread's device poll can run this mapping's callback after this thread's `poll(Wait)` returned
+    /// (bounded, then `Error::Map`; `completion::blocking`). On `wasm32` the browser runs the callback from its event
+    /// loop, which wakes the task, so a plain `.await` suffices there (measured in Chrome by `cargo xtask check-web`).
     ///
     /// ```no_run
     /// # use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
@@ -1374,23 +1380,12 @@ impl HeadlessDevice {
     ) -> Result<(Vec<T>, TransferTiming), Error> {
         let started = Instant::now();
         let readback = self.start_typed_readback(buffer)?;
-        // The callback runs inside a device poll, and nothing else polls this device, so the wait is what
-        // completes the mapping. The future below must therefore be ready at its first poll; it is polled once with a
-        // no-op waker rather than blocked on, so a callback that never ran (nothing would wake a parked thread) is an
-        // error, as it was when this used a channel.
+        // The callback runs inside a device poll, but not necessarily this thread's: another thread's poll collects
+        // the callbacks of every finished submission, so `poll(Wait)` can return before this mapping's callback has
+        // run. The wait is therefore on the completion itself, which the callback signals from whichever thread
+        // runs it, for at most `MAPPING_WAIT` (then `Error::Map`).
         readback.wait(&self.device)?;
-        let mut finish = std::pin::pin!(readback.finish(&self.device));
-        let values = match finish
-            .as_mut()
-            .poll(&mut Context::from_waker(std::task::Waker::noop()))
-        {
-            Poll::Ready(values) => values?,
-            Poll::Pending => {
-                return Err(Error::Map(
-                    "mapping not complete after poll(Wait)".to_string(),
-                ));
-            }
-        };
+        let values = block_on_mapping(readback.finish(&self.device))?;
         Ok((
             values,
             TransferTiming {
@@ -1782,10 +1777,7 @@ impl HeadlessDevice {
 
         let mut writable_buffers = Vec::with_capacity(completions.len());
         for (readback, completion) in readback_buffers.iter().flatten().zip(completions) {
-            completion
-                .recv()
-                .map_err(|error| Error::Map(error.to_string()))?
-                .map_err(Error::Map)?;
+            recv_mapping(&completion)?;
             let view = readback
                 .get_mapped_range(..)
                 .map_err(|error| Error::Map(error.to_string()))?;
@@ -1923,10 +1915,7 @@ impl HeadlessDevice {
 
         let mut writable_buffers = Vec::with_capacity(completions.len());
         for (readback, completion) in readback_buffers.iter().flatten().zip(completions) {
-            completion
-                .recv()
-                .map_err(|error| Error::Map(error.to_string()))?
-                .map_err(Error::Map)?;
+            recv_mapping(&completion)?;
             let view = readback
                 .get_mapped_range(..)
                 .map_err(|error| Error::Map(error.to_string()))?;
@@ -2241,10 +2230,7 @@ impl HeadlessDevice {
                 let _ = sender.send(result.map_err(|error| error.to_string()));
             });
         self.wait_for_submission(submission)?;
-        receiver
-            .recv()
-            .map_err(|error| Error::Map(error.to_string()))?
-            .map_err(Error::Map)?;
+        recv_mapping(&receiver)?;
         let view = profiler
             .readback_buffer
             .get_mapped_range(..)

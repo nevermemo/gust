@@ -274,18 +274,14 @@ impl<T: GpuPod> GpuPool<T> {
 // `BufferPool` (m7.a0): recycled allocations for `GpuVec` and the element-wise map calls.
 // ---------------------------------------------------------------------------------------------------------------
 
+#[cfg(not(target_arch = "wasm32"))]
+use crate::completion::blocking::block_on_mapping;
+use crate::{Completion, MappingReady, pod_vec_from_bytes};
 use std::{
     collections::HashMap,
     marker::PhantomData,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
-#[cfg(not(target_arch = "wasm32"))]
-use std::{
-    future::Future,
-    task::{Context, Poll},
-};
-
-use crate::{Completion, MappingReady, pod_vec_from_bytes};
 
 /// Allocations of at most this many bytes are pooled by their exact size; larger ones by the next power of two (or
 /// by the device's `max_buffer_size` when that is smaller).
@@ -703,17 +699,10 @@ impl HeadlessDevice {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn read_pooled<T: GpuPod>(&self, buffer: &GpuBuffer<T>) -> Result<Vec<T>, Error> {
         let readback = self.start_pooled_readback(buffer)?;
+        // `poll(Wait)` returns when the GPU is done, but a poll of another thread may have collected this mapping's
+        // callback and not run it yet (see `completion::blocking`): wait for the callback itself, bounded.
         readback.wait(&self.device)?;
-        let mut finish = std::pin::pin!(readback.finish(&self.device));
-        match finish
-            .as_mut()
-            .poll(&mut Context::from_waker(std::task::Waker::noop()))
-        {
-            Poll::Ready(values) => values,
-            Poll::Pending => Err(Error::Map(
-                "mapping not complete after poll(Wait)".to_string(),
-            )),
-        }
+        block_on_mapping(readback.finish(&self.device))
     }
 
     /// [`read_pooled`](Self::read_pooled) without blocking: each poll polls the device once (see
@@ -753,7 +742,8 @@ pub(crate) struct PooledReadback<T> {
 }
 
 impl<T: GpuPod> PooledReadback<T> {
-    /// Block until the device has run every pending callback, this mapping's included.
+    /// Block until the device has finished the submitted work. This mapping's callback may not have run yet (another
+    /// thread's poll can have collected it); `read_pooled` waits for the completion afterwards.
     #[cfg(not(target_arch = "wasm32"))]
     fn wait(&self, device: &wgpu::Device) -> Result<(), Error> {
         if self.mapped.is_some() {

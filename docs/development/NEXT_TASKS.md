@@ -132,8 +132,8 @@ test module; do not mix that mechanical move with behavior changes.
   passed and `create_compute_pipeline` crashed, so "naga's SPIR-V front end" is not established. Isolate the layer,
   then reduce it to an upstream report (naga, wgpu or the driver) or lower such constants another way (m6.g1;
   sanity-fable and sanity-opus, 2026-11-02, both asked for "not isolated").
-- **Literal-local typing bug, to be fixed by slice m6.z2** (before m7.a1; ruling in the M6 close rulings). An
-  unannotated `let` whose initializer is an integer literal is emitted as Slang `var x = 7`, which is `int`, whereas
+- **Literal-local typing: fixed as a compile error by m6.z2 (GUST-E0326, D96); kept for the record.** An
+  unannotated `let` whose initializer is an integer literal was emitted as Slang `var x = 7`, which is `int`, whereas
   rustc types the local from its later uses. Measured: `let mut d = 7; d /= y` with `y: u32` divides signed, so for
   `y >= 2^31` Rust gives 0 and the GPU gives `0xFFFFFFF9` (found in the m6.dv review; older than m6.dv). Signed
   comparisons (`d < y`), `>>` and casts of such a local very likely go wrong the same way; that part is inferred from
@@ -181,12 +181,27 @@ test module; do not mix that mechanical move with behavior changes.
 - `HeadlessDevice::enumerate(Backends::VULKAN)` returned no adapter once (the M6 close gates, `gpu-verify` at
   `f452a37`), then passed in `check-full` of the same run and 20 of 20 reruns. Seen again in m7.w's fix round
   (`an_adapter_that_does_not_exist_is_no_adapter` in check-fast, "index 0 is one past the adapters"; green on
-  rerun), and m7.r1's first gate round saw `Error::Map("mapping not complete after poll(Wait)")` with GPU tests
-  running in parallel on the shared default device. Find out whether an empty enumeration is transient on this
-  driver under concurrent load, and whether `enumerate` or the test should report or retry it (m7.a1).
-- Type inference for an unannotated integer-literal `let` from its uses (M6 close ruling 3): m6.z2 ships the
-  compile error alone because no kernel, fixture or example has such a let and inference needs a typer the
-  lowering does not have (estimated 600 to 800 lines; plans m6/z2-measure, 2026-11-02).
+  rerun). Find out whether an empty enumeration is transient on this driver under concurrent load, and whether
+  `enumerate` or the test should report or retry it (m7.a1). (The `Error::Map` m7.r1 saw is a separate readback
+  race, fixed in m7.rb, D97.) Third sighting: m7.rb's fix round (`an_adapter_is_chosen_by_index_and_by_name`, 12 of
+  12 reruns passed); m7.rb's probe of about 360 concurrent enumerations found none empty.
+- mx.t0b: drop schema 2 from xtask's `check_helper_pin` once every helper in use reports schema 3 (mx.t0a accepts
+  both so lanes on older trees keep working).
+- Remove the mutex that serialises gust-algo's GPU tests (`crates/gust-algo/src/tests/gpu.rs`) once m7.rb's
+  readback fix is on `main` (it is, D97), and run them in parallel once (m7.r3).
+- `reduce` zero-clears its partials buffers although every lane writes its slot; skipping the clear needs a
+  non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p).
+- M8: naga 30 rejects an `i32` lane id in `subgroupShuffle`, `subgroupBroadcast` and `quadBroadcast`, which WGSL
+  allows and Slang emits; filed by the owner as https://github.com/gfx-rs/wgpu/issues/10818. The M8-S1 workaround
+  rewrites the id to `u32` in the exported WGSL; drop it when a fixed naga is pinned.
+- Type inference for an unannotated literal `let` from its uses (M6 close ruling 3, D96): m6.z2 ships GUST-E0326
+  alone because no kernel, fixture or example has such a let and inference needs a typer the lowering does not have
+  (estimated 600 to 800 lines; plans m6/z2-measure, 2026-11-02). Inference would also close the float case D96
+  documents (rustc's `f64` fallback for an unconstrained float literal against Slang's `float`).
+- `crates/gust/tests/diagnostics.rs` `scripted_failing_helper` writes a shell script and runs it at once; on Linux a
+  sibling test thread's `fork` can inherit the still-open write handle, and the exec fails with `ETXTBSY` ("Text file
+  busy", `HelperUnavailable`). Seen once in CI on `0b0cfaf` (Slangc tier, green on rerun). Retry on `ETXTBSY` in the
+  test, or write every scripted helper before any test spawns.
 
 ## Deferred language/runtime breadth
 

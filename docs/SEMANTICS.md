@@ -235,12 +235,33 @@ function or type provided by the library, as opposed to the kernel's own `+`) is
 2^32 in every build, exactly as the GPU does (the other atomic functions cannot overflow). So the case does not arise
 for atomics. This is documented, not fixed (D39).
 
-**Limitation (until slice m6.z2): an unannotated `let` with an integer-literal initializer is `int` in Slang.** The
-lowering emits it as Slang `var`, which is `int`, while rustc types the local from its later uses. `let mut d = 7;
-d /= y` with `y: u32` divides signed, so for `y >= 2^31` Rust gives 0 and the GPU `0xFFFFFFF9` (measured, m6.dv
-review). Signed comparisons, `>>` and casts of such a local are inferred, not measured. Write a suffix (`7u32`) or an
-annotation (`let d: u32 = 7`). Slice m6.z2 makes the lowering infer the type from its uses or refuse the `let` (a
-diagnostic asking for a suffix or an annotation); this entry is removed or rewritten when it lands.
+**Rule (slice m6.z2, D86): an unannotated `let` whose initializer is only unsuffixed integer literals is a compile
+error.** The lowering emits an unannotated local as Slang `var`, and a bare integer literal makes that `int`, while
+rustc types the local from its later uses. `let mut d = 7; d /= y` with `y: u32` would divide signed, so for
+`y >= 2^31` Rust gives 0 and the GPU `0xFFFFFFF9` (measured, m6.dv review); signed comparisons, `>>` and casts of
+such a local would differ the same way (not measured, because the construct is refused). The macro refuses the `let`
+with GUST-E0326 and asks for a suffix (`let mut d = 7u32;`) or an annotation (`let mut d: u32 = 7;`). The check is
+syntactic: it covers a bare literal (through parentheses and unary `-` or `!`), arithmetic or bitwise operators whose
+operands are all such literals (`1 + 2`), a shift whose left operand is one (`1 << n`), `Some`, `Ok` and `Err` of
+one, and `X.unwrap_or(Y)` with both literal-only (`Some(7).unwrap_or(0)`). The same check runs on the scrutinee of an
+`if let` (`if let Some(mut v) = Some(7)`), which binds a local too; `while let` and `let .. else` are rejected
+elsewhere (E0402, E0320). It does not infer a type from the uses: a `let` with a typed operand (`3 * i`, `id.x + 1`, a
+cast, a call of a module function) is accepted as before, because that operand fixes the type on both sides. The
+typed path is measured at the edge in `typed_locals` (`tests/fixtures/numeric.rs`,
+`crates/gust-wgpu/tests/numeric.rs`): `u32` division by a divisor of `2^31` or more, an unsigned comparison of two
+locals and a logical `>>` of a value with the top bit set, and the signed counterparts, each equal on the GPU, on the
+twin and in plain Rust.
+
+**Not covered: an unsuffixed float literal** (`let x = 0.0;`), and the difference is not small. rustc falls back to
+`f64` for a float literal that nothing constrains to `f32`, and `as`, arithmetic with other literals and comparisons
+with literals do not constrain it. The twin follows rustc, so such a local is `f64` there, while the lowering emits a
+Slang `float`, which is `f32`. The result is then not bounded by the float bounds of section 4, and control flow can
+differ. Example: `let a = 16777217.0; let b = a - 16777216.0; out[i] = b as f32;` is 1.0 in Rust and on the twin and
+0.0 on the GPU, because `float` rounds 16777217.0 to 16777216.0. `0.1 + 0.2 == 0.3` is false in `f64` and true in
+`f32`, so a branch on it diverges. A local that meets an `f32` (a store into an `f32` buffer, arithmetic with an `f32`
+value) is `f32` on both sides and is unaffected. This is documented, not refused (coordinator ruling on the review of
+m6.z2): write `0.0f32` or `let x: f32 = 0.0;`. Inferring the type from the uses, for either case, is not built
+(`docs/development/NEXT_TASKS.md`).
 
 **Limitation: vector operations follow two overflow modes.** The integer vector operations of `gust::math` (the
 lane-wise arithmetic operators and `dot` on `u32` and `i32` lanes) are `#[inline]` functions in `gust`, so each crate

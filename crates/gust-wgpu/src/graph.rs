@@ -22,7 +22,7 @@ use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::{
     BufferBinding, BufferDispatch, Error, GpuBuffer, GpuBufferAccess, GpuUniform, HeadlessDevice,
-    error::INDIRECT_ARGUMENTS, pod_vec_from_bytes, same_buffer,
+    completion::blocking::recv_mapping, error::INDIRECT_ARGUMENTS, pod_vec_from_bytes, same_buffer,
 };
 
 /// Handle to one node of a [`StagedGraph`], in insertion order.
@@ -681,10 +681,7 @@ impl HeadlessDevice {
         for (readback, receiver) in pending.into_iter().zip(receivers) {
             let bytes = match (readback.staging, receiver) {
                 (Some(staging), Some(receiver)) => {
-                    receiver
-                        .recv()
-                        .map_err(|error| Error::Map(error.to_string()))?
-                        .map_err(Error::Map)?;
+                    recv_mapping(&receiver)?;
                     let view = staging
                         .get_mapped_range(..)
                         .map_err(|error| Error::Map(error.to_string()))?;

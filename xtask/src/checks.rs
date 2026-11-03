@@ -34,6 +34,16 @@ pub(crate) const REFLECTION_TESTS: &[&[&str]] = &[
         "--test",
         "reflection",
     ],
+    // The schema-3 output of the helper on the committed probe inputs (mx.t0a): an ignored test of cargo-gust.
+    &[
+        "test",
+        "--locked",
+        "-p",
+        "cargo-gust",
+        "--",
+        "--ignored",
+        "schema_3_output",
+    ],
 ];
 
 /// The `gust-wgpu` integration tests of `check-feature gpu-semantics`, by file name under crates/gust-wgpu/tests. Kept

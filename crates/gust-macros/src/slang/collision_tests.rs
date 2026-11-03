@@ -288,11 +288,11 @@ fn a_local_named_true_or_false_is_renamed_so_the_literals_keep_their_meaning() {
     // And `var`, which every emitted local starts with.
     let text = emit(
         "mod m { #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { \
-         let var = 1; let after = 2; out[id.x] = var + after; } }",
+         let var = 1u32; let after = 2u32; out[id.x] = var + after; } }",
     )
     .unwrap();
-    assert!(text.contains("var __gust_r_var = 1;"), "{text}");
-    assert!(text.contains("var after = 2;"), "{text}");
+    assert!(text.contains("var __gust_r_var = uint(1);"), "{text}");
+    assert!(text.contains("var after = uint(2);"), "{text}");
 }
 
 /// The invocation parameter and a `ConstantBuffer` parameter are name sites of their own in `emit_kernel` (the

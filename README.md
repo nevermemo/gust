@@ -290,7 +290,7 @@ wrapped as `Independent(&buffer)` at the call site (a settings buffer, a
 reduction's input or output); the kernel must then guard that buffer with its own
 `.len()`, and an empty independent buffer is rejected when the dispatch has work.
 
-Launch limits come from the device `HeadlessDevice` opened (m7.a0, D102).
+Launch limits come from the device `HeadlessDevice` opened (m7.a0, D84).
 `HeadlessDevice::new()` requests wgpu's default limits, the portable ones the
 browser always gets. `HeadlessDevice::with_options` takes `DeviceOptions`, whose
 `LimitsPolicy::Adapter` asks for the adapter's own `max_buffer_size`, storage
@@ -311,13 +311,14 @@ default limits. On both backends the invocation total, with each axis rounded up
 whole workgroups, is at most 2^32 (past it is `DeviceLimit` for
 `global_invocation_id`); a zero axis dispatches nothing and returns `Ok(())`.
 Staged graphs stay one-dimensional. Evidence (exists, m7.d): on the RTX 5090 a
-launch of exactly 2^32 invocations runs in 2D and 3D and one past it is refused;
-the 16x16 and 4x4x4 kernels equal a host reference on the GPU and the twin.
+launch of exactly 2^32 invocations is accepted and runs (the 2D launch reads back its last cell, the 3D one shows
+acceptance and invocation 0), and one past it is refused; the 16x16 and 4x4x4 kernels equal a host reference on
+the GPU and the twin.
 
 `max_buffer_size` is checked before any wgpu call by the fallible allocations
 (`try_create_typed_buffer`, `create_zeroed_buffer` and `GpuVec`), which return
 `Error::DeviceLimit`, and an allocation the adapter cannot serve is
-`Error::OutOfMemory` on native (exists, m7.a0; the out-of-memory case has a unit
+`Error::OutOfMemory` on native (exists, m7.a0, D84; the out-of-memory case has a unit
 test only, not a hardware run). The infallible `create_typed_buffer` does not
 check it.
 
@@ -507,10 +508,10 @@ gust::par_for!(on(device); (x, y) in (0..w, 0..h), [img: &[f32], out: &mut [f32]
 })?;
 ```
 
-`i in 0..n`, `(x, y) in (0..w, 0..h)` and `(x, y, z) in (..)` give the arity. A binding is `&[T]`, `&mut [T]`,
-`&GpuVec<T>`, `&mut GpuVec<T>` or a scalar (`u32`, `i32`, `f32`, `bool`). `on(device);` names the device (without it the
-call opens the process's default device) and `workgroup_size(x, y, z);` overrides the defaults (256x1x1, 16x16x1,
-8x8x4). The call is blocking and returns `Result<(), gust::map::Error>`.
+`i in 0..n`, `(x, y) in (0..w, 0..h)` and `(x, y, z) in (0..w, 0..h, 0..d)` give the arity. A binding is `&[T]`,
+`&mut [T]`, `&GpuVec<T>`, `&mut GpuVec<T>` or a scalar (`u32`, `i32`, `f32`, `bool`). `on(device);` names the
+device (without it the call opens the process's default device) and `workgroup_size(x, y, z);` overrides the
+defaults (256x1x1, 16x16x1, 8x8x4). The call is blocking and returns `Result<(), gust::map::Error>`.
 
 - The body is validated as a `#[gpu]` kernel (the same dialect and codes), and the macro adds a bounds guard on all
   three axes, so a workgroup larger than the loop runs nothing outside it. A zero extent returns `Ok(())` without a
@@ -519,7 +520,7 @@ call opens the process's default device) and `workgroup_size(x, y, z);` override
   another writes is a user error that nothing diagnoses ([SEMANTICS](docs/SEMANTICS.md)).
 - Bodies that are equal after lowering share one generated kernel and one artifact. Under `GUST_PROFILE=cpu` the loop
   runs sequentially in ascending index order.
-- Evidence (exists, m7.p): 26 tests on the RTX 5090 run ten calls on the GPU and on the CPU twin against independent
+- Evidence (exists, m7.p): 26 tests (14 on the RTX 5090 and 12 on the CPU twin) run ten calls against independent
   host references (1D, 2D, 3D, extents off the workgroup, zero and over-cap extents, scalars, the default device,
   resident `GpuVec`); a Slang golden, byte goldens of the export records and a cpu-target case run without a GPU.
   `gust-wgpu/tests/par_for.rs` and `tests/fixtures/par_for.rs` hold them.
@@ -555,9 +556,9 @@ pub fn block_sum(
   until a later slice defines that twin. Under `GUST_PROFILE=cpu` it has no `Run` implementation.
 - Evidence (exists, m7.g1): on the RTX 5090 a 256-wide block reduce equals an integer host sum bit for bit at 1, 255,
   256, 257 and 65 537 elements, every invocation's ids equal `id % 256` and `id / 256`, and the barrier is an
-  `OpControlBarrier` in the compiled SPIR-V (`gust-wgpu/tests/workgroup.rs`); 13 compile-fail fixtures pin the new
-  diagnostics. One adapter only; a read of workgroup memory the validator cannot see is outside the defined domain
-  and no test can observe it ([SEMANTICS](docs/SEMANTICS.md)).
+  `OpControlBarrier` in the compiled SPIR-V (`gust-wgpu/tests/workgroup.rs`); 12 compile-fail fixtures and a passing
+  control pin the new diagnostics. One adapter only; a read of workgroup memory the validator cannot see is
+  outside the defined domain and no test can observe it ([SEMANTICS](docs/SEMANTICS.md)).
 
 ## Examples
 
@@ -715,7 +716,7 @@ crates/
   gust/                 shadow types, descriptors, ABI metadata, slangc bridge, reflection
   gust-macros/          validation and direct syn AST -> Slang translation
   gust-wgpu/            cached headless wgpu execution, buffers, StagedGraph, GpuPool
-  cargo-gust/           the `cargo gust` subcommand: build, check and doctor for precompiled kernel artifacts, Slang install
+  cargo-gust/           the `cargo gust` subcommand: build, check and doctor precompiled kernel artifacts
   gust-algo/            device-resident algorithms on GUST kernels over GpuVec (reduce: sum, min, max, sum_wrapping; scan: inclusive, exclusive; compact: count, indices, gather_u32/i32/f32); publish = false
 examples/
   vector-add/

@@ -358,8 +358,8 @@ pub(super) fn reference_scan(values: &[u32], exclusive: bool) -> Vec<u32> {
 }
 
 /// Lengths around every boundary of the scan schedule: empty, one element, one chunk (256), the second chunk, the 256
-/// chunks one level holds (65 536) and the first length past them, the length where the second level has 257 totals, a
-/// length that is no multiple of anything, and a million.
+/// chunks one level holds (65 536) and the first length past them (257 totals), 65 793 (258 totals), a length that is
+/// no multiple of anything, and a million.
 pub(super) const SCAN_LENGTHS: [usize; 18] = [
     0, 1, 2, 3, 255, 256, 257, 511, 512, 513, 4_097, 65_535, 65_536, 65_537, 65_793, 131_073,
     999_983, 1_000_003,

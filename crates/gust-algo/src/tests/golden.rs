@@ -102,3 +102,22 @@ fn the_scan_golden_holds_every_kernel_once() {
     assert_eq!(scan_kernels::MODULE_DESCRIPTOR.kernels.len(), 6);
     assert_each_kernel_once(&scan_kernels::MODULE_DESCRIPTOR);
 }
+
+/// The Slang cannot tell `wrapping_add` from `+` (SEMANTICS KM-10: it lowers to the plain operator), and a release
+/// build of the twin wraps either way, so this reads the source: both `sum_wrapping_u32_*` kernels must add with
+/// `wrapping_add` and never with a plain `+` or `+=`.
+#[test]
+fn the_wrapping_sum_kernels_add_with_wrapping_add() {
+    let source = include_str!("../../../../tests/fixtures/reduce.rs").replace("\r\n", "\n");
+    let wrapping = &source[source.find("pub fn sum_wrapping_u32_pass").unwrap()..];
+    assert_eq!(
+        wrapping
+            .matches("acc = acc.wrapping_add(input[index]);")
+            .count(),
+        2
+    );
+    assert!(
+        !wrapping.contains("acc +"),
+        "a plain addition in a wrapping kernel"
+    );
+}

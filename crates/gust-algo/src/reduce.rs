@@ -263,7 +263,7 @@ fn reduce_with<T: Element>(
 }
 
 /// The sum of all elements of a `u32` vector, defined modulo 2^32 for every input: the lane chains and the partials
-/// wrap (`wrapping_add`, SEMANTICS section 6.2). The sum of an empty input is `0`.
+/// wrap (`wrapping_add`, SEMANTICS section 3 item 1, KM-10). The sum of an empty input is `0`.
 ///
 /// This is `sum` for inputs whose total may pass `u32::MAX`; for inputs that stay inside, both give the same value.
 /// The twin is `cpu::sum_wrapping` and calls Rust's `wrapping_add`, so the value is the same on the device, on the twin

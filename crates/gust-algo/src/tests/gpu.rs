@@ -452,10 +452,20 @@ fn gpu_a_scan_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch
         (after.hits, after.misses, after.outstanding),
         (pool.hits, pool.misses, pool.outstanding)
     );
-    // One element fewer is inside the limit and scans.
-    let inside = GpuVec::<u32>::zeroed_on(&device, len - 1).unwrap();
+    // One element fewer is inside the limit and scans: ones, so the values at the top of the range (the seven-dispatch
+    // path at 2^25 elements) are checked too.
+    drop(input);
+    let inside = GpuVec::from_slice_on(&device, &vec![1u32; (len - 1) as usize]).unwrap();
     let out = scan::inclusive(&inside).unwrap();
     assert_eq!(out.len(), len - 1);
+    let values = out.to_vec().unwrap();
+    assert!(
+        values
+            .iter()
+            .enumerate()
+            .all(|(index, value)| *value as usize == index + 1),
+        "the inclusive scan of ones at the top of the range"
+    );
 }
 
 /// Level 0 of a scan launches `ceil(ceil(n / 256) / 256)` workgroups; a device that allows fewer refuses before any

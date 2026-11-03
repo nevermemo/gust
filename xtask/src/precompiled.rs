@@ -68,7 +68,7 @@ use std::{
 use crate::{
     checks::{RUSTFLAGS_VARIABLES, dual_target_dir, precompiled_dual_steps, run_dual_step},
     json::{self, Json},
-    process::{PROFILE_VARIABLE, set_workspace_profile},
+    process::{PROFILE_VARIABLE, exit_code, set_workspace_profile},
     ui::{Expectation, judge, parse_expectation, parse_expected},
     workspace::{cargo_target_dir, workspace_root},
 };
@@ -266,7 +266,7 @@ fn slangc_cannot_be_found(environment: &[(OsString, OsString)]) -> Result<(), St
     }
     Err(format!(
         "the lookup of `slangc` failed (exit {}): {}",
-        code.map_or_else(|| "?".to_owned(), |code| code.to_string()),
+        exit_code(output.status),
         String::from_utf8_lossy(&output.stderr).trim()
     ))
 }
@@ -1810,10 +1810,7 @@ fn e7_build_twice(fixture: &Fixture, check_only: bool) -> Result<String, String>
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         println!(
             "check-precompiled E7 cargo gust build, run {run}: exit {}",
-            output
-                .status
-                .code()
-                .map_or_else(|| "?".to_owned(), |code| code.to_string())
+            exit_code(output.status)
         );
         for line in stdout.lines().filter(|line| line.starts_with("gust:")) {
             println!("  {line}");
@@ -2682,10 +2679,7 @@ fn require_success(step: &str, what: &str, output: &Output) -> Result<(), String
     }
     Err(format!(
         "check-precompiled {step}: {what} failed (exit {}):\n{}{}",
-        output
-            .status
-            .code()
-            .map_or_else(|| "?".to_owned(), |code| code.to_string()),
+        exit_code(output.status),
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     ))

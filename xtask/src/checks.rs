@@ -11,9 +11,9 @@ use std::{
 use crate::{
     precompiled::PRECOMPILED_DIR,
     process::{
-        PROFILE_VARIABLE, command_exists, print_command, require_command, run_checked, run_counted,
-        run_counted_captured, run_direct, run_direct_args, set_workspace_profile, without_colors,
-        workspace_command,
+        PROFILE_VARIABLE, command_exists, exit_code, print_command, require_command, run_checked,
+        run_counted, run_counted_captured, run_direct, run_direct_args, set_workspace_profile,
+        without_colors, workspace_command,
     },
     shader::{doctor_smoke, export_golden_spirv},
     ui::{Expectation, judge, parse_expected},
@@ -1539,12 +1539,6 @@ pub(crate) fn check_dual(args: &[String]) -> Result<(), String> {
         ),
     }
     Ok(())
-}
-
-fn exit_code(status: std::process::ExitStatus) -> String {
-    status
-        .code()
-        .map_or_else(|| "?".to_owned(), |code| code.to_string())
 }
 
 /// The problems of a `Fails` step (E1 or E3) for the outcome of its cargo call: none when it failed with exactly the

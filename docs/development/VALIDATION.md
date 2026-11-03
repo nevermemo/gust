@@ -68,6 +68,21 @@ exported modules. Matrix and uniform layout decorations in SPIR-V have never bee
 as `gust`: a unit test reads the bodies of `gust`'s `slangc_command` and `slangc_reflection_command` and requires the
 flag in each (the whole argument lists of those two are pinned by their own tests in `gust`).
 
+**The naga layout gate (slice mx.n).** `crates/gust-wgpu/tests/naga_layout.rs` parses and validates WGSL with the naga
+that wgpu runs (`wgpu::naga`, the lockfile's version; `Capabilities::empty()` for the front end and the validator and
+`ValidationFlags::all()`, as `create_shader_module` does, never the all-capabilities default of
+`naga::front::wgsl::Options`) and compares the `proc::Layouter` size, alignment and field offsets of every storage and
+uniform binding's element type with the descriptor's layout. The WGSL is every compute entry of the 13 goldens of
+`tests/fixtures`, compiled by the `slangc` command line (55 modules); every fixture kernel, compiled through the native
+reflection helper, which is the route `HeadlessDevice` compiles through (65 modules, 10 of them kernels that no golden
+holds); and the committed precompiled WGSL. The test pins those counts, and the golden and fixture `.rs` lists against
+the directory. It needs `slangc` on `PATH` and the helper (`GUST_SLANG_REFLECT`) but no adapter, and it fails with a
+message naming the missing tool; it does not check a `slangc` version (the CI job `slang` installs the pinned one). It
+runs in `cargo xtask check-feature reflection`, in the Slangc suite (the CI job `slang`) and in `cargo test -p
+gust-wgpu`, hence in `verify --mode gpu` (the CI job `gpu-software`), where its 9 tests and one result line are counted
+in `GPU_SUITE_PIN`; the file takes about 15 s on the Windows development machine. It executes nothing, so it is
+WGSL-validity and layout evidence, not Gpu evidence.
+
 **The Slang pin (D46, slice m4.r).** `cargo gust` is pinned to the Slang 2026.20 release, and `VALIDATED_BUILDS` ships
 empty. The pin was validated on Windows with the release archive itself: every committed artifact set was re-blessed
 with that slangc and a helper built against it, the Spirv, Reflect and Gpu suites ran on the RTX 5090, and the three

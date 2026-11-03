@@ -146,6 +146,18 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   `exclusive` returning the inclusive sums, and plain `+` in `sum_wrapping` (by D87 the Slang is the same, so the
   twin and a source-text test catch it). Opus merge with no must-fix.
   Main: 22 gate steps green on `09203ae` (02:39 to 03:02Z, RTX 5090); pins 223/26 and gust-algo 20.
+- MX mx.n (`cb528b2`, fix round `2d24624`, merge `4d4dafe`): the naga layout gate (M6 close ruling 4), a gust-wgpu
+  test that needs no adapter. It parses and validates WGSL with the naga wgpu runs (`wgpu::naga` 30.0.1, the
+  capabilities and flags of `create_shader_module`; a control test shows an f16 module that the all-capabilities
+  default would pass) and compares the `proc::Layouter` size, alignment and offsets of every storage and uniform
+  binding with the descriptor's `GpuPod::LAYOUT`, both ways. 120 modules: the 55 compute entries of the 13 goldens
+  through the slangc CLI, the 65 fixture kernels through the reflection helper (the route `HeadlessDevice`
+  compiles), and the committed precompiled WGSL. naga refuses none and no layout differs; nothing is allow-listed.
+  It replaces m6.m2's by-hand naga run. It runs in the Slangc suite (CI job `slang`) and under the GPU pin (D98,
+  amends D95): 223/26 to 232/27. Mutations: a shifted expected offset and the all-capabilities default each fail
+  it. Exported WGSL (`compile_reflected_clean`) is gated only through the committed precompiled file. Opus merge
+  after one fix round and a re-review.
+  Main: 22 gate steps green on `4d4dafe` (03:45 to 04:14Z, RTX 5090); pin 232/27.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
@@ -538,7 +550,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M7 (m7.a1 and mx.n running) after the M6 close (D86); see the roadmap's Now
+claim: roadmap M7 (m7.a1 and m7.r3 running) after the M6 close (D86); see the roadmap's Now
 and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no

@@ -9,15 +9,18 @@
 //!
 //! The WGSL set (the test names its size and fails on drift):
 //!
-//! - the 12 Slang goldens of `tests/fixtures/*.slang`, which are all of the goldens (the test
-//!   `the_goldens_are_the_fixtures_directory` pins the file list against the directory). Each golden is split at its
-//!   `// ==== kernel <name> ====` markers where it has them, and each `[shader("compute")]` entry of each section is
-//!   compiled to WGSL with the pinned slangc through `gust::slang::compile_source` (the same arguments as the
-//!   run-time compile of a kernel): 47 entries. The descriptor of an entry comes from the fixture's Rust source,
+//! - the 13 Slang goldens of `tests/fixtures/*.slang`, which are all of the goldens (the test
+//!   `the_goldens_are_the_fixtures_directory` pins the file list against the directory, and the fixture `.rs` list
+//!   with it). Each golden is split at its `// ==== kernel <name> ====` markers where it has them, and each
+//!   `[shader("compute")]` entry of each section is compiled to WGSL with the `slangc` command line through
+//!   `gust::slang::compile_source`: 55 entries. The descriptor of an entry comes from the fixture's Rust source,
 //!   included below the way the other test files include it;
-//! - the 9 fixture kernels that no golden holds (`atomics.slang` keeps only the first of the ten kernels of
-//!   `atomics.rs`), compiled from their descriptors' own Slang with `gust::slang::compile_wgsl`, the run-time route,
-//!   so that every kernel of every golden fixture is covered: 56 WGSL modules from the fixtures;
+//! - every fixture kernel, 65 in all (the 55 above and the 10 that no golden holds: `atomics.slang` keeps only the
+//!   first of the ten kernels of `atomics.rs`, and `numeric.slang` only the first of the two of `numeric.rs`),
+//!   compiled from its descriptor's own Slang through the native reflection helper, `gust::reflect::compile_reflected`.
+//!   That is the route `HeadlessDevice` takes at run time (`export` takes `compile_reflected_clean`, the same helper
+//!   with the reflection stripped), so these are the bytes a device is handed. The helper needs no adapter. 120 WGSL
+//!   modules in all;
 //! - the committed precompiled WGSL (`tests/fixtures/precompiled/52e85c5f03f72272.wgsl`), which is the only WGSL file
 //!   the repository commits; its five other copies are required to be byte-identical to it.
 //!
@@ -31,13 +34,16 @@
 //! passed WGSL that wgpu refuses (docs/development/VALIDATION.md); `default_capabilities_refuse_what_all_accept`
 //! pins the difference.
 //!
-//! The test needs the pinned `slangc` on `PATH` (Slangc tier) and no adapter. It fails, never skips, without slangc.
+//! The test needs `slangc` on `PATH` and the native reflection helper (`GUST_SLANG_REFLECT`, or the repository's
+//! `target/slang-reflect`), both of the Slangc tier, and no adapter. It fails, never skips, without either, and the
+//! message names the tool. The `slangc` version is not checked here; the CI job that runs the test installs the
+//! version the repository pins.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use gust::{
     Access, KernelDescriptor, ParameterDescriptor, ParameterKind, ScalarKind, ShaderLayoutRules,
-    TypeLayout, TypeLayoutKind,
+    TypeLayout, TypeLayoutKind, reflect,
     slang::{self, Target},
 };
 use wgpu::naga::{
@@ -74,6 +80,7 @@ fixture!(f_option, optional, "../../../tests/fixtures/option.rs");
 fixture!(f_products, products, "../../../tests/fixtures/products.rs");
 fixture!(f_reduce, reduce, "../../../tests/fixtures/reduce.rs");
 fixture!(f_result, results, "../../../tests/fixtures/result.rs");
+fixture!(f_scan, scan, "../../../tests/fixtures/scan.rs");
 fixture!(
     f_semantics,
     semantics,
@@ -91,7 +98,7 @@ struct Golden {
     kernels: &'static [KernelDescriptor],
 }
 
-fn goldens() -> [Golden; 12] {
+fn goldens() -> [Golden; 13] {
     [
         Golden {
             file: "atomics.slang",
@@ -138,7 +145,7 @@ fn goldens() -> [Golden; 12] {
         Golden {
             file: "reduce.slang",
             text: include_str!("../../../tests/fixtures/reduce.slang"),
-            entries: 18,
+            entries: 20,
             kernels: f_reduce::KERNELS,
         },
         Golden {
@@ -146,6 +153,12 @@ fn goldens() -> [Golden; 12] {
             text: include_str!("../../../tests/fixtures/result.slang"),
             entries: 1,
             kernels: f_result::KERNELS,
+        },
+        Golden {
+            file: "scan.slang",
+            text: include_str!("../../../tests/fixtures/scan.slang"),
+            entries: 6,
+            kernels: f_scan::KERNELS,
         },
         Golden {
             file: "semantics.slang",
@@ -269,6 +282,7 @@ impl Comparison<'_> {
     fn compare_type(&mut self, path: &str, want: &TypeLayout, handle: Handle<Type>) {
         let layout = self.layouter[handle];
         let inner = &self.module.types[handle].inner;
+        // `Alignment * u32` is naga's public way to the number (`Alignment` has no getter): `* 1` is the alignment.
         let mut alignment = layout.alignment * 1;
         let mut size = layout.size;
         if self.uniform && matches!(inner, TypeInner::Struct { .. }) {
@@ -551,42 +565,147 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
     problems
 }
 
-/// The compute entries the twelve goldens hold in all (pinned per golden in [`goldens`]).
-const GOLDEN_ENTRIES: usize = 47;
+/// The compute entries the thirteen goldens hold in all (pinned per golden in [`goldens`]).
+const GOLDEN_ENTRIES: usize = 55;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`
-/// (`atomics.slang` has one entry for the ten kernels of the module). The gate takes their WGSL too, from the
-/// descriptor's own Slang through the run-time route, so that every kernel of every golden fixture is covered.
-const FIXTURE_KERNELS_WITHOUT_GOLDEN: usize = 9;
+/// (`atomics.slang` has one entry for the ten kernels of the module) and of `numeric.rs` (one of two).
+const FIXTURE_KERNELS_WITHOUT_GOLDEN: usize = 10;
 
-/// One WGSL module: where it came from (a golden file, or `fixture` for a kernel without a golden), its entry and text.
+/// Every kernel of every fixture: the ones with a golden entry and the ones without.
+const FIXTURE_KERNELS: usize = GOLDEN_ENTRIES + FIXTURE_KERNELS_WITHOUT_GOLDEN;
+
+/// One WGSL module: where it came from (a golden file for the `slangc` command line, `helper` for the native
+/// reflection helper), its entry and text.
 struct Case {
     origin: &'static str,
     entry: String,
     wgsl: String,
 }
 
-/// The WGSL of every golden entry (the pinned slangc, `compile_source` on the golden's own text) and of every other
-/// fixture kernel (`compile_wgsl` on its descriptor, which is what the run-time route compiles).
+/// Fails with a message naming the missing tool, before any compile: the gate never skips. `slangc` is launched by
+/// name, so a launch error is a missing `PATH` entry; the helper is the file `GUST_SLANG_REFLECT` names, or else the
+/// repository's `target/slang-reflect`, or else a bare name on `PATH` (which only the compile itself can tell).
+fn require_tools() {
+    assert!(
+        std::process::Command::new("slangc")
+            .arg("-version")
+            .output()
+            .is_ok(),
+        "the naga layout gate needs `slangc` on PATH (the Slangc tier; the CI job `slang` puts the \
+         pinned install's bin directory there); it fails and never skips without it"
+    );
+    let helper = gust::reflect::native_compiler_path();
+    assert!(
+        helper.is_file() || helper.components().count() == 1,
+        "the naga layout gate needs the native reflection helper, `gust-slang-reflect`: GUST_SLANG_REFLECT is {:?} and \
+         names no file (build it with `cargo xtask build-slang-reflect` or point the variable at a built helper); it \
+         fails and never skips without it",
+        std::env::var_os("GUST_SLANG_REFLECT")
+    );
+}
+
+/// Where a case's WGSL comes from.
+enum Source {
+    /// `slangc` on the text of one golden section.
+    Slangc(String),
+    /// The native reflection helper on a descriptor's own Slang.
+    Helper(&'static KernelDescriptor),
+}
+
+struct Job {
+    origin: &'static str,
+    entry: String,
+    source: Source,
+}
+
+impl Job {
+    fn compile(&self) -> Result<String, String> {
+        match &self.source {
+            Source::Slangc(section) => slang::compile_source(section, &self.entry, Target::Wgsl)
+                .map_err(|error| {
+                    format!(
+                        "{}: slangc could not compile `{}` (is `slangc` on PATH?): {error}",
+                        self.origin, self.entry
+                    )
+                })
+                .and_then(|bytes| {
+                    String::from_utf8(bytes).map_err(|error| format!("{}: {error}", self.entry))
+                }),
+            Source::Helper(kernel) => reflect::compile_reflected(kernel, Target::Wgsl)
+                .map_err(|error| {
+                    format!(
+                        "{}: the native reflection helper could not compile the kernel (is GUST_SLANG_REFLECT set to \
+                         a built `gust-slang-reflect`?): {error}",
+                        self.entry
+                    )
+                })
+                .and_then(|compiled| {
+                    String::from_utf8(compiled.artifact)
+                        .map_err(|error| format!("{}: {error}", self.entry))
+                }),
+        }
+    }
+}
+
+/// Runs every job on up to four threads (each compile is a process of its own in a directory of its own, and the
+/// other test files already compile in parallel), in the order of `jobs`; every failure is reported, not the first.
+fn compile_all(jobs: Vec<Job>) -> Vec<Case> {
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let done = std::sync::Mutex::new(Vec::new());
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| {
+                loop {
+                    let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let Some(job) = jobs.get(index) else { break };
+                    let result = job.compile();
+                    done.lock().expect("no job panics").push((index, result));
+                }
+            });
+        }
+    });
+    let mut done = done.into_inner().expect("no job panics");
+    done.sort_by_key(|(index, _)| *index);
+    let failures: Vec<&str> = done
+        .iter()
+        .filter_map(|(_, result)| result.as_ref().err().map(String::as_str))
+        .collect();
+    assert!(
+        failures.is_empty(),
+        "{} compile(s) failed:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+    jobs.into_iter()
+        .zip(done)
+        .map(|(job, (_, result))| Case {
+            origin: match job.source {
+                Source::Slangc(_) => job.origin,
+                Source::Helper(_) => "helper",
+            },
+            entry: job.entry,
+            wgsl: result.expect("failures were reported above"),
+        })
+        .collect()
+}
+
+/// The WGSL of every golden entry (`slangc` on the golden's own text) and of every fixture kernel through the helper
+/// (`compile_reflected` on its descriptor, the route `HeadlessDevice` compiles through).
 fn all_cases() -> Vec<Case> {
-    let mut cases = Vec::new();
+    require_tools();
+    let mut jobs = Vec::new();
     let mut in_a_golden = BTreeSet::new();
     for golden in goldens() {
         let mut entries = 0;
         for section in sections(golden.text) {
             for entry in compute_entries(&section) {
-                let bytes = slang::compile_source(&section, &entry, Target::Wgsl).unwrap_or_else(|error| {
-                    panic!(
-                        "{}: slangc could not compile `{entry}` (the pinned slangc must be on PATH): {error}",
-                        golden.file
-                    )
-                });
-                let wgsl = String::from_utf8(bytes).expect("slangc writes UTF-8 WGSL");
                 in_a_golden.insert(entry.clone());
-                cases.push(Case {
+                jobs.push(Job {
                     origin: golden.file,
                     entry,
-                    wgsl,
+                    source: Source::Slangc(section.clone()),
                 });
                 entries += 1;
             }
@@ -599,35 +718,31 @@ fn all_cases() -> Vec<Case> {
         );
     }
     assert_eq!(
-        cases.len(),
+        jobs.len(),
         GOLDEN_ENTRIES,
         "the compute entries of all goldens"
     );
+    let mut without_golden = 0;
     for golden in goldens() {
-        for kernel in golden
-            .kernels
-            .iter()
-            .filter(|k| !in_a_golden.contains(k.entry_point))
-        {
-            let wgsl = slang::compile_wgsl(kernel).unwrap_or_else(|error| {
-                panic!(
-                    "{}: slangc could not compile the fixture kernel: {error}",
-                    kernel.entry_point
-                )
-            });
-            cases.push(Case {
-                origin: "fixture",
+        for kernel in golden.kernels {
+            without_golden += usize::from(!in_a_golden.contains(kernel.entry_point));
+            jobs.push(Job {
+                origin: "helper",
                 entry: kernel.entry_point.to_owned(),
-                wgsl,
+                source: Source::Helper(kernel),
             });
         }
     }
     assert_eq!(
-        cases.len() - GOLDEN_ENTRIES,
-        FIXTURE_KERNELS_WITHOUT_GOLDEN,
+        without_golden, FIXTURE_KERNELS_WITHOUT_GOLDEN,
         "the fixture kernels that no golden holds"
     );
-    cases
+    assert_eq!(
+        jobs.len() - GOLDEN_ENTRIES,
+        FIXTURE_KERNELS,
+        "the fixture kernels compiled through the helper"
+    );
+    compile_all(jobs)
 }
 
 /// The descriptor of a compute entry, from all fixtures (the entry names are unique across them).
@@ -658,15 +773,22 @@ fn the_goldens_are_the_fixtures_directory() {
                 .to_string_lossy()
                 .into_owned()
         })
-        .filter(|name| name.ends_with(".slang"))
         .collect();
     let pinned: BTreeSet<String> = goldens()
         .iter()
-        .map(|golden| golden.file.to_owned())
+        .flat_map(|golden| [golden.file.to_owned(), golden.file.replace(".slang", ".rs")])
         .collect();
+    let in_scope = |set: &BTreeSet<String>| -> BTreeSet<String> {
+        set.iter()
+            .filter(|name| name.ends_with(".slang") || name.ends_with(".rs"))
+            .cloned()
+            .collect()
+    };
     assert_eq!(
-        on_disk, pinned,
-        "tests/fixtures/*.slang against the goldens this gate walks"
+        in_scope(&on_disk),
+        pinned,
+        "tests/fixtures/*.slang and *.rs against the goldens and fixtures this gate walks (a new fixture `.rs` is a \
+         `fixture!` line and a `Golden` row; a fixture without a golden is a decision for the coordinator)"
     );
     // Each golden's entries are kernels of its fixture, in the fixture's order.
     let mut total = 0;
@@ -718,7 +840,7 @@ fn every_fixture_wgsl_validates_and_has_the_descriptor_layouts() {
         problems.len(),
         problems.join("\n")
     );
-    assert_eq!(cases.len(), GOLDEN_ENTRIES + FIXTURE_KERNELS_WITHOUT_GOLDEN);
+    assert_eq!(cases.len(), GOLDEN_ENTRIES + FIXTURE_KERNELS);
 }
 
 #[test]

@@ -44,7 +44,8 @@ pub(crate) const REFLECTION_TESTS: &[&[&str]] = &[
         "--ignored",
         "schema_3_output",
     ],
-    // The naga layout gate (mx.n): the WGSL of every golden against the descriptors' layouts. Needs slangc, no adapter.
+    // The naga layout gate (mx.n): the WGSL of every fixture kernel against the descriptors' layouts. Needs slangc and
+    // the native helper, no adapter; the Slangc suite runs it too (the CI job `slang`).
     &[
         "test",
         "--locked",

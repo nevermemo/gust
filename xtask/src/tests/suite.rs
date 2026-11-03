@@ -121,6 +121,14 @@ fn slangc_is_unit_plus_the_core_library_tests_and_requires_slangc() {
         "--test",
         "diagnostics",
     ]));
+    expected.push(Step::Cargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-wgpu",
+        "--test",
+        "naga_layout",
+    ]));
     assert_eq!(Suite::Slangc.steps(), expected);
 }
 
@@ -752,20 +760,21 @@ fn the_unit_suite_runs_the_coretests_twin_test() {
 
 #[test]
 fn check_feature_reflection_runs_the_naga_layout_gate() {
-    // The naga layout gate (mx.n) is a gust-wgpu test that needs slangc and no adapter; `check-feature reflection`
-    // (the Reflect suite) names it, and its file must exist.
+    // The naga layout gate (mx.n) is a gust-wgpu test that needs slangc and the helper but no adapter;
+    // `check-feature reflection` (the Reflect suite) and the Slangc suite (the CI job `slang`) both name it, and its
+    // file must exist. Other lanes append to REFLECTION_TESTS, so the position is not pinned.
+    let gate = vec![
+        "test",
+        "--locked",
+        "-p",
+        "gust-wgpu",
+        "--test",
+        "naga_layout",
+    ];
     let calls: Vec<Vec<&str>> = REFLECTION_TESTS.iter().map(|call| call.to_vec()).collect();
-    assert_eq!(
-        calls.last().expect("the list is not empty"),
-        &[
-            "test",
-            "--locked",
-            "-p",
-            "gust-wgpu",
-            "--test",
-            "naga_layout"
-        ]
-    );
+    assert!(calls.contains(&gate), "{calls:?}");
+    assert!(Suite::Slangc.covers().contains("naga layout gate"));
+    assert!(Suite::Reflect.covers().contains("naga layout gate"));
     let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../crates/gust-wgpu/tests/naga_layout.rs");
     assert!(

@@ -105,7 +105,7 @@ static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
 /// launch along one axis on a device opened with the default limits, which is what
 /// `HeadlessDevice` requests. A single-dimension dispatch of a kernel with workgroup width `w`
 /// therefore covers at most `w * DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION` elements; more
-/// is an `Error::DeviceLimit` (multi-dimensional dispatch is roadmap M7). Pinned to
+/// is an `Error::DeviceLimit` (a multi-dimensional extent spreads it over y and z). Pinned to
 /// `wgpu::Limits::default()` by a unit test and to the opened device by the `limits` test.
 pub const DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
 
@@ -477,15 +477,18 @@ impl<'a> From<F32BufferBinding<'a>> for BufferBinding<'a> {
 
 /// One persistent dispatch whose bindings can have different POD element types.
 ///
-/// `extent` is what the batch functions read (slice m7.d); `element_count` is its x axis, kept for the one-dimensional
-/// constructor [`BufferDispatch::new`] and for the staged graph, which runs one-dimensional dispatches only (a graph
-/// node with a y or z extent above 1 is refused with [`Error::Extent`] when the graph runs). Build both through
-/// [`BufferDispatch::new`] or [`BufferDispatch::new_extent`] so that they agree.
+/// The extent is `element_count` along x and, along y and z, the two axes fixed by the constructor (slice m7.d):
+/// [`BufferDispatch::extent`] reads it and [`BufferDispatch::set_extent`] replaces it. There is one source of truth,
+/// so `dispatch.element_count = n` on a dispatch from [`BufferDispatch::new`] dispatches `n` invocations, as it always
+/// did. The staged graph runs one-dimensional dispatches only (a node with a y or z extent above 1 is refused with
+/// [`Error::Extent`] when the graph runs), and reads `element_count`.
 #[derive(Clone, Copy)]
 pub struct BufferDispatch<'a> {
     pub kernel: &'a KernelDescriptor,
+    /// The x axis of the extent; the whole extent of a one-dimensional dispatch.
     pub element_count: u32,
-    pub extent: Extent,
+    /// The y and z axes of the extent.
+    extent_yz: [u32; 2],
     pub bindings: &'a [BufferBinding<'a>],
 }
 
@@ -508,9 +511,20 @@ impl<'a> BufferDispatch<'a> {
         Self {
             kernel,
             element_count: extent.x,
-            extent,
+            extent_yz: [extent.y, extent.z],
             bindings,
         }
+    }
+
+    /// The extent the batch functions dispatch: `element_count` by the two other axes.
+    pub const fn extent(&self) -> Extent {
+        Extent::new(self.element_count, self.extent_yz[0], self.extent_yz[1])
+    }
+
+    /// Replaces the whole extent, `element_count` with it.
+    pub const fn set_extent(&mut self, extent: Extent) {
+        self.element_count = extent.x;
+        self.extent_yz = [extent.y, extent.z];
     }
 }
 
@@ -1975,10 +1989,10 @@ impl HeadlessDevice {
     ) -> Result<Vec<PreparedDispatch>, Error> {
         if let Some(dispatch) = dispatches
             .iter()
-            .find(|dispatch| dispatch.extent.y != 1 || dispatch.extent.z != 1)
+            .find(|dispatch| dispatch.extent().y != 1 || dispatch.extent().z != 1)
         {
             return Err(Error::Extent {
-                extent: dispatch.extent.to_array().map(u64::from),
+                extent: dispatch.extent().to_array().map(u64::from),
                 reason: "a staged graph runs one-dimensional dispatches only (use dispatch_batch)",
             });
         }
@@ -1994,7 +2008,7 @@ impl HeadlessDevice {
     }
 
     /// Prepare one indirect dispatch: every check of `prepare_batch` except the workgroup count,
-    /// which only the GPU reads, from the arguments buffer. `dispatch.extent` must be a
+    /// which only the GPU reads, from the arguments buffer. `dispatch.extent()` must be a
     /// nonzero placeholder; the prepared `workgroup_count` is meaningless (0) and never encoded.
     #[cfg(not(target_arch = "wasm32"))]
     fn prepare_indirect(
@@ -2015,7 +2029,7 @@ impl HeadlessDevice {
                 let resources = validate_persistent_dispatch_extent(
                     self.id,
                     dispatch.kernel,
-                    dispatch.extent,
+                    dispatch.extent(),
                     dispatch.bindings,
                 )?;
                 let binding_bytes = dispatch.bindings.iter().map(BufferBinding::limit_bytes);
@@ -2025,7 +2039,7 @@ impl HeadlessDevice {
                 } else {
                     self.check_launch_extent(
                         dispatch.kernel,
-                        dispatch.extent,
+                        dispatch.extent(),
                         &resources,
                         binding_bytes,
                     )?
@@ -2036,7 +2050,7 @@ impl HeadlessDevice {
 
         let mut prepared = Vec::with_capacity(dispatches.len());
         for (dispatch, (resources, workgroups)) in dispatches.iter().zip(validated) {
-            if dispatch.extent.is_empty() {
+            if dispatch.extent().is_empty() {
                 continue;
             }
             let cached_kernel = self.cached_kernel(dispatch.kernel, &resources)?;
@@ -3270,6 +3284,47 @@ mod tests {
         assert!(source.contains("artifact.format == gust::Format::Wgsl"));
         assert!(source.contains("out: f32 [storage-v1; size=4, align=4, stride=4]"));
         assert!(source.contains("pass.dispatch_workgroups(element_count.div_ceil(64), 1, 1);"));
+        // A kernel with a one-dimensional workgroup takes the element count and nothing else (m7.d).
+        assert!(!source.contains("extent"), "{source}");
+    }
+
+    #[test]
+    fn a_kernel_with_a_two_or_three_dimensional_workgroup_renders_a_host_that_takes_an_extent() {
+        for (size, dispatch) in [
+            (
+                [16, 16, 1],
+                "pass.dispatch_workgroups(extent[0].div_ceil(16), extent[1].div_ceil(16), extent[2].div_ceil(1));",
+            ),
+            (
+                [4, 4, 4],
+                "pass.dispatch_workgroups(extent[0].div_ceil(4), extent[1].div_ceil(4), extent[2].div_ceil(4));",
+            ),
+            (
+                [8, 1, 2],
+                "pass.dispatch_workgroups(extent[0].div_ceil(8), extent[1].div_ceil(1), extent[2].div_ceil(2));",
+            ),
+        ] {
+            let descriptor = KernelDescriptor {
+                workgroup_size: size,
+                ..DESCRIPTOR
+            };
+            let source = render_wgpu_source(&descriptor).expect("source should render");
+            assert!(
+                source.contains("        extent: [u32; 3],"),
+                "{size:?}: {source}"
+            );
+            assert!(source.contains(dispatch), "{size:?}: {source}");
+            assert!(!source.contains("element_count"), "{size:?}: {source}");
+        }
+        // A zero axis is refused, as for every dispatch.
+        let flat = KernelDescriptor {
+            workgroup_size: [16, 0, 1],
+            ..DESCRIPTOR
+        };
+        assert!(matches!(
+            render_wgpu_source(&flat),
+            Err(Error::UnsupportedWorkgroupSize([16, 0, 1]))
+        ));
     }
 
     #[test]
@@ -4057,12 +4112,33 @@ mod tests {
         );
         assert_eq!(
             error.to_string(),
-            "kernel `test::kernel` needs 65536 for `max_compute_workgroups_per_dimension`, the limit is 65535; split the work into several dispatches (multi-dimensional dispatch is roadmap M7)"
+            "kernel `test::kernel` needs 65536 for `max_compute_workgroups_per_dimension`, the limit is 65535; \
+             split the work into several dispatches, or spread it over y and z with a multi-dimensional extent"
         );
         let error = device_limit(&DESCRIPTOR, "max_storage_buffer_binding_size", 20, 16);
         assert_eq!(
             error.to_string(),
             "kernel `test::kernel` needs 20 for `max_storage_buffer_binding_size`, the limit is 16"
+        );
+        // The y and z counts name their axis and get a remedy of their own; neither mentions a roadmap.
+        for axis in ["y", "z"] {
+            let limit: &'static str = Box::leak(
+                format!("max_compute_workgroups_per_dimension ({axis})").into_boxed_str(),
+            );
+            let text = device_limit(&DESCRIPTOR, limit, 4, 3).to_string();
+            assert_eq!(
+                text,
+                format!(
+                    "kernel `test::kernel` needs 4 for `{limit}`, the limit is 3; split the work into several \
+                     dispatches, or use fewer invocations along that axis"
+                )
+            );
+            assert!(!text.contains("roadmap"), "{text}");
+        }
+        // A workgroup size with a zero axis says so; it does not claim the backend is one-dimensional.
+        assert_eq!(
+            Error::UnsupportedWorkgroupSize([16, 0, 1]).to_string(),
+            "workgroup size [16, 0, 1] has a zero axis; every axis must be at least 1"
         );
     }
 }

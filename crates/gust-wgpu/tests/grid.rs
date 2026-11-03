@@ -297,6 +297,22 @@ fn rounded_invocations(width: u32, height: u32) -> u64 {
 /// 2^32, the most invocations one launch may run.
 const CAP: u64 = 1 << 32;
 
+/// Whether the adapter is a software rasteriser (lavapipe, which the public CI runs the suite on): a launch of 2^32
+/// invocations is minutes of CPU time there, so the tests below do not dispatch one on it (they say so and still
+/// assert the accept decision, and still dispatch every rejected launch, which fails before any GPU work).
+fn is_cpu_adapter(device: &HeadlessDevice) -> bool {
+    device.adapter_info().device_type == wgpu::DeviceType::Cpu
+}
+
+/// The line printed in place of a dispatch of 2^32 invocations that a CPU adapter does not run.
+fn not_run_on_a_cpu_adapter(device: &HeadlessDevice, what: &str) {
+    eprintln!(
+        "grid: the adapter {:?} is a CPU adapter; the dispatch of 2^32 invocations for {what} was not run \
+         (its accept decision was asserted without it)",
+        device.adapter_info().name
+    );
+}
+
 /// What `gust::cpu::validate` says about launching `corner` over `extent`, with the error reduced to the three numbers
 /// that identify a limit.
 fn twin_decision(extent: Extent) -> Result<(), (&'static str, u64, u64)> {
@@ -368,6 +384,21 @@ fn the_invocation_cap_is_the_same_on_the_gpu_and_the_twin_at_its_boundary() {
             Ok(()),
             "twin, {width} x {height}"
         );
+        // The decision the GPU's dispatch takes is the same function: the rounded product is exactly the cap, and
+        // the workgroup counts are inside the device's per-dimension limit.
+        assert_eq!(
+            Extent::new(width, height, 1).rounded_total([TILE, TILE, 1]),
+            Some(u128::from(CAP)),
+            "{width} x {height}"
+        );
+        let per_dimension = u64::from(device.limits().max_compute_workgroups_per_dimension);
+        assert!(
+            u64::from(width.div_ceil(TILE)).max(u64::from(height.div_ceil(TILE))) <= per_dimension
+        );
+        if is_cpu_adapter(&device) {
+            not_run_on_a_cpu_adapter(&device, &format!("{width} x {height}"));
+            continue;
+        }
         // The GPU runs it, and the last cell of the extent is reached.
         assert_eq!(
             gpu_decision(&device, width, height),
@@ -429,13 +460,20 @@ fn the_invocation_cap_counts_all_three_axes() {
 
     let exact = Extent::new(2048, 2048, 1024);
     assert_eq!(twin(exact), Ok(()));
-    let (result, cell) = run(exact);
-    result.unwrap();
     assert_eq!(
-        cell,
-        [0],
-        "the first cell is written by the first invocation"
+        exact.rounded_total([4, 4, 4]),
+        Some(u128::from(CAP)),
+        "the rounded product is exactly the cap"
     );
+    if is_cpu_adapter(&device) {
+        not_run_on_a_cpu_adapter(&device, "2048 x 2048 x 1024");
+    } else {
+        // The launch is accepted and runs; only invocation 0 writes a cell here (the write is guarded by the length
+        // of `packed`), so this shows acceptance and that the first invocation ran, not that the last cell was reached.
+        let (result, cell) = run(exact);
+        result.unwrap();
+        assert_eq!(cell, [0], "the first invocation wrote its cell");
+    }
 
     let over = Extent::new(2048, 2048, 1025);
     let requested = 2048u64 * 2048 * 1028;
@@ -483,7 +521,8 @@ fn a_product_beyond_a_u64_is_rejected_on_both_backends_before_anything_runs() {
     let device = device();
     let everything = u32::MAX;
     // The twin has no extent error: the launch is over its cap (2^64 once rounded, saturated to a u64). The GPU
-    // reports the overflow itself, because it cannot describe the launch (`Error::Extent`). Both refuse it before a buffer is touched.
+    // reports the overflow itself, because it cannot describe the launch (`Error::Extent`). Both refuse it before a
+    // buffer is touched.
     assert_eq!(
         twin_decision(Extent::new(everything, everything, 1)),
         Err(("global_invocation_id", u64::MAX, CAP))

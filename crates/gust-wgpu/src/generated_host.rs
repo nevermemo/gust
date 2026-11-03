@@ -9,6 +9,12 @@ use crate::{Error, validate_kernel};
 /// The generated source intentionally starts with already-created `wgpu::Buffer`
 /// parameters so the binding layout, shader/pipeline construction, and dispatch
 /// mechanics remain easy to inspect without including upload/readback policy.
+///
+/// The generated `encode` takes the launch size in one of two shapes (m7.d). A kernel whose workgroup is
+/// one-dimensional (`y` and `z` are 1) takes `element_count: u32` and dispatches `element_count.div_ceil(x)`
+/// workgroups along x only, so it cannot be given a `y` or `z` extent. A kernel with a two- or three-dimensional
+/// workgroup takes `extent: [u32; 3]` and divides each axis by the workgroup size. Neither shape checks the device
+/// limits or the invocation cap: the generated host bypasses the checks `HeadlessDevice` makes (D36).
 pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
     let resources = validate_kernel(kernel)?;
     let pipeline_type = format!(
@@ -191,7 +197,8 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
         write_line(
             &mut source,
             format_args!(
-                "        pass.dispatch_workgroups(extent[0].div_ceil({x}), extent[1].div_ceil({y}), extent[2].div_ceil({z}));"
+                "        pass.dispatch_workgroups(extent[0].div_ceil({x}), extent[1].div_ceil({y}), \
+                 extent[2].div_ceil({z}));"
             ),
         );
     } else {

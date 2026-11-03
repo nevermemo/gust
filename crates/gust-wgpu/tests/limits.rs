@@ -925,3 +925,35 @@ fn a_staged_graph_refuses_a_dispatch_with_a_y_or_z_extent() {
     device.execute_graph(&graph).unwrap();
     assert_eq!(device.read_f32_buffer(&output).unwrap(), [17.0]);
 }
+
+#[test]
+fn assigning_element_count_to_a_dispatch_still_sets_what_runs() {
+    let device = device();
+    let output = device.create_f32_buffer("assign", &[3.0], GpuBufferAccess::ReadWrite);
+    let descriptor = kernel(Element::F32, 64, 1);
+    let bindings = [BufferBinding::read_write(&output).independent_length()];
+    // The pattern of code written before the extent existed: build with a count, then assign the real one.
+    let mut dispatch = BufferDispatch::new(&descriptor, 0, &bindings);
+    dispatch.element_count = 64;
+    assert_eq!(dispatch.extent(), Extent::linear(64));
+    device.dispatch_batch(&[dispatch]).unwrap();
+    assert_eq!(device.read_f32_buffer(&output).unwrap(), [17.0]);
+
+    // The same on a dispatch built over an extent: x follows the assignment, y and z stay.
+    let mut dispatch = BufferDispatch::new_extent(&descriptor, Extent::new(0, 2, 3), &bindings);
+    dispatch.element_count = 5;
+    assert_eq!(dispatch.extent(), Extent::new(5, 2, 3));
+    // And the setter replaces all three axes, `element_count` included.
+    dispatch.set_extent(Extent::new(9, 8, 7));
+    assert_eq!(
+        (dispatch.element_count, dispatch.extent()),
+        (9, Extent::new(9, 8, 7))
+    );
+
+    // A count assigned to a zero count dispatches nothing when it is assigned zero, too.
+    device.write_f32_buffer(&output, &[3.0]).unwrap();
+    let mut dispatch = BufferDispatch::new(&descriptor, 64, &bindings);
+    dispatch.element_count = 0;
+    device.dispatch_batch(&[dispatch]).unwrap();
+    assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
+}

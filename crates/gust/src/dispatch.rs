@@ -845,7 +845,9 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     }
 
     /// The invocations along x (before rounding up to whole workgroups): the element count of a one-dimensional
-    /// call. For a call made with [`Call::new_extent`] this is the x axis only; [`Call::extent`] is the whole.
+    /// call. For a call made with [`Call::new_extent`] this is the x axis only; [`Call::extent`] is the whole. Do not
+    /// size a buffer from it for a multi-dimensional call: the length of a shared buffer is
+    /// `call.extent().checked_total()`, the product of the three axes.
     pub const fn element_count(&self) -> u32 {
         self.extent.x
     }

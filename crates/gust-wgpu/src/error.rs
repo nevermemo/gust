@@ -23,6 +23,8 @@ pub enum Error {
         kernel: String,
         profile: &'static str,
     },
+    /// A kernel's workgroup size has a zero axis; every axis of `workgroup_size` must be at least 1. (The size may
+    /// have y and z above 1; whether the device allows it is a [`Error::DeviceLimit`].)
     UnsupportedWorkgroupSize([u32; 3]),
     UnsupportedParameter {
         name: String,
@@ -150,8 +152,9 @@ pub enum Error {
         first: u64,
         second: u64,
     },
-    /// A dispatch extent is unusable: a product overflowed, so no launch can be described. `reason` names the
-    /// failing step.
+    /// A dispatch extent is unusable: a product overflowed, so no launch can be described (the extent's `x * y * z`, or
+    /// the kernel's workgroup size multiplied out), or the dispatch is of a kind that supports one-dimensional extents
+    /// only (a staged graph node with a y or z extent above 1). `reason` names the failing step.
     Extent {
         extent: [u64; 3],
         reason: &'static str,
@@ -184,7 +187,7 @@ impl fmt::Display for Error {
             Self::UnsupportedWorkgroupSize(size) => {
                 write!(
                     formatter,
-                    "the storage backend requires a one-dimensional workgroup, got {size:?}"
+                    "workgroup size {size:?} has a zero axis; every axis must be at least 1"
                 )
             }
             Self::UnsupportedParameter { name, kind } => {
@@ -330,10 +333,17 @@ impl fmt::Display for Error {
                     formatter,
                     "{what} `{kernel}` needs {requested} for `{limit}`, the limit is {maximum}"
                 )?;
+                // The remedy of a workgroup count over the limit: x names no axis, y and z end in `(y)` and `(z)`.
                 if *limit == "max_compute_workgroups_per_dimension" {
                     write!(
                         formatter,
-                        "; split the work into several dispatches (multi-dimensional dispatch is roadmap M7)"
+                        "; split the work into several dispatches, or spread it over y and z with a \
+                         multi-dimensional extent"
+                    )?;
+                } else if limit.starts_with("max_compute_workgroups_per_dimension (") {
+                    write!(
+                        formatter,
+                        "; split the work into several dispatches, or use fewer invocations along that axis"
                     )?;
                 }
                 Ok(())

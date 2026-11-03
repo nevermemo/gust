@@ -825,19 +825,85 @@ pub fn invocations(
         total <= u128::from(MAX_INVOCATIONS),
         "{total} invocations exceed the u32 id range; `validate` rejects this launch"
     );
-    let [x, y, _] = extent
+    let [x, y, z] = extent
         .rounded_axes(kernel.workgroup_size)
         .expect("a workgroup size without a zero axis");
-    // One running index `i < total` split into the three axes: `u64` so that rounding up near `u32::MAX` cannot
-    // overflow, and the cap keeps every id below 2^32 (a width that is not a power of two, 192, can round `u32::MAX`
-    // elements up past it, and `x as u32` would wrap). `x * y` can reach 2^64 only for a launch past the cap.
-    let plane = u128::from(x) * u128::from(y);
+    // `u64` so that rounding up near `u32::MAX` cannot overflow, and the cap keeps every id below 2^32 (a width that
+    // is not a power of two, 192, can round `u32::MAX` elements up past it, and `x as u32` would wrap).
     let total = u64::try_from(total.min(u128::from(MAX_INVOCATIONS))).unwrap_or(MAX_INVOCATIONS);
-    (0..total).map(move |i| UVec3 {
-        x: (i % x) as u32,
-        y: ((i / x) % y) as u32,
-        z: (u128::from(i) / plane) as u32,
-    })
+    if y == 1 && z == 1 {
+        // One dimension, and the D51 CPU target: a plain range, no per-id work beyond the cast.
+        Invocations::Linear(0..total)
+    } else {
+        Invocations::Grid {
+            at: [0; 3],
+            size: [x, y],
+            remaining: total,
+        }
+    }
+}
+
+/// The ids of [`invocations`]: a plain range for a launch of one row, else a counter that carries from `x` into `y`
+/// and `z` without dividing.
+enum Invocations {
+    Linear(std::ops::Range<u64>),
+    Grid {
+        /// The next id, `x` fastest.
+        at: [u64; 3],
+        /// The rounded extent along `x` and `y`; `z` ends the walk through `remaining`.
+        size: [u64; 2],
+        remaining: u64,
+    },
+}
+
+impl Iterator for Invocations {
+    type Item = UVec3;
+
+    fn next(&mut self) -> Option<UVec3> {
+        match self {
+            Self::Linear(range) => range.next().map(|x| UVec3 {
+                x: x as u32,
+                y: 0,
+                z: 0,
+            }),
+            Self::Grid {
+                at,
+                size,
+                remaining,
+            } => {
+                if *remaining == 0 {
+                    return None;
+                }
+                *remaining -= 1;
+                let id = UVec3 {
+                    x: at[0] as u32,
+                    y: at[1] as u32,
+                    z: at[2] as u32,
+                };
+                at[0] += 1;
+                if at[0] == size[0] {
+                    at[0] = 0;
+                    at[1] += 1;
+                    if at[1] == size[1] {
+                        at[1] = 0;
+                        at[2] += 1;
+                    }
+                }
+                Some(id)
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let left = match self {
+            Self::Linear(range) => range.end - range.start,
+            Self::Grid { remaining, .. } => *remaining,
+        };
+        match usize::try_from(left) {
+            Ok(left) => (left, Some(left)),
+            Err(_) => (usize::MAX, None),
+        }
+    }
 }
 
 /// Builds the invocation parameter of a shadow body from the global invocation id. Macro support.

@@ -1144,7 +1144,10 @@ fn typed_call_items(
                         __gust_device: &__GustD,
                         __gust_extent: ::gust::Extent,
                     ) -> ::core::result::Result<(), <__GustD as ::gust::Device>::Error> {
-                        <__GustD as ::gust::Run<Self, 0>>::dispatch_call(__gust_device, &Self::call_extent(__gust_extent))
+                        <__GustD as ::gust::Run<Self, 0>>::dispatch_call(
+                            __gust_device,
+                            &Self::call_extent(__gust_extent),
+                        )
                     }
                 }
             },

@@ -494,7 +494,8 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   and three dimensions. A buffer with the shared length rule holds exactly `x * y * z` elements; the product is
   checked, not wrapped (an overflow of a `u64` is `Error::Extent` on the GPU and the cap below on the twin).
 - **Zero extents.** An extent with a zero axis has no invocations: the call is `Ok(())` on both backends, nothing runs
-  and no buffer is touched, and the launch limits are not checked. The length rule still applies, with a product of 0.
+  and no buffer is touched, and no launch limit is checked, the workgroup-size limits (x, y, z and their product)
+  included. The length rule still applies, with a product of 0.
   A kernel whose workgroup size has a zero axis is rejected whatever the extent.
 - **The invocation cap (CPU and GPU).** The product of the three rounded axes must be at most 2^32
   (`Extent::MAX_INVOCATIONS`), because global ids are `u32`: `DeviceLimit` with the limit `global_invocation_id`,
@@ -508,8 +509,14 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   need 78125 workgroups: they run on the CPU backend and are `DeviceLimit` under wgpu's default limits (65535
   workgroups), and a 2^28 x 1 extent at a 16 x 16 workgroup is exactly the cap but needs 2^24 workgroups along x. This
   is a documented difference (D39), not something to match; split the work into several dispatches for the GPU. The
-  staged graph (`StagedGraph`) runs one-dimensional dispatches only and refuses a y or z extent with `Error::Extent`.
-  The macro-emitted twin uses the CPU backend (m3.c) and visits the invocations in ascending z, then y, then x.
+  macro-emitted twin uses the CPU backend (m3.c) and visits the invocations in ascending z, then y, then x.
+- **Staged graphs and the generated host (m7.d).** A staged graph (`StagedGraph`) supports one-dimensional dispatches
+  only. A node with a y or z extent above 1 is refused with `Error::Extent` when the graph runs, but the graph checks
+  the length of a shared buffer first and from the x axis only, so with a shared-length buffer the error may be
+  `BufferLength` instead; and a node with a zero y or z axis is refused, not `Ok` as in every other path. Graph nodes
+  with a y or z extent are a follow-up. The host code that `render_wgpu_source` generates takes `element_count: u32`
+  for a kernel with a one-dimensional workgroup (no y or z extent can be given to it) and `extent: [u32; 3]` for a
+  kernel with a two- or three-dimensional workgroup; it checks no launch limit.
 
 ## 6. Atomics
 

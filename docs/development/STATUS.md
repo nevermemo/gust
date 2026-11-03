@@ -280,6 +280,21 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   check-examples green; clippy-wasm refused four native-only 1D launch helpers as dead code on wasm32, fixed in
   `154102a` with the file's `cfg_attr` allow. With the m7.r4 lavapipe fix merged (`9dda10d`), fmt, clippy,
   clippy-wasm, check-web, gust-algo and MSRV green (13:32 to 13:35Z).
+- M7 m7.p (`e2612b6`, fix round `2095066`, merge `910ee1c`; D103): `par_for!`. The macro lowers the body once under a
+  placeholder, names the inner `#[gpu]` module by the hash of that Slang, and expands to a typed launch through
+  `dispatch_extent`; schema 2 export records without `source` and one sidecar per call site, read by cargo-gust
+  beside schema 1 (unchanged byte for byte). Evidence on the RTX 5090: 26 GPU and twin tests against host references
+  (1D, 2D, 3D, non-multiple and zero extents, over the cap, scalars, the default device, resident `GpuVec`, and a
+  `workgroup_size` taller or deeper than the loop), the ten-call Slang golden, hygiene (spelling, line, file and
+  profile give one key; two equal bodies give one artifact and two sidecars), byte goldens for the schema 2 record
+  and the sidecar, check-ui fixtures for E0719 and E0720, and a cpu-target case. The Opus review found that the
+  guard compared only the named axes, so a taller workgroup ran the body more than once (probe: `[4, 4, ..]` for a
+  +1 body); fixed, and the twin tests fail on the old guard. On the GPU those tests do not catch the old guard,
+  because the racing `+ 1` writes all store 1. Pin 270/30 to 296/31. Not yet: `doctor`/`check` list only the
+  origin site, the naga layout gate skips `par_for!` kernels, the over-cap error is `map::Error::Device`, and
+  `cargo gust build` cannot export a `par_for!` kernel until m6.u2f. Opus merge after one fix round.
+  Main: 23 gate steps green on `910ee1c` (16:55 to 17:33Z, RTX 5090; pins 296/31 and gust-algo 49) and
+  check-examples green.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
@@ -672,7 +687,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M7 (m7.p next) after the M6 close (D86); see the roadmap's Now
+claim: roadmap M7 (m7.p merged) after the M6 close (D86); see the roadmap's Now
 and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no

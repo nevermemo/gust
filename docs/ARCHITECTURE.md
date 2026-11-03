@@ -173,10 +173,12 @@ that narrower frontend.
 
 ### `gust-algo`
 
-The device-resident algorithms (roadmap M7). Its first member is `reduce` (`sum`, `min`, `max` of a `GpuVec<u32|i32|f32>`):
-the kernels are ordinary GUST kernels in `tests/fixtures/reduce.rs` (one `#[gust::gpu]` module, compiled at run time through the
-`slang-runtime` feature; no precompiled artifacts in v0), and the host code only picks the pass schedule, takes one pooled
-`GpuVec` per pass and submits the passes in one `dispatch_batch`. The crate depends on `gust` and `gust-wgpu` and on nothing
+The device-resident algorithms (roadmap M7). Its first member is `reduce` (`sum`, `min`, `max` of a `GpuVec<u32|i32|f32>`, and
+`sum_wrapping` of a `GpuVec<u32>`, which is defined modulo 2^32 for every input), its second `scan` (`inclusive` and
+`exclusive` prefix sums of a `GpuVec<u32>` in plain `+`, 3, 5 or 7 dispatches by length, up to the device's binding limit):
+the kernels are ordinary GUST kernels in `tests/fixtures/reduce.rs` and `tests/fixtures/scan.rs` (one `#[gust::gpu]` module
+each, compiled at run time through the `slang-runtime` feature; no precompiled artifacts in v0), and the host code only picks
+the schedule, takes one pooled `GpuVec` per level and submits the dispatches in one `dispatch_batch`. The crate depends on `gust` and `gust-wgpu` and on nothing
 else: `xtask/src/arch.rs` carries a `CrateRule` with exactly that allow-list, and `cargo xtask check-arch` fails for a
 workspace crate without one. It is `publish = false` because the kernel file lives outside the package. Its tests run the
 CPU twins against independent references in its test builds; the `gpu::` tests run on the adapter and belong to the Gpu suite

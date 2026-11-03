@@ -880,8 +880,11 @@ pub(crate) const ALGO_GPU_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-alg
 /// The `gpu::` tests of `gust-algo`, by name: each must be reported `ok`, and no other `tests::gpu::` test may exist
 /// ([`check_algo_gpu_counts`]), so a deleted or an unpinned adapter test fails the gate. The twins would still satisfy
 /// a plain "at least one test ran". Adding or removing a `gpu::` test changes this list in the same commit.
-pub(crate) const ALGO_GPU_TESTS: [&str; 12] = [
+pub(crate) const ALGO_GPU_TESTS: [&str; 20] = [
     "tests::gpu::gpu_a_first_pass_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch",
+    "tests::gpu::gpu_a_scan_is_one_batch_of_three_five_or_seven_dispatches",
+    "tests::gpu::gpu_a_scan_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch",
+    "tests::gpu::gpu_a_scan_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch",
     "tests::gpu::gpu_an_input_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch",
     "tests::gpu::gpu_empty_inputs",
     "tests::gpu::gpu_float_min_and_max_are_exact",
@@ -891,8 +894,13 @@ pub(crate) const ALGO_GPU_TESTS: [&str; 12] = [
     "tests::gpu::gpu_integer_sums_past_the_domain_wrap",
     "tests::gpu::gpu_min_of_an_empty_vector_is_empty_and_max_too",
     "tests::gpu::gpu_reductions_leave_the_input_alone_and_return_their_buffers",
+    "tests::gpu::gpu_runs_the_deepest_scans",
     "tests::gpu::gpu_runs_the_deepest_schedule",
+    "tests::gpu::gpu_scans_are_exact_at_every_boundary",
+    "tests::gpu::gpu_scans_leave_the_input_alone_and_return_their_buffers",
+    "tests::gpu::gpu_scans_past_the_domain_wrap",
     "tests::gpu::gpu_sum_on_device_keeps_the_result_resident",
+    "tests::gpu::gpu_wrapping_sums_are_defined_modulo_2_32_for_every_input",
 ];
 
 /// The shape of [`GPU_SUITE_CALL`]'s output: `passed` is the sum over every `test result:` line, `result_lines`

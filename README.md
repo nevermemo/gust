@@ -49,6 +49,8 @@ a strict profile needs neither Slang nor the helper, D45):
 
 - The stable Rust toolchain (this checkout was validated with Rust 1.98.0;
   the manifest's older minimum is not independently verified)
+- Outside this checkout, `cargo install cargo-gust --locked` installs the `cargo gust` tool; it works without
+  `GUST_PROFILE`
 - `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.20 (`cargo gust slang install` installs it, and
   `cargo gust doctor` names a `slangc` of another version). `cargo gust` finds its managed install itself (in
   `GUST_SLANG_HOME` when set), but `cargo xtask` and the run-time bridge launch plain `slangc`, so put the install's
@@ -105,7 +107,11 @@ the shipped WGSL or SPIR-V when the pipeline is created). `dev` has neither rule
 build is strict even without the variable: with `GUST_PROFILE` unset, `cargo build --release` of a crate with
 `#[gpu]` kernels is treated as `web` for `wasm32` and `native` for every other target, and prints
 `warning: gust@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`;
-cargo shows a build script's warning only for path and workspace packages, or with `-vv`). A release build that
+cargo shows a build script's warning only for path and workspace packages, or with `-vv`). The one exception is the
+internal `cargo-gust-bridge` feature (D108): where `cargo-gust` is in the graph (`cargo install cargo-gust`, a
+workspace that has it as a member, or a mistaken `cargo-gust` entry under `[dependencies]`), a release build without
+the variable is `dev` and warns `gust: cargo-gust-bridge treats a release build without GUST_PROFILE as dev`, which
+cargo shows only for path and workspace builds. A release build that
 wants the run-time bridge, such as the benchmark examples below, sets `GUST_PROFILE=dev` explicitly
 (`GUST_PROFILE=dev cargo run --release -p polynomial`; in PowerShell `$env:GUST_PROFILE = "dev"` first). The
 repository's `cargo xtask` commands run their cargo children under `GUST_PROFILE=dev`, whatever the parent

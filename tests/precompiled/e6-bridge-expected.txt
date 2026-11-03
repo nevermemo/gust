@@ -1,0 +1,10 @@
+# E6g, E6i and E6j of `cargo xtask check-precompiled`: the lines that cargo must print when the internal feature
+# `cargo-gust-bridge` of `gust` (D108) made a release build without GUST_PROFILE `dev`, so that the run-time bridge was
+# accepted. Cargo prefixes a build script's `cargo:warning` with `warning: gust@<version>: `; the text after that is
+# the one of crates/gust/build.rs, and the whole line must match. The same cases also require that the plain inference
+# text (`treated as native`) is not printed.
+warning: gust: cargo-gust-bridge treats a release build without GUST_PROFILE as dev
+# E6j only (D117): `app` has `cargo-gust` under [dependencies]. It has no library, so cargo ignores the dependency
+# and says so with this warning of its own (`warning: app v<version> (<path>) <text>`, the whole line), and the feature
+# that `cargo-gust` enables still unifies.
+cargo-warning: ignoring invalid dependency `cargo-gust` which is missing a lib target

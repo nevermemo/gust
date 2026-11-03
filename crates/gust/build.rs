@@ -5,6 +5,11 @@
 //! `cfg(gust_profile = "..")` (see `gust::profile`), and every profile but `dev` refuses the `slang-runtime` feature,
 //! so a production build can never contain the run-time Slang bridge, not even through feature unification.
 //!
+//! The one exception is the internal feature `cargo-gust-bridge` (D108), which only `cargo-gust` enables so that a
+//! plain `cargo install cargo-gust` works: with it on, a release build without `GUST_PROFILE` is `dev` (and the script
+//! says so with a `cargo:warning`) instead of `native`; a `wasm32` build stays `web`. An explicit `GUST_PROFILE`
+//! always wins over it.
+//!
 //! The decision is a pure function of [`Inputs`] that returns the exact lines this script prints, so the unit tests
 //! (`cargo test -p gust`, which includes this file from `src/profile.rs`) pin them.
 
@@ -12,6 +17,10 @@ use std::{env, process::ExitCode};
 
 /// The values `GUST_PROFILE` may take.
 const PROFILES: [&str; 4] = ["dev", "native", "web", "cpu"];
+
+/// The line printed whenever `cargo-gust-bridge` changes the profile (a release build without `GUST_PROFILE`).
+const BRIDGE_WARNING: &str =
+    "cargo:warning=gust: cargo-gust-bridge treats a release build without GUST_PROFILE as dev";
 
 /// What the decision reads from the environment of the build script.
 struct Inputs<'a> {
@@ -23,9 +32,13 @@ struct Inputs<'a> {
     wasm: bool,
     /// `CARGO_FEATURE_SLANG_RUNTIME` is set.
     slang_runtime: bool,
+    /// `CARGO_FEATURE_CARGO_GUST_BRIDGE` is set (the internal feature `cargo-gust-bridge`, D108).
+    bridge: bool,
 }
 
-/// The effective profile, and whether it was inferred from a release build (no explicit `GUST_PROFILE`).
+/// The effective profile, and whether it was inferred from a release build (no explicit `GUST_PROFILE`). With
+/// `cargo-gust-bridge` the inference for a release build is `dev`, except on `wasm32`, which stays strict (`cargo
+/// install` never targets it).
 fn effective(inputs: &Inputs<'_>) -> Result<(&'static str, bool), String> {
     match inputs.profile {
         Some("") => Err(format!(
@@ -37,6 +50,7 @@ fn effective(inputs: &Inputs<'_>) -> Result<(&'static str, bool), String> {
             .find(|known| **known == value)
             .map(|known| (*known, false))
             .ok_or_else(|| format!("gust: unknown GUST_PROFILE `{value}`; use {}", allowed())),
+        None if inputs.release && inputs.bridge && !inputs.wasm => Ok(("dev", true)),
         None if inputs.release && inputs.wasm => Ok(("web", true)),
         None if inputs.release => Ok(("native", true)),
         None => Ok(("dev", false)),
@@ -85,7 +99,10 @@ fn directives(inputs: &Inputs<'_>) -> Result<Vec<String>, String> {
         "cargo:rerun-if-env-changed=GUST_PROFILE".to_owned(),
         check_cfg(),
     ];
-    if inferred {
+    if inferred && profile == "dev" {
+        // The bridge feature is the only way to infer `dev`.
+        lines.push(BRIDGE_WARNING.to_owned());
+    } else if inferred {
         lines.push(format!(
             "cargo:warning=gust: release build without GUST_PROFILE treated as {profile}"
         ));
@@ -101,6 +118,7 @@ fn main() -> ExitCode {
         release: env::var("PROFILE").is_ok_and(|profile| profile == "release"),
         wasm: env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|arch| arch == "wasm32"),
         slang_runtime: env::var_os("CARGO_FEATURE_SLANG_RUNTIME").is_some(),
+        bridge: env::var_os("CARGO_FEATURE_CARGO_GUST_BRIDGE").is_some(),
     };
     match directives(&inputs) {
         Ok(lines) => {
@@ -125,6 +143,7 @@ mod tests {
         release: false,
         wasm: false,
         slang_runtime: false,
+        bridge: false,
     };
 
     fn cfg_line(profile: &str) -> String {
@@ -186,6 +205,7 @@ mod tests {
                         release,
                         wasm,
                         slang_runtime: false,
+                        bridge: false,
                     };
                     let lines = directives(&inputs).unwrap();
                     assert!(lines.contains(&cfg_line(name)), "{name}: {lines:?}");
@@ -398,6 +418,7 @@ mod tests {
                 release,
                 wasm: false,
                 slang_runtime: true,
+                bridge: false,
             };
             let lines = directives(&inputs).unwrap();
             assert!(lines.contains(&cfg_line("dev")), "{lines:?}");
@@ -408,6 +429,137 @@ mod tests {
             ..NONE
         };
         assert!(directives(&inputs).is_ok());
+    }
+
+    const BRIDGE_ON: Inputs<'static> = Inputs {
+        bridge: true,
+        ..NONE
+    };
+
+    fn bridge_warning() -> String {
+        "cargo:warning=gust: cargo-gust-bridge treats a release build without GUST_PROFILE as dev"
+            .to_owned()
+    }
+
+    #[test]
+    fn the_bridge_feature_makes_a_release_build_without_a_variable_dev_and_says_so_once() {
+        for slang_runtime in [false, true] {
+            let inputs = Inputs {
+                release: true,
+                slang_runtime,
+                ..BRIDGE_ON
+            };
+            assert_eq!(effective(&inputs), Ok(("dev", true)));
+            let lines = directives(&inputs).unwrap();
+            assert!(lines.contains(&cfg_line("dev")), "{lines:?}");
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|line| **line == bridge_warning())
+                    .count(),
+                1,
+                "{lines:?}"
+            );
+            // It is the only warning: the plain inference text is not printed beside it.
+            assert_eq!(
+                lines.iter().filter(|line| line.contains("warning")).count(),
+                1,
+                "{lines:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_bridge_feature_keeps_the_wasm32_inference_strict() {
+        // A release build for wasm32 without a variable is still `web`, with the plain warning, and still refuses
+        // the bridge: `cargo install` never targets wasm32, so the exception has no reason to reach it.
+        let wasm = Inputs {
+            release: true,
+            wasm: true,
+            ..BRIDGE_ON
+        };
+        assert_eq!(effective(&wasm), Ok(("web", true)));
+        let lines = directives(&wasm).unwrap();
+        assert!(lines.contains(&cfg_line("web")), "{lines:?}");
+        assert!(lines.contains(&warning("web")), "{lines:?}");
+        assert!(!lines.contains(&bridge_warning()), "{lines:?}");
+        let with_runtime = Inputs {
+            slang_runtime: true,
+            ..wasm
+        };
+        assert!(
+            directives(&with_runtime)
+                .unwrap_err()
+                .starts_with("gust: profile web refuses feature slang-runtime; ")
+        );
+    }
+
+    #[test]
+    fn the_bridge_feature_changes_nothing_else() {
+        // A debug build is dev already, so there is nothing to say.
+        let debug = Inputs {
+            slang_runtime: true,
+            ..BRIDGE_ON
+        };
+        let lines = directives(&debug).unwrap();
+        assert!(lines.contains(&cfg_line("dev")), "{lines:?}");
+        assert!(
+            !lines.iter().any(|line| line.contains("warning")),
+            "{lines:?}"
+        );
+        // An explicit value wins, and is never warned about.
+        for name in ["dev", "cpu"] {
+            let inputs = Inputs {
+                profile: Some(name),
+                release: true,
+                ..BRIDGE_ON
+            };
+            let lines = directives(&inputs).unwrap();
+            assert!(lines.contains(&cfg_line(name)), "{name}: {lines:?}");
+            assert!(
+                !lines.iter().any(|line| line.contains("warning")),
+                "{name}: {lines:?}"
+            );
+        }
+        // Without the feature the same release build stays strict.
+        let plain = Inputs {
+            release: true,
+            ..NONE
+        };
+        assert_eq!(effective(&plain), Ok(("native", true)));
+    }
+
+    #[test]
+    fn an_explicit_strict_value_still_refuses_the_slang_runtime_feature_with_the_bridge_on() {
+        for name in ["native", "web"] {
+            for release in [false, true] {
+                let inputs = Inputs {
+                    profile: Some(name),
+                    release,
+                    slang_runtime: true,
+                    ..BRIDGE_ON
+                };
+                let message = directives(&inputs).unwrap_err();
+                assert!(
+                    message.starts_with(&format!(
+                        "gust: profile {name} refuses feature slang-runtime; "
+                    )),
+                    "{message}"
+                );
+                assert!(!message.contains("inferred"), "{message}");
+            }
+        }
+        let cpu = Inputs {
+            profile: Some("cpu"),
+            release: true,
+            slang_runtime: true,
+            ..BRIDGE_ON
+        };
+        assert!(
+            directives(&cpu)
+                .unwrap_err()
+                .starts_with("gust: profile cpu refuses feature slang-runtime; ")
+        );
     }
 
     #[test]

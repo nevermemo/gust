@@ -90,7 +90,7 @@ fn table(manifest: &str, name: &str) -> Vec<String> {
 fn slang_runtime_is_a_feature_of_gust_and_gust_wgpu_and_is_off_by_default() {
     assert_eq!(
         table("crates/gust/Cargo.toml", "features"),
-        ["slang-runtime = []"]
+        ["slang-runtime = []", "cargo-gust-bridge = []"]
     );
     assert_eq!(
         table("crates/gust-wgpu/Cargo.toml", "features"),

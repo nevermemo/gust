@@ -38,11 +38,14 @@ semantics.
 ## Checks
 
 ```sh
-cargo test -p component-pool -- --ignored
-cargo xtask check-feature gpu-semantics
+cargo test -p component-pool -- --include-ignored
+cargo xtask check-cpu
 cargo xtask check-examples
 cargo xtask check-full
 ```
+
+`check-examples` and `check-full` run the example with `--include-ignored` and fail if any test stays ignored; the T13
+GPU tests are `#[ignore]`d and run nowhere else. `check-feature gpu-semantics` runs no T13 test.
 
 ## Completion
 
@@ -58,10 +61,16 @@ cargo xtask check-full
 
 ## Status and evidence
 
-Status (slice m7.t13, 2026-11-03): implemented in `examples/component-pool`, in review. Compaction and retirement
-are slice m7.t14; until then the active particles form a prefix of the pool (the emitter spawns in slot order and the
-host reference asserts it). The regressions live in the example's tests, not in `crates/gust-wgpu/tests/`, because the
-existing typed graph and pool APIs express the proof.
+Status (slice m7.t13, 2026-11-03): landed in m7.t13, in `examples/component-pool`. Compaction and retirement are
+slice m7.t14; until then the active particles form a prefix of the pool. The emitter spawns in slot order and the host
+reference asserts it (`step_cpu`, `the_emitter_reference_spawns_a_prefix`). The invariant is enforced on the host
+only: nothing on the GPU checks it, so a push that released slots out of order would make `integrate` step the wrong
+particles silently. m7.t14 owns closing that gap. The regressions live in the example's tests, not in
+`crates/gust-wgpu/tests/`, because the existing typed graph and pool APIs express the proof.
+
+The stash's `active_count` entry in `check-feature gpu-semantics` is not added. It names
+`crates/gust-wgpu/tests/active_count.rs`, which does not exist (the stash never had it, and gust-wgpu was out of this
+slice), so the feature would run no T13 test. The real gates are `check-examples` and `check-full`.
 
 - Kernels: `classify` (atomic count of the live particles whose `spawn_frame <= settings.frame`),
   `prepare_dispatch` (reads the GPU-authored count; clamps to `particles.len()` and the budget) and `integrate`
@@ -75,7 +84,9 @@ existing typed graph and pool APIs express the proof.
   of `classify` is checked without a GPU by `twin_classify_counts_the_spawned_live_slots` (`check-cpu`).
 - Mutations, each caught: dropping the allocation clamp or the budget clamp in `prepare_dispatch`, dropping the
   `i < active` guard in `integrate`, and removing the classify to prepare_dispatch edge (the graph refuses the run
-  with `GraphMissingDependency`).
+  with `GraphMissingDependency`), dropping `i < live[0u32]` in `classify` (6 tests fail, among them
+  `twin_classify_counts_the_spawned_live_slots` and `gpu_active_count_matches_cpu_reference_at_boundaries`), and
+  dropping the count reset upload (5 tests fail, among them `gpu_active_count_matches_cpu_reference_at_boundaries`).
 - Exported kernels 13 to 14 (`pool__classify.spv`, `EXPECTED_SPIRV`). The example has no committed
   `gust-artifacts/`; its exports go to the ignored `generated-wgpu/`.
 - Remaining uncertainty: one adapter (NVIDIA GeForce RTX 5090, Vulkan). The count is an integer atomic add, exact on

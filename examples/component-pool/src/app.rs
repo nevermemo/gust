@@ -328,6 +328,10 @@ pub fn assert_close(actual: &[Particle], expected: &[Particle]) {
             "particle[{index}]: {actual:?} vs {expected:?}"
         );
         assert_eq!(actual.steps, expected.steps, "steps[{index}]");
+        assert_eq!(
+            actual.spawn_frame, expected.spawn_frame,
+            "spawn_frame[{index}]"
+        );
     }
 }
 
@@ -1200,6 +1204,8 @@ mod tests {
             })
         ));
 
+        // This derived-graph proof feeds `particles.count_buffer()` straight to prepare_dispatch and has no
+        // classify node: it does not cover inference across the atomic count (the frame graph declares that edge).
         // The derived graph over the same buffers gets the edge the rejected graph lacked: integrate
         // depends on prepare_dispatch (through `args`, `active` and the particles) without a declared
         // edge, and the readback depends on prepare_dispatch, not integrate.

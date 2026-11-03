@@ -212,11 +212,6 @@ test module; do not mix that mechanical move with behavior changes.
   while `gpu_v1_float_sum_of_the_tie_ladder_is_within_the_bound` and `gpu_v1_runs_the_deepest_schedules` ran (over
   60 s, other lanes' gates on the machine); the rerun alone passed. If it repeats, run the binary alone with
   `--test-threads=1` and capture the faulting test before suspecting the driver.
-- m7.lv (uniform and vector layouts in the export record, after m6.u2f): the macro writes no layout for a uniform
-  or a `Vec`/`Mat` element (`LayoutKindRecord` has only scalar and struct kinds), so `Vec4` and `Mat4` elements fail
-  `cargo gust build` for storage and uniforms ("unsupported element type `vector`", fill.rs), including the kernels
-  of the m6.g2 `uniforms` golden; and uniforms skip the export-side check without an `export_unchecked` entry or a
-  note (D104). Files: gust-macros expand/artifact.rs, cargo-gust record.rs, fill.rs, check.rs, the manifest docs.
 - m7.p follow-ups: `doctor` and `check` list only a `par_for!` kernel's origin site (`Record.sites` holds them all);
   the naga layout gate skips `par_for!` kernels (take their descriptors through the hidden `descriptor;` form, or
   delete it); the over-cap error is `map::Error::Device`, not an extent variant (needs `Extent` in

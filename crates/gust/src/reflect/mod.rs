@@ -198,14 +198,15 @@ pub fn compile_reflected_with_helper(
     // hash is of that text, which `from_output` checks against the same copy.
     let compiled_source =
         slang::write_compile_inputs(directory.path(), kernel.slang_source, &kernel.source)?;
-    let output = Command::new(helper.as_ref())
+    let mut command = Command::new(helper.as_ref());
+    command
         .arg(&source)
         .arg(kernel.entry_point)
         .arg(target_name(target))
         .arg(&artifact)
-        .arg(&json)
-        .output()
-        .map_err(|source| Error::HelperUnavailable {
+        .arg(&json);
+    let output =
+        slang::output_retrying_busy(&mut command).map_err(|source| Error::HelperUnavailable {
             helper: helper.as_ref().to_owned(),
             source,
         })?;
@@ -258,13 +259,14 @@ pub fn compile_reflected_clean(
 ) -> Result<CleanCompilation, Error> {
     let helper = helper.as_ref();
     compile_clean_with(kernel, target, helper, |source, artifact, json| {
-        Command::new(helper)
+        let mut command = Command::new(helper);
+        command
             .arg(source)
             .arg(kernel.entry_point)
             .arg(target_name(target))
             .arg(artifact)
-            .arg(json)
-            .output()
+            .arg(json);
+        slang::output_retrying_busy(&mut command)
     })
 }
 
@@ -473,19 +475,18 @@ pub fn reflect(kernel: &KernelDescriptor, target: Target) -> Result<Reflection, 
     };
     slang::write_compile_inputs(directory.path(), kernel.slang_source, &kernel.source)?;
     let mut command = slangc_reflection_command(&source, target, kernel.entry_point);
-    let output = command
+    command
         .arg("-reflection-json")
         .arg(&json)
         .arg("-o")
-        .arg(directory.path().join(format!("kernel.{extension}")))
-        .output()
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                Error::Compiler(slang::Error::CompilerNotFound)
-            } else {
-                e.into()
-            }
-        })?;
+        .arg(directory.path().join(format!("kernel.{extension}")));
+    let output = slang::output_retrying_busy(&mut command).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            Error::Compiler(slang::Error::CompilerNotFound)
+        } else {
+            e.into()
+        }
+    })?;
     if !output.status.success() {
         return Err(Error::Compiler(slang::Error::CompilationFailed {
             target,

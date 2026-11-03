@@ -14,8 +14,9 @@ use std::{error, fmt, fs, path::Path};
 #[cfg(feature = "slang-runtime")]
 use std::{
     path::PathBuf,
-    process::Command,
+    process::{Command, Output},
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use crate::{KernelDescriptor, SourceOrigin};
@@ -27,6 +28,53 @@ mod source_map;
 
 #[cfg(feature = "slang-runtime")]
 static NEXT_INVOCATION: AtomicU64 = AtomicU64::new(1);
+
+/// How often a busy executable is tried before its error is returned (see [`output_retrying_busy`]).
+#[cfg(feature = "slang-runtime")]
+const BUSY_TRIES: u32 = 5;
+/// The wait after the first busy failure; each further wait doubles (10, 20, 40, 80 ms).
+#[cfg(feature = "slang-runtime")]
+const BUSY_FIRST_BACKOFF: Duration = Duration::from_millis(10);
+
+/// Run `command` to completion, trying again when the executable is busy (`ETXTBSY`, `ExecutableFileBusy`).
+///
+/// Every launch of `slangc` or of the reflection helper goes through here. A file that was just written and made
+/// executable (a helper installed or downloaded by this process, a script in a test) can fail to `exec` for a short
+/// while on Linux: another thread's `fork` copies the write descriptor into its child, and the child holds it until
+/// its own `exec`. The window is outside this process's control, since no lock here can cover a `fork` in code
+/// that is not ours, so the launch is retried a bounded number of times. Any other error, and the last busy
+/// error, is returned unchanged; a launch that succeeds is not touched.
+#[cfg(feature = "slang-runtime")]
+pub(crate) fn output_retrying_busy(command: &mut Command) -> std::io::Result<Output> {
+    retry_busy(BUSY_TRIES, BUSY_FIRST_BACKOFF, std::thread::sleep, || {
+        command.output()
+    })
+}
+
+/// Call `spawn` up to `tries` times while it fails with `ExecutableFileBusy`, calling `sleep` between the calls with
+/// `first_backoff`, then double that. Any other result, and the busy error of the last try, is returned.
+#[cfg(feature = "slang-runtime")]
+fn retry_busy<T>(
+    tries: u32,
+    first_backoff: Duration,
+    mut sleep: impl FnMut(Duration),
+    mut spawn: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let mut backoff = first_backoff;
+    let mut attempt = 1;
+    loop {
+        match spawn() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < tries =>
+            {
+                sleep(backoff);
+                backoff *= 2;
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
+}
 
 /// What the compile-time copy is called, and the name a `#line` directive returns
 /// to for lines with no Rust origin.
@@ -209,7 +257,7 @@ fn compile_at(
     fs::write(&map_path, source_map.json(origin, line_directives))?;
 
     let mut command = slangc_command(&source_path, target, entry);
-    let result = command.arg("-o").arg(&output_path).output();
+    let result = output_retrying_busy(command.arg("-o").arg(&output_path));
     let output = match result {
         Ok(output) => output,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -703,6 +751,76 @@ mod tests {
                 .collect();
             assert_eq!(actual, expected, "{target:?}");
         }
+    }
+
+    /// A busy executable is tried again with doubling waits, and the last busy error is returned after the bound.
+    #[cfg(feature = "slang-runtime")]
+    #[test]
+    fn a_busy_executable_is_retried_a_bounded_number_of_times() {
+        let busy = || std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy);
+        let mut calls = 0;
+        let mut waits = Vec::new();
+        let result: std::io::Result<()> = retry_busy(
+            BUSY_TRIES,
+            BUSY_FIRST_BACKOFF,
+            |wait| waits.push(wait),
+            || {
+                calls += 1;
+                Err(busy())
+            },
+        );
+        assert_eq!(
+            result.unwrap_err().kind(),
+            std::io::ErrorKind::ExecutableFileBusy
+        );
+        assert_eq!(calls, 5);
+        let millis: Vec<u128> = waits.iter().map(Duration::as_millis).collect();
+        assert_eq!(millis, [10, 20, 40, 80]);
+
+        // A launch that stops being busy is returned as it is, with no further wait.
+        let mut calls = 0;
+        let mut waited = 0;
+        let result = retry_busy(
+            BUSY_TRIES,
+            BUSY_FIRST_BACKOFF,
+            |_| waited += 1,
+            || {
+                calls += 1;
+                if calls < 3 { Err(busy()) } else { Ok(calls) }
+            },
+        );
+        assert_eq!((result.unwrap(), waited), (3, 2));
+    }
+
+    /// Only the busy error is retried: a missing executable, or a success, is returned at once.
+    #[cfg(feature = "slang-runtime")]
+    #[test]
+    fn an_error_other_than_busy_is_not_retried() {
+        let mut calls = 0;
+        let result: std::io::Result<()> = retry_busy(
+            BUSY_TRIES,
+            BUSY_FIRST_BACKOFF,
+            |_| panic!("no wait before the first result is final"),
+            || {
+                calls += 1;
+                Err(std::io::ErrorKind::NotFound.into())
+            },
+        );
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(calls, 1);
+
+        let mut calls = 0;
+        let result = retry_busy(
+            BUSY_TRIES,
+            BUSY_FIRST_BACKOFF,
+            |_| panic!("a success is not waited on"),
+            || {
+                calls += 1;
+                Ok(())
+            },
+        );
+        assert!(result.is_ok());
+        assert_eq!(calls, 1);
     }
 
     #[cfg(feature = "slang-runtime")]

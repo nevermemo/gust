@@ -14,10 +14,10 @@ struct __GustExtent
 [[vk::binding(2, 0)]] StructuredBuffer<float> b;
 [[vk::binding(3, 0)]] RWStructuredBuffer<float> out;
 
-// @rust kernel: __gust_pf_c58b82d51ee5643e::run
+// @rust kernel: __gust_pf_93f80c0c6a554f60::run
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void gpu___gust_pf_c58b82d51ee5643e_run(uint3 __gust_gid : SV_DispatchThreadID)
+void gpu___gust_pf_93f80c0c6a554f60_run(uint3 __gust_gid : SV_DispatchThreadID)
 {
     uint __gpu_len_a;
     uint __gpu_stride_a;
@@ -28,7 +28,7 @@ void gpu___gust_pf_c58b82d51ee5643e_run(uint3 __gust_gid : SV_DispatchThreadID)
     uint __gpu_len_out;
     uint __gpu_stride_out;
     out.GetDimensions(__gpu_len_out, __gpu_stride_out);
-    if ((__gust_gid.x < __gust_ext.__gust_ex))
+    if ((((__gust_gid.x < __gust_ext.__gust_ex) && (__gust_gid.y < __gust_ext.__gust_ey)) && (__gust_gid.z < __gust_ext.__gust_ez)))
     {
         var i = __gust_gid.x;
         out[i] = (a[i] * b[i]);
@@ -50,10 +50,10 @@ struct __GustExtent
 [[vk::binding(2, 0)]] StructuredBuffer<float> b;
 [[vk::binding(3, 0)]] RWStructuredBuffer<float> out;
 
-// @rust kernel: __gust_pf_6b1a338ac051bbd3::run
+// @rust kernel: __gust_pf_630275d089043ce5::run
 [shader("compute")]
 [numthreads(64, 1, 1)]
-void gpu___gust_pf_6b1a338ac051bbd3_run(uint3 __gust_gid : SV_DispatchThreadID)
+void gpu___gust_pf_630275d089043ce5_run(uint3 __gust_gid : SV_DispatchThreadID)
 {
     uint __gpu_len_a;
     uint __gpu_stride_a;
@@ -64,7 +64,7 @@ void gpu___gust_pf_6b1a338ac051bbd3_run(uint3 __gust_gid : SV_DispatchThreadID)
     uint __gpu_len_out;
     uint __gpu_stride_out;
     out.GetDimensions(__gpu_len_out, __gpu_stride_out);
-    if ((__gust_gid.x < __gust_ext.__gust_ex))
+    if ((((__gust_gid.x < __gust_ext.__gust_ex) && (__gust_gid.y < __gust_ext.__gust_ey)) && (__gust_gid.z < __gust_ext.__gust_ez)))
     {
         var i = __gust_gid.x;
         out[i] = (a[i] * b[i]);
@@ -84,15 +84,15 @@ struct __GustExtent
 [[vk::binding(0, 0)]] ConstantBuffer<__GustExtent> __gust_ext;
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint> out;
 
-// @rust kernel: __gust_pf_3e4fa04e415683f0::run
+// @rust kernel: __gust_pf_7e03716763028642::run
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void gpu___gust_pf_3e4fa04e415683f0_run(uint3 __gust_gid : SV_DispatchThreadID)
+void gpu___gust_pf_7e03716763028642_run(uint3 __gust_gid : SV_DispatchThreadID)
 {
     uint __gpu_len_out;
     uint __gpu_stride_out;
     out.GetDimensions(__gpu_len_out, __gpu_stride_out);
-    if ((__gust_gid.x < __gust_ext.__gust_ex))
+    if ((((__gust_gid.x < __gust_ext.__gust_ex) && (__gust_gid.y < __gust_ext.__gust_ey)) && (__gust_gid.z < __gust_ext.__gust_ez)))
     {
         var i = __gust_gid.x;
         out[i] = (i + uint(1));
@@ -113,10 +113,10 @@ struct __GustExtent
 [[vk::binding(1, 0)]] StructuredBuffer<float> img;
 [[vk::binding(2, 0)]] RWStructuredBuffer<float> out;
 
-// @rust kernel: __gust_pf_5e7993f2b3d98a81::run
+// @rust kernel: __gust_pf_e626553f08c28179::run
 [shader("compute")]
 [numthreads(16, 16, 1)]
-void gpu___gust_pf_5e7993f2b3d98a81_run(uint3 __gust_gid : SV_DispatchThreadID)
+void gpu___gust_pf_e626553f08c28179_run(uint3 __gust_gid : SV_DispatchThreadID)
 {
     uint __gpu_len_img;
     uint __gpu_stride_img;
@@ -124,7 +124,7 @@ void gpu___gust_pf_5e7993f2b3d98a81_run(uint3 __gust_gid : SV_DispatchThreadID)
     uint __gpu_len_out;
     uint __gpu_stride_out;
     out.GetDimensions(__gpu_len_out, __gpu_stride_out);
-    if (((__gust_gid.x < __gust_ext.__gust_ex) && (__gust_gid.y < __gust_ext.__gust_ey)))
+    if ((((__gust_gid.x < __gust_ext.__gust_ex) && (__gust_gid.y < __gust_ext.__gust_ey)) && (__gust_gid.z < __gust_ext.__gust_ez)))
     {
         var x = __gust_gid.x;
         var y = __gust_gid.y;
@@ -146,15 +146,15 @@ struct __GustExtent
 [[vk::binding(0, 0)]] ConstantBuffer<__GustExtent> __gust_ext;
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint> out;
 
-// @rust kernel: __gust_pf_56278f7b27370a1d::run
+// @rust kernel: __gust_pf_58ff63fbf2b09015::run
 [shader("compute")]
 [numthreads(16, 16, 1)]
-void gpu___gust_pf_56278f7b27370a1d_run(uint3 __gust_gid : SV_DispatchThreadID)
+void gpu___gust_pf_58ff63fbf2b09015_run(uint3 __gust_gid : SV_DispatchThreadID)
 {
     uint __gpu_len_out;
     uint __gpu_stride_out;
     out.GetDimensions(__gpu_len_out, __gpu_stride_out);
-    if (((__gust_gid.x < __gust_ext.__gust_ex) && (__gust_gid.y < __gust_ext.__gust_ey)))
+    if ((((__gust_gid.x < __gust_ext.__gust_ex) && (__gust_gid.y < __gust_ext.__gust_ey)) && (__gust_gid.z < __gust_ext.__gust_ez)))
     {
         var x = __gust_gid.x;
         var y = __gust_gid.y;
@@ -218,10 +218,10 @@ struct __GustExtent
 [[vk::binding(2, 0)]] StructuredBuffer<float> b;
 [[vk::binding(3, 0)]] RWStructuredBuffer<float> out;
 
-// @rust kernel: __gust_pf_ae549bde145a5fb3::run
+// @rust kernel: __gust_pf_f38e4a1a0a82c685::run
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void gpu___gust_pf_ae549bde145a5fb3_run(uint3 __gust_gid : SV_DispatchThreadID)
+void gpu___gust_pf_f38e4a1a0a82c685_run(uint3 __gust_gid : SV_DispatchThreadID)
 {
     uint __gpu_len_a;
     uint __gpu_stride_a;
@@ -232,7 +232,7 @@ void gpu___gust_pf_ae549bde145a5fb3_run(uint3 __gust_gid : SV_DispatchThreadID)
     uint __gpu_len_out;
     uint __gpu_stride_out;
     out.GetDimensions(__gpu_len_out, __gpu_stride_out);
-    if ((__gust_gid.x < __gust_ext.__gust_ex))
+    if ((((__gust_gid.x < __gust_ext.__gust_ex) && (__gust_gid.y < __gust_ext.__gust_ey)) && (__gust_gid.z < __gust_ext.__gust_ez)))
     {
         var i = __gust_gid.x;
         var t = __gust_ext.t;
@@ -263,17 +263,75 @@ struct __GustExtent
 [[vk::binding(0, 0)]] ConstantBuffer<__GustExtent> __gust_ext;
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint> out;
 
-// @rust kernel: __gust_pf_b8745e0846f2f2b7::run
+// @rust kernel: __gust_pf_fee81667ae515719::run
 [shader("compute")]
 [numthreads(256, 1, 1)]
-void gpu___gust_pf_b8745e0846f2f2b7_run(uint3 __gust_gid : SV_DispatchThreadID)
+void gpu___gust_pf_fee81667ae515719_run(uint3 __gust_gid : SV_DispatchThreadID)
 {
     uint __gpu_len_out;
     uint __gpu_stride_out;
     out.GetDimensions(__gpu_len_out, __gpu_stride_out);
-    if ((__gust_gid.x < __gust_ext.__gust_ex))
+    if ((((__gust_gid.x < __gust_ext.__gust_ex) && (__gust_gid.y < __gust_ext.__gust_ey)) && (__gust_gid.z < __gust_ext.__gust_ez)))
     {
         var i = __gust_gid.x;
         out[i] = uint(7);
+    }
+}
+// ==== call 9 ====
+// Generated by GUST from Rust syntax. Slang is the compiler backend.
+
+struct __GustExtent
+{
+    uint __gust_ex;
+    uint __gust_ey;
+    uint __gust_ez;
+    uint __gust_pad0;
+};
+
+[[vk::binding(0, 0)]] ConstantBuffer<__GustExtent> __gust_ext;
+[[vk::binding(1, 0)]] RWStructuredBuffer<uint> out;
+
+// @rust kernel: __gust_pf_0ed359173a83349f::run
+[shader("compute")]
+[numthreads(64, 4, 1)]
+void gpu___gust_pf_0ed359173a83349f_run(uint3 __gust_gid : SV_DispatchThreadID)
+{
+    uint __gpu_len_out;
+    uint __gpu_stride_out;
+    out.GetDimensions(__gpu_len_out, __gpu_stride_out);
+    if ((((__gust_gid.x < __gust_ext.__gust_ex) && (__gust_gid.y < __gust_ext.__gust_ey)) && (__gust_gid.z < __gust_ext.__gust_ez)))
+    {
+        var i = __gust_gid.x;
+        (out[i] += uint(1));
+    }
+}
+// ==== call 10 ====
+// Generated by GUST from Rust syntax. Slang is the compiler backend.
+
+struct __GustExtent
+{
+    uint __gust_ex;
+    uint __gust_ey;
+    uint __gust_ez;
+    uint w;
+};
+
+[[vk::binding(0, 0)]] ConstantBuffer<__GustExtent> __gust_ext;
+[[vk::binding(1, 0)]] RWStructuredBuffer<uint> out;
+
+// @rust kernel: __gust_pf_610d503f9f8cc550::run
+[shader("compute")]
+[numthreads(8, 8, 2)]
+void gpu___gust_pf_610d503f9f8cc550_run(uint3 __gust_gid : SV_DispatchThreadID)
+{
+    uint __gpu_len_out;
+    uint __gpu_stride_out;
+    out.GetDimensions(__gpu_len_out, __gpu_stride_out);
+    if ((((__gust_gid.x < __gust_ext.__gust_ex) && (__gust_gid.y < __gust_ext.__gust_ey)) && (__gust_gid.z < __gust_ext.__gust_ez)))
+    {
+        var x = __gust_gid.x;
+        var y = __gust_gid.y;
+        var w = __gust_ext.w;
+        (out[((y * w) + x)] += uint(1));
     }
 }

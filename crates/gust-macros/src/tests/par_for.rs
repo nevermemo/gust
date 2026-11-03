@@ -135,7 +135,7 @@ fn moved(lines: usize) -> String {
 #[test]
 fn the_calls_of_the_fixture_match_the_golden() {
     let inputs = calls(FIXTURE);
-    assert_eq!(inputs.len(), 8, "{inputs:#?}");
+    assert_eq!(inputs.len(), 10, "{inputs:#?}");
     let mut actual = String::new();
     for (index, input) in inputs.iter().enumerate() {
         let scratch = Scratch::new("golden");
@@ -180,7 +180,8 @@ fn one_body_in_two_spellings_is_one_module_name() {
     // `float` is the dialect's spelling of `f32`, and layout does not matter: the name is the hash of the lowered
     // Slang, not of the tokens, so these calls are one kernel. (Mutation: naming the module from the token text.)
     let plain = "i in 0..n, [a: &[f32], out: &mut [f32]] { let v = a[i]; out[i] = v * 2.0; }";
-    let spelled = "i in 0..n , [ a : &[float] , out : &mut [float] ] {\n let v = a [ i ] ;\n\n out [ i ] = v * 2.0 ;\n }";
+    let spelled = "i in 0..n , [ a : &[float] , out : &mut [float] ] {\n let v = a [ i ] ;\n\n \
+                   out [ i ] = v * 2.0 ;\n }";
     let (first, second) = (Scratch::new("spelling"), Scratch::new("spelling"));
     let one = expand(plain, &first, "src/lib.rs", 1, Profile::Other);
     let two = expand(spelled, &second, "src/lib.rs", 1, Profile::Other);
@@ -503,6 +504,22 @@ fn a_binding_that_cannot_be_one_is_e0720() {
     ] {
         rejected(input, Profile::Other, Code::ParForBinding);
     }
+    // The names the expansion defines in the block of the call: a binding reads the variable of its own name.
+    for name in ["run", "launch", "launch_default", "DESCRIPTOR"] {
+        let input = format!("i in 0..n, [{name}: &mut [f32]] {{ }}");
+        let (error, _) = error_line(&input);
+        assert!(error.contains("GUST-E0720"), "{name}: {error}");
+        assert!(
+            error.contains(&format!("the name `{name}`")),
+            "{name}: {error}"
+        );
+        assert!(error.contains("rename the variable"), "{name}: {error}");
+    }
+    // A loop variable of such a name is a local of the kernel and is accepted.
+    let scratch = Scratch::new("loop variable");
+    let input = "run in 0..n, [out: &mut [f32]] { out[run] = 1.0; }";
+    let expansion = expand(input, &scratch, "src/lib.rs", 1, Profile::Other);
+    assert!(!failed(&expansion), "{expansion}");
     // No GPU API under the cpu profile.
     rejected(
         "i in 0..n, [a: &GpuVec<f32>] { }",
@@ -551,7 +568,8 @@ fn error_line(input: &str) -> (String, usize) {
 fn a_dialect_error_in_the_body_is_reported_at_the_body() {
     // D33: the tokens of the body are the user's, so the error carries its code and the line of the offending
     // statement; the generated parts (the guard, the extent record) are never what an error points at.
-    let input = "i in 0..n, [a: &[f32], out: &mut [f32]] {\n    let v = a[i];\n    while v > 0.0 {\n        break;\n    }\n}";
+    let input = "i in 0..n, [a: &[f32], out: &mut [f32]] {\n    let v = a[i];\n    while v > 0.0 {\n\
+                 \x20       break;\n    }\n}";
     let (message, line) = error_line(input);
     assert!(
         message.contains(Code::WhileNotSupported.text()),

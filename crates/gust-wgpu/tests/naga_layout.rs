@@ -835,7 +835,7 @@ fn the_goldens_are_the_fixtures_directory() {
         .flat_map(|golden| [golden.file.to_owned(), golden.file.replace(".slang", ".rs")])
         .collect();
     // `par_for.rs` and `par_for.slang` (slice m7.p) are the one fixture this gate does not walk: the module of a
-    // `par_for!` kernel stands inside the block of its call, so no descriptor can be named from here. Its eight
+    // `par_for!` kernel stands inside the block of its call, so no descriptor can be named from here. Its ten
     // kernels run on a device in `tests/par_for.rs`, which checks every binding's layout at bind time.
     let in_scope = |set: &BTreeSet<String>| -> BTreeSet<String> {
         set.iter()

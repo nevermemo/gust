@@ -199,6 +199,29 @@ macro_rules! scenarios {
             }
 
             #[test]
+            fn a_workgroup_taller_than_the_loop_runs_each_element_once() {
+                // (Mutation: a guard on the named axes only bumps every element once per row of the workgroup.)
+                let device = device();
+                let dev = $device(&device);
+                for n in [1_usize, 63, 64, 65, 300, 1000] {
+                    let mut out = vec![0_u32; n];
+                    $module::bump_tall(&mut out, dev).unwrap();
+                    assert_eq!(out, vec![1_u32; n], "n = {n}");
+                }
+            }
+
+            #[test]
+            fn a_workgroup_deeper_than_the_loop_runs_each_cell_once() {
+                let device = device();
+                let dev = $device(&device);
+                for (w, h) in [(1_u32, 1_u32), (8, 8), (9, 7), (20, 3)] {
+                    let mut out = vec![0_u32; (w * h) as usize];
+                    $module::bump_deep(&mut out, w, h, dev).unwrap();
+                    assert_eq!(out, vec![1_u32; (w * h) as usize], "{w} x {h}");
+                }
+            }
+
+            #[test]
             fn scalars_of_every_kind_reach_the_body() {
                 let device = device();
                 let dev = $device(&device);
@@ -241,7 +264,7 @@ macro_rules! scenarios {
             fn an_extent_past_the_launch_cap_is_an_error_and_runs_nothing() {
                 let device = device();
                 let dev = $device(&device);
-                // 65_536 x 65_552 invocations after rounding y up to 16: a little over 2^32.
+                // 65_536 x 65_552 invocations after rounding y up to 16: a little over 2^32. The generated code\n                // checks the cap (`Extent::rounded_total`) before the uniform is created or anything is uploaded.
                 let mut out = vec![UNWRITTEN; 16];
                 let error = $module::tag_2d(&mut out, 65_536, 65_537, 4, dev).unwrap_err();
                 assert!(<$backend as Backend>::is_over_cap(&error), "{error:?}");

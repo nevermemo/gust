@@ -62,6 +62,18 @@ pub fn gpu(attribute: TokenStream, item: TokenStream) -> TokenStream {
 /// The body is the dialect, run once per index of the ranges as a kernel; the bracketed list names the buffers
 /// (`&[T]`, `&mut [T]`, `&GpuVec<T>`, `&mut GpuVec<T>`) and scalars (`u32`, `i32`, `f32`, `bool`) it uses, each taken
 /// from the variable of that name at the call. The call returns `Result<(), gust::map::Error>`.
+///
+/// Two optional clauses come first, in this order and each ending in `;`: `workgroup_size(x, y, z);` overrides the
+/// workgroup (the defaults are 256 for one variable, 16 x 16 for two and 8 x 8 x 4 for three), and `on(device);` names
+/// the device to run on (a `gust_wgpu::HeadlessDevice`, or a `gust::cpu::CpuDevice` under `GUST_PROFILE=cpu`); without
+/// it the call opens the default device. The iterations run in no defined order and in parallel, so a body whose
+/// iteration depends on another is a bug in the body that nothing diagnoses (docs/SEMANTICS.md).
+///
+/// ```text
+/// gust::par_for!(workgroup_size(8, 8, 1); on(&device); (x, y) in (0..w, 0..h), [out: &mut [u32], w: u32] {
+///     out[y * w + x] = y * 1000u32 + x;
+/// });
+/// ```
 #[proc_macro]
 pub fn par_for(input: TokenStream) -> TokenStream {
     // The one place that reads the build profile, as for `#[gpu]` (D44, R1-9).

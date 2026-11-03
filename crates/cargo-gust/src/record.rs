@@ -15,8 +15,8 @@
 //! Schema 2 (R1.1 M5, slice m7.p) is the record of a `par_for!` call: the same keys without `source`, because one body
 //! can stand at any number of call sites and the record must not depend on them. Each call site writes a sidecar
 //! `<key>.<site16>.site.json` (`schema` 2, `key`, `file`, `lines` as above). The reader takes a schema 2 record's
-//! `file` and `lines` from its first sidecar by file name, so the descriptor it builds has the origin of the first
-//! call site.
+//! `file` and `lines` from its call sites: [`Record::sites`] holds them all, sorted by (file, first Rust line), and the
+//! descriptor it builds has the origin of the first.
 
 use std::{fs, path::Path};
 
@@ -60,16 +60,29 @@ pub(crate) struct Record {
     pub(crate) lines: Vec<[u32; 3]>,
     /// The clean Slang text, byte for byte.
     pub(crate) slang: String,
+    /// The call sites of a schema 2 record, sorted by (file, first Rust line); empty for schema 1. The origin of the
+    /// record is `sites[0]`.
+    pub(crate) sites: Vec<Site>,
 }
 
 /// One call site of a `par_for!` body: the source file of the call and the line table of its copy of the body.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Site {
-    file: String,
-    lines: Vec<[u32; 3]>,
+pub(crate) struct Site {
+    pub(crate) file: String,
+    pub(crate) lines: Vec<[u32; 3]>,
 }
 
 impl Site {
+    /// The first Rust line of the copy of the body (the smallest non-zero line of its table; 0 when there is none).
+    fn first_line(&self) -> u32 {
+        self.lines
+            .iter()
+            .map(|line| line[2])
+            .filter(|line| *line > 0)
+            .min()
+            .unwrap_or(0)
+    }
+
     /// Read a sidecar from its text; `key` is the key of the record it must belong to.
     fn parse(json_text: &str, key: &str) -> Result<Self, String> {
         let root = json::parse(json_text)?;
@@ -209,13 +222,14 @@ impl Record {
             file,
             lines,
             slang: slang.to_owned(),
+            sites: Vec::new(),
         };
         Ok((record, schema))
     }
 
-    /// Take the origin of a schema 2 record from its call sites, in the order of their sidecars' file names: the
-    /// first one's.
-    fn with_origin_of(mut self, schema: u32, sites: &[Site]) -> Result<Self, String> {
+    /// Give a schema 2 record its call sites, sorted by (file, first Rust line) with the order of the sidecars' file
+    /// names breaking a tie, and take its origin from the first.
+    fn with_sites(mut self, schema: u32, mut sites: Vec<Site>) -> Result<Self, String> {
         if schema != SITE_RECORD_SCHEMA {
             if sites.is_empty() {
                 return Ok(self);
@@ -225,6 +239,12 @@ impl Record {
                 self.key
             ));
         }
+        // A stable sort: the sites arrive in the order of the sidecars' names.
+        sites.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then_with(|| a.first_line().cmp(&b.first_line()))
+        });
         let Some(first) = sites.first() else {
             return Err(format!(
                 "record `{}` is schema 2 but has no `{}.<16 hex digits>{SITE_SUFFIX}` file: a par_for! kernel needs at least one call site",
@@ -233,6 +253,7 @@ impl Record {
         };
         self.file.clone_from(&first.file);
         self.lines.clone_from(&first.lines);
+        self.sites = sites;
         Ok(self)
     }
 
@@ -296,8 +317,12 @@ impl Record {
                     .map(|(group, binding)| ResourceBinding { group, binding }),
             });
         }
-        let lines: Vec<LineSpan> = self
-            .lines
+        // The origin of a schema 2 record is its first call site.
+        let (file, table) = match self.sites.first() {
+            Some(site) => (&site.file, &site.lines),
+            None => (&self.file, &self.lines),
+        };
+        let lines: Vec<LineSpan> = table
             .iter()
             .map(|[slang_start, slang_end, rust_line]| LineSpan {
                 slang_start: *slang_start,
@@ -312,11 +337,11 @@ impl Record {
             workgroup_size: self.workgroup_size,
             parameters: Box::leak(parameters.into_boxed_slice()),
             slang_source: leak(&self.slang),
-            source: if self.file.is_empty() && lines.is_empty() {
+            source: if file.is_empty() && lines.is_empty() {
                 SourceOrigin::UNKNOWN
             } else {
                 SourceOrigin {
-                    file: leak(&self.file),
+                    file: leak(file),
                     lines: Box::leak(lines.into_boxed_slice()),
                 }
             },
@@ -566,7 +591,7 @@ pub(crate) fn read_records(directory: &Path) -> Result<Vec<Record>, String> {
             sites.push(Site::parse(&text, stem).map_err(|error| format!("{site_name}: {error}"))?);
         }
         let record = record
-            .with_origin_of(schema, &sites)
+            .with_sites(schema, sites)
             .map_err(|error| format!("{json_name}: {error}"))?;
         records.push(record);
     }

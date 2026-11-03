@@ -1136,6 +1136,7 @@ CPU twin text (a bug in the macro; records never hold a twin), or a record with 
 Reached through `#[gpu]`.
 Rejected: `GUST_EXPORT_DIR` pointing at a path that is a file, or at a read-only directory.
 Also rejected: two kernels of one package with the same 64-bit key and different text; the second one fails here instead of overwriting the first one's record (the message names both kernels).
+Also rejected (a known limitation): two `par_for!` calls with equal bodies that start on the same line of the same file with different line tables, which is what one `macro_rules!` definition makes when it expands the call twice (the expansions are reported on the line of the call inside the definition), because both would write one call-site record. Change the body of one, or move the call out of the macro into a function that the macro calls.
 Write instead: point `GUST_EXPORT_DIR` at a writable directory, or let `cargo gust build` choose it.
 Decision: D45, D46.
 
@@ -1195,17 +1196,18 @@ Decision: D42 (M7 plan 4.1, slice m7.g1).
 ### GUST-E0719 `par_for!` call that is not one of its forms
 
 A `par_for!` call is `par_for!([workgroup_size(x, y, z);] PATTERN in RANGES, [bindings] { body })`. The pattern is `i`, `(x, y)` or `(x, y, z)`, each name an identifier or `_` and each named once; the ranges are `0..n` for one variable or a tuple of them, one per variable, each starting at the literal 0 and ending before an extent expression; the bindings are a bracketed list; the body is one block and ends the call. A `workgroup_size` option has the codes of the same option on a kernel (E0704, E0705, E0706). The hidden options `on(device);` and `descriptor;` come before the pattern and are read the same way.
-Reached through `#[gpu]`, by way of `par_for!`.
+Reached through `#[gpu]`, raised by `par_for!` only (the function-like macro that shares the validator of `#[gpu]`).
 Rejected: `par_for!(i in 0..n, [])` (no body), `par_for!((x) in 0..n, [] { })`, `par_for!((x, y) in 0..n, [] { })`, `par_for!(i in 1..n, [] { })`, `par_for!(i in 0..=n, [] { })`, `par_for!((x, x) in (0..w, 0..h), [] { })`, `par_for!(i in 0..n, [] { } { })`.
 Write instead: one of the forms of the plan (section 3.1), for example `par_for!((x, y) in (0..w, 0..h), [out: &mut [f32], w: u32] { out[y * w + x] = 1.0; })`.
 Decision: M7 plan 3.1 (slice m7.p).
 
 ### GUST-E0720 `par_for!` binding that cannot be one
 
-A binding is `name: Type` with one of: `&[T]` (a buffer the body reads), `&mut [T]` (a buffer it writes, read back after the loop), `&GpuVec<T>` and `&mut GpuVec<T>` (a resident buffer, bound where it is), or a scalar `u32`, `i32`, `f32` or `bool` (a field of the extent record). `T` is a buffer element: `f32`, `i32`, `u32` or a 2- or 4-wide vector or a square matrix; a `bool` buffer is a `u32` buffer, and a 3-wide type is GUST-E0204. A name is used once among the loop variables and the bindings. Under `GUST_PROFILE=cpu` there is no GPU API, so a `GpuVec` binding is refused.
-Reached through `#[gpu]`, by way of `par_for!`.
-Rejected: `a: Vec<f32>`, `a: &Vec<f32>`, `a: &[bool]`, `a: &mut f32`, `a: u64`, `a: &[f32], a: &[f32]`, `i: u32` in a loop over `i`, `a: &GpuVec<f32>` under `GUST_PROFILE=cpu`.
-Write instead: a slice or a `GpuVec` for a buffer, a scalar of the four types for a value, and distinct names; the binding is read from the variable of that name at the call (`&a[..]`, `&mut out[..]`, `&*v`, or the scalar itself).
+A binding is `name: Type` with one of: `&[T]` (a buffer the body reads), `&mut [T]` (a buffer it writes, read back after the loop), `&GpuVec<T>` and `&mut GpuVec<T>` (a resident buffer, bound where it is), or a scalar `u32`, `i32`, `f32` or `bool` (a field of the extent record). `T` is a buffer element: `f32`, `i32`, `u32` or a 2- or 4-wide vector or a square matrix; a `bool` buffer is a `u32` buffer, and a 3-wide type is GUST-E0204. A name is used once among the loop variables and the bindings, and is not one the expansion defines in the block of the call (`run`, `launch`, `launch_default`, `DESCRIPTOR`; the others start with the reserved `__gust` prefix): a binding reads the variable of its own name, so such a name would read the expansion's item. Under `GUST_PROFILE=cpu` there is no GPU API, so a `GpuVec` binding is refused.
+Reached through `#[gpu]`, raised by `par_for!` only (the function-like macro that shares the validator of `#[gpu]`).
+Rejected: `a: Vec<f32>`, `a: &Vec<f32>`, `a: &[bool]`, `a: &mut f32`, `a: u64`, `a: &[f32], a: &[f32]`, `i: u32` in a loop over `i`, `launch: &mut [f32]`, `a: &GpuVec<f32>` under `GUST_PROFILE=cpu`.
+Fixtures: `tests/ui/par-for-binding`, `tests/ui/par-for-reserved-name` (`cargo xtask check-ui`).
+Write instead: a slice or a `GpuVec` for a buffer, a scalar of the four types for a value, and distinct names that the expansion does not use (rename the variable of the call); the binding is read from the variable of that name at the call (`&a[..]`, `&mut out[..]`, `&*v`, or the scalar itself).
 Decision: M7 plan 3.1 (slice m7.p).
 
 ## E08xx: emitter-only rejections

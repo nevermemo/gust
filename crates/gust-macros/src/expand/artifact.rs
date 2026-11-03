@@ -513,8 +513,7 @@ impl SiteRecord<'_> {
 /// The 16 lower-case hex digits that tell the call sites of one body apart: FNV-1a 64 over the recorded file, one NUL
 /// byte and the decimal first line of the call. The file is the relative one `recorded_path` gives, so the name does
 /// not depend on the build machine's directory, and the line is the call's, so moving other code does not matter to a
-/// call
-/// that stays where it is. Two calls on one line of one file with equal bodies share a name, and so a sidecar: their
+/// call that stays where it is. Two calls on one line of one file with equal bodies share a name, and so a sidecar: their
 /// bytes must be equal too (see [`write_site_records`]).
 pub(super) fn site_hash(file: &str, call_line: u32) -> String {
     let line = call_line.to_string();
@@ -650,7 +649,7 @@ fn write_files(
         })?;
         if existing.is_some() {
             return Err(format!(
-                "gust: two `par_for!` calls with equal bodies start on the same line of the same file but have different line tables, so they would share the site record `{name}`; put them on different lines"
+                "gust: two `par_for!` calls with equal bodies start on the same line of the same file but have different line tables, so they would share the site record `{name}`. This happens when one `macro_rules!` definition expands the call twice (the expansions share the line of the call inside the definition): change the body of one of them, or move the call out of the macro into a function that the macro calls. This is a known limitation (docs/DIAGNOSTICS.md, GUST-E0712)"
             ));
         }
     }
@@ -1160,8 +1159,13 @@ pub(super) mod tests {
     }
 
     pub(in crate::expand) fn sample_json() -> String {
+        sample_written_by(|record| record.json())
+    }
+
+    /// The sample kernel as `write` prints it.
+    fn sample_written_by(write: impl Fn(&KernelRecord<'_>) -> String) -> String {
         let parameters = sample_parameters();
-        KernelRecord {
+        let record = KernelRecord {
             key: "0123456789abcdef",
             module: "demo",
             name: "run",
@@ -1181,8 +1185,8 @@ pub(super) mod tests {
                     rust_line: 14,
                 },
             ],
-        }
-        .json()
+        };
+        write(&record)
     }
 
     #[test]
@@ -1192,6 +1196,76 @@ pub(super) mod tests {
             "sample.kernel.json",
             &include_str!("../../tests/golden/sample.kernel.json").replace("\r\n", "\n"),
         );
+    }
+
+    #[test]
+    fn the_par_for_record_matches_the_golden() {
+        let actual = sample_written_by(|record| record.json_without_source());
+        assert_golden(
+            &actual,
+            "sample.par_for.kernel.json",
+            &include_str!("../../tests/golden/sample.par_for.kernel.json").replace("\r\n", "\n"),
+        );
+        // It is the schema 1 record without its `source`, with the schema raised: nothing else differs.
+        let schema_1 = sample_json();
+        let source_start = schema_1.find("  \"source\": {").expect("a source block");
+        let source_end = source_start
+            + schema_1[source_start..].find("  },\n").expect("its end")
+            + "  },\n".len();
+        let derived = format!("{}{}", &schema_1[..source_start], &schema_1[source_end..])
+            .replace("\"schema\": 1", "\"schema\": 2");
+        assert_eq!(actual, derived);
+    }
+
+    #[test]
+    fn the_call_site_record_matches_the_golden() {
+        let lines = [
+            LineRecord {
+                slang_start: 3,
+                slang_end: 9,
+                rust_line: 12,
+            },
+            LineRecord {
+                slang_start: 5,
+                slang_end: 5,
+                rust_line: 14,
+            },
+        ];
+        let actual = SiteRecord {
+            key: "0123456789abcdef",
+            file: "src/lib.rs",
+            lines: &lines,
+        }
+        .json();
+        assert_golden(
+            &actual,
+            "sample.site.json",
+            &include_str!("../../tests/golden/sample.site.json").replace("\r\n", "\n"),
+        );
+    }
+
+    #[test]
+    fn the_site_names_in_the_readers_test_data_are_the_names_the_writer_makes() {
+        // `cargo-gust` reads these names from its own test data; if the hash or the name format changes here, the
+        // reader's data must change with it. The file is read as text because the crates share no code.
+        let reader = include_str!("../../../cargo-gust/src/testdata.rs");
+        for (file, line) in [("src/lib.rs", 12), ("tests/other.rs", 40)] {
+            let name = site_file_name("022c52d675787198", file, line);
+            assert!(
+                reader.contains(&format!("\"{name}\"")),
+                "{name} ({file}:{line}) is not in testdata.rs"
+            );
+        }
+        // FNV-1a 64 over the file, a zero byte and the decimal line, written out once by hand for a short input.
+        let by_hand = [b"a".as_slice(), &[0], b"1"]
+            .concat()
+            .iter()
+            .fold(0xcbf29ce484222325_u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+            });
+        assert_eq!(site_hash("a", 1), format!("{by_hand:016x}"));
+        assert_ne!(site_hash("a", 1), site_hash("a", 2));
+        assert_ne!(site_hash("a", 1), site_hash("b", 1));
     }
 
     /// Set to `1` (as `cargo xtask bless` does for tests named `golden`) to rewrite a golden of

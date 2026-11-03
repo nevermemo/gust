@@ -107,3 +107,19 @@ pub fn fill_u64(out: &mut [u32], n: u64, device: &Dev) -> Result<(), gust::map::
         out[i] = 7u32;
     })
 }
+
+/// A one-dimensional loop in a workgroup taller than the loop: 64 x 4 x 1. The invocations of rows 1 to 3 have `x`
+/// in range, so only the guard on the unused axes keeps each element from being bumped four times.
+pub fn bump_tall(out: &mut [u32], device: &Dev) -> Result<(), gust::map::Error> {
+    let n = out.len() as u32;
+    gust::par_for!(workgroup_size(64, 4, 1); on(device); i in 0..n, [out: &mut [u32]] {
+        out[i] += 1u32;
+    })
+}
+
+/// A two-dimensional loop in a workgroup with a third axis: 8 x 8 x 2, so the guard on `z` is what runs each cell once.
+pub fn bump_deep(out: &mut [u32], w: u32, h: u32, device: &Dev) -> Result<(), gust::map::Error> {
+    gust::par_for!(workgroup_size(8, 8, 2); on(device); (x, y) in (0..w, 0..h), [out: &mut [u32], w: u32] {
+        out[y * w + x] += 1u32;
+    })
+}

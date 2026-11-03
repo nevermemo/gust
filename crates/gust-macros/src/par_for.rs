@@ -20,7 +20,8 @@
 //!
 //! The kernel is `run(gid, extent: Uniform<__GustExtent>, buffers..)`. The extent record holds the three extents, the
 //! scalar bindings (a `bool` as a `u32` word) and explicit padding up to 16 bytes (GUST never inserts padding). The
-//! body runs inside the guard `if x < extent.x && y < extent.y && z < extent.z` over the axes the loop names.
+//! body runs inside the guard `if x < extent.x && y < extent.y && z < extent.z` over all three axes, whatever the arity
+//! of the loop (an unused axis has extent 1, so a taller workgroup runs nothing on it).
 //!
 //! Identity (R1.1 S5, M5). `hash16` is the content key of the *lowered Slang*, not of the tokens: the macro lowers
 //! once as the placeholder module `__gust_pf` (entry `gpu___gust_pf_run`), takes [`content_key`] of that clean text,
@@ -89,6 +90,9 @@ const PLACEHOLDER: &str = "__gust_pf";
 struct Options {
     workgroup: Option<[u32; 3]>,
     on: Option<syn::Expr>,
+    /// The hidden `descriptor;` form, which expands to the kernel's descriptor and launches nothing. It is for the
+    /// follow-up that runs the naga gate over `par_for!` kernels (the fixtures are skipped there until then); it is
+    /// not public API and has no entry in the documentation of the macro.
     descriptor: bool,
 }
 
@@ -470,6 +474,12 @@ fn classify(name: &syn::Ident, ty: &syn::Type, profile: Profile) -> syn::Result<
     }
 }
 
+/// The names the expansion defines in the block of the call that a binding's name would shadow: the kernel `run` (a
+/// unit struct as well as a function, so a binding of that name is read as a pattern for it), the constant
+/// `DESCRIPTOR` (likewise a pattern), and the two launch functions, one of which `launch_default` calls. The other
+/// names the block defines start with `__gust` or `__Gust`, which are reserved for every name in a call.
+const BLOCK_NAMES: [&str; 4] = ["run", "launch", "launch_default", "DESCRIPTOR"];
+
 impl Plan {
     fn new(raw: Raw, profile: Profile) -> syn::Result<Self> {
         let axes = pattern_axes(&raw.pattern)?;
@@ -489,6 +499,16 @@ impl Plan {
                     &binding.name,
                     format!(
                         "the name `{text}` is used twice among the loop variables and the bindings"
+                    ),
+                ));
+            }
+            if BLOCK_NAMES.contains(&text.as_str()) {
+                return Err(binding_error(
+                    &binding.name,
+                    format!(
+                        "the name `{text}` is one the expansion defines in the block of the call ({}); rename the \
+                         variable (a binding reads the variable of its own name)",
+                        BLOCK_NAMES.join(", ")
                     ),
                 ));
             }
@@ -565,7 +585,9 @@ impl Plan {
             }
         });
         let mut guard = TokenStream::new();
-        for axis in 0..self.axes.len() {
+        // All three axes, whatever the loop's arity: a `workgroup_size` taller than the loop runs invocations on
+        // the unused axes too, and their extent is 1.
+        for axis in 0..3 {
             let (field, extent) = (format_ident!("{}", FIELDS[axis]), &axis_fields[axis]);
             if axis > 0 {
                 guard.extend(quote!(&&));
@@ -703,13 +725,17 @@ impl Plan {
                 });
 
         // The body of `launch`.
-        let conversions = extent_names.iter().zip(0..).map(|(name, axis)| {
-            let converted = format_ident!("__gust_{}", FIELDS[axis]);
-            quote! {
-                let #converted = ::core::convert::TryInto::<u32>::try_into(#name)
-                    .map_err(::gust::map::Error::device)?;
-            }
-        });
+        let conversions = extent_names
+            .iter()
+            .zip(0..)
+            .map(|(name, axis)| {
+                let converted = format_ident!("__gust_{}", FIELDS[axis]);
+                quote! {
+                    let #converted = ::core::convert::TryInto::<u32>::try_into(#name)
+                        .map_err(::gust::map::Error::device)?;
+                }
+            })
+            .collect::<Vec<_>>();
         let axis_value = |axis: usize| {
             if axis < dimensions {
                 let converted = format_ident!("__gust_{}", FIELDS[axis]);
@@ -719,6 +745,9 @@ impl Plan {
             }
         };
         let (value_x, value_y, value_z) = (axis_value(0), axis_value(1), axis_value(2));
+        let converted_names: Vec<syn::Ident> = (0..dimensions)
+            .map(|axis| format_ident!("__gust_{}", FIELDS[axis]))
+            .collect();
         let scalar_values = self.scalars().map(|(name, scalar)| {
             if scalar == Scalar::Bool {
                 quote!(#name: ::core::primitive::u32::from(#name))
@@ -807,12 +836,39 @@ impl Plan {
                     Kind = ::gust::kind::Uniform,
                 >;
                 fn __gust_uniform(&self, value: #record) -> ::core::result::Result<Self::Uniform, ::gust::map::Error>;
+                /// The launch needs more invocations than the cap of `global_invocation_id` (the device's own error).
+                fn __gust_over_cap(requested: u64) -> ::gust::map::Error;
+            }
+
+            /// Refuse a launch past the invocation cap before anything is created or uploaded: every axis rounded up
+            /// to whole workgroups, multiplied, at most 2^32 (`Extent::MAX_INVOCATIONS`, the rule of both backends).
+            /// The device repeats the check when it dispatches; this one only comes first.
+            #[cfg(not(target_arch = "wasm32"))]
+            fn __gust_check_cap<__GustD: __GustPfHost>(
+                extent: ::gust::Extent,
+            ) -> ::core::result::Result<(), ::gust::map::Error> {
+                match extent.rounded_total(DESCRIPTOR.workgroup_size) {
+                    ::core::option::Option::Some(total) if total > u128::from(::gust::Extent::MAX_INVOCATIONS) => {
+                        ::core::result::Result::Err(<__GustD as __GustPfHost>::__gust_over_cap(
+                            u64::try_from(total).unwrap_or(u64::MAX),
+                        ))
+                    }
+                    _ => ::core::result::Result::Ok(()),
+                }
             }
 
             impl __GustPfHost for ::gust::cpu::CpuDevice {
                 type Uniform = ::gust::cpu::CpuUniform<#record>;
                 fn __gust_uniform(&self, value: #record) -> ::core::result::Result<Self::Uniform, ::gust::map::Error> {
                     self.uniform(value).map_err(<Self as ::gust::map::MapHost>::map_error)
+                }
+                fn __gust_over_cap(requested: u64) -> ::gust::map::Error {
+                    <Self as ::gust::map::MapHost>::map_error(::gust::cpu::Error::DeviceLimit {
+                        kernel: DESCRIPTOR.qualified_name().to_string(),
+                        limit: "global_invocation_id",
+                        requested,
+                        maximum: ::gust::Extent::MAX_INVOCATIONS,
+                    })
                 }
             }
         };
@@ -826,6 +882,14 @@ impl Plan {
                     ) -> ::core::result::Result<Self::Uniform, ::gust::map::Error> {
                         self.create_uniform("par_for extent", &value)
                             .map_err(<Self as ::gust::map::MapHost>::map_error)
+                    }
+                    fn __gust_over_cap(requested: u64) -> ::gust::map::Error {
+                        <Self as ::gust::map::MapHost>::map_error(::gust_wgpu::Error::DeviceLimit {
+                            kernel: DESCRIPTOR.qualified_name().to_string(),
+                            limit: "global_invocation_id",
+                            requested,
+                            maximum: ::gust::Extent::MAX_INVOCATIONS,
+                        })
                     }
                 }
             });
@@ -849,6 +913,7 @@ impl Plan {
                     return ::core::result::Result::Ok(());
                 }
                 let __gust_extent = ::gust::Extent::new(#value_x, #value_y, #value_z);
+                __gust_check_cap::<__GustD>(__gust_extent)?;
                 let __gust_record = #record {
                     __gust_ex: #value_x,
                     __gust_ey: #value_y,
@@ -875,8 +940,15 @@ impl Plan {
                 #(#extent_bounds)*
                 #(#resident_defaults)*
             {
+                // The extents are converted and the cap is checked before the device is opened; `launch` then takes
+                // the converted ones (a `u32` converts to itself).
+                #(#conversions)*
+                if #value_x == 0u32 || #value_y == 0u32 || #value_z == 0u32 {
+                    return ::core::result::Result::Ok(());
+                }
+                __gust_check_cap::<#concrete_device>(::gust::Extent::new(#value_x, #value_y, #value_z))?;
                 #open_device
-                launch(#device_argument, #(#extent_names,)* #(#names),*)
+                launch(#device_argument, #(#converted_names,)* #(#names),*)
             }
         });
         if !self.options.descriptor {

@@ -350,7 +350,7 @@ fn a_schema_2_record_has_no_origin_until_its_sidecars_are_read() {
 }
 
 #[test]
-fn two_sidecars_give_the_record_the_origin_of_the_first_by_file_name() {
+fn two_sidecars_give_the_record_the_origin_of_the_first_by_file_and_line() {
     let scratch = Scratch::new("two sites");
     let directory = site_directory(
         &scratch,
@@ -363,19 +363,57 @@ fn two_sidecars_give_the_record_the_origin_of_the_first_by_file_name() {
     let [record] = &records[..] else {
         panic!("{records:?}");
     };
-    // `440c...` sorts before `6b7d...`, whatever order the directory lists them in.
+    // The sidecar name is the hash of the call site, so its order is arbitrary: `440c...` (tests/other.rs) sorts
+    // before `6b7d...` (src/lib.rs). The sites are sorted by file, not by name, and the origin is the first.
     assert!(SITE_OTHER_NAME < SITE_LIB_NAME);
-    assert_eq!(record.file, "tests/other.rs");
-    assert_eq!(record.lines, [[3, 9, 40], [5, 5, 42]]);
+    let files: Vec<&str> = record.sites.iter().map(|site| site.file.as_str()).collect();
+    assert_eq!(files, ["src/lib.rs", "tests/other.rs"]);
+    assert_eq!(record.file, "src/lib.rs");
+    assert_eq!(record.lines, [[3, 9, 12], [5, 5, 14]]);
     let descriptor = record.descriptor();
-    assert_eq!(descriptor.source.file, "tests/other.rs");
+    assert_eq!(descriptor.source.file, "src/lib.rs");
     assert_eq!(descriptor.source.lines.len(), 2);
-    assert_eq!(descriptor.source.lines[0].rust_line, 40);
+    assert_eq!(descriptor.source.lines[0].rust_line, 12);
     // Everything but the origin is the schema 1 sample's.
     let schema_1 = sample();
     assert_eq!(record.key, schema_1.key);
     assert_eq!(record.parameters, schema_1.parameters);
     assert_eq!(record.slang, schema_1.slang);
+}
+
+#[test]
+fn sites_of_one_file_are_sorted_by_their_first_line() {
+    // A third call in `src/lib.rs`, above the first one; its name sorts after both others.
+    let earlier = SITE_LIB_JSON
+        .replace("[3, 9, 12]", "[3, 9, 4]")
+        .replace("[5, 5, 14]", "[5, 5, 6]");
+    let name = "022c52d675787198.ffffffffffffffff.site.json";
+    let scratch = Scratch::new("three sites");
+    let directory = site_directory(
+        &scratch,
+        &[
+            (SITE_LIB_NAME, SITE_LIB_JSON),
+            (SITE_OTHER_NAME, SITE_OTHER_JSON),
+            (name, &earlier),
+        ],
+    );
+    let records = read_records(&directory).unwrap();
+    let origins: Vec<(&str, u32)> = records[0]
+        .sites
+        .iter()
+        .map(|site| (site.file.as_str(), site.lines[0][2]))
+        .collect();
+    assert_eq!(
+        origins,
+        [
+            ("src/lib.rs", 4),
+            ("src/lib.rs", 12),
+            ("tests/other.rs", 40)
+        ]
+    );
+    assert_eq!(records[0].lines, [[3, 9, 4], [5, 5, 6]]);
+    // A schema 1 record has no sites.
+    assert!(sample().sites.is_empty());
 }
 
 #[test]

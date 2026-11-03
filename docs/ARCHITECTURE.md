@@ -209,9 +209,9 @@ line) are one module and one kernel. The extent record is the three axis extents
 scalar bindings (a `bool` as a `u32` word) and explicit padding to a multiple of 16
 bytes; every buffer is `Independent`. The launch rounds each axis up to the workgroup,
 returns `Ok(())` for a zero axis without touching the device, and a launch over the
-device's invocation cap is the device's `DeviceLimit` error. The twin (`CpuDevice`; every
-build under `GUST_PROFILE=cpu`, test and dual builds otherwise) runs the loop
-sequentially.
+invocation cap (`Extent::MAX_INVOCATIONS`) is the device's `DeviceLimit` error, checked before the
+uniform is created or anything is uploaded. The twin (`CpuDevice`; every build under `GUST_PROFILE=cpu`, test and
+dual builds otherwise) runs the loop sequentially.
 
 Export records. A `#[gpu]` module or function writes a schema 1 `<key>.kernel.json`
 whose `source` names its file and line table. A `par_for!` body can stand at any number
@@ -219,9 +219,9 @@ of call sites, so its record is schema 2 and has no `source`: equal bodies write
 record bytes (`write_once` makes the second write a no-op). Each call site writes a
 sidecar `<key>.<site16>.site.json` (`schema` 2, `key`, `file`, `lines`), where `site16`
 is FNV-1a 64 over the relative file, a zero byte and the decimal line of the call.
-`cargo gust` reads both schemas; the `SourceOrigin` of a schema 2 kernel is the first
-sidecar's by file name. A `.site.json` next to a schema 1 record, a schema 2 record
-without one, and a sidecar of another key are errors.
+`cargo gust` reads both schemas; the record keeps every call site, sorted by file and first line, and the
+`SourceOrigin` of a schema 2 kernel is the first one's. A `.site.json` next to a schema 1 record, a schema 2
+record without one, and a sidecar of another key are errors.
 
 ## Descriptor flow
 

@@ -171,6 +171,8 @@ codes! {
     QualifiedMathPath = 324 => "GUST-E0324";
     /// A method call with arguments whose name is not in the dialect (the accepted methods are listed in the text).
     MethodNotInDialect = 325 => "GUST-E0325";
+    /// An unannotated `let` whose initializer is only unsuffixed integer literals (`let x = 0;`, `let y = -(1 + 2);`).
+    UnsuffixedLiteralLet = 326 => "GUST-E0326";
 
     // E04xx: control flow and loops.
     /// A `loop` expression.

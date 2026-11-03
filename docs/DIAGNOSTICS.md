@@ -577,6 +577,30 @@ Rejected: `x.wrapping_div(y)`, `x.wrapping_rem(y)`, `x.pow(2)`, `x.min(y)`, `x.c
 Write instead: the operator or an `if` (`if y != 0 { x / y } else { 0 }`), or one of the accepted methods.
 Decision: D22 (the dialect boundary), D87 (the wrapping methods and this code).
 
+### GUST-E0326 unsuffixed integer-literal `let`
+
+An unannotated `let` whose initializer is made only of integer literals without a suffix gives the local no type of
+its own. Slang types it `int`, while rustc infers the type from the later uses (`u32` for `d /= y` with `y: u32`), and
+the two differ for a division, a comparison, a shift or a cast of the local (`d /= y` with `y >= 2^31` is 0 in Rust and
+`0xFFFFFFF9` on the GPU). The error points at the first literal and asks for a suffix or an annotation. Covered: a bare
+literal, through parentheses and unary `-` or `!` (`let x = -(7);`); arithmetic and bitwise operators whose operands are
+all such literals (`let x = 1 + 2;`); a shift whose left operand is one (`let x = 1 << 3;`, `let x = 1 << n;`, because
+the result takes the left operand's type); `Some(..)`, `Ok(..)` or `Err(..)` of such a literal; and `X.unwrap_or(Y)`
+with both literal-only (`Some(7).unwrap_or(0)`). The same check runs on the scrutinee of an `if let`
+(`if let Some(mut v) = Some(7)`), where the span is again the literal. Not covered, because the initializer has a type
+of its own or is not an integer: a suffix, a cast, a name, a field, an index, a call or a method anywhere in the
+operands (`let x = 3 * i;`; the one literal-only method is `unwrap_or` above), and a comparison or a `bool`. A float
+literal (`let x = 0.0;`) is not covered either, although rustc falls back to `f64` for it where Slang has `float`: see
+the float paragraph in [SEMANTICS](SEMANTICS.md). An `if` or a `match` is not a value in the dialect
+(`let x = if c { 1 } else { 2 };` is E0811 and a `match` as a value is E0513), so there are no literal arms to cover.
+`while let` and `let .. else` are E0402 and E0320. Slice m6.z2 chose the error alone over inferring the type from the
+uses (D86).
+Reached through `#[gpu]`.
+Rejected: `let mut acc = 0;`, `let x = -1;`, `let x = 1 + 2;`, `let x = 1 << 3;`, `let o = Some(7);`,
+`let d = Some(7).unwrap_or(0);`, `if let Some(v) = Some(7) { .. }`.
+Write instead: `let mut acc = 0u32;`, `let mut acc: u32 = 0;`, `let x: i32 = -1;`.
+Decision: D86.
+
 ## E04xx: control flow and loops
 
 A GPU thread must always terminate and must never wait on another workgroup, so the

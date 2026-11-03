@@ -126,6 +126,26 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   run in the Reflect suite. xtask's helper pin accepts schema 2 or 3 (mx.t0b drops 2). Opus merge after one fix
   round.
   Main: 22 gate steps green on `893d959` (01:59 to 02:29Z, RTX 5090) with the schema-3 helper; pin 223/26.
+- M7 m7.t13 (`40726ea`, fix round `4275104`, merge `b88bfb0`): T13, the GPU active count to indirect dispatch, in
+  `examples/component-pool`, re-typed by hand from the `WIP T13` stash's design (never applied). `classify` counts
+  live particles with an atomic add, `prepare` clamps the GPU-written count to the allocation and the budget into
+  the indirect arguments, the consumer guards `i < active && i < len`; every binding is independent and non-empty,
+  the graph's edges are declared, and no readback decides work. Every stash test is kept. 14 exported kernels
+  (`pool__classify`). The plan's `active_count` feature is not added: the stash's entry named a gust-wgpu test file
+  that does not exist; the T13 GPU tests are ignored tests that `check-examples` and `check-full` run with
+  `--include-ignored` (16 of 16 on the RTX 5090, Vulkan). Mutations fail them: the clamp, either guard, the count
+  reset; a dropped edge is refused (`GraphMissingDependency`). Uncertainty: only the RTX 5090 has run them so far;
+  the nightly gpu-software list runs `check-examples` on lavapipe; the 890M, DX12 and Metal are untried. Active
+  particles stay a prefix of the pool, checked on the host only, until m7.t14 adds compaction. Opus merge after one
+  fix round.
+- M7 m7.r2 (`900068e`, fix round `88793a0`, merge `09203ae`): scan v0 in `gust-algo`: `scan::inclusive` and
+  `scan::exclusive` over `u32` (wrapping, as `reduce::sum_wrapping`, which this slice adds), `2k + 1` dispatches in
+  one batch over `k` levels: 3 for n <= 65 536, 5 for n <= 2^24, 7 above. Deviation: the plan named 5 and 7 tiers
+  only; a one-level input needs just 3. Golden `scan.slang` (6 entries) with its fixture; gust-algo GPU tests 12 to
+  20 (`ALGO_GPU_TESTS`), including the 7-dispatch path at 2^25 on ones. Mutations fail a test: a skipped add-back,
+  `exclusive` returning the inclusive sums, and plain `+` in `sum_wrapping` (by D87 the Slang is the same, so the
+  twin and a source-text test catch it). Opus merge with no must-fix.
+  Main: 22 gate steps green on `09203ae` (02:39 to 03:02Z, RTX 5090); pins 223/26 and gust-algo 20.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
@@ -518,7 +538,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M7 (m7.a1, m7.r2, m7.t13 and mx.n running) after the M6 close (D86); see the roadmap's Now
+claim: roadmap M7 (m7.a1 and mx.n running) after the M6 close (D86); see the roadmap's Now
 and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no

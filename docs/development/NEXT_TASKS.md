@@ -15,12 +15,8 @@ that does not fit there.
 
 ### T13: GPU active count to indirect dispatch
 
-Deferred by owner. The T13 work in progress is not in the working tree: it is the
-git stash `WIP T13 active count deferred`, based on `59a5c3c`. Its code changes
-(`examples/component-pool/src/app.rs`, `xtask/src/{checks,verify}.rs`) applied
-cleanly to `63769fb` in a 2026-10-22 dry run; its doc renames are superseded by
-that commit and conflict. Do not apply, continue, or drop the stash unless the owner
-explicitly requests it. Contract: [tasks/T13-active-count.md](tasks/T13-active-count.md).
+Landed in M7 slice m7.t13 (merge `b88bfb0`, 2026-11-03), re-typed from the stash's design; contract and status:
+[tasks/T13-active-count.md](tasks/T13-active-count.md). Compaction and retirement are m7.t14. Kept for the record.
 
 ## Claimable DX
 
@@ -35,7 +31,7 @@ test module; do not mix that mechanical move with behavior changes.
 
 ## Later engine proofs
 
-- GPU active count to indirect dispatch (T13), when the owner reactivates it.
+- GPU active count to indirect dispatch (T13): landed in m7.t13; retirement and compaction follow in m7.t14.
 - Culling -> compacted visibility -> indirect arguments -> rendering.
 - Entity identity/lifecycle and storage choices, guided by measured workloads.
 
@@ -190,7 +186,10 @@ test module; do not mix that mechanical move with behavior changes.
 - Remove the mutex that serialises gust-algo's GPU tests (`crates/gust-algo/src/tests/gpu.rs`) once m7.rb's
   readback fix is on `main` (it is, D97), and run them in parallel once (m7.r3).
 - `reduce` zero-clears its partials buffers although every lane writes its slot; skipping the clear needs a
-  non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p).
+  non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p). The scan's `out` is
+  zero-filled the same way (one clear of n elements per call, 2 GiB at 2^29; m7.r2 review).
+- The scan `_wrapping` form the M7 plan promises after m7.w: the same Slang (D87), only the twins change; v0's scan
+  already wraps (m7.r4 or its own slice).
 - M8: naga 30 rejects an `i32` lane id in `subgroupShuffle`, `subgroupBroadcast` and `quadBroadcast`, which WGSL
   allows and Slang emits; filed by the owner as https://github.com/gfx-rs/wgpu/issues/10818. The M8-S1 workaround
   rewrites the id to `u32` in the exported WGSL; drop it when a fixed naga is pinned.

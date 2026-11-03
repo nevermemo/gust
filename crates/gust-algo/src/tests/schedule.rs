@@ -1,6 +1,6 @@
 //! The pass schedule: pure arithmetic, pinned at every boundary the plan names (section 5.2).
 
-use crate::schedule::{BLOCK, CHAIN, LANES, Pass, Schedule};
+use crate::schedule::{BLOCK, CHAIN, CHUNK, LANES, Pass, ScanSchedule, Schedule};
 
 fn shape(n: u32) -> (Vec<(u32, u32)>, u32) {
     let schedule = Schedule::new(n).expect("a non-empty input");
@@ -117,4 +117,71 @@ fn chains_are_at_most_256_terms() {
     );
     assert_eq!(Schedule::new(257).unwrap().chains(), vec![2, 256]);
     assert_eq!(Schedule::new(100).unwrap().chains(), vec![100]);
+}
+
+fn scan_shape(n: u32) -> (Vec<u32>, usize, u32) {
+    let schedule = ScanSchedule::new(n).expect("a non-empty input");
+    (
+        schedule.sums().to_vec(),
+        schedule.dispatches(),
+        schedule.workgroups(),
+    )
+}
+
+#[test]
+fn an_empty_scan_has_no_schedule() {
+    assert!(ScanSchedule::new(0).is_none());
+}
+
+#[test]
+fn up_to_65_536_elements_scan_in_three_dispatches() {
+    // Level 0, the top scan over the totals, the final add-back.
+    assert_eq!(scan_shape(1), (vec![1], 3, 1));
+    assert_eq!(scan_shape(256), (vec![1], 3, 1));
+    assert_eq!(scan_shape(257), (vec![2], 3, 1));
+    assert_eq!(scan_shape(65_536), (vec![256], 3, 1));
+}
+
+#[test]
+fn up_to_2_pow_24_elements_scan_in_five_dispatches() {
+    // The third level appears with the 257th total; level 3 is skipped while level 2 holds at most 256.
+    assert_eq!(scan_shape(65_537), (vec![257, 2], 5, 2));
+    assert_eq!(scan_shape(1 << 24), (vec![65_536, 256], 5, 256));
+}
+
+#[test]
+fn past_2_pow_24_elements_scan_in_seven_dispatches() {
+    assert_eq!(scan_shape((1 << 24) + 1), (vec![65_537, 257, 2], 7, 257));
+    // 2^25 elements: the 128 MiB binding of the portable limits.
+    assert_eq!(scan_shape(1 << 25), (vec![131_072, 512, 2], 7, 512));
+    // 2^29 elements: the 2 GiB binding the adapters offer; level 0 has 2^21 invocations, 8 192 workgroups.
+    assert_eq!(scan_shape(1 << 29), (vec![1 << 21, 8_192, 32], 7, 8_192));
+}
+
+#[test]
+fn the_u32_range_needs_at_most_seven_dispatches() {
+    assert_eq!(CHUNK, 256);
+    for n in [1u32 << 30, (1 << 31) + 1, u32::MAX] {
+        assert_eq!(ScanSchedule::new(n).unwrap().dispatches(), 7, "n = {n}");
+    }
+    // The very top of the range: 2^24 level-0 invocations are 65 536 workgroups, one more than a device allows by
+    // default; the device refuses it by its limit (see the `gpu::` test of the limit).
+    let top = ScanSchedule::new(u32::MAX).unwrap();
+    assert_eq!(top.sums(), [1 << 24, 1 << 16, 256]);
+    assert_eq!(top.workgroups(), 65_536);
+    // The last level never exceeds the top scan's 256 values.
+    for n in [
+        1u32,
+        256,
+        257,
+        65_536,
+        65_537,
+        1 << 24,
+        (1 << 24) + 1,
+        u32::MAX,
+    ] {
+        let schedule = ScanSchedule::new(n).unwrap();
+        assert!(schedule.sums().last().copied().unwrap() <= CHUNK, "n = {n}");
+        assert_eq!(schedule.dispatches(), 2 * schedule.sums().len() + 1);
+    }
 }

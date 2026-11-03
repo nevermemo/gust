@@ -181,8 +181,13 @@ test module; do not mix that mechanical move with behavior changes.
   12 reruns passed); m7.rb's probe of about 360 concurrent enumerations found none empty.
 - mx.t0b: drop schema 2 from xtask's `check_helper_pin` once every helper in use reports schema 3 (mx.t0a accepts
   both so lanes on older trees keep working).
-- Remove the mutex that serialises gust-algo's GPU tests (`crates/gust-algo/src/tests/gpu.rs`) once m7.rb's
-  readback fix is on `main` (it is, D97), and run them in parallel once (m7.r3).
+- The mutex that serialised gust-algo's GPU tests is gone (m7.r3; heavy tests share one lock). The first
+  gpu-software run after `8027169` is the first lavapipe run of the parallel set: if it flakes, widen the heavy lock,
+  do not bring the full mutex back.
+- A generic POD gather (`gather<T>` for a user struct) needs generic GPU functions (M9's traits or a macro-level
+  monomorphisation); until then the user writes the block-strided gather kernel (compact.rs docs, m7.r3).
+- `compact::indices` makes four submissions and reduces the mask twice; the scatter could write the total
+  (`positions[n-1] + mask[n-1]`) itself (m7.r3 review N3; m7.r4).
 - `reduce` zero-clears its partials buffers although every lane writes its slot; skipping the clear needs a
   non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p). The scan's `out` is
   zero-filled the same way (one clear of n elements per call, 2 GiB at 2^29; m7.r2 review).

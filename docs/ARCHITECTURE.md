@@ -185,10 +185,14 @@ that narrower frontend.
 The device-resident algorithms (roadmap M7). Its first member is `reduce` (`sum`, `min`, `max` of a `GpuVec<u32|i32|f32>`, and
 `sum_wrapping` of a `GpuVec<u32>`, which is defined modulo 2^32 for every input), its second `scan` (`inclusive`
 and `exclusive` prefix sums of a `GpuVec<u32>` in plain `+`, 3, 5 or 7 dispatches by length, up to the device's
-binding limit): the kernels are ordinary GUST kernels in `tests/fixtures/reduce.rs` and `tests/fixtures/scan.rs` (one
-`#[gust::gpu]` module each, compiled at run time through the `slang-runtime` feature; no precompiled artifacts in v0),
-and the host code only picks the schedule, takes one pooled `GpuVec` per level and submits the dispatches in one
-`dispatch_batch`. The crate depends on `gust` and `gust-wgpu` and on nothing
+binding limit), its third `compact` (`count` of the non-zero flags of a `GpuVec<u32>` as a one-element vector that stays on
+the device, `indices` of the set flags through the exclusive scan and a scatter, and `gather_u32`, `gather_i32` and
+`gather_f32` by those indices; no readback anywhere, so the indices and the gathers are as long as the flags, zero from
+the count on; a generic gather of structs waits for M9 and is a user kernel until then): the kernels are ordinary GUST
+kernels in `tests/fixtures/reduce.rs`, `tests/fixtures/scan.rs` and `tests/fixtures/compact.rs` (one `#[gust::gpu]`
+module each, compiled at run time through the `slang-runtime` feature; no precompiled artifacts in v0), and the host
+code only picks the schedule, takes one pooled `GpuVec` per level and submits the dispatches in one `dispatch_batch`.
+The crate depends on `gust` and `gust-wgpu` and on nothing
 else: `xtask/src/arch.rs` carries a `CrateRule` with exactly that allow-list, and `cargo xtask check-arch` fails for a
 workspace crate without one. It is `publish = false` because the kernel file lives outside the package. Its tests run the
 CPU twins against independent references in its test builds; the `gpu::` tests run on the adapter and belong to the Gpu suite

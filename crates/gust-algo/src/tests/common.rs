@@ -129,6 +129,16 @@ pub(super) trait Backend {
     fn inclusive(&self, values: &[u32]) -> Vec<u32>;
     /// `scan::exclusive`, read back to the host.
     fn exclusive(&self, values: &[u32]) -> Vec<u32>;
+    /// `compact::count`, read back to the host.
+    fn compact_count(&self, flags: &[u32]) -> u32;
+    /// `compact::indices`, read back to the host: the whole `indices` vector (`flags.len()` long) and the count.
+    fn compact_indices(&self, flags: &[u32]) -> (Vec<u32>, u32);
+    /// `compact::gather_u32` with a count of the caller's choice, the whole output read back.
+    fn gather_u32(&self, values: &[u32], indices: &[u32], count: u32) -> Vec<u32>;
+    /// `compact::gather_i32`, as above.
+    fn gather_i32(&self, values: &[i32], indices: &[u32], count: u32) -> Vec<i32>;
+    /// `compact::gather_f32`, as above.
+    fn gather_f32(&self, values: &[f32], indices: &[u32], count: u32) -> Vec<f32>;
 }
 
 pub(super) const CPU_C: f64 = C_CPU;
@@ -373,24 +383,32 @@ pub(super) fn scan_cases<B: Backend>(backend: &B, lengths: &[usize]) {
     for &n in lengths {
         let ones = vec![1u32; n];
         let counted: Vec<u32> = (1..=n as u32).collect();
-        assert_eq!(backend.inclusive(&ones), counted, "ones inclusive, n = {n}");
+        assert_same(
+            &backend.inclusive(&ones),
+            &counted,
+            &format!("ones inclusive, n = {n}"),
+        );
         let shifted: Vec<u32> = (0..n as u32).collect();
-        assert_eq!(backend.exclusive(&ones), shifted, "ones exclusive, n = {n}");
+        assert_same(
+            &backend.exclusive(&ones),
+            &shifted,
+            &format!("ones exclusive, n = {n}"),
+        );
 
         let mut rng = Rng::new(0x5CA7 + n as u64);
         let cap = (u64::from(u32::MAX) / (n as u64).max(1)).max(1);
         let values: Vec<u32> = (0..n).map(|_| rng.below(cap) as u32).collect();
         let inclusive = backend.inclusive(&values);
         let exclusive = backend.exclusive(&values);
-        assert_eq!(
-            inclusive,
-            reference_scan(&values, false),
-            "random inclusive, n = {n}"
+        assert_same(
+            &inclusive,
+            &reference_scan(&values, false),
+            &format!("random inclusive, n = {n}"),
         );
-        assert_eq!(
-            exclusive,
-            reference_scan(&values, true),
-            "random exclusive, n = {n}"
+        assert_same(
+            &exclusive,
+            &reference_scan(&values, true),
+            &format!("random exclusive, n = {n}"),
         );
         // The two scans differ by exactly the element, and the exclusive one starts at zero.
         for (index, value) in values.iter().enumerate() {
@@ -409,15 +427,15 @@ pub(super) fn scan_cases<B: Backend>(backend: &B, lengths: &[usize]) {
             }
             let mut edge = vec![0u32; n];
             edge[position] = u32::MAX;
-            assert_eq!(
-                backend.inclusive(&edge),
-                reference_scan(&edge, false),
-                "edge inclusive, n = {n}, position {position}"
+            assert_same(
+                &backend.inclusive(&edge),
+                &reference_scan(&edge, false),
+                &format!("edge inclusive, n = {n}, position {position}"),
             );
-            assert_eq!(
-                backend.exclusive(&edge),
-                reference_scan(&edge, true),
-                "edge exclusive, n = {n}, position {position}"
+            assert_same(
+                &backend.exclusive(&edge),
+                &reference_scan(&edge, true),
+                &format!("edge exclusive, n = {n}, position {position}"),
             );
         }
     }
@@ -447,15 +465,15 @@ pub(super) fn deep_scan_cases<B: Backend>(backend: &B) {
         );
         let mut rng = Rng::new(0xDEE9 + n as u64);
         let values: Vec<u32> = (0..n).map(|_| rng.below(255) as u32).collect();
-        assert_eq!(
-            backend.inclusive(&values),
-            reference_scan(&values, false),
-            "random inclusive, n = {n}"
+        assert_same(
+            &backend.inclusive(&values),
+            &reference_scan(&values, false),
+            &format!("random inclusive, n = {n}"),
         );
-        assert_eq!(
-            backend.exclusive(&values),
-            reference_scan(&values, true),
-            "random exclusive, n = {n}"
+        assert_same(
+            &backend.exclusive(&values),
+            &reference_scan(&values, true),
+            &format!("random exclusive, n = {n}"),
         );
     }
 }
@@ -495,5 +513,214 @@ pub(super) fn wrapping_cases<B: Backend>(backend: &B, lengths: &[usize]) {
             "wrapping sum inside the domain, n = {n}"
         );
         assert_eq!(backend.sum_wrapping(&small), backend.sum(&small), "n = {n}");
+    }
+}
+
+/// The independent reference of a compaction: the positions of the non-zero flags, in increasing order.
+pub(super) fn reference_indices(flags: &[u32]) -> Vec<u32> {
+    flags
+        .iter()
+        .enumerate()
+        .filter(|(_, flag)| **flag != 0)
+        .map(|(index, _)| u32::try_from(index).unwrap())
+        .collect()
+}
+
+/// The independent reference of a gather: `values[indices[j]]` for `j < count`, the default (zero) elsewhere, as long
+/// as the indices.
+fn reference_gather<T: Copy + Default>(values: &[T], indices: &[u32], count: usize) -> Vec<T> {
+    let mut out = vec![T::default(); indices.len()];
+    for j in 0..count {
+        out[j] = values[indices[j] as usize];
+    }
+    out
+}
+
+/// Lengths around every boundary of the compaction's launches: empty, one element, one chunk (256), the block of 65 536
+/// elements a workgroup owns and the first length past it, and a length that is no multiple of anything.
+pub(super) const COMPACT_LENGTHS: [usize; 12] = [
+    0, 1, 2, 255, 256, 257, 1_000, 65_535, 65_536, 65_537, 131_073, 200_003,
+];
+
+/// The flag shapes of one length: all zeros, all ones, alternating (both phases), random, sparse, a single set flag at
+/// the first and at the last slot, and flags that are not 0 or 1 (the flag rule: non-zero is set).
+pub(super) fn flag_shapes(n: usize) -> Vec<(&'static str, Vec<u32>)> {
+    let mut rng = Rng::new(0xC0DE + n as u64);
+    let mut shapes = vec![
+        ("zeros", vec![0u32; n]),
+        ("ones", vec![1u32; n]),
+        ("alternating", (0..n).map(|i| (i % 2) as u32).collect()),
+        (
+            "alternating, other phase",
+            (0..n).map(|i| ((i + 1) % 2) as u32).collect(),
+        ),
+        ("random", (0..n).map(|_| rng.below(2) as u32).collect()),
+        (
+            "sparse",
+            (0..n).map(|_| u32::from(rng.below(64) == 0)).collect(),
+        ),
+        (
+            "non-zero values",
+            (0..n)
+                .map(|_| match rng.below(4) {
+                    0 => 0,
+                    1 => 2,
+                    2 => 0x8000_0000,
+                    _ => u32::MAX,
+                })
+                .collect(),
+        ),
+    ];
+    if n > 0 {
+        let mut first = vec![0u32; n];
+        first[0] = 1;
+        shapes.push(("first slot only", first));
+        let mut last = vec![0u32; n];
+        last[n - 1] = 1;
+        shapes.push(("last slot only", last));
+    }
+    shapes
+}
+
+/// One compaction of `flags` on `backend` against the references: the count, the indices (the first `count` equal the
+/// reference, every later element is zero) and each gather, with the true count and, unless `deep`, with half of it
+/// (the kernels must stop at the count they are given, not at the end of the indices).
+pub(super) fn check_compaction<B: Backend>(backend: &B, label: &str, flags: &[u32], deep: bool) {
+    let n = flags.len();
+    let expected = reference_indices(flags);
+    let live = expected.len();
+    let context = format!("{label}, n = {n}");
+    assert_eq!(
+        backend.compact_count(flags) as usize,
+        live,
+        "count, {context}"
+    );
+    let (indices, count) = backend.compact_indices(flags);
+    assert_eq!(count as usize, live, "count of indices, {context}");
+    assert_eq!(indices.len(), n, "length of indices, {context}");
+    assert_same(&indices[..live], &expected, &format!("indices, {context}"));
+    assert!(
+        indices[live..].iter().all(|index| *index == 0),
+        "the unused tail of the indices is zero, {context}"
+    );
+
+    // Values that are never zero, so a slot a gather wrongly fills cannot pass for the zero it should hold.
+    let unsigned: Vec<u32> = (0..n as u32).map(|index| index * 3 + 1).collect();
+    let signed: Vec<i32> = (0..n as i32).map(|index| -index - 1).collect();
+    let floats: Vec<f32> = (0..n).map(|index| index as f32 + 0.5).collect();
+    let counts: &[usize] = if deep { &[live] } else { &[live, live / 2] };
+    for &used in counts {
+        let used_context = format!("{context}, count {used}");
+        let count = used as u32;
+        assert_same(
+            &backend.gather_u32(&unsigned, &indices, count),
+            &reference_gather(&unsigned, &indices, used),
+            &format!("gather_u32, {used_context}"),
+        );
+        assert_same(
+            &backend.gather_i32(&signed, &indices, count),
+            &reference_gather(&signed, &indices, used),
+            &format!("gather_i32, {used_context}"),
+        );
+        let actual: Vec<u32> = backend
+            .gather_f32(&floats, &indices, count)
+            .iter()
+            .map(|value| value.to_bits())
+            .collect();
+        let wanted: Vec<u32> = reference_gather(&floats, &indices, used)
+            .iter()
+            .map(|value| value.to_bits())
+            .collect();
+        assert_same(&actual, &wanted, &format!("gather_f32, {used_context}"));
+    }
+}
+
+/// `compact::count`, `compact::indices` and the gathers over `lengths` and every flag shape.
+pub(super) fn compact_cases<B: Backend>(backend: &B, lengths: &[usize]) {
+    for &n in lengths {
+        for (label, flags) in flag_shapes(n) {
+            check_compaction(backend, label, &flags, false);
+        }
+    }
+}
+
+/// The longest compaction, `2^24 + 1` flags (65 537 workgroups of an element-wise launch would not fit the ceiling,
+/// which is why the kernels are block-strided; the scan is seven dispatches): the shapes that tell the parts apart.
+pub(super) fn deep_compact_cases<B: Backend>(backend: &B) {
+    let n = (1usize << 24) + 1;
+    let wanted = ["ones", "random", "alternating", "last slot only"];
+    for (label, flags) in flag_shapes(n) {
+        if wanted.contains(&label) {
+            check_compaction(backend, label, &flags, true);
+        }
+    }
+}
+
+/// A gather with an index that is not below `values.len()`: the kernel's bound guard leaves that slot zero, and the
+/// slots around it are gathered.
+pub(super) fn out_of_range_index_cases<B: Backend>(backend: &B) {
+    let values = [10u32, 20, 30];
+    let indices = [2u32, 3, 0, u32::MAX, 1];
+    assert_eq!(
+        backend.gather_u32(&values, &indices, 5),
+        vec![30, 0, 10, 0, 20]
+    );
+    assert_eq!(
+        backend.gather_i32(&[-1, -2, -3], &indices, 5),
+        vec![-3, 0, -1, 0, -2]
+    );
+    assert_eq!(
+        backend.gather_f32(&[1.5, 2.5, 3.5], &indices, 5),
+        vec![3.5, 0.0, 1.5, 0.0, 2.5]
+    );
+}
+
+/// The edges of a gather's arguments: no indices, a count of zero, and a count larger than the indices (the kernel
+/// stops at the end of the output).
+pub(super) fn gather_edge_cases<B: Backend>(backend: &B) {
+    let values = [7u32, 8, 9];
+    assert!(backend.gather_u32(&values, &[], 0).is_empty());
+    assert_eq!(backend.gather_u32(&values, &[1, 2, 0], 0), vec![0, 0, 0]);
+    assert_eq!(
+        backend.gather_u32(&values, &[1, 2, 0], 100),
+        vec![8, 9, 7],
+        "a count past the end of the indices gathers all of them"
+    );
+    assert_eq!(
+        backend.gather_u32(&values, &[1, 2, 0], 2),
+        vec![8, 9, 0],
+        "the slot at the count is not written"
+    );
+}
+
+/// Assert two vectors are equal, and on a mismatch print a few lines, not the vectors: the first index that differs,
+/// the expected and the actual value there, how many elements differ and the lengths. A plain `assert_eq!` on the
+/// vectors of 2^16 elements and more prints both of them in full (hundreds of MB at 2^24).
+#[track_caller]
+pub(super) fn assert_same<T: PartialEq + std::fmt::Debug>(
+    actual: &[T],
+    expected: &[T],
+    label: &str,
+) {
+    if actual == expected {
+        return;
+    }
+    let shared = actual.len().min(expected.len());
+    let differing = (0..shared).filter(|&index| actual[index] != expected[index]);
+    let count = differing.clone().count();
+    match differing.clone().next() {
+        Some(index) => panic!(
+            "{label}: {count} of {shared} compared elements differ; first at index {index}: expected {:?}, got {:?} \
+             (lengths: expected {}, got {})",
+            expected[index],
+            actual[index],
+            expected.len(),
+            actual.len()
+        ),
+        None => panic!(
+            "{label}: the lengths differ (expected {}, got {}) and the first {shared} elements are equal",
+            expected.len(),
+            actual.len()
+        ),
     }
 }

@@ -157,7 +157,24 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   amends D95): 223/26 to 232/27. Mutations: a shifted expected offset and the all-capabilities default each fail
   it. Exported WGSL (`compile_reflected_clean`) is gated only through the committed precompiled file. Opus merge
   after one fix round and a re-review.
-  Main: 22 gate steps green on `4d4dafe` (03:45 to 04:14Z, RTX 5090); pin 232/27.
+  Main: 22 gate steps green on `4d4dafe` (03:45 to 04:14Z, RTX 5090); pin 232/27. CI's `msrv` job then failed on
+  an `if let` match guard in the new test (not stable on Rust 1.90); fixed in `de289c5`, and the coordinator's main
+  gates now run the same 1.90.0 check.
+- M7 m7.r3 (`494bf32`, fix round `365722c`, merge `8027169`): compaction v0 in `gust-algo`. `compact::count` (a mask
+  pass, then the exact on-device `reduce` sum; no readback, pinned by a source test), `compact::indices` (exclusive
+  scan of the mask, then a scatter; `flags.len()` long, the first `count` entries are the positions, the tail is 0)
+  and `gather_u32`, `gather_i32`, `gather_f32` (output `indices.len()` long, 0 from `count` on and wherever an index
+  is past `values.len()`). Any non-zero flag counts as 1. The kernels are block-strided like reduce, because one
+  invocation per element passes the 65 535-workgroup ceiling at 2^24 + 1. Golden `compact.slang` (5 entries; the
+  naga gate now covers 130 modules). A user struct is gathered by the user's own block-strided kernel, shown in
+  tests/struct_gather.rs; a generic POD gather is deferred to M9. gust-algo GPU tests 20 to 32. The mutex that
+  serialised them is gone (D97): the light tests run in parallel and the 7 heavy ones (n >= 2^24 or at the binding
+  limit) share one lock; 3 parallel runs passed 32 of 32, peaking about 2.5 GB above a 2.5 GB baseline (serial
+  about 1.4 GB above, unlocked parallel 4 to 6 GB above). Mutations: a scatter to the element's own index and an
+  off-by-one gather bound fail twin and GPU tests; a dropped gather guard fails the twin test only (the GPU test
+  passes because out-of-range reads return 0 on this adapter). Opus merge after one fix round.
+  Main: 23 gate steps (the 22 plus the Rust 1.90.0 check) green on `8027169` (05:16 to 05:42Z, RTX 5090); pins
+  232/27 and gust-algo 32.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
@@ -550,7 +567,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M7 (m7.a1 and m7.r3 running) after the M6 close (D86); see the roadmap's Now
+claim: roadmap M7 (m7.a1 running) after the M6 close (D86); see the roadmap's Now
 and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no

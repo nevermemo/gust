@@ -123,7 +123,7 @@ contains no Slang bridge, helper or GPU runtime. A kernel marked `#[kernel(cpu =
 is the evidence (the `Cpu` tier).
 
 For the full release-readiness check (including ignored example tests, all eight
-examples, and mandatory external validation of all thirteen SPIR-V exports):
+examples, and mandatory external validation of all fourteen SPIR-V exports):
 
 ```sh
 cargo xtask check-full
@@ -574,7 +574,7 @@ crates/
   gust/                 shadow types, descriptors, ABI metadata, slangc bridge, reflection
   gust-macros/          validation and direct syn AST -> Slang translation
   gust-wgpu/            cached headless wgpu execution, buffers, StagedGraph, GpuPool
-  gust-algo/            device-resident algorithms on GUST kernels over GpuVec (reduce: sum, min, max); publish = false
+  gust-algo/            device-resident algorithms on GUST kernels over GpuVec (reduce: sum, min, max, sum_wrapping; scan: inclusive, exclusive); publish = false
 examples/
   vector-add/
   polynomial/

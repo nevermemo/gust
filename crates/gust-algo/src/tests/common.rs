@@ -123,6 +123,12 @@ pub(super) trait Backend {
     fn sum<T: Element>(&self, values: &[T]) -> T;
     fn min<T: Element>(&self, values: &[T]) -> Option<T>;
     fn max<T: Element>(&self, values: &[T]) -> Option<T>;
+    /// `reduce::sum_wrapping`: the sum of `values` modulo 2^32.
+    fn sum_wrapping(&self, values: &[u32]) -> u32;
+    /// `scan::inclusive`, read back to the host.
+    fn inclusive(&self, values: &[u32]) -> Vec<u32>;
+    /// `scan::exclusive`, read back to the host.
+    fn exclusive(&self, values: &[u32]) -> Vec<u32>;
 }
 
 pub(super) const CPU_C: f64 = C_CPU;
@@ -331,4 +337,163 @@ pub(super) fn float_sum_cases<B: Backend>(backend: &B, n: usize) -> Vec<(Shape, 
             (shape, check)
         })
         .collect()
+}
+
+/// The independent reference of a scan: a sequential `u64` accumulation, which must stay inside `u32` (the domain of
+/// plain `+`: no inclusive prefix passes `u32::MAX`).
+pub(super) fn reference_scan(values: &[u32], exclusive: bool) -> Vec<u32> {
+    let mut running = 0u64;
+    values
+        .iter()
+        .map(|value| {
+            let before = running;
+            running += u64::from(*value);
+            assert!(
+                running <= u64::from(u32::MAX),
+                "the case leaves the domain of the scan"
+            );
+            u32::try_from(if exclusive { before } else { running }).unwrap()
+        })
+        .collect()
+}
+
+/// Lengths around every boundary of the scan schedule: empty, one element, one chunk (256), the second chunk, the 256
+/// chunks one level holds (65 536) and the first length past them (257 totals), 65 793 (258 totals), a length that is
+/// no multiple of anything, and a million.
+pub(super) const SCAN_LENGTHS: [usize; 18] = [
+    0, 1, 2, 3, 255, 256, 257, 511, 512, 513, 4_097, 65_535, 65_536, 65_537, 65_793, 131_073,
+    999_983, 1_000_003,
+];
+
+/// `scan::inclusive` and `scan::exclusive` over `lengths`, each against the independent reference: all ones, random
+/// values that keep every prefix inside `u32`, values that sit exactly on the edge of the domain (a total of
+/// `u32::MAX` made of a single element at the first, the last and the chunk-boundary positions), and the relation of
+/// the two scans.
+pub(super) fn scan_cases<B: Backend>(backend: &B, lengths: &[usize]) {
+    for &n in lengths {
+        let ones = vec![1u32; n];
+        let counted: Vec<u32> = (1..=n as u32).collect();
+        assert_eq!(backend.inclusive(&ones), counted, "ones inclusive, n = {n}");
+        let shifted: Vec<u32> = (0..n as u32).collect();
+        assert_eq!(backend.exclusive(&ones), shifted, "ones exclusive, n = {n}");
+
+        let mut rng = Rng::new(0x5CA7 + n as u64);
+        let cap = (u64::from(u32::MAX) / (n as u64).max(1)).max(1);
+        let values: Vec<u32> = (0..n).map(|_| rng.below(cap) as u32).collect();
+        let inclusive = backend.inclusive(&values);
+        let exclusive = backend.exclusive(&values);
+        assert_eq!(
+            inclusive,
+            reference_scan(&values, false),
+            "random inclusive, n = {n}"
+        );
+        assert_eq!(
+            exclusive,
+            reference_scan(&values, true),
+            "random exclusive, n = {n}"
+        );
+        // The two scans differ by exactly the element, and the exclusive one starts at zero.
+        for (index, value) in values.iter().enumerate() {
+            assert_eq!(
+                exclusive[index] + value,
+                inclusive[index],
+                "exclusive + element = inclusive, n = {n}, index {index}"
+            );
+        }
+        assert_eq!(exclusive.first().copied().unwrap_or(0), 0, "n = {n}");
+
+        // A single element equal to u32::MAX: every prefix from it on is exactly u32::MAX.
+        for position in [0, 255, 256, 257, n.saturating_sub(1)] {
+            if position >= n {
+                continue;
+            }
+            let mut edge = vec![0u32; n];
+            edge[position] = u32::MAX;
+            assert_eq!(
+                backend.inclusive(&edge),
+                reference_scan(&edge, false),
+                "edge inclusive, n = {n}, position {position}"
+            );
+            assert_eq!(
+                backend.exclusive(&edge),
+                reference_scan(&edge, true),
+                "edge exclusive, n = {n}, position {position}"
+            );
+        }
+    }
+}
+
+/// The two deepest scans, on a schedule of five dispatches (`2^24`: the second level holds exactly 256 totals) and of
+/// seven (`2^24 + 1`: 257 totals, so a third level and the add-back through it): all ones and random values below 255,
+/// both scans, each against the independent reference.
+pub(super) fn deep_scan_cases<B: Backend>(backend: &B) {
+    for n in [1usize << 24, (1 << 24) + 1] {
+        let ones = vec![1u32; n];
+        let inclusive = backend.inclusive(&ones);
+        assert!(
+            inclusive
+                .iter()
+                .enumerate()
+                .all(|(index, value)| *value as usize == index + 1),
+            "ones inclusive, n = {n}"
+        );
+        let exclusive = backend.exclusive(&ones);
+        assert!(
+            exclusive
+                .iter()
+                .enumerate()
+                .all(|(index, value)| *value as usize == index),
+            "ones exclusive, n = {n}"
+        );
+        let mut rng = Rng::new(0xDEE9 + n as u64);
+        let values: Vec<u32> = (0..n).map(|_| rng.below(255) as u32).collect();
+        assert_eq!(
+            backend.inclusive(&values),
+            reference_scan(&values, false),
+            "random inclusive, n = {n}"
+        );
+        assert_eq!(
+            backend.exclusive(&values),
+            reference_scan(&values, true),
+            "random exclusive, n = {n}"
+        );
+    }
+}
+
+/// `reduce::sum_wrapping` over `lengths`: the independent reference is the exact `i128` sum reduced modulo 2^32. Full
+/// range values (the total passes `u32::MAX` for every `n >= 2` that is not tiny, which the case asserts), all
+/// `u32::MAX`, and the pair that wraps to zero. The empty input is `0`.
+pub(super) fn wrapping_cases<B: Backend>(backend: &B, lengths: &[usize]) {
+    let modulo = |total: i128| (total.rem_euclid(1i128 << 32)) as u32;
+    assert_eq!(backend.sum_wrapping(&[]), 0);
+    assert_eq!(backend.sum_wrapping(&[u32::MAX, 1]), 0);
+    assert_eq!(backend.sum_wrapping(&[u32::MAX; 3]), u32::MAX - 2);
+    for &n in lengths {
+        let mut rng = Rng::new(0xA11CE + n as u64);
+        let values: Vec<u32> = (0..n).map(|_| rng.next_u64() as u32).collect();
+        let exact = exact_sum(&values);
+        if n >= 1_000 {
+            assert!(exact > i128::from(u32::MAX), "the case must pass u32::MAX");
+        }
+        assert_eq!(
+            backend.sum_wrapping(&values),
+            modulo(exact),
+            "wrapping sum of random full-range values, n = {n}"
+        );
+        let maxima = vec![u32::MAX; n];
+        assert_eq!(
+            backend.sum_wrapping(&maxima),
+            modulo(exact_sum(&maxima)),
+            "wrapping sum of u32::MAX, n = {n}"
+        );
+        // Inside the domain the wrapping sum is the plain one.
+        let cap = u64::from(u32::MAX) / n as u64;
+        let small: Vec<u32> = (0..n).map(|_| rng.below(cap.max(1)) as u32).collect();
+        assert_eq!(
+            i128::from(backend.sum_wrapping(&small)),
+            exact_sum(&small),
+            "wrapping sum inside the domain, n = {n}"
+        );
+        assert_eq!(backend.sum_wrapping(&small), backend.sum(&small), "n = {n}");
+    }
 }

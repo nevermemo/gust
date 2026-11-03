@@ -15,12 +15,8 @@ that does not fit there.
 
 ### T13: GPU active count to indirect dispatch
 
-Deferred by owner. The T13 work in progress is not in the working tree: it is the
-git stash `WIP T13 active count deferred`, based on `59a5c3c`. Its code changes
-(`examples/component-pool/src/app.rs`, `xtask/src/{checks,verify}.rs`) applied
-cleanly to `63769fb` in a 2026-10-22 dry run; its doc renames are superseded by
-that commit and conflict. Do not apply, continue, or drop the stash unless the owner
-explicitly requests it. Contract: [tasks/T13-active-count.md](tasks/T13-active-count.md).
+Landed in M7 slice m7.t13 (merge `b88bfb0`, 2026-11-03), re-typed from the stash's design; contract and status:
+[tasks/T13-active-count.md](tasks/T13-active-count.md). Compaction and retirement are m7.t14. Kept for the record.
 
 ## Claimable DX
 
@@ -35,7 +31,7 @@ test module; do not mix that mechanical move with behavior changes.
 
 ## Later engine proofs
 
-- GPU active count to indirect dispatch (T13), when the owner reactivates it.
+- GPU active count to indirect dispatch (T13): landed in m7.t13; retirement and compaction follow in m7.t14.
 - Culling -> compacted visibility -> indirect arguments -> rendering.
 - Entity identity/lifecycle and storage choices, guided by measured workloads.
 
@@ -152,11 +148,9 @@ test module; do not mix that mechanical move with behavior changes.
   been dispatched, yet MR ships SPIR-V to Vulkan users. Dispatch the three goldens (vectors and products, uniforms)
   through SPIR-V passthrough on the RTX 5090; this is input to the MX/MR planning, not an M6 task (sanity-opus,
   2026-11-02; ruling 4).
-- Gate the layouts of the emitted WGSL with naga's validator and `proc::Layouter` (wgpu's default capabilities),
-  which would replace m6.m2's by-hand naga run and catch a disagreement between reflection and the emitted WGSL for
-  every kernel, not only the tested layouts. naga is already in the tree through wgpu, but `check-arch`'s D02
-  allow-list would need a deliberate change, so it needs a decision first. Input to the MX/MR planning (sanity-opus
-  and sanity-fable, 2026-11-02; ruling 4).
+- Gate the layouts of the emitted WGSL with naga's validator and `proc::Layouter`: done in mx.n (merge `4d4dafe`,
+  D98), through `wgpu::naga`, so the D02 allow-list is unchanged; it replaces m6.m2's by-hand run. Left: exported
+  WGSL (`compile_reflected_clean`) is gated only through the one committed precompiled file.
 - `encase` or `crevice` (MIT OR Apache-2.0, licence not yet checked) as an independent Std140V1/StorageV2 oracle for
   the macro's computed offsets, and `bytemuck`'s `Pod` derive to replace the hand-written padding check behind
   `pod_slice_as_bytes` (the m6.g1 must-fix patched it by hand). Both dev-dependencies only, never in a production
@@ -183,11 +177,17 @@ test module; do not mix that mechanical move with behavior changes.
   (`an_adapter_that_does_not_exist_is_no_adapter` in check-fast, "index 0 is one past the adapters"; green on
   rerun). Find out whether an empty enumeration is transient on this driver under concurrent load, and whether
   `enumerate` or the test should report or retry it (m7.a1). (The `Error::Map` m7.r1 saw is a separate readback
-  race, fixed in m7.rb.)
+  race, fixed in m7.rb, D97.) Third sighting: m7.rb's fix round (`an_adapter_is_chosen_by_index_and_by_name`, 12 of
+  12 reruns passed); m7.rb's probe of about 360 concurrent enumerations found none empty.
+- mx.t0b: drop schema 2 from xtask's `check_helper_pin` once every helper in use reports schema 3 (mx.t0a accepts
+  both so lanes on older trees keep working).
 - Remove the mutex that serialises gust-algo's GPU tests (`crates/gust-algo/src/tests/gpu.rs`) once m7.rb's
-  readback fix is on `main`, and run them in parallel once (m7.r2).
+  readback fix is on `main` (it is, D97), and run them in parallel once (m7.r3).
 - `reduce` zero-clears its partials buffers although every lane writes its slot; skipping the clear needs a
-  non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p).
+  non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p). The scan's `out` is
+  zero-filled the same way (one clear of n elements per call, 2 GiB at 2^29; m7.r2 review).
+- The scan `_wrapping` form the M7 plan promises after m7.w: the same Slang (D87), only the twins change; v0's scan
+  already wraps (m7.r4 or its own slice).
 - M8: naga 30 rejects an `i32` lane id in `subgroupShuffle`, `subgroupBroadcast` and `quadBroadcast`, which WGSL
   allows and Slang emits; filed by the owner as https://github.com/gfx-rs/wgpu/issues/10818. The M8-S1 workaround
   rewrites the id to `u32` in the exported WGSL; drop it when a fixed naga is pinned.

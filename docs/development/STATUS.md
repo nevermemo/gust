@@ -109,6 +109,55 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   `literal-let-ok` (pinned 24 to 26). Pin 216/25 to 217/25. Mutations: the check off fails check-ui; annotated
   u32 locals emitted `int` fail the GPU case at y = 0x80000000. Opus merge after one fix round. Main: 22 gate
   steps green on `a496968`.
+- M7 m7.rb (`a0b791e`, fix round `9a656e1`, merge `893d959`): blocking readbacks wait for their own map completion
+  (D97, amends D69). A concurrency test (8 threads on one device) gave 8 `Error::Map` in 2 903 iterations before the
+  fix and 0 in 3 153 after (RTX 5090); a mutation restoring the single check fails it. Pin 222/26 in the lane; 223/26
+  on `main` with m6.z2's test. The empty-enumeration flake (D86) showed once more in the fix round (12 of 12 reruns
+  passed); a probe of about 360 concurrent `enumerate(VULKAN)` calls did not reproduce it. Opus merge after one fix
+  round.
+- MX mx.t0a (`83a6148`, fix round `be46e44`, merge `754e439`): reflection helper schema 3 (D91), C++ side. Written
+  only when a 2D texture, a sampler or a non-compute stage is present, so every committed artifact set stays
+  byte-identical (`cargo gust check --recompile`; old and new helpers equal on 18 compared documents). Texture
+  bindings report shape, access, result type and format (a sampled texture always `read` and `unknown`; a storage
+  texture its declared or inferred format; no byte layout for texture results); samplers; the stage (argv,
+  default `compute`); a fragment's targets in SV_Target order. Comparison samplers, 1D/3D/cube/array/multisampled
+  and combined textures are refused by name. X-S2 outcome A: the API's facts equal slangc `-reflection-json`, so the
+  helper is the D17 witness and the CLI facts are an optional agreement check. 11 probe inputs with expected output
+  run in the Reflect suite. xtask's helper pin accepts schema 2 or 3 (mx.t0b drops 2). Opus merge after one fix
+  round.
+  Main: 22 gate steps green on `893d959` (01:59 to 02:29Z, RTX 5090) with the schema-3 helper; pin 223/26.
+- M7 m7.t13 (`40726ea`, fix round `4275104`, merge `b88bfb0`): T13, the GPU active count to indirect dispatch, in
+  `examples/component-pool`, re-typed by hand from the `WIP T13` stash's design (never applied). `classify` counts
+  live particles with an atomic add, `prepare` clamps the GPU-written count to the allocation and the budget into
+  the indirect arguments, the consumer guards `i < active && i < len`; every binding is independent and non-empty,
+  the graph's edges are declared, and no readback decides work. Every stash test is kept. 14 exported kernels
+  (`pool__classify`). The plan's `active_count` feature is not added: the stash's entry named a gust-wgpu test file
+  that does not exist; the T13 GPU tests are ignored tests that `check-examples` and `check-full` run with
+  `--include-ignored` (16 of 16 on the RTX 5090, Vulkan). Mutations fail them: the clamp, either guard, the count
+  reset; a dropped edge is refused (`GraphMissingDependency`). Uncertainty: only the RTX 5090 has run them so far;
+  the nightly gpu-software list runs `check-examples` on lavapipe; the 890M, DX12 and Metal are untried. Active
+  particles stay a prefix of the pool, checked on the host only, until m7.t14 adds compaction. Opus merge after one
+  fix round.
+- M7 m7.r2 (`900068e`, fix round `88793a0`, merge `09203ae`): scan v0 in `gust-algo`: `scan::inclusive` and
+  `scan::exclusive` over `u32` (wrapping, as `reduce::sum_wrapping`, which this slice adds), `2k + 1` dispatches in
+  one batch over `k` levels: 3 for n <= 65 536, 5 for n <= 2^24, 7 above. Deviation: the plan named 5 and 7 tiers
+  only; a one-level input needs just 3. Golden `scan.slang` (6 entries) with its fixture; gust-algo GPU tests 12 to
+  20 (`ALGO_GPU_TESTS`), including the 7-dispatch path at 2^25 on ones. Mutations fail a test: a skipped add-back,
+  `exclusive` returning the inclusive sums, and plain `+` in `sum_wrapping` (by D87 the Slang is the same, so the
+  twin and a source-text test catch it). Opus merge with no must-fix.
+  Main: 22 gate steps green on `09203ae` (02:39 to 03:02Z, RTX 5090); pins 223/26 and gust-algo 20.
+- MX mx.n (`cb528b2`, fix round `2d24624`, merge `4d4dafe`): the naga layout gate (M6 close ruling 4), a gust-wgpu
+  test that needs no adapter. It parses and validates WGSL with the naga wgpu runs (`wgpu::naga` 30.0.1, the
+  capabilities and flags of `create_shader_module`; a control test shows an f16 module that the all-capabilities
+  default would pass) and compares the `proc::Layouter` size, alignment and offsets of every storage and uniform
+  binding with the descriptor's `GpuPod::LAYOUT`, both ways. 120 modules: the 55 compute entries of the 13 goldens
+  through the slangc CLI, the 65 fixture kernels through the reflection helper (the route `HeadlessDevice`
+  compiles), and the committed precompiled WGSL. naga refuses none and no layout differs; nothing is allow-listed.
+  It replaces m6.m2's by-hand naga run. It runs in the Slangc suite (CI job `slang`) and under the GPU pin (D98,
+  amends D95): 223/26 to 232/27. Mutations: a shifted expected offset and the all-capabilities default each fail
+  it. Exported WGSL (`compile_reflected_clean`) is gated only through the committed precompiled file. Opus merge
+  after one fix round and a re-review.
+  Main: 22 gate steps green on `4d4dafe` (03:45 to 04:14Z, RTX 5090); pin 232/27.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
@@ -501,7 +550,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M7 (m7.rb, m7.r2, m7.t13 and mx.t0a running) after the M6 close (D86); see the roadmap's Now
+claim: roadmap M7 (m7.a1 and m7.r3 running) after the M6 close (D86); see the roadmap's Now
 and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no

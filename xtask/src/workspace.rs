@@ -36,6 +36,7 @@ pub(crate) const EXPECTED_SPIRV: &[&str] = &[
     "particles__snapshot.spv",
     "particles__step.spv",
     "polynomial__evaluate.spv",
+    "pool__classify.spv",
     "pool__integrate.spv",
     "pool__prepare_dispatch.spv",
     "sensor_pipeline__calibrate.spv",

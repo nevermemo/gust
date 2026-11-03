@@ -44,6 +44,16 @@ pub(crate) const REFLECTION_TESTS: &[&[&str]] = &[
         "--ignored",
         "schema_3_output",
     ],
+    // The naga layout gate (mx.n): the WGSL of every fixture kernel against the descriptors' layouts. Needs slangc and
+    // the native helper, no adapter; the Slangc suite runs it too (the CI job `slang`).
+    &[
+        "test",
+        "--locked",
+        "-p",
+        "gust-wgpu",
+        "--test",
+        "naga_layout",
+    ],
 ];
 
 /// The `gust-wgpu` integration tests of `check-feature gpu-semantics`, by file name under crates/gust-wgpu/tests. Kept
@@ -155,6 +165,7 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
         "component-pool",
         &[
             "app::tests::the_derivation_domain_holds_for_the_settings_and_the_spawned_particles",
+            "app::tests::twin_classify_counts_the_spawned_live_slots",
             "app::tests::twin_frames_match_host_reference",
         ],
     ),
@@ -616,7 +627,9 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
         "gpu-runtime" => {
             "gpu-runtime: reflection gate, cache/runtime mismatch tests, launch-limit checks and buffer layout assertions, typed calls and derived graph edges"
         }
-        "reflection" => "reflection: native Slang helper + core/wgpu reflection contract",
+        "reflection" => {
+            "reflection: native Slang helper + core/wgpu reflection contract + the naga layout gate (the WGSL of every golden against the descriptors' layouts)"
+        }
         "loops" => "loops: bounded-loop golden/rejection test plus real-GPU loop differential test",
         "result" => {
             "result: Result lowering/match regressions plus WGSL, SPIR-V, and real-GPU Result tests"
@@ -625,7 +638,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "map: the device side of the map calls: gust::map unit tests, then GpuVec and the buffer pool, device options and adapter choice, and the launch and buffer limits on the GPU"
         }
         "algo" => {
-            "algo: the device-resident algorithms of gust-algo (m7.r1, reduce): the schedule and bound arithmetic, the golden of the reduce kernels and the CPU twins against independent references (no adapter needed), then the same cases on the first Vulkan adapter with the per-level float bound asserted, the empty and over-limit inputs and the pooled buffers"
+            "algo: the device-resident algorithms of gust-algo (m7.r1 reduce, m7.r2 scan and sum_wrapping): the schedule and bound arithmetic, the goldens of the reduce and scan kernels and the CPU twins against independent references (no adapter needed), then the same cases on the first Vulkan adapter with the per-level float bound asserted, the dispatch counts of a scan, the empty and over-limit inputs and the pooled buffers"
         }
         "vectors" => {
             "vectors: the vector and matrix types (M6): the gust-macros tests of the types, products and negation, the gust::math unit tests, the vectors and products goldens on slangc, their SPIR-V (made here from the goldens, since no example uses a vector) validated with spirv-val for Vulkan 1.2 with an informational OpCopyLogical count, as check-artifacts does too; then the GPU tests of crates/gust-wgpu/tests/vectors.rs"

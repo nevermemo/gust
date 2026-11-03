@@ -2,8 +2,9 @@
 //! result is not GPU evidence; `gpu::` runs the same cases on an adapter.
 
 use super::common::{
-    Backend, CPU_C, LENGTHS, Shape, assert_f32_sum, empty_cases, f32_input, float_min_max_cases,
-    float_sum_cases, integer_cases, tie_ladder,
+    Backend, CPU_C, LENGTHS, SCAN_LENGTHS, Shape, assert_f32_sum, deep_scan_cases, empty_cases,
+    f32_input, float_min_max_cases, float_sum_cases, integer_cases, scan_cases, tie_ladder,
+    wrapping_cases,
 };
 use crate::{bound, cpu, reduce::Element};
 
@@ -22,6 +23,18 @@ impl Backend for Twin {
 
     fn max<T: Element>(&self, values: &[T]) -> Option<T> {
         cpu::max(values).expect("the twin runs")
+    }
+
+    fn sum_wrapping(&self, values: &[u32]) -> u32 {
+        cpu::sum_wrapping(values).expect("the twin runs")
+    }
+
+    fn inclusive(&self, values: &[u32]) -> Vec<u32> {
+        cpu::inclusive(values).expect("the twin runs")
+    }
+
+    fn exclusive(&self, values: &[u32]) -> Vec<u32> {
+        cpu::exclusive(values).expect("the twin runs")
     }
 }
 
@@ -128,4 +141,31 @@ fn twin_sum_of_a_partly_filled_last_block_counts_each_element_once() {
         let expected: u64 = values.iter().map(|value| u64::from(*value)).sum();
         assert_eq!(u64::from(cpu::sum(&values).unwrap()), expected, "n = {n}");
     }
+}
+
+#[test]
+fn twin_wrapping_sums_are_defined_modulo_2_32_for_every_input() {
+    wrapping_cases(&Twin, &LENGTHS);
+}
+
+#[test]
+fn twin_scans_are_exact_at_every_boundary() {
+    scan_cases(&Twin, &SCAN_LENGTHS);
+}
+
+/// 2^24 elements are five dispatches and 2^24 + 1 are seven (a third level of totals).
+#[test]
+fn twin_runs_the_deepest_scans() {
+    deep_scan_cases(&Twin);
+}
+
+/// The exclusive scan is the inclusive one shifted by the element, inside the final add-back: the two differ on every
+/// element that is not zero, so an exclusive scan that returned the inclusive result fails here.
+#[test]
+fn twin_exclusive_is_not_inclusive() {
+    let values = [3u32, 1, 4, 1, 5];
+    assert_eq!(cpu::inclusive(&values).unwrap(), vec![3, 4, 8, 9, 14]);
+    assert_eq!(cpu::exclusive(&values).unwrap(), vec![0, 3, 4, 8, 9]);
+    assert!(cpu::inclusive(&[]).unwrap().is_empty());
+    assert!(cpu::exclusive(&[]).unwrap().is_empty());
 }

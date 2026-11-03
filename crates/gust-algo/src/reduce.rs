@@ -1,4 +1,4 @@
-//! `sum`, `min` and `max` of a [`GpuVec`] of `u32`, `i32` or `f32` (plan section 5.2).
+//! `sum`, `min`, `max` of a [`GpuVec`] of `u32`, `i32` or `f32` and `sum_wrapping` of `u32` (plan section 5.2).
 //!
 //! One reduction is one `dispatch_batch` of at most four dispatches (the block-strided passes of
 //! [`Schedule`], then the terminal kernel), with one pooled `GpuVec` per pass for the partials and one element for the
@@ -14,7 +14,7 @@
 use gust::{GpuPod, Independent};
 use gust_wgpu::{BufferDispatch, GpuVec, HeadlessDevice};
 
-use crate::{Error, kernels, schedule::Schedule};
+use crate::{Error, kernels, limits, schedule::Schedule};
 
 /// The reduction a call performs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -223,9 +223,33 @@ fn read_one<T: Element>(result: &GpuVec<T>) -> Result<T, Error> {
 
 /// One reduction of a non-empty input: the limit checks, the pooled buffers, one `dispatch_batch`.
 fn reduce_on_device<T: Element>(op: Op, input: &GpuVec<T>) -> Result<GpuVec<T>, Error> {
+    reduce_with(input, |device, schedule, partials, out| {
+        T::run(op, device, schedule, input, partials, out)
+    })
+}
+
+/// The shared frame of a reduction of a non-empty `input`: the limit checks, then one pooled `GpuVec` per pass and one
+/// for the result, which `run` fills with its batch.
+fn reduce_with<T: Element>(
+    input: &GpuVec<T>,
+    run: impl FnOnce(
+        &HeadlessDevice,
+        &Schedule,
+        &[GpuVec<T>],
+        &GpuVec<T>,
+    ) -> Result<(), gust_wgpu::Error>,
+) -> Result<GpuVec<T>, Error> {
     let schedule = Schedule::new(input.len()).expect("the input is not empty");
     let device = input.device();
-    check_limits(device, &schedule, input.len(), size_of::<T>())?;
+    // A first pass past the workgroup limit is refused here too: it is the largest dispatch of the batch.
+    let workgroups = schedule.passes().first().map_or(1, |pass| pass.workgroups);
+    limits::check(
+        device,
+        "gust_algo::reduce",
+        workgroups,
+        input.len(),
+        size_of::<T>(),
+    )?;
     // Every lane writes its slot, so the zero fill is not needed for correctness; `GpuVec` has no public constructor
     // without it (a recycled buffer costs one clearing submission), and `gust-wgpu` is not this slice's to change.
     let partials = schedule
@@ -234,46 +258,34 @@ fn reduce_on_device<T: Element>(op: Op, input: &GpuVec<T>) -> Result<GpuVec<T>, 
         .map(|pass| GpuVec::<T>::zeroed_on(device, pass.partials()))
         .collect::<Result<Vec<_>, _>>()?;
     let out = GpuVec::<T>::zeroed_on(device, 1)?;
-    T::run(op, device, &schedule, input, &partials, &out)?;
+    run(device, &schedule, &partials, &out)?;
     Ok(out)
 }
 
-/// An input past the storage binding limit, or a first pass past the workgroup limit, is a `DeviceLimit` error before
-/// a buffer is taken or anything is compiled or dispatched (the backend would refuse the dispatch too, but only after
-/// the partials were allocated). The names are the ones the backend reports.
-fn check_limits(
-    device: &HeadlessDevice,
-    schedule: &Schedule,
-    len: u32,
-    element_bytes: usize,
-) -> Result<(), gust_wgpu::Error> {
-    let limits = device.limits();
-    let bytes = u64::from(len) * element_bytes as u64;
-    let binding = limits.max_storage_buffer_binding_size;
-    if bytes > binding {
-        return Err(device_limit(
-            "max_storage_buffer_binding_size",
-            bytes,
-            binding,
-        ));
+/// The sum of all elements of a `u32` vector, defined modulo 2^32 for every input: the lane chains and the partials
+/// wrap (`wrapping_add`, SEMANTICS section 3 item 1, KM-10). The sum of an empty input is `0`.
+///
+/// This is `sum` for inputs whose total may pass `u32::MAX`; for inputs that stay inside, both give the same value.
+/// The twin is `cpu::sum_wrapping` and calls Rust's `wrapping_add`, so the value is the same on the device, on the twin
+/// and in plain Rust, with overflow checks on and off.
+///
+/// # Errors
+///
+/// As for [`sum`].
+pub fn sum_wrapping(input: &GpuVec<u32>) -> Result<u32, Error> {
+    if input.is_empty() {
+        return Ok(0);
     }
-    let workgroups = schedule.passes().first().map_or(1, |pass| pass.workgroups);
-    let ceiling = u64::from(limits.max_compute_workgroups_per_dimension);
-    if u64::from(workgroups) > ceiling {
-        return Err(device_limit(
-            "max_compute_workgroups_per_dimension",
-            u64::from(workgroups),
-            ceiling,
-        ));
-    }
-    Ok(())
-}
-
-fn device_limit(limit: &'static str, requested: u64, maximum: u64) -> gust_wgpu::Error {
-    gust_wgpu::Error::DeviceLimit {
-        kernel: "gust_algo::reduce".to_owned(),
-        limit,
-        requested,
-        maximum,
-    }
+    let result = reduce_with(input, |device, schedule, partials, out| {
+        gpu_chain!(
+            sum_wrapping_u32_pass,
+            sum_wrapping_u32_final,
+            device,
+            schedule,
+            input,
+            partials,
+            out
+        )
+    })?;
+    read_one(&result)
 }

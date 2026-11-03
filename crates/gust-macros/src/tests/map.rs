@@ -213,10 +213,10 @@ fn a_parameter_named_id_does_not_meet_the_dispatch_id() {
     let slang = kernel_slang(&function);
     assert!(slang.contains("StructuredBuffer<uint> id;"), "{slang}");
     assert!(
-        slang.contains("uint3 __gust_id : SV_DispatchThreadID"),
+        slang.contains("uint3 __gust_gid : SV_DispatchThreadID"),
         "{slang}"
     );
-    assert!(slang.contains("__gust_id.x"), "{slang}");
+    assert!(slang.contains("__gust_gid.x"), "{slang}");
     let text = expansion(
         "pub fn hash(id: u32, salt: u32) -> u32 { (id + salt) * 3u32 }",
         Profile::Other,

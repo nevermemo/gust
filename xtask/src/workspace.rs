@@ -13,6 +13,7 @@ pub(crate) const EXAMPLES: &[&str] = &[
     "typed-pipeline",
     "staged-graph",
     "component-pool",
+    "map-chain",
 ];
 
 pub(crate) const SMOKE_EXAMPLES: &[&str] = &["vector-add", "typed-pipeline"];
@@ -26,6 +27,7 @@ pub(crate) const WORKSPACE_EXCLUDES: &[&str] = &[
     "typed-pipeline",
     "staged-graph",
     "component-pool",
+    "map-chain",
 ];
 
 /// SPIR-V files the examples export to `generated-wgpu/`, one `<module>__<kernel>.spv` per
@@ -33,6 +35,8 @@ pub(crate) const WORKSPACE_EXCLUDES: &[&str] = &[
 /// Sorted; `verify` compares the directory against this list by name.
 pub(crate) const EXPECTED_SPIRV: &[&str] = &[
     "atomic_counter__increment.spv",
+    "curve__map_kernel.spv",
+    "damp__map_kernel.spv",
     "particles__snapshot.spv",
     "particles__step.spv",
     "polynomial__evaluate.spv",
@@ -42,6 +46,7 @@ pub(crate) const EXPECTED_SPIRV: &[&str] = &[
     "pool__mark_live.spv",
     "pool__prepare_dispatch.spv",
     "pool__scatter_particles.spv",
+    "rescale__map_kernel.spv",
     "sensor_pipeline__calibrate.spv",
     "sensor_pipeline__classify.spv",
     "sensor_pipeline__finalize.spv",

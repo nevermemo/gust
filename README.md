@@ -87,7 +87,7 @@ major changes and release validation, but the ordinary workspace loop prioritize
 compiler/runtime feedback over full example proofs.
 
 Compiling a kernel at run time (launching `slangc` and the native reflection helper) is the
-`slang-runtime` feature of `gust` and `gust-wgpu`, off by default (D44). The eight examples
+`slang-runtime` feature of `gust` and `gust-wgpu`, off by default (D44). The nine examples
 enable it in their manifests, and `gust` and `gust-wgpu` enable it for their own tests through a
 dev-dependency on themselves, so `cargo run -p vector-add`, `cargo test -p gust-wgpu` and
 `cargo test --workspace` need no flag. A crate of your own that runs kernels this way during
@@ -122,8 +122,8 @@ contains no Slang bridge, helper or GPU runtime. A kernel marked `#[kernel(cpu =
 `dispatch` on it does not compile. Kernels run on one thread, in ascending `global_id.x`. `cargo xtask check-cpu-target`
 is the evidence (the `Cpu` tier).
 
-For the full release-readiness check (including ignored example tests, all eight
-examples, and mandatory external validation of all seventeen SPIR-V exports):
+For the full release-readiness check (including ignored example tests, all nine
+examples, and mandatory external validation of all twenty SPIR-V exports):
 
 ```sh
 cargo xtask check-full
@@ -159,7 +159,7 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask docs-check` | Docs consistency | relative Markdown links in project `.md` files resolve to project files (anchors and external links are not checked), no merge-conflict markers, `docs/DECISIONS.md` ids unique and increasing with the right "Next id"; also sees untracked files that are not ignored |
 | `cargo xtask check-arch` | Architecture guardrails (D02) | per-crate dependency allow-list read from `cargo metadata`, allow-listed external packages must resolve from crates.io in `Cargo.lock` (catches `[patch]`/`[replace]` redirects), no `ir` / `*_ir` module or file under `crates/` outside a `future/` path, no SPIR-V library in the compiler crates; also sees untracked files that are not ignored |
 | `cargo xtask check-ui` | Diagnostic text for misuse (D27) | compiles each crate of the separate `tests/ui` workspace; a crate with `expected.txt` must fail with exactly one error (read from cargo's JSON) that satisfies every listed key (`code`, `file`, `line`, `message`, `label`; `code: none` matches a macro error without a rustc code and needs a `message:`), one without it must compile |
-| `cargo xtask check-cpu` | CPU-twin evidence (no slangc, no GPU) | `--locked` tests of the examples with CPU twins (`vector-add`, `polynomial`, `signal-pipeline`, `particle-step`, `typed-pipeline`, `atomic-counter`, `staged-graph`, `component-pool`), whose non-ignored tests run each macro-emitted CPU twin against its host reference; part of the Unit suite. Each call fails when it reports no passed test (the test-count guard), and when a twin test or derivation-domain guard of the example is not reported `ok` by name |
+| `cargo xtask check-cpu` | CPU-twin evidence (no slangc, no GPU) | `--locked` tests of the examples with CPU twins (`vector-add`, `polynomial`, `signal-pipeline`, `particle-step`, `typed-pipeline`, `atomic-counter`, `staged-graph`, `component-pool`, `map-chain`), whose non-ignored tests run each macro-emitted CPU twin against its host reference; part of the Unit suite. Each call fails when it reports no passed test (the test-count guard), and when a twin test or derivation-domain guard of the example is not reported `ok` by name |
 | `cargo xtask check-difftest [--seeds <list\|range\|random:N>] [--cpu-only] [--report PATH]` | Differential test of generated scalar kernels (`tests/difftest`, `docs/development/DIFFTEST.md`); `--cpu-only` needs no slangc and no GPU | runs `difftest-run` and fails unless its report has the requested seeds and mode, `programs_executed` equal to 16 times the seeds, no mismatch (named by seed) and, without `--cpu-only`, an adapter; without `--cpu-only` it also runs the `short_circuit` GPU test. `--cpu-only --seeds 1-4` is the last step of the Unit suite; the Gpu suite and `check-full` run all 8 seeds |
 | `cargo xtask check-dual [--check-only]` | Cross-crate dual-build evidence; `--check-only` needs no slangc and no GPU | refuses a preset `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` or `CARGO_BUILD_RUSTFLAGS`; checks `tests/dual` with fmt and clippy, builds the workspace with `--cfg gust_dual` (through `CARGO_ENCODED_RUSTFLAGS`) in `<target>/dual`, runs clippy `-D warnings` on vector-add and polynomial with the cfg, then checks the `tests/dual` fixture: without the cfg a dependent's own `cfg(test)` (E1) and a production binary (E3) get no CPU twin of a library kernel (one E0277 each); with it the twin test runs and passes (E2). The full mode (GPU) also runs vector-add and polynomial with the cfg, which must print `CPU twin: matches (N elements, max ULP k)`, and vector-add without it, which must not. CI's `unit` job runs `--check-only`; `check-full` runs the full mode |
 | `cargo xtask check-cpu-target` | Production CPU target evidence (`Cpu` tier; no slangc, no GPU) | builds the fixture `tests/cpu-target` in release under `GUST_PROFILE=cpu` and runs it against host references (E-a); scans the binary for `slangc`, `gust-slang-reflect`, `wgpu` and `vulkan` and reads `cargo tree -e features` (E-b); builds with `--cfg gust_dual` (E-c); checks four refusals (E-d to E-g: the missing twin without the profile, `gust-wgpu` under `cpu`, the bridge feature under `cpu`, an opted-out kernel); flips the profile six times in one target directory (E-h); runs `cargo test -p kernels` under `cpu` (E-i). Stops at the first failing step and names it. CI runs it as the job `cpu-target`, beside `unit` |
@@ -429,9 +429,55 @@ flag the count reaches the GPU unvalidated. A limit lowered with `with_limits` d
 not apply to it, and the kernel that writes the arguments must clamp. See the contract in
 [docs/ENGINE_HURRICANE.md](docs/ENGINE_HURRICANE.md).
 
+## Element-wise maps
+
+`#[gpu]` on a free function of scalars (or vectors) generates the kernel, the buffers, the bounds handling and the
+dispatch of an element-wise call (D60). The function stays an ordinary Rust function; its module of the same name
+holds the calls:
+
+```rust
+use gust::{gpu, map::Broadcast};
+
+#[gpu]
+pub fn saxpy(a: f32, x: f32, y: f32) -> f32 { a * x + y }
+
+let out: Vec<f32> = saxpy::map(Broadcast(2.0), &xs, &ys)?;          // host slices in, a Vec out
+let on_device = saxpy::map_gpu(Broadcast(2.0), &gpu_xs, &gpu_ys)?;  // GpuVec in, GpuVec out, no read-back
+```
+
+`map_on` and `map_gpu_on` take a device explicitly, and `map_async` and `map_on_async` do not block (in the browser
+the blocking `map` and `map_on` are not emitted). Mismatched lengths are an error, never a truncation. The example
+`examples/map-chain` runs three such maps as a resident chain and as host-slice calls.
+
+Map is for resident chains and compute-dense functions. For a cheap function (one multiply-add per element) a map over
+host slices did not beat the CPU at any size this run measured, up to 4.2e6 elements; the planning break-even of the
+design study was about 1e7 elements.
+
+Provisional, shared machine, 2026-11-03 (smoke run of an out-of-repository probe, `plans/m7/probe/a2` of the work
+area, on the lane/m7.a2 tree at base `5609536`; the published run replaces this table. NVIDIA GeForce RTX 5090,
+Vulkan, release build with `-C target-cpu=native`, 24 logical cores, 2 warm-up and 5 timed rounds per cell with the
+backends interleaved, median of the timed rounds; other lanes were using the GPU and the CPU, so read the ratios, not
+the milliseconds. Every map time includes the zero-fill of the map's output buffer, which the generated call does
+before the kernel runs; "faster than the CPU" below means a time under 0.9 of the best CPU form):
+
+| Measurement | n | Result (median ms) |
+|---|---|---|
+| map over host slices (`a + b`) versus a hand-written typed dispatch | 1e3 to 4.2e6 (six sizes) | map / hand 0.76 / 1.05 / 0.77 / 0.79 / 0.49 / 0.50 at 1e3 / 1e4 / 6.6e4 / 1e5 / 1e6 / 4.2e6, so 0.49 to 1.05: at 1e4 map is the slower one; at 1e6 map 3.68 and hand 7.59, at 4.2e6 map 14.1 and hand 28.5 (map reuses pooled buffers, the hand-written path allocates three per call) |
+| resident three-step chain versus the same chain over host slices | 1e5 / 1e6 / 4.2e6 | resident 1.36 / 3.92 / 15.5, host slices 1.93 / 10.2 / 42.5 (host slices / resident 1.42 / 2.60 / 2.73) |
+| per-call floor (whole call, host slice in, `Vec` out) | 1 / 256 | 0.36 / 0.33 (minimum 0.20 / 0.19) |
+| break-even against the best CPU form (one thread or rayon on 24 threads), 1 multiply-add per element | up to 4.2e6 | none: map is 1.8x slower than the best CPU form at 1e6 and 2.7x at 4.2e6 |
+| break-even, 64 multiply-adds per element | 1e4 to 4.2e6 | map is faster from 1e4 (0.86 of the best CPU time) to 1e6 (0.41); at 4.2e6 this run has it 1.2x slower, an outlier this run does not explain (5 samples) |
+| break-even, 256 multiply-adds per element | 6.6e4 to 4.2e6 | map is faster from 6.6e4 (0.32 of the best CPU time) to 4.2e6 (0.44) |
+
+What the smoke run checked: for the rows that compare map with hand-written code and with the CPU (the first and the
+break-even rows), one call per cell was compared with the plain Rust function on the CPU (the dense loops with a
+tolerance of 1e-4 that is not derived), not every timed result. The resident-versus-host-slices row compared the two GPU
+chains with each other only, and the per-call floor row checked nothing.
+
 ## Examples
 
-The workspace contains eight runnable programs:
+The workspace contains nine runnable programs (and `web-vector-add`, a browser module run by
+`cargo xtask check-web`):
 
 - `vector-add` uses the preferred Slang-shaped Rust vocabulary, runs through the
   generated typed `dispatch`, and demonstrates artifact export.
@@ -460,6 +506,13 @@ The workspace contains eight runnable programs:
   printed and asserted by the tests.
 - `atomic-counter` has 257 invocations increment one shared counter with
   `atomic_add` and checks the total against the host count.
+- `map-chain` chains three `#[gpu] fn` maps two ways, as a GPU-resident chain
+  (`GpuVec` in, `map_gpu_on` three times, one read-back) and as host-slice calls
+  (`map_on` three times), checks both against an independent `f64` reference within a
+  float bound derived in the example, asserts that the resident chain takes the device pool's hand-outs of
+  one upload and one read-back (a read-back that bypasses the pool would not be counted), and prints both
+  times with their conditions. See
+  [Element-wise maps](#element-wise-maps).
 
 Release-mode benchmark examples use fixed sizes selected in each example's
 `main` function, kept within the default limit of 65 535 workgroups per dispatch
@@ -472,6 +525,7 @@ environment-variable size override. The examples enable `slang-runtime`, which a
 GUST_PROFILE=dev cargo run --release -p polynomial
 GUST_PROFILE=dev cargo run --release -p signal-pipeline
 GUST_PROFILE=dev cargo run --release -p typed-pipeline
+GUST_PROFILE=dev cargo run --release -p map-chain
 ```
 
 CPU numbers in those examples measure separate host implementations. That makes
@@ -584,6 +638,8 @@ examples/
   staged-graph/
   component-pool/
   atomic-counter/
+  map-chain/
+  web-vector-add/
 tests/fixtures/         reviewed golden Slang and GPU semantics fixtures
 scripts/probes/         native Slang reflection helper source
 xtask/                  project automation and validation commands

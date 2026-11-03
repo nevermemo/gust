@@ -10,4 +10,5 @@ mod common;
 mod golden;
 mod gpu;
 mod schedule;
+mod struct_gather;
 mod twin;

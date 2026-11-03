@@ -185,3 +185,26 @@ fn the_u32_range_needs_at_most_seven_dispatches() {
         assert_eq!(schedule.dispatches(), 2 * schedule.sums().len() + 1);
     }
 }
+
+/// The launch of the element-wise `compact` kernels: one workgroup of 256 lanes per block of 65 536 elements, so even
+/// `2^24 + 1` elements are 257 workgroups and `2^29` are 8 192, far inside the 65 535 ceiling that an invocation per
+/// element would pass at `2^24 + 1`.
+#[test]
+fn the_element_wise_launch_is_one_workgroup_per_block() {
+    for (n, workgroups) in [
+        (0u32, 0u32),
+        (1, 1),
+        (65_536, 1),
+        (65_537, 2),
+        (1 << 24, 256),
+        ((1 << 24) + 1, 257),
+        (1 << 29, 8_192),
+    ] {
+        let pass = Pass::over(n);
+        assert_eq!(pass.workgroups, workgroups, "n = {n}");
+        assert_eq!(pass.partials(), workgroups * LANES, "n = {n}");
+        assert_eq!(pass.input_len, n);
+    }
+    // The largest launch a u32 length can ask for is still a valid dispatch size.
+    assert_eq!(Pass::over(u32::MAX).workgroups, 65_536);
+}

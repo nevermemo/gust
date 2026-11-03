@@ -2,9 +2,10 @@
 //! result is not GPU evidence; `gpu::` runs the same cases on an adapter.
 
 use super::common::{
-    Backend, CPU_C, LENGTHS, SCAN_LENGTHS, Shape, assert_f32_sum, deep_scan_cases, empty_cases,
-    f32_input, float_min_max_cases, float_sum_cases, integer_cases, scan_cases, tie_ladder,
-    wrapping_cases,
+    Backend, COMPACT_LENGTHS, CPU_C, LENGTHS, SCAN_LENGTHS, Shape, assert_f32_sum, compact_cases,
+    deep_compact_cases, deep_scan_cases, empty_cases, f32_input, float_min_max_cases,
+    float_sum_cases, gather_edge_cases, integer_cases, out_of_range_index_cases, scan_cases,
+    tie_ladder, wrapping_cases,
 };
 use crate::{bound, cpu, reduce::Element};
 
@@ -35,6 +36,26 @@ impl Backend for Twin {
 
     fn exclusive(&self, values: &[u32]) -> Vec<u32> {
         cpu::exclusive(values).expect("the twin runs")
+    }
+
+    fn compact_count(&self, flags: &[u32]) -> u32 {
+        cpu::compact_count(flags).expect("the twin runs")
+    }
+
+    fn compact_indices(&self, flags: &[u32]) -> (Vec<u32>, u32) {
+        cpu::compact_indices(flags).expect("the twin runs")
+    }
+
+    fn gather_u32(&self, values: &[u32], indices: &[u32], count: u32) -> Vec<u32> {
+        cpu::gather_u32(values, indices, count).expect("the twin runs")
+    }
+
+    fn gather_i32(&self, values: &[i32], indices: &[u32], count: u32) -> Vec<i32> {
+        cpu::gather_i32(values, indices, count).expect("the twin runs")
+    }
+
+    fn gather_f32(&self, values: &[f32], indices: &[u32], count: u32) -> Vec<f32> {
+        cpu::gather_f32(values, indices, count).expect("the twin runs")
     }
 }
 
@@ -168,4 +189,47 @@ fn twin_exclusive_is_not_inclusive() {
     assert_eq!(cpu::exclusive(&values).unwrap(), vec![0, 3, 4, 8, 9]);
     assert!(cpu::inclusive(&[]).unwrap().is_empty());
     assert!(cpu::exclusive(&[]).unwrap().is_empty());
+}
+
+#[test]
+fn twin_compaction_is_exact_at_every_boundary() {
+    compact_cases(&Twin, &COMPACT_LENGTHS);
+}
+
+/// `2^24 + 1` flags: a mask launch of 257 workgroups, a seven-dispatch scan, a scatter and the gathers.
+#[test]
+fn twin_runs_the_deepest_compaction() {
+    deep_compact_cases(&Twin);
+}
+
+#[test]
+fn twin_a_gather_guards_the_index_bound_and_the_count() {
+    out_of_range_index_cases(&Twin);
+    gather_edge_cases(&Twin);
+}
+
+/// The flag rule on the twin: any non-zero flag is set, so `2`, `0x8000_0000` and `u32::MAX` count as one each, and the
+/// indices are the same as for flags of 0 and 1 (a mask that kept the flag would give a count of 2 + 2^31 + ...).
+#[test]
+fn twin_non_zero_flags_count_as_set() {
+    let flags = [0u32, 2, 0, 0x8000_0000, u32::MAX, 1, 0];
+    assert_eq!(cpu::compact_count(&flags).unwrap(), 4);
+    let (indices, count) = cpu::compact_indices(&flags).unwrap();
+    assert_eq!(count, 4);
+    assert_eq!(indices, vec![1, 3, 4, 5, 0, 0, 0]);
+}
+
+/// Nothing in `compact` reads a value back to the host: the T13 rule, enforced on the source (a readback has to name
+/// `to_vec`, `read` or an async variant of them).
+#[test]
+fn compact_never_reads_back() {
+    let source = include_str!("../compact.rs").replace("\r\n", "\n");
+    let code: String = source
+        .lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for readback in [".to_vec", "to_vec_async", ".read(", "map_async", "Readback"] {
+        assert!(!code.contains(readback), "compact.rs mentions `{readback}`");
+    }
 }

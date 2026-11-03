@@ -626,7 +626,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "map: the device side of the map calls: gust::map unit tests, then GpuVec and the buffer pool, device options and adapter choice, and the launch and buffer limits on the GPU"
         }
         "algo" => {
-            "algo: the device-resident algorithms of gust-algo (m7.r1 reduce, m7.r2 scan and sum_wrapping): the schedule and bound arithmetic, the goldens of the reduce and scan kernels and the CPU twins against independent references (no adapter needed), then the same cases on the first Vulkan adapter with the per-level float bound asserted, the dispatch counts of a scan, the empty and over-limit inputs and the pooled buffers"
+            "algo: the device-resident algorithms of gust-algo (m7.r1 reduce, m7.r2 scan and sum_wrapping, m7.r3 compaction): the schedule and bound arithmetic, the goldens of the reduce, scan and compact kernels and the CPU twins against independent references (no adapter needed), then the same cases on the first Vulkan adapter with the per-level float bound asserted, the dispatch counts of a scan and of a compaction, the empty and over-limit inputs and the pooled buffers"
         }
         "vectors" => {
             "vectors: the vector and matrix types (M6): the gust-macros tests of the types, products and negation, the gust::math unit tests, the vectors and products goldens on slangc, their SPIR-V (made here from the goldens, since no example uses a vector) validated with spirv-val for Vulkan 1.2 with an informational OpCopyLogical count, as check-artifacts does too; then the GPU tests of crates/gust-wgpu/tests/vectors.rs"

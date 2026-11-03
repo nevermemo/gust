@@ -1,13 +1,13 @@
-//! The reviewed expectations `tests/fixtures/reduce.slang` and `tests/fixtures/scan.slang`: the Slang the macro
-//! emits for every kernel of `tests/fixtures/reduce.rs` and `tests/fixtures/scan.rs`, in declaration order, each under a
-//! marker line (the layout of `mismatch.slang`). A translation change needs an explained golden diff and the GPU tests
-//! of this crate.
+//! The reviewed expectations `tests/fixtures/reduce.slang`, `tests/fixtures/scan.slang` and
+//! `tests/fixtures/compact.slang`: the Slang the macro emits for every kernel of `tests/fixtures/reduce.rs`,
+//! `scan.rs` and `compact.rs`, in declaration order, each under a marker line (the layout of `mismatch.slang`). A
+//! translation change needs an explained golden diff and the GPU tests of this crate.
 
 use std::{env, fs, path::Path};
 
 use gust::ModuleDescriptor;
 
-use crate::{kernels, scan_kernels};
+use crate::{compact_kernels, kernels, scan_kernels};
 
 const BLESS_VARIABLE: &str = "BLESS_GOLDEN";
 
@@ -90,6 +90,11 @@ fn scan_golden() {
 }
 
 #[test]
+fn compact_golden() {
+    check_golden(&compact_kernels::MODULE_DESCRIPTOR, "compact.slang");
+}
+
+#[test]
 fn the_golden_holds_every_kernel_once() {
     // 3 element types x (sum, min, max) x (pass, final), then the wrapping `u32` sum (pass, final).
     assert_eq!(kernels::MODULE_DESCRIPTOR.kernels.len(), 20);
@@ -101,6 +106,13 @@ fn the_scan_golden_holds_every_kernel_once() {
     // The level-0 scan, the scan of totals, the top scan, the add-back into totals and the two final add-backs.
     assert_eq!(scan_kernels::MODULE_DESCRIPTOR.kernels.len(), 6);
     assert_each_kernel_once(&scan_kernels::MODULE_DESCRIPTOR);
+}
+
+#[test]
+fn the_compact_golden_holds_every_kernel_once() {
+    // The mask, the scatter and one gather per element type.
+    assert_eq!(compact_kernels::MODULE_DESCRIPTOR.kernels.len(), 5);
+    assert_each_kernel_once(&compact_kernels::MODULE_DESCRIPTOR);
 }
 
 /// The Slang cannot tell `wrapping_add` from `+` (SEMANTICS KM-10: it lowers to the plain operator), and a release

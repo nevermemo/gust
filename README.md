@@ -49,6 +49,8 @@ a strict profile needs neither Slang nor the helper, D45):
 
 - The stable Rust toolchain (this checkout was validated with Rust 1.98.0;
   the manifest's older minimum is not independently verified)
+- Outside this checkout, `cargo install cargo-gust --locked` installs the `cargo gust` tool; it needs no
+  `GUST_PROFILE` (the internal `cargo-gust-bridge` feature, D108, makes its own release build `dev`)
 - `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.20 (`cargo gust slang install` installs it, and
   `cargo gust doctor` names a `slangc` of another version). `cargo gust` finds its managed install itself (in
   `GUST_SLANG_HOME` when set), but `cargo xtask` and the run-time bridge launch plain `slangc`, so put the install's

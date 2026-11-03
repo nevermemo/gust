@@ -1,0 +1,6 @@
+# E6g and E6i of `cargo xtask check-precompiled`: the line that cargo must print when the internal feature
+# `cargo-gust-bridge` of `gust` (D108) made a release build without GUST_PROFILE `dev`, so that the run-time bridge was
+# accepted. Cargo prefixes a build script's `cargo:warning` with `warning: gust@<version>: `; the text after that is
+# the one of crates/gust/build.rs. The same cases also require that the plain inference text (`treated as native`) is
+# not printed.
+warning: gust: cargo-gust-bridge treats a release build without GUST_PROFILE as dev

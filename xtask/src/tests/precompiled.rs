@@ -5,16 +5,17 @@ use std::{
 };
 
 use super::{
-    ADAPTER_PREFIX, BRIDGE_MARKERS, E4_EXPECTED, E6_INFERRED_EXPECTED, E6_NATIVE_EXPECTED,
-    E6Outcome, E6Profile, E8_PACKAGES, Expansion, INFERRED_SENTENCE, INFERRED_WARNING,
-    PRECOMPILED_DIR, RunReport, STRICT_PROFILE, StripReport, VERIFIED_PREFIX, artifact_fresh_flags,
-    bridge_user_manifest, child_environment, consumer_manifest, count_occurrences,
-    default_feature_problems, dependency_disables_defaults, e6_args, e6_cases, e6_problems,
-    e7_steps, expansion_problem, files_written, gust_build_problems, identity_error, is_inside,
-    is_slang_variable, judge_run, lock_problems, marker_counts, markers_missing, markers_present,
-    mutate_wgsl, package_allows, package_files, package_problems, retarget_paths, section_version,
-    slang_free_package_problems, slang_free_problems, snapshot_differences, strip_path,
-    tree_problems, unused_patch_lines, with_bridge_user_dependency, with_bridge_user_member,
+    ADAPTER_PREFIX, BRIDGE_MARKERS, E4_EXPECTED, E6_BRIDGE_EXPECTED, E6_INFERRED_EXPECTED,
+    E6_NATIVE_EXPECTED, E6Outcome, E6Profile, E8_PACKAGES, Expansion, INFERRED_SENTENCE,
+    INFERRED_WARNING, PRECOMPILED_DIR, RunReport, STRICT_PROFILE, StripReport, VERIFIED_PREFIX,
+    artifact_fresh_flags, bridge_user_manifest, child_environment, consumer_manifest,
+    count_occurrences, default_feature_problems, dependency_disables_defaults, e6_args, e6_cases,
+    e6_problems, e7_steps, expansion_problem, files_written, gust_build_problems, identity_error,
+    is_inside, is_slang_variable, judge_run, lock_problems, marker_counts, markers_missing,
+    markers_present, mutate_wgsl, package_allows, package_files, package_problems,
+    parse_warning_expectation, retarget_paths, section_version, slang_free_package_problems,
+    slang_free_problems, snapshot_differences, strip_path, tree_problems, unused_patch_lines,
+    with_bridge_user_dependency, with_bridge_user_member,
 };
 use crate::{process::PROFILE_VARIABLE, ui::parse_expected, workspace::workspace_root};
 
@@ -444,11 +445,33 @@ fn case(id: &str) -> super::E6Case {
 #[test]
 fn e6_has_the_cases_of_the_plan_and_leaves_e6f_to_e4() {
     let ids: Vec<&str> = e6_cases().iter().map(|case| case.id).collect();
-    assert_eq!(ids, ["E6a", "E6b", "E6c", "E6c-release", "E6d", "E6e"]);
-    // The refusals judge a message; the controls compile.
+    assert_eq!(
+        ids,
+        [
+            "E6a",
+            "E6b",
+            "E6c",
+            "E6c-release",
+            "E6d",
+            "E6e",
+            "E6g",
+            "E6h",
+            "E6i"
+        ]
+    );
+    // The refusals judge a message; the controls and the two dev-by-bridge cases compile.
     for case in e6_cases() {
         let refuses = matches!(case.outcome, E6Outcome::Refused { .. });
-        assert_eq!(refuses, !matches!(case.id, "E6d" | "E6e"), "{}", case.id);
+        assert_eq!(
+            refuses,
+            !matches!(case.id, "E6d" | "E6e" | "E6g" | "E6i"),
+            "{}",
+            case.id
+        );
+        let as_dev = matches!(case.outcome, E6Outcome::CompilesAsDev { .. });
+        assert_eq!(as_dev, matches!(case.id, "E6g" | "E6i"), "{}", case.id);
+        // Only E6i checks the whole workspace of the repository.
+        assert_eq!(case.workspace, case.id == "E6i", "{}", case.id);
     }
     assert_eq!(case("E6d").profile, E6Profile::Unset);
     assert!(case("E6d").release && !case("E6d").bridge_user);
@@ -456,6 +479,19 @@ fn e6_has_the_cases_of_the_plan_and_leaves_e6f_to_e4() {
     assert_eq!(case("E6e").features, Some("gust/slang-runtime"));
     assert!(case("E6c").bridge_user && case("E6c-release").bridge_user);
     assert!(!case("E6a").bridge_user && !case("E6b").bridge_user);
+    // The bridge cases: release, no variable (E6g, E6i) or the explicit strict one (E6h), E6g and E6h on `app`.
+    for id in ["E6g", "E6h", "E6i"] {
+        assert!(case(id).release && !case(id).bridge_user, "{id}");
+    }
+    assert_eq!(case("E6g").profile, E6Profile::Unset);
+    assert_eq!(case("E6h").profile, E6Profile::Native);
+    assert_eq!(case("E6i").profile, E6Profile::Unset);
+    assert_eq!(
+        case("E6g").features,
+        Some("gust/cargo-gust-bridge,gust/slang-runtime")
+    );
+    assert_eq!(case("E6h").features, case("E6g").features);
+    assert_eq!(case("E6i").features, None);
 }
 
 #[test]
@@ -469,7 +505,18 @@ fn only_the_copy_of_e6c_runs_without_locked() {
             case.id
         );
         assert_eq!(args.iter().any(|arg| arg == "--release"), case.release);
-        assert!(args.windows(2).any(|pair| pair == ["-p", "app"]));
+        assert_eq!(
+            args.windows(2).any(|pair| pair == ["-p", "app"]),
+            !case.workspace,
+            "{}",
+            case.id
+        );
+        assert_eq!(
+            args.iter().any(|arg| arg == "--workspace"),
+            case.workspace,
+            "{}",
+            case.id
+        );
         assert_eq!(args.last().map(String::as_str), Some("T"));
         match case.features {
             Some(features) => assert!(
@@ -603,6 +650,80 @@ fn the_positive_controls_must_compile_and_d_must_show_the_inference() {
         !e6_problems(&e, None, false, "", &refusal_stderr(&native_text()))
             .unwrap()
             .is_empty()
+    );
+}
+
+fn bridge_warning_text() -> String {
+    parse_warning_expectation(&fixture_file(E6_BRIDGE_EXPECTED))
+        .unwrap()
+        .remove(0)
+}
+
+#[test]
+fn the_bridge_expectation_is_the_warning_of_the_build_script() {
+    let lines = parse_warning_expectation(&fixture_file(E6_BRIDGE_EXPECTED)).unwrap();
+    assert_eq!(
+        lines,
+        ["gust: cargo-gust-bridge treats a release build without GUST_PROFILE as dev"]
+    );
+    // The same text, with its `cargo:warning=` prefix, is what `crates/gust/build.rs` prints.
+    let script =
+        fs::read_to_string(workspace_root().unwrap().join("crates/gust/build.rs")).unwrap();
+    assert!(script.contains(&format!("cargo:warning={}", lines[0])));
+    // The parser takes warnings only.
+    assert!(parse_warning_expectation("").is_err());
+    assert!(parse_warning_expectation("# only a comment\n").is_err());
+    assert!(parse_warning_expectation("warning:\n").is_err());
+    assert!(parse_warning_expectation("build-error: x\n").is_err());
+}
+
+#[test]
+fn the_dev_by_bridge_cases_must_compile_print_the_warning_and_not_the_native_one() {
+    let expected = fixture_file(E6_BRIDGE_EXPECTED);
+    let warning = format!("warning: gust@0.1.0: {}\n", bridge_warning_text());
+    for id in ["E6g", "E6i"] {
+        let bridged = case(id);
+        assert_eq!(
+            e6_problems(&bridged, Some(&expected), true, "", &warning),
+            Ok(Vec::new()),
+            "{id}"
+        );
+        // A silent change fails the case: no warning at all.
+        let problems = e6_problems(&bridged, Some(&expected), true, "", "").unwrap();
+        assert_eq!(problems.len(), 1, "{id}: {problems:?}");
+        assert!(problems[0].contains("did not print"), "{id}: {problems:?}");
+        // The warning of the plain inference means the profile was native and not made dev.
+        let native = format!("warning: gust@0.1.0: {INFERRED_WARNING}\n{warning}");
+        let problems = e6_problems(&bridged, Some(&expected), true, "", &native).unwrap();
+        assert_eq!(problems.len(), 1, "{id}: {problems:?}");
+        assert!(
+            problems[0].contains("inferred as native"),
+            "{id}: {problems:?}"
+        );
+        // A build that fails is no pass, with or without the warning.
+        let problems = e6_problems(&bridged, Some(&expected), false, "", &warning).unwrap();
+        assert!(!problems.is_empty(), "{id}");
+        // A missing or malformed expectation is an error of the check itself.
+        assert!(e6_problems(&bridged, None, true, "", &warning).is_err());
+        assert!(e6_problems(&bridged, Some("build-error: x"), true, "", &warning).is_err());
+    }
+}
+
+#[test]
+fn the_explicit_native_refusal_with_the_bridge_feature_is_the_one_of_e6a() {
+    let h = case("E6h");
+    let native_file = fixture_file(E6_NATIVE_EXPECTED);
+    let message = native_text();
+    assert_eq!(
+        e6_problems(&h, Some(&native_file), false, "", &refusal_stderr(&message)),
+        Ok(Vec::new())
+    );
+    // Accepted as dev (what E6g does) is the failure of E6h.
+    let warning = format!("warning: gust@0.1.0: {}\n", bridge_warning_text());
+    let problems = e6_problems(&h, Some(&native_file), true, "", &warning).unwrap();
+    assert!(
+        problems.iter().any(|problem| problem.contains("compiled")),
+        "{problems:?}"
     );
 }
 

@@ -290,14 +290,37 @@ wrapped as `Independent(&buffer)` at the call site (a settings buffer, a
 reduction's input or output); the kernel must then guard that buffer with its own
 `.len()`, and an empty independent buffer is rejected when the dispatch has work.
 
-Launch limits come from the device `HeadlessDevice` opened (wgpu's default
-limits, not the adapter's); `HeadlessDevice::with_limits` can only lower them to
-emulate a weaker target. A launch whose workgroup width, invocations per
-workgroup, workgroup count, storage buffer count, binding index or binding size
-exceeds them is `Error::DeviceLimit`. Dispatch is one-dimensional, so one launch
-covers at most `workgroup_size[0]` times
+Launch limits come from the device `HeadlessDevice` opened (m7.a0, D84).
+`HeadlessDevice::new()` requests wgpu's default limits, the portable ones the
+browser always gets. `HeadlessDevice::with_options` takes `DeviceOptions`, whose
+`LimitsPolicy::Adapter` asks for the adapter's own `max_buffer_size`, storage
+binding size and workgroups per dimension; that is the native default of
+`DeviceOptions::default()` and so of the process's `default_device()` (the device
+of the calls that take none, such as `GpuVec::from_slice` and `par_for!` without
+`on(..)`). `HeadlessDevice::with_limits` can only lower the limits to emulate a
+weaker target. A launch whose workgroup size on any axis, invocations per
+workgroup, workgroups per dimension, storage buffer count, binding index or
+binding size exceeds them is `Error::DeviceLimit`.
+
+Dispatch can be one-, two- or three-dimensional (exists, m7.d, D102): the typed
+`call_extent`, `submit_extent` and `dispatch_extent` take an `Extent { x, y, z }`,
+and the one-dimensional forms mean `Extent { x: n, y: 1, z: 1 }`. A one-dimensional
+launch covers at most `workgroup_size[0]` times
 `gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION` (65 535) elements on
-default limits. `max_buffer_size` is not checked by GUST.
+default limits. On both backends the invocation total, with each axis rounded up to
+whole workgroups, is at most 2^32 (past it is `DeviceLimit` for
+`global_invocation_id`); a zero axis dispatches nothing and returns `Ok(())`.
+Staged graphs stay one-dimensional. Evidence (exists, m7.d): on the RTX 5090 a
+launch of exactly 2^32 invocations is accepted and runs (the 2D launch reads back its last cell, the 3D one shows
+acceptance and invocation 0), and one past it is refused; the 16x16 and 4x4x4 kernels equal a host reference on
+the GPU and the twin.
+
+`max_buffer_size` is checked before any wgpu call by the fallible allocations
+(`try_create_typed_buffer`, `create_zeroed_buffer` and `GpuVec`), which return
+`Error::DeviceLimit`, and an allocation the adapter cannot serve is
+`Error::OutOfMemory` on native (exists, m7.a0, D84; the out-of-memory case has a unit
+test only, not a hardware run). The infallible `create_typed_buffer` does not
+check it.
 
 The older slice paths (`dispatch_f32`, `dispatch_u32`, `F32Binding`,
 `U32Binding`, `BufferDispatch` built by hand) still work and are not deprecated.
@@ -474,6 +497,69 @@ break-even rows), one call per cell was compared with the plain Rust function on
 tolerance of 1e-4 that is not derived), not every timed result. The resident-versus-host-slices row compared the two GPU
 chains with each other only, and the per-call floor row checked nothing.
 
+## `par_for!`
+
+`gust::par_for!` runs a dialect body once for every index of a one-, two- or three-dimensional range that starts at 0
+(exists, m7.p, D103). It is a function-like macro, not an attribute; the bindings are an explicit typed list:
+
+```rust
+gust::par_for!(on(device); (x, y) in (0..w, 0..h), [img: &[f32], out: &mut [f32], w: u32] {
+    out[y * w + x] = img[y * w + x] * 0.5;
+})?;
+```
+
+`i in 0..n`, `(x, y) in (0..w, 0..h)` and `(x, y, z) in (0..w, 0..h, 0..d)` give the arity. A binding is `&[T]`,
+`&mut [T]`, `&GpuVec<T>`, `&mut GpuVec<T>` or a scalar (`u32`, `i32`, `f32`, `bool`). `on(device);` names the
+device (without it the call opens the process's default device) and `workgroup_size(x, y, z);` overrides the
+defaults (256x1x1, 16x16x1, 8x8x4). The call is blocking and returns `Result<(), gust::map::Error>`.
+
+- The body is validated as a `#[gpu]` kernel (the same dialect and codes), and the macro adds a bounds guard on all
+  three axes, so a workgroup larger than the loop runs nothing outside it. A zero extent returns `Ok(())` without a
+  launch; an extent past `u32` or past the 2^32 invocation cap (D102) is an `Err` before any device work.
+- Every buffer is an independent binding, and the iterations run in no defined order. A body whose iteration reads what
+  another writes is a user error that nothing diagnoses ([SEMANTICS](docs/SEMANTICS.md)).
+- Bodies that are equal after lowering share one generated kernel and one artifact. Under `GUST_PROFILE=cpu` the loop
+  runs sequentially in ascending index order.
+- Evidence (exists, m7.p): 26 tests (14 on the RTX 5090 and 12 on the CPU twin) run ten calls against independent
+  host references (1D, 2D, 3D, extents off the workgroup, zero and over-cap extents, scalars, the default device,
+  resident `GpuVec`); a Slang golden, byte goldens of the export records and a cpu-target case run without a GPU.
+  `gust-wgpu/tests/par_for.rs` and `tests/fixtures/par_for.rs` hold them.
+- Not yet: `cargo gust doctor` and `check` list only the first call site of a body, the naga layout gate skips
+  `par_for!` kernels, and the over-cap error is `map::Error::Device` rather than a variant of its own.
+
+## Workgroup memory and barriers
+
+A kernel can declare workgroup memory and synchronise a workgroup (exists, m7.g1, D100 and D101):
+
+```rust
+#[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]
+pub fn block_sum(
+    id: SV_DispatchThreadID,
+    lid: LocalId,
+    gid: GroupId,
+    input: StructuredBuffer<f32>,
+    mut partial: RWStructuredBuffer<f32>,
+    mut scratch: Workgroup<[f32; 256]>,
+) { /* write scratch[lid.x], workgroup_barrier(), a tree of rounds, partial[gid.x] = scratch[0] */ }
+```
+
+- `Workgroup<[T; N]>` is a kernel parameter (not a local, field or helper parameter) and becomes a `groupshared` array
+  of the entry point; `N` is a nonzero literal, `T` a scalar or vector, and all of a kernel's arrays together are at
+  most 16 KiB (E0718). Its contents start unspecified, so a kernel writes an element before it reads it.
+- `LocalId` and `GroupId` (also spelled `SV_GroupThreadID` and `SV_GroupID`) are derived from the dispatch id and the
+  workgroup size as `id % size` and `id / size` per axis.
+- `workgroup_barrier()` is a statement, allowed only at the top level of the kernel body or of a top-level literal-range
+  `for`, because every invocation of the workgroup must reach it (E0414). A kernel with a barrier has no `return`, no
+  `break` or `continue` in a loop that holds a barrier, and no labelled jump or `?` (E0415, E0416).
+  Helpers cannot take `Workgroup` (E0119). A barrier orders one workgroup only; nothing orders different workgroups.
+- Such a kernel has no CPU twin: it must say `cpu = "unsupported"` (E0717), and `cpu = "lockstep"` is rejected (E0709)
+  until a later slice defines that twin. Under `GUST_PROFILE=cpu` it has no `Run` implementation.
+- Evidence (exists, m7.g1): on the RTX 5090 a 256-wide block reduce equals an integer host sum bit for bit at 1, 255,
+  256, 257 and 65 537 elements, every invocation's ids equal `id % 256` and `id / 256`, and the barrier is an
+  `OpControlBarrier` in the compiled SPIR-V (`gust-wgpu/tests/workgroup.rs`); 12 compile-fail fixtures and a passing
+  control pin the new diagnostics. One adapter only; a read of workgroup memory the validator cannot see is
+  outside the defined domain and no test can observe it ([SEMANTICS](docs/SEMANTICS.md)).
+
 ## Examples
 
 The workspace contains nine runnable programs (and `web-vector-add`, a browser module run by
@@ -573,8 +659,10 @@ The direct syntax translator currently supports:
   `atomic_min`/`atomic_max` (T10);
 - bounded `for i in start..end` loops whose bounds type-check as 32-bit integers,
   with `break`/`continue` (the end bound is evaluated once; see D18);
-- one-dimensional runtime dispatch with explicit three-dimensional Slang
-  workgroup sizes in descriptors.
+- one-, two- and three-dimensional runtime dispatch (`Extent`, m7.d) with explicit three-dimensional Slang
+  workgroup sizes in descriptors;
+- workgroup memory (`Workgroup<[T; N]>`), `LocalId`/`GroupId` and `workgroup_barrier()` (m7.g1), and `par_for!` loops
+  (m7.p): see their sections above.
 
 The validator intentionally rejects allocation, standard-library access, macros,
 closures, async/await, references (other than an atomic's `&mut buffer[index]`
@@ -617,9 +705,9 @@ Its CPU backend, `gust::cpu`, runs the Rust body of each kernel that has a typed
 `cfg(test)` or `--cfg gust_dual`) and, under `GUST_PROFILE=cpu`, as the production CPU target described above.
 The twin is test evidence next to the GPU and the independent host
 reference, never in place of them, and never GPU evidence; where it may differ from the
-GPU, [SEMANTICS](docs/SEMANTICS.md) lists the limitation. It does not yet provide multi-dimensional dispatch
-(roadmap M7), a compile-time portable limit floor (roadmap M8), fallible buffer
-creation against `max_buffer_size`, or an access mode in the buffer type.
+GPU, [SEMANTICS](docs/SEMANTICS.md) lists the limitation. It does not yet provide a compile-time portable limit floor
+(roadmap M8) or an access mode in the buffer type, and a kernel with workgroup memory or a barrier has no CPU twin
+until the lockstep twin of a later M7 slice.
 
 ## Workspace
 
@@ -628,6 +716,7 @@ crates/
   gust/                 shadow types, descriptors, ABI metadata, slangc bridge, reflection
   gust-macros/          validation and direct syn AST -> Slang translation
   gust-wgpu/            cached headless wgpu execution, buffers, StagedGraph, GpuPool
+  cargo-gust/           the `cargo gust` subcommand: build, check and doctor precompiled kernel artifacts
   gust-algo/            device-resident algorithms on GUST kernels over GpuVec (reduce: sum, min, max, sum_wrapping; scan: inclusive, exclusive; compact: count, indices, gather_u32/i32/f32); publish = false
 examples/
   vector-add/
@@ -641,6 +730,11 @@ examples/
   map-chain/
   web-vector-add/
 tests/fixtures/         reviewed golden Slang and GPU semantics fixtures
+tests/ui/               compile-fail fixtures for the stable diagnostics (check-ui)
+tests/dual/             workspace of its own: the dual-build (CPU twin) check
+tests/cpu-target/       workspace of its own: the production CPU target check
+tests/precompiled/      workspace of its own: a consumer of precompiled kernels
+tests/difftest/         workspace of its own: the differential-test harness
 scripts/probes/         native Slang reflection helper source
 xtask/                  project automation and validation commands
 generated-wgpu/         ignored local artifacts emitted by examples

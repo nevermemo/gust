@@ -172,9 +172,10 @@ impl<T: GpuPod> Resident for crate::cpu::CpuBuffer<T> {
 ///
 /// Every [`GpuPod`] type stands for itself; `bool` is held as a `u32` word (0 or 1) in a buffer. A [`MapArg`] is keyed
 /// on the host type, not on the element, so a `bool` parameter takes `bool`s and a `u32` parameter takes `u32`s (Rust
-/// would refuse the other call too). Macro support.
+/// would refuse the other call too). Macro support; sealed, so the set of host types (and the shape of [`MapArg`]'s
+/// bound) can change.
 #[doc(hidden)]
-pub trait MapElement: Copy + 'static {
+pub trait MapElement: sealed::Sealed + Copy + 'static {
     /// The element of the buffer that holds values of this type.
     type Element: GpuPod;
 }
@@ -185,6 +186,15 @@ impl<T: GpuPod> MapElement for T {
 
 impl MapElement for bool {
     type Element = u32;
+}
+
+/// The seal of [`MapElement`]: private, so no other crate can name it and so none can implement the trait.
+mod sealed {
+    pub trait Sealed {}
+
+    impl<T: super::GpuPod> Sealed for T {}
+
+    impl Sealed for bool {}
 }
 
 /// One argument of a generated map call, for a function parameter of host type `H` on device `D`.

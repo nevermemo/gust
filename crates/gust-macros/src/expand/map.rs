@@ -733,8 +733,8 @@ fn host_items(signature: &Signature, profile: Profile) -> TokenStream {
              another device use [`map_gpu_on`]. In the browser (wasm32) `default_device` is `NoAdapter` until \
              `gust_wgpu::default_device_async` has run, so open the device first or call [`map_async`]."
         );
-        let doc_gpu_on = "[`map_gpu`] on another device: `__gust_handle`, which must be the device of every \
-             resident argument (`gust::map::Error::MixedDevices` otherwise).";
+        let doc_gpu_on = "[`map_gpu`] on `__gust_handle`, any device (the default one included), which must be the \
+             device of every resident argument (`gust::map::Error::MixedDevices` otherwise).";
         let doc_map_async = format!(
             "[`{name}`] over the arguments on the default GPU device without blocking: the device opens on the \
              first call (in the browser too, through `gust_wgpu::default_device_async`), and the results are awaited."

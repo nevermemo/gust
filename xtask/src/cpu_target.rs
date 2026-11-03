@@ -22,7 +22,8 @@
 //! - E-h: in one warm target directory the profile flips `cpu`, unset, `cpu`, unset, `cpu`, unset; each `cpu` state
 //!   must build and pass E-a's judgement, each unset state must fail like E-d.
 //! - E-i: `cargo test -p kernels` under `cpu` compiles the kernels with `cfg(test)` (still one impl) and exits 0. The
-//!   crate has no tests, so this proves the build, not any behaviour.
+//!   crate has a few tests (the map case and the hand-worked `vector_ops` case), so this proves the build and those
+//!   cases, not the kernels of `app` (E-a judges those).
 
 use std::{
     cell::RefCell,

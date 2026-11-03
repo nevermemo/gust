@@ -205,6 +205,23 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   `mark_live` without the lifetime test each fail GPU tests. One adapter (RTX 5090, Vulkan). Opus merge after one
   fix round.
   Main: 23 gate steps green on `f96aff1` (07:09 to 07:40Z, RTX 5090); pins 244/28 and gust-algo 32.
+- M7 m7.g1 (`944b2c6`, fix round `25b08fe`, merge `1516c94`): workgroup shared memory and barriers in the dialect
+  (D100, D101). `Workgroup<[T; N]>` kernel parameters become per-kernel `groupshared` arrays (16 KiB per kernel at
+  most); `LocalId`/`GroupId` are derived from the dispatch id; `workgroup_barrier()` lowers to
+  `GroupMemoryBarrierWithGroupSync()` (SPIR-V `OpControlBarrier`, checked with spirv-val and spirv-dis). The
+  validator follows plan §4.2 as a whitelist of barrier positions, and the barrier pass itself rejects `return`,
+  `?`, labelled jumps and `break`/`continue` in a barrier loop, so it does not lean on the dialect's general bans.
+  New diagnostics E0119, E0210, E0327, E0414 to E0416, E0717, E0718; E0709 now rejects `cpu = "lockstep"` (m7.g2).
+  13 check-ui fixtures (46 pinned in all); the `?` fixture keeps its `?` in a helper because rustc adds its own
+  error beside the macro's for one in the kernel body, so direct pass tests cover that case. GPU (RTX 5090): the
+  block reduce of plan §4.1 is bit-equal to an integer host sum at 1, 255, 256, 257 and 65 537 elements, and every
+  invocation's ids equal `id % 256` and `id / 256`. Mutations: dropping either barrier fails the block reduce
+  (both gave the same wrong partial, 10701 for 12120, on this GPU); a barrier allowed in `if` lets three fixtures
+  compile; `GroupId` as `id % size` fails the id test; no 16 KiB check lets its fixture compile. check-changed now
+  runs the macro suite whenever gust-macros changes. The CPU twin's id derivation writes a size-1 axis out (clippy
+  `modulo_one` in user crates). One adapter. Pin 244/28 to 249/29. Opus merge after one fix round.
+  Main: 23 gate steps green on `1516c94` (08:57 to 09:32Z, RTX 5090); pins 249/29 and gust-algo 32;
+  check-examples green after the merge (the validator now runs on every example kernel).
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
@@ -597,7 +614,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M7 (m7.g1 and m7.a2 running) after the M6 close (D86); see the roadmap's Now
+claim: roadmap M7 (m7.a2 running) after the M6 close (D86); see the roadmap's Now
 and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no

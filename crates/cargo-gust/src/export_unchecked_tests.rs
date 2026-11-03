@@ -87,6 +87,7 @@ fn vector_add_record(null_layouts: &[&str]) -> Record {
         file: String::new(),
         lines: Vec::new(),
         slang: kernel.slang_source.to_owned(),
+        sites: Vec::new(),
     }
 }
 

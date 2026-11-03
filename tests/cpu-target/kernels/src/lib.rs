@@ -105,6 +105,20 @@ pub mod map_case {
     }
 }
 
+// `gust::par_for!` (M7, slice m7.p), the same way: under another profile its expansion names `gust-wgpu`. Its line
+// (`CPU target: par_for calls match (`) is not paired with a list by `check-cpu-target`; `app` exits with 1 and prints
+// no final line when the case fails or did not run.
+#[cfg(gust_cpu_profile)]
+pub mod par_for_case;
+
+#[cfg(not(gust_cpu_profile))]
+pub mod par_for_case {
+    /// No `par_for!` is built under this profile, so the case cannot run.
+    pub fn run() -> Result<(), String> {
+        Err("the par_for case needs GUST_PROFILE=cpu (cfg gust_cpu_profile); it did not run".to_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use gust::{cpu::CpuDevice, math::Vec4};
@@ -114,6 +128,13 @@ mod tests {
     #[test]
     fn the_map_case_matches_its_host_references() {
         super::map_case::run().unwrap();
+    }
+
+    /// The `par_for!` case of the CPU target passes. Only under the cpu profile, like the map case.
+    #[cfg(gust_cpu_profile)]
+    #[test]
+    fn the_par_for_case_matches_its_host_loops() {
+        super::par_for_case::run().unwrap();
     }
 
     use super::vector_ops;

@@ -1,0 +1,7 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). A macro error is a `compile_error!` and has no rustc code, so `code: none`
+# requires `"code": null` and at least one `message:`. The line is the `while` of the body (D33).
+code: none
+file: par-for-body-error/src/main.rs
+line: 11
+message: [GUST-E0402] `while` loops are not supported

@@ -1546,6 +1546,17 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
     assert_eq!(find("map-ok").expectation, Expectation::Compiles);
     assert_eq!(find("map-bool-for-u32").env, variable("cpu"));
     assert_eq!(find("map-u32-for-bool").env, variable("cpu"));
+    // `par_for!` runs on the twin under the cpu profile too (m7.p), so its fixtures need no `gust-wgpu` either.
+    for name in [
+        "par-for-binding",
+        "par-for-body-error",
+        "par-for-form",
+        "par-for-ok",
+        "par-for-reserved-name",
+    ] {
+        assert_eq!(find(name).env, variable("cpu"), "{name}");
+    }
+    assert_eq!(find("par-for-ok").expectation, Expectation::Compiles);
     // No other fixture has variables of its own.
     let with_env: Vec<&str> = cases
         .iter()
@@ -1558,6 +1569,11 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "map-bool-for-u32",
             "map-ok",
             "map-u32-for-bool",
+            "par-for-binding",
+            "par-for-body-error",
+            "par-for-form",
+            "par-for-ok",
+            "par-for-reserved-name",
             "profile-dev-no-artifact",
             "profile-empty",
             "profile-native-artifact",
@@ -1573,7 +1589,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 47] = [
+const PINNED_FIXTURES: [&str; 52] = [
     "barrier-in-helper",
     "barrier-in-if",
     "barrier-in-nested-for",
@@ -1600,6 +1616,11 @@ const PINNED_FIXTURES: [&str; 47] = [
     "map-signature",
     "map-three-wide",
     "map-u32-for-bool",
+    "par-for-binding",
+    "par-for-body-error",
+    "par-for-form",
+    "par-for-ok",
+    "par-for-reserved-name",
     "profile-dev-no-artifact",
     "profile-empty",
     "profile-native-artifact",

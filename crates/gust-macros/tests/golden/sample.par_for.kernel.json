@@ -1,0 +1,87 @@
+{
+  "entry_point": "gpu_demo_run",
+  "key": "0123456789abcdef",
+  "module": "demo",
+  "name": "run",
+  "parameters": [
+    {
+      "access": "not_applicable",
+      "binding": null,
+      "kind": "invocation",
+      "layout": null,
+      "name": "id",
+      "rust_type": "SV_DispatchThreadID"
+    },
+    {
+      "access": "read_only",
+      "binding": {
+        "binding": 0,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 4,
+          "fields": [
+            {
+              "name": "a",
+              "offset": 0,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "u32",
+                "scalar": "u32",
+                "size": 4,
+                "stride": 4
+              }
+            },
+            {
+              "name": "b",
+              "offset": 4,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "f32",
+                "scalar": "f32",
+                "size": 4,
+                "stride": 4
+              }
+            }
+          ],
+          "kind": "struct",
+          "name": "Pair",
+          "size": 8,
+          "stride": 8
+        },
+        "element_stride": 8,
+        "rules": "storage_v1"
+      },
+      "name": "pairs",
+      "rust_type": "StructuredBuffer < Pair >"
+    },
+    {
+      "access": "read_write",
+      "binding": {
+        "binding": 1,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 4,
+          "kind": "scalar",
+          "name": "f32",
+          "scalar": "f32",
+          "size": 4,
+          "stride": 4
+        },
+        "element_stride": 4,
+        "rules": "storage_v1"
+      },
+      "name": "out",
+      "rust_type": "RWStructuredBuffer < float >"
+    }
+  ],
+  "schema": 2,
+  "workgroup_size": [64, 1, 1]
+}

@@ -1,6 +1,10 @@
 use super::*;
-use crate::testdata::{
-    PAIRS_REFLECTION, SAMPLE_KEY, SAMPLE_RECORD_JSON, SAMPLE_SLANG, SAMPLE_SLANG_SHA256,
+use crate::{
+    store::tests::Scratch,
+    testdata::{
+        PAIRS_REFLECTION, SAMPLE_KEY, SAMPLE_RECORD_JSON, SAMPLE_SLANG, SAMPLE_SLANG_SHA256,
+        SITE_LIB_JSON, SITE_LIB_NAME, SITE_OTHER_JSON, SITE_OTHER_NAME, site_record_json,
+    },
 };
 
 fn sample() -> Record {
@@ -226,7 +230,7 @@ fn error_of(json: &str) -> String {
 fn malformed_records_are_refused_with_the_path_of_the_problem() {
     for (json, expected) in [
         (
-            broken("\"schema\": 1", "\"schema\": 2"),
+            broken("\"schema\": 1", "\"schema\": 3"),
             "unsupported schema",
         ),
         (broken("  \"schema\": 1,\n", ""), "record: missing `schema`"),
@@ -316,4 +320,181 @@ fn unknown_keys_are_ignored_so_the_macro_may_add_fields_within_schema_one() {
         "  \"schema\": 1,\n  \"future\": {\"x\": [1]},",
     );
     assert_eq!(Record::parse(&extended, SAMPLE_SLANG).unwrap(), sample());
+}
+
+// ---- schema 2: the record of a `par_for!` call and its sidecars (R1.1 M5) ----
+
+/// A record directory holding the sample kernel as schema 2, with the given sidecars.
+fn site_directory(scratch: &Scratch, sidecars: &[(&str, &str)]) -> std::path::PathBuf {
+    let directory = scratch.0.join("records");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join(format!("{SAMPLE_KEY}.kernel.json")),
+        site_record_json(),
+    )
+    .unwrap();
+    fs::write(directory.join(format!("{SAMPLE_KEY}.slang")), SAMPLE_SLANG).unwrap();
+    for (name, text) in sidecars {
+        fs::write(directory.join(name), text).unwrap();
+    }
+    directory
+}
+
+#[test]
+fn a_schema_2_record_has_no_origin_until_its_sidecars_are_read() {
+    let record = Record::parse(&site_record_json(), SAMPLE_SLANG).unwrap();
+    assert_eq!(record.key, SAMPLE_KEY);
+    assert_eq!((record.file.as_str(), record.lines.len()), ("", 0));
+    assert_eq!(record.parameters, sample().parameters);
+    assert_eq!(record.descriptor().source, SourceOrigin::UNKNOWN);
+}
+
+#[test]
+fn two_sidecars_give_the_record_the_origin_of_the_first_by_file_and_line() {
+    let scratch = Scratch::new("two sites");
+    let directory = site_directory(
+        &scratch,
+        &[
+            (SITE_LIB_NAME, SITE_LIB_JSON),
+            (SITE_OTHER_NAME, SITE_OTHER_JSON),
+        ],
+    );
+    let records = read_records(&directory).unwrap();
+    let [record] = &records[..] else {
+        panic!("{records:?}");
+    };
+    // The sidecar name is the hash of the call site, so its order is arbitrary: `440c...` (tests/other.rs) sorts
+    // before `6b7d...` (src/lib.rs). The sites are sorted by file, not by name, and the origin is the first.
+    assert!(SITE_OTHER_NAME < SITE_LIB_NAME);
+    let files: Vec<&str> = record.sites.iter().map(|site| site.file.as_str()).collect();
+    assert_eq!(files, ["src/lib.rs", "tests/other.rs"]);
+    assert_eq!(record.file, "src/lib.rs");
+    assert_eq!(record.lines, [[3, 9, 12], [5, 5, 14]]);
+    let descriptor = record.descriptor();
+    assert_eq!(descriptor.source.file, "src/lib.rs");
+    assert_eq!(descriptor.source.lines.len(), 2);
+    assert_eq!(descriptor.source.lines[0].rust_line, 12);
+    // Everything but the origin is the schema 1 sample's.
+    let schema_1 = sample();
+    assert_eq!(record.key, schema_1.key);
+    assert_eq!(record.parameters, schema_1.parameters);
+    assert_eq!(record.slang, schema_1.slang);
+}
+
+#[test]
+fn sites_of_one_file_are_sorted_by_their_first_line() {
+    // A third call in `src/lib.rs`, above the first one; its name sorts after both others.
+    let earlier = SITE_LIB_JSON
+        .replace("[3, 9, 12]", "[3, 9, 4]")
+        .replace("[5, 5, 14]", "[5, 5, 6]");
+    let name = "022c52d675787198.ffffffffffffffff.site.json";
+    let scratch = Scratch::new("three sites");
+    let directory = site_directory(
+        &scratch,
+        &[
+            (SITE_LIB_NAME, SITE_LIB_JSON),
+            (SITE_OTHER_NAME, SITE_OTHER_JSON),
+            (name, &earlier),
+        ],
+    );
+    let records = read_records(&directory).unwrap();
+    let origins: Vec<(&str, u32)> = records[0]
+        .sites
+        .iter()
+        .map(|site| (site.file.as_str(), site.lines[0][2]))
+        .collect();
+    assert_eq!(
+        origins,
+        [
+            ("src/lib.rs", 4),
+            ("src/lib.rs", 12),
+            ("tests/other.rs", 40)
+        ]
+    );
+    assert_eq!(records[0].lines, [[3, 9, 4], [5, 5, 6]]);
+    // A schema 1 record has no sites.
+    assert!(sample().sites.is_empty());
+}
+
+#[test]
+fn one_sidecar_is_enough_and_a_record_without_any_is_refused() {
+    let scratch = Scratch::new("one site");
+    let directory = site_directory(&scratch, &[(SITE_LIB_NAME, SITE_LIB_JSON)]);
+    let records = read_records(&directory).unwrap();
+    assert_eq!(records[0].file, "src/lib.rs");
+    assert_eq!(records[0].lines, [[3, 9, 12], [5, 5, 14]]);
+    let bare = Scratch::new("no site");
+    let directory = site_directory(&bare, &[]);
+    let error = read_records(&directory).unwrap_err();
+    assert!(error.contains("at least one call site"), "{error}");
+}
+
+#[test]
+fn a_sidecar_that_does_not_belong_is_refused() {
+    // A schema 1 record has its own source: a sidecar next to it is a mixed-up collection.
+    let scratch = Scratch::new("schema 1 with a site");
+    let directory = scratch.0.join("records");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join(format!("{SAMPLE_KEY}.kernel.json")),
+        SAMPLE_RECORD_JSON,
+    )
+    .unwrap();
+    fs::write(directory.join(format!("{SAMPLE_KEY}.slang")), SAMPLE_SLANG).unwrap();
+    fs::write(directory.join(SITE_LIB_NAME), SITE_LIB_JSON).unwrap();
+    let error = read_records(&directory).unwrap_err();
+    assert!(error.contains("has no call sites"), "{error}");
+    // A sidecar of another key.
+    let scratch = Scratch::new("foreign site");
+    let foreign = SITE_LIB_JSON.replace(SAMPLE_KEY, "ffffffffffffffff");
+    let directory = site_directory(&scratch, &[(SITE_LIB_NAME, &foreign)]);
+    let error = read_records(&directory).unwrap_err();
+    assert!(
+        error.contains("is not the key of its kernel record"),
+        "{error}"
+    );
+    // A sidecar that is not schema 2, one that is malformed and files that only look like sidecars.
+    let not_schema_2 = SITE_LIB_JSON.replace("\"schema\": 2", "\"schema\": 1");
+    let short_line = SITE_LIB_JSON.replace("[3, 9, 12]", "[3, 9]");
+    let no_file = SITE_LIB_JSON.replace("\"file\"", "\"path\"");
+    for (name, text, wanted) in [
+        (SITE_LIB_NAME, &not_schema_2, "unsupported schema"),
+        (SITE_LIB_NAME, &short_line, "site.lines[0]"),
+        (SITE_LIB_NAME, &no_file, "file"),
+        (
+            "022c52d675787198.site.json",
+            &SITE_LIB_JSON.to_owned(),
+            "unexpected file",
+        ),
+        (
+            "022c52d675787198.6B7D03DA5734408D.site.json",
+            &SITE_LIB_JSON.to_owned(),
+            "unexpected file",
+        ),
+    ] {
+        let scratch = Scratch::new("bad site");
+        let directory = site_directory(&scratch, &[(name, text)]);
+        let error = read_records(&directory).unwrap_err();
+        assert!(error.contains(wanted), "{name}: {error}");
+    }
+}
+
+#[test]
+fn a_schema_2_record_that_names_a_source_is_refused() {
+    let with_source = site_record_json().replace(
+        "  \"schema\": 2,",
+        "  \"schema\": 2,\n  \"source\": {\"file\": \"src/lib.rs\", \"lines\": []},",
+    );
+    assert!(with_source.contains("\"source\""));
+    let error = Record::parse(&with_source, SAMPLE_SLANG).unwrap_err();
+    assert!(error.contains("has no `source`"), "{error}");
+}
+
+#[test]
+fn an_unknown_schema_is_refused_naming_both_this_tool_reads() {
+    let error = error_of(&broken("  \"schema\": 1,", "  \"schema\": 3,"));
+    assert!(
+        error.contains("unsupported schema") && error.contains("schemas 1 and 2"),
+        "{error}"
+    );
 }

@@ -161,7 +161,7 @@ pub use descriptor::{
 pub use dispatch::{
     Arg, BindingKind, Call, Extent, Independent, LengthRule, Resource, Run, TypedDevice, kind,
 };
-pub use gust_macros::gpu;
+pub use gust_macros::{gpu, par_for};
 pub use job::{Device, Job, JobStatus};
 pub use reflect::{
     PodCrossCheck, ReflectedField, ReflectedResource, ReflectedType, ReflectedTypeKind, Reflection,

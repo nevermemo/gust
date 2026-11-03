@@ -201,6 +201,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "par-for-binding"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "par-for-body-error"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "par-for-form"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "par-for-ok"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "par-for-reserved-name"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"

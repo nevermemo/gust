@@ -2,7 +2,8 @@
 //! from them.
 //!
 //! For every kernel the macro writes `<key>.slang` (the clean Slang text, exact bytes) and `<key>.kernel.json`
-//! (schema 1) under `<GUST_EXPORT_DIR>/<CARGO_PKG_NAME>/`. The JSON holds what the tool needs to rebuild the
+//! (schema 1, or schema 2 for a `par_for!` call) under `<GUST_EXPORT_DIR>/<CARGO_PKG_NAME>/`. The JSON holds what
+//! the tool needs to rebuild the
 //! descriptor without a compiler: `schema`, `key`, `module`, `name`, `entry_point`, `workgroup_size` (three numbers),
 //! `parameters` (each `name`, `rust_type`, `kind` of `invocation`, `storage`, `uniform` or `value`, `access` of
 //! `read_only`, `read_write` or `not_applicable`, `binding` as `{"group": 0, "binding": n}` or null, and `layout`:
@@ -10,6 +11,12 @@
 //! as `[slang_start, slang_end, rust_line]` triples). A `<layout>` is `name`, `size`, `alignment`, `stride`, `kind`
 //! (`scalar` with `scalar` of `u32`, `i32` or `f32`, or `struct` with `fields` of `name`, `offset` and a nested
 //! `type`). Unknown keys are ignored; a missing or mistyped one is an error that names its path.
+//!
+//! Schema 2 (R1.1 M5, slice m7.p) is the record of a `par_for!` call: the same keys without `source`, because one body
+//! can stand at any number of call sites and the record must not depend on them. Each call site writes a sidecar
+//! `<key>.<site16>.site.json` (`schema` 2, `key`, `file`, `lines` as above). The reader takes a schema 2 record's
+//! `file` and `lines` from its call sites: [`Record::sites`] holds them all, sorted by (file, first Rust line), and the
+//! descriptor it builds has the origin of the first.
 
 use std::{fs, path::Path};
 
@@ -24,13 +31,17 @@ use crate::{
     sha256::sha256_hex,
 };
 
-/// The only record schema this tool reads.
+/// The schema of a record that carries its own `source`: a `#[gpu]` module or function.
 pub(crate) const RECORD_SCHEMA: u32 = 1;
+/// The schema of a `par_for!` record and of its sidecars: no `source` in the record, one sidecar per call site.
+pub(crate) const SITE_RECORD_SCHEMA: u32 = 2;
 
 /// The suffix of the file that holds a record's JSON.
 pub(crate) const JSON_SUFFIX: &str = ".kernel.json";
 /// The suffix of the file that holds a record's clean Slang text.
 pub(crate) const SLANG_SUFFIX: &str = ".slang";
+/// The suffix of a call site's sidecar: `<key>.<16 hex digits>.site.json`.
+pub(crate) const SITE_SUFFIX: &str = ".site.json";
 
 /// One collected kernel: its record plus the clean Slang text.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,12 +53,55 @@ pub(crate) struct Record {
     pub(crate) entry_point: String,
     pub(crate) workgroup_size: [u32; 3],
     pub(crate) parameters: Vec<ParameterRecord>,
-    /// The recorded Rust source file (relative, `/` separators); empty when unknown.
+    /// The recorded Rust source file (relative, `/` separators); empty when unknown. For a schema 2 record: the
+    /// file of its first call site.
     pub(crate) file: String,
-    /// `[slang_start, slang_end, rust_line]`.
+    /// `[slang_start, slang_end, rust_line]`. For a schema 2 record: the lines of its first call site.
     pub(crate) lines: Vec<[u32; 3]>,
     /// The clean Slang text, byte for byte.
     pub(crate) slang: String,
+    /// The call sites of a schema 2 record, sorted by (file, first Rust line); empty for schema 1. The origin of the
+    /// record is `sites[0]`.
+    pub(crate) sites: Vec<Site>,
+}
+
+/// One call site of a `par_for!` body: the source file of the call and the line table of its copy of the body.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Site {
+    pub(crate) file: String,
+    pub(crate) lines: Vec<[u32; 3]>,
+}
+
+impl Site {
+    /// The first Rust line of the copy of the body (the smallest non-zero line of its table; 0 when there is none).
+    fn first_line(&self) -> u32 {
+        self.lines
+            .iter()
+            .map(|line| line[2])
+            .filter(|line| *line > 0)
+            .min()
+            .unwrap_or(0)
+    }
+
+    /// Read a sidecar from its text; `key` is the key of the record it must belong to.
+    fn parse(json_text: &str, key: &str) -> Result<Self, String> {
+        let root = json::parse(json_text)?;
+        if root.field("schema", "site")?.as_u32() != Some(SITE_RECORD_SCHEMA) {
+            return Err(format!(
+                "site: unsupported schema (a site record is schema {SITE_RECORD_SCHEMA})"
+            ));
+        }
+        let found = string(&root, "key", "site")?;
+        if found != key {
+            return Err(format!(
+                "site: key `{found}` is not the key of its kernel record (`{key}`)"
+            ));
+        }
+        Ok(Self {
+            file: string(&root, "file", "site")?,
+            lines: parse_lines(array(&root, "lines", "site")?, "site.lines")?,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,19 +149,28 @@ pub(crate) fn key_of(entry_point: &str, slang: &str) -> String {
 }
 
 impl Record {
-    /// Read a record from the text of its `.kernel.json` and its `.slang`.
+    /// [`Record::parse_any`] without the schema.
+    #[cfg(test)]
+    pub(crate) fn parse(json_text: &str, slang: &str) -> Result<Self, String> {
+        Self::parse_any(json_text, slang).map(|(record, _)| record)
+    }
+
+    /// Read a record from the text of its `.kernel.json` and its `.slang`, and give its schema.
     ///
     /// Also checks that the stored key is the key of the entry point and the Slang text, so a `.slang` and a `.json`
     /// that belong to different kernels (two kernels whose keys collide would overwrite each other's files) are an
-    /// error, not a silent mix.
-    pub(crate) fn parse(json_text: &str, slang: &str) -> Result<Self, String> {
+    /// error, not a silent mix. A schema 2 record comes back without a source origin: its call sites are in its
+    /// sidecars ([`read_records`] attaches the first).
+    fn parse_any(json_text: &str, slang: &str) -> Result<(Self, u32), String> {
         let root = json::parse(json_text)?;
-        let schema = root.field("schema", "record")?.as_u32();
-        if schema != Some(RECORD_SCHEMA) {
-            return Err(format!(
-                "record: unsupported schema (this tool reads schema {RECORD_SCHEMA}); regenerate it with a matching gust-macros"
-            ));
-        }
+        let schema = match root.field("schema", "record")?.as_u32() {
+            Some(schema @ (RECORD_SCHEMA | SITE_RECORD_SCHEMA)) => schema,
+            _ => {
+                return Err(format!(
+                    "record: unsupported schema (this tool reads schemas {RECORD_SCHEMA} and {SITE_RECORD_SCHEMA}); regenerate it with a matching gust-macros"
+                ));
+            }
+        };
         let key = string(&root, "key", "record")?;
         let entry_point = string(&root, "entry_point", "record")?;
         let expected = key_of(&entry_point, slang);
@@ -132,29 +195,24 @@ impl Record {
             .enumerate()
             .map(|(index, parameter)| parse_parameter(parameter, &format!("parameters[{index}]")))
             .collect::<Result<Vec<_>, _>>()?;
-        let source = root.field("source", "record")?;
-        let file = string(source, "file", "source")?;
-        let lines = array(source, "lines", "source")?
-            .iter()
-            .enumerate()
-            .map(|(index, line)| {
-                let context = format!("source.lines[{index}]");
-                let triple = line
-                    .as_array()
-                    .filter(|items| items.len() == 3)
-                    .ok_or(format!(
-                        "{context}: expected [slang_start, slang_end, rust_line]"
-                    ))?;
-                let mut numbers = [0_u32; 3];
-                for (slot, item) in numbers.iter_mut().zip(triple) {
-                    *slot = item
-                        .as_u32()
-                        .ok_or(format!("{context}: expected three numbers"))?;
-                }
-                Ok(numbers)
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        Ok(Self {
+        let (file, lines) = if schema == SITE_RECORD_SCHEMA {
+            // The call sites are the sidecars' business; a record that names a source would differ between two calls
+            // with equal bodies, which is what schema 2 exists to avoid.
+            if root.get("source").is_some() {
+                return Err(
+                    "record: a schema 2 record has no `source`; its call sites are in its `.site.json` files"
+                        .to_owned(),
+                );
+            }
+            (String::new(), Vec::new())
+        } else {
+            let source = root.field("source", "record")?;
+            (
+                string(source, "file", "source")?,
+                parse_lines(array(source, "lines", "source")?, "source.lines")?,
+            )
+        };
+        let record = Self {
             key,
             module: string(&root, "module", "record")?,
             name: string(&root, "name", "record")?,
@@ -164,7 +222,39 @@ impl Record {
             file,
             lines,
             slang: slang.to_owned(),
-        })
+            sites: Vec::new(),
+        };
+        Ok((record, schema))
+    }
+
+    /// Give a schema 2 record its call sites, sorted by (file, first Rust line) with the order of the sidecars' file
+    /// names breaking a tie, and take its origin from the first.
+    fn with_sites(mut self, schema: u32, mut sites: Vec<Site>) -> Result<Self, String> {
+        if schema != SITE_RECORD_SCHEMA {
+            if sites.is_empty() {
+                return Ok(self);
+            }
+            return Err(format!(
+                "record `{}` is schema {schema}, which has no call sites, but a site file of its key exists",
+                self.key
+            ));
+        }
+        // A stable sort: the sites arrive in the order of the sidecars' names.
+        sites.sort_by(|a, b| {
+            a.file
+                .cmp(&b.file)
+                .then_with(|| a.first_line().cmp(&b.first_line()))
+        });
+        let Some(first) = sites.first() else {
+            return Err(format!(
+                "record `{}` is schema 2 but has no `{}.<16 hex digits>{SITE_SUFFIX}` file: a par_for! kernel needs at least one call site",
+                self.key, self.key
+            ));
+        };
+        self.file.clone_from(&first.file);
+        self.lines.clone_from(&first.lines);
+        self.sites = sites;
+        Ok(self)
     }
 
     /// `module::name`, as diagnostics and the manifest name the kernel.
@@ -227,8 +317,12 @@ impl Record {
                     .map(|(group, binding)| ResourceBinding { group, binding }),
             });
         }
-        let lines: Vec<LineSpan> = self
-            .lines
+        // The origin of a schema 2 record is its first call site.
+        let (file, table) = match self.sites.first() {
+            Some(site) => (&site.file, &site.lines),
+            None => (&self.file, &self.lines),
+        };
+        let lines: Vec<LineSpan> = table
             .iter()
             .map(|[slang_start, slang_end, rust_line]| LineSpan {
                 slang_start: *slang_start,
@@ -243,11 +337,11 @@ impl Record {
             workgroup_size: self.workgroup_size,
             parameters: Box::leak(parameters.into_boxed_slice()),
             slang_source: leak(&self.slang),
-            source: if self.file.is_empty() && lines.is_empty() {
+            source: if file.is_empty() && lines.is_empty() {
                 SourceOrigin::UNKNOWN
             } else {
                 SourceOrigin {
-                    file: leak(&self.file),
+                    file: leak(file),
                     lines: Box::leak(lines.into_boxed_slice()),
                 }
             },
@@ -305,6 +399,30 @@ fn array<'a>(value: &'a Json, key: &str, context: &str) -> Result<&'a [Json], St
         .field(key, context)?
         .as_array()
         .ok_or_else(|| format!("{context}: `{key}` must be an array"))
+}
+
+/// The `[slang_start, slang_end, rust_line]` triples of a line table.
+fn parse_lines(lines: &[Json], context: &str) -> Result<Vec<[u32; 3]>, String> {
+    lines
+        .iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let context = format!("{context}[{index}]");
+            let triple = line
+                .as_array()
+                .filter(|items| items.len() == 3)
+                .ok_or(format!(
+                    "{context}: expected [slang_start, slang_end, rust_line]"
+                ))?;
+            let mut numbers = [0_u32; 3];
+            for (slot, item) in numbers.iter_mut().zip(triple) {
+                *slot = item
+                    .as_u32()
+                    .ok_or(format!("{context}: expected three numbers"))?;
+            }
+            Ok(numbers)
+        })
+        .collect()
 }
 
 fn parse_parameter(value: &Json, context: &str) -> Result<ParameterRecord, String> {
@@ -418,7 +536,26 @@ pub(crate) fn read_records(directory: &Path) -> Result<Vec<Record>, String> {
     }
     names.sort();
     let mut stems: Vec<&str> = Vec::new();
+    let mut site_files: Vec<(&str, &str)> = Vec::new();
     for name in &names {
+        if let Some(stem) = name.strip_suffix(SITE_SUFFIX) {
+            // `<key>.<16 hex digits>.site.json`; the key is 16 hex digits too.
+            let Some((key, site)) = stem.split_once('.') else {
+                return Err(format!(
+                    "record directory holds an unexpected file `{name}`"
+                ));
+            };
+            if !is_hex16(key) || !is_hex16(site) {
+                return Err(format!(
+                    "record directory holds an unexpected file `{name}`"
+                ));
+            }
+            site_files.push((key, name));
+            if !stems.contains(&key) {
+                stems.push(key);
+            }
+            continue;
+        }
         let stem = name
             .strip_suffix(JSON_SUFFIX)
             .or_else(|| name.strip_suffix(SLANG_SUFFIX))
@@ -440,18 +577,34 @@ pub(crate) fn read_records(directory: &Path) -> Result<Vec<Record>, String> {
         }
         let slang = read_text(&directory.join(&slang_name), &slang_name)?;
         let json = read_text(&directory.join(&json_name), &json_name)?;
-        let record =
-            Record::parse(&json, &slang).map_err(|error| format!("{json_name}: {error}"))?;
+        let (record, schema) =
+            Record::parse_any(&json, &slang).map_err(|error| format!("{json_name}: {error}"))?;
         if record.key != stem {
             return Err(format!(
                 "{json_name}: the file name does not match the record key `{}`",
                 record.key
             ));
         }
+        let mut sites = Vec::new();
+        for (_, site_name) in site_files.iter().filter(|(key, _)| *key == stem) {
+            let text = read_text(&directory.join(site_name), site_name)?;
+            sites.push(Site::parse(&text, stem).map_err(|error| format!("{site_name}: {error}"))?);
+        }
+        let record = record
+            .with_sites(schema, sites)
+            .map_err(|error| format!("{json_name}: {error}"))?;
         records.push(record);
     }
     records.sort_by(|a, b| a.key.cmp(&b.key));
     Ok(records)
+}
+
+/// Sixteen lower-case hex digits: a record key or a call site's hash.
+fn is_hex16(text: &str) -> bool {
+    text.len() == 16
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn read_text(path: &Path, shown: &str) -> Result<String, String> {

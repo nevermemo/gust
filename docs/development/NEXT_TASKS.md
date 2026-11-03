@@ -205,6 +205,14 @@ test module; do not mix that mechanical move with behavior changes.
   non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p). The scan's `out` is
   zero-filled the same way (one clear of n elements per call, 2 GiB at 2^29; m7.r2 review), and so is the map's
   output (`map_on`, `map_gpu`; m7.a1 review N2: name it in m7.a2's timing conditions).
+- Tidy follow-ups (m7.t1): one `element()` in gust-macros (par_for.rs and expand/map.rs hold the same logic; after
+  m7.lv merges, goldens byte-identical); `scripted_failing_helper` in crates/gust/tests/diagnostics.rs writes a
+  script and runs it at once, which raced on Linux CI ("Text file busy", ETXTBSY, on `6be06d4`): close the file
+  before the exec or retry on ETXTBSY (slice m7.f1 in flight). The rest of the scout's list waits for the M7 close.
+- gust-algo GPU lib tests: once, on `1278b61`, the test binary died with STATUS_ACCESS_VIOLATION (0xc0000005)
+  while `gpu_v1_float_sum_of_the_tie_ladder_is_within_the_bound` and `gpu_v1_runs_the_deepest_schedules` ran (over
+  60 s, other lanes' gates on the machine); the rerun alone passed. If it repeats, run the binary alone with
+  `--test-threads=1` and capture the faulting test before suspecting the driver.
 - m7.lv (uniform and vector layouts in the export record, after m6.u2f): the macro writes no layout for a uniform
   or a `Vec`/`Mat` element (`LayoutKindRecord` has only scalar and struct kinds), so `Vec4` and `Mat4` elements fail
   `cargo gust build` for storage and uniforms ("unsupported element type `vector`", fill.rs), including the kernels

@@ -109,6 +109,23 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   `literal-let-ok` (pinned 24 to 26). Pin 216/25 to 217/25. Mutations: the check off fails check-ui; annotated
   u32 locals emitted `int` fail the GPU case at y = 0x80000000. Opus merge after one fix round. Main: 22 gate
   steps green on `a496968`.
+- M7 m7.rb (`a0b791e`, fix round `9a656e1`, merge `893d959`): blocking readbacks wait for their own map completion
+  (D97, amends D69). A concurrency test (8 threads on one device) gave 8 `Error::Map` in 2 903 iterations before the
+  fix and 0 in 3 153 after (RTX 5090); a mutation restoring the single check fails it. Pin 222/26 in the lane; 223/26
+  on `main` with m6.z2's test. The empty-enumeration flake (D86) showed once more in the fix round (12 of 12 reruns
+  passed); a probe of about 360 concurrent `enumerate(VULKAN)` calls did not reproduce it. Opus merge after one fix
+  round.
+- MX mx.t0a (`83a6148`, fix round `be46e44`, merge `754e439`): reflection helper schema 3 (D91), C++ side. Written
+  only when a 2D texture, a sampler or a non-compute stage is present, so every committed artifact set stays
+  byte-identical (`cargo gust check --recompile`; old and new helpers equal on 18 compared documents). Texture
+  bindings report shape, access, result type and format (a sampled texture always `read` and `unknown`; a storage
+  texture its declared or inferred format; no byte layout for texture results); samplers; the stage (argv,
+  default `compute`); a fragment's targets in SV_Target order. Comparison samplers, 1D/3D/cube/array/multisampled
+  and combined textures are refused by name. X-S2 outcome A: the API's facts equal slangc `-reflection-json`, so the
+  helper is the D17 witness and the CLI facts are an optional agreement check. 11 probe inputs with expected output
+  run in the Reflect suite. xtask's helper pin accepts schema 2 or 3 (mx.t0b drops 2). Opus merge after one fix
+  round.
+  Main: 22 gate steps green on `893d959` (01:59 to 02:29Z, RTX 5090) with the schema-3 helper; pin 223/26.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
@@ -501,7 +518,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M7 (m7.rb, m7.r2, m7.t13 and mx.t0a running) after the M6 close (D86); see the roadmap's Now
+claim: roadmap M7 (m7.a1, m7.r2, m7.t13 and mx.n running) after the M6 close (D86); see the roadmap's Now
 and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no

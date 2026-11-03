@@ -183,9 +183,12 @@ test module; do not mix that mechanical move with behavior changes.
   (`an_adapter_that_does_not_exist_is_no_adapter` in check-fast, "index 0 is one past the adapters"; green on
   rerun). Find out whether an empty enumeration is transient on this driver under concurrent load, and whether
   `enumerate` or the test should report or retry it (m7.a1). (The `Error::Map` m7.r1 saw is a separate readback
-  race, fixed in m7.rb.)
+  race, fixed in m7.rb, D97.) Third sighting: m7.rb's fix round (`an_adapter_is_chosen_by_index_and_by_name`, 12 of
+  12 reruns passed); m7.rb's probe of about 360 concurrent enumerations found none empty.
+- mx.t0b: drop schema 2 from xtask's `check_helper_pin` once every helper in use reports schema 3 (mx.t0a accepts
+  both so lanes on older trees keep working).
 - Remove the mutex that serialises gust-algo's GPU tests (`crates/gust-algo/src/tests/gpu.rs`) once m7.rb's
-  readback fix is on `main`, and run them in parallel once (m7.r2).
+  readback fix is on `main` (it is, D97), and run them in parallel once (m7.r3).
 - `reduce` zero-clears its partials buffers although every lane writes its slot; skipping the clear needs a
   non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p).
 - M8: naga 30 rejects an `i32` lane id in `subgroupShuffle`, `subgroupBroadcast` and `quadBroadcast`, which WGSL

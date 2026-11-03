@@ -1,0 +1,8 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). A macro error is a `compile_error!` and has no rustc code, so `code: none`
+# requires `"code": null` and at least one `message:`. The macro's own text carries its GUST code
+# (docs/DIAGNOSTICS.md, E0717); the line is the signature of the kernel.
+code: none
+file: barrier-kernel-no-cpu-strategy/src/main.rs
+line: 8
+message: [GUST-E0717] kernel `reduce` uses `Workgroup<[T; N]>` memory, which has no CPU twin yet

@@ -460,7 +460,26 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   deliberate races (roadmap M7 plans barriers and shared memory, M8 subgroup operations). Before such a construct is accepted into the dialect, it needs a twin
   strategy written into this contract (what the twin does, and where it may differ from the GPU), or the kernels that
   use it must carry `#[kernel(cpu = "unsupported")]`, which leaves them without a twin. Running such a kernel
-  one invocation at a time would give a clean result that says nothing about the GPU.
+  one invocation at a time would give a clean result that says nothing about the GPU. Workgroup barriers and
+  workgroup memory (m7.g1) took the second way: a kernel with a `Workgroup<[T; N]>` parameter or a
+  `workgroup_barrier()` must say `cpu = "unsupported"` (GUST-E0717), and `cpu = "lockstep"` is rejected until a later
+  slice defines that strategy (GUST-E0709). Under `GUST_PROFILE=cpu` such a kernel has no `Run` implementation.
+- **Workgroup memory starts unspecified.** A `Workgroup<[T; N]>` parameter is a `groupshared` array of one workgroup.
+  Slang gives it no initial value and the GPU leaves its contents unspecified, so a kernel must write every element
+  it reads before it reads it. A read of an element that no invocation of the same workgroup has written yet is outside
+  the defined domain, and so is a read of an element another invocation wrote with no `workgroup_barrier()` between
+  the write and the read. The validator checks the position of each barrier (every invocation of the workgroup must
+  reach it), not this precondition, and no test can observe a value the GPU leaves unspecified.
+- **Workgroup races.** Two invocations of a workgroup that write the same element of workgroup memory, or one that
+  writes an element another reads, with no `workgroup_barrier()` between the accesses, are a race and outside the
+  domain, as for storage parameters above. Workgroup memory is private to its workgroup: a barrier orders the
+  invocations of one workgroup only, and no construct orders invocations of different workgroups within a dispatch.
+  The size of all `Workgroup` arrays of a kernel is limited to 16384 bytes (GUST-E0718), the minimum of
+  `maxComputeWorkGroupSharedMemorySize` that Vulkan and WebGPU guarantee.
+- **Local and group ids.** `LocalId` (`SV_GroupThreadID`) and `GroupId` (`SV_GroupID`) are derived from
+  `SV_DispatchThreadID` and the declared `workgroup_size(X, Y, Z)`: the local id is the dispatch id modulo the size per
+  axis and the group id is the dispatch id divided by it. The twin of a kernel that uses only these ids derives them the
+  same way, so such a kernel keeps its CPU twin.
 - **Visibility.** The writes of a dispatch are visible after the dispatch completes. Within a dispatch, an invocation
   must not depend on another invocation's non-atomic writes.
 - **Production CPU target (D51).** Under `GUST_PROFILE=cpu` the kernels run on `gust::cpu::CpuDevice` in every build,

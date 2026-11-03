@@ -1573,12 +1573,22 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 33] = [
+const PINNED_FIXTURES: [&str; 46] = [
+    "barrier-in-helper",
+    "barrier-in-if",
+    "barrier-in-nested-for",
+    "barrier-in-while",
+    "barrier-kernel-no-cpu-strategy",
+    "barrier-ok",
+    "break-in-barrier-loop",
+    "continue-in-barrier-loop",
     "gpupod-missing",
     "gpupod-present",
     "kernel-cpu-bad-value",
     "kernel-cpu-duplicate",
+    "kernel-cpu-lockstep",
     "kernel-missing",
+    "labelled-break-in-barrier-kernel",
     "layout-outside-element",
     "layout-outside-field",
     "literal-let-ok",
@@ -1597,7 +1607,9 @@ const PINNED_FIXTURES: [&str; 33] = [
     "profile-native-no-artifact",
     "profile-native-no-manifest",
     "profile-unknown",
+    "question-mark-in-barrier-kernel",
     "reserved-gust-prefix",
+    "return-in-barrier-kernel",
     "typed-call-buffer-for-uniform",
     "typed-call-cpu-target",
     "typed-call-kind-mismatch",
@@ -1605,6 +1617,7 @@ const PINNED_FIXTURES: [&str; 33] = [
     "typed-call-no-cpu-twin",
     "typed-call-no-run",
     "typed-call-ok",
+    "workgroup-over-16kib",
     "wrapping-div-rejected",
     "wrapping-ok",
 ];

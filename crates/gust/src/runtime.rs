@@ -20,6 +20,61 @@ pub struct UVec3 {
 #[allow(non_camel_case_types)]
 pub type SV_DispatchThreadID = UVec3;
 
+/// The invocation's index inside its workgroup (slice m7.g1, plan 4.1): `id % workgroup_size` per dimension, where `id`
+/// is the dispatch-thread id. The Slang lowering derives it from the dispatch-thread parameter and the kernel's
+/// `workgroup_size`; the entry point has no second semantic parameter. `SV_GroupThreadID` is the Slang spelling.
+pub type LocalId = UVec3;
+
+/// The index of the invocation's workgroup: `id / workgroup_size` per dimension (see [`LocalId`]). `SV_GroupID` is the
+/// Slang spelling.
+pub type GroupId = UVec3;
+
+/// Rust shadow of Slang's `SV_GroupThreadID` semantic value; the same as [`LocalId`].
+#[allow(non_camel_case_types)]
+pub type SV_GroupThreadID = UVec3;
+
+/// Rust shadow of Slang's `SV_GroupID` semantic value; the same as [`GroupId`].
+#[allow(non_camel_case_types)]
+pub type SV_GroupID = UVec3;
+
+/// Rust shadow of workgroup-shared memory (slice m7.g1, plan 4.1): the kernel parameter `Workgroup<[T; N]>` is a
+/// module-scope `groupshared T name[N];` in Slang, shared by the invocations of one workgroup, and is not a resource:
+/// it has no binding, no descriptor entry and no argument of the typed call.
+///
+/// Its contents start unspecified on the GPU, a read before the same workgroup writes the element is outside the
+/// domain, and so is a race (`docs/SEMANTICS.md` section 5). A kernel with a `Workgroup` parameter or a [`workgroup_barrier`]
+/// must carry `#[kernel(cpu = "unsupported")]` (GUST-E0717): the sequential CPU twin cannot model it. This type exists
+/// so that the shadow body type-checks as ordinary Rust; indexing is by `u32`, as for buffers.
+#[derive(Clone, Copy, Debug)]
+pub struct Workgroup<A> {
+    values: A,
+}
+
+impl<A> Workgroup<A> {
+    pub const fn new(values: A) -> Self {
+        Self { values }
+    }
+}
+
+impl<T, const N: usize> Index<u32> for Workgroup<[T; N]> {
+    type Output = T;
+
+    fn index(&self, index: u32) -> &Self::Output {
+        &self.values[index as usize]
+    }
+}
+
+impl<T, const N: usize> IndexMut<u32> for Workgroup<[T; N]> {
+    fn index_mut(&mut self, index: u32) -> &mut Self::Output {
+        &mut self.values[index as usize]
+    }
+}
+
+/// Rust shadow of the workgroup barrier (Slang `GroupMemoryBarrierWithGroupSync()`, WGSL `workgroupBarrier()`, SPIR-V
+/// `OpControlBarrier`): statement-only in kernels. Every invocation of the workgroup must reach it, which the validator
+/// enforces by position (GUST-E0414 to E0416). It does nothing here: a kernel that calls it has no CPU twin.
+pub fn workgroup_barrier() {}
+
 /// GPU invocation metadata. The CPU twin (`gust::cpu`) constructs one per invocation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
@@ -255,6 +310,28 @@ mod tests {
         let mut signed = -7i32;
         assert_eq!(atomic_exchange(&mut signed, -5), -7);
         assert_eq!(signed, -5);
+    }
+
+    #[test]
+    fn workgroup_memory_is_indexed_by_u32_and_written_through_index_mut() {
+        let mut scratch = Workgroup::new([0.0f32; 4]);
+        scratch[2u32] = 5.5;
+        scratch[3u32] = scratch[2u32] + 1.0;
+        assert_eq!(scratch[0u32], 0.0);
+        assert_eq!(scratch[2u32], 5.5);
+        assert_eq!(scratch[3u32], 6.5);
+    }
+
+    #[test]
+    #[should_panic(expected = "index out of bounds")]
+    fn workgroup_memory_panics_past_its_length_like_an_array() {
+        let scratch = Workgroup::new([1u32; 4]);
+        let _ = scratch[4u32];
+    }
+
+    #[test]
+    fn workgroup_barrier_does_nothing_on_the_host() {
+        workgroup_barrier();
     }
 
     #[test]

@@ -61,6 +61,7 @@ pub(crate) const FEATURE_AREAS: &[&str] = &[
     "vectors",
     "uniforms",
     "map",
+    "workgroup",
     "algo",
     "examples",
     "artifacts",

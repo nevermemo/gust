@@ -1,12 +1,17 @@
 [package]
 name = "cargo-gust"
-description = "Export tool for GUST: collects #[gpu] kernels, compiles them with Slang and writes the committed gust-artifacts directory"
+description = "Export tool for GUST: collects #[gpu] kernels, compiles them with Slang, writes gust-artifacts"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-# Not published yet (M10 decides the name and the install story); see the crate documentation for `cargo install`.
-publish = false
+repository.workspace = true
+keywords.workspace = true
+categories = ["development-tools::cargo-plugins"]
+# A binary-only crate has no docs.rs page, so the documentation is its README on GitHub.
+documentation = "https://github.com/nevermemo/gust/blob/main/crates/cargo-gust/README.md"
+# The unit tests live beside the sources and read repository paths, so they do not ship (they run from the repository).
+exclude = ["src/*_tests.rs", "src/testdata.rs", "src/testdata/"]
 
 [[bin]]
 name = "cargo-gust"

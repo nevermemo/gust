@@ -831,13 +831,15 @@ fn the_versions_come_from_the_manifests_and_the_consumer_patches_all_four_packag
 #[test]
 fn the_packaged_crates_carry_versions_on_their_path_dependencies() {
     let root = root_manifest();
+    // The internal dependencies are exact (`=`) so that the four released crates can never be mixed (mr.a).
+    let version = section_version(&root, "workspace.package").unwrap();
     for name in ["gust", "gust-macros", "gust-wgpu"] {
         let line = root
             .lines()
             .find(|line| line.trim_start().starts_with(&format!("{name} = ")))
             .unwrap();
         assert!(
-            line.contains("version = \"0.1.0\"") && line.contains("path = "),
+            line.contains(&format!("version = \"={version}\"")) && line.contains("path = "),
             "{line}"
         );
         let manifest = fs::read_to_string(

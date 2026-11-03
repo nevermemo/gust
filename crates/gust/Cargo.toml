@@ -5,7 +5,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+documentation = "https://docs.rs/gust-compute"
 exclude = ["tests/", "examples/", "benches/"]
+
+# docs.rs builds with the run-time bridge on so that `gust::slang::compile*` and `gust::reflect::reflect*` have pages.
+[package.metadata.docs.rs]
+features = ["slang-runtime"]
+rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 # The run-time Slang bridge: compiling and reflecting a kernel by launching `slangc` or the native reflection helper

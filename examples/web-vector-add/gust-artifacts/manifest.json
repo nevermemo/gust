@@ -14,6 +14,21 @@
       "key": "52e85c5f03f72272",
       "module": "vector_add",
       "name": "add"
+    },
+    {
+      "clean_sha256": "2bf7c0a472a03119a22b812753f4f89048f20ebf79856cc9b728b7d6609bbf72",
+      "entry_point": "gpu_double_add_map_kernel",
+      "formats": [
+        {
+          "file": "5f5fc9afb786701a.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "b43813c41b7b17dd072da923ccf716089dffbbd393ac3686bef867c792d6f4cb",
+          "sha256": "74fd5b3616569f1fc1143c59ae775cbc709aff7112e32949f0578bbb7176e769"
+        }
+      ],
+      "key": "5f5fc9afb786701a",
+      "module": "double_add",
+      "name": "map_kernel"
     }
   ],
   "schema": 1,

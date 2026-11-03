@@ -382,6 +382,21 @@ mod tests {
     }
 
     #[test]
+    #[cfg(not(gust_profile = "cpu"))]
+    fn the_kernels_carry_their_committed_artifacts() {
+        // `gust-artifacts/` is made by `cargo gust build -p map-chain`; a changed kernel or a deleted file leaves a
+        // kernel without its pair, and the strict profiles refuse to build it.
+        for descriptor in descriptors() {
+            assert_eq!(
+                descriptor.artifacts.len(),
+                1,
+                "{} has no embedded artifact: run `cargo gust build -p map-chain`",
+                descriptor.qualified_name()
+            );
+        }
+    }
+
+    #[test]
     fn an_empty_input_is_an_empty_result_and_a_call_of_broadcasts_has_no_length() {
         let device = CpuDevice::new();
         assert_eq!(twin(&device, &[]).unwrap(), Vec::<f32>::new());

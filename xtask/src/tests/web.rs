@@ -717,16 +717,44 @@ fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
     };
     let expected = names(&source);
     assert!(!expected.is_empty(), "no artifacts in {}", source.display());
-    assert_eq!(
-        names(&copy),
-        expected,
-        "examples/web-vector-add/gust-artifacts must hold exactly the files of tests/precompiled/kernels/gust-artifacts"
-    );
-    for name in expected {
-        assert_eq!(
-            fs::read(copy.join(&name)).unwrap(),
-            fs::read(source.join(&name)).unwrap(),
-            "{name} differs: re-copy tests/precompiled/kernels/gust-artifacts/* into examples/web-vector-add/gust-artifacts/"
+    // The example may hold more kernels than the fixture (its own `#[gpu] fn`, whose pair `cargo gust build` writes
+    // beside the fixture's): every file of the fixture is there, byte for byte, and the manifest lists at least the
+    // fixture's kernel entries, each verbatim (manifest.json itself differs by the extra entries).
+    let copied = names(&copy);
+    for name in &expected {
+        assert!(
+            copied.contains(name),
+            "examples/web-vector-add/gust-artifacts lacks {name} of tests/precompiled/kernels/gust-artifacts"
+        );
+        if name != "manifest.json" {
+            assert_eq!(
+                fs::read(copy.join(name)).unwrap(),
+                fs::read(source.join(name)).unwrap(),
+                "{name} differs: re-copy tests/precompiled/kernels/gust-artifacts/* into examples/web-vector-add/gust-artifacts/"
+            );
+        }
+    }
+    let entries = |directory: &Path| -> Vec<String> {
+        let text = fs::read_to_string(directory.join("manifest.json"))
+            .unwrap()
+            .replace("\r\n", "\n");
+        let body = text
+            .split_once("\"kernels\": [\n")
+            .unwrap()
+            .1
+            .split_once("\n  ],")
+            .unwrap()
+            .0
+            .to_owned();
+        body.split("\n    },\n")
+            .map(|entry| entry.trim_end_matches("\n    }").to_owned())
+            .collect()
+    };
+    let held = entries(&copy);
+    for entry in entries(&source) {
+        assert!(
+            held.contains(&entry),
+            "the manifest of the example lacks this kernel entry of the fixture: {entry}"
         );
     }
 }

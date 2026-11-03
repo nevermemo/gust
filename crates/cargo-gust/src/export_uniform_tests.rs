@@ -147,6 +147,7 @@ impl Stored {
             file: String::new(),
             lines: Vec::new(),
             slang: self.kernel.slang_source.to_owned(),
+            sites: Vec::new(),
         }
     }
 

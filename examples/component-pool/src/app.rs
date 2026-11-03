@@ -13,19 +13,31 @@
 //! infers or reorders them), and the graph is rebuilt after growth.
 //!
 //! Particles spawn in slot order (an emitter releasing `emit_per_frame` per
-//! frame), so the active particles always form a prefix of the pool and the
-//! indirect consumer's `i < active` guard covers exactly them. There is no
-//! compaction stage yet (that is T14): the prefix invariant is what makes the
-//! count usable as a dispatch bound.
+//! frame), so on the T13 path (`run_frame_traced`) the active particles always
+//! form a prefix of the pool and the indirect consumer's `i < active` guard
+//! covers exactly them. That path is unchanged, and it is only as good as the
+//! prefix invariant: nothing on the GPU checks it.
+//!
+//! The compacting path (`run_compacting_frame`, m7.t14) does not depend on slot
+//! order. Particles retire (`steps >= lifetime`, the age counter every particle
+//! already has against a lifetime), in any slot order. Each frame `mark_live`
+//! flags the particles that have spawned and not retired, `gust-algo`'s
+//! `compact::indices` turns the flags into the increasing slots of those
+//! particles and their count (the count stays on the device), `gather_particles`
+//! packs them into a dense prefix, `prepare_dispatch` and the indirect
+//! `integrate` run over exactly that prefix, and `scatter_particles` writes the
+//! integrated particles back to their own slots. A retired or unspawned slot is
+//! never read by `integrate` and never written.
 
 use std::{path::PathBuf, time::Instant};
 
 use gust::{Independent, KernelDescriptor, gpu};
+use gust_algo::{compact, schedule::Pass};
 #[cfg(test)]
 use gust_wgpu::BufferBinding;
 use gust_wgpu::{
-    BufferDispatch, GpuBufferAccess, GpuPool, GraphReport, HeadlessDevice, StagedGraph,
-    render_wgpu_source,
+    BufferDispatch, DeviceHandle, GpuBufferAccess, GpuPool, GpuVec, GraphReport, HeadlessDevice,
+    StagedGraph, render_wgpu_source,
 };
 
 #[gpu]
@@ -142,6 +154,99 @@ mod pool {
             particles[i] = p;
         }
     }
+
+    // Retirement and compaction (m7.t14). The three kernels below are block-strided like the element-wise kernels of
+    // `gust_algo::compact` (the host launches `256 * ceil(n / 65536)` invocations, so the 1D workgroup ceiling holds
+    // for every length the binding limit admits): workgroup w owns the block [w * 65536, (w + 1) * 65536) and lane t
+    // visits `block + t + 256 * k` for k in 0..256 while the index is in range.
+
+    // The retirement rule and the compaction flags in one pass: `flags[i]` is 1 when slot `i` holds a particle that
+    // has spawned by this frame (`spawn_frame <= settings.frame`) and has not retired (`steps < lifetime[0]`: the
+    // particle's step counter is its age, and it retires once it has taken `lifetime[0]` steps). Slots are judged on
+    // their own data, so particles may retire in any slot order. One writer per flag; no atomic.
+    #[allow(clippy::len_zero)]
+    #[kernel(workgroup_size(256, 1, 1))]
+    pub fn mark_live(
+        id: SV_DispatchThreadID,
+        settings: StructuredBuffer<Settings>,
+        lifetime: StructuredBuffer<uint>,
+        particles: StructuredBuffer<Particle>,
+        mut flags: RWStructuredBuffer<uint>,
+    ) {
+        let i = id.x;
+        let n = flags.len();
+        let first = (i / 256u32) * 65536u32 + i % 256u32;
+        for k in 0u32..256u32 {
+            let index = first + k * 256u32;
+            if index >= n {
+                break;
+            }
+            let mut live = 0u32;
+            if index < particles.len()
+                && 0u32 < settings.len()
+                && 0u32 < lifetime.len()
+                && particles[index].spawn_frame <= settings[0u32].frame
+                && particles[index].steps < lifetime[0u32]
+            {
+                live = 1u32;
+            }
+            flags[index] = live;
+        }
+    }
+
+    // The user-kernel gather of the compaction (`gust_algo::compact` documents the pattern): `out[j] =
+    // values[indices[j]]` for `j < count[0]`; the rest of `out` keeps the zero it was created with. The source is
+    // checked against `values.len()` before the read.
+    #[kernel(workgroup_size(256, 1, 1))]
+    pub fn gather_particles(
+        id: SV_DispatchThreadID,
+        values: StructuredBuffer<Particle>,
+        indices: StructuredBuffer<uint>,
+        count: StructuredBuffer<uint>,
+        mut out: RWStructuredBuffer<Particle>,
+    ) {
+        let i = id.x;
+        let n = out.len();
+        let live = count[0u32];
+        let first = (i / 256u32) * 65536u32 + i % 256u32;
+        for k in 0u32..256u32 {
+            let j = first + k * 256u32;
+            if j >= n || j >= live {
+                break;
+            }
+            let source = indices[j];
+            if source < values.len() {
+                out[j] = values[source];
+            }
+        }
+    }
+
+    // The mirror of the gather: `particles[indices[j]] = dense[j]` for `j < count[0]`. The indices of a compaction are
+    // distinct, so every slot of the pool has at most one writer; slots no index names (the retired and the
+    // unspawned) are not written, so they keep their bytes exactly.
+    #[kernel(workgroup_size(256, 1, 1))]
+    pub fn scatter_particles(
+        id: SV_DispatchThreadID,
+        dense: StructuredBuffer<Particle>,
+        indices: StructuredBuffer<uint>,
+        count: StructuredBuffer<uint>,
+        mut particles: RWStructuredBuffer<Particle>,
+    ) {
+        let i = id.x;
+        let n = dense.len();
+        let live = count[0u32];
+        let first = (i / 256u32) * 65536u32 + i % 256u32;
+        for k in 0u32..256u32 {
+            let j = first + k * 256u32;
+            if j >= n || j >= live || j >= indices.len() {
+                break;
+            }
+            let slot = indices[j];
+            if slot < particles.len() {
+                particles[slot] = dense[j];
+            }
+        }
+    }
 }
 
 pub use pool::{Active, DispatchArgs, Particle, Settings};
@@ -195,8 +300,47 @@ pub fn step_cpu(particles: &mut [Particle], settings: &Settings) -> usize {
     active
 }
 
+/// The all-zero particle: what a compaction's dense buffer holds past its count.
+pub fn zero_particle() -> Particle {
+    Particle {
+        x: 0.0,
+        y: 0.0,
+        vx: 0.0,
+        vy: 0.0,
+        steps: 0,
+        spawn_frame: 0,
+    }
+}
+
+/// The retirement rule, on the host: a particle takes part in a frame when it has spawned by `settings.frame` and has
+/// taken fewer than `lifetime` steps.
+pub fn is_live(particle: &Particle, settings: &Settings, lifetime: u32) -> bool {
+    particle.spawn_frame <= settings.frame && particle.steps < lifetime
+}
+
+/// Independent host reference for one compacting frame: the first `settings.budget` live particles, in slot order,
+/// take one step each; everything else (retired, unspawned, live beyond the budget) is left exactly as it is. It
+/// filters and never compacts, so it shares nothing with the GPU's mechanism but the rule. Returns the number stepped.
+pub fn step_retiring_cpu(particles: &mut [Particle], settings: &Settings, lifetime: u32) -> usize {
+    let mut stepped = 0;
+    for p in particles
+        .iter_mut()
+        .filter(|particle| is_live(particle, settings, lifetime))
+        .take(settings.budget as usize)
+    {
+        p.vy += settings.gravity * settings.dt;
+        p.x += p.vx * settings.dt;
+        p.y += p.vy * settings.dt;
+        p.steps += 1;
+        stepped += 1;
+    }
+    stepped
+}
+
 pub struct Frame {
     pub settings: gust_wgpu::GpuBuffer<Settings>,
+    /// The retirement lifetime in steps (one element); written by every compacting frame, unused by the T13 path.
+    pub lifetime: gust_wgpu::GpuBuffer<u32>,
     /// GPU-authored classification count (one element); zeroed by the graph before `classify`.
     pub count: gust_wgpu::GpuBuffer<u32>,
     pub active: gust_wgpu::GpuBuffer<Active>,
@@ -214,6 +358,11 @@ impl Frame {
                     budget: 0,
                     frame: 0,
                 }],
+                GpuBufferAccess::ReadOnly,
+            ),
+            lifetime: device.create_typed_buffer(
+                "pool lifetime",
+                &[0u32],
                 GpuBufferAccess::ReadOnly,
             ),
             count: device.create_typed_buffer(
@@ -308,11 +457,144 @@ pub fn run_frame_traced(
     Ok((count, output.report, edges))
 }
 
-pub fn descriptors() -> [&'static KernelDescriptor; 3] {
+/// What one compacting frame leaves on the device, for the demo and the tests (the frame itself reads none of it).
+pub struct CompactedFrame {
+    /// The particles the frame integrated, read back from `frame.active` (the one readback of the frame; it decides
+    /// no work).
+    pub active: u32,
+    /// The compaction flags `mark_live` wrote: 1 for a spawned, unretired slot, else 0 (one per pool slot).
+    pub flags: GpuVec<u32>,
+    /// The compacted copy of the live particles after the frame: the first `count` are the live particles in slot
+    /// order (the first `active` of them integrated), every slot after that is zero.
+    pub dense: GpuVec<Particle>,
+    /// `compact::indices`: the first `count` elements are the increasing pool slots of the live particles, the rest `0`.
+    pub indices: GpuVec<u32>,
+    /// `compact::indices`: the number of live particles, one element, never read back by the frame.
+    pub count: GpuVec<u32>,
+    /// The report of the marking graph and of the compacted graph.
+    pub reports: [GraphReport; 2],
+    /// The declared dependencies per node (node indices, in declaration order) of the marking graph (settings write,
+    /// lifetime write, `mark_live`) and of the compacted graph (`gather_particles`, `prepare_dispatch`, indirect
+    /// `integrate`, `scatter_particles`, readback).
+    pub edges: [Vec<Vec<usize>>; 2],
+}
+
+/// One frame on the compacting path (m7.t14). Returns `None` for an empty pool: the host owns the pool length, there is
+/// nothing to mark or compact, and an empty binding would be refused.
+///
+/// The passes, in submission order: the marking graph (settings and lifetime writes, then `mark_live`), then
+/// `gust_algo::compact::indices` over the flags (the library submits its own passes; the device queue orders them after
+/// the marking graph and before the next), then the compacted graph: `gather_particles` into a dense prefix,
+/// `prepare_dispatch` from the compaction's count, the indirect `integrate` over the dense prefix, `scatter_particles`
+/// back to the particles' own slots, and the readback of the active count. The edges of both graphs are declared
+/// (`upload`, `dispatch`, `dispatch_indirect`, `readback` take their dependencies) and the graph refuses a missing one;
+/// the compaction's outputs are produced before the compacted graph is built, so they are inputs to it with no node to
+/// depend on. The host never learns the compaction's count before the work is submitted: the dense gather, the
+/// dispatch size and the scatter all read it on the device.
+///
+/// `lifetime` is the retirement rule's limit in steps (see `mark_live`).
+pub fn run_compacting_frame(
+    device: &DeviceHandle,
+    frame: &Frame,
+    particles: &GpuPool<Particle>,
+    settings: &[Settings; 1],
+    lifetime: u32,
+) -> Result<Option<CompactedFrame>, gust_algo::Error> {
+    // A pool of more than `u32::MAX` slots cannot exist: its allocation would exceed any adapter's buffer limit.
+    let len = u32::try_from(particles.len()).expect("a pool is at most u32::MAX slots long");
+    if len == 0 {
+        return Ok(None);
+    }
+    let lifetime_values = [lifetime];
+
+    // The marking graph: the flags are a fresh, zeroed vector of the pool's length.
+    let flags = GpuVec::<u32>::zeroed_on(device, len)?;
+    let mark_call = pool::mark_live::call(
+        Pass::over(len).partials(),
+        Independent(&frame.settings),
+        Independent(&frame.lifetime),
+        Independent(particles.buffer()),
+        Independent(&flags),
+    );
+    let mut marking = StagedGraph::new();
+    let write_settings = marking.upload(&frame.settings, settings, &[]);
+    let write_lifetime = marking.upload(&frame.lifetime, &lifetime_values, &[]);
+    let mark = marking.dispatch(
+        BufferDispatch::from(&mark_call),
+        &[write_settings, write_lifetime],
+    );
+    let mark_edges = [write_settings, write_lifetime, mark]
+        .map(|node| marking.dependency_indices(node))
+        .to_vec();
+    let marked = device.execute_graph(&marking)?;
+
+    // The compaction: indices of the flagged slots and their count, both on the device.
+    let (indices, count) = compact::indices(&flags)?;
+
+    // The compacted graph. `dense` is a fresh zeroed vector, so everything after the count stays zero.
+    let dense = GpuVec::<Particle>::zeroed_on(device, len)?;
+    let gather_call = pool::gather_particles::call(
+        Pass::over(len).partials(),
+        Independent(particles.buffer()),
+        Independent(&indices),
+        Independent(&count),
+        Independent(&dense),
+    );
+    let prepare_call = pool::prepare_dispatch::call(
+        1,
+        Independent(&count),
+        Independent(&frame.settings),
+        Independent(&dense),
+        Independent(&frame.active),
+        Independent(&frame.args),
+    );
+    let integrate_call = pool::integrate::call(
+        0,
+        Independent(&frame.active),
+        Independent(&frame.settings),
+        Independent(&dense),
+    );
+    let scatter_call = pool::scatter_particles::call(
+        Pass::over(len).partials(),
+        Independent(&dense),
+        Independent(&indices),
+        Independent(&count),
+        Independent(particles.buffer()),
+    );
+    let mut compacted = StagedGraph::new();
+    let gather = compacted.dispatch(BufferDispatch::from(&gather_call), &[]);
+    let prepare = compacted.dispatch(BufferDispatch::from(&prepare_call), &[gather]);
+    let integrate = compacted.dispatch_indirect(
+        BufferDispatch::from(&integrate_call),
+        &frame.args,
+        &[prepare],
+    );
+    let scatter = compacted.dispatch(BufferDispatch::from(&scatter_call), &[integrate]);
+    let active = compacted.readback(&frame.active, &[integrate]);
+    let edges = [gather, prepare, integrate, scatter, active]
+        .map(|node| compacted.dependency_indices(node))
+        .to_vec();
+    let output = device.execute_graph(&compacted)?;
+    let active_count = output.readback::<Active>(active)?[0].count;
+    Ok(Some(CompactedFrame {
+        active: active_count,
+        flags,
+        dense,
+        indices,
+        count,
+        reports: [marked.report, output.report],
+        edges: [mark_edges, edges],
+    }))
+}
+
+pub fn descriptors() -> [&'static KernelDescriptor; 6] {
     [
         &pool::classify::DESCRIPTOR,
-        &pool::prepare_dispatch::DESCRIPTOR,
+        &pool::gather_particles::DESCRIPTOR,
         &pool::integrate::DESCRIPTOR,
+        &pool::mark_live::DESCRIPTOR,
+        &pool::prepare_dispatch::DESCRIPTOR,
+        &pool::scatter_particles::DESCRIPTOR,
     ]
 }
 
@@ -360,8 +642,64 @@ fn export_artifacts() -> Result<PathBuf, Box<dyn std::error::Error>> {
     Ok(directory.canonicalize().unwrap_or(directory))
 }
 
+/// The compacting path over a few frames of a pool whose particles retire in an interleaved slot order: slot `s` starts
+/// with `s % 4` steps already taken and the lifetime is 4, so the live set shrinks every frame and is never a prefix.
+/// Each frame is compared with the host reference.
+fn retirement_demo(
+    device: &DeviceHandle,
+    frame: &Frame,
+    size: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    const LIFETIME: u32 = 4;
+    let mut reference = spawn(0, size, size);
+    for (slot, particle) in reference.iter_mut().enumerate() {
+        particle.steps = (slot % 4) as u32;
+    }
+    let particles = device.create_pool("retiring particles", &reference, size);
+    println!(
+        "Retirement and compaction: {size} particles, lifetime {LIFETIME} steps, interleaved ages"
+    );
+    for frame_index in 0..=LIFETIME {
+        let settings = Settings {
+            dt: 0.016,
+            gravity: -9.8,
+            budget: BUDGET,
+            frame: frame_index,
+        };
+        let started = Instant::now();
+        let compacted = run_compacting_frame(device, frame, &particles, &[settings], LIFETIME)?
+            .expect("the pool is not empty");
+        let elapsed = started.elapsed();
+        let expected = step_retiring_cpu(&mut reference, &settings, LIFETIME);
+        assert_eq!(compacted.active as usize, expected);
+        assert_close(&device.pool_read(&particles)?, &reference);
+        // The prefix invariant on the GPU's own buffers (read back here to check, never to decide work): the count is
+        // the number of flags, the indices increase, and the dense buffer is zero after the count.
+        let count = compacted.count.to_vec()?[0] as usize;
+        let flags = compacted.flags.to_vec()?;
+        let indices = compacted.indices.to_vec()?;
+        assert_eq!(count, flags.iter().filter(|flag| **flag == 1).count());
+        assert!(indices[..count].windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(
+            compacted.dense.to_vec()?[count..]
+                .iter()
+                .all(|particle| *particle == zero_particle())
+        );
+        println!(
+            "frame {frame_index}: {} live of {size} (GPU-compacted), graphs {elapsed:?}, readback {} B, \
+             declared dependencies (mark, then compacted graph): {:?}",
+            compacted.active, compacted.reports[1].readback_bytes, compacted.edges
+        );
+    }
+    assert!(
+        reference.iter().all(|particle| particle.steps == LIFETIME),
+        "every particle retires after the lifetime"
+    );
+    Ok(())
+}
+
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let device = HeadlessDevice::new()?;
+    let device = DeviceHandle::new(HeadlessDevice::new()?);
     let frame = Frame::new(&device)?;
 
     let initial = if cfg!(debug_assertions) {
@@ -415,6 +753,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let actual = device.pool_read(&particles)?;
     assert_close(&actual, &reference);
+    retirement_demo(&device, &frame, initial + 1)?;
     let artifacts = export_artifacts()?;
     println!(
         "final: {} particles, capacity {}, generation {}, {} growths, {} bytes copied GPU-to-GPU, {} retired allocations pending",
@@ -1485,5 +1824,639 @@ mod tests {
             }) if parameter == "count"
         ));
         assert_eq!(device.read_typed_buffer(&frame.count).unwrap(), vec![0]);
+    }
+
+    // m7.t14: retirement and compaction.
+
+    /// Retire after this many steps (`mark_live`'s `lifetime`).
+    const LIFETIME: u32 = 3;
+
+    /// Which slots of a pool hold retired particles.
+    #[derive(Clone, Copy, Debug)]
+    enum Retired {
+        None,
+        First,
+        Last,
+        Middle,
+        All,
+        Alternate,
+        Scattered,
+    }
+
+    const PATTERNS: [Retired; 7] = [
+        Retired::None,
+        Retired::First,
+        Retired::Last,
+        Retired::Middle,
+        Retired::All,
+        Retired::Alternate,
+        Retired::Scattered,
+    ];
+
+    fn retired_slots(pattern: Retired, n: usize) -> Vec<bool> {
+        (0..n)
+            .map(|slot| match pattern {
+                Retired::None => false,
+                Retired::First => slot == 0,
+                Retired::Last => slot + 1 == n,
+                Retired::Middle => slot == n / 2,
+                Retired::All => true,
+                Retired::Alternate => slot % 2 == 1,
+                // A fixed hash of the slot: neither a prefix nor a suffix nor a stride.
+                Retired::Scattered => (slot as u32).wrapping_mul(2_654_435_761) >> 29 < 3,
+            })
+            .collect()
+    }
+
+    /// `n` particles released `emit` per frame, with mixed ages: a retired slot has taken `LIFETIME` or more steps, a
+    /// live one fewer (`slot % LIFETIME`), so the live ones retire at different frames, in any slot order.
+    fn aged_particles(n: usize, emit: usize, pattern: Retired) -> Vec<Particle> {
+        let retired = retired_slots(pattern, n);
+        let mut particles = spawn(0, n, emit);
+        for (slot, particle) in particles.iter_mut().enumerate() {
+            particle.steps = if retired[slot] {
+                LIFETIME + (slot % 2) as u32
+            } else {
+                slot as u32 % LIFETIME
+            };
+        }
+        particles
+    }
+
+    /// The independent reference for the compaction of one frame, from the pool before it: the live slots in order,
+    /// the dense particles (the first `budget` of them stepped, then zeros to the pool length).
+    fn expected_compaction(
+        before: &[Particle],
+        settings: &Settings,
+    ) -> (Vec<usize>, Vec<Particle>) {
+        let slots: Vec<usize> = (0..before.len())
+            .filter(|&slot| is_live(&before[slot], settings, LIFETIME))
+            .collect();
+        let mut dense: Vec<Particle> = slots.iter().map(|&slot| before[slot]).collect();
+        step_retiring_cpu(&mut dense, settings, LIFETIME);
+        dense.resize(before.len(), zero_particle());
+        (slots, dense)
+    }
+
+    /// Everything a compacting frame promises, judged on what the GPU left in its buffers. `before` is the pool read
+    /// back before the frame and `after` the pool read back after it; `expected` is the host reference stepped through
+    /// the frame.
+    fn assert_compacted(
+        frame: &CompactedFrame,
+        before: &[Particle],
+        after: &[Particle],
+        expected: &[Particle],
+        settings: &Settings,
+        what: &str,
+    ) {
+        let n = before.len();
+        let (live_slots, expected_dense) = expected_compaction(before, settings);
+        let live = live_slots.len();
+        let flags = frame.flags.to_vec().unwrap();
+        let count = frame.count.to_vec().unwrap();
+        let indices = frame.indices.to_vec().unwrap();
+        let dense = frame.dense.to_vec().unwrap();
+        assert_eq!(
+            (flags.len(), indices.len(), dense.len()),
+            (n, n, n),
+            "{what}"
+        );
+
+        // The flags are the retirement rule; the compaction's count and indices are the flagged slots.
+        let expected_flags: Vec<u32> = before
+            .iter()
+            .map(|particle| u32::from(is_live(particle, settings, LIFETIME)))
+            .collect();
+        assert_eq!(flags, expected_flags, "flags; {what}");
+        assert_eq!(count, vec![live as u32], "count; {what}");
+        assert_eq!(
+            indices[..live]
+                .iter()
+                .map(|&slot| slot as usize)
+                .collect::<Vec<_>>(),
+            live_slots,
+            "indices; {what}"
+        );
+        assert!(indices[live..].iter().all(|&slot| slot == 0), "{what}");
+
+        // The prefix invariant, on the GPU's dense buffer: the first `count` slots hold exactly the live particles in
+        // slot order (the first `active` of them integrated) and every slot after them is the zero it started as, so
+        // the dispatched prefix `[0, active)` holds only live particles and no live particle lies beyond `count`.
+        assert_eq!(
+            frame.active as usize,
+            live.min(settings.budget as usize),
+            "active; {what}"
+        );
+        assert_close(&dense[..live], &expected_dense[..live]);
+        assert!(
+            dense[live..]
+                .iter()
+                .all(|particle| *particle == zero_particle()),
+            "the dense tail must stay zero; {what}"
+        );
+        for (position, particle) in dense[..live].iter().enumerate() {
+            let source = &before[live_slots[position]];
+            let stepped = position < frame.active as usize;
+            assert_eq!(
+                particle.steps,
+                source.steps + u32::from(stepped),
+                "dense[{position}] is slot {} stepped once or not at all; {what}",
+                live_slots[position]
+            );
+            // Judged on the GPU's data alone: undo the step and the particle must be live under the rule.
+            let before_step = Particle {
+                steps: particle.steps - u32::from(stepped),
+                ..*particle
+            };
+            assert!(
+                is_live(&before_step, settings, LIFETIME),
+                "a retired or unspawned particle sits in the dense prefix at {position}; {what}"
+            );
+        }
+
+        // Retired and unspawned slots are never read by `integrate` and never written: byte-identical. The live ones
+        // equal the reference, and the whole pool equals the host reference.
+        for slot in 0..n {
+            if !is_live(&before[slot], settings, LIFETIME) {
+                assert_eq!(after[slot], before[slot], "slot {slot} changed; {what}");
+            }
+        }
+        assert_close(after, expected);
+    }
+
+    /// A GPU device handle, as `GpuVec` needs it.
+    fn gpu_device() -> DeviceHandle {
+        DeviceHandle::new(HeadlessDevice::new().expect("Vulkan adapter"))
+    }
+
+    /// Run `frames` compacting frames on a pool of `before_all` and check every one against the host reference.
+    fn run_and_check_frames(
+        device: &DeviceHandle,
+        frame: &Frame,
+        initial: &[Particle],
+        emit_frames: std::ops::Range<u32>,
+        budget: u32,
+        what: &str,
+    ) {
+        let mut reference = initial.to_vec();
+        let particles = device.create_pool("particles", initial, initial.len());
+        for frame_index in emit_frames {
+            let settings = settings_at(frame_index, budget);
+            let what = format!("{what}, frame {frame_index}");
+            let before = device.pool_read(&particles).unwrap();
+            assert_eq!(before.len(), reference.len(), "{what}");
+            let compacted = run_compacting_frame(device, frame, &particles, &[settings], LIFETIME)
+                .unwrap()
+                .expect("not an empty pool");
+            let expected = step_retiring_cpu(&mut reference, &settings, LIFETIME);
+            let after = device.pool_read(&particles).unwrap();
+            assert_eq!(compacted.active as usize, expected, "{what}");
+            assert_compacted(&compacted, &before, &after, &reference, &settings, &what);
+            // Declared edges, in node order, and nothing derived.
+            assert_eq!(compacted.edges[0], [vec![], vec![], vec![0, 1]], "{what}");
+            assert_eq!(
+                compacted.edges[1],
+                [vec![], vec![0], vec![1], vec![2], vec![2]],
+                "{what}"
+            );
+            assert_eq!(
+                compacted
+                    .reports
+                    .each_ref()
+                    .map(|report| (report.derived_edges, report.declared_edges)),
+                [(0, 2), (0, 4)],
+                "{what}"
+            );
+            assert_eq!(compacted.reports[1].indirect_dispatches, 1, "{what}");
+            assert_eq!(compacted.reports[1].dispatches, 4, "{what}");
+            assert_eq!(
+                compacted.reports[1].readback_bytes,
+                size_of::<Active>() as u64,
+                "no readback but the active count; {what}"
+            );
+        }
+    }
+
+    // The compacting path: the prefix invariant and the retirement order, on the GPU, at the boundary sizes, against the
+    // independent host reference.
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn compaction_keeps_the_prefix_and_never_integrates_retired_particles() {
+        let device = gpu_device();
+        let frame = Frame::new(&device).unwrap();
+        for n in [1usize, 63, 64, 65, 257] {
+            for pattern in PATTERNS {
+                // Everything released at frame 0, and an emitter releasing three per frame (so unspawned slots follow
+                // the live ones). Enough frames for the particles to retire; a budget that clamps and one that does not.
+                for (emit, frames) in [(n, 0..LIFETIME + 2), (3, 0..LIFETIME + 7)] {
+                    for budget in [1000, 40] {
+                        run_and_check_frames(
+                            &device,
+                            &frame,
+                            &aged_particles(n, emit, pattern),
+                            frames.clone(),
+                            budget,
+                            &format!("n {n}, {pattern:?}, emit {emit}, budget {budget}"),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    // The T13 gap: the spawned particles need not form a prefix either. Here the later slots are released first
+    // (`spawn_frame` falls along the pool), so the spawned particles are a suffix and the unspawned ones a prefix; the
+    // T13 path would step the wrong slots, the compacting path judges each slot on its own data.
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn compaction_does_not_depend_on_the_order_particles_are_released() {
+        let device = gpu_device();
+        let frame = Frame::new(&device).unwrap();
+        for n in [64usize, 65, 257] {
+            for pattern in [Retired::None, Retired::Alternate, Retired::Scattered] {
+                let mut particles = aged_particles(n, 3, pattern);
+                for (slot, particle) in particles.iter_mut().enumerate() {
+                    particle.spawn_frame = ((n - 1 - slot) / 3) as u32;
+                }
+                run_and_check_frames(
+                    &device,
+                    &frame,
+                    &particles,
+                    0..LIFETIME + 7,
+                    1000,
+                    &format!("n {n}, {pattern:?}, released in reverse"),
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn an_empty_pool_has_nothing_to_compact() {
+        let device = gpu_device();
+        let frame = Frame::new(&device).unwrap();
+        // Capacity 3, length 0: the slots hold nothing, and the frame submits nothing.
+        let particles = device.create_pool::<Particle>("particles", &[], 3);
+        assert!(
+            run_compacting_frame(&device, &frame, &particles, &[settings(1000)], LIFETIME)
+                .unwrap()
+                .is_none()
+        );
+        // A pool emptied by truncation behaves the same.
+        let mut particles =
+            device.create_pool("particles", &aged_particles(5, 5, Retired::None), 5);
+        device.pool_truncate(&mut particles, 0).unwrap();
+        assert!(
+            run_compacting_frame(&device, &frame, &particles, &[settings(1000)], LIFETIME)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn compaction_at_one_past_65536_slots_matches_the_reference() {
+        let device = gpu_device();
+        let frame = Frame::new(&device).unwrap();
+        let n = 65_537;
+        for pattern in [Retired::Scattered, Retired::Last, Retired::None] {
+            run_and_check_frames(
+                &device,
+                &frame,
+                &aged_particles(n, n, pattern),
+                0..LIFETIME + 1,
+                1 << 20,
+                &format!("n {n}, {pattern:?}"),
+            );
+        }
+        // The same size with a budget below the live count: the dense prefix is cut, the rest stays unstepped.
+        run_and_check_frames(
+            &device,
+            &frame,
+            &aged_particles(n, n, Retired::Alternate),
+            0..2,
+            1000,
+            &format!("n {n}, Alternate, budget 1000"),
+        );
+    }
+
+    /// The compacted graph with some of its edges left out, for the tests that the graph refuses them.
+    fn compacted_graph_result(
+        device: &DeviceHandle,
+        frame: &Frame,
+        declare: [bool; 3],
+    ) -> Result<(), Error> {
+        let n = 8u32;
+        let particles = device.create_pool(
+            "particles",
+            &aged_particles(n as usize, 8, Retired::None),
+            8,
+        );
+        let flags = GpuVec::from_slice_on(device, &[1u32, 0, 1, 1, 0, 1, 0, 1]).unwrap();
+        let (indices, count) = compact::indices(&flags).unwrap();
+        let dense = GpuVec::<Particle>::zeroed_on(device, n).unwrap();
+        device
+            .write_typed_buffer(&frame.settings, &[settings(1000)])
+            .unwrap();
+        let gather_call = pool::gather_particles::call(
+            Pass::over(n).partials(),
+            Independent(particles.buffer()),
+            Independent(&indices),
+            Independent(&count),
+            Independent(&dense),
+        );
+        let prepare_call = pool::prepare_dispatch::call(
+            1,
+            Independent(&count),
+            Independent(&frame.settings),
+            Independent(&dense),
+            Independent(&frame.active),
+            Independent(&frame.args),
+        );
+        let integrate_call = pool::integrate::call(
+            0,
+            Independent(&frame.active),
+            Independent(&frame.settings),
+            Independent(&dense),
+        );
+        let scatter_call = pool::scatter_particles::call(
+            Pass::over(n).partials(),
+            Independent(&dense),
+            Independent(&indices),
+            Independent(&count),
+            Independent(particles.buffer()),
+        );
+        let mut graph = StagedGraph::new();
+        let gather = graph.dispatch(BufferDispatch::from(&gather_call), &[]);
+        let prepare_edges = if declare[0] { vec![gather] } else { Vec::new() };
+        let prepare = graph.dispatch(BufferDispatch::from(&prepare_call), &prepare_edges);
+        let integrate_edges = if declare[1] {
+            vec![prepare]
+        } else {
+            Vec::new()
+        };
+        let integrate = graph.dispatch_indirect(
+            BufferDispatch::from(&integrate_call),
+            &frame.args,
+            &integrate_edges,
+        );
+        let scatter_edges = if declare[2] {
+            vec![integrate]
+        } else {
+            Vec::new()
+        };
+        graph.dispatch(BufferDispatch::from(&scatter_call), &scatter_edges);
+        device.execute_graph(&graph).map(drop)
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn the_graph_refuses_a_compaction_pass_without_its_declared_edge() {
+        let device = gpu_device();
+        let frame = Frame::new(&device).unwrap();
+        compacted_graph_result(&device, &frame, [true, true, true]).expect("every edge declared");
+        // prepare_dispatch reads the dense buffer the gather writes; the indirect integrate reads what prepare_dispatch
+        // writes; the scatter reads what integrate wrote. The graph names the first earlier node, in node order, whose
+        // access to a buffer of the refused node conflicts and is not an ancestor: for the scatter that is the gather
+        // (node 0, which reads the pool the scatter writes), not integrate.
+        for (declare, node, producer) in [
+            ([false, true, true], 1, 0),
+            ([true, false, true], 2, 1),
+            ([true, true, false], 3, 0),
+        ] {
+            assert!(
+                matches!(
+                    compacted_graph_result(&device, &frame, declare),
+                    Err(Error::GraphMissingDependency { node: n, producer: p }) if (n, p) == (node, producer)
+                ),
+                "dropping the edge of node {node} must be refused"
+            );
+        }
+    }
+
+    // CPU twins of the new kernels (check-cpu): kernel-level evidence only. The compaction itself (the library's scan)
+    // and the graph stay GPU-only; the twins are fed the slots an independent host filter computes.
+
+    /// Run `mark_live` on the twin over a pool of `allocation` (flags as long as `n`, the logical length).
+    fn mark_on_cpu(
+        allocation: &[Particle],
+        n: usize,
+        settings: &Settings,
+        lifetime: u32,
+    ) -> Result<Vec<u32>, CpuError> {
+        let device = CpuDevice::new();
+        let settings_buffer = device.buffer(&[*settings]);
+        let lifetime_buffer = device.buffer(&[lifetime]);
+        let particles_buffer = device.buffer(allocation);
+        let flags = device.buffer(&vec![7u32; n]);
+        pool::mark_live::dispatch(
+            &device,
+            Pass::over(n as u32).partials(),
+            Independent(&settings_buffer),
+            Independent(&lifetime_buffer),
+            Independent(&particles_buffer),
+            Independent(&flags),
+        )?;
+        Ok(flags.read())
+    }
+
+    /// The host's indices for `before`: the live slots in order, then zeros to the pool length.
+    fn host_indices(before: &[Particle], settings: &Settings) -> (Vec<u32>, u32) {
+        let mut indices: Vec<u32> = (0..before.len() as u32)
+            .filter(|&slot| is_live(&before[slot as usize], settings, LIFETIME))
+            .collect();
+        let live = indices.len() as u32;
+        indices.resize(before.len(), 0);
+        (indices, live)
+    }
+
+    fn gather_on_cpu(
+        values: &[Particle],
+        indices: &[u32],
+        count: u32,
+    ) -> Result<Vec<Particle>, CpuError> {
+        let device = CpuDevice::new();
+        let values = device.buffer(values);
+        let indices_buffer = device.buffer(indices);
+        let count = device.buffer(&[count]);
+        let out = device.buffer(&vec![zero_particle(); indices.len()]);
+        pool::gather_particles::dispatch(
+            &device,
+            Pass::over(indices.len() as u32).partials(),
+            Independent(&values),
+            Independent(&indices_buffer),
+            Independent(&count),
+            Independent(&out),
+        )?;
+        Ok(out.read())
+    }
+
+    fn scatter_on_cpu(
+        dense: &[Particle],
+        indices: &[u32],
+        count: u32,
+        allocation: &[Particle],
+    ) -> Result<Vec<Particle>, CpuError> {
+        let device = CpuDevice::new();
+        let dense = device.buffer(dense);
+        let indices_buffer = device.buffer(indices);
+        let count = device.buffer(&[count]);
+        let particles = device.buffer(allocation);
+        pool::scatter_particles::dispatch(
+            &device,
+            Pass::over(indices.len() as u32).partials(),
+            Independent(&dense),
+            Independent(&indices_buffer),
+            Independent(&count),
+            Independent(&particles),
+        )?;
+        Ok(particles.read())
+    }
+
+    /// Kernel-level twin evidence; graph and indirect dispatch GPU-only (`LABEL`). `mark_live` on the twin is the
+    /// retirement rule, slot by slot, at the workgroup boundaries and for every retirement pattern, and it judges the
+    /// slots of the flags' length only (the allocation may be longer).
+    #[test]
+    fn twin_mark_live_flags_the_spawned_unretired_slots() {
+        for n in [1usize, 63, 64, 65, 257] {
+            for pattern in PATTERNS {
+                for emit in [n, 3] {
+                    let allocation = {
+                        let mut allocation = aged_particles(n + 3, emit, pattern);
+                        // The slots past the logical length hold live-looking particles that must not be flagged.
+                        for particle in &mut allocation[n..] {
+                            particle.steps = 0;
+                            particle.spawn_frame = 0;
+                        }
+                        allocation
+                    };
+                    for frame in [0u32, n as u32 / 3, u32::MAX] {
+                        let settings = settings_at(frame, 1000);
+                        let flags =
+                            mark_on_cpu(&allocation, n, &settings, LIFETIME).expect("mark twin");
+                        let expected: Vec<u32> = allocation[..n]
+                            .iter()
+                            .map(|particle| u32::from(is_live(particle, &settings, LIFETIME)))
+                            .collect();
+                        assert_eq!(
+                            flags, expected,
+                            "n {n}, {pattern:?}, emit {emit}, frame {frame}; {LABEL}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Kernel-level twin evidence; graph and indirect dispatch GPU-only (`LABEL`). The gather packs the live particles
+    /// in slot order and leaves the rest zero; the scatter writes a changed dense prefix back to exactly the live slots
+    /// and leaves every other slot as it was; an index past the buffer is skipped by both, never read or written.
+    #[test]
+    fn twin_gather_and_scatter_follow_the_compaction_indices() {
+        for n in [1usize, 63, 64, 65, 257] {
+            for pattern in PATTERNS {
+                let before = aged_particles(n, 3, pattern);
+                let settings = settings_at(n as u32 / 6, 1000);
+                let (indices, live) = host_indices(&before, &settings);
+                let (live_slots, expected_dense) =
+                    expected_compaction(&before, &settings_at(n as u32 / 6, 0));
+                assert_eq!(live_slots.len(), live as usize);
+
+                let dense = gather_on_cpu(&before, &indices, live).expect("gather twin");
+                let packed: Vec<Particle> = live_slots.iter().map(|&slot| before[slot]).collect();
+                assert_eq!(
+                    dense[..live as usize],
+                    packed[..],
+                    "n {n}, {pattern:?}; {LABEL}"
+                );
+                assert!(
+                    dense[live as usize..].iter().all(|p| *p == zero_particle()),
+                    "n {n}, {pattern:?}; {LABEL}"
+                );
+                // A zero budget steps nothing, so the reference dense buffer is the plain gather.
+                assert_eq!(dense, expected_dense, "n {n}, {pattern:?}; {LABEL}");
+
+                // Change every packed particle, scatter, and compare with the host's in-place change of the live slots.
+                let changed: Vec<Particle> = dense
+                    .iter()
+                    .map(|particle| Particle {
+                        steps: particle.steps + 10,
+                        ..*particle
+                    })
+                    .collect();
+                let scattered =
+                    scatter_on_cpu(&changed, &indices, live, &before).expect("scatter twin");
+                let mut expected = before.clone();
+                for &slot in &live_slots {
+                    expected[slot].steps += 10;
+                }
+                assert_eq!(scattered, expected, "n {n}, {pattern:?}; {LABEL}");
+            }
+        }
+
+        // The guards: an index past the values is skipped by the gather (the output slot keeps its zero) and by the
+        // scatter (nothing is written), and slots at and past the count are ignored.
+        let values = aged_particles(4, 4, Retired::None);
+        let indices = [1u32, 99, 3, 0];
+        let dense = gather_on_cpu(&values, &indices, 3).expect("gather twin");
+        assert_eq!(
+            dense,
+            [values[1], zero_particle(), values[3], zero_particle()],
+            "{LABEL}"
+        );
+        let marked: Vec<Particle> = (0..4)
+            .map(|steps| Particle {
+                steps: 100 + steps,
+                ..zero_particle()
+            })
+            .collect();
+        let scattered = scatter_on_cpu(&marked, &indices, 3, &values).expect("scatter twin");
+        assert_eq!(scattered[1], marked[0], "{LABEL}");
+        assert_eq!(scattered[3], marked[2], "{LABEL}");
+        assert_eq!(
+            scattered[0], values[0],
+            "slot 0 is named only past the count; {LABEL}"
+        );
+        assert_eq!(scattered[2], values[2], "{LABEL}");
+    }
+
+    /// Kernel-level twin evidence; graph and indirect dispatch GPU-only (`LABEL`). Whole compacting frames on the twins
+    /// (mark, the host's indices, gather, `prepare_dispatch`, `integrate`, scatter) against `step_retiring_cpu`, over
+    /// frames in which particles retire in interleaved order and the budget clamps, until none is live.
+    #[test]
+    fn twin_compacting_frames_match_host_reference() {
+        let n = 130;
+        for pattern in PATTERNS {
+            let mut pool = aged_particles(n, 3, pattern);
+            let mut reference = pool.clone();
+            for (frame, budget) in [
+                (0u32, 1000u32),
+                (10, 40),
+                (20, 1000),
+                (30, 1),
+                (60, 1000),
+                (60, 1000),
+                (60, 1000),
+                (60, 0),
+            ] {
+                let settings = settings_at(frame, budget);
+                let flags = mark_on_cpu(&pool, n, &settings, LIFETIME).expect("mark twin");
+                let (indices, live) = host_indices(&pool, &settings);
+                assert_eq!(flags.iter().sum::<u32>(), live, "frame {frame}; {LABEL}");
+                let dense = gather_on_cpu(&pool, &indices, live).expect("gather twin");
+                let (active, args) = prepare_on_cpu(live, &settings, &dense).expect("prepare twin");
+                assert_eq!(active.count, live.min(budget), "frame {frame}; {LABEL}");
+                let stepped =
+                    integrate_on_cpu(active, args.x, &settings, &dense).expect("integrate twin");
+                pool = scatter_on_cpu(&stepped, &indices, live, &pool).expect("scatter twin");
+                let expected = step_retiring_cpu(&mut reference, &settings, LIFETIME);
+                assert_eq!(expected, active.count as usize, "frame {frame}; {LABEL}");
+                assert_eq!(pool, reference, "{pattern:?}, frame {frame}; {LABEL}");
+            }
+            assert!(
+                pool.iter().all(|particle| particle.steps >= LIFETIME),
+                "{pattern:?}: every particle must have retired"
+            );
+        }
     }
 }

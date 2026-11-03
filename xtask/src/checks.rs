@@ -166,7 +166,10 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
         &[
             "app::tests::the_derivation_domain_holds_for_the_settings_and_the_spawned_particles",
             "app::tests::twin_classify_counts_the_spawned_live_slots",
+            "app::tests::twin_compacting_frames_match_host_reference",
             "app::tests::twin_frames_match_host_reference",
+            "app::tests::twin_gather_and_scatter_follow_the_compaction_indices",
+            "app::tests::twin_mark_live_flags_the_spawned_unretired_slots",
         ],
     ),
 ];

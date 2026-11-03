@@ -39,13 +39,16 @@
 //!   unification), and with a dependency crate that enables the feature (E6c, in a copy, also in a release build with
 //!   no variable). E6d (a release build with no variable and the artifacts present) and E6e (a release build under
 //!   `GUST_PROFILE=dev` with the feature) are the positive controls and must compile.
-//! - **E6g to E6i**: the internal feature `cargo-gust-bridge` of `gust` (D108, mr.c). With it, a release build without
+//! - **E6g to E6j**: the internal feature `cargo-gust-bridge` of `gust` (D108, mr.c). With it, a release build without
 //!   `GUST_PROFILE` is `dev` and prints the warning of `e6-bridge-expected.txt` (E6g: `app` with
 //!   `gust/cargo-gust-bridge` and `gust/slang-runtime`, which the plain inference of E6c-release refuses); an explicit
 //!   `GUST_PROFILE=native` still refuses the bridge (E6h, the text of `e6-native-expected.txt`); and (R1 S8) the
 //!   release check of the whole repository workspace without the variable unifies the feature through `cargo-gust`,
 //!   so it is `dev` and prints the same warning (E6i, `--workspace` where the other cases check `-p app`; it is a
-//!   `cargo check` because the build script that the case judges runs in a check as in a build).
+//!   `cargo check` because the build script that the case judges runs in a check as in a build). E6j (D117): in a
+//!   copy, `app` has `cargo-gust` as a normal dependency, a mistake that cargo warns about and ignores
+//!   (`cargo-warning:` in the expectation) but that still unifies the feature, so the release build is `dev` with the
+//!   same warning. Each warning is matched as a whole line.
 //! - **E7**: a change of `GUST_EXPORT_DIR`, which the macro tracks through `option_env!`, makes cargo expand the
 //!   `#[gpu]` module of `kernels` again (and the macro writes its records), and the same value does not. Then, with
 //!   Slang, `cargo gust build` runs twice on a copy of the fixture whose artifacts were deleted first: run 1 writes them, run 2 (the run on unchanged input) writes nothing, and the output is byte-identical and the
@@ -479,7 +482,7 @@ pub(crate) fn check_precompiled_report(args: &[String]) -> Result<String, String
     let distribution = e8_distribution(&fixture, &options)?;
 
     Ok(format!(
-        "check-precompiled passed: E1 {report}. E2 {binary}. E3 {identity}. E4 (E6f) {located}. E5 {strict_dual}. E6a to E6i {refusals}. E7 {reexpanded}. E7 {reproducible}. E8 {distribution}. The fixture is tests/precompiled; every child ran under {PROFILE_VARIABLE}={STRICT_PROFILE} except the E2 control and E6e ({PROFILE_VARIABLE}={CONTROL_PROFILE}), the profile-free builds of E6c and E6d, and cargo gust of E7."
+        "check-precompiled passed: E1 {report}. E2 {binary}. E3 {identity}. E4 (E6f) {located}. E5 {strict_dual}. E6a to E6j {refusals}. E7 {reexpanded}. E7 {reproducible}. E8 {distribution}. The fixture is tests/precompiled; every child ran under {PROFILE_VARIABLE}={STRICT_PROFILE} except the E2 control and E6e ({PROFILE_VARIABLE}={CONTROL_PROFILE}), the profile-free builds of E6c, E6d, E6g, E6i and E6j, and cargo gust of E7."
     ))
 }
 
@@ -1129,7 +1132,35 @@ const INFERRED_SENTENCE: &str =
     "This profile was inferred from a release build without GUST_PROFILE.";
 
 /// What the build script prints for cargo when a release build had no `GUST_PROFILE` and was treated as `native`.
-const INFERRED_WARNING: &str = "release build without GUST_PROFILE treated as native";
+const INFERRED_WARNING: &str = "gust: release build without GUST_PROFILE treated as native";
+
+/// Whether cargo's stderr `text` has the build-script warning `warning` of the package `gust` as a whole line: cargo
+/// prints it as `warning: gust@<version>: <warning>`, so a line that continues after the words (`... as devX`) does not
+/// count.
+pub(crate) fn has_build_script_warning(text: &str, warning: &str) -> bool {
+    text.lines().any(|line| {
+        line.trim_end()
+            .strip_prefix("warning: gust@")
+            .and_then(|rest| rest.split_once(": "))
+            .is_some_and(|(version, printed)| {
+                !version.is_empty() && !version.contains(' ') && printed == warning
+            })
+    })
+}
+
+/// Whether cargo's stderr `text` has the warning of cargo itself `warning` as a whole line: `warning: <warning>`, or,
+/// for a warning about a dependency of the case's `app`, `warning: app v<version> (<path>) <warning>` (cargo names
+/// the package that declares the dependency; the path is the machine's and is not matched).
+pub(crate) fn has_cargo_warning(text: &str, warning: &str) -> bool {
+    text.lines().any(|line| {
+        line.trim_end()
+            .strip_prefix("warning: ")
+            .is_some_and(|rest| {
+                rest == warning
+                    || (rest.starts_with("app v") && rest.ends_with(&format!(") {warning}")))
+            })
+    })
+}
 
 /// The `GUST_PROFILE` of an E6 case.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1153,8 +1184,12 @@ pub(crate) enum E6Outcome {
     Compiles { warning: Option<&'static str> },
     /// The build compiles with the run-time bridge in it because `cargo-gust-bridge` made the profile `dev`. `expected`
     /// holds the `warning:` lines (relative to [`PRECOMPILED_DIR`]) that cargo must print; the plain inference text
-    /// ([`INFERRED_WARNING`], `native`) must not be there.
-    CompilesAsDev { expected: &'static str },
+    /// ([`INFERRED_WARNING`], `native`) must not be there. With `ignored_tool`, the `cargo-warning:` lines of the file
+    /// must be there too (cargo's own warning about a `cargo-gust` dependency, E6j).
+    CompilesAsDev {
+        expected: &'static str,
+        ignored_tool: bool,
+    },
 }
 
 /// One `cargo check -p app` of E6.
@@ -1170,11 +1205,21 @@ pub(crate) struct E6Case {
     pub(crate) bridge_user: bool,
     /// E6i: checks the whole workspace of the repository (`--workspace`, the root manifest) instead of `-p app`.
     pub(crate) workspace: bool,
+    /// E6j: built in a scratch copy in which `app` has `cargo-gust` as a normal dependency (a mistake: it has no
+    /// library, so cargo ignores the dependency, but the features of the edge still unify). Like E6c, never `--locked`.
+    pub(crate) tool_dependency: bool,
     pub(crate) outcome: E6Outcome,
 }
 
+impl E6Case {
+    /// Whether the case builds in a scratch copy of the fixture (whose lockfile then changes).
+    pub(crate) fn in_copy(&self) -> bool {
+        self.bridge_user || self.tool_dependency
+    }
+}
+
 /// The cases of E6, in order. E6f is E4 and is not repeated.
-pub(crate) fn e6_cases() -> [E6Case; 9] {
+pub(crate) fn e6_cases() -> [E6Case; 10] {
     let native = E6Outcome::Refused {
         expected: E6_NATIVE_EXPECTED,
         inferred: false,
@@ -1187,6 +1232,7 @@ pub(crate) fn e6_cases() -> [E6Case; 9] {
             profile: E6Profile::Native,
             bridge_user: false,
             workspace: false,
+            tool_dependency: false,
             outcome: native,
         },
         E6Case {
@@ -1196,6 +1242,7 @@ pub(crate) fn e6_cases() -> [E6Case; 9] {
             profile: E6Profile::Native,
             bridge_user: false,
             workspace: false,
+            tool_dependency: false,
             outcome: native,
         },
         E6Case {
@@ -1205,6 +1252,7 @@ pub(crate) fn e6_cases() -> [E6Case; 9] {
             profile: E6Profile::Native,
             bridge_user: true,
             workspace: false,
+            tool_dependency: false,
             outcome: native,
         },
         E6Case {
@@ -1214,6 +1262,7 @@ pub(crate) fn e6_cases() -> [E6Case; 9] {
             profile: E6Profile::Unset,
             bridge_user: true,
             workspace: false,
+            tool_dependency: false,
             outcome: E6Outcome::Refused {
                 expected: E6_INFERRED_EXPECTED,
                 inferred: true,
@@ -1226,6 +1275,7 @@ pub(crate) fn e6_cases() -> [E6Case; 9] {
             profile: E6Profile::Unset,
             bridge_user: false,
             workspace: false,
+            tool_dependency: false,
             outcome: E6Outcome::Compiles {
                 warning: Some(INFERRED_WARNING),
             },
@@ -1237,6 +1287,7 @@ pub(crate) fn e6_cases() -> [E6Case; 9] {
             profile: E6Profile::Dev,
             bridge_user: false,
             workspace: false,
+            tool_dependency: false,
             outcome: E6Outcome::Compiles { warning: None },
         },
         E6Case {
@@ -1246,8 +1297,10 @@ pub(crate) fn e6_cases() -> [E6Case; 9] {
             profile: E6Profile::Unset,
             bridge_user: false,
             workspace: false,
+            tool_dependency: false,
             outcome: E6Outcome::CompilesAsDev {
                 expected: E6_BRIDGE_EXPECTED,
+                ignored_tool: false,
             },
         },
         E6Case {
@@ -1257,6 +1310,7 @@ pub(crate) fn e6_cases() -> [E6Case; 9] {
             profile: E6Profile::Native,
             bridge_user: false,
             workspace: false,
+            tool_dependency: false,
             outcome: native,
         },
         E6Case {
@@ -1266,8 +1320,23 @@ pub(crate) fn e6_cases() -> [E6Case; 9] {
             profile: E6Profile::Unset,
             bridge_user: false,
             workspace: true,
+            tool_dependency: false,
             outcome: E6Outcome::CompilesAsDev {
                 expected: E6_BRIDGE_EXPECTED,
+                ignored_tool: false,
+            },
+        },
+        E6Case {
+            id: "E6j",
+            features: None,
+            release: true,
+            profile: E6Profile::Unset,
+            bridge_user: false,
+            workspace: false,
+            tool_dependency: true,
+            outcome: E6Outcome::CompilesAsDev {
+                expected: E6_BRIDGE_EXPECTED,
+                ignored_tool: true,
             },
         },
     ]
@@ -1276,7 +1345,7 @@ pub(crate) fn e6_cases() -> [E6Case; 9] {
 /// The arguments of the `cargo check` of one E6 case.
 pub(crate) fn e6_args(case: &E6Case, manifest: &str, target_dir: &str) -> Vec<String> {
     let mut args: Vec<String> = ["check"].iter().map(|arg| (*arg).to_owned()).collect();
-    if !case.bridge_user {
+    if !case.in_copy() {
         args.push("--locked".to_owned());
     }
     for arg in [
@@ -1353,7 +1422,7 @@ pub(crate) fn e6_problems(
                 stderr,
             );
             if let Some(warning) = warning
-                && !text.contains(warning)
+                && !has_build_script_warning(&text, warning)
             {
                 problems.push(format!(
                     "{}: cargo did not print `{warning}`, so nothing shows the profile was inferred",
@@ -1362,10 +1431,19 @@ pub(crate) fn e6_problems(
             }
             Ok(problems)
         }
-        E6Outcome::CompilesAsDev { expected } => {
+        E6Outcome::CompilesAsDev {
+            expected,
+            ignored_tool,
+        } => {
             let source = expectation.ok_or_else(|| format!("{}: no expectation text", case.id))?;
             let wanted = parse_warning_expectation(source)
                 .map_err(|error| format!("{expected}: {error}"))?;
+            if ignored_tool && wanted.cargo.is_empty() {
+                return Err(format!(
+                    "{expected}: {} needs a `cargo-warning:` line",
+                    case.id
+                ));
+            }
             let mut problems = judge(
                 case.id,
                 if case.workspace {
@@ -1378,8 +1456,8 @@ pub(crate) fn e6_problems(
                 stdout,
                 stderr,
             );
-            for warning in &wanted {
-                if !text.contains(warning) {
+            for warning in &wanted.build_script {
+                if !has_build_script_warning(&text, warning) {
                     problems.push(format!(
                         "{}: cargo did not print `{warning}`, so nothing shows that the bridge feature changed \
                          the profile",
@@ -1387,7 +1465,18 @@ pub(crate) fn e6_problems(
                     ));
                 }
             }
-            if text.contains(INFERRED_WARNING) {
+            if ignored_tool {
+                for warning in &wanted.cargo {
+                    if !has_cargo_warning(&text, warning) {
+                        problems.push(format!(
+                            "{}: cargo did not print `warning: {warning}`, so the dependency on `cargo-gust` is not \
+                             the one this case pins",
+                            case.id
+                        ));
+                    }
+                }
+            }
+            if has_build_script_warning(&text, INFERRED_WARNING) {
                 problems.push(format!(
                     "{}: cargo printed `{INFERRED_WARNING}`, so the profile was inferred as native and not made dev",
                     case.id
@@ -1398,24 +1487,45 @@ pub(crate) fn e6_problems(
     }
 }
 
-/// The `warning:` lines of an expectation of the bridge cases: the text that cargo must print for the build script's
-/// `cargo:warning` (blank lines and lines that start with `#` are ignored). Any other line, or none, is an error.
-pub(crate) fn parse_warning_expectation(text: &str) -> Result<Vec<String>, String> {
-    let mut warnings = Vec::new();
+/// The lines of an expectation of the bridge cases: `warning:` is the text of the build script's `cargo:warning` that
+/// cargo must print (as `warning: gust@<version>: <text>`), `cargo-warning:` a warning of cargo itself (as
+/// `warning: <text>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BridgeExpectation {
+    pub(crate) build_script: Vec<String>,
+    pub(crate) cargo: Vec<String>,
+}
+
+/// Parses an expectation of the bridge cases (blank lines and lines that start with `#` are ignored). Any other line,
+/// or no `warning:` line, is an error.
+pub(crate) fn parse_warning_expectation(text: &str) -> Result<BridgeExpectation, String> {
+    let mut wanted = BridgeExpectation {
+        build_script: Vec::new(),
+        cargo: Vec::new(),
+    };
     for raw in text.trim_start_matches('\u{feff}').lines() {
         let entry = raw.trim();
         if entry.is_empty() || entry.starts_with('#') {
             continue;
         }
-        match entry.strip_prefix("warning:").map(str::trim) {
-            Some(value) if !value.is_empty() => warnings.push(value.to_owned()),
-            _ => return Err(format!("`{entry}` is not a `warning: <text>` line")),
+        if let Some(value) = entry.strip_prefix("warning:").map(str::trim)
+            && !value.is_empty()
+        {
+            wanted.build_script.push(value.to_owned());
+        } else if let Some(value) = entry.strip_prefix("cargo-warning:").map(str::trim)
+            && !value.is_empty()
+        {
+            wanted.cargo.push(value.to_owned());
+        } else {
+            return Err(format!(
+                "`{entry}` is not a `warning: <text>` or `cargo-warning: <text>` line"
+            ));
         }
     }
-    if warnings.is_empty() {
+    if wanted.build_script.is_empty() {
         return Err("no `warning:` line".to_owned());
     }
-    Ok(warnings)
+    Ok(wanted)
 }
 
 /// The manifest of the crate that E6c adds: it depends on `gust-wgpu` with the bridge feature. `root` is the
@@ -1451,6 +1561,30 @@ pub(crate) fn with_bridge_user_dependency(app: &str) -> Result<String, String> {
     ))
 }
 
+/// `app`'s manifest with a normal path dependency on `cargo-gust`, after its dependency on `kernels`. `root` is the
+/// repository, with forward slashes.
+pub(crate) fn with_tool_dependency(app: &str, root: &str) -> Result<String, String> {
+    const KERNELS: &str = "kernels = { path = \"../kernels\" }";
+    if !app.contains(KERNELS) {
+        return Err(format!(
+            "{PRECOMPILED_DIR}/app/Cargo.toml no longer has the line `{KERNELS}`; E6j cannot add its dependency"
+        ));
+    }
+    Ok(app.replace(
+        KERNELS,
+        &format!("{KERNELS}\ncargo-gust = {{ path = \"{root}/crates/cargo-gust\" }}"),
+    ))
+}
+
+/// Makes `app` of the scratch copy `copy` of the fixture depend on `cargo-gust`.
+fn add_tool_dependency(fixture: &Fixture, copy: &Path) -> Result<(), String> {
+    let root = fixture.root.to_string_lossy().replace('\\', "/");
+    let app = copy.join("app").join("Cargo.toml");
+    let text = fs::read_to_string(&app).map_err(|error| format!("{}: {error}", app.display()))?;
+    fs::write(&app, with_tool_dependency(&text, &root)?)
+        .map_err(|error| format!("{}: {error}", app.display()))
+}
+
 /// Adds the crate `bridge-user` to the scratch copy `copy` of the fixture and makes `app` depend on it.
 fn add_bridge_user(fixture: &Fixture, copy: &Path) -> Result<(), String> {
     let root = fixture.root.to_string_lossy().replace('\\', "/");
@@ -1478,7 +1612,9 @@ fn add_bridge_user(fixture: &Fixture, copy: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// E6a to E6e: the refusals of `gust`'s build script and their positive controls. Returns the summary.
+/// E6a to E6j: the refusals of `gust`'s build script, their positive controls, and the three ways in which the internal
+/// `cargo-gust-bridge` feature (D108) makes a release build without a variable `dev` (E6g, E6i, E6j; a release build
+/// without `GUST_PROFILE` is otherwise strict). Returns the summary.
 fn e6_refusals(fixture: &Fixture) -> Result<String, String> {
     let scratch_target = fixture.scratch_target_dir();
     let target_dir = Fixture::target_dir_arg(&scratch_target)?;
@@ -1490,12 +1626,21 @@ fn e6_refusals(fixture: &Fixture) -> Result<String, String> {
     let copy_manifest = copy_manifest
         .to_str()
         .ok_or("check-precompiled E6: the scratch path is not valid UTF-8")?;
+    let tool_copy = fixture.scratch.join("e6j");
+    copy_fixture(fixture, &tool_copy)?;
+    add_tool_dependency(fixture, &tool_copy)?;
+    let tool_manifest = tool_copy.join("Cargo.toml");
+    let tool_manifest = tool_manifest
+        .to_str()
+        .ok_or("check-precompiled E6: the scratch path is not valid UTF-8")?;
 
     let mut problems = Vec::new();
     let mut lines = Vec::new();
     for case in e6_cases() {
         let manifest = if case.bridge_user {
             copy_manifest
+        } else if case.tool_dependency {
+            tool_manifest
         } else if case.workspace {
             "Cargo.toml"
         } else {
@@ -1512,7 +1657,7 @@ fn e6_refusals(fixture: &Fixture) -> Result<String, String> {
             .output()
             .map_err(|error| format!("check-precompiled E6: could not launch cargo: {error}"))?;
         let expectation = match case.outcome {
-            E6Outcome::Refused { expected, .. } | E6Outcome::CompilesAsDev { expected } => {
+            E6Outcome::Refused { expected, .. } | E6Outcome::CompilesAsDev { expected, .. } => {
                 let path = fixture.root.join(PRECOMPILED_DIR).join(expected);
                 Some(fs::read_to_string(&path).map_err(|error| {
                     format!("check-precompiled E6: {PRECOMPILED_DIR}/{expected}: {error}")
@@ -1537,11 +1682,14 @@ fn e6_refusals(fixture: &Fixture) -> Result<String, String> {
             case.id,
             args.join(" ")
                 .replace(copy_manifest, "<copy>/Cargo.toml")
+                .replace(tool_manifest, "<tool-copy>/Cargo.toml")
                 .replace(target_dir, "<scratch-target>"),
             case.profile,
             if case.release { ", release" } else { "" },
             if case.bridge_user {
                 ", in a copy with bridge-user"
+            } else if case.tool_dependency {
+                ", in a copy where app depends on cargo-gust"
             } else if case.workspace {
                 ", the whole workspace"
             } else {
@@ -1564,7 +1712,7 @@ fn e6_refusals(fixture: &Fixture) -> Result<String, String> {
         ));
     }
     Ok(format!(
-        "passed: {}; each refusal was judged on the exact message of `gust`'s build script ({PRECOMPILED_DIR}/{E6_NATIVE_EXPECTED}, {PRECOMPILED_DIR}/{E6_INFERRED_EXPECTED}), E6d and E6e are the positive controls, E6g and E6i compiled as dev with the warning of {PRECOMPILED_DIR}/{E6_BRIDGE_EXPECTED}",
+        "passed: {}; each refusal was judged on the exact message of `gust`'s build script ({PRECOMPILED_DIR}/{E6_NATIVE_EXPECTED}, {PRECOMPILED_DIR}/{E6_INFERRED_EXPECTED}), E6d and E6e are the positive controls, E6g, E6i and E6j compiled as dev with the warning of {PRECOMPILED_DIR}/{E6_BRIDGE_EXPECTED}",
         lines.join(", ")
     ))
 }

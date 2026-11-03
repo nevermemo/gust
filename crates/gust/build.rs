@@ -7,7 +7,8 @@
 //!
 //! The one exception is the internal feature `cargo-gust-bridge` (D108), which only `cargo-gust` enables so that a
 //! plain `cargo install cargo-gust` works: with it on, a release build without `GUST_PROFILE` is `dev` (and the script
-//! says so with a `cargo:warning`) instead of `native` or `web`. An explicit `GUST_PROFILE` always wins over it.
+//! says so with a `cargo:warning`) instead of `native`; a `wasm32` build stays `web`. An explicit `GUST_PROFILE`
+//! always wins over it.
 //!
 //! The decision is a pure function of [`Inputs`] that returns the exact lines this script prints, so the unit tests
 //! (`cargo test -p gust`, which includes this file from `src/profile.rs`) pin them.
@@ -36,7 +37,8 @@ struct Inputs<'a> {
 }
 
 /// The effective profile, and whether it was inferred from a release build (no explicit `GUST_PROFILE`). With
-/// `cargo-gust-bridge` the inference for a release build is `dev`, whatever the target.
+/// `cargo-gust-bridge` the inference for a release build is `dev`, except on `wasm32`, which stays strict (`cargo
+/// install` never targets it).
 fn effective(inputs: &Inputs<'_>) -> Result<(&'static str, bool), String> {
     match inputs.profile {
         Some("") => Err(format!(
@@ -48,7 +50,7 @@ fn effective(inputs: &Inputs<'_>) -> Result<(&'static str, bool), String> {
             .find(|known| **known == value)
             .map(|known| (*known, false))
             .ok_or_else(|| format!("gust: unknown GUST_PROFILE `{value}`; use {}", allowed())),
-        None if inputs.release && inputs.bridge => Ok(("dev", true)),
+        None if inputs.release && inputs.bridge && !inputs.wasm => Ok(("dev", true)),
         None if inputs.release && inputs.wasm => Ok(("web", true)),
         None if inputs.release => Ok(("native", true)),
         None => Ok(("dev", false)),
@@ -97,7 +99,8 @@ fn directives(inputs: &Inputs<'_>) -> Result<Vec<String>, String> {
         "cargo:rerun-if-env-changed=GUST_PROFILE".to_owned(),
         check_cfg(),
     ];
-    if inferred && inputs.bridge {
+    if inferred && profile == "dev" {
+        // The bridge feature is the only way to infer `dev`.
         lines.push(BRIDGE_WARNING.to_owned());
     } else if inferred {
         lines.push(format!(
@@ -440,33 +443,55 @@ mod tests {
 
     #[test]
     fn the_bridge_feature_makes_a_release_build_without_a_variable_dev_and_says_so_once() {
-        for wasm in [false, true] {
-            for slang_runtime in [false, true] {
-                let inputs = Inputs {
-                    release: true,
-                    wasm,
-                    slang_runtime,
-                    ..BRIDGE_ON
-                };
-                assert_eq!(effective(&inputs), Ok(("dev", true)));
-                let lines = directives(&inputs).unwrap();
-                assert!(lines.contains(&cfg_line("dev")), "{lines:?}");
-                assert_eq!(
-                    lines
-                        .iter()
-                        .filter(|line| **line == bridge_warning())
-                        .count(),
-                    1,
-                    "{lines:?}"
-                );
-                // It is the only warning: the plain inference text is not printed beside it.
-                assert_eq!(
-                    lines.iter().filter(|line| line.contains("warning")).count(),
-                    1,
-                    "{lines:?}"
-                );
-            }
+        for slang_runtime in [false, true] {
+            let inputs = Inputs {
+                release: true,
+                slang_runtime,
+                ..BRIDGE_ON
+            };
+            assert_eq!(effective(&inputs), Ok(("dev", true)));
+            let lines = directives(&inputs).unwrap();
+            assert!(lines.contains(&cfg_line("dev")), "{lines:?}");
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|line| **line == bridge_warning())
+                    .count(),
+                1,
+                "{lines:?}"
+            );
+            // It is the only warning: the plain inference text is not printed beside it.
+            assert_eq!(
+                lines.iter().filter(|line| line.contains("warning")).count(),
+                1,
+                "{lines:?}"
+            );
         }
+    }
+
+    #[test]
+    fn the_bridge_feature_keeps_the_wasm32_inference_strict() {
+        // A release build for wasm32 without a variable is still `web`, with the plain warning, and still refuses
+        // the bridge: `cargo install` never targets wasm32, so the exception has no reason to reach it.
+        let wasm = Inputs {
+            release: true,
+            wasm: true,
+            ..BRIDGE_ON
+        };
+        assert_eq!(effective(&wasm), Ok(("web", true)));
+        let lines = directives(&wasm).unwrap();
+        assert!(lines.contains(&cfg_line("web")), "{lines:?}");
+        assert!(lines.contains(&warning("web")), "{lines:?}");
+        assert!(!lines.contains(&bridge_warning()), "{lines:?}");
+        let with_runtime = Inputs {
+            slang_runtime: true,
+            ..wasm
+        };
+        assert!(
+            directives(&with_runtime)
+                .unwrap_err()
+                .starts_with("gust: profile web refuses feature slang-runtime; ")
+        );
     }
 
     #[test]

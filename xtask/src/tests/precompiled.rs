@@ -10,12 +10,13 @@ use super::{
     INFERRED_WARNING, PRECOMPILED_DIR, RunReport, STRICT_PROFILE, StripReport, VERIFIED_PREFIX,
     artifact_fresh_flags, bridge_user_manifest, child_environment, consumer_manifest,
     count_occurrences, default_feature_problems, dependency_disables_defaults, e6_args, e6_cases,
-    e6_problems, e7_steps, expansion_problem, files_written, gust_build_problems, identity_error,
-    is_inside, is_slang_variable, judge_run, lock_problems, marker_counts, markers_missing,
-    markers_present, mutate_wgsl, package_allows, package_files, package_problems,
-    parse_warning_expectation, retarget_paths, section_version, slang_free_package_problems,
-    slang_free_problems, snapshot_differences, strip_path, tree_problems, unused_patch_lines,
-    with_bridge_user_dependency, with_bridge_user_member,
+    e6_problems, e7_steps, expansion_problem, files_written, gust_build_problems,
+    has_build_script_warning, has_cargo_warning, identity_error, is_inside, is_slang_variable,
+    judge_run, lock_problems, marker_counts, markers_missing, markers_present, mutate_wgsl,
+    package_allows, package_files, package_problems, parse_warning_expectation, retarget_paths,
+    section_version, slang_free_package_problems, slang_free_problems, snapshot_differences,
+    strip_path, tree_problems, unused_patch_lines, with_bridge_user_dependency,
+    with_bridge_user_member, with_tool_dependency,
 };
 use crate::{process::PROFILE_VARIABLE, ui::parse_expected, workspace::workspace_root};
 
@@ -456,22 +457,33 @@ fn e6_has_the_cases_of_the_plan_and_leaves_e6f_to_e4() {
             "E6e",
             "E6g",
             "E6h",
-            "E6i"
+            "E6i",
+            "E6j"
         ]
     );
-    // The refusals judge a message; the controls and the two dev-by-bridge cases compile.
+    // The refusals judge a message; the controls and the three dev-by-bridge cases compile.
     for case in e6_cases() {
         let refuses = matches!(case.outcome, E6Outcome::Refused { .. });
         assert_eq!(
             refuses,
-            !matches!(case.id, "E6d" | "E6e" | "E6g" | "E6i"),
+            !matches!(case.id, "E6d" | "E6e" | "E6g" | "E6i" | "E6j"),
             "{}",
             case.id
         );
         let as_dev = matches!(case.outcome, E6Outcome::CompilesAsDev { .. });
-        assert_eq!(as_dev, matches!(case.id, "E6g" | "E6i"), "{}", case.id);
-        // Only E6i checks the whole workspace of the repository.
+        assert_eq!(
+            as_dev,
+            matches!(case.id, "E6g" | "E6i" | "E6j"),
+            "{}",
+            case.id
+        );
+        // Only E6i checks the whole workspace of the repository, only E6j has the dependency on cargo-gust.
         assert_eq!(case.workspace, case.id == "E6i", "{}", case.id);
+        assert_eq!(case.tool_dependency, case.id == "E6j", "{}", case.id);
+        // The cargo warning is required of E6j alone.
+        if let E6Outcome::CompilesAsDev { ignored_tool, .. } = case.outcome {
+            assert_eq!(ignored_tool, case.id == "E6j", "{}", case.id);
+        }
     }
     assert_eq!(case("E6d").profile, E6Profile::Unset);
     assert!(case("E6d").release && !case("E6d").bridge_user);
@@ -492,15 +504,19 @@ fn e6_has_the_cases_of_the_plan_and_leaves_e6f_to_e4() {
     );
     assert_eq!(case("E6h").features, case("E6g").features);
     assert_eq!(case("E6i").features, None);
+    // E6j: a release build with no variable and no feature of its own, in a copy where app depends on cargo-gust.
+    let j = case("E6j");
+    assert!(j.release && j.features.is_none() && !j.bridge_user && j.in_copy());
+    assert_eq!(j.profile, E6Profile::Unset);
 }
 
 #[test]
-fn only_the_copy_of_e6c_runs_without_locked() {
+fn only_the_copies_of_e6c_and_e6j_run_without_locked() {
     for case in e6_cases() {
         let args = e6_args(&case, "M/Cargo.toml", "T");
         assert_eq!(
             args.iter().any(|arg| arg == "--locked"),
-            !case.bridge_user,
+            !case.in_copy(),
             "{}: the fixture's own lock must never be regenerated, the copy's must be",
             case.id
         );
@@ -656,44 +672,120 @@ fn the_positive_controls_must_compile_and_d_must_show_the_inference() {
 fn bridge_warning_text() -> String {
     parse_warning_expectation(&fixture_file(E6_BRIDGE_EXPECTED))
         .unwrap()
+        .build_script
+        .remove(0)
+}
+
+fn cargo_warning_text() -> String {
+    parse_warning_expectation(&fixture_file(E6_BRIDGE_EXPECTED))
+        .unwrap()
+        .cargo
         .remove(0)
 }
 
 #[test]
 fn the_bridge_expectation_is_the_warning_of_the_build_script() {
-    let lines = parse_warning_expectation(&fixture_file(E6_BRIDGE_EXPECTED)).unwrap();
+    let wanted = parse_warning_expectation(&fixture_file(E6_BRIDGE_EXPECTED)).unwrap();
     assert_eq!(
-        lines,
+        wanted.build_script,
         ["gust: cargo-gust-bridge treats a release build without GUST_PROFILE as dev"]
+    );
+    assert_eq!(
+        wanted.cargo,
+        ["ignoring invalid dependency `cargo-gust` which is missing a lib target"]
     );
     // The same text, with its `cargo:warning=` prefix, is what `crates/gust/build.rs` prints.
     let script =
         fs::read_to_string(workspace_root().unwrap().join("crates/gust/build.rs")).unwrap();
-    assert!(script.contains(&format!("cargo:warning={}", lines[0])));
-    // The parser takes warnings only.
+    assert!(script.contains(&format!("cargo:warning={}", wanted.build_script[0])));
+    // The parser takes the two kinds of warning and nothing else; a `warning:` line is required.
     assert!(parse_warning_expectation("").is_err());
     assert!(parse_warning_expectation("# only a comment\n").is_err());
     assert!(parse_warning_expectation("warning:\n").is_err());
     assert!(parse_warning_expectation("build-error: x\n").is_err());
+    assert!(parse_warning_expectation("cargo-warning: x\n").is_err());
+    assert!(parse_warning_expectation("warning: a\ncargo-warning:\n").is_err());
+}
+
+#[test]
+fn a_warning_counts_only_as_a_whole_line_after_cargos_prefix() {
+    let text = "gust: cargo-gust-bridge treats a release build without GUST_PROFILE as dev";
+    let line = format!("warning: gust@0.1.0: {text}\n");
+    assert!(has_build_script_warning(&line, text));
+    assert!(has_build_script_warning(&format!("x\n{line}y\n"), text));
+    assert!(has_build_script_warning(&line.replace('\n', "\r\n"), text));
+    // A longer line, a shorter one, another package and another prefix do not count.
+    assert!(!has_build_script_warning(
+        &format!("warning: gust@0.1.0: {text}X\n"),
+        text
+    ));
+    assert!(!has_build_script_warning(
+        &format!("warning: gust@0.1.0: Y{text}\n"),
+        text
+    ));
+    assert!(!has_build_script_warning(
+        &format!("warning: gust-wgpu@0.1.0: {text}\n"),
+        text
+    ));
+    assert!(!has_build_script_warning(
+        &format!("note: gust@0.1.0: {text}\n"),
+        text
+    ));
+    assert!(!has_build_script_warning(
+        &format!("  warning: gust@0.1.0: {text}\n"),
+        text
+    ));
+    assert!(!has_build_script_warning(text, text));
+    let cargo = "ignoring invalid dependency `cargo-gust` which is missing a lib target";
+    assert!(has_cargo_warning(&format!("warning: {cargo}\n"), cargo));
+    assert!(!has_cargo_warning(&format!("warning: {cargo} X\n"), cargo));
+    assert!(!has_cargo_warning(
+        &format!("warning: gust@0.1.0: {cargo}\n"),
+        cargo
+    ));
+    // Named after the package that declares the dependency, as cargo prints it (the path may hold parentheses).
+    let named = format!("warning: app v0.0.0 (C:/x (y)/app) {cargo}\n");
+    assert!(has_cargo_warning(&named, cargo));
+    assert!(!has_cargo_warning(&named.replace('\n', " X\n"), cargo));
+    assert!(!has_cargo_warning(
+        &named.replace("app v", "other v"),
+        cargo
+    ));
 }
 
 #[test]
 fn the_dev_by_bridge_cases_must_compile_print_the_warning_and_not_the_native_one() {
     let expected = fixture_file(E6_BRIDGE_EXPECTED);
     let warning = format!("warning: gust@0.1.0: {}\n", bridge_warning_text());
-    for id in ["E6g", "E6i"] {
+    let ignored = format!("warning: {}\n", cargo_warning_text());
+    for id in ["E6g", "E6i", "E6j"] {
         let bridged = case(id);
+        // E6j also needs cargo's own warning about the dependency; the others do not look for it.
+        let complete = if id == "E6j" {
+            format!("{ignored}{warning}")
+        } else {
+            warning.clone()
+        };
         assert_eq!(
-            e6_problems(&bridged, Some(&expected), true, "", &warning),
+            e6_problems(&bridged, Some(&expected), true, "", &complete),
             Ok(Vec::new()),
             "{id}"
         );
-        // A silent change fails the case: no warning at all.
-        let problems = e6_problems(&bridged, Some(&expected), true, "", "").unwrap();
+        // A silent change fails the case: no bridge warning at all.
+        let silent = if id == "E6j" {
+            ignored.clone()
+        } else {
+            String::new()
+        };
+        let problems = e6_problems(&bridged, Some(&expected), true, "", &silent).unwrap();
         assert_eq!(problems.len(), 1, "{id}: {problems:?}");
         assert!(problems[0].contains("did not print"), "{id}: {problems:?}");
+        // A warning that only starts like the expected one is no match (the line must be the same).
+        let longer = format!("warning: gust@0.1.0: {}X\n{silent}", bridge_warning_text());
+        let problems = e6_problems(&bridged, Some(&expected), true, "", &longer).unwrap();
+        assert_eq!(problems.len(), 1, "{id}: {problems:?}");
         // The warning of the plain inference means the profile was native and not made dev.
-        let native = format!("warning: gust@0.1.0: {INFERRED_WARNING}\n{warning}");
+        let native = format!("warning: gust@0.1.0: {INFERRED_WARNING}\n{complete}");
         let problems = e6_problems(&bridged, Some(&expected), true, "", &native).unwrap();
         assert_eq!(problems.len(), 1, "{id}: {problems:?}");
         assert!(
@@ -701,12 +793,19 @@ fn the_dev_by_bridge_cases_must_compile_print_the_warning_and_not_the_native_one
             "{id}: {problems:?}"
         );
         // A build that fails is no pass, with or without the warning.
-        let problems = e6_problems(&bridged, Some(&expected), false, "", &warning).unwrap();
+        let problems = e6_problems(&bridged, Some(&expected), false, "", &complete).unwrap();
         assert!(!problems.is_empty(), "{id}");
         // A missing or malformed expectation is an error of the check itself.
-        assert!(e6_problems(&bridged, None, true, "", &warning).is_err());
-        assert!(e6_problems(&bridged, Some("build-error: x"), true, "", &warning).is_err());
+        assert!(e6_problems(&bridged, None, true, "", &complete).is_err());
+        assert!(e6_problems(&bridged, Some("build-error: x"), true, "", &complete).is_err());
     }
+    // E6j without cargo's warning is not the dependency it pins, whatever else is printed.
+    let problems = e6_problems(&case("E6j"), Some(&expected), true, "", &warning).unwrap();
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("`cargo-gust`"), "{problems:?}");
+    // An expectation without a `cargo-warning:` line cannot serve E6j.
+    let error = e6_problems(&case("E6j"), Some("warning: x"), true, "", &warning).unwrap_err();
+    assert!(error.contains("cargo-warning"), "{error}");
 }
 
 #[test]
@@ -738,6 +837,18 @@ fn the_bridge_user_copy_is_built_from_the_fixture_files() {
     assert!(app.contains("bridge-user = { path = \"../bridge-user\" }"));
     assert!(with_bridge_user_member("members = []").is_err());
     assert!(with_bridge_user_dependency("[dependencies]").is_err());
+}
+
+#[test]
+fn the_tool_dependency_of_e6j_is_a_normal_path_dependency_on_cargo_gust() {
+    let app = with_tool_dependency(&fixture_file("app/Cargo.toml"), "C:/repo").unwrap();
+    assert!(app.contains("cargo-gust = { path = \"C:/repo/crates/cargo-gust\" }"));
+    // It sits in `[dependencies]`, beside `kernels`, and nowhere else.
+    let dependencies = app.split("[dependencies]").nth(1).unwrap();
+    let before_next_table = dependencies.split("\n[").next().unwrap();
+    assert!(before_next_table.contains("cargo-gust = "));
+    assert_eq!(app.matches("cargo-gust = ").count(), 1);
+    assert!(with_tool_dependency("[dependencies]", "C:/repo").is_err());
 }
 
 #[test]

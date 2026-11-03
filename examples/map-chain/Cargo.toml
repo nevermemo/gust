@@ -1,0 +1,15 @@
+[package]
+name = "map-chain"
+description = "Three #[gpu] fn maps run as a GPU-resident chain and as host-slice calls (D60)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+gust.workspace = true
+gust-wgpu = { workspace = true, features = ["slang-runtime"] }
+
+[lints]
+workspace = true

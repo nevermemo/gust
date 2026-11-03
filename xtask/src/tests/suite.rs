@@ -647,7 +647,8 @@ fn check_cpu_is_a_unit_step_of_locked_example_test_runs() {
             ["test", "--locked", "-p", "typed-pipeline"],
             ["test", "--locked", "-p", "atomic-counter"],
             ["test", "--locked", "-p", "staged-graph"],
-            ["test", "--locked", "-p", "component-pool"]
+            ["test", "--locked", "-p", "component-pool"],
+            ["test", "--locked", "-p", "map-chain"]
         ]
     );
     // The step is in Unit (after check-ui) and so in Slangc, which contains Unit; CI runs Unit.

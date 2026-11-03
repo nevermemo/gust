@@ -144,7 +144,7 @@ pool: `classify` ignores `lifetime`, so the T13 path on a pool that has retired 
   resource-hazard edge (`prepare_dispatch` reads `dense.len()`); it is not an edge between compaction and
   `prepare_dispatch`, which does not exist (see above).
 - Exported kernels 14 to 17 (`pool__mark_live.spv`, `pool__gather_particles.spv`, `pool__scatter_particles.spv`;
-  `EXPECTED_SPIRV`, `the_expected_list_is_seventeen_sorted_unique_spirv_names`). The example still has no committed
+  `EXPECTED_SPIRV`, `the_expected_list_is_twenty_sorted_unique_spirv_names`). The example still has no committed
   `gust-artifacts/`, so there is nothing to regenerate; its exports go to the ignored `generated-wgpu/`
   (`cargo xtask check-artifacts` regenerates and validates them).
 - Remaining: the pool's host length does not shrink when particles retire (the host never learns the count), so dead

@@ -7,6 +7,7 @@ members = [
     "crates/gust-algo",
     "examples/atomic-counter",
     "examples/component-pool",
+    "examples/map-chain",
     "examples/polynomial",
     "examples/particle-step",
     "examples/signal-pipeline",

@@ -11,7 +11,8 @@ a typed call (slice m3.c). The fixture tests assert the twin next to the GPU and
 atomic functions run for real on the twin, and the ledger has a twin column (slice m3.d). `cargo xtask check-cpu`
 (slice m3.c2) is a step of the Unit suite and runs the locked, GPU-free tests of the vector-add, polynomial,
 signal-pipeline, particle-step, typed-pipeline, atomic-counter (slice m3.e1), staged-graph and component-pool (slice
-m3.e2) examples. `cargo xtask check-dual` (slices m3.f1 and m3.f2) proves across crates that the twin is absent from a
+m3.e2) examples, and of map-chain (slice m7.a2), whose twin runs the plain bodies of its three `#[gpu] fn` maps.
+`cargo xtask check-dual` (slices m3.f1 and m3.f2) proves across crates that the twin is absent from a
 production build and present in a `--cfg gust_dual` build, and, with an integer kernel whose `+` overflows, that a twin
 runs in the overflow mode of the package that defines its kernel: the twin of a dependency's kernel panics when the
 dependency has checks on while the dependent has them off, and the twin of a kernel the dependent defines itself wraps
@@ -381,6 +382,13 @@ ignored tests (`--nocapture`) and kept in the m3.e1 and m3.e2 slice logs; it is 
 | `integrate` (component-pool) | `vy` | 18u | 19u = 1.13e-6 | 2.98e-8 |
 | `integrate` (component-pool) | `x` | 52.5u | 54u = 3.22e-6 | 3.73e-9 |
 | `integrate` (component-pool) | `y` | 72u | 73u = 4.35e-6 | 1.86e-9 |
+| three-step map chain (map-chain, slice m7.a2) | result | 9u | 9u * (1 + 2^-20) = 5.36e-7, relative | not recorded; `main` prints the worst error |
+
+The map-chain row differs from the others: its bound is relative to an independent `f64` reference of the whole chain,
+not to a twin-versus-GPU comparison, and it holds for the twin, the resident GPU chain and the materialised GPU chain
+alike. It is derived in the doc comment at the top of `examples/map-chain/src/app.rs` (lines 12 to 34): nine roundings
+for `x * gain + offset`, `x * x * k + x` and `(x + shift) * scale` in turn, with the slack `2^-20` covering the `f64`
+reference's own error and the second-order terms the first-order argument drops.
 
 Two properties of these kernels are worth stating. A chain of products has the same relative error in any grouping, and
 every sum in them has two operands, so reassociation (15.7.5) cannot raise a bound; fusing a product into a sum only

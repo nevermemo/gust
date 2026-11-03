@@ -21,6 +21,14 @@ use wasm_bindgen_futures::JsFuture;
 /// More than one workgroup (64) and not a multiple of it, so the kernel's bounds check matters.
 const LENGTH: usize = 1000;
 
+/// The element-wise map of the same job (D60), run by [`double_add::map_async`] after the vector add: it opens the
+/// default device itself (in the browser through `gust_wgpu::default_device_async`) and awaits the result. Small
+/// integers and halves, so its result is exact too.
+#[gpu]
+pub fn double_add(a: f32, b: f32) -> f32 {
+    a * 2.0 + b
+}
+
 #[gpu]
 mod vector_add {
     #[kernel(workgroup_size(64, 1, 1))]
@@ -100,6 +108,9 @@ async fn vector_add_on_the_browser_gpu() -> Result<String, String> {
     let a: Vec<f32> = (0..LENGTH).map(|i| i as f32).collect();
     let b: Vec<f32> = (0..LENGTH).map(|i| 2.0 * i as f32 + 0.5).collect();
     let expected: Vec<f32> = a.iter().zip(&b).map(|(left, right)| left + right).collect();
+    // The host inputs and reference of the map path below (`a` and `b` become device buffers).
+    let doubled: Vec<f32> = a.iter().zip(&b).map(|(a, b)| a * 2.0 + b).collect();
+    let (host_a, host_b) = (a.clone(), b.clone());
 
     let device = HeadlessDevice::new_async(wgpu::Backends::BROWSER_WEBGPU)
         .await
@@ -126,6 +137,24 @@ async fn vector_add_on_the_browser_gpu() -> Result<String, String> {
             "GPU result differs from the host reference: {} of {} values, first at index {first}",
             result.len(),
             expected.len()
+        ));
+    }
+
+    // The map path: `map_async` opens the default device (a second device, through `default_device_async`), uploads
+    // the host slices, dispatches the generated kernel and awaits the read-back.
+    let mapped = double_add::map_async(&host_a, &host_b)
+        .await
+        .map_err(|error| format!("map_async failed: {error}"))?;
+    if mapped != doubled {
+        let first = mapped
+            .iter()
+            .zip(&doubled)
+            .position(|(got, want)| got != want)
+            .unwrap_or(mapped.len().min(doubled.len()));
+        return Err(format!(
+            "map_async result differs from the host reference: {} of {} values, first at index {first}",
+            mapped.len(),
+            doubled.len()
         ));
     }
     Ok(browser_adapter_label().await)

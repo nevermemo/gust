@@ -1,0 +1,51 @@
+{
+  "kernels": [
+    {
+      "clean_sha256": "8886a738fde1d8bb785f78f0e0c70f404aa2ca61bd49ed556386d7d733d53538",
+      "entry_point": "gpu_curve_map_kernel",
+      "formats": [
+        {
+          "file": "443ab55c412cf3e5.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "5ff8aa7e7448b862fcb2b0363385c4b85fd2945d7fea5866acba6a37cef77808",
+          "sha256": "10308234e9752d1b46d8e8ce62ed8bfe6e28e814e967dfd0889176f5bdb2c537"
+        }
+      ],
+      "key": "443ab55c412cf3e5",
+      "module": "curve",
+      "name": "map_kernel"
+    },
+    {
+      "clean_sha256": "794dba9a580f259556183dc475639ff9edc87c204455b734ba9de0dec418bf2d",
+      "entry_point": "gpu_damp_map_kernel",
+      "formats": [
+        {
+          "file": "7a31d859726fa88f.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "0022522f5ec601b0922b4acb2b06099b5b8f1432c51c43b52d597d6d415f203e",
+          "sha256": "2665aa3e4314197d437f2d2ecd777247326ee416f6a79bf181dd797ffc9643cf"
+        }
+      ],
+      "key": "7a31d859726fa88f",
+      "module": "damp",
+      "name": "map_kernel"
+    },
+    {
+      "clean_sha256": "6420659a40a09aa85a374156185088b3d60218e34aea87340030c26039618185",
+      "entry_point": "gpu_rescale_map_kernel",
+      "formats": [
+        {
+          "file": "f456c511b99696af.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "8e29fbae1d0d85f52580ac3f99eb973294f8f1d63751db9982d0ea15309cc23e",
+          "sha256": "49280e467f7929bf88c97623878f1b75932e4f6855eed81ec627a4213b5cdf21"
+        }
+      ],
+      "key": "f456c511b99696af",
+      "module": "rescale",
+      "name": "map_kernel"
+    }
+  ],
+  "schema": 1,
+  "slang": "2026.20"
+}

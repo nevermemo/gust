@@ -1,0 +1,4 @@
+code: none
+file: par-for-bool-buffer/src/main.rs
+line: 9
+message: [GUST-E0720] the binding `flags` has a type a buffer cannot hold

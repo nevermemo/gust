@@ -44,8 +44,10 @@ use syn::{
 
 use crate::{
     diagnostics::{self, Code},
-    expand::{Environment, Identity, KernelOptions, Profile, content_key, expand_validated},
-    math_types,
+    expand::{
+        ElementReject, Environment, Identity, KernelOptions, Profile, content_key, element_types,
+        expand_validated,
+    },
 };
 
 /// The names the generated kernel uses for its own parts, in the module that is expanded (reserved `__gust_` names) and
@@ -367,37 +369,23 @@ fn element(ty: &syn::Type, what: &str) -> syn::Result<Element> {
             ),
         )
     };
-    let syn::Type::Path(path) = ty else {
-        return Err(reject());
-    };
-    let Some(ident) = path.path.get_ident().filter(|_| path.qself.is_none()) else {
-        return Err(reject());
-    };
-    let name = ident.unraw().to_string();
-    let scalar = |kernel: TokenStream, host: TokenStream| Element { kernel, host };
-    Ok(match name.as_str() {
-        "f32" | "float" => scalar(quote!(f32), quote!(::core::primitive::f32)),
-        "i32" | "int" => scalar(quote!(i32), quote!(::core::primitive::i32)),
-        "u32" | "uint" => scalar(quote!(u32), quote!(::core::primitive::u32)),
-        other => {
-            let Some(math) = math_types::math_type(other) else {
-                return Err(reject());
-            };
-            if !math.buffer {
-                return Err(diagnostics::error(
-                    Code::ThreeWideInBuffer,
-                    ty,
-                    format!(
-                        "{what} is `{}`, which a buffer cannot hold: 3-wide types have stride 16 in a buffer and no \
-                         Rust layout that matches in every position; use the 4-wide type or scalars",
-                        math.name
-                    ),
-                ));
-            }
-            let path = format_ident!("{}", math.name);
-            scalar(quote!(#path), quote!(::gust::math::#path))
-        }
-    })
+    match element_types(ty) {
+        // A `bool` is a scalar binding at this site, never a buffer element. For the other types the host type is the
+        // lookup's `buffer` type (the lookup's own `host` differs only for `bool`).
+        Ok(types) if !types.boolean => Ok(Element {
+            kernel: types.kernel,
+            host: types.buffer,
+        }),
+        Ok(_) | Err(ElementReject::Unsupported) => Err(reject()),
+        Err(ElementReject::ThreeWide(name)) => Err(diagnostics::error(
+            Code::ThreeWideInBuffer,
+            ty,
+            format!(
+                "{what} is `{name}`, which a buffer cannot hold: 3-wide types have stride 16 in a buffer and no Rust \
+                 layout that matches in every position; use the 4-wide type or scalars"
+            ),
+        )),
+    }
 }
 
 /// The one type argument of a `GpuVec<T>` path.

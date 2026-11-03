@@ -64,30 +64,32 @@ const GENERATED_NAMES: [&str; 10] = [
 /// pins to this number).
 const CEILING: u32 = 65_535 * 256;
 
-/// One scalar type of a map signature.
+/// The types one element type is spelled with: the result of the lookup `element_types`, which the map generator (a
+/// parameter or result of a map function) and `par_for!` (a buffer binding) share.
 #[derive(Clone)]
-struct Element {
+pub(crate) struct ElementTypes {
     /// The element type as the kernel spells it (a plain name of the dialect): `bool` is `u32` there.
-    kernel: TokenStream,
+    pub(crate) kernel: TokenStream,
     /// The same type as host code spells it (an absolute path).
-    buffer: TokenStream,
+    pub(crate) buffer: TokenStream,
     /// The type of the value in host code: `bool` stays `bool`.
-    host: TokenStream,
-    /// Whether the function's type is `bool`.
-    boolean: bool,
+    pub(crate) host: TokenStream,
+    /// Whether the type looked up is `bool`. A map function takes it; `par_for!` has no `bool` buffer element and
+    /// refuses it at its own site (a `bool` there is a scalar binding).
+    pub(crate) boolean: bool,
 }
 
 struct Parameter {
     /// The parameter's name as the user wrote it (without `mut`).
     name: syn::Ident,
-    element: Element,
+    element: ElementTypes,
 }
 
 /// A map function understood: its name, parameters and result.
 struct Signature {
     name: syn::Ident,
     parameters: Vec<Parameter>,
-    result: Element,
+    result: ElementTypes,
 }
 
 /// What the generator makes of one function: the module to expand (the kernel around the user's function) and the
@@ -229,25 +231,48 @@ fn check_signature(function: &syn::ItemFn) -> syn::Result<Signature> {
 /// The element a map parameter or result of type `ty` is: `f32`, `i32`, `u32`, `bool` (or their dialect spellings
 /// `float`, `int`, `uint`) and the vector and matrix types that can be buffer elements (GUST-E0714 otherwise,
 /// GUST-E0204 for a 3-wide type or `Mat3`).
-fn element(ty: &syn::Type, what: &str) -> syn::Result<Element> {
-    let reject = |ty: &syn::Type| {
-        diagnostics::error(
+fn element(ty: &syn::Type, what: &str) -> syn::Result<ElementTypes> {
+    element_types(ty).map_err(|reject| match reject {
+        ElementReject::Unsupported => diagnostics::error(
             Code::MapSignature,
             ty,
             format!(
                 "{what} has a type a map function cannot take: use `f32`, `i32`, `u32`, `bool`, `Vec2`, `Vec4`, \
                  `IVec2`, `IVec4`, `UVec2`, `UVec4`, `Mat2` or `Mat4`, by value"
             ),
-        )
-    };
+        ),
+        ElementReject::ThreeWide(name) => diagnostics::error(
+            Code::ThreeWideInBuffer,
+            ty,
+            format!(
+                "{what} is `{name}`, which a map call cannot take: a map's arguments and results are buffer \
+                 elements, and 3-wide types have stride 16 in a buffer and no Rust layout that matches in \
+                 every position; use the 4-wide type or scalars"
+            ),
+        ),
+    })
+}
+
+/// Why a type is not an element. The lookup names the reason only; each caller words it in its own diagnostic.
+pub(crate) enum ElementReject {
+    /// Not a plain type name, or a name that is none of the element types.
+    Unsupported,
+    /// A 3-wide vector or `Mat3` (the type's name), which has no matching layout in a buffer.
+    ThreeWide(&'static str),
+}
+
+/// The element types a plain type name stands for, shared by the map generator and `par_for!`: `f32`, `i32`, `u32`,
+/// `bool` (`ElementTypes::boolean`; a caller that has no `bool` element refuses it) and the buffer-element vector and
+/// matrix types, with the dialect spellings `float`, `int`, `uint`.
+pub(crate) fn element_types(ty: &syn::Type) -> Result<ElementTypes, ElementReject> {
     let syn::Type::Path(path) = ty else {
-        return Err(reject(ty));
+        return Err(ElementReject::Unsupported);
     };
     let Some(ident) = path.path.get_ident().filter(|_| path.qself.is_none()) else {
-        return Err(reject(ty));
+        return Err(ElementReject::Unsupported);
     };
     let name = ident.unraw().to_string();
-    let scalar = |kernel: TokenStream, buffer: TokenStream| Element {
+    let scalar = |kernel: TokenStream, buffer: TokenStream| ElementTypes {
         kernel,
         host: buffer.clone(),
         buffer,
@@ -257,7 +282,7 @@ fn element(ty: &syn::Type, what: &str) -> syn::Result<Element> {
         "f32" | "float" => scalar(quote!(f32), quote!(::core::primitive::f32)),
         "i32" | "int" => scalar(quote!(i32), quote!(::core::primitive::i32)),
         "u32" | "uint" => scalar(quote!(u32), quote!(::core::primitive::u32)),
-        "bool" => Element {
+        "bool" => ElementTypes {
             kernel: quote!(u32),
             buffer: quote!(::core::primitive::u32),
             host: quote!(::core::primitive::bool),
@@ -265,19 +290,10 @@ fn element(ty: &syn::Type, what: &str) -> syn::Result<Element> {
         },
         other => {
             let Some(math) = math_types::math_type(other) else {
-                return Err(reject(ty));
+                return Err(ElementReject::Unsupported);
             };
             if !math.buffer {
-                return Err(diagnostics::error(
-                    Code::ThreeWideInBuffer,
-                    ty,
-                    format!(
-                        "{what} is `{}`, which a map call cannot take: a map's arguments and results are buffer \
-                         elements, and 3-wide types have stride 16 in a buffer and no Rust layout that matches in \
-                         every position; use the 4-wide type or scalars",
-                        math.name
-                    ),
-                ));
+                return Err(ElementReject::ThreeWide(math.name));
             }
             let path = format_ident!("{}", math.name);
             scalar(quote!(#path), quote!(::gust::math::#path))

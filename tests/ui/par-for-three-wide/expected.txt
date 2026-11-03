@@ -1,0 +1,4 @@
+code: none
+file: par-for-three-wide/src/main.rs
+line: 10
+message: [GUST-E0204] the binding `points` is `Vec3`, which a buffer cannot hold

@@ -256,7 +256,30 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   tests pass on v1. Mutations: a dropped barrier (17 tests fail), a dropped scan guard (8 fail; the validator
   accepts it), a flipped shipped variant (the observer test fails). Pin gust-algo 32 to 49; naga_layout goldens 67
   to 82. Opus merge after one fix round.
+  Erratum (public CI on `a6a1546`): `gpu_v1_runs_the_deepest_schedules` bound 2^26 + 1 `u32` (256 MiB) on the
+  adapter's own limits, and lavapipe allows 128 MiB, so gpu-software failed with `DeviceLimit` before any dispatch.
+  `282ad27` (merge `9dda10d`): below that limit the test prints that the three-pass reduction did not run, asserts
+  the `DeviceLimit` of the smallest input past the limit, and runs the deepest reduction that fits (2^25 elements, two
+  passes) and the deep scans; unchanged on the RTX 5090.
   Main: 23 gate steps green on `d6b425f` (12:15 to 12:46Z, RTX 5090); pins 249/29 and gust-algo 49.
+- M7 m7.d (`dfead07`, fix round `4428dca`, coordinator merge `36d78c2`, merge `853aade`; D102): multi-dimensional
+  dispatch. `Extent { x, y, z }` with `call_extent`, `submit_extent` and `dispatch_extent` beside the 1D forms;
+  `LengthRule::Shared` compares the checked product. The cap rule is one function on both backends
+  (`Extent::rounded_total`: whole workgroups per axis, then the product, at most 2^32); the GPU also checks
+  workgroup size y and z and workgroups per axis; a zero axis dispatches nothing. The CPU twin walks z, y, x with a
+  1D fast path (check-cpu-target 160 s to 72 s). `BufferDispatch` keeps `element_count` public and its y and z
+  private, so the old `d.element_count = n` pattern dispatches n (regression test). Evidence on the RTX 5090: 16x16
+  and 4x4x4 kernels on the GPU and the twin against a host reference (1x1, 15x17, 256x256, 3D, zero axes,
+  `LocalId`/`GroupId` exact in 2D); exactly 2^32 invocations run in 2D (the last cell read back) and in 3D
+  (acceptance and invocation 0), one past refused. On a CPU adapter the giant dispatch is not run and a line says
+  so; that branch first runs in public CI (lavapipe). The twin at 2^32 is checked through `cpu::validate` only.
+  Staged graphs stay 1D (SEMANTICS says how they refuse); the generated host takes an extent for 2D and 3D kernels.
+  Error texts no longer call y and z unsupported or name M7. Mutations a to d each fail a test. Pin 249/29 to
+  270/30 (17 GPU and 4 host tests). Opus merge after one fix round; the reviewer's clippy on the wip was green.
+  Main: 22 of 23 gate steps green on `853aade` (12:50 to 13:27Z, RTX 5090; pins 270/30 and gust-algo 49) and
+  check-examples green; clippy-wasm refused four native-only 1D launch helpers as dead code on wasm32, fixed in
+  `154102a` with the file's `cfg_attr` allow. With the m7.r4 lavapipe fix merged (`9dda10d`), fmt, clippy,
+  clippy-wasm, check-web, gust-algo and MSRV green (13:32 to 13:35Z).
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
@@ -649,7 +672,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M7 (m7.d running) after the M6 close (D86); see the roadmap's Now
+claim: roadmap M7 (m7.p next) after the M6 close (D86); see the roadmap's Now
 and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no

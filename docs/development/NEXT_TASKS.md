@@ -205,6 +205,11 @@ test module; do not mix that mechanical move with behavior changes.
   non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p). The scan's `out` is
   zero-filled the same way (one clear of n elements per call, 2 GiB at 2^29; m7.r2 review), and so is the map's
   output (`map_on`, `map_gpu`; m7.a1 review N2: name it in m7.a2's timing conditions).
+- m7.d follow-ups: staged graphs are 1D only, and graph.rs validates with the x axis before `prepare_batch`, so a
+  16x16 dispatch with a shared buffer fails with `BufferLength` and a zero y or z axis is refused rather than `Ok`
+  (m7.p, which owns graph.rs); `Call::element_count()` is the x axis only, a trap for buffer sizing; for m7.g2 the
+  twin walks the grid x-fastest, so a 2D workgroup is not contiguous and a lockstep twin must group by workgroup;
+  the twin at 2^32 invocations has not run (validate only).
 - m7.r4 follow-ups: the Radeon 890M half of the plan §5.5 measurement (it may change `variant::shipped`); a
   pre-registered statistic for the re-run; re-measure if the pool's zeroing or an unzeroed `GpuVec` constructor
   lands (the small-size win is per-call overhead); a public way to learn which variant (and so which f32 bound) ran.

@@ -42,7 +42,7 @@ m7.rb (blocking readbacks wait for their own completion, D97, merge `893d959`), 
 merge `5609536`), m7.t14 (compaction in component-pool, merge `f96aff1`) and m7.g1 (shared memory and barriers,
 D100 and D101, merge `1516c94`) and m7.a2 (map examples, merge `44299e5`; its README table is provisional until a
 quiet-window run) and m7.r4 (shared-memory v1, merge `d6b425f`; v1 ships for all six operations, provisional until
-the Radeon 890M half). Running: m7.d (multi-dimensional dispatch, the macro chain). The
+the Radeon 890M half) and m7.d (multi-dimensional dispatch, D102, merge `853aade`). Next: m7.p (the macro chain). The
 wasm32 `Job` contract (D69) lands before m7.a's `map_async` reaches the browser. The MX plan is adopted (D88 to
 D95).
 

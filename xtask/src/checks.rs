@@ -473,7 +473,7 @@ fn select_changed_checks(paths: &[String]) -> Vec<ChangedCheck> {
     ]) {
         checks.push(ChangedCheck::Feature("workgroup"));
     }
-    if (has("crates/gust-macros/") || has("tests/fixtures/")) && checks.is_empty() {
+    if has("crates/gust-macros/") || (has("tests/fixtures/") && checks.is_empty()) {
         checks.push(ChangedCheck::Feature("macro"));
     }
     if any(&[

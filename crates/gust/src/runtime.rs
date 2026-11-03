@@ -42,9 +42,10 @@ pub type SV_GroupID = UVec3;
 /// it has no binding, no descriptor entry and no argument of the typed call.
 ///
 /// Its contents start unspecified on the GPU, a read before the same workgroup writes the element is outside the
-/// domain, and so is a race (`docs/SEMANTICS.md` section 5). A kernel with a `Workgroup` parameter or a [`workgroup_barrier`]
-/// must carry `#[kernel(cpu = "unsupported")]` (GUST-E0717): the sequential CPU twin cannot model it. This type exists
-/// so that the shadow body type-checks as ordinary Rust; indexing is by `u32`, as for buffers.
+/// domain, and so is a race (`docs/SEMANTICS.md` section 5). A kernel with a `Workgroup` parameter or a
+/// [`workgroup_barrier`] must carry `#[kernel(cpu = "unsupported")]` (GUST-E0717): the sequential CPU twin cannot
+/// model it. This type exists so that the shadow body type-checks as ordinary Rust; indexing is by `u32`, as for
+/// buffers.
 #[derive(Clone, Copy, Debug)]
 pub struct Workgroup<A> {
     values: A,

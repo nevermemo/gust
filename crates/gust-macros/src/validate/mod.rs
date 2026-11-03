@@ -704,7 +704,8 @@ fn validate_function(
             return Err(diagnostics::error(
                 Code::KernelDispatchParameter,
                 &function.sig,
-                "a GPU kernel requires exactly one dispatch-thread parameter",
+                "a GPU kernel requires exactly one dispatch-thread parameter (`LocalId` and `GroupId` are derived \
+                 from it, so a kernel that takes either needs it)",
             ));
         }
         if !matches!(&function.sig.output, syn::ReturnType::Default)

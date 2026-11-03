@@ -213,8 +213,20 @@ impl Pass {
         }
     }
 
-    fn jump(&mut self, node: impl quote::ToTokens, name: &str) {
-        if self.loops.last() == Some(&true) {
+    fn jump(&mut self, node: impl quote::ToTokens, name: &str, label: Option<&syn::Lifetime>) {
+        // A labelled jump can leave an outer loop that holds a barrier, whatever the innermost loop holds. Loop labels
+        // are GUST-E0403 in every kernel today; this keeps rule 2 true if a later slice admits them.
+        if self.forbid_return && label.is_some() {
+            self.reject(
+                Code::JumpInBarrierLoop,
+                node,
+                &format!(
+                    "a labelled `{name}` in a kernel with workgroup memory or a barrier can skip the barriers of \
+                     an outer loop that the other invocations wait at; run the loops to their ends and guard the \
+                     work with `if`"
+                ),
+            );
+        } else if self.loops.last() == Some(&true) {
             self.reject(
                 Code::JumpInBarrierLoop,
                 node,
@@ -265,11 +277,69 @@ impl<'ast> Visit<'ast> for Pass {
     }
 
     fn visit_expr_break(&mut self, expression: &'ast syn::ExprBreak) {
-        self.jump(expression, "break");
+        self.jump(expression, "break", expression.label.as_ref());
         visit::visit_expr_break(self, expression);
     }
 
     fn visit_expr_continue(&mut self, expression: &'ast syn::ExprContinue) {
-        self.jump(expression, "continue");
+        self.jump(expression, "continue", expression.label.as_ref());
+    }
+
+    fn visit_expr_try(&mut self, expression: &'ast syn::ExprTry) {
+        // `?` is an early exit like `return`. It is GUST-E0311 in every function today; this keeps rule 3 true if a
+        // later slice admits it.
+        if self.forbid_return {
+            self.reject(
+                Code::ReturnInBarrierKernel,
+                expression,
+                "a kernel with workgroup memory or a barrier has no early exit: `?` can leave the kernel before the \
+                 barriers the other invocations wait at; guard the rest of the work with `if`",
+            );
+        }
+        visit::visit_expr_try(self, expression);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diagnostics::testing::parse_str;
+
+    fn kernel(body: &str) -> syn::ItemFn {
+        parse_str(&format!("fn k() {{ {body} }}")).unwrap()
+    }
+
+    fn message(function: &syn::ItemFn, barrier_kernel: bool) -> Option<String> {
+        check(function, true, barrier_kernel)
+            .err()
+            .map(|error| error.to_string())
+    }
+
+    /// The pass is the default for what the generic visitor does not reject: it is called directly, as if a later
+    /// slice admitted `?` and loop labels.
+    #[test]
+    fn the_pass_rejects_try_in_a_barrier_kernel_by_itself() {
+        let function = kernel("let v = half(1u32)?; workgroup_barrier();");
+        let text = message(&function, true).expect("`?` in a barrier kernel");
+        assert!(text.contains("early exit"), "{text}");
+        assert!(message(&function, false).is_none());
+    }
+
+    #[test]
+    fn the_pass_rejects_a_labelled_break_or_continue_in_a_barrier_kernel_by_itself() {
+        for jump in ["break 'r;", "continue 'r;"] {
+            let function = kernel(&format!(
+                "'r: for a in 0u32..4u32 {{ workgroup_barrier(); for b in 0u32..2u32 {{ {jump} }} }}"
+            ));
+            let text = message(&function, true).expect(jump);
+            assert!(text.contains("labelled"), "{jump}: {text}");
+        }
+    }
+
+    #[test]
+    fn an_unlabelled_jump_in_a_loop_without_a_barrier_stays_allowed() {
+        let function =
+            kernel("workgroup_barrier(); for a in 0u32..4u32 { if a == 2u32 { break; } }");
+        assert!(message(&function, true).is_none());
     }
 }

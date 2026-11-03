@@ -1,5 +1,7 @@
 // The `?` operator is rejected everywhere, GUST-E0311, so a barrier kernel adds no second error for the early exit
-// that a `?` in a helper it calls would be. expected.txt pins the code and the line of the `?`.
+// that a `?` in a helper it calls would be. expected.txt pins the code and the line of the `?`. The `?` stands in a
+// helper on purpose: in the unit-returning kernel itself rustc would add its own E0277 to the one macro error, which
+// this check refuses. The kernel-body case is covered by the unit tests of the barrier pass and of the rejections.
 
 #[gust::gpu]
 mod block {

@@ -193,7 +193,7 @@ Decision: D02.
 
 ### GUST-E0109 kernel dispatch parameter
 
-A `#[kernel]` function takes exactly one dispatch-thread parameter.
+A `#[kernel]` function takes exactly one dispatch-thread parameter. A kernel that takes `LocalId` or `GroupId` needs it too, since those ids are derived from the dispatch id and the workgroup size.
 Reached through `#[gpu]`.
 Rejected: `#[kernel] fn run() {}` and a kernel with two `SV_DispatchThreadID` parameters.
 Write instead: `#[kernel] fn run(id: SV_DispatchThreadID) { ... }`.
@@ -358,7 +358,7 @@ Decision: D17, D40 (M6 plan 2.3, F7).
 
 ### GUST-E0210 malformed `Workgroup` type
 
-`Workgroup<[T; N]>` is the type of a kernel parameter and declares `N` elements of workgroup memory (`groupshared` in Slang) that every invocation of one workgroup shares. `N` is a nonzero integer literal, so the size is known when the macro runs, and `T` is `f32`, `i32`, `u32`, `bool` or a vector type (`Vec2`, `Vec3`, `Vec4`, `IVec2`, `IVec4`, `UVec2`, `UVec3`, `UVec4`); a matrix, a struct and a nested array are not accepted. The type stands nowhere but as the type of a kernel parameter: not as a local, a field, a helper parameter or a result.
+`Workgroup<[T; N]>` is the type of a kernel parameter and declares `N` elements of workgroup memory (`groupshared` in Slang) that every invocation of one workgroup shares. `N` is a nonzero integer literal, so the size is known when the macro runs, and `T` is `f32`, `i32`, `u32`, `bool` or a vector type (`Vec2`, `Vec3`, `Vec4`, `IVec2`, `IVec4`, `UVec2`, `UVec3`, `UVec4`); a matrix, a struct and a nested array are not accepted. The type stands nowhere but as the type of a kernel parameter: not as a local, a field, a helper parameter or a result. The macro sees no types, so `Workgroup`, `LocalId`, `GroupId`, `SV_GroupThreadID` and `SV_GroupID` are taken by their spelling, as `UVec3` is: a user type of one of these names is read as the dialect's type.
 Reached through `#[gpu]`.
 Rejected: `Workgroup<f32>`, `Workgroup<[f32; 0]>`, `Workgroup<[f32; LEN]>`, `Workgroup<[f64; 4]>`, `Workgroup<[Mat4; 4]>`, `Workgroup<[Item; 4]>`, `let s: Workgroup<[f32; 4]> = ..;`, `fn f() -> Workgroup<[f32; 4]>`.
 Write instead: `mut scratch: Workgroup<[f32; 256]>` as a kernel parameter, with a literal length and a supported element.
@@ -746,7 +746,7 @@ Decision: D42 (M7 plan 4.2 rule 1, slice m7.g1).
 
 ### GUST-E0415 `return` in a kernel with workgroup memory or a barrier
 
-An invocation that returns early never reaches the barriers the others wait at, so a kernel that uses workgroup memory or a barrier has no `return`: its body ends by falling off the end. A `return` in a helper that such a kernel calls is fine; the helper contains no barrier.
+An invocation that returns early never reaches the barriers the others wait at, so a kernel that uses workgroup memory or a barrier has no `return`: its body ends by falling off the end. A `return` in a helper that such a kernel calls is fine; the helper contains no barrier. The `?` operator is an early exit too, so the barrier pass also rejects it in such a kernel with this code; today GUST-E0311 rejects `?` in every function first, so the pass is the default that holds if a later slice admits `?` (tested by calling the pass directly).
 Reached through `#[gpu]`.
 Rejected: `workgroup_barrier(); return;`, `if lid.x == 0u32 { return; }` in a kernel that has a `Workgroup` parameter.
 Fixture: `tests/ui/return-in-barrier-kernel` (`cargo xtask check-ui`, `code: none` plus the message).
@@ -755,7 +755,7 @@ Decision: D42 (M7 plan 4.2 rule 2, slice m7.g1).
 
 ### GUST-E0416 `break` or `continue` in a loop that holds a barrier
 
-A `break` or `continue` lets some invocations leave a loop, or skip the rest of an iteration, while the others wait at a barrier inside it. The rule covers every unlabelled `break` and `continue`, conditional or not, whose innermost loop contains a `workgroup_barrier()`. A loop without a barrier may use its own `break` and `continue`. A labelled `break` or `continue`, and a loop label, are GUST-E0403 in every kernel; the `?` operator is GUST-E0311 in every kernel; neither gets a second report here.
+A `break` or `continue` lets some invocations leave a loop, or skip the rest of an iteration, while the others wait at a barrier inside it. The rule covers every unlabelled `break` and `continue`, conditional or not, whose innermost loop contains a `workgroup_barrier()`. A loop without a barrier may use its own `break` and `continue`. A labelled `break` or `continue` is rejected in a kernel with workgroup memory or a barrier by the barrier pass with this code, whichever loop holds the barrier; today a loop label is GUST-E0403 in every kernel and that error comes first, so the pass is the default that holds if a later slice admits labels (tested by calling the pass directly). The `?` operator is GUST-E0415 in such a kernel and GUST-E0311 in every function; no second report is made.
 Reached through `#[gpu]`.
 Rejected: `for r in 0u32..4u32 { if r == 2u32 { break; } workgroup_barrier(); }`, `for r in 0u32..4u32 { if r == 2u32 { continue; } workgroup_barrier(); }`.
 Fixture: `tests/ui/break-in-barrier-loop`, `tests/ui/continue-in-barrier-loop`, `tests/ui/labelled-break-in-barrier-kernel` (GUST-E0403) and `tests/ui/question-mark-in-barrier-kernel` (GUST-E0311) (`cargo xtask check-ui`, `code: none` plus the message).

@@ -126,6 +126,55 @@ fn the_golden_shows_the_lowering() {
     assert!(!golden.contains("SV_GroupID"), "{golden}");
 }
 
+#[test]
+fn two_kernels_with_a_workgroup_parameter_of_the_same_name_keep_their_own_array() {
+    // The `groupshared` array is named like the parameter (not `<kernel>__<name>`), which is safe because each
+    // kernel is emitted as its own Slang source with only its own parameters. This pins that property.
+    let source = "mod t {
+        #[kernel(workgroup_size(64, 1, 1), cpu = \"unsupported\")]
+        pub fn first(id: SV_DispatchThreadID, lid: LocalId, mut out: RWStructuredBuffer<f32>,
+                     mut scratch: Workgroup<[f32; 64]>) {
+            scratch[lid.x] = 1.0f32;
+            workgroup_barrier();
+            out[id.x] = scratch[0u32];
+        }
+        #[kernel(workgroup_size(32, 1, 1), cpu = \"unsupported\")]
+        pub fn second(id: SV_DispatchThreadID, lid: LocalId, mut out: RWStructuredBuffer<u32>,
+                      mut scratch: Workgroup<[u32; 32]>) {
+            scratch[lid.x] = 2u32;
+            workgroup_barrier();
+            out[id.x] = scratch[0u32];
+        }
+    }";
+    let module: syn::ItemMod = parse_str(source).unwrap();
+    validate_module(&module).unwrap();
+    let mut sources = Vec::new();
+    for item in &module.content.as_ref().unwrap().1 {
+        let syn::Item::Fn(function) = item else {
+            continue;
+        };
+        let options = kernel_options(function).unwrap().unwrap();
+        sources.push(emit_kernel(&module, function, options).unwrap().source);
+    }
+    assert_eq!(sources.len(), 2);
+    for (source, own, other) in [
+        (
+            &sources[0],
+            "groupshared float scratch[64];",
+            "uint scratch[32]",
+        ),
+        (
+            &sources[1],
+            "groupshared uint scratch[32];",
+            "float scratch[64]",
+        ),
+    ] {
+        assert_eq!(source.matches("groupshared").count(), 1, "{source}");
+        assert_eq!(source.matches(own).count(), 1, "{source}");
+        assert!(!source.contains(other), "{source}");
+    }
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // The expansion.
 // ---------------------------------------------------------------------------------------------------------------

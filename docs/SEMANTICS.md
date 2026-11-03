@@ -474,8 +474,10 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   writes an element another reads, with no `workgroup_barrier()` between the accesses, are a race and outside the
   domain, as for storage parameters above. Workgroup memory is private to its workgroup: a barrier orders the
   invocations of one workgroup only, and no construct orders invocations of different workgroups within a dispatch.
-  The size of all `Workgroup` arrays of a kernel is limited to 16384 bytes (GUST-E0718), the minimum of
-  `maxComputeWorkGroupSharedMemorySize` that Vulkan and WebGPU guarantee.
+  An index at or above the length of a `Workgroup` array is outside the domain, as an out-of-bounds index into a
+  storage parameter is (the first row of this section); the GPU gives no trap to rely on. The size of all `Workgroup`
+  arrays of a kernel is limited to 16384 bytes (GUST-E0718): the default of WebGPU's `maxComputeWorkgroupStorageSize`
+  and the least that Vulkan's `maxComputeSharedMemorySize` guarantees.
 - **Local and group ids.** `LocalId` (`SV_GroupThreadID`) and `GroupId` (`SV_GroupID`) are derived from
   `SV_DispatchThreadID` and the declared `workgroup_size(X, Y, Z)`: the local id is the dispatch id modulo the size per
   axis and the group id is the dispatch id divided by it. The twin of a kernel that uses only these ids derives them the

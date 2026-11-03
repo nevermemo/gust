@@ -205,6 +205,9 @@ test module; do not mix that mechanical move with behavior changes.
   non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p). The scan's `out` is
   zero-filled the same way (one clear of n elements per call, 2 GiB at 2^29; m7.r2 review), and so is the map's
   output (`map_on`, `map_gpu`; m7.a1 review N2: name it in m7.a2's timing conditions).
+- m7.r4 follow-ups: the Radeon 890M half of the plan §5.5 measurement (it may change `variant::shipped`); a
+  pre-registered statistic for the re-run; re-measure if the pool's zeroing or an unzeroed `GpuVec` constructor
+  lands (the small-size win is per-call overhead); a public way to learn which variant (and so which f32 bound) ran.
 - m7.a2 follow-ups: the README map table's published run in a quiet window (replaces the provisional smoke table);
   a `#[gpu] fn` from an artifact under `native` (the workspace profile pin requires `slang-runtime` on every
   example's gust-wgpu, and `native` refuses it; tests/precompiled has no `#[gpu] fn`); `map_async` in a browser has

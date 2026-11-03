@@ -242,6 +242,21 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   fix round.
   Main: 23 gate steps green on `44299e5` (10:23 to 10:57Z, RTX 5090); pins 249/29 and gust-algo 32;
   check-examples green.
+- M7 m7.r4 (`0c5d456`, fix round `b945ab0`, merge `d6b425f`): gust-algo v1 with shared memory. Block reduce (sum,
+  min, max over u32/i32/f32 and the wrapping u32 sum) and tile scan (u32 inclusive and exclusive) with
+  `Workgroup<[T; 256]>` and barriers, `cpu = "unsupported"` (D101); v0 stays the CPU form and the fallback
+  (`limits::admits` picks v0 where a v1 launch or its 3072 bytes of workgroup memory do not fit). Public signatures
+  unchanged; f32 sums now differ bit-wise from v0 (another grouping) within the bound of the variant that ran, and a
+  caller may assert the larger of the two bounds. Measured end to end on the shared RTX 5090 (interleaved, 5
+  warm-ups, 3 to 5 runs): median v0/v1 1.16 to 1.38 for reduce and 1.52 to 3.76 for scan at 1e6, 1e7 and 1e8, so
+  `variant::shipped` picks v1 for all six operations. The choice is provisional: the statistic (median of per-run
+  medians) was chosen after the runs, the lowest single run was 1.085 (min f32, 1e8), the small-size win is mostly
+  one dispatch and one pooled zeroing fewer, and the Radeon 890M half of plan §5.5 is owed. The builder's own VRAM
+  reached 4.3 GB at 1e8, over the slice's 1 GB limit (no other work was disturbed). component-pool's ignored GPU
+  tests pass on v1. Mutations: a dropped barrier (17 tests fail), a dropped scan guard (8 fail; the validator
+  accepts it), a flipped shipped variant (the observer test fails). Pin gust-algo 32 to 49; naga_layout goldens 67
+  to 82. Opus merge after one fix round.
+  Main: 23 gate steps green on `d6b425f` (12:15 to 12:46Z, RTX 5090); pins 249/29 and gust-algo 49.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
@@ -634,7 +649,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M7 (m7.d and m7.r4 running) after the M6 close (D86); see the roadmap's Now
+claim: roadmap M7 (m7.d running) after the M6 close (D86); see the roadmap's Now
 and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no

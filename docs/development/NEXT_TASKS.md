@@ -205,8 +205,13 @@ test module; do not mix that mechanical move with behavior changes.
   non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p). The scan's `out` is
   zero-filled the same way (one clear of n elements per call, 2 GiB at 2^29; m7.r2 review), and so is the map's
   output (`map_on`, `map_gpu`; m7.a1 review N2: name it in m7.a2's timing conditions).
-- m7.a1 follow-ups: precompiled artifacts for a `#[gpu] fn` under `native` and `web` (a wasm32 `web` build panics
-  "needs a precompiled artifact" today; m7.a2); a `#[diagnostic::on_unimplemented]` on `MapArg` so a type mismatch
+- m7.a2 follow-ups: the README map table's published run in a quiet window (replaces the provisional smoke table);
+  a `#[gpu] fn` from an artifact under `native` (the workspace profile pin requires `slang-runtime` on every
+  example's gust-wgpu, and `native` refuses it; tests/precompiled has no `#[gpu] fn`); `map_async` in a browser has
+  never run (web-vector-add is closed at compile level only), and it opens a second device through
+  `default_device_async` beside the explicit one; the resident chain's count sees only pooled buffers, so a
+  submission or read-back counter would close the gap (m7.a2 review).
+- m7.a1 follow-ups: a `#[diagnostic::on_unimplemented]` on `MapArg` so a type mismatch
   reads in GUST's words (re-pin the two check-ui fixtures); `missing_docs` fires on generated constants of both
   `#[gpu] mod` and `#[gpu] fn` (older); `TooLong` is unit-tested only.
 - The scan `_wrapping` form the M7 plan promises after m7.w: the same Slang (D87), only the twins change; v0's scan

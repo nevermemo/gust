@@ -41,8 +41,15 @@ fn a_renamed_kernel_is_one_missing_and_one_unexpected_file() {
 }
 
 #[test]
-fn the_expected_list_is_fourteen_sorted_unique_spirv_names() {
-    assert_eq!(EXPECTED_SPIRV.len(), 14);
+fn the_expected_list_is_seventeen_sorted_unique_spirv_names() {
+    // 14 before m7.a2; map-chain adds the three kernels of its `#[gpu] fn` maps (`<function>__map_kernel`).
+    assert_eq!(EXPECTED_SPIRV.len(), 17);
+    for map_kernel in ["curve", "damp", "rescale"] {
+        assert!(
+            EXPECTED_SPIRV.contains(&format!("{map_kernel}__map_kernel.spv").as_str()),
+            "{map_kernel}"
+        );
+    }
     assert!(EXPECTED_SPIRV.windows(2).all(|pair| pair[0] < pair[1]));
     assert!(EXPECTED_SPIRV.iter().all(|name| name.ends_with(".spv")));
     assert!(EXPECTED_SPIRV.iter().all(|name| name.contains("__")));

@@ -487,12 +487,29 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
 - **Production CPU target (D51).** Under `GUST_PROFILE=cpu` the kernels run on `gust::cpu::CpuDevice` in every build,
   one thread per dispatch. A racy kernel is still outside the contract: it gives one deterministic result that proves
   nothing about the GPU. The launch rule below holds as written, and the limits of the GPU are not emulated.
-- **Launch size (CPU backend).** The CPU backend (`gust::cpu`) rejects only a launch whose invocation total, rounded up
-  to whole workgroups, is above 2^32 (`DeviceLimit`, because global ids are `u32`). The GPU backend also enforces the
-  adapter's `max_compute_workgroups_per_dimension` (and any lower `with_limits` value). For example 5,000,000 elements
-  at workgroup width 64 need 78125 workgroups: they run on the CPU backend and are `DeviceLimit` under wgpu's default
-  limits (65535 workgroups). This is a documented difference (D39), not something to match; split the work into
-  several dispatches for the GPU. The macro-emitted twin uses this backend (m3.c).
+- **Launch extent and size (m7.d).** A launch covers an `Extent { x, y, z }` (the typed call's `call_extent`,
+  `submit_extent` and `dispatch_extent`; the one-dimensional `call`, `submit` and `dispatch` mean `Extent { x: n, y: 1,
+  z: 1 }`). Every axis is rounded up to whole workgroups of the kernel's `workgroup_size`, and the invocation id is
+  `(x, y, z)` below the rounded axes, so `LocalId` and `GroupId` (`id % size`, `id / size` per axis) are exact in two
+  and three dimensions. A buffer with the shared length rule holds exactly `x * y * z` elements; the product is
+  checked, not wrapped (an overflow of a `u64` is `Error::Extent` on the GPU and the cap below on the twin).
+- **Zero extents.** An extent with a zero axis has no invocations: the call is `Ok(())` on both backends, nothing runs
+  and no buffer is touched, and the launch limits are not checked. The length rule still applies, with a product of 0.
+  A kernel whose workgroup size has a zero axis is rejected whatever the extent.
+- **The invocation cap (CPU and GPU).** The product of the three rounded axes must be at most 2^32
+  (`Extent::MAX_INVOCATIONS`), because global ids are `u32`: `DeviceLimit` with the limit `global_invocation_id`,
+  the requested count saturated to a `u64`, on both backends and for exactly the same extents. The cap is on the
+  rounded product, not the raw one: 65537 x 65535 is 4294967295 elements, below 2^32, but 4296015872 invocations at a
+  16 x 16 workgroup, so it is rejected, while 65536 x 65535 and 65536 x 65536 (exactly 2^32) are accepted.
+- **Launch size (GPU only).** The GPU backend also enforces the device's workgroup size limits on all three axes
+  (`max_compute_workgroup_size_x`, `_y`, `_z`) and `max_compute_invocations_per_workgroup` for their checked product,
+  and `max_compute_workgroups_per_dimension` on each axis (the error names the axis: the limit string ends in `(y)`
+  or `(z)` for those two; any lower `with_limits` value applies). For example 5,000,000 elements at workgroup width 64
+  need 78125 workgroups: they run on the CPU backend and are `DeviceLimit` under wgpu's default limits (65535
+  workgroups), and a 2^28 x 1 extent at a 16 x 16 workgroup is exactly the cap but needs 2^24 workgroups along x. This
+  is a documented difference (D39), not something to match; split the work into several dispatches for the GPU. The
+  staged graph (`StagedGraph`) runs one-dimensional dispatches only and refuses a y or z extent with `Error::Extent`.
+  The macro-emitted twin uses the CPU backend (m3.c) and visits the invocations in ascending z, then y, then x.
 
 ## 6. Atomics
 

@@ -2085,7 +2085,52 @@ fn a_kernel_gets_call_submit_and_dispatch_with_prefixed_generated_names() {
         dispatch,
         ["__gust_device", "__gust_element_count", "a", "b", "out"]
     );
-    assert_eq!(item.items.len(), 3);
+    // The multi-dimensional forms (m7.d): the same three over `gust::Extent` in place of the element count.
+    let (_, call_extent) = typed_fn(&item, "call_extent");
+    let (_, submit_extent) = typed_fn(&item, "submit_extent");
+    let (_, dispatch_extent) = typed_fn(&item, "dispatch_extent");
+    assert_eq!(call_extent, ["__gust_extent", "a", "b", "out"]);
+    assert_eq!(
+        submit_extent,
+        ["__gust_device", "__gust_extent", "a", "b", "out"]
+    );
+    assert_eq!(
+        dispatch_extent,
+        ["__gust_device", "__gust_extent", "a", "b", "out"]
+    );
+    assert_eq!(item.items.len(), 6);
+}
+
+#[test]
+fn the_extent_forms_take_a_gust_extent_and_bind_like_the_one_dimensional_ones() {
+    let output = expansion(VECTOR_ADD);
+    let item = typed_impl(&output, "add").unwrap();
+    let (extent, _) = typed_fn(&item, "call_extent");
+    assert!(
+        extent.contains("__gust_extent : :: gust :: Extent"),
+        "{extent}"
+    );
+    let (one_dimensional, _) = typed_fn(&item, "call");
+    // The same bindings after the count, through `Call::new_extent` instead of `Call::new`.
+    let bindings = |function: &str, constructor: &str, first: &str| {
+        function
+            .split_once(constructor)
+            .unwrap_or_else(|| panic!("no {constructor} in {function}"))
+            .1
+            .replacen(first, "", 1)
+    };
+    assert_eq!(
+        bindings(&extent, "Call :: new_extent", "__gust_extent"),
+        bindings(&one_dimensional, "Call :: new", "__gust_element_count")
+    );
+    for name in ["submit_extent", "dispatch_extent"] {
+        let (function, _) = typed_fn(&item, name);
+        assert!(
+            function.contains("Self :: call_extent (__gust_extent , a , b , out)"),
+            "{name}: {function}"
+        );
+        assert!(function.contains("Run < Self , 3 >"), "{name}: {function}");
+    }
 }
 
 #[test]
@@ -2203,6 +2248,16 @@ fn a_kernel_without_storage_parameters_takes_the_device_type_as_a_parameter() {
         dispatch.contains(":: gust :: Run < Self , 0 >"),
         "{dispatch}"
     );
+    let (call_extent, parameters) = typed_fn(&item, "call_extent");
+    assert_eq!(parameters, ["__gust_extent"]);
+    assert!(
+        call_extent.contains(":: gust :: Call < 'r , __GustD , Self , 0 >"),
+        "{call_extent}"
+    );
+    let (_, parameters) = typed_fn(&item, "submit_extent");
+    assert_eq!(parameters, ["__gust_device", "__gust_extent"]);
+    let (_, parameters) = typed_fn(&item, "dispatch_extent");
+    assert_eq!(parameters, ["__gust_device", "__gust_extent"]);
     assert!(
         output
             .to_string()
@@ -2269,11 +2324,12 @@ fn every_generated_bound_names_the_kind_of_its_parameter() {
         "{text}"
     );
     assert!(text.contains(&bound("float", "Storage")), "{text}");
-    // Three bounds per function, one function each for `call`, `submit` and `dispatch`: the uniform once, two storage.
-    assert_eq!(count(&text, "kind :: Uniform >"), 3, "{text}");
-    assert_eq!(count(&text, "kind :: Storage >"), 6, "{text}");
+    // Three bounds per function, one function each for `call`, `submit` and `dispatch` and the same three over an
+    // extent (`call_extent`, `submit_extent`, `dispatch_extent`): the uniform once, two storage.
+    assert_eq!(count(&text, "kind :: Uniform >"), 6, "{text}");
+    assert_eq!(count(&text, "kind :: Storage >"), 12, "{text}");
     // No bound without a kind.
-    assert_eq!(count(&text, "Resource < Element ="), 9, "{text}");
+    assert_eq!(count(&text, "Resource < Element ="), 18, "{text}");
 }
 
 #[test]
@@ -2442,7 +2498,7 @@ fn the_twin_has_the_exact_shape_of_the_hand_written_one_in_gust_cpu() {
                 let b = ::gust::cpu::read::<float>(b, "b")?;
                 let mut out = ::gust::cpu::write::<float>(out, "out")?;
                 for __gust_id in
-                    ::gust::cpu::invocations(__gust_call.kernel(), __gust_call.element_count())
+                    ::gust::cpu::invocations(__gust_call.kernel(), __gust_call.extent())
                 {
                     __gpu_typecheck_add(
                         <SV_DispatchThreadID as ::gust::cpu::FromGlobalId>::from_global_id(__gust_id),
@@ -2627,7 +2683,7 @@ fn the_ungated_impl_has_the_exact_shape_of_the_gated_one() {
                 let b = ::gust::cpu::read::<float>(b, "b")?;
                 let mut out = ::gust::cpu::write::<float>(out, "out")?;
                 for __gust_id in
-                    ::gust::cpu::invocations(__gust_call.kernel(), __gust_call.element_count())
+                    ::gust::cpu::invocations(__gust_call.kernel(), __gust_call.extent())
                 {
                     __gpu_typecheck_add(
                         <SV_DispatchThreadID as ::gust::cpu::FromGlobalId>::from_global_id(__gust_id),

@@ -9,7 +9,7 @@
 //! descriptor, so the only failure a test can see is the limit.
 
 use gust::{
-    Access, GpuPod, KernelDescriptor, ParameterDescriptor, ParameterKind, ResourceBinding,
+    Access, Extent, GpuPod, KernelDescriptor, ParameterDescriptor, ParameterKind, ResourceBinding,
     ResourceLayout, TypeLayout,
 };
 use gust_wgpu::{
@@ -56,6 +56,11 @@ impl Element {
 /// A kernel with `count` read-write storage parameters `p0..`, workgroup width
 /// `workgroup`, whose invocation 0 writes 17 into element 0 of `p0`.
 fn kernel(element: Element, workgroup: u32, count: usize) -> KernelDescriptor {
+    kernel_sized(element, [workgroup, 1, 1], count)
+}
+
+/// [`kernel`] with a workgroup of `size` on every axis (every invocation with `id.x == 0` writes the same 17).
+fn kernel_sized(element: Element, size: [u32; 3], count: usize) -> KernelDescriptor {
     let parameters = (0..count)
         .map(|index| ParameterDescriptor {
             name: Box::leak(format!("p{index}").into_boxed_str()),
@@ -77,15 +82,18 @@ fn kernel(element: Element, workgroup: u32, count: usize) -> KernelDescriptor {
         ));
     }
     source.push_str(&format!(
-        "[shader(\"compute\")] [numthreads({workgroup}, 1, 1)]\n\
+        "[shader(\"compute\")] [numthreads({}, {}, {})]\n\
          void probe_k(uint3 id : SV_DispatchThreadID) {{ if (id.x == 0) p0[0] = {}; }}\n",
+        size[0],
+        size[1],
+        size[2],
         element.literal()
     ));
     KernelDescriptor {
         module: "limits_test",
         name: "k",
         entry_point: "probe_k",
-        workgroup_size: [workgroup, 1, 1],
+        workgroup_size: size,
         parameters: Box::leak(parameters.into_boxed_slice()),
         slang_source: Box::leak(source.into_boxed_str()),
         source: gust::SourceOrigin::UNKNOWN,
@@ -708,4 +716,212 @@ fn a_1_gib_zeroed_buffer_is_created_where_the_adapter_allows_it() {
             );
         }
     }
+}
+
+// ---- the y and z axes of a multi-dimensional dispatch (m7.d) ----
+
+/// One dispatch of `descriptor` over `extent`, through the batch path every typed call takes.
+fn dispatch_extent(
+    device: &HeadlessDevice,
+    descriptor: &KernelDescriptor,
+    extent: Extent,
+    bindings: &[BufferBinding<'_>],
+) -> Result<(), Error> {
+    device.dispatch_batch(&[BufferDispatch::new_extent(descriptor, extent, bindings)])
+}
+
+#[test]
+fn workgroup_size_y_and_z_above_the_limit_are_errors_before_compilation() {
+    let device = device();
+    let limits = device.limits().clone();
+    let output = device.create_f32_buffer("axes", &[3.0], GpuBufferAccess::ReadWrite);
+    for (axis, name, maximum) in [
+        (
+            1,
+            "max_compute_workgroup_size_y",
+            limits.max_compute_workgroup_size_y,
+        ),
+        (
+            2,
+            "max_compute_workgroup_size_z",
+            limits.max_compute_workgroup_size_z,
+        ),
+    ] {
+        let mut size = [1, 1, 1];
+        size[axis] = maximum + 1;
+        let error = device
+            .dispatch_buffers(
+                &kernel_sized(Element::F32, size, 1),
+                1,
+                &[BufferBinding::read_write(&output)],
+            )
+            .expect_err("a workgroup deeper than the device allows must fail");
+        assert_limit(error, name, u64::from(maximum) + 1, u64::from(maximum));
+        assert_cold(&device);
+        assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0], "{name}");
+    }
+}
+
+#[test]
+fn workgroup_size_y_and_z_at_the_limit_still_run() {
+    let device = device();
+    let limits = device.limits().clone();
+    for (axis, maximum) in [
+        (1, limits.max_compute_workgroup_size_y),
+        (2, limits.max_compute_workgroup_size_z),
+    ] {
+        let mut size = [1, 1, 1];
+        size[axis] = maximum;
+        // The invocations per workgroup limit still applies to the product; keep inside it.
+        if u64::from(maximum) > u64::from(limits.max_compute_invocations_per_workgroup) {
+            continue;
+        }
+        let output = device.create_f32_buffer("exact", &[3.0], GpuBufferAccess::ReadWrite);
+        device
+            .dispatch_buffers(
+                &kernel_sized(Element::F32, size, 1),
+                1,
+                &[BufferBinding::read_write(&output)],
+            )
+            .unwrap_or_else(|error| panic!("axis {axis} at its limit {maximum}: {error:?}"));
+        assert_eq!(
+            device.read_f32_buffer(&output).unwrap(),
+            [17.0],
+            "axis {axis}"
+        );
+    }
+}
+
+#[test]
+fn the_workgroup_counts_of_every_axis_are_checked_against_the_per_dimension_limit() {
+    let device = lowered(device(), |limits| {
+        limits.max_compute_workgroups_per_dimension = 3;
+    });
+    let output = device.create_f32_buffer("counts", &[3.0], GpuBufferAccess::ReadWrite);
+    let descriptor = kernel_sized(Element::F32, [4, 4, 4], 1);
+    let bindings = [BufferBinding::read_write(&output).independent_length()];
+    // Each over-limit axis is named in the error. The first one over is the one reported: x, then y, then z.
+    for (extent, limit) in [
+        (
+            Extent::new(16, 12, 12),
+            "max_compute_workgroups_per_dimension",
+        ),
+        (
+            Extent::new(12, 13, 12),
+            "max_compute_workgroups_per_dimension (y)",
+        ),
+        (
+            Extent::new(12, 12, 13),
+            "max_compute_workgroups_per_dimension (z)",
+        ),
+        (
+            Extent::new(12, 16, 16),
+            "max_compute_workgroups_per_dimension (y)",
+        ),
+        (
+            Extent::new(16, 16, 16),
+            "max_compute_workgroups_per_dimension",
+        ),
+    ] {
+        let error = dispatch_extent(&device, &descriptor, extent, &bindings)
+            .expect_err("four workgroups along an axis exceed the lowered limit of three");
+        assert_limit(error, limit, 4, 3);
+        assert_cold(&device);
+        assert_eq!(
+            device.read_f32_buffer(&output).unwrap(),
+            [3.0],
+            "{extent:?}"
+        );
+    }
+    // Three workgroups on every axis, and a ragged extent that rounds up to three on every axis, both run.
+    for extent in [Extent::new(12, 12, 12), Extent::new(9, 9, 9)] {
+        device.write_f32_buffer(&output, &[3.0]).unwrap();
+        dispatch_extent(&device, &descriptor, extent, &bindings).unwrap();
+        assert_eq!(
+            device.read_f32_buffer(&output).unwrap(),
+            [17.0],
+            "{extent:?}"
+        );
+    }
+}
+
+#[test]
+fn an_extent_with_a_zero_dimension_is_ok_and_not_limit_checked() {
+    let device = device();
+    let output = device.create_f32_buffer("zero", &[3.0], GpuBufferAccess::ReadWrite);
+    // A workgroup too deep for the device: any dispatch of it that is not empty is an error.
+    let too_deep = device.limits().max_compute_workgroup_size_z + 1;
+    let descriptor = kernel_sized(Element::F32, [1, 1, too_deep], 1);
+    let bindings = [BufferBinding::read_write(&output).independent_length()];
+    for extent in [
+        Extent::new(0, 1, 1),
+        Extent::new(1, 0, 1),
+        Extent::new(1, 1, 0),
+        Extent::new(u32::MAX, u32::MAX, 0),
+        Extent::new(0, u32::MAX, u32::MAX),
+    ] {
+        dispatch_extent(&device, &descriptor, extent, &bindings)
+            .unwrap_or_else(|error| panic!("{extent:?} is empty and must be Ok: {error:?}"));
+    }
+    assert_cold(&device);
+    assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
+    // The same kernel over one invocation is the error the empty launches did not report.
+    let error = dispatch_extent(&device, &descriptor, Extent::new(1, 1, 1), &bindings).unwrap_err();
+    assert_limit(
+        error,
+        "max_compute_workgroup_size_z",
+        u64::from(too_deep),
+        u64::from(too_deep) - 1,
+    );
+}
+
+#[test]
+fn an_extent_product_beyond_a_u64_is_an_extent_error_before_compilation() {
+    let device = device();
+    let output = device.create_f32_buffer("overflow", &[3.0], GpuBufferAccess::ReadWrite);
+    let descriptor = kernel_sized(Element::F32, [4, 4, 4], 1);
+    let bindings = [BufferBinding::read_write(&output).independent_length()];
+    let everything = Extent::new(u32::MAX, u32::MAX, u32::MAX);
+    match dispatch_extent(&device, &descriptor, everything, &bindings) {
+        Err(Error::Extent { extent, .. }) => assert_eq!(extent, [u64::from(u32::MAX); 3]),
+        other => panic!("expected Error::Extent, got {other:?}"),
+    }
+    assert_cold(&device);
+    assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
+}
+
+#[test]
+fn a_staged_graph_refuses_a_dispatch_with_a_y_or_z_extent() {
+    let device = device();
+    let output = device.create_f32_buffer("graph", &[3.0], GpuBufferAccess::ReadWrite);
+    let descriptor = kernel_sized(Element::F32, [4, 4, 4], 1);
+    let bindings = [BufferBinding::read_write(&output).independent_length()];
+    for extent in [Extent::new(8, 2, 1), Extent::new(8, 1, 2)] {
+        let mut graph = StagedGraph::new();
+        graph.dispatch(
+            BufferDispatch::new_extent(&descriptor, extent, &bindings),
+            &[],
+        );
+        match device.execute_graph(&graph) {
+            Err(Error::Extent {
+                extent: reported, ..
+            }) => {
+                assert_eq!(reported, extent.to_array().map(u64::from));
+            }
+            other => panic!(
+                "expected Error::Extent for {extent:?}, got {:?}",
+                other.err()
+            ),
+        }
+        assert_cold(&device);
+        assert_eq!(device.read_f32_buffer(&output).unwrap(), [3.0]);
+    }
+    // A linear extent is the one-dimensional dispatch it always was.
+    let mut graph = StagedGraph::new();
+    graph.dispatch(
+        BufferDispatch::new_extent(&descriptor, Extent::linear(8), &bindings),
+        &[],
+    );
+    device.execute_graph(&graph).unwrap();
+    assert_eq!(device.read_f32_buffer(&output).unwrap(), [17.0]);
 }

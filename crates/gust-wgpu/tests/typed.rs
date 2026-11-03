@@ -11,7 +11,7 @@
 include!("../../../tests/fixtures/semantics.rs");
 
 use gust::{
-    Access, Arg, Call, GpuPod, Independent, Kernel, KernelDescriptor, LengthRule,
+    Access, Arg, Call, Extent, GpuPod, Independent, Kernel, KernelDescriptor, LengthRule,
     ParameterDescriptor, ParameterKind, Resource, ResourceBinding, ResourceLayout, Run,
     SourceOrigin,
 };
@@ -1485,4 +1485,157 @@ fn the_uniform_launch_limits_apply_before_any_compilation() {
         other => panic!("expected DeviceLimit, got {other:?}"),
     }
     assert_eq!(stats(&device), (0, 0, 0));
+}
+
+// ---- the extent forms of a typed call (m7.d) ----
+
+#[test]
+fn a_linear_extent_call_is_the_one_dimensional_call() {
+    let device = device();
+    let values: Vec<f32> = (0..100).map(|i| (i % 7) as f32 - 3.0).collect();
+    let input = buffer(&device, "extent input", &values, GpuBufferAccess::ReadOnly);
+    let outputs = |label: &str| {
+        (
+            buffer(
+                &device,
+                label,
+                &vec![0.0; values.len()],
+                GpuBufferAccess::ReadWrite,
+            ),
+            device.create_typed_buffer(
+                label,
+                &vec![0u32; values.len()],
+                GpuBufferAccess::ReadWrite,
+            ),
+        )
+    };
+    let (floats, integers) = outputs("one-dimensional");
+    let (extent_floats, extent_integers) = outputs("extent");
+    let count = values.len() as u32;
+    let linear = semantics::run::call(count, &input, &floats, &integers);
+    let extent = semantics::run::call_extent(
+        Extent::linear(count),
+        &input,
+        &extent_floats,
+        &extent_integers,
+    );
+    assert_eq!(linear.extent(), Extent::new(count, 1, 1));
+    assert_eq!(extent.extent(), linear.extent());
+    assert_eq!(extent.element_count(), count);
+    device.dispatch_call(&linear).unwrap();
+    device.dispatch_call(&extent).unwrap();
+    assert_eq!(
+        device.read_typed_buffer(&extent_floats).unwrap(),
+        device.read_typed_buffer(&floats).unwrap()
+    );
+    assert_eq!(
+        device.read_typed_buffer(&extent_integers).unwrap(),
+        device.read_typed_buffer(&integers).unwrap()
+    );
+    // The other two forms of the extent family bind the same way.
+    let (submit_floats, submit_integers) = outputs("submit_extent");
+    semantics::run::submit_extent(
+        &device,
+        Extent::linear(count),
+        &input,
+        &submit_floats,
+        &submit_integers,
+    )
+    .unwrap()
+    .wait()
+    .unwrap();
+    let (dispatch_floats, dispatch_integers) = outputs("dispatch_extent");
+    semantics::run::dispatch_extent(
+        &device,
+        Extent::linear(count),
+        &input,
+        &dispatch_floats,
+        &dispatch_integers,
+    )
+    .unwrap();
+    for (floats_, integers_) in [
+        (&submit_floats, &submit_integers),
+        (&dispatch_floats, &dispatch_integers),
+    ] {
+        assert_eq!(
+            device.read_typed_buffer(floats_).unwrap(),
+            device.read_typed_buffer(&floats).unwrap()
+        );
+        assert_eq!(
+            device.read_typed_buffer(integers_).unwrap(),
+            device.read_typed_buffer(&integers).unwrap()
+        );
+    }
+}
+
+#[test]
+fn a_shared_buffer_holds_the_product_of_the_extent_and_that_product_does_not_wrap() {
+    let device = device();
+    let input = buffer(
+        &device,
+        "shared input",
+        &[1.0; 12],
+        GpuBufferAccess::ReadOnly,
+    );
+    let floats = |len: usize| {
+        buffer(
+            &device,
+            "shared floats",
+            &vec![0.0; len],
+            GpuBufferAccess::ReadWrite,
+        )
+    };
+    let integers = |len: usize| {
+        device.create_typed_buffer(
+            "shared integers",
+            &vec![0u32; len],
+            GpuBufferAccess::ReadWrite,
+        )
+    };
+    // 4 x 3 x 1 is twelve elements: twelve is accepted, eleven and thirteen are not, each naming the length.
+    let extent = Extent::new(4, 3, 1);
+    let (floats_ok, integers_ok) = (floats(12), integers(12));
+    device
+        .dispatch_call(&semantics::run::call_extent(
+            extent,
+            &input,
+            &floats_ok,
+            &integers_ok,
+        ))
+        .unwrap();
+    for wrong in [11usize, 13] {
+        let (floats_wrong, integers_wrong) = (floats(wrong), integers(wrong));
+        let error = device
+            .dispatch_call(&semantics::run::call_extent(
+                extent,
+                &input,
+                &floats_wrong,
+                &integers_wrong,
+            ))
+            .unwrap_err();
+        match error {
+            Error::BufferLength {
+                expected, actual, ..
+            } => assert_eq!((expected, actual), (12, wrong)),
+            other => panic!("expected BufferLength, got {other:?}"),
+        }
+    }
+    // 65536 x 65536 is 2^32 elements, not the 0 a product computed in 32 bits would be. The first buffer (twelve
+    // elements) is the one reported.
+    let wrapping = Extent::new(65_536, 65_536, 1);
+    let (floats_one, integers_one) = (floats(1), integers(1));
+    match device
+        .dispatch_call(&semantics::run::call_extent(
+            wrapping,
+            &input,
+            &floats_one,
+            &integers_one,
+        ))
+        .unwrap_err()
+    {
+        Error::BufferLength {
+            expected, actual, ..
+        } => assert_eq!((expected, actual), (1 << 32, 12)),
+        other => panic!("expected BufferLength for the 32-bit wrap, got {other:?}"),
+    }
 }

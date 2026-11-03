@@ -314,6 +314,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "typed-call-extent-for-count"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "typed-call-kind-mismatch"
 version = "0.0.0"
 dependencies = [

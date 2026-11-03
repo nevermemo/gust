@@ -23,6 +23,10 @@ mod map_tests;
 #[path = "tests/workgroup.rs"]
 mod workgroup_tests;
 
+#[cfg(test)]
+#[path = "tests/grid.rs"]
+mod grid_tests;
+
 /// Marks an inline Rust module as GUST GPU code, or a free scalar function as an element-wise map (D60).
 ///
 /// On a module, the macro validates a deliberately small Rust subset, translates each

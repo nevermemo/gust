@@ -1,0 +1,7 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). The primary span is the `4u32` argument of the call in this file.
+code: E0308
+file: typed-call-extent-for-count/src/main.rs
+line: 74
+message: mismatched types
+label: expected `Extent`, found `u32`

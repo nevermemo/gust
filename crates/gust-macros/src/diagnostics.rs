@@ -1184,6 +1184,7 @@ mod tests {
         file.ends_with("src/tests/regression.rs")
             || file.ends_with("src/tests/map.rs")
             || file.ends_with("src/tests/workgroup.rs")
+            || file.ends_with("src/tests/grid.rs")
             || file.ends_with("src/validate/mod.rs")
     }
 

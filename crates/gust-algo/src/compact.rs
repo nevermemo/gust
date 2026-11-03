@@ -28,9 +28,12 @@
 //! # A gather of structs
 //!
 //! There is no generic `gather<T>`: generic GPU functions are not part of the dialect before M9's traits (plan section
-//! 5.4). For a struct, write the one-line kernel yourself, against the `indices` and `count` of [`indices`]; the block
-//! shape of `tests/fixtures/compact.rs` is the one to copy, and `src/tests/struct_gather.rs` holds a worked, tested
-//! example (`out[j] = particles[indices[j]]` for a struct of a `u32` and an `f32`).
+//! 5.4). For a struct, write the gather kernel yourself, against the `indices` and `count` of [`indices`]. Copy the
+//! block-strided body of `gather_u32` in `tests/fixtures/compact.rs` and change the element type: launch
+//! `schedule::Pass::over(n).partials()` invocations, not one per element (that is refused past 65 535
+//! workgroups, 16 776 960 elements at 256 lanes), and keep the `source < values.len()` check before the read (an
+//! index past the values is then skipped, not read out of bounds). `src/tests/struct_gather.rs` holds a worked,
+//! tested example (`out[j] = particles[indices[j]]` for a struct of a `u32` and an `f32`).
 
 use gust::{GpuPod, Independent};
 use gust_wgpu::{BufferDispatch, GpuVec, HeadlessDevice};
@@ -175,7 +178,8 @@ gather!(
     i32
 );
 gather!(
-    /// Gather `f32` values by index; the bits are copied, so the result is exact.
+    /// Gather `f32` values by index; the bits are copied, so the result is exact for finite values (WGSL does not
+    /// promise that NaN payloads or subnormals survive a copy).
     gather_f32,
     f32
 );

@@ -205,6 +205,7 @@ fn the_element_wise_launch_is_one_workgroup_per_block() {
         assert_eq!(pass.partials(), workgroups * LANES, "n = {n}");
         assert_eq!(pass.input_len, n);
     }
-    // The largest launch a u32 length can ask for is still a valid dispatch size.
+    // The largest length a u32 can hold needs 65 536 workgroups, one past the 65 535 ceiling (`limits::check` refuses
+    // it); what this pins is that the arithmetic does not overflow there.
     assert_eq!(Pass::over(u32::MAX).workgroups, 65_536);
 }

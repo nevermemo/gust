@@ -383,24 +383,32 @@ pub(super) fn scan_cases<B: Backend>(backend: &B, lengths: &[usize]) {
     for &n in lengths {
         let ones = vec![1u32; n];
         let counted: Vec<u32> = (1..=n as u32).collect();
-        assert_eq!(backend.inclusive(&ones), counted, "ones inclusive, n = {n}");
+        assert_same(
+            &backend.inclusive(&ones),
+            &counted,
+            &format!("ones inclusive, n = {n}"),
+        );
         let shifted: Vec<u32> = (0..n as u32).collect();
-        assert_eq!(backend.exclusive(&ones), shifted, "ones exclusive, n = {n}");
+        assert_same(
+            &backend.exclusive(&ones),
+            &shifted,
+            &format!("ones exclusive, n = {n}"),
+        );
 
         let mut rng = Rng::new(0x5CA7 + n as u64);
         let cap = (u64::from(u32::MAX) / (n as u64).max(1)).max(1);
         let values: Vec<u32> = (0..n).map(|_| rng.below(cap) as u32).collect();
         let inclusive = backend.inclusive(&values);
         let exclusive = backend.exclusive(&values);
-        assert_eq!(
-            inclusive,
-            reference_scan(&values, false),
-            "random inclusive, n = {n}"
+        assert_same(
+            &inclusive,
+            &reference_scan(&values, false),
+            &format!("random inclusive, n = {n}"),
         );
-        assert_eq!(
-            exclusive,
-            reference_scan(&values, true),
-            "random exclusive, n = {n}"
+        assert_same(
+            &exclusive,
+            &reference_scan(&values, true),
+            &format!("random exclusive, n = {n}"),
         );
         // The two scans differ by exactly the element, and the exclusive one starts at zero.
         for (index, value) in values.iter().enumerate() {
@@ -419,15 +427,15 @@ pub(super) fn scan_cases<B: Backend>(backend: &B, lengths: &[usize]) {
             }
             let mut edge = vec![0u32; n];
             edge[position] = u32::MAX;
-            assert_eq!(
-                backend.inclusive(&edge),
-                reference_scan(&edge, false),
-                "edge inclusive, n = {n}, position {position}"
+            assert_same(
+                &backend.inclusive(&edge),
+                &reference_scan(&edge, false),
+                &format!("edge inclusive, n = {n}, position {position}"),
             );
-            assert_eq!(
-                backend.exclusive(&edge),
-                reference_scan(&edge, true),
-                "edge exclusive, n = {n}, position {position}"
+            assert_same(
+                &backend.exclusive(&edge),
+                &reference_scan(&edge, true),
+                &format!("edge exclusive, n = {n}, position {position}"),
             );
         }
     }
@@ -457,15 +465,15 @@ pub(super) fn deep_scan_cases<B: Backend>(backend: &B) {
         );
         let mut rng = Rng::new(0xDEE9 + n as u64);
         let values: Vec<u32> = (0..n).map(|_| rng.below(255) as u32).collect();
-        assert_eq!(
-            backend.inclusive(&values),
-            reference_scan(&values, false),
-            "random inclusive, n = {n}"
+        assert_same(
+            &backend.inclusive(&values),
+            &reference_scan(&values, false),
+            &format!("random inclusive, n = {n}"),
         );
-        assert_eq!(
-            backend.exclusive(&values),
-            reference_scan(&values, true),
-            "random exclusive, n = {n}"
+        assert_same(
+            &backend.exclusive(&values),
+            &reference_scan(&values, true),
+            &format!("random exclusive, n = {n}"),
         );
     }
 }
@@ -590,7 +598,7 @@ pub(super) fn check_compaction<B: Backend>(backend: &B, label: &str, flags: &[u3
     let (indices, count) = backend.compact_indices(flags);
     assert_eq!(count as usize, live, "count of indices, {context}");
     assert_eq!(indices.len(), n, "length of indices, {context}");
-    assert_eq!(&indices[..live], &expected[..], "indices, {context}");
+    assert_same(&indices[..live], &expected, &format!("indices, {context}"));
     assert!(
         indices[live..].iter().all(|index| *index == 0),
         "the unused tail of the indices is zero, {context}"
@@ -604,15 +612,15 @@ pub(super) fn check_compaction<B: Backend>(backend: &B, label: &str, flags: &[u3
     for &used in counts {
         let used_context = format!("{context}, count {used}");
         let count = used as u32;
-        assert_eq!(
-            backend.gather_u32(&unsigned, &indices, count),
-            reference_gather(&unsigned, &indices, used),
-            "gather_u32, {used_context}"
+        assert_same(
+            &backend.gather_u32(&unsigned, &indices, count),
+            &reference_gather(&unsigned, &indices, used),
+            &format!("gather_u32, {used_context}"),
         );
-        assert_eq!(
-            backend.gather_i32(&signed, &indices, count),
-            reference_gather(&signed, &indices, used),
-            "gather_i32, {used_context}"
+        assert_same(
+            &backend.gather_i32(&signed, &indices, count),
+            &reference_gather(&signed, &indices, used),
+            &format!("gather_i32, {used_context}"),
         );
         let actual: Vec<u32> = backend
             .gather_f32(&floats, &indices, count)
@@ -623,7 +631,7 @@ pub(super) fn check_compaction<B: Backend>(backend: &B, label: &str, flags: &[u3
             .iter()
             .map(|value| value.to_bits())
             .collect();
-        assert_eq!(actual, wanted, "gather_f32, {used_context}");
+        assert_same(&actual, &wanted, &format!("gather_f32, {used_context}"));
     }
 }
 
@@ -683,4 +691,36 @@ pub(super) fn gather_edge_cases<B: Backend>(backend: &B) {
         vec![8, 9, 0],
         "the slot at the count is not written"
     );
+}
+
+/// Assert two vectors are equal, and on a mismatch print a few lines, not the vectors: the first index that differs,
+/// the expected and the actual value there, how many elements differ and the lengths. A plain `assert_eq!` on the
+/// vectors of 2^16 elements and more prints both of them in full (hundreds of MB at 2^24).
+#[track_caller]
+pub(super) fn assert_same<T: PartialEq + std::fmt::Debug>(
+    actual: &[T],
+    expected: &[T],
+    label: &str,
+) {
+    if actual == expected {
+        return;
+    }
+    let shared = actual.len().min(expected.len());
+    let differing = (0..shared).filter(|&index| actual[index] != expected[index]);
+    let count = differing.clone().count();
+    match differing.clone().next() {
+        Some(index) => panic!(
+            "{label}: {count} of {shared} compared elements differ; first at index {index}: expected {:?}, got {:?} \
+             (lengths: expected {}, got {})",
+            expected[index],
+            actual[index],
+            expected.len(),
+            actual.len()
+        ),
+        None => panic!(
+            "{label}: the lengths differ (expected {}, got {}) and the first {shared} elements are equal",
+            expected.len(),
+            actual.len()
+        ),
+    }
 }

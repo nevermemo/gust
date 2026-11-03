@@ -1,0 +1,353 @@
+{
+  "entry_point": "gpu_vectors_run",
+  "key": "7ac7b445a03f9ce0",
+  "module": "vectors",
+  "name": "run",
+  "parameters": [
+    {
+      "access": "not_applicable",
+      "binding": null,
+      "kind": "invocation",
+      "layout": null,
+      "name": "id",
+      "rust_type": "SV_DispatchThreadID"
+    },
+    {
+      "access": "read_only",
+      "binding": {
+        "binding": 0,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 16,
+          "count": 4,
+          "kind": "vector",
+          "name": "Vec4",
+          "scalar": "f32",
+          "size": 16,
+          "stride": 16
+        },
+        "element_stride": 16,
+        "rules": "storage_v2"
+      },
+      "name": "points",
+      "rust_type": "StructuredBuffer < Vec4 >"
+    },
+    {
+      "access": "read_only",
+      "binding": {
+        "binding": 1,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 8,
+          "fields": [
+            {
+              "name": "position",
+              "offset": 0,
+              "type": {
+                "alignment": 8,
+                "count": 2,
+                "kind": "vector",
+                "name": "Vec2",
+                "scalar": "f32",
+                "size": 8,
+                "stride": 8
+              }
+            },
+            {
+              "name": "velocity",
+              "offset": 8,
+              "type": {
+                "alignment": 8,
+                "count": 2,
+                "kind": "vector",
+                "name": "Vec2",
+                "scalar": "f32",
+                "size": 8,
+                "stride": 8
+              }
+            },
+            {
+              "name": "mass",
+              "offset": 16,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "f32",
+                "scalar": "f32",
+                "size": 4,
+                "stride": 4
+              }
+            },
+            {
+              "name": "tag",
+              "offset": 20,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "u32",
+                "scalar": "u32",
+                "size": 4,
+                "stride": 4
+              }
+            }
+          ],
+          "kind": "struct",
+          "name": "Particle",
+          "size": 24,
+          "stride": 24
+        },
+        "element_stride": 24,
+        "rules": "storage_v2"
+      },
+      "name": "particles",
+      "rust_type": "StructuredBuffer < Particle >"
+    },
+    {
+      "access": "read_only",
+      "binding": {
+        "binding": 2,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 8,
+          "count": 2,
+          "kind": "vector",
+          "name": "UVec2",
+          "scalar": "u32",
+          "size": 8,
+          "stride": 8
+        },
+        "element_stride": 8,
+        "rules": "storage_v2"
+      },
+      "name": "counts",
+      "rust_type": "StructuredBuffer < UVec2 >"
+    },
+    {
+      "access": "read_only",
+      "binding": {
+        "binding": 3,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 16,
+          "count": 4,
+          "kind": "vector",
+          "name": "IVec4",
+          "scalar": "i32",
+          "size": 16,
+          "stride": 16
+        },
+        "element_stride": 16,
+        "rules": "storage_v2"
+      },
+      "name": "signed_in",
+      "rust_type": "StructuredBuffer < IVec4 >"
+    },
+    {
+      "access": "read_only",
+      "binding": {
+        "binding": 4,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 16,
+          "count": 4,
+          "kind": "vector",
+          "name": "UVec4",
+          "scalar": "u32",
+          "size": 16,
+          "stride": 16
+        },
+        "element_stride": 16,
+        "rules": "storage_v2"
+      },
+      "name": "wide_in",
+      "rust_type": "StructuredBuffer < UVec4 >"
+    },
+    {
+      "access": "read_write",
+      "binding": {
+        "binding": 5,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 16,
+          "count": 4,
+          "kind": "vector",
+          "name": "Vec4",
+          "scalar": "f32",
+          "size": 16,
+          "stride": 16
+        },
+        "element_stride": 16,
+        "rules": "storage_v2"
+      },
+      "name": "moved",
+      "rust_type": "RWStructuredBuffer < Vec4 >"
+    },
+    {
+      "access": "read_write",
+      "binding": {
+        "binding": 6,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 4,
+          "kind": "scalar",
+          "name": "f32",
+          "scalar": "f32",
+          "size": 4,
+          "stride": 4
+        },
+        "element_stride": 4,
+        "rules": "storage_v1"
+      },
+      "name": "sums",
+      "rust_type": "RWStructuredBuffer < float >"
+    },
+    {
+      "access": "read_write",
+      "binding": {
+        "binding": 7,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 8,
+          "count": 2,
+          "kind": "vector",
+          "name": "UVec2",
+          "scalar": "u32",
+          "size": 8,
+          "stride": 8
+        },
+        "element_stride": 8,
+        "rules": "storage_v2"
+      },
+      "name": "cells",
+      "rust_type": "RWStructuredBuffer < UVec2 >"
+    },
+    {
+      "access": "read_write",
+      "binding": {
+        "binding": 8,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 8,
+          "count": 2,
+          "kind": "vector",
+          "name": "Vec2",
+          "scalar": "f32",
+          "size": 8,
+          "stride": 8
+        },
+        "element_stride": 8,
+        "rules": "storage_v2"
+      },
+      "name": "velocities",
+      "rust_type": "RWStructuredBuffer < Vec2 >"
+    },
+    {
+      "access": "read_write",
+      "binding": {
+        "binding": 9,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 16,
+          "count": 4,
+          "kind": "vector",
+          "name": "IVec4",
+          "scalar": "i32",
+          "size": 16,
+          "stride": 16
+        },
+        "element_stride": 16,
+        "rules": "storage_v2"
+      },
+      "name": "signed_out",
+      "rust_type": "RWStructuredBuffer < IVec4 >"
+    }
+  ],
+  "schema": 1,
+  "source": {
+    "file": "vectors.rs",
+    "lines": [
+      [63, 69, 3],
+      [82, 85, 11],
+      [84, 84, 12],
+      [87, 90, 15],
+      [89, 89, 16],
+      [92, 96, 20],
+      [94, 94, 21],
+      [95, 95, 22],
+      [98, 101, 28],
+      [100, 100, 29],
+      [103, 109, 33],
+      [105, 105, 34],
+      [106, 106, 35],
+      [107, 107, 36],
+      [108, 108, 37],
+      [111, 119, 41],
+      [113, 113, 42],
+      [114, 114, 43],
+      [115, 115, 44],
+      [116, 116, 45],
+      [117, 117, 46],
+      [118, 118, 47],
+      [121, 131, 53],
+      [123, 123, 54],
+      [124, 124, 55],
+      [125, 125, 56],
+      [126, 126, 57],
+      [127, 127, 58],
+      [128, 128, 59],
+      [129, 129, 60],
+      [130, 130, 61],
+      [168, 168, 79],
+      [169, 192, 80],
+      [171, 171, 81],
+      [172, 172, 83],
+      [173, 173, 84],
+      [174, 174, 85],
+      [175, 175, 86],
+      [176, 176, 88],
+      [177, 177, 94],
+      [178, 178, 100],
+      [179, 179, 101],
+      [180, 180, 103],
+      [181, 184, 104],
+      [185, 185, 105],
+      [186, 186, 106],
+      [187, 187, 107],
+      [188, 188, 108],
+      [189, 189, 109],
+      [190, 190, 110],
+      [191, 191, 111]
+    ]
+  },
+  "workgroup_size": [64, 1, 1]
+}

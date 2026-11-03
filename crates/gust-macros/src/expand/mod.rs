@@ -226,7 +226,8 @@ pub(crate) fn expand_validated(
         let export_error = match &record_directory {
             Ok(None) => TokenStream::new(),
             Ok(Some(directory)) => {
-                let parameters = parameter_records(&function.sig.inputs, &structs)?;
+                let parameters =
+                    parameter_records(&function.sig.inputs, &structs, &structs_by_name)?;
                 let file = origin_file(reported.as_deref(), manifest_dir, &emitted.lines);
                 let record = artifact::KernelRecord {
                     key: &key,
@@ -402,10 +403,12 @@ fn require_manifest_item(present: bool, span: proc_macro2::Span) -> TokenStream 
 }
 
 /// The parameters of a kernel as `kernel.json` records them: the facts [`parameter_descriptors`] turns into tokens,
-/// plus the element layout of each storage parameter.
+/// plus the element layout of each storage parameter (`structs`, keyed as the source spells the names) and of each
+/// uniform parameter (`structs_by_unraw_name`, keyed as [`crate::uniform::module_structs`] keys them).
 fn parameter_records(
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
     structs: &HashMap<String, &syn::ItemStruct>,
+    structs_by_unraw_name: &HashMap<String, &syn::ItemStruct>,
 ) -> syn::Result<Vec<artifact::ParameterRecord>> {
     Ok(parameter_facts(inputs)?
         .into_iter()
@@ -422,10 +425,13 @@ fn parameter_records(
                     unreachable!("`parameter_facts` leaves out what is not in the descriptor")
                 }
             };
-            let layout = fact
-                .element
-                .as_ref()
-                .and_then(|element| artifact::element_layout(element, structs));
+            // The numbers are the ones the `const` assertions of the expansion check against the real types (D80): the
+            // storage layout is the running sum of the field sizes, the uniform layout is `uniform::std140_struct`.
+            let layout = match (&fact.element, &fact.uniform_element) {
+                (Some(element), _) => artifact::storage_resource(element, structs),
+                (None, Some(element)) => artifact::uniform_resource(element, structs_by_unraw_name),
+                (None, None) => None,
+            };
             artifact::ParameterRecord {
                 name: fact.name,
                 rust_type: fact.rust_type,

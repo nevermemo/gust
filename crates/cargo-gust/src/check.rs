@@ -10,8 +10,8 @@
 //! - a collected kernel has no manifest entry, or its entry names another module, name, entry point or clean-text
 //!   SHA-256;
 //! - a manifest entry is not a collected kernel (an orphan), or has no WGSL artifact;
-//! - a manifest entry's `export_unchecked` list differs from the one the collected record gives (the storage parameters
-//!   whose layout the macro could not write);
+//! - a manifest entry's `export_unchecked` list differs from the one the collected record gives (the storage and
+//!   uniform parameters whose layout the macro could not write);
 //! - a listed file is missing, or its SHA-256 differs from the manifest's;
 //! - a stored artifact does not verify the way a program verifies it at run time
 //!   (`gust::artifact::verify_artifact`), or was compiled by another Slang build than the manifest says;

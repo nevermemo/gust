@@ -1,16 +1,21 @@
-//! Uniform kernels through the export path (slice m6.u2f).
+//! Uniform kernels through the export path (slices m6.u2f and m7.lv).
 //!
-//! The macro writes `layout: null` for a `Uniform<T>` parameter (the record schema has no uniform layout), so the
-//! export completes it from the reflection's constant buffer as `Std140V1` ([`completed_descriptor`]). These tests use
-//! the WGSL and the reflection JSON the native helper wrote for two uniform kernels (`testdata/uniform/`, made by
-//! `cargo gust build` on a crate with the same module) and the descriptor `#[gust::gpu]` makes of the same kernels, so
-//! the cross-check that runs here is gust's own and no helper is needed. `the_helper_builds_the_stored_artifacts`
-//! needs the helper and checks that the stored bytes are what it writes today.
+//! The macro writes the std140 layout of a `Uniform<T>` whose type it can describe (m7.lv), so the export checks it in
+//! full against the reflection and lists nothing. A uniform whose layout is `null` (a type from outside the module) is
+//! still filled from the reflection's constant buffer as `Std140V1` ([`completed_descriptor`]) and is listed in
+//! `export_unchecked`; D104's exemption for it is retired. These tests use the records the macro wrote for two uniform
+//! kernels (`testdata/uniform/<key>.kernel.json`, made by `cargo gust build` on a crate with the same module), the WGSL
+//! and the reflection JSON the native helper wrote for them, and the descriptor `#[gust::gpu]` makes of the same
+//! kernels, so the cross-check that runs here is gust's own and no helper is needed.
+//! `the_helper_builds_the_stored_artifacts` needs the helper and checks that the stored bytes are what it writes today.
 
-use gust::{ParameterDescriptor, ScalarKind, artifact::verify_artifact};
+use gust::{
+    ParameterDescriptor, ParameterKind, ResourceLayout, ShaderLayoutRules,
+    artifact::verify_artifact,
+};
 
 use super::*;
-use crate::record::{LayoutKindRecord, LayoutRecord, ParameterRecord, ResourceRecord};
+use crate::record::{LayoutKindRecord, ResourceRecord};
 
 #[gust::gpu]
 mod probes {
@@ -67,19 +72,23 @@ mod probes {
 }
 
 const SCALE_KEY: &str = "bfb6e436140611c0";
+const SCALE_RECORD: &str = include_str!("testdata/uniform/bfb6e436140611c0.kernel.json");
 const SCALE_WGSL: &[u8] = include_bytes!("testdata/uniform/bfb6e436140611c0.wgsl");
 const SCALE_REFLECTION: &str =
     include_str!("testdata/uniform/bfb6e436140611c0.wgsl.reflection.json");
 const SHIFTED_KEY: &str = "f6dd8e3fe6e29694";
+const SHIFTED_RECORD: &str = include_str!("testdata/uniform/f6dd8e3fe6e29694.kernel.json");
 const SHIFTED_WGSL: &[u8] = include_bytes!("testdata/uniform/f6dd8e3fe6e29694.wgsl");
 const SHIFTED_REFLECTION: &str =
     include_str!("testdata/uniform/f6dd8e3fe6e29694.wgsl.reflection.json");
 
-/// One stored kernel: its descriptor from the macro, the key it must have and the helper's bytes for it.
+/// One stored kernel: its descriptor from the macro, the record the macro wrote for it, the key it must have and the
+/// helper's bytes for it.
 struct Stored {
     kernel: &'static KernelDescriptor,
     key: &'static str,
     name: &'static str,
+    record_json: &'static str,
     wgsl: &'static [u8],
     reflection: &'static str,
 }
@@ -88,6 +97,7 @@ const SCALE: Stored = Stored {
     kernel: &probes::scale::DESCRIPTOR,
     key: SCALE_KEY,
     name: "scale",
+    record_json: SCALE_RECORD,
     wgsl: SCALE_WGSL,
     reflection: SCALE_REFLECTION,
 };
@@ -95,25 +105,13 @@ const SHIFTED: Stored = Stored {
     kernel: &probes::shifted::DESCRIPTOR,
     key: SHIFTED_KEY,
     name: "shifted",
+    record_json: SHIFTED_RECORD,
     wgsl: SHIFTED_WGSL,
     reflection: SHIFTED_REFLECTION,
 };
 
-fn f32_layout() -> ResourceRecord {
-    ResourceRecord {
-        element_stride: 4,
-        element: LayoutRecord {
-            name: "f32".to_owned(),
-            size: 4,
-            alignment: 4,
-            stride: 4,
-            kind: LayoutKindRecord::Scalar(ScalarKind::F32),
-        },
-    }
-}
-
 impl Stored {
-    /// The record as the macro writes it: every storage parameter has its f32 layout, every uniform `layout: null`.
+    /// The record as the macro writes it (the stored `.kernel.json`, read by the tool's own reader).
     fn record(&self) -> Record {
         assert_eq!(
             format!(
@@ -123,32 +121,16 @@ impl Stored {
             self.key,
             "the macro's output drifted from the stored artifact"
         );
-        Record {
-            key: self.key.to_owned(),
-            module: "probes".to_owned(),
-            name: self.name.to_owned(),
-            entry_point: self.kernel.entry_point.to_owned(),
-            workgroup_size: [64, 1, 1],
-            parameters: self
-                .kernel
-                .parameters
-                .iter()
-                .map(|parameter| ParameterRecord {
-                    name: parameter.name.to_owned(),
-                    rust_type: parameter.rust_type.to_owned(),
-                    kind: parameter.kind,
-                    access: parameter.access,
-                    binding: parameter
-                        .binding
-                        .map(|binding| (binding.group, binding.binding)),
-                    layout: (parameter.kind == ParameterKind::Storage).then(f32_layout),
-                })
-                .collect(),
-            file: String::new(),
-            lines: Vec::new(),
-            slang: self.kernel.slang_source.to_owned(),
-            sites: Vec::new(),
+        Record::parse(self.record_json, self.kernel.slang_source).unwrap()
+    }
+
+    /// The record with every layout `null`: what the macro writes for types it cannot describe.
+    fn null_record(&self) -> Record {
+        let mut record = self.record();
+        for parameter in &mut record.parameters {
+            parameter.layout = None;
         }
+        record
     }
 
     fn verify(&self, record: &Record) -> Result<String, String> {
@@ -209,8 +191,17 @@ fn uniforms(kernel: &KernelDescriptor) -> Vec<&ParameterDescriptor> {
         .collect()
 }
 
+/// The resource layout of every parameter of a descriptor, in order.
+fn layouts(kernel: &KernelDescriptor) -> Vec<Option<ResourceLayout>> {
+    kernel
+        .parameters
+        .iter()
+        .map(|parameter| parameter.resource_layout)
+        .collect()
+}
+
 #[test]
-fn the_macro_leaves_the_uniform_layouts_null_and_the_stored_artifacts_are_the_macros_kernels() {
+fn the_macro_writes_the_uniform_layouts_and_the_record_rebuilds_its_descriptor() {
     for stored in [SCALE, SHIFTED] {
         let record = stored.record();
         let uniform_count = record
@@ -225,19 +216,27 @@ fn the_macro_leaves_the_uniform_layouts_null_and_the_stored_artifacts_are_the_ma
                 .parameters
                 .iter()
                 .filter(|parameter| parameter.kind == ParameterKind::Uniform)
-                .all(|parameter| parameter.layout.is_none()),
+                .all(|parameter| parameter
+                    .layout
+                    .as_ref()
+                    .is_some_and(|layout| layout.rules == ShaderLayoutRules::Std140V1)),
+            "{}",
+            stored.name
         );
-        // Without the completion the descriptor has no element layout for them: the failure of `cargo gust build`
-        // on main, as the runtime's own cross-check words it.
-        let raw = stored
+        // Nothing is left to fill, so nothing is unchecked.
+        assert!(record.unchecked_parameters().is_empty(), "{}", stored.name);
+        // The record round-trips: its descriptor carries the macro's own resource layouts, parameter by parameter.
+        assert_eq!(
+            layouts(&record.descriptor()),
+            layouts(stored.kernel),
+            "{}",
+            stored.name
+        );
+        // And the descriptor of the record passes the cross-check against the stored reflection as it is.
+        stored
             .reflection()
             .cross_check_kernel(&record.descriptor())
-            .unwrap_err();
-        assert!(
-            raw.to_string()
-                .contains("missing descriptor element layout"),
-            "{raw}"
-        );
+            .unwrap();
     }
 }
 
@@ -245,23 +244,22 @@ fn the_macro_leaves_the_uniform_layouts_null_and_the_stored_artifacts_are_the_ma
 fn a_uniform_kernel_verifies_as_a_program_verifies_it() {
     for stored in [SCALE, SHIFTED] {
         assert_eq!(stored.verify(&stored.record()).unwrap(), "2026.20");
+        // A record with null layouts verifies too: they are filled from the reflection.
+        assert_eq!(stored.verify(&stored.null_record()).unwrap(), "2026.20");
     }
 }
 
 #[test]
 fn uniform_and_storage_layouts_are_completed_together() {
-    let mut record = SHIFTED.record();
-    for parameter in &mut record.parameters {
-        parameter.layout = None;
-    }
-    assert_eq!(record.unchecked_parameters(), ["src", "out"]);
+    let record = SHIFTED.null_record();
+    assert_eq!(record.unchecked_parameters(), ["o", "g", "src", "out"]);
     assert_eq!(SHIFTED.verify(&record).unwrap(), "2026.20");
 }
 
 #[test]
 fn the_completed_uniform_layouts_are_the_macros_own_std140_layouts() {
     for stored in [SCALE, SHIFTED] {
-        let completed = completed_descriptor(&stored.record(), stored.reflection).unwrap();
+        let completed = completed_descriptor(&stored.null_record(), stored.reflection).unwrap();
         let from_macro = uniforms(stored.kernel);
         let from_reflection = uniforms(&completed);
         assert_eq!(from_macro.len(), from_reflection.len());
@@ -278,20 +276,16 @@ fn the_completed_uniform_layouts_are_the_macros_own_std140_layouts() {
             );
             assert_eq!(macro_side.resource_layout.unwrap(), layout);
         }
-        // The storage parameters keep their `StorageV1` layouts.
-        for parameter in completed
-            .parameters
-            .iter()
-            .filter(|parameter| parameter.kind == ParameterKind::Storage)
-        {
-            assert_eq!(
-                parameter.resource_layout.unwrap().rules,
-                ShaderLayoutRules::StorageV1
-            );
-        }
+        // Every filled layout is what the macro wrote, the storage parameters (`StorageV1`) included.
+        assert_eq!(
+            layouts(&completed),
+            layouts(stored.kernel),
+            "{}",
+            stored.name
+        );
     }
     // Spelled out for the nested one (`o`: 32 bytes, `inner` at 16 inside it) so the numbers are not only compared.
-    let completed = completed_descriptor(&SHIFTED.record(), SHIFTED.reflection).unwrap();
+    let completed = completed_descriptor(&SHIFTED.null_record(), SHIFTED.reflection).unwrap();
     let outer = completed.parameters[1].resource_layout.unwrap();
     assert_eq!((outer.element.size, outer.element.alignment), (32, 16));
     assert_eq!(outer.element_stride, 32);
@@ -323,9 +317,7 @@ fn the_plan_of_a_uniform_kernel_is_built_by_the_export_path() {
             "f6dd8e3fe6e29694.wgsl.reflection.json",
         ]
     );
-    // The macro lists the storage parameters it could not describe; a uniform is filled from the reflection without
-    // being listed, because its layout is never in the record (and the run-time check of the real `GpuPod::LAYOUT`
-    // still holds, as for the others).
+    // The macro described every layout, so the descriptor-side check ran in full and nothing is unchecked.
     assert!(
         planned
             .manifest
@@ -336,8 +328,111 @@ fn the_plan_of_a_uniform_kernel_is_built_by_the_export_path() {
 }
 
 #[test]
-fn a_uniform_layout_the_reflection_does_not_confirm_is_refused() {
+fn a_null_uniform_is_listed_in_export_unchecked() {
+    // The retired exemption (D104): a uniform the macro could not describe is filled from the reflection and, like a
+    // storage buffer in that case, named in the manifest, because its layout was not checked against the macro's.
+    let mut record = SHIFTED.record();
+    for parameter in &mut record.parameters {
+        if parameter.name == "o" {
+            parameter.layout = None;
+        }
+    }
+    assert_eq!(record.unchecked_parameters(), ["o"]);
+    let planned = plan(vec![record], &[Format::Wgsl], &StoredCompiler).unwrap();
+    assert_eq!(planned.manifest.kernels.len(), 1);
+    assert_eq!(planned.manifest.kernels[0].export_unchecked, ["o"]);
+    // Every layout null: all four are listed, in parameter order, the uniforms with the storage buffers.
+    let planned = plan(
+        vec![SHIFTED.null_record()],
+        &[Format::Wgsl],
+        &StoredCompiler,
+    )
+    .unwrap();
+    assert_eq!(
+        planned.manifest.kernels[0].export_unchecked,
+        ["o", "g", "src", "out"]
+    );
+}
+
+#[test]
+fn a_uniform_offset_tampered_in_the_record_is_caught_at_export() {
+    let record = SHIFTED.record();
     let genuine = SHIFTED.reflection();
+    // Move the nested `inner` (a struct inside the uniform `o`) from 16 to 20, a number std140 would refuse, and the
+    // `count` field of `Inner` from 0 to 4 (a valid offset but not where the reflection has it).
+    for (what, edit) in [
+        (
+            "the offset of a nested struct",
+            tamper_offset as fn(&mut Record, &str, u32) -> String,
+        ),
+        ("the offset of a scalar inside it", tamper_inner_offset),
+    ] {
+        let mut tampered = record.clone();
+        let target = edit(&mut tampered, "o", 20);
+        let error = cross_check_completed(&tampered, &genuine, SHIFTED.reflection).unwrap_err();
+        assert!(
+            error.contains("host layout is not Std140V1"),
+            "{what} ({target}): {error}"
+        );
+        // And the whole export refuses the record, with the same cause, before anything is written.
+        let error = plan(vec![tampered], &[Format::Wgsl], &StoredCompiler).unwrap_err();
+        assert!(
+            error.contains("host layout is not Std140V1"),
+            "{what}: {error}"
+        );
+    }
+}
+
+/// Set the offset of the field named `inner` of the uniform `parameter` to `to`; returns what was changed.
+fn tamper_offset(record: &mut Record, parameter: &str, to: u32) -> String {
+    let layout = uniform_layout(record, parameter);
+    let LayoutKindRecord::Struct(fields) = &mut layout.element.kind else {
+        panic!("the uniform element is a struct");
+    };
+    let field = fields
+        .iter_mut()
+        .find(|field| field.name == "inner")
+        .unwrap();
+    let from = field.offset;
+    field.offset = to;
+    format!("inner {from} -> {to}")
+}
+
+/// Set the offset of `pad0` inside the nested `inner` of the uniform `parameter` to `to`.
+fn tamper_inner_offset(record: &mut Record, parameter: &str, to: u32) -> String {
+    let layout = uniform_layout(record, parameter);
+    let LayoutKindRecord::Struct(fields) = &mut layout.element.kind else {
+        panic!("the uniform element is a struct");
+    };
+    let inner = fields
+        .iter_mut()
+        .find(|field| field.name == "inner")
+        .unwrap();
+    let LayoutKindRecord::Struct(inner_fields) = &mut inner.ty.kind else {
+        panic!("inner is a struct");
+    };
+    let field = inner_fields
+        .iter_mut()
+        .find(|field| field.name == "pad0")
+        .unwrap();
+    let from = field.offset;
+    field.offset = to;
+    format!("inner.pad0 {from} -> {to}")
+}
+
+fn uniform_layout<'a>(record: &'a mut Record, parameter: &str) -> &'a mut ResourceRecord {
+    record
+        .parameters
+        .iter_mut()
+        .find(|candidate| candidate.name == parameter)
+        .unwrap()
+        .layout
+        .as_mut()
+        .unwrap()
+}
+
+#[test]
+fn a_uniform_layout_the_reflection_does_not_confirm_is_refused() {
     let record = SHIFTED.record();
     // The stored reflection with one change each; the all-in-one verification judges the changed document alone.
     for (what, from, to, expected) in [
@@ -345,19 +440,19 @@ fn a_uniform_layout_the_reflection_does_not_confirm_is_refused() {
             "an offset that is not where std140 puts it",
             "\"name\":\"pad0\",\"binding\":{\"kind\":\"uniform\",\"offset\":4,",
             "\"name\":\"pad0\",\"binding\":{\"kind\":\"uniform\",\"offset\":8,",
-            "host layout is not Std140V1",
+            "o.pad0.offset: host 4, compiler 8",
         ),
         (
             "a constant buffer whose size is not its element's",
             "\"type\":{\"kind\":\"constantBuffer\",\"size\":32,",
             "\"type\":{\"kind\":\"constantBuffer\",\"size\":48,",
-            "o.stride: inconsistent host resource layout",
+            "o.stride: host 32, compiler 48",
         ),
         (
             "an alignment that is not rounded up to 16",
             "\"type\":{\"size\":16,\"alignment\":16,\"stride\":16,\"name\":\"Inner\"",
             "\"type\":{\"size\":16,\"alignment\":4,\"stride\":16,\"name\":\"Inner\"",
-            "host layout is not Std140V1",
+            "o.inner.alignment: host 16, compiler 4",
         ),
     ] {
         let tampered = SHIFTED.reflection.replacen(from, to, 1);
@@ -367,52 +462,38 @@ fn a_uniform_layout_the_reflection_does_not_confirm_is_refused() {
         );
         let error = verify_stored(&record, Format::Wgsl, SHIFTED.wgsl, &tampered).unwrap_err();
         assert!(error.contains(expected), "{what}: {error}");
-        // The export-time cross-check judges a layout filled from the changed document against the genuine
-        // reflection, which is what the helper wrote: they disagree, so it never passes.
-        let error = cross_check_completed(&record, &genuine, &tampered).unwrap_err();
-        assert!(error.contains(expected), "{what}: {error}");
     }
-    // A field named differently in the filled layout than in the reflection that is checked.
+    // A field named differently in the record's layout than in the reflection that is checked.
     let renamed = SHIFTED
         .reflection
         .replacen("\"name\":\"bias\"", "\"name\":\"offset\"", 1);
     assert_ne!(renamed, SHIFTED.reflection);
-    let error = cross_check_completed(&record, &genuine, &renamed).unwrap_err();
+    let error = verify_stored(&record, Format::Wgsl, SHIFTED.wgsl, &renamed).unwrap_err();
     assert!(error.contains("field name/order differs"), "{error}");
 }
 
 #[test]
-fn a_std140_valid_difference_from_the_macro_passes_the_export_and_fails_at_run_time() {
-    // The limitation, pinned: the record carries no uniform layout, so the export checks the reflection against itself
-    // and cannot see a difference from the macro's layout that is still valid std140. Here the Slang side names a
-    // padding field differently (the same offsets and sizes). `verify_stored` is what `HelperCompiler::compile` runs
-    // on the fresh artifact and what `cargo gust check` runs on a stored one; it accepts the document.
+fn a_std140_valid_difference_from_the_macro_is_now_caught_at_export() {
+    // The limitation m6.u2f pinned is gone: with the macro's layout in the record, a Slang side that names a padding
+    // field differently (the same offsets and sizes, so still valid std140) fails the export-time check, where it
+    // used to pass the export and fail only in a program. `null_record` shows the old behaviour for contrast.
     for stored in [SCALE, SHIFTED] {
         let renamed = stored
             .reflection
             .replacen("\"name\":\"pad0\"", "\"name\":\"padx\"", 1);
         assert_ne!(renamed, stored.reflection, "{}", stored.name);
-        assert_eq!(
-            verify_stored(&stored.record(), Format::Wgsl, stored.wgsl, &renamed).unwrap(),
-            "2026.20",
-            "{}",
+        let error =
+            verify_stored(&stored.record(), Format::Wgsl, stored.wgsl, &renamed).unwrap_err();
+        assert!(
+            error.contains("field name/order differs"),
+            "{}: {error}",
             stored.name
         );
-        // A program that loads the artifact checks it against the macro's own Std140V1 descriptor (D17), a real
-        // `#[gpu]` kernel descriptor, and refuses it by the field name.
-        let error = verify_artifact(
-            stored.kernel,
-            &Artifact {
-                format: Format::Wgsl,
-                key: stored.key,
-                bytes: stored.wgsl,
-                reflection: leak_str(&renamed),
-            },
-        )
-        .unwrap_err();
-        assert!(
-            error.to_string().contains("field name/order differs"),
-            "{}: {error}",
+        // A null layout is filled from the document itself, so that check cannot see it (and says so in the manifest).
+        assert_eq!(
+            verify_stored(&stored.null_record(), Format::Wgsl, stored.wgsl, &renamed).unwrap(),
+            "2026.20",
+            "{}",
             stored.name
         );
     }
@@ -420,12 +501,12 @@ fn a_std140_valid_difference_from_the_macro_passes_the_export_and_fails_at_run_t
 
 #[test]
 fn a_uniform_layout_declared_with_storage_rules_is_refused() {
-    // A record that carries a layout for its uniform is not re-declared: the rules `descriptor()` gives it are
-    // `StorageV1`, which does not fit a constant buffer. (The macro writes no such layout today.)
+    // The record's rules are the descriptor's rules: `StorageV1` does not fit a constant buffer.
     let mut record = SCALE.record();
-    let layout = crate::fill::reflected_uniform_layout(SCALE.reflection, "g").unwrap();
+    let layout = uniform_layout(&mut record, "g");
+    assert_eq!(layout.rules, ShaderLayoutRules::Std140V1);
     assert_eq!(layout.element_stride, 16);
-    record.parameters[1].layout = Some(layout);
+    layout.rules = ShaderLayoutRules::StorageV1;
     let error = SCALE.verify(&record).unwrap_err();
     assert!(
         error.contains("g.rules: StorageV1 does not fit this parameter kind"),
@@ -436,7 +517,7 @@ fn a_uniform_layout_declared_with_storage_rules_is_refused() {
 #[test]
 fn a_reflection_that_does_not_report_a_constant_buffer_for_a_uniform_is_refused_by_name() {
     // The uniform `g` is renamed to the storage buffer `src`, which the reflection reports as a structured buffer.
-    let mut record = SCALE.record();
+    let mut record = SCALE.null_record();
     record.parameters[1].name = "src".to_owned();
     let error = SCALE.verify(&record).unwrap_err();
     assert!(

@@ -223,6 +223,20 @@ is FNV-1a 64 over the relative file, a zero byte and the decimal line of the cal
 `SourceOrigin` of a schema 2 kernel is the first one's. A `.site.json` next to a schema 1 record, a schema 2
 record without one, and a sidecar of another key are errors.
 
+Layouts in the record (slice m7.lv). A parameter's `layout` is `null` or `{rules, element_stride, element}`. `rules` is
+`storage_v1` (a padding-free element of scalars and structs of them), `storage_v2` (a storage element that holds a
+vector or a matrix) or `std140_v1` (the element of a `Uniform<T>`). The element's `kind` is `scalar`, `vector`
+(`scalar`, `count`), `matrix` (`scalar`, `rows`, `cols`, `column_stride`) or `struct` (`fields` of `name`, `offset`
+and a nested `type`). The macro writes these numbers from the same functions that produce its const assertions
+(storage structs are padding-free; a uniform struct uses the std140 offsets, an alignment of at least 16 and a size
+rounded up to 16, and its `element_stride` is its size), for every element it can describe from the module's own
+types and the `gust::math` vectors and matrices (a 3-wide type is never a buffer element). Anything else stays `null`
+(an alias or a type from outside the module): `cargo gust` then fills the layout from the helper's reflection and the
+kernel's manifest entry lists the parameter in `export_unchecked`, uniforms included. A record with only `storage_v1`
+layouts is byte for byte what it was, so no schema 1 record of a kernel without a uniform or a vector changed and the
+schema stays 1. A `cargo-gust` from before this slice refuses a record with the new rules by path (an `unknown layout
+rules` error that names `parameters[i].layout`) and needs the update.
+
 ## Descriptor flow
 
 For a kernel with three storage buffers, the macro records:

@@ -7,10 +7,17 @@
 //! descriptor without a compiler: `schema`, `key`, `module`, `name`, `entry_point`, `workgroup_size` (three numbers),
 //! `parameters` (each `name`, `rust_type`, `kind` of `invocation`, `storage`, `uniform` or `value`, `access` of
 //! `read_only`, `read_write` or `not_applicable`, `binding` as `{"group": 0, "binding": n}` or null, and `layout`:
-//! null or `{"rules": "storage_v1", "element_stride": n, "element": <layout>}`) and `source` (`file`, and `lines`
-//! as `[slang_start, slang_end, rust_line]` triples). A `<layout>` is `name`, `size`, `alignment`, `stride`, `kind`
-//! (`scalar` with `scalar` of `u32`, `i32` or `f32`, or `struct` with `fields` of `name`, `offset` and a nested
-//! `type`). Unknown keys are ignored; a missing or mistyped one is an error that names its path.
+//! null or `{"rules": <rules>, "element_stride": n, "element": <layout>}` with `<rules>` of `storage_v1`,
+//! `storage_v2` or `std140_v1`) and `source` (`file`, and `lines` as `[slang_start, slang_end, rust_line]` triples).
+//! A `<layout>` is `name`, `size`, `alignment`, `stride`, `kind` (`scalar` with `scalar` of `u32`, `i32` or `f32`;
+//! `vector` with `scalar` and `count`; `matrix` with `scalar`, `rows`, `cols` and `column_stride`; or `struct` with
+//! `fields` of `name`, `offset` and a nested `type`), the same numbers as a `gust::TypeLayout`. Unknown keys are
+//! ignored; a missing or mistyped one is an error that names its path.
+//!
+//! The macro writes a layout for a storage element (`storage_v1`, or `storage_v2` when it holds a vector or a matrix)
+//! and for a uniform (`std140_v1`) whenever it can describe the type from the module's own syntax (m7.lv). A reader
+//! from before that slice knows only `storage_v1` and refuses the other two with `unknown layout rules`, which names
+//! the parameter's path; a record that has only `storage_v1` layouts is byte for byte what it was.
 //!
 //! Schema 2 (R1.1 M5, slice m7.p) is the record of a `par_for!` call: the same keys without `source`, because one body
 //! can stand at any number of call sites and the record must not depend on them. Each call site writes a sidecar
@@ -115,8 +122,19 @@ pub(crate) struct ParameterRecord {
     pub(crate) layout: Option<ResourceRecord>,
 }
 
+impl ParameterRecord {
+    /// A storage or uniform parameter without a layout: the macro could not describe its element, so the layout is
+    /// filled from the reflection and the parameter is listed as `export_unchecked`.
+    fn needs_fill(&self) -> bool {
+        matches!(self.kind, ParameterKind::Storage | ParameterKind::Uniform)
+            && self.layout.is_none()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResourceRecord {
+    /// `storage_v1`, `storage_v2` or `std140_v1`: how the descriptor declares the layout.
+    pub(crate) rules: ShaderLayoutRules,
     pub(crate) element_stride: u32,
     pub(crate) element: LayoutRecord,
 }
@@ -133,7 +151,32 @@ pub(crate) struct LayoutRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LayoutKindRecord {
     Scalar(ScalarKind),
+    /// `count` scalars of one kind.
+    Vector {
+        scalar: ScalarKind,
+        count: u32,
+    },
+    /// A column-major `rows` by `cols` matrix whose columns are `column_stride` bytes apart.
+    Matrix {
+        scalar: ScalarKind,
+        rows: u32,
+        cols: u32,
+        column_stride: u32,
+    },
     Struct(Vec<FieldRecord>),
+}
+
+impl LayoutRecord {
+    /// Whether a vector or a matrix is this layout or is inside it: such an element cannot be `StorageV1`.
+    pub(crate) fn holds_math_type(&self) -> bool {
+        match &self.kind {
+            LayoutKindRecord::Scalar(_) => false,
+            LayoutKindRecord::Vector { .. } | LayoutKindRecord::Matrix { .. } => true,
+            LayoutKindRecord::Struct(fields) => {
+                fields.iter().any(|field| field.ty.holds_math_type())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -267,29 +310,32 @@ impl Record {
         sha256_hex(self.slang.as_bytes())
     }
 
-    /// The storage parameters whose element layout the macro could not write (`layout: null`), in parameter order.
-    /// The manifest lists them as `export_unchecked`.
+    /// The storage and uniform parameters whose element layout the macro could not write (`layout: null`), in
+    /// parameter order. The manifest lists them as `export_unchecked`.
     pub(crate) fn unchecked_parameters(&self) -> Vec<String> {
         self.parameters
             .iter()
-            .filter(|parameter| {
-                parameter.kind == ParameterKind::Storage && parameter.layout.is_none()
-            })
+            .filter(|parameter| parameter.needs_fill())
             .map(|parameter| parameter.name.clone())
             .collect()
     }
 
-    /// A copy whose unchecked parameters have the layout the reflection JSON reports (see [`crate::fill`]). A record
-    /// without unchecked parameters comes back unchanged and the JSON is not read.
+    /// A copy whose unchecked parameters have the layout the reflection JSON reports (see [`crate::fill`]): a storage
+    /// element with `StorageV1` or `StorageV2` rules by its shape, a uniform with `Std140V1` rules. A record without
+    /// unchecked parameters comes back unchanged and the JSON is not read.
     pub(crate) fn completed(&self, reflection_json: &str) -> Result<Self, String> {
         let mut completed = self.clone();
         for parameter in &mut completed.parameters {
-            if parameter.kind == ParameterKind::Storage && parameter.layout.is_none() {
-                parameter.layout = Some(
-                    crate::fill::reflected_layout(reflection_json, &parameter.name)
-                        .map_err(|error| format!("{}: {error}", self.qualified_name()))?,
-                );
+            if !parameter.needs_fill() {
+                continue;
             }
+            let filled = if parameter.kind == ParameterKind::Uniform {
+                crate::fill::reflected_uniform_layout(reflection_json, &parameter.name)
+            } else {
+                crate::fill::reflected_layout(reflection_json, &parameter.name)
+            };
+            parameter.layout =
+                Some(filled.map_err(|error| format!("{}: {error}", self.qualified_name()))?);
         }
         Ok(completed)
     }
@@ -297,8 +343,9 @@ impl Record {
     /// Rebuild the kernel's descriptor. Strings and tables are leaked: the tool is a short-lived process and the
     /// descriptor type wants `'static` data.
     ///
-    /// A storage parameter without an element layout (the macro could not describe its type) gets no resource layout:
-    /// compile with this descriptor, then [`Record::completed`] and build the descriptor again to cross-check.
+    /// A storage or uniform parameter without an element layout (the macro could not describe its type) gets no
+    /// resource layout: compile with this descriptor, then [`Record::completed`] and build the descriptor again to
+    /// cross-check.
     pub(crate) fn descriptor(&self) -> KernelDescriptor {
         let mut parameters = Vec::with_capacity(self.parameters.len());
         for parameter in &self.parameters {
@@ -308,7 +355,7 @@ impl Record {
                 kind: parameter.kind,
                 access: parameter.access,
                 resource_layout: parameter.layout.as_ref().map(|layout| ResourceLayout {
-                    rules: ShaderLayoutRules::StorageV1,
+                    rules: layout.rules,
                     element: layout.element.type_layout(),
                     element_stride: layout.element_stride,
                 }),
@@ -363,6 +410,21 @@ impl LayoutRecord {
             stride: self.stride,
             kind: match &self.kind {
                 LayoutKindRecord::Scalar(scalar) => TypeLayoutKind::Scalar(*scalar),
+                LayoutKindRecord::Vector { scalar, count } => TypeLayoutKind::Vector {
+                    scalar: *scalar,
+                    count: *count,
+                },
+                LayoutKindRecord::Matrix {
+                    scalar,
+                    rows,
+                    cols,
+                    column_stride,
+                } => TypeLayoutKind::Matrix {
+                    scalar: *scalar,
+                    rows: *rows,
+                    cols: *cols,
+                    column_stride: *column_stride,
+                },
                 LayoutKindRecord::Struct(fields) => {
                     let fields: Vec<StructFieldLayout> = fields
                         .iter()
@@ -454,11 +516,14 @@ fn parse_parameter(value: &Json, context: &str) -> Result<ParameterRecord, Strin
         None
     } else {
         let at = format!("{context}.layout");
-        let rules = string(layout, "rules", &at)?;
-        if rules != "storage_v1" {
-            return Err(format!("{at}: unknown layout rules `{rules}`"));
-        }
+        let rules = match string(layout, "rules", &at)?.as_str() {
+            "storage_v1" => ShaderLayoutRules::StorageV1,
+            "storage_v2" => ShaderLayoutRules::StorageV2,
+            "std140_v1" => ShaderLayoutRules::Std140V1,
+            other => return Err(format!("{at}: unknown layout rules `{other}`")),
+        };
         Some(ResourceRecord {
+            rules,
             element_stride: number(layout, "element_stride", &at)?,
             element: parse_layout(layout.field("element", &at)?, &format!("{at}.element"))?,
         })
@@ -473,14 +538,29 @@ fn parse_parameter(value: &Json, context: &str) -> Result<ParameterRecord, Strin
     })
 }
 
+/// The `scalar` of a layout: `u32`, `i32` or `f32`.
+fn scalar_kind(value: &Json, context: &str) -> Result<ScalarKind, String> {
+    match string(value, "scalar", context)?.as_str() {
+        "u32" => Ok(ScalarKind::U32),
+        "i32" => Ok(ScalarKind::I32),
+        "f32" => Ok(ScalarKind::F32),
+        other => Err(format!("{context}: unknown scalar `{other}`")),
+    }
+}
+
 fn parse_layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
     let kind = match string(value, "kind", context)?.as_str() {
-        "scalar" => LayoutKindRecord::Scalar(match string(value, "scalar", context)?.as_str() {
-            "u32" => ScalarKind::U32,
-            "i32" => ScalarKind::I32,
-            "f32" => ScalarKind::F32,
-            other => return Err(format!("{context}: unknown scalar `{other}`")),
-        }),
+        "scalar" => LayoutKindRecord::Scalar(scalar_kind(value, context)?),
+        "vector" => LayoutKindRecord::Vector {
+            scalar: scalar_kind(value, context)?,
+            count: number(value, "count", context)?,
+        },
+        "matrix" => LayoutKindRecord::Matrix {
+            scalar: scalar_kind(value, context)?,
+            rows: number(value, "rows", context)?,
+            cols: number(value, "cols", context)?,
+            column_stride: number(value, "column_stride", context)?,
+        },
         "struct" => LayoutKindRecord::Struct(
             array(value, "fields", context)?
                 .iter()

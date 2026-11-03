@@ -344,6 +344,10 @@ static std::string reflection_json(slang::ProgramLayout* layout, const char* ent
         }
         if (type->getKind() == slang::TypeReflection::Kind::SamplerState)
         {
+            // SamplerComparisonState is a sampler kind too, but a comparison sampler binds differently (WebGPU's
+            // sampler_comparison), and the document has no field for it yet: refuse it instead of calling it plain.
+            if (!type->getName() || std::string(type->getName()) != "SamplerState")
+                throw std::runtime_error("comparison samplers (SamplerComparisonState) are not supported");
             use.shapes = true;
             if (index) parameters << ',';
             parameters << "{\"name\":" << json_string(resource->getName())
@@ -355,8 +359,9 @@ static std::string reflection_json(slang::ProgramLayout* layout, const char* ent
             // Only a plain 2D texture (no array, multisample or feedback flag). The access of a sampled Texture2D is
             // "read" (the slangc command line omits it). A sampled texture has no format in the shader, so it always
             // reports "unknown" here, whatever the API says for it (Texture2D<uint> reads back as r32ui, a
-            // Texture2D<float4> as unknown); a read-write or write-only one must declare its format, which is part of
-            // D17's identity, and reports it.
+            // Texture2D<float4> as unknown); a read-write or write-only one reports the format of its artifact, which
+            // is part of D17's identity: the declared [format(..)], or the one Slang infers (RWTexture2D<uint> is
+            // r32ui). One that has neither (RWTexture2D<float4>) is refused.
             const char* access = nullptr;
             switch (type->getResourceAccess())
             {
@@ -369,7 +374,8 @@ static std::string reflection_json(slang::ProgramLayout* layout, const char* ent
             if (type->getResourceAccess() != SLANG_RESOURCE_ACCESS_READ)
             {
                 if (resource->getImageFormat() == SLANG_IMAGE_FORMAT_unknown)
-                    throw std::runtime_error("a read-write or write-only texture must declare a [format(..)]");
+                    throw std::runtime_error(
+                        "a read-write or write-only texture needs a format, declared with [format(..)] or inferred");
                 format = image_format_name(resource->getImageFormat());
             }
             use.shapes = true;
@@ -380,6 +386,32 @@ static std::string reflection_json(slang::ProgramLayout* layout, const char* ent
                        << ",\"result\":" << value_type_json(type->getResourceResultType())
                        << ",\"format\":" << json_string(format) << "}}";
             continue;
+        }
+        if (type->getKind() == slang::TypeReflection::Kind::Resource)
+        {
+            // Any other texture (1D, 3D, cube, array, multisampled, feedback, shadow, or combined with a sampler as
+            // Sampler2D) is refused by name; a buffer falls through to the structured-buffer rule below.
+            const auto shape = static_cast<int>(type->getResourceShape());
+            const char* base = nullptr;
+            switch (shape & SLANG_RESOURCE_BASE_SHAPE_MASK)
+            {
+            case SLANG_TEXTURE_1D: base = "1D"; break;
+            case SLANG_TEXTURE_2D: base = "2D"; break;
+            case SLANG_TEXTURE_3D: base = "3D"; break;
+            case SLANG_TEXTURE_CUBE: base = "cube"; break;
+            default: break;
+            }
+            if (base)
+            {
+                std::string text = base;
+                if (shape & SLANG_TEXTURE_ARRAY_FLAG) text += " array";
+                if (shape & SLANG_TEXTURE_MULTISAMPLE_FLAG) text += " multisampled";
+                if (shape & SLANG_TEXTURE_FEEDBACK_FLAG) text += " feedback";
+                if (shape & SLANG_TEXTURE_SHADOW_FLAG) text += " shadow";
+                if (shape & SLANG_TEXTURE_COMBINED_FLAG) text += " combined with a sampler";
+                throw std::runtime_error("unsupported texture shape (" + text +
+                                         "); only a plain 2D texture is supported");
+            }
         }
         if (type->getKind() != slang::TypeReflection::Kind::Resource ||
             type->getResourceShape() != SLANG_STRUCTURED_BUFFER ||

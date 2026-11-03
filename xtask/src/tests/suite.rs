@@ -544,7 +544,7 @@ fn every_cargo_step_is_locked() {
     }
     // The nested calls of Reflect and Spirv are really among the calls checked.
     let count = |wanted: Suite| seen.iter().filter(|(suite, _)| *suite == wanted).count();
-    assert_eq!(count(Suite::Reflect), 2);
+    assert_eq!(count(Suite::Reflect), 3);
     assert_eq!(count(Suite::Spirv), EXAMPLES.len());
     assert!(count(Suite::Unit) >= 2 && count(Suite::Gpu) >= 1);
 }

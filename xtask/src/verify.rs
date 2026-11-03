@@ -490,8 +490,13 @@ pub(crate) fn check_helper_pin(
         .split_whitespace()
         .find_map(|word| word.strip_prefix("schema="));
     if !schema.is_some_and(|schema| HELPER_SCHEMAS.contains(&schema)) {
+        let accepted = HELPER_SCHEMAS
+            .iter()
+            .map(|schema| format!("`schema={schema}`"))
+            .collect::<Vec<_>>()
+            .join(" or ");
         return Err(format!(
-            "{which} prints `schema={}`, but xtask needs `schema=2` or `schema=3`; rebuild it with the current \
+            "{which} prints `schema={}`, but xtask needs {accepted}; rebuild it with the current \
              `cargo gust slang build-helper`",
             schema.unwrap_or("<none>")
         ));

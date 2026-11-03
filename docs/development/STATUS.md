@@ -333,6 +333,31 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   directory (a vendored copy or a nested work directory finds nothing). The tests copy cargo-gust's tables case by
   case (slang_tests.rs) and run on hand-built environments; three mutations fail tests. Opus "merge"; the four
   should-fixes and two nits were taken. Not yet: the `slangc -version` launch is outside m7.f1's retry (mr.t2).
+- M7 m7.lv (`3d5d0c8`, fix round `9d7165e`, merge `9d47f67`; D116): uniform and vector layouts in the
+  export record. The macro now writes `std140_v1` layouts for uniforms and `storage_v2` layouts for storage
+  elements holding `Vec2`/`Vec4`/`IVec*`/`UVec*`/`Mat2`/`Mat4` (new `vector` and `matrix` kinds), so those kernels
+  build with `cargo gust build` and every layout the macro describes is checked against the reflection at export;
+  a null uniform is listed in `export_unchecked` (D104 retired). Records with only scalars and every existing
+  golden are unchanged; new golden uniform.kernel.json. Evidence: a probe crate with five kernels (nested uniforms,
+  `Frame` with `Mat4`/`Vec4`/`Vec2`, vector storage, and storage `Mat4`/`Mat2` and a struct holding a `Mat4`) ran
+  `build`, `check` and `check --recompile` with no `export_unchecked` entry; a test rebuilds the macro's own
+  descriptors from the records; tampered records are refused, both by the rules and, with valid rules, by the
+  reflection comparison; the run-time check (D17) still refuses a std140-valid rename; mutations a to c fail
+  tests. Opus "merge after fixes" (a torn error message, the run-time pin, a rules-valid tamper); fixed, plus a
+  storage-matrix end-to-end case.
+  Main: 23 gate steps green on `88b46d0` (21:29 to 22:08Z, RTX 5090) and check-examples green.
+- MR mr.a (`c520795`, fix round `f2125ec`, merge `88b46d0`; D107, D110): packaging metadata. The workspace
+  gains `repository`, `keywords` and `categories`; the four publishable crates (D110) set `documentation` and
+  docs.rs metadata, and the internal dependencies are exact `=0.1.0` pins (D107). `cargo-gust` is publishable now
+  and excludes its test modules and testdata; gust-macros excludes its collision tests; every example, gust-algo
+  and xtask say `publish = false`. Each crate has a README and the two licence files; the root `LICENSE-APACHE` is
+  now the full Apache License 2.0 text (it was the short notice), byte-equal in every copy. `cargo xtask lint`
+  checks the metadata, the licence copies and that every `path` dependency on a `crates/*` package names it (or a
+  matching `package =`), from `cargo metadata` (offline). Evidence: the four package lists hold no test, fixture or
+  machine-specific file; packaging with verification of all four passes; lint mutations a to d fail. Opus "merge
+  after fixes"; the six items ruled were fixed. Not yet: the crate READMEs' `cargo install cargo-gust --locked`
+  works only after mr.c (today it stops at the `gust` build script without `GUST_PROFILE=dev`), and the root
+  README's lint line is mr.d's.
   Main: 23 gate steps green on `96051c8` (20:50 to 21:23Z, RTX 5090) and check-examples green.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,

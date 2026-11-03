@@ -886,12 +886,22 @@ pub(crate) const ALGO_GPU_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-alg
 /// The `gpu::` tests of `gust-algo`, by name: each must be reported `ok`, and no other `tests::gpu::` test may exist
 /// ([`check_algo_gpu_counts`]), so a deleted or an unpinned adapter test fails the gate. The twins would still satisfy
 /// a plain "at least one test ran". Adding or removing a `gpu::` test changes this list in the same commit.
-pub(crate) const ALGO_GPU_TESTS: [&str; 20] = [
+pub(crate) const ALGO_GPU_TESTS: [&str; 32] = [
+    "tests::gpu::gpu_a_compaction_chain_runs_on_the_device_with_the_device_count",
+    "tests::gpu::gpu_a_compaction_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch",
+    "tests::gpu::gpu_a_compaction_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch",
     "tests::gpu::gpu_a_first_pass_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch",
+    "tests::gpu::gpu_a_gather_guards_the_index_bound_and_the_count",
+    "tests::gpu::gpu_a_gather_refuses_a_count_that_is_not_one_element_and_buffers_of_another_device",
     "tests::gpu::gpu_a_scan_is_one_batch_of_three_five_or_seven_dispatches",
     "tests::gpu::gpu_a_scan_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch",
     "tests::gpu::gpu_a_scan_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch",
+    "tests::gpu::gpu_a_user_kernel_gathers_structs_by_the_compaction_indices",
+    "tests::gpu::gpu_an_empty_compaction_has_a_resident_zero_count",
     "tests::gpu::gpu_an_input_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch",
+    "tests::gpu::gpu_compaction_dispatch_counts_are_the_mask_the_reduction_the_scan_and_the_scatter",
+    "tests::gpu::gpu_compaction_is_exact_at_every_boundary",
+    "tests::gpu::gpu_compaction_leaves_the_flags_alone_and_returns_its_buffers",
     "tests::gpu::gpu_empty_inputs",
     "tests::gpu::gpu_float_min_and_max_are_exact",
     "tests::gpu::gpu_float_sum_of_the_tie_ladder_is_within_the_bound",
@@ -899,7 +909,9 @@ pub(crate) const ALGO_GPU_TESTS: [&str; 20] = [
     "tests::gpu::gpu_integer_sums_min_and_max_are_exact_at_every_boundary",
     "tests::gpu::gpu_integer_sums_past_the_domain_wrap",
     "tests::gpu::gpu_min_of_an_empty_vector_is_empty_and_max_too",
+    "tests::gpu::gpu_non_zero_flags_count_as_set",
     "tests::gpu::gpu_reductions_leave_the_input_alone_and_return_their_buffers",
+    "tests::gpu::gpu_runs_the_deepest_compaction",
     "tests::gpu::gpu_runs_the_deepest_scans",
     "tests::gpu::gpu_runs_the_deepest_schedule",
     "tests::gpu::gpu_scans_are_exact_at_every_boundary",

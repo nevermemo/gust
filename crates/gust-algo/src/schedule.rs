@@ -25,6 +25,16 @@ pub struct Pass {
 }
 
 impl Pass {
+    /// The block-strided launch over `input_len` elements that the element-wise kernels of `compact` use: the same
+    /// workgroups of [`LANES`] lanes, each lane visiting up to [`CHAIN`] elements of its block, so the invocation count
+    /// ([`partials`](Self::partials)) stays inside the 1D workgroup ceiling for every input the binding limit admits.
+    pub const fn over(input_len: u32) -> Self {
+        Self {
+            input_len,
+            workgroups: input_len.div_ceil(BLOCK),
+        }
+    }
+
     /// Partials it writes, which is its invocation count: one per lane.
     pub const fn partials(self) -> u32 {
         self.workgroups * LANES

@@ -574,7 +574,7 @@ crates/
   gust/                 shadow types, descriptors, ABI metadata, slangc bridge, reflection
   gust-macros/          validation and direct syn AST -> Slang translation
   gust-wgpu/            cached headless wgpu execution, buffers, StagedGraph, GpuPool
-  gust-algo/            device-resident algorithms on GUST kernels over GpuVec (reduce: sum, min, max, sum_wrapping; scan: inclusive, exclusive); publish = false
+  gust-algo/            device-resident algorithms on GUST kernels over GpuVec (reduce: sum, min, max, sum_wrapping; scan: inclusive, exclusive; compact: count, indices, gather_u32/i32/f32); publish = false
 examples/
   vector-add/
   polynomial/

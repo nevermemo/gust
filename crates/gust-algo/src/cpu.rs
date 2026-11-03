@@ -11,10 +11,10 @@ use gust::{
 };
 
 use crate::{
-    kernels,
+    compact_kernels, kernels,
     reduce::{Element, Op},
     scan_kernels,
-    schedule::{ScanSchedule, Schedule},
+    schedule::{Pass, ScanSchedule, Schedule},
 };
 
 /// The result of `op` over `values`, or `None` for an empty input (the identity applies to `sum`, which has its own
@@ -155,3 +155,94 @@ fn scan(values: &[u32], exclusive: bool) -> Result<Vec<u32>, Error> {
     }
     Ok(out.read())
 }
+
+/// The 0/1 mask of `flags` on the twin of `flags_to_mask_u32`: 1 where the flag is not zero.
+fn mask(device: &CpuDevice, flags: &[u32]) -> Result<CpuBuffer<u32>, Error> {
+    let input = device.buffer(flags);
+    let mask = device.buffer(&vec![0u32; flags.len()]);
+    compact_kernels::flags_to_mask_u32::dispatch(
+        device,
+        Pass::over(u32::try_from(flags.len()).expect("at most u32::MAX elements")).partials(),
+        Independent(&input),
+        Independent(&mask),
+    )?;
+    Ok(mask)
+}
+
+/// The number of non-zero `flags` on the twins: the mask, then the twin of the reduction.
+pub fn compact_count(flags: &[u32]) -> Result<u32, Error> {
+    if flags.is_empty() {
+        return Ok(0);
+    }
+    sum(&mask(&CpuDevice::new(), flags)?.read())
+}
+
+/// `(indices, count)` of the non-zero `flags` on the twins, the same chain as `compact::indices`: the mask, the
+/// exclusive scan, the count and the scatter. `indices` is `flags.len()` long, zero from `count` on.
+pub fn compact_indices(flags: &[u32]) -> Result<(Vec<u32>, u32), Error> {
+    if flags.is_empty() {
+        return Ok((Vec::new(), 0));
+    }
+    let device = CpuDevice::new();
+    let mask = mask(&device, flags)?;
+    let ones = mask.read();
+    let positions = device.buffer(&exclusive(&ones)?);
+    let total = sum(&ones)?;
+    let indices = device.buffer(&vec![0u32; flags.len()]);
+    compact_kernels::scatter_indices_u32::dispatch(
+        &device,
+        Pass::over(u32::try_from(flags.len()).expect("at most u32::MAX elements")).partials(),
+        Independent(&mask),
+        Independent(&positions),
+        Independent(&indices),
+    )?;
+    Ok((indices.read(), total))
+}
+
+macro_rules! twin_gather {
+    ($(#[$meta:meta])* $name:ident, $ty:ty, $zero:expr) => {
+        $(#[$meta])*
+        pub fn $name(values: &[$ty], indices: &[u32], count: u32) -> Result<Vec<$ty>, Error> {
+            let device = CpuDevice::new();
+            let out = device.buffer(&vec![$zero; indices.len()]);
+            if !indices.is_empty() && !values.is_empty() {
+                let len = u32::try_from(indices.len()).expect("at most u32::MAX elements");
+                let invocations = Pass::over(len).partials();
+                let (values, indices, count) = (
+                    device.buffer(values),
+                    device.buffer(indices),
+                    device.buffer(&[count]),
+                );
+                compact_kernels::$name::dispatch(
+                    &device,
+                    invocations,
+                    Independent(&values),
+                    Independent(&indices),
+                    Independent(&count),
+                    Independent(&out),
+                )?;
+            }
+            Ok(out.read())
+        }
+    };
+}
+
+twin_gather!(
+    /// `out[j] = values[indices[j]]` for `j < count` on the twin of `gather_u32`; `out` is `indices.len()` long, zero
+    /// elsewhere.
+    gather_u32,
+    u32,
+    0u32
+);
+twin_gather!(
+    /// As [`gather_u32`], for `i32`.
+    gather_i32,
+    i32,
+    0i32
+);
+twin_gather!(
+    /// As [`gather_u32`], for `f32`.
+    gather_f32,
+    f32,
+    0.0f32
+);

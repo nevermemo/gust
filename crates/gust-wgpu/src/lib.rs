@@ -63,7 +63,7 @@ use std::{
 use std::{sync::mpsc, time::Instant};
 
 use gust::{
-    Access, BindingKind, Call, GpuPod, JobStatus, Kernel, KernelDescriptor, LengthRule,
+    Access, BindingKind, Call, Extent, GpuPod, JobStatus, Kernel, KernelDescriptor, LengthRule,
     ParameterDescriptor, ParameterKind, Resource, ResourceLayout, Run, TypedDevice,
     pod_slice_as_bytes,
 };
@@ -105,7 +105,7 @@ static NEXT_DEVICE_ID: AtomicU64 = AtomicU64::new(1);
 /// launch along one axis on a device opened with the default limits, which is what
 /// `HeadlessDevice` requests. A single-dimension dispatch of a kernel with workgroup width `w`
 /// therefore covers at most `w * DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION` elements; more
-/// is an `Error::DeviceLimit` (multi-dimensional dispatch is roadmap M7). Pinned to
+/// is an `Error::DeviceLimit` (a multi-dimensional extent spreads it over y and z). Pinned to
 /// `wgpu::Limits::default()` by a unit test and to the opened device by the `limits` test.
 pub const DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION: u32 = 65_535;
 
@@ -476,24 +476,55 @@ impl<'a> From<F32BufferBinding<'a>> for BufferBinding<'a> {
 }
 
 /// One persistent dispatch whose bindings can have different POD element types.
+///
+/// The extent is `element_count` along x and, along y and z, the two axes fixed by the constructor (slice m7.d):
+/// [`BufferDispatch::extent`] reads it and [`BufferDispatch::set_extent`] replaces it. There is one source of truth,
+/// so `dispatch.element_count = n` on a dispatch from [`BufferDispatch::new`] dispatches `n` invocations, as it always
+/// did. The staged graph runs one-dimensional dispatches only (a node with a y or z extent above 1 is refused with
+/// [`Error::Extent`] when the graph runs), and reads `element_count`.
 #[derive(Clone, Copy)]
 pub struct BufferDispatch<'a> {
     pub kernel: &'a KernelDescriptor,
+    /// The x axis of the extent; the whole extent of a one-dimensional dispatch.
     pub element_count: u32,
+    /// The y and z axes of the extent.
+    extent_yz: [u32; 2],
     pub bindings: &'a [BufferBinding<'a>],
 }
 
 impl<'a> BufferDispatch<'a> {
+    /// A one-dimensional dispatch of `element_count` invocations: the extent `element_count x 1 x 1`.
     pub const fn new(
         kernel: &'a KernelDescriptor,
         element_count: u32,
         bindings: &'a [BufferBinding<'a>],
     ) -> Self {
+        Self::new_extent(kernel, Extent::linear(element_count), bindings)
+    }
+
+    /// A dispatch over an [`Extent`]: `x * y * z` invocations before every axis is rounded up to whole workgroups.
+    pub const fn new_extent(
+        kernel: &'a KernelDescriptor,
+        extent: Extent,
+        bindings: &'a [BufferBinding<'a>],
+    ) -> Self {
         Self {
             kernel,
-            element_count,
+            element_count: extent.x,
+            extent_yz: [extent.y, extent.z],
             bindings,
         }
+    }
+
+    /// The extent the batch functions dispatch: `element_count` by the two other axes.
+    pub const fn extent(&self) -> Extent {
+        Extent::new(self.element_count, self.extent_yz[0], self.extent_yz[1])
+    }
+
+    /// Replaces the whole extent, `element_count` with it.
+    pub const fn set_extent(&mut self, extent: Extent) {
+        self.element_count = extent.x;
+        self.extent_yz = [extent.y, extent.z];
     }
 }
 
@@ -667,7 +698,7 @@ impl<'call, 'resources: 'call, K: Kernel, const N: usize>
     /// `Call` is invariant over the lifetime of the buffers it borrows, so the two lifetimes stay separate:
     /// the dispatch borrows the call only for `'call`.
     fn from(call: &'call Call<'resources, HeadlessDevice, K, N>) -> Self {
-        Self::new(call.kernel(), call.element_count(), call.bindings())
+        Self::new_extent(call.kernel(), call.extent(), call.bindings())
     }
 }
 
@@ -820,7 +851,10 @@ impl<T: GpuPod> Resource for GpuUniform<T> {
 struct PreparedDispatch {
     cached_kernel: Arc<CachedKernel>,
     bind_group: wgpu::BindGroup,
+    /// The workgroups along x, which is all the staged graph encodes (it runs one-dimensional dispatches only).
     workgroup_count: u32,
+    /// The workgroups along x, y and z; `[workgroup_count, 1, 1]` for a one-dimensional dispatch.
+    workgroups: [u32; 3],
 }
 
 const TIMESTAMP_RESULT_BYTES: u64 = 2 * size_of::<u64>() as u64;
@@ -1113,8 +1147,9 @@ impl HeadlessDevice {
     /// consumes the device, like any failing builder step.
     ///
     /// Only these fields are honoured by the launch checks:
-    /// `max_compute_workgroup_size_x`, `max_compute_invocations_per_workgroup`,
-    /// `max_compute_workgroups_per_dimension`, `max_storage_buffers_per_shader_stage`,
+    /// `max_compute_workgroup_size_x`, `max_compute_workgroup_size_y`,
+    /// `max_compute_workgroup_size_z`, `max_compute_invocations_per_workgroup`,
+    /// `max_compute_workgroups_per_dimension` (for x, y and z alike), `max_storage_buffers_per_shader_stage`,
     /// `max_storage_buffer_binding_size`, `max_uniform_buffers_per_shader_stage`,
     /// `max_uniform_buffer_binding_size` and `max_bindings_per_bind_group` (every binding
     /// index of a kernel must be below it). Every other field is accepted if it is not
@@ -1542,7 +1577,7 @@ impl HeadlessDevice {
         &'device self,
         dispatches: &[BufferDispatch<'_>],
     ) -> Result<WgpuJob<'device>, Error> {
-        let prepared = self.prepare_batch(dispatches)?;
+        let prepared = self.prepare_extent_batch(dispatches)?;
         if prepared.is_empty() {
             return Ok(WgpuJob {
                 device: &self.device,
@@ -1562,7 +1597,11 @@ impl HeadlessDevice {
             });
             pass.set_pipeline(&dispatch.cached_kernel.pipeline);
             pass.set_bind_group(0, &dispatch.bind_group, &[]);
-            pass.dispatch_workgroups(dispatch.workgroup_count, 1, 1);
+            pass.dispatch_workgroups(
+                dispatch.workgroups[0],
+                dispatch.workgroups[1],
+                dispatch.workgroups[2],
+            );
         }
         let submission = self.queue.submit([encoder.finish()]);
         Ok(WgpuJob {
@@ -1587,7 +1626,7 @@ impl HeadlessDevice {
         dispatches: &[BufferDispatch<'_>],
     ) -> Result<DispatchTiming, Error> {
         let started = Instant::now();
-        let prepared = self.prepare_batch(dispatches)?;
+        let prepared = self.prepare_extent_batch(dispatches)?;
         if prepared.is_empty() {
             return Ok(DispatchTiming {
                 host_elapsed: started.elapsed(),
@@ -1609,7 +1648,11 @@ impl HeadlessDevice {
                 });
                 pass.set_pipeline(&dispatch.cached_kernel.pipeline);
                 pass.set_bind_group(0, &dispatch.bind_group, &[]);
-                pass.dispatch_workgroups(dispatch.workgroup_count, 1, 1);
+                pass.dispatch_workgroups(
+                    dispatch.workgroups[0],
+                    dispatch.workgroups[1],
+                    dispatch.workgroups[2],
+                );
             }
             let submission = self.queue.submit([encoder.finish()]);
             self.wait_for_submission(submission)?;
@@ -1637,7 +1680,11 @@ impl HeadlessDevice {
             });
             pass.set_pipeline(&dispatch.cached_kernel.pipeline);
             pass.set_bind_group(0, &dispatch.bind_group, &[]);
-            pass.dispatch_workgroups(dispatch.workgroup_count, 1, 1);
+            pass.dispatch_workgroups(
+                dispatch.workgroups[0],
+                dispatch.workgroups[1],
+                dispatch.workgroups[2],
+            );
         }
         encoder.resolve_query_set(&profiler.query_set, 0..2, &profiler.resolve_buffer, 0);
         encoder.copy_buffer_to_buffer(
@@ -1933,7 +1980,27 @@ impl HeadlessDevice {
         Ok(U32DispatchOutput { writable_buffers })
     }
 
+    /// The staged graph's preparation (`graph.rs` reads `workgroup_count`, the x count): one-dimensional dispatches
+    /// only. A dispatch with a y or z extent other than 1 is refused with [`Error::Extent`] instead of being encoded
+    /// as its x count alone, which would silently run a fraction of it.
     fn prepare_batch(
+        &self,
+        dispatches: &[BufferDispatch<'_>],
+    ) -> Result<Vec<PreparedDispatch>, Error> {
+        if let Some(dispatch) = dispatches
+            .iter()
+            .find(|dispatch| dispatch.extent().y != 1 || dispatch.extent().z != 1)
+        {
+            return Err(Error::Extent {
+                extent: dispatch.extent().to_array().map(u64::from),
+                reason: "a staged graph runs one-dimensional dispatches only (use dispatch_batch)",
+            });
+        }
+        self.prepare_dispatches(dispatches, false)
+    }
+
+    /// The batch functions' preparation: every dispatch over its whole [`Extent`].
+    fn prepare_extent_batch(
         &self,
         dispatches: &[BufferDispatch<'_>],
     ) -> Result<Vec<PreparedDispatch>, Error> {
@@ -1941,7 +2008,7 @@ impl HeadlessDevice {
     }
 
     /// Prepare one indirect dispatch: every check of `prepare_batch` except the workgroup count,
-    /// which only the GPU reads, from the arguments buffer. `dispatch.element_count` must be a
+    /// which only the GPU reads, from the arguments buffer. `dispatch.extent()` must be a
     /// nonzero placeholder; the prepared `workgroup_count` is meaningless (0) and never encoded.
     #[cfg(not(target_arch = "wasm32"))]
     fn prepare_indirect(
@@ -1959,31 +2026,31 @@ impl HeadlessDevice {
         let validated = dispatches
             .iter()
             .map(|dispatch| {
-                let resources = validate_persistent_dispatch(
+                let resources = validate_persistent_dispatch_extent(
                     self.id,
                     dispatch.kernel,
-                    dispatch.element_count,
+                    dispatch.extent(),
                     dispatch.bindings,
                 )?;
                 let binding_bytes = dispatch.bindings.iter().map(BufferBinding::limit_bytes);
-                let workgroup_count = if indirect {
+                let workgroups = if indirect {
                     self.check_indirect_launch(dispatch.kernel, &resources, binding_bytes)?;
-                    0
+                    [0; 3]
                 } else {
-                    self.check_launch(
+                    self.check_launch_extent(
                         dispatch.kernel,
-                        dispatch.element_count,
+                        dispatch.extent(),
                         &resources,
                         binding_bytes,
                     )?
                 };
-                Ok((resources, workgroup_count))
+                Ok((resources, workgroups))
             })
             .collect::<Result<Vec<_>, Error>>()?;
 
         let mut prepared = Vec::with_capacity(dispatches.len());
-        for (dispatch, (resources, workgroup_count)) in dispatches.iter().zip(validated) {
-            if dispatch.element_count == 0 {
+        for (dispatch, (resources, workgroups)) in dispatches.iter().zip(validated) {
+            if dispatch.extent().is_empty() {
                 continue;
             }
             let cached_kernel = self.cached_kernel(dispatch.kernel, &resources)?;
@@ -2007,7 +2074,8 @@ impl HeadlessDevice {
             prepared.push(PreparedDispatch {
                 cached_kernel,
                 bind_group,
-                workgroup_count,
+                workgroup_count: workgroups[0],
+                workgroups,
             });
         }
         Ok(prepared)
@@ -2024,10 +2092,28 @@ impl HeadlessDevice {
         resources: &[&ParameterDescriptor],
         binding_bytes: impl IntoIterator<Item = (u64, BindingKind)>,
     ) -> Result<u32, Error> {
-        if element_count == 0 {
-            return Ok(0);
+        self.check_launch_extent(
+            kernel,
+            Extent::linear(element_count),
+            resources,
+            binding_bytes,
+        )
+        .map(|workgroups| workgroups[0])
+    }
+
+    /// `check_launch` over an [`Extent`]: the workgroups along x, y and z. A launch with a zero axis does no GPU
+    /// work, is not checked and has `[0, 0, 0]` workgroups.
+    fn check_launch_extent(
+        &self,
+        kernel: &KernelDescriptor,
+        extent: Extent,
+        resources: &[&ParameterDescriptor],
+        binding_bytes: impl IntoIterator<Item = (u64, BindingKind)>,
+    ) -> Result<[u32; 3], Error> {
+        if extent.is_empty() {
+            return Ok([0; 3]);
         }
-        self.check_launch_limits(kernel, Some(element_count), resources, binding_bytes)
+        self.check_launch_limits(kernel, Some(extent), resources, binding_bytes)
     }
 
     /// `check_launch` for an indirect dispatch: every check except the workgroup count, which the
@@ -2043,29 +2129,29 @@ impl HeadlessDevice {
             .map(|_| ())
     }
 
-    /// The limit checks in their fixed order. `element_count` is `None` for an indirect launch,
-    /// which skips the workgroup count and returns 0.
+    /// The limit checks in their fixed order. `extent` is `None` for an indirect launch,
+    /// which skips the workgroup counts and returns zeros.
     fn check_launch_limits(
         &self,
         kernel: &KernelDescriptor,
-        element_count: Option<u32>,
+        extent: Option<Extent>,
         resources: &[&ParameterDescriptor],
         binding_bytes: impl IntoIterator<Item = (u64, BindingKind)>,
-    ) -> Result<u32, Error> {
+    ) -> Result<[u32; 3], Error> {
         let uniforms = resources
             .iter()
             .filter(|parameter| parameter.kind == ParameterKind::Uniform)
             .count();
         check_kernel_limits(&self.limits, kernel, resources.len() - uniforms, uniforms)?;
         check_binding_indices(&self.limits, kernel, resources)?;
-        let workgroup_count = match element_count {
-            Some(count) => workgroup_count(&self.limits, kernel, count)?,
-            None => 0,
+        let workgroups = match extent {
+            Some(extent) => workgroup_counts(&self.limits, kernel, extent)?,
+            None => [0; 3],
         };
         for (bytes, kind) in binding_bytes {
             check_binding_size(&self.limits, kernel, bytes, kind)?;
         }
-        Ok(workgroup_count)
+        Ok(workgroups)
     }
 
     fn cached_kernel(
@@ -2289,26 +2375,45 @@ fn device_limit(
     }
 }
 
-/// Limits a pipeline for `kernel` must respect. `validate_kernel` already restricts
-/// workgroups to one dimension, so the invocation count equals the width.
+/// Limits a pipeline for `kernel` must respect: each workgroup axis against its own limit (x, then y, then z), the
+/// product of the three (a checked product: [`Error::Extent`] when it overflows) against
+/// `max_compute_invocations_per_workgroup`, then the buffer counts.
 fn check_kernel_limits(
     limits: &wgpu::Limits,
     kernel: &KernelDescriptor,
     storage_buffers: usize,
     uniform_buffers: usize,
 ) -> Result<(), Error> {
-    let width = u64::from(kernel.workgroup_size[0]);
-    let invocations = kernel
-        .workgroup_size
-        .iter()
-        .map(|&dimension| u64::from(dimension))
-        .product::<u64>();
+    let size = kernel.workgroup_size.map(u64::from);
     for (limit, requested, maximum) in [
         (
             "max_compute_workgroup_size_x",
-            width,
+            size[0],
             u64::from(limits.max_compute_workgroup_size_x),
         ),
+        (
+            "max_compute_workgroup_size_y",
+            size[1],
+            u64::from(limits.max_compute_workgroup_size_y),
+        ),
+        (
+            "max_compute_workgroup_size_z",
+            size[2],
+            u64::from(limits.max_compute_workgroup_size_z),
+        ),
+    ] {
+        if requested > maximum {
+            return Err(device_limit(kernel, limit, requested, maximum));
+        }
+    }
+    let invocations = size[0]
+        .checked_mul(size[1])
+        .and_then(|plane| plane.checked_mul(size[2]))
+        .ok_or(Error::Extent {
+            extent: size,
+            reason: "the workgroup size multiplies to more invocations than a u64 holds",
+        })?;
+    for (limit, requested, maximum) in [
         (
             "max_compute_invocations_per_workgroup",
             invocations,
@@ -2358,23 +2463,60 @@ fn check_binding_indices(
     Ok(())
 }
 
-/// Workgroups needed for `element_count` invocations, within the per-dimension limit.
-fn workgroup_count(
+/// The limit the workgroups along y name in an [`Error::DeviceLimit`]; the one along x keeps the unsuffixed name of the
+/// one-dimensional dispatch, the one along z is `max_compute_workgroups_per_dimension (z)`.
+const WORKGROUPS_Y_LIMIT: &str = "max_compute_workgroups_per_dimension (y)";
+const WORKGROUPS_Z_LIMIT: &str = "max_compute_workgroups_per_dimension (z)";
+
+/// The name of the invocation cap in an [`Error::DeviceLimit`]; the CPU twin reports the same name
+/// (`gust::cpu::Error::DeviceLimit`).
+const INVOCATION_CAP_LIMIT: &str = "global_invocation_id";
+
+/// Workgroups along x, y and z needed for `extent`, each within `max_compute_workgroups_per_dimension` (the error
+/// names the axis: `max_compute_workgroups_per_dimension` for x, with ` (y)` and ` (z)` for the others), and the launch
+/// within the invocation cap: every axis rounded up to whole workgroups, multiplied, at most 2^32
+/// ([`Extent::MAX_INVOCATIONS`]), the rule of the CPU twin. A kernel without a zero workgroup axis
+/// (`validate_kernel`) and a non-empty extent are assumed.
+fn workgroup_counts(
     limits: &wgpu::Limits,
     kernel: &KernelDescriptor,
-    element_count: u32,
-) -> Result<u32, Error> {
-    let count = element_count.div_ceil(kernel.workgroup_size[0]);
+    extent: Extent,
+) -> Result<[u32; 3], Error> {
+    let size = kernel.workgroup_size;
     let maximum = limits.max_compute_workgroups_per_dimension;
-    if count > maximum {
+    let counts = [
+        extent.x.div_ceil(size[0]),
+        extent.y.div_ceil(size[1]),
+        extent.z.div_ceil(size[2]),
+    ];
+    for (limit, count) in [
+        ("max_compute_workgroups_per_dimension", counts[0]),
+        (WORKGROUPS_Y_LIMIT, counts[1]),
+        (WORKGROUPS_Z_LIMIT, counts[2]),
+    ] {
+        if count > maximum {
+            return Err(device_limit(
+                kernel,
+                limit,
+                u64::from(count),
+                u64::from(maximum),
+            ));
+        }
+    }
+    // `rounded_total` is in `u128`: three rounded axes are at most 2^96, so it cannot overflow. The error carries a
+    // `u64`, so a launch beyond it saturates (as the CPU twin's does).
+    let invocations = extent
+        .rounded_total(size)
+        .expect("a workgroup size without a zero axis");
+    if invocations > u128::from(Extent::MAX_INVOCATIONS) {
         return Err(device_limit(
             kernel,
-            "max_compute_workgroups_per_dimension",
-            u64::from(count),
-            u64::from(maximum),
+            INVOCATION_CAP_LIMIT,
+            u64::try_from(invocations).unwrap_or(u64::MAX),
+            Extent::MAX_INVOCATIONS,
         ));
     }
-    Ok(count)
+    Ok(counts)
 }
 
 /// One binding of `bytes` bytes against `max_storage_buffer_binding_size`, or `max_uniform_buffer_binding_size` for a
@@ -2511,13 +2653,33 @@ fn validate_u32_dispatch(
     Ok(resources)
 }
 
+/// `validate_persistent_dispatch_extent` for a one-dimensional dispatch of `element_count` invocations.
 fn validate_persistent_dispatch(
     device_id: u64,
     kernel: &KernelDescriptor,
     element_count: u32,
     bindings: &[BufferBinding<'_>],
 ) -> Result<Vec<&'static ParameterDescriptor>, Error> {
+    validate_persistent_dispatch_extent(device_id, kernel, Extent::linear(element_count), bindings)
+}
+
+/// The binding checks of a persistent dispatch over `extent`: the kernel, then per binding the kind, layout, device,
+/// access and length, then aliasing. A shared binding holds exactly `x * y * z` elements (the checked product;
+/// [`Error::Extent`] when it overflows a `u64`, before any binding is looked at), an independent one only has to be
+/// non-empty when the extent is. The launch limits are `check_launch_extent`'s.
+fn validate_persistent_dispatch_extent(
+    device_id: u64,
+    kernel: &KernelDescriptor,
+    extent: Extent,
+    bindings: &[BufferBinding<'_>],
+) -> Result<Vec<&'static ParameterDescriptor>, Error> {
     let resources = validate_kernel(kernel)?;
+    let total = extent.checked_total().ok_or(Error::Extent {
+        extent: extent.to_array().map(u64::from),
+        reason: "x * y * z overflows a u64",
+    })?;
+    // A product above `usize::MAX` is longer than any buffer: it saturates, so the length check fails for all of them.
+    let expected = usize::try_from(total).unwrap_or(usize::MAX);
     if resources.len() != bindings.len() {
         return Err(Error::BindingCount {
             expected: resources.len(),
@@ -2557,15 +2719,15 @@ fn validate_persistent_dispatch(
             });
         }
         if binding.independent_length {
-            if buffer.len == 0 && element_count != 0 {
+            if buffer.len == 0 && total != 0 {
                 return Err(Error::IndependentLengthEmpty {
                     parameter: parameter.name.to_owned(),
                 });
             }
-        } else if buffer.len != element_count as usize {
+        } else if buffer.len != expected {
             return Err(Error::BufferLength {
                 parameter: parameter.name.to_owned(),
-                expected: element_count as usize,
+                expected,
                 actual: buffer.len,
             });
         }
@@ -2596,10 +2758,9 @@ pub(crate) fn validate_kernel(
             kernel.qualified_name().to_string(),
         ));
     }
-    if kernel.workgroup_size[0] == 0
-        || kernel.workgroup_size[1] != 1
-        || kernel.workgroup_size[2] != 1
-    {
+    // Workgroups of one, two or three dimensions (slice m7.d); an axis of 0 is no workgroup. The device limits of each
+    // axis and of their product are `check_kernel_limits`'s.
+    if kernel.workgroup_size.contains(&0) {
         return Err(Error::UnsupportedWorkgroupSize(kernel.workgroup_size));
     }
 
@@ -3123,6 +3284,47 @@ mod tests {
         assert!(source.contains("artifact.format == gust::Format::Wgsl"));
         assert!(source.contains("out: f32 [storage-v1; size=4, align=4, stride=4]"));
         assert!(source.contains("pass.dispatch_workgroups(element_count.div_ceil(64), 1, 1);"));
+        // A kernel with a one-dimensional workgroup takes the element count and nothing else (m7.d).
+        assert!(!source.contains("extent"), "{source}");
+    }
+
+    #[test]
+    fn a_kernel_with_a_two_or_three_dimensional_workgroup_renders_a_host_that_takes_an_extent() {
+        for (size, dispatch) in [
+            (
+                [16, 16, 1],
+                "pass.dispatch_workgroups(extent[0].div_ceil(16), extent[1].div_ceil(16), extent[2].div_ceil(1));",
+            ),
+            (
+                [4, 4, 4],
+                "pass.dispatch_workgroups(extent[0].div_ceil(4), extent[1].div_ceil(4), extent[2].div_ceil(4));",
+            ),
+            (
+                [8, 1, 2],
+                "pass.dispatch_workgroups(extent[0].div_ceil(8), extent[1].div_ceil(1), extent[2].div_ceil(2));",
+            ),
+        ] {
+            let descriptor = KernelDescriptor {
+                workgroup_size: size,
+                ..DESCRIPTOR
+            };
+            let source = render_wgpu_source(&descriptor).expect("source should render");
+            assert!(
+                source.contains("        extent: [u32; 3],"),
+                "{size:?}: {source}"
+            );
+            assert!(source.contains(dispatch), "{size:?}: {source}");
+            assert!(!source.contains("element_count"), "{size:?}: {source}");
+        }
+        // A zero axis is refused, as for every dispatch.
+        let flat = KernelDescriptor {
+            workgroup_size: [16, 0, 1],
+            ..DESCRIPTOR
+        };
+        assert!(matches!(
+            render_wgpu_source(&flat),
+            Err(Error::UnsupportedWorkgroupSize([16, 0, 1]))
+        ));
     }
 
     #[test]
@@ -3715,11 +3917,14 @@ mod tests {
             max_compute_workgroups_per_dimension: 3,
             ..wgpu::Limits::default()
         };
-        assert_eq!(workgroup_count(&limits, &DESCRIPTOR, 0).unwrap(), 0);
-        assert_eq!(workgroup_count(&limits, &DESCRIPTOR, 1).unwrap(), 1);
-        assert_eq!(workgroup_count(&limits, &DESCRIPTOR, 192).unwrap(), 3);
+        let count =
+            |elements: u32| workgroup_counts(&limits, &DESCRIPTOR, Extent::linear(elements));
+        // An empty extent never reaches the count (the dispatch is skipped first); its x count is 0.
+        assert_eq!(count(0).unwrap(), [0, 1, 1]);
+        assert_eq!(count(1).unwrap(), [1, 1, 1]);
+        assert_eq!(count(192).unwrap(), [3, 1, 1]);
         assert!(matches!(
-            workgroup_count(&limits, &DESCRIPTOR, 193),
+            count(193),
             Err(Error::DeviceLimit {
                 limit: "max_compute_workgroups_per_dimension",
                 requested: 4,
@@ -3727,6 +3932,85 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// A 16 x 16 kernel for the multi-dimensional unit tests below.
+    const TILE: KernelDescriptor = KernelDescriptor {
+        workgroup_size: [16, 16, 1],
+        ..DESCRIPTOR
+    };
+
+    #[test]
+    fn workgroup_counts_round_every_axis_and_name_the_axis_that_is_over_the_limit() {
+        let limits = wgpu::Limits {
+            max_compute_workgroups_per_dimension: 3,
+            ..wgpu::Limits::default()
+        };
+        let counts = |x, y, z| workgroup_counts(&limits, &TILE, Extent::new(x, y, z));
+        assert_eq!(counts(15, 17, 1).unwrap(), [1, 2, 1]);
+        assert_eq!(counts(48, 48, 3).unwrap(), [3, 3, 3]);
+        let over = |result: Result<[u32; 3], Error>| match result {
+            Err(Error::DeviceLimit {
+                limit,
+                requested,
+                maximum,
+                ..
+            }) => (limit, requested, maximum),
+            other => panic!("expected a DeviceLimit, got {other:?}"),
+        };
+        assert_eq!(
+            over(counts(49, 16, 1)),
+            ("max_compute_workgroups_per_dimension", 4, 3)
+        );
+        assert_eq!(
+            over(counts(16, 49, 1)),
+            ("max_compute_workgroups_per_dimension (y)", 4, 3)
+        );
+        assert_eq!(
+            over(counts(16, 16, 4)),
+            ("max_compute_workgroups_per_dimension (z)", 4, 3)
+        );
+        // The first axis over the limit is the one named: x before y before z.
+        assert_eq!(
+            over(counts(49, 49, 4)),
+            ("max_compute_workgroups_per_dimension", 4, 3)
+        );
+    }
+
+    #[test]
+    fn the_invocation_cap_is_the_rounded_product_at_most_2_pow_32() {
+        let limits = wgpu::Limits {
+            max_compute_workgroups_per_dimension: u32::MAX,
+            ..wgpu::Limits::default()
+        };
+        let counts = |x, y, z| workgroup_counts(&limits, &TILE, Extent::new(x, y, z));
+        let cap = |result: Result<[u32; 3], Error>| match result {
+            Err(Error::DeviceLimit {
+                limit,
+                requested,
+                maximum,
+                ..
+            }) => Some((limit, requested, maximum)),
+            Ok(_) => None,
+            other => panic!("expected a DeviceLimit or Ok, got {other:?}"),
+        };
+        // Exactly 2^32 after rounding is accepted (not "below"), even when the raw product is smaller.
+        assert_eq!(counts(65_536, 65_536, 1).unwrap(), [4096, 4096, 1]);
+        assert_eq!(counts(65_536, 65_535, 1).unwrap(), [4096, 4096, 1]);
+        // A raw product below 2^32 (65537 * 65535) that rounds up above it is refused.
+        assert_eq!(
+            cap(counts(65_537, 65_535, 1)),
+            Some(("global_invocation_id", 65_552 * 65_536, 1 << 32))
+        );
+        assert_eq!(
+            cap(counts(65_537, 65_536, 1)),
+            Some(("global_invocation_id", 65_552 * 65_536, 1 << 32))
+        );
+        // The rounded product is far beyond a u64 here, and saturates in the error.
+        assert_eq!(
+            cap(counts(u32::MAX, u32::MAX, u32::MAX)),
+            Some(("global_invocation_id", u64::MAX, 1 << 32))
+        );
     }
 
     #[test]
@@ -3765,6 +4049,60 @@ mod tests {
     }
 
     #[test]
+    fn kernel_limits_check_the_y_and_z_sizes_and_the_checked_product() {
+        let limits = wgpu::Limits::default();
+        let kernel = |size| KernelDescriptor {
+            workgroup_size: size,
+            ..DESCRIPTOR
+        };
+        let check = |limits: &wgpu::Limits, size| check_kernel_limits(limits, &kernel(size), 1, 0);
+        let named = |result: Result<(), Error>| match result {
+            Err(Error::DeviceLimit {
+                limit,
+                requested,
+                maximum,
+                ..
+            }) => (limit, requested, maximum),
+            other => panic!("expected a DeviceLimit, got {other:?}"),
+        };
+        assert!(check(&limits, [16, 16, 1]).is_ok());
+        assert!(check(&limits, [1, 1, 64]).is_ok());
+        assert_eq!(
+            named(check(&limits, [1, 257, 1])),
+            ("max_compute_workgroup_size_y", 257, 256)
+        );
+        assert_eq!(
+            named(check(&limits, [1, 1, 65])),
+            ("max_compute_workgroup_size_z", 65, 64)
+        );
+        // 16 * 16 * 2 = 512 invocations: every axis is within its limit and the product is not.
+        assert_eq!(
+            named(check(&limits, [16, 16, 2])),
+            ("max_compute_invocations_per_workgroup", 512, 256)
+        );
+        // The axes are checked in the order x, y, z, before the product.
+        assert_eq!(
+            named(check(&limits, [257, 257, 65])),
+            ("max_compute_workgroup_size_x", 257, 256)
+        );
+        assert_eq!(
+            named(check(&limits, [1, 257, 65])),
+            ("max_compute_workgroup_size_y", 257, 256)
+        );
+        // A product beyond a u64 is an `Error::Extent`, not a wrapped number.
+        let wide = wgpu::Limits {
+            max_compute_workgroup_size_x: u32::MAX,
+            max_compute_workgroup_size_y: u32::MAX,
+            max_compute_workgroup_size_z: u32::MAX,
+            ..limits
+        };
+        assert!(matches!(
+            check(&wide, [u32::MAX, u32::MAX, u32::MAX]),
+            Err(Error::Extent { extent, .. }) if extent == [u64::from(u32::MAX); 3]
+        ));
+    }
+
+    #[test]
     fn device_limit_error_text_names_kernel_limit_and_remedy() {
         let error = device_limit(
             &DESCRIPTOR,
@@ -3774,12 +4112,33 @@ mod tests {
         );
         assert_eq!(
             error.to_string(),
-            "kernel `test::kernel` needs 65536 for `max_compute_workgroups_per_dimension`, the limit is 65535; split the work into several dispatches (multi-dimensional dispatch is roadmap M7)"
+            "kernel `test::kernel` needs 65536 for `max_compute_workgroups_per_dimension`, the limit is 65535; \
+             split the work into several dispatches, or spread it over y and z with a multi-dimensional extent"
         );
         let error = device_limit(&DESCRIPTOR, "max_storage_buffer_binding_size", 20, 16);
         assert_eq!(
             error.to_string(),
             "kernel `test::kernel` needs 20 for `max_storage_buffer_binding_size`, the limit is 16"
+        );
+        // The y and z counts name their axis and get a remedy of their own; neither mentions a roadmap.
+        for axis in ["y", "z"] {
+            let limit: &'static str = Box::leak(
+                format!("max_compute_workgroups_per_dimension ({axis})").into_boxed_str(),
+            );
+            let text = device_limit(&DESCRIPTOR, limit, 4, 3).to_string();
+            assert_eq!(
+                text,
+                format!(
+                    "kernel `test::kernel` needs 4 for `{limit}`, the limit is 3; split the work into several \
+                     dispatches, or use fewer invocations along that axis"
+                )
+            );
+            assert!(!text.contains("roadmap"), "{text}");
+        }
+        // A workgroup size with a zero axis says so; it does not claim the backend is one-dimensional.
+        assert_eq!(
+            Error::UnsupportedWorkgroupSize([16, 0, 1]).to_string(),
+            "workgroup size [16, 0, 1] has a zero axis; every axis must be at least 1"
         );
     }
 }

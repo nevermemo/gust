@@ -9,6 +9,12 @@ use crate::{Error, validate_kernel};
 /// The generated source intentionally starts with already-created `wgpu::Buffer`
 /// parameters so the binding layout, shader/pipeline construction, and dispatch
 /// mechanics remain easy to inspect without including upload/readback policy.
+///
+/// The generated `encode` takes the launch size in one of two shapes (m7.d). A kernel whose workgroup is
+/// one-dimensional (`y` and `z` are 1) takes `element_count: u32` and dispatches `element_count.div_ceil(x)`
+/// workgroups along x only, so it cannot be given a `y` or `z` extent. A kernel with a two- or three-dimensional
+/// workgroup takes `extent: [u32; 3]` and divides each axis by the workgroup size. Neither shape checks the device
+/// limits or the invocation cap: the generated host bypasses the checks `HeadlessDevice` makes (D36).
 pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
     let resources = validate_kernel(kernel)?;
     let pipeline_type = format!(
@@ -140,7 +146,14 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
     source.push_str("        &self,\n");
     source.push_str("        device: &wgpu::Device,\n");
     source.push_str("        encoder: &mut wgpu::CommandEncoder,\n");
-    source.push_str("        element_count: u32,\n");
+    // A kernel whose workgroup is two- or three-dimensional takes its extent as `[x, y, z]` (slice m7.d); every other
+    // kernel keeps the element count of the one-dimensional host.
+    let multi_dimensional = kernel.workgroup_size[1] != 1 || kernel.workgroup_size[2] != 1;
+    if multi_dimensional {
+        source.push_str("        extent: [u32; 3],\n");
+    } else {
+        source.push_str("        element_count: u32,\n");
+    }
     for parameter in &resources {
         write_line(
             &mut source,
@@ -179,13 +192,24 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
     source.push_str(
         "        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {\n            label: Some(label),\n            timestamp_writes: None,\n        });\n        pass.set_pipeline(&self.pipeline);\n        pass.set_bind_group(0, &bind_group, &[]);\n",
     );
-    write_line(
-        &mut source,
-        format_args!(
-            "        pass.dispatch_workgroups(element_count.div_ceil({}), 1, 1);",
-            kernel.workgroup_size[0]
-        ),
-    );
+    if multi_dimensional {
+        let [x, y, z] = kernel.workgroup_size;
+        write_line(
+            &mut source,
+            format_args!(
+                "        pass.dispatch_workgroups(extent[0].div_ceil({x}), extent[1].div_ceil({y}), \
+                 extent[2].div_ceil({z}));"
+            ),
+        );
+    } else {
+        write_line(
+            &mut source,
+            format_args!(
+                "        pass.dispatch_workgroups(element_count.div_ceil({}), 1, 1);",
+                kernel.workgroup_size[0]
+            ),
+        );
+    }
     source.push_str("    }\n}\n");
     Ok(source)
 }

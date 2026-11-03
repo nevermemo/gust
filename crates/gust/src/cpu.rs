@@ -42,7 +42,7 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::{
-    Access, BindingKind, Call, Device, GpuPod, Invocation, Job, JobStatus, Kernel,
+    Access, BindingKind, Call, Device, Extent, GpuPod, Invocation, Job, JobStatus, Kernel,
     KernelDescriptor, LengthRule, ParameterKind, Resource, ResourceLayout, TypeLayout,
     TypeLayoutKind, TypedDevice, UVec3, kind,
 };
@@ -415,16 +415,17 @@ pub enum Error {
         /// The kernel parameter.
         parameter: &'static str,
     },
-    /// The CPU twin runs one-dimensional workgroups of non-zero width only.
+    /// A workgroup size with a zero axis. The twin runs workgroups of any non-zero size in one, two or three
+    /// dimensions (slice m7.d).
     UnsupportedWorkgroupSize {
         /// The kernel's workgroup size.
         size: [u32; 3],
     },
     /// A launch needs more than a limit of the CPU twin allows; the counterpart of `gust_wgpu::Error::DeviceLimit`.
-    /// The only limit is `global_invocation_id` (a `u32`): the element count rounded up to whole workgroups must not
-    /// exceed 2^32 invocations, or ids would wrap and re-run real elements. A width that is not a power of two can
-    /// exceed it below `u32::MAX` elements (192 wide, `u32::MAX` elements: 4294967424). A launch of zero elements is
-    /// not checked.
+    /// The only limit is `global_invocation_id` (a `u32` per axis): the extent with every axis rounded up to whole
+    /// workgroups must not multiply to more than 2^32 invocations ([`crate::Extent::MAX_INVOCATIONS`]), or ids would
+    /// wrap and re-run real elements. A width that is not a power of two can exceed it below `u32::MAX` elements
+    /// (192 wide, `u32::MAX` elements: 4294967424). A launch with a zero axis is not checked.
     DeviceLimit {
         /// The kernel, as `module::name`.
         kernel: String,
@@ -497,7 +498,7 @@ impl fmt::Display for Error {
             ),
             Self::UnsupportedWorkgroupSize { size } => write!(
                 f,
-                "workgroup size {size:?} is not supported by the CPU twin (one-dimensional, non-zero width only)"
+                "workgroup size {size:?} is not supported by the CPU twin (every axis must be non-zero)"
             ),
             Self::DeviceLimit {
                 kernel,
@@ -567,12 +568,17 @@ impl<T: GpuPod> Resource for CpuUniform<T> {
     }
 }
 
-/// The id range of a launch: `global_invocation_id` is a `u32`, so at most 2^32 invocations.
-const MAX_INVOCATIONS: u64 = 1 << 32;
+/// The id range of a launch: `global_invocation_id` is a `u32` per axis, so at most 2^32 invocations
+/// ([`Extent::MAX_INVOCATIONS`], the one rule of both backends).
+const MAX_INVOCATIONS: u64 = Extent::MAX_INVOCATIONS;
 
-/// Invocations of a launch: `element_count` rounded up to whole workgroups of `width` (not zero).
-fn launch_invocations(width: u32, element_count: u32) -> u64 {
-    u64::from(element_count.div_ceil(width)) * u64::from(width)
+/// Invocations of a launch: every axis of `extent` rounded up to whole workgroups of `size`, multiplied
+/// ([`Extent::rounded_total`], in `u128`, so it cannot overflow). `size` has no zero axis: [`validate`] refuses one,
+/// and [`invocations`] panics on it.
+fn launch_invocations(size: [u32; 3], extent: Extent) -> u128 {
+    extent
+        .rounded_total(size)
+        .expect("a workgroup size without a zero axis")
 }
 
 /// The backend contract once for every kernel: every binding against `call.kernel()`, then aliasing by identity, then
@@ -592,9 +598,10 @@ pub fn validate<K: Kernel, const N: usize>(
 ) -> Result<(), Error> {
     let kernel = call.kernel();
     let size = kernel.workgroup_size;
-    if size[0] == 0 || size[1] != 1 || size[2] != 1 {
+    if size.contains(&0) {
         return Err(Error::UnsupportedWorkgroupSize { size });
     }
+    let extent = call.extent();
     let parameters: Vec<_> = kernel
         .parameters
         .iter()
@@ -604,7 +611,12 @@ pub fn validate<K: Kernel, const N: usize>(
     // count at compile time); a hand-built `Call` cannot differ either. The assertion documents that the zip below is
     // total.
     debug_assert_eq!(parameters.len(), N);
-    let expected = call.element_count() as usize;
+    // A shared buffer holds exactly `x * y * z` elements. A product that overflows a `u64` or a `usize` is larger than
+    // any buffer, so it saturates: the length check then fails for every buffer, as it must.
+    let expected = extent
+        .checked_total()
+        .and_then(|total| usize::try_from(total).ok())
+        .unwrap_or(usize::MAX);
     for (parameter, binding) in parameters.iter().zip(call.bindings().iter().copied()) {
         let name = parameter.name;
         // The kind comes first: the layout rule of a uniform differs from a buffer's, so everything after it assumes
@@ -674,14 +686,17 @@ pub fn validate<K: Kernel, const N: usize>(
         }
     }
     // The launch limit, after validation and not for an empty launch, as `check_launch` does on the GPU. The GPU
-    // limit is `max_compute_workgroups_per_dimension` (65535 by default); the twin's only limit is the `u32` id range.
-    if call.element_count() != 0 {
-        let requested = launch_invocations(size[0], call.element_count());
-        if requested > MAX_INVOCATIONS {
+    // limits are `max_compute_workgroups_per_dimension` (65535 by default) per axis and the same invocation cap as
+    // here ([`Extent::MAX_INVOCATIONS`], at most and rounded up to whole workgroups); the twin's only limit is
+    // that cap.
+    if !extent.is_empty() {
+        let requested = launch_invocations(size, extent);
+        if requested > u128::from(MAX_INVOCATIONS) {
             return Err(Error::DeviceLimit {
                 kernel: kernel.qualified_name().to_string(),
                 limit: "global_invocation_id",
-                requested,
+                // Three rounded axes are below 2^96; the error carries a `u64`, so a launch beyond it saturates.
+                requested: u64::try_from(requested).unwrap_or(u64::MAX),
                 maximum: MAX_INVOCATIONS,
             });
         }
@@ -791,8 +806,11 @@ fn require_kind(
     }
 }
 
-/// Global invocation ids in x for whole workgroups, like the GPU: `element_count` rounded up to a multiple of the
-/// workgroup width, so shadow bodies must guard with `.len()` as GPU bodies do. Macro support.
+/// Global invocation ids for whole workgroups, like the GPU: every axis of `extent` rounded up to a multiple of the
+/// workgroup size along that axis, so shadow bodies must guard with `.len()` (or the extent) as GPU bodies do. The ids
+/// run over `z`, then `y`, then `x` (x fastest), each axis from 0 below its rounded extent; the id of an invocation is
+/// its `(x, y, z)`, so `LocalId` (`id % size`) and `GroupId` (`id / size`) are exact in two and three dimensions.
+/// Macro support.
 ///
 /// [`validate`] rejects a launch whose rounded-up total exceeds 2^32 ([`Error::DeviceLimit`]); this function is not
 /// reachable with such a launch from a validated call. A direct caller who skips `validate` gets the first 2^32 ids
@@ -800,20 +818,92 @@ fn require_kind(
 #[doc(hidden)]
 pub fn invocations(
     kernel: &KernelDescriptor,
-    element_count: u32,
+    extent: Extent,
 ) -> impl Iterator<Item = UVec3> + use<> {
-    let total = launch_invocations(kernel.workgroup_size[0], element_count);
+    let total = launch_invocations(kernel.workgroup_size, extent);
     debug_assert!(
-        total <= MAX_INVOCATIONS,
+        total <= u128::from(MAX_INVOCATIONS),
         "{total} invocations exceed the u32 id range; `validate` rejects this launch"
     );
-    // `u64` so that rounding up near `u32::MAX` cannot overflow. The cap keeps every id below 2^32: a width that is
-    // not a power of two (192) can round `u32::MAX` elements up past it, and `x as u32` would wrap.
-    (0..total.min(MAX_INVOCATIONS)).map(|x| UVec3 {
-        x: x as u32,
-        y: 0,
-        z: 0,
-    })
+    let [x, y, z] = extent
+        .rounded_axes(kernel.workgroup_size)
+        .expect("a workgroup size without a zero axis");
+    // `u64` so that rounding up near `u32::MAX` cannot overflow, and the cap keeps every id below 2^32 (a width that
+    // is not a power of two, 192, can round `u32::MAX` elements up past it, and `x as u32` would wrap).
+    let total = u64::try_from(total.min(u128::from(MAX_INVOCATIONS))).unwrap_or(MAX_INVOCATIONS);
+    if y == 1 && z == 1 {
+        // One dimension, and the D51 CPU target: a plain range, no per-id work beyond the cast.
+        Invocations::Linear(0..total)
+    } else {
+        Invocations::Grid {
+            at: [0; 3],
+            size: [x, y],
+            remaining: total,
+        }
+    }
+}
+
+/// The ids of [`invocations`]: a plain range for a launch of one row, else a counter that carries from `x` into `y`
+/// and `z` without dividing.
+enum Invocations {
+    Linear(std::ops::Range<u64>),
+    Grid {
+        /// The next id, `x` fastest.
+        at: [u64; 3],
+        /// The rounded extent along `x` and `y`; `z` ends the walk through `remaining`.
+        size: [u64; 2],
+        remaining: u64,
+    },
+}
+
+impl Iterator for Invocations {
+    type Item = UVec3;
+
+    fn next(&mut self) -> Option<UVec3> {
+        match self {
+            Self::Linear(range) => range.next().map(|x| UVec3 {
+                x: x as u32,
+                y: 0,
+                z: 0,
+            }),
+            Self::Grid {
+                at,
+                size,
+                remaining,
+            } => {
+                if *remaining == 0 {
+                    return None;
+                }
+                *remaining -= 1;
+                let id = UVec3 {
+                    x: at[0] as u32,
+                    y: at[1] as u32,
+                    z: at[2] as u32,
+                };
+                at[0] += 1;
+                if at[0] == size[0] {
+                    at[0] = 0;
+                    at[1] += 1;
+                    if at[1] == size[1] {
+                        at[1] = 0;
+                        at[2] += 1;
+                    }
+                }
+                Some(id)
+            }
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let left = match self {
+            Self::Linear(range) => range.end - range.start,
+            Self::Grid { remaining, .. } => *remaining,
+        };
+        match usize::try_from(left) {
+            Ok(left) => (left, Some(left)),
+            Err(_) => (usize::MAX, None),
+        }
+    }
 }
 
 /// Builds the invocation parameter of a shadow body from the global invocation id. Macro support.
@@ -1151,7 +1241,7 @@ mod tests {
             let a = read::<f32>(a, "a")?;
             let settings = read::<f32>(settings, "settings")?;
             let mut out = write::<f32>(out, "out")?;
-            for id in invocations(call.kernel(), call.element_count()) {
+            for id in invocations(call.kernel(), call.extent()) {
                 scale_body(
                     <Invocation as FromGlobalId>::from_global_id(id),
                     Storage::new(&a),
@@ -1171,7 +1261,7 @@ mod tests {
             let a = read::<f32>(a, "a")?;
             let factor = Uniform(read_uniform::<f32>(factor, "factor")?);
             let mut out = write::<f32>(out, "out")?;
-            for id in invocations(call.kernel(), call.element_count()) {
+            for id in invocations(call.kernel(), call.extent()) {
                 shade_body(
                     <Invocation as FromGlobalId>::from_global_id(id),
                     Storage::new(&a),
@@ -1189,7 +1279,7 @@ mod tests {
             let [color, out] = *call.bindings();
             let color = Uniform(read_uniform::<Vec4>(color, "color")?);
             let mut out = write::<f32>(out, "out")?;
-            for id in invocations(call.kernel(), call.element_count()) {
+            for id in invocations(call.kernel(), call.extent()) {
                 tint_body(
                     <Invocation as FromGlobalId>::from_global_id(id),
                     color,
@@ -1206,7 +1296,7 @@ mod tests {
             let [x, y] = *call.bindings();
             let mut x = write::<f32>(x, "x")?;
             let mut y = write::<f32>(y, "y")?;
-            for id in invocations(call.kernel(), call.element_count()) {
+            for id in invocations(call.kernel(), call.extent()) {
                 swap_body(
                     <SV_DispatchThreadID as FromGlobalId>::from_global_id(id),
                     StorageMut::new(&mut x),
@@ -1664,7 +1754,7 @@ mod tests {
     fn invocations_cover_whole_workgroups() {
         let kernel = &Scale::DESCRIPTOR;
         for (count, expected) in [(0u32, 0usize), (1, 64), (63, 64), (64, 64), (65, 128)] {
-            let ids: Vec<UVec3> = invocations(kernel, count).collect();
+            let ids: Vec<UVec3> = invocations(kernel, Extent::linear(count)).collect();
             assert_eq!(ids.len(), expected, "element count {count}");
             for (index, id) in ids.iter().enumerate() {
                 assert_eq!(
@@ -1679,8 +1769,57 @@ mod tests {
         }
         // A workgroup of width 1 has no partial group, width 4 rounds up.
         let narrow = descriptor("narrow", [1, 1, 1], &[]);
-        assert_eq!(invocations(&narrow, 5).count(), 5);
-        assert_eq!(invocations(&Swap::DESCRIPTOR, 5).count(), 8);
+        assert_eq!(invocations(&narrow, Extent::linear(5)).count(), 5);
+        assert_eq!(invocations(&Swap::DESCRIPTOR, Extent::linear(5)).count(), 8);
+    }
+
+    // Two and three dimensions (slice m7.d): every axis rounds up to whole workgroups, the ids run z, then y, then x
+    // (x fastest), and each id is its own `(x, y, z)`, so `id % size` and `id / size` are the local and group ids.
+    #[test]
+    fn invocations_cover_whole_workgroups_in_two_and_three_dimensions() {
+        let tile = descriptor("tile", [4, 2, 1], &[]);
+        let ids: Vec<UVec3> = invocations(&tile, Extent::new(5, 3, 1)).collect();
+        // x rounds 5 up to 8, y rounds 3 up to 4, z stays 1: 32 invocations.
+        assert_eq!(ids.len(), 32);
+        for (index, id) in ids.iter().enumerate() {
+            assert_eq!(
+                *id,
+                UVec3 {
+                    x: (index % 8) as u32,
+                    y: (index / 8) as u32,
+                    z: 0
+                },
+                "invocation {index}"
+            );
+        }
+        let block = descriptor("block", [2, 2, 2], &[]);
+        let ids: Vec<UVec3> = invocations(&block, Extent::new(3, 1, 3)).collect();
+        // 4 * 2 * 4 = 32; z is the slowest axis.
+        assert_eq!(ids.len(), 32);
+        assert_eq!(ids[0], UVec3 { x: 0, y: 0, z: 0 });
+        assert_eq!(ids[1], UVec3 { x: 1, y: 0, z: 0 });
+        assert_eq!(ids[4], UVec3 { x: 0, y: 1, z: 0 });
+        assert_eq!(ids[8], UVec3 { x: 0, y: 0, z: 1 });
+        assert_eq!(ids[31], UVec3 { x: 3, y: 1, z: 3 });
+        // The ids of a 15 x 17 launch of 16 x 16 workgroups are the 16 x 32 rectangle; the local and group ids
+        // derived from them are exact.
+        let grid = descriptor("grid", [16, 16, 1], &[]);
+        let ids: Vec<UVec3> = invocations(&grid, Extent::new(15, 17, 1)).collect();
+        assert_eq!(ids.len(), 16 * 32);
+        for id in &ids {
+            let (local, group) = ((id.x % 16, id.y % 16), (id.x / 16, id.y / 16));
+            assert_eq!(id.x, group.0 * 16 + local.0);
+            assert_eq!(id.y, group.1 * 16 + local.1);
+            assert!(group.0 < 1 && group.1 < 2, "{id:?}");
+        }
+        // A zero axis runs nothing, whichever it is.
+        for extent in [
+            Extent::new(0, 5, 5),
+            Extent::new(5, 0, 5),
+            Extent::new(5, 5, 0),
+        ] {
+            assert_eq!(invocations(&block, extent).count(), 0, "{extent:?}");
+        }
     }
 
     // Rounding up near `u32::MAX` does not overflow: 2^32 invocations, the last id is `u32::MAX`.
@@ -1689,20 +1828,26 @@ mod tests {
     fn invocations_near_the_u32_limit_do_not_overflow() {
         let total = 1usize << 32;
         assert_eq!(
-            invocations(&Scale::DESCRIPTOR, u32::MAX).size_hint(),
+            invocations(&Scale::DESCRIPTOR, Extent::linear(u32::MAX)).size_hint(),
+            (total, Some(total))
+        );
+        // Two dimensions reach the same total: 65536 * 65536 (the ids themselves are not walked: 2^32 of them).
+        let grid = descriptor("grid", [16, 16, 1], &[]);
+        assert_eq!(
+            invocations(&grid, Extent::new(65_536, 65_536, 1)).size_hint(),
             (total, Some(total))
         );
     }
 
     #[test]
-    fn unsupported_workgroup_sizes_are_rejected_before_anything_runs() {
+    fn a_workgroup_size_with_a_zero_axis_is_rejected_before_anything_runs() {
         struct Wide;
         impl Kernel for Wide {
-            const DESCRIPTOR: KernelDescriptor = descriptor("wide", [8, 2, 1], &[]);
+            const DESCRIPTOR: KernelDescriptor = descriptor("wide", [8, 0, 1], &[]);
         }
         struct Deep;
         impl Kernel for Deep {
-            const DESCRIPTOR: KernelDescriptor = descriptor("deep", [8, 1, 4], &[]);
+            const DESCRIPTOR: KernelDescriptor = descriptor("deep", [8, 1, 0], &[]);
         }
         struct Empty;
         impl Kernel for Empty {
@@ -1711,11 +1856,11 @@ mod tests {
         let cpu = CpuDevice::new();
         assert_eq!(
             validate(&cpu, &Call::<CpuDevice, Wide, 0>::new(1, [])),
-            Err(Error::UnsupportedWorkgroupSize { size: [8, 2, 1] })
+            Err(Error::UnsupportedWorkgroupSize { size: [8, 0, 1] })
         );
         assert_eq!(
             validate(&cpu, &Call::<CpuDevice, Deep, 0>::new(1, [])),
-            Err(Error::UnsupportedWorkgroupSize { size: [8, 1, 4] })
+            Err(Error::UnsupportedWorkgroupSize { size: [8, 1, 0] })
         );
         assert_eq!(
             validate(&cpu, &Call::<CpuDevice, Empty, 0>::new(1, [])),
@@ -1862,8 +2007,8 @@ mod tests {
                 "parameter `settings` was bound with an independent length but the buffer is empty",
             ),
             (
-                Error::UnsupportedWorkgroupSize { size: [8, 2, 1] },
-                "workgroup size [8, 2, 1] is not supported by the CPU twin (one-dimensional, non-zero width only)",
+                Error::UnsupportedWorkgroupSize { size: [8, 0, 1] },
+                "workgroup size [8, 0, 1] is not supported by the CPU twin (every axis must be non-zero)",
             ),
         ];
         for (error, expected) in messages {
@@ -2030,13 +2175,133 @@ mod tests {
         );
     }
 
+    // The cap in two and three dimensions (slice m7.d): the product of the three rounded axes, at most 2^32. It is not
+    // the raw product (65537 * 65535 is below 2^32 and still over) and it is not "below" (exactly 2^32 is accepted).
+    // The GPU backend applies the same rule (`crates/gust-wgpu/tests/limits.rs`, which compares both).
+    #[test]
+    fn the_cap_is_the_rounded_up_product_of_all_axes_at_most_2_pow_32() {
+        struct Tile16;
+        impl Kernel for Tile16 {
+            const DESCRIPTOR: KernelDescriptor = descriptor("tile16", [16, 16, 1], &[]);
+        }
+        struct Block4;
+        impl Kernel for Block4 {
+            const DESCRIPTOR: KernelDescriptor = descriptor("block4", [4, 4, 4], &[]);
+        }
+        let cpu = CpuDevice::new();
+        let tile = |x, y, z| {
+            validate(
+                &cpu,
+                &Call::<CpuDevice, Tile16, 0>::new_extent(Extent::new(x, y, z), []),
+            )
+        };
+        let block = |x, y, z| {
+            validate(
+                &cpu,
+                &Call::<CpuDevice, Block4, 0>::new_extent(Extent::new(x, y, z), []),
+            )
+        };
+        let over = |kernel: &str, requested: u64| Error::DeviceLimit {
+            kernel: format!("cpu_tests::{kernel}"),
+            limit: "global_invocation_id",
+            requested,
+            maximum: 1 << 32,
+        };
+        // Exactly 2^32 after rounding: accepted, including a raw product that is smaller (65536 * 65535 rounds up).
+        assert_eq!(tile(65_536, 65_536, 1), Ok(()));
+        assert_eq!(tile(65_536, 65_535, 1), Ok(()));
+        assert_eq!(block(2048, 2048, 1024), Ok(()));
+        // The raw product 65537 * 65535 = 2^32 - 1 is below the cap, the rounded one (65552 * 65536) is above it.
+        assert_eq!(
+            tile(65_537, 65_535, 1),
+            Err(over("tile16", 65_552 * 65_536))
+        );
+        assert_eq!(
+            tile(65_537, 65_536, 1),
+            Err(over("tile16", 65_552 * 65_536))
+        );
+        assert_eq!(
+            block(2048, 2048, 1025),
+            Err(over("block4", 2048 * 2048 * 1028))
+        );
+        // A one-dimensional extent follows the same rule through a 2D kernel: y rounds 1 up to 16, so 2^28 elements
+        // along x are 2^32 invocations and one more element needs another workgroup column.
+        assert_eq!(tile(1 << 28, 1, 1), Ok(()));
+        assert_eq!(
+            tile((1 << 28) + 1, 1, 1),
+            Err(over("tile16", ((1 << 28) + 16) * 16))
+        );
+        // A launch beyond a `u64` saturates in the error, and an empty one is never checked.
+        assert_eq!(
+            tile(u32::MAX, u32::MAX, u32::MAX),
+            Err(over("tile16", u64::MAX))
+        );
+        assert_eq!(tile(0, u32::MAX, u32::MAX), Ok(()));
+        assert_eq!(tile(u32::MAX, 0, u32::MAX), Ok(()));
+        assert_eq!(tile(u32::MAX, u32::MAX, 0), Ok(()));
+    }
+
+    // A shared buffer holds `x * y * z` elements (an `Independent` one only has to be non-empty).
+    #[test]
+    fn a_shared_buffer_holds_the_product_of_the_extent() {
+        struct Fill;
+        impl Kernel for Fill {
+            const DESCRIPTOR: KernelDescriptor = descriptor(
+                "fill",
+                [4, 4, 1],
+                &[storage("out", Access::ReadWrite, 0, F32)],
+            );
+        }
+        let cpu = CpuDevice::new();
+        let out = cpu.buffer(&[0.0f32; 12]);
+        let run = |extent: Extent, length: LengthRule| {
+            validate(
+                &cpu,
+                &Call::<CpuDevice, Fill, 1>::new_extent(
+                    extent,
+                    [out.bind(Access::ReadWrite, length)],
+                ),
+            )
+        };
+        let shared = LengthRule::Shared;
+        assert_eq!(run(Extent::new(3, 4, 1), shared), Ok(()));
+        assert_eq!(run(Extent::new(2, 2, 3), shared), Ok(()));
+        assert_eq!(
+            run(Extent::new(4, 4, 1), shared),
+            Err(Error::BufferLength {
+                parameter: "out",
+                expected: 16,
+                actual: 12
+            })
+        );
+        // A zero axis makes the product 0, so a non-empty shared buffer is wrong, as for a count of 0.
+        assert_eq!(
+            run(Extent::new(0, 4, 3), shared),
+            Err(Error::BufferLength {
+                parameter: "out",
+                expected: 0,
+                actual: 12
+            })
+        );
+        assert_eq!(run(Extent::new(4, 4, 4), LengthRule::Independent), Ok(()));
+        // A product too large for any buffer saturates, never wraps to a size that fits.
+        assert_eq!(
+            run(Extent::new(u32::MAX, u32::MAX, u32::MAX), shared),
+            Err(Error::BufferLength {
+                parameter: "out",
+                expected: usize::MAX,
+                actual: 12
+            })
+        );
+    }
+
     // `invocations` cannot wrap an id even when `validate` was skipped: a debug build asserts, a release build is
     // capped at 2^32 ids (the first 2^32, never ids that restart from 0).
     #[test]
     #[cfg(debug_assertions)]
     #[should_panic(expected = "exceed the u32 id range")]
     fn invocations_assert_beyond_the_id_range_in_debug() {
-        let _ = invocations(&Wide192::DESCRIPTOR, u32::MAX);
+        let _ = invocations(&Wide192::DESCRIPTOR, Extent::linear(u32::MAX));
     }
 
     #[test]
@@ -2044,7 +2309,7 @@ mod tests {
     fn invocations_are_capped_at_the_id_range_in_release() {
         let total = 1usize << 32;
         assert_eq!(
-            invocations(&Wide192::DESCRIPTOR, u32::MAX).size_hint(),
+            invocations(&Wide192::DESCRIPTOR, Extent::linear(u32::MAX)).size_hint(),
             (total, Some(total))
         );
     }

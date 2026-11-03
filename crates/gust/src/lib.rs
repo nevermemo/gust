@@ -159,7 +159,7 @@ pub use descriptor::{
     ParameterKind, ResourceBinding, SourceOrigin,
 };
 pub use dispatch::{
-    Arg, BindingKind, Call, Independent, LengthRule, Resource, Run, TypedDevice, kind,
+    Arg, BindingKind, Call, Extent, Independent, LengthRule, Resource, Run, TypedDevice, kind,
 };
 pub use gust_macros::gpu;
 pub use job::{Device, Job, JobStatus};

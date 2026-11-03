@@ -32,9 +32,14 @@
 //! - One buffer bound twice in one call is accepted when both bindings are [`Access::ReadOnly`]; when either side is
 //!   [`Access::ReadWrite`] the backend rejects the call at run time with an error that names both parameters, before
 //!   it writes anything (S0 decision A; `gust-wgpu` implements this in m2.c).
-//! - `LengthRule::Shared` bindings must hold exactly `element_count` elements; `LengthRule::Independent` ones only
-//!   need to be non-empty when `element_count` is non-zero (the rules of the existing runtime checks). A uniform
-//!   holds one value and has no element count: it is `Independent` whatever the argument says, and never empty.
+//! - `LengthRule::Shared` bindings must hold exactly the call's [`Extent::checked_total`] elements (`x * y * z`; the
+//!   element count of a one-dimensional call); `LengthRule::Independent` ones only need to be non-empty when the
+//!   extent is non-empty (the rules of the existing runtime checks). A uniform holds one value and has no element
+//!   count: it is `Independent` whatever the argument says, and never empty.
+//! - An extent with a zero axis runs nothing and is `Ok` (after the binding checks, before any limit check). A launch
+//!   whose three axes, each rounded up to whole workgroups, multiply to more than 2^32 invocations
+//!   ([`Extent::MAX_INVOCATIONS`]) is refused by every backend, and a launch of exactly 2^32 is accepted by every
+//!   backend: the GPU backend adds its device limits (workgroup size and workgroups per dimension) on top.
 //!
 //! # What the tests in this file are
 //!
@@ -147,14 +152,119 @@ pub trait Run<K: Kernel, const N: usize>: TypedDevice {
     }
 }
 
-/// How a binding's length relates to the call's element count.
+/// How a binding's length relates to the call's extent (its element count for a one-dimensional call).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LengthRule {
-    /// The buffer must hold exactly `element_count` elements.
+    /// The buffer must hold exactly the call's [`Extent::checked_total`] elements, `x * y * z` (`element_count` for a
+    /// one-dimensional call).
     Shared,
-    /// The buffer's length is independent of the element count (a settings buffer, a counter).
+    /// The buffer's length is independent of the extent (a settings buffer, a counter).
     Independent,
+}
+
+/// The invocations of a call along the three dispatch axes (slice m7.d): `x * y * z` invocations before rounding each
+/// axis up to whole workgroups of the kernel's `workgroup_size`.
+///
+/// The one-dimensional forms of the typed API (`call`, `submit`, `dispatch`) mean [`Extent::linear`]: `y` and `z`
+/// are 1.
+/// `call_extent`, `submit_extent` and `dispatch_extent` take an `Extent` instead. Every backend reads it the same way:
+///
+/// - an axis of 0 makes the call empty: nothing runs, nothing is limit-checked, the result is `Ok`;
+/// - each axis is rounded up to whole workgroups, `ceil(axis / size) * size`, and the three rounded axes multiplied are
+///   the launch's invocations, which must be at most 2^32 ([`Extent::MAX_INVOCATIONS`]);
+/// - a [`LengthRule::Shared`] binding holds exactly [`Extent::checked_total`] elements, the product of the three axes
+///   before rounding.
+///
+/// The global invocation id is `(x, y, z)` with every axis below its rounded extent, so `LocalId` and `GroupId`
+/// (`id % size`, `id / size` per axis) stay exact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Extent {
+    /// Invocations along x.
+    pub x: u32,
+    /// Invocations along y.
+    pub y: u32,
+    /// Invocations along z.
+    pub z: u32,
+}
+
+impl Extent {
+    /// The most invocations of one launch, counted after rounding every axis up to whole workgroups: 2^32. It is the
+    /// range of a `u32` global id along a single axis, and both backends enforce it the same way (at most, not below).
+    pub const MAX_INVOCATIONS: u64 = 1 << 32;
+
+    /// An extent of `x` invocations along x and `y`, `z`.
+    pub const fn new(x: u32, y: u32, z: u32) -> Self {
+        Self { x, y, z }
+    }
+
+    /// `count` invocations along x only: what the one-dimensional `call` means.
+    pub const fn linear(count: u32) -> Self {
+        Self {
+            x: count,
+            y: 1,
+            z: 1,
+        }
+    }
+
+    /// Whether some axis is 0, so that the call runs nothing.
+    pub const fn is_empty(&self) -> bool {
+        self.x == 0 || self.y == 0 || self.z == 0
+    }
+
+    /// `x * y * z`, or `None` when the product does not fit a `u64` (an extent far beyond any launch: the cap is 2^32
+    /// invocations).
+    pub const fn checked_total(&self) -> Option<u64> {
+        // `u32 * u32` always fits a `u64`; only the second product can overflow.
+        (self.x as u64 * self.y as u64).checked_mul(self.z as u64)
+    }
+
+    /// The axes as `[x, y, z]`.
+    pub const fn to_array(&self) -> [u32; 3] {
+        [self.x, self.y, self.z]
+    }
+
+    /// The three axes rounded up to whole workgroups of `size`, `ceil(axis / size) * size` each (at most 2^32, so a
+    /// `u64`). `None` when an axis of `size` is 0.
+    pub const fn rounded_axes(&self, size: [u32; 3]) -> Option<[u64; 3]> {
+        if size[0] == 0 || size[1] == 0 || size[2] == 0 {
+            return None;
+        }
+        Some([
+            self.x.div_ceil(size[0]) as u64 * size[0] as u64,
+            self.y.div_ceil(size[1]) as u64 * size[1] as u64,
+            self.z.div_ceil(size[2]) as u64 * size[2] as u64,
+        ])
+    }
+
+    /// The invocations of a launch of this extent with workgroups of `size`: the [`rounded_axes`](Self::rounded_axes)
+    /// multiplied. `None` when an axis of `size` is 0. Computed in `u128`, so it cannot overflow: three rounded axes
+    /// are at most 2^96. A launch is valid for a backend only when this is at most [`Extent::MAX_INVOCATIONS`].
+    pub const fn rounded_total(&self, size: [u32; 3]) -> Option<u128> {
+        match self.rounded_axes(size) {
+            Some([x, y, z]) => Some(x as u128 * y as u128 * z as u128),
+            None => None,
+        }
+    }
+}
+
+impl From<u32> for Extent {
+    /// `count` along x: [`Extent::linear`].
+    fn from(count: u32) -> Self {
+        Self::linear(count)
+    }
+}
+
+impl From<[u32; 3]> for Extent {
+    fn from([x, y, z]: [u32; 3]) -> Self {
+        Self::new(x, y, z)
+    }
+}
+
+impl From<(u32, u32, u32)> for Extent {
+    fn from((x, y, z): (u32, u32, u32)) -> Self {
+        Self::new(x, y, z)
+    }
 }
 
 /// A typed buffer of one backend.
@@ -538,15 +648,16 @@ impl KernelDescriptor {
     }
 }
 
-/// A typed kernel call: the kernel, the element count and one binding per storage or uniform parameter.
+/// A typed kernel call: the kernel, the extent and one binding per storage or uniform parameter.
 ///
 /// It is a plain value (build once, submit as often as needed) and what the generated `call` returns, what
 /// [`Run::submit_call`] consumes and what the staged graph records. The descriptor is `K::DESCRIPTOR` and `N` is
-/// the kernel's number of storage plus uniform parameters: [`Call::new`] takes neither as an argument.
+/// the kernel's number of storage plus uniform parameters: [`Call::new`] takes neither as an argument. A call made by
+/// [`Call::new`] covers `element_count` invocations along x; one made by [`Call::new_extent`] covers an [`Extent`].
 #[must_use = "a `Call` does nothing until a device runs it"]
 pub struct Call<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> {
     kernel: &'static KernelDescriptor,
-    element_count: u32,
+    extent: Extent,
     bindings: [D::Binding<'r>; N],
     _kernel: PhantomData<fn() -> K>,
 }
@@ -713,10 +824,16 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// assert_eq!(call.kernel().uniform_parameter_count(), 1);
     /// ```
     pub const fn new(element_count: u32, bindings: [D::Binding<'r>; N]) -> Self {
+        Self::new_extent(Extent::linear(element_count), bindings)
+    }
+
+    /// [`Call::new`] over an [`Extent`] instead of an element count (slice m7.d): `Call::new(n, ..)` is
+    /// `Call::new_extent(Extent::linear(n), ..)`.
+    pub const fn new_extent(extent: Extent, bindings: [D::Binding<'r>; N]) -> Self {
         let () = Described::<K, N>::BOUND_PARAMETERS_MATCH;
         Self {
             kernel: Described::<K, N>::DESCRIPTOR,
-            element_count,
+            extent,
             bindings,
             _kernel: PhantomData,
         }
@@ -727,9 +844,17 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
         self.kernel
     }
 
-    /// How many invocations the call covers (before rounding up to whole workgroups).
+    /// The invocations along x (before rounding up to whole workgroups): the element count of a one-dimensional
+    /// call. For a call made with [`Call::new_extent`] this is the x axis only; [`Call::extent`] is the whole. Do not
+    /// size a buffer from it for a multi-dimensional call: the length of a shared buffer is
+    /// `call.extent().checked_total()`, the product of the three axes.
     pub const fn element_count(&self) -> u32 {
-        self.element_count
+        self.extent.x
+    }
+
+    /// The invocations the call covers along the three axes (before rounding up to whole workgroups).
+    pub const fn extent(&self) -> Extent {
+        self.extent
     }
 
     /// One binding per storage or uniform parameter, in declaration order.
@@ -745,7 +870,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Call")
             .field("kernel", &self.kernel.name)
-            .field("element_count", &self.element_count)
+            .field("extent", &self.extent)
             .field("bindings", &self.bindings)
             .finish()
     }
@@ -1238,7 +1363,7 @@ mod tests {
             let a = cpu::read::<f32>(a, "a")?;
             let settings = cpu::read::<f32>(settings, "settings")?;
             let mut out = cpu::write::<f32>(out, "out")?;
-            for id in cpu::invocations(call.kernel(), call.element_count()) {
+            for id in cpu::invocations(call.kernel(), call.extent()) {
                 scale_body(
                     <Invocation as FromGlobalId>::from_global_id(id),
                     Storage::new(&a),
@@ -1257,7 +1382,7 @@ mod tests {
             let a = cpu::read::<f32>(a, "a")?;
             let b = cpu::read::<f32>(b, "b")?;
             let mut out = cpu::write::<f32>(out, "out")?;
-            for id in cpu::invocations(call.kernel(), call.element_count()) {
+            for id in cpu::invocations(call.kernel(), call.extent()) {
                 sum2_body(
                     <Invocation as FromGlobalId>::from_global_id(id),
                     Storage::new(&a),
@@ -1275,7 +1400,7 @@ mod tests {
             let [x, y] = *call.bindings();
             let mut x = cpu::write::<f32>(x, "x")?;
             let mut y = cpu::write::<f32>(y, "y")?;
-            for id in cpu::invocations(call.kernel(), call.element_count()) {
+            for id in cpu::invocations(call.kernel(), call.extent()) {
                 swap2_body(
                     <Invocation as FromGlobalId>::from_global_id(id),
                     StorageMut::new(&mut x),
@@ -1742,8 +1867,67 @@ mod tests {
         let call = Nothing::call::<RecordingDevice>(7);
         assert_eq!(
             format!("{call:?}"),
-            "Call { kernel: \"nothing\", element_count: 7, bindings: [] }"
+            "Call { kernel: \"nothing\", extent: Extent { x: 7, y: 1, z: 1 }, bindings: [] }"
         );
         assert!(format!("{:?}", Independent(&buffer.values)).starts_with("Independent("));
+    }
+
+    // ---- extents (slice m7.d) ----
+
+    #[test]
+    fn a_one_dimensional_call_is_the_linear_extent() {
+        let call = Nothing::call::<RecordingDevice>(7);
+        assert_eq!(call.extent(), Extent::linear(7));
+        assert_eq!(call.extent(), Extent::new(7, 1, 1));
+        assert_eq!(call.element_count(), 7);
+        let from_extent = Call::<RecordingDevice, Nothing, 0>::new_extent(Extent::new(7, 1, 1), []);
+        assert_eq!(format!("{call:?}"), format!("{from_extent:?}"));
+        assert_eq!(Extent::from(7), Extent::linear(7));
+        assert_eq!(Extent::from([2, 3, 4]), Extent::new(2, 3, 4));
+        assert_eq!(Extent::from((2, 3, 4)), Extent::new(2, 3, 4));
+        assert_eq!(Extent::new(2, 3, 4).to_array(), [2, 3, 4]);
+    }
+
+    #[test]
+    fn a_multi_dimensional_call_keeps_its_extent_and_the_recording_device_sees_it() {
+        let call = Call::<RecordingDevice, Nothing, 0>::new_extent(Extent::new(15, 17, 2), []);
+        assert_eq!(call.extent(), Extent::new(15, 17, 2));
+        // `element_count` is the x axis only; the extent is the whole.
+        assert_eq!(call.element_count(), 15);
+        RecordingDevice::default().dispatch_call(&call).unwrap();
+    }
+
+    #[test]
+    fn the_checked_total_is_the_product_and_none_when_it_overflows() {
+        assert_eq!(Extent::new(15, 17, 1).checked_total(), Some(255));
+        assert_eq!(Extent::new(0, u32::MAX, u32::MAX).checked_total(), Some(0));
+        assert_eq!(
+            Extent::new(u32::MAX, u32::MAX, 1).checked_total(),
+            Some(u64::from(u32::MAX) * u64::from(u32::MAX))
+        );
+        assert_eq!(
+            Extent::new(u32::MAX, u32::MAX, u32::MAX).checked_total(),
+            None
+        );
+        assert!(Extent::new(1, 0, 1).is_empty());
+        assert!(!Extent::new(1, 1, 1).is_empty());
+    }
+
+    #[test]
+    fn rounding_is_per_axis_and_the_total_cannot_overflow() {
+        let extent = Extent::new(15, 17, 1);
+        assert_eq!(extent.rounded_axes([16, 16, 1]), Some([16, 32, 1]));
+        assert_eq!(extent.rounded_total([16, 16, 1]), Some(16 * 32));
+        assert_eq!(extent.rounded_axes([0, 16, 1]), None);
+        assert_eq!(extent.rounded_total([16, 1, 0]), None);
+        // The raw product of this one is below 2^32, the rounded one is above (the boundary the backends share).
+        let edge = Extent::new(65_537, 65_535, 1);
+        assert_eq!(edge.checked_total(), Some((1 << 32) - 1));
+        assert_eq!(edge.rounded_total([16, 16, 1]), Some(65_552 * 65_536));
+        assert_eq!(
+            Extent::new(u32::MAX, u32::MAX, u32::MAX).rounded_total([1, 1, 1]),
+            Some(u128::from(u32::MAX).pow(3))
+        );
+        assert_eq!(Extent::MAX_INVOCATIONS, 1 << 32);
     }
 }

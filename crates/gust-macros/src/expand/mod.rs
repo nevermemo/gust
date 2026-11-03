@@ -1060,6 +1060,22 @@ fn typed_call_items(
     );
     let dispatch_doc =
         format!("Run `{kernel}` and wait: `__gust_device`, `__gust_element_count`, {order}.");
+    // The multi-dimensional forms (slice m7.d): the same three functions over a `gust::Extent` in place of the element
+    // count. The one-dimensional forms are `Extent { x: n, y: 1, z: 1 }`.
+    let extent_note = "The extent is `gust::Extent { x, y, z }`: each axis is rounded up to whole workgroups, a shared \
+         buffer holds exactly `x * y * z` elements, an axis of 0 runs nothing, and the rounded launch is at most \
+         2^32 invocations on every backend.";
+    let call_extent_doc = format!(
+        "Typed call of `{kernel}` over an extent: `__gust_extent`, {order}. Like `call`, with a `gust::Extent` \
+         in place of the element count. {extent_note}{turbofish}"
+    );
+    let submit_extent_doc = format!(
+        "Submit `{kernel}` over an extent: `__gust_device`, `__gust_extent`, {order}. Returns a job to wait on. \
+         {extent_note}"
+    );
+    let dispatch_extent_doc = format!(
+        "Run `{kernel}` over an extent and wait: `__gust_device`, `__gust_extent`, {order}. {extent_note}"
+    );
 
     let assertion = quote! {
         const _: () = ::core::assert!(
@@ -1103,6 +1119,36 @@ fn typed_call_items(
                     ) -> ::core::result::Result<(), <__GustD as ::gust::Device>::Error> {
                         <__GustD as ::gust::Run<Self, 0>>::dispatch_call(__gust_device, &Self::call(__gust_element_count))
                     }
+
+                    #[doc = #call_extent_doc]
+                    pub fn call_extent<'r, __GustD: ::gust::TypedDevice>(
+                        __gust_extent: ::gust::Extent,
+                    ) -> ::gust::Call<'r, __GustD, Self, 0> {
+                        ::gust::Call::new_extent(__gust_extent, [])
+                    }
+
+                    #[doc = #submit_extent_doc]
+                    #[allow(clippy::type_complexity)]
+                    pub fn submit_extent<'d, __GustD: ::gust::Run<Self, 0>>(
+                        __gust_device: &'d __GustD,
+                        __gust_extent: ::gust::Extent,
+                    ) -> ::core::result::Result<
+                        <__GustD as ::gust::Device>::Job<'d>,
+                        <__GustD as ::gust::Device>::Error,
+                    > {
+                        <__GustD as ::gust::Run<Self, 0>>::submit_call(__gust_device, &Self::call_extent(__gust_extent))
+                    }
+
+                    #[doc = #dispatch_extent_doc]
+                    pub fn dispatch_extent<__GustD: ::gust::Run<Self, 0>>(
+                        __gust_device: &__GustD,
+                        __gust_extent: ::gust::Extent,
+                    ) -> ::core::result::Result<(), <__GustD as ::gust::Device>::Error> {
+                        <__GustD as ::gust::Run<Self, 0>>::dispatch_call(
+                            __gust_device,
+                            &Self::call_extent(__gust_extent),
+                        )
+                    }
                 }
             },
         ));
@@ -1138,10 +1184,13 @@ fn typed_call_items(
         })
         .collect();
     let forwarded: Vec<&syn::Ident> = arguments.iter().map(|argument| &argument.name).collect();
-    let bindings = arguments.iter().map(|argument| {
-        let (name, access) = (&argument.name, &argument.access);
-        quote!(::core::convert::Into::into(#name).bind(#access))
-    });
+    let bindings: Vec<TokenStream> = arguments
+        .iter()
+        .map(|argument| {
+            let (name, access) = (&argument.name, &argument.access);
+            quote!(::core::convert::Into::into(#name).bind(#access))
+        })
+        .collect();
 
     Ok((
         handle_doc,
@@ -1195,6 +1244,55 @@ fn typed_call_items(
                     <#device as ::gust::Run<Self, #count>>::dispatch_call(
                         __gust_device,
                         &Self::call(__gust_element_count, #(#forwarded),*),
+                    )
+                }
+
+                #[doc = #call_extent_doc]
+                #[allow(clippy::too_many_arguments)]
+                pub fn call_extent<'r, #(#resources),*>(
+                    __gust_extent: ::gust::Extent,
+                    #(#parameters),*
+                ) -> ::gust::Call<'r, #device, Self, #count>
+                where
+                    #(#bounds,)*
+                {
+                    ::gust::Call::new_extent(__gust_extent, [#(#bindings),*])
+                }
+
+                #[doc = #submit_extent_doc]
+                #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+                pub fn submit_extent<'d, 'r, #(#resources),*>(
+                    __gust_device: &'d #device,
+                    __gust_extent: ::gust::Extent,
+                    #(#parameters),*
+                ) -> ::core::result::Result<
+                    <#device as ::gust::Device>::Job<'d>,
+                    <#device as ::gust::Device>::Error,
+                >
+                where
+                    #(#bounds,)*
+                    #device: ::gust::Run<Self, #count>,
+                {
+                    <#device as ::gust::Run<Self, #count>>::submit_call(
+                        __gust_device,
+                        &Self::call_extent(__gust_extent, #(#forwarded),*),
+                    )
+                }
+
+                #[doc = #dispatch_extent_doc]
+                #[allow(clippy::too_many_arguments)]
+                pub fn dispatch_extent<'r, #(#resources),*>(
+                    __gust_device: &#device,
+                    __gust_extent: ::gust::Extent,
+                    #(#parameters),*
+                ) -> ::core::result::Result<(), <#device as ::gust::Device>::Error>
+                where
+                    #(#bounds,)*
+                    #device: ::gust::Run<Self, #count>,
+                {
+                    <#device as ::gust::Run<Self, #count>>::dispatch_call(
+                        __gust_device,
+                        &Self::call_extent(__gust_extent, #(#forwarded),*),
                     )
                 }
             }
@@ -1323,7 +1421,7 @@ fn cpu_twin_items(
                 let [#(#names),*] = *__gust_call.bindings();
                 #(#acquisitions)*
                 for __gust_id in
-                    ::gust::cpu::invocations(__gust_call.kernel(), __gust_call.element_count())
+                    ::gust::cpu::invocations(__gust_call.kernel(), __gust_call.extent())
                 {
                     #typecheck(#(#arguments),*);
                 }

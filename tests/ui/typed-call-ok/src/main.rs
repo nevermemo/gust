@@ -7,7 +7,7 @@
 use std::{marker::PhantomData, time::Duration};
 
 use gust::{
-    Access, Call, Device, GpuPod, Independent, Job, JobStatus, Kernel, LengthRule, Resource, Run,
+    Access, Call, Device, Extent, GpuPod, Independent, Job, JobStatus, Kernel, LengthRule, Resource, Run,
     TypedDevice,
 };
 
@@ -133,4 +133,16 @@ fn main() {
     // No storage parameters: the device type cannot be inferred, so `call` takes a turbofish.
     kernels::nothing::dispatch(&device, 16).unwrap();
     let _: Call<'_, Mock, kernels::nothing, 0> = kernels::nothing::call::<Mock>(16);
+
+    // The multi-dimensional forms take a `gust::Extent`; a linear extent is the element count.
+    let call: Call<'_, Mock, kernels::scale, 3> =
+        kernels::scale::call_extent(Extent::new(4, 4, 1), &input, Independent(&settings), &output);
+    assert_eq!(call.extent(), Extent::new(4, 4, 1));
+    kernels::scale::dispatch_extent(&device, Extent::linear(16), &input, Independent(&settings), &output).unwrap();
+    kernels::scale::submit_extent(&device, Extent::new(2, 2, 2), &input, Independent(&settings), &output)
+        .unwrap()
+        .wait()
+        .unwrap();
+    kernels::nothing::dispatch_extent(&device, Extent::new(16, 16, 1)).unwrap();
+    let _: Call<'_, Mock, kernels::nothing, 0> = kernels::nothing::call_extent::<Mock>(Extent::new(1, 1, 1));
 }

@@ -317,6 +317,23 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   Main: 22 of 23 gate steps green on `1278b61` (19:40 to 20:22Z, RTX 5090); gpu-verify died once in the
   gust-algo GPU tests (STATUS_ACCESS_VIOLATION, NEXT_TASKS) and passed alone (20:25 to 20:32Z); check-examples
   green.
+- M7 m7.f1 (`754f12f`, fix round `64100b2`, merge `96051c8`): the Linux CI flake "Text file busy" (ETXTBSY) on
+  `6be06d4`. A test wrote a helper script and ran it while another thread's `fork` still held the write
+  descriptor. The four places in `gust` that start the reflection helper or `slangc` (slang/mod.rs `compile_at`,
+  reflect/mod.rs `compile_reflected_with_helper`, the clean-compile closure and `reflect`) now go through one
+  bounded retry on `ExecutableFileBusy` only (5 tries, 10 to 80 ms apart; every other result returned at once), so
+  real programs that write or download a helper and run it are covered too. Tests inject the spawn: the bound, the
+  waits, the last error returned, and no retry for other errors. Opus approved; one test nit fixed.
+- MR mr.t1 (`448c52b`, fix round `069db3b`, merge `76cfeb0`; D109): `gust::toolchain`, the one owner of the
+  toolchain-location rules, as a std-only `#[doc(hidden)]` module that is not wired yet (mr.t2 adds the `mod` line
+  and points cargo-gust and the bridge at it). The cache root, the Slang pin and validated-build rule, the `slangc`
+  and helper paths in the order `GUST_SLANG_REFLECT`, managed cache, checkout, and the version check. Stricter
+  than cargo-gust's copy: a relative `GUST_SLANG_REFLECT` is refused, no current-directory or bare-name lookup,
+  and the checkout fallback needs the `xtask/Cargo.toml` marker and `crates/gust` resolving to the crate's own
+  directory (a vendored copy or a nested work directory finds nothing). The tests copy cargo-gust's tables case by
+  case (slang_tests.rs) and run on hand-built environments; three mutations fail tests. Opus "merge"; the four
+  should-fixes and two nits were taken. Not yet: the `slangc -version` launch is outside m7.f1's retry (mr.t2).
+  Main: 23 gate steps green on `96051c8` (20:50 to 21:23Z, RTX 5090) and check-examples green.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).

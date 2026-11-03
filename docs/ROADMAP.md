@@ -44,7 +44,8 @@ D100 and D101, merge `1516c94`) and m7.a2 (map examples, merge `44299e5`; its RE
 quiet-window run) and m7.r4 (shared-memory v1, merge `d6b425f`; v1 ships for all six operations, provisional until
 the Radeon 890M half) and m7.d (multi-dimensional dispatch, D102, merge `853aade`) and m7.p (`par_for!`, D103,
 merge `910ee1c`) and m6.u2f (`cargo gust build` on uniform kernels, D104) and m7.t1 (tidy pass 1, merge
-`1278b61`). Next: m7.lv (uniform and vector layouts in the export record). The
+`1278b61`) and m7.f1 (ETXTBSY retry, merge `96051c8`). Next: m7.lv (uniform and vector layouts in the export
+record). The
 wasm32 `Job` contract (D69) lands before m7.a's `map_async` reaches the browser. The MX plan is adopted (D88 to
 D95).
 

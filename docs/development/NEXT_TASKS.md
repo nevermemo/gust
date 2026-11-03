@@ -206,9 +206,8 @@ test module; do not mix that mechanical move with behavior changes.
   zero-filled the same way (one clear of n elements per call, 2 GiB at 2^29; m7.r2 review), and so is the map's
   output (`map_on`, `map_gpu`; m7.a1 review N2: name it in m7.a2's timing conditions).
 - Tidy follow-ups (m7.t1): one `element()` in gust-macros (par_for.rs and expand/map.rs hold the same logic; after
-  m7.lv merges, goldens byte-identical); `scripted_failing_helper` in crates/gust/tests/diagnostics.rs writes a
-  script and runs it at once, which raced on Linux CI ("Text file busy", ETXTBSY, on `6be06d4`): close the file
-  before the exec or retry on ETXTBSY (slice m7.f1 in flight). The rest of the scout's list waits for the M7 close.
+  m7.lv merges, goldens byte-identical). The ETXTBSY flake is fixed (m7.f1). The rest of the scout's list waits
+  for the M7 close.
 - gust-algo GPU lib tests: once, on `1278b61`, the test binary died with STATUS_ACCESS_VIOLATION (0xc0000005)
   while `gpu_v1_float_sum_of_the_tie_ladder_is_within_the_bound` and `gpu_v1_runs_the_deepest_schedules` ran (over
   60 s, other lanes' gates on the machine); the rerun alone passed. If it repeats, run the binary alone with

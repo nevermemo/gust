@@ -757,7 +757,7 @@ mod tests {
     #[cfg(feature = "slang-runtime")]
     #[test]
     fn a_busy_executable_is_retried_a_bounded_number_of_times() {
-        let busy = || std::io::Error::from(std::io::ErrorKind::ExecutableFileBusy);
+        let busy = |text: String| std::io::Error::new(std::io::ErrorKind::ExecutableFileBusy, text);
         let mut calls = 0;
         let mut waits = Vec::new();
         let result: std::io::Result<()> = retry_busy(
@@ -766,12 +766,15 @@ mod tests {
             |wait| waits.push(wait),
             || {
                 calls += 1;
-                Err(busy())
+                Err(busy(format!("busy {calls}")))
             },
         );
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::ExecutableFileBusy);
         assert_eq!(
-            result.unwrap_err().kind(),
-            std::io::ErrorKind::ExecutableFileBusy
+            error.to_string(),
+            "busy 5",
+            "the last busy error is the one returned"
         );
         assert_eq!(calls, 5);
         let millis: Vec<u128> = waits.iter().map(Duration::as_millis).collect();
@@ -786,7 +789,11 @@ mod tests {
             |_| waited += 1,
             || {
                 calls += 1;
-                if calls < 3 { Err(busy()) } else { Ok(calls) }
+                if calls < 3 {
+                    Err(busy(String::new()))
+                } else {
+                    Ok(calls)
+                }
             },
         );
         assert_eq!((result.unwrap(), waited), (3, 2));

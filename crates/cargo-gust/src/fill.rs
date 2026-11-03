@@ -213,7 +213,7 @@ fn layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
         }
         other => {
             return Err(format!(
-                "{context}: unsupported element type `{other}` (only 32-bit scalars, vectors, matrices and \r
+                "{context}: unsupported element type `{other}` (only 32-bit scalars, vectors, matrices and \
                  structs of them)"
             ));
         }
@@ -307,6 +307,23 @@ mod tests {
             let error = reflected_layout(&bad, "pairs").unwrap_err();
             assert!(error.contains(expected), "{what}: {error}");
         }
+    }
+
+    #[test]
+    fn an_unsupported_element_is_refused_with_one_whole_line_of_text() {
+        // The whole message, not a substring: it is one line (no CR, no LF, no run of spaces) that names the type and
+        // what is supported.
+        let bad = PAIRS_REFLECTION.replace("\"kind\":\"struct\"", "\"kind\":\"texture\"");
+        let error = reflected_layout(&bad, "pairs").unwrap_err();
+        assert_eq!(
+            error,
+            "reflection parameter `pairs`.resultType: unsupported element type `texture` (only 32-bit scalars, \
+             vectors, matrices and structs of them)"
+        );
+        assert!(
+            !error.contains(['\r', '\n']) && !error.contains("  "),
+            "{error:?}"
+        );
     }
 
     fn seen(layout: &LayoutRecord) -> Vec<(&str, u32, &str)> {

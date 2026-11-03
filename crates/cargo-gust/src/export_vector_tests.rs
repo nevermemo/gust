@@ -28,6 +28,11 @@ const FRAME_REFLECTION: &str =
 const VECTORS_KEY: &str = "7ac7b445a03f9ce0";
 const VECTORS_RECORD: &str = include_str!("testdata/uniform/7ac7b445a03f9ce0.kernel.json");
 const VECTORS_WGSL: &[u8] = include_bytes!("testdata/uniform/7ac7b445a03f9ce0.wgsl");
+const MATRICES_KEY: &str = "b7f174d042abdcbc";
+const MATRICES_RECORD: &str = include_str!("testdata/uniform/b7f174d042abdcbc.kernel.json");
+const MATRICES_WGSL: &[u8] = include_bytes!("testdata/uniform/b7f174d042abdcbc.wgsl");
+const MATRICES_REFLECTION: &str =
+    include_str!("testdata/uniform/b7f174d042abdcbc.wgsl.reflection.json");
 const VECTORS_REFLECTION: &str =
     include_str!("testdata/uniform/7ac7b445a03f9ce0.wgsl.reflection.json");
 
@@ -47,6 +52,14 @@ const FRAME: Stored = Stored {
     record_json: FRAME_RECORD,
     wgsl: FRAME_WGSL,
     reflection: FRAME_REFLECTION,
+};
+const MATRICES: Stored = Stored {
+    kernel: &matrix_fixture::matrices::run::DESCRIPTOR,
+    key: MATRICES_KEY,
+    name: "matrices::run",
+    record_json: MATRICES_RECORD,
+    wgsl: MATRICES_WGSL,
+    reflection: MATRICES_REFLECTION,
 };
 const VECTORS: Stored = Stored {
     kernel: &fixtures::vectors_run::DESCRIPTOR,
@@ -109,7 +122,7 @@ impl Compiler for StoredCompiler {
         _kernel: &KernelDescriptor,
         format: Format,
     ) -> Result<Compiled, String> {
-        let stored = [FRAME, VECTORS]
+        let stored = [FRAME, VECTORS, MATRICES]
             .into_iter()
             .find(|stored| stored.key == record.key)
             .ok_or("no stored artifact for this key")?;
@@ -246,7 +259,7 @@ fn the_records_carry_the_vector_matrix_and_std140_kinds_and_rules() {
 
 #[test]
 fn the_records_rebuild_the_macros_own_descriptors() {
-    for stored in [FRAME, VECTORS] {
+    for stored in [FRAME, VECTORS, MATRICES] {
         let record = stored.record();
         assert!(record.unchecked_parameters().is_empty(), "{}", stored.name);
         assert_eq!(
@@ -272,7 +285,7 @@ fn the_records_rebuild_the_macros_own_descriptors() {
 
 #[test]
 fn a_null_record_is_filled_with_the_macros_layouts_for_vectors_and_matrices() {
-    for stored in [FRAME, VECTORS] {
+    for stored in [FRAME, VECTORS, MATRICES] {
         let record = stored.null_record();
         let completed = completed_descriptor(&record, stored.reflection).unwrap();
         // Rules, strides and every vector and matrix kind of the reflection's fill are the macro's numbers.
@@ -425,4 +438,119 @@ fn a_vector_buffer_fails_when_the_record_says_it_is_a_scalar() {
     counts.element.kind = LayoutKindRecord::Scalar(gust::ScalarKind::U32);
     let error = cross_check_completed(&record, &genuine, VECTORS.reflection).unwrap_err();
     assert!(error.contains("host layout is not StorageV2"), "{error}");
+}
+
+#[test]
+fn a_record_that_keeps_valid_rules_but_disagrees_with_the_reflection_is_caught_at_export() {
+    // Edits that leave the record a valid Std140V1 layout, so the rules accept it and the comparison with the
+    // reflection is what refuses it (`check_type`).
+    type Edit = fn(&mut Record);
+    let genuine = FRAME.reflection();
+    let cases: [(&str, Edit, &str); 2] = [
+        (
+            "`scale` is a u32 in the record and an f32 in the reflection",
+            |record| {
+                let LayoutKindRecord::Struct(fields) = &mut layout_of(record, "frame").element.kind
+                else {
+                    panic!("Frame is a struct");
+                };
+                let scale = fields
+                    .iter_mut()
+                    .find(|field| field.name == "scale")
+                    .unwrap();
+                scale.ty.kind = LayoutKindRecord::Scalar(gust::ScalarKind::U32);
+                scale.ty.name = "u32".to_owned();
+            },
+            "type or field count differs",
+        ),
+        (
+            "`scale` and `count` swap names",
+            |record| {
+                let LayoutKindRecord::Struct(fields) = &mut layout_of(record, "frame").element.kind
+                else {
+                    panic!("Frame is a struct");
+                };
+                for field in fields.iter_mut() {
+                    match field.name.as_str() {
+                        "scale" => field.name = "count".to_owned(),
+                        "count" => field.name = "scale".to_owned(),
+                        _ => {}
+                    }
+                }
+            },
+            "field name/order differs",
+        ),
+    ];
+    for (what, edit, expected) in cases {
+        let mut tampered = FRAME.record();
+        edit(&mut tampered);
+        let error = cross_check_completed(&tampered, &genuine, FRAME.reflection).unwrap_err();
+        assert!(error.contains(expected), "{what}: {error}");
+        let error = FRAME.verify(&tampered).unwrap_err();
+        assert!(error.contains(expected), "{what}: {error}");
+        let error = plan(vec![tampered], &[Format::Wgsl], &StoredCompiler).unwrap_err();
+        assert!(error.contains(expected), "{what}: {error}");
+    }
+}
+
+/// Storage matrices: a `Mat4` and a `Mat2` element and a struct that holds a `Mat4` (no fixture in `tests/fixtures`
+/// has a matrix buffer). The same source as the `matrices` module of the scratch crate that `cargo gust build` ran on.
+mod matrix_fixture {
+    #[gust::gpu]
+    pub mod matrices {
+        // 80 bytes: a Mat4 (64, align 16) and a Vec4 after it.
+        pub struct Xform {
+            pub m: Mat4,
+            pub tint: Vec4,
+        }
+
+        #[kernel(workgroup_size(64, 1, 1))]
+        pub fn run(
+            id: SV_DispatchThreadID,
+            mats: StructuredBuffer<Mat4>,
+            small: StructuredBuffer<Mat2>,
+            xs: StructuredBuffer<Xform>,
+            pts: StructuredBuffer<Vec4>,
+            mut out: RWStructuredBuffer<Vec4>,
+            mut flat: RWStructuredBuffer<Vec2>,
+        ) {
+            let i = id.x;
+            if i < out.len() {
+                out[i] = mats[0].mul_vec4(pts[i]) + xs[0].m.mul_vec4(xs[0].tint);
+            }
+            if i < flat.len() {
+                flat[i] = small[0].mul_vec2(Vec2::new(1.0, 2.0));
+            }
+        }
+    }
+}
+
+#[test]
+fn storage_matrices_are_described_by_the_macro_and_confirmed_by_the_reflection() {
+    let mut record = MATRICES.record();
+    for (name, rows, stride, column_stride) in [("mats", 4, 64, 16), ("small", 2, 16, 8)] {
+        let layout = layout_of(&mut record, name).clone();
+        assert_eq!(layout.rules, ShaderLayoutRules::StorageV2, "{name}");
+        assert_eq!(layout.element_stride, stride, "{name}");
+        assert_eq!(
+            layout.element.kind,
+            LayoutKindRecord::Matrix {
+                scalar: gust::ScalarKind::F32,
+                rows,
+                cols: rows,
+                column_stride
+            },
+            "{name}"
+        );
+    }
+    let xs = layout_of(&mut record, "xs").clone();
+    assert_eq!(
+        (xs.rules, xs.element_stride),
+        (ShaderLayoutRules::StorageV2, 80)
+    );
+    // Slang's reflection agrees with every one of them: the stored artifact verifies with these layouts, and a record
+    // with all layouts null is filled with the same numbers.
+    assert_eq!(MATRICES.verify(&record).unwrap(), "2026.20");
+    let filled = completed_descriptor(&MATRICES.null_record(), MATRICES.reflection).unwrap();
+    assert_eq!(layouts(&filled), layouts(MATRICES.kernel));
 }

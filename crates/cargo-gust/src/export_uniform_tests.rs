@@ -358,8 +358,8 @@ fn a_null_uniform_is_listed_in_export_unchecked() {
 fn a_uniform_offset_tampered_in_the_record_is_caught_at_export() {
     let record = SHIFTED.record();
     let genuine = SHIFTED.reflection();
-    // Move the nested `inner` (a struct inside the uniform `o`) from 16 to 20, a number std140 would refuse, and the
-    // `count` field of `Inner` from 0 to 4 (a valid offset but not where the reflection has it).
+    // Move the nested `inner` (a struct inside the uniform `o`) from 16 to 20, and the `pad0` field inside `inner`
+    // from 8 to 20. Neither is where std140 puts it, so the rules refuse the record before the reflection is read.
     for (what, edit) in [
         (
             "the offset of a nested struct",
@@ -494,6 +494,24 @@ fn a_std140_valid_difference_from_the_macro_is_now_caught_at_export() {
             verify_stored(&stored.null_record(), Format::Wgsl, stored.wgsl, &renamed).unwrap(),
             "2026.20",
             "{}",
+            stored.name
+        );
+        // D17 still holds at run time for exactly that case (`export_unchecked`): a program that loads the artifact
+        // checks it against the macro's own Std140V1 descriptor, a real `#[gpu]` kernel descriptor, and refuses it by
+        // the field name.
+        let error = verify_artifact(
+            stored.kernel,
+            &Artifact {
+                format: Format::Wgsl,
+                key: stored.key,
+                bytes: stored.wgsl,
+                reflection: leak_str(&renamed),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("field name/order differs"),
+            "{}: {error}",
             stored.name
         );
     }

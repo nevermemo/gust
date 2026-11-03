@@ -852,6 +852,7 @@ struct PreparedDispatch {
     cached_kernel: Arc<CachedKernel>,
     bind_group: wgpu::BindGroup,
     /// The workgroups along x, which is all the staged graph encodes (it runs one-dimensional dispatches only).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     workgroup_count: u32,
     /// The workgroups along x, y and z; `[workgroup_count, 1, 1]` for a one-dimensional dispatch.
     workgroups: [u32; 3],
@@ -1983,6 +1984,7 @@ impl HeadlessDevice {
     /// The staged graph's preparation (`graph.rs` reads `workgroup_count`, the x count): one-dimensional dispatches
     /// only. A dispatch with a y or z extent other than 1 is refused with [`Error::Extent`] instead of being encoded
     /// as its x count alone, which would silently run a fraction of it.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn prepare_batch(
         &self,
         dispatches: &[BufferDispatch<'_>],
@@ -2085,6 +2087,7 @@ impl HeadlessDevice {
     /// count. Runs after `validate_*` and before the pipeline-cache lookup, so no
     /// compilation, cache hit or wgpu object can precede a limit error. A launch of
     /// zero elements does no GPU work and is not checked.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn check_launch(
         &self,
         kernel: &KernelDescriptor,
@@ -2654,6 +2657,7 @@ fn validate_u32_dispatch(
 }
 
 /// `validate_persistent_dispatch_extent` for a one-dimensional dispatch of `element_count` invocations.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn validate_persistent_dispatch(
     device_id: u64,
     kernel: &KernelDescriptor,

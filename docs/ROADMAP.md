@@ -45,8 +45,8 @@ quiet-window run) and m7.r4 (shared-memory v1, merge `d6b425f`; v1 ships for all
 the Radeon 890M half) and m7.d (multi-dimensional dispatch, D102, merge `853aade`) and m7.p (`par_for!`, D103,
 merge `910ee1c`) and m6.u2f (`cargo gust build` on uniform kernels, D104) and m7.t1 (tidy pass 1, merge
 `1278b61`) and m7.f1 (ETXTBSY retry, merge `96051c8`) and m7.lv (uniform and vector layouts in the export
-record, D116, merge `9d47f67`). Next: the `element()` dedupe, m7.g2 and m7.c (their spikes' quiet
-windows), then m7.x and the close. The
+record, D116, merge `9d47f67`) and m7.t2 (one element-type lookup, merge `6b0d59a`). Next: m7.g2 and
+m7.c (their spikes' quiet windows), then m7.x and the close. The
 wasm32 `Job` contract (D69) lands before m7.a's `map_async` reaches the browser. The MX plan is adopted (D88 to
 D95).
 

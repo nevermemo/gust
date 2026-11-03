@@ -568,7 +568,7 @@ fn every_cargo_step_is_locked() {
     }
     // The nested calls of Reflect and Spirv are really among the calls checked.
     let count = |wanted: Suite| seen.iter().filter(|(suite, _)| *suite == wanted).count();
-    assert_eq!(count(Suite::Reflect), 2);
+    assert_eq!(count(Suite::Reflect), 3);
     assert_eq!(count(Suite::Spirv), EXAMPLES.len());
     assert!(count(Suite::Unit) >= 2 && count(Suite::Gpu) >= 1);
 }
@@ -748,6 +748,33 @@ fn the_unit_suite_runs_the_coretests_twin_test() {
             .iter()
             .all(|s| !matches!(s, Step::RequireTool(_)))
     );
+}
+
+#[test]
+fn check_feature_reflection_runs_the_naga_layout_gate() {
+    // The naga layout gate (mx.n) is a gust-wgpu test that needs slangc and no adapter; `check-feature reflection`
+    // (the Reflect suite) names it, and its file must exist.
+    let calls: Vec<Vec<&str>> = REFLECTION_TESTS.iter().map(|call| call.to_vec()).collect();
+    assert_eq!(
+        calls.last().expect("the list is not empty"),
+        &[
+            "test",
+            "--locked",
+            "-p",
+            "gust-wgpu",
+            "--test",
+            "naga_layout"
+        ]
+    );
+    let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../crates/gust-wgpu/tests/naga_layout.rs");
+    assert!(
+        file.is_file(),
+        "crates/gust-wgpu/tests/naga_layout.rs does not exist"
+    );
+    let explained =
+        crate::checks::explanation(Some("reflection")).expect("reflection is explained");
+    assert!(explained.contains("naga"), "{explained}");
 }
 
 #[test]

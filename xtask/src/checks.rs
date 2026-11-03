@@ -34,6 +34,15 @@ pub(crate) const REFLECTION_TESTS: &[&[&str]] = &[
         "--test",
         "reflection",
     ],
+    // The naga layout gate (mx.n): the WGSL of every golden against the descriptors' layouts. Needs slangc, no adapter.
+    &[
+        "test",
+        "--locked",
+        "-p",
+        "gust-wgpu",
+        "--test",
+        "naga_layout",
+    ],
 ];
 
 /// The `gust-wgpu` integration tests of `check-feature gpu-semantics`, by file name under crates/gust-wgpu/tests. Kept
@@ -606,7 +615,9 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
         "gpu-runtime" => {
             "gpu-runtime: reflection gate, cache/runtime mismatch tests, launch-limit checks and buffer layout assertions, typed calls and derived graph edges"
         }
-        "reflection" => "reflection: native Slang helper + core/wgpu reflection contract",
+        "reflection" => {
+            "reflection: native Slang helper + core/wgpu reflection contract + the naga layout gate (the WGSL of every golden against the descriptors' layouts)"
+        }
         "loops" => "loops: bounded-loop golden/rejection test plus real-GPU loop differential test",
         "result" => {
             "result: Result lowering/match regressions plus WGSL, SPIR-V, and real-GPU Result tests"

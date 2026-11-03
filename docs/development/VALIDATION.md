@@ -68,6 +68,8 @@ exported modules. Matrix and uniform layout decorations in SPIR-V have never bee
 as `gust`: a unit test reads the bodies of `gust`'s `slangc_command` and `slangc_reflection_command` and requires the
 flag in each (the whole argument lists of those two are pinned by their own tests in `gust`).
 
+**The naga layout gate (slice mx.n).** `crates/gust-wgpu/tests/naga_layout.rs` (Slangc tier: it needs the pinned `slangc` and no adapter; `cargo xtask check-feature reflection` runs it, and so does every `cargo test -p gust-wgpu`) compiles each compute entry of the twelve goldens of `tests/fixtures` (47 modules) and parses and validates the WGSL with the naga that wgpu runs (`wgpu::naga`; `Capabilities::empty()` for the front end and the validator and `ValidationFlags::all()`, as `create_shader_module` does, never the all-capabilities default of `naga::front::wgsl::Options`), then compares the `proc::Layouter` size, alignment and field offsets of every storage and uniform binding's element type with the descriptor's layout. It executes nothing, so it is WGSL-validity and layout evidence, not Gpu evidence.
+
 **The Slang pin (D46, slice m4.r).** `cargo gust` is pinned to the Slang 2026.20 release, and `VALIDATED_BUILDS` ships
 empty. The pin was validated on Windows with the release archive itself: every committed artifact set was re-blessed
 with that slangc and a helper built against it, the Spirv, Reflect and Gpu suites ran on the RTX 5090, and the three

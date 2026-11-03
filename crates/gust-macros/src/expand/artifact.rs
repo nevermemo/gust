@@ -38,12 +38,16 @@ const DIRECTORY: &str = "gust-artifacts";
 /// The manifest of that directory.
 const MANIFEST: &str = "manifest.json";
 
-/// The version of the `kernel.json` layout.
+/// The version of the `kernel.json` layout of a `#[gpu]` module or function: it carries the kernel's `source`.
 const SCHEMA: u64 = 1;
+
+/// The version of the `kernel.json` layout of a `par_for!` call (R1.1 M5): the same record without `source`, so equal
+/// bodies at two call sites write the same bytes, plus one [`SiteRecord`] sidecar per call site.
+const SITE_SCHEMA: u64 = 2;
 
 /// What the expansion reads from the process environment.
 #[derive(Clone, Debug, Default)]
-pub(super) struct Environment {
+pub(crate) struct Environment {
     /// `CARGO_MANIFEST_DIR`: the expanding crate.
     pub manifest_dir: Option<PathBuf>,
     /// `GUST_EXPORT_DIR`, when set and non-empty: export mode.
@@ -56,7 +60,7 @@ pub(super) struct Environment {
 }
 
 impl Environment {
-    pub(super) fn from_process() -> Self {
+    pub(crate) fn from_process() -> Self {
         let variable = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty());
         Self {
             manifest_dir: variable("CARGO_MANIFEST_DIR").map(PathBuf::from),
@@ -96,7 +100,7 @@ impl Environment {
 /// This is a byte-for-byte copy of `gust::artifact::content_key`; both crates assert the same golden strings
 /// (`expand::artifact::tests::the_key_matches_the_golden_values` and `gust::artifact::tests`). The macro cannot call
 /// the original: `gust` depends on this crate.
-pub(super) fn content_key(entry_point: &str, clean_slang: &str) -> String {
+pub(crate) fn content_key(entry_point: &str, clean_slang: &str) -> String {
     let hash = [entry_point.as_bytes(), &[0], clean_slang.as_bytes()]
         .iter()
         .flat_map(|part| part.iter())
@@ -391,6 +395,17 @@ impl KernelRecord<'_> {
     /// line `[slang_start, slang_end, rust_line]`). A `<layout>` is `name`, `size`, `alignment`, `stride`, `kind`
     /// (`scalar` with `scalar`, or `struct` with `fields`: `name`, `offset`, `type` with the nested `<layout>`).
     pub(super) fn json(&self) -> String {
+        self.write_json(SCHEMA, true)
+    }
+
+    /// The record of a `par_for!` call (schema 2): every key of [`KernelRecord::json`] except `source`. The origin of
+    /// the call sites is in their [`SiteRecord`]s, so the bytes depend on the clean Slang and the entry point only and
+    /// two equal bodies write the same record.
+    pub(super) fn json_without_source(&self) -> String {
+        self.write_json(SITE_SCHEMA, false)
+    }
+
+    fn write_json(&self, schema: u64, with_source: bool) -> String {
         let parameters = self
             .parameters
             .iter()
@@ -418,20 +433,9 @@ impl KernelRecord<'_> {
                 ])
             })
             .collect();
-        let lines = self
-            .lines
-            .iter()
-            .map(|line| {
-                Json::Array(vec![
-                    Json::Number(line.slang_start.into()),
-                    Json::Number(line.slang_end.into()),
-                    Json::Number(line.rust_line.into()),
-                ])
-            })
-            .collect();
         let [x, y, z] = self.workgroup_size;
-        let record = Json::object(vec![
-            ("schema", Json::Number(SCHEMA)),
+        let mut members = vec![
+            ("schema", Json::Number(schema)),
             ("key", Json::string(self.key)),
             ("module", Json::string(self.module)),
             ("name", Json::string(self.name)),
@@ -445,19 +449,86 @@ impl KernelRecord<'_> {
                 ]),
             ),
             ("parameters", Json::Array(parameters)),
-            (
+        ];
+        if with_source {
+            members.push((
                 "source",
                 Json::object(vec![
                     ("file", Json::string(self.file)),
-                    ("lines", Json::Array(lines)),
+                    ("lines", lines_json(self.lines)),
                 ]),
-            ),
-        ]);
-        let mut text = String::new();
-        record.write(&mut text, 0);
-        text.push('\n');
-        text
+            ));
+        }
+        render(Json::object(members))
     }
+}
+
+/// A line table as JSON: one `[slang_start, slang_end, rust_line]` triple per record.
+fn lines_json(lines: &[LineRecord]) -> Json {
+    Json::Array(
+        lines
+            .iter()
+            .map(|line| {
+                Json::Array(vec![
+                    Json::Number(line.slang_start.into()),
+                    Json::Number(line.slang_end.into()),
+                    Json::Number(line.rust_line.into()),
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// A document as text: sorted keys, two-space indentation, LF line ends and a final newline.
+fn render(document: Json) -> String {
+    let mut text = String::new();
+    document.write(&mut text, 0);
+    text.push('\n');
+    text
+}
+
+/// What `<key>.<site16>.site.json` (schema 2) says about one `par_for!` call: where its body is in the Rust source and
+/// which Slang lines came from which Rust lines (R1.1 M5). It is written beside the kernel record, whose bytes do not
+/// depend on it, so two calls with equal bodies share one record and one artifact and keep a line table each (D33).
+pub(super) struct SiteRecord<'a> {
+    pub key: &'a str,
+    /// The recorded source file (see `recorded_path`); empty when unknown, in which case the line table is empty too.
+    pub file: &'a str,
+    pub lines: &'a [LineRecord],
+}
+
+impl SiteRecord<'_> {
+    /// The sidecar as JSON text: schema 2, keys sorted (`file`, `key`, `lines`, `schema`), two-space indentation, LF
+    /// line ends, a final newline.
+    pub(super) fn json(&self) -> String {
+        render(Json::object(vec![
+            ("schema", Json::Number(SITE_SCHEMA)),
+            ("key", Json::string(self.key)),
+            ("file", Json::string(self.file)),
+            ("lines", lines_json(self.lines)),
+        ]))
+    }
+}
+
+/// The 16 lower-case hex digits that tell the call sites of one body apart: FNV-1a 64 over the recorded file, one NUL
+/// byte and the decimal first line of the call. The file is the relative one `recorded_path` gives, so the name does
+/// not depend on the build machine's directory, and the line is the call's, so moving other code does not matter to a
+/// call that stays where it is. Two calls on one line of one file with equal bodies share a name, and so a sidecar: their
+/// bytes must be equal too (see [`write_site_records`]).
+pub(super) fn site_hash(file: &str, call_line: u32) -> String {
+    let line = call_line.to_string();
+    let hash = [file.as_bytes(), &[0], line.as_bytes()]
+        .iter()
+        .flat_map(|part| part.iter())
+        .fold(0xcbf29ce484222325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+        });
+    format!("{hash:016x}")
+}
+
+/// The file name of a call site's sidecar.
+pub(super) fn site_file_name(key: &str, file: &str, call_line: u32) -> String {
+    format!("{key}.{}.site.json", site_hash(file, call_line))
 }
 
 // ---- export ----
@@ -472,7 +543,7 @@ impl KernelRecord<'_> {
 /// identifier can spell: it has a path into `gust::cpu`, a `cfg` call, or a reserved prefix. Choice (D45 follow-up):
 /// the guard is tightened rather than the names reserved, because reserving `CpuDevice` and `gust_dual` would reject
 /// programs that are valid today for a leak that these forms already catch.
-pub(super) const TWIN_TEXT: &[&str] = &[
+pub(crate) const TWIN_TEXT: &[&str] = &[
     "cfg(any(test, gust_dual))",
     "cfg (any (test , gust_dual))",
     "cfg(gust_dual)",
@@ -502,7 +573,38 @@ pub(super) fn write_records(
     slang: &str,
     json: &str,
 ) -> Result<(), String> {
-    for (what, text) in [("the Slang text", slang), ("the kernel record", json)] {
+    write_files(directory, key, slang, json, None)
+}
+
+/// [`write_records`] for a `par_for!` call (schema 2): the same two files, whose bytes do not depend on the call site,
+/// and the sidecar `site_name` holding `site_json`, which does. The sidecar goes through [`write_once`] like the rest:
+/// the same call expanded again (a library and a binary target) writes the same bytes, and two calls that share a
+/// name but not the bytes (two calls on one line of one file, equal bodies, different line tables) are refused with a
+/// message that says so.
+pub(super) fn write_site_records(
+    directory: &Path,
+    key: &str,
+    slang: &str,
+    json: &str,
+    site_name: &str,
+    site_json: &str,
+) -> Result<(), String> {
+    write_files(directory, key, slang, json, Some((site_name, site_json)))
+}
+
+fn write_files(
+    directory: &Path,
+    key: &str,
+    slang: &str,
+    json: &str,
+    site: Option<(&str, &str)>,
+) -> Result<(), String> {
+    let site_text = site.map_or("", |(_, text)| text);
+    for (what, text) in [
+        ("the Slang text", slang),
+        ("the kernel record", json),
+        ("the site record", site_text),
+    ] {
         if let Some(marker) = twin_text(text) {
             return Err(format!(
                 "gust: {what} of kernel `{key}` contains CPU twin text (`{marker}`); records never hold a twin (D45). This is a bug in gust-macros"
@@ -534,6 +636,20 @@ pub(super) fn write_records(
                 old.as_deref().and_then(record_name).as_deref(),
                 path.extension()
                     .is_some_and(|extension| extension == "slang"),
+            ));
+        }
+    }
+    if let Some((name, text)) = site {
+        let path = directory.join(name);
+        let existing = write_once(&path, text.as_bytes()).map_err(|error| {
+            format!(
+                "gust: export mode could not write `{}`: {error}",
+                path.display()
+            )
+        })?;
+        if existing.is_some() {
+            return Err(format!(
+                "gust: two `par_for!` calls with equal bodies start on the same line of the same file but have different line tables, so they would share the site record `{name}`. This happens when one `macro_rules!` definition expands the call twice (the expansions share the line of the call inside the definition): change the body of one of them, or move the call out of the macro into a function that the macro calls. This is a known limitation (docs/DIAGNOSTICS.md, GUST-E0712)"
             ));
         }
     }
@@ -1043,8 +1159,13 @@ pub(super) mod tests {
     }
 
     pub(in crate::expand) fn sample_json() -> String {
+        sample_written_by(|record| record.json())
+    }
+
+    /// The sample kernel as `write` prints it.
+    fn sample_written_by(write: impl Fn(&KernelRecord<'_>) -> String) -> String {
         let parameters = sample_parameters();
-        KernelRecord {
+        let record = KernelRecord {
             key: "0123456789abcdef",
             module: "demo",
             name: "run",
@@ -1064,8 +1185,8 @@ pub(super) mod tests {
                     rust_line: 14,
                 },
             ],
-        }
-        .json()
+        };
+        write(&record)
     }
 
     #[test]
@@ -1075,6 +1196,76 @@ pub(super) mod tests {
             "sample.kernel.json",
             &include_str!("../../tests/golden/sample.kernel.json").replace("\r\n", "\n"),
         );
+    }
+
+    #[test]
+    fn the_par_for_record_matches_the_golden() {
+        let actual = sample_written_by(|record| record.json_without_source());
+        assert_golden(
+            &actual,
+            "sample.par_for.kernel.json",
+            &include_str!("../../tests/golden/sample.par_for.kernel.json").replace("\r\n", "\n"),
+        );
+        // It is the schema 1 record without its `source`, with the schema raised: nothing else differs.
+        let schema_1 = sample_json();
+        let source_start = schema_1.find("  \"source\": {").expect("a source block");
+        let source_end = source_start
+            + schema_1[source_start..].find("  },\n").expect("its end")
+            + "  },\n".len();
+        let derived = format!("{}{}", &schema_1[..source_start], &schema_1[source_end..])
+            .replace("\"schema\": 1", "\"schema\": 2");
+        assert_eq!(actual, derived);
+    }
+
+    #[test]
+    fn the_call_site_record_matches_the_golden() {
+        let lines = [
+            LineRecord {
+                slang_start: 3,
+                slang_end: 9,
+                rust_line: 12,
+            },
+            LineRecord {
+                slang_start: 5,
+                slang_end: 5,
+                rust_line: 14,
+            },
+        ];
+        let actual = SiteRecord {
+            key: "0123456789abcdef",
+            file: "src/lib.rs",
+            lines: &lines,
+        }
+        .json();
+        assert_golden(
+            &actual,
+            "sample.site.json",
+            &include_str!("../../tests/golden/sample.site.json").replace("\r\n", "\n"),
+        );
+    }
+
+    #[test]
+    fn the_site_names_in_the_readers_test_data_are_the_names_the_writer_makes() {
+        // `cargo-gust` reads these names from its own test data; if the hash or the name format changes here, the
+        // reader's data must change with it. The file is read as text because the crates share no code.
+        let reader = include_str!("../../../cargo-gust/src/testdata.rs");
+        for (file, line) in [("src/lib.rs", 12), ("tests/other.rs", 40)] {
+            let name = site_file_name("022c52d675787198", file, line);
+            assert!(
+                reader.contains(&format!("\"{name}\"")),
+                "{name} ({file}:{line}) is not in testdata.rs"
+            );
+        }
+        // FNV-1a 64 over the file, a zero byte and the decimal line, written out once by hand for a short input.
+        let by_hand = [b"a".as_slice(), &[0], b"1"]
+            .concat()
+            .iter()
+            .fold(0xcbf29ce484222325_u64, |hash, byte| {
+                (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3)
+            });
+        assert_eq!(site_hash("a", 1), format!("{by_hand:016x}"));
+        assert_ne!(site_hash("a", 1), site_hash("a", 2));
+        assert_ne!(site_hash("a", 1), site_hash("b", 1));
     }
 
     /// Set to `1` (as `cargo xtask bless` does for tests named `golden`) to rewrite a golden of

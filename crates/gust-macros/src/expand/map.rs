@@ -36,7 +36,7 @@ use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 use syn::ext::IdentExt as _;
 
-use super::{Environment, Profile, expand_validated};
+use super::{Environment, Identity, Profile, expand_validated};
 use crate::{
     diagnostics::{self, Code},
     math_types,
@@ -123,7 +123,7 @@ pub(super) fn expand_map_in(
     let signature = check_signature(&function)?;
     validate(&function)?;
     let (module, host) = build(&function, &signature, profile);
-    let expanded = expand_validated(module, environment, profile, &host)?;
+    let expanded = expand_validated(module, environment, profile, &host, Identity::Module)?;
     Ok(quote! {
         #function
 

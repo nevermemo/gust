@@ -1,0 +1,7 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). A macro error is a `compile_error!` and has no rustc code, so `code: none`
+# requires `"code": null` and at least one `message:`.
+code: none
+file: par-for-form/src/main.rs
+line: 9
+message: [GUST-E0719]

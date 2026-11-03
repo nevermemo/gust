@@ -16,7 +16,8 @@ that does not fit there.
 ### T13: GPU active count to indirect dispatch
 
 Landed in M7 slice m7.t13 (merge `b88bfb0`, 2026-11-03), re-typed from the stash's design; contract and status:
-[tasks/T13-active-count.md](tasks/T13-active-count.md). Compaction and retirement are m7.t14. Kept for the record.
+[tasks/T13-active-count.md](tasks/T13-active-count.md). Compaction and retirement landed in m7.t14 (merge
+`f96aff1`). Kept for the record.
 
 ## Claimable DX
 
@@ -31,7 +32,13 @@ test module; do not mix that mechanical move with behavior changes.
 
 ## Later engine proofs
 
-- GPU active count to indirect dispatch (T13): landed in m7.t13; retirement and compaction follow in m7.t14.
+- GPU active count to indirect dispatch (T13): landed in m7.t13; retirement and compaction landed in m7.t14.
+- component-pool after m7.t14: the pool's host length never shrinks and retired slots are never reused, so under a
+  running emitter each frame's cost (mark, scan, gather, scatter) grows with every particle ever spawned. Options: a
+  freelist, a double-buffered dense pool (the pool itself becomes the prefix), or a deferred host truncation from an
+  async readback that decides no work in its own frame (m7.t14 review).
+- gust-algo passes as graph nodes, so an order such as compaction before `prepare` is declared in the graph instead
+  of resting on blocking calls; a non-blocking `dispatch_batch` would remove it silently today (m7.t14 review).
 - Culling -> compacted visibility -> indirect arguments -> rendering.
 - Entity identity/lifecycle and storage choices, guided by measured workloads.
 

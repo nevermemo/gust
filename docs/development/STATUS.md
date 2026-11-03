@@ -190,6 +190,21 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   unit-tested only (a real call needs more than 2^32 elements). Pin 232/27 to 244/28. Opus merge after two fix
   rounds and a re-review.
   Main: 23 gate steps green on `5609536` (06:06 to 06:42Z, RTX 5090); pins 244/28 and gust-algo 32.
+- M7 m7.t14 (`c08e560`, fix round `dc7fc43`, merge `f96aff1`): retirement and compaction in component-pool. A
+  particle retires when `steps >= lifetime` (a one-element device buffer), judged per slot, so in any slot order.
+  Each frame: `mark_live`, then gust-algo `compact::indices`, then one graph that gathers the live particles into a
+  dense prefix, runs `prepare` and the indirect `integrate` on it, and scatters them back. The pool stays sparse;
+  retired and unspawned slots are never read or written. No readback decides work; the active-count readback only
+  reports. The GPU result is checked every frame against an independent host filter: flags, count, indices, the
+  dense prefix (and zeros after it), and every untouched slot byte for byte. Sizes 0 to 65 537, seven retirement
+  patterns, two budgets, both release orders. This closes the T13 gap for the compacting path; the T13 path stays
+  valid only on emitter-ordered pools where nothing retires (the two must not share a pool). The order from
+  compaction to `prepare` rests on blocking waits (`dispatch_batch`, `execute_graph`), not on a graph edge: dropping
+  the gather to `prepare` edge is refused as a resource hazard. gust-algo becomes a path dependency of the example
+  (check-arch accepts it); exported kernels 14 to 17. Mutations: identity indices, a gather off by one, and a
+  `mark_live` without the lifetime test each fail GPU tests. One adapter (RTX 5090, Vulkan). Opus merge after one
+  fix round.
+  Main: 23 gate steps green on `f96aff1` (07:09 to 07:40Z, RTX 5090); pins 244/28 and gust-algo 32.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
@@ -582,7 +597,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M7 (m7.t14 running) after the M6 close (D86); see the roadmap's Now
+claim: roadmap M7 (m7.g1 and m7.a2 running) after the M6 close (D86); see the roadmap's Now
 and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no

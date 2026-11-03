@@ -38,9 +38,9 @@ framework, and Hurricane, the game engine (destination in
 Done: m7.w (wrapping arithmetic and GUST-E0325, D87, merge `4797013`) and m7.r1 (reduce v0 in the new crate
 `gust-algo`, merge `b5d2c68`), m6.z2 (GUST-E0326 for an unsuffixed literal `let`, D96, merge `a496968`) and
 m7.rb (blocking readbacks wait for their own completion, D97, merge `893d959`), m7.t13 (T13 active count, merge
-`b88bfb0`), m7.r2 (scan v0, merge `09203ae`), m7.r3 (compaction v0, merge `8027169`) and m7.a1 (the map API, D99,
-merge `5609536`). Running: m7.t14 (compaction in component-pool). Next: m7.g1 (shared memory and barriers) and m7.a2
-(map examples); m7.r4 (shared-memory v1) after m7.g1. The
+`b88bfb0`), m7.r2 (scan v0, merge `09203ae`), m7.r3 (compaction v0, merge `8027169`), m7.a1 (the map API, D99,
+merge `5609536`) and m7.t14 (compaction in component-pool, merge `f96aff1`). Running: m7.g1 (shared memory and
+barriers) and m7.a2 (map examples). Next: m7.r4 (shared-memory v1) after m7.g1, and m7.d after m7.g1. The
 wasm32 `Job` contract (D69) lands before m7.a's `map_async` reaches the browser. The MX plan is adopted (D88 to
 D95).
 

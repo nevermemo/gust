@@ -1,6 +1,6 @@
 # Evidence chain
 
-The repository already contains the vertical slice: the `#[gpu]` macro, the Slang bridge, the native reflection gate (D17), the headless wgpu runtime, `cargo gust` (committed, content-keyed WGSL and SPIR-V artifacts under `gust-artifacts/`, D45) and eight examples that exercise them. There is no adapter-script layer; `cargo xtask` is the command surface (D27). Do not claim GPU acceptance before the Gpu tier ran on a device.
+The repository already contains the vertical slice: the `#[gpu]` macro, the Slang bridge, the native reflection gate (D17), the headless wgpu runtime, `cargo gust` (committed, content-keyed WGSL and SPIR-V artifacts under `gust-artifacts/`, D45) and nine examples that exercise them. There is no adapter-script layer; `cargo xtask` is the command surface (D27). Do not claim GPU acceptance before the Gpu tier ran on a device.
 
 ## What each command proves
 

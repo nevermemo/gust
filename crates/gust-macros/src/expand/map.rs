@@ -864,7 +864,11 @@ mod tests {
         };
         let expanded = expand_map_in(function, &environment, Profile::Other)
             .unwrap_or_else(|error| panic!("a map must export: {error}"));
-        assert!(expanded.to_string().contains("map_kernel"));
+        // A record with twin text is refused (GUST-E0712) as a `compile_error!` beside the item, not as an `Err`, so
+        // the failure names the code instead of a missing directory.
+        let text = expanded.to_string();
+        assert!(!text.contains("compile_error"), "{text}");
+        assert!(text.contains("map_kernel"));
         let mut checked = 0;
         for entry in std::fs::read_dir(records.join("demo-crate")).unwrap() {
             let record = std::fs::read_to_string(entry.unwrap().path()).unwrap();

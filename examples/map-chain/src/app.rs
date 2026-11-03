@@ -24,8 +24,10 @@
 //!
 //! So whatever order or fusion a backend picks, each result is within `9u` of the exact value, relative. The exact
 //! value is computed in `f64`, whose own error is below `2^-49` relative here (nine roundings of `2^-53`), so
-//! [`FLOAT_BOUND`] is `9 * 2^-24 * (1 + 2^-20)`. `inputs_stay_inside_the_derivation_domain` pins the domain the
-//! argument needs (all operands positive and finite, every intermediate normal, nothing near overflow).
+//! [`FLOAT_BOUND`] is `9 * 2^-24 * (1 + 2^-20)`. The slack `9u * 2^-20` (about 5.1e-13) also covers the second-order
+//! terms the first-order argument drops: `(1 + u)^9 - 1 = 9u + 36u^2 + ..`, and `36u^2` is about 1.3e-13.
+//! `inputs_stay_inside_the_derivation_domain` pins the domain the argument needs (all operands positive and finite,
+//! every intermediate normal, nothing near overflow).
 //!
 //! The same bound holds against the exact value for the CPU twin, the GPU resident chain and the GPU materialised
 //! chain, one by one. The two GPU chains also agree bit for bit with each other: they run the same kernels over the
@@ -238,6 +240,9 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!(
         "conditions: n = {MAIN_LEN}, {WARM_UP} warm-up calls, {REPEATS} timed calls, host slice in and host Vec out"
     );
+    println!(
+        "  every map time includes the zero-fill of the map's output buffer, done before the kernel runs"
+    );
     println!("resident     (1 upload, 3 x map_gpu_on, 1 read-back):");
     println!("  median {resident_ms:.3} ms, min {resident_min:.3} ms");
     println!("materialised (3 x map_on over host slices):");
@@ -248,7 +253,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         materialised_min / resident_min
     );
     println!(
-        "resident chain pool hand-outs: {hand_outs} (expected {RESIDENT_HAND_OUTS}: one upload and one read-back)"
+        "resident chain pool hand-outs: {hand_outs} (expected {RESIDENT_HAND_OUTS}: one upload, one read-back; \
+         a read-back that bypasses the pool is not counted)"
     );
     println!(
         "worst relative error against the f64 reference: {worst:.3e} (bound {FLOAT_BOUND:.3e})"
@@ -385,7 +391,9 @@ mod tests {
     #[cfg(not(gust_profile = "cpu"))]
     fn the_kernels_carry_their_committed_artifacts() {
         // `gust-artifacts/` is made by `cargo gust build -p map-chain`; a changed kernel or a deleted file leaves a
-        // kernel without its pair, and the strict profiles refuse to build it.
+        // kernel without its pair, so this test fails here and a strict-profile build of a crate that holds these
+        // kernels (web-vector-add's, for the web profile) is refused. map-chain itself builds under `dev` only: its
+        // workspace manifest turns `slang-runtime` on, which `native` and `web` refuse.
         for descriptor in descriptors() {
             assert_eq!(
                 descriptor.artifacts.len(),
@@ -450,7 +458,9 @@ mod tests {
     #[ignore = "example validation runs only in full verification"]
     fn the_resident_chain_uploads_once_and_reads_back_once() {
         // A device of its own, so no other test's buffers are counted. Every upload, result and read-back takes one
-        // buffer from the device's pool (hits plus misses), and gust-wgpu has no counter of submissions.
+        // buffer from the device's pool (hits plus misses), and gust-wgpu has no counter of submissions. So this counts
+        // the pool's hand-outs (one upload, one read-back), not submissions: a read-back through an unpooled staging
+        // buffer would not be seen.
         let handle: DeviceHandle = Arc::new(HeadlessDevice::new().expect("Vulkan adapter"));
         let x = input(1000);
         resident(&handle, &x).unwrap();

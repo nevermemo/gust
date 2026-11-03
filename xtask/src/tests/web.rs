@@ -757,6 +757,20 @@ fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
             "the manifest of the example lacks this kernel entry of the fixture: {entry}"
         );
     }
+    // What follows the kernel list (`schema` and the `slang` pin) is the same, so a Slang drift is not hidden.
+    let after_kernels = |directory: &Path| -> String {
+        let text = fs::read_to_string(directory.join("manifest.json")).unwrap();
+        text.replace("\r\n", "\n")
+            .split_once("\n  ],")
+            .unwrap()
+            .1
+            .to_owned()
+    };
+    assert_eq!(
+        after_kernels(&copy),
+        after_kernels(&source),
+        "the schema and slang fields of the example's manifest differ from the fixture's"
+    );
 }
 
 #[test]

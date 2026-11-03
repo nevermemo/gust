@@ -123,6 +123,17 @@ const CORE_ARTIFACT_UNIT_TESTS: Step = Step::CountedCargo(&[
 ]);
 const CORE_DIAGNOSTICS_TESTS: Step =
     Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "diagnostics"]);
+/// The naga layout gate (slice mx.n): every fixture's WGSL through wgpu's own naga against the descriptors' layouts.
+/// It needs slangc and the native reflection helper but no adapter, so it runs here (the CI job `slang`) as well as in
+/// `check-feature reflection` and, counted in `GPU_SUITE_PIN`, in `verify --mode gpu` (the job `gpu-software`).
+const NAGA_LAYOUT_GATE: Step = Step::Cargo(&[
+    "test",
+    "--locked",
+    "-p",
+    "gust-wgpu",
+    "--test",
+    "naga_layout",
+]);
 /// The Unit tier's differential batch (R1-13): seeds 1 to 4, 64 programs, the interpreter against the CPU twin. No
 /// adapter and no Slang; it builds the generated crate (`gust` and `gust-wgpu`) with cargo.
 const DIFFTEST_CPU: Step = Step::CheckDifftest(&["--cpu-only", "--seeds", "1-4"]);
@@ -216,13 +227,13 @@ impl Suite {
                 "the production CPU target (GUST_PROFILE=cpu) on the fixture tests/cpu-target: the kernels build in release, run on gust::cpu::CpuDevice and equal independent host references; the binary holds no compiler, helper or GPU runtime; gust-wgpu refuses the profile; the cfg(test) and --cfg gust_dual builds keep one impl; the profile flips rebuild correctly; cargo only"
             }
             Self::Slangc => {
-                "Unit, plus the gust library tests and the diagnostics integration test, which compile generated Slang with slangc"
+                "Unit, plus the gust library tests and the diagnostics integration test, which compile generated Slang with slangc, and the naga layout gate (every fixture's WGSL, from slangc and from the native reflection helper, parsed and validated by wgpu's naga and compared with the descriptors' layouts; no adapter)"
             }
             Self::Spirv => {
                 "the example binaries export SPIR-V and spirv-val accepts every file (vulkan1.2)"
             }
             Self::Reflect => {
-                "the D17 layout gate: native reflection helper, core and wgpu reflection tests"
+                "the D17 layout gate: native reflection helper, core and wgpu reflection tests, and the naga layout gate (every fixture's WGSL checked by wgpu's naga against the descriptors' layouts)"
             }
             Self::Gpu => {
                 "all gust-wgpu tests on the first Vulkan adapter wgpu finds (their `test result:` lines checked against GPU_SUITE_PIN, as in verify --mode gpu), then all gust-algo tests (the reduce and scan calls, their dispatch counts and the float bound on the adapter; its `gpu::` tests are pinned by name), then the differential batch of all 8 seeds (128 generated kernels: interpreter, CPU twin and GPU compared; report.json judged by cargo xtask check-difftest) and the short_circuit GPU test of tests/difftest"
@@ -285,6 +296,7 @@ impl Suite {
                 steps.extend(unit);
                 steps.push(CORE_LIB_TESTS);
                 steps.push(CORE_DIAGNOSTICS_TESTS);
+                steps.push(NAGA_LAYOUT_GATE);
                 steps
             }
             Self::Spirv => vec![Step::Verify(VerifyMode::Artifacts, false)],

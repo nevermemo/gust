@@ -121,6 +121,14 @@ fn slangc_is_unit_plus_the_core_library_tests_and_requires_slangc() {
         "--test",
         "diagnostics",
     ]));
+    expected.push(Step::Cargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-wgpu",
+        "--test",
+        "naga_layout",
+    ]));
     assert_eq!(Suite::Slangc.steps(), expected);
 }
 
@@ -568,7 +576,7 @@ fn every_cargo_step_is_locked() {
     }
     // The nested calls of Reflect and Spirv are really among the calls checked.
     let count = |wanted: Suite| seen.iter().filter(|(suite, _)| *suite == wanted).count();
-    assert_eq!(count(Suite::Reflect), 3);
+    assert_eq!(count(Suite::Reflect), 4);
     assert_eq!(count(Suite::Spirv), EXAMPLES.len());
     assert!(count(Suite::Unit) >= 2 && count(Suite::Gpu) >= 1);
 }
@@ -748,6 +756,34 @@ fn the_unit_suite_runs_the_coretests_twin_test() {
             .iter()
             .all(|s| !matches!(s, Step::RequireTool(_)))
     );
+}
+
+#[test]
+fn check_feature_reflection_runs_the_naga_layout_gate() {
+    // The naga layout gate (mx.n) is a gust-wgpu test that needs slangc and the helper but no adapter;
+    // `check-feature reflection` (the Reflect suite) and the Slangc suite (the CI job `slang`) both name it, and its
+    // file must exist. Other lanes append to REFLECTION_TESTS, so the position is not pinned.
+    let gate = vec![
+        "test",
+        "--locked",
+        "-p",
+        "gust-wgpu",
+        "--test",
+        "naga_layout",
+    ];
+    let calls: Vec<Vec<&str>> = REFLECTION_TESTS.iter().map(|call| call.to_vec()).collect();
+    assert!(calls.contains(&gate), "{calls:?}");
+    assert!(Suite::Slangc.covers().contains("naga layout gate"));
+    assert!(Suite::Reflect.covers().contains("naga layout gate"));
+    let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../crates/gust-wgpu/tests/naga_layout.rs");
+    assert!(
+        file.is_file(),
+        "crates/gust-wgpu/tests/naga_layout.rs does not exist"
+    );
+    let explained =
+        crate::checks::explanation(Some("reflection")).expect("reflection is explained");
+    assert!(explained.contains("naga"), "{explained}");
 }
 
 #[test]

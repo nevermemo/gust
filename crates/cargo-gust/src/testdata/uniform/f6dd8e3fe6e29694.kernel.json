@@ -1,0 +1,276 @@
+{
+  "entry_point": "gpu_probes_shifted",
+  "key": "f6dd8e3fe6e29694",
+  "module": "probes",
+  "name": "shifted",
+  "parameters": [
+    {
+      "access": "not_applicable",
+      "binding": null,
+      "kind": "invocation",
+      "layout": null,
+      "name": "id",
+      "rust_type": "SV_DispatchThreadID"
+    },
+    {
+      "access": "read_only",
+      "binding": {
+        "binding": 0,
+        "group": 0
+      },
+      "kind": "uniform",
+      "layout": {
+        "element": {
+          "alignment": 16,
+          "fields": [
+            {
+              "name": "scale",
+              "offset": 0,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "f32",
+                "scalar": "f32",
+                "size": 4,
+                "stride": 4
+              }
+            },
+            {
+              "name": "pad0",
+              "offset": 4,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "f32",
+                "scalar": "f32",
+                "size": 4,
+                "stride": 4
+              }
+            },
+            {
+              "name": "pad1",
+              "offset": 8,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "f32",
+                "scalar": "f32",
+                "size": 4,
+                "stride": 4
+              }
+            },
+            {
+              "name": "pad2",
+              "offset": 12,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "f32",
+                "scalar": "f32",
+                "size": 4,
+                "stride": 4
+              }
+            },
+            {
+              "name": "inner",
+              "offset": 16,
+              "type": {
+                "alignment": 16,
+                "fields": [
+                  {
+                    "name": "count",
+                    "offset": 0,
+                    "type": {
+                      "alignment": 4,
+                      "kind": "scalar",
+                      "name": "u32",
+                      "scalar": "u32",
+                      "size": 4,
+                      "stride": 4
+                    }
+                  },
+                  {
+                    "name": "bias",
+                    "offset": 4,
+                    "type": {
+                      "alignment": 4,
+                      "kind": "scalar",
+                      "name": "i32",
+                      "scalar": "i32",
+                      "size": 4,
+                      "stride": 4
+                    }
+                  },
+                  {
+                    "name": "pad0",
+                    "offset": 8,
+                    "type": {
+                      "alignment": 4,
+                      "kind": "scalar",
+                      "name": "f32",
+                      "scalar": "f32",
+                      "size": 4,
+                      "stride": 4
+                    }
+                  },
+                  {
+                    "name": "pad1",
+                    "offset": 12,
+                    "type": {
+                      "alignment": 4,
+                      "kind": "scalar",
+                      "name": "f32",
+                      "scalar": "f32",
+                      "size": 4,
+                      "stride": 4
+                    }
+                  }
+                ],
+                "kind": "struct",
+                "name": "Inner",
+                "size": 16,
+                "stride": 16
+              }
+            }
+          ],
+          "kind": "struct",
+          "name": "Outer",
+          "size": 32,
+          "stride": 32
+        },
+        "element_stride": 32,
+        "rules": "std140_v1"
+      },
+      "name": "o",
+      "rust_type": "Uniform < Outer >"
+    },
+    {
+      "access": "read_only",
+      "binding": {
+        "binding": 1,
+        "group": 0
+      },
+      "kind": "uniform",
+      "layout": {
+        "element": {
+          "alignment": 16,
+          "fields": [
+            {
+              "name": "gain",
+              "offset": 0,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "f32",
+                "scalar": "f32",
+                "size": 4,
+                "stride": 4
+              }
+            },
+            {
+              "name": "pad0",
+              "offset": 4,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "f32",
+                "scalar": "f32",
+                "size": 4,
+                "stride": 4
+              }
+            },
+            {
+              "name": "pad1",
+              "offset": 8,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "f32",
+                "scalar": "f32",
+                "size": 4,
+                "stride": 4
+              }
+            },
+            {
+              "name": "pad2",
+              "offset": 12,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "f32",
+                "scalar": "f32",
+                "size": 4,
+                "stride": 4
+              }
+            }
+          ],
+          "kind": "struct",
+          "name": "Gain",
+          "size": 16,
+          "stride": 16
+        },
+        "element_stride": 16,
+        "rules": "std140_v1"
+      },
+      "name": "g",
+      "rust_type": "Uniform < Gain >"
+    },
+    {
+      "access": "read_only",
+      "binding": {
+        "binding": 2,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 4,
+          "kind": "scalar",
+          "name": "f32",
+          "scalar": "f32",
+          "size": 4,
+          "stride": 4
+        },
+        "element_stride": 4,
+        "rules": "storage_v1"
+      },
+      "name": "src",
+      "rust_type": "StructuredBuffer < f32 >"
+    },
+    {
+      "access": "read_write",
+      "binding": {
+        "binding": 3,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 4,
+          "kind": "scalar",
+          "name": "f32",
+          "scalar": "f32",
+          "size": 4,
+          "stride": 4
+        },
+        "element_stride": 4,
+        "rules": "storage_v1"
+      },
+      "name": "out",
+      "rust_type": "RWStructuredBuffer < f32 >"
+    }
+  ],
+  "schema": 1,
+  "source": {
+    "file": "src/probes.rs",
+    "lines": [
+      [3, 9, 4],
+      [11, 17, 11],
+      [19, 26, 19],
+      [44, 44, 48],
+      [45, 48, 49],
+      [47, 47, 50]
+    ]
+  },
+  "workgroup_size": [64, 1, 1]
+}

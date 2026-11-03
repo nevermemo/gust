@@ -498,3 +498,131 @@ fn an_unknown_schema_is_refused_naming_both_this_tool_reads() {
         "{error}"
     );
 }
+
+/// The sample with the layout block of the `out` buffer replaced: `element` is the element's JSON object (inside
+/// braces already) and `rules` the rules string.
+fn with_out_layout(element: &str, stride: u32, rules: &str) -> String {
+    let start = SAMPLE_RECORD_JSON
+        .find(concat!(
+            "      \"layout\": {\n        \"element\": {\n",
+            "          \"alignment\": 4,\n          \"kind\": \"scalar\""
+        ))
+        .unwrap();
+    let end = SAMPLE_RECORD_JSON.find("      \"name\": \"out\"").unwrap();
+    let layout = format!(
+        "      \"layout\": {{\n        \"element\": {element},\n        \"element_stride\": {stride},\n\
+         \"rules\": \"{rules}\"\n      }},\n"
+    );
+    format!(
+        "{}{layout}{}",
+        &SAMPLE_RECORD_JSON[..start],
+        &SAMPLE_RECORD_JSON[end..]
+    )
+}
+
+const VEC4_JSON: &str = concat!(
+    "{\"alignment\": 16, \"count\": 4, \"kind\": \"vector\", \"name\": \"Vec4\", ",
+    "\"scalar\": \"f32\", \"size\": 16, \"stride\": 16}"
+);
+const MAT4_JSON: &str = concat!(
+    "{\"alignment\": 16, \"cols\": 4, \"column_stride\": 16, \"kind\": \"matrix\", ",
+    "\"name\": \"Mat4\", \"rows\": 4, \"scalar\": \"f32\", \"size\": 64, \"stride\": 64}"
+);
+
+#[test]
+fn a_vector_layout_is_read_and_rebuilt_with_storage_v2_rules() {
+    let record =
+        Record::parse(&with_out_layout(VEC4_JSON, 16, "storage_v2"), SAMPLE_SLANG).unwrap();
+    let layout = record.parameters[2].layout.as_ref().unwrap();
+    assert_eq!(layout.rules, ShaderLayoutRules::StorageV2);
+    assert_eq!(layout.element_stride, 16);
+    assert_eq!(
+        layout.element.kind,
+        LayoutKindRecord::Vector {
+            scalar: ScalarKind::F32,
+            count: 4
+        }
+    );
+    assert_eq!((layout.element.size, layout.element.alignment), (16, 16));
+    let rebuilt = record.descriptor().parameters[2].resource_layout.unwrap();
+    assert_eq!(
+        rebuilt,
+        ResourceLayout::storage_v2(TypeLayout::vector("Vec4", ScalarKind::F32, 4))
+    );
+    assert!(layout.element.holds_math_type());
+}
+
+#[test]
+fn a_matrix_layout_is_read_and_rebuilt_under_storage_v2_and_std140_v1() {
+    for (rules, expected) in [
+        (
+            "storage_v2",
+            ResourceLayout::storage_v2(TypeLayout::matrix("Mat4", ScalarKind::F32, 4, 4)),
+        ),
+        (
+            "std140_v1",
+            ResourceLayout::std140_v1(TypeLayout::matrix("Mat4", ScalarKind::F32, 4, 4)),
+        ),
+    ] {
+        let record = Record::parse(&with_out_layout(MAT4_JSON, 64, rules), SAMPLE_SLANG).unwrap();
+        let layout = record.parameters[2].layout.as_ref().unwrap();
+        assert_eq!(
+            layout.element.kind,
+            LayoutKindRecord::Matrix {
+                scalar: ScalarKind::F32,
+                rows: 4,
+                cols: 4,
+                column_stride: 16
+            },
+            "{rules}"
+        );
+        assert_eq!(
+            record.descriptor().parameters[2].resource_layout.unwrap(),
+            expected,
+            "{rules}"
+        );
+    }
+}
+
+#[test]
+fn a_reader_from_before_this_slice_would_refuse_the_new_rules_by_path() {
+    // The new strings are read here; an unknown one (what a reader without them says to `storage_v2` and `std140_v1`)
+    // is refused naming the path, so an older cargo-gust fails clearly, not silently, on a new record.
+    for known in ["storage_v1", "storage_v2", "std140_v1"] {
+        Record::parse(&with_out_layout(VEC4_JSON, 16, known), SAMPLE_SLANG).unwrap();
+    }
+    let error = error_of(&with_out_layout(VEC4_JSON, 16, "std430"));
+    assert!(
+        error.contains("parameters[2].layout: unknown layout rules `std430`"),
+        "{error}"
+    );
+}
+
+#[test]
+fn malformed_vector_and_matrix_layouts_are_refused_with_the_path_of_the_problem() {
+    for (element, expected) in [
+        (
+            VEC4_JSON.replace("\"count\": 4, ", ""),
+            "parameters[2].layout.element: missing `count`",
+        ),
+        (
+            VEC4_JSON.replace("\"scalar\": \"f32\"", "\"scalar\": \"f64\""),
+            "unknown scalar `f64`",
+        ),
+        (
+            MAT4_JSON.replace("\"column_stride\": 16, ", ""),
+            "parameters[2].layout.element: missing `column_stride`",
+        ),
+        (
+            MAT4_JSON.replace("\"rows\": 4, ", ""),
+            "parameters[2].layout.element: missing `rows`",
+        ),
+        (
+            VEC4_JSON.replace("\"vector\"", "\"tensor\""),
+            "parameters[2].layout.element: unknown layout kind `tensor`",
+        ),
+    ] {
+        let error = error_of(&with_out_layout(&element, 16, "storage_v2"));
+        assert!(error.contains(expected), "{expected:?} not in {error:?}");
+    }
+}

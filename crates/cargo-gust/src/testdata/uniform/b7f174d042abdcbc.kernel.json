@@ -1,0 +1,199 @@
+{
+  "entry_point": "gpu_matrices_run",
+  "key": "b7f174d042abdcbc",
+  "module": "matrices",
+  "name": "run",
+  "parameters": [
+    {
+      "access": "not_applicable",
+      "binding": null,
+      "kind": "invocation",
+      "layout": null,
+      "name": "id",
+      "rust_type": "SV_DispatchThreadID"
+    },
+    {
+      "access": "read_only",
+      "binding": {
+        "binding": 0,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 16,
+          "cols": 4,
+          "column_stride": 16,
+          "kind": "matrix",
+          "name": "Mat4",
+          "rows": 4,
+          "scalar": "f32",
+          "size": 64,
+          "stride": 64
+        },
+        "element_stride": 64,
+        "rules": "storage_v2"
+      },
+      "name": "mats",
+      "rust_type": "StructuredBuffer < Mat4 >"
+    },
+    {
+      "access": "read_only",
+      "binding": {
+        "binding": 1,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 8,
+          "cols": 2,
+          "column_stride": 8,
+          "kind": "matrix",
+          "name": "Mat2",
+          "rows": 2,
+          "scalar": "f32",
+          "size": 16,
+          "stride": 16
+        },
+        "element_stride": 16,
+        "rules": "storage_v2"
+      },
+      "name": "small",
+      "rust_type": "StructuredBuffer < Mat2 >"
+    },
+    {
+      "access": "read_only",
+      "binding": {
+        "binding": 2,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 16,
+          "fields": [
+            {
+              "name": "m",
+              "offset": 0,
+              "type": {
+                "alignment": 16,
+                "cols": 4,
+                "column_stride": 16,
+                "kind": "matrix",
+                "name": "Mat4",
+                "rows": 4,
+                "scalar": "f32",
+                "size": 64,
+                "stride": 64
+              }
+            },
+            {
+              "name": "tint",
+              "offset": 64,
+              "type": {
+                "alignment": 16,
+                "count": 4,
+                "kind": "vector",
+                "name": "Vec4",
+                "scalar": "f32",
+                "size": 16,
+                "stride": 16
+              }
+            }
+          ],
+          "kind": "struct",
+          "name": "Xform",
+          "size": 80,
+          "stride": 80
+        },
+        "element_stride": 80,
+        "rules": "storage_v2"
+      },
+      "name": "xs",
+      "rust_type": "StructuredBuffer < Xform >"
+    },
+    {
+      "access": "read_only",
+      "binding": {
+        "binding": 3,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 16,
+          "count": 4,
+          "kind": "vector",
+          "name": "Vec4",
+          "scalar": "f32",
+          "size": 16,
+          "stride": 16
+        },
+        "element_stride": 16,
+        "rules": "storage_v2"
+      },
+      "name": "pts",
+      "rust_type": "StructuredBuffer < Vec4 >"
+    },
+    {
+      "access": "read_write",
+      "binding": {
+        "binding": 4,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 16,
+          "count": 4,
+          "kind": "vector",
+          "name": "Vec4",
+          "scalar": "f32",
+          "size": 16,
+          "stride": 16
+        },
+        "element_stride": 16,
+        "rules": "storage_v2"
+      },
+      "name": "out",
+      "rust_type": "RWStructuredBuffer < Vec4 >"
+    },
+    {
+      "access": "read_write",
+      "binding": {
+        "binding": 5,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 8,
+          "count": 2,
+          "kind": "vector",
+          "name": "Vec2",
+          "scalar": "f32",
+          "size": 8,
+          "stride": 8
+        },
+        "element_stride": 8,
+        "rules": "storage_v2"
+      },
+      "name": "flat",
+      "rust_type": "RWStructuredBuffer < Vec2 >"
+    }
+  ],
+  "schema": 1,
+  "source": {
+    "file": "src/matrices.rs",
+    "lines": [
+      [54, 58, 4],
+      [90, 90, 19],
+      [91, 94, 20],
+      [93, 93, 21],
+      [95, 98, 23],
+      [97, 97, 24]
+    ]
+  },
+  "workgroup_size": [64, 1, 1]
+}

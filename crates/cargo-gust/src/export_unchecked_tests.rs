@@ -4,7 +4,7 @@
 //! fixture, spike S1) with the descriptor `#[gust::gpu]` makes of the same kernel, so the cross-check that runs here is
 //! gust's own and no helper is needed.
 
-use gust::{Access, ParameterKind, ScalarKind, artifact::verify_artifact};
+use gust::{Access, ParameterKind, ScalarKind, ShaderLayoutRules, artifact::verify_artifact};
 
 use super::*;
 use crate::{
@@ -30,6 +30,7 @@ mod vector_add {
 
 fn f32_layout() -> Option<ResourceRecord> {
     Some(ResourceRecord {
+        rules: ShaderLayoutRules::StorageV1,
         element_stride: 4,
         element: LayoutRecord {
             name: "f32".to_owned(),

@@ -221,11 +221,13 @@ pub(super) fn incomplete_message(left: &str, missing: &str) -> String {
 
 // ---- layouts ----
 
-/// The size, alignment and field structure of one element type: a `gust::TypeLayout`.
+/// The size, alignment and field structure of one element type: a `gust::TypeLayout`. Its stride is its size: the
+/// macro describes only layouts that are whole multiples of their alignment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Layout {
     name: String,
     size: u32,
+    alignment: u32,
     kind: LayoutKind,
 }
 
@@ -233,6 +235,19 @@ pub(super) struct Layout {
 enum LayoutKind {
     /// `u32`, `i32` or `f32`.
     Scalar(&'static str),
+    /// `count` (2 or 4) scalars of one kind: `Vec2`, `Vec4`, `IVec2`, `IVec4`, `UVec2`, `UVec4`.
+    Vector {
+        scalar: &'static str,
+        count: u32,
+    },
+    /// A square column-major `f32` matrix (`Mat2`, `Mat4`): `cols` columns of `rows` scalars, `column_stride` bytes
+    /// apart.
+    Matrix {
+        scalar: &'static str,
+        rows: u32,
+        cols: u32,
+        column_stride: u32,
+    },
     Struct(Vec<LayoutField>),
 }
 
@@ -247,12 +262,76 @@ struct LayoutField {
 /// before that error is found).
 const MAX_NESTING: usize = 32;
 
-/// The StorageV1 layout of a storage element type, derived from the module's own structs, or `None` when the macro
-/// cannot describe the type: anything but a scalar (`u32`, `i32`, `f32` or their `uint`, `int`, `float` aliases) or a
-/// struct of this module whose fields are such types. StorageV1 structs are padding free with alignment 4, so their
-/// offsets are the running sum of the field sizes, which is what the assertions the macro emits (`gpu_pod_impl`) make
-/// rustc check against the real type. The layout is the macro's claim; `cargo gust build` checks it against the Slang
-/// reflection (D17) and the runtime checks it again.
+/// The rules a record states for a resource element: the three `gust::ShaderLayoutRules` a kernel descriptor uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Rules {
+    /// Scalars and padding-free structs of them, alignment 4.
+    StorageV1,
+    /// A storage element that holds a vector or a matrix: the alignment of each field, no padding.
+    StorageV2,
+    /// A constant buffer's element (`Uniform<T>`): structs rounded up to 16 (D57, D80).
+    Std140V1,
+}
+
+impl Rules {
+    /// The spelling in the record's `layout.rules`.
+    fn name(self) -> &'static str {
+        match self {
+            Self::StorageV1 => "storage_v1",
+            Self::StorageV2 => "storage_v2",
+            Self::Std140V1 => "std140_v1",
+        }
+    }
+}
+
+/// The layout of a resource's element and the rules it follows: a `gust::ResourceLayout`. The element stride is the
+/// element's size (the stride of a storage element, the size of a constant buffer's).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ResourceLayout {
+    pub rules: Rules,
+    element: Layout,
+}
+
+/// The layout of a storage parameter's element type, with `StorageV1` rules when the element holds no vector and no
+/// matrix and `StorageV2` rules when it does (the choice the descriptor makes at run time with `is_storage_v1`), or
+/// `None` when [`element_layout`] cannot describe the type.
+pub(super) fn storage_resource(
+    element: &syn::Type,
+    structs: &HashMap<String, &syn::ItemStruct>,
+) -> Option<ResourceLayout> {
+    let element = element_layout(element, structs)?;
+    let rules = if element.holds_math_type() {
+        Rules::StorageV2
+    } else {
+        Rules::StorageV1
+    };
+    Some(ResourceLayout { rules, element })
+}
+
+/// The layout of a uniform parameter's element type: `Std140V1`, from the numbers of [`crate::uniform::std140_struct`],
+/// which are the ones the `const` assertions of the expansion make rustc check against the real type (D80). `None`
+/// when the element is not a module struct whose fields are all scalars, vectors, `Mat4` or such structs (a `Mat2`
+/// has no constant-buffer layout: E0205). `structs` is keyed by unraw name, as [`crate::uniform::module_structs`] is.
+pub(super) fn uniform_resource(
+    element: &syn::Type,
+    structs: &HashMap<String, &syn::ItemStruct>,
+) -> Option<ResourceLayout> {
+    let element = std140_layout_at(element, structs, 0)?;
+    matches!(element.kind, LayoutKind::Struct(_)).then_some(ResourceLayout {
+        rules: Rules::Std140V1,
+        element,
+    })
+}
+
+/// The StorageV1 or StorageV2 layout of a storage element type, derived from the module's own structs, or `None` when
+/// the macro cannot describe the type: anything but a scalar (`u32`, `i32`, `f32` or their `uint`, `int`, `float`
+/// aliases), a vector or matrix of `gust::math` that may be a buffer element (`Vec2`, `Vec4`, `IVec2`, `IVec4`,
+/// `UVec2`, `UVec4`, `Mat2`, `Mat4`) or a struct of this module whose fields are such types. Structs are padding free,
+/// so their offsets are the running sum of the field sizes (each at a multiple of its own alignment) and their
+/// alignment is the largest field alignment, which is what the assertions the macro emits (`gpu_pod_impl`) make rustc
+/// check against the real type. A struct whose fields would need padding is no layout here (the assertions reject it
+/// at compile time). The layout is the macro's claim; `cargo gust build` checks it against the Slang reflection (D17)
+/// and the runtime checks it again.
 pub(super) fn element_layout(
     element: &syn::Type,
     structs: &HashMap<String, &syn::ItemStruct>,
@@ -260,14 +339,8 @@ pub(super) fn element_layout(
     layout_at(element, structs, 0)
 }
 
-fn layout_at(
-    ty: &syn::Type,
-    structs: &HashMap<String, &syn::ItemStruct>,
-    depth: usize,
-) -> Option<Layout> {
-    if depth > MAX_NESTING {
-        return None;
-    }
+/// The name of a bare path type (one segment, no arguments, no `<T as ..>`, no leading `::`).
+fn bare_name(ty: &syn::Type) -> Option<String> {
     let syn::Type::Path(path) = ty else {
         return None;
     };
@@ -278,27 +351,81 @@ fn layout_at(
     if !segment.arguments.is_empty() {
         return None;
     }
-    let name = segment.ident.to_string();
+    Some(segment.ident.to_string())
+}
+
+/// The layout of a scalar, vector or matrix spelling that may be a buffer element, `None` for anything else (a struct,
+/// the 3-wide types, an unknown name).
+fn leaf_layout(name: &str) -> Option<Layout> {
     let scalar = |canonical: &'static str| {
         Some(Layout {
             name: canonical.to_owned(),
             size: 4,
+            alignment: 4,
             kind: LayoutKind::Scalar(canonical),
         })
     };
-    match name.as_str() {
+    match name {
         "f32" | "float" => return scalar("f32"),
         "i32" | "int" => return scalar("i32"),
         "u32" | "uint" => return scalar("u32"),
         _ => {}
     }
+    let math = crate::math_types::math_type(name).filter(|math| math.buffer)?;
+    let width = u32::try_from(crate::math_types::width(math)).ok()?;
+    let kind = if math.matrix {
+        LayoutKind::Matrix {
+            scalar: "f32",
+            rows: width,
+            cols: width,
+            // Columns are `rows`-wide vectors packed one after the other: the size is `cols` column strides.
+            column_stride: math.size.checked_div(width)?,
+        }
+    } else {
+        LayoutKind::Vector {
+            scalar: if name.starts_with('I') {
+                "i32"
+            } else if name.starts_with('U') {
+                "u32"
+            } else {
+                "f32"
+            },
+            count: width,
+        }
+    };
+    Some(Layout {
+        name: name.to_owned(),
+        size: math.size,
+        alignment: math.alignment,
+        kind,
+    })
+}
+
+fn layout_at(
+    ty: &syn::Type,
+    structs: &HashMap<String, &syn::ItemStruct>,
+    depth: usize,
+) -> Option<Layout> {
+    if depth > MAX_NESTING {
+        return None;
+    }
+    let name = bare_name(ty)?;
+    if let Some(leaf) = leaf_layout(&name) {
+        return Some(leaf);
+    }
     let syn::Fields::Named(fields) = &structs.get(&name)?.fields else {
         return None;
     };
     let mut offset = 0_u32;
+    let mut alignment = 1_u32;
     let mut described = Vec::new();
     for field in &fields.named {
         let layout = layout_at(&field.ty, structs, depth + 1)?;
+        // No padding: a field sits at the sum of the sizes before it, and that must be where its alignment puts it.
+        if layout.alignment == 0 || !offset.is_multiple_of(layout.alignment) {
+            return None;
+        }
+        alignment = alignment.max(layout.alignment);
         let size = layout.size;
         described.push(LayoutField {
             name: crate::slang::emit_ident(field.ident.as_ref()?),
@@ -307,28 +434,103 @@ fn layout_at(
         });
         offset = offset.checked_add(size)?;
     }
-    if described.is_empty() {
+    if described.is_empty() || !offset.is_multiple_of(alignment) {
         return None;
     }
     Some(Layout {
         name,
         size: offset,
+        alignment,
+        kind: LayoutKind::Struct(described),
+    })
+}
+
+/// [`element_layout`] for a constant buffer. `Mat2` is no field of one (its column stride is 16 in a constant buffer
+/// and 8 in Rust).
+fn std140_layout_at(
+    ty: &syn::Type,
+    structs: &HashMap<String, &syn::ItemStruct>,
+    depth: usize,
+) -> Option<Layout> {
+    use syn::ext::IdentExt as _;
+
+    if depth > MAX_NESTING {
+        return None;
+    }
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    let name = path.path.get_ident()?.unraw().to_string();
+    if let Some(leaf) = leaf_layout(&name) {
+        return (name != "Mat2").then_some(leaf);
+    }
+    let item = structs.get(&name)?;
+    let syn::Fields::Named(fields) = &item.fields else {
+        return None;
+    };
+    let model = crate::uniform::std140_struct(item, structs, 0)?;
+    if fields.named.is_empty() || model.offsets.len() != fields.named.len() {
+        return None;
+    }
+    let mut described = Vec::new();
+    for (index, field) in fields.named.iter().enumerate() {
+        let layout = std140_layout_at(&field.ty, structs, depth + 1)?;
+        // The model's numbers and the field's own agree, or the macro describes nothing.
+        if model.sizes[index] != layout.size {
+            return None;
+        }
+        described.push(LayoutField {
+            name: crate::slang::emit_ident(field.ident.as_ref()?),
+            offset: model.offsets[index],
+            layout,
+        });
+    }
+    Some(Layout {
+        name,
+        size: model.size,
+        alignment: model.alignment,
         kind: LayoutKind::Struct(described),
     })
 }
 
 impl Layout {
+    /// Whether a vector or a matrix is this layout or is inside it.
+    fn holds_math_type(&self) -> bool {
+        match &self.kind {
+            LayoutKind::Scalar(_) => false,
+            LayoutKind::Vector { .. } | LayoutKind::Matrix { .. } => true,
+            LayoutKind::Struct(fields) => fields.iter().any(|field| field.layout.holds_math_type()),
+        }
+    }
+
     fn json(&self) -> Json {
         let mut members = vec![
             ("name", Json::string(&self.name)),
             ("size", Json::Number(self.size.into())),
-            ("alignment", Json::Number(4)),
+            ("alignment", Json::Number(self.alignment.into())),
             ("stride", Json::Number(self.size.into())),
         ];
         match &self.kind {
             LayoutKind::Scalar(scalar) => {
                 members.push(("kind", Json::string("scalar")));
                 members.push(("scalar", Json::string(scalar)));
+            }
+            LayoutKind::Vector { scalar, count } => {
+                members.push(("kind", Json::string("vector")));
+                members.push(("scalar", Json::string(scalar)));
+                members.push(("count", Json::Number((*count).into())));
+            }
+            LayoutKind::Matrix {
+                scalar,
+                rows,
+                cols,
+                column_stride,
+            } => {
+                members.push(("kind", Json::string("matrix")));
+                members.push(("scalar", Json::string(scalar)));
+                members.push(("rows", Json::Number((*rows).into())));
+                members.push(("cols", Json::Number((*cols).into())));
+                members.push(("column_stride", Json::Number((*column_stride).into())));
             }
             LayoutKind::Struct(fields) => {
                 members.push(("kind", Json::string("struct")));
@@ -366,10 +568,10 @@ pub(super) struct ParameterRecord {
     pub access: &'static str,
     /// The binding in descriptor set 0; `None` for a parameter without a resource.
     pub binding: Option<u32>,
-    /// The element layout of a storage parameter; `None` for other parameters and for an element type the macro cannot
-    /// describe (a storage parameter with no layout: `cargo gust build` fills it from the Slang reflection and lists the
-    /// parameter as `export_unchecked` in the manifest).
-    pub layout: Option<Layout>,
+    /// The element layout of a storage or uniform parameter; `None` for other parameters and for an element type the
+    /// macro cannot describe (a storage or uniform parameter with no layout: `cargo gust build` fills it from the Slang
+    /// reflection and lists the parameter as `export_unchecked` in the manifest).
+    pub layout: Option<ResourceLayout>,
 }
 
 /// What `<key>.kernel.json` (schema 1) says about one kernel.
@@ -391,9 +593,13 @@ impl KernelRecord<'_> {
     ///
     /// Keys: `schema`, `key`, `module`, `name`, `entry_point`, `workgroup_size` (three numbers), `parameters` (each
     /// with `name`, `rust_type`, `kind`, `access`, `binding` (`{"group": 0, "binding": n}` or null) and `layout`: null,
-    /// or `{"rules": "storage_v1", "element_stride": n, "element": <layout>}`), and `source` (`file` and `lines`, each
-    /// line `[slang_start, slang_end, rust_line]`). A `<layout>` is `name`, `size`, `alignment`, `stride`, `kind`
-    /// (`scalar` with `scalar`, or `struct` with `fields`: `name`, `offset`, `type` with the nested `<layout>`).
+    /// or `{"rules": <rules>, "element_stride": n, "element": <layout>}` with `<rules>` one of `storage_v1`,
+    /// `storage_v2` (a storage element that holds a vector or a matrix) and `std140_v1` (a uniform)), and `source`
+    /// (`file` and `lines`, each line `[slang_start, slang_end, rust_line]`). A `<layout>` is `name`, `size`,
+    /// `alignment`, `stride`, `kind` (`scalar` with `scalar`; `vector` with `scalar` and `count`; `matrix` with
+    /// `scalar`, `rows`, `cols` and `column_stride`; or `struct` with `fields`: `name`, `offset`, `type` with the
+    /// nested `<layout>`). A record whose layouts are all scalars and structs of them with `storage_v1` rules is the
+    /// same bytes it was before vectors and uniforms had layouts.
     pub(super) fn json(&self) -> String {
         self.write_json(SCHEMA, true)
     }
@@ -412,9 +618,9 @@ impl KernelRecord<'_> {
             .map(|parameter| {
                 let layout = parameter.layout.as_ref().map_or(Json::Null, |layout| {
                     Json::object(vec![
-                        ("rules", Json::string("storage_v1")),
-                        ("element_stride", Json::Number(layout.size.into())),
-                        ("element", layout.json()),
+                        ("rules", Json::string(layout.rules.name())),
+                        ("element_stride", Json::Number(layout.element.size.into())),
+                        ("element", layout.element.json()),
                     ])
                 });
                 let binding = parameter.binding.map_or(Json::Null, |binding| {
@@ -1076,9 +1282,249 @@ pub(super) mod tests {
         ] {
             let layout = layout_of("", written).unwrap();
             assert_eq!(layout.name, canonical);
-            assert_eq!(layout.size, 4);
+            assert_eq!((layout.size, layout.alignment), (4, 4));
             assert_eq!(layout.kind, LayoutKind::Scalar(canonical));
         }
+    }
+
+    fn storage_of(source: &str, element: &str) -> Option<ResourceLayout> {
+        let items = structs_of(source);
+        let structs: HashMap<String, &syn::ItemStruct> = items
+            .iter()
+            .map(|item| (item.ident.to_string(), item))
+            .collect();
+        let ty: syn::Type = crate::diagnostics::testing::parse_str(element).unwrap();
+        storage_resource(&ty, &structs)
+    }
+
+    fn uniform_of(source: &str, element: &str) -> Option<ResourceLayout> {
+        let items = structs_of(source);
+        let structs: HashMap<String, &syn::ItemStruct> = items
+            .iter()
+            .map(|item| (item.ident.to_string(), item))
+            .collect();
+        let ty: syn::Type = crate::diagnostics::testing::parse_str(element).unwrap();
+        uniform_resource(&ty, &structs)
+    }
+
+    /// `(name, size, alignment, offset)` of the fields of a struct layout.
+    fn field_shape(layout: &Layout) -> Vec<(&str, u32, u32, u32)> {
+        let LayoutKind::Struct(fields) = &layout.kind else {
+            panic!("{layout:?}");
+        };
+        fields
+            .iter()
+            .map(|field| {
+                (
+                    field.name.as_str(),
+                    field.layout.size,
+                    field.layout.alignment,
+                    field.offset,
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn vectors_and_matrices_have_the_layout_of_gust_math() {
+        for (written, size, alignment, kind) in [
+            (
+                "Vec2",
+                8,
+                8,
+                LayoutKind::Vector {
+                    scalar: "f32",
+                    count: 2,
+                },
+            ),
+            (
+                "Vec4",
+                16,
+                16,
+                LayoutKind::Vector {
+                    scalar: "f32",
+                    count: 4,
+                },
+            ),
+            (
+                "IVec2",
+                8,
+                8,
+                LayoutKind::Vector {
+                    scalar: "i32",
+                    count: 2,
+                },
+            ),
+            (
+                "IVec4",
+                16,
+                16,
+                LayoutKind::Vector {
+                    scalar: "i32",
+                    count: 4,
+                },
+            ),
+            (
+                "UVec2",
+                8,
+                8,
+                LayoutKind::Vector {
+                    scalar: "u32",
+                    count: 2,
+                },
+            ),
+            (
+                "UVec4",
+                16,
+                16,
+                LayoutKind::Vector {
+                    scalar: "u32",
+                    count: 4,
+                },
+            ),
+            (
+                "Mat2",
+                16,
+                8,
+                LayoutKind::Matrix {
+                    scalar: "f32",
+                    rows: 2,
+                    cols: 2,
+                    column_stride: 8,
+                },
+            ),
+            (
+                "Mat4",
+                64,
+                16,
+                LayoutKind::Matrix {
+                    scalar: "f32",
+                    rows: 4,
+                    cols: 4,
+                    column_stride: 16,
+                },
+            ),
+        ] {
+            let layout = layout_of("", written).unwrap();
+            assert_eq!(layout.name, written);
+            assert_eq!(
+                (layout.size, layout.alignment),
+                (size, alignment),
+                "{written}"
+            );
+            assert_eq!(layout.kind, kind, "{written}");
+        }
+        // The 3-wide types are not buffer elements, and a vector spelled with arguments is not a layout.
+        for element in ["Vec3", "UVec3", "Mat3", "Vec4<f32>", "gust::Vec4", "bool"] {
+            assert_eq!(layout_of("", element), None, "{element}");
+        }
+    }
+
+    #[test]
+    fn a_storage_element_with_a_vector_has_running_offsets_the_largest_alignment_and_storage_v2_rules()
+     {
+        let source = "struct P { a: Vec4, b: f32, c: u32, d: Vec2 } struct Q { m: Mat4, p: P }";
+        let layout = layout_of(source, "P").unwrap();
+        assert_eq!((layout.size, layout.alignment), (32, 16));
+        assert_eq!(
+            field_shape(&layout),
+            [
+                ("a", 16, 16, 0),
+                ("b", 4, 4, 16),
+                ("c", 4, 4, 20),
+                ("d", 8, 8, 24)
+            ]
+        );
+        let nested = layout_of(source, "Q").unwrap();
+        assert_eq!((nested.size, nested.alignment), (96, 16));
+        assert_eq!(field_shape(&nested), [("m", 64, 16, 0), ("p", 32, 16, 64)]);
+        // The rules follow the shape: a vector anywhere in the element makes it StorageV2.
+        assert_eq!(storage_of(source, "P").unwrap().rules, Rules::StorageV2);
+        assert_eq!(storage_of(source, "Q").unwrap().rules, Rules::StorageV2);
+        assert_eq!(storage_of("", "Vec4").unwrap().rules, Rules::StorageV2);
+        assert_eq!(storage_of("", "Mat2").unwrap().rules, Rules::StorageV2);
+        assert_eq!(storage_of("", "f32").unwrap().rules, Rules::StorageV1);
+        assert_eq!(
+            storage_of("struct S { a: u32, b: f32 }", "S")
+                .unwrap()
+                .rules,
+            Rules::StorageV1
+        );
+    }
+
+    #[test]
+    fn a_storage_struct_that_would_need_padding_is_not_described() {
+        // The expansion's assertions reject all three at compile time; the record says nothing about them.
+        let source = "struct Gap { a: f32, v: Vec2 } struct Tail { v: Vec4, a: f32 } struct Inner { v: Vec2, a: f32 } \
+                      struct Outer { a: f32, i: Inner }";
+        for element in ["Gap", "Tail", "Inner", "Outer"] {
+            assert_eq!(layout_of(source, element), None, "{element}");
+        }
+    }
+
+    /// The `uniforms` fixture's structs (`tests/fixtures/uniforms.rs`), whose numbers the constant-buffer assertions of
+    /// the expansion check.
+    const UNIFORM_STRUCTS: &str = "struct Light { color: Vec4, intensity: f32, falloff: f32, pad0: f32, pad1: f32 } \
+         struct Frame { view: Mat4, tint: Vec4, light: Light, offset: Vec2, scale: f32, count: u32 } \
+         struct Gain { gain: f32, pad0: f32, pad1: f32, pad2: f32 }";
+
+    #[test]
+    fn a_uniform_has_the_std140_layout_of_the_macros_own_model() {
+        let resource = uniform_of(UNIFORM_STRUCTS, "Frame").unwrap();
+        assert_eq!(resource.rules, Rules::Std140V1);
+        let frame = &resource.element;
+        assert_eq!(
+            (frame.name.as_str(), frame.size, frame.alignment),
+            ("Frame", 128, 16)
+        );
+        assert_eq!(
+            field_shape(frame),
+            [
+                ("view", 64, 16, 0),
+                ("tint", 16, 16, 64),
+                ("light", 32, 16, 80),
+                ("offset", 8, 8, 112),
+                ("scale", 4, 4, 120),
+                ("count", 4, 4, 124),
+            ]
+        );
+        let LayoutKind::Struct(fields) = &frame.kind else {
+            panic!("{frame:?}");
+        };
+        assert_eq!(
+            field_shape(&fields[2].layout),
+            [
+                ("color", 16, 16, 0),
+                ("intensity", 4, 4, 16),
+                ("falloff", 4, 4, 20),
+                ("pad0", 4, 4, 24),
+                ("pad1", 4, 4, 28),
+            ]
+        );
+        let gain = uniform_of(UNIFORM_STRUCTS, "Gain").unwrap().element;
+        assert_eq!((gain.size, gain.alignment), (16, 16));
+        // The same numbers as the model the const assertions use, field by field.
+        let items = structs_of(UNIFORM_STRUCTS);
+        let by_name: HashMap<String, &syn::ItemStruct> = items
+            .iter()
+            .map(|item| (item.ident.to_string(), item))
+            .collect();
+        let model = crate::uniform::std140_struct(by_name["Frame"], &by_name, 0).unwrap();
+        assert_eq!((model.size, model.alignment), (frame.size, frame.alignment));
+        let offsets: Vec<u32> = field_shape(frame).iter().map(|field| field.3).collect();
+        assert_eq!(offsets, model.offsets);
+    }
+
+    #[test]
+    fn what_a_constant_buffer_cannot_hold_has_no_uniform_layout() {
+        let source = "struct M { m: Mat2, a: f32 } struct B { a: bool } struct E {} struct T(u32) ; \
+                      struct V3 { v: Vec3 } struct Fine { a: f32, b: f32, c: f32, d: f32 }";
+        for element in [
+            "M", "B", "E", "T", "V3", "Unknown", "f32", "Vec4", "Mat4", "Vec<u32>",
+        ] {
+            assert!(uniform_of(source, element).is_none(), "{element}");
+        }
+        assert!(uniform_of(source, "Fine").is_some());
     }
 
     /// The record's field names are the emitted ones (M6 plan 2.5), so they match what slangc reflects.
@@ -1129,7 +1575,7 @@ pub(super) mod tests {
     }
 
     fn sample_parameters() -> Vec<ParameterRecord> {
-        let pair = layout_of("struct Pair { a: uint, b: float }", "Pair").unwrap();
+        let pair = storage_of("struct Pair { a: uint, b: float }", "Pair").unwrap();
         vec![
             ParameterRecord {
                 name: "id".to_owned(),
@@ -1153,9 +1599,103 @@ pub(super) mod tests {
                 kind: "storage",
                 access: "read_write",
                 binding: Some(1),
-                layout: layout_of("", "float"),
+                layout: storage_of("", "float"),
             },
         ]
+    }
+
+    /// The parameters of the `uniforms` fixture's `run` (`tests/fixtures/uniforms.rs`): a `Uniform<Frame>` and two
+    /// `Vec4` buffers.
+    fn uniform_parameters() -> Vec<ParameterRecord> {
+        let parameter =
+            |name: &str, rust_type: &str, kind, access, binding, layout| ParameterRecord {
+                name: name.to_owned(),
+                rust_type: rust_type.to_owned(),
+                kind,
+                access,
+                binding,
+                layout,
+            };
+        vec![
+            parameter(
+                "id",
+                "SV_DispatchThreadID",
+                "invocation",
+                "not_applicable",
+                None,
+                None,
+            ),
+            parameter(
+                "frame",
+                "Uniform < Frame >",
+                "uniform",
+                "read_only",
+                Some(0),
+                uniform_of(UNIFORM_STRUCTS, "Frame"),
+            ),
+            parameter(
+                "points",
+                "StructuredBuffer < Vec4 >",
+                "storage",
+                "read_only",
+                Some(1),
+                storage_of("", "Vec4"),
+            ),
+            parameter(
+                "out",
+                "RWStructuredBuffer < Vec4 >",
+                "storage",
+                "read_write",
+                Some(2),
+                storage_of("", "Vec4"),
+            ),
+        ]
+    }
+
+    /// The uniform kernel's record as `write` prints it.
+    fn uniform_json() -> String {
+        let parameters = uniform_parameters();
+        KernelRecord {
+            key: "0123456789abcdef",
+            module: "uniforms",
+            name: "run",
+            entry_point: "gpu_uniforms_run",
+            workgroup_size: [64, 1, 1],
+            parameters: &parameters,
+            file: "src/lib.rs",
+            lines: &[LineRecord {
+                slang_start: 3,
+                slang_end: 9,
+                rust_line: 12,
+            }],
+        }
+        .json()
+    }
+
+    #[test]
+    fn the_uniform_and_vector_record_matches_the_golden() {
+        assert_golden(
+            &uniform_json(),
+            "uniform.kernel.json",
+            &include_str!("../../tests/golden/uniform.kernel.json").replace("\r\n", "\n"),
+        );
+    }
+
+    /// The rules of each parameter as the JSON states them, so that a uniform written with storage rules (or the other
+    /// way round) cannot pass on the strength of a golden that was blessed with the mistake.
+    #[test]
+    fn the_rules_in_the_record_follow_the_parameter_kind_and_the_element() {
+        let json = uniform_json();
+        let rules: Vec<&str> = json
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("\"rules\": \""))
+            .map(|rest| rest.trim_end_matches(['"', ',']))
+            .collect();
+        // Parameters in order: the uniform, then the two `Vec4` buffers; JSON keys are sorted but parameters are not.
+        assert_eq!(rules, ["std140_v1", "storage_v2", "storage_v2"], "{json}");
+        let sample = sample_json();
+        assert_eq!(sample.matches("\"rules\": \"storage_v1\"").count(), 2);
+        assert!(!sample.contains("std140") && !sample.contains("storage_v2"));
     }
 
     pub(in crate::expand) fn sample_json() -> String {

@@ -61,11 +61,13 @@
 //!                                 "validated": true } ] } ] }
 //! ```
 //!
-//! A kernel whose storage-buffer layout the macro could not describe (`layout: null` in its record) is built anyway:
-//! the layout is filled from the helper's reflection, the descriptor-side half of the D17 cross-check is skipped for
-//! that parameter only, and the kernel's entry lists it as `"export_unchecked": ["<param>", ...]` (`build` prints a
-//! note, `check` reports the same list). D17 still holds at run time, where `verify_artifact` checks the stored
-//! reflection against the descriptor.
+//! A kernel whose storage-buffer or uniform layout the macro could not describe (`layout: null` in its record) is
+//! built anyway: the layout is filled from the helper's reflection (a vector or matrix element too), the
+//! descriptor-side half of the D17 cross-check is skipped for that parameter only, and the kernel's entry lists it as
+//! `"export_unchecked": ["<param>", ...]` (`build` prints a note, `check` reports the same list). D17 still holds at
+//! run time, where `verify_artifact` checks the stored reflection against the descriptor. The macro describes the
+//! element of a `Uniform<T>` and any storage element whose types are all scalars, vectors, matrices and structs of
+//! this module, so those are checked in full at export and are not listed.
 //!
 //! The Slang version recorded is the build tag the helper writes into every reflection JSON (`compiler`): the build
 //! that actually compiled. With `--allow-slang-mismatch` that can differ from the pin (`SLANG_VERSION` in `slang.rs`),

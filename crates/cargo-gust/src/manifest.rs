@@ -40,12 +40,14 @@
 //! - Object keys are sorted, `kernels` are sorted by `key` and `formats` by format (`wgsl`, then `spirv`); the text
 //!   uses two-space indentation, LF line ends and one final newline. `check` reports a manifest that is not exactly
 //!   this text.
-//! - `export_unchecked` is present only when it is not empty. It names the storage parameters whose element type the
-//!   macro could not describe from the module's own syntax (`layout: null` in the kernel record: a `GpuPod` type from
-//!   outside the module, an alias, a nested type from elsewhere). For them the stored reflection supplied the
-//!   layout, so the descriptor-side half of the D17 cross-check was skipped at export; the other half (binding,
-//!   access, and the layouts of every other parameter) was not. D17 still holds at run time, where
-//!   `verify_artifact` checks the real `GpuPod::LAYOUT`. The names are in parameter order.
+//! - `export_unchecked` is present only when it is not empty. It names the storage and uniform parameters whose
+//!   element type the macro could not describe from the module's own syntax (`layout: null` in the kernel record: a
+//!   `GpuPod` type from outside the module, an alias, a nested type from elsewhere). For them the stored reflection
+//!   supplied the layout, so the descriptor-side half of the D17 cross-check was skipped at export; the other half
+//!   (binding, access, and the layouts of every other parameter) was not. D17 still holds at run time, where
+//!   `verify_artifact` checks the real `GpuPod::LAYOUT`. The names are in parameter order. A uniform or a vector
+//!   element that the macro does describe is not listed: its layout is in the record and is checked against the
+//!   reflection at export (m7.lv).
 //! - `file` is always `<key>.wgsl` or `<key>.spv`; the reflection file beside it is `<file>.reflection.json`.
 //! - `validated` is present for `spirv` only: `true` when `spirv-val --target-env vulkan1.2` accepted the module and
 //!   `false` when the tool was not on `PATH` (never a silent pass). A failed validation writes nothing.

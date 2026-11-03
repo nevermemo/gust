@@ -11,8 +11,8 @@
 use std::{fs, path::PathBuf, process::Command};
 
 use gust::{
-    Artifact, Format, KernelDescriptor, ParameterKind, PodCrossCheck, ShaderLayoutRules,
-    artifact::verify_artifact, reflect::Reflection,
+    Artifact, Format, KernelDescriptor, PodCrossCheck, artifact::verify_artifact,
+    reflect::Reflection,
 };
 
 use crate::{
@@ -229,50 +229,27 @@ pub(crate) fn verify_stored(
         .map_err(|error| error.to_string())
 }
 
-/// The record's descriptor with every `layout: null` parameter filled from the reflection: the storage parameters by
-/// [`Record::completed`] (`StorageV1`), the uniform parameters here (`Std140V1`, D80).
+/// The record's descriptor with every `layout: null` parameter filled from the reflection ([`Record::completed`]): a
+/// storage element as `StorageV1` or `StorageV2` by its shape, a uniform as `Std140V1` (D80).
 ///
-/// The record schema has no uniform layout (the macro writes one for storage elements only), so a uniform's layout
-/// always comes from the reflection's constant buffer. [`Record::descriptor`] declares every layout `StorageV1`, so the
-/// filled uniforms are re-declared `Std140V1` afterwards; a uniform whose record does carry a layout is left as the
-/// record says, and the cross-check refuses it when its rules do not fit a constant buffer. Nothing is accepted on the
-/// strength of the fill alone: the descriptor goes through the same cross-check as any other, which holds a
-/// constant buffer to std140 and to the reflection.
+/// A parameter whose record does carry a layout keeps it, with the rules the record states, and the cross-check refuses
+/// it when those rules do not fit the parameter (a constant buffer with storage rules, a storage buffer with
+/// `std140_v1`). Nothing is accepted on the strength of the fill alone: the descriptor goes through the same
+/// cross-check as any other, which holds a constant buffer to std140 and every layout to the reflection.
 fn completed_descriptor(
     record: &Record,
     reflection_json: &str,
 ) -> Result<KernelDescriptor, String> {
-    let mut filled = record.clone();
-    let mut std140 = Vec::new();
-    for (index, parameter) in filled.parameters.iter_mut().enumerate() {
-        if parameter.kind == ParameterKind::Uniform && parameter.layout.is_none() {
-            parameter.layout = Some(
-                crate::fill::reflected_uniform_layout(reflection_json, &parameter.name)
-                    .map_err(|error| format!("{}: {error}", record.qualified_name()))?,
-            );
-            std140.push(index);
-        }
-    }
-    let mut kernel = filled.completed(reflection_json)?.descriptor();
-    let mut parameters = kernel.parameters.to_vec();
-    for index in std140 {
-        if let Some(layout) = parameters[index].resource_layout.as_mut() {
-            layout.rules = ShaderLayoutRules::Std140V1;
-        }
-    }
-    kernel.parameters = Box::leak(parameters.into_boxed_slice());
-    Ok(kernel)
+    Ok(record.completed(reflection_json)?.descriptor())
 }
 
 /// D17 at export time: the helper's reflection against the record's descriptor, resource by resource.
 ///
-/// The macro could not describe some element types (`layout: null`, the manifest's `export_unchecked`). Their layout
-/// is filled in from the same reflection first ([`Record::completed`]), so for those storage parameters only the
-/// binding, the group and the access are compared with the descriptor and the layout half is skipped. A uniform is
-/// always in that state: the record carries no uniform layout, so its layout is always filled from the reflection
-/// ([`completed_descriptor`], `Std140V1`) and it is never listed in `export_unchecked`. What is checked for it here is
-/// the reflection against itself: std140 shape, binding, group and access. The macro's own layout is compared only at
-/// run time (D17 through `verify_artifact`). Every other parameter is checked in full, layout included.
+/// The macro could not describe some element types (`layout: null`, the manifest's `export_unchecked`): a type from
+/// outside the module or an alias, in a storage buffer or in a uniform. Their layout is filled in from the same
+/// reflection first ([`Record::completed`]), so for those parameters only the binding, the group and the access are
+/// compared with the descriptor and the layout half is skipped; the manifest says so. Every other parameter, uniforms
+/// included, is checked in full, layout included: the macro's own numbers against the reflection's.
 pub(crate) fn cross_check_completed(
     record: &Record,
     reflection: &Reflection,
@@ -567,3 +544,7 @@ mod unchecked_tests;
 #[cfg(test)]
 #[path = "export_uniform_tests.rs"]
 mod uniform_tests;
+
+#[cfg(test)]
+#[path = "export_vector_tests.rs"]
+mod vector_tests;

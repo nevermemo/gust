@@ -12,3 +12,4 @@ mod gpu;
 mod schedule;
 mod struct_gather;
 mod twin;
+mod variant;

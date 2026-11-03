@@ -100,10 +100,22 @@ impl FloatCheck {
 /// Assert `actual` is within the per-level bound (plus the `f64` reference's own error) of the `f64` reference sum.
 #[track_caller]
 pub(super) fn assert_f32_sum(label: &str, values: &[f32], actual: f32, c: f64) -> FloatCheck {
+    assert_f32_sum_by(label, values, actual, c, bound::f32_sum_bound)
+}
+
+/// [`assert_f32_sum`] with the bound of another schedule (`bound::f32_sum_bound_v1` for the v1 block reduce).
+#[track_caller]
+pub(super) fn assert_f32_sum_by(
+    label: &str,
+    values: &[f32],
+    actual: f32,
+    c: f64,
+    bound_of: impl Fn(u32, f64, f64) -> f64,
+) -> FloatCheck {
     let n = u32::try_from(values.len()).unwrap();
     let reference = bound::sum_f64(values);
     let s = bound::abs_sum(values);
-    let limit = bound::f32_sum_bound(n, c, s) + bound::f64_reference_error(n, s);
+    let limit = bound_of(n, c, s) + bound::f64_reference_error(n, s);
     let distance = (f64::from(actual) - reference).abs();
     assert!(
         distance <= limit,
@@ -120,6 +132,10 @@ pub(super) fn assert_f32_sum(label: &str, values: &[f32], actual: f32, c: f64) -
 pub(super) trait Backend {
     /// The constant of the backend's per-addition error: `C_CPU` or `C_GPU`.
     const C: f64;
+    /// The bound a float sum of `n` values with absolute sum `s` is asserted against: the v0 schedule's by default.
+    fn sum_bound(&self, n: u32, c: f64, s: f64) -> f64 {
+        bound::f32_sum_bound(n, c, s)
+    }
     fn sum<T: Element>(&self, values: &[T]) -> T;
     fn min<T: Element>(&self, values: &[T]) -> Option<T>;
     fn max<T: Element>(&self, values: &[T]) -> Option<T>;
@@ -343,7 +359,10 @@ pub(super) fn float_sum_cases<B: Backend>(backend: &B, n: usize) -> Vec<(Shape, 
         .map(|shape| {
             let values = f32_input(shape, n, 0xABCD + n as u64);
             let actual = backend.sum(&values);
-            let check = assert_f32_sum(&format!("{shape:?}"), &values, actual, B::C);
+            let check =
+                assert_f32_sum_by(&format!("{shape:?}"), &values, actual, B::C, |n, c, s| {
+                    backend.sum_bound(n, c, s)
+                });
             (shape, check)
         })
         .collect()
@@ -421,7 +440,7 @@ pub(super) fn scan_cases<B: Backend>(backend: &B, lengths: &[usize]) {
         assert_eq!(exclusive.first().copied().unwrap_or(0), 0, "n = {n}");
 
         // A single element equal to u32::MAX: every prefix from it on is exactly u32::MAX.
-        for position in [0, 255, 256, 257, n.saturating_sub(1)] {
+        for position in [0, 255, 256, 257, 4_095, 4_096, 4_097, n.saturating_sub(1)] {
             if position >= n {
                 continue;
             }

@@ -34,6 +34,16 @@ pub(crate) const REFLECTION_TESTS: &[&[&str]] = &[
         "--test",
         "reflection",
     ],
+    // The schema-3 output of the helper on the committed probe inputs (mx.t0a): an ignored test of cargo-gust.
+    &[
+        "test",
+        "--locked",
+        "-p",
+        "cargo-gust",
+        "--",
+        "--ignored",
+        "schema_3_output",
+    ],
 ];
 
 /// The `gust-wgpu` integration tests of `check-feature gpu-semantics`, by file name under crates/gust-wgpu/tests. Kept
@@ -272,6 +282,7 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                 ],
             )
         }
+        "algo" => run_counted(&root, &["test", "-p", "gust-algo"]).map(drop),
         "vectors" => {
             let mut macros = vec!["test", "-p", "gust-macros", "--"];
             macros.extend(VECTOR_MACRO_FILTERS);
@@ -613,6 +624,9 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
         "map" => {
             "map: the device side of the map calls: gust::map unit tests, then GpuVec and the buffer pool, device options and adapter choice, and the launch and buffer limits on the GPU"
         }
+        "algo" => {
+            "algo: the device-resident algorithms of gust-algo (m7.r1, reduce): the schedule and bound arithmetic, the golden of the reduce kernels and the CPU twins against independent references (no adapter needed), then the same cases on the first Vulkan adapter with the per-level float bound asserted, the empty and over-limit inputs and the pooled buffers"
+        }
         "vectors" => {
             "vectors: the vector and matrix types (M6): the gust-macros tests of the types, products and negation, the gust::math unit tests, the vectors and products goldens on slangc, their SPIR-V (made here from the goldens, since no example uses a vector) validated with spirv-val for Vulkan 1.2 with an informational OpCopyLogical count, as check-artifacts does too; then the GPU tests of crates/gust-wgpu/tests/vectors.rs"
         }
@@ -662,7 +676,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "test: `cargo xtask test --suite Unit|Cpu|Slangc|Spirv|Reflect|Gpu|Full` runs one evidence tier of VALIDATION.md"
         }
         "all" => {
-            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, result, vectors, uniforms, map, examples, artifacts, full, changed, workspace, format, lints, lint, docs-check, check-arch, check-ui, check-cpu, check-dual, check-cpu-target, bless, test"
+            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, result, vectors, uniforms, map, algo, examples, artifacts, full, changed, workspace, format, lints, lint, docs-check, check-arch, check-ui, check-cpu, check-dual, check-cpu-target, bless, test"
         }
         _ => return Err(format!("unknown check area `{area}`")),
     };

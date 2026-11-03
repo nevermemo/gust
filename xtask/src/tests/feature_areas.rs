@@ -98,7 +98,7 @@ fn every_area_check_feature_accepts_is_listed_and_every_listed_area_is_accepted(
 
 #[test]
 fn the_areas_of_m6_and_m7_are_listed() {
-    for area in ["vectors", "uniforms", "map"] {
+    for area in ["vectors", "uniforms", "map", "algo"] {
         assert!(FEATURE_AREAS.contains(&area), "{area}");
     }
 }

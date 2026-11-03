@@ -37,6 +37,123 @@ fn the_packaged_helper_source_is_the_probe_source() {
 }
 
 #[test]
+fn schema_3_is_written_only_for_textures_samplers_and_a_non_compute_stage() {
+    // The behaviour itself is exercised by running the built helper (the byte-identity gate and the Reflect suite);
+    // these pins catch an edit that widens schema 3 to every document or drops the compute default of the stage.
+    let source = HELPER_SOURCE.replace("\r\n", "\n");
+    assert!(
+        source.contains("const int schema = use.shapes ? 3 : (use.newKinds ? 2 : 1);"),
+        "schema 3 must be written only when a texture, a sampler or a non-compute stage is present"
+    );
+    assert!(
+        source.contains("use.shapes = !compute;"),
+        "a fragment entry is schema 3 even without a texture"
+    );
+    assert!(
+        source.contains("Stage stage = Stage::Compute;") && source.contains("if (argc == 7)"),
+        "the stage is the optional seventh argument and defaults to compute"
+    );
+}
+
+/// The probe inputs of `src/testdata/schema3`, by file stem (the entry point is `gpu_<stem>`), with the stage passed to
+/// the helper. `fragment_gap` also runs as `compute` to pin the stage refusal.
+const SCHEMA_3_CASES: &[(&str, &str)] = &[
+    ("sampled_float4", "compute"),
+    ("sampled_uint", "compute"),
+    ("storage_declared", "compute"),
+    ("storage_inferred", "compute"),
+    ("sampler_fragment", "fragment"),
+    ("fragment_gap", "fragment"),
+    ("fragment_gap", "compute"),
+    ("refuse_storage_noformat", "compute"),
+    ("refuse_comparison_sampler", "compute"),
+    ("refuse_texture3d", "compute"),
+    ("refuse_texture_array", "compute"),
+    ("refuse_fragment_depth", "fragment"),
+];
+
+fn schema_3_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("src/testdata/schema3")
+}
+
+#[test]
+fn the_schema_3_expectations_cover_every_probe_input_and_both_targets() {
+    let expected = fs::read_to_string(schema_3_dir().join("expected.txt"))
+        .unwrap()
+        .replace("\r\n", "\n");
+    let mut headers = Vec::new();
+    for (stem, stage) in SCHEMA_3_CASES {
+        assert!(
+            schema_3_dir().join(format!("{stem}.slang")).is_file(),
+            "{stem}"
+        );
+        for target in ["wgsl", "spirv"] {
+            headers.push(format!("== {stem} {target} {stage}"));
+        }
+    }
+    let found: Vec<&str> = expected
+        .lines()
+        .filter(|line| line.starts_with("== "))
+        .collect();
+    assert_eq!(found, headers, "expected.txt must list the cases in order");
+}
+
+/// Runs the built helper on every probe input and compares its output (a document, or the refusal) with
+/// `expected.txt`, byte for byte once line endings are normalised. It needs the helper, so it is ignored by default and
+/// fails, never skips, when there is no helper (the rule of the Reflect tests). The Reflect suite runs it
+/// (`REFLECTION_TESTS` in xtask), after it has prepared the helper; by hand:
+/// `GUST_SLANG_REFLECT=<helper> cargo test -p cargo-gust -- --ignored schema_3_output`. The helper is the one
+/// `gust::reflect::native_compiler_path` names (`GUST_SLANG_REFLECT`, else `target/slang-reflect`). The expected text
+/// holds the Slang build tag and the artifact fingerprints of the pinned Slang, so a pin bump re-blesses it: set
+/// `GUST_SCHEMA3_ACTUAL=<file>` to have the test write what the helper printed, review it, and copy it over
+/// `expected.txt`.
+#[test]
+#[ignore = "needs the native helper: GUST_SLANG_REFLECT=<helper> cargo test -p cargo-gust -- --ignored schema_3_output"]
+fn schema_3_output_of_the_built_helper_matches_the_committed_expectations() {
+    let helper = gust::reflect::native_compiler_path();
+    let scratch = Scratch::new("schema3-output");
+    let mut actual = String::new();
+    for (stem, stage) in SCHEMA_3_CASES {
+        // The source hash in the document covers the source bytes, so the copy is LF whatever the checkout did.
+        let text = fs::read_to_string(schema_3_dir().join(format!("{stem}.slang")))
+            .unwrap()
+            .replace("\r\n", "\n");
+        let source = scratch.0.join(format!("{stem}.slang"));
+        fs::write(&source, text).unwrap();
+        for target in ["wgsl", "spirv"] {
+            let artifact = scratch.0.join(format!("{stem}.{target}.artifact"));
+            let document = scratch.0.join(format!("{stem}.{target}.json"));
+            let output = Command::new(&helper)
+                .arg(&source)
+                .arg(format!("gpu_{stem}"))
+                .arg(target)
+                .arg(&artifact)
+                .arg(&document)
+                .arg(stage)
+                .output()
+                .unwrap();
+            actual.push_str(&format!("== {stem} {target} {stage}\n"));
+            if output.status.success() {
+                actual.push_str(&fs::read_to_string(&document).unwrap());
+            } else {
+                actual.push_str(&format!(
+                    "error: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            actual.push('\n');
+        }
+    }
+    if let Some(path) = env::var_os("GUST_SCHEMA3_ACTUAL") {
+        fs::write(path, &actual).unwrap();
+    }
+    let expected = fs::read_to_string(schema_3_dir().join("expected.txt"))
+        .unwrap()
+        .replace("\r\n", "\n");
+    assert_eq!(actual, expected);
+}
+
+#[test]
 fn the_compiler_is_the_first_of_cl_clang_c_plus_plus_and_g_plus_plus_on_path() {
     assert_eq!(COMPILER_SEARCH_ORDER, ["cl", "clang++", "c++", "g++"]);
     let scratch = Scratch::new("compiler-order");
@@ -279,9 +396,9 @@ fn reports(output: &'static str) -> impl Fn(&Path) -> Result<String, String> {
 
 #[test]
 fn a_helper_is_current_only_when_its_stamp_schema_and_slang_tag_are_this_tools_and_the_sdks() {
-    let (_scratch, exe, stamp) = stamped_helper("staleness", "2", "2026.20");
+    let (_scratch, exe, stamp) = stamped_helper("staleness", "3", "2026.20");
     let sdk = Ok("2026.20".to_owned());
-    let current = reports("gust-slang-reflect schema=2 slang=2026.20\n");
+    let current = reports("gust-slang-reflect schema=3 slang=2026.20\n");
     assert_eq!(staleness(&exe, &stamp, &sdk, &current), Ok(None));
     // A helper built against another Slang is stale whatever the times of its files say; the reason names both tags.
     for old in [
@@ -290,7 +407,7 @@ fn a_helper_is_current_only_when_its_stamp_schema_and_slang_tag_are_this_tools_a
         "2026.20-1-g0a1b2c3d4",
         "2026.2",
     ] {
-        let output = format!("gust-slang-reflect schema=2 slang={old}\n");
+        let output = format!("gust-slang-reflect schema=3 slang={old}\n");
         let older = move |_: &Path| Ok(output.clone());
         let reason = staleness(&exe, &stamp, &sdk, &older).unwrap().unwrap();
         assert_eq!(
@@ -302,12 +419,12 @@ fn a_helper_is_current_only_when_its_stamp_schema_and_slang_tag_are_this_tools_a
 
 #[test]
 fn a_helper_without_this_sources_stamp_is_stale() {
-    let (_scratch, exe, stamp) = stamped_helper("staleness-stamp", "2", "2026.20");
+    let (_scratch, exe, stamp) = stamped_helper("staleness-stamp", "3", "2026.20");
     let sdk = Ok("2026.20".to_owned());
-    let current = reports("gust-slang-reflect schema=2 slang=2026.20\n");
+    let current = reports("gust-slang-reflect schema=3 slang=2026.20\n");
     assert_eq!(staleness(&exe, &stamp, &sdk, &current), Ok(None));
     // A stamp of another probe source (a helper built by a tool with a different source) is stale.
-    let other = stamp_text("2", "2026.20").replace(&source_sha256(), &"0".repeat(64));
+    let other = stamp_text("3", "2026.20").replace(&source_sha256(), &"0".repeat(64));
     fs::write(&stamp, other).unwrap();
     let reason = staleness(&exe, &stamp, &sdk, &current).unwrap().unwrap();
     assert!(
@@ -323,7 +440,7 @@ fn a_helper_without_this_sources_stamp_is_stale() {
     let reason = staleness(&exe, &stamp, &sdk, &current).unwrap().unwrap();
     assert!(reason.starts_with("it has no build stamp"), "{reason}");
     // A helper replaced after its build (the stamp names another tag than the helper prints) is stale.
-    fs::write(&stamp, stamp_text("2", "2026.19")).unwrap();
+    fs::write(&stamp, stamp_text("3", "2026.19")).unwrap();
     let reason = staleness(&exe, &stamp, &sdk, &current).unwrap().unwrap();
     assert!(reason.contains("replaced after the build"), "{reason}");
 }
@@ -333,38 +450,47 @@ fn a_stamp_does_not_depend_on_which_tool_wrote_it() {
     // Two cargo-gust versions with the same probe source write byte-identical stamps for the same helper, so neither
     // rebuilds the other's helper.
     assert_eq!(
-        stamp_text("2", "2026.20"),
+        stamp_text("3", "2026.20"),
         format!(
-            "gust-slang-reflect build stamp\nsource-sha256={}\nschema=2\nslang=2026.20\n",
+            "gust-slang-reflect build stamp\nsource-sha256={}\nschema=3\nslang=2026.20\n",
             source_sha256()
         )
     );
     assert_eq!(
-        parse_stamp(&stamp_text("2", "2026.20")),
-        Some((source_sha256(), "2".to_owned(), "2026.20".to_owned()))
+        parse_stamp(&stamp_text("3", "2026.20")),
+        Some((source_sha256(), "3".to_owned(), "2026.20".to_owned()))
     );
-    assert_eq!(parse_stamp("schema=2\nslang=x\n"), None);
-    assert_eq!(parse_stamp("source-sha256=\nschema=2\nslang=x\n"), None);
+    assert_eq!(parse_stamp("schema=3\nslang=x\n"), None);
+    assert_eq!(parse_stamp("source-sha256=\nschema=3\nslang=x\n"), None);
 }
 
 #[test]
 fn a_helper_with_another_schema_or_no_readable_version_is_stale() {
-    let (_scratch, exe, stamp) = stamped_helper("staleness-schema", "2", "2026.20");
+    let (_scratch, exe, stamp) = stamped_helper("staleness-schema", "3", "2026.20");
     let sdk = Ok("2026.20".to_owned());
     let reason = |output: &'static str| staleness(&exe, &stamp, &sdk, &reports(output)).unwrap();
-    assert_eq!(
-        reason("gust-slang-reflect schema=1 slang=2026.20\n"),
-        Some("it prints schema 1, but the source prints schema 2".to_owned())
-    );
-    for unreadable in ["", "slangc 2026.20\n", "gust-slang-reflect schema=2\n"] {
+    // The helpers of the earlier schemas (a schema-2 helper from before mx.t0a) are rebuilt.
+    for old in ["1", "2"] {
+        let output: &'static str = match old {
+            "1" => "gust-slang-reflect schema=1 slang=2026.20\n",
+            _ => "gust-slang-reflect schema=2 slang=2026.20\n",
+        };
+        assert_eq!(
+            reason(output),
+            Some(format!(
+                "it prints schema {old}, but the source prints schema 3"
+            ))
+        );
+    }
+    for unreadable in ["", "slangc 2026.20\n", "gust-slang-reflect schema=3\n"] {
         let reason = reason(unreadable).unwrap();
         assert!(
             reason.contains("--version") || reason.contains("unexpected"),
             "{unreadable:?}: {reason}"
         );
     }
-    let reason = reason("gust-slang-reflect schema=3 slang=2026.20\n").unwrap();
-    assert!(reason.contains("schema 3"), "{reason}");
+    let reason = reason("gust-slang-reflect schema=4 slang=2026.20\n").unwrap();
+    assert!(reason.contains("schema 4"), "{reason}");
     let failing = |_: &Path| Err::<String, String>("exit 3".to_owned());
     assert_eq!(
         staleness(&exe, &stamp, &sdk, &failing),
@@ -372,7 +498,7 @@ fn a_helper_with_another_schema_or_no_readable_version_is_stale() {
     );
     // An SDK that cannot name its version never makes a helper current.
     let unknown = Err("no slangc".to_owned());
-    let current = reports("gust-slang-reflect schema=2 slang=2026.20\n");
+    let current = reports("gust-slang-reflect schema=3 slang=2026.20\n");
     assert_eq!(
         staleness(&exe, &stamp, &unknown, &current),
         Ok(Some(

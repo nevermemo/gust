@@ -244,7 +244,12 @@ fn only_the_gpu_mode_makes_the_pinned_call() {
             .collect::<Vec<_>>();
         if mode == VerifyMode::Gpu {
             assert_eq!(pinned, vec![call()], "{mode:?}");
-            assert_eq!(cargo_calls(mode), vec![call()], "{mode:?}");
+            // The algorithms call follows (m7.r1); it is judged by name, not by the wgpu pin.
+            assert_eq!(
+                cargo_calls(mode),
+                vec![call(), owned(&["test", "--locked", "-p", "gust-algo"])],
+                "{mode:?}"
+            );
         } else {
             assert!(pinned.is_empty(), "{mode:?}");
         }
@@ -530,6 +535,15 @@ fn a_helper_is_refused_unless_its_tag_is_the_pin_and_its_schema_is_the_current_o
         check_helper_pin(&helper("2026.20"), &pin, "the helper"),
         Ok(())
     );
+    // Schema 3 (mx.t0a) is accepted beside schema 2: a helper built before it keeps working.
+    assert_eq!(
+        check_helper_pin(
+            "gust-slang-reflect schema=3 slang=2026.20\n",
+            &pin,
+            "the helper"
+        ),
+        Ok(())
+    );
     // The 2026.13.1 helper that every lane used before the bump, in both spellings, is refused with both tags named.
     for old in ["2026.13.1", "2026.13.1-1-g84792eb15"] {
         let error = check_helper_pin(&helper(old), &pin, "the helper named by X").unwrap_err();
@@ -556,11 +570,11 @@ fn a_helper_is_refused_unless_its_tag_is_the_pin_and_its_schema_is_the_current_o
     for output in [
         "gust-slang-reflect schema=1 slang=2026.20\n",
         "gust-slang-reflect slang=2026.20\n",
-        "gust-slang-reflect schema=3 slang=2026.20\n",
+        "gust-slang-reflect schema=4 slang=2026.20\n",
     ] {
         let error = check_helper_pin(output, &pin, "the helper named by X").unwrap_err();
         assert!(
-            error.contains("needs `schema=2`")
+            error.contains("needs `schema=2` or `schema=3`")
                 && error.contains("cargo gust slang build-helper")
                 && error.contains("the helper named by X"),
             "{error}"

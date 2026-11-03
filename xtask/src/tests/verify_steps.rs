@@ -160,7 +160,8 @@ fn the_other_modes_keep_their_cargo_calls() {
         cargo_calls(VerifyMode::Fast),
         [owned(&FMT), macros, core, wgpu.clone()]
     );
-    assert_eq!(cargo_calls(VerifyMode::Gpu), [wgpu]);
+    let algo = owned(&["test", "--locked", "-p", "gust-algo"]);
+    assert_eq!(cargo_calls(VerifyMode::Gpu), [wgpu, algo]);
     let mut smoke = vec![owned(&FMT), owned(&CLIPPY), workspace_test_args()];
     smoke.extend(example_runs(SMOKE_EXAMPLES));
     assert_eq!(cargo_calls(VerifyMode::Smoke), smoke);

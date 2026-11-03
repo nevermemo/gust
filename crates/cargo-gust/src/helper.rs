@@ -33,7 +33,7 @@ pub(crate) const HELPER_NAME: &str = "gust-slang-reflect";
 
 /// The reflection schema the packaged source prints (`gust-slang-reflect schema=<n> slang=<tag>`); a test ties it to
 /// the source.
-pub(crate) const HELPER_SCHEMA: &str = "2";
+pub(crate) const HELPER_SCHEMA: &str = "3";
 
 /// The compilers to look for, in order.
 pub(crate) const COMPILER_SEARCH_ORDER: [&str; 4] = ["cl", "clang++", "c++", "g++"];

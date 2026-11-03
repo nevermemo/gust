@@ -1,20 +1,31 @@
-//! Component pool and indirect workload proofs (T08).
+//! Component pool, indirect workload, and GPU active-count proofs (T08, T13).
 //!
 //! A `GpuPool<Particle>` grows across frames while GPU-authored state survives
 //! each growth (a GPU-to-GPU copy, never a readback). Every frame runs a graph:
-//! `prepare_dispatch` derives the active count and indirect workgroup arguments
-//! on the GPU from the pool's count buffer, clamped to the allocation and a
-//! settings budget; `integrate` then runs as an indirect dispatch over exactly
-//! that many particles. The host never learns the dispatched count. The graph is
-//! built from typed calls, derives its dependencies, and is rebuilt after growth.
+//! `classify` atomically counts the live particles that have spawned by the
+//! current frame into a one-element count buffer; `prepare_dispatch` derives the
+//! active count and indirect workgroup arguments on the GPU from that
+//! GPU-authored count, clamped to the allocation and a settings budget;
+//! `integrate` then runs as an indirect dispatch over exactly that many
+//! particles. The host never learns the dispatched count before the work is
+//! submitted. The kernels are typed calls, the graph edges are declared
+//! (classify -> prepare_dispatch -> integrate; the graph checks them and never
+//! infers or reorders them), and the graph is rebuilt after growth.
+//!
+//! Particles spawn in slot order (an emitter releasing `emit_per_frame` per
+//! frame), so the active particles always form a prefix of the pool and the
+//! indirect consumer's `i < active` guard covers exactly them. There is no
+//! compaction stage yet (that is T14): the prefix invariant is what makes the
+//! count usable as a dispatch bound.
 
 use std::{path::PathBuf, time::Instant};
 
 use gust::{Independent, KernelDescriptor, gpu};
 #[cfg(test)]
-use gust_wgpu::{BufferBinding, BufferDispatch};
+use gust_wgpu::BufferBinding;
 use gust_wgpu::{
-    GpuBufferAccess, GpuPool, GraphReport, HeadlessDevice, StagedGraph, render_wgpu_source,
+    BufferDispatch, GpuBufferAccess, GpuPool, GraphReport, HeadlessDevice, StagedGraph,
+    render_wgpu_source,
 };
 
 #[gpu]
@@ -26,6 +37,8 @@ mod pool {
         pub vx: float,
         pub vy: float,
         pub steps: uint,
+        /// Frame at which the emitter releases this particle.
+        pub spawn_frame: uint,
     }
 
     #[derive(Debug, PartialEq)]
@@ -34,6 +47,8 @@ mod pool {
         pub gravity: float,
         /// Upper bound on particles integrated per frame.
         pub budget: uint,
+        /// Current frame; live particles with `spawn_frame <= frame` are active.
+        pub frame: uint,
     }
 
     #[derive(Debug, PartialEq)]
@@ -52,8 +67,33 @@ mod pool {
         if a < b { a } else { b }
     }
 
+    // One invocation per pool slot: count the live particles that have spawned by
+    // this frame. `live` mirrors the pool's logical length; slots at or beyond it
+    // hold unspecified bytes and are never classified. The count buffer is only
+    // touched atomically here; the host zeroes it through an ordered graph upload.
+    #[allow(clippy::len_zero)]
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn classify(
+        id: SV_DispatchThreadID,
+        live: StructuredBuffer<uint>,
+        settings: StructuredBuffer<Settings>,
+        particles: StructuredBuffer<Particle>,
+        mut count: RWStructuredBuffer<uint>,
+    ) {
+        let i = id.x;
+        if 0u32 < live.len()
+            && 0u32 < settings.len()
+            && 0u32 < count.len()
+            && i < live[0u32]
+            && i < particles.len()
+            && particles[i].spawn_frame <= settings[0u32].frame
+        {
+            atomic_add(&mut count[0u32], 1u32);
+        }
+    }
+
     // One invocation: derive the active count and the indirect arguments on the
-    // GPU. The count buffer mirrors the pool's logical length; it is clamped to the
+    // GPU. `count` is the GPU-authored classification result; it is clamped to the
     // allocation (`particles.len()`) so a malformed count can never dispatch past
     // the buffer, and to the settings budget.
     #[allow(clippy::len_zero)]
@@ -111,7 +151,10 @@ pub use pool::{Active, DispatchArgs, Particle, Settings};
 /// indirect dispatch, and the runtime cannot check it, so the kernel's clamp to the budget is what holds.
 const BUDGET: u32 = 1 << 20;
 
-pub fn spawn(first: usize, count: usize) -> Vec<Particle> {
+/// Spawn `count` particles for slots `first..`, released by the emitter in slot order at `emit_per_frame` particles
+/// per frame, so `spawn_frame` never decreases along the pool: the particles spawned by any frame are a prefix.
+pub fn spawn(first: usize, count: usize, emit_per_frame: usize) -> Vec<Particle> {
+    let emit_per_frame = emit_per_frame.max(1);
     (first..first + count)
         .map(|index| Particle {
             x: (index % 17) as f32 * 0.5,
@@ -119,13 +162,30 @@ pub fn spawn(first: usize, count: usize) -> Vec<Particle> {
             vx: 1.0 + (index % 5) as f32 * 0.1,
             vy: (index % 7) as f32 * 0.2 - 0.6,
             steps: 0,
+            spawn_frame: (index / emit_per_frame) as u32,
         })
         .collect()
 }
 
-/// Independent host reference for one frame over the first `min(len, budget)` particles.
+/// Independent host reference for the classification: the particles spawned by `settings.frame`.
+pub fn count_spawned(particles: &[Particle], settings: &Settings) -> usize {
+    particles
+        .iter()
+        .filter(|particle| particle.spawn_frame <= settings.frame)
+        .count()
+}
+
+/// Independent host reference for one frame: the spawned count, clamped to the budget, selects how many slots
+/// integrate from the front of the pool (the prefix invariant: the spawned particles are the first ones).
 pub fn step_cpu(particles: &mut [Particle], settings: &Settings) -> usize {
-    let active = particles.len().min(settings.budget as usize);
+    let spawned = count_spawned(particles, settings);
+    assert!(
+        particles[..spawned]
+            .iter()
+            .all(|particle| particle.spawn_frame <= settings.frame),
+        "the spawned particles must form a prefix of the pool (no compaction yet)"
+    );
+    let active = spawned.min(settings.budget as usize);
     for p in &mut particles[..active] {
         p.vy += settings.gravity * settings.dt;
         p.x += p.vx * settings.dt;
@@ -137,6 +197,8 @@ pub fn step_cpu(particles: &mut [Particle], settings: &Settings) -> usize {
 
 pub struct Frame {
     pub settings: gust_wgpu::GpuBuffer<Settings>,
+    /// GPU-authored classification count (one element); zeroed by the graph before `classify`.
+    pub count: gust_wgpu::GpuBuffer<u32>,
     pub active: gust_wgpu::GpuBuffer<Active>,
     pub args: gust_wgpu::GpuBuffer<DispatchArgs>,
 }
@@ -150,8 +212,14 @@ impl Frame {
                     dt: 0.0,
                     gravity: 0.0,
                     budget: 0,
+                    frame: 0,
                 }],
                 GpuBufferAccess::ReadOnly,
+            ),
+            count: device.create_typed_buffer(
+                "pool active count",
+                &[0u32],
+                GpuBufferAccess::ReadWrite,
             ),
             active: device.create_typed_buffer(
                 "pool active",
@@ -178,14 +246,17 @@ pub fn run_frame(
     Ok((count, report))
 }
 
-/// One frame: settings write → prepare_dispatch → indirect integrate → read the GPU-derived active
-/// count back (the only readback; particles stay resident). Returns the count, the report, and the
-/// dependency edges the graph derived, per node (node indices, ascending).
+/// One frame: settings write and count reset → classify → prepare_dispatch → indirect integrate → read the
+/// GPU-derived active count back (the only readback; particles stay resident). Returns the count, the report,
+/// and the dependency edges the graph holds, per node (node indices, in declaration order).
 ///
 /// The graph is rebuilt every frame: growth replaces the pool's allocation, and the typed calls (locals
-/// built before the graph, which borrows them) bind the allocation the pool holds right now. Nothing
-/// is declared by the host. The readback of `active` depends on `prepare_dispatch`, its last writer;
-/// `integrate` only reads it.
+/// built before the graph, which borrows them) bind the allocation the pool holds right now. Every edge is
+/// declared (`upload`, `dispatch`, `dispatch_indirect`, `readback` take their dependencies): the graph
+/// checks them against the buffers the nodes touch and refuses a missing one, and it neither infers nor
+/// reorders any. The classification dispatch is sized by the host-tracked pool length, never by a value
+/// read back from the GPU; the readback of `active` waits for `integrate`, which follows its writer
+/// `prepare_dispatch`.
 pub fn run_frame_traced(
     device: &HeadlessDevice,
     frame: &Frame,
@@ -193,10 +264,18 @@ pub fn run_frame_traced(
     settings: &[Settings; 1],
 ) -> Result<(u32, GraphReport, Vec<Vec<usize>>), gust_wgpu::Error> {
     // Every buffer is bound `Independent`: none has the dispatch's element count as its length (the
-    // pool's allocation is its capacity), and an indirect dispatch has no host element count at all.
+    // pool's allocation is its capacity, the count has one element), and an indirect dispatch has no
+    // host element count at all.
+    let classify_call = pool::classify::call(
+        particles.len() as u32,
+        Independent(particles.count_buffer()),
+        Independent(&frame.settings),
+        Independent(particles.buffer()),
+        Independent(&frame.count),
+    );
     let prepare_call = pool::prepare_dispatch::call(
         1,
-        Independent(particles.count_buffer()),
+        Independent(&frame.count),
         Independent(&frame.settings),
         Independent(particles.buffer()),
         Independent(&frame.active),
@@ -208,13 +287,20 @@ pub fn run_frame_traced(
         Independent(&frame.settings),
         Independent(particles.buffer()),
     );
+    let zero = [0u32];
 
     let mut graph = StagedGraph::new();
-    let write = graph.write(&frame.settings, settings);
-    let prepare = graph.run(&prepare_call);
-    let integrate = graph.run_indirect(&integrate_call, &frame.args);
-    let active = graph.read(&frame.active);
-    let edges = [write, prepare, integrate, active]
+    let write = graph.upload(&frame.settings, settings, &[]);
+    let reset = graph.upload(&frame.count, &zero, &[]);
+    let classify = graph.dispatch(BufferDispatch::from(&classify_call), &[write, reset]);
+    let prepare = graph.dispatch(BufferDispatch::from(&prepare_call), &[classify]);
+    let integrate = graph.dispatch_indirect(
+        BufferDispatch::from(&integrate_call),
+        &frame.args,
+        &[prepare],
+    );
+    let active = graph.readback(&frame.active, &[integrate]);
+    let edges = [write, reset, classify, prepare, integrate, active]
         .map(|node| graph.dependency_indices(node))
         .to_vec();
     let output = device.execute_graph(&graph)?;
@@ -222,8 +308,9 @@ pub fn run_frame_traced(
     Ok((count, output.report, edges))
 }
 
-pub fn descriptors() -> [&'static KernelDescriptor; 2] {
+pub fn descriptors() -> [&'static KernelDescriptor; 3] {
     [
+        &pool::classify::DESCRIPTOR,
         &pool::prepare_dispatch::DESCRIPTOR,
         &pool::integrate::DESCRIPTOR,
     ]
@@ -241,6 +328,10 @@ pub fn assert_close(actual: &[Particle], expected: &[Particle]) {
             "particle[{index}]: {actual:?} vs {expected:?}"
         );
         assert_eq!(actual.steps, expected.steps, "steps[{index}]");
+        assert_eq!(
+            actual.spawn_frame, expected.spawn_frame,
+            "spawn_frame[{index}]"
+        );
     }
 }
 
@@ -272,21 +363,19 @@ fn export_artifacts() -> Result<PathBuf, Box<dyn std::error::Error>> {
 pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device = HeadlessDevice::new()?;
     let frame = Frame::new(&device)?;
-    let settings = Settings {
-        dt: 0.016,
-        gravity: -9.8,
-        budget: BUDGET,
-    };
 
     let initial = if cfg!(debug_assertions) {
         1 << 12
     } else {
         1 << 16
     };
-    let mut reference = spawn(0, initial);
+    // The emitter releases `initial` particles per frame; the pool is grown ahead of it, so later frames
+    // hold particles that have not spawned yet.
+    let emit_per_frame = initial;
+    let mut reference = spawn(0, initial, emit_per_frame);
     let mut particles = device.create_pool("particles", &reference, initial);
     println!(
-        "Component pool: start {initial} particles, capacity {}",
+        "Component pool: start {initial} particles, capacity {}, emitter {emit_per_frame}/frame",
         particles.capacity()
     );
 
@@ -294,6 +383,13 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut total_copied = 0;
     let mut last_edges = Vec::new();
     for frame_index in 0..frames {
+        let settings = Settings {
+            dt: 0.016,
+            gravity: -9.8,
+            budget: BUDGET,
+            frame: frame_index,
+        };
+        let live = particles.len();
         let started = Instant::now();
         let (active, report, edges) = run_frame_traced(&device, &frame, &particles, &[settings])?;
         last_edges = edges;
@@ -304,7 +400,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(active as usize, expected_active);
 
         // Grow after each frame: GPU-authored positions must survive the copy.
-        let spawned = spawn(reference.len(), reference.len());
+        let spawned = spawn(reference.len(), reference.len(), emit_per_frame);
         let growth = device.pool_push(&mut particles, &spawned)?;
         reference.extend(spawned);
         if let Some(growth) = growth {
@@ -312,7 +408,7 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         let reclaimed = device.pool_reclaim(&mut particles)?;
         println!(
-            "frame {frame_index}: active {active}, graph {frame_elapsed:?} (CPU reference {cpu_elapsed:?}), upload {} B, readback {} B, resident {} B, growth {growth:?}, reclaimed {reclaimed}",
+            "frame {frame_index}: active {active} of {live} (GPU-classified), graph {frame_elapsed:?} (CPU reference {cpu_elapsed:?}), upload {} B, readback {} B, resident {} B, growth {growth:?}, reclaimed {reclaimed}",
             report.upload_bytes, report.readback_bytes, report.resident_bytes
         );
     }
@@ -331,7 +427,8 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!("adapter: {}", device.adapter_info().name);
     println!(
-        "derived dependencies per node (write, prepare_dispatch, integrate, read; declared: none): {last_edges:?}"
+        "declared dependencies per node (upload settings, reset count, classify, prepare_dispatch, integrate, \
+         read; derived: none): {last_edges:?}"
     );
     println!("pipeline cache: {:?}", device.pipeline_cache_stats());
     println!("generated artifacts: {}", artifacts.display());
@@ -401,12 +498,31 @@ mod tests {
     const X_BOUND: f64 = 54.0 * U;
     const Y_BOUND: f64 = 73.0 * U;
 
+    /// Everything spawned; only the budget can clamp.
     fn settings(budget: u32) -> Settings {
+        settings_at(u32::MAX, budget)
+    }
+
+    fn settings_at(frame: u32, budget: u32) -> Settings {
         Settings {
             dt: 0.5,
             gravity: -2.0,
             budget,
+            frame,
         }
+    }
+
+    /// A pool with `live` particles plus three spawned-then-retired tail slots (one particle per frame), so a
+    /// classification that ignored the live length would over-count. Returns the pool and the live reference.
+    fn pool_with_retired_tail(
+        device: &HeadlessDevice,
+        live: usize,
+    ) -> (GpuPool<Particle>, Vec<Particle>) {
+        let mut reference = spawn(0, live + 3, 1);
+        let mut pool = device.create_pool("particles", &reference, reference.len());
+        device.pool_truncate(&mut pool, live).unwrap();
+        reference.truncate(live);
+        (pool, reference)
     }
 
     /// Workgroup width of `integrate`, which the indirect arguments count in.
@@ -555,9 +671,114 @@ mod tests {
                 dt,
                 gravity,
                 budget: 0,
+                frame: 0,
             });
         }
-        assert_state_domain(&spawn(0, 4096), 4096);
+        assert_state_domain(&spawn(0, 4096, 1), 4096);
+    }
+
+    /// The independent host reference for the emitter: with one particle per frame, the particles spawned by frame
+    /// `f` are exactly slots `0..=f`, a prefix, and `step_cpu` steps exactly that prefix.
+    #[test]
+    fn the_emitter_reference_spawns_a_prefix() {
+        for emit_per_frame in [1usize, 3, 64] {
+            let pool = spawn(0, 200, emit_per_frame);
+            assert!(
+                pool.windows(2)
+                    .all(|pair| pair[0].spawn_frame <= pair[1].spawn_frame)
+            );
+            for frame in [0u32, 1, 5, 66, u32::MAX] {
+                let settings = settings_at(frame, 1000);
+                let expected = (frame as usize)
+                    .saturating_add(1)
+                    .saturating_mul(emit_per_frame)
+                    .min(pool.len());
+                assert_eq!(
+                    count_spawned(&pool, &settings),
+                    expected,
+                    "{emit_per_frame}/frame, frame {frame}"
+                );
+                let mut stepped = pool.clone();
+                assert_eq!(step_cpu(&mut stepped, &settings), expected);
+                assert!(
+                    stepped[..expected]
+                        .iter()
+                        .all(|particle| particle.steps == 1)
+                );
+                assert!(
+                    stepped[expected..]
+                        .iter()
+                        .all(|particle| particle.steps == 0)
+                );
+            }
+        }
+    }
+
+    /// `classify` on the twin. `live` is the pool's logical length, `allocation` the whole allocation and `initial`
+    /// the value the count buffer starts from (the graph zeroes it on the GPU; the twin needs no reset to be seeded).
+    fn classify_on_cpu(
+        live: u32,
+        settings: &Settings,
+        allocation: &[Particle],
+        initial: u32,
+        invocations: u32,
+    ) -> Result<u32, CpuError> {
+        let device = CpuDevice::new();
+        let live_buffer = device.buffer(&[live]);
+        let settings_buffer = device.buffer(&[*settings]);
+        let particles_buffer = device.buffer(allocation);
+        let count = device.buffer(&[initial]);
+        pool::classify::dispatch(
+            &device,
+            invocations,
+            Independent(&live_buffer),
+            Independent(&settings_buffer),
+            Independent(&particles_buffer),
+            Independent(&count),
+        )?;
+        Ok(count.read()[0])
+    }
+
+    /// Kernel-level twin evidence; graph and indirect dispatch GPU-only (`LABEL`). The twin of `classify` counts the
+    /// spawned live slots, never the retired tail, at the boundaries of the workgroup width, and agrees with the
+    /// independent host reference `count_spawned`. The count is integer-only and exact.
+    #[test]
+    fn twin_classify_counts_the_spawned_live_slots() {
+        let group = pool::classify::DESCRIPTOR.workgroup_size[0];
+        for live in [0usize, 1, 63, 64, 65, 257] {
+            let allocation = spawn(0, live + 3, 1);
+            let reference = &allocation[..live];
+            for frame in [
+                0u32,
+                live as u32 / 2,
+                (live as u32).saturating_sub(1),
+                u32::MAX,
+            ] {
+                let settings = settings_at(frame, 1000);
+                let expected = count_spawned(reference, &settings);
+                assert_eq!(expected, (frame as usize).saturating_add(1).min(live));
+                // The graph's dispatch covers the live length rounded up to whole workgroups; the second launch also
+                // covers the retired tail, which `i < live` must keep out of the count.
+                for slots in [live, live + 3] {
+                    let invocations = (slots as u32).div_ceil(group) * group;
+                    let counted =
+                        classify_on_cpu(live as u32, &settings, &allocation, 0, invocations)
+                            .expect("classify twin");
+                    assert_eq!(
+                        counted as usize, expected,
+                        "live {live}, frame {frame}, {invocations} invocations; {LABEL}"
+                    );
+                    // The count accumulates onto what it holds: the graph's reset upload is what zeroes it.
+                    let more = classify_on_cpu(live as u32, &settings, &allocation, 7, invocations)
+                        .expect("classify twin");
+                    assert_eq!(
+                        more as usize,
+                        expected + 7,
+                        "live {live}, frame {frame} from 7; {LABEL}"
+                    );
+                }
+            }
+        }
     }
 
     /// Kernel-level twin evidence; graph and indirect dispatch GPU-only (`LABEL`). The two twins run in sequence over
@@ -568,7 +789,7 @@ mod tests {
     fn twin_frames_match_host_reference() {
         let capacity = 130;
         for (dt, gravity) in [(0.016f32, -9.8f32), (0.5, -2.0)] {
-            let mut allocation = spawn(0, capacity);
+            let mut allocation = spawn(0, capacity, 1);
             let mut reference = allocation.clone();
             // (live count in the count buffer, budget). 1000 is a malformed count past the allocation.
             for (frame, (count, budget)) in [
@@ -588,6 +809,7 @@ mod tests {
                     dt,
                     gravity,
                     budget,
+                    frame: u32::MAX,
                 };
                 let (active, args) =
                     prepare_on_cpu(count, &settings, &allocation).expect("prepare twin");
@@ -622,7 +844,7 @@ mod tests {
         let device = HeadlessDevice::new().expect("Vulkan adapter");
         let frame = Frame::new(&device).unwrap();
         for (dt, gravity) in [(0.016f32, -9.8f32), (0.5, -2.0)] {
-            let mut reference = spawn(0, 130);
+            let mut reference = spawn(0, 130, 1);
             let mut particles = device.create_pool("particles", &reference, 130);
             // The actions before each frame: grow, truncate, or nothing. Each is GPU-only.
             for (index, (budget, action)) in [
@@ -637,7 +859,7 @@ mod tests {
             {
                 match action {
                     "grow" => {
-                        let spawned = spawn(reference.len(), 70);
+                        let spawned = spawn(reference.len(), 70, 1);
                         let growth = device.pool_push(&mut particles, &spawned).unwrap();
                         assert!(growth.is_some(), "130 -> 200 must grow the allocation");
                         reference.extend(spawned);
@@ -656,6 +878,7 @@ mod tests {
                     dt,
                     gravity,
                     budget,
+                    frame: u32::MAX,
                 };
                 assert_derivation_domain(&settings);
 
@@ -681,11 +904,23 @@ mod tests {
                 assert_eq!(step_cpu(&mut reference, &settings), stepped);
                 assert_close(&after[..len], &reference);
 
-                // prepare_dispatch: integer-only, exact.
-                // The count buffer is the pool's own mirror of its length (read-only, so not readable back): the host
-                // `len` is exactly what it holds, and so the kernel's input.
+                // classify: integer-only, exact. Every live particle has spawned (`frame` is `u32::MAX`), so the
+                // GPU-authored count is the logical length, which is what the twin counts too.
+                let gpu_classified = device.read_typed_buffer(&frame.count).unwrap()[0];
+                let twin_classified =
+                    classify_on_cpu(len as u32, &settings, &before, 0, capacity as u32).unwrap();
+                assert_eq!(
+                    gpu_classified as usize, len,
+                    "GPU classified, frame {index}"
+                );
+                assert_eq!(
+                    twin_classified, gpu_classified,
+                    "classified, frame {index}; {LABEL}"
+                );
+
+                // prepare_dispatch: integer-only, exact, fed the classification count.
                 let (twin_active, twin_args) =
-                    prepare_on_cpu(len as u32, &settings, &before).unwrap();
+                    prepare_on_cpu(gpu_classified, &settings, &before).unwrap();
                 assert_eq!(twin_active, expected_active, "twin active, frame {index}");
                 assert_eq!(twin_args, expected_args, "twin args, frame {index}");
                 assert_eq!(twin_active, gpu_active, "active, frame {index}; {LABEL}");
@@ -741,7 +976,7 @@ mod tests {
     fn gpu_authored_state_survives_growth_without_readback() {
         let device = HeadlessDevice::new().expect("Vulkan adapter");
         let frame = Frame::new(&device).unwrap();
-        let mut reference = spawn(0, 3);
+        let mut reference = spawn(0, 3, 1);
         let mut particles = device.create_pool("particles", &reference, 4);
         assert_eq!((particles.len(), particles.capacity()), (3, 4));
 
@@ -751,7 +986,7 @@ mod tests {
         step_cpu(&mut reference, &settings(1000));
 
         // Growth boundaries: 4 -> 8 (geometric), 8 -> 70 (required exceeds doubling).
-        let spawned = spawn(3, 2);
+        let spawned = spawn(3, 2, 1);
         let growth = device.pool_push(&mut particles, &spawned).unwrap().unwrap();
         reference.extend(spawned);
         assert_eq!(
@@ -762,7 +997,7 @@ mod tests {
                 copied_bytes: 3 * size_of::<Particle>() as u64
             }
         );
-        let spawned = spawn(5, 65);
+        let spawned = spawn(5, 65, 1);
         let growth = device.pool_push(&mut particles, &spawned).unwrap().unwrap();
         reference.extend(spawned);
         assert_eq!((growth.old_capacity, growth.new_capacity), (8, 70));
@@ -783,13 +1018,21 @@ mod tests {
         let (active, report, edges) =
             run_frame_traced(&device, &frame, &particles, &[settings(1000)]).unwrap();
         assert_eq!(active, 70);
-        // The readback of `active` depends on prepare_dispatch (its last writer), not on integrate.
-        assert_eq!(edges, [vec![], vec![0], vec![0, 1], vec![1]]);
-        assert_eq!((report.derived_edges, report.declared_edges), (4, 0));
+        // Declared edges, in node order: the settings write and the count reset have none, classify follows both,
+        // prepare_dispatch follows classify, the indirect integrate follows prepare_dispatch, and the readback
+        // follows integrate.
+        assert_eq!(
+            edges,
+            [vec![], vec![], vec![0, 1], vec![2], vec![3], vec![4]]
+        );
+        assert_eq!((report.derived_edges, report.declared_edges), (0, 5));
         assert_eq!(report.indirect_dispatches, 1);
-        assert_eq!(report.dispatches, 2);
+        assert_eq!(report.dispatches, 3);
         assert_eq!(report.readback_bytes, size_of::<Active>() as u64);
-        assert_eq!(report.upload_bytes, size_of::<Settings>() as u64);
+        assert_eq!(
+            report.upload_bytes,
+            (size_of::<Settings>() + size_of::<u32>()) as u64
+        );
         step_cpu(&mut reference, &settings(1000));
         assert_close(&device.pool_read(&particles).unwrap(), &reference);
 
@@ -804,7 +1047,7 @@ mod tests {
     fn active_count_is_derived_on_the_gpu_and_clamped() {
         let device = HeadlessDevice::new().expect("Vulkan adapter");
         let frame = Frame::new(&device).unwrap();
-        let mut reference = spawn(0, 130);
+        let mut reference = spawn(0, 130, 1);
         let mut particles = device.create_pool("particles", &reference, 130);
 
         // Budget below the length: only the first 100 move.
@@ -837,7 +1080,7 @@ mod tests {
         assert!(device.pool_read(&particles).unwrap().is_empty());
 
         // Push after truncation reuses capacity and resumes from the logical length.
-        let spawned = spawn(0, 2);
+        let spawned = spawn(0, 2, 1);
         assert!(
             device
                 .pool_push(&mut particles, &spawned)
@@ -855,7 +1098,7 @@ mod tests {
         // so the new allocation observes that frame's writes.
         let device = HeadlessDevice::new().expect("Vulkan adapter");
         let frame = Frame::new(&device).unwrap();
-        let mut reference = spawn(0, 64);
+        let mut reference = spawn(0, 64, 1);
         let mut particles = device.create_pool("particles", &reference, 64);
         device
             .write_typed_buffer(&frame.settings, &[settings(1000)])
@@ -873,7 +1116,7 @@ mod tests {
             Independent(particles.buffer()),
         )
         .unwrap();
-        let spawned = spawn(64, 64);
+        let spawned = spawn(64, 64, 1);
         let growth = device.pool_push(&mut particles, &spawned).unwrap().unwrap();
         assert_eq!((growth.old_capacity, growth.new_capacity), (64, 128));
         job.wait().unwrap();
@@ -887,7 +1130,7 @@ mod tests {
     fn indirect_dispatch_rejects_wrong_buffers_and_bindings() {
         let device = HeadlessDevice::new().expect("Vulkan adapter");
         let frame = Frame::new(&device).unwrap();
-        let particles = device.create_pool("particles", &spawn(0, 8), 8);
+        let particles = device.create_pool("particles", &spawn(0, 8, 1), 8);
         let settings = [settings(1000)];
         let integrate_bindings = [
             BufferBinding::read_only(&frame.active).independent_length(),
@@ -940,7 +1183,7 @@ mod tests {
         // The args buffer is a read for hazard checking: a dispatch that reads
         // args written by prepare_dispatch must declare that edge.
         let prepare_bindings = [
-            BufferBinding::read_only(particles.count_buffer()).independent_length(),
+            BufferBinding::read_only(&frame.count).independent_length(),
             BufferBinding::read_only(&frame.settings).independent_length(),
             BufferBinding::read_only(particles.buffer()).independent_length(),
             BufferBinding::read_write(&frame.active).independent_length(),
@@ -961,6 +1204,8 @@ mod tests {
             })
         ));
 
+        // This derived-graph proof feeds `particles.count_buffer()` straight to prepare_dispatch and has no
+        // classify node: it does not cover inference across the atomic count (the frame graph declares that edge).
         // The derived graph over the same buffers gets the edge the rejected graph lacked: integrate
         // depends on prepare_dispatch (through `args`, `active` and the particles) without a declared
         // edge, and the readback depends on prepare_dispatch, not integrate.
@@ -999,5 +1244,246 @@ mod tests {
             (4, 0)
         );
         assert_eq!(output.readback::<Active>(read).unwrap()[0].count, 8);
+    }
+
+    // T13: the count that sizes the indirect dispatch is authored on the GPU by `classify` (atomic increments) and
+    // read back only to compare with the independent host reference; the graph never reads it to decide work.
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn gpu_active_count_matches_cpu_reference_at_boundaries() {
+        let device = HeadlessDevice::new().expect("Vulkan adapter");
+        let frame = Frame::new(&device).unwrap();
+        for n in [0usize, 1, 63, 64, 65, 257] {
+            let (particles, mut reference) = pool_with_retired_tail(&device, n);
+            let n32 = n as u32;
+            // Nothing (or one), about half, everything live, and the u32 extreme.
+            for frame_index in [0, n32 / 2, n32.saturating_sub(1), u32::MAX] {
+                let settings = settings_at(frame_index, 1000);
+                let (active, report) = run_frame(&device, &frame, &particles, &[settings]).unwrap();
+                let classified = device.read_typed_buffer(&frame.count).unwrap()[0];
+                let expected_classified = count_spawned(&reference, &settings);
+                let expected_active = step_cpu(&mut reference, &settings);
+                assert_eq!(
+                    (classified as usize, active as usize),
+                    (expected_classified, expected_active),
+                    "n {n}, frame {frame_index}"
+                );
+                assert_eq!(
+                    expected_classified,
+                    (frame_index as usize).saturating_add(1).min(n),
+                    "emitter reference for n {n}, frame {frame_index}"
+                );
+                assert_eq!(report.indirect_dispatches, 1, "n {n}, frame {frame_index}");
+                // An empty pool launches no classification (a zero-element dispatch is skipped).
+                assert_eq!(
+                    report.dispatches,
+                    if n == 0 { 2 } else { 3 },
+                    "n {n}, frame {frame_index}"
+                );
+                assert_close(&device.pool_read(&particles).unwrap(), &reference);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn indirect_arguments_are_clamped_to_budget_and_allocation() {
+        let device = HeadlessDevice::new().expect("Vulkan adapter");
+        let frame = Frame::new(&device).unwrap();
+        let (particles, mut reference) = pool_with_retired_tail(&device, 65);
+        assert_eq!(particles.capacity(), 68);
+
+        // Budget below the classified count: 65 classified, 40 active, one workgroup.
+        let (active, _) = run_frame(&device, &frame, &particles, &[settings(40)]).unwrap();
+        assert_eq!(device.read_typed_buffer(&frame.count).unwrap(), vec![65]);
+        assert_eq!(active, 40);
+        assert_eq!(
+            device.read_typed_buffer(&frame.args).unwrap(),
+            vec![DispatchArgs { x: 1, y: 1, z: 1 }]
+        );
+        assert_eq!(step_cpu(&mut reference, &settings(40)), 40);
+        assert_close(&device.pool_read(&particles).unwrap(), &reference);
+
+        // Unclamped budget: 65 active needs a partial second workgroup.
+        let (active, _) = run_frame(&device, &frame, &particles, &[settings(1000)]).unwrap();
+        assert_eq!(active, 65);
+        assert_eq!(
+            device.read_typed_buffer(&frame.args).unwrap(),
+            vec![DispatchArgs { x: 2, y: 1, z: 1 }]
+        );
+        step_cpu(&mut reference, &settings(1000));
+        assert_close(&device.pool_read(&particles).unwrap(), &reference);
+
+        // A malformed count (injected by the host; no classification runs) degrades to "the whole allocation",
+        // never past it and never to zero; the budget still caps it.
+        for (budget, expected_active, expected_groups) in [(1000, 68, 2), (10, 10, 1)] {
+            device
+                .write_typed_buffer(&frame.count, &[u32::MAX])
+                .unwrap();
+            let settings = [settings(budget)];
+            let prepare_bindings = [
+                BufferBinding::read_only(&frame.count).independent_length(),
+                BufferBinding::read_only(&frame.settings).independent_length(),
+                BufferBinding::read_only(particles.buffer()).independent_length(),
+                BufferBinding::read_write(&frame.active).independent_length(),
+                BufferBinding::read_write(&frame.args).independent_length(),
+            ];
+            let integrate_bindings = [
+                BufferBinding::read_only(&frame.active).independent_length(),
+                BufferBinding::read_only(&frame.settings).independent_length(),
+                BufferBinding::read_write(particles.buffer()).independent_length(),
+            ];
+            let mut graph = StagedGraph::new();
+            let upload = graph.upload(&frame.settings, &settings, &[]);
+            let prepare = graph.dispatch(
+                BufferDispatch::new(&pool::prepare_dispatch::DESCRIPTOR, 1, &prepare_bindings),
+                &[upload],
+            );
+            let integrate = graph.dispatch_indirect(
+                BufferDispatch::new(&pool::integrate::DESCRIPTOR, 0, &integrate_bindings),
+                &frame.args,
+                &[prepare],
+            );
+            let active = graph.readback(&frame.active, &[integrate]);
+            let output = device.execute_graph(&graph).unwrap();
+            assert_eq!(
+                output.readback::<Active>(active).unwrap(),
+                vec![Active {
+                    count: expected_active
+                }]
+            );
+            assert_eq!(
+                device.read_typed_buffer(&frame.args).unwrap(),
+                vec![DispatchArgs {
+                    x: expected_groups,
+                    y: 1,
+                    z: 1
+                }]
+            );
+            // The live prefix stepped once more; the retired slots are unspecified and not compared.
+            step_cpu(&mut reference, &settings[0]);
+            assert_close(&device.pool_read(&particles).unwrap(), &reference);
+        }
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn graph_rejects_undeclared_classification_edges() {
+        let device = HeadlessDevice::new().expect("Vulkan adapter");
+        let frame = Frame::new(&device).unwrap();
+        let particles = device.create_pool("particles", &spawn(0, 8, 1), 8);
+        let settings = [settings(1000)];
+        let classify_bindings = [
+            BufferBinding::read_only(particles.count_buffer()).independent_length(),
+            BufferBinding::read_only(&frame.settings).independent_length(),
+            BufferBinding::read_only(particles.buffer()).independent_length(),
+            BufferBinding::read_write(&frame.count).independent_length(),
+        ];
+        let prepare_bindings = [
+            BufferBinding::read_only(&frame.count).independent_length(),
+            BufferBinding::read_only(&frame.settings).independent_length(),
+            BufferBinding::read_only(particles.buffer()).independent_length(),
+            BufferBinding::read_write(&frame.active).independent_length(),
+            BufferBinding::read_write(&frame.args).independent_length(),
+        ];
+        let classify = BufferDispatch::new(&pool::classify::DESCRIPTOR, 8, &classify_bindings);
+        let prepare =
+            BufferDispatch::new(&pool::prepare_dispatch::DESCRIPTOR, 1, &prepare_bindings);
+
+        // prepare_dispatch reads the count classify writes: the edge must be declared.
+        let mut graph = StagedGraph::new();
+        let upload = graph.upload(&frame.settings, &settings, &[]);
+        let reset = graph.upload(&frame.count, &[0u32], &[]);
+        graph.dispatch(classify, &[upload, reset]);
+        graph.dispatch(prepare, &[upload, reset]);
+        assert!(matches!(
+            device.execute_graph(&graph),
+            Err(Error::GraphMissingDependency {
+                node: 3,
+                producer: 2
+            })
+        ));
+
+        // classify accumulates into the count the reset upload zeroes: same rule.
+        let mut graph = StagedGraph::new();
+        let upload = graph.upload(&frame.settings, &settings, &[]);
+        graph.upload(&frame.count, &[0u32], &[]);
+        graph.dispatch(classify, &[upload]);
+        assert!(matches!(
+            device.execute_graph(&graph),
+            Err(Error::GraphMissingDependency {
+                node: 2,
+                producer: 1
+            })
+        ));
+        assert_eq!(device.read_typed_buffer(&frame.count).unwrap(), vec![0]);
+    }
+
+    #[test]
+    #[ignore = "example validation runs only in full verification"]
+    fn count_bindings_reject_empty_and_mismatched_buffers() {
+        let device = HeadlessDevice::new().expect("Vulkan adapter");
+        let frame = Frame::new(&device).unwrap();
+        let particles = device.create_pool("particles", &spawn(0, 8, 1), 8);
+        device
+            .write_typed_buffer(&frame.settings, &[settings(1000)])
+            .unwrap();
+        let empty =
+            device.create_typed_buffer::<u32>("empty count", &[], GpuBufferAccess::ReadWrite);
+
+        // A zero-length independent count cannot receive the classification.
+        let classify_bindings = [
+            BufferBinding::read_only(particles.count_buffer()).independent_length(),
+            BufferBinding::read_only(&frame.settings).independent_length(),
+            BufferBinding::read_only(particles.buffer()).independent_length(),
+            BufferBinding::read_write(&empty).independent_length(),
+        ];
+        assert!(matches!(
+            device.dispatch_buffers(&pool::classify::DESCRIPTOR, 8, &classify_bindings),
+            Err(Error::IndependentLengthEmpty { parameter }) if parameter == "count"
+        ));
+
+        // Nor can prepare_dispatch read one.
+        let prepare_bindings = [
+            BufferBinding::read_only(&empty).independent_length(),
+            BufferBinding::read_only(&frame.settings).independent_length(),
+            BufferBinding::read_only(particles.buffer()).independent_length(),
+            BufferBinding::read_write(&frame.active).independent_length(),
+            BufferBinding::read_write(&frame.args).independent_length(),
+        ];
+        assert!(matches!(
+            device.dispatch_buffers(&pool::prepare_dispatch::DESCRIPTOR, 1, &prepare_bindings),
+            Err(Error::IndependentLengthEmpty { parameter }) if parameter == "count"
+        ));
+
+        // The count must be a `uint` buffer; a struct of the same size is rejected.
+        let prepare_bindings = [
+            BufferBinding::read_only(&frame.active).independent_length(),
+            BufferBinding::read_only(&frame.settings).independent_length(),
+            BufferBinding::read_only(particles.buffer()).independent_length(),
+            BufferBinding::read_write(&frame.active).independent_length(),
+            BufferBinding::read_write(&frame.args).independent_length(),
+        ];
+        assert!(matches!(
+            device.dispatch_buffers(&pool::prepare_dispatch::DESCRIPTOR, 1, &prepare_bindings),
+            Err(Error::UnsupportedResourceLayout { parameter, .. }) if parameter == "count"
+        ));
+
+        // The one-element count cannot pretend to share the per-slot element count.
+        let classify_bindings = [
+            BufferBinding::read_only(particles.count_buffer()).independent_length(),
+            BufferBinding::read_only(&frame.settings).independent_length(),
+            BufferBinding::read_only(particles.buffer()).independent_length(),
+            BufferBinding::read_write(&frame.count),
+        ];
+        assert!(matches!(
+            device.dispatch_buffers(&pool::classify::DESCRIPTOR, 8, &classify_bindings),
+            Err(Error::BufferLength {
+                parameter,
+                expected: 8,
+                actual: 1
+            }) if parameter == "count"
+        ));
+        assert_eq!(device.read_typed_buffer(&frame.count).unwrap(), vec![0]);
     }
 }

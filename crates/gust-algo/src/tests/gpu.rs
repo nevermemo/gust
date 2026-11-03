@@ -6,12 +6,15 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use gust_wgpu::{DeviceHandle, GpuVec, HeadlessDevice, default_device};
 
 use super::common::{
-    Backend, GPU_C, LENGTHS, Shape, assert_f32_sum, empty_cases, f32_input, float_min_max_cases,
-    float_sum_cases, integer_cases, tie_ladder,
+    Backend, GPU_C, LENGTHS, SCAN_LENGTHS, Shape, assert_f32_sum, deep_scan_cases, empty_cases,
+    f32_input, float_min_max_cases, float_sum_cases, integer_cases, reference_scan, scan_cases,
+    tie_ladder, wrapping_cases,
 };
 use crate::{
     Error,
     reduce::{self, Element},
+    scan,
+    schedule::ScanSchedule,
 };
 
 /// One GPU test at a time. Once, in a Gpu-suite run, the blocking readback of a result failed with
@@ -57,6 +60,25 @@ impl Backend for Gpu {
             Err(Error::Empty) => None,
             Err(error) => panic!("{error}"),
         }
+    }
+
+    fn sum_wrapping(&self, values: &[u32]) -> u32 {
+        let input = GpuVec::from_slice_on(&self.0, values).unwrap();
+        reduce::sum_wrapping(&input).unwrap()
+    }
+
+    fn inclusive(&self, values: &[u32]) -> Vec<u32> {
+        let input = GpuVec::from_slice_on(&self.0, values).unwrap();
+        let out = scan::inclusive(&input).unwrap();
+        assert_eq!(out.len() as usize, values.len());
+        out.to_vec().unwrap()
+    }
+
+    fn exclusive(&self, values: &[u32]) -> Vec<u32> {
+        let input = GpuVec::from_slice_on(&self.0, values).unwrap();
+        let out = scan::exclusive(&input).unwrap();
+        assert_eq!(out.len() as usize, values.len());
+        out.to_vec().unwrap()
     }
 }
 
@@ -264,6 +286,213 @@ fn gpu_a_first_pass_past_the_workgroup_limit_is_a_device_limit_error_before_any_
     let outside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 65_536 + 1]).unwrap();
     let cache = device.pipeline_cache_stats();
     match reduce::sum(&outside) {
+        Err(Error::Device(gust_wgpu::Error::DeviceLimit {
+            limit,
+            requested,
+            maximum,
+            ..
+        })) => assert_eq!(
+            (limit, requested, maximum),
+            ("max_compute_workgroups_per_dimension", 4, 3)
+        ),
+        other => panic!("expected a DeviceLimit error, got {other:?}"),
+    }
+    assert_eq!(device.pipeline_cache_stats(), cache);
+}
+
+/// `sum_wrapping` is defined past `u32::MAX` on the adapter, where the plain `sum` is outside its domain: full range
+/// values, all `u32::MAX`, the pair that wraps to zero, and the empty input.
+#[test]
+fn gpu_wrapping_sums_are_defined_modulo_2_32_for_every_input() {
+    let _serial = serial();
+    wrapping_cases(&Gpu(device()), &LENGTHS);
+}
+
+#[test]
+fn gpu_scans_are_exact_at_every_boundary() {
+    let _serial = serial();
+    scan_cases(&Gpu(device()), &SCAN_LENGTHS);
+}
+
+/// 2^24 elements are five dispatches and 2^24 + 1 are seven (a third level of totals, the add-back through it).
+#[test]
+fn gpu_runs_the_deepest_scans() {
+    let _serial = serial();
+    deep_scan_cases(&Gpu(device()));
+}
+
+/// The dispatch count of a scan, measured: every dispatch of a batch takes one pipeline from the device's cache (a hit
+/// or a miss), so the counters of a device of its own move by the number of dispatches. 3 up to 65 536 elements, 5 up
+/// to 2^24, 7 above (the level-3 path); `exclusive` costs the same as `inclusive`, and an empty input dispatches
+/// nothing.
+#[test]
+fn gpu_a_scan_is_one_batch_of_three_five_or_seven_dispatches() {
+    let _serial = serial();
+    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    let touched = |device: &HeadlessDevice| {
+        let stats = device.pipeline_cache_stats();
+        stats.hits + stats.misses
+    };
+    for (n, dispatches) in [
+        (1usize, 3usize),
+        (256, 3),
+        (257, 3),
+        (65_536, 3),
+        (65_537, 5),
+        (1 << 24, 5),
+        ((1 << 24) + 1, 7),
+    ] {
+        assert_eq!(
+            ScanSchedule::new(n as u32).unwrap().dispatches(),
+            dispatches,
+            "n = {n}"
+        );
+        let input = GpuVec::<u32>::from_slice_on(&device, &vec![1u32; n]).unwrap();
+        for exclusive in [false, true] {
+            let before = touched(&device);
+            let out = if exclusive {
+                scan::exclusive(&input)
+            } else {
+                scan::inclusive(&input)
+            }
+            .unwrap();
+            assert_eq!(
+                touched(&device) - before,
+                dispatches as u64,
+                "dispatches of the {} scan, n = {n}",
+                if exclusive { "exclusive" } else { "inclusive" }
+            );
+            let last = out.to_vec().unwrap()[n - 1];
+            assert_eq!(last as usize, if exclusive { n - 1 } else { n }, "n = {n}");
+        }
+    }
+    let empty = GpuVec::<u32>::zeroed_on(&device, 0).unwrap();
+    let before = touched(&device);
+    assert!(scan::inclusive(&empty).unwrap().is_empty());
+    assert!(scan::exclusive(&empty).unwrap().is_empty());
+    assert_eq!(touched(&device), before, "an empty scan dispatches nothing");
+}
+
+#[test]
+fn gpu_scans_leave_the_input_alone_and_return_their_buffers() {
+    let _serial = serial();
+    // A device of its own: the pool counters of the process-wide default device move with every parallel test.
+    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    let values: Vec<u32> = (0..70_001).map(|index| index % 100).collect();
+    let input = GpuVec::from_slice_on(&device, &values).unwrap();
+    let before = device.buffer_pool_stats();
+    let inclusive = scan::inclusive(&input).unwrap();
+    let exclusive = scan::exclusive(&input).unwrap();
+    assert_eq!(input.to_vec().unwrap(), values);
+    assert!(Arc::ptr_eq(inclusive.device(), &device));
+    assert_eq!(inclusive.to_vec().unwrap(), reference_scan(&values, false));
+    assert_eq!(exclusive.to_vec().unwrap(), reference_scan(&values, true));
+    drop((inclusive, exclusive));
+    let after = device.buffer_pool_stats();
+    assert_eq!(
+        after.outstanding, before.outstanding,
+        "the totals and the results went back to the pool"
+    );
+    // A second round is served from the pool: no new allocation.
+    let misses = device.buffer_pool_stats().misses;
+    drop(scan::inclusive(&input).unwrap());
+    assert_eq!(
+        device.buffer_pool_stats().misses,
+        misses,
+        "the second scan allocated"
+    );
+}
+
+/// The documented wrap of a scan past the domain, pinned on the adapter (the debug twin panics instead, as every `+`
+/// of the dialect does).
+#[test]
+fn gpu_scans_past_the_domain_wrap() {
+    let _serial = serial();
+    let device = device();
+    let input = GpuVec::from_slice_on(&device, &[u32::MAX, 2u32, 3]).unwrap();
+    assert_eq!(
+        scan::inclusive(&input).unwrap().to_vec().unwrap(),
+        vec![u32::MAX, 1, 4]
+    );
+}
+
+/// An input past the storage binding limit is a `DeviceLimit` error before any buffer is taken or kernel compiled: the
+/// pipeline cache and the pool are untouched.
+#[test]
+fn gpu_a_scan_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch() {
+    let _serial = serial();
+    // The portable limits: 128 MiB bindings, 2^25 four-byte elements.
+    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    let limit = device.limits().max_storage_buffer_binding_size;
+    let len = u32::try_from(limit / 4).unwrap() + 1;
+    let input = GpuVec::<u32>::zeroed_on(&device, len).unwrap();
+    let cache = device.pipeline_cache_stats();
+    let pool = device.buffer_pool_stats();
+    for result in [scan::inclusive(&input), scan::exclusive(&input)] {
+        match result {
+            Err(Error::Device(gust_wgpu::Error::DeviceLimit {
+                limit: name,
+                requested,
+                maximum,
+                ..
+            })) => {
+                assert_eq!(name, "max_storage_buffer_binding_size");
+                assert_eq!((requested, maximum), (limit + 4, limit));
+            }
+            other => panic!("expected a DeviceLimit error, got {other:?}"),
+        }
+    }
+    assert_eq!(
+        device.pipeline_cache_stats(),
+        cache,
+        "nothing was compiled or dispatched"
+    );
+    let after = device.buffer_pool_stats();
+    assert_eq!(
+        (after.hits, after.misses, after.outstanding),
+        (pool.hits, pool.misses, pool.outstanding)
+    );
+    // One element fewer is inside the limit and scans: ones, so the values at the top of the range (the seven-dispatch
+    // path at 2^25 elements) are checked too.
+    drop(input);
+    let inside = GpuVec::from_slice_on(&device, &vec![1u32; (len - 1) as usize]).unwrap();
+    let out = scan::inclusive(&inside).unwrap();
+    assert_eq!(out.len(), len - 1);
+    let values = out.to_vec().unwrap();
+    assert!(
+        values
+            .iter()
+            .enumerate()
+            .all(|(index, value)| *value as usize == index + 1),
+        "the inclusive scan of ones at the top of the range"
+    );
+}
+
+/// Level 0 of a scan launches `ceil(ceil(n / 256) / 256)` workgroups; a device that allows fewer refuses before any
+/// dispatch.
+#[test]
+fn gpu_a_scan_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch() {
+    let _serial = serial();
+    let mut limits = HeadlessDevice::new()
+        .expect("a Vulkan adapter is required")
+        .limits()
+        .clone();
+    limits.max_compute_workgroups_per_dimension = 3;
+    let device = Arc::new(
+        HeadlessDevice::new()
+            .expect("a Vulkan adapter is required")
+            .with_limits(limits)
+            .unwrap(),
+    );
+    // 3 workgroups of 256 invocations, one invocation per chunk of 256: 196 608 elements.
+    let inside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 256 * 256]).unwrap();
+    assert_eq!(
+        scan::inclusive(&inside).unwrap().to_vec().unwrap()[3 * 256 * 256 - 1],
+        3 * 256 * 256
+    );
+    let outside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 256 * 256 + 1]).unwrap();
+    let cache = device.pipeline_cache_stats();
+    match scan::exclusive(&outside) {
         Err(Error::Device(gust_wgpu::Error::DeviceLimit {
             limit,
             requested,

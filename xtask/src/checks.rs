@@ -34,6 +34,16 @@ pub(crate) const REFLECTION_TESTS: &[&[&str]] = &[
         "--test",
         "reflection",
     ],
+    // The schema-3 output of the helper on the committed probe inputs (mx.t0a): an ignored test of cargo-gust.
+    &[
+        "test",
+        "--locked",
+        "-p",
+        "cargo-gust",
+        "--",
+        "--ignored",
+        "schema_3_output",
+    ],
     // The naga layout gate (mx.n): the WGSL of every golden against the descriptors' layouts. Needs slangc, no adapter.
     &[
         "test",
@@ -154,6 +164,7 @@ pub(crate) const CPU_REQUIRED_TESTS: &[(&str, &[&str])] = &[
         "component-pool",
         &[
             "app::tests::the_derivation_domain_holds_for_the_settings_and_the_spawned_particles",
+            "app::tests::twin_classify_counts_the_spawned_live_slots",
             "app::tests::twin_frames_match_host_reference",
         ],
     ),
@@ -626,7 +637,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "map: the device side of the map calls: gust::map unit tests, then GpuVec and the buffer pool, device options and adapter choice, and the launch and buffer limits on the GPU"
         }
         "algo" => {
-            "algo: the device-resident algorithms of gust-algo (m7.r1, reduce): the schedule and bound arithmetic, the golden of the reduce kernels and the CPU twins against independent references (no adapter needed), then the same cases on the first Vulkan adapter with the per-level float bound asserted, the empty and over-limit inputs and the pooled buffers"
+            "algo: the device-resident algorithms of gust-algo (m7.r1 reduce, m7.r2 scan and sum_wrapping): the schedule and bound arithmetic, the goldens of the reduce and scan kernels and the CPU twins against independent references (no adapter needed), then the same cases on the first Vulkan adapter with the per-level float bound asserted, the dispatch counts of a scan, the empty and over-limit inputs and the pooled buffers"
         }
         "vectors" => {
             "vectors: the vector and matrix types (M6): the gust-macros tests of the types, products and negation, the gust::math unit tests, the vectors and products goldens on slangc, their SPIR-V (made here from the goldens, since no example uses a vector) validated with spirv-val for Vulkan 1.2 with an informational OpCopyLogical count, as check-artifacts does too; then the GPU tests of crates/gust-wgpu/tests/vectors.rs"

@@ -123,7 +123,7 @@ contains no Slang bridge, helper or GPU runtime. A kernel marked `#[kernel(cpu =
 is the evidence (the `Cpu` tier).
 
 For the full release-readiness check (including ignored example tests, all eight
-examples, and mandatory external validation of all thirteen SPIR-V exports):
+examples, and mandatory external validation of all fourteen SPIR-V exports):
 
 ```sh
 cargo xtask check-full
@@ -353,7 +353,9 @@ diagnostics, checks SPIR-V structure, and attempts cleanup on every return path.
 (`scripts/probes/slang-layout.cpp`, built by `cargo xtask build-slang-reflect`) to
 compile one entry point and reflect the identical linked program; the result carries
 the artifact, its hashes, the compiler build tag, and complete layouts (`StorageV1`
-buffers; schema 2 adds vectors, matrices and constant buffers, matrices column-major).
+buffers; schema 2 adds vectors, matrices and constant buffers, matrices column-major; schema 3 adds 2D
+textures, samplers and fragment entries, and the helper writes it only when a program has one of those, so every
+compute kernel over buffers still gets its schema 1 or 2 document unchanged).
 `Reflection::cross_check_kernel` compares that evidence against the descriptor and
 fails on any difference. The SPIR-V it produces is byte-identical to `compile_spirv`,
 and its WGSL differs from `compile_wgsl` only in line endings. The older
@@ -572,7 +574,7 @@ crates/
   gust/                 shadow types, descriptors, ABI metadata, slangc bridge, reflection
   gust-macros/          validation and direct syn AST -> Slang translation
   gust-wgpu/            cached headless wgpu execution, buffers, StagedGraph, GpuPool
-  gust-algo/            device-resident algorithms on GUST kernels over GpuVec (reduce: sum, min, max); publish = false
+  gust-algo/            device-resident algorithms on GUST kernels over GpuVec (reduce: sum, min, max, sum_wrapping; scan: inclusive, exclusive); publish = false
 examples/
   vector-add/
   polynomial/

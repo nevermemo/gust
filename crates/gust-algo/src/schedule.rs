@@ -1,4 +1,6 @@
-//! The pass schedule of `reduce` (plan section 5.2): how many block-strided passes an input of `n` elements takes, and
+//! The schedules of `reduce` (plan section 5.2, [`Schedule`]) and of `scan` (section 5.3, [`ScanSchedule`]).
+//!
+//! A reduction: how many block-strided passes an input of `n` elements takes, and
 //! how long a chain of additions each lane of each pass evaluates (the numbers the float bound of [`crate::bound`]
 //! is built from).
 //!
@@ -92,5 +94,52 @@ impl Schedule {
             .collect();
         chains.push(self.final_len);
         chains
+    }
+}
+
+/// Elements one invocation of a scan kernel owns (the chunk width of plan section 5.3).
+pub const CHUNK: u32 = 256;
+
+/// The levels of one scan (plan section 5.3): the input is cut into chunks of [`CHUNK`] elements, one invocation each,
+/// and the chunk totals are scanned the same way until at most [`CHUNK`] are left.
+///
+/// `sums()[j]` is the length of the totals buffer of level `j + 1`: `ceil(n / 256)`, then `ceil(that / 256)`, and so on,
+/// the last one at most 256 long. With `k` levels the batch is the level-0 scan, `k - 1` scans of totals, the top scan,
+/// `k - 1` add-backs into totals and the final add-back: `2k + 1` dispatches. That is 3 for `n <= 65 536`, 5 for
+/// `n <= 2^24` and 7 above it, up to the end of the `u32` range (`2^32 - 1` elements has levels of `2^24`, `2^16` and
+/// 256 totals).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScanSchedule {
+    sums: Vec<u32>,
+}
+
+impl ScanSchedule {
+    /// The schedule for `n` elements, or `None` for `n == 0` (an empty input has no dispatch at all).
+    pub fn new(n: u32) -> Option<Self> {
+        if n == 0 {
+            return None;
+        }
+        let mut sums = vec![n.div_ceil(CHUNK)];
+        while sums[sums.len() - 1] > CHUNK {
+            sums.push(sums[sums.len() - 1].div_ceil(CHUNK));
+        }
+        Some(Self { sums })
+    }
+
+    /// The lengths of the totals buffers, level 1 first. The first is also the invocation count of the level-0 scan and
+    /// of the final add-back; the last is what the top scan handles (at most [`CHUNK`]).
+    pub fn sums(&self) -> &[u32] {
+        &self.sums
+    }
+
+    /// Dispatches of the batch: `2k + 1` for `k` levels of totals.
+    pub fn dispatches(&self) -> usize {
+        2 * self.sums.len() + 1
+    }
+
+    /// The workgroups of the widest dispatch (level 0 and the final add-back, one invocation per chunk): the number a
+    /// device's per-dimension workgroup limit has to admit.
+    pub fn workgroups(&self) -> u32 {
+        self.sums[0].div_ceil(LANES)
     }
 }

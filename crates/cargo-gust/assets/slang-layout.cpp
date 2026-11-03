@@ -10,6 +10,7 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -79,11 +80,40 @@ static const char* scalar_name(slang::TypeReflection::ScalarType scalar)
 }
 
 // Schema 1 describes 32-bit scalars and structs of them in structured buffers. A vector, a matrix or a constant buffer
-// anywhere in the program makes the document schema 2: a top-level matrixLayout and the new type kinds.
+// anywhere in the program makes the document schema 2: a top-level matrixLayout and the new type kinds. A texture, a
+// sampler or a stage other than compute makes it schema 3 (mx.t0a): schema 2's grammar (matrixLayout included) plus a
+// top-level "stage", texture and sampler bindings and, for a fragment entry, "targets" and no "workgroupSize". Nothing
+// else writes schema 3, so every document a compute kernel over buffers produced before stays byte-identical.
 struct SchemaUse
 {
     bool newKinds = false;
+    bool shapes = false;
 };
+
+// The pipeline stage the caller expects the entry point to have (the optional seventh argument; compute by default).
+enum class Stage
+{
+    Compute,
+    Fragment
+};
+
+static const char* stage_name(Stage stage)
+{
+    return stage == Stage::Compute ? "compute" : "fragment";
+}
+
+static SlangStage stage_slang(Stage stage)
+{
+    return stage == Stage::Compute ? SLANG_STAGE_COMPUTE : SLANG_STAGE_FRAGMENT;
+}
+
+static std::string upper_case(const char* text)
+{
+    std::string result = text;
+    for (auto& character : result)
+        character = static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
+    return result;
+}
 
 static std::string fingerprint(const void* data, size_t size)
 {
@@ -161,35 +191,130 @@ static std::string type_json(slang::TypeLayoutReflection* type, SchemaUse& use, 
     return output.str();
 }
 
+// The Slang name of a storage-texture format ("r32ui", "rgba32f", ...), from the same table slang.h builds the enum
+// from. Only a read-write or write-only texture carries one; a sampled texture reports "unknown" (see below).
+static const char* image_format_name(SlangImageFormat format)
+{
+    switch (format)
+    {
+#define SLANG_FORMAT(NAME, DESC) \
+    case SLANG_IMAGE_FORMAT_##NAME: return #NAME;
+#include "slang-image-format-defs.h"
+#undef SLANG_FORMAT
+    default: throw std::runtime_error("unknown image format");
+    }
+}
+
+// A type without a byte layout (a texture's result type, a fragment output): kind, scalarType and elementCount spelled
+// as type_json does, and no size, alignment or stride.
+static std::string value_type_json(slang::TypeReflection* type)
+{
+    if (!type) throw std::runtime_error("missing texture result or fragment output type");
+    std::ostringstream output;
+    switch (type->getKind())
+    {
+    case slang::TypeReflection::Kind::Scalar:
+        output << "{\"kind\":\"scalar\",\"scalarType\":" << json_string(scalar_name(type->getScalarType())) << '}';
+        break;
+    case slang::TypeReflection::Kind::Vector:
+        output << "{\"kind\":\"vector\",\"scalarType\":" << json_string(scalar_name(type->getScalarType()))
+               << ",\"elementCount\":" << type->getElementCount() << '}';
+        break;
+    default:
+        throw std::runtime_error(
+            "unsupported texture result or fragment output type; only 32-bit scalars and vectors are supported");
+    }
+    return output.str();
+}
+
+// The binding object of a texture or sampler: one descriptor slot, as for a buffer.
+static std::string slot_binding_json(slang::VariableLayoutReflection* resource, slang::TypeLayoutReflection* type)
+{
+    const auto category = slang::ParameterCategory::DescriptorTableSlot;
+    if (resource->getCategoryCount() != 1 || resource->getCategoryByIndex(0) != category ||
+        type->getSize(category) != 1)
+        throw std::runtime_error("only individual texture and sampler descriptor bindings are supported");
+    std::ostringstream output;
+    output << "{\"kind\":\"descriptorTableSlot\",\"count\":1,\"index\":"
+           << known(resource->getOffset(category), "binding index") << ",\"space\":"
+           << known(resource->getBindingSpace(category), "binding space") << '}';
+    return output.str();
+}
+
+// A fragment entry's outputs in SV_Target order: {"index":n,"type":{..}} per target. The result is either one
+// SV_Target scalar or vector, or a struct whose every field is one; anything else (SV_Depth, a nested struct) is out.
+static std::string targets_json(slang::EntryPointReflection* entry)
+{
+    std::map<unsigned, std::string> targets;
+    const auto add = [&targets](slang::VariableLayoutReflection* variable)
+    {
+        if (!variable || !variable->getSemanticName() || !variable->getTypeLayout() ||
+            upper_case(variable->getSemanticName()) != "SV_TARGET")
+            throw std::runtime_error("only SV_Target fragment outputs are supported");
+        const auto index = static_cast<unsigned>(variable->getSemanticIndex());
+        if (!targets.emplace(index, value_type_json(variable->getTypeLayout()->getType())).second)
+            throw std::runtime_error("duplicate SV_Target index");
+    };
+    auto result = entry->getResultVarLayout();
+    if (result && result->getTypeLayout())
+    {
+        auto type = result->getTypeLayout();
+        switch (type->getKind())
+        {
+        case slang::TypeReflection::Kind::None: break;
+        case slang::TypeReflection::Kind::Struct:
+            for (unsigned index = 0; index < type->getFieldCount(); ++index) add(type->getFieldByIndex(index));
+            break;
+        default: add(result); break;
+        }
+    }
+    std::ostringstream output;
+    output << '[';
+    bool first = true;
+    for (const auto& target : targets)
+    {
+        if (!first) output << ',';
+        first = false;
+        output << "{\"index\":" << target.first << ",\"type\":" << target.second << '}';
+    }
+    output << ']';
+    return output.str();
+}
+
 static std::string reflection_json(slang::ProgramLayout* layout, const char* entryName,
                                    const char* target, const char* compiler,
-                                   const std::string& source, slang::IBlob* code)
+                                   const std::string& source, slang::IBlob* code, Stage stage = Stage::Compute)
 {
     if (layout->getEntryPointCount() != 1) throw std::runtime_error("expected exactly one entry point");
     auto entry = layout->getEntryPointByIndex(0);
     if (!entry || !entry->getName() || std::string(entry->getName()) != entryName ||
-        entry->getStage() != SLANG_STAGE_COMPUTE)
-        throw std::runtime_error("entry point identity or compute stage mismatch");
+        entry->getStage() != stage_slang(stage))
+        throw std::runtime_error(std::string("entry point identity or ") + stage_name(stage) + " stage mismatch");
+    const bool compute = stage == Stage::Compute;
     for (unsigned index = 0; index < entry->getParameterCount(); ++index)
     {
+        // A compute entry takes the dispatch thread id; a fragment entry may take its position and nothing else.
+        const char* unsupported = compute ? "only dispatch-thread-ID entry-point parameters are supported"
+                                          : "only SV_Position entry-point parameters are supported";
         auto parameter = entry->getParameterByIndex(index);
         if (!parameter || !parameter->getSemanticName() || !parameter->getTypeLayout())
-            throw std::runtime_error("only dispatch-thread-ID entry-point parameters are supported");
-        std::string semantic = parameter->getSemanticName();
-        for (auto& character : semantic)
-            character = static_cast<char>(std::toupper(static_cast<unsigned char>(character)));
+            throw std::runtime_error(unsupported);
+        const auto semantic = upper_case(parameter->getSemanticName());
         auto type = parameter->getTypeLayout();
-        if (semantic != "SV_DISPATCHTHREADID" || type->getKind() != slang::TypeReflection::Kind::Vector ||
-            type->getType()->getElementCount() != 3 ||
-            type->getScalarType() != slang::TypeReflection::ScalarType::UInt32)
-            throw std::runtime_error("only dispatch-thread-ID entry-point parameters are supported");
+        if (semantic != (compute ? "SV_DISPATCHTHREADID" : "SV_POSITION") ||
+            type->getKind() != slang::TypeReflection::Kind::Vector ||
+            type->getType()->getElementCount() != (compute ? 3u : 4u) ||
+            type->getScalarType() !=
+                (compute ? slang::TypeReflection::ScalarType::UInt32 : slang::TypeReflection::ScalarType::Float32))
+            throw std::runtime_error(unsupported);
         for (unsigned category = 0; category < parameter->getCategoryCount(); ++category)
             if (parameter->getCategoryByIndex(category) != slang::ParameterCategory::VaryingInput)
                 throw std::runtime_error("entry-point resource/uniform bindings are unsupported");
     }
     SlangUInt dimensions[3] = {};
-    entry->getComputeThreadGroupSize(3, dimensions);
+    if (compute) entry->getComputeThreadGroupSize(3, dimensions);
     SchemaUse use;
+    use.shapes = !compute;
     std::ostringstream parameters;
     for (unsigned index = 0; index < layout->getParameterCount(); ++index)
     {
@@ -217,6 +342,77 @@ static std::string reflection_json(slang::ProgramLayout* layout, const char* ent
                        << "}}";
             continue;
         }
+        if (type->getKind() == slang::TypeReflection::Kind::SamplerState)
+        {
+            // SamplerComparisonState is a sampler kind too, but a comparison sampler binds differently (WebGPU's
+            // sampler_comparison), and the document has no field for it yet: refuse it instead of calling it plain.
+            if (!type->getName() || std::string(type->getName()) != "SamplerState")
+                throw std::runtime_error("comparison samplers (SamplerComparisonState) are not supported");
+            use.shapes = true;
+            if (index) parameters << ',';
+            parameters << "{\"name\":" << json_string(resource->getName())
+                       << ",\"binding\":" << slot_binding_json(resource, type) << ",\"type\":{\"kind\":\"sampler\"}}";
+            continue;
+        }
+        if (type->getKind() == slang::TypeReflection::Kind::Resource && type->getResourceShape() == SLANG_TEXTURE_2D)
+        {
+            // Only a plain 2D texture (no array, multisample or feedback flag). The access of a sampled Texture2D is
+            // "read" (the slangc command line omits it). A sampled texture has no format in the shader, so it always
+            // reports "unknown" here, whatever the API says for it (Texture2D<uint> reads back as r32ui, a
+            // Texture2D<float4> as unknown); a read-write or write-only one reports the format of its artifact, which
+            // is part of D17's identity: the declared [format(..)], or the one Slang infers (RWTexture2D<uint> is
+            // r32ui). One that has neither (RWTexture2D<float4>) is refused.
+            const char* access = nullptr;
+            switch (type->getResourceAccess())
+            {
+            case SLANG_RESOURCE_ACCESS_READ: access = "read"; break;
+            case SLANG_RESOURCE_ACCESS_READ_WRITE: access = "readWrite"; break;
+            case SLANG_RESOURCE_ACCESS_WRITE: access = "write"; break;
+            default: throw std::runtime_error("unsupported resource access");
+            }
+            const char* format = "unknown";
+            if (type->getResourceAccess() != SLANG_RESOURCE_ACCESS_READ)
+            {
+                if (resource->getImageFormat() == SLANG_IMAGE_FORMAT_unknown)
+                    throw std::runtime_error(
+                        "a read-write or write-only texture needs a format, declared with [format(..)] or inferred");
+                format = image_format_name(resource->getImageFormat());
+            }
+            use.shapes = true;
+            if (index) parameters << ',';
+            parameters << "{\"name\":" << json_string(resource->getName())
+                       << ",\"binding\":" << slot_binding_json(resource, type)
+                       << ",\"type\":{\"kind\":\"texture\",\"shape\":\"2d\",\"access\":" << json_string(access)
+                       << ",\"result\":" << value_type_json(type->getResourceResultType())
+                       << ",\"format\":" << json_string(format) << "}}";
+            continue;
+        }
+        if (type->getKind() == slang::TypeReflection::Kind::Resource)
+        {
+            // Any other texture (1D, 3D, cube, array, multisampled, feedback, shadow, or combined with a sampler as
+            // Sampler2D) is refused by name; a buffer falls through to the structured-buffer rule below.
+            const auto shape = static_cast<int>(type->getResourceShape());
+            const char* base = nullptr;
+            switch (shape & SLANG_RESOURCE_BASE_SHAPE_MASK)
+            {
+            case SLANG_TEXTURE_1D: base = "1D"; break;
+            case SLANG_TEXTURE_2D: base = "2D"; break;
+            case SLANG_TEXTURE_3D: base = "3D"; break;
+            case SLANG_TEXTURE_CUBE: base = "cube"; break;
+            default: break;
+            }
+            if (base)
+            {
+                std::string text = base;
+                if (shape & SLANG_TEXTURE_ARRAY_FLAG) text += " array";
+                if (shape & SLANG_TEXTURE_MULTISAMPLE_FLAG) text += " multisampled";
+                if (shape & SLANG_TEXTURE_FEEDBACK_FLAG) text += " feedback";
+                if (shape & SLANG_TEXTURE_SHADOW_FLAG) text += " shadow";
+                if (shape & SLANG_TEXTURE_COMBINED_FLAG) text += " combined with a sampler";
+                throw std::runtime_error("unsupported texture shape (" + text +
+                                         "); only a plain 2D texture is supported");
+            }
+        }
         if (type->getKind() != slang::TypeReflection::Kind::Resource ||
             type->getResourceShape() != SLANG_STRUCTURED_BUFFER ||
             type->getExplicitCounter() || resource->getCategoryCount() != 1 ||
@@ -240,16 +436,23 @@ static std::string reflection_json(slang::ProgramLayout* layout, const char* ent
                    << ",\"type\":{\"kind\":\"resource\",\"baseShape\":\"structuredBuffer\",\"access\":"
                    << json_string(access) << ",\"resultType\":" << elementJson << "}}";
     }
+    // Key order: schemaVersion, matrixLayout (schema 2 and 3), compiler, target, entryPoint, stage (schema 3),
+    // sourceHash, artifactHash, workgroupSize (compute only), parameters, targets (fragment only).
+    const int schema = use.shapes ? 3 : (use.newKinds ? 2 : 1);
     std::ostringstream output;
-    output << "{\"schemaVersion\":" << (use.newKinds ? 2 : 1);
-    if (use.newKinds) output << ",\"matrixLayout\":" << json_string(matrix_layout_name(kMatrixLayoutMode));
+    output << "{\"schemaVersion\":" << schema;
+    if (schema >= 2) output << ",\"matrixLayout\":" << json_string(matrix_layout_name(kMatrixLayoutMode));
     output << ",\"compiler\":" << json_string(compiler)
-           << ",\"target\":" << json_string(target) << ",\"entryPoint\":" << json_string(entryName)
-           << ",\"sourceHash\":\"" << fingerprint(source.data(), source.size())
-           << "\",\"artifactHash\":\"" << fingerprint(code->getBufferPointer(), code->getBufferSize())
-           << "\",\"workgroupSize\":[" << known(dimensions[0], "workgroup x") << ','
-           << known(dimensions[1], "workgroup y") << ',' << known(dimensions[2], "workgroup z")
-           << "],\"parameters\":[" << parameters.str() << "]}";
+           << ",\"target\":" << json_string(target) << ",\"entryPoint\":" << json_string(entryName);
+    if (schema >= 3) output << ",\"stage\":" << json_string(stage_name(stage));
+    output << ",\"sourceHash\":\"" << fingerprint(source.data(), source.size())
+           << "\",\"artifactHash\":\"" << fingerprint(code->getBufferPointer(), code->getBufferSize()) << '"';
+    if (compute)
+        output << ",\"workgroupSize\":[" << known(dimensions[0], "workgroup x") << ','
+               << known(dimensions[1], "workgroup y") << ',' << known(dimensions[2], "workgroup z") << ']';
+    output << ",\"parameters\":[" << parameters.str() << ']';
+    if (!compute) output << ",\"targets\":" << targets_json(entry);
+    output << '}';
     return output.str();
 }
 
@@ -284,7 +487,7 @@ static void describe(slang::TypeLayoutReflection* type, const std::string& path,
 static void probe(slang::IGlobalSession* global, const std::string& source,
                   const char* sourcePath, SlangCompileTarget format, const char* label,
                   const char* entryName = "main", const char* artifactPath = nullptr,
-                  const char* reflectionPath = nullptr)
+                  const char* reflectionPath = nullptr, Stage stage = Stage::Compute)
 {
     slang::CompilerOptionEntry option = {};
     option.name = slang::CompilerOptionName::VulkanUseEntryPointName;
@@ -325,7 +528,7 @@ static void probe(slang::IGlobalSession* global, const std::string& source,
     if (!layout) throw std::runtime_error("missing program layout");
     if (artifactPath)
     {
-        const auto json = reflection_json(layout, entryName, label, global->getBuildTagString(), source, code);
+        const auto json = reflection_json(layout, entryName, label, global->getBuildTagString(), source, code, stage);
         write_file(artifactPath, code->getBufferPointer(), code->getBufferSize());
         write_file(reflectionPath, json.data(), json.size());
         return;
@@ -353,25 +556,36 @@ int main(int argc, char** argv)
 {
     try
     {
-        if (argc != 2 && argc != 6)
-            throw std::runtime_error("usage: gust-slang-reflect <source> <entry> <wgsl|spirv> <artifact> <json>, or <layout.slang>, or --version");
+        if (argc != 2 && argc != 6 && argc != 7)
+            throw std::runtime_error(
+                "usage: gust-slang-reflect <source> <entry> <wgsl|spirv> <artifact> <json> [compute|fragment], "
+                "or <layout.slang>, or --version");
         ComPtr<slang::IGlobalSession> global;
         check(slang::createGlobalSession(global.writeRef()), "createGlobalSession failed");
         if (argc == 2 && std::string(argv[1]) == "--version")
         {
-            std::cout << "gust-slang-reflect schema=2 slang=" << global->getBuildTagString() << '\n';
+            std::cout << "gust-slang-reflect schema=3 slang=" << global->getBuildTagString() << '\n';
             return 0;
         }
         std::ifstream stream(argv[1], std::ios::binary);
         if (!stream) throw std::runtime_error(std::string("cannot open source: ") + argv[1]);
         const std::string source((std::istreambuf_iterator<char>(stream)), {});
         if (stream.bad() || source.empty()) throw std::runtime_error("cannot read source or source is empty");
-        if (argc == 6)
+        if (argc == 6 || argc == 7)
         {
             const std::string target = argv[3];
             if (target != "wgsl" && target != "spirv") throw std::runtime_error("unsupported target: " + target);
+            // The stage is the caller's expectation of the entry point; it is compute when the argument is absent, so
+            // every existing caller is unchanged.
+            Stage stage = Stage::Compute;
+            if (argc == 7)
+            {
+                const std::string name = argv[6];
+                if (name == "fragment") stage = Stage::Fragment;
+                else if (name != "compute") throw std::runtime_error("unsupported stage: " + name);
+            }
             probe(global, source, argv[1], target == "wgsl" ? SLANG_WGSL : SLANG_SPIRV,
-                  argv[3], argv[2], argv[4], argv[5]);
+                  argv[3], argv[2], argv[4], argv[5], stage);
         }
         else
         {

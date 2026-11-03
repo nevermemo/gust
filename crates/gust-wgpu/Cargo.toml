@@ -5,7 +5,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+documentation = "https://docs.rs/gust-compute-wgpu"
 exclude = ["tests/", "examples/", "benches/", "clippy.toml"]
+
+# docs.rs builds with the run-time compile feature on, for the native target and for the browser backend.
+[package.metadata.docs.rs]
+features = ["slang-runtime"]
+rustdoc-args = ["--cfg", "docsrs"]
+targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
 
 [features]
 # Compile a kernel at run time through `gust/slang-runtime` (the native reflection helper). Off by default (D44):

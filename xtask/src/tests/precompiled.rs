@@ -837,7 +837,7 @@ fn the_packaged_crates_carry_versions_on_their_path_dependencies() {
             .find(|line| line.trim_start().starts_with(&format!("{name} = ")))
             .unwrap();
         assert!(
-            line.contains("version = \"0.1.0\"") && line.contains("path = "),
+            line.contains("version = \"=0.1.0\"") && line.contains("path = "),
             "{line}"
         );
         let manifest = fs::read_to_string(

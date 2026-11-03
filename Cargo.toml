@@ -25,11 +25,17 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.90"
+repository = "https://github.com/nevermemo/gust"
+keywords = ["gpu", "compute", "slang", "wgpu", "compiler"]
+categories = ["compilers", "graphics", "wasm"]
+# No `homepage` and no inherited `readme`: cargo finds each crate's own `README.md` by itself.
 
 [workspace.dependencies]
-gust = { version = "0.1.0", path = "crates/gust" }
-gust-macros = { version = "0.1.0", path = "crates/gust-macros" }
-gust-wgpu = { version = "0.1.0", path = "crates/gust-wgpu" }
+# The three library crates and `cargo-gust` are released together at one version, and the macro emits items that only
+# the same release of `gust` has, so their internal dependencies are exact (`=`), never a range.
+gust = { version = "=0.1.0", path = "crates/gust" }
+gust-macros = { version = "=0.1.0", path = "crates/gust-macros" }
+gust-wgpu = { version = "=0.1.0", path = "crates/gust-wgpu" }
 pollster = "0.4"
 proc-macro2 = { version = "1.0", features = ["span-locations"] }
 quote = "1.0"

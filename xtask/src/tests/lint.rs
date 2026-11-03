@@ -1,4 +1,7 @@
-use super::{find_machine_path, is_forbidden_script, machine_path_problems};
+use super::{
+    Member, find_machine_path, is_forbidden_script, licence_problem, machine_path_problems,
+    member_field_problems, parse_members, path_dependency_problems,
+};
 
 #[test]
 fn shell_script_extensions_are_forbidden_in_any_directory() {
@@ -272,4 +275,391 @@ fn a_unix_home_directory_is_flagged_at_the_end_of_a_line_or_before_a_quote() {
     let problems = machine_path_problems("docs/notes.md", "ends here: /home/someone\n");
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("`/home/someone`"), "{}", problems[0]);
+}
+
+// ---- Release rules (mr.a) -----------------------------------------------------------------------------------
+
+/// A publishable member with every field the rules read.
+fn complete_member() -> Member {
+    Member {
+        name: "gust-compute".to_owned(),
+        directory: "<workspace>/crates/gust".to_owned(),
+        publishable: true,
+        description: Some("A crate".to_owned()),
+        license: Some("MIT OR Apache-2.0".to_owned()),
+        repository: Some("https://example.com/repo".to_owned()),
+        documentation: Some("https://docs.rs/gust-compute".to_owned()),
+        readme: Some("README.md".to_owned()),
+        keywords: vec!["gpu".to_owned()],
+        categories: vec!["compilers".to_owned()],
+    }
+}
+
+#[test]
+fn metadata_output_is_read_into_members() {
+    let text = r#"{"packages": [
+        {"name": "lib", "manifest_path": "C:\\work\\crates\\lib\\Cargo.toml", "publish": null,
+         "description": "d", "license": "MIT", "repository": "r", "documentation": "docs", "readme": "README.md",
+         "keywords": ["a", "b"], "categories": ["c"]},
+        {"name": "example", "manifest_path": "/work/examples/example/Cargo.toml", "publish": [],
+         "description": null, "license": null, "repository": null, "documentation": null, "readme": null,
+         "keywords": [], "categories": []},
+        {"name": "registry", "manifest_path": "/work/registry/Cargo.toml", "publish": ["crates-io"]},
+        {"name": "bare", "manifest_path": "/work/bare/Cargo.toml", "repository": ""}
+    ]}"#;
+    let members = parse_members(text).unwrap();
+    assert_eq!(members.len(), 4);
+    assert_eq!(members[0].directory, r"C:\work\crates\lib");
+    assert!(members[0].publishable);
+    assert_eq!(members[0].readme.as_deref(), Some("README.md"));
+    assert_eq!(members[0].keywords, ["a", "b"]);
+    assert_eq!(members[0].categories, ["c"]);
+    assert_eq!(members[1].directory, "/work/examples/example");
+    assert!(!members[1].publishable, "publish = false is `[]`");
+    assert_eq!(members[1].description, None);
+    assert!(
+        members[2].publishable,
+        "a list of registries allows publishing"
+    );
+    assert!(members[3].publishable, "no `publish` key allows publishing");
+    assert_eq!(members[3].repository, None, "an empty string is missing");
+    assert!(parse_members("{}").is_err());
+    assert!(parse_members("[").is_err());
+    assert!(parse_members(r#"{"packages": [{"name": "x"}]}"#).is_err());
+}
+
+#[test]
+fn a_complete_publishable_member_and_any_unpublished_member_have_no_field_problems() {
+    assert!(member_field_problems(&complete_member()).is_empty());
+    let example = Member {
+        publishable: false,
+        description: None,
+        license: None,
+        repository: None,
+        documentation: None,
+        readme: None,
+        keywords: Vec::new(),
+        categories: Vec::new(),
+        ..complete_member()
+    };
+    assert!(member_field_problems(&example).is_empty());
+}
+
+#[test]
+fn each_missing_metadata_field_of_a_publishable_member_is_named() {
+    let without = [
+        (
+            "description",
+            Member {
+                description: None,
+                ..complete_member()
+            },
+        ),
+        (
+            "license",
+            Member {
+                license: None,
+                ..complete_member()
+            },
+        ),
+        (
+            "repository",
+            Member {
+                repository: None,
+                ..complete_member()
+            },
+        ),
+        (
+            "documentation",
+            Member {
+                documentation: None,
+                ..complete_member()
+            },
+        ),
+        (
+            "readme",
+            Member {
+                readme: None,
+                ..complete_member()
+            },
+        ),
+        (
+            "keywords",
+            Member {
+                keywords: Vec::new(),
+                ..complete_member()
+            },
+        ),
+        (
+            "categories",
+            Member {
+                categories: Vec::new(),
+                ..complete_member()
+            },
+        ),
+    ];
+    for (field, member) in without {
+        let problems = member_field_problems(&member);
+        assert_eq!(problems.len(), 1, "{field}: {problems:?}");
+        assert!(
+            problems[0].starts_with(&format!(
+                "package `gust-compute` can be published but has no `{field}`; add it"
+            )),
+            "{}",
+            problems[0]
+        );
+        assert!(problems[0].ends_with("or set `publish = false` if it is not meant for crates.io"));
+    }
+    // An example that lost its `publish = false` line fails for every field it never had.
+    let example = Member {
+        name: "vector-add".to_owned(),
+        repository: None,
+        documentation: None,
+        readme: None,
+        keywords: Vec::new(),
+        categories: Vec::new(),
+        ..complete_member()
+    };
+    assert_eq!(member_field_problems(&example).len(), 5);
+}
+
+#[test]
+fn a_licence_copy_must_equal_the_root_file_byte_for_byte() {
+    let root = b"MIT License\r\n\r\nCopyright (c) 2026\r\n";
+    assert_eq!(
+        licence_problem("gust", "LICENSE-MIT", root, Some(root)),
+        None
+    );
+    // One byte different: the message names the file, the package and the offset.
+    let mut changed = root.to_vec();
+    changed[12] = b'X';
+    assert_eq!(
+        licence_problem("gust", "LICENSE-MIT", root, Some(&changed)).as_deref(),
+        Some(
+            "package `gust`: LICENSE-MIT differs from the root LICENSE-MIT (first difference at byte 12; \
+             35 bytes against 35); copy the root file again"
+        )
+    );
+    // Line endings are bytes too.
+    let lf = root
+        .iter()
+        .copied()
+        .filter(|byte| *byte != b'\r')
+        .collect::<Vec<_>>();
+    let problem = licence_problem("gust", "LICENSE-MIT", root, Some(&lf)).unwrap();
+    assert!(
+        problem.contains("first difference at byte 11;"),
+        "{problem}"
+    );
+    // A copy that is a prefix or an extension of the original differs too.
+    let truncated = &root[..root.len() - 1];
+    let problem = licence_problem("gust", "LICENSE-MIT", root, Some(truncated)).unwrap();
+    assert!(
+        problem.contains("first difference at byte 34;"),
+        "{problem}"
+    );
+    let mut longer = root.to_vec();
+    longer.push(b'\n');
+    let problem = licence_problem("gust", "LICENSE-MIT", root, Some(&longer)).unwrap();
+    assert!(
+        problem.contains("first difference at byte 35;"),
+        "{problem}"
+    );
+    // A missing copy.
+    assert_eq!(
+        licence_problem("gust", "LICENSE-APACHE", root, None).as_deref(),
+        Some(
+            "package `gust`: LICENSE-APACHE is missing; copy the root LICENSE-APACHE into the package directory \
+             (cp LICENSE-APACHE <crate dir>/)"
+        )
+    );
+}
+
+fn manifest(path: &str, text: &str) -> (String, String) {
+    (path.to_owned(), text.to_owned())
+}
+
+/// The three kinds of manifest the rule reads, with the package `crates/gust` named `name`.
+fn manifests_with(name: &str, fixture: &str) -> Vec<(String, String)> {
+    vec![
+        manifest(
+            "crates/gust/Cargo.toml",
+            &format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n"),
+        ),
+        manifest(
+            "crates/gust-wgpu/Cargo.toml",
+            "[package]\nname = \"gust-wgpu\"\n",
+        ),
+        manifest("tests/ui/case/Cargo.toml", fixture),
+    ]
+}
+
+#[test]
+fn a_path_dependency_that_names_its_package_passes() {
+    let fixture = "[package]\nname = \"case\"\n\n[dependencies]\n\
+                   gust = { path = \"../../../crates/gust\" }\n\
+                   gust-wgpu = { path = \"../../../crates/gust-wgpu\", features = [\"slang-runtime\"] }\n";
+    assert!(path_dependency_problems(&manifests_with("gust", fixture)).is_empty());
+    // After a rename the key may stay when `package` carries the new name, or follow the new name.
+    for line in [
+        "gust = { path = \"../../../crates/gust\", package = \"gust-compute\" }",
+        "gust-compute = { path = \"../../../crates/gust\" }",
+        "gust = { package = \"gust-compute\", path = \"../../../crates/gust\" }",
+        "gust = { path = '../../../crates/gust', package = 'gust-compute' }",
+        "\"gust\" = { path = \"../../../crates/gust\", package = \"gust-compute\" }",
+    ] {
+        let fixture = format!("[package]\nname = \"case\"\n\n[dependencies]\n{line}\n");
+        assert!(
+            path_dependency_problems(&manifests_with("gust-compute", &fixture)).is_empty(),
+            "{line}"
+        );
+    }
+}
+
+#[test]
+fn a_path_dependency_on_a_renamed_package_without_the_new_name_fails_with_a_clear_message() {
+    let fixture = "[package]\nname = \"case\"\n\n[dependencies]\n\
+                   gust = { path = \"../../../crates/gust\" }\n";
+    assert_eq!(
+        path_dependency_problems(&manifests_with("gust-compute", fixture)),
+        [
+            "tests/ui/case/Cargo.toml:5: dependency `gust` has path `../../../crates/gust`, the package \
+             `gust-compute` (crates/gust), but calls it `gust`; name the dependency `gust-compute` or add \
+             package = \"gust-compute\""
+        ]
+    );
+    // A `package` that names something else is wrong too.
+    let fixture =
+        "[dependencies]\ngust = { path = \"../../../crates/gust\", package = \"gust-wgpu\" }\n";
+    let problems = path_dependency_problems(&manifests_with("gust-compute", fixture));
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("but calls it `gust-wgpu`"),
+        "{}",
+        problems[0]
+    );
+}
+
+#[test]
+fn every_manifest_form_of_a_path_dependency_is_read() {
+    let wrong = |text: &str, line: usize| {
+        let problems = path_dependency_problems(&manifests_with("gust-compute", text));
+        assert_eq!(problems.len(), 1, "{text}: {problems:?}");
+        assert!(
+            problems[0].starts_with(&format!(
+                "tests/ui/case/Cargo.toml:{line}: dependency `gust` "
+            )),
+            "{}",
+            problems[0]
+        );
+    };
+    wrong(
+        "[dev-dependencies]\ngust = { path = \"../../../crates/gust\" }\n",
+        2,
+    );
+    wrong(
+        "[build-dependencies]\ngust = { path = \"../../../crates/gust\" }\n",
+        2,
+    );
+    wrong(
+        "[target.'cfg(unix)'.dependencies]\ngust = { path = \"../../../crates/gust\" }\n",
+        2,
+    );
+    wrong(
+        "[target.\"cfg(any(unix, windows))\".dev-dependencies]\n\
+         gust = { path = \"../../../crates/gust\" }\n",
+        2,
+    );
+    wrong(
+        "[dependencies.gust]\nfeatures = [\"a\"]\npath = \"../../../crates/gust\"\n",
+        1,
+    );
+    wrong(
+        "[dev-dependencies.gust]\npath = \"../../../crates/gust\"\n",
+        1,
+    );
+    wrong("[dependencies]\ngust.path = \"../../../crates/gust\"\n", 2);
+    wrong(
+        "[dependencies]\ngust.version = \"1\"\ngust.path = \"../../../crates/gust\"\n",
+        3,
+    );
+    wrong(
+        "[workspace.dependencies]\ngust = { version = \"=0.1.0\", path = \"../../../crates/gust\" }\n",
+        2,
+    );
+    wrong(
+        "[dependencies]\ngust = { path = \"../../../crates/gust\" } # trailing comment\n",
+        2,
+    );
+    wrong(
+        "[dependencies]\ngust = { features = [\"a\", \"b\"], path = \"..\\\\..\\\\..\\\\crates\\\\gust\" }\n",
+        2,
+    );
+    wrong(
+        "[dependencies]\ngust = { path = \"../../../crates/./gust/../gust\" }\n",
+        2,
+    );
+    // The self dev-dependency of a package: `path = "."` from its own directory.
+    let own = vec![manifest(
+        "crates/gust/Cargo.toml",
+        "[package]\nname = \"gust-compute\"\n\n[dev-dependencies]\n\
+         gust = { path = \".\", features = [\"slang-runtime\"] }\n",
+    )];
+    let problems = path_dependency_problems(&own);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].starts_with("crates/gust/Cargo.toml:5: dependency `gust` has path `.`"));
+    let own = vec![manifest(
+        "crates/gust/Cargo.toml",
+        "[package]\nname = \"gust-compute\"\n\n[dev-dependencies]\n\
+         gust = { path = \".\", package = \"gust-compute\" }\n",
+    )];
+    assert!(path_dependency_problems(&own).is_empty());
+}
+
+#[test]
+fn dependencies_the_rule_does_not_concern_are_left_alone() {
+    let fixture = "\
+[package]
+name = \"case\"
+path = \"../../../crates/gust\"
+
+[[bin]]
+name = \"x\"
+path = \"../../../crates/gust\"
+
+[lib]
+path = \"../../../crates/gust\"
+
+[dependencies]
+# gust = { path = \"../../../crates/gust\" }
+kernels = { path = \"../kernels\" }
+gust-wgpu.workspace = true
+gust-macros = \"1\"
+outside = { path = \"../../../../elsewhere/crates/gust\" }
+absolute = { path = \"/abs/crates/gust\" }
+drive = { path = \"C:/abs/crates/gust\" }
+inside = { path = \"../../../crates/gust/src\" }
+note = { version = \"1\", features = [\"path = x\"] }
+";
+    assert!(path_dependency_problems(&manifests_with("gust-compute", fixture)).is_empty());
+    // A fixture directory that merely contains the word `crates` is not a package.
+    let fixture = "[dependencies]\ngust = { path = \"../crates/gust\" }\n";
+    assert!(path_dependency_problems(&manifests_with("gust-compute", fixture)).is_empty());
+}
+
+#[test]
+fn a_dependency_table_over_several_lines_is_reported_instead_of_skipped() {
+    let fixture = "[dependencies]\ngust = {\n    path = \"../../../crates/gust\",\n}\n";
+    let problems = path_dependency_problems(&manifests_with("gust-compute", fixture));
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].starts_with("tests/ui/case/Cargo.toml:2: "),
+        "{}",
+        problems[0]
+    );
+    assert!(
+        problems[0].contains("write it on one line"),
+        "{}",
+        problems[0]
+    );
 }

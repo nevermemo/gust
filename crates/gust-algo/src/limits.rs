@@ -36,15 +36,21 @@ pub(crate) fn check(
     Ok(())
 }
 
-/// Whether [`check`] would accept the same arguments: the test of a v1 schedule, which runs only inside the limits and
-/// otherwise leaves the call (and its `DeviceLimit` error) to v0, whose launch is the smaller one.
+/// The workgroup memory the v1 kernels declare, in bytes: the largest of them is the scan tile kernels, three arrays of
+/// 256 `u32` (the reduce blocks use one array of at most 256 four-byte elements).
+pub(crate) const V1_SHARED_BYTES: u32 = 3 * 256 * 4;
+
+/// Whether [`check`] would accept the same arguments and the device offers the workgroup memory of the v1 kernels
+/// ([`V1_SHARED_BYTES`]): the test of a v1 schedule, which runs only inside the limits and otherwise leaves the call
+/// (and its `DeviceLimit` error) to v0, whose launch is the smaller one and uses no workgroup memory.
 pub(crate) fn admits(
     device: &HeadlessDevice,
     workgroups: u32,
     len: u32,
     element_bytes: usize,
 ) -> bool {
-    check(device, "", workgroups, len, element_bytes).is_ok()
+    device.limits().max_compute_workgroup_storage_size >= V1_SHARED_BYTES
+        && check(device, "", workgroups, len, element_bytes).is_ok()
 }
 
 fn device_limit(

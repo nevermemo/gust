@@ -77,17 +77,35 @@ fn a_tile_scan_takes_one_dispatch_for_a_span_and_two_k_plus_one_above() {
 }
 
 /// The v1 bound is the same form with fewer additions on the longest path: at most 39 per level (31 for a lane's 32
-/// terms, 8 for the tree) and 86 for the three levels of 2^29 elements, against 796 for v0.
+/// terms, 8 for the tree) and 86 for the three passes of 2^28 elements, against 796 for v0 at 2^29. It is not below
+/// v0's for a tiny input: v1's depth is 8 from one element up, v0's is `n - 1` (at most 8 for `n <= 9`), so v1 is
+/// larger for `n` of 2 to 8, equal at 9 and smaller from 10 on.
 #[test]
-fn the_v1_depth_is_below_the_v0_depth_except_for_a_single_element() {
+fn the_v1_depth_is_below_the_v0_depth_from_ten_elements_up() {
     let v0 = |n: u32| bound::depth(&Schedule::new(n).unwrap());
     let v1 = |n: u32| bound::depth_v1(&BlockSchedule::new(n).unwrap());
     assert_eq!(v1(1), 8);
     assert_eq!(v1(256), 8);
     assert_eq!(v1(8_192), 31 + 8);
-    assert_eq!(v1(1 << 29), 39 + 39 + 8);
+    assert_eq!(v1(1 << 28), 39 + 39 + 8);
     assert_eq!(v0(1 << 29), 796);
-    for n in [257, 1_000, 65_537, 1_000_000, 1 << 24, 1 << 29] {
+    assert_eq!(v0(1), 0);
+    for n in 2..=8 {
+        assert_eq!(v0(n), u64::from(n - 1));
+        assert!(v1(n) > v0(n), "n = {n}: {} against {}", v1(n), v0(n));
+    }
+    assert_eq!(v1(9), v0(9));
+    for n in [
+        10,
+        100,
+        256,
+        257,
+        1_000,
+        65_537,
+        1_000_000,
+        1 << 24,
+        1 << 28,
+    ] {
         assert!(v1(n) < v0(n), "n = {n}: {} against {}", v1(n), v0(n));
         assert!(v1(n) <= 3 * (31 + 8), "n = {n}");
     }
@@ -99,18 +117,38 @@ fn the_v1_depth_is_below_the_v0_depth_except_for_a_single_element() {
 
 /// The record of the measurement of m7.r4 (plan section 5.5: v1 ships per operation only where it is at least 10 %
 /// faster than v0 at 1e6, 1e7 and 1e8 elements on the RTX 5090; the log of the slice, `plans/m7/probe/r4/`, has the
-/// table). A change of `shipped` without a new measurement fails here.
+/// table). `WORST` is the lowest median ratio v0 / v1 over the sizes and element types of each operation, in
+/// thousandths (the medians of the per-run medians; single runs went lower, see the module docs of [`crate::variant`]).
+/// `shipped` must be v1 exactly where that ratio is at least 1.10. It is a two-place tripwire, not a proof: it fails
+/// when only one of `WORST` and `shipped` is edited, and a changed `shipped` needs the new measurement written here
+/// beside it. The Radeon 890M half of the measurement is owed.
 #[test]
 fn the_shipped_variants_are_the_measured_ones() {
-    let measured = |operation: Operation| match operation {
-        Operation::Sum
-        | Operation::Min
-        | Operation::Max
-        | Operation::SumWrapping
-        | Operation::Inclusive
-        | Operation::Exclusive => Variant::V1,
-    };
+    const WORST: [(Operation, u32); 6] = [
+        (Operation::Sum, 1_188),
+        (Operation::Min, 1_180),
+        (Operation::Max, 1_158),
+        (Operation::SumWrapping, 1_222),
+        (Operation::Inclusive, 1_516),
+        (Operation::Exclusive, 1_565),
+    ];
+    assert_eq!(WORST.len(), OPERATIONS.len());
+    for (operation, worst) in WORST {
+        let expected = if worst >= 1_100 {
+            Variant::V1
+        } else {
+            Variant::V0
+        };
+        assert_eq!(
+            shipped(operation),
+            expected,
+            "{operation:?} at {worst} thousandths"
+        );
+    }
     for operation in OPERATIONS {
-        assert_eq!(shipped(operation), measured(operation), "{operation:?}");
+        assert!(
+            WORST.iter().any(|(measured, _)| *measured == operation),
+            "{operation:?} has no measurement"
+        );
     }
 }

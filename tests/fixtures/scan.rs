@@ -481,7 +481,6 @@ mod scan {
             }
             carry += last[255u32];
         }
-
     }
 
     #[kernel(workgroup_size(256, 1, 1))]

@@ -189,7 +189,9 @@ impl BlockPass {
 }
 
 /// The dispatches of one v1 reduction: block passes until one workgroup is left, and that pass writes the result. So
-/// `n <= 8192` is one dispatch, `n <= 8192^2` (67 million) two, and an input of 2^29 elements three.
+/// `n <= 8192` is one dispatch, `n <= 8192^2` (67 million) two, and an input of 2^28 elements three. The schedule of
+/// any `n` is computed, but it runs only while the first pass fits the device: at most 65 535 workgroups (536 862 720
+/// elements, as 2^29 elements are past the 2 GiB binding anyway); `limits::admits` sends a larger input to v0.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlockSchedule {
     passes: Vec<BlockPass>,

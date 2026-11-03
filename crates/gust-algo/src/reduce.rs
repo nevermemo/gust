@@ -16,9 +16,11 @@
 //! The contract (section 5.1): the sum of an empty input is the identity (`0`, `0.0`); `min` and `max` of an empty
 //! input are [`Error::Empty`]. Integer sums use plain `+` and are exact and in the domain only when no partial sum
 //! overflows (the kernels wrap on the GPU, the debug twin panics, as every `+` of the dialect). `min` and `max` are
-//! exact. Float sums are within [`crate::bound::f32_sum_bound`] of the exact sum (v0; the shipped v1 meets the tighter
-//! [`crate::bound::f32_sum_bound_v1`]). An input larger than the device's
-//! storage binding limit is `Error::Device(DeviceLimit)` before any buffer is taken or dispatch is made.
+//! exact. Float sums are within the bound of the variant that ran: [`crate::bound::f32_sum_bound_v1`] when v1 ran,
+//! [`crate::bound::f32_sum_bound`] when v0 ran as the fallback. The crate has no public call that says which one ran
+//! for a given input and device, so the bound a caller may assert is the looser (larger) of the two; v1's is the
+//! smaller one except for `n` of 2 to 8 elements, where its depth of 8 exceeds v0's `n - 1`. An input larger than
+//! the device's storage binding limit is `Error::Device(DeviceLimit)` before any buffer is taken or dispatch is made.
 
 use gust::{GpuPod, Independent};
 use gust_wgpu::{BufferDispatch, GpuVec, HeadlessDevice};

@@ -64,8 +64,11 @@ pub fn depth_v1(schedule: &BlockSchedule) -> u64 {
 }
 
 /// [`f32_sum_bound`] for the v1 block reduce (plan section 5.5): the same form `gamma_K * S` with the `K` of
-/// [`depth_v1`], at most 39 per level and 86 for the levels of an input of 2^29 elements, against the 796 of v0.
+/// [`depth_v1`], at most 39 per level and 86 for the three passes of 2^28 elements, against the 796 of v0 at 2^29.
 /// The tree adds 256 values of one level in a balanced shape, so a value passes through 8 additions in it, not 255.
+/// It holds only where v1 runs (`limits::admits`); the v0 fallback is within [`f32_sum_bound`], and for `n` of 2 to 8
+/// elements the depth of 8 here is larger than v0's `n - 1`, so the bound a caller who cannot tell which ran may
+/// assert is the larger of the two.
 ///
 /// # Panics
 ///

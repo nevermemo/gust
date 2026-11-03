@@ -163,7 +163,9 @@ test module; do not mix that mechanical move with behavior changes.
 - The crate-path question before m7.p: the macro writes `::gust::` in about 90 places
   (`crates/gust-macros/src`, tests excluded), MR renames the crates (D48) and m7.p adds more generated paths.
   Decide between `[lib] name = "gust"` on the renamed crate and a macro that resolves the imported crate path (the ROADMAP's MR row
-  says the latter), before m7.p writes more of them (sanity-opus, 2026-11-02).
+  says the latter), before m7.p writes more of them (sanity-opus, 2026-11-02). Since m7.a1 the map code also names
+  `::gust_wgpu` under GPU profiles (D99), so a user crate needs a direct `gust-wgpu` dependency; `cargo gust doctor`
+  could name that for rustc's E0433.
 
 ## M7 follow-ups (filed during M7)
 
@@ -190,7 +192,12 @@ test module; do not mix that mechanical move with behavior changes.
   (`positions[n-1] + mask[n-1]`) itself (m7.r3 review N3; m7.r4).
 - `reduce` zero-clears its partials buffers although every lane writes its slot; skipping the clear needs a
   non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p). The scan's `out` is
-  zero-filled the same way (one clear of n elements per call, 2 GiB at 2^29; m7.r2 review).
+  zero-filled the same way (one clear of n elements per call, 2 GiB at 2^29; m7.r2 review), and so is the map's
+  output (`map_on`, `map_gpu`; m7.a1 review N2: name it in m7.a2's timing conditions).
+- m7.a1 follow-ups: precompiled artifacts for a `#[gpu] fn` under `native` and `web` (a wasm32 `web` build panics
+  "needs a precompiled artifact" today; m7.a2); a `#[diagnostic::on_unimplemented]` on `MapArg` so a type mismatch
+  reads in GUST's words (re-pin the two check-ui fixtures); `missing_docs` fires on generated constants of both
+  `#[gpu] mod` and `#[gpu] fn` (older); `TooLong` is unit-tested only.
 - The scan `_wrapping` form the M7 plan promises after m7.w: the same Slang (D87), only the twins change; v0's scan
   already wraps (m7.r4 or its own slice).
 - M8: naga 30 rejects an `i32` lane id in `subgroupShuffle`, `subgroupBroadcast` and `quadBroadcast`, which WGSL

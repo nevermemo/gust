@@ -174,7 +174,22 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   off-by-one gather bound fail twin and GPU tests; a dropped gather guard fails the twin test only (the GPU test
   passes because out-of-range reads return 0 on this adapter). Opus merge after one fix round.
   Main: 23 gate steps (the 22 plus the Rust 1.90.0 check) green on `8027169` (05:16 to 05:42Z, RTX 5090); pins
-  232/27 and gust-algo 32.
+  232/27 and gust-algo 32. CI's gpu-software ran the parallel gust-algo set on lavapipe (32 passed).
+- M7 m7.a1 (`7ea07f4`, fix rounds `ffb5b76` and `d559e72`, merge `5609536`): the map API (D60, D99). `#[gpu] pub fn
+  saxpy(a, x, y) -> f32` stays a plain function and gains `pub mod saxpy` with the generated kernel (grid-stride,
+  workgroup 256, 16 776 960 invocations at most, a length-1 argument broadcast), `map`, `map_on`, `map_on_async`,
+  `map_gpu`, `map_gpu_on` and `map_async`; under `GUST_PROFILE=cpu` only the CPU forms, with no `gust_wgpu`. Lengths
+  are checked before any device work (`LengthMismatch`, `Empty`, `TooLong`). `map_async` exists on every target and
+  the blocking calls are native only (D69, D97). GUST-E0714 (map signature), E0715 (name collision), E0716 (a nested
+  `#[gpu]` function); 3-wide values reuse E0204. The dispatch id is a reserved name, so a parameter named `id`
+  works. Map arguments are keyed on the host type, so a `bool` slice for a `u32` parameter fails to compile (two
+  check-ui fixtures, 33 in all). Golden `map.slang` (5 entries; the naga gate covers 140 modules). check-cpu-target
+  requires the map case's line; check-feature map runs the new tests. A wasm32 crate compiles `map_async` (dev
+  profile; no browser run). Mutations: a dropped guard is caught only by the CPU twin (the GPU's robust bounds hide
+  it); a skipped length check, a missing E0715 and a broadcast reading index i each fail tests. `TooLong` is
+  unit-tested only (a real call needs more than 2^32 elements). Pin 232/27 to 244/28. Opus merge after two fix
+  rounds and a re-review.
+  Main: 23 gate steps green on `5609536` (06:06 to 06:42Z, RTX 5090); pins 244/28 and gust-algo 32.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
@@ -567,7 +582,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M7 (m7.a1 running) after the M6 close (D86); see the roadmap's Now
+claim: roadmap M7 (m7.t14 running) after the M6 close (D86); see the roadmap's Now
 and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no

@@ -789,7 +789,10 @@ pub(crate) fn cargo_calls(mode: VerifyMode) -> Vec<Vec<String>> {
             calls.push(owned(&["test", "--locked", "-p", "gust", "--lib"]));
             calls.push(owned(&["test", "--locked", "-p", "gust-wgpu"]));
         }
-        VerifyMode::Gpu => calls.push(owned(&GPU_SUITE_CALL)),
+        VerifyMode::Gpu => {
+            calls.push(owned(&GPU_SUITE_CALL));
+            calls.push(owned(&ALGO_GPU_CALL));
+        }
         VerifyMode::Smoke => calls.push(workspace_test_args()),
         VerifyMode::Full => {
             calls.push(workspace_test_args());
@@ -870,6 +873,28 @@ fn owned_args(args: &[&str]) -> Vec<String> {
 /// file and the doc tests.
 pub(crate) const GPU_SUITE_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-wgpu"];
 
+/// The cargo call of the device-resident algorithms (m7.r1): every test of `gust-algo`, the `gpu::` ones on the first
+/// adapter. Run after [`GPU_SUITE_CALL`] in the Gpu mode and by the Gpu suite, so the lavapipe job runs it too.
+pub(crate) const ALGO_GPU_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-algo"];
+
+/// The `gpu::` tests of `gust-algo`, by name: each must be reported `ok`, and no other `tests::gpu::` test may exist
+/// ([`check_algo_gpu_counts`]), so a deleted or an unpinned adapter test fails the gate. The twins would still satisfy
+/// a plain "at least one test ran". Adding or removing a `gpu::` test changes this list in the same commit.
+pub(crate) const ALGO_GPU_TESTS: [&str; 12] = [
+    "tests::gpu::gpu_a_first_pass_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch",
+    "tests::gpu::gpu_an_input_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch",
+    "tests::gpu::gpu_empty_inputs",
+    "tests::gpu::gpu_float_min_and_max_are_exact",
+    "tests::gpu::gpu_float_sum_of_the_tie_ladder_is_within_the_bound",
+    "tests::gpu::gpu_float_sums_are_within_the_per_level_bound",
+    "tests::gpu::gpu_integer_sums_min_and_max_are_exact_at_every_boundary",
+    "tests::gpu::gpu_integer_sums_past_the_domain_wrap",
+    "tests::gpu::gpu_min_of_an_empty_vector_is_empty_and_max_too",
+    "tests::gpu::gpu_reductions_leave_the_input_alone_and_return_their_buffers",
+    "tests::gpu::gpu_runs_the_deepest_schedule",
+    "tests::gpu::gpu_sum_on_device_keeps_the_result_resident",
+];
+
 /// The shape of [`GPU_SUITE_CALL`]'s output: `passed` is the sum over every `test result:` line, `result_lines`
 /// the number of those lines (one per test binary and doc-test run), which catches drift that cancels out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -907,6 +932,11 @@ pub(crate) fn pins_gpu_counts(mode: VerifyMode, call: &[String]) -> bool {
     mode == VerifyMode::Gpu && call.iter().map(String::as_str).eq(GPU_SUITE_CALL)
 }
 
+/// Whether a cargo call of a mode is [`ALGO_GPU_CALL`] in the Gpu mode, whose output [`check_algo_gpu_counts`] judges.
+pub(crate) fn judges_algo_gpu(mode: VerifyMode, call: &[String]) -> bool {
+    mode == VerifyMode::Gpu && call.iter().map(String::as_str).eq(ALGO_GPU_CALL)
+}
+
 /// The guards on a finished cargo call, in order: the examples and release Slang tests must run tests
 /// ([`check_counted_call`]), the Gpu suite must match [`GPU_SUITE_PIN`] ([`check_gpu_suite_counts`]).
 fn guard_call(mode: VerifyMode, call: &[String], stdout: &str) -> Result<(), String> {
@@ -914,6 +944,8 @@ fn guard_call(mode: VerifyMode, call: &[String], stdout: &str) -> Result<(), Str
         check_counted_call(call, stdout)
     } else if pins_gpu_counts(mode, call) {
         check_gpu_suite_counts(call, stdout, GPU_SUITE_PIN)
+    } else if judges_algo_gpu(mode, call) {
+        check_algo_gpu_counts(call, stdout)
     } else {
         Ok(())
     }
@@ -970,6 +1002,50 @@ pub(crate) fn check_gpu_suite_counts(
     }
     Err(format!(
         "cargo {}: {}. If a Gpu test or test file was added or removed on purpose, change GPU_SUITE_PIN in xtask/src/verify.rs in the same commit",
+        call.join(" "),
+        problems.join("; ")
+    ))
+}
+
+/// The guard for [`ALGO_GPU_CALL`] on its captured `stdout`: tests ran and none failed or was ignored, every test of
+/// [`ALGO_GPU_TESTS`] is reported `ok`, and no `tests::gpu::` test outside the list ran.
+pub(crate) fn check_algo_gpu_counts(call: &[String], stdout: &str) -> Result<(), String> {
+    let plain = without_colors(stdout);
+    let totals = sum_test_results(&plain);
+    require_tests_ran(call, &totals)?;
+    let mut problems = Vec::new();
+    if totals.ignored > 0 {
+        problems.push(format!("{} test(s) reported ignored", totals.ignored));
+    }
+    let missing = tests_not_ok(&plain, &ALGO_GPU_TESTS);
+    if !missing.is_empty() {
+        problems.push(format!(
+            "the adapter test(s) `{}` did not run and pass (renamed, deleted, ignored or failed?)",
+            missing.join("`, `")
+        ));
+    }
+    let ran = plain
+        .lines()
+        .filter(|line| {
+            let line = line.trim();
+            line.starts_with("test tests::gpu::") && line.ends_with("... ok")
+        })
+        .count();
+    if ran != ALGO_GPU_TESTS.len() {
+        problems.push(format!(
+            "{ran} adapter test(s) passed, the pinned number is {} (ALGO_GPU_TESTS)",
+            ALGO_GPU_TESTS.len()
+        ));
+    }
+    if problems.is_empty() {
+        println!(
+            "{ran} gust-algo adapter tests passed (pinned {})",
+            ALGO_GPU_TESTS.len()
+        );
+        return Ok(());
+    }
+    Err(format!(
+        "cargo {}: {}. If an adapter test was added or removed on purpose, change ALGO_GPU_TESTS in xtask/src/verify.rs in the same commit",
         call.join(" "),
         problems.join("; ")
     ))

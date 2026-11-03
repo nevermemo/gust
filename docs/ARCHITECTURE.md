@@ -171,6 +171,17 @@ instructions that the current wgpu SPIR-V frontend does not implement. SPIR-V is
 therefore exported and validated independently rather than being forced through
 that narrower frontend.
 
+### `gust-algo`
+
+The device-resident algorithms (roadmap M7). Its first member is `reduce` (`sum`, `min`, `max` of a `GpuVec<u32|i32|f32>`):
+the kernels are ordinary GUST kernels in `tests/fixtures/reduce.rs` (one `#[gust::gpu]` module, compiled at run time through the
+`slang-runtime` feature; no precompiled artifacts in v0), and the host code only picks the pass schedule, takes one pooled
+`GpuVec` per pass and submits the passes in one `dispatch_batch`. The crate depends on `gust` and `gust-wgpu` and on nothing
+else: `xtask/src/arch.rs` carries a `CrateRule` with exactly that allow-list, and `cargo xtask check-arch` fails for a
+workspace crate without one. It is `publish = false` because the kernel file lives outside the package. Its tests run the
+CPU twins against independent references in its test builds; the `gpu::` tests run on the adapter and belong to the Gpu suite
+and `verify --mode gpu`, not to Unit.
+
 ## Descriptor flow
 
 For a kernel with three storage buffers, the macro records:

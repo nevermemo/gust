@@ -101,6 +101,10 @@ fn current_packages() -> Vec<String> {
                 from_registry("wgpu"),
             ],
         ),
+        package_json(
+            "gust-algo",
+            &[workspace_crate("gust"), workspace_crate("gust-wgpu")],
+        ),
         package_json("cargo-gust", &[workspace_crate("gust")]),
         package_json("xtask", &[]),
     ]
@@ -508,7 +512,7 @@ fn relative_paths_need_a_whole_directory_prefix() {
 
 #[test]
 fn a_rule_crate_that_cargo_does_not_list_is_reported() {
-    let packages = parse_metadata(&metadata_json(&current_packages()[..4])).unwrap();
+    let packages = parse_metadata(&metadata_json(&current_packages()[..5])).unwrap();
     let problems = package_problems(ROOT, &packages);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(

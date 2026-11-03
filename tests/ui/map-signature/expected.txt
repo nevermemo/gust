@@ -1,0 +1,4 @@
+code: none
+file: map-signature/src/main.rs
+line: 5
+message: [GUST-E0714] parameter `x` has a type a map function cannot take

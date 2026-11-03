@@ -1540,6 +1540,9 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
         manifest.contains("features = [\"slang-runtime\"]"),
         "{manifest}"
     );
+    // The map functions build under the cpu profile, where nothing names a GPU API (m7.a1).
+    assert_eq!(find("map-ok").env, variable("cpu"));
+    assert_eq!(find("map-ok").expectation, Expectation::Compiles);
     // No other fixture has variables of its own.
     let with_env: Vec<&str> = cases
         .iter()
@@ -1549,6 +1552,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
     assert_eq!(
         with_env,
         [
+            "map-ok",
             "profile-dev-no-artifact",
             "profile-empty",
             "profile-native-artifact",
@@ -1564,7 +1568,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 26] = [
+const PINNED_FIXTURES: [&str; 31] = [
     "gpupod-missing",
     "gpupod-present",
     "kernel-cpu-bad-value",
@@ -1574,6 +1578,11 @@ const PINNED_FIXTURES: [&str; 26] = [
     "layout-outside-field",
     "literal-let-ok",
     "literal-let-rejected",
+    "map-name-collision",
+    "map-nested",
+    "map-ok",
+    "map-signature",
+    "map-three-wide",
     "profile-dev-no-artifact",
     "profile-empty",
     "profile-native-artifact",

@@ -89,9 +89,29 @@ pub mod vector_ops {
     }
 }
 
+// The map functions (M7, D60): `#[gust::gpu]` on a function. Built under `GUST_PROFILE=cpu` only, because under any
+// other profile the generated host functions name `gust-wgpu`, which this crate does not depend on; `map_case::run` is
+// the one entry `app` calls in every build.
+#[cfg(gust_cpu_profile)]
+pub mod map_case;
+
+#[cfg(not(gust_cpu_profile))]
+pub mod map_case {
+    /// No map functions are built under this profile.
+    pub fn run() -> Result<(), String> {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use gust::{cpu::CpuDevice, math::Vec4};
+
+    /// The map case of the CPU target passes (a no-op under another profile).
+    #[test]
+    fn the_map_case_matches_its_host_references() {
+        super::map_case::run().unwrap();
+    }
 
     use super::vector_ops;
 

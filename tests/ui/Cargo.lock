@@ -82,6 +82,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "map-name-collision"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "map-nested"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "map-ok"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "map-signature"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "map-three-wide"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"

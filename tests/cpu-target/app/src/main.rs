@@ -41,6 +41,9 @@ fn run(bench: bool) -> Result<(), String> {
     check_polynomial()?;
     check_atomic_counter()?;
     check_vector_ops()?;
+    // The map functions of the kernels crate (under `GUST_PROFILE=cpu`; nothing under another profile). Its line is
+    // not a `matches` line, which `check-cpu-target` pairs with its list of kernels.
+    kernels::map_case::run()?;
     println!("CPU target: all kernels match");
     if bench {
         bench_vector_add()?;

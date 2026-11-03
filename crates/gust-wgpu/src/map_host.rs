@@ -4,9 +4,26 @@
 //! The blocking `readback` is native only (the browser cannot block, D69). `readback_async` exists on both targets, so
 //! the generic `map_on_async` of M7 is written over `D: MapHost` alone.
 
-use gust::{GpuPod, map::MapHost};
+use gust::{
+    GpuPod,
+    map::{MapHost, Resident},
+};
 
-use crate::{Error, GpuBuffer, HeadlessDevice, pool::Fill};
+use crate::{Error, GpuBuffer, GpuVec, HeadlessDevice, pool::Fill};
+
+/// A resident buffer is a map argument as it is (`&GpuVec<T>` binds without a copy); the trait gives the generic
+/// map call its length. It lives here because `GpuVec` and `GpuBuffer` do (m7.a1).
+impl<T: GpuPod> Resident for GpuVec<T> {
+    fn resident_len(&self) -> usize {
+        self.len() as usize
+    }
+}
+
+impl<T: GpuPod> Resident for GpuBuffer<T> {
+    fn resident_len(&self) -> usize {
+        self.len()
+    }
+}
 
 impl MapHost for HeadlessDevice {
     type Buffer<T: GpuPod> = GpuBuffer<T>;
@@ -29,6 +46,17 @@ impl MapHost for HeadlessDevice {
 
     async fn readback_async<T: GpuPod>(&self, buffer: &GpuBuffer<T>) -> Result<Vec<T>, Error> {
         self.read_pooled_async(buffer).await
+    }
+
+    /// Resident buffers of two devices in one call are `MixedDevices`, as the map error names it.
+    fn map_error(error: Error) -> gust::map::Error {
+        match error {
+            // `MixedDevices` is `GpuVec::check_device`'s; a dispatch reports a buffer of another device as foreign.
+            Error::MixedDevices { .. } | Error::ForeignPersistentBuffer => {
+                gust::map::Error::MixedDevices
+            }
+            other => gust::map::Error::device(other),
+        }
     }
 }
 

@@ -1,0 +1,4 @@
+code: none
+file: map-three-wide/src/main.rs
+line: 7
+message: [GUST-E0204] parameter `v` is `Vec3`, which a map call cannot take

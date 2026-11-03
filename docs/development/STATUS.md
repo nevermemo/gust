@@ -293,6 +293,8 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   because the racing `+ 1` writes all store 1. Pin 270/30 to 296/31. Not yet: `doctor`/`check` list only the
   origin site, the naga layout gate skips `par_for!` kernels, the over-cap error is `map::Error::Device`, and
   `cargo gust build` cannot export a `par_for!` kernel until m6.u2f. Opus merge after one fix round.
+  Main: 23 gate steps green on `910ee1c` (16:55 to 17:33Z, RTX 5090; pins 296/31 and gust-algo 49) and
+  check-examples green.
 - M6 m6.u2f (`9dc3169`, fix round `e596bb7`, merge `bee193a`; D104): `cargo gust build` on uniform kernels.
   Before it, every kernel with a `Uniform<T>` failed the export with "missing descriptor element layout" (found by
   the m7.p builder, reproduced on a plain `#[gpu]` kernel): the macro writes no uniform layout and cargo-gust filled
@@ -306,8 +308,15 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   (D104). Opus merge after one fix round.
   Main: 23 gate steps green on `bee193a` (17:40 to 18:12Z, RTX 5090; pins 296/31 and gust-algo 49) and
   check-examples green.
-  Main: 23 gate steps green on `910ee1c` (16:55 to 17:33Z, RTX 5090; pins 296/31 and gust-algo 49) and
-  check-examples green.
+- M7 m7.t1 (`e1c2410`, fix round `fd7a7b6`, merge `1278b61`): tidy pass 1, the cleanup scout's "now" items. xtask
+  has one `exit_code` helper (process.rs) for its five copies, behaviour unchanged. The README's limits and
+  dispatch claims now match m7.a0 (D84) and m7.d (D102), and short `par_for!` and workgroup-memory sections mark
+  each claim as its honesty table does. HANDOFF drops the T13 stash note; `.gitignore` drops the dead
+  `/artifacts/generated-wgpu/` entry and ignores `/.claude/`. The `element()` dedupe in gust-macros waits for m7.lv,
+  which edits the same expand files. Opus merge after one README fix round.
+  Main: 22 of 23 gate steps green on `1278b61` (19:40 to 20:22Z, RTX 5090); gpu-verify died once in the
+  gust-algo GPU tests (STATUS_ACCESS_VIOLATION, NEXT_TASKS) and passed alone (20:25 to 20:32Z); check-examples
+  green.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).

@@ -3,17 +3,15 @@
 ## Current state
 
 - Branch: `main`
-- Active: roadmap M6 (language breadth I) beside M7 (GPU concepts in Rust); see the
+- Active: roadmap M7 (GPU concepts in Rust); M6 (language breadth I) is closed (D86). See the
   "Now and next" section of [ROADMAP.md](../ROADMAP.md) and [STATUS.md](STATUS.md).
 - M0 is closed (D28), and M0.15 (the CI `unit` job is a required check on `main`) followed on
   2026-11-01. M1 (diagnostics) is closed (D33), M2 (typed host API) is closed (D37), and
   M3 (dual test builds) is closed (D43; `check-full` passed at `5971c12`). M4 (build-time targets and
   distribution) is closed (D73), and M5 (CPU target and evidence breadth) is closed (D76; `check-full` passed at
   `7dd9c3d`).
-- T13 GPU active-count proof is deferred by owner. Its work in progress is the git
-  stash `WIP T13 active count deferred`, not the working tree. Do not apply,
-  continue, validate, commit, or drop it without explicit direction.
-- Last committed compiler feature: T12 statement Result match.
+- T13 (GPU active count to indirect dispatch) landed in m7.t13 and m7.t14; no stash is kept for it. The latest
+  slices and features are in the "Now and next" section of [ROADMAP.md](../ROADMAP.md).
 
 ## Pickup
 

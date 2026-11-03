@@ -369,7 +369,7 @@ fn a_uniform_layout_the_reflection_does_not_confirm_is_refused() {
         // The export-time cross-check judges a layout filled from the changed document against the genuine
         // reflection, which is what the helper wrote: they disagree, so it never passes.
         let error = cross_check_completed(&record, &genuine, &tampered).unwrap_err();
-        assert!(!error.is_empty(), "{what}");
+        assert!(error.contains(expected), "{what}: {error}");
     }
     // A field named differently in the filled layout than in the reflection that is checked.
     let renamed = SHIFTED
@@ -378,6 +378,43 @@ fn a_uniform_layout_the_reflection_does_not_confirm_is_refused() {
     assert_ne!(renamed, SHIFTED.reflection);
     let error = cross_check_completed(&record, &genuine, &renamed).unwrap_err();
     assert!(error.contains("field name/order differs"), "{error}");
+}
+
+#[test]
+fn a_std140_valid_difference_from_the_macro_passes_the_export_and_fails_at_run_time() {
+    // The limitation, pinned: the record carries no uniform layout, so the export checks the reflection against itself
+    // and cannot see a difference from the macro's layout that is still valid std140. Here the Slang side names a
+    // padding field differently (the same offsets and sizes). `verify_stored` is what `HelperCompiler::compile` runs
+    // on the fresh artifact and what `cargo gust check` runs on a stored one; it accepts the document.
+    for stored in [SCALE, SHIFTED] {
+        let renamed = stored
+            .reflection
+            .replacen("\"name\":\"pad0\"", "\"name\":\"padx\"", 1);
+        assert_ne!(renamed, stored.reflection, "{}", stored.name);
+        assert_eq!(
+            verify_stored(&stored.record(), Format::Wgsl, stored.wgsl, &renamed).unwrap(),
+            "2026.20",
+            "{}",
+            stored.name
+        );
+        // A program that loads the artifact checks it against the macro's own Std140V1 descriptor (D17), a real
+        // `#[gpu]` kernel descriptor, and refuses it by the field name.
+        let error = verify_artifact(
+            stored.kernel,
+            &Artifact {
+                format: Format::Wgsl,
+                key: stored.key,
+                bytes: stored.wgsl,
+                reflection: leak_str(&renamed),
+            },
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("field name/order differs"),
+            "{}: {error}",
+            stored.name
+        );
+    }
 }
 
 #[test]

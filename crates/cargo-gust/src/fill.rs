@@ -1,5 +1,6 @@
 //! Element layouts read from the Slang helper's reflection JSON, for the parameters whose layout the macro could not
-//! write into the record (`layout: null`, listed as `export_unchecked` in the manifest).
+//! write into the record (`layout: null`). A storage parameter is listed as `export_unchecked` in the manifest; a
+//! uniform is not (see the last paragraph).
 //!
 //! The macro describes an element type from the module's own syntax: scalars and structs of this module. A `GpuPod`
 //! type from outside the module, a type alias or a nested type from elsewhere is invisible to it, so the record says
@@ -15,7 +16,8 @@
 //! A uniform (`Uniform<T>`, a constant buffer; D80) is always in this state: the record schema has no uniform layout,
 //! so its `layout` is `null` whatever `T` is. [`reflected_uniform_layout`] reads the constant buffer's element, and the
 //! export declares it `Std140V1`, so the same cross-check holds it to std140 (padding fields spelled out, nested
-//! structs at multiples of 16) and to the reflection it came from.
+//! structs at multiples of 16) and to the reflection it came from. It is not listed as `export_unchecked`, and the
+//! macro's own layout of a uniform is compared with the reflection only at run time (D17, `verify_artifact`).
 
 use gust::ScalarKind;
 

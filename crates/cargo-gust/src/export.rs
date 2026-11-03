@@ -267,9 +267,12 @@ fn completed_descriptor(
 /// D17 at export time: the helper's reflection against the record's descriptor, resource by resource.
 ///
 /// The macro could not describe some element types (`layout: null`, the manifest's `export_unchecked`). Their layout
-/// is filled in from the same reflection first ([`Record::completed`]), so for those parameters only the binding, the
-/// group and the access are compared with the descriptor and the layout half is skipped. Every other parameter is
-/// checked in full, layout included.
+/// is filled in from the same reflection first ([`Record::completed`]), so for those storage parameters only the
+/// binding, the group and the access are compared with the descriptor and the layout half is skipped. A uniform is
+/// always in that state: the record carries no uniform layout, so its layout is always filled from the reflection
+/// ([`completed_descriptor`], `Std140V1`) and it is never listed in `export_unchecked`. What is checked for it here is
+/// the reflection against itself: std140 shape, binding, group and access. The macro's own layout is compared only at
+/// run time (D17 through `verify_artifact`). Every other parameter is checked in full, layout included.
 pub(crate) fn cross_check_completed(
     record: &Record,
     reflection: &Reflection,

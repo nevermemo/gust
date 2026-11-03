@@ -184,7 +184,7 @@ pub(crate) mod blocking {
         }
 
         #[test]
-        fn a_completion_finished_by_another_thread_wakes_the_blocked_thread() {
+        fn a_completion_finished_by_another_thread_ends_the_blocked_wait() {
             let completion = Completion::new();
             let callback = completion.clone();
             let started = Instant::now();

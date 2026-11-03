@@ -742,7 +742,8 @@ pub(crate) struct PooledReadback<T> {
 }
 
 impl<T: GpuPod> PooledReadback<T> {
-    /// Block until the device has run every pending callback, this mapping's included.
+    /// Block until the device has finished the submitted work. This mapping's callback may not have run yet (another
+    /// thread's poll can have collected it); `read_pooled` waits for the completion afterwards.
     #[cfg(not(target_arch = "wasm32"))]
     fn wait(&self, device: &wgpu::Device) -> Result<(), Error> {
         if self.mapped.is_some() {

@@ -98,8 +98,9 @@ fn round(device: &DeviceHandle, thread: usize, iteration: u64, tally: &mut Tally
     tally.iterations += 1;
 }
 
-/// `threads` threads reading back in a loop on `device` for `seconds`; returns the sum of their tallies.
-fn hammer(device: &DeviceHandle, threads: usize, seconds: u64) -> Tally {
+/// `threads` threads reading back in a loop on `device` for `seconds`; returns the sum of their tallies and the
+/// iterations each thread finished.
+fn hammer(device: &DeviceHandle, threads: usize, seconds: u64) -> (Tally, Vec<u64>) {
     let deadline = Instant::now() + Duration::from_secs(seconds);
     let workers: Vec<_> = (0..threads)
         .map(|thread_index| {
@@ -116,10 +117,13 @@ fn hammer(device: &DeviceHandle, threads: usize, seconds: u64) -> Tally {
         })
         .collect();
     let mut total = Tally::default();
+    let mut per_thread = Vec::with_capacity(threads);
     for worker in workers {
-        total.add(&worker.join().expect("a worker thread panicked"));
+        let tally = worker.join().expect("a worker thread panicked");
+        per_thread.push(tally.iterations);
+        total.add(&tally);
     }
-    total
+    (total, per_thread)
 }
 
 #[test]
@@ -127,14 +131,14 @@ fn blocking_readbacks_from_many_threads_on_one_device_never_miss_their_mapping()
     let threads = setting("GUST_CONCURRENCY_THREADS", DEFAULT_THREADS).max(2);
     let seconds = setting("GUST_CONCURRENCY_SECONDS", DEFAULT_SECONDS).clamp(1, MAX_SECONDS);
     let device = device();
-    let total = hammer(&device, threads, seconds);
+    let (total, per_thread) = hammer(&device, threads, seconds);
     eprintln!(
         "concurrency: {threads} threads, {seconds} s: {} iterations, {} Error::Map, {} other errors, {} wrong values",
         total.iterations, total.map_errors, total.other_errors, total.wrong_values
     );
     assert!(
-        total.iterations >= threads as u64,
-        "every thread should finish an iteration"
+        per_thread.iter().all(|iterations| *iterations >= 1),
+        "every thread should finish an iteration: {per_thread:?}"
     );
     assert_eq!(
         (total.map_errors, total.other_errors, total.wrong_values),

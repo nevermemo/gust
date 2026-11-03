@@ -29,8 +29,10 @@
 //! `read_typed_buffer_async` and `HeadlessDevice::new_async` are the async core (R4.9); a std-only `Completion` future
 //! sits above wgpu's `map_async` callback. On native the blocking functions (`new`, `read_typed_buffer`) keep their
 //! names and wrap the async functions (`new` with `pollster::block_on`); a readback wrapper waits with `poll(Wait)`
-//! first and then polls the finished future once, because on native the callback runs only while something polls the
-//! device. They do not exist on `wasm32`.
+//! first and then waits for the mapping's own completion (it parks until the callback wakes it, polls the device
+//! again every 10 ms, and gives up with `Error::Map` after 30 s). On native the callback runs inside a device poll,
+//! and the poll that runs it may be another thread's, so one poll and one check would be a race. They do not exist on
+//! `wasm32`.
 //!
 //! # The `wasm32` surface
 //!
@@ -937,9 +939,10 @@ struct TypedReadback<T> {
 }
 
 impl<T: GpuPod> TypedReadback<T> {
-    /// Block until the device has run every pending callback, which includes this mapping's. The native blocking
-    /// wrappers call it before they drive `finish`; without it `finish` would wait for a device poll that no one
-    /// makes.
+    /// Block until the device has finished the submitted work. This does not mean this mapping's callback has run:
+    /// another thread's poll may have collected it and not fired it yet. The native blocking wrappers call it before
+    /// they wait for the completion in `finish` (`block_on_mapping`), so that the wait is short; the completion is
+    /// what they rely on.
     #[cfg(not(target_arch = "wasm32"))]
     fn wait(&self, device: &wgpu::Device) -> Result<(), Error> {
         if self.mapping.is_some() {

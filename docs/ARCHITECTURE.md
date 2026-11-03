@@ -143,8 +143,9 @@ a device poll, and a poll runs the callbacks of every finished submission, whoev
 thread's poll can collect this thread's callback and a `poll(Wait)` can return before it has run. A blocking
 readback therefore waits for the mapping's own completion after the device wait (the callback wakes the waiting
 thread, or sends on a channel), for at most 30 seconds, and a callback that does not arrive in that time is
-`Error::Map`. A single check after one poll reported that error under load (87 failures in six 4-second runs of
-8 threads before the change, none after). The `wasm32` readbacks are awaited and unaffected.
+`Error::Map`. A single check after one poll reported that error under load; `tests/concurrency.rs` is the regression
+test (8 threads, 4 seconds), and the m7.rb run logs `m7rb-repro0.log` (8 `Error::Map` in 2903 iterations before the
+change) and `m7rb-fix1.log` (0 in 3153 after) hold the counts. The `wasm32` readbacks are awaited and unaffected.
 
 `HeadlessDevice` implements `TypedDevice` and, in one blanket impl, `Run<K, N>` for
 every kernel type (a kernel with a `Uniform<T>` parameter runs through it too since m6.g2, with the uniform bound

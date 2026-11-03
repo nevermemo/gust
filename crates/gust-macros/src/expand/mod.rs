@@ -10,12 +10,26 @@ use crate::{
 };
 
 mod artifact;
-use artifact::{Environment, Lookup};
+use artifact::Lookup;
+#[cfg(test)]
+pub(crate) use artifact::TWIN_TEXT;
+pub(crate) use artifact::{Environment, content_key};
 
 mod map;
 pub(crate) use map::expand_map;
 #[cfg(test)]
 pub(crate) use map::map_kernel;
+
+/// What names a kernel's export record to the tool that reads it: a `#[gpu]` module or function is one place in the
+/// source, so its record says where (schema 1, `source`); a `par_for!` call is a body that can stand at any number of
+/// places, so its record says nothing of them (schema 2) and each place writes its own sidecar (R1.1 M5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Identity {
+    /// A `#[gpu]` module or function: schema 1, the record holds the kernel's `source`.
+    Module,
+    /// A `par_for!` call whose first line is `call_line`: schema 2 and a sidecar `<key>.<site16>.site.json`.
+    Site { call_line: u32 },
+}
 
 #[derive(Clone, Copy, Debug)]
 pub struct KernelOptions {
@@ -102,18 +116,25 @@ fn expand_in(
     profile: Profile,
 ) -> syn::Result<TokenStream> {
     crate::validate::validate_module(&module)?;
-    expand_validated(module, environment, profile, &TokenStream::new())
+    expand_validated(
+        module,
+        environment,
+        profile,
+        &TokenStream::new(),
+        Identity::Module,
+    )
 }
 
 /// [`expand_in`] for a module that is already validated: the module's items are expanded as they stand, and `extra`
 /// is emitted inside the generated module after the kernels' items. The map generator (`map.rs`) validates the user's
 /// function as a helper of a module, then expands the module it synthesises around it (whose generated kernel uses
 /// the reserved `__gust_` names the validator refuses in user code) and adds the host functions as `extra`.
-fn expand_validated(
+pub(crate) fn expand_validated(
     mut module: syn::ItemMod,
     environment: &Environment,
     profile: Profile,
     extra: &TokenStream,
+    identity: Identity,
 ) -> syn::Result<TokenStream> {
     let original_module = module.clone();
     let module_name = module.ident.to_string();
@@ -217,7 +238,29 @@ fn expand_validated(
                     file: file.as_deref().unwrap_or_default(),
                     lines: if file.is_some() { &emitted.lines } else { &[] },
                 };
-                match artifact::write_records(directory, &key, &slang_source, &record.json()) {
+                let written = match identity {
+                    Identity::Module => {
+                        artifact::write_records(directory, &key, &slang_source, &record.json())
+                    }
+                    // A `par_for!` call: the record carries no origin (equal bodies write equal bytes) and the
+                    // call's own file and line table go to its sidecar (R1.1 M5).
+                    Identity::Site { call_line } => {
+                        let site = artifact::SiteRecord {
+                            key: &key,
+                            file: record.file,
+                            lines: record.lines,
+                        };
+                        artifact::write_site_records(
+                            directory,
+                            &key,
+                            &slang_source,
+                            &record.json_without_source(),
+                            &artifact::site_file_name(&key, record.file, call_line),
+                            &site.json(),
+                        )
+                    }
+                };
+                match written {
                     Ok(()) => TokenStream::new(),
                     Err(message) => artifact::error_item(
                         Code::ExportWriteFailed,

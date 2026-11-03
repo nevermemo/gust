@@ -198,6 +198,31 @@ workspace crate without one. It is `publish = false` because the kernel file liv
 CPU twins against independent references in its test builds; the `gpu::` tests run on the adapter and belong to the Gpu suite
 and `verify --mode gpu`, not to Unit.
 
+`par_for!` (slice m7.p, plan 3.1) is a function-like macro in the same crate. A call
+`par_for!(i in 0..n, [a: &[f32], out: &mut [f32]] { out[i] = a[i]; })` validates its body
+with the same rules as a `#[gpu]` kernel (an error in the body carries the code and the
+span of the offending statement, D33), lowers it once into a kernel `run` with an extent
+uniform and a bounds guard, and expands to a block that holds a module named
+`__gust_pf_<hash16>` and a launch of it. The hash is `content_key` of the entry point and
+the clean Slang text, so two spellings of one body (other layout, other file, other
+line) are one module and one kernel. The extent record is the three axis extents, the
+scalar bindings (a `bool` as a `u32` word) and explicit padding to a multiple of 16
+bytes; every buffer is `Independent`. The launch rounds each axis up to the workgroup,
+returns `Ok(())` for a zero axis without touching the device, and a launch over the
+device's invocation cap is the device's `DeviceLimit` error. The twin (`CpuDevice`; every
+build under `GUST_PROFILE=cpu`, test and dual builds otherwise) runs the loop
+sequentially.
+
+Export records. A `#[gpu]` module or function writes a schema 1 `<key>.kernel.json`
+whose `source` names its file and line table. A `par_for!` body can stand at any number
+of call sites, so its record is schema 2 and has no `source`: equal bodies write equal
+record bytes (`write_once` makes the second write a no-op). Each call site writes a
+sidecar `<key>.<site16>.site.json` (`schema` 2, `key`, `file`, `lines`), where `site16`
+is FNV-1a 64 over the relative file, a zero byte and the decimal line of the call.
+`cargo gust` reads both schemas; the `SourceOrigin` of a schema 2 kernel is the first
+sidecar's by file name. A `.site.json` next to a schema 1 record, a schema 2 record
+without one, and a sidecar of another key are errors.
+
 ## Descriptor flow
 
 For a kernel with three storage buffers, the macro records:

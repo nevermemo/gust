@@ -4,6 +4,7 @@ mod diagnostics;
 mod expand;
 mod math_types;
 mod mul_impls;
+mod par_for;
 mod recover;
 mod slang;
 mod uniform;
@@ -27,6 +28,10 @@ mod workgroup_tests;
 #[path = "tests/grid.rs"]
 mod grid_tests;
 
+#[cfg(test)]
+#[path = "tests/par_for.rs"]
+mod par_for_tests;
+
 /// Marks an inline Rust module as GUST GPU code, or a free scalar function as an element-wise map (D60).
 ///
 /// On a module, the macro validates a deliberately small Rust subset, translates each
@@ -44,6 +49,25 @@ pub fn gpu(attribute: TokenStream, item: TokenStream) -> TokenStream {
     let value = std::env::var("GUST_PROFILE").ok();
     let profile = expand::Profile::from_value(value.as_deref());
     gpu_impl_with(attribute.into(), item.into(), profile).into()
+}
+
+/// A parallel loop written at the call site (slice m7.p, plan section 3.1):
+///
+/// ```text
+/// gust::par_for!(i in 0..n, [a: &[f32], b: &[f32], out: &mut [f32]] {
+///     out[i] = a[i] * b[i];
+/// });
+/// ```
+///
+/// The body is the dialect, run once per index of the ranges as a kernel; the bracketed list names the buffers
+/// (`&[T]`, `&mut [T]`, `&GpuVec<T>`, `&mut GpuVec<T>`) and scalars (`u32`, `i32`, `f32`, `bool`) it uses, each taken
+/// from the variable of that name at the call. The call returns `Result<(), gust::map::Error>`.
+#[proc_macro]
+pub fn par_for(input: TokenStream) -> TokenStream {
+    // The one place that reads the build profile, as for `#[gpu]` (D44, R1-9).
+    let value = std::env::var("GUST_PROFILE").ok();
+    let profile = expand::Profile::from_value(value.as_deref());
+    par_for::par_for(input.into(), profile).into()
 }
 
 /// The `Mul` and `MulAssign` impls of `gust::math`, generated from the product table that also drives the Slang

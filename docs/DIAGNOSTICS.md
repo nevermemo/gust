@@ -1192,6 +1192,22 @@ Fixture: `tests/ui/workgroup-over-16kib` (`cargo xtask check-ui`, `code: none` p
 Write instead: shorter arrays, a smaller element type, or fewer arrays; 16384 bytes exactly is accepted.
 Decision: D42 (M7 plan 4.1, slice m7.g1).
 
+### GUST-E0719 `par_for!` call that is not one of its forms
+
+A `par_for!` call is `par_for!([workgroup_size(x, y, z);] PATTERN in RANGES, [bindings] { body })`. The pattern is `i`, `(x, y)` or `(x, y, z)`, each name an identifier or `_` and each named once; the ranges are `0..n` for one variable or a tuple of them, one per variable, each starting at the literal 0 and ending before an extent expression; the bindings are a bracketed list; the body is one block and ends the call. A `workgroup_size` option has the codes of the same option on a kernel (E0704, E0705, E0706). The hidden options `on(device);` and `descriptor;` come before the pattern and are read the same way.
+Reached through `#[gpu]`, by way of `par_for!`.
+Rejected: `par_for!(i in 0..n, [])` (no body), `par_for!((x) in 0..n, [] { })`, `par_for!((x, y) in 0..n, [] { })`, `par_for!(i in 1..n, [] { })`, `par_for!(i in 0..=n, [] { })`, `par_for!((x, x) in (0..w, 0..h), [] { })`, `par_for!(i in 0..n, [] { } { })`.
+Write instead: one of the forms of the plan (section 3.1), for example `par_for!((x, y) in (0..w, 0..h), [out: &mut [f32], w: u32] { out[y * w + x] = 1.0; })`.
+Decision: M7 plan 3.1 (slice m7.p).
+
+### GUST-E0720 `par_for!` binding that cannot be one
+
+A binding is `name: Type` with one of: `&[T]` (a buffer the body reads), `&mut [T]` (a buffer it writes, read back after the loop), `&GpuVec<T>` and `&mut GpuVec<T>` (a resident buffer, bound where it is), or a scalar `u32`, `i32`, `f32` or `bool` (a field of the extent record). `T` is a buffer element: `f32`, `i32`, `u32` or a 2- or 4-wide vector or a square matrix; a `bool` buffer is a `u32` buffer, and a 3-wide type is GUST-E0204. A name is used once among the loop variables and the bindings. Under `GUST_PROFILE=cpu` there is no GPU API, so a `GpuVec` binding is refused.
+Reached through `#[gpu]`, by way of `par_for!`.
+Rejected: `a: Vec<f32>`, `a: &Vec<f32>`, `a: &[bool]`, `a: &mut f32`, `a: u64`, `a: &[f32], a: &[f32]`, `i: u32` in a loop over `i`, `a: &GpuVec<f32>` under `GUST_PROFILE=cpu`.
+Write instead: a slice or a `GpuVec` for a buffer, a scalar of the four types for a value, and distinct names; the binding is read from the variable of that name at the call (`&a[..]`, `&mut out[..]`, `&*v`, or the scalar itself).
+Decision: M7 plan 3.1 (slice m7.p).
+
 ## E08xx: emitter-only rejections
 
 These are checked by the Slang emitter after the validator has accepted the module. The

@@ -321,6 +321,12 @@ codes! {
     BarrierKernelCpu = 717 => "GUST-E0717";
     /// Workgroup memory of a kernel that adds up to more than 16 KiB.
     WorkgroupMemoryLimit = 718 => "GUST-E0718";
+    /// A `par_for!` whose shape is not one of the forms: the loop pattern, the ranges, the binding list, the body, or
+    /// an option in front of the loop.
+    ParForForm = 719 => "GUST-E0719";
+    /// A `par_for!` binding that is named twice, has a type a binding cannot have, or is a `GpuVec` under
+    /// `GUST_PROFILE=cpu`.
+    ParForBinding = 720 => "GUST-E0720";
 
     // E08xx: rejections only the emitter makes, after validation passed.
     /// A kernel parameter that is neither a resource nor the dispatch thread.
@@ -1185,6 +1191,7 @@ mod tests {
             || file.ends_with("src/tests/map.rs")
             || file.ends_with("src/tests/workgroup.rs")
             || file.ends_with("src/tests/grid.rs")
+            || file.ends_with("src/tests/par_for.rs")
             || file.ends_with("src/validate/mod.rs")
     }
 

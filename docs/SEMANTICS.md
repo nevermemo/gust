@@ -102,6 +102,20 @@ describes the intended behaviour and is not evidence.
   two kernels, and a graph update between two dispatches, each against an independent host reference and the twin. It
   also checks that the reflected `constantBuffer` size equals Rust's `size_of` of the element (D17; that check has no
   host reference).
+- **`par_for!` (exists, m7.p).** `par_for!(PATTERN in RANGES, [bindings] { body })` runs the body once for every
+  index of a one-, two- or three-dimensional range that starts at 0, on the device named by `on(..)` or the default
+  one. The loop variable is the invocation's global id on that axis and the body is the `#[gpu]` dialect (the same
+  validator, the same codes). The macro adds a guard on each named axis, so the last workgroup's extra invocations
+  run nothing; an extent of 0 on any axis runs nothing and returns `Ok(())`; an extent that does not fit `u32`, or a
+  launch past the device's invocation cap, is an `Err` before any device work. Every buffer is an independent
+  binding: the body may not rely on two bindings being the same memory, and a `&mut [T]` binding is uploaded before
+  and read back after the loop. Scalars (`f32`, `i32`, `u32`, `bool`) travel in the extent record. The CPU twin runs
+  the same body sequentially in ascending index order; that is the semantics of a loop with no loop-carried
+  dependence, which is all the dialect lets a body express. Evidence (exists, m7.p): `gust-wgpu/tests/par_for.rs`
+  runs the eight calls of `tests/fixtures/par_for.rs` on the GPU and on the twin against independent host references
+  over 1, 2 and 3 dimensions, extents off the workgroup, a zero extent, an over-cap extent, an extent past `u32`,
+  scalars of every kind, the default device and resident `GpuVec` bindings; the macro's tests pin the Slang golden
+  `tests/fixtures/par_for.slang`, the export records and their sidecars, and the attribution of body errors.
 - **Not executed by the twin.** Indirect dispatch and staged graphs stay GPU-only. A kernel can opt out explicitly with
   `#[kernel(cpu = "unsupported")]` (D26). The examples that use them carry kernel-level twin evidence only (exists, m3.e2): `staged-graph` and
   `component-pool` run the twin of each of their kernels on the GPU's inputs to that kernel (read back where an earlier kernel produced them), and

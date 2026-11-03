@@ -133,6 +133,57 @@ pub(crate) const SAMPLE_RECORD_JSON: &str = concat!(
     "}\n"
 );
 
+/// The sample kernel's record as a `par_for!` call writes it (schema 2, R1.1 M5): the same keys, no `source`. The
+/// record does not depend on where its body stands, so it is derived from [`SAMPLE_RECORD_JSON`] by dropping the
+/// source block and raising the schema.
+pub(crate) fn site_record_json() -> String {
+    let source = concat!(
+        "  \"source\": {\n",
+        "    \"file\": \"src/lib.rs\",\n",
+        "    \"lines\": [\n",
+        "      [3, 9, 12],\n",
+        "      [5, 5, 14]\n",
+        "    ]\n",
+        "  },\n"
+    );
+    assert!(SAMPLE_RECORD_JSON.contains(source));
+    SAMPLE_RECORD_JSON
+        .replace(source, "")
+        .replace("\"schema\": 1", "\"schema\": 2")
+}
+
+/// The sidecar names of two call sites of the sample kernel, as the macro names them (`<key>.<site16>.site.json`,
+/// `site16` = FNV-1a 64 over the relative file, a zero byte and the decimal call line; computed outside this code
+/// with a script): `src/lib.rs` at line 12 and `tests/other.rs` at line 40. The second sorts first.
+pub(crate) const SITE_LIB_NAME: &str = "022c52d675787198.6b7d03da5734408d.site.json";
+pub(crate) const SITE_OTHER_NAME: &str = "022c52d675787198.440c6d8bbdeab608.site.json";
+
+/// The sidecar of the call in `src/lib.rs`.
+pub(crate) const SITE_LIB_JSON: &str = concat!(
+    "{\n",
+    "  \"file\": \"src/lib.rs\",\n",
+    "  \"key\": \"022c52d675787198\",\n",
+    "  \"lines\": [\n",
+    "    [3, 9, 12],\n",
+    "    [5, 5, 14]\n",
+    "  ],\n",
+    "  \"schema\": 2\n",
+    "}\n"
+);
+
+/// The sidecar of the call in `tests/other.rs`: the same body at another place.
+pub(crate) const SITE_OTHER_JSON: &str = concat!(
+    "{\n",
+    "  \"file\": \"tests/other.rs\",\n",
+    "  \"key\": \"022c52d675787198\",\n",
+    "  \"lines\": [\n",
+    "    [3, 9, 40],\n",
+    "    [5, 5, 42]\n",
+    "  ],\n",
+    "  \"schema\": 2\n",
+    "}\n"
+);
+
 /// The vector-add kernel's WGSL and the raw reflection JSON the helper wrote for it (spike S1, kept verbatim in gust's
 /// fixtures; the key is the one its macro-made descriptor has).
 pub(crate) const VECTOR_ADD_KEY: &str = "52e85c5f03f72272";

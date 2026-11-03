@@ -12,6 +12,11 @@ use crate::{
 mod artifact;
 use artifact::{Environment, Lookup};
 
+mod map;
+pub(crate) use map::expand_map;
+#[cfg(test)]
+pub(crate) use map::map_kernel;
+
 #[derive(Clone, Copy, Debug)]
 pub struct KernelOptions {
     pub workgroup_size: [u32; 3],
@@ -92,11 +97,24 @@ pub(crate) fn expand_with_directories(
 /// half pair there is no concern of a CPU build), so every kernel is `Lookup::Absent` and the manifest is absent;
 /// the per-kernel `require_artifact` item is still emitted, and the build script's profile makes it a no-op.
 fn expand_in(
-    mut module: syn::ItemMod,
+    module: syn::ItemMod,
     environment: &Environment,
     profile: Profile,
 ) -> syn::Result<TokenStream> {
     crate::validate::validate_module(&module)?;
+    expand_validated(module, environment, profile, &TokenStream::new())
+}
+
+/// [`expand_in`] for a module that is already validated: the module's items are expanded as they stand, and `extra`
+/// is emitted inside the generated module after the kernels' items. The map generator (`map.rs`) validates the user's
+/// function as a helper of a module, then expands the module it synthesises around it (whose generated kernel uses
+/// the reserved `__gust_` names the validator refuses in user code) and adds the host functions as `extra`.
+fn expand_validated(
+    mut module: syn::ItemMod,
+    environment: &Environment,
+    profile: Profile,
+    extra: &TokenStream,
+) -> syn::Result<TokenStream> {
     let original_module = module.clone();
     let module_name = module.ident.to_string();
     let manifest_dir = environment.manifest_dir.as_deref();
@@ -284,6 +302,8 @@ fn expand_in(
         #module_vis mod #module_ident {
             #(#content)*
             #(#generated)*
+
+            #extra
 
             #tracked_environment
 

@@ -15,10 +15,18 @@ use diagnostics::Code;
 #[path = "tests/regression.rs"]
 mod regression_tests;
 
-/// Marks an inline Rust module as GUST GPU code.
+#[cfg(test)]
+#[path = "tests/map.rs"]
+mod map_tests;
+
+/// Marks an inline Rust module as GUST GPU code, or a free scalar function as an element-wise map (D60).
 ///
-/// The macro validates a deliberately small Rust subset, translates each
-/// kernel directly to Slang, and generates host-side handles and descriptors.
+/// On a module, the macro validates a deliberately small Rust subset, translates each
+/// kernel directly to Slang, and generates host-side handles and descriptors. On a
+/// function (`#[gpu] pub fn saxpy(a: f32, x: f32, y: f32) -> f32 { .. }`) the function stays
+/// as written and the macro adds a module of the same name with a generated grid-stride
+/// kernel and the calls `map`, `map_on`, `map_gpu`, `map_gpu_on`, `map_async` and
+/// `map_on_async` (under `GUST_PROFILE=cpu`: `map`, `map_on` and `map_on_async`).
 #[proc_macro_attribute]
 pub fn gpu(attribute: TokenStream, item: TokenStream) -> TokenStream {
     // The one place that reads the build profile (D44, R1-9): everything below takes it as an argument, so tests
@@ -63,21 +71,55 @@ pub(crate) fn gpu_impl_with(
     profile: expand::Profile,
 ) -> proc_macro2::TokenStream {
     // `syn` words the parse failure itself; the code is added in front.
-    let parsed = diagnostics::parse2::<syn::ItemMod>(Code::ItemNotModule, item.clone());
+    let parsed = diagnostics::parse2::<syn::Item>(Code::ItemNotModule, item.clone());
     if !attribute.is_empty() {
         let error = diagnostics::error_at(
             Code::GpuArguments,
             proc_macro2::Span::call_site(),
             "#[gpu] does not accept arguments in the current Rust-to-Slang subset",
         );
-        return recover::beside_error(error, &item, parsed.ok());
+        let module = match parsed {
+            Ok(syn::Item::Mod(module)) => Some(without_nested_gpu(module)),
+            _ => None,
+        };
+        return recover::beside_error(error, &item, module);
     }
-    let module = match parsed {
-        Ok(module) => module,
-        Err(error) => return recover::beside_error(error, &item, None),
-    };
-    match expand::expand_with(module.clone(), profile) {
-        Ok(tokens) => tokens,
-        Err(error) => recover::beside_error(error, &item, Some(module)),
+    match parsed {
+        Ok(syn::Item::Mod(module)) => match expand::expand_with(module.clone(), profile) {
+            Ok(tokens) => tokens,
+            Err(error) => recover::beside_error(error, &item, Some(without_nested_gpu(module))),
+        },
+        // A free function: the element-wise map calls of D60 (m7.a1). On error the function follows the error as
+        // written.
+        Ok(syn::Item::Fn(function)) => match expand::expand_map(function, profile) {
+            Ok(tokens) => tokens,
+            Err(error) => recover::beside_error(error, &item, None),
+        },
+        Ok(other) => {
+            let error = diagnostics::error(
+                Code::ItemNotModule,
+                &other,
+                "#[gpu] goes on an inline module (`#[gpu] mod name { .. }`) or on a free scalar function \
+                 (`#[gpu] fn name(..) -> T { .. }`)",
+            );
+            recover::beside_error(error, &item, None)
+        }
+        Err(error) => recover::beside_error(error, &item, None),
     }
+}
+
+/// A rejected module goes back beside the error as written, except that a `#[gpu]` function inside it (GUST-E0716)
+/// loses the attribute: left on, it would expand by itself in the user's crate and add errors that only follow from
+/// the first.
+fn without_nested_gpu(mut module: syn::ItemMod) -> syn::ItemMod {
+    if let Some((_, items)) = &mut module.content {
+        for item in items {
+            if let syn::Item::Fn(function) = item {
+                function
+                    .attrs
+                    .retain(|attribute| !validate::is_gpu_attribute(attribute));
+            }
+        }
+    }
+    module
 }

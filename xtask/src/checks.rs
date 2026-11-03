@@ -277,6 +277,7 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
         }
         "map" => {
             run_direct(&root, "cargo", &["test", "-p", "gust", "--lib", "map::"])?;
+            run_counted(&root, &["test", "-p", "gust-macros", "--lib", "map_tests"])?;
             run_direct(
                 &root,
                 "cargo",
@@ -284,6 +285,8 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                     "test",
                     "-p",
                     "gust-wgpu",
+                    "--test",
+                    "map",
                     "--test",
                     "gpu_vec",
                     "--test",
@@ -635,7 +638,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "result: Result lowering/match regressions plus WGSL, SPIR-V, and real-GPU Result tests"
         }
         "map" => {
-            "map: the device side of the map calls: gust::map unit tests, then GpuVec and the buffer pool, device options and adapter choice, and the launch and buffer limits on the GPU"
+            "map: the map calls of `#[gpu]` on a function and their device side: gust::map unit tests, the gust-macros map tests (expansion, diagnostics and the golden of the generated kernels), the map calls on the GPU against their CPU twins (crates/gust-wgpu/tests/map.rs), then GpuVec and the buffer pool, device options and adapter choice, and the launch and buffer limits on the GPU"
         }
         "algo" => {
             "algo: the device-resident algorithms of gust-algo (m7.r1 reduce, m7.r2 scan and sum_wrapping, m7.r3 compaction): the schedule and bound arithmetic, the goldens of the reduce, scan and compact kernels and the CPU twins against independent references (no adapter needed), then the same cases on the first Vulkan adapter with the per-level float bound asserted, the dispatch counts of a scan and of a compaction, the empty and over-limit inputs and the pooled buffers"
@@ -680,7 +683,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "check-dual: the dual test build (`--cfg gust_dual`, D26) and its cross-crate proof, with its own target directory <target>/dual: tests/dual is formatted (`cargo fmt --check`) and passes clippy with -D warnings (the root fmt and CI clippy do not reach that workspace), as do vector-add and polynomial with the cfg (CI's clippy compiles their dual code out); the workspace builds with the cfg; in tests/dual a consumer's test (E1) and production binary (E3) each fail with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib` without the cfg, and with it (E2) the test passes. Without `--check-only` it then runs `cargo run` of vector-add and polynomial with the cfg, which must print the `CPU twin: matches (N elements, max ULP k)` line (polynomial also the twin's time beside run_cpu's), and of vector-add without the cfg, which must not mention the twin; that part needs a Vulkan GPU, and `check-full` runs it. Refuses to run while RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS or CARGO_BUILD_RUSTFLAGS is set (it delivers the cfg through CARGO_ENCODED_RUSTFLAGS). `--check-only` is the CPU-only mode CI runs; it needs cargo only"
         }
         "check-cpu-target" => {
-            "check-cpu-target: the production CPU target (D21, D51) on the fixture workspace tests/cpu-target, with cargo only (no slangc, no GPU), in <target>/cpu-target, cpu-target-dual and cpu-target-flip: E-a builds `app` in release under GUST_PROFILE=cpu and runs it (one `CPU target: matches` line per kernel, the final line); E-b scans that binary for slangc, gust-slang-reflect, wgpu and vulkan (any letter case, with a control string) and reads `cargo tree -e features -p app`; E-c builds and runs it under cpu with --cfg gust_dual; E-d to E-g judge the four refusals on tests/cpu-target/e-*-expected.txt (E-e is the E0080 of gust-wgpu's require_gpu_target); E-h flips the profile cpu, unset, cpu, unset, cpu, unset in one directory; E-i runs cargo test -p kernels under cpu. Stops at the first failing step and names it. The Cpu suite is this command; CI's unit job runs it"
+            "check-cpu-target: the production CPU target (D21, D51) on the fixture workspace tests/cpu-target, with cargo only (no slangc, no GPU), in <target>/cpu-target, cpu-target-dual and cpu-target-flip: E-a builds `app` in release under GUST_PROFILE=cpu and runs it (one `CPU target: matches` line per kernel, the `CPU target: map calls match (..)` line of the map case exactly once, the final line); E-b scans that binary for slangc, gust-slang-reflect, wgpu and vulkan (any letter case, with a control string) and reads `cargo tree -e features -p app`; E-c builds and runs it under cpu with --cfg gust_dual; E-d to E-g judge the four refusals on tests/cpu-target/e-*-expected.txt (E-e is the E0080 of gust-wgpu's require_gpu_target); E-h flips the profile cpu, unset, cpu, unset, cpu, unset in one directory; E-i runs cargo test -p kernels under cpu. Stops at the first failing step and names it. The Cpu suite is this command; CI's unit job runs it"
         }
         "bless" => {
             "bless: reruns the Slang golden tests with BLESS_GOLDEN=1, which rewrites changed fixtures and fails with the diff; review before committing"

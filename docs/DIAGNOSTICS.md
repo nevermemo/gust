@@ -304,9 +304,9 @@ Decision: D17, D31 (M6 plan R1.1).
 
 `Vec3`, `UVec3` and `Mat3` have stride 16 in a Slang buffer but size 12 (36) in Rust, so no Rust type matches them in every buffer position.
 Reached through `#[gpu]`.
-Rejected: a struct field `v: Vec3`, `m: Mat3`; a resource element `StructuredBuffer<Vec3>`, `RWStructuredBuffer<UVec3>`, `Storage<Mat3>`.
-Write instead: `Vec4` or three scalars in buffers; the 3-wide types stay allowed as locals, helper parameters and helper results.
-Decision: D17 (M6 plan F4, F5).
+Rejected: a struct field `v: Vec3`, `m: Mat3`; a resource element `StructuredBuffer<Vec3>`, `RWStructuredBuffer<UVec3>`, `Storage<Mat3>`; a parameter or the result of a `#[gpu]` map function (`#[gpu] fn f(v: Vec3) -> f32`), whose arguments and results are buffer elements.
+Write instead: `Vec4` or three scalars in buffers; the 3-wide types stay allowed as locals, helper parameters and helper results (also inside the body of a map function).
+Decision: D17 (M6 plan F4, F5), D60.
 
 ### GUST-E0205 `Mat2` or `bool` in a uniform struct
 
@@ -983,15 +983,16 @@ Rejected: `#[gpu(debug)] mod shaders { ... }`.
 Write instead: `#[gpu] mod shaders { ... }`.
 Decision: D02.
 
-### GUST-E0702 item is not a module, or does not parse as one
+### GUST-E0702 item is not a module or a function, or does not parse as one
 
-`#[gpu]` goes on an inline module whose body parses as Rust. The message after the code is
-`syn`'s own parse error.
+`#[gpu]` goes on an inline module whose body parses as Rust, or on a free scalar function (the
+map calls of D60, GUST-E0714). The message after the code is `syn`'s own parse error when the
+tokens are not an item.
 Reached through `#[gpu]`.
-Rejected: `#[gpu] fn f() {}`, a module with a syntax error inside, or tokens that do not
-parse as an item.
-Write instead: put the function inside `#[gpu] mod shaders { ... }` and fix the syntax error.
-Decision: D02.
+Rejected: `#[gpu] struct S;`, `#[gpu] const X: u32 = 1;`, `#[gpu] use ..;`, a module with a syntax
+error inside, or tokens that do not parse as an item.
+Write instead: put the item inside `#[gpu] mod shaders { ... }` and fix the syntax error.
+Decision: D02, D60.
 
 ### GUST-E0703 duplicate `#[kernel]`
 
@@ -1095,6 +1096,31 @@ Reached through `#[gpu]`.
 Rejected: `GUST_EXPORT_DIR` set while `CARGO_PKG_NAME` is unset or contains a path separator.
 Write instead: build through cargo, which sets `CARGO_PKG_NAME`.
 Decision: D45, D46.
+
+### GUST-E0714 map function signature
+
+`#[gpu]` on a free function generates a grid-stride kernel and the element-wise calls of the function (`saxpy::map`, `saxpy::map_on`, `saxpy::map_gpu`, `saxpy::map_async`, ..), so its signature must be one the generator can make a kernel of: at least one parameter, each a plain identifier of type `f32`, `i32`, `u32`, `bool` or a vector or matrix buffer element (`Vec2`, `Vec4`, `IVec2`, `IVec4`, `UVec2`, `UVec4`, `Mat2`, `Mat4`), by value, a result of such a type, and no `#[kernel]` attribute. The body follows the rules of a helper function, so its own errors have the codes of those rules.
+Reached through `#[gpu]`.
+Rejected: `#[gpu] fn f() -> f32`, `#[gpu] fn f(x: f32)` (no result), `x: f64`, `x: &f32`, `x: Option<f32>`, a tuple or array, a result of `()`, `#[gpu] #[kernel] fn ..`.
+Write instead: a function from scalars and vectors to one value; write a `#[kernel]` inside `#[gpu] mod name { .. }` for anything else. A 3-wide type is GUST-E0204.
+Related, not a GUST code: under a GPU profile (`dev`, `native`, ..) the generated `map`, `map_on`, `map_gpu`, `map_gpu_on`, `map_async` and `map_on_async` name `::gust_wgpu`, so the crate that writes `#[gpu]` on a function must depend on `gust-wgpu` directly. Without it rustc reports E0433 (failed to resolve: use of unresolved module or unlinked crate `gust_wgpu`) at the attribute. Add `gust-wgpu` to that crate's dependencies. Under `GUST_PROFILE=cpu` the functions name only `::gust::cpu`, nothing GPU is named and no `gust-wgpu` is needed. An argument is also typed by the function's own parameter: a `bool` parameter takes `bool`s and a `u32` parameter takes `u32`s, so passing one for the other is rustc's E0277 (the trait bound `MapArg<u32, ..>` or `MapArg<bool, ..>` is not satisfied).
+Decision: D60.
+
+### GUST-E0715 map function name collides with the generated module
+
+The module `#[gpu]` generates for `fn name` is named `name` and defines `map`, `map_on`, `map_gpu`, `map_gpu_on`, `map_async`, `map_on_async`, `map_kernel`, `DESCRIPTOR`, `MODULE_DESCRIPTOR` and `OWN_INDEX`, and holds the function itself under its own name, so the function may not have one of those names and no parameter may have the function's name.
+Reached through `#[gpu]`.
+Rejected: `#[gpu] fn map(x: f32) -> f32`, `#[gpu] fn DESCRIPTOR(..)`, `#[gpu] fn f(f: f32) -> f32`.
+Write instead: another name for the function or the parameter.
+Decision: D60.
+
+### GUST-E0716 `#[gpu]` function inside a `#[gpu]` module
+
+`#[gpu]` on a function generates a module beside the function, and a `#[gpu]` module has no place for one: its functions are kernels and helpers.
+Reached through `#[gpu]`.
+Rejected: `#[gpu] mod m { #[gpu] pub fn f(x: f32) -> f32 { x } }`, also spelled `#[gust::gpu]`.
+Write instead: put the function outside the module (a map function is plain Rust that the generated kernel calls), or drop the inner attribute and use it as a helper.
+Decision: D60.
 
 ## E08xx: emitter-only rejections
 

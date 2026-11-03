@@ -5,10 +5,12 @@
 //! variable and with `GUST_PROFILE` set by the step (or removed, for the `unset` state). Steps, in order, each
 //! printing one line with its result; the command stops at the first step that fails and names it.
 //!
-//! - E-a: `app` built in release under `GUST_PROFILE=cpu` and run: one `CPU target: matches (..)` line per kernel and
-//!   the final line, exit 0. Every step that runs or scans a binary (E-a, E-b, E-c, E-h) takes its path from the
-//!   `executable` of cargo's own `compiler-artifact` record ([`executable_of`]), never from a guessed
-//!   `<dir>/release/app`, so a `build.target` or `CARGO_BUILD_TARGET` cannot make it use an old binary.
+//! - E-a: `app` built in release under `GUST_PROFILE=cpu` and run: one `CPU target: matches (..)` line per kernel,
+//!   the line of the map case (`CPU target: map calls match (..)`, exactly once; the map functions exist only under
+//!   this profile, so a missing line is a case that did not run) and the final line, exit 0. Every step that runs or
+//!   scans a binary (E-a, E-b, E-c, E-h) takes its path from the `executable` of cargo's own `compiler-artifact`
+//!   record ([`executable_of`]), never from a guessed `<dir>/release/app`, so a `build.target` or
+//!   `CARGO_BUILD_TARGET` cannot make it use an old binary.
 //! - E-b: that release binary holds none of `slangc`, `gust-slang-reflect`, `wgpu`, `vulkan` (case-insensitive), and
 //!   `cargo tree -e features -p app` shows neither `wgpu` nor `slang-runtime`.
 //! - E-c: `app` under `cpu` with `--cfg gust_dual` builds and runs (one `Run` impl, no E0119), judged like E-a.
@@ -20,7 +22,8 @@
 //! - E-h: in one warm target directory the profile flips `cpu`, unset, `cpu`, unset, `cpu`, unset; each `cpu` state
 //!   must build and pass E-a's judgement, each unset state must fail like E-d.
 //! - E-i: `cargo test -p kernels` under `cpu` compiles the kernels with `cfg(test)` (still one impl) and exits 0. The
-//!   crate has no tests, so this proves the build, not any behaviour.
+//!   crate has a few tests (the map case and the hand-worked `vector_ops` case), so this proves the build and those
+//!   cases, not the kernels of `app` (E-a judges those).
 
 use std::{
     cell::RefCell,
@@ -57,6 +60,10 @@ pub(crate) const KERNELS: [&str; 4] = [
 pub(crate) const FINAL_LINE: &str = "CPU target: all kernels match";
 
 const MATCH_PREFIX: &str = "CPU target: matches (";
+
+/// What `app` prints, exactly once, when the map case of the kernels crate ran and every map call matched its host
+/// reference (`#[gust::gpu]` on a function, M7). Not a `matches` line: it names no kernel of [`KERNELS`].
+pub(crate) const MAP_LINE_PREFIX: &str = "CPU target: map calls match (";
 
 /// The byte strings that must not occur in the release binary (E-b), in any letter case: the compiler, the native
 /// helper, the GPU runtime and the graphics API.
@@ -490,8 +497,9 @@ pub(crate) fn parse_match_line(line: &str) -> Option<MatchLine> {
 }
 
 /// The problems of the standard output of a run of `app`: each of [`KERNELS`] has exactly one well-formed `matches`
-/// line with a count above zero, no other kernel has one, no `matches` line is malformed, and [`FINAL_LINE`] occurs
-/// exactly once. Empty when the output is what E-a requires.
+/// line with a count above zero, no other kernel has one, no `matches` line is malformed, the line of the map case
+/// ([`MAP_LINE_PREFIX`]) occurs exactly once and [`FINAL_LINE`] occurs exactly once. Empty when the output is what E-a
+/// requires.
 pub(crate) fn match_problems(stdout: &str) -> Vec<String> {
     let stdout = without_colors(stdout);
     let mut problems = Vec::new();
@@ -527,6 +535,19 @@ pub(crate) fn match_problems(stdout: &str) -> Vec<String> {
                 line.kernel
             ));
         }
+    }
+    match stdout
+        .lines()
+        .filter(|line| line.trim().starts_with(MAP_LINE_PREFIX))
+        .count()
+    {
+        1 => {}
+        0 => problems.push(format!(
+            "the map case did not run: the line `{MAP_LINE_PREFIX}..` is missing"
+        )),
+        many => problems.push(format!(
+            "the line `{MAP_LINE_PREFIX}..` occurs {many} times, expected one"
+        )),
     }
     match stdout
         .lines()

@@ -1,0 +1,4 @@
+code: none
+file: map-nested/src/main.rs
+line: 6
+message: [GUST-E0716] `#[gpu]` on a function goes on a free function outside any `#[gpu]` module

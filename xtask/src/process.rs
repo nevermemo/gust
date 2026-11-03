@@ -16,6 +16,13 @@ pub(crate) const PROFILE_VARIABLE: &str = "GUST_PROFILE";
 /// release artefact. So every cargo child of a workspace command gets this value, whatever the parent has.
 pub(crate) const WORKSPACE_PROFILE: &str = "dev";
 
+/// The exit code of a child for a message: its number, or `?` when it ended without one (a signal).
+pub(crate) fn exit_code(status: std::process::ExitStatus) -> String {
+    status
+        .code()
+        .map_or_else(|| "?".to_owned(), |code| code.to_string())
+}
+
 /// What is printed when the parent environment has a `GUST_PROFILE` other than [`WORKSPACE_PROFILE`]; `None` when
 /// there is nothing to say. A preset strict value is overridden, not refused: unlike a preset rustflags variable it
 /// cannot corrupt a measurement, so the override is only logged.

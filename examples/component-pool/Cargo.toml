@@ -9,6 +9,9 @@ rust-version.workspace = true
 [dependencies]
 gust.workspace = true
 gust-wgpu = { workspace = true, features = ["slang-runtime"] }
+# Retirement and compaction (m7.t14): `compact::indices` over a live-flag buffer. A path dependency, because the
+# library is not a workspace dependency; the run-time compile feature is the one `gust-wgpu` already has here.
+gust-algo = { path = "../../crates/gust-algo", features = ["slang-runtime"] }
 
 [lints]
 workspace = true

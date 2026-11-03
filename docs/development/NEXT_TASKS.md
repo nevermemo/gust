@@ -37,6 +37,10 @@ test module; do not mix that mechanical move with behavior changes.
   running emitter each frame's cost (mark, scan, gather, scatter) grows with every particle ever spawned. Options: a
   freelist, a double-buffered dense pool (the pool itself becomes the prefix), or a deferred host truncation from an
   async readback that decides no work in its own frame (m7.t14 review).
+- m7.g1 follow-ups: m7.d keeps the derived ids exact (D100) if it folds a 1D launch into y; m7.g2 adds the lockstep
+  twin and the `Workgroup` carriers if S7.4 ends A or B (until then `cpu = "unsupported"` is mandatory, D101); bool
+  and vector `Workgroup` elements are accepted but never compiled through slangc or run; the SPIR-V test's storage
+  class check is weak (`contains("Workgroup")`); one adapter only (m7.g1 review).
 - gust-algo passes as graph nodes, so an order such as compaction before `prepare` is declared in the graph instead
   of resting on blocking calls; a non-blocking `dispatch_batch` would remove it silently today (m7.t14 review).
 - Culling -> compacted visibility -> indirect arguments -> rendering.

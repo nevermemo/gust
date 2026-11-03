@@ -118,8 +118,10 @@
 //! `PROFILE=release`, the profile is `web` for `wasm32` and `native` for every other target, and the build prints
 //! `warning: gust@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`; cargo shows a build
 //! script's warning only for path and workspace packages, or with `-vv`, so a registry or git dependency stays
-//! silent). So `cargo build --release` of any crate with `#[gpu]` kernels needs artifacts and no bridge. A release
-//! build that wants the bridge, such as
+//! silent). So `cargo build --release` of any crate with `#[gpu]` kernels needs artifacts and no bridge, except where
+//! the internal `cargo-gust-bridge` feature (D108) is in the graph (the `cargo-gust` install, a workspace that has
+//! `cargo-gust` as a member, or a mistaken `cargo-gust` dependency): there the profile is `dev`, with a warning that
+//! only path and workspace builds show. A release build that wants the bridge, such as
 //! `cargo run --release` of an example that enables `slang-runtime`, sets `GUST_PROFILE=dev` explicitly:
 //!
 //! ```sh

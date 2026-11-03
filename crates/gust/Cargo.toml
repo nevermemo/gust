@@ -23,6 +23,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 # `reflect::Reflection` and `artifact::verify_artifact` need no feature, so a precompiled artifact is verified without it.
 # The repository enables the feature in its examples and, through the self dev-dependency below, in its own tests.
 slang-runtime = []
+# INTERNAL: enabled by `cargo-gust` only, so that `cargo install cargo-gust` works with no `GUST_PROFILE` (D108).
+# With it on and `GUST_PROFILE` unset, the build script of `gust` treats a release build as `dev` instead of refusing
+# `slang-runtime`, and prints a `cargo:warning` saying so; an explicit strict `GUST_PROFILE` still refuses. It is not
+# part of the pre-1.0 promise (D111): do not name it in an application's manifest.
+cargo-gust-bridge = []
 
 [dependencies]
 gust-macros.workspace = true

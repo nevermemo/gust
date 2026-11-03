@@ -333,6 +333,7 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   directory (a vendored copy or a nested work directory finds nothing). The tests copy cargo-gust's tables case by
   case (slang_tests.rs) and run on hand-built environments; three mutations fail tests. Opus "merge"; the four
   should-fixes and two nits were taken. Not yet: the `slangc -version` launch is outside m7.f1's retry (mr.t2).
+  Main: 23 gate steps green on `96051c8` (20:50 to 21:23Z, RTX 5090) and check-examples green.
 - M7 m7.lv (`3d5d0c8`, fix round `9d7165e`, merge `9d47f67`; D116): uniform and vector layouts in the
   export record. The macro now writes `std140_v1` layouts for uniforms and `storage_v2` layouts for storage
   elements holding `Vec2`/`Vec4`/`IVec*`/`UVec*`/`Mat2`/`Mat4` (new `vector` and `matrix` kinds), so those kernels
@@ -358,7 +359,17 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   after fixes"; the six items ruled were fixed. Not yet: the crate READMEs' `cargo install cargo-gust --locked`
   works only after mr.c (today it stops at the `gust` build script without `GUST_PROFILE=dev`), and the root
   README's lint line is mr.d's.
-  Main: 23 gate steps green on `96051c8` (20:50 to 21:23Z, RTX 5090) and check-examples green.
+- M7 m7.t2 (`1142a09`, fix round `6f37387`, merge `6b0d59a`): one element-type lookup in gust-macros.
+  `map` and `par_for!` held two copies of the type-to-element rules; they differed on purpose in diagnostic code
+  (`MapSignature` against `ParForBinding`), wording and `bool` (a map accepts it, a `par_for!` buffer does not).
+  Now `element_types` (expand/map.rs) is the one pure lookup, returning the element types or a reason
+  (`ElementReject`), and each site keeps its own code, text and `bool` rule. Output is byte-identical: no golden,
+  expected or UI file changed. The review found nothing pinned `par_for!`'s own rejections, so two check-ui
+  fixtures now do (`par-for-bool-buffer`, E0720; `par-for-three-wide`, E0204), and dropping the `bool` guard fails
+  the first. Opus merge; that should-fix and a doc nit taken. Main gates then found xtask's fixture-name pins
+  (tests/ui.rs) still without the two new fixtures; `6c83aab` adds them.
+  Main: 20 of 23 gate steps green on `6b0d59a` (22:21 to 22:52Z, RTX 5090); xtask-test, unit and slangc failed
+  on those pins and passed with fmt and clippy on the fix (22:55 to 23:05Z), and check-examples green.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).

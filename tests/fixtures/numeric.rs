@@ -87,12 +87,12 @@ mod numeric {
             big /= y[i];
             let mut small: u32 = 7;
             small /= y[i];
+            let word: u32 = y[i];
             let limit: u32 = 5;
             let mut above: u32 = 0;
-            if y[i] > limit {
+            if word > limit {
                 above = 1;
             }
-            let word: u32 = y[i];
             let shifted: u32 = word >> 4;
             let value: i32 = s[i];
             let mut negative: i32 = 0;

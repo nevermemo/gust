@@ -304,7 +304,8 @@ fn is_unsuffixed_integer_literal(expression: &syn::Expr) -> bool {
 /// when some operand is typed (a suffix, a cast, a name, a call, a field, an index) or the expression is something
 /// else. Covered: a bare literal, through parentheses, groups, unary `-` and `!`; arithmetic and bitwise binary
 /// operators with a literal-only operand on each side; a shift with a literal-only left operand (the result takes the
-/// left operand's type, whatever the right one is); `Some(..)`, `Ok(..)` and `Err(..)` of a literal-only payload.
+/// left operand's type, whatever the right one is); `Some(..)`, `Ok(..)` and `Err(..)` of a literal-only payload;
+/// `X.unwrap_or(Y)` with both literal-only (`Some(7).unwrap_or(0)`). Also applied to an `if let` scrutinee.
 /// Comparisons and `&&`/`||` give `bool`, so they are not covered. Slang types such an initializer `int`, while rustc
 /// types the local from its later uses (`u32` for `d /= y` with `y: u32`), so the two would silently diverge (D86).
 fn unsuffixed_literal_only(expression: &syn::Expr) -> Option<&syn::Expr> {
@@ -349,6 +350,13 @@ fn unsuffixed_literal_only(expression: &syn::Expr) -> Option<&syn::Expr> {
                 ) =>
         {
             unsuffixed_literal_only(&call.args[0])
+        }
+        // `Some(7).unwrap_or(0)`: the receiver is an `Option<{integer}>`, which rustc accepts, and the default is
+        // the same unconstrained integer. (On a bare integer receiver rustc itself refuses the method call.)
+        syn::Expr::MethodCall(call) if call.method == "unwrap_or" && call.args.len() == 1 => {
+            let receiver = unsuffixed_literal_only(&call.receiver)?;
+            unsuffixed_literal_only(&call.args[0])?;
+            Some(receiver)
         }
         _ => None,
     }
@@ -1560,6 +1568,18 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 Code::ShadowedParameter,
                 name,
                 "GPU locals cannot shadow resource or dispatch-thread parameters",
+            );
+            return;
+        }
+        // `if let Some(mut v) = Some(7)` binds a local of the scrutinee's payload type, which is as untyped as the
+        // initializer of a `let` (GUST-E0326).
+        if let Some(literal) = unsuffixed_literal_only(&binding.expr) {
+            self.reject(
+                Code::UnsuffixedLiteralLet,
+                literal,
+                "an integer literal without a suffix or a type annotation gives the bound value no type of its own: \
+                 Slang types it `int` while rustc infers the type from the later uses, so the two can differ; add a \
+                 suffix (`Some(7u32)`)",
             );
             return;
         }

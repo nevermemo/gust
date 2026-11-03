@@ -492,6 +492,8 @@ fn an_unannotated_unsuffixed_integer_literal_let_is_e0326() {
         "let x = Some(7);",
         "let x = Ok(7);",
         "let x = Err(-7);",
+        "let mut d = Some(7).unwrap_or(0); d /= x;",
+        "let x = Some(-1).unwrap_or(2 + 3);",
     ] {
         let source = kernel_with_body(body);
         assert_rejected(&source, Code::UnsuffixedLiteralLet);
@@ -501,6 +503,24 @@ fn an_unannotated_unsuffixed_integer_literal_let_is_e0326() {
             "{body}: {text}"
         );
     }
+    // An `if let` scrutinee binds an untyped local as well; `while let` and `let .. else` are rejected elsewhere.
+    for body in [
+        "if let Some(mut v) = Some(7) { v /= x; out[id.x] = v; }",
+        "if let Ok(v) = Ok(7) { out[id.x] = v; }",
+        "if let Some(v) = Some(7).unwrap_or(0) { }",
+    ] {
+        assert_rejected(&kernel_with_body(body), Code::UnsuffixedLiteralLet);
+    }
+    assert_rejected(
+        &kernel_with_body("while let Some(v) = Some(7) { }"),
+        Code::WhileNotSupported,
+    );
+    assert_rejected(
+        &kernel_with_body("let Some(v) = Some(7) else { return; };"),
+        Code::LetNeedsIdentifier,
+    );
+    // `let x;` has no initializer to check: the emitter refuses it (E0803).
+    assert_rejected(&kernel_with_body("let x;"), Code::LetNeedsInitializer);
     // An `if` or a `match` is not a value in the dialect, so literal arms never reach this check (docs/DIAGNOSTICS.md).
     assert_rejected(
         &kernel_with_body("let y = if id.x > 1u32 { 1 } else { 2 };"),
@@ -519,8 +539,7 @@ fn an_unannotated_unsuffixed_integer_literal_let_is_e0326() {
 }
 
 /// What stays accepted: any suffix, any annotation, and every initializer with an operand that has a type of its own.
-/// Float literals are not covered (Slang `float` and the twin's `f32` agree on a float literal that meets an `f32`
-/// operand; see docs/SEMANTICS.md).
+/// Float literals are not covered: they are documented, not refused (docs/SEMANTICS.md).
 #[test]
 fn a_suffixed_annotated_or_typed_let_is_not_e0326() {
     for body in [
@@ -543,7 +562,10 @@ fn a_suffixed_annotated_or_typed_let_is_not_e0326() {
         "let x = 1 < 2;",
         "let x: Option<u32> = Some(7);",
         "let x = Some(7u32);",
-        "let x;",
+        "let x = Some(7u32).unwrap_or(0);",
+        "let x = Some(id.x).unwrap_or(0);",
+        "if let Some(v) = Some(7u32) { out[id.x] = v; }",
+        "if let Some(v) = Some(id.x) { out[id.x] = v; }",
     ] {
         let source = kernel_with_body(body);
         let module: syn::ItemMod = crate::diagnostics::testing::parse_str(&source).unwrap();

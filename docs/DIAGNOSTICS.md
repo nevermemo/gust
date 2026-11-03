@@ -585,14 +585,19 @@ the two differ for a division, a comparison, a shift or a cast of the local (`d 
 `0xFFFFFFF9` on the GPU). The error points at the first literal and asks for a suffix or an annotation. Covered: a bare
 literal, through parentheses and unary `-` or `!` (`let x = -(7);`); arithmetic and bitwise operators whose operands are
 all such literals (`let x = 1 + 2;`); a shift whose left operand is one (`let x = 1 << 3;`, `let x = 1 << n;`, because
-the result takes the left operand's type); and `Some(..)`, `Ok(..)` or `Err(..)` of such a literal. Not covered, because
-the initializer has a type of its own or is not an integer: a suffix, a cast, a name, a field, an index, a call or a
-method anywhere in the operands (`let x = 3 * i;`), a comparison or a `bool`, and a float literal (`let x = 0.0;`, see
-the float paragraph in [SEMANTICS](SEMANTICS.md)). An `if` or a `match` is not a value in the dialect (`let x = if c { 1 } else { 2 };` is E0811 and a `match`
-as a value is E0513), so there are no literal arms to cover. Slice m6.z2 chose the error alone over inferring the type
-from the uses (D86).
+the result takes the left operand's type); `Some(..)`, `Ok(..)` or `Err(..)` of such a literal; and `X.unwrap_or(Y)`
+with both literal-only (`Some(7).unwrap_or(0)`). The same check runs on the scrutinee of an `if let`
+(`if let Some(mut v) = Some(7)`), where the span is again the literal. Not covered, because the initializer has a type
+of its own or is not an integer: a suffix, a cast, a name, a field, an index, a call or a method anywhere in the
+operands (`let x = 3 * i;`; the one literal-only method is `unwrap_or` above), and a comparison or a `bool`. A float
+literal (`let x = 0.0;`) is not covered either, although rustc falls back to `f64` for it where Slang has `float`: see
+the float paragraph in [SEMANTICS](SEMANTICS.md). An `if` or a `match` is not a value in the dialect
+(`let x = if c { 1 } else { 2 };` is E0811 and a `match` as a value is E0513), so there are no literal arms to cover.
+`while let` and `let .. else` are E0402 and E0320. Slice m6.z2 chose the error alone over inferring the type from the
+uses (D86).
 Reached through `#[gpu]`.
-Rejected: `let mut acc = 0;`, `let x = -1;`, `let x = 1 + 2;`, `let x = 1 << 3;`, `let o = Some(7);`.
+Rejected: `let mut acc = 0;`, `let x = -1;`, `let x = 1 + 2;`, `let x = 1 << 3;`, `let o = Some(7);`,
+`let d = Some(7).unwrap_or(0);`, `if let Some(v) = Some(7) { .. }`.
 Write instead: `let mut acc = 0u32;`, `let mut acc: u32 = 0;`, `let x: i32 = -1;`.
 Decision: D86.
 

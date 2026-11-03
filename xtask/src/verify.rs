@@ -460,8 +460,9 @@ fn pin_rule(root: &Path) -> Result<PinRule, String> {
     pin_rule_of(&source)
 }
 
-/// The reflection schema xtask needs from the helper (the one `gust-slang-reflect` prints as `schema=2` since m6.r).
-const HELPER_SCHEMA: &str = "2";
+/// The reflection schemas xtask accepts from the helper: `schema=2` since m6.r, `schema=3` since mx.t0a (the same
+/// documents for every buffer kernel; schema 3 only adds textures, samplers and the fragment stage).
+const HELPER_SCHEMAS: [&str; 2] = ["2", "3"];
 
 /// Fails unless the helper writes the schema xtask reads and was built against the Slang the pin names (the pin
 /// itself, or a validated build, see [`PinRule`]). `which` says what the helper is, for the message, which names both
@@ -488,9 +489,9 @@ pub(crate) fn check_helper_pin(
     let schema = helper_output
         .split_whitespace()
         .find_map(|word| word.strip_prefix("schema="));
-    if schema != Some(HELPER_SCHEMA) {
+    if !schema.is_some_and(|schema| HELPER_SCHEMAS.contains(&schema)) {
         return Err(format!(
-            "{which} prints `schema={}`, but xtask needs `schema={HELPER_SCHEMA}`; rebuild it with the current \
+            "{which} prints `schema={}`, but xtask needs `schema=2` or `schema=3`; rebuild it with the current \
              `cargo gust slang build-helper`",
             schema.unwrap_or("<none>")
         ));

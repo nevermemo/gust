@@ -16,9 +16,9 @@ pub(crate) use artifact::TWIN_TEXT;
 pub(crate) use artifact::{Environment, content_key};
 
 mod map;
-pub(crate) use map::expand_map;
 #[cfg(test)]
 pub(crate) use map::map_kernel;
+pub(crate) use map::{ElementReject, element_types, expand_map};
 
 /// What names a kernel's export record to the tool that reads it: a `#[gpu]` module or function is one place in the
 /// source, so its record says where (schema 1, `source`); a `par_for!` call is a body that can stand at any number of

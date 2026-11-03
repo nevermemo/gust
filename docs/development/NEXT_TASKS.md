@@ -205,18 +205,12 @@ test module; do not mix that mechanical move with behavior changes.
   non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p). The scan's `out` is
   zero-filled the same way (one clear of n elements per call, 2 GiB at 2^29; m7.r2 review), and so is the map's
   output (`map_on`, `map_gpu`; m7.a1 review N2: name it in m7.a2's timing conditions).
-- Tidy follow-ups (m7.t1): one `element()` in gust-macros (par_for.rs and expand/map.rs hold the same logic; after
-  m7.lv merges, goldens byte-identical). The ETXTBSY flake is fixed (m7.f1). The rest of the scout's list waits
-  for the M7 close.
+- Tidy follow-ups (m7.t1): the `element()` lookup is shared (m7.t2) and the ETXTBSY flake is fixed (m7.f1); the
+  rest of the cleanup scout's list waits for the M7 close.
 - gust-algo GPU lib tests: once, on `1278b61`, the test binary died with STATUS_ACCESS_VIOLATION (0xc0000005)
   while `gpu_v1_float_sum_of_the_tie_ladder_is_within_the_bound` and `gpu_v1_runs_the_deepest_schedules` ran (over
   60 s, other lanes' gates on the machine); the rerun alone passed. If it repeats, run the binary alone with
   `--test-threads=1` and capture the faulting test before suspecting the driver.
-- m7.lv (uniform and vector layouts in the export record, after m6.u2f): the macro writes no layout for a uniform
-  or a `Vec`/`Mat` element (`LayoutKindRecord` has only scalar and struct kinds), so `Vec4` and `Mat4` elements fail
-  `cargo gust build` for storage and uniforms ("unsupported element type `vector`", fill.rs), including the kernels
-  of the m6.g2 `uniforms` golden; and uniforms skip the export-side check without an `export_unchecked` entry or a
-  note (D104). Files: gust-macros expand/artifact.rs, cargo-gust record.rs, fill.rs, check.rs, the manifest docs.
 - m7.p follow-ups: `doctor` and `check` list only a `par_for!` kernel's origin site (`Record.sites` holds them all);
   the naga layout gate skips `par_for!` kernels (take their descriptors through the hidden `descriptor;` form, or
   delete it); the over-cap error is `map::Error::Device`, not an extent variant (needs `Extent` in
@@ -260,3 +254,13 @@ Vectors/matrices, uniforms, textures, samplers, additional binding groups, and
 specialized layouts each require their own reflected ABI evidence. `while`,
 inclusive ranges, general match expressions, `?`, and broader Result APIs need
 explicit semantic contracts before implementation.
+
+### Idea (not planned): rounds of `par_for!` until a GPU-written condition
+
+Owner, 2026-11-03: noted as a potential idea only. A `par_while!`-like construct (name open, for example
+`par_for!(..).until(..)` or `par_rounds!`) would repeat a `par_for!` round until a flag or active count the
+kernel writes says done: rounds in sequence, invocations parallel within a round, the twin running rounds in
+order. It would need a mandatory round budget, ping-pong buffers instead of in-place stencils, a condition check
+every k rounds (or GPU-driven through T13's indirect dispatch), and D39 wording for float convergence that takes
+a different round count on CPU and GPU. It is the `while_gpu` candidate of EXECUTION_GRAPH.md. Measure first: a
+host loop over resident `GpuVec` bindings with a one-word readback per round may already be enough.

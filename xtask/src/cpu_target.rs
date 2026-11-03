@@ -37,7 +37,7 @@ use crate::{
     checks::{DualKind, DualStep, RUSTFLAGS_VARIABLES, dual_command, target_rustflags_variables},
     json::{self, Json},
     precompiled::count_occurrences,
-    process::{PROFILE_VARIABLE, without_colors},
+    process::{PROFILE_VARIABLE, exit_code, without_colors},
     ui::{Expectation, judge, parse_expectation},
     workspace::{cargo_target_dir, workspace_root},
 };
@@ -747,13 +747,6 @@ fn tail(stderr: &[u8]) -> String {
     lines[from..].join("\n")
 }
 
-fn exit_code(output: &Output) -> String {
-    output
-        .status
-        .code()
-        .map_or_else(|| "?".to_owned(), |code| code.to_string())
-}
-
 fn problems_error(problems: &[String]) -> String {
     format!(
         "found {} problem(s):\n{}",
@@ -807,7 +800,7 @@ impl Check {
         Err(format!(
             "`{}` failed (exit {}):\n{}",
             call.shown(),
-            exit_code(&output),
+            exit_code(output.status),
             tail(&output.stderr)
         ))
     }
@@ -878,7 +871,7 @@ impl Check {
                 0,
                 format!(
                     "`app` exited with {}: {}",
-                    exit_code(&output),
+                    exit_code(output.status),
                     String::from_utf8_lossy(&output.stderr).trim()
                 ),
             );

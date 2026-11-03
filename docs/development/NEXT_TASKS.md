@@ -205,9 +205,28 @@ test module; do not mix that mechanical move with behavior changes.
   non-zeroing `GpuVec` constructor in gust-wgpu (m7.r1 review item 11; m7.r4 or m7.p). The scan's `out` is
   zero-filled the same way (one clear of n elements per call, 2 GiB at 2^29; m7.r2 review), and so is the map's
   output (`map_on`, `map_gpu`; m7.a1 review N2: name it in m7.a2's timing conditions).
+- Tidy follow-ups (m7.t1): one `element()` in gust-macros (par_for.rs and expand/map.rs hold the same logic; after
+  m7.lv merges, goldens byte-identical); `scripted_failing_helper` in crates/gust/tests/diagnostics.rs writes a
+  script and runs it at once, which raced on Linux CI ("Text file busy", ETXTBSY, on `6be06d4`): close the file
+  before the exec or retry on ETXTBSY (slice m7.f1 in flight). The rest of the scout's list waits for the M7 close.
+- gust-algo GPU lib tests: once, on `1278b61`, the test binary died with STATUS_ACCESS_VIOLATION (0xc0000005)
+  while `gpu_v1_float_sum_of_the_tie_ladder_is_within_the_bound` and `gpu_v1_runs_the_deepest_schedules` ran (over
+  60 s, other lanes' gates on the machine); the rerun alone passed. If it repeats, run the binary alone with
+  `--test-threads=1` and capture the faulting test before suspecting the driver.
+- m7.lv (uniform and vector layouts in the export record, after m6.u2f): the macro writes no layout for a uniform
+  or a `Vec`/`Mat` element (`LayoutKindRecord` has only scalar and struct kinds), so `Vec4` and `Mat4` elements fail
+  `cargo gust build` for storage and uniforms ("unsupported element type `vector`", fill.rs), including the kernels
+  of the m6.g2 `uniforms` golden; and uniforms skip the export-side check without an `export_unchecked` entry or a
+  note (D104). Files: gust-macros expand/artifact.rs, cargo-gust record.rs, fill.rs, check.rs, the manifest docs.
+- m7.p follow-ups: `doctor` and `check` list only a `par_for!` kernel's origin site (`Record.sites` holds them all);
+  the naga layout gate skips `par_for!` kernels (take their descriptors through the hidden `descriptor;` form, or
+  delete it); the over-cap error is `map::Error::Device`, not an extent variant (needs `Extent` in
+  `crates/gust/src/map.rs`); a `macro_rules!` that passes one body in from two sites gives two calls with one call
+  line; the GPU tests of a taller workgroup cannot see a missing axis in the guard (only the twin can); xtask does not
+  check the cpu-target `par_for` line.
 - m7.d follow-ups: staged graphs are 1D only, and graph.rs validates with the x axis before `prepare_batch`, so a
   16x16 dispatch with a shared buffer fails with `BufferLength` and a zero y or z axis is refused rather than `Ok`
-  (m7.p, which owns graph.rs); `Call::element_count()` is the x axis only, a trap for buffer sizing; for m7.g2 the
+  (still open); `Call::element_count()` is the x axis only, a trap for buffer sizing; for m7.g2 the
   twin walks the grid x-fastest, so a 2D workgroup is not contiguous and a lockstep twin must group by workgroup;
   the twin at 2^32 invocations has not run (validate only).
 - m7.r4 follow-ups: the Radeon 890M half of the plan §5.5 measurement (it may change `variant::shipped`); a

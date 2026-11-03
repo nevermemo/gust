@@ -1,6 +1,6 @@
 /target/
 /generated-wgpu/
-/artifacts/generated-wgpu/
+/.claude/
 /vendor/
 /.cargo/registry/
 /.cargo/git/

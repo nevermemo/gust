@@ -217,13 +217,16 @@ void vec_tail_add_one(uint3 id : SV_DispatchThreadID)
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_buffer_to_buffer(buffer, 0, &staging, 0, size);
         device.queue.submit([encoder.finish()]);
-        staging.map_async(wgpu::MapMode::Read, .., |result| {
-            result.expect("the staging buffer maps");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        staging.map_async(wgpu::MapMode::Read, .., move |result| {
+            let _ = sender.send(result.map_err(|error| error.to_string()));
         });
         device
             .device
             .poll(wgpu::PollType::wait_indefinitely())
             .expect("the device finishes");
+        // Another test thread's poll may have collected this callback: wait for the callback, not for the poll.
+        crate::completion::blocking::recv_mapping(&receiver).expect("the staging buffer maps");
         let view = staging
             .get_mapped_range(..)
             .expect("the mapped range of the staging buffer");

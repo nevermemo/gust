@@ -138,6 +138,15 @@ the adapter name is part of every Gpu evidence record. A request that
 succeeds after a failed attempt prints one line to stderr, so a transient loader failure
 stays visible.
 
+Blocking readbacks are safe to call from many threads on one device (m7.rb). wgpu runs a `map_async` callback inside
+a device poll, and a poll runs the callbacks of every finished submission, whoever requested them, so another
+thread's poll can collect this thread's callback and a `poll(Wait)` can return before it has run. A blocking
+readback therefore waits for the mapping's own completion after the device wait (the callback wakes the waiting
+thread, or sends on a channel), for at most 30 seconds, and a callback that does not arrive in that time is
+`Error::Map`. A single check after one poll reported that error under load; `tests/concurrency.rs` is the regression
+test (8 threads, 4 seconds), and the m7.rb run logs `m7rb-repro0.log` (8 `Error::Map` in 2903 iterations before the
+change) and `m7rb-fix1.log` (0 in 3153 after) hold the counts. The `wasm32` readbacks are awaited and unaffected.
+
 `HeadlessDevice` implements `TypedDevice` and, in one blanket impl, `Run<K, N>` for
 every kernel type (a kernel with a `Uniform<T>` parameter runs through it too since m6.g2, with the uniform bound
 in parameter order), and `GpuBuffer<T>` is a `Resource`. Every launch (typed call, slice dispatch,
@@ -261,10 +270,23 @@ entry point, source and artifact FNV-1a fingerprints, compute workgroup size, an
 every global structured buffer its name, descriptor slot and space, access, element
 stride, and the element type with size, alignment, stride, scalar kind, and nested
 fields (name, offset, size, type), and for a vector, matrix or constant buffer the scalar type, element count, rows,
-columns and layout; matrices are column-major. The helper reports what Slang computes and refuses what it cannot
-describe completely, with a message instead of a partial record: non-32-bit scalars, arrays and other kinds of element
-or field, an empty struct, a field that does not sit at a plain byte offset, a counter, entry-point resources and
-uniform bindings, binding arrays, and a global parameter that is neither an individual structured buffer nor an
+columns and layout; matrices are column-major. Schema 3 (slice mx.t0a, D91; `--version` prints `schema=3`) is schema
+2's grammar plus a top-level `stage` and is written only when the program holds a 2D texture or a sampler or the
+entry's stage is not compute, so every document of a compute kernel over buffers is byte-identical to before. The stage
+is the optional seventh argument of the helper (`compute` by default, or `fragment`): it is the caller's expectation of
+the entry point and the helper refuses an entry of another stage. A texture is `{"kind":"texture","shape":"2d",
+"access":"read"|"readWrite"|"write","result":<scalar or vector, no byte layout>,"format":"<name>"}` in one descriptor
+slot; `format` is the storage format (`r32ui`, `rgba32f`, ...) of a read-write or write-only texture, declared with
+`[format(..)]` or inferred by Slang (`RWTexture2D<uint>` is `r32ui`), and the fixed word `unknown` for a sampled texture
+(access `read`), whatever the API reports for it (it says `r32ui` for a `Texture2D<uint>` and `unknown` for a
+`Texture2D<float4>`, and the command line omits both format and access). A sampler is `{"kind":"sampler"}`. A fragment
+entry has no `workgroupSize`; it has `targets`, `[{"index":n,"type":<scalar or vector>}]` in `SV_Target` order, and may
+take `SV_Position`. Refused, each with a message that names it: a texture that is not a plain 2D one (1D, 3D, cube,
+array, multisampled, combined `Sampler2D`), a comparison sampler (`SamplerComparisonState`), other fragment outputs, and
+a storage texture with no declared or inferred format (`RWTexture2D<float4>`). The helper reports what Slang computes
+and refuses what it cannot describe completely, with a message instead of a partial record: non-32-bit scalars, arrays
+and other kinds of element or field, an empty struct, a field that does not sit at a plain byte offset, a counter,
+entry-point resources and uniform bindings, binding arrays, and a global parameter that is neither an individual structured buffer nor an
 individual constant buffer in one descriptor slot. What a storage buffer may hold is a separate rule, enforced by
 `is_storage_v1`/`is_storage_v2`, the macro's layouts and `gust-wgpu`'s binding checks, so the helper reporting a padded
 `float3` field does not make it acceptable. The helper is rebuilt only when it is stale, judged by content: a build

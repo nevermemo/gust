@@ -3,13 +3,14 @@
 //!
 //! On native nothing polls the device in the background, so the async future completes only while something does. The
 //! executor below re-polls the future on a timer and ignores wakes; every poll of the future polls the device once
-//! (`wgpu::PollType::Poll`). The blocking wrapper waits with `poll(Wait)` and then drives the same future.
+//! (`wgpu::PollType::Poll`). The blocking wrapper waits with `poll(Wait)` and then waits for the same future with a
+//! parking waiter that polls the device again every 10 ms (`completion::blocking`).
 //!
 //! The slow kernel keeps the device busy for tens of milliseconds, so the readback queued behind it is normally still
 //! pending when the first poll runs; the async test retries up to three times and requires one attempt with two or more
-//! polls. A readback that returned before the mapping completed fails the value check, and a blocking wrapper that
-//! skipped its wait fails with `Error::Map` (a hang is caught by a timeout). Expectations come from a host loop, not
-//! from a CPU twin.
+//! polls. A readback that returned before the mapping completed fails the value check (a hang is caught by a
+//! timeout). Expectations come from a host loop, not from a CPU twin. The blocking test checks values on a busy device;
+//! it does not prove the `poll(Wait)`, which only shortens the wait since the parking waiter polls by itself.
 //!
 //! The Gpu tests drive the future with a no-op waker, so they do not exercise the waker path inside the readback; the
 //! `Completion` unit tests in `src/completion.rs` cover waking, including from another thread.
@@ -234,10 +235,10 @@ fn an_async_readback_queued_behind_a_busy_kernel_waits_for_the_mapping() {
 }
 
 #[test]
-fn the_blocking_readback_waits_for_a_busy_device() {
-    // The wrapper must wait with `poll(Wait)`: it polls the finished future only once afterwards, without waiting, so
-    // a wrapper that skipped the wait returns `Error::Map` while the kernel runs. The thread and its timeout turn a
-    // hang into a failure too.
+fn the_blocking_readback_returns_the_values_of_a_busy_device() {
+    // The readback is queued behind a kernel that is still running, so the values are right only if the wrapper waits
+    // for the copy and the mapping. (`poll(Wait)` makes that wait short; the waiter would also finish without it, so
+    // this test does not discriminate the wait itself.) The thread and its timeout turn a hang into a failure.
     let values = within(60, || {
         let device = device();
         warm(&device);

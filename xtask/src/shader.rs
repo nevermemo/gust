@@ -550,6 +550,180 @@ fn fresh_smoke_directory(root: &Path) -> Result<PathBuf, String> {
     Ok(directory)
 }
 
+/// The files `export-artifacts --hash-manifest` and `--compare` cover: the WGSL and SPIR-V the examples write.
+const EXPORT_EXTENSIONS: [&str; 2] = ["wgsl", "spv"];
+
+/// The options of `export-artifacts`: with neither flag it only runs the examples.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct ExportOptions {
+    /// `--hash-manifest PATH`: write the SHA-256 of every exported `.wgsl` and `.spv` file to PATH.
+    pub(crate) hash_manifest: Option<PathBuf>,
+    /// `--compare PATH`: require the exports to equal the manifest at PATH, name for name and byte for byte.
+    pub(crate) compare: Option<PathBuf>,
+}
+
+impl ExportOptions {
+    pub(crate) fn parse(args: &[String]) -> Result<Self, String> {
+        let mut options = Self::default();
+        let mut index = 0;
+        while index < args.len() {
+            let flag = args[index].clone();
+            match flag.as_str() {
+                "--hash-manifest" => {
+                    options.hash_manifest =
+                        Some(PathBuf::from(option_value(args, &mut index, &flag)?));
+                }
+                "--compare" => {
+                    options.compare = Some(PathBuf::from(option_value(args, &mut index, &flag)?))
+                }
+                other => {
+                    return Err(format!(
+                        "unknown export-artifacts argument `{other}` (expected --hash-manifest PATH, --compare PATH)"
+                    ));
+                }
+            }
+            index += 1;
+        }
+        Ok(options)
+    }
+
+    /// Whether the run hashes the exports, which makes it start from a directory without stale ones.
+    pub(crate) fn hashes(&self) -> bool {
+        self.hash_manifest.is_some() || self.compare.is_some()
+    }
+}
+
+fn is_export_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| EXPORT_EXTENSIONS.contains(&extension))
+}
+
+/// Deletes the `.wgsl` and `.spv` files of the generated directory (ignored by git, never committed), so that a file
+/// the examples stopped writing cannot survive into a manifest. A missing directory is fine.
+pub(crate) fn clear_exports(directory: &Path) -> Result<(), String> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("{}: {error}", directory.display())),
+    };
+    for entry in entries {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        if path.is_file() && is_export_file(&path) {
+            fs::remove_file(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// The manifest of the exports in `directory`: one `<sha256>  <file name>` line per `.wgsl` or `.spv` file, sorted by
+/// name, each line ending in a line feed. An empty directory is an error: a baseline of nothing proves nothing.
+pub(crate) fn hash_manifest(directory: &Path) -> Result<String, String> {
+    let mut entries = Vec::new();
+    for entry in
+        fs::read_dir(directory).map_err(|error| format!("{}: {error}", directory.display()))?
+    {
+        let path = entry.map_err(|error| error.to_string())?.path();
+        if !path.is_file() || !is_export_file(&path) {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("{}: the file name is not UTF-8", path.display()))?
+            .to_owned();
+        let bytes = fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        entries.push((name, sha256_hex(&bytes)));
+    }
+    if entries.is_empty() {
+        return Err(format!(
+            "{} holds no .wgsl or .spv export",
+            directory.display()
+        ));
+    }
+    entries.sort();
+    Ok(entries
+        .iter()
+        .map(|(name, hash)| format!("{hash}  {name}\n"))
+        .collect())
+}
+
+/// Reads a manifest into `(name, hash)` pairs; a malformed line, a duplicate name or an empty manifest is an error.
+pub(crate) fn parse_manifest(text: &str) -> Result<Vec<(String, String)>, String> {
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        let (hash, name) = line
+            .split_once("  ")
+            .filter(|(hash, name)| {
+                hash.len() == 64
+                    && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                    && !name.is_empty()
+            })
+            .ok_or_else(|| {
+                format!(
+                    "manifest line {} is not `<sha256>  <file name>`: `{line}`",
+                    number + 1
+                )
+            })?;
+        if entries.iter().any(|(known, _)| known == name) {
+            return Err(format!("manifest line {} repeats `{name}`", number + 1));
+        }
+        entries.push((name.to_owned(), hash.to_owned()));
+    }
+    if entries.is_empty() {
+        return Err("the manifest records no export".to_owned());
+    }
+    Ok(entries)
+}
+
+/// Compares the baseline manifest with the exports just made and names every difference separately: missing files,
+/// unexpected files, and files whose bytes changed.
+pub(crate) fn compare_manifests(baseline: &str, found: &str) -> Result<(), String> {
+    let baseline = parse_manifest(baseline).map_err(|error| format!("baseline: {error}"))?;
+    let found = parse_manifest(found).map_err(|error| format!("exports: {error}"))?;
+    let lookup = |entries: &[(String, String)], name: &str| {
+        entries
+            .iter()
+            .find(|(known, _)| known == name)
+            .map(|(_, hash)| hash.clone())
+    };
+    let mut missing = Vec::new();
+    let mut changed = Vec::new();
+    for (name, hash) in &baseline {
+        match lookup(&found, name) {
+            None => missing.push(name.as_str()),
+            Some(now) if now != *hash => changed.push(name.as_str()),
+            Some(_) => {}
+        }
+    }
+    let mut unexpected = found
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .filter(|name| lookup(&baseline, name).is_none())
+        .collect::<Vec<_>>();
+    if missing.is_empty() && changed.is_empty() && unexpected.is_empty() {
+        return Ok(());
+    }
+    missing.sort_unstable();
+    changed.sort_unstable();
+    unexpected.sort_unstable();
+    let mut message = format!(
+        "The exports differ from the baseline manifest ({} recorded, {} found).",
+        baseline.len(),
+        found.len()
+    );
+    for (label, names) in [
+        ("Missing", missing),
+        ("Changed", changed),
+        ("Unexpected", unexpected),
+    ] {
+        if !names.is_empty() {
+            message.push_str(&format!(" {label}: {}.", names.join(", ")));
+        }
+    }
+    Err(message)
+}
+
 #[cfg(test)]
 #[path = "tests/shader.rs"]
 mod shader_tests;

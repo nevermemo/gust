@@ -7,6 +7,7 @@ use crate::{
     diagnostics::{self, Code},
     expand::KernelOptions,
     math_types,
+    profile::{Builtin, DerivedId, GRID, KernelFacts, StageProfile},
 };
 
 #[cfg(test)]
@@ -282,14 +283,26 @@ impl ParameterFlavor {
     }
 }
 
+/// [`parameter_flavor_in`] for the `grid` profile, for the callers that classify a type without a kernel (the
+/// reachability of uniform structs, the nested checks of the validator): they tell resources from values, and the
+/// invocation names do not matter to them.
 pub fn parameter_flavor(ty: &syn::Type) -> ParameterFlavor {
+    parameter_flavor_in(&GRID, ty)
+}
+
+/// What a kernel parameter of type `ty` is: the invocation built-ins are the profile's (D63), the resources are the
+/// dialect's.
+pub(crate) fn parameter_flavor_in(stage: &dyn StageProfile, ty: &syn::Type) -> ParameterFlavor {
+    match stage.invocation(ty) {
+        Some(Builtin::Global) => return ParameterFlavor::Invocation,
+        Some(Builtin::Local) => return ParameterFlavor::LocalId,
+        Some(Builtin::Group) => return ParameterFlavor::GroupId,
+        None => {}
+    }
     let Some(name) = type_name(ty) else {
         return ParameterFlavor::Value;
     };
     match name.as_str() {
-        "Invocation" | "SV_DispatchThreadID" | "UVec3" => ParameterFlavor::Invocation,
-        "LocalId" | "SV_GroupThreadID" => ParameterFlavor::LocalId,
-        "GroupId" | "SV_GroupID" => ParameterFlavor::GroupId,
         "Workgroup" => ParameterFlavor::Workgroup,
         "Storage" | "StructuredBuffer" => ParameterFlavor::StorageRead,
         "StorageMut" | "RWStructuredBuffer" => ParameterFlavor::StorageReadWrite,
@@ -298,11 +311,26 @@ pub fn parameter_flavor(ty: &syn::Type) -> ParameterFlavor {
     }
 }
 
+/// [`emit_kernel_in`] for the `grid` profile, the entry point of the tests; the expander passes its profile.
+#[cfg(test)]
 pub fn emit_kernel(
     module: &syn::ItemMod,
     kernel: &syn::ItemFn,
     options: KernelOptions,
 ) -> syn::Result<EmittedKernel> {
+    emit_kernel_in(&GRID, module, kernel, options)
+}
+
+/// Emits the Slang of one kernel of `module`. Everything that depends on the execution shape (the stage attribute and
+/// the entry signature, which parameters are the invocation and which take a binding slot, the statements before and
+/// after the body, the resources the shape adds) comes from `stage`; the rest is the dialect's.
+pub(crate) fn emit_kernel_in(
+    stage: &dyn StageProfile,
+    module: &syn::ItemMod,
+    kernel: &syn::ItemFn,
+    options: KernelOptions,
+) -> syn::Result<EmittedKernel> {
+    let rules = stage.binding_rules();
     let (_, items) = module.content.as_ref().expect("validated inline module");
     let lowering = module_lowering(module);
     let _scope = LoweringScope::enter(lowering);
@@ -458,7 +486,7 @@ pub fn emit_kernel(
     for argument in &kernel.sig.inputs {
         let (name, ty) = typed_argument(argument)?;
         let name = emit_ident(name);
-        match parameter_flavor(ty) {
+        match parameter_flavor_in(stage, ty) {
             ParameterFlavor::Invocation => invocation = Some(name),
             ParameterFlavor::LocalId => derived_ids.push((name, false)),
             ParameterFlavor::GroupId => derived_ids.push((name, true)),
@@ -474,7 +502,7 @@ pub fn emit_kernel(
             }
             ParameterFlavor::StorageRead | ParameterFlavor::StorageReadWrite => {
                 let element = wrapper_element_type(ty)?;
-                let wrapper = if parameter_flavor(ty) == ParameterFlavor::StorageRead {
+                let wrapper = if parameter_flavor_in(stage, ty) == ParameterFlavor::StorageRead {
                     "StructuredBuffer"
                 } else {
                     "RWStructuredBuffer"
@@ -506,7 +534,7 @@ pub fn emit_kernel(
                 return Err(diagnostics::error(
                     Code::EntryPointParameter,
                     ty,
-                    "Slang compute entry points currently accept resources and SV_DispatchThreadID only",
+                    rules.value_refusal,
                 ));
             }
         }
@@ -518,7 +546,7 @@ pub fn emit_kernel(
             continue;
         };
         if function.sig.ident == kernel.sig.ident
-            || crate::expand::kernel_options(function)?.is_some()
+            || crate::expand::kernel_attribute_in(stage, function)?.is_some()
         {
             continue;
         }
@@ -532,44 +560,41 @@ pub fn emit_kernel(
             "a Slang kernel requires an `SV_DispatchThreadID` (or legacy `Invocation`) parameter",
         )
     })?;
-    let [x, y, z] = options.workgroup_size;
     let entry_point = format!("gpu_{}_{}", module.ident, kernel.sig.ident);
+    let derived_ids = derived_ids
+        .into_iter()
+        .map(|(name, group)| DerivedId { name, group })
+        .collect::<Vec<_>>();
+    let mut facts = KernelFacts {
+        entry_point: &entry_point,
+        workgroup_size: options.workgroup_size,
+        invocation: &invocation,
+        resources: &resources,
+        derived_ids: &derived_ids,
+        next_binding: binding,
+    };
+    // The resources the shape declares beside the kernel's own take the next binding slots, in order.
+    for extra in stage.extra_bindings(&facts) {
+        writeln!(
+            output,
+            "[[vk::binding({}, 0)]] ConstantBuffer<{}> {};",
+            facts.next_binding, extra.slang_type, extra.name
+        )
+        .unwrap();
+        facts.next_binding += 1;
+    }
     writeln!(
         output,
         "// @rust kernel: {}::{}",
         module.ident, kernel.sig.ident
     )
     .unwrap();
-    writeln!(output, "[shader(\"compute\")]").unwrap();
-    writeln!(output, "[numthreads({x}, {y}, {z})]").unwrap();
-    writeln!(
-        output,
-        "void {entry_point}(uint3 {invocation} : SV_DispatchThreadID)"
-    )
-    .unwrap();
+    writeln!(output, "[shader(\"{}\")]", stage.slang_stage()).unwrap();
+    writeln!(output, "{}", stage.entry_signature(&facts)).unwrap();
     writeln!(output, "{{").unwrap();
-    for resource in &resources {
-        writeln!(output, "    uint __gpu_len_{resource};").unwrap();
-        writeln!(output, "    uint __gpu_stride_{resource};").unwrap();
-        writeln!(
-            output,
-            "    {resource}.GetDimensions(__gpu_len_{resource}, __gpu_stride_{resource});"
-        )
-        .unwrap();
-    }
-    // `LocalId` and `GroupId` come from the dispatch-thread id and the workgroup size: a dispatch-thread id is
-    // `group * size + local` in every dimension, so `id % size` and `id / size` are the local and the group id.
-    // The entry point keeps its one semantic parameter, so the reflection and the descriptor stay as they are.
-    for (name, group) in &derived_ids {
-        let operator = if *group { '/' } else { '%' };
-        writeln!(
-            output,
-            "    uint3 {name} = uint3({invocation}.x {operator} {x}u, {invocation}.y {operator} {y}u, \
-             {invocation}.z {operator} {z}u);"
-        )
-        .unwrap();
-    }
+    output.push_str(&stage.prologue(&facts));
     emit_statements(&mut output, &mut table, &kernel.block.stmts, 1, false)?;
+    output.push_str(&stage.epilogue(&facts));
     writeln!(output, "}}").unwrap();
     Ok(EmittedKernel {
         source: output,
@@ -1805,7 +1830,7 @@ pub fn wrapper_element_type(ty: &syn::Type) -> syn::Result<&syn::Type> {
         })
 }
 
-fn type_name(ty: &syn::Type) -> Option<String> {
+pub(crate) fn type_name(ty: &syn::Type) -> Option<String> {
     let syn::Type::Path(path) = ty else {
         return None;
     };

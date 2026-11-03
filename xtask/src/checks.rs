@@ -15,7 +15,10 @@ use crate::{
         run_counted, run_counted_captured, run_direct, run_direct_args, set_workspace_profile,
         without_colors, workspace_command,
     },
-    shader::{doctor_smoke, export_golden_spirv},
+    shader::{
+        ExportOptions, clear_exports, compare_manifests, doctor_smoke, export_golden_spirv,
+        hash_manifest,
+    },
     ui::{Expectation, judge, parse_expected},
     validation::{compact_validation_summary, json_string},
     verify::{VerifyMode, prepare_helper, verify},
@@ -727,11 +730,47 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
     Ok(message)
 }
 
+/// `export-artifacts [--hash-manifest PATH] [--compare PATH]`. The dispatcher in `main.rs` calls this without the
+/// arguments, so they are read from the process arguments here (`cargo xtask export-artifacts ...`).
 pub(crate) fn export_artifacts() -> Result<(), String> {
+    let args = env::args().skip(2).collect::<Vec<_>>();
+    export_artifacts_with(&args)
+}
+
+/// Runs every example, which exports its Slang, WGSL and SPIR-V to `generated-wgpu/`. With `--hash-manifest PATH`
+/// or `--compare PATH` the `.wgsl` and `.spv` files of that directory are deleted first (so a stale file cannot
+/// survive), and afterwards the SHA-256 of each is written to PATH (sorted) and/or compared with the manifest at PATH,
+/// which fails on any missing, unexpected or changed file. The byte-identical gate of mx.p0 (plan section 2.3).
+pub(crate) fn export_artifacts_with(args: &[String]) -> Result<(), String> {
+    let options = ExportOptions::parse(args)?;
     let root = workspace_root()?;
+    let directory = root.join("generated-wgpu");
+    if options.hashes() {
+        clear_exports(&directory)?;
+    }
     for example in EXAMPLES {
         println!("Exporting artifacts via {example}");
         run_direct(&root, "cargo", &["run", "--quiet", "-p", example])?;
+    }
+    if options.hashes() {
+        let manifest = hash_manifest(&directory)?;
+        let recorded = manifest.lines().count();
+        if let Some(path) = &options.hash_manifest {
+            fs::write(path, &manifest).map_err(|error| format!("{}: {error}", path.display()))?;
+            println!(
+                "Wrote the hash manifest of {recorded} exports to {}",
+                path.display()
+            );
+        }
+        if let Some(path) = &options.compare {
+            let baseline =
+                fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+            compare_manifests(&baseline, &manifest)?;
+            println!(
+                "The {recorded} exports equal the baseline manifest {}",
+                path.display()
+            );
+        }
     }
     Ok(())
 }

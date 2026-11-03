@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
 use super::{
-    MATRIX_LAYOUT_FLAG, ShaderTarget, SlangcOptions, SpirvValOptions, check_spirv_header,
-    compare_golden_names, compute_entries, count_copy_logical, golden_file_name, sidecar,
+    ExportOptions, MATRIX_LAYOUT_FLAG, ShaderTarget, SlangcOptions, SpirvValOptions,
+    check_spirv_header, clear_exports, compare_golden_names, compare_manifests, compute_entries,
+    count_copy_logical, golden_file_name, hash_manifest, parse_manifest, sidecar,
 };
 
 fn args(values: &[&str]) -> Vec<String> {
@@ -293,4 +294,100 @@ fn the_golden_names_are_compared_and_the_differences_named() {
         compare_golden_names(&["a__run.spv", "b__run.spv"], &found(&["a__run.spv"])).unwrap_err();
     assert!(error.contains("Missing: b__run.spv."), "{error}");
     assert!(error.contains("deliberately"), "{error}");
+}
+
+fn export_directory(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("gust-mxp0-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn export_options_take_both_flags_and_refuse_the_rest() {
+    assert_eq!(ExportOptions::parse(&[]).unwrap(), ExportOptions::default());
+    assert!(!ExportOptions::default().hashes());
+    let options =
+        ExportOptions::parse(&args(&["--compare", "b.txt", "--hash-manifest", "a.txt"])).unwrap();
+    assert_eq!(options.hash_manifest, Some(PathBuf::from("a.txt")));
+    assert_eq!(options.compare, Some(PathBuf::from("b.txt")));
+    assert!(options.hashes());
+    assert!(
+        ExportOptions::parse(&args(&["--compare"]))
+            .unwrap_err()
+            .contains("needs a value")
+    );
+    assert!(
+        ExportOptions::parse(&args(&["--bogus"]))
+            .unwrap_err()
+            .contains("--bogus")
+    );
+}
+
+#[test]
+fn the_hash_manifest_lists_wgsl_and_spv_files_sorted_and_skips_the_rest() {
+    let dir = export_directory("manifest");
+    std::fs::write(dir.join("b__run.spv"), b"two").unwrap();
+    std::fs::write(dir.join("a__run.wgsl"), b"one").unwrap();
+    std::fs::write(dir.join("a__run.slang"), b"not hashed").unwrap();
+    let manifest = hash_manifest(&dir).unwrap();
+    let lines = manifest.lines().collect::<Vec<_>>();
+    assert_eq!(lines.len(), 2, "{manifest}");
+    assert_eq!(
+        lines[0],
+        "7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed  a__run.wgsl"
+    );
+    assert!(lines[1].ends_with("  b__run.spv"), "{manifest}");
+    assert_eq!(parse_manifest(&manifest).unwrap().len(), 2);
+    clear_exports(&dir).unwrap();
+    assert!(dir.join("a__run.slang").exists());
+    assert!(!dir.join("b__run.spv").exists());
+    assert!(
+        hash_manifest(&dir)
+            .unwrap_err()
+            .contains("no .wgsl or .spv")
+    );
+    std::fs::remove_dir_all(&dir).unwrap();
+    clear_exports(&dir).unwrap();
+}
+
+#[test]
+fn the_comparison_names_missing_changed_and_unexpected_exports() {
+    let dir = export_directory("compare");
+    for (name, bytes) in [("a.spv", "1"), ("b.spv", "2"), ("c.wgsl", "3")] {
+        std::fs::write(dir.join(name), bytes).unwrap();
+    }
+    let baseline = hash_manifest(&dir).unwrap();
+    assert_eq!(compare_manifests(&baseline, &baseline), Ok(()));
+    std::fs::remove_file(dir.join("a.spv")).unwrap();
+    std::fs::write(dir.join("b.spv"), "changed").unwrap();
+    std::fs::write(dir.join("d.spv"), "4").unwrap();
+    let error = compare_manifests(&baseline, &hash_manifest(&dir).unwrap()).unwrap_err();
+    assert!(error.contains("(3 recorded, 3 found)"), "{error}");
+    assert!(error.contains("Missing: a.spv."), "{error}");
+    assert!(error.contains("Changed: b.spv."), "{error}");
+    assert!(error.contains("Unexpected: d.spv."), "{error}");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_malformed_or_empty_manifest_is_refused() {
+    assert!(parse_manifest("").unwrap_err().contains("no export"));
+    assert!(
+        parse_manifest("abc  a.spv\n")
+            .unwrap_err()
+            .contains("line 1")
+    );
+    let hash = "0".repeat(64);
+    let twice = format!("{hash}  a.spv\n{hash}  a.spv\n");
+    assert!(
+        parse_manifest(&twice)
+            .unwrap_err()
+            .contains("repeats `a.spv`")
+    );
+    assert!(
+        compare_manifests("", &format!("{hash}  a.spv\n"))
+            .unwrap_err()
+            .starts_with("baseline:")
+    );
 }

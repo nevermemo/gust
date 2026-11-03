@@ -6,7 +6,8 @@ use syn::ext::IdentExt as _;
 
 use crate::{
     diagnostics::{self, Code},
-    slang::ParameterFlavor,
+    profile::{GRID, ReflectionKind, StageProfile, TwinHarness},
+    slang::{ParameterFlavor, parameter_flavor_in},
 };
 
 mod artifact;
@@ -115,11 +116,12 @@ fn expand_in(
     environment: &Environment,
     profile: Profile,
 ) -> syn::Result<TokenStream> {
-    crate::validate::validate_module(&module)?;
+    crate::validate::validate_module_in(&GRID, &module)?;
     expand_validated(
         module,
         environment,
         profile,
+        &GRID,
         &TokenStream::new(),
         Identity::Module,
     )
@@ -133,6 +135,7 @@ pub(crate) fn expand_validated(
     mut module: syn::ItemMod,
     environment: &Environment,
     profile: Profile,
+    stage: &dyn StageProfile,
     extra: &TokenStream,
     identity: Identity,
 ) -> syn::Result<TokenStream> {
@@ -193,7 +196,7 @@ pub(crate) fn expand_validated(
         let syn::Item::Fn(function) = item else {
             continue;
         };
-        let Some((options, cpu)) = kernel_attribute(function)? else {
+        let Some((options, cpu)) = kernel_attribute_in(stage, function)? else {
             continue;
         };
         let original_name = function.sig.ident.clone();
@@ -201,9 +204,14 @@ pub(crate) fn expand_validated(
         let entry_point = format!("gpu_{}_{}", module_name, original_name_text);
         let typecheck_name = format_ident!("__gpu_typecheck_{}", original_name);
         let visibility = function.vis.clone();
-        let parameter_descriptors = parameter_descriptors(&function.sig.inputs)?;
+        let parameter_descriptors = parameter_descriptors(stage, &function.sig.inputs)?;
         let original_kernel = find_function(&original_module, &original_name_text);
-        let emitted = crate::slang::emit_kernel(&original_module, original_kernel, options)?;
+        let emitted =
+            crate::slang::emit_kernel_in(stage, &original_module, original_kernel, options)?;
+        // The workgroup size the descriptor and the record carry: what the reflection of the shape expects (D17).
+        let workgroup_size = match stage.reflection() {
+            ReflectionKind::Compute => options.workgroup_size,
+        };
         let reported = reported_file(original_kernel, environment);
         let source_origin = source_origin(reported.as_deref(), manifest_dir, &emitted.lines);
         let slang_source = emitted.source;
@@ -227,14 +235,14 @@ pub(crate) fn expand_validated(
             Ok(None) => TokenStream::new(),
             Ok(Some(directory)) => {
                 let parameters =
-                    parameter_records(&function.sig.inputs, &structs, &structs_by_name)?;
+                    parameter_records(stage, &function.sig.inputs, &structs, &structs_by_name)?;
                 let file = origin_file(reported.as_deref(), manifest_dir, &emitted.lines);
                 let record = artifact::KernelRecord {
                     key: &key,
                     module: &module_name,
                     name: &original_name_text,
                     entry_point: &entry_point,
-                    workgroup_size: options.workgroup_size,
+                    workgroup_size,
                     parameters: &parameters,
                     file: file.as_deref().unwrap_or_default(),
                     lines: if file.is_some() { &emitted.lines } else { &[] },
@@ -274,14 +282,17 @@ pub(crate) fn expand_validated(
                 artifact::error_item(Code::ExportPackageName, original_name.span(), message)
             }
         };
-        let [x, y, z] = options.workgroup_size;
-        let (handle_doc, typed_calls) = typed_call_items(&original_name, &function.sig.inputs)?;
-        let element_assertions = element_layout_assertions(&original_name, &function.sig.inputs)?;
+        let [x, y, z] = workgroup_size;
+        let (handle_doc, typed_calls) =
+            typed_call_items(stage, &original_name, &function.sig.inputs)?;
+        let element_assertions =
+            element_layout_assertions(stage, &original_name, &function.sig.inputs)?;
         let cpu_twin = cpu_twin_items(
+            stage,
             &original_name,
             &typecheck_name,
             &function.sig.inputs,
-            options.workgroup_size,
+            workgroup_size,
             cpu,
             profile,
         )?;
@@ -406,11 +417,12 @@ fn require_manifest_item(present: bool, span: proc_macro2::Span) -> TokenStream 
 /// plus the element layout of each storage parameter (`structs`, keyed as the source spells the names) and of each
 /// uniform parameter (`structs_by_unraw_name`, keyed as [`crate::uniform::module_structs`] keys them).
 fn parameter_records(
+    stage: &dyn StageProfile,
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
     structs: &HashMap<String, &syn::ItemStruct>,
     structs_by_unraw_name: &HashMap<String, &syn::ItemStruct>,
 ) -> syn::Result<Vec<artifact::ParameterRecord>> {
-    Ok(parameter_facts(inputs)?
+    Ok(parameter_facts(stage, inputs)?
         .into_iter()
         .map(|fact| {
             let (kind, access) = match fact.flavor {
@@ -728,6 +740,16 @@ pub fn kernel_options(function: &syn::ItemFn) -> syn::Result<Option<KernelOption
 /// All options of a `#[kernel]` attribute: `workgroup_size(x, y, z)` and `cpu = "unsupported"`, each at
 /// most once. `None` when the function has no `#[kernel]`.
 pub fn kernel_attribute(function: &syn::ItemFn) -> syn::Result<Option<(KernelOptions, CpuTwin)>> {
+    kernel_attribute_in(&GRID, function)
+}
+
+/// [`kernel_attribute`] with the options the profile `stage` accepts (D63): which of them exist, the workgroup size of
+/// a kernel that gives none, and the text of the error for any other option.
+pub(crate) fn kernel_attribute_in(
+    stage: &dyn StageProfile,
+    function: &syn::ItemFn,
+) -> syn::Result<Option<(KernelOptions, CpuTwin)>> {
+    let rules = stage.options();
     if function
         .attrs
         .iter()
@@ -751,7 +773,7 @@ pub fn kernel_attribute(function: &syn::ItemFn) -> syn::Result<Option<(KernelOpt
     if matches!(attribute.meta, syn::Meta::Path(_)) {
         return Ok(Some((
             KernelOptions {
-                workgroup_size: [64, 1, 1],
+                workgroup_size: rules.default_workgroup,
             },
             CpuTwin::Emitted,
         )));
@@ -762,7 +784,7 @@ pub fn kernel_attribute(function: &syn::ItemFn) -> syn::Result<Option<(KernelOpt
     // The options below report their own coded errors. Failures `syn` words itself (a
     // missing comma, a literal that is not an integer) get the malformed-attribute code.
     diagnostics::parse_nested_meta(attribute, Code::MalformedKernelAttribute, |meta| {
-        if meta.path.is_ident("workgroup_size") {
+        if rules.workgroup_size && meta.path.is_ident("workgroup_size") {
             if result.is_some() {
                 return Err(diagnostics::meta_error(
                     &meta,
@@ -794,7 +816,7 @@ pub fn kernel_attribute(function: &syn::ItemFn) -> syn::Result<Option<(KernelOpt
             }
             result = Some(dimensions);
             Ok(())
-        } else if meta.path.is_ident("cpu") {
+        } else if rules.cpu && meta.path.is_ident("cpu") {
             if cpu.is_some() {
                 return Err(diagnostics::meta_error(
                     &meta,
@@ -824,13 +846,13 @@ pub fn kernel_attribute(function: &syn::ItemFn) -> syn::Result<Option<(KernelOpt
             Err(diagnostics::meta_error(
                 &meta,
                 Code::UnknownKernelOption,
-                "expected `workgroup_size(x, y, z)` or `cpu = \"unsupported\"`",
+                rules.expected,
             ))
         }
     })?;
     Ok(Some((
         KernelOptions {
-            workgroup_size: result.unwrap_or([64, 1, 1]),
+            workgroup_size: result.unwrap_or(rules.default_workgroup),
         },
         cpu.unwrap_or_default(),
     )))
@@ -851,8 +873,10 @@ struct ParameterFacts {
 }
 
 fn parameter_facts(
+    stage: &dyn StageProfile,
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
 ) -> syn::Result<Vec<ParameterFacts>> {
+    let rules = stage.binding_rules();
     let mut next_binding = 0_u32;
     inputs
         .iter()
@@ -871,19 +895,13 @@ fn parameter_facts(
                     "GPU parameters need identifier names",
                 ));
             };
-            let flavor = crate::slang::parameter_flavor(&input.ty);
+            let flavor = parameter_flavor_in(stage, &input.ty);
             // The ids derived from the dispatch-thread id and the workgroup memory are no parameter of the entry
             // point: neither the descriptor nor the export record lists them.
             if !flavor.in_descriptor() {
                 return Ok(None);
             }
-            let is_resource = matches!(
-                flavor,
-                ParameterFlavor::StorageRead
-                    | ParameterFlavor::StorageReadWrite
-                    | ParameterFlavor::Uniform
-            );
-            let binding = is_resource.then(|| {
+            let binding = rules.gets_slot(flavor).then(|| {
                 let binding = next_binding;
                 next_binding += 1;
                 binding
@@ -915,9 +933,10 @@ fn parameter_facts(
 }
 
 fn parameter_descriptors(
+    stage: &dyn StageProfile,
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
 ) -> syn::Result<Vec<TokenStream>> {
-    parameter_facts(inputs)?
+    parameter_facts(stage, inputs)?
         .into_iter()
         .map(|fact| {
             let ParameterFacts {
@@ -1021,6 +1040,7 @@ struct ResourceArgument {
 /// Returns the doc text for the kernel's handle struct (users read it on `kernel_name`; it states the rules above
 /// for the user) and the items.
 fn typed_call_items(
+    stage: &dyn StageProfile,
     kernel: &syn::Ident,
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
 ) -> syn::Result<(String, TokenStream)> {
@@ -1033,7 +1053,7 @@ fn typed_call_items(
         let syn::Pat::Ident(pattern) = input.pat.as_ref() else {
             continue;
         };
-        let (access, kind) = match crate::slang::parameter_flavor(&input.ty) {
+        let (access, kind) = match parameter_flavor_in(stage, &input.ty) {
             // The derived ids and the workgroup memory are not arguments of a call: no buffer stands for them.
             ParameterFlavor::Invocation
             | ParameterFlavor::LocalId
@@ -1361,6 +1381,7 @@ fn typed_call_items(
 /// passed as `::gust::Uniform(copy)` (D57). Locals take the user's parameter names (the validator reserves `__gust_`,
 /// so they cannot collide with `__gust_call` and `__gust_id`).
 fn cpu_twin_items(
+    stage: &dyn StageProfile,
     kernel: &syn::Ident,
     typecheck: &syn::Ident,
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
@@ -1384,7 +1405,7 @@ fn cpu_twin_items(
         };
         let name = &pattern.ident;
         let label = name.to_string();
-        match crate::slang::parameter_flavor(&input.ty) {
+        match parameter_flavor_in(stage, &input.ty) {
             ParameterFlavor::Invocation => {
                 let ty = &input.ty;
                 arguments.push(quote! {
@@ -1396,8 +1417,7 @@ fn cpu_twin_items(
             // that only reads the ids.
             ParameterFlavor::LocalId | ParameterFlavor::GroupId => {
                 let [x, y, z] = workgroup_size;
-                let is_group =
-                    crate::slang::parameter_flavor(&input.ty) == ParameterFlavor::GroupId;
+                let is_group = parameter_flavor_in(stage, &input.ty) == ParameterFlavor::GroupId;
                 // An axis of size 1 is spelled out (`id % 1` is 0, `id / 1` is `id`): clippy denies `modulo_one`
                 // in the generated twin, and the default size is `64, 1, 1`.
                 let axis = |component: TokenStream, size: u32| {
@@ -1459,6 +1479,15 @@ fn cpu_twin_items(
         Profile::Cpu => TokenStream::new(),
         Profile::Other => quote!(#[cfg(any(test, gust_dual))]),
     };
+    // How the twin visits the invocations of the call: the shape's harness.
+    let invocations = match stage.twin() {
+        TwinHarness::Linear => {
+            quote!(::gust::cpu::invocations(
+                __gust_call.kernel(),
+                __gust_call.extent()
+            ))
+        }
+    };
     Ok(quote! {
         #gate
         impl ::gust::Run<#kernel, #count> for ::gust::cpu::CpuDevice {
@@ -1469,9 +1498,7 @@ fn cpu_twin_items(
                 ::gust::cpu::validate(self, __gust_call)?;
                 let [#(#names),*] = *__gust_call.bindings();
                 #(#acquisitions)*
-                for __gust_id in
-                    ::gust::cpu::invocations(__gust_call.kernel(), __gust_call.extent())
-                {
+                for __gust_id in #invocations {
                     #typecheck(#(#arguments),*);
                 }
                 ::core::result::Result::Ok(::gust::cpu::CpuJob::complete())
@@ -1504,6 +1531,7 @@ fn type_text(ty: &syn::Type) -> String {
 /// `TypeLayout::is_std140_v1`). The message is a static string (const panics cannot format) that names the element,
 /// the parameter and the kernel.
 fn element_layout_assertions(
+    stage: &dyn StageProfile,
     kernel: &syn::Ident,
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
 ) -> syn::Result<TokenStream> {
@@ -1517,7 +1545,7 @@ fn element_layout_assertions(
         let syn::Pat::Ident(pattern) = input.pat.as_ref() else {
             continue;
         };
-        let flavor = crate::slang::parameter_flavor(&input.ty);
+        let flavor = parameter_flavor_in(stage, &input.ty);
         if !flavor.in_descriptor() {
             continue;
         }

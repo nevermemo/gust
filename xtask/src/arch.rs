@@ -40,6 +40,11 @@ const CRATE_RULES: &[CrateRule] = &[
         allowed: &["gust", "gust-wgpu", "pollster", "wgpu"],
     },
     CrateRule {
+        manifest: "crates/gust-algo/Cargo.toml",
+        name: "gust-algo",
+        allowed: &["gust", "gust-wgpu"],
+    },
+    CrateRule {
         manifest: "crates/cargo-gust/Cargo.toml",
         name: "cargo-gust",
         allowed: &["gust"],

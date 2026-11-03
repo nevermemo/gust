@@ -1,0 +1,96 @@
+//! The pass schedule of `reduce` (plan section 5.2): how many block-strided passes an input of `n` elements takes, and
+//! how long a chain of additions each lane of each pass evaluates (the numbers the float bound of [`crate::bound`]
+//! is built from).
+//!
+//! A pass over `N` elements launches `W = ceil(N / BLOCK)` workgroups of [`LANES`] lanes and writes `LANES * W`
+//! partials, one per lane; a remaining `N <= LANES` is reduced by the terminal kernel, one invocation, into the result.
+//! So `n <= 256` is a single dispatch, `n <= 65 536` two, and an input of 2^29 elements (a 2 GiB binding) four.
+
+/// Lanes of a workgroup of the pass kernels.
+pub const LANES: u32 = 256;
+/// Elements a workgroup owns: lane `t` reads `block + t + LANES * k` for `k` in `0..CHAIN`.
+pub const BLOCK: u32 = 65_536;
+/// Most terms one lane of a pass adds (and the terminal kernel's limit): `BLOCK / LANES`.
+pub const CHAIN: u32 = BLOCK / LANES;
+
+/// One block-strided pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Pass {
+    /// Elements the pass reads (the length of its input).
+    pub input_len: u32,
+    /// Workgroups of [`LANES`] lanes it launches: `ceil(input_len / BLOCK)`.
+    pub workgroups: u32,
+}
+
+impl Pass {
+    /// Partials it writes, which is its invocation count: one per lane.
+    pub const fn partials(self) -> u32 {
+        self.workgroups * LANES
+    }
+
+    /// The most terms any lane of the pass adds (a lane starts from the identity, so its first term costs no rounding):
+    /// lane 0 of workgroup 0 reads `0, LANES, 2 * LANES, ...` below `input_len`, capped at [`CHAIN`].
+    pub const fn longest_chain(self) -> u32 {
+        let terms = self.input_len.div_ceil(LANES);
+        if terms < CHAIN { terms } else { CHAIN }
+    }
+}
+
+/// The dispatches of one reduction: the block-strided passes, then the terminal kernel over `final_len` values.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Schedule {
+    passes: Vec<Pass>,
+    final_len: u32,
+}
+
+impl Schedule {
+    /// The schedule for `n` elements, or `None` for `n == 0` (an empty input has no dispatch at all).
+    pub fn new(n: u32) -> Option<Self> {
+        if n == 0 {
+            return None;
+        }
+        let mut passes = Vec::new();
+        let mut remaining = n;
+        while remaining > LANES {
+            // `remaining <= u32::MAX`, so the workgroup count is at most 2^16 and the partial count at most 2^24.
+            let workgroups = u32::try_from(u64::from(remaining).div_ceil(u64::from(BLOCK)))
+                .expect("at most 2^16 workgroups");
+            let pass = Pass {
+                input_len: remaining,
+                workgroups,
+            };
+            remaining = pass.partials();
+            passes.push(pass);
+        }
+        Some(Self {
+            passes,
+            final_len: remaining,
+        })
+    }
+
+    /// The block-strided passes, in order.
+    pub fn passes(&self) -> &[Pass] {
+        &self.passes
+    }
+
+    /// The values the terminal kernel combines: the last pass's partials, or the input itself when `n <= LANES`.
+    pub const fn final_len(&self) -> u32 {
+        self.final_len
+    }
+
+    /// Dispatches of the batch: the passes and the terminal kernel.
+    pub fn dispatches(&self) -> usize {
+        self.passes.len() + 1
+    }
+
+    /// The longest chain of additions per level, in order: each pass's, then the terminal kernel's (`final_len`).
+    pub fn chains(&self) -> Vec<u32> {
+        let mut chains: Vec<u32> = self
+            .passes
+            .iter()
+            .map(|pass| pass.longest_chain())
+            .collect();
+        chains.push(self.final_len);
+        chains
+    }
+}

@@ -101,6 +101,14 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   `verify --mode gpu` with their own pin. Its GPU tests share one device behind a mutex until m7.rb (a readback
   race under concurrent polls, found in review) lands. Opus merge after one fix round. Main: 22 gate steps green on
   `b5d2c68` (from 23:42Z, RTX 5090).
+- M6 m6.z2 (`71314f1`, fix round `dcd46a6`, merge `a496968`): GUST-E0326 for an unsuffixed literal `let` (D96).
+  The rule covers literal-only integer initializers, `Some`/`Ok`/`Err` of one, `unwrap_or` of two and `if let`
+  scrutinees; an unsuffixed float `let` is documented in SEMANTICS (rustc's `f64` fallback against Slang's
+  `float`), not rejected. GPU case `typed_locals` (u32 `/=` by y >= 2^31, an unsigned compare of two locals,
+  `>>` on u32 and i32) against the twin and host Rust; check-ui fixtures `literal-let-rejected` and
+  `literal-let-ok` (pinned 24 to 26). Pin 216/25 to 217/25. Mutations: the check off fails check-ui; annotated
+  u32 locals emitted `int` fail the GPU case at y = 0x80000000. Opus merge after one fix round. Main: 22 gate
+  steps green on `a496968`.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).
@@ -493,7 +501,7 @@ validate, commit, or drop it without explicit direction.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
-claim: roadmap M7 (m7.rb, m6.z2, m7.r2, m7.t13 and mx.t0a running) after the M6 close (D86); see the roadmap's Now
+claim: roadmap M7 (m7.rb, m7.r2, m7.t13 and mx.t0a running) after the M6 close (D86); see the roadmap's Now
 and next
 next_focused_check: cargo xtask check-fast
 full_check_needed_before_commit: no

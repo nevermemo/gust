@@ -132,8 +132,8 @@ test module; do not mix that mechanical move with behavior changes.
   passed and `create_compute_pipeline` crashed, so "naga's SPIR-V front end" is not established. Isolate the layer,
   then reduce it to an upstream report (naga, wgpu or the driver) or lower such constants another way (m6.g1;
   sanity-fable and sanity-opus, 2026-11-02, both asked for "not isolated").
-- **Literal-local typing bug, to be fixed by slice m6.z2** (before m7.a1; ruling in the M6 close rulings). An
-  unannotated `let` whose initializer is an integer literal is emitted as Slang `var x = 7`, which is `int`, whereas
+- **Literal-local typing: fixed as a compile error by m6.z2 (GUST-E0326, D96); kept for the record.** An
+  unannotated `let` whose initializer is an integer literal was emitted as Slang `var x = 7`, which is `int`, whereas
   rustc types the local from its later uses. Measured: `let mut d = 7; d /= y` with `y: u32` divides signed, so for
   `y >= 2^31` Rust gives 0 and the GPU gives `0xFFFFFFF9` (found in the m6.dv review; older than m6.dv). Signed
   comparisons (`d < y`), `>>` and casts of such a local very likely go wrong the same way; that part is inferred from
@@ -191,9 +191,14 @@ test module; do not mix that mechanical move with behavior changes.
 - M8: naga 30 rejects an `i32` lane id in `subgroupShuffle`, `subgroupBroadcast` and `quadBroadcast`, which WGSL
   allows and Slang emits; filed by the owner as https://github.com/gfx-rs/wgpu/issues/10818. The M8-S1 workaround
   rewrites the id to `u32` in the exported WGSL; drop it when a fixed naga is pinned.
-- Type inference for an unannotated integer-literal `let` from its uses (M6 close ruling 3): m6.z2 ships the
-  compile error alone because no kernel, fixture or example has such a let and inference needs a typer the
-  lowering does not have (estimated 600 to 800 lines; plans m6/z2-measure, 2026-11-02).
+- Type inference for an unannotated literal `let` from its uses (M6 close ruling 3, D96): m6.z2 ships GUST-E0326
+  alone because no kernel, fixture or example has such a let and inference needs a typer the lowering does not have
+  (estimated 600 to 800 lines; plans m6/z2-measure, 2026-11-02). Inference would also close the float case D96
+  documents (rustc's `f64` fallback for an unconstrained float literal against Slang's `float`).
+- `crates/gust/tests/diagnostics.rs` `scripted_failing_helper` writes a shell script and runs it at once; on Linux a
+  sibling test thread's `fork` can inherit the still-open write handle, and the exec fails with `ETXTBSY` ("Text file
+  busy", `HelperUnavailable`). Seen once in CI on `0b0cfaf` (Slangc tier, green on rerun). Retry on `ETXTBSY` in the
+  test, or write every scripted helper before any test spawns.
 
 ## Deferred language/runtime breadth
 

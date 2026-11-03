@@ -1130,6 +1130,14 @@ fn gpu_v1_scans_are_exact_at_every_boundary() {
 /// The deepest v1 schedules: a reduction of 2^26 + 1 elements takes three block passes (the second level holds 8193
 /// values, one more than a workgroup owns), and the scans of 2^24 (one level of totals, 4096 of them) and 2^24 + 1 (a
 /// second level, the add-back through it).
+///
+/// The test opens the adapter's own limits, and what runs depends on the adapter's `max_storage_buffer_binding_size`:
+/// - 2^28 + 4 bytes or more (2^26 + 1 four-byte elements fit; the RTX 5090 reports 2 GiB): everything above.
+/// - Less (lavapipe reports 128 MiB): the three-pass reduction cannot bind. The test prints one line saying so, asserts
+///   that the pinned v1 sum of the smallest input past the limit (allocated on the device only, instead of 256 MiB of
+///   2^26 + 1 elements) is a `DeviceLimit` naming `max_storage_buffer_binding_size`, the documented error before any
+///   dispatch, then runs the deepest reduction that does fit (2^25 elements at 128 MiB: two block passes) and, when
+///   2^24 + 1 elements fit, the deep scans.
 #[test]
 fn gpu_v1_runs_the_deepest_schedules() {
     let _heavy = heavy();
@@ -1138,19 +1146,48 @@ fn gpu_v1_runs_the_deepest_schedules() {
         HeadlessDevice::with_options(DeviceOptions::default())
             .expect("a Vulkan adapter is required; this test must not silently skip"),
     );
+    let limit = device.limits().max_storage_buffer_binding_size;
+    let deepest = (1usize << 26) + 1;
+    let mut n = deepest;
+    let mut passes = 3;
+    if limit < 4 * deepest as u64 {
+        n = usize::try_from(limit / 4).unwrap().min(1 << 26);
+        passes = 2;
+        eprintln!(
+            "gpu v1 deepest schedules: this adapter's max_storage_buffer_binding_size is {limit} bytes, so the \
+             three-pass reduction (2^26 + 1 elements, {} bytes) was NOT run here; running {n} elements in {passes} \
+             passes instead",
+            4 * deepest
+        );
+        // The smallest input past the limit, device memory only: the pinned v1 sum is refused before any dispatch.
+        let past = u32::try_from(limit / 4).unwrap() + 1;
+        let input = GpuVec::<u32>::zeroed_on(&device, past).unwrap();
+        match reduce::sum_with(Variant::V1, &input) {
+            Err(Error::Device(gust_wgpu::Error::DeviceLimit {
+                limit: name,
+                requested,
+                maximum,
+                ..
+            })) => {
+                assert_eq!(name, "max_storage_buffer_binding_size");
+                assert_eq!((requested, maximum), (limit + 4, limit));
+            }
+            other => panic!("expected a DeviceLimit error, got {other:?}"),
+        }
+        drop(input);
+    }
     let gpu = Pinned(device, Variant::V1);
-    let n = (1usize << 26) + 1;
-    assert_eq!(BlockSchedule::new(n as u32).unwrap().dispatches(), 3);
+    assert_eq!(BlockSchedule::new(n as u32).unwrap().dispatches(), passes);
     assert_eq!(gpu.sum(&vec![1u32; n]) as usize, n);
     let mut values = vec![5_000i32; n];
     values[n - 1] = -7;
-    values[12_345_678] = 9_000;
+    values[12_345_678.min(n - 2)] = 9_000;
     assert_eq!(gpu.min(&values), Some(-7));
     assert_eq!(gpu.max(&values), Some(9_000));
     drop(values);
     let floats = f32_input(Shape::Uniform, n, 0xF00D);
     let check = assert_f32_sum_by(
-        "v1 2^26 + 1 uniform",
+        "v1 deepest uniform",
         &floats,
         gpu.sum(&floats),
         GPU_C,
@@ -1158,7 +1195,13 @@ fn gpu_v1_runs_the_deepest_schedules() {
     );
     eprintln!("gpu v1 f32 sum n = {n}: ratio {:.4}", check.ratio());
     drop(floats);
-    deep_scan_cases(&gpu);
+    if limit >= 4 * ((1u64 << 24) + 1) {
+        deep_scan_cases(&gpu);
+    } else {
+        eprintln!(
+            "gpu v1 deepest schedules: the 2^24 + 1 scans (64 MiB) do not fit {limit} bytes and were NOT run here"
+        );
+    }
 }
 
 /// The dispatch counts of the v1 schedules, measured as in the v0 test: one dispatch while the input fits a workgroup

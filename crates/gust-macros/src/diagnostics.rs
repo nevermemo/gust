@@ -327,6 +327,29 @@ codes! {
     /// A `par_for!` binding that is named twice, has a type a binding cannot have, or is a `GpuVec` under
     /// `GUST_PROFILE=cpu`.
     ParForBinding = 720 => "GUST-E0720";
+    /// A `#[kernel(shape = ..)]` whose value is a name other than `grid` or `pixel`.
+    ShapeUnknown = 721 => "GUST-E0721";
+    /// A `shape` option given twice, without a value, with a value that is not a bare name, or as `cpu` (a target, not a
+    /// shape).
+    ShapeOption = 722 => "GUST-E0722";
+    /// A pinned shape the kernel's workgroup memory, barrier, invocation built-ins, atomics, storage textures,
+    /// outputs or workgroup size rule out.
+    ShapeExcluded = 723 => "GUST-E0723";
+    /// A pinned shape ruled out by a `mut` invocation parameter or an assignment to it.
+    ShapeMutableInvocation = 724 => "GUST-E0724";
+    /// A pinned shape ruled out by a write at an index other than the element's own, or by a second or rebound alias
+    /// of the own index.
+    ShapeOwnIndex = 725 => "GUST-E0725";
+    /// A pinned shape ruled out by an output that is not written on every path.
+    ShapeConditionalWrite = 726 => "GUST-E0726";
+    /// A pinned shape ruled out by a `return` in the kernel body.
+    ShapeReturn = 727 => "GUST-E0727";
+    /// A pinned shape ruled out by a use of an output other than `out[own] = v` and `out.len()`.
+    ShapeOutputUse = 728 => "GUST-E0728";
+    /// A construct the kernel's execution shape (its stage profile) does not take.
+    ProfileRefusal = 729 => "GUST-E0729";
+    /// A `shape = pixel` pin on a kernel that is compatible with it, while no `pixel` profile exists yet.
+    ShapeNotAvailable = 730 => "GUST-E0730";
 
     // E08xx: rejections only the emitter makes, after validation passed.
     /// A kernel parameter that is neither a resource nor the dispatch thread.
@@ -1167,6 +1190,10 @@ mod tests {
             Code::ResourceElementPath,
             "the emitter rejects a resource type that is not a path as E0813 first",
         ),
+        (
+            Code::ProfileRefusal,
+            "the only profile, grid, refuses no construct; a test profile raises it until mx.p1a's pixel profile",
+        ),
     ];
 
     fn is_listed_unreachable(code: Code) -> bool {
@@ -1193,6 +1220,7 @@ mod tests {
             || file.ends_with("src/tests/grid.rs")
             || file.ends_with("src/tests/par_for.rs")
             || file.ends_with("src/validate/mod.rs")
+            || file.ends_with("src/validate/classify/tests.rs")
     }
 
     /// The problems with `recorded`, the (code text, calling file) pairs that

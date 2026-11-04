@@ -1593,7 +1593,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 59] = [
+const PINNED_FIXTURES: [&str; 78] = [
     "barrier-in-helper",
     "barrier-in-if",
     "barrier-in-nested-for",
@@ -1637,6 +1637,25 @@ const PINNED_FIXTURES: [&str; 59] = [
     "question-mark-in-barrier-kernel",
     "reserved-gust-prefix",
     "return-in-barrier-kernel",
+    "shape-cpu-pin",
+    "shape-grid-ok",
+    "shape-not-a-name",
+    "shape-pixel-atomic",
+    "shape-pixel-barrier",
+    "shape-pixel-conditional-write",
+    "shape-pixel-mutable-invocation",
+    "shape-pixel-no-output",
+    "shape-pixel-other-index",
+    "shape-pixel-output-compound",
+    "shape-pixel-output-read",
+    "shape-pixel-return",
+    "shape-pixel-second-alias",
+    "shape-pixel-struct-output",
+    "shape-pixel-too-many-outputs",
+    "shape-pixel-unavailable",
+    "shape-pixel-workgroup-size",
+    "shape-twice",
+    "shape-unknown",
     "typed-call-buffer-for-sampler",
     "typed-call-buffer-for-texture",
     "typed-call-buffer-for-uniform",

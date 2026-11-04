@@ -437,6 +437,9 @@ impl Record {
             name: leak(&self.name),
             entry_point: leak(&self.entry_point),
             shape: self.shape,
+            // A record names the shape it was built as; the shapes the kernel could take are the macro's to judge
+            // and are not recorded (mx.c).
+            compatible_shapes: Box::leak(vec![self.shape].into_boxed_slice()),
             workgroup_size: self.workgroup_size,
             parameters: Box::leak(parameters.into_boxed_slice()),
             slang_source: leak(&self.slang),

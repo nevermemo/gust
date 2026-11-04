@@ -1448,6 +1448,7 @@ mod tests {
         name: "k",
         entry_point: "entry",
         shape: crate::Shape::Grid,
+        compatible_shapes: &[crate::Shape::Grid],
         workgroup_size: [1, 1, 1],
         parameters: &[],
         slang_source: SOURCE,

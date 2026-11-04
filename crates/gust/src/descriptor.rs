@@ -28,6 +28,14 @@ pub struct KernelDescriptor {
     /// `shape: Shape::Grid`, and the derived `PartialEq`/`Eq` compare it. It is not part of the content key: the
     /// stage is already in the Slang text (D45), so one body under two shapes has two keys.
     pub shape: Shape,
+    /// Every shape the kernel can take, judged by the macro's conservative syntactic rules (decision D63, slice
+    /// mx.c). `Shape::Grid` is always in it; `Shape::Pixel` is when nothing in the kernel rules a pixel out. It is
+    /// information only: nothing reads it at run time, and it is not part of the content key. A descriptor rebuilt
+    /// from an export record (`cargo-gust`) carries only the shape it was built as.
+    ///
+    /// API change (mx.c): this field is new. A hand-written `KernelDescriptor { .. }` literal must add
+    /// `compatible_shapes: &[Shape::Grid]` (after `shape`), and the derived `PartialEq`/`Eq` compare it.
+    pub compatible_shapes: &'static [Shape],
     pub workgroup_size: [u32; 3],
     pub parameters: &'static [ParameterDescriptor],
     /// Slang source emitted directly from the annotated Rust syntax tree.

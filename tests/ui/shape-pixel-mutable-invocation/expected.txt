@@ -1,0 +1,8 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). A macro error is a `compile_error!` and has no rustc code, so
+# `code: none`. The line is the `#[kernel(..)]` attribute that holds the pin.
+code: none
+file: shape-pixel-mutable-invocation/src/main.rs
+line: 6
+message: [GUST-E0724] shape `pixel` is not compatible with kernel `paint`
+message: makes mutable the invocation id

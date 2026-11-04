@@ -131,6 +131,7 @@ fn the_rebuilt_descriptor_equals_the_hand_built_one() {
         name: "run",
         entry_point: "gpu_demo_run",
         shape: gust::Shape::Grid,
+        compatible_shapes: &[gust::Shape::Grid],
         workgroup_size: [64, 1, 1],
         parameters: EXPECTED_PARAMETERS,
         slang_source: SAMPLE_SLANG,

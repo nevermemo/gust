@@ -44,6 +44,7 @@ const fn descriptor(
         name,
         entry_point,
         shape: gust::Shape::Grid,
+        compatible_shapes: &[gust::Shape::Grid],
         workgroup_size: [64, 1, 1],
         parameters,
         slang_source,

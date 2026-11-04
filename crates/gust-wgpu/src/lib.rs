@@ -715,7 +715,7 @@ impl<'call, 'resources: 'call, K: Kernel, const N: usize>
 /// # struct Probe;
 /// # impl Kernel for Probe {
 /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, workgroup_size: [1, 1, 1],
+/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
 /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
 /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
 /// #     };
@@ -743,7 +743,7 @@ impl<'call, 'resources: 'call, K: Kernel, const N: usize>
 /// # struct Probe;
 /// # impl Kernel for Probe {
 /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, workgroup_size: [1, 1, 1],
+/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
 /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
 /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
 /// #     };
@@ -792,7 +792,7 @@ impl<T: GpuPod> Resource for GpuBuffer<T> {
 /// # struct Probe;
 /// # impl Kernel for Probe {
 /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, workgroup_size: [1, 1, 1],
+/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
 /// #         parameters: &[p("a", Access::ReadOnly)],
 /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
 /// #     };
@@ -819,7 +819,7 @@ impl<T: GpuPod> Resource for GpuBuffer<T> {
 /// # struct Probe;
 /// # impl Kernel for Probe {
 /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, workgroup_size: [1, 1, 1],
+/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
 /// #         parameters: &[p("a", Access::ReadOnly)],
 /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
 /// #     };
@@ -2963,6 +2963,7 @@ mod tests {
         name: "kernel",
         entry_point: "gpu_test_kernel",
         shape: gust::Shape::Grid,
+        compatible_shapes: &[gust::Shape::Grid],
         workgroup_size: [64, 1, 1],
         parameters: PARAMETERS,
         slang_source: r#"

@@ -839,6 +839,7 @@ mod schema_three {
             name: "k",
             entry_point,
             shape,
+            compatible_shapes: &[Shape::Grid],
             workgroup_size: [8, 8, 1],
             parameters: Box::leak(parameters.into_boxed_slice()),
             slang_source,

@@ -578,6 +578,7 @@ const HANDWRITTEN: KernelDescriptor = KernelDescriptor {
     name: "write",
     entry_point: "handwritten_write",
     shape: gust::Shape::Grid,
+    compatible_shapes: &[gust::Shape::Grid],
     workgroup_size: [64, 1, 1],
     parameters: HANDWRITTEN_PARAMETERS,
     slang_source: HANDWRITTEN_SLANG,

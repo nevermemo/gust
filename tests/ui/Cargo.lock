@@ -338,6 +338,139 @@ dependencies = [
 ]
 
 [[package]]
+name = "shape-cpu-pin"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-grid-ok"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-not-a-name"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-atomic"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-barrier"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-conditional-write"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-mutable-invocation"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-no-output"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-other-index"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-output-compound"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-output-read"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-return"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-second-alias"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-struct-output"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-too-many-outputs"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-unavailable"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-workgroup-size"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-twice"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-unknown"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.119"
 source = "registry+https://github.com/rust-lang/crates.io-index"

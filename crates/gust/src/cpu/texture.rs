@@ -893,6 +893,7 @@ mod tests {
             name: "blur",
             entry_point: "texture_tests_blur",
             shape: crate::Shape::Grid,
+            compatible_shapes: &[crate::Shape::Grid],
             workgroup_size: [64, 1, 1],
             parameters: &[
                 ParameterDescriptor {

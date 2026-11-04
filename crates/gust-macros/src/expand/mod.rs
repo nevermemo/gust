@@ -8,6 +8,7 @@ use crate::{
     diagnostics::{self, Code},
     profile::{GRID, ReflectionKind, Shape, StageProfile, TwinHarness},
     slang::{ParameterFlavor, parameter_flavor_in},
+    validate::classify::{self, AttributeFacts, ShapePin},
 };
 
 mod artifact;
@@ -196,7 +197,7 @@ pub(crate) fn expand_validated(
         let syn::Item::Fn(function) = item else {
             continue;
         };
-        let Some((options, cpu)) = kernel_attribute_in(stage, function)? else {
+        let Some((options, cpu, attribute_facts)) = kernel_attribute_facts(stage, function)? else {
             continue;
         };
         let original_name = function.sig.ident.clone();
@@ -206,6 +207,31 @@ pub(crate) fn expand_validated(
         let visibility = function.vis.clone();
         let parameter_descriptors = parameter_descriptors(stage, &function.sig.inputs)?;
         let original_kernel = find_function(&original_module, &original_name_text);
+        // The shapes the kernel can take (D63, plan 5.1) and the check of the pin (5.3). Nothing reads the result at
+        // run time: the descriptor lists it, and the shape the kernel is built as is still the profile's.
+        let classification = classify::classify(stage, original_kernel, &attribute_facts);
+        if let Some(pin) = &attribute_facts.shape {
+            classify::check_pin(original_kernel, &classification, pin)?;
+            let built = classify::Shape::from_profile(stage.shape());
+            if pin.shape != built {
+                return Err(diagnostics::error(
+                    Code::ShapeNotAvailable,
+                    &pin.tokens,
+                    format!(
+                        "shape `{}` is compatible with kernel `{original_name_text}`, but this build has no `{}` \
+                         profile yet: the kernel is built as `{}`",
+                        pin.shape.name(),
+                        pin.shape.name(),
+                        built.name(),
+                    ),
+                ));
+            }
+        }
+        let compatible_shapes: Vec<TokenStream> = classification
+            .shapes
+            .iter()
+            .map(|shape| shape.tokens())
+            .collect();
         let emitted =
             crate::slang::emit_kernel_in(stage, &original_module, original_kernel, options)?;
         // The workgroup size the descriptor and the record carry: what the reflection of the shape expects (D17).
@@ -325,6 +351,7 @@ pub(crate) fn expand_validated(
                     name: stringify!(#original_name),
                     entry_point: #entry_point,
                     shape: #shape_path,
+                    compatible_shapes: &[#(#compatible_shapes),*],
                     workgroup_size: [#x, #y, #z],
                     parameters: &[#(#parameter_descriptors),*],
                     slang_source: #slang_source,
@@ -773,6 +800,16 @@ pub(crate) fn kernel_attribute_in(
     stage: &dyn StageProfile,
     function: &syn::ItemFn,
 ) -> syn::Result<Option<(KernelOptions, CpuTwin)>> {
+    Ok(kernel_attribute_facts(stage, function)?.map(|(options, cpu, _)| (options, cpu)))
+}
+
+/// [`kernel_attribute_in`] with the facts the shape classifier reads (slice mx.c): the `shape = ..` pin, and whether
+/// the kernel set a workgroup size itself. The `shape` option is the dialect's, not a profile's: it is parsed under
+/// every profile, and `cpu` is refused as a shape (a target is not a shape, D51).
+pub(crate) fn kernel_attribute_facts(
+    stage: &dyn StageProfile,
+    function: &syn::ItemFn,
+) -> syn::Result<Option<(KernelOptions, CpuTwin, AttributeFacts)>> {
     let rules = stage.options();
     if function
         .attrs
@@ -800,11 +837,14 @@ pub(crate) fn kernel_attribute_in(
                 workgroup_size: rules.default_workgroup,
             },
             CpuTwin::Emitted,
+            AttributeFacts::default(),
         )));
     }
 
     let mut result = None;
     let mut cpu = None;
+    let mut pin: Option<ShapePin> = None;
+    let mut size_tokens: Option<TokenStream> = None;
     // The options below report their own coded errors. Failures `syn` words itself (a
     // missing comma, a literal that is not an integer) get the malformed-attribute code.
     diagnostics::parse_nested_meta(attribute, Code::MalformedKernelAttribute, |meta| {
@@ -839,6 +879,54 @@ pub(crate) fn kernel_attribute_in(
                 ));
             }
             result = Some(dimensions);
+            size_tokens = Some(quote!(workgroup_size(#x, #y, #z)));
+            Ok(())
+        } else if meta.path.is_ident("shape") {
+            if pin.is_some() {
+                return Err(diagnostics::meta_error(
+                    &meta,
+                    Code::ShapeOption,
+                    "duplicate `shape` option",
+                ));
+            }
+            let path = meta.path.clone();
+            let Ok(input) = meta.value() else {
+                return Err(diagnostics::meta_error(
+                    &meta,
+                    Code::ShapeOption,
+                    "the `shape` option needs a value: `shape = grid` or `shape = pixel`",
+                ));
+            };
+            let Ok(value) = input.parse::<syn::Ident>() else {
+                return Err(diagnostics::meta_error(
+                    &meta,
+                    Code::ShapeOption,
+                    "the value of `shape` is a bare name: `shape = grid` or `shape = pixel`",
+                ));
+            };
+            let shape = match value.to_string().as_str() {
+                "grid" => classify::Shape::Grid,
+                "pixel" => classify::Shape::Pixel,
+                "cpu" => {
+                    return Err(diagnostics::error(
+                        Code::ShapeOption,
+                        &value,
+                        "`cpu` is a target, not a shape: build with `GUST_PROFILE=cpu` to run a kernel on the CPU, \
+                         and pin `shape = grid` or `shape = pixel` only",
+                    ));
+                }
+                other => {
+                    return Err(diagnostics::error(
+                        Code::ShapeUnknown,
+                        &value,
+                        format!("unknown shape `{other}`; the shapes are `grid` and `pixel`"),
+                    ));
+                }
+            };
+            pin = Some(ShapePin {
+                shape,
+                tokens: quote!(#path = #value),
+            });
             Ok(())
         } else if rules.cpu && meta.path.is_ident("cpu") {
             if cpu.is_some() {
@@ -879,6 +967,10 @@ pub(crate) fn kernel_attribute_in(
             workgroup_size: result.unwrap_or(rules.default_workgroup),
         },
         cpu.unwrap_or_default(),
+        AttributeFacts {
+            shape: pin,
+            workgroup_size: size_tokens,
+        },
     )))
 }
 

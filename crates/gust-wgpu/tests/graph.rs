@@ -1003,6 +1003,7 @@ impl Kernel for Shade {
         name: "shade",
         entry_point: "graph_shade",
         shape: gust::Shape::Grid,
+        compatible_shapes: &[gust::Shape::Grid],
         workgroup_size: [64, 1, 1],
         parameters: &[
             graph_storage("src", Access::ReadOnly, 0),

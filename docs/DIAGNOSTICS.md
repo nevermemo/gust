@@ -1239,7 +1239,7 @@ Decision: D63 (plan section 5.2, slice mx.c).
 A `shape` pin names a shape the kernel cannot take because of what it declares: workgroup memory, a workgroup barrier, an invocation id other than the global id (`LocalId`, `GroupId`), an atomic operation, a storage texture, an explicit `workgroup_size`, no output buffer, an output element that is no colour-target format (only `u32`, `i32`, `f32` and their 2- and 4-wide vectors are), or more than 8 outputs or 32 bytes of them (D62). The classifier is syntactic and conservative: what it does not recognise makes the kernel `grid`-only. The message names the construct that excludes the shape.
 Reached through `#[gpu]`.
 Rejected: `#[kernel(shape = pixel, workgroup_size(64, 1, 1))]`, `shape = pixel` on a kernel with a `Workgroup<[f32; 64]>` parameter or a nine-buffer output list.
-Fixtures (each pins its reason with a second `message:`): `tests/ui/shape-pixel-workgroup-size`, `tests/ui/shape-pixel-barrier`, `tests/ui/shape-pixel-atomic`, `tests/ui/shape-pixel-struct-output`, `tests/ui/shape-pixel-no-output`, `tests/ui/shape-pixel-too-many-outputs` (`cargo xtask check-ui`). The storage-texture reason has no fixture: the macro has no texture parameters before mx.t3.
+Fixtures (each pins its reason with a second `message:`): `tests/ui/shape-pixel-workgroup-size`, `tests/ui/shape-pixel-barrier`, `tests/ui/shape-pixel-atomic`, `tests/ui/shape-pixel-struct-output`, `tests/ui/shape-pixel-no-output`, `tests/ui/shape-pixel-too-many-outputs` (`cargo xtask check-ui`).
 Write instead: drop the pin (the kernel stays `grid`), or remove the construct the message names.
 Decision: D62, D63 (plan section 5.1 and 5.3, slice mx.c).
 
@@ -1304,6 +1304,60 @@ Rejected: `#[kernel(shape = pixel)]` on `fn paint(id: SV_DispatchThreadID, input
 Fixture: `tests/ui/shape-pixel-unavailable` (`cargo xtask check-ui`); the accepted forms are `tests/ui/shape-grid-ok`.
 Write instead: drop the pin; the kernel is built as `grid`.
 Decision: D63, D89 (plan section 5.3, slice mx.c).
+
+### GUST-E0731 texture or sampler type outside the dialect
+
+A texture parameter with a texel type or a format the dialect does not have: `Texture2D<T>` takes `f32`, `u32`, `i32` and their 2- and 4-wide vectors (a 3-wide texel has no texture format); `StorageTexture2D<F>` takes `R32Float`, `R32Uint` or `R32Sint`, the formats a kernel may read and write; `WriteTexture2D<F>` takes the nine formats `R32`, `Rg32` and `Rgba32` in `Float`, `Uint` and `Sint`; `Sampler` takes no type arguments. The message lists the accepted arguments.
+Reached through `#[gpu]`.
+Rejected: `Texture2D<Vec3>`, `Texture2D<bool>`, `Texture2D` without an argument, `StorageTexture2D<Rgba32Float>`, `WriteTexture2D<Rgba8Unorm>`, `WriteTexture2D<f32>`, `Sampler<f32>`.
+Fixture: `tests/ui/texture-bad-format` (a 3-wide texel; the other spellings are also Rust type errors and have unit tests only); the accepted forms are `tests/ui/texture-ok` and `tests/fixtures/textures.rs`.
+Write instead: a texel type or format from the lists above; `WriteTexture2D` for a format a kernel may only write.
+Decision: D62, D64 (slice mx.t3).
+
+### GUST-E0732 texture method with a wrong coordinate
+
+A texture method call with the wrong number of arguments, or with a coordinate that is visibly not the right type. A texel address (`load`, `store`) is two `u32`; a sample coordinate (`sample`) is two `f32`. The check is syntactic: a float literal or a float cast as an address, an integer literal or an integer cast as a sample coordinate, a negative address, a suffix of another type. Typing the rest is the Slang compiler's job.
+Reached through `#[gpu]`.
+Rejected: `image.load(0u32)`, `image.load(1.5f32, 0u32)`, `image.load(-1, 0u32)`, `image.store(0u32, 0u32)`, `image.sample(s, 1u32, 0.5f32)`, `image.width(1u32)`.
+No `check-ui` fixture: rustc reports its own type error beside the macro's, and `check-ui` pins exactly one error. The unit tests of `crates/gust-macros/src/tests/regression.rs` assert it.
+Write instead: `load(x, y)` and `store(x, y, v)` with `u32` addresses, `sample(sampler, u, v)` with `f32` coordinates.
+Decision: D62 (slice mx.t3).
+
+### GUST-E0733 sample without a sampler
+
+The first argument of `sample` is not a `Sampler` parameter of the kernel. A sampler is passed by its parameter name: it cannot be built, stored in a local or passed from a helper.
+Reached through `#[gpu]`.
+Rejected: `image.sample(id.x, 0.5f32, 0.5f32)`, `image.sample(0.5f32, 0.5f32, 0.5f32)`, `image.sample(image, ..)`.
+Fixture: `tests/ui/texture-sample-argument` (`cargo xtask check-ui`).
+Write instead: declare a `filter: Sampler` parameter and call `image.sample(filter, u, v)`.
+Decision: D64 (slice mx.t3).
+
+### GUST-E0734 sample of integer texels
+
+A `sample` on a texture whose texels are integers (`u32`, `i32` and their vectors): integer textures are never filtered.
+Reached through `#[gpu]`.
+Rejected: `ids.sample(filter, 0.5f32, 0.5f32)` on a `Texture2D<u32>`, `Texture2D<UVec4>` or `Texture2D<IVec2>`.
+No `check-ui` fixture: rustc reports its own type error beside the macro's, and `check-ui` pins exactly one error. The unit tests of `crates/gust-macros/src/tests/regression.rs` assert it.
+Write instead: read the texel with `ids.load(x, y)`, or sample a texture of `f32`, `Vec2` or `Vec4` texels.
+Decision: D62 (slice mx.t3).
+
+### GUST-E0735 method a texture does not have
+
+A method call on a texture parameter that the texture's access does not have, or a name that is no texture method. A sampled `Texture2D` has `load`, `sample`, `width` and `height`; a `StorageTexture2D` has `load`, `store`, `width` and `height`; a `WriteTexture2D` has `store`, `width` and `height`. The message names the missing method and the texture that has it.
+Reached through `#[gpu]`.
+Rejected: `image.store(..)` on a `Texture2D`, `out.load(..)` on a `WriteTexture2D`, `image.sample(..)` on a `StorageTexture2D`, `image.gather(..)`, `image.depth()`.
+No `check-ui` fixture: rustc reports its own type error beside the macro's, and `check-ui` pins exactly one error. The unit tests of `crates/gust-macros/src/tests/regression.rs` assert it.
+Write instead: use the access that has the method: `StorageTexture2D` to read and write, `WriteTexture2D` to write, `Texture2D` to read and sample.
+Decision: D62, D64 (slice mx.t3).
+
+### GUST-E0736 texture or sampler used as a value
+
+A texture or sampler parameter used other than as the receiver of a texture method (or the sampler argument of `sample`), or a texture or sampler type anywhere but a kernel parameter: copied to a local, passed to a helper, called with a method of its own, or written as the type of a `let` or a struct field.
+Reached through `#[gpu]`.
+Rejected: `let alias = image;`, `let size = image.width() + image;`, `filter.width()`, `let alias: Texture2D<Vec4> = ..;`.
+Fixture: `tests/ui/texture-as-value` (`cargo xtask check-ui`).
+Write instead: call the method on the parameter by name; a helper function takes the texel values (`image.load(x, y)`) or the coordinates, not the texture.
+Decision: D62, D64 (slice mx.t3).
 
 ## E08xx: emitter-only rejections
 

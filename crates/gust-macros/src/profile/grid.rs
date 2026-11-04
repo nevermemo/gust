@@ -44,6 +44,10 @@ impl StageProfile for GridProfile {
                 ParameterFlavor::StorageRead,
                 ParameterFlavor::StorageReadWrite,
                 ParameterFlavor::Uniform,
+                ParameterFlavor::SampledTexture,
+                ParameterFlavor::StorageTexture,
+                ParameterFlavor::WriteTexture,
+                ParameterFlavor::Sampler,
             ],
         )
     }

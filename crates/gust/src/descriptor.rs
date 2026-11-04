@@ -184,9 +184,9 @@ pub struct ResourceBinding {
 /// API change (mx.t1): the enum is `#[non_exhaustive]` and has two new variants, [`Texture`](Self::Texture) and
 /// [`Sampler`](Self::Sampler). A `match` outside this crate must add a wildcard arm. Constructing a variant is
 /// unchanged. Inside the workspace every such `match` already had one (`gust-wgpu`'s `validate_kernel` and `gust`'s
-/// own `reflect`), so none of them changed, and both refuse the two new kinds. `cargo-gust`'s record reader and the
-/// artifact writer do not know the two new kind names either, so they refuse a texture or sampler parameter today;
-/// teaching them the names is later work (the first producer of such a descriptor, the macro, comes with it).
+/// own `reflect`), so none of them changed, and both refuse the two new kinds. The `#[gpu]` macro produces both kinds
+/// since mx.t3 (a `Texture2D<T>`, `StorageTexture2D<F>`, `WriteTexture2D<F>` or `Sampler` kernel parameter), and
+/// `cargo-gust`'s record reader and the macro's artifact writer know the names `texture` and `sampler`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ParameterKind {

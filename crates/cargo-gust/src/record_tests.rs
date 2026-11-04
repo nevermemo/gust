@@ -259,8 +259,8 @@ fn malformed_records_are_refused_with_the_path_of_the_problem() {
             "parameters[1]: unknown access `sometimes`",
         ),
         (
-            broken("\"kind\": \"invocation\"", "\"kind\": \"texture\""),
-            "parameters[0]: unknown parameter kind `texture`",
+            broken("\"kind\": \"invocation\"", "\"kind\": \"image\""),
+            "parameters[0]: unknown parameter kind `image`",
         ),
         (
             broken("\"rules\": \"storage_v1\"", "\"rules\": \"std140\""),
@@ -772,4 +772,220 @@ fn a_shape_under_schema_1_or_2_is_refused_and_a_bad_shape_is_named() {
         let error = Record::parse(&json, SAMPLE_SLANG).unwrap_err();
         assert!(error.contains(wanted), "{value}: {error}");
     }
+}
+
+// --- Texture and sampler parameters (slice mx.t3, D62, D64, D91) ---
+
+/// The texture and sampler parameters of a record as the macro writes them: a sampled `Texture2D<Vec4>`, a `Sampler`
+/// and a write-only `WriteTexture2D<Rgba32Float>`.
+fn texture_parameters() -> String {
+    let texture = |name: &str, rust_type: &str, binding: u32, access: &str, facts: &str| {
+        format!(
+            concat!(
+                "    {{\n",
+                "      \"access\": \"{access}\",\n",
+                "      \"binding\": {{\"binding\": {binding}, \"group\": 0}},\n",
+                "      \"kind\": \"texture\",\n",
+                "      \"layout\": {{\n",
+                "        \"element\": {element},\n",
+                "        \"element_stride\": 16,\n",
+                "        \"rules\": \"texture_v1\",\n",
+                "        \"texture\": {facts}\n",
+                "      }},\n",
+                "      \"name\": \"{name}\",\n",
+                "      \"rust_type\": \"{rust_type}\"\n",
+                "    }}"
+            ),
+            access = access,
+            binding = binding,
+            element = VEC4_JSON,
+            facts = facts,
+            name = name,
+            rust_type = rust_type,
+        )
+    };
+    let id = concat!(
+        "    {\n",
+        "      \"access\": \"not_applicable\",\n",
+        "      \"binding\": null,\n",
+        "      \"kind\": \"invocation\",\n",
+        "      \"layout\": null,\n",
+        "      \"name\": \"id\",\n",
+        "      \"rust_type\": \"SV_DispatchThreadID\"\n",
+        "    }"
+    );
+    let sampler = concat!(
+        "    {\n",
+        "      \"access\": \"not_applicable\",\n",
+        "      \"binding\": {\"binding\": 1, \"group\": 0},\n",
+        "      \"kind\": \"sampler\",\n",
+        "      \"layout\": null,\n",
+        "      \"name\": \"bilinear\",\n",
+        "      \"rust_type\": \"Sampler\"\n",
+        "    }"
+    );
+    let image = texture(
+        "image",
+        "Texture2D < Vec4 >",
+        0,
+        "read_only",
+        "{\"access\": \"sampled\", \"class\": \"f32\", \"dimension\": \"2d\", \"format\": null}",
+    );
+    let out = texture(
+        "out",
+        "WriteTexture2D < Rgba32Float >",
+        2,
+        "read_write",
+        "{\"access\": \"write_only\", \"class\": \"f32\", \"dimension\": \"2d\", \"format\": \"rgba32float\"}",
+    );
+    format!("  \"parameters\": [\n{id},\n{image},\n{sampler},\n{out}\n  ],\n")
+}
+
+fn texture_record_json() -> String {
+    let start = SAMPLE_RECORD_JSON.find("  \"parameters\": [\n").unwrap();
+    let end = SAMPLE_RECORD_JSON.find("  \"schema\": 1,").unwrap();
+    format!(
+        "{}{}{}",
+        &SAMPLE_RECORD_JSON[..start],
+        texture_parameters(),
+        &SAMPLE_RECORD_JSON[end..]
+    )
+}
+
+#[test]
+fn a_record_with_a_texture_and_a_sampler_reads_and_rebuilds_the_descriptor() {
+    let record = Record::parse(&texture_record_json(), SAMPLE_SLANG).unwrap();
+    let [id, image, sampler, out] = &record.parameters[..] else {
+        panic!("{:?}", record.parameters);
+    };
+    assert_eq!(id.kind, ParameterKind::Invocation);
+    assert_eq!(
+        (image.kind, image.access, image.binding),
+        (ParameterKind::Texture, Access::ReadOnly, Some((0, 0)))
+    );
+    // A sampler has a binding and no layout.
+    assert_eq!(
+        (
+            sampler.kind,
+            sampler.access,
+            sampler.binding,
+            sampler.layout.is_none()
+        ),
+        (
+            ParameterKind::Sampler,
+            Access::NotApplicable,
+            Some((0, 1)),
+            true
+        )
+    );
+    assert_eq!(
+        (out.kind, out.access, out.binding),
+        (ParameterKind::Texture, Access::ReadWrite, Some((0, 2)))
+    );
+    let sampled = TextureLayout {
+        format: None,
+        dimension: TextureDimension::D2,
+        access: TextureAccess::Sampled,
+        class: SampleClass::Float,
+    };
+    let written = TextureLayout {
+        format: Some(Format::Rgba32Float),
+        dimension: TextureDimension::D2,
+        access: TextureAccess::WriteOnly,
+        class: SampleClass::Float,
+    };
+    assert_eq!(
+        image.layout.as_ref().unwrap().rules,
+        ShaderLayoutRules::TextureV1(sampled)
+    );
+    assert_eq!(
+        out.layout.as_ref().unwrap().rules,
+        ShaderLayoutRules::TextureV1(written)
+    );
+    // The descriptor carries the same facts a `#[gpu]` module's own descriptor carries (`ResourceLayout::texture_v1`
+    // over the texel type), and the sampler has no layout.
+    let descriptor = record.descriptor();
+    let rebuilt: Vec<_> = descriptor
+        .parameters
+        .iter()
+        .map(|parameter| (parameter.kind, parameter.binding, parameter.resource_layout))
+        .collect();
+    let element = <gust::math::Vec4 as gust::GpuPod>::LAYOUT;
+    assert_eq!(
+        rebuilt,
+        [
+            (ParameterKind::Invocation, None, None),
+            (
+                ParameterKind::Texture,
+                Some(ResourceBinding {
+                    group: 0,
+                    binding: 0
+                }),
+                Some(ResourceLayout::texture_v1(element, sampled))
+            ),
+            (
+                ParameterKind::Sampler,
+                Some(ResourceBinding {
+                    group: 0,
+                    binding: 1
+                }),
+                None
+            ),
+            (
+                ParameterKind::Texture,
+                Some(ResourceBinding {
+                    group: 0,
+                    binding: 2
+                }),
+                Some(ResourceLayout::texture_v1(element, written))
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_texture_layout_without_its_facts_or_with_unknown_facts_is_refused_with_the_path() {
+    let json = texture_record_json();
+    for (from, to, expected) in [
+        (
+            "\"access\": \"sampled\"",
+            "\"access\": \"mapped\"",
+            "unknown texture access `mapped`",
+        ),
+        (
+            "\"class\": \"f32\", \"dimension\": \"2d\", \"format\": null",
+            "\"class\": \"f16\", \"dimension\": \"2d\", \"format\": null",
+            "unknown sample class `f16`",
+        ),
+        (
+            "\"dimension\": \"2d\", \"format\": null",
+            "\"dimension\": \"3d\", \"format\": null",
+            "unsupported texture dimension `3d`",
+        ),
+        (
+            "\"format\": \"rgba32float\"",
+            "\"format\": \"rgba8unorm\"",
+            "unknown texture format `rgba8unorm`",
+        ),
+        (
+            "        \"rules\": \"texture_v1\",\n        \"texture\": {\"access\": \"sampled\", \"class\": \"f32\", \"dimension\": \"2d\", \"format\": null}\n",
+            "        \"rules\": \"texture_v1\"\n",
+            "texture",
+        ),
+    ] {
+        assert!(json.contains(from), "{from}");
+        let error = Record::parse(&json.replacen(from, to, 1), SAMPLE_SLANG).unwrap_err();
+        assert!(error.contains(expected), "{expected} in {error}");
+        assert!(error.contains("parameters["), "{error}");
+    }
+    // A kind the reader does not know is still refused.
+    let error = Record::parse(
+        &json.replacen("\"kind\": \"sampler\"", "\"kind\": \"image\"", 1),
+        SAMPLE_SLANG,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("parameters[2]: unknown parameter kind `image`"),
+        "{error}"
+    );
 }

@@ -139,6 +139,19 @@ pub(crate) const GRID_GOLDEN_STEMS: [&str; 1] = ["grid"];
 pub(crate) const GRID_GOLDEN_SPIRV: [&str; 3] =
     ["grid__cells.spv", "grid__corner.spv", "grid__volume.spv"];
 
+/// The golden of the textures (mx.t3): one file per kernel, "textures__<kernel>.spv".
+pub(crate) const TEXTURES_GOLDEN_STEMS: [&str; 1] = ["textures"];
+pub(crate) const TEXTURES_GOLDEN_SPIRV: [&str; 8] = [
+    "textures__accumulate.spv",
+    "textures__blur.spv",
+    "textures__gather.spv",
+    "textures__invert.spv",
+    "textures__shift.spv",
+    "textures__write_floats.spv",
+    "textures__write_ints.spv",
+    "textures__write_uints.spv",
+];
+
 pub(crate) const WORKGROUP_GOLDEN_STEMS: [&str; 1] = ["workgroup"];
 pub(crate) const WORKGROUP_GOLDEN_SPIRV: [&str; 2] =
     ["workgroup__block_sum.spv", "workgroup__local_ids.spv"];
@@ -217,7 +230,7 @@ pub(crate) const COMPACT_GOLDEN_SPIRV: [&str; 5] = [
 
 /// Every golden set `verify` exports and validates after the examples' SPIR-V: the area (the directory under the
 /// target directory's `golden-spirv`), the fixture stems and the expected file names.
-pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 9] = [
+pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 10] = [
     ("vectors", &VECTOR_GOLDEN_STEMS, &VECTOR_GOLDEN_SPIRV),
     ("uniforms", &UNIFORM_GOLDEN_STEMS, &UNIFORM_GOLDEN_SPIRV),
     ("map", &MAP_GOLDEN_STEMS, &MAP_GOLDEN_SPIRV),
@@ -231,6 +244,7 @@ pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 9] = [
     ("reduce", &REDUCE_GOLDEN_STEMS, &REDUCE_GOLDEN_SPIRV),
     ("scan", &SCAN_GOLDEN_STEMS, &SCAN_GOLDEN_SPIRV),
     ("compact", &COMPACT_GOLDEN_STEMS, &COMPACT_GOLDEN_SPIRV),
+    ("textures", &TEXTURES_GOLDEN_STEMS, &TEXTURES_GOLDEN_SPIRV),
 ];
 
 /// The cargo calls of `cargo xtask check-cpu` (a step of the Unit suite): the non-ignored,

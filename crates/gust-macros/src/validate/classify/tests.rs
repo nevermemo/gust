@@ -395,20 +395,26 @@ fn an_atomic_operation_is_refused() {
     );
 }
 
-// The macro has no texture parameters until mx.t3, so only the predicate `classify` uses can be tested; the kernel
-// path (and a ui fixture) belong to mx.t3, where a storage texture first becomes reachable.
+// A storage texture is the one texture parameter that rules `pixel` out (mx.t3); the fixture with the kernel is
+// `tests/ui/shape-pixel-storage-texture`.
 #[test]
 fn a_storage_texture_parameter_is_refused() {
     for (ty, expected) in [
-        ("StorageTexture2D<Rgba8>", true),
-        ("WriteTexture2D<Rgba8>", true),
+        ("StorageTexture2D<R32Float>", true),
+        ("WriteTexture2D<Rgba32Float>", true),
         ("Texture2D<f32>", false),
         ("Sampler", false),
         ("f32", false),
         ("StructuredBuffer<f32>", false),
     ] {
         let parsed: syn::Type = parse_str(ty).unwrap();
-        assert_eq!(is_storage_texture(&parsed), expected, "{ty}");
+        let flavor = crate::slang::parameter_flavor(&parsed);
+        let refused = matches!(
+            flavor,
+            crate::slang::ParameterFlavor::StorageTexture
+                | crate::slang::ParameterFlavor::WriteTexture
+        );
+        assert_eq!(refused, expected, "{ty}");
     }
     assert_eq!(Why::StorageTexture.code(), Code::ShapeExcluded);
 }

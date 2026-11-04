@@ -479,6 +479,11 @@ fn parameter_records(
                 ParameterFlavor::StorageReadWrite => ("storage", "read_write"),
                 ParameterFlavor::Uniform => ("uniform", "read_only"),
                 ParameterFlavor::Value => ("value", "not_applicable"),
+                ParameterFlavor::SampledTexture => ("texture", "read_only"),
+                ParameterFlavor::StorageTexture | ParameterFlavor::WriteTexture => {
+                    ("texture", "read_write")
+                }
+                ParameterFlavor::Sampler => ("sampler", "not_applicable"),
                 ParameterFlavor::LocalId
                 | ParameterFlavor::GroupId
                 | ParameterFlavor::Workgroup => {
@@ -487,10 +492,21 @@ fn parameter_records(
             };
             // The numbers are the ones the `const` assertions of the expansion check against the real types (D80): the
             // storage layout is the running sum of the field sizes, the uniform layout is `uniform::std140_struct`.
-            let layout = match (&fact.element, &fact.uniform_element) {
-                (Some(element), _) => artifact::storage_resource(element, structs),
-                (None, Some(element)) => artifact::uniform_resource(element, structs_by_unraw_name),
-                (None, None) => None,
+            // A texture's layout is its texel type and the texture facts (D91).
+            let layout = match (&fact.element, &fact.uniform_element, &fact.texture) {
+                (Some(element), _, _) => artifact::storage_resource(element, structs),
+                (None, Some(element), _) => {
+                    artifact::uniform_resource(element, structs_by_unraw_name)
+                }
+                (None, None, Some(texture)) => artifact::texture_resource(
+                    &texture.record_element,
+                    artifact::TextureRecord {
+                        format: texture.format.map(|format| format.name),
+                        access: texture.access.record_name(),
+                        class: texture.scalar.name(),
+                    },
+                ),
+                (None, None, None) => None,
             };
             artifact::ParameterRecord {
                 name: fact.name,
@@ -986,6 +1002,20 @@ struct ParameterFacts {
     element: Option<syn::Type>,
     /// The struct type of a uniform parameter.
     uniform_element: Option<syn::Type>,
+    /// The facts of a texture parameter.
+    texture: Option<TextureParameter>,
+}
+
+/// What the descriptor and the export record say about a texture parameter (mx.t3, D64, D91).
+struct TextureParameter {
+    access: crate::slang::texture::Access,
+    format: Option<&'static crate::slang::texture::FormatInfo>,
+    /// The Rust type of one texel as the descriptor names it: the user's type for a sampled texture, the format's
+    /// texel for a storage one.
+    element: syn::Type,
+    /// The same type by its bare name, which is what the record's layout writer reads.
+    record_element: syn::Type,
+    scalar: crate::slang::texture::Scalar,
 }
 
 fn parameter_facts(
@@ -1035,6 +1065,24 @@ fn parameter_facts(
             } else {
                 None
             };
+            let texture = if flavor.is_texture() {
+                let spec = crate::slang::texture::texture_spec(flavor, &input.ty)
+                    .map_err(|message| diagnostics::error(Code::TextureType, &input.ty, message))?;
+                let (element, record_element) = match (spec.sampled_texel, spec.format) {
+                    (Some(texel), _) => (texel.clone(), texel.clone()),
+                    (None, Some(format)) => (format.texel_type(), format.texel_leaf_type()),
+                    (None, None) => unreachable!("a texture has a texel type or a format"),
+                };
+                Some(TextureParameter {
+                    access: spec.access,
+                    format: spec.format,
+                    element,
+                    record_element,
+                    scalar: spec.scalar,
+                })
+            } else {
+                None
+            };
             Ok(Some(ParameterFacts {
                 name: crate::slang::emit_ident(&pattern.ident),
                 rust_type: input.ty.to_token_stream().to_string(),
@@ -1042,6 +1090,7 @@ fn parameter_facts(
                 binding,
                 element,
                 uniform_element,
+                texture,
             }))
         })
         .filter_map(Result::transpose)
@@ -1075,6 +1124,7 @@ fn parameter_descriptors(
                 binding,
                 element,
                 uniform_element,
+                texture,
             } = fact;
             let (kind, access) = match flavor {
                 ParameterFlavor::Invocation => (
@@ -1097,6 +1147,19 @@ fn parameter_descriptors(
                     quote!(::gust::ParameterKind::Value),
                     quote!(::gust::Access::NotApplicable),
                 ),
+                // A sampled texture is read-only; a storage or write-only one is bound read-write (D64).
+                ParameterFlavor::SampledTexture => (
+                    quote!(::gust::ParameterKind::Texture),
+                    quote!(::gust::Access::ReadOnly),
+                ),
+                ParameterFlavor::StorageTexture | ParameterFlavor::WriteTexture => (
+                    quote!(::gust::ParameterKind::Texture),
+                    quote!(::gust::Access::ReadWrite),
+                ),
+                ParameterFlavor::Sampler => (
+                    quote!(::gust::ParameterKind::Sampler),
+                    quote!(::gust::Access::NotApplicable),
+                ),
                 ParameterFlavor::LocalId
                 | ParameterFlavor::GroupId
                 | ParameterFlavor::Workgroup => {
@@ -1110,6 +1173,30 @@ fn parameter_descriptors(
                 None => quote!(None),
             };
             let resource_layout = match (element, uniform_element) {
+                // A texture: its texel type is the element, and the facts the shader witnesses (D91) follow. The
+                // element is named once, so a texel type that is no `GpuPod` still reports one E0277.
+                (None, None) if texture.is_some() => {
+                    let texture = texture.expect("guarded by the match arm");
+                    let element = &texture.element;
+                    let format = match texture.format {
+                        Some(format) => {
+                            let tokens = format.format_tokens();
+                            quote!(::core::option::Option::Some(#tokens))
+                        }
+                        None => quote!(::core::option::Option::None),
+                    };
+                    let access = texture.access.tokens();
+                    let class = texture.scalar.class_tokens();
+                    quote!(Some(::gust::ResourceLayout::texture_v1(
+                        <#element as ::gust::GpuPod>::LAYOUT,
+                        ::gust::TextureLayout {
+                            format: #format,
+                            dimension: ::gust::TextureDimension::D2,
+                            access: #access,
+                            class: #class,
+                        }
+                    )))
+                }
                 // StorageV1 when the element is scalars and padding-free structs of them, StorageV2 when it holds
                 // vectors or matrices. The element is named once, so a type that is no `GpuPod` still reports one
                 // E0277.
@@ -1142,7 +1229,14 @@ fn parameter_descriptors(
         .collect()
 }
 
-/// One storage or uniform parameter of a kernel, as the typed call needs it.
+/// An argument of a typed call in declaration order: the index into the resources or into the samplers.
+#[derive(Clone, Copy)]
+enum CallParameter {
+    Resource(usize),
+    Sampler(usize),
+}
+
+/// One storage, uniform or texture parameter of a kernel, as the typed call needs it.
 struct ResourceArgument {
     name: syn::Ident,
     element: syn::Type,
@@ -1174,6 +1268,9 @@ fn typed_call_items(
     inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
 ) -> syn::Result<(String, TokenStream)> {
     let mut arguments = Vec::new();
+    // The sampler parameters, and the declaration order of the call's arguments (a resource or a sampler).
+    let mut samplers: Vec<syn::Ident> = Vec::new();
+    let mut call_order: Vec<CallParameter> = Vec::new();
     for input in inputs {
         // `parameter_descriptors` has already rejected a receiver or a non-identifier pattern.
         let syn::FnArg::Typed(input) = input else {
@@ -1182,7 +1279,29 @@ fn typed_call_items(
         let syn::Pat::Ident(pattern) = input.pat.as_ref() else {
             continue;
         };
-        let (access, kind) = match parameter_flavor_in(stage, &input.ty) {
+        let flavor = parameter_flavor_in(stage, &input.ty);
+        // A texture is a resource of kind `Texture` whose element is its texel type; a sampler is not a resource at
+        // all but a `SamplerArg` of the same device (D64).
+        let mut texel = None;
+        let (access, kind) = match flavor {
+            ParameterFlavor::Sampler => {
+                call_order.push(CallParameter::Sampler(samplers.len()));
+                samplers.push(pattern.ident.clone());
+                continue;
+            }
+            ParameterFlavor::SampledTexture
+            | ParameterFlavor::StorageTexture
+            | ParameterFlavor::WriteTexture => {
+                let spec = crate::slang::texture::texture_spec(flavor, &input.ty)
+                    .map_err(|message| diagnostics::error(Code::TextureType, &input.ty, message))?;
+                texel = Some(spec.element_type());
+                let access = if spec.access == crate::slang::texture::Access::Sampled {
+                    quote!(::gust::Access::ReadOnly)
+                } else {
+                    quote!(::gust::Access::ReadWrite)
+                };
+                (access, quote!(::gust::kind::Texture))
+            }
             // The derived ids and the workgroup memory are not arguments of a call: no buffer stands for them.
             ParameterFlavor::Invocation
             | ParameterFlavor::LocalId
@@ -1213,22 +1332,45 @@ fn typed_call_items(
                 ));
             }
         };
+        let element = match texel {
+            Some(texel) => texel,
+            None => crate::slang::wrapper_element_type(&input.ty)?.clone(),
+        };
+        call_order.push(CallParameter::Resource(arguments.len()));
         arguments.push(ResourceArgument {
             name: pattern.ident.clone(),
-            element: crate::slang::wrapper_element_type(&input.ty)?.clone(),
+            element,
             access,
             kind,
         });
     }
     let total = arguments.len();
     let count = proc_macro2::Literal::usize_unsuffixed(total);
+    let sampler_total = samplers.len();
+    let sampler_count = proc_macro2::Literal::usize_unsuffixed(sampler_total);
     let count_message = format!(
-        "`{kernel}`: the generated typed call takes a different number of arguments than its descriptor has storage \
-         plus uniform parameters"
+        "`{kernel}`: the generated typed call takes a different number of arguments than its descriptor has storage, \
+         uniform and texture parameters, or a different number of samplers than its sampler parameters"
     );
-    let names: Vec<String> = arguments.iter().map(|a| a.name.to_string()).collect();
+    let names: Vec<String> = call_order
+        .iter()
+        .map(|parameter| match *parameter {
+            CallParameter::Resource(index) => arguments[index].name.to_string(),
+            CallParameter::Sampler(index) => samplers[index].to_string(),
+        })
+        .collect();
+    // The wording of a kernel without textures is the one it had before they existed.
+    let textured = !samplers.is_empty()
+        || arguments
+            .iter()
+            .any(|argument| argument.kind.to_string().contains("Texture"));
     let order = if names.is_empty() {
         "no resource arguments".to_owned()
+    } else if textured {
+        format!(
+            "then the storage, uniform, texture and sampler arguments in declaration order: {}",
+            names.join(", ")
+        )
     } else {
         format!(
             "then the storage and uniform arguments in declaration order: {}",
@@ -1275,15 +1417,40 @@ fn typed_call_items(
         "Run `{kernel}` over an extent and wait: `__gust_device`, `__gust_extent`, {order}. {extent_note}"
     );
 
-    let assertion = quote! {
-        const _: () = ::core::assert!(
-            <#kernel as ::gust::Kernel>::DESCRIPTOR.storage_parameter_count()
-                + <#kernel as ::gust::Kernel>::DESCRIPTOR.uniform_parameter_count()
-                == #count,
-            #count_message
-        );
+    let assertion = if textured {
+        quote! {
+            const _: () = ::core::assert!(
+                <#kernel as ::gust::Kernel>::DESCRIPTOR.storage_parameter_count()
+                    + <#kernel as ::gust::Kernel>::DESCRIPTOR.uniform_parameter_count()
+                    + <#kernel as ::gust::Kernel>::DESCRIPTOR.texture_parameter_count()
+                    == #count
+                    && <#kernel as ::gust::Kernel>::DESCRIPTOR.sampler_parameter_count()
+                        == #sampler_count,
+                #count_message
+            );
+        }
+    } else {
+        quote! {
+            const _: () = ::core::assert!(
+                <#kernel as ::gust::Kernel>::DESCRIPTOR.storage_parameter_count()
+                    + <#kernel as ::gust::Kernel>::DESCRIPTOR.uniform_parameter_count()
+                    == #count,
+                #count_message
+            );
+        }
     };
 
+    // A sampler is used through a texture's `sample`, so a kernel with a sampler and no resource has nothing to take
+    // the device from: it gets no typed call (its descriptor, record and twin are unaffected).
+    if arguments.is_empty() && !samplers.is_empty() {
+        return Ok((
+            format!(
+                "Handle of the GUST kernel `{kernel}`. It has a sampler parameter but no buffer or texture, so it has \
+                 no typed `call`, `submit` or `dispatch`."
+            ),
+            TokenStream::new(),
+        ));
+    }
     if arguments.is_empty() {
         return Ok((
             handle_doc,
@@ -1355,17 +1522,26 @@ fn typed_call_items(
     let resources: Vec<syn::Ident> = (0..total)
         .map(|index| format_ident!("__GustR{}", index))
         .collect();
+    let sampler_types: Vec<syn::Ident> = (0..sampler_total)
+        .map(|index| format_ident!("__GustS{}", index))
+        .collect();
     let first = &resources[0];
     let device = quote!(<#first as ::gust::Resource>::Device);
-    let parameters: Vec<TokenStream> = arguments
+    // In declaration order: a resource is any `Into<Arg>` of its type, a sampler a reference to its type.
+    let parameters: Vec<TokenStream> = call_order
         .iter()
-        .zip(&resources)
-        .map(|(argument, resource)| {
-            let name = &argument.name;
-            quote!(#name: impl ::core::convert::Into<::gust::Arg<'r, #resource>>)
+        .map(|parameter| match *parameter {
+            CallParameter::Resource(index) => {
+                let (name, resource) = (&arguments[index].name, &resources[index]);
+                quote!(#name: impl ::core::convert::Into<::gust::Arg<'r, #resource>>)
+            }
+            CallParameter::Sampler(index) => {
+                let (name, sampler) = (&samplers[index], &sampler_types[index]);
+                quote!(#name: &'r #sampler)
+            }
         })
         .collect();
-    let bounds: Vec<TokenStream> = arguments
+    let mut bounds: Vec<TokenStream> = arguments
         .iter()
         .zip(&resources)
         .enumerate()
@@ -1381,7 +1557,21 @@ fn typed_call_items(
             }
         })
         .collect();
-    let forwarded: Vec<&syn::Ident> = arguments.iter().map(|argument| &argument.name).collect();
+    // A sampler is an argument of the same device as the resources, and that device must have samplers (D64).
+    for (name, sampler) in samplers.iter().zip(&sampler_types) {
+        let span = name.span();
+        bounds.push(quote_spanned!(span=> #sampler: ::gust::SamplerArg<Device = #device> + 'r));
+    }
+    if !samplers.is_empty() {
+        bounds.push(quote!(#device: ::gust::SamplerDevice));
+    }
+    let forwarded: Vec<&syn::Ident> = call_order
+        .iter()
+        .map(|parameter| match *parameter {
+            CallParameter::Resource(index) => &arguments[index].name,
+            CallParameter::Sampler(index) => &samplers[index],
+        })
+        .collect();
     let bindings: Vec<TokenStream> = arguments
         .iter()
         .map(|argument| {
@@ -1389,6 +1579,49 @@ fn typed_call_items(
             quote!(::core::convert::Into::into(#name).bind(#access))
         })
         .collect();
+    let sampler_bindings: Vec<TokenStream> = samplers
+        .iter()
+        .map(|name| quote!(::gust::SamplerArg::bind(#name)))
+        .collect();
+    // The call type, its constructors and the `Run` bound: `Call<.., N>` for a kernel without samplers, and the
+    // `SampledCall` of its `S` samplers for one with them.
+    let (call_type, new_call, new_extent_call, run_bound) = if samplers.is_empty() {
+        (
+            quote!(::gust::Call<'r, #device, Self, #count>),
+            quote!(::gust::Call::new(__gust_element_count, [#(#bindings),*])),
+            quote!(::gust::Call::new_extent(__gust_extent, [#(#bindings),*])),
+            quote!(#device: ::gust::Run<Self, #count>),
+        )
+    } else {
+        (
+            quote!(::gust::SampledCall<'r, #device, Self, #count, #sampler_count>),
+            quote!(::gust::Call::new_with_samplers(
+                __gust_element_count,
+                [#(#bindings),*],
+                [#(#sampler_bindings),*]
+            )),
+            quote!(::gust::Call::new_extent_with_samplers(
+                __gust_extent,
+                [#(#bindings),*],
+                [#(#sampler_bindings),*]
+            )),
+            quote!(#device: ::gust::Run<
+                Self,
+                #count,
+                [<#device as ::gust::SamplerDevice>::SamplerBinding<'r>; #sampler_count]
+            >),
+        )
+    };
+    let run_trait = if samplers.is_empty() {
+        quote!(::gust::Run<Self, #count>)
+    } else {
+        quote!(::gust::Run<
+            Self,
+            #count,
+            [<#device as ::gust::SamplerDevice>::SamplerBinding<'r>; #sampler_count]
+        >)
+    };
+    let generics: Vec<&syn::Ident> = resources.iter().chain(&sampler_types).collect();
 
     Ok((
         handle_doc,
@@ -1398,19 +1631,19 @@ fn typed_call_items(
             impl #kernel {
                 #[doc = #call_doc]
                 #[allow(clippy::too_many_arguments)]
-                pub fn call<'r, #(#resources),*>(
+                pub fn call<'r, #(#generics),*>(
                     __gust_element_count: ::core::primitive::u32,
                     #(#parameters),*
-                ) -> ::gust::Call<'r, #device, Self, #count>
+                ) -> #call_type
                 where
                     #(#bounds,)*
                 {
-                    ::gust::Call::new(__gust_element_count, [#(#bindings),*])
+                    #new_call
                 }
 
                 #[doc = #submit_doc]
                 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-                pub fn submit<'d, 'r, #(#resources),*>(
+                pub fn submit<'d, 'r, #(#generics),*>(
                     __gust_device: &'d #device,
                     __gust_element_count: ::core::primitive::u32,
                     #(#parameters),*
@@ -1420,9 +1653,9 @@ fn typed_call_items(
                 >
                 where
                     #(#bounds,)*
-                    #device: ::gust::Run<Self, #count>,
+                    #run_bound,
                 {
-                    <#device as ::gust::Run<Self, #count>>::submit_call(
+                    <#device as #run_trait>::submit_call(
                         __gust_device,
                         &Self::call(__gust_element_count, #(#forwarded),*),
                     )
@@ -1430,16 +1663,16 @@ fn typed_call_items(
 
                 #[doc = #dispatch_doc]
                 #[allow(clippy::too_many_arguments)]
-                pub fn dispatch<'r, #(#resources),*>(
+                pub fn dispatch<'r, #(#generics),*>(
                     __gust_device: &#device,
                     __gust_element_count: ::core::primitive::u32,
                     #(#parameters),*
                 ) -> ::core::result::Result<(), <#device as ::gust::Device>::Error>
                 where
                     #(#bounds,)*
-                    #device: ::gust::Run<Self, #count>,
+                    #run_bound,
                 {
-                    <#device as ::gust::Run<Self, #count>>::dispatch_call(
+                    <#device as #run_trait>::dispatch_call(
                         __gust_device,
                         &Self::call(__gust_element_count, #(#forwarded),*),
                     )
@@ -1447,19 +1680,19 @@ fn typed_call_items(
 
                 #[doc = #call_extent_doc]
                 #[allow(clippy::too_many_arguments)]
-                pub fn call_extent<'r, #(#resources),*>(
+                pub fn call_extent<'r, #(#generics),*>(
                     __gust_extent: ::gust::Extent,
                     #(#parameters),*
-                ) -> ::gust::Call<'r, #device, Self, #count>
+                ) -> #call_type
                 where
                     #(#bounds,)*
                 {
-                    ::gust::Call::new_extent(__gust_extent, [#(#bindings),*])
+                    #new_extent_call
                 }
 
                 #[doc = #submit_extent_doc]
                 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-                pub fn submit_extent<'d, 'r, #(#resources),*>(
+                pub fn submit_extent<'d, 'r, #(#generics),*>(
                     __gust_device: &'d #device,
                     __gust_extent: ::gust::Extent,
                     #(#parameters),*
@@ -1469,9 +1702,9 @@ fn typed_call_items(
                 >
                 where
                     #(#bounds,)*
-                    #device: ::gust::Run<Self, #count>,
+                    #run_bound,
                 {
-                    <#device as ::gust::Run<Self, #count>>::submit_call(
+                    <#device as #run_trait>::submit_call(
                         __gust_device,
                         &Self::call_extent(__gust_extent, #(#forwarded),*),
                     )
@@ -1479,16 +1712,16 @@ fn typed_call_items(
 
                 #[doc = #dispatch_extent_doc]
                 #[allow(clippy::too_many_arguments)]
-                pub fn dispatch_extent<'r, #(#resources),*>(
+                pub fn dispatch_extent<'r, #(#generics),*>(
                     __gust_device: &#device,
                     __gust_extent: ::gust::Extent,
                     #(#parameters),*
                 ) -> ::core::result::Result<(), <#device as ::gust::Device>::Error>
                 where
                     #(#bounds,)*
-                    #device: ::gust::Run<Self, #count>,
+                    #run_bound,
                 {
-                    <#device as ::gust::Run<Self, #count>>::dispatch_call(
+                    <#device as #run_trait>::dispatch_call(
                         __gust_device,
                         &Self::call_extent(__gust_extent, #(#forwarded),*),
                     )
@@ -1522,6 +1755,7 @@ fn cpu_twin_items(
         return Ok(TokenStream::new());
     }
     let mut names = Vec::new();
+    let mut sampler_names: Vec<syn::Ident> = Vec::new();
     let mut acquisitions = Vec::new();
     let mut arguments = Vec::new();
     for input in inputs {
@@ -1600,10 +1834,77 @@ fn cpu_twin_items(
                 });
                 arguments.push(quote!(::gust::Uniform(#name)));
             }
+            // A texture is acquired by its texel type and viewed through the kernel-side type over the same texels
+            // (`gust/src/cpu/texture.rs` has the hand-written impl of this shape, which is the specification).
+            ParameterFlavor::SampledTexture => {
+                let spec = crate::slang::texture::texture_spec(
+                    parameter_flavor_in(stage, &input.ty),
+                    &input.ty,
+                )
+                .map_err(|message| diagnostics::error(Code::TextureType, &input.ty, message))?;
+                let texel = spec.element_type();
+                names.push(name.clone());
+                acquisitions.push(quote! {
+                    let #name = ::gust::cpu::texture::read::<#texel>(#name, #label)?;
+                });
+                arguments
+                    .push(quote!(::gust::Texture2D::new(&#name.texels, #name.width, #name.height)));
+            }
+            ParameterFlavor::StorageTexture | ParameterFlavor::WriteTexture => {
+                let flavor = parameter_flavor_in(stage, &input.ty);
+                let spec = crate::slang::texture::texture_spec(flavor, &input.ty)
+                    .map_err(|message| diagnostics::error(Code::TextureType, &input.ty, message))?;
+                let texel = spec.element_type();
+                let marker = spec
+                    .format
+                    .expect("a storage texture has a format")
+                    .marker_tokens();
+                let view = if flavor == ParameterFlavor::StorageTexture {
+                    quote!(::gust::StorageTexture2D)
+                } else {
+                    quote!(::gust::WriteTexture2D)
+                };
+                names.push(name.clone());
+                acquisitions.push(quote! {
+                    let mut #name = ::gust::cpu::texture::write::<#texel>(#name, #label)?;
+                });
+                arguments.push(quote!(
+                    #view::<#marker>::new(&mut #name.texels, #name.width, #name.height)
+                ));
+            }
+            ParameterFlavor::Sampler => {
+                sampler_names.push(name.clone());
+                arguments.push(quote!(::gust::cpu::texture::sampler(#name)));
+            }
             ParameterFlavor::Value => return Ok(TokenStream::new()),
         }
     }
     let count = proc_macro2::Literal::usize_unsuffixed(names.len());
+    // A kernel with samplers is `Run<K, N, [CpuSamplerBinding; S]>`, and reads the sampler bindings of its call.
+    let sampler_count = proc_macro2::Literal::usize_unsuffixed(sampler_names.len());
+    let (run_trait, call_type, sampler_binding) = if sampler_names.is_empty() {
+        (
+            quote!(::gust::Run<#kernel, #count>),
+            quote!(::gust::Call<'_, Self, #kernel, #count>),
+            TokenStream::new(),
+        )
+    } else {
+        (
+            quote!(::gust::Run<
+                #kernel,
+                #count,
+                [::gust::cpu::texture::CpuSamplerBinding<'_>; #sampler_count]
+            >),
+            quote!(::gust::Call<
+                '_,
+                Self,
+                #kernel,
+                #count,
+                [::gust::cpu::texture::CpuSamplerBinding<'_>; #sampler_count]
+            >),
+            quote!(let [#(#sampler_names),*] = *__gust_call.samplers();),
+        )
+    };
     let gate = match profile {
         Profile::Cpu => TokenStream::new(),
         Profile::Other => quote!(#[cfg(any(test, gust_dual))]),
@@ -1619,13 +1920,14 @@ fn cpu_twin_items(
     };
     Ok(quote! {
         #gate
-        impl ::gust::Run<#kernel, #count> for ::gust::cpu::CpuDevice {
+        impl #run_trait for ::gust::cpu::CpuDevice {
             fn submit_call(
                 &self,
-                __gust_call: &::gust::Call<'_, Self, #kernel, #count>,
+                __gust_call: &#call_type,
             ) -> ::core::result::Result<::gust::cpu::CpuJob, ::gust::cpu::Error> {
                 ::gust::cpu::validate(self, __gust_call)?;
                 let [#(#names),*] = *__gust_call.bindings();
+                #sampler_binding
                 #(#acquisitions)*
                 for __gust_id in #invocations {
                     #typecheck(#(#arguments),*);

@@ -1,0 +1,8 @@
+# Keys matched against the one error of `cargo check --message-format json` (see gpupod-missing/expected.txt). A macro
+# error is a `compile_error!` and has no rustc code, so `code: none`. The macro text carries the GUST code
+# (docs/DIAGNOSTICS.md, E0723); a second `message:` pins the reason.
+code: none
+file: shape-pixel-storage-texture/src/main.rs
+line: 6
+message: [GUST-E0723] shape `pixel` is not compatible with kernel `paint`
+message: is a storage texture

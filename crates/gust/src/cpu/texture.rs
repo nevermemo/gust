@@ -538,10 +538,11 @@ mod tests {
     use super::*;
     use crate::cpu::{CpuJob, invocations};
     use crate::math::{Vec2, Vec4};
-    use crate::texture::{R32Float, R32Sint, R32Uint, Rg32Float, Rg32Uint, Texture2D};
+    use crate::texture::{R32Float, R32Sint, R32Uint, Rg32Float, Rg32Uint, SampleClass, Texture2D};
     use crate::{
         Arg, Call, Device, Kernel, KernelDescriptor, ParameterDescriptor, ParameterKind,
-        ResourceBinding, ResourceLayout, Run, SampledCall, SourceOrigin, StorageMut, UVec3,
+        ResourceBinding, ResourceLayout, Run, SampledCall, SourceOrigin, StorageMut, TextureAccess,
+        TextureDimension, TextureLayout, UVec3,
     };
 
     const NEAREST: SamplerOptions = SamplerOptions::new(Filter::Nearest, Address::ClampToEdge);
@@ -881,10 +882,18 @@ mod tests {
     /// centre of output element `i` of a row of `out.len()` elements.
     struct Blur;
 
+    /// The layout of the sampled `f32` texture `tex`: what the macro writes for a `Texture2D<f32>` parameter (mx.t3),
+    /// the texel layout under the texture rule, so a D17 cross-check of this kernel compares real texture facts.
     const fn texel_layout() -> ResourceLayout {
-        // Until mx.t0b adds the texture layout rule, a texture parameter's descriptor carries the texel layout under
-        // the storage rule; the twin compares the element layout only.
-        ResourceLayout::storage_v2(<f32 as GpuPod>::LAYOUT)
+        ResourceLayout::texture_v1(
+            <f32 as GpuPod>::LAYOUT,
+            TextureLayout {
+                format: None,
+                dimension: TextureDimension::D2,
+                access: TextureAccess::Sampled,
+                class: SampleClass::Float,
+            },
+        )
     }
 
     impl Kernel for Blur {

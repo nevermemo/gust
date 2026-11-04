@@ -5330,3 +5330,279 @@ fn star_assign_on_a_place_with_a_wrapping_method_is_not_a_call_in_a_matrix_modul
         Code::MulAssignPlace,
     );
 }
+
+// --- Textures and samplers (slice mx.t3, D62, D64): GUST-E0731 to GUST-E0736 and the golden of the fixture ---
+
+const TEXTURES_FIXTURE: &str = include_str!("../../../../tests/fixtures/textures.rs");
+const TEXTURES_GOLDEN: &str = include_str!("../../../../tests/fixtures/textures.slang");
+
+/// The textures fixture as `#[gpu]` receives it (the attribute is the macro's own).
+fn textures_module() -> String {
+    TEXTURES_FIXTURE.replacen("#[gust::gpu]", "", 1)
+}
+
+#[test]
+fn kernels_of_the_textures_fixture_match_the_golden() {
+    let module: syn::ItemMod =
+        crate::diagnostics::testing::parse_str(textures_module().trim()).unwrap();
+    validate_module(&module).unwrap();
+    let mut actual = String::new();
+    for item in &module.content.as_ref().unwrap().1 {
+        let syn::Item::Fn(function) = item else {
+            continue;
+        };
+        let Some(options) = kernel_options(function).unwrap() else {
+            continue;
+        };
+        actual.push_str(&format!("// ==== kernel {} ====\n", function.sig.ident));
+        actual.push_str(
+            &emit_kernel(&module, function, options)
+                .unwrap()
+                .source
+                .replace("\r\n", "\n"),
+        );
+    }
+    assert_golden(
+        &actual,
+        "textures.slang",
+        &TEXTURES_GOLDEN.replace("\r\n", "\n"),
+    );
+}
+
+#[test]
+fn the_textures_golden_declares_each_parameter_kind_with_its_binding_and_format() {
+    let golden = TEXTURES_GOLDEN.replace("\r\n", "\n");
+    for text in [
+        "[[vk::binding(0, 0)]] Texture2D<float4> image;",
+        "[[vk::binding(1, 0)]] SamplerState bilinear;",
+        "[[vk::binding(2, 0)]] [format(\"rgba32f\")] WTexture2D<float4> blurred;",
+        "[[vk::binding(0, 0)]] [format(\"r32f\")] RWTexture2D<float> image;",
+        "[[vk::binding(1, 0)]] [format(\"r32ui\")] RWTexture2D<uint> totals;",
+        "[[vk::binding(0, 0)]] [format(\"r32i\")] RWTexture2D<int> field;",
+        "[[vk::binding(1, 0)]] [format(\"rg32f\")] WTexture2D<float2> two;",
+        "[[vk::binding(1, 0)]] [format(\"rg32ui\")] WTexture2D<uint2> two;",
+        "[[vk::binding(1, 0)]] [format(\"rg32i\")] WTexture2D<int2> two;",
+        "[[vk::binding(2, 0)]] [format(\"rgba32ui\")] WTexture2D<uint4> four;",
+        "[[vk::binding(2, 0)]] [format(\"rgba32i\")] WTexture2D<int4> four;",
+        "Texture2D<uint> ids;",
+        "Texture2D<uint4> counts;",
+        "Texture2D<int2> offsets;",
+    ] {
+        assert!(golden.contains(text), "{text} in {golden}");
+    }
+    // The size is read once, in the prologue, whatever the number of `width()` and `height()` calls.
+    assert!(golden.contains(".GetDimensions("), "{golden}");
+    assert!(golden.contains(".SampleLevel("), "{golden}");
+    assert!(golden.contains(".Store("), "{golden}");
+}
+
+#[test]
+fn the_expansion_of_the_textures_fixture_describes_textures_and_samplers() {
+    let item: proc_macro2::TokenStream = textures_module().parse().unwrap();
+    let text: String = crate::gpu_impl_with(
+        proc_macro2::TokenStream::new(),
+        item,
+        crate::expand::Profile::Other,
+    )
+    .to_string()
+    .chars()
+    .filter(|c| !c.is_whitespace())
+    .collect();
+    // The descriptor: the texture and sampler kinds, the layout with the texture facts, no layout for a sampler.
+    assert!(text.contains("::gust::ParameterKind::Texture"), "{text}");
+    assert!(text.contains("::gust::ParameterKind::Sampler"), "{text}");
+    assert!(text.contains("texture_v1"), "{text}");
+    assert!(text.contains("::gust::TextureAccess::WriteOnly"), "{text}");
+    assert!(text.contains("::gust::TextureAccess::ReadWrite"), "{text}");
+    assert!(text.contains("::gust::TextureAccess::Sampled"), "{text}");
+    // The typed call: a kernel with samplers is built with `new_with_samplers` and runs through the sampled `Run`.
+    assert!(text.contains("::gust::Call::new_with_samplers("), "{text}");
+    assert!(text.contains("::gust::SamplerDevice"), "{text}");
+    // A kernel without a sampler keeps the plain `Call`.
+    assert!(text.contains("::gust::Call::new("), "{text}");
+}
+
+/// A kernel whose parameters follow the dispatch id, with `body` as its statements.
+fn texture_kernel(parameters: &str, body: &str) -> String {
+    format!("mod bad {{ #[kernel] fn run(id: SV_DispatchThreadID, {parameters}) {{ {body} }} }}")
+}
+
+#[test]
+fn texture_and_sampler_types_outside_the_dialect_are_e0731() {
+    for parameters in [
+        // A 3-wide texel has no texture format.
+        "image: Texture2D<Vec3>",
+        "image: Texture2D<bool>",
+        "image: Texture2D",
+        // `StorageTexture2D` is the read-write spelling, which three formats have.
+        "mut image: StorageTexture2D<Rgba32Float>",
+        "mut image: StorageTexture2D<Rg32Uint>",
+        // An unknown format, and a sampled texel type in the place of a format.
+        "mut image: WriteTexture2D<Rgba8Unorm>",
+        "mut image: WriteTexture2D<f32>",
+        "mut image: StorageTexture2D<Vec4>",
+        // A sampler takes no type arguments.
+        "filter: Sampler<f32>",
+    ] {
+        assert_rejected(&texture_kernel(parameters, ""), Code::TextureType);
+    }
+}
+
+#[test]
+fn a_texture_method_with_a_wrong_coordinate_is_e0732() {
+    for (parameters, body) in [
+        (
+            "mut image: StorageTexture2D<R32Float>",
+            "let v = image.load(0u32);",
+        ),
+        (
+            "mut image: StorageTexture2D<R32Float>",
+            "let v = image.load(0u32, 1u32, 2u32);",
+        ),
+        (
+            "mut image: StorageTexture2D<R32Float>",
+            "let v = image.load(1.5f32, 0u32);",
+        ),
+        (
+            "mut image: StorageTexture2D<R32Float>",
+            "let v = image.load(0u32, 2.0);",
+        ),
+        (
+            "mut image: StorageTexture2D<R32Float>",
+            "let v = image.load(-1, 0u32);",
+        ),
+        (
+            "mut image: StorageTexture2D<R32Float>",
+            "image.store(0u32, 0u32);",
+        ),
+        (
+            "mut image: StorageTexture2D<R32Float>",
+            "image.store(0u32, 1i32, 1.0f32);",
+        ),
+        (
+            "image: Texture2D<Vec4>, filter: Sampler",
+            "let v = image.sample(filter, 1u32, 0.5f32);",
+        ),
+        (
+            "image: Texture2D<Vec4>, filter: Sampler",
+            "let v = image.sample(filter, 0.5f32);",
+        ),
+        ("image: Texture2D<Vec4>", "let w = image.width(1u32);"),
+    ] {
+        assert_rejected(&texture_kernel(parameters, body), Code::TextureCoordinate);
+    }
+}
+
+#[test]
+fn the_first_argument_of_sample_must_be_a_sampler_parameter_e0733() {
+    for body in [
+        "let v = image.sample(id.x, 0.5f32, 0.5f32);",
+        "let v = image.sample(0.5f32, 0.5f32, 0.5f32);",
+        "let v = image.sample(image, 0.5f32, 0.5f32);",
+        "let v = image.sample(unknown, 0.5f32, 0.5f32);",
+    ] {
+        assert_rejected(
+            &texture_kernel("image: Texture2D<Vec4>, filter: Sampler", body),
+            Code::SamplerArgument,
+        );
+    }
+}
+
+#[test]
+fn sample_on_integer_texels_is_e0734() {
+    for parameters in [
+        "ids: Texture2D<u32>, filter: Sampler",
+        "ids: Texture2D<UVec4>, filter: Sampler",
+        "ids: Texture2D<IVec2>, filter: Sampler",
+    ] {
+        assert_rejected(
+            &texture_kernel(parameters, "let v = ids.sample(filter, 0.5f32, 0.5f32);"),
+            Code::SampleInteger,
+        );
+    }
+}
+
+#[test]
+fn a_method_the_texture_does_not_have_is_e0735() {
+    for (parameters, body) in [
+        // A sampled texture is read-only.
+        (
+            "image: Texture2D<Vec4>",
+            "image.store(0u32, 0u32, Vec4::splat(0.0f32));",
+        ),
+        // A write-only texture cannot be read.
+        (
+            "mut out: WriteTexture2D<R32Float>",
+            "let v = out.load(0u32, 0u32);",
+        ),
+        // A storage texture is read with `load`, not sampled.
+        (
+            "mut image: StorageTexture2D<R32Float>, filter: Sampler",
+            "let v = image.sample(filter, 0.5f32, 0.5f32);",
+        ),
+        // Any other name.
+        ("image: Texture2D<Vec4>", "let v = image.gather(0u32);"),
+        ("image: Texture2D<Vec4>", "let v = image.depth();"),
+    ] {
+        assert_rejected(&texture_kernel(parameters, body), Code::TextureMethod);
+    }
+}
+
+#[test]
+fn a_texture_or_sampler_used_as_a_value_is_e0736() {
+    for (parameters, body) in [
+        ("image: Texture2D<Vec4>", "let alias = image;"),
+        (
+            "image: Texture2D<Vec4>",
+            "let size = image.width() + image;",
+        ),
+        ("filter: Sampler", "let alias = filter;"),
+        // A sampler has no methods of its own.
+        ("filter: Sampler", "let v = filter.width();"),
+        // A texture type anywhere but a kernel parameter.
+        (
+            "image: Texture2D<Vec4>",
+            "let alias: Texture2D<Vec4> = 1u32;",
+        ),
+        ("filter: Sampler", "let alias: Sampler = 1u32;"),
+    ] {
+        assert_rejected(&texture_kernel(parameters, body), Code::TextureUse);
+    }
+}
+
+#[test]
+fn a_texture_in_a_helper_function_is_refused_with_the_resource_code() {
+    assert_rejected(
+        "mod bad { fn helper(image: Texture2D<Vec4>) -> u32 { 0u32 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+        Code::HelperResourceParameter,
+    );
+    assert_rejected(
+        "mod bad { fn helper(filter: Sampler) -> u32 { 0u32 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+        Code::HelperResourceParameter,
+    );
+}
+
+#[test]
+fn an_accepted_texture_kernel_emits_the_lowering_of_the_module_comment() {
+    let source = translate(&texture_kernel(
+        "image: Texture2D<f32>, filter: Sampler, mut out: StorageTexture2D<R32Float>",
+        "let w = out.width(); let h = out.height(); \
+         let v = image.sample(filter, 0.25f32, 0.75f32); \
+         let n = out.load(id.x, id.y); \
+         out.store(id.x, id.y, v + n); \
+         let t = image.load(w, h);",
+    ))
+    .unwrap();
+    assert!(source.contains("Texture2D<float> image;"), "{source}");
+    assert!(source.contains("SamplerState filter;"), "{source}");
+    assert!(
+        source.contains("[format(\"r32f\")] RWTexture2D<float> out;"),
+        "{source}"
+    );
+    assert!(
+        source.contains("image.SampleLevel(filter, float2("),
+        "{source}"
+    );
+    assert!(source.contains("out.Store(uint2("), "{source}");
+    assert!(source.contains("out.GetDimensions("), "{source}");
+}

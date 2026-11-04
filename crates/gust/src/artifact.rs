@@ -77,6 +77,12 @@ pub struct Verified {
 /// (target, entry point, hash of `kernel.slang_source`, hash of the bytes), the workgroup
 /// size, and the complete stored layouts against the descriptor's parameters.
 ///
+/// The stage is the descriptor's: `kernel.shape` says compute or fragment, and the stored reflection has to say the
+/// same. Under schema 3 (mx.t0b, D91) the stored document also carries the texture and sampler bindings and a
+/// fragment's targets, and the descriptor's textures, samplers and outputs are compared with them in the same call;
+/// nothing else about the artifact changes, since the identity fields and the key formula are the same for every
+/// stage (the stage is in the Slang text, so one body under two shapes has two keys, D89).
+///
 /// Identity failures are [`Error::Invalid`] and name the value that differed; a descriptor
 /// that disagrees with the stored layouts is [`Error::Mismatch`] or [`Error::Incomplete`].
 pub fn verify_artifact(kernel: &KernelDescriptor, artifact: &Artifact) -> Result<Verified, Error> {
@@ -219,6 +225,32 @@ mod tests {
             if i < out.len() {
                 out[i] = a[i] + b[i];
             }
+        }
+    }
+
+    /// The stage of the stored reflection has to be the descriptor's: a compute artifact does not verify for a pixel
+    /// kernel, and the message names the field (D91). The control is the same artifact against the grid descriptor.
+    #[test]
+    fn a_compute_artifact_does_not_verify_for_a_pixel_descriptor() {
+        const ARTIFACT: Artifact = Artifact {
+            format: Format::Wgsl,
+            key: "52e85c5f03f72272",
+            bytes: include_bytes!("../tests/fixtures/precompiled/52e85c5f03f72272.wgsl"),
+            reflection: include_str!(
+                "../tests/fixtures/precompiled/52e85c5f03f72272.wgsl.reflection.json"
+            ),
+        };
+        let grid = vector_add::add::DESCRIPTOR;
+        verify_artifact(&grid, &ARTIFACT).expect("the control verifies");
+        let pixel = KernelDescriptor {
+            shape: crate::Shape::Pixel,
+            ..grid
+        };
+        match verify_artifact(&pixel, &ARTIFACT) {
+            Err(Error::Mismatch(message)) => {
+                assert_eq!(message, "stage: host fragment, compiler compute")
+            }
+            other => panic!("expected a stage mismatch, got {other:?}"),
         }
     }
 

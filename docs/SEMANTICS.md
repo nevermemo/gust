@@ -148,8 +148,8 @@ describes the intended behaviour and is not evidence.
     takes any device that is `MapHost` and `Run` for the kernel. Neither is emitted on `wasm32`, where nothing may
     block (D69). `map_gpu` and `map_gpu_on(&DeviceHandle, ..)` leave the result on the device as a `GpuVec`; resident
     arguments must all live on the device that runs the call, or the call is `Error::MixedDevices` (D99).
-    `map_async` and `map_on_async` do not block and exist on every target; `map_async` was compiled for `wasm32` and
-    never run in a browser (STATUS m7.a2). Under `GUST_PROFILE=cpu` only `map`, `map_on` and `map_on_async` exist, and
+    `map_async` and `map_on_async` do not block and exist on every target; `map_async` runs in headless Chrome inside
+    the web check (STATUS m7.a2). Under `GUST_PROFILE=cpu` only `map`, `map_on` and `map_on_async` exist, and
     `map_on` is concrete over `&CpuDevice` (D119).
   - *Twin.* In a test or dual build `map_on` over `CpuDevice` runs the generated kernel through its twin: the same
     grid-stride body, with the user's function called as plain Rust, one invocation at a time in ascending id and in
@@ -210,6 +210,15 @@ describes the intended behaviour and is not evidence.
   and no bound is stated for it.
 - **Independent references stay.** Tests of the translator keep an independent host reference as the expected value
   (D26); the twin is a third party in those tests, never the oracle.
+- **Textures and samplers on the CPU twin (slice mx.t1; D64).** The twin has a texture carrier, `CpuTexture2d<F>`
+  (a row-major `Vec` of the texels of format `F`, created by `CpuDevice::texture_2d` with the `TextureUse` it is
+  for), and a sampler, `CpuSampler`. A texture is a `Resource` of kind `Texture`, so a typed call rejects it where
+  the kernel has a buffer at compile time, and a buffer where it has a texture; a sampler is a `SamplerArg`, not a
+  `Resource`, and is rejected the same way both ways (`tests/ui/typed-call-*-for-*`). The backend checks the kind,
+  the texel layout, the texture's use against the parameter's access (read-only needs `SAMPLED`, read-write needs
+  `STORAGE`) and the device instance at submit. Formats are the nine of `gust::texture::Format`
+  (`R32/Rg32/Rgba32` x `Uint/Sint/Float`); `StorageTexture2D` (read-write) exists for the three r32 formats only,
+  `WriteTexture2D` (write-only) for all nine.
 
 WGSL section numbers and quotes on this page come from the WGSL editor's draft (gpuweb.github.io/gpuweb/wgsl), copy
 read on 2026-10-24. A superscript in the spec is written with `^` here.
@@ -522,6 +531,41 @@ never been executed. The exported SPIR-V of that module
 is valid (`spirv-val`, vulkan1.2, checked by hand for the six kernels of `vectors`) but must not be dispatched through
 the SPIR-V ingestion path. This is a difference of toolchain behavior, documented and not chased.
 
+**Texture sampling (slice mx.t1).** `Texture2D::sample(sampler, u, v)` is outside the exact contract (D22): the CPU twin
+computes the formula below in `f32`, and a GPU result is accepted inside the error domain below. A `load` or `store` is
+exact.
+
+**Coordinates.** `u` and `v` are normalised: `(0, 0)` is the top-left *corner* of texel `(0, 0)` and `(1, 1)` the
+bottom-right corner of the last texel, so the centre of texel `(i, j)` is `((i + 0.5) / width, (j + 0.5) / height)`.
+The unnormalised position is `x = u * width`, `y = v * height`.
+
+**Address mode, applied first.** `ClampToEdge` clamps the coordinate to `[0, 1]`; a NaN coordinate becomes 0 on the
+twin. `Repeat` uses `u - floor(u)`, so `1.0` wraps to `0.0`. For a linear read the mode is also applied to the
+neighbouring texel *indices*: clamped to `[0, n - 1]`, or wrapped modulo `n`.
+[`clamp_to_edge_clamps_the_coordinate_to_zero_one`, `repeat_wraps_with_u_minus_floor_u`,
+`linear_with_clamp_repeats_the_edge_texel_past_the_first_and_last_centre`, `linear_with_repeat_wraps_to_the_far_edge`]
+
+**Nearest** reads texel `(min(floor(x), width - 1), min(floor(y), height - 1))`; it is exact on the twin. A GPU may
+pick the neighbouring texel when `x` is within an ulp of an integer; this is documented and not chased (D39).
+[`nearest_picks_the_texel_the_coordinate_falls_in`, `nearest_follows_v_down_the_rows`]
+
+**Linear** (bilinear) computes `x' = x - 0.5`, `i0 = floor(x')`, `fx = x' - i0` (and `y` likewise), reads the four
+texels `(i0, j0)`, `(i0 + 1, j0)`, `(i0, j0 + 1)`, `(i0 + 1, j0 + 1)` after the address mode, and returns
+`lerp(lerp(t00, t10, fx), lerp(t01, t11, fx), fy)` in `f32` in that written order, with
+`lerp(a, b, t) = a + (b - a) * t` per channel (a vector texel is filtered channel by channel).
+[`linear_at_a_texel_centre_is_that_texel`, `linear_between_centres_interpolates_with_the_distance`,
+`bilinear_weights_the_four_texels_and_matches_the_hand_computed_sum`, `vector_texels_interpolate_channel_by_channel`]
+
+**Error domain** of a GPU `sample` against that formula, per channel:
+`|gpu - twin| <= 2^-8 * (max - min of the four texels) + 2 * ulp(max |texel|)`
+(`cpu::texture::linear_error_bound`; the `2^-8` is the precision WebGPU allows for the filter weights, inferred from
+the specification and to be pinned per adapter as an observation, D52, in mx.t4).
+[`the_linear_error_bound_is_a_256th_of_the_range_plus_two_ulps_of_the_largest_texel`,
+`ulp_is_the_gap_to_the_next_magnitude`]
+NaN and infinite texels, and coordinates with `|u| > 2^24` or `|v| > 2^24`, are outside the domain: the twin does
+not panic there (Clamp and Repeat both tested) and what it returns is unspecified. Only float textures have `sample`
+at all (neither filter exists for an integer texture, a compile error); an integer texture is read with `load`.
+
 ## 5. Memory preconditions
 
 A kernel is inside the contract only if both of these hold. A sequential CPU twin hides violations of the second.
@@ -537,6 +581,15 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   that another writes, except through the atomic functions. On the GPU a race is a dynamic error, which section 2.2
   says "may or may not be detectable"; after a dynamic error the program "may not behave as described in the rest of
   this specification". Parameter alias rejection (D34) is a different guarantee and does not prevent this.
+- **Texel addresses.** `Texture2D::load`, `StorageTexture2D::load` and `::store` and `WriteTexture2D::store` take
+  texel coordinates `(x, y)` with `(0, 0)` the top-left texel, `x` to the right, `y` downward, stored row-major.
+  They are exact and inside the contract only while `x < width` and `y < height`. Outside, the twin panics with
+  "index out of bounds" (the same message as KM-11, and a coordinate past the width panics even when the flat index
+  would exist, `a_texel_address_past_the_width_is_out_of_bounds_even_if_the_flat_index_exists`); the host methods of
+  the carrier return `cpu::Error::TextureCoordinate`. On the GPU the outcome is open: WGSL `textureLoad` with an
+  out-of-range coordinate returns an unspecified value (a texel of the texture, a zero value, or for a texture with
+  an alpha channel a vector such as (0, 0, 0, 1); the exact set is to be read from the WGSL text and measured in
+  mx.t4) and `textureStore` may be dropped (inferred, not measured; a row KM-12 is proposed there, not claimed here).
 - **Why the twin cannot help.** The twin runs invocations one at a time in ascending `global_id.x`, so it
   produces one definite order. A racy kernel gives a clean twin result that matches a reference computed in the same
   order and proves nothing about the GPU, where the order is unspecified. Every reference in a fixture or example is

@@ -492,6 +492,19 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   writer the texture kinds. Opus merge after fixes: one must-fix (a public doc linking a private item, which
   check-release R5 refuses), three should-fixes taken, the fourth owned by mx.t3. Tests: gust lib 292, reflection 24,
   cargo-gust 210. Main: 24 of 24 gates green on `3bea3a3` (2026-11-04 16:51 to 17:40Z, RTX 5090).
+- MX mx.c (`db21129`, fix round `b51e378`, post-merge fix `de4a641`, merge `c349a68`; D63, MX plan §5.1 to §5.4): the
+  shape classifier and the pin. `validate/classify.rs` sorts each kernel into `grid` or `pixel` by §5.1's conservative
+  syntactic rules; anything the rules do not recognise is `grid`-only with the span named, and the map generator's and
+  `par_for!`'s kernels are `grid`-only by the same rules (a test each). The kernel attribute takes
+  `shape = grid | pixel` (default `grid`, at most once; `shape = cpu` is refused with the `GUST_PROFILE=cpu` hint), and
+  a pin outside the compatible set is an error at the pin with a note at the excluding construct. Codes GUST-E0721 to
+  E0730 (E0729 replaces the profile refusal's borrowed E0811; E0730, a pinned shape not available yet, holds `pixel`
+  until mx.p1a), each in DIAGNOSTICS; the E0707 message names `shape`. The descriptor gains `compatible_shapes`, which
+  nothing reads at run time yet. An explicit `workgroup_size` makes a kernel `grid`-only (§5.1), so today's difftest and
+  example corpus is `grid`-only; mx.p1c must generate pixel-eligible variants. 19 `shape-*` ui fixtures pin every
+  reachable reason (check-ui pin 78). Opus merge after fixes: one must-fix (the missing ui reasons), two should-fixes
+  taken, the third kept by ruling (the `workgroup_size` rule). Tests: gust-macros 414, gust lib 292. Main: 24 of 24
+  gates green on `c349a68` (2026-11-04 17:42 to 18:34Z, RTX 5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

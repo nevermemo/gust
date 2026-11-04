@@ -381,6 +381,21 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   (D117); its should-fixes (the evidence line, the stale sentences in README, lib.rs and VALIDATION, every gate on
   the final tree) and three nits were taken, and the ci.yml comment is mr.r's.
   Main: 23 gate steps green on `e85e1b5` (2026-11-03 23:34 to 2026-11-04 00:16Z, RTX 5090) and check-examples green.
+- MX mx.p0 (`d10c871`, fix round `c5a4ac2`, merge `7ed260f`; implements D63, plan §2): P0, the
+  stage-profile trait. `StageProfile` (crates/gust-macros/src/profile/mod.rs) has fourteen methods and one
+  implementation, `grid` (profile/grid.rs); the emitter, the validator, the expansion and the twin harness now read
+  every stage-specific rule through it: the stage attribute, the entry signature, prologue and epilogue, extra
+  bindings, invocation names, binding slots (the emitter numbers and declares a resource by the same slot rule as the
+  descriptor; a Probe test pins it), value-parameter refusal, `#[kernel]` options and the default workgroup, the
+  dispatch-parameter sentences, the twin's iterator and the reflected workgroup size. The byte-identical gate held:
+  no golden, artifact or UI expectation changed, and `cargo xtask export-artifacts --compare` (new, with
+  `--hash-manifest`) matched a manifest of 80 exports (`.slang`, `.rs`, `.wgsl`, `.spv`) captured at `6b0d59a`
+  before any source edit. Kill rule (§2.4) clear: fourteen methods, no hook sees a syn body, no profile call in
+  `emit_statements` or `emit_expression`. Not yet read by anything: `shape`, `lower_output_write` (mx.c's
+  classifier), `contract_tier`; a shape refusal from `validate_body` uses E0811 as a placeholder until mx.c gives it
+  a code; an extra binding has no descriptor entry yet (mx.p1a). Opus merge after fixes; the must-fix (slot
+  numbering), three should-fixes and four nits were taken.
+  Main: 23 gate steps green on `7ed260f` (2026-11-04 01:15 to 01:54Z, RTX 5090), check-examples and the export compare green.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).

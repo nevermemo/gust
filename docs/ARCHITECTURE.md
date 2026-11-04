@@ -100,9 +100,19 @@ no artifact. The profile is chosen at build time and is never inferred, so a bin
 one target. `gust-wgpu` evaluates `const _: () = ::gust::profile::require_gpu_target();`
 and so fails to compile (E0080) under `cpu`, and the build script of `gust` refuses the
 `slang-runtime` feature there. A `cpu` build therefore links no Slang bridge, no helper and
-no GPU runtime. Each dispatch runs on one thread, in ascending `global_id.x`.
-`cargo xtask check-cpu-target` is the evidence (the `Cpu` tier of
+no GPU runtime. Each kernel dispatch runs on one thread, in ascending `global_id.x`; the element-wise map is the one
+exception (`gust::cpu::parallel`, below). `cargo xtask check-cpu-target` is the evidence (the `Cpu` tier of
 docs/development/VALIDATION.md).
+
+The map generator (D60, slice m7.a1, amended by D99; `crates/gust-macros/src/expand/map.rs`).
+`#[gpu]` on a free scalar function (an `fn`, not a module) builds a synthetic module and hands it to the same `expand_validated` path as a written
+module, so the body gets the validation and the lowering of any kernel. The module holds one kernel, `map_kernel`,
+which is grid-stride at `workgroup_size(256, 1, 1)` and binds every buffer `Independent`. The host launches
+`min(n, CEILING)` invocations, where `CEILING` is 65535 * 256 = 16,776,960 (`gust::map::CEILING`), and runs
+ceil(n / CEILING) rounds. The signature rules (GUST-E0714, E0715 and, for a 3-wide type, E0204) ask for at least one
+parameter, each a plain identifier of a type that can be a buffer element, and a result of such a type; a name that
+the generated module uses itself (`GENERATED_NAMES`) is rejected. `par_for!` reuses this
+element-type lookup (`ElementTypes`, `element_types`), so a `bool` is a `u32` word on the device in both (D103).
 
 ### `gust`
 
@@ -144,6 +154,25 @@ writes. Access is not part of the buffer type, so an access mismatch is a run-ti
 error, and argument order among buffers of one element type is not checked at all.
 Generated names use the reserved `__gust_` prefix so that no user parameter name
 can collide.
+
+`gust::map` (D60, slice m7.a1, amended by D99) is the host side of the element-wise map.
+`MapHost: TypedDevice` is what a device offers it (`upload`, `zeroed`, `readback`, `readback_async` and `map_error`); `CpuDevice` implements it in `gust`, and
+`HeadlessDevice` in `gust-wgpu` (`map_host.rs`). `MapArg<H, D>` is what a call argument may be (a slice, a `&Vec`, a
+`&[T; N]`, `Broadcast`, or a `&R` for a `Resident` buffer), and the sealed `MapElement` ties a host type to its device
+element. The element count is checked before anything is bound or uploaded: `Error::LengthMismatch`, `TooLong`,
+`Empty`, `MixedDevices` and `Device(Box)` (`#[non_exhaustive]`), and a call over zero elements returns an empty
+`Vec` or `GpuVec`. An input of length one is read at index 0 (`Broadcast`). The generated functions are `map` and
+`map_on` (not emitted on `wasm32`), `map_gpu` and `map_gpu_on` (not emitted under `cpu`) and `map_async` and
+`map_on_async` (on `wasm32`, compiled but never run in a browser); `map` and `map_gpu` open the default device first.
+
+`gust::cpu::parallel` (slice m7.c, D119; `crates/gust/src/cpu/parallel.rs`) runs the map on the production CPU target
+across threads. `run_map_chunked` and `run_map_into_vec` use `min(configured, max(1, n / ELEMENTS_PER_THREAD))`
+threads (`bounded_threads`; `ELEMENTS_PER_THREAD` is 2^18), where `configured` is `GUST_CPU_THREADS` (anything but a
+positive integer is `Error::InvalidThreads`) or else the machine's parallelism, and run the chunks with
+`std::thread::scope`, so the crate stays `forbid(unsafe_code)`. Each chunk runs under `catch_unwind`, and after the
+join the panic of the lowest element index is raised again. The macro emits a CPU-only chunk function,
+`__gust_map_cpu_chunk`, for it. Under `cpu`, `map_on` is concrete over `&CpuDevice`. `par_for!` and a kernel written
+by hand stay sequential.
 
 `KernelDescriptor::slang_source` is the source of truth of executable shader artifacts; the precompiled ones
 (`KernelDescriptor::artifacts`, embedded by the macro from the crate's `gust-artifacts/` when the pair for the
@@ -209,25 +238,51 @@ instructions that the current wgpu SPIR-V frontend does not implement. SPIR-V is
 therefore exported and validated independently rather than being forced through
 that narrower frontend.
 
+`GpuVec<T>` (slice m7.a0, D84; `crates/gust-wgpu/src/vec.rs`) is a typed vector that stays on a device. It is
+built from a slice (`from_slice`, `from_slice_on`) or zeroed (`zeroed`, `zeroed_on`), reads back with `to_vec`, is a
+`Resource` (so it binds to a generated call and to a map as a `Resident` argument), and carries the id of its device,
+so `check_device` and a map refuse another device's vector with `Error::MixedDevices`. Its storage comes from
+the device's `BufferPool` (`pool.rs`) and goes back to it on drop. The pool keeps idle buffers in size classes, exact
+up to 64 KiB (`EXACT_CLASS_BYTES`) and a power of two above that, capped at the device's `max_buffer_size`. It drops
+the least recently returned idle buffers past an idle cap of 1 GiB by default. A pooled buffer may be larger than the
+vector, and every binding exposes the logical bytes only. A recycled buffer is cleared in a submission of its own
+before it is handed out as zeroed, and a buffer with a mapping pending is never put back. `PoolStats` reports the
+hand-outs, the returns and the idle bytes. `DeviceHandle` is the shared handle that `default_device()` returns, opened
+with `DeviceOptions { backends, adapter, limits }`; `set_default_options` applies to the first `default_device()` and
+is `Error::DefaultDeviceOpened` after that.
+
 ### `gust-algo`
 
 The device-resident algorithms (roadmap M7). Its first member is `reduce` (`sum`, `min`, `max` of a `GpuVec<u32|i32|f32>`, and
 `sum_wrapping` of a `GpuVec<u32>`, which is defined modulo 2^32 for every input), its second `scan` (`inclusive`
-and `exclusive` prefix sums of a `GpuVec<u32>` in plain `+`, 3, 5 or 7 dispatches by length, up to the device's
-binding limit), its third `compact` (`count` of the non-zero flags of a `GpuVec<u32>` as a one-element vector that stays on
-the device, `indices` of the set flags through the exclusive scan and a scatter, and `gather_u32`, `gather_i32` and
-`gather_f32` by those indices; no readback anywhere, so the indices and the gathers are as long as the flags, zero from
-the count on; a generic gather of structs waits for M9 and is a user kernel until then): the kernels are ordinary GUST
-kernels in `tests/fixtures/reduce.rs`, `tests/fixtures/scan.rs` and `tests/fixtures/compact.rs` (one `#[gust::gpu]`
-module each, compiled at run time through the `slang-runtime` feature; no precompiled artifacts in v0), and the host
-code only picks the schedule, takes one pooled `GpuVec` per level and submits the dispatches in one `dispatch_batch`.
-The crate depends on `gust` and `gust-wgpu` and on nothing
-else: `xtask/src/arch.rs` carries a `CrateRule` with exactly that allow-list, and `cargo xtask check-arch` fails for a
-workspace crate without one. It is `publish = false` because the kernel file lives outside the package. Its tests run the
-CPU twins against independent references in its test builds; the `gpu::` tests run on the adapter and belong to the Gpu suite
-and `verify --mode gpu`, not to Unit.
+and `exclusive` prefix sums of a `GpuVec<u32>` in plain `+`, up to the device's binding limit), its third `compact`
+(`count` of the non-zero flags of a `GpuVec<u32>` as a one-element vector that stays on the device, `indices` of the
+set flags through the exclusive scan and a scatter, and `gather_u32`, `gather_i32` and `gather_f32` by those indices; no
+readback anywhere, so the indices and the gathers are as long as the flags, zero from the count on; a generic gather
+of structs waits for M9 and is a user kernel until then). The kernels are ordinary GUST kernels in
+`tests/fixtures/reduce.rs`, `tests/fixtures/scan.rs` and `tests/fixtures/compact.rs` (one `#[gust::gpu]` module each,
+included as `kernels`, `scan_kernels` and `compact_kernels` and compiled at run time through the `slang-runtime`
+feature; the crate ships no precompiled artifact), and the host code only picks the schedule, takes one pooled
+`GpuVec` per level and submits the dispatches in one `dispatch_batch`.
 
-`par_for!` (slice m7.p, plan 3.1) is a function-like macro in the same crate. A call
+Two variants exist for the reduce and the scan (slice m7.r4, `variant.rs`). v0 is block-strided and has CPU twins
+(`cpu.rs`, in test and dual builds): a reduction takes up to 4 dispatches and a scan 3, 5 or 7 dispatches by length. v1
+keeps a tree in `Workgroup<[T; 256]>` and uses `workgroup_barrier()`, so its kernels are `cpu = "unsupported"` and have
+no twin (D101): a workgroup owns 8192 elements of a reduce or a span of 4096 elements of a scan. `variant::shipped`
+names `V1` for all six operations (D121), so the public functions run v1, and the `*_with` functions of `reduce` and
+`scan` run either on request. `limits::admits` sends a call to v0 when the device has less workgroup storage than the
+v1 kernels declare (3072 bytes), when the first dispatch is past the device's workgroup limit or when a binding does
+not fit. The results agree: integers bit for bit, floats within the per-level bound of `bound.rs`, which has a form for
+each variant (`f32_sum_bound` for v0 and `f32_sum_bound_v1` for v1). The measurement behind `shipped` is in D121:
+the RTX 5090 half used a 10 % margin, and the Radeon 890M half put v1 ahead by 1.01 to 1.03 for the reductions at 1e8.
+
+The crate depends on `gust` and `gust-wgpu` and on nothing else: `xtask/src/arch.rs` carries a `CrateRule` with exactly
+that allow-list, and `cargo xtask check-arch` fails for a workspace crate without one. It is `publish = false` because
+the kernel files live outside the package. Its twin tests run the v0 twins against independent references in its test
+builds; the `gpu::` tests run on the adapter. Both are in the one `cargo test -p gust-algo` call that the Gpu suite and
+`verify --mode gpu` make (`ALGO_GPU_CALL`, with 49 tests required by name); the Unit suite does not run the crate.
+
+`par_for!` (slice m7.p, plan 3.1) is a function-like macro of `gust-macros`, re-exported by `gust`. A call
 `par_for!(i in 0..n, [a: &[f32], out: &mut [f32]] { out[i] = a[i]; })` validates its body
 with the same rules as a `#[gpu]` kernel (an error in the body carries the code and the
 span of the offending statement, D33), lowers it once into a kernel `run` with an extent

@@ -44,10 +44,7 @@ use super::{CpuBinding, CpuData, CpuDevice, Error, require_kind};
 use crate::texture::{
     Address, Filter, Filterable, Sampler, SamplerOptions, TextureFormat, TextureUse,
 };
-use crate::{
-    Access, BindingKind, Call, GpuPod, Kernel, LengthRule, ParameterKind, Resource, SamplerArg,
-    SamplerDevice, kind,
-};
+use crate::{Access, BindingKind, GpuPod, LengthRule, Resource, SamplerArg, SamplerDevice, kind};
 
 // ---- the conventions, as functions the views and the carrier share ----
 
@@ -514,42 +511,37 @@ pub fn sampler(binding: CpuSamplerBinding<'_>) -> Sampler {
     Sampler::new(binding.options)
 }
 
-/// Check the sampler bindings of a call: each is a sampler of this device instance ([`Error::WrongDevice`], naming the
-/// kernel's sampler parameter). The texture bindings are in `N` and checked by [`validate`](super::validate), which
-/// must run as well. Macro support.
+/// The device instance a bound sampler belongs to, as [`validate`](super::validate) reads it from the call's
+/// [`SamplerSet`](crate::SamplerSet). Macro support.
 #[doc(hidden)]
-pub fn validate_samplers<K: Kernel, const N: usize, const S: usize>(
-    device: &CpuDevice,
-    call: &Call<'_, CpuDevice, K, N, [CpuSamplerBinding<'_>; S]>,
-) -> Result<(), Error> {
-    let parameters = call
-        .kernel()
-        .parameters
-        .iter()
-        .filter(|parameter| parameter.kind == ParameterKind::Sampler);
-    for (parameter, binding) in parameters.zip(call.samplers()) {
-        if binding.owner != device.id {
-            return Err(Error::WrongDevice {
-                parameter: parameter.name,
-            });
-        }
+pub trait SamplerOwner {
+    /// The id of the owning [`CpuDevice`].
+    fn owner(&self) -> u32;
+}
+
+impl SamplerOwner for CpuSamplerBinding<'_> {
+    fn owner(&self) -> u32 {
+        self.owner
     }
-    Ok(())
+}
+
+// The binding type of a call without samplers: there is never a value of it.
+impl SamplerOwner for core::convert::Infallible {
+    fn owner(&self) -> u32 {
+        match *self {}
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use core::time::Duration;
 
     use super::*;
     use crate::cpu::{CpuJob, invocations};
     use crate::math::{Vec2, Vec4};
-    use crate::texture::{
-        R32Float, R32Sint, R32Uint, Rg32Float, Rg32Uint, Rgba32Float, Rgba32Uint, Texture2D,
-    };
+    use crate::texture::{R32Float, R32Sint, R32Uint, Rg32Float, Rg32Uint, Texture2D};
     use crate::{
-        Arg, KernelDescriptor, ParameterDescriptor, ResourceBinding, ResourceLayout, Run,
-        SampledCall, SourceOrigin, StorageMut, UVec3,
+        Arg, Call, Device, Kernel, KernelDescriptor, ParameterDescriptor, ParameterKind,
+        ResourceBinding, ResourceLayout, Run, SampledCall, SourceOrigin, StorageMut, UVec3,
     };
 
     const NEAREST: SamplerOptions = SamplerOptions::new(Filter::Nearest, Address::ClampToEdge);
@@ -629,6 +621,27 @@ mod tests {
         assert_eq!(strip(NEAREST_REPEAT, -1.0), 10.0); // -1 - (-1) = 0
         // Exactly 1.0 wraps to 0: texel 0, where clamping would give the last texel.
         assert_eq!(strip(NEAREST_REPEAT, 1.0), 10.0);
+    }
+
+    #[test]
+    fn repeat_outside_the_domain_does_not_panic() {
+        // NaN, infinities and `|u| > 2^24` are outside the error domain: the twin returns something and never panics
+        // (a NaN position lands on texel 0 for the nearest filter; for the linear filter the value is unspecified).
+        for u in [
+            f32::NAN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            33_554_432.0,
+            -33_554_433.0,
+        ] {
+            let _ = strip(NEAREST_REPEAT, u);
+            let _ = strip(LINEAR_REPEAT, u);
+            let _ = sample_2d(&SQUARE, 2, 2, LINEAR_REPEAT, u, u);
+            let _ = sample_2d(&SQUARE, 2, 2, NEAREST_REPEAT, u, u);
+        }
+        assert_eq!(strip(NEAREST_REPEAT, f32::NAN), 10.0);
+        // 2^25 is a whole number of periods: it wraps to 0.
+        assert_eq!(strip(NEAREST_REPEAT, 33_554_432.0), 10.0);
     }
 
     // ---- linear ----
@@ -967,8 +980,8 @@ mod tests {
             &self,
             call: &Call<'_, Self, Blur, 2, [CpuSamplerBinding<'_>; 1]>,
         ) -> Result<CpuJob, Error> {
+            // `validate` checks the sampler bindings too: this impl cannot skip that.
             crate::cpu::validate(self, call)?;
-            validate_samplers(self, call)?;
             let [tex, out] = *call.bindings();
             let [samp] = *call.samplers();
             let tex = read::<f32>(tex, "tex")?;
@@ -1152,27 +1165,99 @@ mod tests {
             }
         );
     }
+    #[test]
+    fn a_texture_of_another_texel_type_is_refused_for_an_f32_texture_parameter() {
+        // `Rg32Uint` texels are `UVec2`, not the `f32` the kernel's `Texture2D<float>` reads. The typed call's
+        // `Element = f32` bound rejects it at compile time; a hand-built call is refused by the backend.
+        let (device, _, sampler, out) = blur_fixture(NEAREST, 4);
+        let wide = device
+            .texture_2d::<Rg32Uint>(4, 1, TextureUse::SAMPLED)
+            .unwrap();
+        let call = Call::<CpuDevice, Blur, 2, _>::new_with_samplers(
+            4,
+            [
+                wide.bind(Access::ReadOnly, LengthRule::Independent),
+                out.bind(Access::ReadWrite, LengthRule::Shared),
+            ],
+            [sampler.bind()],
+        );
+        assert_eq!(
+            device.dispatch_call(&call).unwrap_err(),
+            Error::ElementType { parameter: "tex" }
+        );
+    }
 
     #[test]
-    fn a_wide_texel_texture_and_a_float_one_have_distinct_element_types() {
-        // `Rg32Uint` and `Rgba32Float` texels differ from `R32Float`'s `f32`, so a kernel that declares an `f32`
-        // texture cannot be given them: the typed call's `Element = f32` bound rejects it at compile time, and the
-        // layouts differ at run time.
-        let device = CpuDevice::new();
-        let rg = device
-            .texture_2d::<Rg32Uint>(1, 1, TextureUse::SAMPLED)
-            .unwrap();
-        let rgba = device
-            .texture_2d::<Rgba32Float>(1, 1, TextureUse::SAMPLED)
-            .unwrap();
-        let _ = device
-            .texture_2d::<Rgba32Uint>(1, 1, TextureUse::SAMPLED)
-            .unwrap();
-        let rg = rg.bind(Access::ReadOnly, LengthRule::Shared);
-        let rgba = rgba.bind(Access::ReadOnly, LengthRule::Shared);
-        assert_ne!(rg.layout, <f32 as GpuPod>::LAYOUT);
-        assert_ne!(rgba.layout, <f32 as GpuPod>::LAYOUT);
-        assert_ne!(rg.layout, rgba.layout);
-        let _ = Duration::ZERO;
+    fn validate_alone_refuses_a_sampler_of_another_device_instance() {
+        // The check lives in `cpu::validate`, so a `Run` impl cannot skip it; here nothing but `validate` runs.
+        let (device, texture, _, out) = blur_fixture(NEAREST, 4);
+        let stranger = CpuDevice::new();
+        let foreign = stranger.sampler(NEAREST);
+        let call = Blur::call(4, &texture, &foreign, &out);
+        assert_eq!(
+            crate::cpu::validate(&device, &call).unwrap_err(),
+            Error::WrongDevice { parameter: "samp" }
+        );
+    }
+
+    /// `Blur::dispatch` as the macro will emit it for a kernel with a sampler: generic over the three arguments, the
+    /// device projected from the texture, and the `Run` bound spelled with the device's `SamplerBinding`.
+    fn blur_dispatch<'r, R0, S1, R2>(
+        device: &R0::Device,
+        element_count: u32,
+        tex: impl Into<Arg<'r, R0>>,
+        samp: &'r S1,
+        out: impl Into<Arg<'r, R2>>,
+    ) -> Result<(), <R0::Device as Device>::Error>
+    where
+        R0: Resource<Element = f32, Kind = kind::Texture> + 'r,
+        S1: SamplerArg<Device = R0::Device>,
+        R2: Resource<Element = f32, Device = R0::Device, Kind = kind::Storage> + 'r,
+        R0::Device:
+            SamplerDevice + Run<Blur, 2, [<R0::Device as SamplerDevice>::SamplerBinding<'r>; 1]>,
+    {
+        <R0::Device as Run<Blur, 2, [<R0::Device as SamplerDevice>::SamplerBinding<'r>; 1]>>::dispatch_call(
+            device,
+            &Blur::call(element_count, tex, samp, out),
+        )
+    }
+
+    /// `Blur::submit`, likewise: the job type is the device's.
+    fn blur_submit<'d, 'r, R0, S1, R2>(
+        device: &'d R0::Device,
+        element_count: u32,
+        tex: impl Into<Arg<'r, R0>>,
+        samp: &'r S1,
+        out: impl Into<Arg<'r, R2>>,
+    ) -> Result<<R0::Device as Device>::Job<'d>, <R0::Device as Device>::Error>
+    where
+        R0: Resource<Element = f32, Kind = kind::Texture> + 'r,
+        S1: SamplerArg<Device = R0::Device>,
+        R2: Resource<Element = f32, Device = R0::Device, Kind = kind::Storage> + 'r,
+        R0::Device:
+            SamplerDevice + Run<Blur, 2, [<R0::Device as SamplerDevice>::SamplerBinding<'r>; 1]>,
+    {
+        <R0::Device as Run<Blur, 2, [<R0::Device as SamplerDevice>::SamplerBinding<'r>; 1]>>::submit_call(
+            device,
+            &Blur::call(element_count, tex, samp, out),
+        )
+    }
+
+    #[test]
+    fn the_generic_dispatch_the_macro_will_emit_compiles_and_runs_on_the_twin() {
+        let (device, texture, sampler, out) = blur_fixture(LINEAR, 8);
+        blur_dispatch(&device, 8, &texture, &sampler, &out).unwrap();
+        assert_eq!(out.read(), [10.0, 12.5, 17.5, 22.5, 27.5, 32.5, 37.5, 40.0]);
+        let (device, texture, sampler, out) = blur_fixture(NEAREST, 4);
+        let job = blur_submit(&device, 4, &texture, &sampler, &out).unwrap();
+        crate::Job::wait(&job).unwrap();
+        assert_eq!(out.read(), STRIP);
+        // The generic path reports the same refusals as the concrete one.
+        let stranger = CpuDevice::new();
+        let foreign = stranger.sampler(NEAREST);
+        assert_eq!(
+            blur_dispatch(&device, 4, &texture, &foreign, &out).unwrap_err(),
+            Error::WrongDevice { parameter: "samp" }
+        );
     }
 }

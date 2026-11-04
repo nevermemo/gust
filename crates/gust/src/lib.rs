@@ -163,7 +163,7 @@ pub use descriptor::{
 };
 pub use dispatch::{
     Arg, BindingKind, Call, Extent, Independent, LengthRule, Resource, Run, SampledCall,
-    SamplerArg, SamplerDevice, TypedDevice, kind,
+    SamplerArg, SamplerDevice, SamplerSet, TypedDevice, kind,
 };
 pub use gust_macros::{gpu, par_for};
 pub use job::{Device, Job, JobStatus};
@@ -184,6 +184,10 @@ pub use texture::{
 /// Names automatically imported into every `#[gpu]` module.
 pub mod prelude {
     pub use crate::math::{IVec2, IVec4, Mat2, Mat3, Mat4, UVec2, UVec4, Vec2, Vec3, Vec4};
+    pub use crate::texture::{
+        R32Float, R32Sint, R32Uint, Rg32Float, Rg32Sint, Rg32Uint, Rgba32Float, Rgba32Sint,
+        Rgba32Uint, Sampler, StorageTexture2D, Texture2D, WriteTexture2D,
+    };
     pub use crate::{
         ConstantBuffer, GroupId, Invocation, LocalId, RWStructuredBuffer, SV_DispatchThreadID,
         SV_GroupID, SV_GroupThreadID, Storage, StorageMut, StructuredBuffer, UVec3, Uniform,

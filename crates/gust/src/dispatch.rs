@@ -176,6 +176,45 @@ pub trait SamplerArg {
     fn bind(&self) -> <Self::Device as SamplerDevice>::SamplerBinding<'_>;
 }
 
+mod sampler_set {
+    pub trait Sealed {}
+}
+
+/// The sampler bindings a [`Call`] carries beside its resource bindings: `()` for a call of a kernel with no sampler
+/// parameter, and `[SamplerBinding<'r>; S]` for one with `S` (the [`SampledCall`] shape). The trait is sealed: those
+/// two shapes are all there is.
+///
+/// A backend's validation function bounds its `Call`'s `X` by this trait, so that it can check every sampler binding
+/// (the device instance a sampler belongs to) in the one place that validates a call, whatever the shape of `X`. A
+/// backend `Run` impl that validates through that function cannot skip the sampler check.
+pub trait SamplerSet: sampler_set::Sealed {
+    /// One erased sampler binding; [`Infallible`](core::convert::Infallible) when there is none.
+    type Binding: Copy;
+
+    /// The sampler bindings, in the order of the kernel's sampler parameters.
+    fn sampler_bindings(&self) -> &[Self::Binding];
+}
+
+impl sampler_set::Sealed for () {}
+
+impl SamplerSet for () {
+    type Binding = core::convert::Infallible;
+
+    fn sampler_bindings(&self) -> &[core::convert::Infallible] {
+        &[]
+    }
+}
+
+impl<B: Copy, const S: usize> sampler_set::Sealed for [B; S] {}
+
+impl<B: Copy, const S: usize> SamplerSet for [B; S] {
+    type Binding = B;
+
+    fn sampler_bindings(&self) -> &[B] {
+        self
+    }
+}
+
 /// A device that can run kernel `K`, which has `N` storage, uniform and texture parameters.
 ///
 /// The third parameter `X` is the call's sampler bindings: `()` for a call with no sampler (the default, so every

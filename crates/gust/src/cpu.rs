@@ -44,7 +44,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use crate::texture::TextureUse;
 use crate::{
     Access, BindingKind, Call, Device, Extent, GpuPod, Invocation, Job, JobStatus, Kernel,
-    KernelDescriptor, LengthRule, ParameterKind, Resource, ResourceLayout, TypeLayout,
+    KernelDescriptor, LengthRule, ParameterKind, Resource, ResourceLayout, SamplerSet, TypeLayout,
     TypeLayoutKind, TypedDevice, UVec3, kind,
 };
 
@@ -686,12 +686,20 @@ fn launch_invocations(size: [u32; 3], extent: Extent) -> u128 {
 /// that is wrong in two ways reports the same cause on both backends. One difference: `Borrowed` (a buffer that is
 /// borrowed outside the call; a GPU buffer cannot be) is reported after access and before length.
 ///
+/// The call's sampler bindings (the `X` of a [`SampledCall`](crate::SampledCall); none for `()`) are checked here too,
+/// after the resource bindings: a sampler of another device instance is [`Error::WrongDevice`] naming the kernel's
+/// sampler parameter. A `Run` impl that validates through this function cannot skip that check.
+///
 /// Macro support.
 #[doc(hidden)]
 pub fn validate<K: Kernel, const N: usize, X>(
     device: &CpuDevice,
     call: &Call<'_, CpuDevice, K, N, X>,
-) -> Result<(), Error> {
+) -> Result<(), Error>
+where
+    X: SamplerSet,
+    X::Binding: texture::SamplerOwner,
+{
     let kernel = call.kernel();
     let size = kernel.workgroup_size;
     if size.contains(&0) {
@@ -705,8 +713,8 @@ pub fn validate<K: Kernel, const N: usize, X>(
         .collect();
     // `Run<K, N>` makes a mismatch unreachable (`Call::new` asserts `N` equals the storage, uniform and texture
     // parameter count at compile time); a hand-built `Call` cannot differ either. The assertion documents that the zip
-    // below is total. A sampler parameter is not one of them (`BindingKind::of` is `None` for it); `validate_samplers`
-    // checks the sampler bindings.
+    // below is total. A sampler parameter is not one of them (`BindingKind::of` is `None` for it); the sampler
+    // bindings are checked after the loop.
     debug_assert_eq!(parameters.len(), N);
     // A shared buffer holds exactly `x * y * z` elements. A product that overflows a `u64` or a `usize` is larger than
     // any buffer, so it saturates: the length check then fails for every buffer, as it must.
@@ -751,12 +759,14 @@ pub fn validate<K: Kernel, const N: usize, X>(
         }
         // A texture must have been created for the use the kernel makes of it: a read-only parameter is a sampled
         // texture, a read-write one a storage texture (the descriptor's access is all a texture parameter has until
-        // the texture layout of mx.t0b names the write-only form).
+        // the texture layout of mx.t0b names the write-only form). A texture parameter with no access is malformed.
         if parameter.kind == ParameterKind::Texture {
             let required = match parameter.access {
                 Access::ReadOnly => TextureUse::SAMPLED,
                 Access::ReadWrite => TextureUse::STORAGE,
-                Access::NotApplicable => TextureUse::NONE,
+                Access::NotApplicable => {
+                    return Err(Error::InvalidResourceLayout { parameter: name });
+                }
             };
             let actual = binding.data.texture_uses().unwrap_or(TextureUse::NONE);
             if !actual.contains(required) {
@@ -786,6 +796,18 @@ pub fn validate<K: Kernel, const N: usize, X>(
                 return Err(Error::IndependentLengthEmpty { parameter: name });
             }
             _ => {}
+        }
+    }
+    // Each sampler binding belongs to this device instance, named by the kernel's sampler parameter in order.
+    let sampler_parameters = kernel
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.kind == ParameterKind::Sampler);
+    for (parameter, binding) in sampler_parameters.zip(call.samplers().sampler_bindings()) {
+        if texture::SamplerOwner::owner(binding) != device.id {
+            return Err(Error::WrongDevice {
+                parameter: parameter.name,
+            });
         }
     }
     // One buffer may be bound twice only when both bindings are read-only; the pair is named in declaration order.

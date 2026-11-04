@@ -1100,7 +1100,7 @@ mod schema_three {
                 "rw.access: host write, compiler readWrite",
             ),
             (
-                "a texture format swapped",
+                "a texture format with the wrong channel count",
                 compute,
                 retextured(
                     &compute,
@@ -1108,7 +1108,7 @@ mod schema_three {
                     UVEC2,
                     storage(Format::Rgba32Uint, TextureAccess::WriteOnly),
                 ),
-                "wo.format: host rgba32uint, compiler rg32uint",
+                "wo.format: rgba32uint has channel count 4, the result type has width 2",
             ),
             (
                 "a storage texture's result type swapped",
@@ -1120,6 +1120,12 @@ mod schema_three {
                     storage(Format::R32Sint, TextureAccess::ReadWrite),
                 ),
                 "rw.result: host i32, compiler f32",
+            ),
+            (
+                "a sampled texture's result width swapped",
+                compute,
+                retextured(&compute, 0, F32, sampled(SampleClass::Float)),
+                "tex.result: host f32, compiler f32x4",
             ),
             (
                 "a sampled texture's class swapped",
@@ -1298,6 +1304,12 @@ mod schema_three {
             message(verify("sampled_uint.wgsl.json", &as_float).unwrap_err()),
             "tex.class: host f32, compiler u32"
         );
+        // A `float` texture is not the document's `float4` one (D91: the result type for every texture).
+        let narrow = retextured(&float, 0, F32, sampled(SampleClass::Float));
+        assert_eq!(
+            message(verify("sampled_float4.wgsl.json", &narrow).unwrap_err()),
+            "tex.result: host f32, compiler f32x4"
+        );
     }
 
     #[test]
@@ -1337,7 +1349,7 @@ mod schema_three {
                 "rw.result: host f32, compiler u32",
             ),
             (
-                "format",
+                "result and format",
                 retextured(
                     &inferred,
                     0,
@@ -1482,6 +1494,41 @@ mod schema_three {
                 assert!(message.contains("artifact hash"), "{message}");
             }
             other => panic!("expected an identity failure, got {other:?}"),
+        }
+    }
+
+    /// The committed documents are byte copies of the helper's own output in the cargo-gust probe expectations
+    /// (`== <name> wgsl <stage>` heading and one document line). In a checkout the two are compared, so a helper
+    /// update that changes one cannot leave the other behind; a packaged crate has no such file and the test ends.
+    #[test]
+    fn the_committed_documents_are_the_cargo_gust_probe_expectations() {
+        let expected = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../cargo-gust/src/testdata/schema3/expected.txt");
+        let Ok(expected) = std::fs::read_to_string(&expected) else {
+            return;
+        };
+        for (name, file) in [
+            ("sampled_float4", "sampled_float4.wgsl.json"),
+            ("sampled_uint", "sampled_uint.wgsl.json"),
+            ("storage_declared", "storage_declared.wgsl.json"),
+            ("storage_inferred", "storage_inferred.wgsl.json"),
+            ("sampler_fragment", "sampler_fragment.wgsl.json"),
+            ("fragment_gap", "fragment_gap.wgsl.json"),
+        ] {
+            let heading = format!("== {name} wgsl ");
+            let mut lines = expected.lines();
+            let probe = loop {
+                match lines.next() {
+                    Some(line) if line.starts_with(&heading) => break lines.next().unwrap(),
+                    Some(_) => {}
+                    None => panic!("no `{heading}` section"),
+                }
+            };
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/schema3")
+                .join(file);
+            let committed = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(committed.trim_end(), probe.trim_end(), "{file}");
         }
     }
 }

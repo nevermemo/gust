@@ -262,6 +262,10 @@ pub struct StructFieldLayout {
 }
 
 /// Layout rules recorded for a shader resource (not Slang compiler reflection).
+///
+/// API change (mx.t0b): the enum has a new variant, [`TextureV1`](Self::TextureV1), for the 2-D texture parameters of
+/// decision D91. It is not `#[non_exhaustive]`, so a `match` outside this crate must add an arm (`gust-wgpu`'s
+/// `generated_host.rs` did). `TextureV1` has no byte layout of its own: the element is the texel type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ShaderLayoutRules {
     /// The v1 storage ABI: 32-bit scalars and recursively padding-free structs.

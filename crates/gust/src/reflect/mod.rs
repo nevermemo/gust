@@ -30,7 +30,7 @@
 //! outcome A (mx.t0a): the helper reports the texture format, the access and a fragment's targets itself, so the
 //! helper's facts are the D17 witness and that gate is **not built**. `reflect` (the CLI path) stays what it was: a
 //! compute-only partial-evidence path for tests, and an optional agreement check against the helper is later work.
-//! Were the helper to stop seeing a fact, the gate belongs next to [`CompiledReflection::from_output`], with its
+//! Were the helper to stop seeing a fact, the gate belongs next to `CompiledReflection::from_output`, with its
 //! comparison in [`Reflection::cross_check_kernel`] beside the texture checks.
 //!
 //! # The `slang-runtime` feature
@@ -887,7 +887,7 @@ impl Reflection {
                     "reflection schema 1 cannot describe {what}; re-export with cargo gust build"
                 )));
             }
-            // Under `pixel` an output buffer is not a shader binding: it is a colour target, in parameter order.
+            // Under `pixel` a render-target output (no binding; see `is_pixel_output`) is a colour target.
             if kernel.shape == Shape::Pixel && is_pixel_output(parameter) {
                 let layout = parameter.resource_layout.ok_or_else(|| {
                     Error::Mismatch(format!(
@@ -1025,9 +1025,10 @@ impl Reflection {
 
     /// A texture parameter against the document: the descriptor's own consistency first (the layout is the texture
     /// rule, the class and format agree with the result type, the access with the parameter's), then slot, dimension
-    /// and access. A **sampled** texture is held to the sample class of its result type and to having no format (its
-    /// concrete format is checked at submit against the bound texture); a **storage** or **write-only** texture to
-    /// its exact result type and exact format. Each mismatch names `<parameter>.<field>`.
+    /// and access. A **sampled** texture is held to the sample class and the width of its result type and to having no
+    /// format (its concrete format is checked at submit against the bound texture); a **storage** or **write-only**
+    /// texture to its exact result type and exact format, which must have the result's channel count. Each mismatch
+    /// names `<parameter>.<field>`.
     fn check_texture(
         &self,
         parameter: &crate::ParameterDescriptor,
@@ -1044,9 +1045,10 @@ impl Reflection {
             )));
         };
         // The descriptor's own coherence: these are host-side facts, so a disagreement is a malformed descriptor.
-        let Some((scalar, count)) = result_shape(layout.element) else {
+        let Some((scalar, count)) = result_shape(layout.element).filter(|(_, count)| *count != 3)
+        else {
             return Err(Error::Mismatch(format!(
-                "{name}.result: a texture result is a 32-bit scalar or a 2- to 4-wide vector"
+                "{name}.result: a texture result is a 32-bit scalar or a 2- or 4-wide vector"
             )));
         };
         if layout.element_stride != layout.element.stride {
@@ -1092,6 +1094,12 @@ impl Reflection {
                         access.name()
                     )));
                 }
+                if format.channels() != count {
+                    return Err(Error::Mismatch(format!(
+                        "{name}.format: {format} has channel count {}, the result type has width {count}",
+                        format.channels()
+                    )));
+                }
             }
         }
         let reflected = self
@@ -1127,15 +1135,15 @@ impl Reflection {
                 "{name}.result: the compiler's result type is not a scalar or a vector"
             )));
         };
-        if texture.access == TextureAccess::Sampled {
-            if texture.class != class_of(reflected_scalar) {
-                return Err(Error::Mismatch(format!(
-                    "{name}.class: host {}, compiler {}",
-                    texture.class.name(),
-                    class_of(reflected_scalar).name()
-                )));
-            }
-        } else if (scalar, count) != (reflected_scalar, reflected_count) {
+        if texture.access == TextureAccess::Sampled && texture.class != class_of(reflected_scalar) {
+            return Err(Error::Mismatch(format!(
+                "{name}.class: host {}, compiler {}",
+                texture.class.name(),
+                class_of(reflected_scalar).name()
+            )));
+        }
+        // The result type for every texture (D91): a sampled one differs from its twin in width as well.
+        if (scalar, count) != (reflected_scalar, reflected_count) {
             return Err(Error::Mismatch(format!(
                 "{name}.result: host {}, compiler {}",
                 shape_text(scalar, count),
@@ -1232,11 +1240,16 @@ impl Reflection {
     }
 }
 
-/// Whether a pixel descriptor's parameter is an output buffer: a storage parameter without a shader binding (D93: an
-/// output is a colour target, not a resource). Its `SV_Target` index is its position among such parameters.
+/// Whether a pixel descriptor's parameter is a render-target output: a storage parameter without a shader binding.
+/// Its `SV_Target` index is its position among such parameters.
 ///
-/// This is the descriptor-side rule until the descriptor names a target explicitly (plan section 4.1's
-/// `target: Some(k)`, which mx.c/mx.p1a add): then this function reads that field instead and nothing else changes.
+/// This is the **render-target model** (D93: an output is a colour target, not a resource), which D120 keeps only for
+/// targets the host provides itself (Breeze). MX pixel outputs under D120 are fragment *storage writes*: their
+/// parameters carry a `binding`, this function is false for them, and they are cross-checked as buffers, so the
+/// document's `targets` must then be empty unless the never-written `r8unorm` attachment is declared, which mx.p1a
+/// decides. The rule is the descriptor-side one until the descriptor names a target explicitly (plan section 4.1's
+/// `target: Some(k)`): then this function reads that field instead and nothing else changes. It does not look at
+/// `access`: a read-only input that lost its binding counts as an output, and fails as a `targets` count mismatch.
 fn is_pixel_output(parameter: &crate::ParameterDescriptor) -> bool {
     parameter.kind == crate::ParameterKind::Storage && parameter.binding.is_none()
 }
@@ -3310,7 +3323,7 @@ mod tests {
             ),
             (
                 "access of a sampled texture",
-                with(0, texture_json("tex", 0, "readWrite", F4, "r32f")),
+                with(0, texture_json("tex", 0, "readWrite", F4, "unknown")),
                 "tex.access: host read, compiler readWrite",
             ),
             (
@@ -3356,6 +3369,11 @@ mod tests {
                 "sample class of a sampled texture",
                 with(0, texture_json("tex", 0, "read", ("uint32", 4), "unknown")),
                 "tex.class: host f32, compiler u32",
+            ),
+            (
+                "result width of a sampled texture",
+                with(0, texture_json("tex", 0, "read", ("float32", 1), "unknown")),
+                "tex.result: host f32x4, compiler f32",
             ),
             (
                 "slot of a texture",
@@ -3565,7 +3583,44 @@ mod tests {
                     sampled(SampleClass::Float),
                     0,
                 )),
-                "tex.result: a texture result is a 32-bit scalar or a 2- to 4-wide vector",
+                "tex.result: a texture result is a 32-bit scalar or a 2- or 4-wide vector",
+            ),
+            (
+                "a texture result that is three wide",
+                kernel_with_tex(texture_parameter(
+                    "tex",
+                    Access::ReadOnly,
+                    TypeLayout::vector("Vec3", ScalarKind::F32, 3),
+                    sampled(SampleClass::Float),
+                    0,
+                )),
+                "tex.result: a texture result is a 32-bit scalar or a 2- or 4-wide vector",
+            ),
+            (
+                "a format with more channels than the result type has",
+                kernel_with_rw(texture_parameter(
+                    "rw",
+                    Access::ReadWrite,
+                    UVEC2,
+                    TextureLayout {
+                        format: Some(TexelFormat::Rgba32Uint),
+                        access: TextureAccess::WriteOnly,
+                        ..storage(TexelFormat::Rgba32Uint, TextureAccess::WriteOnly)
+                    },
+                    1,
+                )),
+                "rw.format: rgba32uint has channel count 4, the result type has width 2",
+            ),
+            (
+                "a format with fewer channels than the result type has",
+                kernel_with_rw(texture_parameter(
+                    "rw",
+                    Access::ReadWrite,
+                    VEC4,
+                    storage(TexelFormat::R32Float, TextureAccess::ReadWrite),
+                    1,
+                )),
+                "rw.format: r32float has channel count 1, the result type has width 4",
             ),
             (
                 "a sampler with a layout",

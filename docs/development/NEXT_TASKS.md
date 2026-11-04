@@ -37,8 +37,8 @@ test module; do not mix that mechanical move with behavior changes.
   running emitter each frame's cost (mark, scan, gather, scatter) grows with every particle ever spawned. Options: a
   freelist, a double-buffered dense pool (the pool itself becomes the prefix), or a deferred host truncation from an
   async readback that decides no work in its own frame (m7.t14 review).
-- m7.g1 follow-ups: m7.d keeps the derived ids exact (D100) if it folds a 1D launch into y; m7.g2 adds the lockstep
-  twin and the `Workgroup` carriers if S7.4 ends A or B (until then `cpu = "unsupported"` is mandatory, D101); bool
+- m7.g1 follow-ups: m7.d keeps the derived ids exact (D100) if it folds a 1D launch into y; S7.4 ended C (D118), so
+  there is no lockstep twin in M7 and `cpu = "unsupported"` stays mandatory for barrier kernels (D101); bool
   and vector `Workgroup` elements are accepted but never compiled through slangc or run; the SPIR-V test's storage
   class check is weak (`contains("Workgroup")`); one adapter only (m7.g1 review).
 - gust-algo passes as graph nodes, so an order such as compaction before `prepare` is declared in the graph instead
@@ -264,3 +264,12 @@ order. It would need a mandatory round budget, ping-pong buffers instead of in-p
 every k rounds (or GPU-driven through T13's indirect dispatch), and D39 wording for float convergence that takes
 a different round count on CPU and GPU. It is the `while_gpu` candidate of EXECUTION_GRAPH.md. Measure first: a
 host loop over resident `GpuVec` bindings with a one-word readback per round may already be enough.
+
+### Idea (not planned): a lockstep twin without threads
+
+S7.4 (D118) measured a threaded lockstep twin at about 2.9 ms per barrier round of 256 threads, far too slow. E0414
+already allows a barrier only at the body's top level or at the top level of a top-level literal-range `for`, so
+the macro could split the body at its barriers into phases and run each phase for every invocation of a workgroup
+in a plain loop (the "work-item loop" of CPU OpenCL implementations), keeping the locals that live across a barrier
+in per-invocation arrays: no condvar rounds, one thread per workgroup, workgroups in parallel. A spike would have to
+settle locals across a split, loops around a barrier, panics and early returns, and the D22 contract for it.

@@ -495,8 +495,9 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   use it must carry `#[kernel(cpu = "unsupported")]`, which leaves them without a twin. Running such a kernel
   one invocation at a time would give a clean result that says nothing about the GPU. Workgroup barriers and
   workgroup memory (m7.g1) took the second way: a kernel with a `Workgroup<[T; N]>` parameter or a
-  `workgroup_barrier()` must say `cpu = "unsupported"` (GUST-E0717), and `cpu = "lockstep"` is rejected until a later
-  slice defines that strategy (GUST-E0709). Under `GUST_PROFILE=cpu` such a kernel has no `Run` implementation.
+  `workgroup_barrier()` must say `cpu = "unsupported"` (GUST-E0717), and `cpu = "lockstep"` is rejected (GUST-E0709):
+  a threaded lockstep twin measured far too slow (S7.4, D118), so no CPU strategy for barrier kernels is defined.
+  Under `GUST_PROFILE=cpu` such a kernel has no `Run` implementation.
 - **Workgroup memory starts unspecified.** A `Workgroup<[T; N]>` parameter is a `groupshared` array of one workgroup.
   Slang gives it no initial value and the GPU leaves its contents unspecified, so a kernel must write every element
   it reads before it reads it. A read of an element that no invocation of the same workgroup has written yet is outside

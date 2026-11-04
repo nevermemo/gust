@@ -438,6 +438,17 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   gpu failed on the pin, fixed in `c9862eb` (GPU_SUITE_PIN 297/31), then green with fmt, xtask test and lint (04:36 to
   04:45Z); check-examples and the 80-export compare green; check-release --check-only green in a fresh target directory
   (04:47 to 04:52Z; in the shared one cargo reused a stale gust build from its temporary registry, an mr.p item).
+- M7 S7.4 (spike, D118; plan §1a): the lockstep barrier twin premise ended in outcome C. A hand-written threaded
+  twin of the block reduce (256 scoped threads per workgroup, a `Mutex` + `Condvar` phase barrier, std only, no
+  `unsafe`) handled every injected panic, barrier mismatch and timeout cleanly, but took 102 to 104 s at 1e6
+  elements (A needs 2 s, C starts at 20 s; five runs, median, quiet window 2026-11-04 04:58 to 08:08Z, both output
+  carriers alike): about 2.9 ms per barrier round, linear in the workgroup count. m7.g2 is dropped; barrier kernels
+  keep `cpu = "unsupported"` (D101); m7.c no longer waits on m7.g2. The scratch crate stays local, never merged.
+- M7 S7.5 (spike, D119; plan §1a, §6): the chunked CPU map ended in outcome A. The generator's chunk body over
+  `std::thread::scope` (safe Rust, std only) gave the k = 64 polynomial 14.2x at 1e8 elements on 24 threads and
+  9.6x at 1e7; vector-add 2 to 9x; every result bit-exact with one thread; the lowest failing index re-raised (48
+  cases, 0 failed). Spawning costs about 0.1 ms per thread, so m7.c also bounds the thread count by the input and
+  measures that bound (D119). Quiet window 2026-11-04 08:09Z, alone. The scratch crate stays local, never merged.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).

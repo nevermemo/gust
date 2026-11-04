@@ -521,6 +521,26 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   byte-identical before and after. Opus merge after fixes: one must-fix (the CI pin step would have read an empty
   version), five should-fixes taken. Tests: gust lib 297, cargo-gust 213, xtask 505, Slangc 1525. Main: 24 of 24 gates
   green on `f6c12e9` (2026-11-04 20:26 to 21:25Z, RTX 5090).
+- MX mx.t2 (`2435a49`, fix round `873d0bf`, merge `db28395`; D64, D90, D91, D120, MX plan §3.4): textures in gust-wgpu.
+  `GpuTexture2d<F>` and `GpuSampler`, with `create_texture_2d`, `write_texture`, `read_texture` (native) and
+  `read_texture_async`, and `create_sampler`; mx.t1's nine formats map to `wgpu::TextureFormat` through wgpu's
+  `block_copy_size` and `sample_type`, and readback strips the 256-byte row padding. Texture, storage-texture and
+  sampler bind-group entries come in both layout variants: with `float32-filterable` an `f32` sampled texture is
+  filterable and takes a filtering sampler; without it the texture is unfilterable and a linear sampler is
+  `Error::TextureFilter`. A wide write-only format is always bound write-only, and read-write is only for the r32
+  formats (D120). `DeviceOptions` gains `features: FeaturesPolicy` (`Adapter` on native, as D90 has it for limits;
+  `Default` on `wasm32` and in `HeadlessDevice::new`). `check_kernel_limits` covers sampled and storage textures,
+  samplers and the 2D dimension of the opened device, and a sampled texture whose format's channel count differs from
+  the declared result is refused on the untyped path too. New errors `TextureUse`, `TextureFormat`, `TextureFilter`,
+  `TextureSize` and `SamplerOptions`; a texture larger than `max_buffer_size` reads back as `DeviceLimit`. The staged
+  graph refuses texture kernels, and each texture carries a 4-byte identity buffer for the aliasing check until mx.p1b.
+  The generated host takes `float32_filterable` when a kernel samples. Tests: 31 in `tests/textures.rs` (the nine
+  formats round-trip bit-exactly at width 67, nearest and linear sampling within §3.5's bound, read-write r32 and
+  write-only kernels from hand-built descriptors, limits, aliasing), which CI's `gpu-software` (lavapipe) also runs; Gpu
+  pin 333/32. `#[gpu]` texture kernels arrive with mx.t3. Opus merge after fixes: one must-fix (a separate features knob
+  broke D90), four should-fixes taken, the identity buffer deferred to mx.p1b. Main: 23 of 24 gates green on `db28395`
+  (2026-11-04 22:00 to 22:51Z, RTX 5090); the Gpu step hit the known gust-algo STATUS_ACCESS_VIOLATION (the third time
+  at a merge) and passed alone at 22:52 to 22:57Z (pin 333/32, gust-algo 49).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

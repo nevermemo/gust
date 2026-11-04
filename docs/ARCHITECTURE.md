@@ -266,18 +266,19 @@ instructions that the current wgpu SPIR-V frontend does not implement. SPIR-V is
 therefore exported and validated independently rather than being forced through
 that narrower frontend.
 
-`GpuVec<T>` (slice m7.a0, D84; `crates/gust-wgpu/src/vec.rs`) is a typed vector that stays on a device. It is
-built from a slice (`from_slice`, `from_slice_on`) or zeroed (`zeroed`, `zeroed_on`), reads back with `to_vec`, is a
-`Resource` (so it binds to a generated call and to a map as a `Resident` argument), and carries the id of its device,
-so `check_device` and a map refuse another device's vector with `Error::MixedDevices`. Its storage comes from
-the device's `BufferPool` (`pool.rs`) and goes back to it on drop. The pool keeps idle buffers in size classes, exact
-up to 64 KiB (`EXACT_CLASS_BYTES`) and a power of two above that, capped at the device's `max_buffer_size`. It drops
-the least recently returned idle buffers past an idle cap of 1 GiB by default. A pooled buffer may be larger than the
-vector, and every binding exposes the logical bytes only. A recycled buffer is cleared in a submission of its own
-before it is handed out as zeroed, and a buffer with a mapping pending is never put back. `PoolStats` reports the
-hand-outs, the returns and the idle bytes. `DeviceHandle` is the shared handle that `default_device()` returns, opened
-with `DeviceOptions { backends, adapter, limits }`; `set_default_options` applies to the first `default_device()` and
-is `Error::DefaultDeviceOpened` after that.
+`GpuVec<T>` (slice m7.a0, D84; `crates/gust-wgpu/src/vec.rs`) is a typed vector that stays on a device. It is built from
+a slice (`from_slice`, `from_slice_on`) or zeroed (`zeroed`, `zeroed_on`), reads back with `to_vec`, is a `Resource` (so
+it binds to a generated call and to a map as a `Resident` argument), and carries the id of its device, so `check_device`
+and a map refuse another device's vector with `Error::MixedDevices`. Its storage comes from the device's `BufferPool`
+(`pool.rs`) and goes back to it on drop. The pool keeps idle buffers in size classes, exact up to 64 KiB
+(`EXACT_CLASS_BYTES`) and a power of two above that, capped at the device's `max_buffer_size`. It drops the least
+recently returned idle buffers past an idle cap of 1 GiB by default. A pooled buffer may be larger than the vector, and
+every binding exposes the logical bytes only. A recycled buffer is cleared in a submission of its own before it is
+handed out as zeroed, and a buffer with a mapping pending is never put back. `PoolStats` reports the hand-outs, the
+returns and the idle bytes. `DeviceHandle` is the shared handle that `default_device()` returns, opened with
+`DeviceOptions { backends, adapter, limits, features }` (`features` asks for `float32-filterable` when the adapter
+offers it on native and for nothing on `wasm32`; slice mx.t2); `set_default_options` applies to the first
+`default_device()` and is `Error::DefaultDeviceOpened` after that.
 
 ### `gust-algo`
 

@@ -505,6 +505,22 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   reachable reason (check-ui pin 78). Opus merge after fixes: one must-fix (the missing ui reasons), two should-fixes
   taken, the third kept by ruling (the `workgroup_size` rule). Tests: gust-macros 414, gust lib 292. Main: 24 of 24
   gates green on `c349a68` (2026-11-04 17:42 to 18:34Z, RTX 5090).
+- MR mr.t2 (`470530d`, fix round `a835c95`, merge `f6c12e9`; D72, D109, MR plan §2.4): the toolchain wiring.
+  `gust::toolchain` is now a module of `gust` (under `slang-runtime`), and `gust::slang` and `gust::reflect` find
+  `slangc` and the helper through it; the guarded checkout fallback replaces the `CARGO_MANIFEST_DIR` one. cargo-gust's
+  `slang`, `toolchain`, `tools` and `doctor` use the same rules (one PATH rule, no relative entries), `SLANG_VERSION` is
+  `toolchain::SLANG_PIN`, and `doctor` prints the `gust-compute` version and the install line. Every helper and `slangc`
+  launch in `gust` and cargo-gust goes through the one std-only ETXTBSY retry (5 tries, 10 to 80 ms). A
+  `slangc -version` that differs from the pin is the typed `slang::Error::SlangVersionMismatch` naming both; a bad
+  `GUST_SLANG_HOME`, `GUST_SLANG_REFLECT` or version probe is `slang::Error::Toolchain`; `slang::Error` and
+  `toolchain::VersionError` are `#[non_exhaustive]`. `toolchain::require` refuses helper schemas 1 and 2. xtask exports
+  `GUST_SLANG_REFLECT` to its cargo children when the repository helper exists, and `PinRule`, the CI `gpu-software` pin
+  step, VALIDATION and the slang-language skill read the pin from `crates/gust/src/toolchain.rs`. The managed helper
+  under the cache root is now used whenever the cache root is nameable, not only beside a managed `slangc` (cargo-gust
+  still checks its schema and its tag against the located `slangc`). `cargo gust doctor`'s binary-path lines are
+  byte-identical before and after. Opus merge after fixes: one must-fix (the CI pin step would have read an empty
+  version), five should-fixes taken. Tests: gust lib 297, cargo-gust 213, xtask 505, Slangc 1525. Main: 24 of 24 gates
+  green on `f6c12e9` (2026-11-04 20:26 to 21:25Z, RTX 5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

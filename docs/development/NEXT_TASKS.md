@@ -184,9 +184,15 @@ test module; do not mix that mechanical move with behavior changes.
   tail). m7.p did not size them: `generated_host.rs` still emits `as_entire_binding()` (m7.a0 review). Open; the next
   slice that changes the generated host code takes it, with a test that reads `arrayLength` of a pooled `GpuVec`.
 - Before MR publishes (M7 sanity, Fable/Opus): the wasm32 `Job` contract (D69; see the M4 follow-ups);
-  `#[non_exhaustive]` on the public error enums (gust-wgpu `Error`, `gust::slang::Error`, `gust::reflect::Error`);
-  and a way to query which gust-algo variant ran, since v1 switches to v0 above about 2^28 elements without any sign,
-  and the float bound changes with it (see the m7.r4 follow-ups).
+  `#[non_exhaustive]` on the public error enums (gust-wgpu `Error` and `gust::reflect::Error`; `gust::slang::Error` is
+  done, mr.t2) and on `DeviceOptions`, with builder methods (mx.t2 review); and a way to query which gust-algo variant
+  ran, since v1 switches to v0 above about 2^28 elements without any sign, and the float bound changes with it (see the
+  m7.r4 follow-ups).
+- mr.t2 follow-ups (Opus review): xtask still starts the helper without the ETXTBSY retry (the two launches in
+  `xtask/src/verify.rs`; xtask has no `gust` dependency); a third copy of `HELPER_VARIABLE` and `default_helper` is left
+  in `xtask/src/release.rs`; `gust::slang` now checks the `slangc` version, so D72's `__gust_keep` follow-up can be
+  revisited; a managed helper built before schema 3 is now picked first outside xtask, so rebuild it with
+  `cargo gust build-helper`.
 - `HeadlessDevice::enumerate(Backends::VULKAN)` returned no adapter once (the M6 close gates, `gpu-verify` at
   `f452a37`), then passed in `check-full` of the same run and 20 of 20 reruns. Seen again in m7.w's fix round
   (`an_adapter_that_does_not_exist_is_no_adapter` in check-fast, "index 0 is one past the adapters"; green on

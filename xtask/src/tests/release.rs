@@ -7,12 +7,13 @@ use std::{
 
 use super::{
     DependencyKind, DocDebt, DocMessage, HELLO_DIR, HELLO_OUTPUT, Member, Options, PackageSpec,
-    WorkDir, caret_satisfied, consumer_lock_problems, doc_messages, doc_problems, docsrs_request,
-    dry_run_problems, existing_crate_lines, finish_outcome, fixture_dependency_problems,
-    has_nightly, helper_choice, metadata_problems, package_allows, package_files, package_problems,
-    parse_args, parse_metadata, patch_config_arguments, patched_manifest, readme_blocks,
-    readme_problems, recipe_ran, required_file_problems, section_value, size_problems,
-    unused_library_patches, verify_problems,
+    RegistryCleanup, Run, WorkDir, caret_satisfied, clean_registry_src, consumer_lock_problems,
+    doc_messages, doc_problems, docsrs_request, dry_run_problems, existing_crate_lines,
+    finish_outcome, fixture_dependency_problems, has_nightly, helper_choice, metadata_problems,
+    package_allows, package_files, package_problems, parse_args, parse_metadata,
+    patch_config_arguments, patched_manifest, readme_blocks, readme_problems, recipe_ran,
+    registry_command, registry_entries, registry_target, required_file_problems, section_value,
+    size_problems, unused_library_patches, verify_problems,
 };
 use crate::workspace::workspace_root;
 
@@ -880,4 +881,198 @@ fn r1_requires_a_verifying_line_for_every_package() {
     assert_eq!(verify_problems(wrong, &both).len(), 1);
     assert_eq!(verify_problems("", &both).len(), 2);
     assert!(verify_problems("", &[]).is_empty());
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The target of R1 and R8 (mr.r2) and the cleanup of cargo's registry/src
+
+/// The value that `command` sets for the environment variable `name`.
+fn env_of(command: &std::process::Command, name: &str) -> Option<OsString> {
+    command
+        .get_envs()
+        .find(|(key, _)| *key == std::ffi::OsStr::new(name))
+        .and_then(|(_, value)| value.map(OsString::from))
+}
+
+fn args_of(command: &std::process::Command) -> Vec<String> {
+    command
+        .get_args()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect()
+}
+
+#[test]
+fn r1_and_r8_build_into_a_target_directory_inside_the_work_directory() {
+    let set = members();
+    let both: Vec<&Member> = ["alpha", "tool"]
+        .iter()
+        .map(|name| member(&set, name))
+        .collect();
+    let root = scratch("repo");
+    let work = scratch("work");
+    let run = Run {
+        root: &root,
+        cargo: OsString::from("cargo"),
+        work: &work,
+        check_only: true,
+        helper: None,
+    };
+    let package = registry_command(&run, &["package"], &both);
+    let publish = registry_command(&run, &["publish", "--dry-run"], &both);
+    for (command, leading) in [(&package, "package"), (&publish, "publish")] {
+        let target = PathBuf::from(
+            env_of(command, "CARGO_TARGET_DIR").expect("the target is set on the command itself"),
+        );
+        assert!(
+            target.starts_with(&work) && target != work,
+            "{} is not inside {}",
+            target.display(),
+            work.display()
+        );
+        assert_eq!(target, registry_target(&work));
+        let args = args_of(command);
+        assert_eq!(args[0], leading, "{args:?}");
+        assert!(
+            args.iter().any(|argument| argument == "--locked"),
+            "{args:?}"
+        );
+        for name in ["alpha", "tool"] {
+            let at = args.iter().position(|argument| argument == name).unwrap();
+            assert_eq!(args[at - 1], "-p", "{args:?}");
+        }
+        assert_eq!(command.get_current_dir(), Some(root.as_path()));
+    }
+    assert_eq!(args_of(&publish)[1], "--dry-run");
+}
+
+fn packages(items: &[&str]) -> std::collections::BTreeSet<String> {
+    items.iter().map(|item| (*item).to_owned()).collect()
+}
+
+/// Makes `src/<name>/<child>` for each child: a name ending in `/` is a directory with a source file, else a file.
+fn fill_registry(src: &std::path::Path, entries: &[(&str, &[&str])]) {
+    fs::create_dir_all(src).unwrap();
+    for (name, children) in entries {
+        let entry = src.join(name);
+        fs::create_dir_all(&entry).unwrap();
+        for child in *children {
+            match child.strip_suffix('/') {
+                Some(directory) => {
+                    let path = entry.join(directory);
+                    fs::create_dir_all(path.join("src")).unwrap();
+                    fs::write(path.join("src").join("lib.rs"), "// source").unwrap();
+                }
+                None => fs::write(entry.join(child), "x").unwrap(),
+            }
+        }
+    }
+}
+
+#[test]
+fn a_new_entry_of_only_publishable_name_version_directories_is_deleted() {
+    let wanted = packages(&["alpha-1.2.0", "tool-1.2.0"]);
+    let src = scratch("reg-new");
+    fill_registry(&src, &[("index.crates.io-aaaa", &["serde-1.0.0/"])]);
+    let before = registry_entries(&src);
+    // Cargo makes this one during the run: the hash of the registry's path, with the packages of the run.
+    fill_registry(
+        &src,
+        &[("-dff94c00431122b2", &["alpha-1.2.0/", "tool-1.2.0/"])],
+    );
+    let result = clean_registry_src(&src, &before, &wanted);
+    assert_eq!(result.removed.len(), 1, "{result:?}");
+    assert_eq!(result.removed[0].0, "-dff94c00431122b2");
+    assert!(result.removed[0].1 > 0, "the size is reported");
+    assert!(
+        result.kept.is_empty() && result.failed.is_empty(),
+        "{result:?}"
+    );
+    assert!(!src.join("-dff94c00431122b2").exists());
+    assert!(
+        src.join("index.crates.io-aaaa")
+            .join("serde-1.0.0")
+            .is_dir(),
+        "the registry's own entry is untouched"
+    );
+    assert!(result.describe().contains("-dff94c00431122b2"));
+    fs::remove_dir_all(&src).unwrap();
+}
+
+#[test]
+fn an_index_entry_is_kept_even_when_it_is_new_and_looks_like_ours() {
+    let wanted = packages(&["alpha-1.2.0"]);
+    let src = scratch("reg-index");
+    fill_registry(&src, &[]);
+    let before = registry_entries(&src);
+    fill_registry(&src, &[("index.crates.io-bbbb", &["alpha-1.2.0/"])]);
+    let result = clean_registry_src(&src, &before, &wanted);
+    assert_eq!(result, RegistryCleanup::default(), "skipped without a word");
+    assert!(
+        src.join("index.crates.io-bbbb")
+            .join("alpha-1.2.0")
+            .is_dir()
+    );
+    fs::remove_dir_all(&src).unwrap();
+}
+
+#[test]
+fn a_new_entry_with_any_other_content_is_kept_and_named() {
+    let wanted = packages(&["alpha-1.2.0", "tool-1.2.0"]);
+    let src = scratch("reg-other");
+    fill_registry(&src, &[]);
+    let before = registry_entries(&src);
+    fill_registry(
+        &src,
+        &[
+            // another crate next to ours
+            ("-1111", &["alpha-1.2.0/", "serde-1.0.0/"]),
+            // another version of ours
+            ("-2222", &["alpha-1.2.1/"]),
+            // a file beside our directory
+            ("-3333", &["alpha-1.2.0/", "notes.txt"]),
+            // our name as a file
+            ("-4444", &["tool-1.2.0"]),
+            // nothing at all
+            ("-5555", &[]),
+        ],
+    );
+    // A new entry that is itself a file.
+    fs::write(src.join("-6666"), "x").unwrap();
+    let result = clean_registry_src(&src, &before, &wanted);
+    assert!(
+        result.removed.is_empty() && result.failed.is_empty(),
+        "{result:?}"
+    );
+    assert_eq!(result.kept.len(), 6, "{result:?}");
+    for name in ["-1111", "-2222", "-3333", "-4444", "-5555", "-6666"] {
+        assert!(src.join(name).exists(), "{name} survives");
+        assert!(
+            result.kept.iter().any(|line| line.starts_with(name)),
+            "{name} is named: {result:?}"
+        );
+    }
+    let said = result.describe();
+    assert!(
+        said.contains("-1111") && said.contains("serde-1.0.0"),
+        "{said}"
+    );
+    assert!(said.contains("not deleted"), "{said}");
+    fs::remove_dir_all(&src).unwrap();
+}
+
+#[test]
+fn an_entry_that_existed_before_the_run_is_never_touched() {
+    let wanted = packages(&["alpha-1.2.0", "tool-1.2.0"]);
+    // What an earlier run left: the shape of a deletable entry, but not new.
+    let src = scratch("reg-old");
+    fill_registry(&src, &[("-7777", &["alpha-1.2.0/", "tool-1.2.0/"])]);
+    let before = registry_entries(&src);
+    let result = clean_registry_src(&src, &before, &wanted);
+    assert_eq!(result, RegistryCleanup::default());
+    assert!(src.join("-7777").join("alpha-1.2.0").is_dir());
+    assert!(result.describe().contains("no new entry"));
+    fs::remove_dir_all(&src).unwrap();
+    // A registry/src that does not exist is nothing to clean, not an error.
+    let missing = clean_registry_src(&scratch("reg-missing"), &packages(&[]), &wanted);
+    assert_eq!(missing, RegistryCleanup::default());
 }

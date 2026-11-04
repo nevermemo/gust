@@ -18,6 +18,7 @@ use crate::{
         run_checked, run_checked_owned, sum_test_results, without_colors,
     },
     reflect::{BuildOptions, build_slang_reflect},
+    release::check_release_report,
     shader::{compile_golden_spirv, copy_logical_note},
     suite::DIFFTEST_CARGO_CALLS,
     time::now_utc,
@@ -130,6 +131,7 @@ pub(crate) fn integration_checks(mode: VerifyMode, skip_web: bool) -> Vec<Integr
     }
     vec![
         Integration::Run("check-precompiled"),
+        Integration::Run("check-release"),
         if skip_web {
             Integration::Skip("check-web")
         } else {
@@ -338,6 +340,15 @@ fn verify_inner(
             Integration::Run("check-precompiled") => {
                 let outcome = check_precompiled_report(&[]).map(|summary| format!("{summary}\n"));
                 run_integration(checks, "check-precompiled", outcome)?;
+            }
+            Integration::Run("check-release") => {
+                let outcome = check_release_report(&[]).map(|summary| {
+                    format!(
+                        "{summary}
+"
+                    )
+                });
+                run_integration(checks, "check-release", outcome)?;
             }
             Integration::Run("check-web") => {
                 let outcome = check_web_report(&[]).map(|summary| format!("{summary}\n"));

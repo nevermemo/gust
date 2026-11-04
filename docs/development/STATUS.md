@@ -461,6 +461,21 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   the must-fix (concurrent runs deleting each other's entry), two should-fixes and the nits taken.
   Main: 23 gate steps green on `b719a30` (2026-11-04 09:49 to 10:20Z, RTX 5090) and check-release --check-only green in
   the shared main target (10:20 to 10:24Z; registry/src clean after).
+- M7 m7.x (the close-out, plan §11; three lanes). m7.x1 (`097c75f`, fix round `e61d237`, merge `3ebd368`): a
+  feature area `dispatch` (the `par_for!` and multi-dimensional dispatch tests of gust-macros, gust and gust-wgpu,
+  one counted call per filter so a filter that matches nothing fails); `map` also runs m7.c's tests; `check-changed`
+  routes the gust-algo, map, dispatch and workgroup paths to their areas, and a changed fixture no rule claims keeps
+  the `macro` suite; `check-artifacts` exports and `spirv-val`s the M7 goldens (map, grid, workgroup, par_for, reduce,
+  scan, compact: 66 SPIR-V files) beside vectors and uniforms, splitting multi-kernel goldens at their marker lines
+  (the earlier sets' bytes unchanged); `check-cpu-target` requires the `par_for!` line once; E0709 says GUST defines
+  no CPU strategy for barrier kernels (D118). m7.x2 (`88abaeb`, rounds `eaa5647` and `66b682a`, merge `1e648b7`):
+  README (the stale lockstep text, the check-feature table, the Current subset for M6 and M7), VALIDATION (command
+  rows, the Cpu tier, the M7 runtime tests, the gust-algo Gpu step, the M7 golden sets) and REPO_STRUCTURE (cargo-gust
+  and gust-algo, "publishable"). m7.x3 (`4811714`, round `b7b8bdd`, `f0551f3`, merge `07b851d`): a
+  SEMANTICS map section and the M7 entries of "What is proven" (compaction's count and indices measured, as they run
+  v1), ARCHITECTURE for map, the generator, `par_for!`, `GpuVec` and the pool, `cpu::parallel` and gust-algo,
+  NEXT_TASKS (stale items, storage barriers and the decoupled look-back), three skills, and gust-algo's variant docs
+  without "provisional" (D121). Opus merge after fixes on each; every must-fix taken. Main: 23 of 23 gates green on `1e648b7` (m7.x1 and m7.x2; 2026-11-04 13:01 to 13:41Z), and on the m7.x3 merge (docs and doc comments only) fmt, gust-algo lib and doc tests, docs-check, lint and clippy.
 - M7 m7.c (`60e5aa3`, fix round `7f1b37f`, measured doc `3499303`, merge `88ac459`; D119): parallel CPU
   execution for generator-stamped map kernels. Under the `cpu` target the map generator emits a chunk body that
   `gust::cpu::parallel::run_map_chunked` runs over disjoint output chunks with `std::thread::scope` (safe Rust, std
@@ -472,7 +487,10 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   polynomial 16.1x at 1e8 and 11.7x at 1e7 over one thread, vector-add 1.84x at 1e8; every result bit-exact with one
   thread. The first run's vector-add cell at 2^17 read 0.85 with one thread on both sides (the same code path), so
   the pre-registered re-run of the vector-add cells (21 runs) decided: 0.95 to 1.02 from 2^16 to 1e6, inside D119's
-  10 %. Opus merge after fixes, no must-fix; five should-fixes and three nits taken. Main: 22 of 23 gates green on `88ac459` (2026-11-04 10:54 to 11:33Z); the Gpu suite step died with the gust-algo STATUS_ACCESS_VIOLATION a second time (NEXT_TASKS), while gpu-verify in the same run passed the same tests (297 pinned, gust-algo 49), and gust-algo's tests alone passed three times after (one thread, then default threads twice).
+  10 %. Opus merge after fixes, no must-fix; five should-fixes and three nits taken. Main: 22 of 23 gates green on
+  `88ac459` (2026-11-04 10:54 to 11:33Z); the Gpu suite step died with the gust-algo STATUS_ACCESS_VIOLATION a second
+  time (NEXT_TASKS), while gpu-verify in the same run passed the same tests (297 pinned, gust-algo 49), and gust-algo's
+  tests alone passed three times after (one thread, then default threads twice).
 - MX X-S3 (spike, D120; MX plan §1a): the pixel output model ended in outcome B on both adapters. Grid, render
   targets with `LoadOp::Load` and two copies, and fragment storage writes gave bit-identical outputs on the RTX 5090
   and the Radeon 890M; the storage-write call took 0.12 to 0.76 of the render-target call on the 5090 and 0.45 to 0.81

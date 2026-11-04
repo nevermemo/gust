@@ -5,8 +5,11 @@
 //! [`crate::cpu::CpuDevice`] (the map slice, m7.a1).
 //! It extends [`TypedDevice`] with three things a map call needs and a typed `Run` does not have: allocation
 //! and upload, a zeroed output, and readback. Nothing here names a backend, so `gust` depends on no GPU crate and a
-//! `GUST_PROFILE=cpu` build keeps no GPU API (D21). The trait is generic, not `dyn`: the generated `map_on` is
-//! generic over the device and `map` instantiates it with the build's concrete device type.
+//! `GUST_PROFILE=cpu` build keeps no GPU API (D21). The trait is generic, not `dyn`: under the GPU profiles the
+//! generated `map_on` is generic over the device and `map` instantiates it with the build's concrete device type.
+//! Under `GUST_PROFILE=cpu` the generated `map_on` and `map_on_async` are concrete over `&CpuDevice` (the one device
+//! there, and the parallel chunked run of `crate::cpu::parallel` needs its buffers); what the `cpu` profile gives up
+//! is code that is generic over the device and calls `map_on` on it.
 //!
 //! [`Error`] is the one error type of the map calls. It is the same in every profile; the backend's own error is
 //! boxed in [`Error::Device`] and recovered with [`Error::downcast_ref`].
@@ -405,7 +408,7 @@ impl MapHost for crate::cpu::CpuDevice {
         // pattern is a valid `T` (the contract of the trait's safety section).
         #[allow(unsafe_code)]
         let zero: T = unsafe { core::mem::zeroed() };
-        Ok(self.buffer(&vec![zero; len as usize]))
+        Ok(self.buffer_from_vec(vec![zero; len as usize]))
     }
 
     #[cfg(not(target_arch = "wasm32"))]

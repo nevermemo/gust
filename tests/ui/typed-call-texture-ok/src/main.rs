@@ -90,6 +90,7 @@ impl Kernel for Blur {
         name: "blur",
         entry_point: "ui_blur",
         shape: Shape::Grid,
+        compatible_shapes: &[Shape::Grid],
         workgroup_size: [64, 1, 1],
         parameters: &[
             ParameterDescriptor {

@@ -9,6 +9,7 @@ use crate::math_types;
 use crate::profile::{BodyChecks, StageProfile};
 
 mod barrier;
+pub(crate) mod classify;
 
 pub(crate) use barrier::{is_barrier_call, workgroup_array};
 
@@ -771,11 +772,9 @@ fn validate_function(
         };
         stage.validate_body(&mut checks);
         if let Some(sentence) = checks.forbidden.into_iter().next() {
-            // Placeholder: GUST-E0811 is the code of an unsupported expression, used here so a refusal by a profile
-            // has one. The code and the text of the refusal of a construct a shape does not take are mx.c's
-            // (`diagnostics.rs`, `DIAGNOSTICS`).
+            // A construct the kernel's shape does not take (GUST-E0729); the profile supplies the sentence.
             return Err(diagnostics::error(
-                Code::UnsupportedExpression,
+                Code::ProfileRefusal,
                 &function.sig,
                 sentence,
             ));

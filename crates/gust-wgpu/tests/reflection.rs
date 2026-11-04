@@ -21,6 +21,7 @@ const KERNEL: KernelDescriptor = KernelDescriptor {
     name: "write",
     entry_point: "write_value",
     shape: gust::Shape::Grid,
+    compatible_shapes: &[gust::Shape::Grid],
     workgroup_size: [64, 1, 1],
     parameters: PARAMETERS,
     slang_source: r#"
@@ -247,6 +248,7 @@ const HANDWRITTEN_FAILING: KernelDescriptor = KernelDescriptor {
     name: "handwritten_failure",
     entry_point: "handwritten_write",
     shape: gust::Shape::Grid,
+    compatible_shapes: &[gust::Shape::Grid],
     workgroup_size: [64, 1, 1],
     parameters: PARAMETERS,
     slang_source: concat!(

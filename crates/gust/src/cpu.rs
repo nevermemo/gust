@@ -1239,6 +1239,7 @@ mod tests {
             name,
             entry_point: name,
             shape: crate::Shape::Grid,
+            compatible_shapes: &[crate::Shape::Grid],
             workgroup_size,
             parameters,
             slang_source: "",

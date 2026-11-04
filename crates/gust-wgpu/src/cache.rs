@@ -119,6 +119,7 @@ mod tests {
         name: "kernel",
         entry_point: "cache_test_kernel",
         shape: Shape::Grid,
+        compatible_shapes: &[Shape::Grid],
         workgroup_size: [64, 1, 1],
         parameters: &[],
         slang_source: "void cache_test_kernel() {}",
@@ -205,6 +206,7 @@ mod tests {
     fn descriptors_that_differ_only_in_the_shape_have_different_keys() {
         let pixel = KernelDescriptor {
             shape: Shape::Pixel,
+            compatible_shapes: &[Shape::Pixel],
             ..KERNEL
         };
         assert_ne!(key(&KERNEL), key(&pixel));

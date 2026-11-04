@@ -1084,10 +1084,10 @@ Decision: D02.
 
 ### GUST-E0707 unknown `#[kernel]` option
 
-`workgroup_size` and `cpu` are the only `#[kernel]` options.
+`workgroup_size`, `cpu` and `shape` are the only `#[kernel]` options.
 Reached through `#[gpu]`.
 Rejected: `#[kernel(threads(64))]`.
-Write instead: `#[kernel(workgroup_size(x, y, z))]` or `#[kernel(cpu = "unsupported")]`.
+Write instead: `#[kernel(workgroup_size(x, y, z))]`, `#[kernel(cpu = "unsupported")]` or `#[kernel(shape = grid)]`.
 Decision: D02, D26.
 
 ### GUST-E0708 malformed `#[kernel]` attribute
@@ -1215,6 +1215,95 @@ Rejected: `a: Vec<f32>`, `a: &Vec<f32>`, `a: &[bool]`, `a: &mut f32`, `a: u64`, 
 Fixtures: `tests/ui/par-for-binding`, `tests/ui/par-for-reserved-name` (`cargo xtask check-ui`).
 Write instead: a slice or a `GpuVec` for a buffer, a scalar of the four types for a value, and distinct names that the expansion does not use (rename the variable of the call); the binding is read from the variable of that name at the call (`&a[..]`, `&mut out[..]`, `&*v`, or the scalar itself).
 Decision: M7 plan 3.1 (slice m7.p).
+
+### GUST-E0721 unknown kernel shape
+
+The value of `#[kernel(shape = ..)]` is `grid` or `pixel`; `cpu` is a target (`GUST_PROFILE=cpu`, D51), never a shape.
+Reached through `#[gpu]`.
+Rejected: `#[kernel(shape = cpu)]` (the message says to build with `GUST_PROFILE=cpu`), `#[kernel(shape = vulkan)]`, `#[kernel(shape = Grid)]`.
+Fixtures: `tests/ui/shape-cpu-pin`, `tests/ui/shape-unknown` (`cargo xtask check-ui`).
+Write instead: `shape = grid` or `shape = pixel`, or no `shape` at all (the default is `grid`); to run a kernel on the CPU, build with `GUST_PROFILE=cpu`.
+Decision: D63 (plan section 5.2, slice mx.c).
+
+### GUST-E0722 malformed `shape` option
+
+The `shape` option is given at most once, with a value that is a bare name.
+Reached through `#[gpu]`.
+Rejected: `#[kernel(shape = grid, shape = pixel)]`, `#[kernel(shape = "pixel")]`, `#[kernel(shape = 1)]`, `#[kernel(shape)]`.
+Fixtures: `tests/ui/shape-twice`, `tests/ui/shape-not-a-name` (`cargo xtask check-ui`).
+Write instead: one `shape = grid` or `shape = pixel`.
+Decision: D63 (plan section 5.2, slice mx.c).
+
+### GUST-E0723 pinned shape excluded by the kernel's resources or attribute
+
+A `shape` pin names a shape the kernel cannot take because of what it declares: workgroup memory, a workgroup barrier, an invocation id other than the global id (`LocalId`, `GroupId`), an atomic operation, a storage texture, an explicit `workgroup_size`, no output buffer, an output element that is no colour-target format (only `u32`, `i32`, `f32` and their 2- and 4-wide vectors are), or more than 8 outputs or 32 bytes of them (D62). The classifier is syntactic and conservative: what it does not recognise makes the kernel `grid`-only. The message names the construct that excludes the shape.
+Reached through `#[gpu]`.
+Rejected: `#[kernel(shape = pixel, workgroup_size(64, 1, 1))]`, `shape = pixel` on a kernel with a `Workgroup<[f32; 64]>` parameter or a nine-buffer output list.
+Fixtures: `tests/ui/shape-pixel-workgroup-size`, `tests/ui/shape-pixel-barrier`, `tests/ui/shape-pixel-too-many-outputs` (`cargo xtask check-ui`).
+Write instead: drop the pin (the kernel stays `grid`), or remove the construct the message names.
+Decision: D62, D63 (plan section 5.1 and 5.3, slice mx.c).
+
+### GUST-E0724 pinned shape excluded by a mutable invocation
+
+A `pixel` pin on a kernel whose invocation parameter is `mut`, or that assigns to the invocation or a field of it: the invocation id of a pixel is fixed.
+Reached through `#[gpu]`.
+Rejected: `#[kernel(shape = pixel)] fn k(mut id: SV_DispatchThreadID, ..)`, `id.x = 3;`.
+Fixture: `tests/ui/shape-pixel-mutable-invocation` (`cargo xtask check-ui`).
+Write instead: declare the invocation without `mut` and compute any other index into a local.
+Decision: D63 (plan section 5.1, slice mx.c).
+
+### GUST-E0725 pinned shape excluded by the own index
+
+A `pixel` pin on a kernel that writes an output at an index other than the element's own (`out[i] = v` with `i` the own index), or whose own-index alias is not one immutable `let i = id.x;` (or `id.global_id().x`) that is never bound again. The own index is `id.x`, `id.global_id().x`, or that one alias.
+Reached through `#[gpu]`.
+Rejected: `out[id.x + 1u32] = v`, `out[0u32] = v`, `let mut i = id.x;`, a second alias, `let i = id.x; for i in 0..3 { .. }`.
+Fixture: `tests/ui/shape-pixel-other-index` (`cargo xtask check-ui`).
+Write instead: write each output at the element's own index only, and bind the index once.
+Decision: D63 (plan section 5.1, slice mx.c).
+
+### GUST-E0726 pinned shape excluded by a conditional write
+
+A `pixel` pin on a kernel that does not write every output on every path. The rule is ordinary definite assignment: a block writes if some statement does, `if` with `else` if both arms do, `match` if every arm does, a loop never, and an `if` without `else` only when its condition is a conjunction of `own < out.len()` comparisons (which a live pixel always satisfies).
+Reached through `#[gpu]`.
+Rejected: `if input[id.x] > 0.0 { out[id.x] = 1.0; }`, a write in a `for` loop, a guard on a length that is not an output's.
+Fixture: `tests/ui/shape-pixel-conditional-write` (`cargo xtask check-ui`).
+Write instead: write the output in both arms, or in front of the branch, or guard with `if i < out.len()` only.
+Decision: D63 (plan section 5.1, slice mx.c).
+
+### GUST-E0727 pinned shape excluded by a return
+
+A `pixel` pin on a kernel with a `return` in its body: a pixel kernel is written to its end.
+Reached through `#[gpu]`.
+Rejected: `if id.x >= out.len() { return; }`.
+Fixture: `tests/ui/shape-pixel-return` (`cargo xtask check-ui`).
+Write instead: wrap the writes in `if id.x < out.len() { .. }`.
+Decision: D63 (plan section 5.1, slice mx.c).
+
+### GUST-E0728 pinned shape excluded by a use of an output
+
+A `pixel` pin on a kernel that uses an output other than as `out[own] = v` and `out.len()`: it reads an element, assigns to it with a compound operator, writes one component of it, rebinds the buffer, passes it on, or never writes a `StorageMut` buffer (an input read through a mutable binding, which should be a plain `Storage` buffer).
+Reached through `#[gpu]`.
+Rejected: `out[id.x] = out[id.x] + 1.0;`, `out[id.x] += v;`, `out[id.x].x = 1.0;`, an unwritten `mut` buffer.
+Fixture: `tests/ui/shape-pixel-output-read` (`cargo xtask check-ui`).
+Write instead: compute the whole element into a local from the inputs and write it once; declare a buffer the kernel only reads without `mut`.
+Decision: D63 (plan section 5.1, slice mx.c).
+
+### GUST-E0729 construct the kernel's shape does not take
+
+The execution shape of a kernel (its stage profile) refuses a construct the kernel declares: workgroup memory, a barrier or an atomic operation, as the profile decides. The message after the code is the profile's own sentence. The only profile today, `grid`, refuses nothing, so the code is raised by a profile test double; the `pixel` profile (slice mx.p1a) is the first to raise it.
+Unreachable through `#[gpu]`: the `grid` profile refuses no construct.
+Rejected: a barrier in a kernel of a profile whose `validate_body` forbids barriers.
+Write instead: remove the construct the message names, or give the kernel a shape that takes it.
+Decision: D63 (slice mx.p0, mx.c).
+
+### GUST-E0730 pinned shape not available yet
+
+A `pixel` pin on a kernel that is compatible with `pixel` while no `pixel` profile exists: the macro will not build a kernel as a shape it cannot emit, so the descriptor never says `pixel` for a compute entry point. The pin is refused here until the `pixel` profile exists (slice mx.p1a); the classification (`compatible_shapes` in the descriptor) already lists `Shape::Pixel` for such a kernel.
+Reached through `#[gpu]`.
+Rejected: `#[kernel(shape = pixel)]` on `fn paint(id: SV_DispatchThreadID, input: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) { out[id.x] = input[id.x]; }`.
+Fixture: `tests/ui/shape-pixel-unavailable` (`cargo xtask check-ui`); the accepted forms are `tests/ui/shape-grid-ok`.
+Write instead: drop the pin; the kernel is built as `grid`.
+Decision: D63, D89 (plan section 5.3, slice mx.c).
 
 ## E08xx: emitter-only rejections
 

@@ -5,7 +5,7 @@
 # where the kernel reads a texture.
 code: E0271
 file: typed-call-buffer-for-texture/src/main.rs
-line: 165
+line: 166
 message: type mismatch resolving `<Buffer<f32> as Resource>::Kind == Texture`
 message: required by a bound in `blur_call`
 label: Kind == Texture

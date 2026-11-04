@@ -12,9 +12,10 @@
 //!
 //! Slice m7.r4 adds the v1 kernels (`Workgroup<[T; 256]>` and barriers, `cpu = "unsupported"`, D101) of the reduce
 //! and the scan beside them ([`variant`]): the same results, fewer and wider dispatches. **The public functions run
-//! v1** (`variant::shipped` is `V1` for every operation: the measurement on the RTX 5090 put it at least 15 % ahead of
-//! v0 at 1e6, 1e7 and 1e8 elements). That choice is provisional: plan section 5.5 asks for both adapters, and the
-//! Radeon 890M half is owed and may change `shipped`. v0 stays the fallback, for an input whose v1 launch exceeds the
+//! v1** (`variant::shipped` is `V1` for every operation). The plan's rule (section 5.5) is faster than v0 on both
+//! adapters at 1e6, 1e7 and 1e8 elements, and it holds on the RTX 5090 and on the Radeon 890M; the reductions are only
+//! 1.01 to 1.03 ahead at 1e8 on the 890M, where both forms are bound by shared system memory, and D121 keeps v1.
+//! v0 stays the fallback, for an input whose v1 launch exceeds the
 //! device's workgroup limit, and the only form with CPU twins (the `cpu` module, `GUST_PROFILE=cpu`). The `*_with`
 //! functions run either on request.
 //!

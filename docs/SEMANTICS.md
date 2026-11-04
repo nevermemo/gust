@@ -129,7 +129,8 @@ describes the intended behaviour and is not evidence.
     buffer; or `&R` for a buffer that is already on the device (`GpuVec`, `GpuBuffer`, `CpuBuffer`), bound without a
     copy. The kernel reads any input buffer of length 1 at index 0, so a call whose other arguments are longer than one
     element cannot take a real vector for a broadcast (they must all have the call's length). The keying means that a
-    `&[bool]` for a `u32` parameter does not compile (two check-ui fixtures, STATUS m7.a1).
+    `&[bool]` for a `u32` parameter, and a `&[u32]` for a `bool` parameter, do not compile (the check-ui fixtures
+    `tests/ui/map-bool-for-u32` and `tests/ui/map-u32-for-bool`, STATUS m7.a1).
   - *Checks.* `gust::map::element_count` takes the count from the first slice-shaped argument and compares every later
     one: `LengthMismatch` names the later parameter, `Empty` means the call holds only broadcasts, and `TooLong` means
     more than `u32::MAX` elements. The generated body makes this check before it uploads or dispatches anything
@@ -764,7 +765,9 @@ adapter in section 1.
 The M7 entries that follow each name their label and tier, because not all of them meet the definition above: a kernel
 with workgroup memory has no twin (GUST-E0717), and the parallel CPU map is not a GPU statement at all. Every Gpu entry
 ran on the NVIDIA GeForce RTX 5090 (Vulkan) named in the STATUS record of its slice; no entry here claims another
-adapter.
+adapter. In the `par_for!` and gust-algo entries the GPU and the twin are two tests of one case
+function (or one scenario set), each against the reference, in one cargo call, not one test that asserts all three; the
+coretests entry above has the same shape.
 
 - **The element-wise map** (m7.a1, D99; `crates/gust-wgpu/tests/map.rs`; Gpu). Label: **proven** on the inputs used. The
   GPU, the CPU twin (`map_on` over `CpuDevice`) and an independent host reference agree for `saxpy` at 0, 1, 2, 255,
@@ -773,23 +776,27 @@ adapter.
   (`bool_arguments_and_results_are_bool_vectors`), for `i32` branches (`signed_integers_and_branches`) and for `Vec2`
   elements (`vector_elements`). The float inputs are small integer-valued numbers, so every comparison is exact; the
   tests say nothing about float rounding. Elements above `CEILING`
-  (`more_elements_than_one_round_takes_a_second_round`), resident chains and `MixedDevices` are GPU against a host
-  reference, without a twin comparison.
+  (`more_elements_than_one_round_takes_a_second_round`) and resident chains are GPU against a host reference, without a
+  twin comparison. `MixedDevices` is an error assertion (`resident_arguments_of_two_devices_are_mixed_devices`), not a
+  comparison with a reference.
 - **Multi-dimensional dispatch and the 2^32 rule** (m7.d, D102; `crates/gust-wgpu/tests/grid.rs`; Gpu). Label:
   **proven** for the cells, and for the zero extents.
-  `cells_match_the_host_reference_on_the_gpu_and_on_the_twin` (ten two-dimensional extents, off the 16 x 16 workgroup
-  on one or both axes), `a_three_dimensional_extent_runs_on_the_gpu_and_on_the_twin` (six extents) and
+  `cells_match_the_host_reference_on_the_gpu_and_on_the_twin` (ten two-dimensional extents, on and off the 16 x 16
+  workgroup on one or both axes), `a_three_dimensional_extent_runs_on_the_gpu_and_on_the_twin` (six extents) and
   `a_zero_dimension_is_ok_and_dispatches_nothing_on_both_backends` assert the GPU, the twin and a host reference.
   `local_and_group_ids_are_exact_in_two_dimensions` is the GPU against the identity `id = group * 16 +
-  local` (**measured**; no twin). The cap: `the_invocation_cap_is_the_same_on_the_gpu_and_the_twin_at_its_boundary` and
-  `the_invocation_cap_counts_all_three_axes` show the same accept and reject decisions and the same `DeviceLimit`
-  numbers on both backends at exactly 2^32 rounded invocations and one past. The GPU runs the accepted launches (65536
-  x 65536, 65536 x 65535 and, in three dimensions, 2048 x 2048 x 1024; in the last only invocation 0 writes a cell, so
-  it shows acceptance and not that every invocation ran). The twin's decision comes from `gust::cpu::validate`, because
-  a twin run of 2^32 invocations takes days. On a software adapter (`device_type: Cpu`) the 2^32 dispatch is not run
-  and the test says so; the accept decision is still asserted. The 2^28 x 1 extent is accepted by the twin and refused
-  by the GPU for workgroups per dimension (`the_per_dimension_workgroup_limit_is_the_gpus_alone_and_the_cap_is_both`),
-  a documented difference (D39).
+  local` (**measured**; no twin).
+  - The cap has its own labels. The accept and reject decisions at 2^32 rounded invocations and one past are
+    **proven** on both backends (`the_invocation_cap_is_the_same_on_the_gpu_and_the_twin_at_its_boundary` and
+    `the_invocation_cap_counts_all_three_axes`: the same decisions and the same `DeviceLimit` numbers); the twin's
+    decision comes from `gust::cpu::validate`, because a twin run of 2^32 invocations takes days. The execution of the
+    accepted launches is **measured**, GPU only (65536 x 65536, 65536 x 65535 and, in three dimensions,
+    2048 x 2048 x 1024; in the last only invocation 0 writes a cell, so it shows acceptance and not that every
+    invocation ran). On a software adapter (`device_type: Cpu`) the 2^32 dispatch is not run and the test says so; the
+    accept decision is still asserted. The public CI job `gpu-software` (Mesa lavapipe) is that adapter, so the
+    accepted 2^32 launches ran only on the RTX 5090.
+  - The 2^28 x 1 extent is accepted by the twin and refused by the GPU for workgroups per dimension
+    (`the_per_dimension_workgroup_limit_is_the_gpus_alone_and_the_cap_is_both`), a documented difference (D39).
 - **`par_for!`** (m7.p, D103; `crates/gust-wgpu/tests/par_for.rs`; Gpu). Label: **proven** on the inputs used. One set
   of scenarios, written once and instantiated for the GPU (`gpu::`) and the twin (`twin::`), asserts each against a
   host reference: one-, two- and three-dimensional loops with extents off the workgroup, `workgroup_size` overrides, a
@@ -814,21 +821,32 @@ adapter.
   evidence and not execution evidence.
 - **gust-algo, integers** (m7.r1 to m7.r4; `crates/gust-algo/src/tests/gpu.rs`, `twin.rs` and `common.rs`; Gpu, with
   the twin tests in the same cargo call). Reduce `sum`, `min` and `max` of `u32` and `i32`, `sum_wrapping`, the `u32`
-  scans, and compaction (count, indices, gathers) are exact against an independent reference (an `i128` sum,
-  `Iterator::min` and `max`, a sequential
-  scan), at every boundary of the schedules (1 to 1 000 003 elements and the deepest schedules). The sums and scans
-  are exact only while no partial sum or prefix overflows (the domain, SEMANTICS section 3); `sum_wrapping` and the scan
-  are tested past it and wrap modulo 2^32 (`gpu_wrapping_sums_are_defined_modulo_2_32_for_every_input`,
-  `gpu_scans_past_the_domain_wrap`). Label for v0: **proven**, since the twin tests
-  (`twin_integer_sums_min_and_max_are_exact_at_every_boundary` and its siblings) and the GPU tests
-  (`gpu_v0_integer_sums_min_and_max_are_exact_at_every_boundary`,
-  `gpu_v0_scans_are_exact_at_every_boundary`) run the same case functions, each against the reference and never
-  against each other. Label for v1, the variant the public functions run (`variant::shipped`): **measured**, because its
-  kernels carry `cpu = "unsupported"` (`gpu_v1_integer_sums_min_and_max_are_exact_at_every_boundary`,
-  `gpu_v1_scans_are_exact_at_every_boundary`, `gpu_v1_wrapping_sums_are_defined_modulo_2_32_for_every_input`). Where
-  the GPU runs these: `cargo xtask test --suite Gpu` and `verify --mode gpu` run `cargo test --locked -p gust-algo` as a
-  step of their own, which requires the 49 `gpu::` tests by name (`ALGO_GPU_TESTS` in `xtask/src/verify.rs`); the Unit
-  suite does not run the crate.
+  scans, and compaction (`count`, `indices`, the gathers) are exact against an independent reference (an `i128` sum,
+  `Iterator::min` and `max`, a sequential scan), at the boundaries of the schedules (the length lists
+  in the test files) and at the deepest schedules. The sums and scans are exact only while no
+  partial sum or prefix overflows (the domain, SEMANTICS section 3); `sum_wrapping` and the scan wrap modulo 2^32 past
+  it. The labels differ by variant, because the public functions run v1 (`variant::shipped`) and the twins are v0.
+  - Reduce and scan, v0: **proven**. The twin tests (`twin_integer_sums_min_and_max_are_exact_at_every_boundary`,
+    `twin_wrapping_sums_are_defined_modulo_2_32_for_every_input`, `twin_scans_are_exact_at_every_boundary`) and the
+    GPU tests pinned to v0 (`gpu_v0_integer_sums_min_and_max_are_exact_at_every_boundary`,
+    `gpu_v0_wrapping_sums_are_defined_modulo_2_32_for_every_input`, `gpu_v0_scans_are_exact_at_every_boundary`) run the
+    same case functions, each against the reference and never against each other.
+  - Reduce and scan, v1: **measured**, because its kernels carry `cpu = "unsupported"`
+    (`gpu_v1_integer_sums_min_and_max_are_exact_at_every_boundary`, `gpu_v1_scans_are_exact_at_every_boundary`,
+    `gpu_v1_wrapping_sums_are_defined_modulo_2_32_for_every_input`). The wrap past the domain is pinned once on the
+    public functions, so on v1 (`gpu_integer_sums_past_the_domain_wrap`, `gpu_scans_past_the_domain_wrap`).
+  - Compaction `count` and `indices`: **measured**. They run the public sum and scan, so the GPU test
+    (`gpu_compaction_is_exact_at_every_boundary`, and `gpu_runs_the_deepest_compaction`) is v1 against the reference;
+    the twin (`twin_compaction_is_exact_at_every_boundary`) runs the v0 chain against the same reference. No GPU test
+    runs a v0 compaction.
+  - The gathers (`gather_u32`, `gather_i32`, `gather_f32`): **proven** on those inputs. They are one kernel on both
+    backends, and the twin and the GPU each compare them with the independent `reference_gather`
+    (`twin_a_gather_guards_the_index_bound_and_the_count`, `gpu_a_gather_guards_the_index_bound_and_the_count` and the
+    gathers inside the compaction tests).
+
+  Where the GPU runs these: `cargo xtask test --suite Gpu` and `verify --mode gpu` run
+  `cargo test --locked -p gust-algo` as a step of their own, which requires the 49 `gpu::` tests by name
+  (`ALGO_GPU_TESTS` in `xtask/src/verify.rs`); the Unit suite does not run the crate.
 - **gust-algo, float sums** (the same files; Gpu, with the twin tests in the same cargo call). Label: **measured
   against a derived bound**, not proven. The distance of an `f32` sum from an independent `f64` accumulation stays
   within `gamma_K * S` for the per-addition error `c` of the target (2^-24 on the twin, 2^-23 on the GPU) plus the
@@ -838,16 +856,19 @@ adapter.
   (`bound::f32_sum_bound`), and `gpu_v1_float_sums_are_within_the_per_level_bound` and
   `gpu_v1_float_sum_of_the_tie_ladder_is_within_the_bound` to v1's (`bound::f32_sum_bound_v1`). The tests of the public
   functions (`gpu_float_sums_are_within_the_per_level_bound` and `gpu_float_sum_of_the_tie_ladder_is_within_the_bound`)
-  run the shipped variant, v1, against the larger v0 bound, as the crate documents for a caller who cannot tell which
-  variant ran. `min` and `max` of floats are exact (`gpu_float_min_and_max_are_exact`, with a v0 and a v1 form). The
-  bound holds for finite, normal inputs and says nothing about the relative error of a sum of mixed signs; v0 and v1
-  sums need not be bit-equal to each other or across adapters (STATUS m7.r4).
-- **The parallel CPU map** (m7.c, D119; `crates/gust/tests/parallel.rs`; Unit, and `tests/cpu-target` through
+  run the shipped variant, v1, against v0's bound (the larger one at these sizes), as the crate documents for a caller
+  who cannot tell which variant ran. `min` and `max` of floats are exact (`gpu_float_min_and_max_are_exact`, with a v0
+  and a v1 form). The bound holds for finite inputs, normal or zero, and says nothing about the relative error of a
+  sum of mixed signs; v0 and v1 sums need not be bit-equal to each other or across adapters (STATUS m7.r4).
+- **The parallel CPU map** (m7.c, D119; `crates/gust/tests/parallel.rs`, and `tests/cpu-target` through
   `cargo xtask check-cpu-target`; Cpu). Not a GPU statement and not compared with one. Label: none of section 2's;
-  these are **Unit** and **Cpu** evidence for the runner's promises. `every_thread_count_gives_the_bits_of_one_thread`
-  runs a chain of dependent `f32` operations over twelve lengths from 0 to 1 000 003, around `ELEMENTS_PER_THREAD`, and
-  compares the bits of 1, 2, 3, 4, 7 and the machine's threads with those of one thread. The panic of the lowest failing
-  index comes out with its own payload and nothing is returned
+  these are tests that need no adapter, for the runner's promises. No step of the Unit suite runs
+  `crates/gust/tests/parallel.rs`: the workspace test does (`cargo xtask check-workspace`, `verify --mode smoke` and
+  `verify --mode full`, so `check-full`). The unit tests inside `cpu/parallel.rs` run in `verify --mode fast` and in
+  the Slangc suite (`cargo test -p gust --lib`), and the Cpu half runs in the Cpu suite.
+  `every_thread_count_gives_the_bits_of_one_thread` runs a chain of dependent `f32` operations over twelve lengths
+  from 0 to 1 000 003, around `ELEMENTS_PER_THREAD`, and compares the bits of 1, 2, 3, 4, 7 and the machine's threads
+  with those of one thread. The panic of the lowest failing index comes out with its own payload and nothing is returned
   (`panics_at_777_and_9_report_9_for_every_thread_count_with_no_output`,
   `the_payload_is_the_one_of_the_lowest_index_unchanged`), and `GUST_CPU_THREADS` is a positive integer or an error
   (`gust_cpu_threads_is_a_positive_integer_or_an_error`). The Cpu half is `tests/cpu-target/kernels/src/map_case.rs`: a

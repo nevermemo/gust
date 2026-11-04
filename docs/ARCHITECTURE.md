@@ -105,14 +105,40 @@ exception (`gust::cpu::parallel`, below). `cargo xtask check-cpu-target` is the 
 docs/development/VALIDATION.md).
 
 The map generator (D60, slice m7.a1, amended by D99; `crates/gust-macros/src/expand/map.rs`).
-`#[gpu]` on a free scalar function (an `fn`, not a module) builds a synthetic module and hands it to the same `expand_validated` path as a written
-module, so the body gets the validation and the lowering of any kernel. The module holds one kernel, `map_kernel`,
-which is grid-stride at `workgroup_size(256, 1, 1)` and binds every buffer `Independent`. The host launches
-`min(n, CEILING)` invocations, where `CEILING` is 65535 * 256 = 16,776,960 (`gust::map::CEILING`), and runs
-ceil(n / CEILING) rounds. The signature rules (GUST-E0714, E0715 and, for a 3-wide type, E0204) ask for at least one
-parameter, each a plain identifier of a type that can be a buffer element, and a result of such a type; a name that
-the generated module uses itself (`GENERATED_NAMES`) is rejected. `par_for!` reuses this
-element-type lookup (`ElementTypes`, `element_types`), so a `bool` is a `u32` word on the device in both (D103).
+`#[gpu]` on a free scalar function (an `fn`, not a module) builds a synthetic module and hands it to the same
+`expand_validated` path as a written module, so the body gets the validation and the lowering of any kernel. The module
+holds one kernel, `map_kernel`, which is grid-stride at `workgroup_size(256, 1, 1)` and binds every buffer
+`Independent`. The host launches `min(n, CEILING)` invocations, where `CEILING` is 65535 * 256 = 16,776,960
+(`gust::map::CEILING`), and runs ceil(n / CEILING) rounds. The signature rules (GUST-E0714, E0715 and, for a 3-wide
+type, E0204) ask for at least one parameter, each a plain identifier of a type that can be a buffer element, and a
+result of such a type; a name that the generated module uses itself (`GENERATED_NAMES`) is rejected.
+
+`par_for!` (slice m7.p, plan 3.1, D103) is a function-like macro of `gust-macros`, re-exported by `gust`, built on that
+generator. It reuses the element-type lookup (`ElementTypes`, `element_types`) for its buffer elements and refuses a
+`bool` buffer there; a `bool` is a scalar binding, a `u32` word in the extent record. A call
+`par_for!(i in 0..n, [a: &[f32], out: &mut [f32]] { out[i] = a[i]; })` validates its body
+with the same rules as a `#[gpu]` kernel (an error in the body carries the code and the
+span of the offending statement, D33), lowers it once into a kernel `run` with an extent
+uniform and a bounds guard, and expands to a block that holds a module named
+`__gust_pf_<hash16>` and a launch of it. The hash is `content_key` of the entry point and
+the clean Slang text, so two spellings of one body (other layout, other file, other
+line) are one module and one kernel. The extent record is the three axis extents, the
+scalar bindings and explicit padding to a multiple of 16
+bytes; every buffer is `Independent`. The launch rounds each axis up to the workgroup,
+returns `Ok(())` for a zero axis without touching the device, and a launch over the
+invocation cap (`Extent::MAX_INVOCATIONS`) is the device's `DeviceLimit` error, checked before the
+uniform is created or anything is uploaded. The twin (`CpuDevice`; every build under `GUST_PROFILE=cpu`, test and
+dual builds otherwise) runs the loop sequentially.
+
+Export records. A `#[gpu]` module or function writes a schema 1 `<key>.kernel.json`
+whose `source` names its file and line table. A `par_for!` body can stand at any number
+of call sites, so its record is schema 2 and has no `source`: equal bodies write equal
+record bytes (`write_once` makes the second write a no-op). Each call site writes a
+sidecar `<key>.<site16>.site.json` (`schema` 2, `key`, `file`, `lines`), where `site16`
+is FNV-1a 64 over the relative file, a zero byte and the decimal line of the call.
+`cargo gust` reads schemas 1, 2 and 3; the record keeps every call site, sorted by file and first line, and the
+`SourceOrigin` of a schema 2 kernel is the first one's. A `.site.json` next to a schema 1 record, a schema 2
+record without one, and a sidecar of another key are errors.
 
 ### `gust`
 
@@ -156,23 +182,25 @@ Generated names use the reserved `__gust_` prefix so that no user parameter name
 can collide.
 
 `gust::map` (D60, slice m7.a1, amended by D99) is the host side of the element-wise map.
-`MapHost: TypedDevice` is what a device offers it (`upload`, `zeroed`, `readback`, `readback_async` and `map_error`); `CpuDevice` implements it in `gust`, and
-`HeadlessDevice` in `gust-wgpu` (`map_host.rs`). `MapArg<H, D>` is what a call argument may be (a slice, a `&Vec`, a
-`&[T; N]`, `Broadcast`, or a `&R` for a `Resident` buffer), and the sealed `MapElement` ties a host type to its device
-element. The element count is checked before anything is bound or uploaded: `Error::LengthMismatch`, `TooLong`,
-`Empty`, `MixedDevices` and `Device(Box)` (`#[non_exhaustive]`), and a call over zero elements returns an empty
-`Vec` or `GpuVec`. An input of length one is read at index 0 (`Broadcast`). The generated functions are `map` and
-`map_on` (not emitted on `wasm32`), `map_gpu` and `map_gpu_on` (not emitted under `cpu`) and `map_async` and
-`map_on_async` (on `wasm32`, compiled but never run in a browser); `map` and `map_gpu` open the default device first.
+`MapHost: TypedDevice` is what a device offers it (`upload`, `zeroed`, `readback`, `readback_async` and `map_error`);
+`CpuDevice` implements it in `gust`, and `HeadlessDevice` in `gust-wgpu` (`map_host.rs`). `MapArg<H, D>` is what a call
+argument may be (a slice, a `&Vec`, a `&[T; N]`, `Broadcast`, or a `&R` for a `Resident` buffer), and the sealed
+`MapElement` ties a host type to its device element. The element count is checked before anything is bound or
+uploaded (`Error::LengthMismatch`, `TooLong`, `Empty`); `MixedDevices` is a resident argument of another device and
+`Device(Box)` a device failure (the enum is `#[non_exhaustive]`). A call over zero elements returns an empty `Vec` or
+`GpuVec`. An input of length one is read at index 0 (`Broadcast`). The generated functions are `map` and `map_on`
+(not emitted on `wasm32`), `map_gpu` and `map_gpu_on` (not emitted under `cpu`) and `map_async` and `map_on_async`
+(`map_async` is not emitted under `cpu` either, and was compiled for `wasm32` but never run in a browser); `map` and
+`map_gpu` open the default device first.
 
 `gust::cpu::parallel` (slice m7.c, D119; `crates/gust/src/cpu/parallel.rs`) runs the map on the production CPU target
-across threads. `run_map_chunked` and `run_map_into_vec` use `min(configured, max(1, n / ELEMENTS_PER_THREAD))`
-threads (`bounded_threads`; `ELEMENTS_PER_THREAD` is 2^18), where `configured` is `GUST_CPU_THREADS` (anything but a
-positive integer is `Error::InvalidThreads`) or else the machine's parallelism, and run the chunks with
-`std::thread::scope`, so the crate stays `forbid(unsafe_code)`. Each chunk runs under `catch_unwind`, and after the
-join the panic of the lowest element index is raised again. The macro emits a CPU-only chunk function,
-`__gust_map_cpu_chunk`, for it. Under `cpu`, `map_on` is concrete over `&CpuDevice`. `par_for!` and a kernel written
-by hand stay sequential.
+across threads. `map_threads` gives the runners their thread count, `min(configured, max(1, n / ELEMENTS_PER_THREAD))`
+(`threads_from` and `bounded_threads`; `ELEMENTS_PER_THREAD` is 2^18), where `configured` is `GUST_CPU_THREADS`
+(anything but a positive integer is `Error::InvalidThreads`) or else the machine's parallelism. `run_map_chunked` and
+`run_map_into_vec` run the chunks with `std::thread::scope`, so `gust::cpu` stays `forbid(unsafe_code)`. Each chunk
+runs under `catch_unwind`, and after the join the panic of the lowest element index is raised again. The macro emits
+a CPU-only chunk function, `__gust_map_cpu_chunk`, for it. Under `cpu`, `map_on` is concrete over `&CpuDevice`.
+`par_for!` and a kernel written by hand stay sequential.
 
 `KernelDescriptor::slang_source` is the source of truth of executable shader artifacts; the precompiled ones
 (`KernelDescriptor::artifacts`, embedded by the macro from the crate's `gust-artifacts/` when the pair for the
@@ -281,31 +309,6 @@ that allow-list, and `cargo xtask check-arch` fails for a workspace crate withou
 the kernel files live outside the package. Its twin tests run the v0 twins against independent references in its test
 builds; the `gpu::` tests run on the adapter. Both are in the one `cargo test -p gust-algo` call that the Gpu suite and
 `verify --mode gpu` make (`ALGO_GPU_CALL`, with 49 tests required by name); the Unit suite does not run the crate.
-
-`par_for!` (slice m7.p, plan 3.1) is a function-like macro of `gust-macros`, re-exported by `gust`. A call
-`par_for!(i in 0..n, [a: &[f32], out: &mut [f32]] { out[i] = a[i]; })` validates its body
-with the same rules as a `#[gpu]` kernel (an error in the body carries the code and the
-span of the offending statement, D33), lowers it once into a kernel `run` with an extent
-uniform and a bounds guard, and expands to a block that holds a module named
-`__gust_pf_<hash16>` and a launch of it. The hash is `content_key` of the entry point and
-the clean Slang text, so two spellings of one body (other layout, other file, other
-line) are one module and one kernel. The extent record is the three axis extents, the
-scalar bindings (a `bool` as a `u32` word) and explicit padding to a multiple of 16
-bytes; every buffer is `Independent`. The launch rounds each axis up to the workgroup,
-returns `Ok(())` for a zero axis without touching the device, and a launch over the
-invocation cap (`Extent::MAX_INVOCATIONS`) is the device's `DeviceLimit` error, checked before the
-uniform is created or anything is uploaded. The twin (`CpuDevice`; every build under `GUST_PROFILE=cpu`, test and
-dual builds otherwise) runs the loop sequentially.
-
-Export records. A `#[gpu]` module or function writes a schema 1 `<key>.kernel.json`
-whose `source` names its file and line table. A `par_for!` body can stand at any number
-of call sites, so its record is schema 2 and has no `source`: equal bodies write equal
-record bytes (`write_once` makes the second write a no-op). Each call site writes a
-sidecar `<key>.<site16>.site.json` (`schema` 2, `key`, `file`, `lines`), where `site16`
-is FNV-1a 64 over the relative file, a zero byte and the decimal line of the call.
-`cargo gust` reads schemas 1, 2 and 3; the record keeps every call site, sorted by file and first line, and the
-`SourceOrigin` of a schema 2 kernel is the first one's. A `.site.json` next to a schema 1 record, a schema 2
-record without one, and a sidecar of another key are errors.
 
 Shapes (slice mx.k, D89). `gust::Shape` (`Grid`, `Pixel`; `#[non_exhaustive]`) is a field of `KernelDescriptor`, set
 by the macro from the stage profile, and it picks the `slangc -stage` (`compute` or `fragment`) in `gust::slang`,

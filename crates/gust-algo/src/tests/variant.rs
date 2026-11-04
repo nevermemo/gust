@@ -115,13 +115,15 @@ fn the_v1_depth_is_below_the_v0_depth_from_ten_elements_up() {
     assert_eq!(bound::f32_sum_bound_v1(0, c, s), 0.0);
 }
 
-/// The record of the measurement of m7.r4 (plan section 5.5: v1 ships per operation only where it is at least 10 %
-/// faster than v0 at 1e6, 1e7 and 1e8 elements on the RTX 5090; the log of the slice, `plans/m7/probe/r4/`, has the
-/// table). `WORST` is the lowest median ratio v0 / v1 over the sizes and element types of each operation, in
-/// thousandths (the medians of the per-run medians; single runs went lower, see the module docs of [`crate::variant`]).
+/// The record of the RTX 5090 half of the measurement of m7.r4 (the slice brief asked for at least 10 % over v0 at
+/// 1e6, 1e7 and 1e8 elements there; the plan's rule, section 5.5, is faster on both adapters at those sizes; the log of
+/// the slice, `plans/m7/probe/r4/`, has the table). `WORST` is the lowest median ratio v0 / v1 over the sizes and
+/// element types of each operation, in thousandths (the medians of the per-run medians; single runs went lower, see
+/// the module docs of [`crate::variant`]).
 /// `shipped` must be v1 exactly where that ratio is at least 1.10. It is a two-place tripwire, not a proof: it fails
 /// when only one of `WORST` and `shipped` is edited, and a changed `shipped` needs the new measurement written here
-/// beside it. The Radeon 890M half of the measurement is owed.
+/// beside it. The Radeon 890M half ran too (D121): v1 was faster there for every operation and size, the reductions
+/// only 1.01 to 1.03 ahead at 1e8, and D121 kept v1; that half is not in this table.
 #[test]
 fn the_shipped_variants_are_the_measured_ones() {
     const WORST: [(Operation, u32); 6] = [

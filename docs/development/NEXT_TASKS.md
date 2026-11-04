@@ -75,11 +75,12 @@ test module; do not mix that mechanical move with behavior changes.
 - CPU limits (open after M5): decide whether the production CPU target emulates the device limits
   (workgroup count per dimension, invocations per workgroup, storage binding size) or
   keeps documenting the difference; today the CPU backend rejects only a launch above
-  2^32 invocations and a zero workgroup axis (D102; D39 documents the rest).
-- CPU strategy for barrier kernels (open): a kernel with `Workgroup` memory or `workgroup_barrier()` has no CPU twin
-  and uses `#[kernel(cpu = "unsupported")]` (E0717; SEMANTICS section 5). Spike S7.4 measured a lockstep twin at about
-  2.9 ms per barrier round and D118 dropped it, so a CPU strategy for them is a decision for a later milestone. The
-  one parallel CPU path today is the element-wise map (`gust::cpu::parallel`, D119).
+  2^32 invocations and a workgroup size with a zero axis (D102; D39 documents the rest).
+- No CPU strategy for barrier kernels (D118, D101): a kernel with `Workgroup` memory or `workgroup_barrier()` has no
+  CPU twin and uses `#[kernel(cpu = "unsupported")]` (E0717; `cpu = "lockstep"` is E0709; SEMANTICS section 5). Spike
+  S7.4 measured a lockstep twin at about 2.9 ms per barrier round and D118 dropped it; v0 stays every CPU form of
+  gust-algo. A thread-free twin is the unplanned idea "A lockstep twin without threads" below. The one parallel CPU
+  path today is the element-wise map (`gust::cpu::parallel`, D119).
 - M8, capability-gated tests that fail rather than skip: a test that needs a capability
   the adapter lacks is a failure of its tier, never a skipped or ignored pass.
 - M10, benchmark fairness: bounds checking and panic behaviour must be equal on the
@@ -95,9 +96,9 @@ test module; do not mix that mechanical move with behavior changes.
 - The module-wide `#[allow(unexpected_cfgs)]` that the `#[gpu]` expansion carries also
   silences a user's cfg typos inside the `#[gpu]` module; narrow it to the emitted twin
   items.
-- `gust::cpu::invocations` (done in m7.d, D102): it walks the rounded grid in all three axes, caps its range at 2^32
-  ids and debug-asserts that `validate` already refused a larger launch (`launch_invocations` in `cpu.rs`). The
-  twin at 2^32 invocations has still not run; the cap tests assert the decision of `validate` only.
+- `invocations` in `gust::cpu` (done in m7.d, D102): it walks the rounded grid in all three axes, caps its range at
+  2^32 ids and debug-asserts that `validate` already refused a larger launch (it uses `launch_invocations`). The twin
+  at 2^32 invocations has still not run; the cap tests assert the decision of `validate` only.
 - If kernels ever become generic, re-check that a defining crate's overflow checks survive instantiation in an
   unchecked crate (the defining-crate rule is measured for non-generic shadow bodies only).
 - Optional: `cargo test -- --color never` in the counted calls would remove the ANSI
@@ -241,12 +242,13 @@ test module; do not mix that mechanical move with behavior changes.
 - m7.a1 follow-ups: a `#[diagnostic::on_unimplemented]` on `MapArg` so a type mismatch
   reads in GUST's words (re-pin the two check-ui fixtures); `missing_docs` fires on generated constants of both
   `#[gpu] mod` and `#[gpu] fn` (older); `TooLong` is unit-tested only.
-- Storage barriers (`storageBarrier`, memory ordering between workgroups of one dispatch): M7 has `workgroup_barrier()`
-  only (D100, D101); the storage form comes with M8's capability work (D23). Until then no kernel orders writes
-  across workgroups inside one dispatch.
-- A decoupled look-back scan (single-pass scan with an inter-workgroup wait): not built. It needs the storage barriers
-  above, and AGENTS.md rules out GPU inter-workgroup spin waits ("No GPU inter-workgroup spin waits").
-  `gust-algo`'s scan stays the multi-dispatch form of 2k + 1 dispatches (v0 and v1).
+- Storage barriers (`storageBarrier`: a workgroup barrier over storage memory): M7 has `workgroup_barrier()` only
+  (D100, D101); the storage form comes with M8 (M7 plan sections 7 and 9, D23). It orders the accesses of one
+  workgroup and gives no ordering between workgroups of a dispatch.
+- docs/ARCHITECTURE.md: the paragraphs "Shapes" (mx.k) and "Layouts in the record" (m7.lv) sit under `### gust-algo`
+  and belong with `gust-macros` and `cargo gust`; move them (m7.x3 review, older text).
+- A decoupled look-back scan: not built. It needs an inter-workgroup wait, which AGENTS.md rules out ("No GPU
+  inter-workgroup spin waits"). `gust-algo`'s scan stays the multi-dispatch form of 2k + 1 dispatches (v0 and v1).
 - The scan `_wrapping` form the M7 plan promises after m7.w: the same Slang (D87), only the twins change; v0's scan
   already wraps (m7.r4 or its own slice).
 - M8: naga 30 rejects an `i32` lane id in `subgroupShuffle`, `subgroupBroadcast` and `quadBroadcast`, which WGSL

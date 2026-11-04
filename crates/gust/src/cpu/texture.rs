@@ -2,7 +2,7 @@
 //!
 //! [`CpuTexture2d<F>`] is a typed 2-D array of texels (a `Vec`, no image crate: none establishes GPU sampling
 //! semantics) that a [`CpuDevice`] hands out the way it hands out buffers, and [`CpuSampler`] is a sampler of the same
-//! device. A texture is a [`Resource`] of kind [`kind::Texture`](crate::kind::Texture); a sampler is a
+//! device. A texture is a [`Resource`] of kind [`kind::Texture`]; a sampler is a
 //! [`SamplerArg`], not a resource. The kernel-side views ([`Texture2D`](crate::texture::Texture2D) and the others)
 //! use the functions of this module, so a shadow body and a host call mean the same thing.
 //!

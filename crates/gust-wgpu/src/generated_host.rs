@@ -47,9 +47,17 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
     );
     for parameter in &resources {
         let binding = parameter.binding.expect("validated resource binding");
-        let layout = parameter
-            .resource_layout
-            .expect("validated resource layout");
+        let Some(layout) = parameter.resource_layout else {
+            // A sampler has no element contract.
+            write_line(
+                &mut source,
+                format_args!(
+                    "// @group({}) @binding({}) {}: sampler",
+                    binding.group, binding.binding, parameter.name
+                ),
+            );
+            continue;
+        };
         write_line(
             &mut source,
             format_args!(
@@ -115,21 +123,28 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
             format_args!("                binding: {},", binding.binding),
         );
         source.push_str("                visibility: wgpu::ShaderStages::COMPUTE,\n");
-        source.push_str("                ty: wgpu::BindingType::Buffer {\n");
-        if parameter.kind == ParameterKind::Uniform {
-            source.push_str("                    ty: wgpu::BufferBindingType::Uniform,\n");
-        } else {
-            write_line(
-                &mut source,
-                format_args!(
-                    "                    ty: wgpu::BufferBindingType::Storage {{ read_only: {} }},",
-                    parameter.access == Access::ReadOnly
-                ),
-            );
+        match parameter.kind {
+            ParameterKind::Texture | ParameterKind::Sampler => {
+                render_texture_type(&mut source, parameter);
+            }
+            _ => {
+                source.push_str("                ty: wgpu::BindingType::Buffer {\n");
+                if parameter.kind == ParameterKind::Uniform {
+                    source.push_str("                    ty: wgpu::BufferBindingType::Uniform,\n");
+                } else {
+                    write_line(
+                        &mut source,
+                        format_args!(
+                            "                    ty: wgpu::BufferBindingType::Storage {{ read_only: {} }},",
+                            parameter.access == Access::ReadOnly
+                        ),
+                    );
+                }
+                source.push_str("                    has_dynamic_offset: false,\n");
+                source.push_str("                    min_binding_size: None,\n");
+                source.push_str("                },\n");
+            }
         }
-        source.push_str("                    has_dynamic_offset: false,\n");
-        source.push_str("                    min_binding_size: None,\n");
-        source.push_str("                },\n");
         source.push_str("                count: None,\n");
         source.push_str("            },\n");
     }
@@ -156,9 +171,14 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
         source.push_str("        element_count: u32,\n");
     }
     for parameter in &resources {
+        let argument = match parameter.kind {
+            ParameterKind::Texture => "&wgpu::TextureView",
+            ParameterKind::Sampler => "&wgpu::Sampler",
+            _ => "&wgpu::Buffer",
+        };
         write_line(
             &mut source,
-            format_args!("        {}: &wgpu::Buffer,", parameter.name),
+            format_args!("        {}: {argument},", parameter.name),
         );
     }
     source.push_str("    ) {\n");
@@ -177,13 +197,29 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
             &mut source,
             format_args!("                binding: {},", binding.binding),
         );
-        write_line(
-            &mut source,
-            format_args!(
-                "                resource: {}.as_entire_binding(),",
-                parameter.name
+        match parameter.kind {
+            ParameterKind::Texture => write_line(
+                &mut source,
+                format_args!(
+                    "                resource: wgpu::BindingResource::TextureView({}),",
+                    parameter.name
+                ),
             ),
-        );
+            ParameterKind::Sampler => write_line(
+                &mut source,
+                format_args!(
+                    "                resource: wgpu::BindingResource::Sampler({}),",
+                    parameter.name
+                ),
+            ),
+            _ => write_line(
+                &mut source,
+                format_args!(
+                    "                resource: {}.as_entire_binding(),",
+                    parameter.name
+                ),
+            ),
+        }
         source.push_str("            },\n");
     }
     source.push_str("        ];\n");
@@ -213,6 +249,60 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
     }
     source.push_str("    }\n}\n");
     Ok(source)
+}
+
+/// The `ty:` line of a texture or sampler layout entry, in the portable variant (the device without
+/// `float32-filterable`): a float texture is not filterable and a sampler is `NonFiltering`. A device that enabled the
+/// feature uses `filterable: true` and `Filtering` (`HeadlessDevice` picks per device; the generated host leaves that
+/// choice to its user). A write-only storage texture stays `WriteOnly`: wgpu refuses `ReadWrite` outside the `r32`
+/// formats (D120).
+fn render_texture_type(target: &mut String, parameter: &gust::ParameterDescriptor) {
+    if parameter.kind == ParameterKind::Sampler {
+        target.push_str(
+            "                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),\n",
+        );
+        return;
+    }
+    let texture = parameter
+        .resource_layout
+        .and_then(|layout| match layout.rules {
+            gust::ShaderLayoutRules::TextureV1(texture) => Some(texture),
+            _ => None,
+        })
+        .expect("validated texture layout");
+    match (texture.access, texture.format) {
+        (gust::TextureAccess::Sampled, _) => {
+            let sample_type = match texture.class {
+                gust::texture::SampleClass::Uint => "Uint",
+                gust::texture::SampleClass::Sint => "Sint",
+                _ => "Float { filterable: false }",
+            };
+            write_line(
+                target,
+                format_args!(
+                    "                ty: wgpu::BindingType::Texture {{ sample_type: \
+                     wgpu::TextureSampleType::{sample_type}, view_dimension: \
+                     wgpu::TextureViewDimension::D2, multisampled: false }},"
+                ),
+            );
+        }
+        (access, Some(format)) => {
+            let access = if access == gust::TextureAccess::ReadWrite {
+                "ReadWrite"
+            } else {
+                "WriteOnly"
+            };
+            write_line(
+                target,
+                format_args!(
+                    "                ty: wgpu::BindingType::StorageTexture {{ access: \
+                     wgpu::StorageTextureAccess::{access}, format: wgpu::TextureFormat::{format:?}, \
+                     view_dimension: wgpu::TextureViewDimension::D2 }},"
+                ),
+            );
+        }
+        (_, None) => unreachable!("a validated storage texture has a format"),
+    }
 }
 
 fn render_struct_fields(

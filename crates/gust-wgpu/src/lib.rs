@@ -78,6 +78,7 @@ mod generated_host;
 pub mod graph;
 mod map_host;
 pub mod pool;
+mod texture;
 mod vec;
 pub use cache::PipelineCacheStats;
 use cache::{CachedKernel, KernelCacheKey, PipelineCache};
@@ -85,14 +86,16 @@ use completion::Completion;
 #[cfg(not(target_arch = "wasm32"))]
 use completion::blocking::{block_on_mapping, recv_mapping};
 pub use device::{
-    AdapterChoice, DeviceHandle, DeviceOptions, LimitsPolicy, default_device, default_device_async,
-    set_default_options,
+    AdapterChoice, DeviceHandle, DeviceOptions, FeaturesPolicy, LimitsPolicy, default_device,
+    default_device_async, set_default_options,
 };
 pub use error::Error;
 pub use generated_host::render_wgpu_source;
 #[cfg(not(target_arch = "wasm32"))]
 pub use graph::{GraphOutput, GraphReport, NodeId, StagedGraph, TransferDirection, TransferRecord};
 pub use pool::{BufferPool, GpuPool, GrowthRecord, PoolStats};
+pub use texture::{GpuSampler, GpuSamplerBinding, GpuTexture2d};
+use texture::{TextureBinding, TextureCounts};
 pub use vec::GpuVec;
 
 // A build holds one target (D21): this crate is the GPU runtime, so a build under `GUST_PROFILE=cpu` stops here with
@@ -384,6 +387,9 @@ pub struct BufferBinding<'a> {
     /// The bytes the bind group exposes, from offset 0: the logical length (at least one element, as for an empty
     /// buffer), which is the whole allocation unless the buffer is pooled and its class is larger.
     bytes: u64,
+    /// A texture binding's own facts (`raw` is then the texture's 4-byte identity buffer, which only the aliasing rule
+    /// and the staged graph's hazard check read); `None` for a buffer.
+    texture: Option<TextureBinding<'a>>,
 }
 
 impl<'a> BufferBinding<'a> {
@@ -420,6 +426,7 @@ impl<'a> BufferBinding<'a> {
             indirect: buffer.indirect,
             kind: BindingKind::Storage,
             bytes: logical_bytes(buffer),
+            texture: None,
         }
     }
 
@@ -437,6 +444,7 @@ impl<'a> BufferBinding<'a> {
             indirect: false,
             kind: BindingKind::Uniform,
             bytes: uniform.raw.size(),
+            texture: None,
         }
     }
 
@@ -448,6 +456,9 @@ impl<'a> BufferBinding<'a> {
     /// The binding resource of the bind group: `bytes` from offset 0, so a pooled buffer larger than its logical
     /// length shows the kernel (`arrayLength`, `.len()`) the logical length only.
     fn resource(&self) -> wgpu::BindingResource<'a> {
+        if let Some(texture) = self.texture {
+            return wgpu::BindingResource::TextureView(texture.view);
+        }
         wgpu::BindingResource::Buffer(wgpu::BufferBinding {
             buffer: self.raw,
             offset: 0,
@@ -490,6 +501,9 @@ pub struct BufferDispatch<'a> {
     /// The y and z axes of the extent.
     extent_yz: [u32; 2],
     pub bindings: &'a [BufferBinding<'a>],
+    /// The sampler bindings of a kernel with `Sampler` parameters, in declaration order; empty for a kernel with none.
+    /// Set with [`BufferDispatch::with_samplers`].
+    samplers: &'a [GpuSamplerBinding<'a>],
 }
 
 impl<'a> BufferDispatch<'a> {
@@ -513,7 +527,22 @@ impl<'a> BufferDispatch<'a> {
             element_count: extent.x,
             extent_yz: [extent.y, extent.z],
             bindings,
+            samplers: &[],
         }
+    }
+
+    /// The same dispatch with `samplers` as the bindings of the kernel's `Sampler` parameters, one per parameter in
+    /// declaration order (slice mx.t2). A kernel with a sampler parameter and no sampler binding is
+    /// [`Error::BindingCount`] at submit.
+    #[must_use]
+    pub const fn with_samplers(mut self, samplers: &'a [GpuSamplerBinding<'a>]) -> Self {
+        self.samplers = samplers;
+        self
+    }
+
+    /// The sampler bindings of this dispatch.
+    pub const fn samplers(&self) -> &'a [GpuSamplerBinding<'a>] {
+        self.samplers
     }
 
     /// The extent the batch functions dispatch: `element_count` by the two other axes.
@@ -699,6 +728,32 @@ impl<'call, 'resources: 'call, K: Kernel, const N: usize>
     /// the dispatch borrows the call only for `'call`.
     fn from(call: &'call Call<'resources, HeadlessDevice, K, N>) -> Self {
         Self::new_extent(call.kernel(), call.extent(), call.bindings())
+    }
+}
+
+/// The calls of kernels with sampler parameters (decision D64, slice mx.t2): `Run<K, N, [GpuSamplerBinding; S]>`, beside
+/// `Run<K, N>`. The sampler bindings travel in the call (`SampledCall`) and are checked at submit with the others.
+impl<'sampler, K: Kernel, const N: usize, const S: usize>
+    Run<K, N, [GpuSamplerBinding<'sampler>; S]> for HeadlessDevice
+{
+    fn submit_call<'device>(
+        &'device self,
+        call: &Call<'_, Self, K, N, [GpuSamplerBinding<'sampler>; S]>,
+    ) -> Result<Self::Job<'device>, Self::Error> {
+        self.submit_batch(&[BufferDispatch::from(call)])
+    }
+}
+
+impl<'call, 'resources: 'call, 'sampler: 'call, K: Kernel, const N: usize, const S: usize>
+    From<&'call Call<'resources, HeadlessDevice, K, N, [GpuSamplerBinding<'sampler>; S]>>
+    for BufferDispatch<'call>
+{
+    /// The dispatch of a call that carries sampler bindings (the other `From<&Call>` impl is the one without).
+    fn from(
+        call: &'call Call<'resources, HeadlessDevice, K, N, [GpuSamplerBinding<'sampler>; S]>,
+    ) -> Self {
+        Self::new_extent(call.kernel(), call.extent(), call.bindings())
+            .with_samplers(call.samplers())
     }
 }
 
@@ -1077,6 +1132,16 @@ impl HeadlessDevice {
     /// fixed to Vulkan, the high-performance adapter and wgpu's default limits, the options choose the backends, the
     /// adapter and whether the adapter's own buffer limits are requested (see [`DeviceOptions`]).
     pub async fn new_async_with(options: DeviceOptions) -> Result<Self, Error> {
+        Self::new_async_with_features(options, FeaturesPolicy::Default).await
+    }
+
+    /// [`new_async_with`](Self::new_async_with) with the optional device features `features` asks for (slice mx.t2):
+    /// [`FeaturesPolicy::Adapter`] enables `float32-filterable` where the adapter offers it, so that a linear sampler
+    /// can be bound ([`float32_filterable`](Self::float32_filterable) reports the result).
+    pub async fn new_async_with_features(
+        options: DeviceOptions,
+        features: FeaturesPolicy,
+    ) -> Result<Self, Error> {
         let DeviceOptions {
             backends,
             adapter,
@@ -1090,10 +1155,14 @@ impl HeadlessDevice {
             || Self::request_adapter(backends, &adapter),
         )
         .await?;
-        Self::open(adapter, limits).await
+        Self::open(adapter, limits, features).await
     }
 
-    async fn open(adapter: wgpu::Adapter, limits_policy: LimitsPolicy) -> Result<Self, Error> {
+    async fn open(
+        adapter: wgpu::Adapter,
+        limits_policy: LimitsPolicy,
+        features_policy: FeaturesPolicy,
+    ) -> Result<Self, Error> {
         let adapter_info = adapter.get_info();
         let timestamp_queries = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);
         let required_features = if timestamp_queries {
@@ -1105,7 +1174,8 @@ impl HeadlessDevice {
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("GUST headless device"),
                 required_features: required_features
-                    | (adapter.features() & wgpu::Features::MEMORY_DECORATION_COHERENT),
+                    | (adapter.features() & wgpu::Features::MEMORY_DECORATION_COHERENT)
+                    | features_policy.required_features(&adapter),
                 required_limits: limits_policy.required_limits(&adapter),
                 ..Default::default()
             })
@@ -1152,8 +1222,10 @@ impl HeadlessDevice {
     /// `max_compute_workgroup_size_z`, `max_compute_invocations_per_workgroup`,
     /// `max_compute_workgroups_per_dimension` (for x, y and z alike), `max_storage_buffers_per_shader_stage`,
     /// `max_storage_buffer_binding_size`, `max_uniform_buffers_per_shader_stage`,
-    /// `max_uniform_buffer_binding_size` and `max_bindings_per_bind_group` (every binding
-    /// index of a kernel must be below it). Every other field is accepted if it is not
+    /// `max_uniform_buffer_binding_size`, `max_sampled_textures_per_shader_stage`,
+    /// `max_storage_textures_per_shader_stage`, `max_samplers_per_shader_stage`, `max_texture_dimension_2d` (the
+    /// sides of every texture a launch binds, and of `create_texture_2d`) and `max_bindings_per_bind_group`
+    /// (every binding index of a kernel must be below it). Every other field is accepted if it is not
     /// raised, but has no effect. `max_buffer_size` is read by the fallible buffer functions
     /// ([`try_create_typed_buffer`](Self::try_create_typed_buffer),
     /// [`create_zeroed_buffer`](Self::create_zeroed_buffer),
@@ -2028,11 +2100,13 @@ impl HeadlessDevice {
         let validated = dispatches
             .iter()
             .map(|dispatch| {
-                let resources = validate_persistent_dispatch_extent(
+                let resources = validate_dispatch_extent(
                     self.id,
+                    self.float32_filterable(),
                     dispatch.kernel,
                     dispatch.extent(),
                     dispatch.bindings,
+                    dispatch.samplers,
                 )?;
                 let binding_bytes = dispatch.bindings.iter().map(BufferBinding::limit_bytes);
                 let workgroups = if indirect {
@@ -2046,6 +2120,13 @@ impl HeadlessDevice {
                         binding_bytes,
                     )?
                 };
+                if indirect || !dispatch.extent().is_empty() {
+                    texture::check_texture_dimensions(
+                        &self.limits,
+                        dispatch.kernel,
+                        dispatch.bindings,
+                    )?;
+                }
                 Ok((resources, workgroups))
             })
             .collect::<Result<Vec<_>, Error>>()?;
@@ -2057,15 +2138,28 @@ impl HeadlessDevice {
             }
             let cached_kernel = self.cached_kernel(dispatch.kernel, &resources)?;
             let label = dispatch.kernel.qualified_name().to_string();
+            // The bound parameters in declaration order; a sampler parameter takes the next sampler binding and every
+            // other one the next resource binding (`validate_dispatch_extent` counted both).
+            let mut resource_bindings = dispatch.bindings.iter();
+            let mut sampler_bindings = dispatch.samplers.iter();
             let bind_group_entries = resources
                 .iter()
-                .zip(dispatch.bindings)
-                .map(|(parameter, binding)| wgpu::BindGroupEntry {
+                .map(|parameter| wgpu::BindGroupEntry {
                     binding: parameter
                         .binding
                         .expect("validated resource binding")
                         .binding,
-                    resource: binding.resource(),
+                    resource: if parameter.kind == ParameterKind::Sampler {
+                        sampler_bindings
+                            .next()
+                            .expect("validated sampler binding")
+                            .resource()
+                    } else {
+                        resource_bindings
+                            .next()
+                            .expect("validated resource binding")
+                            .resource()
+                    },
                 })
                 .collect::<Vec<_>>();
             let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -2141,11 +2235,19 @@ impl HeadlessDevice {
         resources: &[&ParameterDescriptor],
         binding_bytes: impl IntoIterator<Item = (u64, BindingKind)>,
     ) -> Result<[u32; 3], Error> {
-        let uniforms = resources
-            .iter()
-            .filter(|parameter| parameter.kind == ParameterKind::Uniform)
-            .count();
-        check_kernel_limits(&self.limits, kernel, resources.len() - uniforms, uniforms)?;
+        let count = |kind: ParameterKind| {
+            resources
+                .iter()
+                .filter(|parameter| parameter.kind == kind)
+                .count()
+        };
+        check_kernel_limits(
+            &self.limits,
+            kernel,
+            count(ParameterKind::Storage),
+            count(ParameterKind::Uniform),
+            TextureCounts::of(resources),
+        )?;
         check_binding_indices(&self.limits, kernel, resources)?;
         let workgroups = match extent {
             Some(extent) => workgroup_counts(&self.limits, kernel, extent)?,
@@ -2223,28 +2325,37 @@ impl HeadlessDevice {
         let wgsl = std::str::from_utf8(&compiled.artifact)
             .expect("WGSL validated by the native compiler bridge");
         let label = kernel.qualified_name().to_string();
+        // A texture or sampler entry follows the device's layout variant (`texture.rs`); a buffer entry is as ever.
         let layout_entries = resources
             .iter()
-            .map(|parameter| wgpu::BindGroupLayoutEntry {
-                binding: parameter
-                    .binding
-                    .expect("validated resource binding")
-                    .binding,
-                visibility: wgpu::ShaderStages::COMPUTE,
-                ty: wgpu::BindingType::Buffer {
-                    ty: if parameter.kind == ParameterKind::Uniform {
-                        wgpu::BufferBindingType::Uniform
-                    } else {
-                        wgpu::BufferBindingType::Storage {
-                            read_only: parameter.access == Access::ReadOnly,
-                        }
+            .map(|parameter| {
+                let ty = match parameter.kind {
+                    ParameterKind::Texture | ParameterKind::Sampler => {
+                        self.texture_binding_type(parameter)?
+                    }
+                    _ => wgpu::BindingType::Buffer {
+                        ty: if parameter.kind == ParameterKind::Uniform {
+                            wgpu::BufferBindingType::Uniform
+                        } else {
+                            wgpu::BufferBindingType::Storage {
+                                read_only: parameter.access == Access::ReadOnly,
+                            }
+                        },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
+                };
+                Ok(wgpu::BindGroupLayoutEntry {
+                    binding: parameter
+                        .binding
+                        .expect("validated resource binding")
+                        .binding,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty,
+                    count: None,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>, Error>>()?;
         let bind_group_layout =
             self.device
                 .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -2380,12 +2491,15 @@ fn device_limit(
 
 /// Limits a pipeline for `kernel` must respect: each workgroup axis against its own limit (x, then y, then z), the
 /// product of the three (a checked product: [`Error::Extent`] when it overflows) against
-/// `max_compute_invocations_per_workgroup`, then the buffer counts.
+/// `max_compute_invocations_per_workgroup`, then the buffer counts, then the texture and sampler counts
+/// (`max_sampled_textures_per_shader_stage`, `max_storage_textures_per_shader_stage` and
+/// `max_samplers_per_shader_stage`; the texture dimension is `texture::check_texture_dimensions`'s).
 fn check_kernel_limits(
     limits: &wgpu::Limits,
     kernel: &KernelDescriptor,
     storage_buffers: usize,
     uniform_buffers: usize,
+    textures: TextureCounts,
 ) -> Result<(), Error> {
     let size = kernel.workgroup_size.map(u64::from);
     for (limit, requested, maximum) in [
@@ -2431,6 +2545,21 @@ fn check_kernel_limits(
             "max_uniform_buffers_per_shader_stage",
             uniform_buffers as u64,
             u64::from(limits.max_uniform_buffers_per_shader_stage),
+        ),
+        (
+            "max_sampled_textures_per_shader_stage",
+            textures.sampled as u64,
+            u64::from(limits.max_sampled_textures_per_shader_stage),
+        ),
+        (
+            "max_storage_textures_per_shader_stage",
+            textures.storage as u64,
+            u64::from(limits.max_storage_textures_per_shader_stage),
+        ),
+        (
+            "max_samplers_per_shader_stage",
+            textures.samplers as u64,
+            u64::from(limits.max_samplers_per_shader_stage),
         ),
     ] {
         if requested > maximum {
@@ -2530,6 +2659,10 @@ fn check_binding_size(
     bytes: u64,
     kind: BindingKind,
 ) -> Result<(), Error> {
+    // A texture has no byte size in a binding: its limit is the dimension (`texture::check_texture_dimensions`).
+    if kind == BindingKind::Texture {
+        return Ok(());
+    }
     let (limit, maximum) = if kind == BindingKind::Uniform {
         (
             "max_uniform_buffer_binding_size",
@@ -2656,7 +2789,9 @@ fn validate_u32_dispatch(
     Ok(resources)
 }
 
-/// `validate_persistent_dispatch_extent` for a one-dimensional dispatch of `element_count` invocations.
+/// The binding checks of a one-dimensional dispatch of `element_count` invocations of a buffer-only kernel: what the
+/// staged graph validates a node with. A kernel with a texture or sampler parameter is refused
+/// ([`Error::UnsupportedParameter`]): the graph tracks hazards by buffer and does not learn textures in MX.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn validate_persistent_dispatch(
     device_id: u64,
@@ -2664,18 +2799,44 @@ fn validate_persistent_dispatch(
     element_count: u32,
     bindings: &[BufferBinding<'_>],
 ) -> Result<Vec<&'static ParameterDescriptor>, Error> {
-    validate_persistent_dispatch_extent(device_id, kernel, Extent::linear(element_count), bindings)
+    let resources = validate_kernel(kernel)?;
+    if let Some(parameter) = resources.iter().find(|parameter| {
+        matches!(
+            parameter.kind,
+            ParameterKind::Texture | ParameterKind::Sampler
+        )
+    }) {
+        return Err(Error::UnsupportedParameter {
+            name: parameter.name.to_owned(),
+            kind: parameter.kind,
+        });
+    }
+    validate_dispatch_extent(
+        device_id,
+        false,
+        kernel,
+        Extent::linear(element_count),
+        bindings,
+        &[],
+    )
 }
 
 /// The binding checks of a persistent dispatch over `extent`: the kernel, then per binding the kind, layout, device,
 /// access and length, then aliasing. A shared binding holds exactly `x * y * z` elements (the checked product;
 /// [`Error::Extent`] when it overflows a `u64`, before any binding is looked at), an independent one only has to be
 /// non-empty when the extent is. The launch limits are `check_launch_extent`'s.
-fn validate_persistent_dispatch_extent(
+///
+/// A texture binding has no length rule. It is checked for its format (a storage parameter's exact format, a sampled
+/// one's sample class: [`Error::TextureFormat`]), its device, its access and its use ([`Error::TextureUse`]). A sampler
+/// binding is checked for its device and its filter against the device's layout variant (`float32_filterable`:
+/// [`Error::TextureFilter`]). `samplers` are the bindings of the kernel's sampler parameters in declaration order.
+fn validate_dispatch_extent(
     device_id: u64,
+    float32_filterable: bool,
     kernel: &KernelDescriptor,
     extent: Extent,
     bindings: &[BufferBinding<'_>],
+    samplers: &[GpuSamplerBinding<'_>],
 ) -> Result<Vec<&'static ParameterDescriptor>, Error> {
     let resources = validate_kernel(kernel)?;
     let total = extent.checked_total().ok_or(Error::Extent {
@@ -2684,13 +2845,31 @@ fn validate_persistent_dispatch_extent(
     })?;
     // A product above `usize::MAX` is longer than any buffer: it saturates, so the length check fails for all of them.
     let expected = usize::try_from(total).unwrap_or(usize::MAX);
-    if resources.len() != bindings.len() {
+    // The resource parameters (buffers and textures) pair with `bindings`, the sampler parameters with `samplers`.
+    let (sampler_parameters, resource_parameters): (
+        Vec<&ParameterDescriptor>,
+        Vec<&ParameterDescriptor>,
+    ) = resources
+        .iter()
+        .copied()
+        .partition(|parameter| parameter.kind == ParameterKind::Sampler);
+    if resource_parameters.len() != bindings.len() {
         return Err(Error::BindingCount {
-            expected: resources.len(),
+            expected: resource_parameters.len(),
             actual: bindings.len(),
         });
     }
-    for (parameter, binding) in resources.iter().copied().zip(bindings.iter().copied()) {
+    if sampler_parameters.len() != samplers.len() {
+        return Err(Error::BindingCount {
+            expected: sampler_parameters.len(),
+            actual: samplers.len(),
+        });
+    }
+    for (parameter, binding) in resource_parameters
+        .iter()
+        .copied()
+        .zip(bindings.iter().copied())
+    {
         let buffer = binding;
         let expected_kind =
             BindingKind::of(parameter.kind).expect("validate_kernel keeps only bound parameters");
@@ -2700,6 +2879,10 @@ fn validate_persistent_dispatch_extent(
                 expected: expected_kind,
                 actual: buffer.kind,
             });
+        }
+        if let Some(texture) = binding.texture {
+            texture::validate_texture_binding(device_id, parameter, &binding, texture)?;
+            continue;
         }
         validate_binding_layout(
             parameter,
@@ -2736,10 +2919,15 @@ fn validate_persistent_dispatch_extent(
             });
         }
     }
+    for (parameter, sampler) in sampler_parameters.iter().copied().zip(samplers) {
+        texture::validate_sampler_binding(device_id, float32_filterable, parameter, sampler)?;
+    }
     // One buffer may be bound twice only when both bindings are read-only. The access of each binding
-    // equals its parameter's access here, and the check names both parameters in declaration order.
-    for (index, (first_parameter, first)) in resources.iter().zip(bindings).enumerate() {
-        for (second_parameter, second) in resources.iter().zip(bindings).skip(index + 1) {
+    // equals its parameter's access here, and the check names both parameters in declaration order. A texture
+    // stands for itself by its identity buffer, so one texture bound twice is a buffer bound twice: a storage
+    // texture twice is refused, a sampled one twice is accepted (wgpu allows two read-only uses of one texture).
+    for (index, (first_parameter, first)) in resource_parameters.iter().zip(bindings).enumerate() {
+        for (second_parameter, second) in resource_parameters.iter().zip(bindings).skip(index + 1) {
             if same_buffer(first.raw, second.raw)
                 && (first.access == Access::ReadWrite || second.access == Access::ReadWrite)
             {
@@ -2795,6 +2983,9 @@ pub(crate) fn validate_kernel(
                         && layout == binding_resource_layout(BindingKind::Uniform, layout.element)
                 })
             }
+            // A texture's contract is the `TextureV1` rule (D91) and a sampler has none: `texture.rs` judges both.
+            ParameterKind::Texture => texture::texture_parameter_is_valid(parameter),
+            ParameterKind::Sampler => texture::sampler_parameter_is_valid(parameter),
             _ => {
                 return Err(Error::UnsupportedParameter {
                     name: parameter.name.to_owned(),
@@ -3885,9 +4076,9 @@ mod tests {
         ));
         // The same bytes as a storage binding are within the (much larger) storage limit.
         assert!(check_binding_size(&limits, &DESCRIPTOR, 65, BindingKind::Storage).is_ok());
-        assert!(check_kernel_limits(&limits, &DESCRIPTOR, 1, 2).is_ok());
+        assert!(check_kernel_limits(&limits, &DESCRIPTOR, 1, 2, TextureCounts::NONE).is_ok());
         assert!(matches!(
-            check_kernel_limits(&limits, &DESCRIPTOR, 1, 3),
+            check_kernel_limits(&limits, &DESCRIPTOR, 1, 3, TextureCounts::NONE),
             Err(Error::DeviceLimit {
                 limit: "max_uniform_buffers_per_shader_stage",
                 requested: 3,
@@ -3896,7 +4087,7 @@ mod tests {
             })
         ));
         // A uniform does not count against the storage buffer limit.
-        assert!(check_kernel_limits(&limits, &DESCRIPTOR, 8, 2).is_ok());
+        assert!(check_kernel_limits(&limits, &DESCRIPTOR, 8, 2, TextureCounts::NONE).is_ok());
     }
 
     #[test]
@@ -4022,9 +4213,9 @@ mod tests {
     #[test]
     fn kernel_limits_name_the_first_exceeded_limit() {
         let mut limits = wgpu::Limits::default();
-        assert!(check_kernel_limits(&limits, &DESCRIPTOR, 8, 0).is_ok());
+        assert!(check_kernel_limits(&limits, &DESCRIPTOR, 8, 0, TextureCounts::NONE).is_ok());
         assert!(matches!(
-            check_kernel_limits(&limits, &DESCRIPTOR, 9, 0),
+            check_kernel_limits(&limits, &DESCRIPTOR, 9, 0, TextureCounts::NONE),
             Err(Error::DeviceLimit {
                 limit: "max_storage_buffers_per_shader_stage",
                 requested: 9,
@@ -4034,7 +4225,7 @@ mod tests {
         ));
         limits.max_compute_invocations_per_workgroup = 32;
         assert!(matches!(
-            check_kernel_limits(&limits, &DESCRIPTOR, 1, 0),
+            check_kernel_limits(&limits, &DESCRIPTOR, 1, 0, TextureCounts::NONE),
             Err(Error::DeviceLimit {
                 limit: "max_compute_invocations_per_workgroup",
                 requested: 64,
@@ -4044,7 +4235,7 @@ mod tests {
         ));
         limits.max_compute_workgroup_size_x = 32;
         assert!(matches!(
-            check_kernel_limits(&limits, &DESCRIPTOR, 1, 0),
+            check_kernel_limits(&limits, &DESCRIPTOR, 1, 0, TextureCounts::NONE),
             Err(Error::DeviceLimit {
                 limit: "max_compute_workgroup_size_x",
                 requested: 64,
@@ -4061,7 +4252,9 @@ mod tests {
             workgroup_size: size,
             ..DESCRIPTOR
         };
-        let check = |limits: &wgpu::Limits, size| check_kernel_limits(limits, &kernel(size), 1, 0);
+        let check = |limits: &wgpu::Limits, size| {
+            check_kernel_limits(limits, &kernel(size), 1, 0, TextureCounts::NONE)
+        };
         let named = |result: Result<(), Error>| match result {
             Err(Error::DeviceLimit {
                 limit,

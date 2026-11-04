@@ -72,8 +72,50 @@ impl LimitsPolicy {
     }
 }
 
+/// Which optional device features [`HeadlessDevice::with_options_and_features`] asks the adapter for (slice mx.t2).
+///
+/// The only feature GUST asks for is `float32-filterable`, which a linear filter of a 32-bit float texture needs
+/// (decision D64). A device that did not enable it still runs every texture kernel, with `Nearest` samplers and
+/// `load`; binding a `Linear` sampler there is `Error::TextureFilter`. [`HeadlessDevice::float32_filterable`] reports
+/// what the opened device actually has.
+///
+/// The policy is a separate knob from [`DeviceOptions`] (which stays as it was, so that every caller that builds one
+/// keeps compiling): [`HeadlessDevice::new`], [`new_async`](HeadlessDevice::new_async),
+/// [`new_async_with`](HeadlessDevice::new_async_with) and [`with_options`](HeadlessDevice::with_options) use
+/// [`Default`](Self::Default); [`default_device`] uses [`Adapter`](Self::Adapter) on native and
+/// [`Default`](Self::Default) in the browser.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum FeaturesPolicy {
+    /// No optional feature: wgpu's default features, what the browser always has.
+    #[default]
+    Default,
+    /// `float32-filterable` when the adapter offers it (measured on both adapters of this project, X-S1), nothing
+    /// else. An adapter without it opens as under [`Default`](Self::Default); the device never fails to open for
+    /// want of it.
+    Adapter,
+}
+
+impl FeaturesPolicy {
+    /// The features to put in the device descriptor for `adapter`.
+    pub(crate) fn required_features(self, adapter: &wgpu::Adapter) -> wgpu::Features {
+        match self {
+            Self::Default => wgpu::Features::empty(),
+            Self::Adapter => adapter.features() & wgpu::Features::FLOAT32_FILTERABLE,
+        }
+    }
+
+    /// The policy of [`default_device`]: the adapter's features on native, none in the browser.
+    pub(crate) const fn for_default_device() -> Self {
+        if cfg!(target_arch = "wasm32") {
+            Self::Default
+        } else {
+            Self::Adapter
+        }
+    }
+}
+
 /// How to open a device: the backends, the adapter and the limits. Explicit and overridable; there is no workload
-/// policy in it.
+/// policy in it. The optional features are [`FeaturesPolicy`], a separate argument.
 ///
 /// `DeviceOptions::default()` is what [`default_device`] opens: Vulkan (the browser's WebGPU on `wasm32`), the
 /// high-performance adapter, and on native the adapter's own limits ([`LimitsPolicy::Adapter`], S7.6 outcome A). It
@@ -107,6 +149,16 @@ impl HeadlessDevice {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn with_options(options: DeviceOptions) -> Result<Self, Error> {
         pollster::block_on(Self::new_async_with(options))
+    }
+
+    /// [`with_options`](Self::with_options) with the optional features `features` asks for (slice mx.t2). Blocks the
+    /// calling thread; not available on `wasm32`.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_options_and_features(
+        options: DeviceOptions,
+        features: FeaturesPolicy,
+    ) -> Result<Self, Error> {
+        pollster::block_on(Self::new_async_with_features(options, features))
     }
 
     /// The adapters wgpu offers for `backends`, in the order [`AdapterChoice::Index`] counts them. Blocks like
@@ -427,7 +479,7 @@ fn new_instance(backends: wgpu::Backends) -> wgpu::Instance {
 mod native_default {
     use std::sync::{Mutex, MutexGuard, PoisonError};
 
-    use super::{Arc, DeviceHandle, DeviceOptions, Error, HeadlessDevice};
+    use super::{Arc, DeviceHandle, DeviceOptions, Error, FeaturesPolicy, HeadlessDevice};
 
     /// Options for the first `default_device()`; `None` means `DeviceOptions::default()`.
     static OPTIONS: Mutex<Option<DeviceOptions>> = Mutex::new(None);
@@ -453,7 +505,10 @@ mod native_default {
             return Ok(Arc::clone(device));
         }
         let options = lock(&OPTIONS).clone().unwrap_or_default();
-        let opened = Arc::new(HeadlessDevice::with_options(options)?);
+        let opened = Arc::new(HeadlessDevice::with_options_and_features(
+            options,
+            FeaturesPolicy::for_default_device(),
+        )?);
         *device = Some(Arc::clone(&opened));
         Ok(opened)
     }
@@ -463,7 +518,7 @@ mod native_default {
 mod web_default {
     use std::{cell::RefCell, rc::Rc};
 
-    use super::{DeviceHandle, DeviceOptions, Error, HeadlessDevice};
+    use super::{DeviceHandle, DeviceOptions, Error, FeaturesPolicy, HeadlessDevice};
 
     thread_local! {
         static OPTIONS: RefCell<Option<DeviceOptions>> = const { RefCell::new(None) };
@@ -496,7 +551,10 @@ mod web_default {
         let options = OPTIONS
             .with(|slot| slot.borrow().clone())
             .unwrap_or_default();
-        let opened = Rc::new(HeadlessDevice::new_async_with(options).await?);
+        let opened = Rc::new(
+            HeadlessDevice::new_async_with_features(options, FeaturesPolicy::for_default_device())
+                .await?,
+        );
         // A second caller may have opened one while this awaited; keep the first.
         Ok(DEVICE.with(|device| {
             Rc::clone(

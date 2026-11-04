@@ -148,8 +148,8 @@ describes the intended behaviour and is not evidence.
     takes any device that is `MapHost` and `Run` for the kernel. Neither is emitted on `wasm32`, where nothing may
     block (D69). `map_gpu` and `map_gpu_on(&DeviceHandle, ..)` leave the result on the device as a `GpuVec`; resident
     arguments must all live on the device that runs the call, or the call is `Error::MixedDevices` (D99).
-    `map_async` and `map_on_async` do not block and exist on every target; `map_async` was compiled for `wasm32` and
-    never run in a browser (STATUS m7.a2). Under `GUST_PROFILE=cpu` only `map`, `map_on` and `map_on_async` exist, and
+    `map_async` and `map_on_async` do not block and exist on every target; `map_async` runs in headless Chrome inside
+    the web check (STATUS m7.a2). Under `GUST_PROFILE=cpu` only `map`, `map_on` and `map_on_async` exist, and
     `map_on` is concrete over `&CpuDevice` (D119).
   - *Twin.* In a test or dual build `map_on` over `CpuDevice` runs the generated kernel through its twin: the same
     grid-stride body, with the user's function called as plain Rust, one invocation at a time in ascending id and in

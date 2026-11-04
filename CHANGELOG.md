@@ -43,12 +43,12 @@ kernels. Nothing in this entry changes an earlier release: there is none.
 
 ### Known limits
 
-- SPIR-V is exported and validated with `spirv-val`, but the runtime executes the WGSL. Running the exported SPIR-V
-  is planned for a 0.1.x release.
+- SPIR-V is exported and validated with `spirv-val` when it is on `PATH`, but the runtime executes the WGSL.
+  Running the exported SPIR-V is planned for a 0.1.x release.
 - The run-time compile path does not look into the managed Slang cache by itself yet: put the pinned `slangc` on
   `PATH` and name the helper in `GUST_SLANG_REFLECT` (README, "Install from crates.io").
-- A crate that depends on both `gust-compute` and the unrelated crate `gust` fails with rustc error E0464, because both
-  libraries are called `gust`. Renaming a dependency needs an `extern crate ... as gust;` line.
+- A crate that depends directly on both `gust-compute` and the unrelated crate `gust` fails with rustc error
+  E0464, because both libraries are called `gust`. Renaming a dependency needs an `extern crate ... as gust;` line.
 - The packaged crates are not test-runnable: their tests read files of the repository. Run the tests from a checkout.
 - Kernels that use workgroup memory or barriers have no CPU twin yet: they must say `cpu = "unsupported"`, and a
   `dispatch` on them does not compile under the `cpu` profile.

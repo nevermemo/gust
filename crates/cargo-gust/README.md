@@ -17,7 +17,7 @@ cargo gust build               # writes gust-artifacts/ for the kernels of this 
 
 This is a binary-only crate, so it has no docs.rs page; `cargo gust --help` lists the commands. The library it works
 with is `gust-compute` (library name `gust`): <https://github.com/nevermemo/gust/blob/main/README.md>. A first program,
-from the install to a release build, is in its section "Install from crates.io"
+from the install to a release build, is in the root README's section "Install from crates.io"
 (<https://github.com/nevermemo/gust/blob/main/README.md#install-from-cratesio>). Minimum supported Rust: 1.90.
 
 The tests of this crate read files of the repository, so they run from a checkout, not from this package.

@@ -3,7 +3,7 @@
 This is the procedure for the first release (0.1.0) and the template for later ones. Publishing, tagging, the GitHub
 release and yanking are the owner's acts (D115); the coordinator prepares everything up to a green gate and the
 commands below. The crate names are the published ones (D48, D106): `gust-compute-macros`, `gust-compute`,
-`gust-compute-wgpu` and `cargo-gust`. This list is the slice mr.p of the roadmap row MR ([ROADMAP](../ROADMAP.md));
+`gust-compute-wgpu` and `cargo-gust`. This is the release checklist of the roadmap row MR ([ROADMAP](../ROADMAP.md));
 the decisions behind it are D106 to D115 in [DECISIONS](../DECISIONS.md).
 
 ## Who does what
@@ -93,16 +93,16 @@ cargo gust slang locate                # prints the slangc to put on PATH
 export GUST_SLANG_REFLECT=<the helper path>          # until the run-time bridge reads the managed cache itself
 export PATH="<the folder of that slangc>:$PATH"      # (the README says the same)
 cargo new --bin hello-gust && cd hello-gust
-cargo add gust-compute gust-compute-wgpu
-#    paste the README blocks: the [features] gust-dev line into Cargo.toml, the kernel into src/main.rs
+#    replace Cargo.toml and src/main.rs with the README's two blocks of "Install from crates.io", word for word
 cargo run --features gust-dev          # development path: run-time compile through the managed toolchain
 cargo gust build -p hello-gust         # release path: writes gust-artifacts/
 cargo build --release && ./target/release/hello-gust
 cargo gust doctor
 ```
 
-Both runs must print `hello-gust: [11.0, 22.0, 33.0, 44.0]`. Note the adapter that ran them. If `cargo add` writes a
-dependency line that differs from the README's, the README is what is wrong; fix it on `main`.
+Both runs must print `hello-gust: [11.0, 22.0, 33.0, 44.0]`. Note the adapter that ran them. The two blocks are
+the ones that R7 builds from the packaged files; if they do not build against the published crates, the gate and
+the registry disagree, so stop and tell the coordinator.
 
 ```sh
 # 6. Tag the published commit after all four crates are up, then the GitHub release (owner decision Q6; public acts)
@@ -122,8 +122,10 @@ git push origin v0.1.0
 
 crates.io keeps every uploaded version forever: nothing published can be retracted, only yanked.
 
-- A transient failure (network, an index delay) with no change needed in the repository: run the failed command again.
-  Cargo refuses a version that is already up, so the commands are safe to repeat.
+- A transient failure (network, an index delay) with no change needed in the repository:
+  resume from the command that failed.
+  Cargo refuses a version that is already up, so running the whole block again would stop at the first crate that is
+  already published.
 - A failure that needs a change (a packaging error, a broken crate): fix it on `main` and release 0.1.1. The four
   packages share one version and pin each other exactly (D107), so 0.1.1 is published for the remaining crates and
   for the ones already up, and the procedure restarts at step 1.

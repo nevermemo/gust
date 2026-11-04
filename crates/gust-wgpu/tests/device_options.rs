@@ -4,7 +4,9 @@
 //! The tests assert relations (the adapter policy grants what the adapter offers, the default policy grants wgpu's
 //! defaults), not the numbers of one GPU.
 
-use gust_wgpu::{AdapterChoice, DeviceOptions, Error, HeadlessDevice, LimitsPolicy};
+use gust_wgpu::{
+    AdapterChoice, DeviceOptions, Error, FeaturesPolicy, HeadlessDevice, LimitsPolicy,
+};
 
 fn vulkan() -> wgpu::Backends {
     wgpu::Backends::VULKAN
@@ -15,6 +17,7 @@ fn options(adapter: AdapterChoice, limits: LimitsPolicy) -> DeviceOptions {
         backends: vulkan(),
         adapter,
         limits,
+        features: FeaturesPolicy::Default,
     }
 }
 
@@ -175,11 +178,12 @@ fn the_default_options_ask_for_the_adapters_limits_on_native() {
     assert_eq!(defaults.backends, vulkan());
     assert_eq!(defaults.adapter, AdapterChoice::HighPerformance);
     assert_eq!(defaults.limits, LimitsPolicy::Adapter);
-    // `HeadlessDevice::new` is unchanged: wgpu's default limits.
-    assert_eq!(
-        HeadlessDevice::new().expect("a Vulkan adapter").limits(),
-        &wgpu::Limits::default()
-    );
+    // D90: the optional features follow the same two defaults as the limits.
+    assert_eq!(defaults.features, FeaturesPolicy::Adapter);
+    // `HeadlessDevice::new` is unchanged: wgpu's default limits, and no optional feature.
+    let plain = HeadlessDevice::new().expect("a Vulkan adapter");
+    assert_eq!(plain.limits(), &wgpu::Limits::default());
+    assert!(!plain.float32_filterable());
 }
 
 /// The one test of this file that touches the process-wide default device: options set before the first use apply to
@@ -196,6 +200,9 @@ fn the_default_device_opens_once_with_the_options_set_before_it() {
         .expect("options can be replaced before the first use");
     let first = gust_wgpu::default_device().expect("the default device opens");
     assert_eq!(first.limits(), &wgpu::Limits::default());
+    // `set_default_options` governs the optional features too (D90): `Default` turns `float32-filterable` off even
+    // on an adapter that offers it.
+    assert!(!first.float32_filterable());
     let second = gust_wgpu::default_device().expect("and is still there");
     assert!(
         std::sync::Arc::ptr_eq(&first, &second),

@@ -125,6 +125,9 @@ pub enum Error {
     /// an encoder or submitted work. An indirect dispatch is never
     /// checked against `max_compute_workgroups_per_dimension`, because the host does
     /// not see its workgroup count; every other limit GUST checks applies to it.
+    ///
+    /// `kernel` is the qualified name of the kernel; for a limit met outside a launch it names the operation
+    /// (`create_texture_2d 5x1`, a buffer label).
     DeviceLimit {
         kernel: String,
         limit: &'static str,
@@ -162,6 +165,41 @@ pub enum Error {
     /// `set_default_options` was called after the default device had been opened successfully: the options can no
     /// longer change what it was opened with. (After a failed open they can still be set, and the next call retries.)
     DefaultDeviceOpened,
+    /// A texture is bound (or created) for a use it does not have: a sampled parameter needs `TextureUse::SAMPLED`,
+    /// a storage one `TextureUse::STORAGE`. `required` is what the parameter needs and `actual` what the texture
+    /// offers (for `create_texture_2d`: what the caller asked for, and what the format allows on the device).
+    TextureUse {
+        parameter: String,
+        required: gust::TextureUse,
+        actual: gust::TextureUse,
+    },
+    /// A texture of the wrong format is bound: a storage parameter needs its exact format, a sampled one a format of
+    /// its sample class. `expected` says which.
+    TextureFormat {
+        parameter: String,
+        expected: String,
+        actual: gust::texture::Format,
+    },
+    /// A sampler that filters linearly is bound on a device without the `float32-filterable` feature, which a linear
+    /// filter of a 32-bit float texture needs. `feature` names what is missing. Remedy: open the device with
+    /// `FeaturesPolicy::Adapter` on an adapter that offers it, or bind a `Filter::Nearest` sampler.
+    TextureFilter {
+        parameter: String,
+        filter: gust::texture::Filter,
+        feature: &'static str,
+    },
+    /// A texture's size is unusable: a zero side, or a host slice that does not hold `width * height` texels.
+    TextureSize {
+        width: u32,
+        height: u32,
+        reason: String,
+    },
+    /// `create_sampler` was given a filter or an address mode this backend has no mapping for (both enums are
+    /// `#[non_exhaustive]`, so a newer `gust` can name one).
+    SamplerOptions {
+        filter: gust::texture::Filter,
+        address: gust::texture::Address,
+    },
 }
 
 impl fmt::Display for Error {
@@ -375,6 +413,39 @@ impl fmt::Display for Error {
             Self::DefaultDeviceOpened => write!(
                 formatter,
                 "the default device is already open; call `set_default_options` before the first `default_device()`",
+            ),
+            Self::TextureUse {
+                parameter,
+                required,
+                actual,
+            } => write!(
+                formatter,
+                "`{parameter}` needs the texture use {required:?}, and the texture offers {actual:?}",
+            ),
+            Self::TextureFormat {
+                parameter,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "`{parameter}` needs {expected}, got a {actual} texture",
+            ),
+            Self::TextureFilter {
+                parameter,
+                filter,
+                feature,
+            } => write!(
+                formatter,
+                "`{parameter}` filters with {filter:?}, which needs the `{feature}` device feature; open the device with `FeaturesPolicy::Adapter` on an adapter that offers it, or bind a Nearest sampler",
+            ),
+            Self::TextureSize {
+                width,
+                height,
+                reason,
+            } => write!(formatter, "texture of {width}x{height} texels: {reason}"),
+            Self::SamplerOptions { filter, address } => write!(
+                formatter,
+                "this backend maps no sampler with filter {filter:?} and address mode {address:?}",
             ),
         }
     }

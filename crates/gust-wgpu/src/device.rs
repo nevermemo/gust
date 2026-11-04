@@ -72,11 +72,46 @@ impl LimitsPolicy {
     }
 }
 
-/// How to open a device: the backends, the adapter and the limits. Explicit and overridable; there is no workload
-/// policy in it.
+/// Which optional device features [`HeadlessDevice::with_options`] asks the adapter for (slice mx.t2).
+///
+/// The only feature GUST asks for is `float32-filterable`, which a linear filter of a 32-bit float texture needs
+/// (decision D64). A device that did not enable it still runs every texture kernel, with `Nearest` samplers and
+/// `load`; binding a `Linear` sampler there is `Error::TextureFilter`. [`HeadlessDevice::float32_filterable`] reports
+/// what the opened device actually has.
+///
+/// Like [`LimitsPolicy`] (decision D90), the policy is a field of [`DeviceOptions`]:
+/// `DeviceOptions::default().features`
+/// is [`Adapter`](Self::Adapter) on native and [`Default`](Self::Default) in the browser, so [`default_device`] and
+/// `with_options(DeviceOptions::default())` open the same device, and [`set_default_options`] governs the feature
+/// of [`default_device`]. [`HeadlessDevice::new`] and [`new_async`](HeadlessDevice::new_async) use
+/// [`Default`](Self::Default), as they use wgpu's default limits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum FeaturesPolicy {
+    /// No optional feature: wgpu's default features, what the browser always has.
+    #[default]
+    Default,
+    /// `float32-filterable` when the adapter offers it (measured on both adapters of this project, X-S1), nothing
+    /// else. An adapter without it opens as under [`Default`](Self::Default); the device never fails to open for
+    /// want of it.
+    Adapter,
+}
+
+impl FeaturesPolicy {
+    /// The features to put in the device descriptor for `adapter`.
+    pub(crate) fn required_features(self, adapter: &wgpu::Adapter) -> wgpu::Features {
+        match self {
+            Self::Default => wgpu::Features::empty(),
+            Self::Adapter => adapter.features() & wgpu::Features::FLOAT32_FILTERABLE,
+        }
+    }
+}
+
+/// How to open a device: the backends, the adapter, the limits and the optional features. Explicit and overridable;
+/// there is no workload policy in it.
 ///
 /// `DeviceOptions::default()` is what [`default_device`] opens: Vulkan (the browser's WebGPU on `wasm32`), the
-/// high-performance adapter, and on native the adapter's own limits ([`LimitsPolicy::Adapter`], S7.6 outcome A). It
+/// high-performance adapter, and on native the adapter's own limits ([`LimitsPolicy::Adapter`], S7.6 outcome A) and
+/// optional features ([`FeaturesPolicy::Adapter`], slice mx.t2). It
 /// differs from [`HeadlessDevice::new`], which keeps requesting wgpu's default limits, and from
 /// `LimitsPolicy::default()`, which is [`LimitsPolicy::Default`]: native `default_device()` allows storage bindings
 /// of the adapter's size (2 GiB measured), the browser's only 128 MiB.
@@ -85,18 +120,28 @@ pub struct DeviceOptions {
     pub backends: wgpu::Backends,
     pub adapter: AdapterChoice,
     pub limits: LimitsPolicy,
+    pub features: FeaturesPolicy,
 }
 
 impl Default for DeviceOptions {
     fn default() -> Self {
         #[cfg(not(target_arch = "wasm32"))]
-        let (backends, limits) = (wgpu::Backends::VULKAN, LimitsPolicy::Adapter);
+        let (backends, limits, features) = (
+            wgpu::Backends::VULKAN,
+            LimitsPolicy::Adapter,
+            FeaturesPolicy::Adapter,
+        );
         #[cfg(target_arch = "wasm32")]
-        let (backends, limits) = (wgpu::Backends::BROWSER_WEBGPU, LimitsPolicy::Default);
+        let (backends, limits, features) = (
+            wgpu::Backends::BROWSER_WEBGPU,
+            LimitsPolicy::Default,
+            FeaturesPolicy::Default,
+        );
         Self {
             backends,
             adapter: AdapterChoice::HighPerformance,
             limits,
+            features,
         }
     }
 }

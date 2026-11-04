@@ -7,6 +7,7 @@ use syn::visit::{self, Visit};
 use crate::diagnostics::{self, Code};
 use crate::math_types;
 use crate::profile::{BodyChecks, StageProfile};
+use crate::slang::texture;
 
 mod barrier;
 pub(crate) mod classify;
@@ -46,6 +47,57 @@ pub(crate) fn wrapping_arity(name: &str) -> Option<usize> {
     match name {
         "wrapping_add" | "wrapping_sub" | "wrapping_mul" => Some(1),
         "wrapping_neg" => Some(0),
+        _ => None,
+    }
+}
+
+/// Why `expression` is visibly not a `u32` texel address (GUST-E0732), or `None` when it may be one: the macro sees no
+/// types, so it refuses what is plainly another type and leaves the rest to rustc, which checks the shadow body.
+fn address_problem(expression: &syn::Expr) -> Option<&'static str> {
+    match expression {
+        syn::Expr::Paren(paren) => address_problem(&paren.expr),
+        syn::Expr::Group(group) => address_problem(&group.expr),
+        syn::Expr::Lit(literal) => match &literal.lit {
+            syn::Lit::Float(_) => Some("a float literal"),
+            syn::Lit::Int(int) if !matches!(int.suffix(), "" | "u32") => {
+                Some("an integer literal that is not a `u32`")
+            }
+            _ => None,
+        },
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
+            Some("a negated value (a texel address cannot be negative)")
+        }
+        syn::Expr::Cast(cast) => match cast.ty.as_ref() {
+            syn::Type::Path(path) if path.path.is_ident("u32") || path.path.is_ident("uint") => {
+                None
+            }
+            _ => Some("a cast to a type other than `u32`"),
+        },
+        _ => None,
+    }
+}
+
+/// Why `expression` is visibly not an `f32` sample coordinate (GUST-E0732), or `None`: the counterpart of
+/// [`address_problem`].
+fn coordinate_problem(expression: &syn::Expr) -> Option<&'static str> {
+    match expression {
+        syn::Expr::Paren(paren) => coordinate_problem(&paren.expr),
+        syn::Expr::Group(group) => coordinate_problem(&group.expr),
+        syn::Expr::Lit(literal) => match &literal.lit {
+            syn::Lit::Int(_) => {
+                Some("an integer literal (write `0.5`, or `1.0` for a whole number)")
+            }
+            syn::Lit::Float(float) if !matches!(float.suffix(), "" | "f32") => {
+                Some("a float literal that is not an `f32`")
+            }
+            _ => None,
+        },
+        syn::Expr::Cast(cast) => match cast.ty.as_ref() {
+            syn::Type::Path(path) if path.path.is_ident("f32") || path.path.is_ident("float") => {
+                None
+            }
+            _ => Some("a cast to a type other than `f32`"),
+        },
         _ => None,
     }
 }
@@ -749,6 +801,10 @@ fn validate_function(
                 ParameterFlavor::StorageRead
                     | ParameterFlavor::StorageReadWrite
                     | ParameterFlavor::Uniform
+                    | ParameterFlavor::SampledTexture
+                    | ParameterFlavor::StorageTexture
+                    | ParameterFlavor::WriteTexture
+                    | ParameterFlavor::Sampler
             )
         )
     }) {
@@ -846,6 +902,52 @@ fn validate_function(
                         visitor
                             .read_write_buffers
                             .insert(name.ident.to_string(), element);
+                    }
+                }
+                flavor @ (ParameterFlavor::SampledTexture
+                | ParameterFlavor::StorageTexture
+                | ParameterFlavor::WriteTexture) => {
+                    let name = name.ident.to_string();
+                    match texture::texture_spec(flavor, &argument.ty) {
+                        Ok(spec) => {
+                            visitor.textures.insert(
+                                name,
+                                TextureFacts {
+                                    access: spec.access,
+                                    filterable: spec.filterable(),
+                                },
+                            );
+                        }
+                        Err(message) => {
+                            visitor.textures.insert(
+                                name,
+                                TextureFacts {
+                                    access: texture::Access::Sampled,
+                                    filterable: false,
+                                },
+                            );
+                            visitor.reject(Code::TextureType, &argument.ty, &message);
+                        }
+                    }
+                    if let syn::Type::Path(path) = argument.ty.as_ref() {
+                        visitor
+                            .texture_types
+                            .insert(std::ptr::from_ref(path) as usize);
+                    }
+                }
+                ParameterFlavor::Sampler => {
+                    visitor.samplers.insert(name.ident.to_string());
+                    if !texture::sampler_has_no_arguments(&argument.ty) {
+                        visitor.reject(
+                            Code::TextureType,
+                            &argument.ty,
+                            "`Sampler` takes no type arguments",
+                        );
+                    }
+                    if let syn::Type::Path(path) = argument.ty.as_ref() {
+                        visitor
+                            .texture_types
+                            .insert(std::ptr::from_ref(path) as usize);
                     }
                 }
                 ParameterFlavor::Value if matches!(argument.ty.as_ref(), syn::Type::Path(path) if result_payload(path).is_some()) =>
@@ -965,6 +1067,14 @@ fn is_qualified_math_path(path: &syn::Path) -> bool {
         && math_types::math_type(&path.segments[0].ident.unraw().to_string()).is_some())
 }
 
+/// What the visitor needs to know about a texture parameter.
+#[derive(Clone, Copy)]
+struct TextureFacts {
+    access: texture::Access,
+    /// Whether `sample` exists: a sampled texture of float texels.
+    filterable: bool,
+}
+
 struct RestrictedVisitor {
     function_names: HashSet<String>,
     result_helpers: HashSet<String>,
@@ -978,6 +1088,12 @@ struct RestrictedVisitor {
     /// Uniform parameters. They are read field by field only (E0321), and are not in `resources` because `.len()` of
     /// one is E0306.
     uniforms: HashSet<String>,
+    /// Texture parameters (mx.t3). They are used as the receiver of a texture method only (GUST-E0736).
+    textures: HashMap<String, TextureFacts>,
+    /// `Sampler` parameters: the first argument of `sample` and nothing else.
+    samplers: HashSet<String>,
+    /// The texture and sampler parameter types of the kernel, by address: the only place the types may stand.
+    texture_types: HashSet<usize>,
     /// Read-write buffer parameters and their element type, for atomic receivers.
     read_write_buffers: HashMap<String, String>,
     /// Buffer parameters used by an atomic operation in this function.
@@ -1002,6 +1118,9 @@ impl RestrictedVisitor {
             derived_ids: HashSet::new(),
             workgroup_types: HashSet::new(),
             uniforms: HashSet::new(),
+            textures: HashMap::new(),
+            samplers: HashSet::new(),
+            texture_types: HashSet::new(),
             read_write_buffers: HashMap::new(),
             atomic_buffers: HashSet::new(),
             option_forbidden: None,
@@ -1017,6 +1136,8 @@ impl RestrictedVisitor {
             || self.invocations.contains(name)
             || self.derived_ids.contains(name)
             || self.uniforms.contains(name)
+            || self.textures.contains_key(name)
+            || self.samplers.contains(name)
     }
 
     /// Whether `expression` is a bare use of a uniform parameter, possibly in parentheses.
@@ -1033,6 +1154,155 @@ impl RestrictedVisitor {
             syn::Expr::Group(group) => self.is_uniform_parameter(&group.expr),
             _ => false,
         }
+    }
+
+    /// The name of a bare parameter use: `img` or `(img)`.
+    fn direct_name(expression: &syn::Expr) -> Option<String> {
+        match expression {
+            syn::Expr::Path(path) if path.qself.is_none() => {
+                path.path.get_ident().map(ToString::to_string)
+            }
+            syn::Expr::Paren(paren) => Self::direct_name(&paren.expr),
+            syn::Expr::Group(group) => Self::direct_name(&group.expr),
+            _ => None,
+        }
+    }
+
+    /// A method call whose receiver is a texture or a sampler parameter (slice mx.t3, D64): `load`, `store`,
+    /// `sample`, `width` and `height` on the textures that have them. Returns whether the receiver was one; the call
+    /// is then checked here and its arguments visited, and the receiver is not visited (a texture is used as a
+    /// receiver only, GUST-E0736).
+    fn check_texture_call(&mut self, call: &syn::ExprMethodCall) -> bool {
+        let Some(receiver) = Self::direct_name(&call.receiver) else {
+            return false;
+        };
+        if self.samplers.contains(&receiver) {
+            self.reject(
+                Code::TextureUse,
+                call,
+                &format!(
+                    "`{receiver}` is a `Sampler`: it has no methods; pass it as the first argument of a texture's \
+                     `.sample({receiver}, u, v)`"
+                ),
+            );
+            return true;
+        }
+        let Some(facts) = self.textures.get(&receiver).copied() else {
+            return false;
+        };
+        let method = call.method.to_string();
+        if call.turbofish.is_some() {
+            self.reject(
+                Code::BuiltinTypeArguments,
+                call,
+                "GPU built-ins do not accept type arguments",
+            );
+            return true;
+        }
+        let Some(kind) = texture::Method::from_name(&method) else {
+            self.reject(
+                Code::TextureMethod,
+                call,
+                &format!(
+                    "a texture has the methods `.load(x, y)`, `.store(x, y, v)`, `.sample(sampler, u, v)`, \
+                     `.width()` and `.height()`, not `.{method}(..)`"
+                ),
+            );
+            return true;
+        };
+        if !kind.exists_on(facts.access) {
+            let reason = match (kind, facts.access) {
+                (texture::Method::Load, _) => {
+                    "a write-only texture cannot be read: use `StorageTexture2D` (three formats) or bind the texture \
+                     as a sampled `Texture2D` in a second kernel"
+                }
+                (texture::Method::Store, _) => {
+                    "a sampled texture is read-only: use `StorageTexture2D` or `WriteTexture2D` to write"
+                }
+                (_, texture::Access::ReadWrite) => {
+                    "`.sample(..)` filters a sampled `Texture2D`; a storage texture is read with `.load(x, y)`"
+                }
+                _ => {
+                    "`.sample(..)` filters a sampled `Texture2D`; a write-only texture has `.store(x, y, v)`, \
+                     `.width()` and `.height()` only"
+                }
+            };
+            self.reject(
+                Code::TextureMethod,
+                call,
+                &format!("`{receiver}` has no `.{method}(..)`: {reason}"),
+            );
+            return true;
+        }
+        if call.args.len() != kind.arity() {
+            self.reject(
+                Code::TextureCoordinate,
+                call,
+                &format!(
+                    "`.{method}(..)` takes {} argument(s): {}",
+                    kind.arity(),
+                    match kind {
+                        texture::Method::Load => "the texel address `x, y` (both `u32`)",
+                        texture::Method::Store =>
+                            "the texel address `x, y` (both `u32`) and the value",
+                        texture::Method::Sample =>
+                            "a sampler and the coordinates `u, v` (both `f32`)",
+                        _ => "none",
+                    }
+                ),
+            );
+            return true;
+        }
+        let mut skipped = 0;
+        match kind {
+            texture::Method::Sample => {
+                if !facts.filterable {
+                    self.reject(
+                        Code::SampleInteger,
+                        call,
+                        &format!(
+                            "`{receiver}` has integer texels, which are never filtered: read it with \
+                             `.load(x, y)`, or sample a texture of `f32`, `Vec2` or `Vec4` texels"
+                        ),
+                    );
+                    return true;
+                }
+                let sampler = Self::direct_name(&call.args[0]);
+                if !sampler.is_some_and(|name| self.samplers.contains(&name)) {
+                    self.reject(
+                        Code::SamplerArgument,
+                        &call.args[0],
+                        "the first argument of `.sample(..)` is a `Sampler` parameter of the kernel, passed by name",
+                    );
+                }
+                skipped = 1;
+                for coordinate in call.args.iter().skip(1) {
+                    if let Some(problem) = coordinate_problem(coordinate) {
+                        self.reject(
+                            Code::TextureCoordinate,
+                            coordinate,
+                            &format!("a sample coordinate is an `f32`, and this is {problem}"),
+                        );
+                    }
+                }
+            }
+            texture::Method::Load | texture::Method::Store => {
+                for coordinate in call.args.iter().take(2) {
+                    if let Some(problem) = address_problem(coordinate) {
+                        self.reject(
+                            Code::TextureCoordinate,
+                            coordinate,
+                            &format!("a texel address is a `u32`, and this is {problem}"),
+                        );
+                    }
+                }
+            }
+            texture::Method::Width | texture::Method::Height => {}
+        }
+        for argument in call.args.iter().skip(skipped) {
+            self.visit_expr(argument);
+        }
+        true
     }
 
     fn reject(&mut self, code: Code, node: impl quote::ToTokens, message: &str) {
@@ -1260,6 +1530,23 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                     Code::WorkgroupShape,
                     ty,
                     "`Workgroup<[T; N]>` is the type of a kernel parameter only: not a local, a field, a helper \
+                     parameter or a result",
+                );
+            }
+            return;
+        }
+        // A texture or sampler type stands as a kernel parameter type only (`validate_function` registered those).
+        if ty.qself.is_none()
+            && parameter_flavor(&syn::Type::Path(ty.clone())).is_texture_or_sampler()
+        {
+            if !self
+                .texture_types
+                .contains(&(std::ptr::from_ref(ty) as usize))
+            {
+                self.reject(
+                    Code::TextureUse,
+                    ty,
+                    "a texture or sampler type is the type of a kernel parameter only: not a local, a field, a helper \
                      parameter or a result",
                 );
             }
@@ -1537,6 +1824,9 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if self.check_texture_call(call) {
+            return;
+        }
         let method = call.method.to_string();
         let in_dialect = matches!(
             method.as_str(),
@@ -1700,6 +1990,30 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        // A texture or a sampler is the receiver of a texture method (or the sampler argument of `sample`) and
+        // nothing else; those uses never reach this function (`check_texture_call`).
+        if path.qself.is_none()
+            && let Some(name) = path.path.get_ident().map(ToString::to_string)
+            && (self.textures.contains_key(&name) || self.samplers.contains(&name))
+        {
+            let uses = if self.samplers.contains(&name) {
+                format!(
+                    "`{name}` is a sampler parameter: it is used as `texture.sample({name}, u, v)` only"
+                )
+            } else {
+                format!(
+                    "`{name}` is a texture parameter: it is used as `{name}.load(x, y)`, \
+                     `{name}.store(x, y, v)`, `{name}.sample(sampler, u, v)`, `{name}.width()` or \
+                     `{name}.height()` only"
+                )
+            };
+            self.reject(
+                Code::TextureUse,
+                path,
+                &format!("{uses}; it cannot be copied, passed or returned"),
+            );
+            return;
+        }
         // Any other use of a uniform parameter by name copies or passes the whole struct: slangc crashes on a whole
         // struct copy out of a constant buffer on WGSL, and the twin would accept what the GPU cannot compile.
         if path.qself.is_none()

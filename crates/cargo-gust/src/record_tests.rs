@@ -259,8 +259,8 @@ fn malformed_records_are_refused_with_the_path_of_the_problem() {
             "parameters[1]: unknown access `sometimes`",
         ),
         (
-            broken("\"kind\": \"invocation\"", "\"kind\": \"texture\""),
-            "parameters[0]: unknown parameter kind `texture`",
+            broken("\"kind\": \"invocation\"", "\"kind\": \"image\""),
+            "parameters[0]: unknown parameter kind `image`",
         ),
         (
             broken("\"rules\": \"storage_v1\"", "\"rules\": \"std140\""),
@@ -772,4 +772,224 @@ fn a_shape_under_schema_1_or_2_is_refused_and_a_bad_shape_is_named() {
         let error = Record::parse(&json, SAMPLE_SLANG).unwrap_err();
         assert!(error.contains(wanted), "{value}: {error}");
     }
+}
+
+// --- Texture and sampler parameters (slice mx.t3, D62, D64, D91) ---
+
+/// The record the macro's artifact writer produced for a sampled `Texture2D<Vec4>`, a `Sampler` and a write-only
+/// `WriteTexture2D<Rgba32Float>`: the committed golden of `gust-macros`
+/// (`the_texture_and_sampler_record_matches_the_golden`), so this reader and that writer are held to one file.
+const TEXTURE_GOLDEN: &str = include_str!("../../gust-macros/tests/golden/texture.kernel.json");
+
+/// The Slang the golden's kernel stands for. The golden's key is a placeholder, so the record is read with the key of
+/// this text.
+const TEXTURE_SLANG: &str = concat!(
+    "[[vk::binding(0, 0)]]\n",
+    "Texture2D<float4> image;\n",
+    "\n",
+    "[[vk::binding(1, 0)]]\n",
+    "SamplerState bilinear;\n",
+    "\n",
+    "[[vk::binding(2, 0)]]\n",
+    "[format(\"rgba32f\")]\n",
+    "WriteTexture2D<float4> out;\n",
+    "\n",
+    "[shader(\"compute\")]\n",
+    "[numthreads(8, 8, 1)]\n",
+    "void gpu_textures_run(uint3 id : SV_DispatchThreadID)\n",
+    "{\n",
+    "    out[id.xy] = image.SampleLevel(bilinear, float2(0.5, 0.5), 0);\n",
+    "}\n"
+);
+
+fn texture_record_json() -> String {
+    let golden = TEXTURE_GOLDEN.replace("\r\n", "\n");
+    let placeholder = "\"key\": \"0123456789abcdef\"";
+    assert!(golden.contains(placeholder));
+    golden.replacen(
+        placeholder,
+        &format!("\"key\": \"{}\"", key_of("gpu_textures_run", TEXTURE_SLANG)),
+        1,
+    )
+}
+
+#[test]
+fn a_record_with_a_texture_and_a_sampler_reads_and_rebuilds_the_descriptor() {
+    let record = Record::parse(&texture_record_json(), TEXTURE_SLANG).unwrap();
+    assert_eq!(record.qualified_name(), "textures::run");
+    assert_eq!(record.workgroup_size, [8, 8, 1]);
+    let [id, image, sampler, out] = &record.parameters[..] else {
+        panic!("{:?}", record.parameters);
+    };
+    assert_eq!(id.kind, ParameterKind::Invocation);
+    assert_eq!(
+        (image.kind, image.access, image.binding),
+        (ParameterKind::Texture, Access::ReadOnly, Some((0, 0)))
+    );
+    // A sampler has a binding and no layout.
+    assert_eq!(
+        (
+            sampler.kind,
+            sampler.access,
+            sampler.binding,
+            sampler.layout.is_none()
+        ),
+        (
+            ParameterKind::Sampler,
+            Access::NotApplicable,
+            Some((0, 1)),
+            true
+        )
+    );
+    assert_eq!(
+        (out.kind, out.access, out.binding),
+        (ParameterKind::Texture, Access::ReadWrite, Some((0, 2)))
+    );
+    let sampled = TextureLayout {
+        format: None,
+        dimension: TextureDimension::D2,
+        access: TextureAccess::Sampled,
+        class: SampleClass::Float,
+    };
+    let written = TextureLayout {
+        format: Some(Format::Rgba32Float),
+        dimension: TextureDimension::D2,
+        access: TextureAccess::WriteOnly,
+        class: SampleClass::Float,
+    };
+    assert_eq!(
+        image.layout.as_ref().unwrap().rules,
+        ShaderLayoutRules::TextureV1(sampled)
+    );
+    assert_eq!(
+        out.layout.as_ref().unwrap().rules,
+        ShaderLayoutRules::TextureV1(written)
+    );
+    // The descriptor carries the same facts a `#[gpu]` module's own descriptor carries (`ResourceLayout::texture_v1`
+    // over the texel type), and the sampler has no layout.
+    let descriptor = record.descriptor();
+    let rebuilt: Vec<_> = descriptor
+        .parameters
+        .iter()
+        .map(|parameter| (parameter.kind, parameter.binding, parameter.resource_layout))
+        .collect();
+    let element = <gust::math::Vec4 as gust::GpuPod>::LAYOUT;
+    assert_eq!(
+        rebuilt,
+        [
+            (ParameterKind::Invocation, None, None),
+            (
+                ParameterKind::Texture,
+                Some(ResourceBinding {
+                    group: 0,
+                    binding: 0
+                }),
+                Some(ResourceLayout::texture_v1(element, sampled))
+            ),
+            (
+                ParameterKind::Sampler,
+                Some(ResourceBinding {
+                    group: 0,
+                    binding: 1
+                }),
+                None
+            ),
+            (
+                ParameterKind::Texture,
+                Some(ResourceBinding {
+                    group: 0,
+                    binding: 2
+                }),
+                Some(ResourceLayout::texture_v1(element, written))
+            ),
+        ]
+    );
+}
+
+#[test]
+fn a_texture_layout_without_its_facts_or_with_unknown_facts_is_refused_with_the_path() {
+    let json = texture_record_json();
+    // The `texture` object of the first texture parameter, with the comma that leads to it.
+    let start = json.find(",\n        \"texture\": {").unwrap();
+    let end = start + json[start..].find("\n        }").unwrap() + "\n        }".len();
+    let without_facts = format!("{}{}", &json[..start], &json[end..]);
+    for (changed, expected) in [
+        (
+            json.replacen("\"access\": \"sampled\"", "\"access\": \"mapped\"", 1),
+            "unknown texture access `mapped`",
+        ),
+        (
+            json.replacen("\"class\": \"f32\"", "\"class\": \"f16\"", 1),
+            "unknown sample class `f16`",
+        ),
+        (
+            json.replacen("\"dimension\": \"2d\"", "\"dimension\": \"3d\"", 1),
+            "unsupported texture dimension `3d`",
+        ),
+        (
+            json.replacen(
+                "\"format\": \"rgba32float\"",
+                "\"format\": \"rgba8unorm\"",
+                1,
+            ),
+            "unknown texture format `rgba8unorm`",
+        ),
+        (without_facts, "texture"),
+    ] {
+        assert_ne!(changed, json, "{expected}");
+        let error = Record::parse(&changed, TEXTURE_SLANG).unwrap_err();
+        assert!(error.contains(expected), "{expected} in {error}");
+        assert!(error.contains("parameters["), "{error}");
+    }
+    // A kind the reader does not know is still refused.
+    let error = Record::parse(
+        &json.replacen("\"kind\": \"sampler\"", "\"kind\": \"image\"", 1),
+        TEXTURE_SLANG,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("parameters[2]: unknown parameter kind `image`"),
+        "{error}"
+    );
+}
+
+/// A layout and a parameter kind that disagree are refused with the path: a sampler has no layout, a `texture_v1`
+/// layout belongs to a texture, and buffer rules do not (the descriptor would otherwise hold a texture that is read
+/// as a buffer, or the other way round).
+#[test]
+fn a_layout_that_does_not_fit_the_parameter_kind_is_refused() {
+    let json = texture_record_json();
+    // A sampler given the layout of the texture before it.
+    let sampler_with_layout = json.replacen(
+        "      \"kind\": \"sampler\",\n      \"layout\": null,",
+        &format!(
+            concat!(
+                "      \"kind\": \"sampler\",\n",
+                "      \"layout\": {{\"element\": {}, \"element_stride\": 16, \"rules\": \"storage_v2\"}},"
+            ),
+            VEC4_JSON
+        ),
+        1,
+    );
+    assert_ne!(sampler_with_layout, json);
+    let error = Record::parse(&sampler_with_layout, TEXTURE_SLANG).unwrap_err();
+    assert!(
+        error.contains("parameters[2].layout: a sampler has no layout"),
+        "{error}"
+    );
+    // A texture whose layout is a buffer's, and a buffer whose layout is a texture's.
+    let buffer_texture = json.replacen("\"rules\": \"texture_v1\"", "\"rules\": \"storage_v2\"", 1);
+    let error = Record::parse(&buffer_texture, TEXTURE_SLANG).unwrap_err();
+    assert!(
+        error.contains("parameters[1].layout: `buffer` rules do not belong to a texture parameter"),
+        "{error}"
+    );
+    let texture_buffer = json.replacen("\"kind\": \"texture\"", "\"kind\": \"storage\"", 1);
+    let error = Record::parse(&texture_buffer, TEXTURE_SLANG).unwrap_err();
+    assert!(
+        error.contains(
+            "parameters[1].layout: `texture_v1` rules do not belong to a non-texture parameter"
+        ),
+        "{error}"
+    );
 }

@@ -322,7 +322,9 @@ pub(crate) fn classify(
                 name: name.ident.to_string(),
                 argument,
             }),
-            ParameterFlavor::Value if is_storage_texture(&argument.ty) => {
+            // A storage texture is written at texel addresses the own-index rules cannot see (mx.t3); a sampled
+            // texture and a sampler are reads, which a fragment can make.
+            ParameterFlavor::StorageTexture | ParameterFlavor::WriteTexture => {
                 found.exclude(Why::StorageTexture, argument, "");
             }
             _ => {}
@@ -559,14 +561,6 @@ fn render(tokens: &TokenStream) -> String {
         text = format!("{}...", cut.trim_end());
     }
     text
-}
-
-/// Whether a value parameter has a storage-texture type (`StorageTexture2D<F>`, `WriteTexture2D<F>`).
-fn is_storage_texture(ty: &syn::Type) -> bool {
-    matches!(
-        crate::slang::type_name(ty).as_deref(),
-        Some("StorageTexture2D" | "WriteTexture2D")
-    )
 }
 
 /// The bytes of the colour target an output element becomes, or `None` when it has no target format (D62).

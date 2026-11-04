@@ -5,10 +5,15 @@
 //! (schema 1, schema 2 for a `par_for!` call, or schema 3 for a kernel whose shape is not `grid`) under
 //! `<GUST_EXPORT_DIR>/<CARGO_PKG_NAME>/`. The JSON holds what the tool needs to rebuild the
 //! descriptor without a compiler: `schema`, `key`, `module`, `name`, `entry_point`, `workgroup_size` (three numbers),
-//! `parameters` (each `name`, `rust_type`, `kind` of `invocation`, `storage`, `uniform` or `value`, `access` of
+//! `parameters` (each `name`, `rust_type`, `kind` of `invocation`, `storage`, `uniform`, `value`, `texture` or
+//! `sampler`, `access` of
 //! `read_only`, `read_write` or `not_applicable`, `binding` as `{"group": 0, "binding": n}` or null, and `layout`:
 //! null or `{"rules": <rules>, "element_stride": n, "element": <layout>}` with `<rules>` of `storage_v1`,
-//! `storage_v2` or `std140_v1`) and `source` (`file`, and `lines` as `[slang_start, slang_end, rust_line]` triples).
+//! `storage_v2`, `std140_v1` or `texture_v1`) and `source` (`file`, and `lines` as `[slang_start, slang_end, rust_line]`
+//! triples). A `texture_v1` layout (mx.t3, D91) is a texture parameter's: its `element` is the texel type, and it has one
+//! more key, `texture`: `access` of `sampled`, `read_write` or `write_only`, `class` of `f32`, `u32` or `i32`,
+//! `dimension` of `2d` and `format` (a `gust::texture::Format` name such as `r32float`, null for a sampled texture). A
+//! sampler has no layout.
 //! A `<layout>` is `name`, `size`, `alignment`, `stride`, `kind` (`scalar` with `scalar` of `u32`, `i32` or `f32`;
 //! `vector` with `scalar` and `count`; `matrix` with `scalar`, `rows`, `cols` and `column_stride`; or `struct` with
 //! `fields` of `name`, `offset` and a nested `type`), the same numbers as a `gust::TypeLayout`. Unknown keys are
@@ -37,7 +42,9 @@ use std::{fs, path::Path};
 use gust::{
     Access, KernelDescriptor, LineSpan, ParameterDescriptor, ParameterKind, ResourceBinding,
     ResourceLayout, ScalarKind, ShaderLayoutRules, Shape, SourceOrigin, StructFieldLayout,
-    TypeLayout, TypeLayoutKind, artifact::content_key,
+    TextureAccess, TextureDimension, TextureLayout, TypeLayout, TypeLayoutKind,
+    artifact::content_key,
+    texture::{Format, SampleClass},
 };
 
 use crate::{
@@ -137,17 +144,20 @@ pub(crate) struct ParameterRecord {
 }
 
 impl ParameterRecord {
-    /// A storage or uniform parameter without a layout: the macro could not describe its element, so the layout is
-    /// filled from the reflection and the parameter is listed as `export_unchecked`.
+    /// A storage, uniform or texture parameter without a layout: the macro could not describe its element, so the
+    /// layout is filled from the reflection and the parameter is listed as `export_unchecked`.
     fn needs_fill(&self) -> bool {
-        matches!(self.kind, ParameterKind::Storage | ParameterKind::Uniform)
-            && self.layout.is_none()
+        matches!(
+            self.kind,
+            ParameterKind::Storage | ParameterKind::Uniform | ParameterKind::Texture
+        ) && self.layout.is_none()
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResourceRecord {
-    /// `storage_v1`, `storage_v2` or `std140_v1`: how the descriptor declares the layout.
+    /// `storage_v1`, `storage_v2`, `std140_v1` or `texture_v1` (which holds the texture facts): how the descriptor
+    /// declares the layout.
     pub(crate) rules: ShaderLayoutRules,
     pub(crate) element_stride: u32,
     pub(crate) element: LayoutRecord,
@@ -384,10 +394,14 @@ impl Record {
             if !parameter.needs_fill() {
                 continue;
             }
-            let filled = if parameter.kind == ParameterKind::Uniform {
-                crate::fill::reflected_uniform_layout(reflection_json, &parameter.name)
-            } else {
-                crate::fill::reflected_layout(reflection_json, &parameter.name)
+            let filled = match parameter.kind {
+                ParameterKind::Uniform => {
+                    crate::fill::reflected_uniform_layout(reflection_json, &parameter.name)
+                }
+                ParameterKind::Texture => {
+                    crate::fill::reflected_texture_layout(reflection_json, &parameter.name)
+                }
+                _ => crate::fill::reflected_layout(reflection_json, &parameter.name),
             };
             parameter.layout =
                 Some(filled.map_err(|error| format!("{}: {error}", self.qualified_name()))?);
@@ -564,6 +578,8 @@ fn parse_parameter(value: &Json, context: &str) -> Result<ParameterRecord, Strin
         "storage" => ParameterKind::Storage,
         "uniform" => ParameterKind::Uniform,
         "value" => ParameterKind::Value,
+        "texture" => ParameterKind::Texture,
+        "sampler" => ParameterKind::Sampler,
         other => return Err(format!("{context}: unknown parameter kind `{other}`")),
     };
     let access = match string(value, "access", context)?.as_str() {
@@ -591,6 +607,10 @@ fn parse_parameter(value: &Json, context: &str) -> Result<ParameterRecord, Strin
             "storage_v1" => ShaderLayoutRules::StorageV1,
             "storage_v2" => ShaderLayoutRules::StorageV2,
             "std140_v1" => ShaderLayoutRules::Std140V1,
+            "texture_v1" => ShaderLayoutRules::TextureV1(parse_texture(
+                layout.field("texture", &at)?,
+                &format!("{at}.texture"),
+            )?),
             other => return Err(format!("{at}: unknown layout rules `{other}`")),
         };
         Some(ResourceRecord {
@@ -599,6 +619,31 @@ fn parse_parameter(value: &Json, context: &str) -> Result<ParameterRecord, Strin
             element: parse_layout(layout.field("element", &at)?, &format!("{at}.element"))?,
         })
     };
+    // The layout and the kind agree: a sampler has none, and a `texture_v1` layout belongs to a texture only.
+    match (&layout, kind) {
+        (Some(_), ParameterKind::Sampler) => {
+            return Err(format!("{context}.layout: a sampler has no layout"));
+        }
+        (Some(ResourceRecord { rules, .. }), kind) => {
+            let texture_rules = matches!(rules, ShaderLayoutRules::TextureV1(_));
+            if texture_rules != (kind == ParameterKind::Texture) {
+                return Err(format!(
+                    "{context}.layout: `{}` rules do not belong to a {} parameter",
+                    if texture_rules {
+                        "texture_v1"
+                    } else {
+                        "buffer"
+                    },
+                    if kind == ParameterKind::Texture {
+                        "texture"
+                    } else {
+                        "non-texture"
+                    },
+                ));
+            }
+        }
+        (None, _) => {}
+    }
     Ok(ParameterRecord {
         name: string(value, "name", context)?,
         rust_type: string(value, "rust_type", context)?,
@@ -606,6 +651,46 @@ fn parse_parameter(value: &Json, context: &str) -> Result<ParameterRecord, Strin
         access,
         binding,
         layout,
+    })
+}
+
+/// The facts of a `texture_v1` layout: `access`, `class`, `dimension` and `format`.
+fn parse_texture(value: &Json, context: &str) -> Result<TextureLayout, String> {
+    let access = match string(value, "access", context)?.as_str() {
+        "sampled" => TextureAccess::Sampled,
+        "read_write" => TextureAccess::ReadWrite,
+        "write_only" => TextureAccess::WriteOnly,
+        other => return Err(format!("{context}: unknown texture access `{other}`")),
+    };
+    let class = match string(value, "class", context)?.as_str() {
+        "f32" => SampleClass::Float,
+        "u32" => SampleClass::Uint,
+        "i32" => SampleClass::Sint,
+        other => return Err(format!("{context}: unknown sample class `{other}`")),
+    };
+    let dimension = match string(value, "dimension", context)?.as_str() {
+        "2d" => TextureDimension::D2,
+        other => {
+            return Err(format!(
+                "{context}: unsupported texture dimension `{other}`"
+            ));
+        }
+    };
+    let format = value.field("format", context)?;
+    let format = if format.is_null() {
+        None
+    } else {
+        let name = string(value, "format", context)?;
+        Some(
+            Format::from_name(&name)
+                .ok_or_else(|| format!("{context}: unknown texture format `{name}`"))?,
+        )
+    };
+    Ok(TextureLayout {
+        format,
+        dimension,
+        access,
+        class,
     })
 }
 

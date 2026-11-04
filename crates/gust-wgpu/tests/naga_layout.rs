@@ -9,18 +9,18 @@
 //!
 //! The WGSL set (the test names its size and fails on drift):
 //!
-//! - the 17 Slang goldens of `tests/fixtures/*.slang`, which are all of the goldens (the test
+//! - the 18 Slang goldens of `tests/fixtures/*.slang`, which are all of the goldens (the test
 //!   `the_goldens_are_the_fixtures_directory` pins the file list against the directory, and the fixture `.rs` list
 //!   with it). Each golden is split at its `// ==== kernel <name> ====` markers where it has them, and each
 //!   `[shader("compute")]` entry of each section is compiled to WGSL with the `slangc` command line through
-//!   `gust::slang::compile_source`: 85 entries. The descriptor of an entry comes from the fixture's Rust source,
+//!   `gust::slang::compile_source`: 93 entries. The descriptor of an entry comes from the fixture's Rust source,
 //!   included below the way the other test files include it;
-//! - every fixture kernel, 95 in all (the 85 above and the 10 that no golden holds: `atomics.slang` keeps only the
+//! - every fixture kernel, 103 in all (the 93 above and the 10 that no golden holds: `atomics.slang` keeps only the
 //!   first of the ten kernels of `atomics.rs`, and `numeric.slang` only the first of the two of `numeric.rs`),
 //!   compiled from its descriptor's own Slang through the native reflection helper, `gust::reflect::compile_reflected`.
 //!   That is the route `HeadlessDevice` takes at run time, so these are the bytes a device is handed when it compiles
 //!   at run time. `export` takes `compile_reflected_clean` (the same helper on input without `#line` directives), so
-//!   exported WGSL is gated only through the committed precompiled file below. The helper needs no adapter. 180 WGSL
+//!   exported WGSL is gated only through the committed precompiled file below. The helper needs no adapter. 196 WGSL
 //!   modules in all;
 //! - the committed precompiled WGSL (`tests/fixtures/precompiled/52e85c5f03f72272.wgsl`), which is the only WGSL file
 //!   the repository commits; its five other copies are required to be byte-identical to it.
@@ -44,8 +44,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use gust::{
     Access, KernelDescriptor, ParameterDescriptor, ParameterKind, ScalarKind, ShaderLayoutRules,
-    TypeLayout, TypeLayoutKind, reflect,
+    TextureAccess, TypeLayout, TypeLayoutKind, reflect,
     slang::{self, Target},
+    texture::SampleClass,
 };
 use wgpu::naga::{
     self, AddressSpace, ArraySize, GlobalVariable, Handle, Module, StorageAccess, Type, TypeInner,
@@ -109,6 +110,7 @@ fixture!(
     semantics,
     "../../../tests/fixtures/semantics.rs"
 );
+fixture!(f_textures, textures, "../../../tests/fixtures/textures.rs");
 fixture!(f_uniforms, uniforms, "../../../tests/fixtures/uniforms.rs");
 fixture!(f_vectors, vectors, "../../../tests/fixtures/vectors.rs");
 fixture!(
@@ -126,7 +128,7 @@ struct Golden {
     kernels: &'static [KernelDescriptor],
 }
 
-fn goldens() -> [Golden; 17] {
+fn goldens() -> [Golden; 18] {
     [
         Golden {
             file: "atomics.slang",
@@ -211,6 +213,12 @@ fn goldens() -> [Golden; 17] {
             text: include_str!("../../../tests/fixtures/semantics.slang"),
             entries: 1,
             kernels: f_semantics::KERNELS,
+        },
+        Golden {
+            file: "textures.slang",
+            text: include_str!("../../../tests/fixtures/textures.slang"),
+            entries: 8,
+            kernels: f_textures::KERNELS,
         },
         Golden {
             file: "uniforms.slang",
@@ -481,8 +489,121 @@ impl Comparison<'_> {
     }
 
     /// One storage or uniform parameter against its WGSL global.
+    /// A texture binding (slice mx.t3): a handle of a 2-D image whose class, access and format are the descriptor's
+    /// `TextureLayout`; a sampled texture's class is the scalar kind of its result, a storage texture's format is exact.
+    fn compare_texture(&mut self, parameter: &ParameterDescriptor, var: &GlobalVariable) {
+        let name = parameter.name;
+        let Some(layout) = parameter.resource_layout else {
+            self.problem(name, "resource layout", "none", "a texture");
+            return;
+        };
+        let ShaderLayoutRules::TextureV1(texture) = layout.rules else {
+            self.problem(
+                name,
+                "layout rules",
+                format!("{:?}", layout.rules),
+                "a texture",
+            );
+            return;
+        };
+        if var.space != AddressSpace::Handle {
+            self.problem(name, "address space", "Handle", format!("{:?}", var.space));
+            return;
+        }
+        let TypeInner::Image {
+            dim,
+            arrayed,
+            class,
+        } = self.module.types[var.ty].inner
+        else {
+            let found = format!("{:?}", self.module.types[var.ty].inner);
+            self.problem(name, "texture type", "an image", found);
+            return;
+        };
+        if dim != naga::ImageDimension::D2 || arrayed {
+            self.problem(
+                name,
+                "dimension",
+                "2-D, not arrayed",
+                format!("{dim:?}, arrayed {arrayed}"),
+            );
+        }
+        match (texture.access, class) {
+            (TextureAccess::Sampled, naga::ImageClass::Sampled { kind, multi: false }) => {
+                let found = match kind {
+                    naga::ScalarKind::Float => Some(SampleClass::Float),
+                    naga::ScalarKind::Uint => Some(SampleClass::Uint),
+                    naga::ScalarKind::Sint => Some(SampleClass::Sint),
+                    _ => None,
+                };
+                if found != Some(texture.class) {
+                    self.problem(
+                        name,
+                        "sample class",
+                        format!("{:?}", texture.class),
+                        format!("{kind:?}"),
+                    );
+                }
+                if texture.format.is_some() {
+                    self.problem(name, "format", format!("{:?}", texture.format), "none");
+                }
+            }
+            (
+                TextureAccess::ReadWrite | TextureAccess::WriteOnly,
+                naga::ImageClass::Storage { format, access },
+            ) => {
+                let wanted = if texture.access == TextureAccess::ReadWrite {
+                    StorageAccess::LOAD | StorageAccess::STORE
+                } else {
+                    StorageAccess::STORE
+                };
+                if access != wanted {
+                    self.problem(name, "access", format!("{wanted:?}"), format!("{access:?}"));
+                }
+                let found = format!("{format:?}");
+                if texture
+                    .format
+                    .map(|format| format!("{format:?}"))
+                    .as_deref()
+                    != Some(&found)
+                {
+                    self.problem(name, "format", format!("{:?}", texture.format), found);
+                }
+            }
+            (access, class) => {
+                self.problem(
+                    name,
+                    "texture class",
+                    format!("{access:?}"),
+                    format!("{class:?}"),
+                );
+            }
+        }
+    }
+
+    /// A sampler binding: a handle of a non-comparison sampler, with no layout of its own.
+    fn compare_sampler(&mut self, parameter: &ParameterDescriptor, var: &GlobalVariable) {
+        let name = parameter.name;
+        if parameter.resource_layout.is_some() {
+            self.problem(name, "resource layout", "some", "a sampler has none");
+        }
+        if var.space != AddressSpace::Handle {
+            self.problem(name, "address space", "Handle", format!("{:?}", var.space));
+            return;
+        }
+        match self.module.types[var.ty].inner {
+            TypeInner::Sampler { comparison: false } => {}
+            ref other => self.problem(name, "sampler type", "a sampler", format!("{other:?}")),
+        }
+    }
+
     fn compare_binding(&mut self, parameter: &ParameterDescriptor, var: &GlobalVariable) {
         let name = parameter.name;
+        match parameter.kind {
+            ParameterKind::Texture => return self.compare_texture(parameter, var),
+            ParameterKind::Sampler => return self.compare_sampler(parameter, var),
+            _ => {}
+        }
         let Some(layout) = parameter.resource_layout else {
             self.problem(name, "resource layout", "none", "a binding");
             return;
@@ -592,7 +713,11 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
         problems: &mut problems,
     };
     for parameter in kernel.parameters {
-        let (ParameterKind::Storage | ParameterKind::Uniform) = parameter.kind else {
+        let (ParameterKind::Storage
+        | ParameterKind::Uniform
+        | ParameterKind::Texture
+        | ParameterKind::Sampler) = parameter.kind
+        else {
             continue;
         };
         let Some(binding) = parameter.binding else {
@@ -621,8 +746,8 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
     problems
 }
 
-/// The compute entries the seventeen goldens hold in all (pinned per golden in [`goldens`]).
-const GOLDEN_ENTRIES: usize = 85;
+/// The compute entries the eighteen goldens hold in all (pinned per golden in [`goldens`]).
+const GOLDEN_ENTRIES: usize = 93;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`
 /// (`atomics.slang` has one entry for the ten kernels of the module) and of `numeric.rs` (one of two).
@@ -689,6 +814,17 @@ impl Job {
                     String::from_utf8(bytes).map_err(|error| format!("{}: {error}", self.entry))
                 }),
             Source::Helper(kernel) => reflect::compile_reflected(kernel, Target::Wgsl)
+                .and_then(|compiled| {
+                    // D17 (plan 3.3): the helper's own reflection of a kernel with a texture or a sampler agrees with the
+                    // descriptor the macro wrote (class and dimension of a sampled texture, exact format of a storage
+                    // one, the sampler's slot).
+                    if kernel.parameters.iter().any(|parameter| {
+                        matches!(parameter.kind, ParameterKind::Texture | ParameterKind::Sampler)
+                    }) {
+                        compiled.reflection.cross_check_kernel(kernel)?;
+                    }
+                    Ok(compiled)
+                })
                 .map_err(|error| {
                     format!(
                         "{}: the native reflection helper could not compile the kernel (is GUST_SLANG_REFLECT set to \

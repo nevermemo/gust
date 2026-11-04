@@ -16,6 +16,7 @@ pub(crate) mod collisions;
 pub(crate) mod div_table;
 pub(crate) mod mul_table;
 pub(crate) mod neg_table;
+pub(crate) mod texture;
 
 /// The lowerings that depend on what the whole module names (the macro sees syntax and not types, so a module that
 /// names a matrix or an integer vector sends `*` and `.dot` through overloaded helpers; see [`module_lowering`]).
@@ -272,6 +273,15 @@ pub enum ParameterFlavor {
     StorageRead,
     StorageReadWrite,
     Uniform,
+    /// `Texture2D<T>` (slice mx.t3): a sampled texture, read with `load` and `sample`.
+    SampledTexture,
+    /// `StorageTexture2D<F>` (slice mx.t3): a read-write storage texture of one of the three 32-bit single-channel
+    /// formats.
+    StorageTexture,
+    /// `WriteTexture2D<F>` (slice mx.t3): a write-only storage texture of any of the nine formats.
+    WriteTexture,
+    /// `Sampler` (slice mx.t3): a sampler, passed to `sample`.
+    Sampler,
     Value,
 }
 
@@ -280,6 +290,20 @@ impl ParameterFlavor {
     /// call): the dispatch-thread id and the resources. The derived ids and the workgroup arrays are the body's own.
     pub(crate) fn in_descriptor(self) -> bool {
         !matches!(self, Self::LocalId | Self::GroupId | Self::Workgroup)
+    }
+
+    /// Whether the parameter is a texture (not a sampler).
+    pub(crate) fn is_texture(self) -> bool {
+        matches!(
+            self,
+            Self::SampledTexture | Self::StorageTexture | Self::WriteTexture
+        )
+    }
+
+    /// Whether the parameter is a texture or a sampler: it has a shader binding and the dialect uses it only through
+    /// texture methods (GUST-E0736).
+    pub(crate) fn is_texture_or_sampler(self) -> bool {
+        self.is_texture() || self == Self::Sampler
     }
 }
 
@@ -307,6 +331,10 @@ pub(crate) fn parameter_flavor_in(stage: &dyn StageProfile, ty: &syn::Type) -> P
         "Storage" | "StructuredBuffer" => ParameterFlavor::StorageRead,
         "StorageMut" | "RWStructuredBuffer" => ParameterFlavor::StorageReadWrite,
         "Uniform" | "ConstantBuffer" => ParameterFlavor::Uniform,
+        "Texture2D" => ParameterFlavor::SampledTexture,
+        "StorageTexture2D" => ParameterFlavor::StorageTexture,
+        "WriteTexture2D" => ParameterFlavor::WriteTexture,
+        "Sampler" => ParameterFlavor::Sampler,
         _ => ParameterFlavor::Value,
     }
 }
@@ -480,6 +508,8 @@ pub(crate) fn emit_kernel_in(
 
     let mut binding = 0_u32;
     let mut resources = Vec::new();
+    // The texture parameters, by emitted name, in parameter order.
+    let mut textures: Vec<String> = Vec::new();
     let mut invocation = None;
     // The ids derived from the dispatch-thread id (name, whether it is the group id), in parameter order.
     let mut derived_ids: Vec<(String, bool)> = Vec::new();
@@ -535,9 +565,32 @@ pub(crate) fn emit_kernel_in(
                 .unwrap();
                 binding += 1;
             }
+            // A texture or a sampler (slice mx.t3) is declared with the next binding, like a buffer. Textures are
+            // remembered for the prologue that reads their size.
+            ParameterFlavor::SampledTexture
+            | ParameterFlavor::StorageTexture
+            | ParameterFlavor::WriteTexture
+            | ParameterFlavor::Sampler
+                if rules.gets_slot(flavor) =>
+            {
+                writeln!(
+                    output,
+                    "{}",
+                    texture::declaration(flavor, ty, &name, binding)?
+                )
+                .unwrap();
+                if flavor.is_texture() {
+                    textures.push(name);
+                }
+                binding += 1;
+            }
             ParameterFlavor::StorageRead
             | ParameterFlavor::StorageReadWrite
-            | ParameterFlavor::Uniform => {}
+            | ParameterFlavor::Uniform
+            | ParameterFlavor::SampledTexture
+            | ParameterFlavor::StorageTexture
+            | ParameterFlavor::WriteTexture
+            | ParameterFlavor::Sampler => {}
             ParameterFlavor::Value => {
                 return Err(diagnostics::error(
                     Code::EntryPointParameter,
@@ -601,6 +654,7 @@ pub(crate) fn emit_kernel_in(
     writeln!(output, "{}", stage.entry_signature(&facts)).unwrap();
     writeln!(output, "{{").unwrap();
     output.push_str(&stage.prologue(&facts));
+    output.push_str(&texture::dimension_prologue(&textures, kernel));
     emit_statements(&mut output, &mut table, &kernel.block.stmts, 1, false)?;
     output.push_str(&stage.epilogue(&facts));
     writeln!(output, "}}").unwrap();
@@ -1223,6 +1277,11 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         syn::Expr::MethodCall(call) if call.method == "len" => {
             let receiver = emit_expression(&call.receiver)?;
             format!("__gpu_len_{receiver}")
+        }
+        // `load`, `store`, `sample`, `width` and `height` of a texture parameter (slice mx.t3); the validator has
+        // refused them on anything else.
+        syn::Expr::MethodCall(call) if texture::is_texture_method(call) => {
+            texture::emit_method(call)?
         }
         syn::Expr::MethodCall(call) if call.method == "is_some" => {
             format!("{}.hasValue", emit_expression(&call.receiver)?)

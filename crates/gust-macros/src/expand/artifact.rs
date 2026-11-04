@@ -278,6 +278,8 @@ pub(super) enum Rules {
     StorageV2,
     /// A constant buffer's element (`Uniform<T>`): structs rounded up to 16 (D57, D80).
     Std140V1,
+    /// A 2-D texture (mx.t3, D91): the element is the texel type, and the layout record carries the texture facts.
+    TextureV1,
 }
 
 impl Rules {
@@ -287,6 +289,7 @@ impl Rules {
             Self::StorageV1 => "storage_v1",
             Self::StorageV2 => "storage_v2",
             Self::Std140V1 => "std140_v1",
+            Self::TextureV1 => "texture_v1",
         }
     }
 }
@@ -297,6 +300,31 @@ impl Rules {
 pub(super) struct ResourceLayout {
     pub rules: Rules,
     element: Layout,
+    /// The facts of a texture parameter (`texture_v1` rules only).
+    texture: Option<TextureRecord>,
+}
+
+/// The `TextureLayout` of a texture parameter, as a record spells it (D91): the format's WebGPU name (`None` for a
+/// sampled texture), the access and the sample class. The dimension is always `2d`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TextureRecord {
+    pub format: Option<&'static str>,
+    pub access: &'static str,
+    pub class: &'static str,
+}
+
+/// The layout of a texture parameter: the texel type `texel` (a scalar or a 2- or 4-wide vector spelling) as the element,
+/// and the texture facts. `None` when `texel` is not a spelling [`element_layout`] describes.
+pub(super) fn texture_resource(
+    texel: &syn::Type,
+    texture: TextureRecord,
+) -> Option<ResourceLayout> {
+    let element = element_layout(texel, &HashMap::new())?;
+    Some(ResourceLayout {
+        rules: Rules::TextureV1,
+        element,
+        texture: Some(texture),
+    })
 }
 
 /// The layout of a storage parameter's element type, with `StorageV1` rules when the element holds no vector and no
@@ -312,7 +340,11 @@ pub(super) fn storage_resource(
     } else {
         Rules::StorageV1
     };
-    Some(ResourceLayout { rules, element })
+    Some(ResourceLayout {
+        rules,
+        element,
+        texture: None,
+    })
 }
 
 /// The layout of a uniform parameter's element type: `Std140V1`, from the numbers of [`crate::uniform::std140_struct`],
@@ -327,6 +359,7 @@ pub(super) fn uniform_resource(
     matches!(element.kind, LayoutKind::Struct(_)).then_some(ResourceLayout {
         rules: Rules::Std140V1,
         element,
+        texture: None,
     })
 }
 
@@ -569,7 +602,7 @@ impl Layout {
 pub(super) struct ParameterRecord {
     pub name: String,
     pub rust_type: String,
-    /// `invocation`, `storage`, `uniform` or `value`.
+    /// `invocation`, `storage`, `uniform`, `value`, `texture` or `sampler`.
     pub kind: &'static str,
     /// `read_only`, `read_write` or `not_applicable`.
     pub access: &'static str,
@@ -633,11 +666,23 @@ impl KernelRecord<'_> {
             .iter()
             .map(|parameter| {
                 let layout = parameter.layout.as_ref().map_or(Json::Null, |layout| {
-                    Json::object(vec![
+                    let mut members = vec![
                         ("rules", Json::string(layout.rules.name())),
                         ("element_stride", Json::Number(layout.element.size.into())),
                         ("element", layout.element.json()),
-                    ])
+                    ];
+                    if let Some(texture) = &layout.texture {
+                        members.push((
+                            "texture",
+                            Json::object(vec![
+                                ("access", Json::string(texture.access)),
+                                ("class", Json::string(texture.class)),
+                                ("dimension", Json::string("2d")),
+                                ("format", texture.format.map_or(Json::Null, Json::string)),
+                            ]),
+                        ));
+                    }
+                    Json::object(members)
                 });
                 let binding = parameter.binding.map_or(Json::Null, |binding| {
                     Json::object(vec![
@@ -1721,6 +1766,91 @@ pub(super) mod tests {
             shape: None,
         }
         .json()
+    }
+
+    /// The parameters of a texture kernel: a sampled `Texture2D<Vec4>`, a `Sampler` and a write-only
+    /// `WriteTexture2D<Rgba32Float>` (the shapes `tests/fixtures/textures.rs` has, D91).
+    fn texture_parameters() -> Vec<ParameterRecord> {
+        let texel: syn::Type = crate::diagnostics::testing::parse_str("Vec4").unwrap();
+        let facts = |format, access, class| TextureRecord {
+            format,
+            access,
+            class,
+        };
+        let parameter =
+            |name: &str, rust_type: &str, kind, access, binding, layout| ParameterRecord {
+                name: name.to_owned(),
+                rust_type: rust_type.to_owned(),
+                kind,
+                access,
+                binding,
+                layout,
+            };
+        vec![
+            parameter(
+                "id",
+                "SV_DispatchThreadID",
+                "invocation",
+                "not_applicable",
+                None,
+                None,
+            ),
+            parameter(
+                "image",
+                "Texture2D < Vec4 >",
+                "texture",
+                "read_only",
+                Some(0),
+                texture_resource(&texel, facts(None, "sampled", "f32")),
+            ),
+            parameter(
+                "bilinear",
+                "Sampler",
+                "sampler",
+                "not_applicable",
+                Some(1),
+                None,
+            ),
+            parameter(
+                "out",
+                "WriteTexture2D < Rgba32Float >",
+                "texture",
+                "read_write",
+                Some(2),
+                texture_resource(&texel, facts(Some("rgba32float"), "write_only", "f32")),
+            ),
+        ]
+    }
+
+    /// The texture kernel's record as `write` prints it.
+    fn texture_json() -> String {
+        let parameters = texture_parameters();
+        KernelRecord {
+            key: "0123456789abcdef",
+            module: "textures",
+            name: "run",
+            entry_point: "gpu_textures_run",
+            workgroup_size: [8, 8, 1],
+            parameters: &parameters,
+            file: "src/lib.rs",
+            lines: &[LineRecord {
+                slang_start: 3,
+                slang_end: 9,
+                rust_line: 12,
+            }],
+            shape: None,
+        }
+        .json()
+    }
+
+    /// cargo-gust's reader parses this same file (`record_tests.rs`), with the key of its own Slang in place of this.
+    #[test]
+    fn the_texture_and_sampler_record_matches_the_golden() {
+        assert_golden(
+            &texture_json(),
+            "texture.kernel.json",
+            &include_str!("../../tests/golden/texture.kernel.json").replace("\r\n", "\n"),
+        );
     }
 
     #[test]

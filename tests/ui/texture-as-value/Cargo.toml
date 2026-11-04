@@ -1,0 +1,8 @@
+[package]
+name = "texture-as-value"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+gust = { path = "../../../crates/gust" }

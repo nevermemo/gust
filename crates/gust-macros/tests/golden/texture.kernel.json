@@ -1,0 +1,93 @@
+{
+  "entry_point": "gpu_textures_run",
+  "key": "0123456789abcdef",
+  "module": "textures",
+  "name": "run",
+  "parameters": [
+    {
+      "access": "not_applicable",
+      "binding": null,
+      "kind": "invocation",
+      "layout": null,
+      "name": "id",
+      "rust_type": "SV_DispatchThreadID"
+    },
+    {
+      "access": "read_only",
+      "binding": {
+        "binding": 0,
+        "group": 0
+      },
+      "kind": "texture",
+      "layout": {
+        "element": {
+          "alignment": 16,
+          "count": 4,
+          "kind": "vector",
+          "name": "Vec4",
+          "scalar": "f32",
+          "size": 16,
+          "stride": 16
+        },
+        "element_stride": 16,
+        "rules": "texture_v1",
+        "texture": {
+          "access": "sampled",
+          "class": "f32",
+          "dimension": "2d",
+          "format": null
+        }
+      },
+      "name": "image",
+      "rust_type": "Texture2D < Vec4 >"
+    },
+    {
+      "access": "not_applicable",
+      "binding": {
+        "binding": 1,
+        "group": 0
+      },
+      "kind": "sampler",
+      "layout": null,
+      "name": "bilinear",
+      "rust_type": "Sampler"
+    },
+    {
+      "access": "read_write",
+      "binding": {
+        "binding": 2,
+        "group": 0
+      },
+      "kind": "texture",
+      "layout": {
+        "element": {
+          "alignment": 16,
+          "count": 4,
+          "kind": "vector",
+          "name": "Vec4",
+          "scalar": "f32",
+          "size": 16,
+          "stride": 16
+        },
+        "element_stride": 16,
+        "rules": "texture_v1",
+        "texture": {
+          "access": "write_only",
+          "class": "f32",
+          "dimension": "2d",
+          "format": "rgba32float"
+        }
+      },
+      "name": "out",
+      "rust_type": "WriteTexture2D < Rgba32Float >"
+    }
+  ],
+  "schema": 1,
+  "source": {
+    "file": "src/lib.rs",
+    "lines": [
+      [3, 9, 12]
+    ]
+  },
+  "workgroup_size": [8, 8, 1]
+}

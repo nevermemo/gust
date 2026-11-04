@@ -429,6 +429,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shape-pixel-storage-texture"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "shape-pixel-struct-output"
 version = "0.0.0"
 dependencies = [
@@ -479,6 +486,41 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "texture-as-value"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "texture-bad-format"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "texture-method"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "texture-ok"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "texture-sample-argument"
+version = "0.0.0"
+dependencies = [
+ "gust",
 ]
 
 [[package]]

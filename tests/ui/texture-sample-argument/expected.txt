@@ -1,0 +1,8 @@
+# Keys matched against the one error of `cargo check --message-format json` (see gpupod-missing/expected.txt). A macro
+# error is a `compile_error!` and has no rustc code, so `code: none`. The macro text carries the GUST code
+# (docs/DIAGNOSTICS.md, E0733); a second `message:` pins the reason.
+code: none
+file: texture-sample-argument/src/main.rs
+line: 9
+message: [GUST-E0733]
+message: passed by name

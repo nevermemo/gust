@@ -351,6 +351,25 @@ codes! {
     /// A `shape = pixel` pin on a kernel that is compatible with it, while no `pixel` profile exists yet.
     ShapeNotAvailable = 730 => "GUST-E0730";
 
+    // E0731-E0736: texture and sampler parameters (mx.t3, D62, D64).
+    /// A texture parameter type with a texel or format argument the dialect does not have: a `Texture2D` texel type
+    /// outside the nine, a `StorageTexture2D` format that is not read-write, an unknown format, a wrong number of
+    /// arguments, or a `Sampler` with arguments.
+    TextureType = 731 => "GUST-E0731";
+    /// A texture method call with the wrong number of coordinates, or with a coordinate that is visibly not the
+    /// right type (a float or negative texel address, an integer `u` or `v`).
+    TextureCoordinate = 732 => "GUST-E0732";
+    /// A `sample` whose first argument is not a `Sampler` parameter of the kernel.
+    SamplerArgument = 733 => "GUST-E0733";
+    /// A `sample` on a texture of integer texels, which are never filtered.
+    SampleInteger = 734 => "GUST-E0734";
+    /// A method a texture parameter does not have: `store` on a sampled texture, `load` on a write-only one,
+    /// `sample` on a storage texture, or any other name.
+    TextureMethod = 735 => "GUST-E0735";
+    /// A texture or sampler parameter used other than as the receiver of a texture method (or the sampler argument of
+    /// `sample`), or a texture or sampler type anywhere but a kernel parameter.
+    TextureUse = 736 => "GUST-E0736";
+
     // E08xx: rejections only the emitter makes, after validation passed.
     /// A kernel parameter that is neither a resource nor the dispatch thread.
     EntryPointParameter = 801 => "GUST-E0801";

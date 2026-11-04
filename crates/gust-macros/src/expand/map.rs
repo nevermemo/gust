@@ -40,6 +40,7 @@ use super::{Environment, Identity, Profile, expand_validated};
 use crate::{
     diagnostics::{self, Code},
     math_types,
+    profile::GRID,
 };
 
 /// The name of the generated kernel, and so of its handle struct in the function's module.
@@ -125,7 +126,7 @@ pub(super) fn expand_map_in(
     let signature = check_signature(&function)?;
     validate(&function)?;
     let (module, host) = build(&function, &signature, profile);
-    let expanded = expand_validated(module, environment, profile, &host, Identity::Module)?;
+    let expanded = expand_validated(module, environment, profile, &GRID, &host, Identity::Module)?;
     Ok(quote! {
         #function
 
@@ -312,7 +313,7 @@ fn validate(function: &syn::ItemFn) -> syn::Result<()> {
             #function
         }
     };
-    crate::validate::validate_module(&module)
+    crate::validate::validate_module_in(&GRID, &module)
 }
 
 // ---------------------------------------------------------------------------------------------------------------

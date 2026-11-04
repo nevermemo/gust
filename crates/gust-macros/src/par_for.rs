@@ -48,6 +48,7 @@ use crate::{
         ElementReject, Environment, Identity, KernelOptions, Profile, content_key, element_types,
         expand_validated,
     },
+    profile::GRID,
 };
 
 /// The names the generated kernel uses for its own parts, in the module that is expanded (reserved `__gust_` names) and
@@ -634,7 +635,7 @@ impl Plan {
         let options = KernelOptions {
             workgroup_size: self.workgroup,
         };
-        let emitted = crate::slang::emit_kernel(&module, kernel, options)?;
+        let emitted = crate::slang::emit_kernel_in(&GRID, &module, kernel, options)?;
         Ok(content_key(
             &format!("gpu_{PLACEHOLDER}_run"),
             &emitted.source,
@@ -955,7 +956,10 @@ impl Plan {
     fn expand(&self, environment: &Environment, call_line: u32) -> syn::Result<TokenStream> {
         // The body as a kernel of a module with names the validator accepts: a dialect error is reported at the
         // body's own tokens with its code.
-        crate::validate::validate_module(&self.module(&format_ident!("par_for_view"), &VIEW))?;
+        crate::validate::validate_module_in(
+            &GRID,
+            &self.module(&format_ident!("par_for_view"), &VIEW),
+        )?;
         let hash = self.lowered_hash()?;
         let name = format_ident!("{}_{}", PLACEHOLDER, hash);
         let module = self.module(&name, &FINAL);
@@ -964,6 +968,7 @@ impl Plan {
             module,
             environment,
             self.profile,
+            &GRID,
             &host,
             Identity::Site { call_line },
         )?;

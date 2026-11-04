@@ -5,6 +5,7 @@ mod expand;
 mod math_types;
 mod mul_impls;
 mod par_for;
+mod profile;
 mod recover;
 mod slang;
 mod uniform;
@@ -31,6 +32,10 @@ mod grid_tests;
 #[cfg(test)]
 #[path = "tests/par_for.rs"]
 mod par_for_tests;
+
+#[cfg(test)]
+#[path = "tests/profile.rs"]
+mod profile_tests;
 
 /// Marks an inline Rust module as GUST GPU code, or a free scalar function as an element-wise map (D60).
 ///

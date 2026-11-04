@@ -847,10 +847,11 @@ D119, D121 to D125.
 - Tidy and close-out: m7.t1 `1278b61`, m7.f1 `96051c8` (Linux "Text file busy" retry), m7.t2 `6b0d59a`; m7.x1
   `3ebd368` (feature area `dispatch`, `check-artifacts` over the M7 goldens), m7.x2 `1e648b7` (README, VALIDATION,
   REPO_STRUCTURE), m7.x3 `07b851d` (SEMANTICS, ARCHITECTURE, NEXT_TASKS, skills, gust-algo docs).
-- Records at the close (plan §11.2), on `<CLOSE-SHA>`: (i) Gpu RTX 5090 `verify --mode gpu`, pin 297/31;
-  (ii) Gpu (software): lavapipe `gpu-software`, run `<LAVAPIPE-RUN>`; (iii) Cpu target `check-cpu-target`;
-  (iv) web: `check-web` builds `web-vector-add` and runs it in headless Chrome, which includes the `map_async` path
-  (`GUST_OK`, `<WEB-RESULT>`); (v) precompiled: `check-precompiled` and `check-artifacts`. `check-cpu` is twin evidence.
+- Records at the close (plan §11.2), on `dd74689`: (i) Gpu RTX 5090 `verify --mode gpu`, pin 297/31; (ii) Gpu
+  (software): lavapipe `gpu-software`, run `<LAVAPIPE-RUN>`; (iii) Cpu target `check-cpu-target`; (iv) web: `check-web`
+  builds `web-vector-add` and runs it in headless Chrome, which includes the `map_async` path
+  (`GUST_OK nvidia blackwell`, Chrome 156, passed); (v) precompiled: `check-precompiled` and `check-artifacts`.
+  `check-cpu` is twin evidence.
 - Open (also in NEXT_TASKS): the write-set race checker; storage barriers; decoupled look-back scan; generic gather
   (M9); the thread-free lockstep twin idea; `as_entire_binding()` in `generated_host.rs`; `gust-wgpu` `Error` is not
   `#[non_exhaustive]`; a `_wrapping` scan form; the 890M, DX12 and Metal are untried for T13 and T14; the browser run
@@ -980,16 +981,16 @@ full_check_needed_before_commit: no
 - Last complete compiler feature: M7 (map generator, `GpuVec` residency, `par_for!`, shared memory and barriers,
   multi-dimensional dispatch, wrapping arithmetic, gust-algo); the last M7 compiler slice is m7.c (`88ac459`), and
   mx.t1 (`00b72c7`, texture and sampler descriptors) merged after it
-- Last full validation: `cargo xtask check-full` passed at `<CLOSE-SHA>` (M7 close, <CHECK-FULL-TIME>, NVIDIA GeForce
-  RTX 5090 / Vulkan, driver <DRIVER>, Slang <SLANG>; clean tree), through the shared cargo slot wrapper: workspace
-  tests, the release-only tests required by name, every example test with `--include-ignored`, `check-dual` in full
-  mode, the SPIR-V artifacts through `spirv-val`, and `check-web` with the browser run. The runs before it were at
+- Last full validation: `cargo xtask check-full` passed at `dd74689` (M7 close, 2026-11-04, 15:58 to 16:33Z, NVIDIA
+  GeForce RTX 5090 / Vulkan, driver 610.88, Slang v2026.20; clean tree), through the shared cargo slot wrapper:
+  workspace tests, the release-only tests required by name, every example test with `--include-ignored`, `check-dual` in
+  full mode, the SPIR-V artifacts through `spirv-val`, and `check-web` with the browser run. The runs before it were at
   `f452a37` (M6 close, 2026-11-02, 19:32 to 20:12Z, driver 610.88, Slang v2026.20), `7dd9c3d` (M5 close after m5.f1,
-  2026-11-02, 13:49 to 14:01Z), `68c6f40` (m5.c2, 2026-11-02, one untracked log file), `27b342b` (M4 close after
-  m4.i) and `c964222` (2026-11-02, before the M4 sanity fixes), then `5971c12` (M3 close, 2026-11-01, clean tree),
-  then `96e4b9d` (2026-11-01, before the M3 sanity fixes), then `634a50e` (M2 close, 2026-10-24) and the one before
-  that (M1) at `a6cbb8f`, together with the Slangc and Reflect suites. The local `.ai/VALIDATION.json` record stamps
-  the commit and dirty state and contains no machine paths.
+  2026-11-02, 13:49 to 14:01Z), `68c6f40` (m5.c2, 2026-11-02, one untracked log file), `27b342b` (M4 close after m4.i)
+  and `c964222` (2026-11-02, before the M4 sanity fixes), then `5971c12` (M3 close, 2026-11-01, clean tree), then
+  `96e4b9d` (2026-11-01, before the M3 sanity fixes), then `634a50e` (M2 close, 2026-10-24) and the one before that (M1)
+  at `a6cbb8f`, together with the Slangc and Reflect suites. The local `.ai/VALIDATION.json` record stamps the commit
+  and dirty state and contains no machine paths.
 - DX19 is closed: full validation, two independent reviews, and fixes (`027eef7`,
   `08a4843`, `3296885`).
 - CI (`unit` job: fmt, clippy, Unit suite; `msrv` job on Rust 1.90) passes on main;

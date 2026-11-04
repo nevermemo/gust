@@ -25,6 +25,25 @@ code generation.
 
 ## Component responsibilities
 
+Packages and library names (D48, D106). The directories keep their names. The first release publishes four
+packages under the D48 names; until the rename slice (mr.n) lands after MX's last code merge, the workspace packages
+still carry today's names. The library names do not change, which is why the macro's `::gust::` and `::gust_wgpu::`
+paths keep resolving in a user's crate.
+
+| Directory | Package today | Package when published | Library name | Published |
+| --- | --- | --- | --- | --- |
+| `crates/gust` | `gust` | `gust-compute` | `gust` | yes |
+| `crates/gust-macros` | `gust-macros` | `gust-compute-macros` | `gust_macros` | yes |
+| `crates/gust-wgpu` | `gust-wgpu` | `gust-compute-wgpu` | `gust_wgpu` | yes |
+| `crates/cargo-gust` | `cargo-gust` | `cargo-gust` | none (binary only) | yes |
+| `crates/gust-algo` | `gust-algo` | not published (D110) | `gust_algo` | no |
+
+The four published packages share one version, bumped together, and depend on each other with exact (`=`) versions
+(D107). `cargo-gust` has no library and so no docs.rs page; its documentation is its README. The examples, `xtask`,
+the fixture workspaces and `gust-algo` are not published. A packaged crate is not test-runnable: its tests read files
+of the repository, so tests run from a checkout. A release follows [RELEASE](development/RELEASE.md) and the gate
+`cargo xtask check-release` (D113).
+
 ### `gust-macros`
 
 The proc macro owns validation, syntax translation, binding assignment, and host

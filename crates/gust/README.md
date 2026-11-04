@@ -15,9 +15,13 @@ The package is `gust-compute`; the library is named `gust`, so code writes `use 
 
 - The `slang-runtime` feature (off by default) compiles a kernel at run time by launching `slangc` and the native
   reflection helper. A production build leaves it off and ships the artifacts that `cargo gust build` writes.
-- `cargo install cargo-gust --locked` installs the tool that writes those artifacts; `cargo gust slang install` then
-  installs the pinned Slang release.
+- `cargo install cargo-gust --locked --version "~0.1"` installs the tool that writes those artifacts; `cargo gust
+  slang install` then installs the pinned Slang release.
 - The tests of this crate read files of the repository, so they run from a checkout, not from this package.
+
+A complete first program (the manifest with a `gust-dev` feature, `cargo run`, and the release build with `cargo gust
+build`) is in the root README: <https://github.com/nevermemo/gust/blob/main/README.md#install-from-cratesio>.
+Minimum supported Rust: 1.90.
 
 Documentation: <https://docs.rs/gust-compute>. The project, its platforms and its status:
 <https://github.com/nevermemo/gust/blob/main/README.md>.

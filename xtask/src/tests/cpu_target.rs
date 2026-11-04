@@ -109,7 +109,7 @@ fn the_output_of_a_good_run_has_no_problem() {
     );
     assert_eq!(
         match_summary(GOOD),
-        "vector_add::add 1000 elements, max ULP 0; polynomial::evaluate 1000 elements, max ULP 0; atomic_counter::increment 257 invocations, max ULP 0; vector_ops::blend 1000 elements, max ULP 0"
+        "vector_add::add 1000 elements, max ULP 0; polynomial::evaluate 1000 elements, max ULP 0; atomic_counter::increment 257 invocations, max ULP 0; vector_ops::blend 1000 elements, max ULP 0; map calls match (scale_add, pick, 1000 elements); par_for calls match (1D 1000 elements, 2D 37 x 21 cells)"
     );
 }
 

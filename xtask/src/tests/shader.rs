@@ -3,7 +3,8 @@ use std::path::PathBuf;
 use super::{
     ExportOptions, MATRIX_LAYOUT_FLAG, ShaderTarget, SlangcOptions, SpirvValOptions,
     check_spirv_header, clear_exports, compare_golden_names, compare_manifests, compute_entries,
-    count_copy_logical, golden_file_name, golden_sections, hash_manifest, parse_manifest, sidecar,
+    count_copy_logical, golden_file_name, golden_jobs, golden_sections, hash_manifest,
+    parse_manifest, sidecar,
 };
 
 fn args(values: &[&str]) -> Vec<String> {
@@ -325,6 +326,64 @@ fn a_golden_of_several_kernels_is_split_at_its_marker_lines() {
     let sections = golden_sections(preamble);
     assert_eq!(sections.len(), 2);
     assert_eq!(sections.concat(), preamble);
+}
+
+#[test]
+fn the_jobs_of_a_golden_name_each_entry_its_section_and_its_file() {
+    let slang = "// ==== kernel a ====\n[shader(\"compute\")]\nvoid gpu_map_a_map_kernel() {}\n\
+                 // ==== kernel b ====\n[shader(\"compute\")]\nvoid gpu_map_b_map_kernel() {}\n";
+    assert_eq!(
+        golden_jobs("map", slang).unwrap(),
+        [
+            (
+                0,
+                "gpu_map_a_map_kernel".to_owned(),
+                "map__a_map_kernel.spv".to_owned()
+            ),
+            (
+                1,
+                "gpu_map_b_map_kernel".to_owned(),
+                "map__b_map_kernel.spv".to_owned()
+            ),
+        ]
+    );
+    let error = golden_jobs("map", "// ==== kernel a ====\nvoid helper() {}\n").unwrap_err();
+    assert!(error.contains("no compute entry point"), "{error}");
+}
+
+#[test]
+fn two_entries_that_make_the_same_file_name_are_refused_not_overwritten() {
+    // The map golden drops a leading `map_` from a function name, so the functions `map_foo` and `foo` both make
+    // `map__foo_map_kernel.spv`; the same entry twice (two `par_for!` calls with equal bodies share a hashed module)
+    // is the same case.
+    let kernels = |first: &str, second: &str| {
+        format!(
+            "// ==== kernel a ====\n[shader(\"compute\")]\nvoid {first}() {{}}\n\
+             // ==== kernel b ====\n[shader(\"compute\")]\nvoid {second}() {{}}\n"
+        )
+    };
+    let error = golden_jobs(
+        "map",
+        &kernels("gpu_map_foo_map_kernel", "gpu_foo_map_kernel"),
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("two entries make the file map__foo_map_kernel.spv"),
+        "{error}"
+    );
+    let error = golden_jobs(
+        "par_for",
+        &kernels("gpu___gust_pf_1_run", "gpu___gust_pf_1_run"),
+    )
+    .unwrap_err();
+    assert!(error.contains("two entries make the file"), "{error}");
+    // Different names are fine, in one section or two.
+    assert_eq!(
+        golden_jobs("map", &kernels("gpu_foo_map_kernel", "gpu_bar_map_kernel"))
+            .unwrap()
+            .len(),
+        2
+    );
 }
 
 #[test]

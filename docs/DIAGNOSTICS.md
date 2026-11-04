@@ -1107,7 +1107,7 @@ Decision: D02.
 `cpu` opts a kernel out of its CPU twin, which the macro otherwise emits under `cfg(test)` or
 `--cfg gust_dual`. The only value is `"unsupported"`. `"lockstep"` would name a CPU twin that runs a barrier kernel
 one workgroup at a time on scoped threads; GUST defines no CPU strategy for barrier kernels (D118), so it is rejected
-like any other unknown value, and the message says that.
+with the same code as any other unknown value, with a message of its own that says that.
 Reached through `#[gpu]`.
 Rejected: `#[kernel(cpu = "off")]`, `#[kernel(cpu = "lockstep")]`.
 Fixture: `tests/ui/kernel-cpu-bad-value` and `tests/ui/kernel-cpu-lockstep` (`cargo xtask check-ui`, `code: none` plus the message).

@@ -570,19 +570,26 @@ pub(crate) fn match_problems(stdout: &str) -> Vec<String> {
     problems
 }
 
-/// The `matches` lines of `stdout` in the form of the summary of a step: `vector_add::add 1000 elements ULP 0`.
+/// The `matches` lines of `stdout` in the form of the summary of a step: `vector_add::add 1000 elements ULP 0`, then
+/// the lines of the map and par_for cases without their `CPU target: ` lead (what each printed is part of the record).
 fn match_summary(stdout: &str) -> String {
-    without_colors(stdout)
-        .lines()
-        .filter_map(parse_match_line)
-        .map(|line| {
-            format!(
-                "{} {} {}, max ULP {}",
-                line.kernel, line.count, line.unit, line.max_ulp
-            )
+    let stdout = without_colors(stdout);
+    let kernels = stdout.lines().filter_map(parse_match_line).map(|line| {
+        format!(
+            "{} {} {}, max ULP {}",
+            line.kernel, line.count, line.unit, line.max_ulp
+        )
+    });
+    let cases = [MAP_LINE_PREFIX, PAR_FOR_LINE_PREFIX]
+        .into_iter()
+        .flat_map(|prefix| {
+            stdout
+                .lines()
+                .map(str::trim)
+                .filter(move |line| line.starts_with(prefix))
         })
-        .collect::<Vec<_>>()
-        .join("; ")
+        .map(|line| line.strip_prefix("CPU target: ").unwrap_or(line).to_owned());
+    kernels.chain(cases).collect::<Vec<_>>().join("; ")
 }
 
 /// How often the control and each forbidden string occur in `bytes`, ignoring ASCII letter case.

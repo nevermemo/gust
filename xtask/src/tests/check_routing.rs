@@ -68,10 +68,14 @@ fn a_fixture_alone_selects_only_its_feature() {
 
 #[test]
 fn the_algorithm_crate_and_its_goldens_select_the_algo_area() {
-    // Before m7.x1 the crate fell through to the workspace tests.
+    // Before m7.x1 the crate fell through to the workspace tests. component-pool depends on it, so the examples are
+    // built and tested beside the area.
     assert_eq!(
         select(&["crates/gust-algo/src/scan.rs"]),
-        vec![ChangedCheck::Feature("algo")]
+        vec![
+            ChangedCheck::Feature("algo"),
+            ChangedCheck::Feature("examples")
+        ]
     );
     for golden in [
         "tests/fixtures/reduce.slang",
@@ -201,7 +205,58 @@ fn mixed_m7_paths_keep_every_scope_in_a_fixed_order() {
             ChangedCheck::Feature("map"),
             ChangedCheck::Feature("dispatch"),
             ChangedCheck::Feature("wgpu"),
+            ChangedCheck::Feature("core"),
+            ChangedCheck::Feature("examples")
+        ]
+    );
+}
+
+#[test]
+fn a_fixture_of_another_golden_keeps_the_macro_suite_beside_an_m7_area() {
+    // The pair of the review (M1): the vectors golden is pinned by gust-macros tests, and the map source selecting
+    // its area must not hide that.
+    assert_eq!(
+        select(&["crates/gust/src/map.rs", "tests/fixtures/vectors.slang"]),
+        vec![
+            ChangedCheck::Feature("map"),
+            ChangedCheck::Feature("macro"),
             ChangedCheck::Feature("core")
+        ]
+    );
+    // An unclaimed fixture alone, and beside the older fixture rules and the other M7 sources.
+    assert_eq!(
+        select(&["tests/fixtures/products.rs"]),
+        vec![ChangedCheck::Feature("macro")]
+    );
+    assert_eq!(
+        select(&["tests/fixtures/loops.rs", "tests/fixtures/vectors.slang"]),
+        vec![
+            ChangedCheck::Feature("loops"),
+            ChangedCheck::Feature("macro")
+        ]
+    );
+    assert_eq!(
+        select(&[
+            "crates/gust-wgpu/tests/par_for.rs",
+            "tests/fixtures/uniforms.slang"
+        ]),
+        vec![
+            ChangedCheck::Feature("dispatch"),
+            ChangedCheck::Feature("macro"),
+            ChangedCheck::Feature("wgpu")
+        ]
+    );
+    // Fixtures that rules claim (M7 stems, workgroup) add no macro suite by themselves.
+    assert_eq!(
+        select(&[
+            "tests/fixtures/map.slang",
+            "tests/fixtures/grid.rs",
+            "tests/fixtures/workgroup.rs"
+        ]),
+        vec![
+            ChangedCheck::Feature("workgroup"),
+            ChangedCheck::Feature("map"),
+            ChangedCheck::Feature("dispatch")
         ]
     );
 }

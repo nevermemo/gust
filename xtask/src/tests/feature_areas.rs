@@ -275,8 +275,15 @@ fn the_dispatch_area_runs_every_dispatch_test_and_counts_each_call() {
     assert_eq!(DISPATCH_MACRO_MODULES, ["par_for_tests::", "grid_tests::"]);
     assert_eq!(
         DISPATCH_CORE_FILTERS,
-        ["dispatch::", "extent", "dimensions"]
+        [
+            "dispatch::",
+            "cpu::tests::a_shared_buffer_holds_the_product_of_the_extent",
+            "cpu::tests::invocations_cover_whole_workgroups_in_two_and_three_dimensions"
+        ]
     );
+    // Each filter is its own counted call (no ORed `--` list): a filter that matches nothing fails by itself.
+    assert!(arm.contains("for filter in DISPATCH_CORE_FILTERS"), "{arm}");
+    assert!(!arm.contains("core.extend"), "{arm}");
     assert_eq!(
         DISPATCH_GPU_TESTS,
         ["par_for", "grid", "concurrency", "async_readback"]
@@ -302,9 +309,15 @@ fn the_dispatch_tests_exist_where_the_area_looks_for_them() {
         let path = root.join(format!("crates/gust-wgpu/tests/{test}.rs"));
         assert!(path.is_file(), "{}", path.display());
     }
-    // The gust tests of the filters: the dispatch module has tests of its own.
+    // The gust tests of the filters: the dispatch module has tests of its own, and the two named CPU tests exist
+    // under the names the filters give.
     let dispatch = std::fs::read_to_string(root.join("crates/gust/src/dispatch.rs")).unwrap();
     assert!(dispatch.contains("mod tests"));
+    let cpu = std::fs::read_to_string(root.join("crates/gust/src/cpu.rs")).unwrap();
+    for filter in &DISPATCH_CORE_FILTERS[1..] {
+        let name = filter.strip_prefix("cpu::tests::").unwrap();
+        assert!(cpu.contains(&format!("fn {name}(")), "{name}");
+    }
 }
 
 #[test]

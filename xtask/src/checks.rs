@@ -77,10 +77,15 @@ pub(crate) const GPU_SEMANTICS_TESTS: [&str; 8] = [
 /// that of `tests/grid.rs`: the multi-dimensional kernels and their golden). Each is its own cargo call, counted.
 pub(crate) const DISPATCH_MACRO_MODULES: [&str; 2] = ["par_for_tests::", "grid_tests::"];
 
-/// The name filters of the `gust` library tests of `check-feature dispatch` (libtest ORs them): the `dispatch` module
-/// (`Extent` and the extent of a call), every test whose name says `extent`, and the CPU invocations of a two- and
-/// three-dimensional extent.
-pub(crate) const DISPATCH_CORE_FILTERS: [&str; 3] = ["dispatch::", "extent", "dimensions"];
+/// The name filters of the `gust` library tests of `check-feature dispatch`, each its own counted call (a filter that
+/// matches nothing fails by itself): the `dispatch` module (`Extent` and the extent of a call), the CPU buffer sized by
+/// the product of the extent, and the CPU invocations of a two- and three-dimensional extent (one test each, by full
+/// name, so that a rename fails here).
+pub(crate) const DISPATCH_CORE_FILTERS: [&str; 3] = [
+    "dispatch::",
+    "cpu::tests::a_shared_buffer_holds_the_product_of_the_extent",
+    "cpu::tests::invocations_cover_whole_workgroups_in_two_and_three_dimensions",
+];
 
 /// The `gust-wgpu` integration tests of `check-feature dispatch`, by file name under crates/gust-wgpu/tests: `par_for!`
 /// on the GPU, multi-dimensional grids, concurrent calls and the asynchronous readback.
@@ -119,7 +124,8 @@ pub(crate) const UNIFORM_GOLDEN_SPIRV: [&str; 1] = ["uniforms__run.spv"];
 /// that must come out of them, sorted. A golden that holds several kernels is compiled one section at a time
 /// (`shader::golden_sections`); an entry that does not carry the golden's name keeps its own
 /// (`map__<function>_map_kernel`, `par_for__<hashed module>_run`, see `shader::golden_file_name`). A golden that gains
-/// or loses a kernel changes its list in the same commit.
+/// or loses a kernel changes its list in the same commit; the `par_for` list also changes when a lowering change
+/// re-hashes a body (the module name is the hash of the lowered Slang). The unit tests of xtask catch both.
 pub(crate) const MAP_GOLDEN_STEMS: [&str; 1] = ["map"];
 pub(crate) const MAP_GOLDEN_SPIRV: [&str; 5] = [
     "map__add_one_map_kernel.spv",
@@ -442,9 +448,9 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
             }
             // Extent and the dispatch types of gust (the recording device, the extent of a call, the CPU
             // invocations of a multi-dimensional extent).
-            let mut core = vec!["test", "-p", "gust", "--lib", "--"];
-            core.extend(DISPATCH_CORE_FILTERS);
-            run_counted(&root, &core)?;
+            for filter in DISPATCH_CORE_FILTERS {
+                run_counted(&root, &["test", "-p", "gust", "--lib", filter])?;
+            }
             // The GPU tests, one binary per call: a binary that ran no test fails by itself.
             for test in DISPATCH_GPU_TESTS {
                 run_counted(&root, &["test", "-p", "gust-wgpu", "--test", test])?;
@@ -631,7 +637,8 @@ fn select_changed_checks(paths: &[String]) -> Vec<ChangedCheck> {
         checks.push(ChangedCheck::Feature("workgroup"));
     }
     // M7 areas. A specific area is added to the broader check the path already had (macro, wgpu, core), never
-    // instead of it; a golden fixture alone selects only its area, as the workgroup and loops fixtures do.
+    // instead of it; a golden fixture alone selects only its area, as the workgroup and loops fixtures do, while
+    // a fixture of another golden still selects `macro` ([`unclaimed_fixture`] below).
     let fixture = |stems: &[&str]| {
         paths.iter().any(|path| {
             path.strip_prefix("tests/fixtures/").is_some_and(|rest| {
@@ -674,7 +681,21 @@ fn select_changed_checks(paths: &[String]) -> Vec<ChangedCheck> {
     {
         checks.push(ChangedCheck::Feature("dispatch"));
     }
-    if has("crates/gust-macros/") || (has("tests/fixtures/") && checks.is_empty()) {
+    // A changed fixture that no fixture rule above claims (loops, workgroup, the M7 stems) is pinned by the macro
+    // suite, whatever else changed: it selects `macro` even when another path selected an area first.
+    let unclaimed_fixture = paths.iter().any(|path| {
+        path.strip_prefix("tests/fixtures/").is_some_and(|rest| {
+            !(rest.starts_with("loops")
+                || rest.starts_with("workgroup")
+                || ["reduce", "scan", "compact", "map", "par_for", "grid"]
+                    .iter()
+                    .any(|stem| {
+                        rest.strip_prefix(stem)
+                            .is_some_and(|tail| tail.starts_with('.'))
+                    }))
+        })
+    });
+    if has("crates/gust-macros/") || unclaimed_fixture {
         checks.push(ChangedCheck::Feature("macro"));
     }
     if any(&[
@@ -694,7 +715,8 @@ fn select_changed_checks(paths: &[String]) -> Vec<ChangedCheck> {
     {
         checks.push(ChangedCheck::Feature("core"));
     }
-    if has("examples/") || has("generated-wgpu/") {
+    // The examples that depend on gust-algo (component-pool) are built and tested beside the crate's own area.
+    if has("examples/") || has("generated-wgpu/") || has("crates/gust-algo/") {
         checks.push(ChangedCheck::Feature("examples"));
     }
     if checks.is_empty() {
@@ -855,7 +877,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "map: the map calls of `#[gpu]` on a function and their device side: gust::map unit tests, the gust-macros map tests (expansion, diagnostics and the golden of the generated kernels), the parallel CPU map of m7.c (the gust::cpu::parallel unit tests and crates/gust/tests/parallel.rs: thread count, bit equality with one thread, the lowest failing index; counted, no adapter needed), the map calls on the GPU against their CPU twins (crates/gust-wgpu/tests/map.rs), then GpuVec and the buffer pool, device options and adapter choice, and the launch and buffer limits on the GPU"
         }
         "dispatch" => {
-            "dispatch: multi-dimensional dispatch and `par_for!` (m7.p, m7.d), each call counted so that a missing test file fails by itself: the gust-macros tests `par_for_tests::` (expansion, golden, export records, GUST-E0719 and E0720) and `grid_tests::` (the multi-dimensional kernels and their golden), the gust library tests of Extent (`dispatch::`, names with `extent`, the CPU invocations of a two- and three-dimensional extent), then crates/gust-wgpu/tests/par_for.rs, grid.rs, concurrency.rs and async_readback.rs on the first Vulkan adapter"
+            "dispatch: multi-dimensional dispatch and `par_for!` (m7.p, m7.d), each call counted so that a missing test file fails by itself: the gust-macros tests `par_for_tests::` (expansion, golden, export records, GUST-E0719 and E0720) and `grid_tests::` (the multi-dimensional kernels and their golden), the gust library tests of Extent (the `dispatch::` module, the CPU buffer sized by the extent and the CPU invocations of a two- and three-dimensional extent, each filter its own counted call), then crates/gust-wgpu/tests/par_for.rs, grid.rs, concurrency.rs and async_readback.rs on the first Vulkan adapter"
         }
         "workgroup" => {
             "workgroup: workgroup shared memory, the workgroup barrier and the local and group ids (m7.g1): the gust-macros workgroup tests (validator rules, expansion, the golden of the generated kernels, one rejection per diagnostic), the gust unit tests of the Workgroup runtime type, then crates/gust-wgpu/tests/workgroup.rs on the first Vulkan adapter (a block reduce against an independent host sum, the derived ids, the barrier in the SPIR-V validated with spirv-val and in the WGSL)"

@@ -4,4 +4,4 @@
 code: none
 file: shape-cpu-pin/src/main.rs
 line: 6
-message: [GUST-E0721] `cpu` is a target, not a shape
+message: [GUST-E0722] `cpu` is a target, not a shape

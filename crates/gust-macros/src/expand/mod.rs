@@ -909,7 +909,7 @@ pub(crate) fn kernel_attribute_facts(
                 "pixel" => classify::Shape::Pixel,
                 "cpu" => {
                     return Err(diagnostics::error(
-                        Code::ShapeUnknown,
+                        Code::ShapeOption,
                         &value,
                         "`cpu` is a target, not a shape: build with `GUST_PROFILE=cpu` to run a kernel on the CPU, \
                          and pin `shape = grid` or `shape = pixel` only",

@@ -482,10 +482,21 @@ pub(crate) fn check_pin(
     let Some(exclusion) = classification.first_exclusion(pin.shape) else {
         return Ok(());
     };
+    let others = classification
+        .exclusions
+        .iter()
+        .filter(|other| other.shape == pin.shape)
+        .count()
+        - 1;
+    let mut message = exclusion.message(&function.sig.ident.to_string());
+    if others > 0 {
+        let plural = if others == 1 { "" } else { "s" };
+        message.push_str(&format!(" and {others} more construct{plural} rule it out"));
+    }
     Err(diagnostics::error(
         exclusion.why.code(),
         &pin.tokens,
-        exclusion.message(&function.sig.ident.to_string()),
+        message,
     ))
 }
 
@@ -518,7 +529,8 @@ struct Output<'a> {
 
 /// The source text of `tokens`, tidied (`out [i + 1]` to `out[i + 1]`) and cut to a line.
 fn render(tokens: &TokenStream) -> String {
-    let mut text = tokens.to_string();
+    // `&&` is kept whole while the single `&` of a reference is tightened.
+    let mut text = tokens.to_string().replace("&&", "\u{1}");
     for (from, to) in [
         (" . ", "."),
         (" .", "."),
@@ -540,6 +552,7 @@ fn render(tokens: &TokenStream) -> String {
     ] {
         text = text.replace(from, to);
     }
+    text = text.replace('\u{1}', "&&");
     const LIMIT: usize = 72;
     if text.chars().count() > LIMIT {
         let cut: String = text.chars().take(LIMIT).collect();
@@ -561,7 +574,12 @@ fn target_bytes(element: &syn::Type) -> Option<u32> {
     let syn::Type::Path(path) = element else {
         return None;
     };
-    match path.path.get_ident()?.unraw().to_string().as_str() {
+    // The last segment names the type, so `gust::Vec4` is a `Vec4`.
+    let last = path.path.segments.last()?;
+    if !last.arguments.is_none() {
+        return None;
+    }
+    match last.ident.unraw().to_string().as_str() {
         "u32" | "uint" | "i32" | "int" | "f32" | "float" => Some(4),
         "Vec2" | "IVec2" | "UVec2" => Some(8),
         "Vec4" | "IVec4" | "UVec4" => Some(16),

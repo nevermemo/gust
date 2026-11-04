@@ -5,3 +5,4 @@ code: none
 file: shape-pixel-output-read/src/main.rs
 line: 6
 message: [GUST-E0728] shape `pixel` is not compatible with kernel `paint`
+message: reads the output `out`

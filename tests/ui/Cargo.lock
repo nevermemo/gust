@@ -359,6 +359,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shape-pixel-atomic"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "shape-pixel-barrier"
 version = "0.0.0"
 dependencies = [
@@ -380,7 +387,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "shape-pixel-no-output"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "shape-pixel-other-index"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-output-compound"
 version = "0.0.0"
 dependencies = [
  "gust",
@@ -395,6 +416,20 @@ dependencies = [
 
 [[package]]
 name = "shape-pixel-return"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-second-alias"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "shape-pixel-struct-output"
 version = "0.0.0"
 dependencies = [
  "gust",

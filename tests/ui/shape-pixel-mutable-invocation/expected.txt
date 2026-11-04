@@ -5,3 +5,4 @@ code: none
 file: shape-pixel-mutable-invocation/src/main.rs
 line: 6
 message: [GUST-E0724] shape `pixel` is not compatible with kernel `paint`
+message: makes mutable the invocation id

@@ -5,3 +5,4 @@ code: none
 file: shape-pixel-other-index/src/main.rs
 line: 6
 message: [GUST-E0725] shape `pixel` is not compatible with kernel `paint`
+message: writes at an index other than the element's own

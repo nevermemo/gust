@@ -327,9 +327,10 @@ codes! {
     /// A `par_for!` binding that is named twice, has a type a binding cannot have, or is a `GpuVec` under
     /// `GUST_PROFILE=cpu`.
     ParForBinding = 720 => "GUST-E0720";
-    /// A `#[kernel(shape = ..)]` whose value is not `grid` or `pixel` (`cpu` is a target, not a shape).
+    /// A `#[kernel(shape = ..)]` whose value is a name other than `grid` or `pixel`.
     ShapeUnknown = 721 => "GUST-E0721";
-    /// A `shape` option given twice, or without a value.
+    /// A `shape` option given twice, without a value, with a value that is not a bare name, or as `cpu` (a target, not a
+    /// shape).
     ShapeOption = 722 => "GUST-E0722";
     /// A pinned shape the kernel's workgroup memory, barrier, invocation built-ins, atomics, storage textures,
     /// outputs or workgroup size rule out.

@@ -1,0 +1,9 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). A macro error is a `compile_error!` and has no rustc code, so
+# `code: none`. The line is the `#[kernel(..)]` attribute that holds the pin; the second `message:` pins the
+# reason (a code such as E0723 is shared by several).
+code: none
+file: shape-pixel-struct-output/src/main.rs
+line: 11
+message: [GUST-E0723] shape `pixel` is not compatible with kernel `paint`
+message: has the element type `Pair`, which is no colour-target format

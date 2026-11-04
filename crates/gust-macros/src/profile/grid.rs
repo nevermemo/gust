@@ -53,7 +53,7 @@ impl StageProfile for GridProfile {
             workgroup_size: true,
             cpu: true,
             default_workgroup: [64, 1, 1],
-            expected: "expected `workgroup_size(x, y, z)` or `cpu = \"unsupported\"`",
+            expected: "expected `workgroup_size(x, y, z)`, `cpu = \"unsupported\"` or `shape = grid`",
         }
     }
 

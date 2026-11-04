@@ -1,4 +1,4 @@
-// cpu is a target, not a shape (GUST-E0721): the hint names GUST_PROFILE=cpu.
+// cpu is a target, not a shape (GUST-E0722): the hint names GUST_PROFILE=cpu.
 // expected.txt pins the code and the line of the pin.
 
 #[gust::gpu]

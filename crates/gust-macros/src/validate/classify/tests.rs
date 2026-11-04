@@ -395,6 +395,8 @@ fn an_atomic_operation_is_refused() {
     );
 }
 
+// The macro has no texture parameters until mx.t3, so only the predicate `classify` uses can be tested; the kernel
+// path (and a ui fixture) belong to mx.t3, where a storage texture first becomes reachable.
 #[test]
 fn a_storage_texture_parameter_is_refused() {
     for (ty, expected) in [
@@ -763,7 +765,7 @@ fn a_shape_the_dialect_does_not_have_is_an_unknown_shape() {
 fn cpu_is_a_target_not_a_shape() {
     let source = kernel("#[kernel(shape = cpu)]", PARAMETERS, "out[id.x] = a[id.x];");
     let error = expanded(&source).unwrap_err();
-    assert_code(&error, Code::ShapeUnknown);
+    assert_code(&error, Code::ShapeOption);
     assert!(error.to_string().contains("GUST_PROFILE=cpu"), "{error}");
 }
 
@@ -879,4 +881,47 @@ fn a_construct_a_profile_refuses_has_its_own_code() {
             .contains("the refusing stage has no barriers"),
         "{error}"
     );
+}
+
+#[test]
+fn a_construct_is_written_as_source_text() {
+    let tokens = |text: &str| render(&text.parse::<TokenStream>().unwrap());
+    assert_eq!(
+        tokens("id.x < out.len() && a[id.x] > 0.0f32"),
+        "id.x < out.len() && a[id.x] > 0.0f32"
+    );
+    assert_eq!(tokens("out [ i + 1 ] = & mut x"), "out[i + 1] = &mut x");
+    assert_eq!(tokens("f ( a , b )"), "f(a, b)");
+}
+
+#[test]
+fn a_qualified_element_type_is_judged_by_its_last_segment() {
+    for (ty, bytes) in [
+        ("f32", Some(4)),
+        ("gust::Vec4", Some(16)),
+        ("::gust::math::Vec2", Some(8)),
+        ("Vec3", None),
+        ("Option<f32>", None),
+    ] {
+        let parsed: syn::Type = parse_str(ty).unwrap();
+        assert_eq!(target_bytes(&parsed), bytes, "{ty}");
+    }
+}
+
+#[test]
+fn a_refused_pin_counts_the_other_constructs_that_rule_the_shape_out() {
+    let one = kernel(
+        "#[kernel(shape = pixel, workgroup_size(64, 1, 1))]",
+        PARAMETERS,
+        "out[id.x] = a[id.x];",
+    );
+    let text = expanded(&one).unwrap_err().to_string();
+    assert!(!text.contains("more construct"), "{text}");
+    let several = kernel(
+        "#[kernel(shape = pixel, workgroup_size(64, 1, 1))]",
+        "mut id: SV_DispatchThreadID, a: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>",
+        "out[id.x + 1u32] = a[id.x];",
+    );
+    let text = expanded(&several).unwrap_err().to_string();
+    assert!(text.contains("and 2 more constructs rule it out"), "{text}");
 }

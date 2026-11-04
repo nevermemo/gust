@@ -529,20 +529,24 @@ fn the_validated_builds_are_read_from_the_source_that_holds_the_pin() {
 
 #[test]
 fn a_helper_is_refused_unless_its_tag_is_the_pin_and_its_schema_is_the_current_one() {
-    let helper = |tag: &str| format!("gust-slang-reflect schema=2 slang={tag}\n");
+    let helper = |tag: &str| format!("gust-slang-reflect schema=3 slang={tag}\n");
     let pin = rule("2026.20", &[]);
     assert_eq!(
         check_helper_pin(&helper("2026.20"), &pin, "the helper"),
         Ok(())
     );
-    // Schema 3 (mx.t0a) is accepted beside schema 2: a helper built before it keeps working.
-    assert_eq!(
-        check_helper_pin(
-            "gust-slang-reflect schema=3 slang=2026.20\n",
-            &pin,
-            "the helper"
-        ),
-        Ok(())
+    // Schema 3 is the only one (mx.k): every compile passes the stage, which a schema 2 helper refuses.
+    let error = check_helper_pin(
+        "gust-slang-reflect schema=2 slang=2026.20\n",
+        &pin,
+        "the helper",
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("prints `schema=2`")
+            && error.contains("needs `schema=3`")
+            && error.contains("cargo xtask build-slang-reflect --force"),
+        "{error}"
     );
     // The 2026.13.1 helper that every lane used before the bump, in both spellings, is refused with both tags named.
     for old in ["2026.13.1", "2026.13.1-1-g84792eb15"] {
@@ -558,7 +562,7 @@ fn a_helper_is_refused_unless_its_tag_is_the_pin_and_its_schema_is_the_current_o
     // A prefix, an extension and a missing tag are not the pin.
     assert!(check_helper_pin(&helper("2026.2"), &pin, "h").is_err());
     assert!(check_helper_pin(&helper("2026.20-1-g0a1b2c3d4"), &pin, "h").is_err());
-    assert!(check_helper_pin("gust-slang-reflect schema=2\n", &pin, "h").is_err());
+    assert!(check_helper_pin("gust-slang-reflect schema=3\n", &pin, "h").is_err());
     assert!(check_helper_pin("", &pin, "h").is_err());
     // A validated build of the pin is the pin for the helper too (the one rule of slang.rs).
     let validated = rule("2026.20", &["2026.20-1-g0a1b2c3d4"]);
@@ -574,7 +578,7 @@ fn a_helper_is_refused_unless_its_tag_is_the_pin_and_its_schema_is_the_current_o
     ] {
         let error = check_helper_pin(output, &pin, "the helper named by X").unwrap_err();
         assert!(
-            error.contains("needs `schema=2` or `schema=3`")
+            error.contains("needs `schema=3`")
                 && error.contains("cargo gust slang build-helper")
                 && error.contains("the helper named by X"),
             "{error}"
@@ -636,7 +640,7 @@ fn a_named_helper_is_used_when_it_is_the_pin_and_refused_when_it_is_not() {
         Ok(())
     };
     let version = |tag: &'static str| {
-        move |_: &Path| Ok(format!("gust-slang-reflect schema=2 slang={tag}\n"))
+        move |_: &Path| Ok(format!("gust-slang-reflect schema=3 slang={tag}\n"))
     };
 
     // The pin's helper is used, and nothing is built.
@@ -728,14 +732,14 @@ fn without_a_named_helper_one_is_built_and_it_must_be_the_pin_too() {
         Ok(())
     };
     let version = |tag: &'static str| {
-        move |_: &Path| Ok(format!("gust-slang-reflect schema=2 slang={tag}\n"))
+        move |_: &Path| Ok(format!("gust-slang-reflect schema=3 slang={tag}\n"))
     };
 
     // No variable: built, and the build is judged. The built helper is the one that is read.
     let seen = std::cell::RefCell::new(Vec::new());
     let reading = |path: &Path| {
         seen.borrow_mut().push(path.to_owned());
-        Ok("gust-slang-reflect schema=2 slang=2026.99\n".to_owned())
+        Ok("gust-slang-reflect schema=3 slang=2026.99\n".to_owned())
     };
     prepare_helper_with(&root, None, None, &build, &reading, &no_slangc).unwrap();
     assert_eq!(
@@ -800,7 +804,7 @@ fn the_slangc_on_path_must_be_the_pin_on_every_path_even_when_nobody_ran_it() {
         built.set(built.get() + 1);
         Ok(())
     };
-    let pins_helper = |_: &Path| Ok("gust-slang-reflect schema=2 slang=2026.99\n".to_owned());
+    let pins_helper = |_: &Path| Ok("gust-slang-reflect schema=3 slang=2026.99\n".to_owned());
     let old_slangc = || Some("2026.13.1\n".to_owned());
     let pin_slangc = || Some("2026.99\n".to_owned());
 

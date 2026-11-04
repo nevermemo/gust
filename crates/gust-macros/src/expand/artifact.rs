@@ -10,7 +10,8 @@
 //!
 //! Export mode (`GUST_EXPORT_DIR` set and non-empty) additionally writes, under
 //! `<GUST_EXPORT_DIR>/<CARGO_PKG_NAME>/`, the clean text as `<key>.slang` (exact bytes) and `<key>.kernel.json`
-//! ([`KernelRecord::json`], schema 1). The records hold what `cargo gust build` needs to rebuild the kernel's
+//! ([`KernelRecord::json`], schema 1; schema 2 for a `par_for!` call; schema 3 only for a kernel whose shape is not
+//! `grid`, which no expansion produces yet). The records hold what `cargo gust build` needs to rebuild the kernel's
 //! `KernelDescriptor` without a compiler: module, name, entry point, workgroup size, the parameters with kind, access,
 //! binding and the complete element layout tree, and the source file with its line table. They never hold CPU twin
 //! text (D45): [`write_records`] refuses a record that does.
@@ -44,6 +45,12 @@ const SCHEMA: u64 = 1;
 /// The version of the `kernel.json` layout of a `par_for!` call (R1.1 M5): the same record without `source`, so equal
 /// bodies at two call sites write the same bytes, plus one [`SiteRecord`] sidecar per call site.
 const SITE_SCHEMA: u64 = 2;
+
+/// The version of the `kernel.json` layout of a kernel whose shape is not `grid` (mx.k, D89): schema 2's grammar
+/// (`source` optional: present for a `#[gpu]` module or function, absent for a `par_for!` call) plus `shape`. The
+/// number moves so that a reader of schema 1 and 2 refuses the record instead of reading a pixel kernel as `grid`. A
+/// `grid` kernel keeps schema 1 or 2 and has no `shape` key, byte for byte.
+const SHAPE_SCHEMA: u64 = 3;
 
 /// What the expansion reads from the process environment.
 #[derive(Clone, Debug, Default)]
@@ -585,6 +592,9 @@ pub(super) struct KernelRecord<'a> {
     /// The recorded source file (see `recorded_path`); empty when unknown, in which case the line table is empty too.
     pub file: &'a str,
     pub lines: &'a [LineRecord],
+    /// The name of the kernel's shape when it is not `grid` (`None` for every kernel today). A record with a shape is
+    /// schema 3 and carries the `shape` key; one without keeps the schema of its kind.
+    pub shape: Option<&'a str>,
 }
 
 impl KernelRecord<'_> {
@@ -599,7 +609,8 @@ impl KernelRecord<'_> {
     /// `alignment`, `stride`, `kind` (`scalar` with `scalar`; `vector` with `scalar` and `count`; `matrix` with
     /// `scalar`, `rows`, `cols` and `column_stride`; or `struct` with `fields`: `name`, `offset`, `type` with the
     /// nested `<layout>`). A record whose layouts are all scalars and structs of them with `storage_v1` rules is the
-    /// same bytes it was before vectors and uniforms had layouts.
+    /// same bytes it was before vectors and uniforms had layouts. A record whose `shape` is set (mx.k) is schema 3 and
+    /// has one more key, `shape` (the shape's name); the record of a `grid` kernel has none.
     pub(super) fn json(&self) -> String {
         self.write_json(SCHEMA, true)
     }
@@ -612,6 +623,11 @@ impl KernelRecord<'_> {
     }
 
     fn write_json(&self, schema: u64, with_source: bool) -> String {
+        let schema = if self.shape.is_some() {
+            SHAPE_SCHEMA
+        } else {
+            schema
+        };
         let parameters = self
             .parameters
             .iter()
@@ -656,6 +672,9 @@ impl KernelRecord<'_> {
             ),
             ("parameters", Json::Array(parameters)),
         ];
+        if let Some(shape) = self.shape {
+            members.push(("shape", Json::string(shape)));
+        }
         if with_source {
             members.push((
                 "source",
@@ -1084,6 +1103,18 @@ pub(super) mod tests {
             "// \u{fc}n\u{ef} \u{65e5}\u{672c} \u{1f600}\n",
             "f3edb671848d99cc",
         ),
+        // One body under two shapes (mx.k, D89): the same entry point and body line, the stage attribute and the
+        // signature differ, and so do the keys. The formula has no shape in it.
+        (
+            "gpu_demo_run",
+            "[shader(\"compute\")]\n[numthreads(64, 1, 1)]\nvoid gpu_demo_run(uint3 id : SV_DispatchThreadID)\n{\n    uint i = id.x;\n}\n",
+            "4be1a569519007e0",
+        ),
+        (
+            "gpu_demo_run",
+            "[shader(\"fragment\")]\nOut gpu_demo_run(float4 pos : SV_Position)\n{\n    uint i = id.x;\n}\n",
+            "76d7388ee1e8f383",
+        ),
     ];
 
     #[test]
@@ -1091,6 +1122,25 @@ pub(super) mod tests {
         for (entry_point, text, expected) in GOLDEN_KEYS {
             assert_eq!(&content_key(entry_point, text), expected, "{entry_point:?}");
         }
+    }
+
+    #[test]
+    fn one_body_under_two_shapes_gives_two_keys() {
+        let [
+            ..,
+            (grid_entry, grid, grid_key),
+            (pixel_entry, pixel, pixel_key),
+        ] = GOLDEN_KEYS
+        else {
+            panic!("the two-shapes pair is the end of GOLDEN_KEYS");
+        };
+        assert_eq!(grid_entry, pixel_entry);
+        assert!(grid.contains("[shader(\"compute\")]") && pixel.contains("[shader(\"fragment\")]"));
+        assert_ne!(grid_key, pixel_key);
+        assert_ne!(
+            content_key(grid_entry, grid),
+            content_key(pixel_entry, pixel)
+        );
     }
 
     #[test]
@@ -1668,6 +1718,7 @@ pub(super) mod tests {
                 slang_end: 9,
                 rust_line: 12,
             }],
+            shape: None,
         }
         .json()
     }
@@ -1725,8 +1776,19 @@ pub(super) mod tests {
                     rust_line: 14,
                 },
             ],
+            shape: None,
         };
         write(&record)
+    }
+
+    /// The sample record with the shape `shape` given (the macro writes none today, so only a test makes one).
+    fn sample_with_shape(shape: &str, write: impl Fn(&KernelRecord<'_>) -> String) -> String {
+        sample_written_by(|record| {
+            write(&KernelRecord {
+                shape: Some(shape),
+                ..*record
+            })
+        })
     }
 
     #[test]
@@ -1755,6 +1817,35 @@ pub(super) mod tests {
         let derived = format!("{}{}", &schema_1[..source_start], &schema_1[source_end..])
             .replace("\"schema\": 1", "\"schema\": 2");
         assert_eq!(actual, derived);
+    }
+
+    /// Schema 3 (mx.k, D89) is written only for a kernel whose shape is not `grid`: schema 1 or 2's grammar plus a
+    /// `shape` key, between `schema` and `source` in key order. No kernel the macro expands today has one, so the
+    /// record is made by hand here.
+    #[test]
+    fn a_record_with_a_shape_is_schema_3_and_a_grid_record_is_unchanged() {
+        let schema_1 = sample_json();
+        let schema_2 = sample_written_by(|record| record.json_without_source());
+        assert!(!schema_1.contains("shape") && !schema_2.contains("shape"));
+        // A `#[gpu]` kernel of another shape keeps its `source`.
+        let module = sample_with_shape("pixel", |record| record.json());
+        assert_eq!(
+            module,
+            schema_1.replace(
+                "  \"schema\": 1,\n",
+                "  \"schema\": 3,\n  \"shape\": \"pixel\",\n"
+            )
+        );
+        // A `par_for!` kernel of another shape has none, as in schema 2.
+        let site = sample_with_shape("pixel", |record| record.json_without_source());
+        assert_eq!(
+            site,
+            schema_2.replace(
+                "  \"schema\": 2,\n",
+                "  \"schema\": 3,\n  \"shape\": \"pixel\",\n"
+            )
+        );
+        assert!(!site.contains("\"source\""));
     }
 
     #[test]

@@ -130,6 +130,7 @@ fn the_rebuilt_descriptor_equals_the_hand_built_one() {
         module: "demo",
         name: "run",
         entry_point: "gpu_demo_run",
+        shape: gust::Shape::Grid,
         workgroup_size: [64, 1, 1],
         parameters: EXPECTED_PARAMETERS,
         slang_source: SAMPLE_SLANG,
@@ -230,7 +231,7 @@ fn error_of(json: &str) -> String {
 fn malformed_records_are_refused_with_the_path_of_the_problem() {
     for (json, expected) in [
         (
-            broken("\"schema\": 1", "\"schema\": 3"),
+            broken("\"schema\": 1", "\"schema\": 4"),
             "unsupported schema",
         ),
         (broken("  \"schema\": 1,\n", ""), "record: missing `schema`"),
@@ -491,10 +492,10 @@ fn a_schema_2_record_that_names_a_source_is_refused() {
 }
 
 #[test]
-fn an_unknown_schema_is_refused_naming_both_this_tool_reads() {
-    let error = error_of(&broken("  \"schema\": 1,", "  \"schema\": 3,"));
+fn an_unknown_schema_is_refused_naming_the_three_this_tool_reads() {
+    let error = error_of(&broken("  \"schema\": 1,", "  \"schema\": 4,"));
     assert!(
-        error.contains("unsupported schema") && error.contains("schemas 1 and 2"),
+        error.contains("unsupported schema") && error.contains("schemas 1, 2 and 3"),
         "{error}"
     );
 }
@@ -624,5 +625,150 @@ fn malformed_vector_and_matrix_layouts_are_refused_with_the_path_of_the_problem(
     ] {
         let error = error_of(&with_out_layout(&element, 16, "storage_v2"));
         assert!(error.contains(expected), "{expected:?} not in {error:?}");
+    }
+}
+
+// ---- schema 3: the record of a kernel whose shape is not `grid` (mx.k, D89) ----
+
+/// The sample record as a pixel kernel's `#[gpu]` record: schema 3, `shape` between `schema` and `source`.
+fn pixel_record_json() -> String {
+    broken(
+        "  \"schema\": 1,\n",
+        "  \"schema\": 3,\n  \"shape\": \"pixel\",\n",
+    )
+}
+
+/// The `par_for!` form of the same: schema 3 without a `source`.
+fn pixel_site_record_json() -> String {
+    site_record_json().replace(
+        "  \"schema\": 2,\n",
+        "  \"schema\": 3,\n  \"shape\": \"pixel\",\n",
+    )
+}
+
+#[test]
+fn a_record_without_a_shape_reads_as_grid() {
+    // Schema 1 and schema 2 never carry one; the macro writes `shape` only for another shape (D89).
+    assert!(!SAMPLE_RECORD_JSON.contains("shape") && !site_record_json().contains("shape"));
+    assert_eq!(sample().shape, Shape::Grid);
+    assert_eq!(sample().descriptor().shape, Shape::Grid);
+    let site = Record::parse(&site_record_json(), SAMPLE_SLANG).unwrap();
+    assert_eq!(site.shape, Shape::Grid);
+    // A schema 3 record that has no `shape` either is `grid` as well (the key is optional), and one that says so
+    // explicitly reads the same.
+    let bare = broken("  \"schema\": 1,\n", "  \"schema\": 3,\n");
+    assert_eq!(
+        Record::parse(&bare, SAMPLE_SLANG).unwrap().shape,
+        Shape::Grid
+    );
+    let explicit = broken(
+        "  \"schema\": 1,\n",
+        "  \"schema\": 3,\n  \"shape\": \"grid\",\n",
+    );
+    assert_eq!(
+        Record::parse(&explicit, SAMPLE_SLANG).unwrap().shape,
+        Shape::Grid
+    );
+}
+
+#[test]
+fn a_schema_3_record_carries_its_shape_into_the_descriptor() {
+    let (record, schema, sited) = Record::parse_any(&pixel_record_json(), SAMPLE_SLANG).unwrap();
+    assert_eq!((record.shape, schema, sited), (Shape::Pixel, 3, false));
+    // A schema 3 record that has its own `source` is read like schema 1: the origin is in the record.
+    assert_eq!(record.file, "src/lib.rs");
+    assert_eq!(record.lines, [[3, 9, 12], [5, 5, 14]]);
+    assert_eq!(record.descriptor().shape, Shape::Pixel);
+    // Everything else is the sample's.
+    assert_eq!(record.key, sample().key);
+    assert_eq!(record.parameters, sample().parameters);
+    // Without a `source` it is read like schema 2: no origin until its sidecars are read.
+    let (site, schema, sited) = Record::parse_any(&pixel_site_record_json(), SAMPLE_SLANG).unwrap();
+    assert_eq!((site.shape, schema, sited), (Shape::Pixel, 3, true));
+    assert_eq!((site.file.as_str(), site.lines.len()), ("", 0));
+}
+
+#[test]
+fn a_schema_3_site_record_takes_its_origin_from_its_sidecars() {
+    let scratch = Scratch::new("pixel site");
+    let directory = scratch.0.join("records");
+    fs::create_dir_all(&directory).unwrap();
+    fs::write(
+        directory.join(format!("{SAMPLE_KEY}.kernel.json")),
+        pixel_site_record_json(),
+    )
+    .unwrap();
+    fs::write(directory.join(format!("{SAMPLE_KEY}.slang")), SAMPLE_SLANG).unwrap();
+    fs::write(directory.join(SITE_LIB_NAME), SITE_LIB_JSON).unwrap();
+    let records = read_records(&directory).unwrap();
+    assert_eq!(records[0].shape, Shape::Pixel);
+    assert_eq!(records[0].file, "src/lib.rs");
+    assert_eq!(records[0].lines, [[3, 9, 12], [5, 5, 14]]);
+    // Without a sidecar it is refused, as a schema 2 record is.
+    fs::remove_file(directory.join(SITE_LIB_NAME)).unwrap();
+    let error = read_records(&directory).unwrap_err();
+    assert!(
+        error.contains("is schema 3 but has no") && error.contains("at least one call site"),
+        "{error}"
+    );
+    // A schema 3 record with its own `source` takes no sidecar, like schema 1.
+    fs::write(
+        directory.join(format!("{SAMPLE_KEY}.kernel.json")),
+        pixel_record_json(),
+    )
+    .unwrap();
+    fs::write(directory.join(SITE_LIB_NAME), SITE_LIB_JSON).unwrap();
+    let error = read_records(&directory).unwrap_err();
+    assert!(error.contains("has no call sites"), "{error}");
+}
+
+#[test]
+fn a_reader_of_schemas_1_and_2_refuses_a_record_with_a_shape() {
+    // The number moves so that a reader from before mx.k cannot read a pixel kernel as `grid`.
+    let before = [RECORD_SCHEMA, SITE_RECORD_SCHEMA];
+    for json in [pixel_record_json(), pixel_site_record_json()] {
+        let error = Record::parse_schemas(&json, SAMPLE_SLANG, &before).unwrap_err();
+        assert!(
+            error.contains("unsupported schema") && error.contains("schemas 1 and 2"),
+            "{error}"
+        );
+        // The reader of this tool accepts the same text.
+        assert!(Record::parse_any(&json, SAMPLE_SLANG).is_ok());
+    }
+    // The old readers still read what they always read.
+    for json in [SAMPLE_RECORD_JSON.to_owned(), site_record_json()] {
+        assert!(Record::parse_schemas(&json, SAMPLE_SLANG, &before).is_ok());
+    }
+}
+
+#[test]
+fn a_shape_under_schema_1_or_2_is_refused_and_a_bad_shape_is_named() {
+    let under_1 = broken(
+        "  \"schema\": 1,\n",
+        "  \"schema\": 1,\n  \"shape\": \"pixel\",\n",
+    );
+    let under_2 = site_record_json().replace(
+        "  \"schema\": 2,\n",
+        "  \"schema\": 2,\n  \"shape\": \"pixel\",\n",
+    );
+    for json in [under_1, under_2] {
+        let error = Record::parse(&json, SAMPLE_SLANG).unwrap_err();
+        assert!(
+            error.contains("has no `shape`") && error.contains("schema 3 key"),
+            "{error}"
+        );
+    }
+    for (value, wanted) in [
+        ("\"cpu\"", "unknown shape `cpu`"),
+        ("\"Pixel\"", "unknown shape `Pixel`"),
+        ("7", "`shape` must be a string"),
+        ("null", "`shape` must be a string"),
+    ] {
+        let json = broken(
+            "  \"schema\": 1,\n",
+            &format!("  \"schema\": 3,\n  \"shape\": {value},\n"),
+        );
+        let error = Record::parse(&json, SAMPLE_SLANG).unwrap_err();
+        assert!(error.contains(wanted), "{value}: {error}");
     }
 }

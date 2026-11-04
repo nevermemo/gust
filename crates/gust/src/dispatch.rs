@@ -312,7 +312,7 @@ impl From<(u32, u32, u32)> for Extent {
 /// # struct Probe;
 /// # impl Kernel for Probe {
 /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, workgroup_size: [1, 1, 1],
 /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
 /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
 /// #     };
@@ -362,7 +362,7 @@ impl From<(u32, u32, u32)> for Extent {
 /// # struct Probe;
 /// # impl Kernel for Probe {
 /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, workgroup_size: [1, 1, 1],
 /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
 /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
 /// #     };
@@ -412,7 +412,7 @@ impl From<(u32, u32, u32)> for Extent {
 /// # struct Probe;
 /// # impl Kernel for Probe {
 /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, workgroup_size: [1, 1, 1],
 /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
 /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
 /// #     };
@@ -467,7 +467,7 @@ impl From<(u32, u32, u32)> for Extent {
 /// # struct Probe;
 /// # impl Kernel for Probe {
 /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, workgroup_size: [1, 1, 1],
 /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
 /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
 /// #     };
@@ -517,7 +517,7 @@ impl From<(u32, u32, u32)> for Extent {
 /// # struct Probe;
 /// # impl Kernel for Probe {
 /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, workgroup_size: [1, 1, 1],
 /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
 /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
 /// #     };
@@ -697,7 +697,7 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// # struct Probe;
     /// # impl Kernel for Probe {
     /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-    /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+    /// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, workgroup_size: [1, 1, 1],
     /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
     /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
     /// #     };
@@ -735,7 +735,7 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// # struct Probe;
     /// # impl Kernel for Probe {
     /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-    /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+    /// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, workgroup_size: [1, 1, 1],
     /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
     /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
     /// #     };
@@ -774,7 +774,7 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// # struct Probe;
     /// # impl Kernel for Probe {
     /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-    /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+    /// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, workgroup_size: [1, 1, 1],
     /// #         parameters: &[p("a", ParameterKind::Storage), p("u", ParameterKind::Uniform)],
     /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
     /// #     };
@@ -811,7 +811,7 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// # struct Probe;
     /// # impl Kernel for Probe {
     /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-    /// #         module: "m", name: "probe", entry_point: "m_probe", workgroup_size: [1, 1, 1],
+    /// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, workgroup_size: [1, 1, 1],
     /// #         parameters: &[p("a", ParameterKind::Storage), p("u", ParameterKind::Uniform)],
     /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
     /// #     };
@@ -923,6 +923,7 @@ mod tests {
             module: "typed_tests",
             name,
             entry_point: name,
+            shape: crate::Shape::Grid,
             workgroup_size: [64, 1, 1],
             parameters,
             slang_source: "",

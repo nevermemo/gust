@@ -93,6 +93,7 @@ fn kernel_sized(element: Element, size: [u32; 3], count: usize) -> KernelDescrip
         module: "limits_test",
         name: "k",
         entry_point: "probe_k",
+        shape: gust::Shape::Grid,
         workgroup_size: size,
         parameters: Box::leak(parameters.into_boxed_slice()),
         slang_source: Box::leak(source.into_boxed_str()),

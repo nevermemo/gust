@@ -71,6 +71,7 @@ fn vector_add_record(null_layouts: &[&str]) -> Record {
         module: "vector_add".to_owned(),
         name: "add".to_owned(),
         entry_point: kernel.entry_point.to_owned(),
+        shape: gust::Shape::Grid,
         workgroup_size: [64, 1, 1],
         parameters: vec![
             ParameterRecord {

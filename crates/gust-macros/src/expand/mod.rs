@@ -6,7 +6,7 @@ use syn::ext::IdentExt as _;
 
 use crate::{
     diagnostics::{self, Code},
-    profile::{GRID, ReflectionKind, StageProfile, TwinHarness},
+    profile::{GRID, ReflectionKind, Shape, StageProfile, TwinHarness},
     slang::{ParameterFlavor, parameter_flavor_in},
 };
 
@@ -212,6 +212,10 @@ pub(crate) fn expand_validated(
         let workgroup_size = match stage.reflection() {
             ReflectionKind::Compute => options.workgroup_size,
         };
+        // The shape the profile gives the kernel: the descriptor's `shape`, and the export record's when it is not
+        // `grid` (mx.k). Every kernel expanded today is `grid`.
+        let shape = stage.shape();
+        let shape_path = shape_tokens(shape);
         let reported = reported_file(original_kernel, environment);
         let source_origin = source_origin(reported.as_deref(), manifest_dir, &emitted.lines);
         let slang_source = emitted.source;
@@ -246,6 +250,7 @@ pub(crate) fn expand_validated(
                     parameters: &parameters,
                     file: file.as_deref().unwrap_or_default(),
                     lines: if file.is_some() { &emitted.lines } else { &[] },
+                    shape: record_shape(shape),
                 };
                 let written = match identity {
                     Identity::Module => {
@@ -319,6 +324,7 @@ pub(crate) fn expand_validated(
                     module: #module_name,
                     name: stringify!(#original_name),
                     entry_point: #entry_point,
+                    shape: #shape_path,
                     workgroup_size: [#x, #y, #z],
                     parameters: &[#(#parameter_descriptors),*],
                     slang_source: #slang_source,
@@ -374,6 +380,21 @@ pub(crate) fn expand_validated(
                 };
         }
     })
+}
+
+/// The path of `gust::Shape` for the descriptor of a kernel of `shape`.
+fn shape_tokens(shape: Shape) -> TokenStream {
+    match shape {
+        Shape::Grid => quote!(::gust::Shape::Grid),
+    }
+}
+
+/// The shape's name in the export record, or `None` for `grid`: only a kernel of another shape has a `shape` key and
+/// so a schema 3 record (D89); a `grid` kernel's record stays what it was, byte for byte.
+fn record_shape(shape: Shape) -> Option<&'static str> {
+    match shape {
+        Shape::Grid => None,
+    }
 }
 
 /// The profile checks of one kernel, all spanned at the kernel so that a strict build fails at the kernel's own line in

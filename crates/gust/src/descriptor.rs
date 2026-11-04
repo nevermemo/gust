@@ -21,6 +21,13 @@ pub struct KernelDescriptor {
     pub name: &'static str,
     /// Prefixed entry point used in generated Slang and target binaries.
     pub entry_point: &'static str,
+    /// How the kernel's invocations are laid out, and so which Slang stage its entry point has (D63, D89). Every
+    /// kernel the macro emits today is [`Shape::Grid`].
+    ///
+    /// API change (mx.k): this field is new. A hand-written `KernelDescriptor { .. }` literal must add
+    /// `shape: Shape::Grid`, and the derived `PartialEq`/`Eq` compare it. It is not part of the content key: the
+    /// stage is already in the Slang text (D45), so one body under two shapes has two keys.
+    pub shape: Shape,
     pub workgroup_size: [u32; 3],
     pub parameters: &'static [ParameterDescriptor],
     /// Slang source emitted directly from the annotated Rust syntax tree.
@@ -42,6 +49,49 @@ pub struct KernelDescriptor {
     /// Like `source`, a hand-written `KernelDescriptor { .. }` literal must add
     /// `artifacts: &[]`, and the derived `PartialEq`/`Eq` compare it.
     pub artifacts: &'static [crate::artifact::Artifact],
+}
+
+/// The execution shape of a kernel: how its invocations are laid out, and with it the Slang stage of its entry point
+/// (decisions D63 and D89).
+///
+/// `cpu` is a target (D51), never a shape. The enum is `#[non_exhaustive]` so that a later shape is not a breaking
+/// change for a `match` outside this crate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum Shape {
+    /// One compute thread per element of a dispatch grid (`[shader("compute")]`). The shape of every kernel until
+    /// the pixel shape exists, and the one a record or manifest without a `shape` means.
+    Grid,
+    /// One fragment invocation per element, drawn by a full-screen pass (`[shader("fragment")]`).
+    Pixel,
+}
+
+impl Shape {
+    /// The shape's name in a record and a manifest: `grid` or `pixel`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Grid => "grid",
+            Self::Pixel => "pixel",
+        }
+    }
+
+    /// The shape named `name` (the inverse of [`Shape::name`]), or `None` for any other text.
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name {
+            "grid" => Some(Self::Grid),
+            "pixel" => Some(Self::Pixel),
+            _ => None,
+        }
+    }
+
+    /// The Slang stage of the entry point: the argument of `slangc -stage` and the stage the reflection helper is
+    /// told to expect.
+    pub const fn slang_stage(self) -> &'static str {
+        match self {
+            Self::Grid => "compute",
+            Self::Pixel => "fragment",
+        }
+    }
 }
 
 /// Rust source location of a kernel module and the line table that maps its
@@ -134,4 +184,25 @@ pub enum Access {
     ReadOnly,
     ReadWrite,
     NotApplicable,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_shape_has_a_name_that_reads_back_and_a_slang_stage() {
+        for (shape, name, stage) in [
+            (Shape::Grid, "grid", "compute"),
+            (Shape::Pixel, "pixel", "fragment"),
+        ] {
+            assert_eq!(shape.name(), name);
+            assert_eq!(Shape::from_name(name), Some(shape));
+            assert_eq!(shape.slang_stage(), stage);
+        }
+        // Only the exact lower-case names read back: `cpu` is a target (D51), not a shape.
+        for other in ["", "Grid", "PIXEL", "cpu", "compute", "grid "] {
+            assert_eq!(Shape::from_name(other), None, "{other:?}");
+        }
+    }
 }

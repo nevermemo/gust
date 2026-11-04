@@ -1,4 +1,4 @@
-//! `gust-artifacts/manifest.json`, schema 1 (D45).
+//! `gust-artifacts/manifest.json`, schema 1, or schema 2 once a kernel is not a `grid` kernel (D45, D89).
 //!
 //! The manifest is the tool-owned index of a kernel crate's committed artifacts. It is required once a crate uses
 //! artifacts: `cargo gust init` creates an empty one, the `#[gpu]` macro includes it so that cargo re-expands the
@@ -52,20 +52,29 @@
 //! - `validated` is present for `spirv` only: `true` when `spirv-val --target-env vulkan1.2` accepted the module and
 //!   `false` when the tool was not on `PATH` (never a silent pass). A failed validation writes nothing.
 //! - `slang` is the build tag the native helper wrote into every reflection JSON of the set.
+//! - `schema` is 1 unless a kernel's shape is not `grid` (mx.k, D89). Then it is 2, and every kernel carries `"shape":
+//!   "grid" | "pixel"` (the last key of its object). A manifest of `grid` kernels only is
+//!   schema 1 and has no `shape` key anywhere, byte for byte what it was before shapes existed; `cargo gust init`
+//!   writes schema 1. Schema 1 reads as all-`grid`; a `shape` in a schema 1 manifest is an unknown key. A schema 2
+//!   entry without `shape` reads as `grid`, but `render` writes it, so such a file is not canonical.
 //! - The SHA-256 values protect the committed files from accidents the FNV-1a hashes inside the reflection JSON
 //!   (D17 schema 1) are too weak to be trusted with; neither defends against an adversary (R4.4).
 
 use std::collections::HashSet;
 
-use gust::Format;
+use gust::{Format, Shape};
 
 use crate::json::{self, Json};
 
 /// The file name of the manifest inside `gust-artifacts/`.
 pub(crate) const MANIFEST_FILE: &str = "manifest.json";
 
-/// The only manifest schema this tool reads and writes.
+/// The manifest schema of a crate whose kernels are all `grid`: what `cargo gust init` writes.
 pub(crate) const SCHEMA: u32 = 1;
+
+/// The manifest schema of a crate with a kernel whose shape is not `grid` (mx.k, D89): schema 1 plus `shape` per
+/// kernel.
+pub(crate) const SHAPE_SCHEMA: u32 = 2;
 
 /// The manifest of a kernel crate's `gust-artifacts/` directory.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -81,6 +90,8 @@ pub(crate) struct KernelEntry {
     pub(crate) module: String,
     pub(crate) name: String,
     pub(crate) entry_point: String,
+    /// The kernel's shape (`grid` for every kernel of a schema 1 manifest).
+    pub(crate) shape: Shape,
     pub(crate) clean_sha256: String,
     /// Storage parameters whose layout came from the reflection (see the module docs), in parameter order.
     pub(crate) export_unchecked: Vec<String>,
@@ -145,9 +156,23 @@ impl Manifest {
         Self::default()
     }
 
+    /// The schema [`Manifest::render`] writes: 2 when a kernel's shape is not `grid`, else 1.
+    pub(crate) fn schema(&self) -> u32 {
+        if self
+            .kernels
+            .iter()
+            .any(|kernel| kernel.shape != Shape::Grid)
+        {
+            SHAPE_SCHEMA
+        } else {
+            SCHEMA
+        }
+    }
+
     /// The manifest as text. Kernels are sorted by key and formats by [`format_rank`], whatever order they were added
     /// in, so equal contents always give equal bytes.
     pub(crate) fn render(&self) -> String {
+        let schema = self.schema();
         let mut kernels: Vec<&KernelEntry> = self.kernels.iter().collect();
         kernels.sort_by(|a, b| a.key.cmp(&b.key));
         let kernels = kernels
@@ -166,6 +191,9 @@ impl Manifest {
                         Json::Array(formats.into_iter().map(format_json).collect()),
                     ),
                 ];
+                if schema == SHAPE_SCHEMA {
+                    members.push(("shape", Json::text(kernel.shape.name())));
+                }
                 if !kernel.export_unchecked.is_empty() {
                     members.push((
                         "export_unchecked",
@@ -182,7 +210,7 @@ impl Manifest {
             })
             .collect();
         Json::object(vec![
-            ("schema", Json::number(u64::from(SCHEMA))),
+            ("schema", Json::number(u64::from(schema))),
             (
                 "slang",
                 self.slang.as_deref().map_or(Json::Null, Json::text),
@@ -198,11 +226,14 @@ impl Manifest {
     pub(crate) fn parse(text: &str) -> Result<Self, String> {
         let root = json::parse(text)?;
         only_keys(&root, &["schema", "slang", "kernels"], "manifest")?;
-        if root.field("schema", "manifest")?.as_u32() != Some(SCHEMA) {
-            return Err(format!(
-                "manifest: unsupported schema (this tool reads schema {SCHEMA})"
-            ));
-        }
+        let schema = match root.field("schema", "manifest")?.as_u32() {
+            Some(schema @ (SCHEMA | SHAPE_SCHEMA)) => schema,
+            _ => {
+                return Err(format!(
+                    "manifest: unsupported schema (this tool reads schemas {SCHEMA} and {SHAPE_SCHEMA})"
+                ));
+            }
+        };
         let slang = {
             let value = root.field("slang", "manifest")?;
             if value.is_null() {
@@ -225,7 +256,7 @@ impl Manifest {
             .iter()
             .enumerate()
         {
-            let entry = parse_kernel(kernel, &format!("kernels[{index}]"))?;
+            let entry = parse_kernel(kernel, schema, &format!("kernels[{index}]"))?;
             if !seen.insert(entry.key.clone()) {
                 return Err(format!("manifest: key `{}` appears twice", entry.key));
             }
@@ -288,20 +319,36 @@ fn hex_field(value: &Json, key: &str, length: usize, context: &str) -> Result<St
     }
 }
 
-fn parse_kernel(value: &Json, context: &str) -> Result<KernelEntry, String> {
-    only_keys(
-        value,
-        &[
-            "key",
-            "module",
-            "name",
-            "entry_point",
-            "clean_sha256",
-            "export_unchecked",
-            "formats",
-        ],
-        context,
-    )?;
+fn parse_kernel(value: &Json, schema: u32, context: &str) -> Result<KernelEntry, String> {
+    // `shape` is a schema 2 key: under schema 1 it is as unknown as any other, so a reader of schema 1 and this one
+    // agree on what a schema 1 file is.
+    let shape_key: &[&str] = if schema == SHAPE_SCHEMA {
+        &["shape"]
+    } else {
+        &[]
+    };
+    let mut allowed = vec![
+        "key",
+        "module",
+        "name",
+        "entry_point",
+        "clean_sha256",
+        "export_unchecked",
+        "formats",
+    ];
+    allowed.extend(shape_key);
+    only_keys(value, &allowed, context)?;
+    let shape = match value.get("shape") {
+        None => Shape::Grid,
+        Some(found) => {
+            let name = found
+                .as_str()
+                .ok_or_else(|| format!("{context}: `shape` must be a string"))?;
+            Shape::from_name(name).ok_or_else(|| {
+                format!("{context}: unknown shape `{name}` (expected `grid` or `pixel`)")
+            })?
+        }
+    };
     let export_unchecked = match value.get("export_unchecked") {
         None => Vec::new(),
         Some(list) => {
@@ -351,6 +398,7 @@ fn parse_kernel(value: &Json, context: &str) -> Result<KernelEntry, String> {
         module: text(value, "module", context)?,
         name: text(value, "name", context)?,
         entry_point: text(value, "entry_point", context)?,
+        shape,
         clean_sha256: hex_field(value, "clean_sha256", 64, context)?,
         key,
         export_unchecked,
@@ -422,6 +470,7 @@ mod tests {
             module: "demo".to_owned(),
             name: name.to_owned(),
             entry_point: format!("gpu_demo_{name}"),
+            shape: Shape::Grid,
             clean_sha256: "e".repeat(64),
             export_unchecked: Vec::new(),
             formats,
@@ -550,7 +599,14 @@ mod tests {
         .render();
         assert!(Manifest::parse(&good).is_ok());
         for (what, bad) in [
-            ("schema 2", good.replace("\"schema\": 1", "\"schema\": 2")),
+            ("schema 3", good.replace("\"schema\": 1", "\"schema\": 3")),
+            (
+                "a shape under schema 1",
+                good.replace(
+                    "\"name\": \"run\"",
+                    "\"name\": \"run\",\n      \"shape\": \"grid\"",
+                ),
+            ),
             (
                 "unknown top-level key",
                 good.replace("\"schema\"", "\"extra\": 0,\n  \"schema\""),
@@ -595,6 +651,93 @@ mod tests {
                 .unwrap_err()
                 .contains("appears twice")
         );
+    }
+
+    /// A manifest with one pixel kernel among grid kernels: the only way to make a schema 2 manifest today, since the
+    /// macro expands no pixel kernel yet.
+    fn manifest_with_a_pixel_kernel() -> Manifest {
+        let mut pixel = sample_kernel("0123456789abcdef", "run", false);
+        pixel.shape = Shape::Pixel;
+        Manifest {
+            slang: Some("2026.13.1-test".to_owned()),
+            kernels: vec![sample_kernel("00000000000000ff", "grid_one", false), pixel],
+        }
+    }
+
+    #[test]
+    fn a_grid_manifest_is_schema_1_with_no_shape_and_a_pixel_kernel_makes_it_schema_2() {
+        // Every manifest written before shapes existed: schema 1, no `shape`, byte for byte (also pinned above).
+        let grid = Manifest {
+            slang: Some("2026.13.1-test".to_owned()),
+            kernels: vec![
+                sample_kernel("0123456789abcdef", "run", true),
+                sample_kernel("00000000000000ff", "other", false),
+            ],
+        };
+        assert_eq!(grid.schema(), SCHEMA);
+        let grid_text = grid.render();
+        assert!(grid_text.contains("\"schema\": 1") && !grid_text.contains("shape"));
+        assert_eq!(Manifest::empty().schema(), SCHEMA);
+        // One non-grid kernel moves the number, and then every kernel names its shape.
+        let mixed = manifest_with_a_pixel_kernel();
+        assert_eq!(mixed.schema(), SHAPE_SCHEMA);
+        let text = mixed.render();
+        assert!(text.contains("\"schema\": 2"), "{text}");
+        assert_eq!(text.matches("\"shape\": \"pixel\"").count(), 1, "{text}");
+        assert_eq!(text.matches("\"shape\": \"grid\"").count(), 1, "{text}");
+        // `shape` is the last key of the entry, after `name`.
+        assert!(
+            text.contains("\"name\": \"run\",\n      \"shape\": \"pixel\"\n    }"),
+            "{text}"
+        );
+        assert_eq!(Manifest::parse(&text).unwrap(), mixed);
+        // Apart from the number and the key, the entries are the schema 1 entries.
+        let without = text
+            .replace("\"schema\": 2", "\"schema\": 1")
+            .replace(",\n      \"shape\": \"grid\"", "")
+            .replace(",\n      \"shape\": \"pixel\"", "");
+        let mut as_grid = mixed.clone();
+        as_grid.kernels[1].shape = Shape::Grid;
+        assert_eq!(without, as_grid.render());
+    }
+
+    #[test]
+    fn a_schema_1_manifest_reads_as_all_grid_and_a_schema_2_entry_without_a_shape_is_grid() {
+        let good = Manifest {
+            slang: Some("s".to_owned()),
+            kernels: vec![sample_kernel("0123456789abcdef", "run", true)],
+        }
+        .render();
+        let parsed = Manifest::parse(&good).unwrap();
+        assert!(
+            parsed
+                .kernels
+                .iter()
+                .all(|kernel| kernel.shape == Shape::Grid)
+        );
+        // A schema 2 file whose entry has no `shape` reads as grid; it is not canonical, since `render` of a manifest
+        // with no pixel kernel is schema 1 (`check` reports that as a hand edit).
+        let lenient = good.replace("\"schema\": 1", "\"schema\": 2");
+        let parsed = Manifest::parse(&lenient).unwrap();
+        assert_eq!(parsed.kernels[0].shape, Shape::Grid);
+        assert_ne!(parsed.render(), lenient);
+    }
+
+    #[test]
+    fn a_bad_shape_in_a_schema_2_manifest_is_named() {
+        let text = manifest_with_a_pixel_kernel().render();
+        for (value, wanted) in [
+            ("\"cpu\"", "unknown shape `cpu`"),
+            ("\"Pixel\"", "unknown shape `Pixel`"),
+            ("3", "`shape` must be a string"),
+        ] {
+            let bad = text.replace("\"shape\": \"pixel\"", &format!("\"shape\": {value}"));
+            let error = Manifest::parse(&bad).unwrap_err();
+            assert!(
+                error.contains(wanted) && error.contains("kernels["),
+                "{value}: {error}"
+            );
+        }
     }
 
     #[test]

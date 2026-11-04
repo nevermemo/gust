@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use gust::{Artifact, Format, KernelDescriptor};
+use gust::{Artifact, Format, KernelDescriptor, Shape};
 
 /// Observable state of one device's compiled-kernel cache.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -48,6 +48,9 @@ pub(crate) struct KernelCacheKey {
     slang_bytes: usize,
     parameters_address: usize,
     parameters: usize,
+    /// The shape (mx.k): the stage of the entry point, and so what kind of pipeline the entry point makes. Two
+    /// descriptors that differ only in it never share a pipeline.
+    shape: Shape,
     workgroup_size: [u32; 3],
     artifact_address: usize,
     artifact_bytes: usize,
@@ -66,6 +69,7 @@ impl KernelCacheKey {
             slang_bytes: kernel.slang_source.len(),
             parameters_address: kernel.parameters.as_ptr() as usize,
             parameters: kernel.parameters.len(),
+            shape: kernel.shape,
             workgroup_size: kernel.workgroup_size,
             artifact_address: artifact.map_or(0, |artifact| artifact.bytes.as_ptr() as usize),
             artifact_bytes: artifact.map_or(0, |artifact| artifact.bytes.len()),
@@ -114,6 +118,7 @@ mod tests {
         module: "cache_test",
         name: "kernel",
         entry_point: "cache_test_kernel",
+        shape: Shape::Grid,
         workgroup_size: [64, 1, 1],
         parameters: &[],
         slang_source: "void cache_test_kernel() {}",
@@ -194,6 +199,16 @@ mod tests {
         };
         assert_eq!(shorter.reflection.as_ptr(), BASE.reflection.as_ptr());
         assert_ne!(key(&with(BASE)), key(&with(shorter)));
+    }
+
+    #[test]
+    fn descriptors_that_differ_only_in_the_shape_have_different_keys() {
+        let pixel = KernelDescriptor {
+            shape: Shape::Pixel,
+            ..KERNEL
+        };
+        assert_ne!(key(&KERNEL), key(&pixel));
+        assert_eq!(key(&pixel), key(&pixel));
     }
 
     #[test]

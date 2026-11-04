@@ -158,7 +158,7 @@ pub use abi::{
 pub use artifact::{Artifact, Format};
 pub use descriptor::{
     Access, Kernel, KernelDescriptor, LineSpan, ModuleDescriptor, ParameterDescriptor,
-    ParameterKind, ResourceBinding, SourceOrigin,
+    ParameterKind, ResourceBinding, Shape, SourceOrigin,
 };
 pub use dispatch::{
     Arg, BindingKind, Call, Extent, Independent, LengthRule, Resource, Run, TypedDevice, kind,

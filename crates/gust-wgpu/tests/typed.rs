@@ -43,6 +43,7 @@ const fn descriptor(
         module: "typed_tests",
         name,
         entry_point,
+        shape: gust::Shape::Grid,
         workgroup_size: [64, 1, 1],
         parameters,
         slang_source,

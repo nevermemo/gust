@@ -471,3 +471,28 @@ fn a_recompile_without_spirv_val_says_so_instead_of_reporting_a_bare_manifest_di
         report.problems
     );
 }
+
+#[test]
+fn a_manifest_entry_whose_shape_differs_from_the_record_is_reported() {
+    // Two pixel kernels make a canonical schema 2 manifest; one entry hand-edited to "grid" keeps it canonical (the
+    // other kernel is still a pixel kernel), so only the comparison with the record can see it.
+    let mut records = kernels();
+    for record in &mut records {
+        record.shape = gust::Shape::Pixel;
+    }
+    let good = planned(records.clone(), &[Format::Wgsl]);
+    let mut state = state_of(&good);
+    assert!(String::from_utf8_lossy(state.file(MANIFEST_FILE).unwrap()).contains("\"schema\": 2"));
+    assert_eq!(check(&records, &state), Report::default());
+    let mut manifest = good.manifest.clone();
+    manifest.kernels[0].shape = gust::Shape::Grid;
+    set_file(&mut state, MANIFEST_FILE, manifest.render().as_bytes());
+    let report = check(&records, &state);
+    assert_eq!(report.problems.len(), 1, "{:?}", report.problems);
+    assert!(
+        report.problems[0].contains("the manifest has shape `grid`, the source has `pixel`")
+            && report.problems[0].contains("run `cargo gust build`"),
+        "{:?}",
+        report.problems
+    );
+}

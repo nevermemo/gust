@@ -2,8 +2,8 @@
 //! from them.
 //!
 //! For every kernel the macro writes `<key>.slang` (the clean Slang text, exact bytes) and `<key>.kernel.json`
-//! (schema 1, or schema 2 for a `par_for!` call) under `<GUST_EXPORT_DIR>/<CARGO_PKG_NAME>/`. The JSON holds what
-//! the tool needs to rebuild the
+//! (schema 1, schema 2 for a `par_for!` call, or schema 3 for a kernel whose shape is not `grid`) under
+//! `<GUST_EXPORT_DIR>/<CARGO_PKG_NAME>/`. The JSON holds what the tool needs to rebuild the
 //! descriptor without a compiler: `schema`, `key`, `module`, `name`, `entry_point`, `workgroup_size` (three numbers),
 //! `parameters` (each `name`, `rust_type`, `kind` of `invocation`, `storage`, `uniform` or `value`, `access` of
 //! `read_only`, `read_write` or `not_applicable`, `binding` as `{"group": 0, "binding": n}` or null, and `layout`:
@@ -24,13 +24,20 @@
 //! `<key>.<site16>.site.json` (`schema` 2, `key`, `file`, `lines` as above). The reader takes a schema 2 record's
 //! `file` and `lines` from its call sites: [`Record::sites`] holds them all, sorted by (file, first Rust line), and the
 //! descriptor it builds has the origin of the first.
+//!
+//! Schema 3 (mx.k, D89) is schema 2's grammar plus an optional `shape` (`grid` or `pixel`; absent means `grid`), and
+//! the macro writes it only for a kernel whose shape is not `grid`: a `grid` kernel keeps schema 1 (a `#[gpu]` module
+//! or function) or schema 2 (a `par_for!` call), byte for byte. `source` is optional in schema 3: a record that has one
+//! is read like schema 1, one that has none like schema 2, with its call sites in sidecars. The number moves so that a
+//! reader of schemas 1 and 2 refuses a non-grid record instead of reading it as `grid`; this reader also refuses a
+//! `shape` in a record that says schema 1 or 2.
 
 use std::{fs, path::Path};
 
 use gust::{
     Access, KernelDescriptor, LineSpan, ParameterDescriptor, ParameterKind, ResourceBinding,
-    ResourceLayout, ScalarKind, ShaderLayoutRules, SourceOrigin, StructFieldLayout, TypeLayout,
-    TypeLayoutKind, artifact::content_key,
+    ResourceLayout, ScalarKind, ShaderLayoutRules, Shape, SourceOrigin, StructFieldLayout,
+    TypeLayout, TypeLayoutKind, artifact::content_key,
 };
 
 use crate::{
@@ -42,6 +49,11 @@ use crate::{
 pub(crate) const RECORD_SCHEMA: u32 = 1;
 /// The schema of a `par_for!` record and of its sidecars: no `source` in the record, one sidecar per call site.
 pub(crate) const SITE_RECORD_SCHEMA: u32 = 2;
+/// The schema of a record whose kernel has a shape other than `grid` (mx.k): schema 2's grammar plus `shape`.
+pub(crate) const SHAPE_RECORD_SCHEMA: u32 = 3;
+/// Every record schema this tool reads (`RECORD_SCHEMA` of D89 is this set).
+pub(crate) const RECORD_SCHEMAS: [u32; 3] =
+    [RECORD_SCHEMA, SITE_RECORD_SCHEMA, SHAPE_RECORD_SCHEMA];
 
 /// The suffix of the file that holds a record's JSON.
 pub(crate) const JSON_SUFFIX: &str = ".kernel.json";
@@ -58,6 +70,8 @@ pub(crate) struct Record {
     pub(crate) module: String,
     pub(crate) name: String,
     pub(crate) entry_point: String,
+    /// The kernel's shape: `grid` when the record has no `shape` (schemas 1 and 2, and a schema 3 record without one).
+    pub(crate) shape: Shape,
     pub(crate) workgroup_size: [u32; 3],
     pub(crate) parameters: Vec<ParameterRecord>,
     /// The recorded Rust source file (relative, `/` separators); empty when unknown. For a schema 2 record: the
@@ -195,23 +209,51 @@ impl Record {
     /// [`Record::parse_any`] without the schema.
     #[cfg(test)]
     pub(crate) fn parse(json_text: &str, slang: &str) -> Result<Self, String> {
-        Self::parse_any(json_text, slang).map(|(record, _)| record)
+        Self::parse_any(json_text, slang).map(|(record, _, _)| record)
     }
 
-    /// Read a record from the text of its `.kernel.json` and its `.slang`, and give its schema.
+    /// Read a record from the text of its `.kernel.json` and its `.slang`, and give its schema and whether its call
+    /// sites are in sidecars.
     ///
     /// Also checks that the stored key is the key of the entry point and the Slang text, so a `.slang` and a `.json`
     /// that belong to different kernels (two kernels whose keys collide would overwrite each other's files) are an
-    /// error, not a silent mix. A schema 2 record comes back without a source origin: its call sites are in its
-    /// sidecars ([`read_records`] attaches the first).
-    fn parse_any(json_text: &str, slang: &str) -> Result<(Self, u32), String> {
+    /// error, not a silent mix. A record without a `source` (schema 2, or schema 3 without one) comes back without a
+    /// source origin: its call sites are in its sidecars ([`read_records`] attaches the first).
+    fn parse_any(json_text: &str, slang: &str) -> Result<(Self, u32, bool), String> {
+        Self::parse_schemas(json_text, slang, &RECORD_SCHEMAS)
+    }
+
+    /// [`Record::parse_any`] for a reader that knows only the schemas in `accepted`: a reader from before mx.k is
+    /// `[1, 2]`, and it refuses a schema 3 record (a non-grid kernel) instead of reading it as `grid`.
+    fn parse_schemas(
+        json_text: &str,
+        slang: &str,
+        accepted: &[u32],
+    ) -> Result<(Self, u32, bool), String> {
         let root = json::parse(json_text)?;
         let schema = match root.field("schema", "record")?.as_u32() {
-            Some(schema @ (RECORD_SCHEMA | SITE_RECORD_SCHEMA)) => schema,
+            Some(schema) if accepted.contains(&schema) => schema,
             _ => {
                 return Err(format!(
-                    "record: unsupported schema (this tool reads schemas {RECORD_SCHEMA} and {SITE_RECORD_SCHEMA}); regenerate it with a matching gust-macros"
+                    "record: unsupported schema (this tool reads schemas {}); regenerate it with a matching gust-macros",
+                    schema_list(accepted)
                 ));
+            }
+        };
+        // `shape` belongs to schema 3: the number is what keeps an older reader from misreading a non-grid kernel, so
+        // a record that carries one under another number is malformed, not "grid".
+        let shape = match root.get("shape") {
+            None => Shape::Grid,
+            Some(_) if schema != SHAPE_RECORD_SCHEMA => {
+                return Err(format!(
+                    "record: a schema {schema} record has no `shape` (it is a schema {SHAPE_RECORD_SCHEMA} key; the number is what keeps an older reader from reading a non-grid kernel as `grid`)"
+                ));
+            }
+            Some(value) => {
+                let name = value.as_str().ok_or("record: `shape` must be a string")?;
+                Shape::from_name(name).ok_or_else(|| {
+                    format!("record: unknown shape `{name}` (expected `grid` or `pixel`)")
+                })?
             }
         };
         let key = string(&root, "key", "record")?;
@@ -238,7 +280,13 @@ impl Record {
             .enumerate()
             .map(|(index, parameter)| parse_parameter(parameter, &format!("parameters[{index}]")))
             .collect::<Result<Vec<_>, _>>()?;
-        let (file, lines) = if schema == SITE_RECORD_SCHEMA {
+        // Schema 2 never names a source; schema 3 names one or not, and then it is read like schema 1 or like schema 2.
+        let sited = match schema {
+            SITE_RECORD_SCHEMA => true,
+            SHAPE_RECORD_SCHEMA => root.get("source").is_none(),
+            _ => false,
+        };
+        let (file, lines) = if sited {
             // The call sites are the sidecars' business; a record that names a source would differ between two calls
             // with equal bodies, which is what schema 2 exists to avoid.
             if root.get("source").is_some() {
@@ -260,6 +308,7 @@ impl Record {
             module: string(&root, "module", "record")?,
             name: string(&root, "name", "record")?,
             entry_point,
+            shape,
             workgroup_size,
             parameters,
             file,
@@ -267,18 +316,24 @@ impl Record {
             slang: slang.to_owned(),
             sites: Vec::new(),
         };
-        Ok((record, schema))
+        Ok((record, schema, sited))
     }
 
-    /// Give a schema 2 record its call sites, sorted by (file, first Rust line) with the order of the sidecars' file
-    /// names breaking a tie, and take its origin from the first.
-    fn with_sites(mut self, schema: u32, mut sites: Vec<Site>) -> Result<Self, String> {
-        if schema != SITE_RECORD_SCHEMA {
+    /// Give a record whose call sites are in sidecars (`sited`: schema 2, or schema 3 without a `source`) those sites,
+    /// sorted by (file, first Rust line) with the order of the sidecars' file names breaking a tie, and take its origin
+    /// from the first.
+    fn with_sites(
+        mut self,
+        schema: u32,
+        sited: bool,
+        mut sites: Vec<Site>,
+    ) -> Result<Self, String> {
+        if !sited {
             if sites.is_empty() {
                 return Ok(self);
             }
             return Err(format!(
-                "record `{}` is schema {schema}, which has no call sites, but a site file of its key exists",
+                "record `{}` is schema {schema} with its own `source`, so it has no call sites, but a site file of its key exists",
                 self.key
             ));
         }
@@ -290,7 +345,7 @@ impl Record {
         });
         let Some(first) = sites.first() else {
             return Err(format!(
-                "record `{}` is schema 2 but has no `{}.<16 hex digits>{SITE_SUFFIX}` file: a par_for! kernel needs at least one call site",
+                "record `{}` is schema {schema} but has no `{}.<16 hex digits>{SITE_SUFFIX}` file: a par_for! kernel needs at least one call site",
                 self.key, self.key
             ));
         };
@@ -381,6 +436,7 @@ impl Record {
             module: leak(&self.module),
             name: leak(&self.name),
             entry_point: leak(&self.entry_point),
+            shape: self.shape,
             workgroup_size: self.workgroup_size,
             parameters: Box::leak(parameters.into_boxed_slice()),
             slang_source: leak(&self.slang),
@@ -393,6 +449,18 @@ impl Record {
                 }
             },
             artifacts: &[],
+        }
+    }
+}
+
+/// `1, 2 and 3`: the schemas a reader knows, as its refusal names them.
+fn schema_list(schemas: &[u32]) -> String {
+    match schemas {
+        [] => "none".to_owned(),
+        [only] => only.to_string(),
+        [rest @ .., last] => {
+            let rest: Vec<String> = rest.iter().map(u32::to_string).collect();
+            format!("{} and {last}", rest.join(", "))
         }
     }
 }
@@ -657,7 +725,7 @@ pub(crate) fn read_records(directory: &Path) -> Result<Vec<Record>, String> {
         }
         let slang = read_text(&directory.join(&slang_name), &slang_name)?;
         let json = read_text(&directory.join(&json_name), &json_name)?;
-        let (record, schema) =
+        let (record, schema, sited) =
             Record::parse_any(&json, &slang).map_err(|error| format!("{json_name}: {error}"))?;
         if record.key != stem {
             return Err(format!(
@@ -671,7 +739,7 @@ pub(crate) fn read_records(directory: &Path) -> Result<Vec<Record>, String> {
             sites.push(Site::parse(&text, stem).map_err(|error| format!("{site_name}: {error}"))?);
         }
         let record = record
-            .with_sites(schema, sites)
+            .with_sites(schema, sited, sites)
             .map_err(|error| format!("{json_name}: {error}"))?;
         records.push(record);
     }

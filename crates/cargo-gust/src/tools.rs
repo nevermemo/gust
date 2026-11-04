@@ -50,10 +50,23 @@ pub(crate) fn helper_hint() -> &'static str {
     "build it with `cargo gust slang build-helper` (in the GUST repository `cargo xtask build-slang-reflect` does the same), or set GUST_SLANG_REFLECT to the helper executable"
 }
 
+/// The reflection schema a helper must write for this tool to use it (mx.k): every compile passes the kernel's stage
+/// as a seventh argument, which a helper of schema 1 or 2 refuses with its usage text.
+pub(crate) const REQUIRED_HELPER_SCHEMA: &str = "3";
+
 /// Read the Slang build tag from the output of `gust-slang-reflect --version`:
-/// `gust-slang-reflect schema=<1|2|3> slang=<tag>` (the highest reflection schema the helper writes).
+/// `gust-slang-reflect schema=3 slang=<tag>`. A helper of schema 1 or 2 is refused, naming the schema found and the
+/// rebuild command; [`parse_helper_report`] reads any schema, for the build's staleness check.
 pub(crate) fn parse_helper_version(output: &str) -> Result<String, String> {
-    parse_helper_report(output).map(|(_, tag)| tag)
+    let (schema, tag) = parse_helper_report(output)?;
+    if schema != REQUIRED_HELPER_SCHEMA {
+        return Err(format!(
+            "the helper reports schema {schema}, but this tool needs schema {REQUIRED_HELPER_SCHEMA} (a helper of an \
+             older schema cannot take the stage argument); rebuild it with `cargo gust slang build-helper --force` \
+             (in the GUST repository `cargo xtask build-slang-reflect --force`)"
+        ));
+    }
+    Ok(tag)
 }
 
 /// The schema and the Slang build tag of the output of `gust-slang-reflect --version`, with the refusals of
@@ -118,19 +131,27 @@ mod tests {
     #[test]
     fn the_helper_version_line_gives_the_slang_tag() {
         assert_eq!(
-            parse_helper_version("gust-slang-reflect schema=1 slang=2026.13.1-1-g84792eb15\n")
+            parse_helper_version("gust-slang-reflect schema=3 slang=2026.13.1-1-g84792eb15\n")
                 .unwrap(),
             "2026.13.1-1-g84792eb15"
         );
-        // The grown helpers (schemas 2 and 3) name the same tag.
-        for schema in ["2", "3"] {
-            assert_eq!(
-                parse_helper_version(&format!(
-                    "gust-slang-reflect schema={schema} slang=2026.13.1-1-g84792eb15\n"
-                ))
-                .unwrap(),
-                "2026.13.1-1-g84792eb15"
+        // A helper of schema 1 or 2 cannot take the stage argument (mx.k): refused, with the schema and the rebuild.
+        for schema in ["1", "2"] {
+            let error = parse_helper_version(&format!(
+                "gust-slang-reflect schema={schema} slang=2026.13.1-1-g84792eb15\n"
+            ))
+            .unwrap_err();
+            assert!(
+                error.contains(&format!("reports schema {schema}"))
+                    && error.contains("needs schema 3")
+                    && error.contains("cargo gust slang build-helper --force"),
+                "{schema}: {error}"
             );
+        }
+        // The build's staleness check still reads every schema, to say what is stale.
+        for schema in ["1", "2", "3"] {
+            let output = format!("gust-slang-reflect schema={schema} slang=x\n");
+            assert_eq!(parse_helper_report(&output).unwrap().0, schema);
         }
         for (bad, expected) in [
             ("", "unexpected"),

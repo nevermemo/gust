@@ -248,9 +248,21 @@ of call sites, so its record is schema 2 and has no `source`: equal bodies write
 record bytes (`write_once` makes the second write a no-op). Each call site writes a
 sidecar `<key>.<site16>.site.json` (`schema` 2, `key`, `file`, `lines`), where `site16`
 is FNV-1a 64 over the relative file, a zero byte and the decimal line of the call.
-`cargo gust` reads both schemas; the record keeps every call site, sorted by file and first line, and the
+`cargo gust` reads schemas 1, 2 and 3; the record keeps every call site, sorted by file and first line, and the
 `SourceOrigin` of a schema 2 kernel is the first one's. A `.site.json` next to a schema 1 record, a schema 2
 record without one, and a sidecar of another key are errors.
+
+Shapes (slice mx.k, D89). `gust::Shape` (`Grid`, `Pixel`; `#[non_exhaustive]`) is a field of `KernelDescriptor`, set
+by the macro from the stage profile, and it picks the `slangc -stage` (`compute` or `fragment`) in `gust::slang`,
+`gust::reflect` (also the reflection helper's explicit last argument) and `cargo gust` (`build`, `check --recompile`).
+It is not part of the content key: the stage is already in the clean Slang text, so one body under two shapes gives
+two keys. Schema 3 is schema 2's grammar plus an optional `shape` (`grid` or `pixel`; absent means `grid`) and an
+optional `source` (a record with one is read like schema 1, one without like schema 2). The macro writes it only for a
+kernel whose shape is not `grid`: a `#[gpu]` grid kernel keeps schema 1 and a `par_for!` grid kernel keeps schema 2,
+byte for byte. A reader of schemas 1 and 2 refuses a schema 3 record, and a `shape` in a record that says schema 1 or
+2 is an error. The manifest (`gust-artifacts/manifest.json`) is schema 1 while every kernel is a grid kernel (no
+`shape` key anywhere; `cargo gust init` writes it) and schema 2 once one is not: then every kernel entry carries
+`shape`. A schema 1 manifest reads as all grid, and `check` compares each entry's shape with its record's.
 
 Layouts in the record (slice m7.lv). A parameter's `layout` is `null` or `{rules, element_stride, element}`. `rules` is
 `storage_v1` (a padding-free element of scalars and structs of them), `storage_v2` (a storage element that holds a

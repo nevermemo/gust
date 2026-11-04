@@ -507,7 +507,7 @@ fn a_kernel_with_workgroup_memory_or_a_barrier_must_say_cpu_unsupported_e0717() 
 }
 
 #[test]
-fn cpu_lockstep_is_not_available_yet_e0709() {
+fn cpu_lockstep_is_not_a_cpu_strategy_e0709() {
     let source = module(
         "workgroup_size(64, 1, 1), cpu = \"lockstep\"",
         "",
@@ -517,7 +517,11 @@ fn cpu_lockstep_is_not_available_yet_e0709() {
     assert_rejected(&source, Code::UnknownCpuValue);
     let output = expansion(&source, Profile::Other).to_string();
     assert!(output.contains("lockstep"), "{output}");
-    assert!(output.contains("not available yet"), "{output}");
+    assert!(
+        output.contains("GUST defines none for barrier kernels (D118)"),
+        "{output}"
+    );
+    assert!(!output.contains("not available yet"), "{output}");
 }
 
 #[test]

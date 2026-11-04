@@ -207,10 +207,12 @@ test module; do not mix that mechanical move with behavior changes.
   output (`map_on`, `map_gpu`; m7.a1 review N2: name it in m7.a2's timing conditions).
 - Tidy follow-ups (m7.t1): the `element()` lookup is shared (m7.t2) and the ETXTBSY flake is fixed (m7.f1); the
   rest of the cleanup scout's list waits for the M7 close.
-- gust-algo GPU lib tests: once, on `1278b61`, the test binary died with STATUS_ACCESS_VIOLATION (0xc0000005)
-  while `gpu_v1_float_sum_of_the_tie_ladder_is_within_the_bound` and `gpu_v1_runs_the_deepest_schedules` ran (over
-  60 s, other lanes' gates on the machine); the rerun alone passed. If it repeats, run the binary alone with
-  `--test-threads=1` and capture the faulting test before suspecting the driver.
+- gust-algo GPU lib tests: twice, on `1278b61` and on `88ac459`, the test binary died with STATUS_ACCESS_VIOLATION
+  (0xc0000005) while `gpu_v1_float_sum_of_the_tie_ladder_is_within_the_bound` and `gpu_v1_runs_the_deepest_schedules`
+  ran (over 60 s each, other lanes' builds on the machine, about 2.7 GB of video memory spilled to shared memory the
+  second time). Both times the same tests passed later in the same gate run, and on `88ac459` the binary alone passed
+  with one thread and twice with default threads. Not reproduced alone, so the faulting test is unknown. Next: a
+  slice that runs the deepest GPU tests serially (one device, or a test lock), and a run under a second GPU process.
 - m7.p follow-ups: `doctor` and `check` list only a `par_for!` kernel's origin site (`Record.sites` holds them all);
   the naga layout gate skips `par_for!` kernels (take their descriptors through the hidden `descriptor;` form, or
   delete it); the over-cap error is `map::Error::Device`, not an extent variant (needs `Extent` in
@@ -225,6 +227,9 @@ test module; do not mix that mechanical move with behavior changes.
 - m7.r4 follow-ups: a pre-registered statistic for any re-run (the 890M half, D121, kept v1 on a reading chosen
   after the run); re-measure if the pool's zeroing or an unzeroed `GpuVec` constructor
   lands (the small-size win is per-call overhead); a public way to learn which variant (and so which f32 bound) ran.
+- m7.c follow-ups: the `cpu` map copies its host slices once in `bind` before the chunked read; borrowing them
+  would cut vector-add's serial part (m7.c review). `par_for!` and user kernels stay sequential on the `cpu` target
+  (D119); a chunked `par_for!` would need its own write-set proof.
 - m7.a2 follow-ups: the README map table's published run in a quiet window (replaces the provisional smoke table);
   a `#[gpu] fn` from an artifact under `native` (the workspace profile pin requires `slang-runtime` on every
   example's gust-wgpu, and `native` refuses it; tests/precompiled has no `#[gpu] fn`); `map_async` in a browser has

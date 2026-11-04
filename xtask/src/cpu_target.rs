@@ -7,7 +7,9 @@
 //!
 //! - E-a: `app` built in release under `GUST_PROFILE=cpu` and run: one `CPU target: matches (..)` line per kernel,
 //!   the line of the map case (`CPU target: map calls match (..)`, exactly once; the map functions exist only under
-//!   this profile, so a missing line is a case that did not run) and the final line, exit 0. Every step that runs or
+//!   this profile, so a missing line is a case that did not run; it includes the parallel map of m7.c, whose cases run
+//!   before the line is printed), the line of the par_for case (`CPU target: par_for calls match (..)`, exactly once) and
+//!   the final line, exit 0. Every step that runs or
 //!   scans a binary (E-a, E-b, E-c, E-h) takes its path from the `executable` of cargo's own `compiler-artifact`
 //!   record ([`executable_of`]), never from a guessed `<dir>/release/app`, so a `build.target` or
 //!   `CARGO_BUILD_TARGET` cannot make it use an old binary.
@@ -64,6 +66,11 @@ const MATCH_PREFIX: &str = "CPU target: matches (";
 /// What `app` prints, exactly once, when the map case of the kernels crate ran and every map call matched its host
 /// reference (`#[gust::gpu]` on a function, M7). Not a `matches` line: it names no kernel of [`KERNELS`].
 pub(crate) const MAP_LINE_PREFIX: &str = "CPU target: map calls match (";
+
+/// What `app` prints, exactly once, when the `par_for!` case of the kernels crate ran (M7, m7.p): a one-dimensional and a
+/// two-dimensional loop on `CpuDevice` and the default-device form, each equal to a host loop, and an empty extent that
+/// changes nothing. Not a `matches` line either.
+pub(crate) const PAR_FOR_LINE_PREFIX: &str = "CPU target: par_for calls match (";
 
 /// The byte strings that must not occur in the release binary (E-b), in any letter case: the compiler, the native
 /// helper, the GPU runtime and the graphics API.
@@ -497,8 +504,8 @@ pub(crate) fn parse_match_line(line: &str) -> Option<MatchLine> {
 }
 
 /// The problems of the standard output of a run of `app`: each of [`KERNELS`] has exactly one well-formed `matches`
-/// line with a count above zero, no other kernel has one, no `matches` line is malformed, the line of the map case
-/// ([`MAP_LINE_PREFIX`]) occurs exactly once and [`FINAL_LINE`] occurs exactly once. Empty when the output is what E-a
+/// line with a count above zero, no other kernel has one, no `matches` line is malformed, the lines of the map case
+/// ([`MAP_LINE_PREFIX`]) and of the par_for case ([`PAR_FOR_LINE_PREFIX`]) each occur exactly once and [`FINAL_LINE`] occurs exactly once. Empty when the output is what E-a
 /// requires.
 pub(crate) fn match_problems(stdout: &str) -> Vec<String> {
     let stdout = without_colors(stdout);
@@ -536,18 +543,20 @@ pub(crate) fn match_problems(stdout: &str) -> Vec<String> {
             ));
         }
     }
-    match stdout
-        .lines()
-        .filter(|line| line.trim().starts_with(MAP_LINE_PREFIX))
-        .count()
-    {
-        1 => {}
-        0 => problems.push(format!(
-            "the map case did not run: the line `{MAP_LINE_PREFIX}..` is missing"
-        )),
-        many => problems.push(format!(
-            "the line `{MAP_LINE_PREFIX}..` occurs {many} times, expected one"
-        )),
+    for (case, prefix) in [("map", MAP_LINE_PREFIX), ("par_for", PAR_FOR_LINE_PREFIX)] {
+        match stdout
+            .lines()
+            .filter(|line| line.trim().starts_with(prefix))
+            .count()
+        {
+            1 => {}
+            0 => problems.push(format!(
+                "the {case} case did not run: the line `{prefix}..` is missing"
+            )),
+            many => problems.push(format!(
+                "the line `{prefix}..` occurs {many} times, expected one"
+            )),
+        }
     }
     match stdout
         .lines()
@@ -561,19 +570,26 @@ pub(crate) fn match_problems(stdout: &str) -> Vec<String> {
     problems
 }
 
-/// The `matches` lines of `stdout` in the form of the summary of a step: `vector_add::add 1000 elements ULP 0`.
+/// The `matches` lines of `stdout` in the form of the summary of a step: `vector_add::add 1000 elements ULP 0`, then
+/// the lines of the map and par_for cases without their `CPU target: ` lead (what each printed is part of the record).
 fn match_summary(stdout: &str) -> String {
-    without_colors(stdout)
-        .lines()
-        .filter_map(parse_match_line)
-        .map(|line| {
-            format!(
-                "{} {} {}, max ULP {}",
-                line.kernel, line.count, line.unit, line.max_ulp
-            )
+    let stdout = without_colors(stdout);
+    let kernels = stdout.lines().filter_map(parse_match_line).map(|line| {
+        format!(
+            "{} {} {}, max ULP {}",
+            line.kernel, line.count, line.unit, line.max_ulp
+        )
+    });
+    let cases = [MAP_LINE_PREFIX, PAR_FOR_LINE_PREFIX]
+        .into_iter()
+        .flat_map(|prefix| {
+            stdout
+                .lines()
+                .map(str::trim)
+                .filter(move |line| line.starts_with(prefix))
         })
-        .collect::<Vec<_>>()
-        .join("; ")
+        .map(|line| line.strip_prefix("CPU target: ").unwrap_or(line).to_owned());
+    kernels.chain(cases).collect::<Vec<_>>().join("; ")
 }
 
 /// How often the control and each forbidden string occur in `bytes`, ignoring ASCII letter case.

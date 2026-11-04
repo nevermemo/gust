@@ -1,6 +1,6 @@
-// `cpu = "lockstep"` is the name of the CPU twin that a later slice adds for barrier kernels. Until then it is
-// GUST-E0709, and the message says the twin is not available yet. expected.txt pins the code and the line of the
-// option.
+// `cpu = "lockstep"` would name a CPU twin for barrier kernels, and GUST defines none (D118): a barrier kernel says
+// `cpu = "unsupported"` (GUST-E0717), and `"lockstep"` is GUST-E0709. expected.txt pins the code, the message and the
+// line of the option.
 
 #[gust::gpu]
 mod block {

@@ -1,12 +1,17 @@
 use std::collections::BTreeSet;
 
 use super::{
-    GOLDEN_SPIRV_SETS, UNIFORM_GOLDEN_SPIRV, UNIFORM_GOLDEN_STEMS, UNIFORM_MACRO_FILTERS,
-    VECTOR_GOLDEN_SPIRV, VECTOR_GOLDEN_STEMS, VECTOR_MACRO_FILTERS, explanation,
+    COMPACT_GOLDEN_SPIRV, COMPACT_GOLDEN_STEMS, DISPATCH_CORE_FILTERS, DISPATCH_GPU_TESTS,
+    DISPATCH_MACRO_MODULES, GOLDEN_SPIRV_SETS, GRID_GOLDEN_SPIRV, GRID_GOLDEN_STEMS,
+    MAP_GOLDEN_SPIRV, MAP_GOLDEN_STEMS, PAR_FOR_GOLDEN_SPIRV, PAR_FOR_GOLDEN_STEMS,
+    REDUCE_GOLDEN_SPIRV, REDUCE_GOLDEN_STEMS, SCAN_GOLDEN_SPIRV, SCAN_GOLDEN_STEMS,
+    UNIFORM_GOLDEN_SPIRV, UNIFORM_GOLDEN_STEMS, UNIFORM_MACRO_FILTERS, VECTOR_GOLDEN_SPIRV,
+    VECTOR_GOLDEN_STEMS, VECTOR_MACRO_FILTERS, WORKGROUP_GOLDEN_SPIRV, WORKGROUP_GOLDEN_STEMS,
+    explanation,
 };
 use crate::{
     shader::{compute_entries, golden_file_name},
-    workspace::FEATURE_AREAS,
+    workspace::{FEATURE_AREAS, workspace_root},
 };
 
 /// The source of `checks.rs`, read as text: `check_feature` is a `match` over the area name that runs commands, so
@@ -98,7 +103,7 @@ fn every_area_check_feature_accepts_is_listed_and_every_listed_area_is_accepted(
 
 #[test]
 fn the_areas_of_m6_and_m7_are_listed() {
-    for area in ["vectors", "uniforms", "map", "algo"] {
+    for area in ["vectors", "uniforms", "map", "dispatch", "algo"] {
         assert!(FEATURE_AREAS.contains(&area), "{area}");
     }
 }
@@ -134,17 +139,28 @@ fn the_filters_are_distinct_lowercase_words() {
     }
 }
 
+/// The golden `tests/fixtures/<stem>.slang`, read at compile time (no slangc).
+fn golden_text(stem: &str) -> &'static str {
+    match stem {
+        "vectors" => include_str!("../../../tests/fixtures/vectors.slang"),
+        "products" => include_str!("../../../tests/fixtures/products.slang"),
+        "uniforms" => include_str!("../../../tests/fixtures/uniforms.slang"),
+        "map" => include_str!("../../../tests/fixtures/map.slang"),
+        "grid" => include_str!("../../../tests/fixtures/grid.slang"),
+        "workgroup" => include_str!("../../../tests/fixtures/workgroup.slang"),
+        "par_for" => include_str!("../../../tests/fixtures/par_for.slang"),
+        "reduce" => include_str!("../../../tests/fixtures/reduce.slang"),
+        "scan" => include_str!("../../../tests/fixtures/scan.slang"),
+        "compact" => include_str!("../../../tests/fixtures/compact.slang"),
+        other => panic!("the test does not know the golden {other}"),
+    }
+}
+
 /// The SPIR-V names the goldens give, read from the goldens themselves (no slangc): they must equal the pinned names.
 fn names_of(stems: &[&str]) -> Vec<String> {
     let mut names = Vec::new();
     for stem in stems {
-        let text = match *stem {
-            "vectors" => include_str!("../../../tests/fixtures/vectors.slang"),
-            "products" => include_str!("../../../tests/fixtures/products.slang"),
-            "uniforms" => include_str!("../../../tests/fixtures/uniforms.slang"),
-            other => panic!("the test does not know the golden {other}"),
-        };
-        let entries = compute_entries(text);
+        let entries = compute_entries(golden_text(stem));
         assert!(!entries.is_empty(), "{stem} has no compute entry");
         for entry in entries {
             names.push(golden_file_name(stem, &entry).unwrap());
@@ -158,14 +174,164 @@ fn names_of(stems: &[&str]) -> Vec<String> {
 fn the_pinned_golden_spirv_names_are_the_ones_the_goldens_produce() {
     assert_eq!(names_of(&VECTOR_GOLDEN_STEMS), VECTOR_GOLDEN_SPIRV);
     assert_eq!(names_of(&UNIFORM_GOLDEN_STEMS), UNIFORM_GOLDEN_SPIRV);
-    // The sets `verify` (check-artifacts, the Spirv suite, check-full) exports are these two, and no others.
+    assert_eq!(names_of(&MAP_GOLDEN_STEMS), MAP_GOLDEN_SPIRV);
+    assert_eq!(names_of(&GRID_GOLDEN_STEMS), GRID_GOLDEN_SPIRV);
+    assert_eq!(names_of(&WORKGROUP_GOLDEN_STEMS), WORKGROUP_GOLDEN_SPIRV);
+    assert_eq!(names_of(&PAR_FOR_GOLDEN_STEMS), PAR_FOR_GOLDEN_SPIRV);
+    assert_eq!(names_of(&REDUCE_GOLDEN_STEMS), REDUCE_GOLDEN_SPIRV);
+    assert_eq!(names_of(&SCAN_GOLDEN_STEMS), SCAN_GOLDEN_SPIRV);
+    assert_eq!(names_of(&COMPACT_GOLDEN_STEMS), COMPACT_GOLDEN_SPIRV);
+    // The sets `verify` (check-artifacts, the Spirv suite, check-full) exports are these, and no others (m7.x1 added
+    // the goldens of M7 to the vectors and uniforms of M6).
     let areas: Vec<&str> = GOLDEN_SPIRV_SETS.iter().map(|(area, _, _)| *area).collect();
-    assert_eq!(areas, ["vectors", "uniforms"]);
+    assert_eq!(
+        areas,
+        [
+            "vectors",
+            "uniforms",
+            "map",
+            "grid",
+            "workgroup",
+            "par_for",
+            "reduce",
+            "scan",
+            "compact"
+        ]
+    );
     for (_, stems, expected) in GOLDEN_SPIRV_SETS {
         assert_eq!(names_of(stems), expected);
-    }
-    for expected in [&VECTOR_GOLDEN_SPIRV[..], &UNIFORM_GOLDEN_SPIRV[..]] {
         assert!(expected.windows(2).all(|pair| pair[0] < pair[1]));
         assert!(expected.iter().all(|name| name.ends_with(".spv")));
     }
+}
+
+#[test]
+fn every_golden_of_m7_is_in_a_set_and_the_file_names_are_unique() {
+    let stems: Vec<&str> = GOLDEN_SPIRV_SETS
+        .iter()
+        .flat_map(|(_, stems, _)| stems.iter().copied())
+        .collect();
+    for golden in [
+        "map",
+        "grid",
+        "workgroup",
+        "par_for",
+        "reduce",
+        "scan",
+        "compact",
+    ] {
+        assert!(
+            stems.contains(&golden),
+            "{golden} is not exported by verify"
+        );
+    }
+    let mut names: Vec<&str> = GOLDEN_SPIRV_SETS
+        .iter()
+        .flat_map(|(_, _, expected)| expected.iter().copied())
+        .collect();
+    let count = names.len();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), count, "two sets expect the same file name");
+    // 2 (vectors, products) + 1 + 5 + 3 + 2 + 10 + 30 + 11 + 5: one file per compute entry of the goldens.
+    assert_eq!(count, 69);
+}
+
+// ---- `check-feature dispatch` and the parallel-map additions to `map` (m7.x1) ----
+
+/// The body of the arm `area` of `check_feature`, up to the next arm of the list `next`.
+fn arm_body(area: &str, next: &str) -> String {
+    let source = CHECKS_SOURCE.replace("\r\n", "\n");
+    let body = source
+        .split_once("pub(crate) fn check_feature(")
+        .expect("check_feature is in checks.rs")
+        .1;
+    let start = body
+        .split_once(&format!("\n        \"{area}\" => {{\n"))
+        .unwrap_or_else(|| panic!("no arm for {area}"))
+        .1;
+    start
+        .split_once(&format!("\n        \"{next}\" => "))
+        .unwrap_or_else(|| panic!("no arm {next} after {area}"))
+        .0
+        .to_owned()
+}
+
+#[test]
+fn the_dispatch_area_runs_every_dispatch_test_and_counts_each_call() {
+    let arm = arm_body("dispatch", "workgroup");
+    for constant in [
+        "DISPATCH_MACRO_MODULES",
+        "DISPATCH_CORE_FILTERS",
+        "DISPATCH_GPU_TESTS",
+    ] {
+        assert!(arm.contains(constant), "the arm does not use {constant}");
+    }
+    // Counted, so that a call that runs no test fails; an uncounted call would pass with nothing.
+    assert!(!arm.contains("run_direct"), "{arm}");
+    assert_eq!(arm.matches("run_counted").count(), 3, "{arm}");
+    // The lists name the tests of the brief: the `par_for!` and grid unit tests of the macros, the gust tests of
+    // Extent, and the four GPU files.
+    assert_eq!(DISPATCH_MACRO_MODULES, ["par_for_tests::", "grid_tests::"]);
+    assert_eq!(
+        DISPATCH_CORE_FILTERS,
+        [
+            "dispatch::",
+            "cpu::tests::a_shared_buffer_holds_the_product_of_the_extent",
+            "cpu::tests::invocations_cover_whole_workgroups_in_two_and_three_dimensions"
+        ]
+    );
+    // Each filter is its own counted call (no ORed `--` list): a filter that matches nothing fails by itself.
+    assert!(arm.contains("for filter in DISPATCH_CORE_FILTERS"), "{arm}");
+    assert!(!arm.contains("core.extend"), "{arm}");
+    assert_eq!(
+        DISPATCH_GPU_TESTS,
+        ["par_for", "grid", "concurrency", "async_readback"]
+    );
+}
+
+#[test]
+fn the_dispatch_tests_exist_where_the_area_looks_for_them() {
+    let root = workspace_root().unwrap();
+    let macros = std::fs::read_to_string(root.join("crates/gust-macros/src/lib.rs"))
+        .unwrap()
+        .replace("\r\n", "\n");
+    for module in DISPATCH_MACRO_MODULES {
+        let module = module.trim_end_matches("::");
+        assert!(macros.contains(&format!("mod {module};")), "{module}");
+        let file = module.trim_end_matches("_tests");
+        assert!(
+            macros.contains(&format!("#[path = \"tests/{file}.rs\"]")),
+            "{module}"
+        );
+    }
+    for test in DISPATCH_GPU_TESTS {
+        let path = root.join(format!("crates/gust-wgpu/tests/{test}.rs"));
+        assert!(path.is_file(), "{}", path.display());
+    }
+    // The gust tests of the filters: the dispatch module has tests of its own, and the two named CPU tests exist
+    // under the names the filters give.
+    let dispatch = std::fs::read_to_string(root.join("crates/gust/src/dispatch.rs")).unwrap();
+    assert!(dispatch.contains("mod tests"));
+    let cpu = std::fs::read_to_string(root.join("crates/gust/src/cpu.rs")).unwrap();
+    for filter in &DISPATCH_CORE_FILTERS[1..] {
+        let name = filter.strip_prefix("cpu::tests::").unwrap();
+        assert!(cpu.contains(&format!("fn {name}(")), "{name}");
+    }
+}
+
+#[test]
+fn the_map_area_counts_the_parallel_cpu_map_tests() {
+    let arm = arm_body("map", "dispatch");
+    for call in [
+        "&[\"test\", \"-p\", \"gust\", \"--lib\", \"cpu::parallel\"]",
+        "&[\"test\", \"-p\", \"gust\", \"--test\", \"parallel\"]",
+    ] {
+        let line = format!("run_counted(&root, {call})?;");
+        assert!(arm.contains(&line), "the map arm lacks {line}");
+    }
+    let root = workspace_root().unwrap();
+    assert!(root.join("crates/gust/tests/parallel.rs").is_file());
+    let parallel = std::fs::read_to_string(root.join("crates/gust/src/cpu.rs")).unwrap();
+    assert!(parallel.contains("pub mod parallel;"));
 }

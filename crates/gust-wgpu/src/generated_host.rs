@@ -62,6 +62,7 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
                     gust::ShaderLayoutRules::StorageV1 => "storage-v1",
                     gust::ShaderLayoutRules::StorageV2 => "storage-v2",
                     gust::ShaderLayoutRules::Std140V1 => "std140-v1",
+                    gust::ShaderLayoutRules::TextureV1(_) => "texture-v1",
                 },
                 layout.element.size,
                 layout.element.alignment,

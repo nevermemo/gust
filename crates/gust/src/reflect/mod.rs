@@ -6,7 +6,7 @@
 //!
 //! # Schema versions of the native reflection JSON
 //!
-//! The reader accepts `schemaVersion` 1 and 2. Schema 1 describes exactly what it always did: 32-bit scalars and
+//! The reader accepts `schemaVersion` 1, 2 and 3. Schema 1 describes exactly what it always did: 32-bit scalars and
 //! structs of them, in structured buffers. Schema 2 adds, beside those, the type kinds `vector`
 //! (`scalarType`, `elementCount`) and `matrix` (`scalarType`, `rows`, `columns`, `matrixLayout`; its `stride` is the
 //! column stride), the parameter type `constantBuffer` (`elementType`, `size`), and a mandatory top-level
@@ -14,6 +14,24 @@
 //! `stride`. A schema-1 document checked against a descriptor with a vector, a matrix or a uniform is refused with
 //! the instruction to re-export it ([`Reflection::cross_check_kernel`]); nothing committed before schema 2 needs
 //! re-exporting otherwise.
+//!
+//! Schema 3 (mx.t0b, decision D91) is schema 2's grammar (its `matrixLayout` included) plus, at the top level, a
+//! `stage` (`compute` or `fragment`) and, as parameters, the type kinds `texture` (`shape`, `access`, `result`,
+//! `format`) and `sampler`; a fragment document has `targets` (`index`, `type`, in `SV_Target` order) and no
+//! `workgroupSize`. The helper writes it only when a 2-D texture, a sampler or a non-compute stage is present, so
+//! every document of a compute kernel over buffers stays schema 1 or 2, byte for byte, and the reader reads those
+//! exactly as before (a texture in a schema-1 or schema-2 document is refused with the old message). A document of
+//! schema 1 or 2 describes a compute entry point: [`Reflection::stage`] is [`Stage::Compute`] for it.
+//!
+//! # Where the CLI gate would sit
+//!
+//! The plan's section 3.3 had a second witness for the facts the helper could not see: slangc's
+//! `-reflection-json`, run on the same compilation, parsed into `CliFacts` and stored in the record. X-S2 ended in
+//! outcome A (mx.t0a): the helper reports the texture format, the access and a fragment's targets itself, so the
+//! helper's facts are the D17 witness and that gate is **not built**. `reflect` (the CLI path) stays what it was: a
+//! compute-only partial-evidence path for tests, and an optional agreement check against the helper is later work.
+//! Were the helper to stop seeing a fact, the gate belongs next to `CompiledReflection::from_output`, with its
+//! comparison in [`Reflection::cross_check_kernel`] beside the texture checks.
 //!
 //! # The `slang-runtime` feature
 //!
@@ -23,9 +41,10 @@
 //! no feature, so [`crate::artifact::verify_artifact`] works without a compiler.
 
 use crate::{
-    GpuPod, KernelDescriptor, ScalarKind, ShaderLayoutRules, TypeLayout, TypeLayoutKind,
-    abi::{MATRIX_LAYOUT, MatrixLayout},
+    GpuPod, KernelDescriptor, ScalarKind, ShaderLayoutRules, Shape, TypeLayout, TypeLayoutKind,
+    abi::{MATRIX_LAYOUT, MatrixLayout, TextureAccess, TextureDimension},
     slang::{self, Target},
+    texture::{Format as TexelFormat, SampleClass},
 };
 #[cfg(feature = "slang-runtime")]
 use crate::{SourceOrigin, slang::TemporaryDirectory};
@@ -81,9 +100,74 @@ fn invalid(s: impl Into<String>) -> Error {
 pub struct Reflection {
     pub target: Target,
     /// The `schemaVersion` the document was read under: 1 for the CLI JSON path and for schema-1 native documents,
-    /// 2 for schema-2 native documents.
+    /// 2 for schema-2 native documents, 3 for schema-3 native documents.
     pub schema_version: u32,
+    /// The pipeline stage of the entry point: the document's `stage` under schema 3, [`Stage::Compute`] under 1 and
+    /// 2 (which describe compute entry points only).
+    pub stage: Stage,
+    /// The structured and constant buffers, in document order. Textures and samplers are not in this list.
     pub resources: Vec<ReflectedResource>,
+    /// Schema 3 only: the 2-D texture bindings, in document order.
+    pub textures: Vec<ReflectedTexture>,
+    /// Schema 3 only: the sampler bindings, in document order.
+    pub samplers: Vec<ReflectedSampler>,
+    /// Schema 3, fragment only: the colour outputs in `SV_Target` order (ascending, no repeated index).
+    pub targets: Vec<ReflectedTarget>,
+}
+/// The pipeline stage of a reflected entry point (decision D89: it is the stage of the kernel's [`Shape`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Stage {
+    /// `[shader("compute")]`: the stage of [`Shape::Grid`].
+    Compute,
+    /// `[shader("fragment")]`: the stage of [`Shape::Pixel`].
+    Fragment,
+}
+impl Stage {
+    /// The stage a kernel of `shape` has.
+    pub const fn of(shape: Shape) -> Self {
+        match shape {
+            Shape::Grid => Self::Compute,
+            Shape::Pixel => Self::Fragment,
+        }
+    }
+
+    /// The spelling in the reflection JSON (`stage`) and on `slangc -stage`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Compute => "compute",
+            Self::Fragment => "fragment",
+        }
+    }
+}
+/// A 2-D texture binding of a schema-3 document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReflectedTexture {
+    pub name: String,
+    pub binding: u32,
+    pub space: u32,
+    pub dimension: TextureDimension,
+    pub access: TextureAccess,
+    /// The result type: a 32-bit scalar or a 2- to 4-wide vector of one. The helper reports no byte layout for it
+    /// (`size`, `alignment` and `stride` are `None`).
+    pub result: ReflectedType,
+    /// The texel format of a storage or write-only texture. `None` is the document's `unknown`: a sampled texture
+    /// has no format in the shader (its concrete format is checked at submit against the bound texture).
+    pub format: Option<TexelFormat>,
+}
+/// A sampler binding of a schema-3 document.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReflectedSampler {
+    pub name: String,
+    pub binding: u32,
+    pub space: u32,
+}
+/// One colour output of a fragment entry point.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReflectedTarget {
+    /// The `SV_Target` index.
+    pub index: u32,
+    /// A 32-bit scalar or a 2- to 4-wide vector of one.
+    pub ty: ReflectedType,
 }
 /// What kind of shader resource a [`ReflectedResource`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +240,7 @@ pub struct CompiledReflection {
     pub reflection: Reflection,
     pub compiler_version: String,
     pub entry_point: String,
+    /// The compute workgroup size. `[0, 0, 0]` for a fragment entry point, which has none (mx.t0b).
     pub workgroup_size: [u32; 3],
 }
 
@@ -439,20 +524,36 @@ impl CompiledReflection {
                 differs.join("; ")
             )));
         }
-        let workgroup_size = root
-            .get("workgroupSize")?
-            .array()?
-            .iter()
-            .map(Json::u32)
-            .collect::<Result<Vec<_>, _>>()?;
-        let workgroup_size: [u32; 3] = workgroup_size
-            .try_into()
-            .map_err(|_| invalid("expected three workgroup dimensions"))?;
-        if workgroup_size.contains(&0) || workgroup_size != kernel.workgroup_size {
-            return Err(Error::Mismatch(
-                "compute workgroup dimensions differ".into(),
-            ));
-        }
+        // The stage is judged before the workgroup size: a compute document read for a pixel kernel (or the other way
+        // round) is a stage mismatch, not a workgroup one.
+        let stage = read_stage(&root, schema)?;
+        check_stage(kernel.shape, stage)?;
+        let workgroup_size = match stage {
+            Stage::Compute => {
+                let workgroup_size = root
+                    .get("workgroupSize")?
+                    .array()?
+                    .iter()
+                    .map(Json::u32)
+                    .collect::<Result<Vec<_>, _>>()?;
+                let workgroup_size: [u32; 3] = workgroup_size
+                    .try_into()
+                    .map_err(|_| invalid("expected three workgroup dimensions"))?;
+                if workgroup_size.contains(&0) || workgroup_size != kernel.workgroup_size {
+                    return Err(Error::Mismatch(
+                        "compute workgroup dimensions differ".into(),
+                    ));
+                }
+                workgroup_size
+            }
+            // A fragment entry point has no workgroup: the document has no `workgroupSize` and the field is zeros.
+            Stage::Fragment => {
+                if root.optional("workgroupSize")?.is_some() {
+                    return Err(invalid("a fragment reflection has no workgroupSize"));
+                }
+                [0; 3]
+            }
+        };
         if artifact.is_empty() {
             return Err(invalid("empty native artifact"));
         }
@@ -549,8 +650,10 @@ impl Reflection {
         Self::read_json(target, &root, false, 1)
     }
 
-    /// `schema` is the document's `schemaVersion` (1 or 2): under 1 exactly the pre-schema-2 grammar is read.
+    /// `schema` is the document's `schemaVersion` (1, 2 or 3): under 1 exactly the pre-schema-2 grammar is read, and
+    /// the texture, sampler, `stage` and `targets` members exist from 3 on only.
     fn read_json(target: Target, root: &Json, complete: bool, schema: u32) -> Result<Self, Error> {
+        let stage = read_stage(root, schema)?;
         if schema >= 2 {
             let text = root.get("matrixLayout")?.string()?;
             match MatrixLayout::parse(text) {
@@ -595,7 +698,9 @@ impl Reflection {
                 }
             }
         }
-        let mut resources = Vec::new();
+        let mut resources: Vec<ReflectedResource> = Vec::new();
+        let mut textures: Vec<ReflectedTexture> = Vec::new();
+        let mut samplers: Vec<ReflectedSampler> = Vec::new();
         for value in root.get("parameters")?.array()? {
             let name = value.get("name")?.string()?.to_owned();
             let binding = value.get("binding")?;
@@ -613,6 +718,31 @@ impl Reflection {
                     .unwrap_or(0)
             };
             let ty = value.get("type")?;
+            // Schema 3 only: a texture or a sampler. Schemas 1 and 2 never evaluate this and read exactly what they
+            // always did (a texture there is refused as "only structured buffers are supported").
+            if schema >= 3 && matches!(ty.get("kind")?.string()?, "texture" | "sampler") {
+                if complete && binding.get("count")?.u32()? != 1 {
+                    return Err(invalid("binding arrays are unsupported"));
+                }
+                if let Some(count) = binding.optional("count")?
+                    && count.u32()? != 1
+                {
+                    return Err(invalid("binding arrays are unsupported"));
+                }
+                if slot_taken(&resources, &textures, &samplers, &name, index, space) {
+                    return Err(invalid("duplicate resource name or binding"));
+                }
+                if ty.get("kind")?.string()? == "sampler" {
+                    samplers.push(ReflectedSampler {
+                        name,
+                        binding: index,
+                        space,
+                    });
+                } else {
+                    textures.push(read_texture(name, index, space, ty)?);
+                }
+                continue;
+            }
             // Schema 2 only: a constant buffer. Schema 1 never evaluates this and reads exactly what it always did.
             let constant = schema >= 2 && ty.get("kind")?.string()? == "constantBuffer";
             if !constant
@@ -639,9 +769,7 @@ impl Reflection {
             {
                 return Err(invalid("binding arrays are unsupported"));
             }
-            if resources.iter().any(|r: &ReflectedResource| {
-                r.name == name || (r.binding == index && r.space == space)
-            }) {
+            if slot_taken(&resources, &textures, &samplers, &name, index, space) {
                 return Err(invalid("duplicate resource name or binding"));
             }
             let (kind, element, element_stride) = if constant {
@@ -676,10 +804,19 @@ impl Reflection {
                 element_stride,
             });
         }
+        let targets = if schema >= 3 {
+            read_targets(root, stage)?
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             target,
             schema_version: schema,
+            stage,
             resources,
+            textures,
+            samplers,
+            targets,
         })
     }
 
@@ -700,8 +837,13 @@ impl Reflection {
                 return Err(invalid("duplicate resource name or binding"));
             }
         }
+        // The stage first: a compute reflection checked against a pixel descriptor (or the reverse) has nothing else
+        // worth comparing (D91).
+        check_stage(kernel.shape, self.stage)?;
         let mut reports = Vec::new();
         let mut bindings = BTreeMap::new();
+        let (mut textures, mut samplers) = (0_usize, 0_usize);
+        let mut outputs: Vec<(&'static str, TypeLayout)> = Vec::new();
         for (index, parameter) in kernel.parameters.iter().enumerate() {
             if kernel.parameters[..index]
                 .iter()
@@ -722,12 +864,61 @@ impl Reflection {
                 }
                 continue;
             }
+            if self.schema_version < 3
+                && matches!(
+                    parameter.kind,
+                    crate::ParameterKind::Texture | crate::ParameterKind::Sampler
+                )
+            {
+                return Err(Error::Mismatch(format!(
+                    "reflection schema {} cannot describe {}; re-export with cargo gust build",
+                    self.schema_version,
+                    if parameter.kind == crate::ParameterKind::Texture {
+                        "texture"
+                    } else {
+                        "sampler"
+                    }
+                )));
+            }
             if self.schema_version < 2
                 && let Some(what) = schema_one_gap(parameter)
             {
                 return Err(Error::Mismatch(format!(
                     "reflection schema 1 cannot describe {what}; re-export with cargo gust build"
                 )));
+            }
+            // Under `pixel` a render-target output (no binding; see `is_pixel_output`) is a colour target.
+            if kernel.shape == Shape::Pixel && is_pixel_output(parameter) {
+                let layout = parameter.resource_layout.ok_or_else(|| {
+                    Error::Mismatch(format!(
+                        "{}: missing descriptor element layout",
+                        parameter.name
+                    ))
+                })?;
+                outputs.push((parameter.name, layout.element));
+                continue;
+            }
+            if matches!(
+                parameter.kind,
+                crate::ParameterKind::Texture | crate::ParameterKind::Sampler
+            ) {
+                let binding = parameter
+                    .binding
+                    .ok_or_else(|| Error::Mismatch("missing descriptor binding".into()))?;
+                if bindings
+                    .insert((binding.group, binding.binding), parameter.name)
+                    .is_some()
+                {
+                    return Err(Error::Mismatch("duplicate descriptor binding".into()));
+                }
+                if parameter.kind == crate::ParameterKind::Texture {
+                    self.check_texture(parameter, binding)?;
+                    textures += 1;
+                } else {
+                    self.check_sampler(parameter, binding)?;
+                    samplers += 1;
+                }
+                continue;
             }
             let expected_kind = match parameter.kind {
                 crate::ParameterKind::Storage => ReflectedResourceKind::StructuredBuffer,
@@ -820,13 +1011,426 @@ impl Reflection {
             }
             reports.push(report);
         }
-        if reports.len() != self.resources.len() {
+        if reports.len() != self.resources.len()
+            || textures != self.textures.len()
+            || samplers != self.samplers.len()
+        {
             return Err(Error::Mismatch(
                 "unexpected compiler resource bindings".into(),
             ));
         }
+        self.check_targets(&outputs)?;
         Ok(reports)
     }
+
+    /// A texture parameter against the document: the descriptor's own consistency first (the layout is the texture
+    /// rule, the class and format agree with the result type, the access with the parameter's), then slot, dimension
+    /// and access. A **sampled** texture is held to the sample class and the width of its result type and to having no
+    /// format (its concrete format is checked at submit against the bound texture); a **storage** or **write-only**
+    /// texture to its exact result type and exact format, which must have the result's channel count. Each mismatch
+    /// names `<parameter>.<field>`.
+    fn check_texture(
+        &self,
+        parameter: &crate::ParameterDescriptor,
+        binding: crate::ResourceBinding,
+    ) -> Result<(), Error> {
+        let name = parameter.name;
+        let layout = parameter
+            .resource_layout
+            .ok_or_else(|| Error::Mismatch(format!("{name}: missing descriptor element layout")))?;
+        let ShaderLayoutRules::TextureV1(texture) = layout.rules else {
+            return Err(Error::Mismatch(format!(
+                "{name}.rules: {:?} does not fit this parameter kind",
+                layout.rules
+            )));
+        };
+        // The descriptor's own coherence: these are host-side facts, so a disagreement is a malformed descriptor.
+        let Some((scalar, count)) = result_shape(layout.element).filter(|(_, count)| *count != 3)
+        else {
+            return Err(Error::Mismatch(format!(
+                "{name}.result: a texture result is a 32-bit scalar or a 2- or 4-wide vector"
+            )));
+        };
+        if layout.element_stride != layout.element.stride {
+            return Err(Error::Mismatch(format!(
+                "{name}.stride: inconsistent host resource layout"
+            )));
+        }
+        if texture.class != class_of(scalar) {
+            return Err(Error::Mismatch(format!(
+                "{name}.class: host {}, result type {}",
+                texture.class.name(),
+                class_of(scalar).name()
+            )));
+        }
+        let access_fits = match texture.access {
+            TextureAccess::Sampled => parameter.access == crate::Access::ReadOnly,
+            TextureAccess::ReadWrite | TextureAccess::WriteOnly => {
+                parameter.access == crate::Access::ReadWrite
+            }
+        };
+        if !access_fits {
+            return Err(Error::Mismatch(format!("{name}.access differs")));
+        }
+        match (texture.access, texture.format) {
+            (TextureAccess::Sampled, None) => {}
+            (TextureAccess::Sampled, Some(format)) => {
+                return Err(Error::Mismatch(format!(
+                    "{name}.format: a sampled texture has no format in the shader, host {format}"
+                )));
+            }
+            (_, None) => {
+                return Err(Error::Mismatch(format!(
+                    "{name}.format: a storage texture needs a format"
+                )));
+            }
+            (access, Some(format)) => {
+                if format.sample_class() != texture.class
+                    || (access == TextureAccess::ReadWrite && !format.read_write())
+                {
+                    return Err(Error::Mismatch(format!(
+                        "{name}.format: {format} does not fit class {} and access {}",
+                        texture.class.name(),
+                        access.name()
+                    )));
+                }
+                if format.channels() != count {
+                    return Err(Error::Mismatch(format!(
+                        "{name}.format: {format} has channel count {}, the result type has width {count}",
+                        format.channels()
+                    )));
+                }
+            }
+        }
+        let reflected = self
+            .textures
+            .iter()
+            .find(|candidate| candidate.name == name);
+        let Some(reflected) = reflected else {
+            return Err(self.missing(name, "texture"));
+        };
+        equal(binding.group, reflected.space, &format!("{name}.group"))?;
+        equal(
+            binding.binding,
+            reflected.binding,
+            &format!("{name}.binding"),
+        )?;
+        if texture.dimension != reflected.dimension {
+            return Err(Error::Mismatch(format!(
+                "{name}.dimension: host {}, compiler {}",
+                texture.dimension.name(),
+                reflected.dimension.name()
+            )));
+        }
+        if texture.access != reflected.access {
+            return Err(Error::Mismatch(format!(
+                "{name}.access: host {}, compiler {}",
+                texture.access.name(),
+                reflected.access.name()
+            )));
+        }
+        let Some((reflected_scalar, reflected_count)) = reflected_shape(&reflected.result.kind)
+        else {
+            return Err(Error::Mismatch(format!(
+                "{name}.result: the compiler's result type is not a scalar or a vector"
+            )));
+        };
+        if texture.access == TextureAccess::Sampled && texture.class != class_of(reflected_scalar) {
+            return Err(Error::Mismatch(format!(
+                "{name}.class: host {}, compiler {}",
+                texture.class.name(),
+                class_of(reflected_scalar).name()
+            )));
+        }
+        // The result type for every texture (D91): a sampled one differs from its twin in width as well.
+        if (scalar, count) != (reflected_scalar, reflected_count) {
+            return Err(Error::Mismatch(format!(
+                "{name}.result: host {}, compiler {}",
+                shape_text(scalar, count),
+                shape_text(reflected_scalar, reflected_count)
+            )));
+        }
+        if texture.format != reflected.format {
+            return Err(Error::Mismatch(format!(
+                "{name}.format: host {}, compiler {}",
+                format_text(texture.format),
+                format_text(reflected.format)
+            )));
+        }
+        Ok(())
+    }
+
+    /// A sampler parameter against the document: only its slot is compared (the options are bound at submit).
+    fn check_sampler(
+        &self,
+        parameter: &crate::ParameterDescriptor,
+        binding: crate::ResourceBinding,
+    ) -> Result<(), Error> {
+        let name = parameter.name;
+        if parameter.resource_layout.is_some() || parameter.access != crate::Access::NotApplicable {
+            return Err(Error::Mismatch(format!(
+                "{name}: a sampler has no resource contract"
+            )));
+        }
+        let Some(reflected) = self.samplers.iter().find(|sampler| sampler.name == name) else {
+            return Err(self.missing(name, "sampler"));
+        };
+        equal(binding.group, reflected.space, &format!("{name}.group"))?;
+        equal(
+            binding.binding,
+            reflected.binding,
+            &format!("{name}.binding"),
+        )
+    }
+
+    /// The error for a descriptor texture or sampler the document has under that name in no list of its own kind: a
+    /// buffer or the other kind of binding under that name is a kind mismatch, nothing at all a missing binding.
+    fn missing(&self, name: &str, host: &str) -> Error {
+        let other = if self.resources.iter().any(|r| r.name == name) {
+            Some("a buffer")
+        } else if self.textures.iter().any(|t| t.name == name) {
+            Some("a texture")
+        } else if self.samplers.iter().any(|s| s.name == name) {
+            Some("a sampler")
+        } else {
+            None
+        };
+        match other {
+            Some(other) => Error::Mismatch(format!("{name}.kind: host {host}, compiler {other}")),
+            None => Error::Mismatch(format!("missing compiler binding {name}")),
+        }
+    }
+
+    /// The colour outputs of a pixel descriptor against the document's `targets`: the same count, the output `k`
+    /// (in parameter order) at `SV_Target` index `k`, and the same scalar kind and width.
+    fn check_targets(&self, outputs: &[(&'static str, TypeLayout)]) -> Result<(), Error> {
+        if self.targets.len() != outputs.len() {
+            return Err(Error::Mismatch(format!(
+                "targets: host {} outputs, compiler {}",
+                outputs.len(),
+                self.targets.len()
+            )));
+        }
+        for (position, ((name, element), target)) in outputs.iter().zip(&self.targets).enumerate() {
+            let host_index = u32::try_from(position).unwrap_or(u32::MAX);
+            equal(
+                host_index,
+                target.index,
+                &format!("targets[{position}].index"),
+            )?;
+            let Some((scalar, count)) = result_shape(*element) else {
+                return Err(Error::Mismatch(format!(
+                    "{name}: an output is a 32-bit scalar or a 2- to 4-wide vector"
+                )));
+            };
+            let Some((reflected_scalar, reflected_count)) = reflected_shape(&target.ty.kind) else {
+                return Err(Error::Mismatch(format!(
+                    "targets[{position}].type: the compiler's type is not a scalar or a vector"
+                )));
+            };
+            if (scalar, count) != (reflected_scalar, reflected_count) {
+                return Err(Error::Mismatch(format!(
+                    "targets[{position}].type: host {}, compiler {}",
+                    shape_text(scalar, count),
+                    shape_text(reflected_scalar, reflected_count)
+                )));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Whether a pixel descriptor's parameter is a render-target output: a storage parameter without a shader binding.
+/// Its `SV_Target` index is its position among such parameters.
+///
+/// This is the **render-target model** (D93: an output is a colour target, not a resource), which D120 keeps only for
+/// targets the host provides itself (Breeze). MX pixel outputs under D120 are fragment *storage writes*: their
+/// parameters carry a `binding`, this function is false for them, and they are cross-checked as buffers, so the
+/// document's `targets` must then be empty unless the never-written `r8unorm` attachment is declared, which mx.p1a
+/// decides. The rule is the descriptor-side one until the descriptor names a target explicitly (plan section 4.1's
+/// `target: Some(k)`): then this function reads that field instead and nothing else changes. It does not look at
+/// `access`: a read-only input that lost its binding counts as an output, and fails as a `targets` count mismatch.
+fn is_pixel_output(parameter: &crate::ParameterDescriptor) -> bool {
+    parameter.kind == crate::ParameterKind::Storage && parameter.binding.is_none()
+}
+
+/// The stage of the document against the kernel's shape. `Mismatch` naming `stage`.
+fn check_stage(shape: Shape, stage: Stage) -> Result<(), Error> {
+    let host = Stage::of(shape);
+    if host == stage {
+        Ok(())
+    } else {
+        Err(Error::Mismatch(format!(
+            "stage: host {}, compiler {}",
+            host.name(),
+            stage.name()
+        )))
+    }
+}
+
+/// The document's `stage`: the member from schema 3 on, compute for the schemas that predate it.
+fn read_stage(root: &Json, schema: u32) -> Result<Stage, Error> {
+    if schema < 3 {
+        return Ok(Stage::Compute);
+    }
+    match root.get("stage")?.string()? {
+        "compute" => Ok(Stage::Compute),
+        "fragment" => Ok(Stage::Fragment),
+        _ => Err(invalid("unknown stage")),
+    }
+}
+
+/// Whether a resource of the same name or the same `(space, binding)` is already read, in any of the three lists.
+fn slot_taken(
+    resources: &[ReflectedResource],
+    textures: &[ReflectedTexture],
+    samplers: &[ReflectedSampler],
+    name: &str,
+    binding: u32,
+    space: u32,
+) -> bool {
+    resources
+        .iter()
+        .map(|r| (r.name.as_str(), r.binding, r.space))
+        .chain(
+            textures
+                .iter()
+                .map(|t| (t.name.as_str(), t.binding, t.space)),
+        )
+        .chain(
+            samplers
+                .iter()
+                .map(|s| (s.name.as_str(), s.binding, s.space)),
+        )
+        .any(|(other, other_binding, other_space)| {
+            other == name || (other_binding == binding && other_space == space)
+        })
+}
+
+/// One `kind: "texture"` parameter of a schema-3 document.
+fn read_texture(
+    name: String,
+    binding: u32,
+    space: u32,
+    ty: &Json,
+) -> Result<ReflectedTexture, Error> {
+    let dimension = match ty.get("shape")?.string()? {
+        "2d" => TextureDimension::D2,
+        _ => return Err(invalid("unsupported texture shape (only 2d)")),
+    };
+    let access = match ty.get("access")?.string()? {
+        "read" => TextureAccess::Sampled,
+        "readWrite" => TextureAccess::ReadWrite,
+        "write" => TextureAccess::WriteOnly,
+        _ => return Err(invalid("unsupported texture access")),
+    };
+    let result = read_type(ty.get("result")?, false, 3)?;
+    if !matches!(
+        result.kind,
+        ReflectedTypeKind::Scalar(_) | ReflectedTypeKind::Vector { .. }
+    ) {
+        return Err(invalid(
+            "unsupported texture result type (a scalar or a vector)",
+        ));
+    }
+    let format = match ty.get("format")?.string()? {
+        "unknown" => None,
+        text => Some(
+            TexelFormat::ALL
+                .into_iter()
+                .find(|format| format.slang_name() == text)
+                .ok_or_else(|| invalid(format!("unsupported texture format `{text}`")))?,
+        ),
+    };
+    Ok(ReflectedTexture {
+        name,
+        binding,
+        space,
+        dimension,
+        access,
+        result,
+        format,
+    })
+}
+
+/// The `targets` of a schema-3 document: present with a fragment stage (possibly empty), absent with a compute one.
+fn read_targets(root: &Json, stage: Stage) -> Result<Vec<ReflectedTarget>, Error> {
+    let Some(targets) = root.optional("targets")? else {
+        return if stage == Stage::Fragment {
+            Err(invalid("a fragment reflection needs targets"))
+        } else {
+            Ok(Vec::new())
+        };
+    };
+    if stage == Stage::Compute {
+        return Err(invalid("a compute reflection has no targets"));
+    }
+    let mut read: Vec<ReflectedTarget> = Vec::new();
+    for target in targets.array()? {
+        let index = target.get("index")?.u32()?;
+        if read.last().is_some_and(|previous| previous.index >= index) {
+            return Err(invalid(
+                "targets must be in ascending SV_Target order without repeats",
+            ));
+        }
+        let ty = read_type(target.get("type")?, false, 3)?;
+        if !matches!(
+            ty.kind,
+            ReflectedTypeKind::Scalar(_) | ReflectedTypeKind::Vector { .. }
+        ) {
+            return Err(invalid("unsupported target type (a scalar or a vector)"));
+        }
+        read.push(ReflectedTarget { index, ty });
+    }
+    Ok(read)
+}
+
+/// The scalar kind and width (1 for a scalar) of a host type layout, if it is a scalar or a vector.
+fn result_shape(layout: TypeLayout) -> Option<(ScalarKind, u32)> {
+    match layout.kind {
+        TypeLayoutKind::Scalar(scalar) => Some((scalar, 1)),
+        TypeLayoutKind::Vector { scalar, count } => Some((scalar, count)),
+        _ => None,
+    }
+}
+
+/// The same for a reflected type.
+fn reflected_shape(kind: &ReflectedTypeKind) -> Option<(ScalarKind, u32)> {
+    match kind {
+        ReflectedTypeKind::Scalar(scalar) => Some((*scalar, 1)),
+        ReflectedTypeKind::Vector { scalar, count } => Some((*scalar, *count)),
+        _ => None,
+    }
+}
+
+/// The sample class of a result type's scalar.
+const fn class_of(scalar: ScalarKind) -> SampleClass {
+    match scalar {
+        ScalarKind::F32 => SampleClass::Float,
+        ScalarKind::U32 => SampleClass::Uint,
+        ScalarKind::I32 => SampleClass::Sint,
+    }
+}
+
+fn shape_text(scalar: ScalarKind, count: u32) -> String {
+    let name = scalar_text(scalar);
+    if count == 1 {
+        name.to_owned()
+    } else {
+        format!("{name}x{count}")
+    }
+}
+
+fn scalar_text(scalar: ScalarKind) -> &'static str {
+    match scalar {
+        ScalarKind::F32 => "f32",
+        ScalarKind::I32 => "i32",
+        ScalarKind::U32 => "u32",
+    }
+}
+
+fn format_text(format: Option<TexelFormat>) -> &'static str {
+    format.map_or("none", TexelFormat::name)
 }
 
 #[cfg(test)]
@@ -1590,9 +2194,9 @@ mod tests {
     }
 
     #[test]
-    fn only_schema_versions_one_and_two_are_read() {
+    fn only_schema_versions_one_to_three_are_read() {
         let kernel = kernel_with(Vec::new());
-        for version in ["0", "3", "4294967295"] {
+        for version in ["0", "4", "4294967295"] {
             let json = document(1, None, &[]).replacen(
                 r#""schemaVersion":1"#,
                 &format!(r#""schemaVersion":{version}"#),
@@ -2031,12 +2635,1080 @@ mod tests {
             }
         }
     }
+
+    // ---- schema 3: textures, samplers, the stage and a fragment's targets (slice mx.t0b, D91) ----
+
+    use crate::{TextureLayout, math::UVec2};
+
+    const U32_LAYOUT: TypeLayout = <u32 as GpuPod>::LAYOUT;
+    const UVEC2: TypeLayout = <UVec2 as GpuPod>::LAYOUT;
+
+    /// A texture or target result type: a scalar for `count == 1`, a vector otherwise.
+    fn result_json(scalar: &str, count: u32) -> String {
+        if count == 1 {
+            format!(r#"{{"kind":"scalar","scalarType":"{scalar}"}}"#)
+        } else {
+            format!(r#"{{"kind":"vector","scalarType":"{scalar}","elementCount":{count}}}"#)
+        }
+    }
+
+    const F4: (&str, u32) = ("float32", 4);
+
+    fn slot_json(index: u32) -> String {
+        format!(r#"{{"kind":"descriptorTableSlot","count":1,"index":{index},"space":0}}"#)
+    }
+
+    fn texture_json(
+        name: &str,
+        index: u32,
+        access: &str,
+        result: (&str, u32),
+        format: &str,
+    ) -> String {
+        format!(
+            r#"{{"name":"{name}","binding":{},"type":{{"kind":"texture","shape":"2d","access":"{access}","result":{},"format":"{format}"}}}}"#,
+            slot_json(index),
+            result_json(result.0, result.1)
+        )
+    }
+
+    fn sampler_json(name: &str, index: u32) -> String {
+        format!(
+            r#"{{"name":"{name}","binding":{},"type":{{"kind":"sampler"}}}}"#,
+            slot_json(index)
+        )
+    }
+
+    fn target_json(index: u32, result: (&str, u32)) -> String {
+        format!(
+            r#"{{"index":{index},"type":{}}}"#,
+            result_json(result.0, result.1)
+        )
+    }
+
+    /// A schema-3 document whose identity fields match `SOURCE` and `ARTIFACT`: a compute one carries a workgroup
+    /// size, a fragment one `targets`.
+    fn document3(stage: &str, parameters: &[String], targets: &[String]) -> String {
+        let source = fingerprint(SOURCE.as_bytes());
+        let artifact = fingerprint(ARTIFACT);
+        let (workgroup, targets) = if stage == "compute" {
+            (r#""workgroupSize":[1,1,1],"#.to_owned(), String::new())
+        } else {
+            (
+                String::new(),
+                format!(r#","targets":[{}]"#, targets.join(",")),
+            )
+        };
+        format!(
+            r#"{{"schemaVersion":3,"matrixLayout":"column","compiler":"canned","target":"wgsl","entryPoint":"entry","stage":"{stage}","sourceHash":"{source}","artifactHash":"{artifact}",{workgroup}"parameters":[{}]{targets}}}"#,
+            parameters.join(",")
+        )
+    }
+
+    const fn sampled(class: crate::texture::SampleClass) -> TextureLayout {
+        TextureLayout {
+            format: None,
+            dimension: TextureDimension::D2,
+            access: TextureAccess::Sampled,
+            class,
+        }
+    }
+
+    const fn storage(format: TexelFormat, access: TextureAccess) -> TextureLayout {
+        TextureLayout {
+            format: Some(format),
+            dimension: TextureDimension::D2,
+            access,
+            class: format.sample_class(),
+        }
+    }
+
+    fn texture_parameter(
+        name: &'static str,
+        access: Access,
+        element: TypeLayout,
+        texture: TextureLayout,
+        index: u32,
+    ) -> ParameterDescriptor {
+        parameter(
+            name,
+            ParameterKind::Texture,
+            access,
+            ResourceLayout::texture_v1(element, texture),
+            index,
+        )
+    }
+
+    fn sampler_parameter(name: &'static str, index: u32) -> ParameterDescriptor {
+        ParameterDescriptor {
+            name,
+            rust_type: "Sampler",
+            kind: ParameterKind::Sampler,
+            access: Access::NotApplicable,
+            resource_layout: None,
+            binding: Some(ResourceBinding {
+                group: 0,
+                binding: index,
+            }),
+        }
+    }
+
+    /// An output buffer of a pixel kernel: a storage parameter with no shader binding (a colour target).
+    fn output_parameter(name: &'static str, element: TypeLayout) -> ParameterDescriptor {
+        ParameterDescriptor {
+            name,
+            rust_type: "RWStructuredBuffer<T>",
+            kind: ParameterKind::Storage,
+            access: Access::ReadWrite,
+            resource_layout: Some(ResourceLayout::storage_v2(element)),
+            binding: None,
+        }
+    }
+
+    fn pixel_kernel(parameters: Vec<ParameterDescriptor>) -> KernelDescriptor {
+        KernelDescriptor {
+            shape: crate::Shape::Pixel,
+            ..kernel_with(parameters)
+        }
+    }
+
+    /// A compute kernel with every texture form and a sampler and a buffer: `tex` sampled `float4` at 0, `rw` an
+    /// `r32f` read-write texture at 1, `wo` an `rg32ui` write-only texture at 2, `samp` at 3, `out` at 4.
+    fn texture_kernel() -> KernelDescriptor {
+        kernel_with(vec![
+            texture_parameter(
+                "tex",
+                Access::ReadOnly,
+                VEC4,
+                sampled(SampleClass::Float),
+                0,
+            ),
+            texture_parameter(
+                "rw",
+                Access::ReadWrite,
+                F32_LAYOUT,
+                storage(TexelFormat::R32Float, TextureAccess::ReadWrite),
+                1,
+            ),
+            texture_parameter(
+                "wo",
+                Access::ReadWrite,
+                UVEC2,
+                storage(TexelFormat::Rg32Uint, TextureAccess::WriteOnly),
+                2,
+            ),
+            sampler_parameter("samp", 3),
+            parameter(
+                "out",
+                ParameterKind::Storage,
+                Access::ReadWrite,
+                ResourceLayout::storage_v1(F32_LAYOUT),
+                4,
+            ),
+        ])
+    }
+
+    fn texture_parameters() -> Vec<String> {
+        vec![
+            texture_json("tex", 0, "read", F4, "unknown"),
+            texture_json("rw", 1, "readWrite", ("float32", 1), "r32f"),
+            texture_json("wo", 2, "write", ("uint32", 2), "rg32ui"),
+            sampler_json("samp", 3),
+            storage_json("out", 4, F32_LAYOUT, "readWrite"),
+        ]
+    }
+
+    fn texture_document() -> String {
+        document3("compute", &texture_parameters(), &[])
+    }
+
+    /// A fragment kernel: `tex` and `samp`, one `float4` output.
+    fn fragment_kernel() -> KernelDescriptor {
+        pixel_kernel(vec![
+            texture_parameter(
+                "tex",
+                Access::ReadOnly,
+                VEC4,
+                sampled(SampleClass::Float),
+                0,
+            ),
+            sampler_parameter("samp", 1),
+            output_parameter("color", VEC4),
+        ])
+    }
+
+    fn fragment_parameters() -> Vec<String> {
+        vec![
+            texture_json("tex", 0, "read", F4, "unknown"),
+            sampler_json("samp", 1),
+        ]
+    }
+
+    fn fragment_document() -> String {
+        document3("fragment", &fragment_parameters(), &[target_json(0, F4)])
+    }
+
+    /// The message of the `Mismatch` that reading `json` for `kernel` gives, at the read or at the cross-check.
+    fn any_mismatch(json: &str, kernel: &KernelDescriptor) -> String {
+        match read(json, kernel) {
+            Err(Error::Mismatch(message)) => message,
+            Err(other) => panic!("expected a mismatch, got {other:?}\n{json}"),
+            Ok(compiled) => match compiled.reflection.cross_check_kernel(kernel) {
+                Err(Error::Mismatch(message)) => message,
+                other => panic!("expected a mismatch, got {other:?}\n{json}"),
+            },
+        }
+    }
+
+    fn invalid_of(json: &str, kernel: &KernelDescriptor) -> String {
+        match read(json, kernel) {
+            Err(Error::Invalid(message)) => message,
+            other => panic!("expected an invalid document, got {other:?}\n{json}"),
+        }
+    }
+
+    #[test]
+    fn schema_three_reads_textures_samplers_and_the_stage() {
+        let kernel = texture_kernel();
+        let compiled = read(&texture_document(), &kernel).unwrap();
+        let reflection = &compiled.reflection;
+        assert_eq!(reflection.schema_version, 3);
+        assert_eq!(reflection.stage, Stage::Compute);
+        assert_eq!(compiled.workgroup_size, [1, 1, 1]);
+        assert!(reflection.targets.is_empty());
+        let textures: Vec<_> = reflection
+            .textures
+            .iter()
+            .map(|t| (t.name.as_str(), t.binding, t.space, t.access, t.format))
+            .collect();
+        assert_eq!(
+            textures,
+            [
+                ("tex", 0, 0, TextureAccess::Sampled, None),
+                (
+                    "rw",
+                    1,
+                    0,
+                    TextureAccess::ReadWrite,
+                    Some(TexelFormat::R32Float)
+                ),
+                (
+                    "wo",
+                    2,
+                    0,
+                    TextureAccess::WriteOnly,
+                    Some(TexelFormat::Rg32Uint)
+                ),
+            ]
+        );
+        assert!(
+            reflection
+                .textures
+                .iter()
+                .all(|t| t.dimension == TextureDimension::D2)
+        );
+        assert_eq!(
+            reflection.textures[2].result.kind,
+            ReflectedTypeKind::Vector {
+                scalar: ScalarKind::U32,
+                count: 2
+            }
+        );
+        // The helper reports no byte layout for a texture result.
+        assert_eq!(reflection.textures[2].result.size, None);
+        let samplers: Vec<_> = reflection
+            .samplers
+            .iter()
+            .map(|s| (s.name.as_str(), s.binding, s.space))
+            .collect();
+        assert_eq!(samplers, [("samp", 3, 0)]);
+        // The buffer is in the buffer list alone, and only buffers have a layout report.
+        assert_eq!(reflection.resources.len(), 1);
+        let reports = reflection.cross_check_kernel(&kernel).unwrap();
+        assert_eq!(reports.len(), 1);
+        assert!(reports[0].is_full_abi_match());
+    }
+
+    #[test]
+    fn a_fragment_document_has_targets_in_order_and_no_workgroup() {
+        let kernel = fragment_kernel();
+        let compiled = read(&fragment_document(), &kernel).unwrap();
+        let reflection = &compiled.reflection;
+        assert_eq!(reflection.stage, Stage::Fragment);
+        assert_eq!(compiled.workgroup_size, [0, 0, 0]);
+        assert_eq!(reflection.targets.len(), 1);
+        assert_eq!(reflection.targets[0].index, 0);
+        assert_eq!(
+            reflection.targets[0].ty.kind,
+            ReflectedTypeKind::Vector {
+                scalar: ScalarKind::F32,
+                count: 4
+            }
+        );
+        assert!(reflection.cross_check_kernel(&kernel).unwrap().is_empty());
+        // Two outputs, in parameter order, at indices 0 and 1.
+        let two = pixel_kernel(vec![
+            output_parameter("a", U32_LAYOUT),
+            output_parameter("b", VEC2),
+        ]);
+        let document = document3(
+            "fragment",
+            &[],
+            &[
+                target_json(0, ("uint32", 1)),
+                target_json(1, ("float32", 2)),
+            ],
+        );
+        let compiled = read(&document, &two).unwrap();
+        assert!(compiled.reflection.cross_check_kernel(&two).is_ok());
+    }
+
+    #[test]
+    fn schemas_one_and_two_are_compute_documents_without_textures() {
+        let kernel = full_kernel();
+        for (schema, matrix) in [(1_u32, None), (2, Some("column"))] {
+            let parameters = if schema == 1 {
+                vec![storage_json("a", 0, F32_LAYOUT, "read")]
+            } else {
+                full_parameters()
+            };
+            let kernel = if schema == 1 {
+                kernel_with(vec![parameter(
+                    "a",
+                    ParameterKind::Storage,
+                    Access::ReadOnly,
+                    ResourceLayout::storage_v1(F32_LAYOUT),
+                    0,
+                )])
+            } else {
+                kernel
+            };
+            let compiled = read(&document(schema, matrix, &parameters), &kernel).unwrap();
+            let reflection = &compiled.reflection;
+            assert_eq!(reflection.stage, Stage::Compute);
+            assert!(reflection.textures.is_empty() && reflection.samplers.is_empty());
+            assert!(reflection.targets.is_empty());
+        }
+        // A texture in a document of schema 1 or 2 is refused with the message those schemas always gave.
+        let texture = texture_json("tex", 0, "read", F4, "unknown");
+        for (schema, matrix) in [(1_u32, None), (2, Some("column"))] {
+            let json = document(schema, matrix, std::slice::from_ref(&texture));
+            assert_eq!(
+                invalid_of(&json, &kernel_with(Vec::new())),
+                "only structured buffers are supported",
+                "schema {schema}"
+            );
+        }
+        // A schema-3 document with nothing new in it is still a schema-3 document.
+        assert!(read(&document3("compute", &[], &[]), &kernel_with(Vec::new())).is_ok());
+    }
+
+    #[test]
+    fn a_schema_one_or_two_reflection_cannot_describe_a_texture_or_a_sampler() {
+        let compiled = read(&document(2, Some("column"), &[]), &kernel_with(Vec::new())).unwrap();
+        let tex = texture_parameter(
+            "tex",
+            Access::ReadOnly,
+            VEC4,
+            sampled(SampleClass::Float),
+            0,
+        );
+        for (what, parameter) in [("texture", tex), ("sampler", sampler_parameter("samp", 1))] {
+            assert_eq!(
+                compiled
+                    .reflection
+                    .cross_check_kernel(&kernel_with(vec![parameter]))
+                    .unwrap_err()
+                    .to_string(),
+                format!(
+                    "POD reflection mismatch: reflection schema 2 cannot describe {what}; re-export with cargo gust build"
+                ),
+                "{what}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_schema_three_grammar_is_strict() {
+        let kernel = texture_kernel();
+        let fragment = fragment_kernel();
+        let control = texture_parameters();
+        let with = |index: usize, parameter: String| {
+            let mut parameters = control.clone();
+            parameters[index] = parameter;
+            document3("compute", &parameters, &[])
+        };
+        let cases: Vec<(&str, String, &str)> = vec![
+            (
+                "an unknown stage",
+                texture_document().replacen(r#""stage":"compute""#, r#""stage":"geometry""#, 1),
+                "unknown stage",
+            ),
+            (
+                "a stage that is not text",
+                texture_document().replacen(r#""stage":"compute""#, r#""stage":1"#, 1),
+                "expected string",
+            ),
+            (
+                "a missing stage",
+                texture_document().replacen(r#""stage":"compute","#, "", 1),
+                "missing stage",
+            ),
+            (
+                "a texture of another shape",
+                with(0, texture_json("tex", 0, "read", F4, "unknown").replace("2d", "3d")),
+                "unsupported texture shape (only 2d)",
+            ),
+            (
+                "a texture access of another name",
+                with(0, texture_json("tex", 0, "sample", F4, "unknown")),
+                "unsupported texture access",
+            ),
+            (
+                "a format outside the dialect",
+                with(1, texture_json("rw", 1, "readWrite", F4, "rgba8")),
+                "unsupported texture format `rgba8`",
+            ),
+            (
+                "a matrix result",
+                with(
+                    0,
+                    texture_json("tex", 0, "read", F4, "unknown").replace(
+                        r#""kind":"vector","scalarType":"float32","elementCount":4"#,
+                        r#""kind":"matrix","scalarType":"float32","rows":2,"columns":2,"matrixLayout":"column""#,
+                    ),
+                ),
+                "unsupported texture result type (a scalar or a vector)",
+            ),
+            (
+                "a texture result of five components",
+                with(0, texture_json("tex", 0, "read", ("float32", 5), "unknown")),
+                "unsupported elementCount 5",
+            ),
+            (
+                "a texture and a buffer in one slot",
+                with(4, storage_json("out", 1, F32_LAYOUT, "readWrite")),
+                "duplicate resource name or binding",
+            ),
+            (
+                "a sampler named like a texture",
+                with(3, sampler_json("tex", 3)),
+                "duplicate resource name or binding",
+            ),
+            (
+                "a sampler in a texture's slot",
+                with(3, sampler_json("samp", 0)),
+                "duplicate resource name or binding",
+            ),
+            (
+                "a binding array of textures",
+                with(
+                    0,
+                    texture_json("tex", 0, "read", F4, "unknown")
+                        .replacen(r#""count":1"#, r#""count":2"#, 1),
+                ),
+                "binding arrays are unsupported",
+            ),
+            (
+                "targets in a compute document",
+                texture_document().replacen(
+                    r#""parameters""#,
+                    r#""targets":[],"parameters""#,
+                    1,
+                ),
+                "a compute reflection has no targets",
+            ),
+        ];
+        for (what, json, expected) in cases {
+            assert_eq!(invalid_of(&json, &kernel), expected, "{what}");
+        }
+        let fragment_cases: Vec<(&str, String, &str)> = vec![
+            (
+                "a fragment with a workgroup size",
+                fragment_document().replacen(
+                    r#""parameters""#,
+                    r#""workgroupSize":[1,1,1],"parameters""#,
+                    1,
+                ),
+                "a fragment reflection has no workgroupSize",
+            ),
+            (
+                "a fragment without targets",
+                fragment_document().replacen(r#","targets":[{"index":0,"type":{"kind":"vector","scalarType":"float32","elementCount":4}}]"#, "", 1),
+                "a fragment reflection needs targets",
+            ),
+            (
+                "targets out of order",
+                document3(
+                    "fragment",
+                    &fragment_parameters(),
+                    &[target_json(1, F4), target_json(0, F4)],
+                ),
+                "targets must be in ascending SV_Target order without repeats",
+            ),
+            (
+                "a repeated target index",
+                document3(
+                    "fragment",
+                    &fragment_parameters(),
+                    &[target_json(0, F4), target_json(0, F4)],
+                ),
+                "targets must be in ascending SV_Target order without repeats",
+            ),
+            (
+                "a target that is a struct",
+                document3(
+                    "fragment",
+                    &fragment_parameters(),
+                    &[r#"{"index":0,"type":{"kind":"struct","fields":[{"name":"a","binding":{"kind":"uniform","offset":0,"size":4},"type":{"kind":"scalar","scalarType":"float32"}}]}}"#.to_owned()],
+                ),
+                "unsupported target type (a scalar or a vector)",
+            ),
+        ];
+        for (what, json, expected) in fragment_cases {
+            assert_eq!(invalid_of(&json, &fragment), expected, "{what}");
+        }
+    }
+
+    // ---- the tamper cases (plan section 3.3): every one is a `Mismatch` that names the field ----
+
+    #[test]
+    fn the_untouched_schema_three_documents_pass_their_cross_checks() {
+        let compute = texture_kernel();
+        let compiled = read(&texture_document(), &compute).unwrap();
+        assert!(compiled.reflection.cross_check_kernel(&compute).is_ok());
+        let fragment = fragment_kernel();
+        let compiled = read(&fragment_document(), &fragment).unwrap();
+        assert!(compiled.reflection.cross_check_kernel(&fragment).is_ok());
+    }
+
+    #[test]
+    fn a_stage_that_differs_from_the_shape_is_a_mismatch_naming_stage() {
+        // A compute reflection against a pixel descriptor.
+        let pixel = fragment_kernel();
+        let compute_document = document3("compute", &fragment_parameters(), &[]);
+        assert_eq!(
+            any_mismatch(&compute_document, &pixel),
+            "stage: host fragment, compiler compute"
+        );
+        // The same at the cross-check, which does not depend on the read having caught it: the reflection was read for
+        // a grid kernel and is checked against a pixel one.
+        let grid = kernel_with(Vec::new());
+        let compiled = read(&document3("compute", &[], &[]), &grid).unwrap();
+        assert_eq!(
+            compiled
+                .reflection
+                .cross_check_kernel(&pixel)
+                .unwrap_err()
+                .to_string(),
+            "POD reflection mismatch: stage: host fragment, compiler compute"
+        );
+        // A fragment reflection against a grid descriptor, at the read and at the cross-check.
+        assert_eq!(
+            any_mismatch(&fragment_document(), &texture_kernel()),
+            "stage: host compute, compiler fragment"
+        );
+        let compiled = read(&fragment_document(), &fragment_kernel()).unwrap();
+        assert_eq!(
+            compiled
+                .reflection
+                .cross_check_kernel(&texture_kernel())
+                .unwrap_err()
+                .to_string(),
+            "POD reflection mismatch: stage: host compute, compiler fragment"
+        );
+        // A schema-1 and a schema-2 reflection are compute reflections.
+        let compiled = read(&document(2, Some("column"), &[]), &grid).unwrap();
+        assert_eq!(
+            compiled
+                .reflection
+                .cross_check_kernel(&pixel)
+                .unwrap_err()
+                .to_string(),
+            "POD reflection mismatch: stage: host fragment, compiler compute"
+        );
+    }
+
+    #[test]
+    fn a_target_index_or_type_that_differs_is_a_mismatch_naming_the_target() {
+        let kernel = fragment_kernel();
+        let parameters = fragment_parameters();
+        for (what, targets, expected) in [
+            (
+                "the index",
+                vec![target_json(1, F4)],
+                "targets[0].index: host 0, compiler 1",
+            ),
+            (
+                "the scalar type",
+                vec![target_json(0, ("uint32", 4))],
+                "targets[0].type: host f32x4, compiler u32x4",
+            ),
+            (
+                "the width",
+                vec![target_json(0, ("float32", 2))],
+                "targets[0].type: host f32x4, compiler f32x2",
+            ),
+            (
+                "a scalar for a vector",
+                vec![target_json(0, ("float32", 1))],
+                "targets[0].type: host f32x4, compiler f32",
+            ),
+            (
+                "an extra target",
+                vec![target_json(0, F4), target_json(1, F4)],
+                "targets: host 1 outputs, compiler 2",
+            ),
+            (
+                "a missing target",
+                Vec::new(),
+                "targets: host 1 outputs, compiler 0",
+            ),
+        ] {
+            let json = document3("fragment", &parameters, &targets);
+            assert_eq!(any_mismatch(&json, &kernel), expected, "{what}");
+        }
+        // A gap in the indices (the helper reports `SV_Target0` and `SV_Target2`) is not outputs in parameter order.
+        let two = pixel_kernel(vec![
+            output_parameter("a", U32_LAYOUT),
+            output_parameter("b", VEC4),
+        ]);
+        let json = document3(
+            "fragment",
+            &[],
+            &[target_json(0, ("uint32", 1)), target_json(2, F4)],
+        );
+        assert_eq!(
+            any_mismatch(&json, &two),
+            "targets[1].index: host 1, compiler 2"
+        );
+        // Swapping the two outputs' order is a type mismatch at both positions' first.
+        let swapped = pixel_kernel(vec![
+            output_parameter("b", VEC4),
+            output_parameter("a", U32_LAYOUT),
+        ]);
+        let json = document3(
+            "fragment",
+            &[],
+            &[target_json(0, ("uint32", 1)), target_json(1, F4)],
+        );
+        assert_eq!(
+            any_mismatch(&json, &swapped),
+            "targets[0].type: host f32x4, compiler u32"
+        );
+    }
+
+    #[test]
+    fn a_texture_that_differs_is_a_mismatch_naming_the_field() {
+        let kernel = texture_kernel();
+        let control = texture_parameters();
+        let with = |index: usize, parameter: String| {
+            let mut parameters = control.clone();
+            parameters[index] = parameter;
+            document3("compute", &parameters, &[])
+        };
+        for (what, json, expected) in [
+            (
+                "access of a read-write texture",
+                with(1, texture_json("rw", 1, "write", ("float32", 1), "r32f")),
+                "rw.access: host readWrite, compiler write",
+            ),
+            (
+                "access of a write-only texture",
+                with(
+                    2,
+                    texture_json("wo", 2, "readWrite", ("uint32", 2), "rg32ui"),
+                ),
+                "wo.access: host write, compiler readWrite",
+            ),
+            (
+                "access of a sampled texture",
+                with(0, texture_json("tex", 0, "readWrite", F4, "unknown")),
+                "tex.access: host read, compiler readWrite",
+            ),
+            (
+                "format of a read-write texture",
+                with(
+                    1,
+                    texture_json("rw", 1, "readWrite", ("float32", 1), "rgba32f"),
+                ),
+                "rw.format: host r32float, compiler rgba32float",
+            ),
+            (
+                "format of a write-only texture",
+                with(2, texture_json("wo", 2, "write", ("uint32", 2), "rg32i")),
+                "wo.format: host rg32uint, compiler rg32sint",
+            ),
+            (
+                "format of a storage texture reported as unknown",
+                with(
+                    1,
+                    texture_json("rw", 1, "readWrite", ("float32", 1), "unknown"),
+                ),
+                "rw.format: host r32float, compiler none",
+            ),
+            (
+                "a format on a sampled texture",
+                with(0, texture_json("tex", 0, "read", F4, "r32f")),
+                "tex.format: host none, compiler r32float",
+            ),
+            (
+                "result type of a storage texture",
+                with(
+                    1,
+                    texture_json("rw", 1, "readWrite", ("float32", 2), "r32f"),
+                ),
+                "rw.result: host f32, compiler f32x2",
+            ),
+            (
+                "result scalar of a write-only texture",
+                with(2, texture_json("wo", 2, "write", ("int32", 2), "rg32ui")),
+                "wo.result: host u32x2, compiler i32x2",
+            ),
+            (
+                "sample class of a sampled texture",
+                with(0, texture_json("tex", 0, "read", ("uint32", 4), "unknown")),
+                "tex.class: host f32, compiler u32",
+            ),
+            (
+                "result width of a sampled texture",
+                with(0, texture_json("tex", 0, "read", ("float32", 1), "unknown")),
+                "tex.result: host f32x4, compiler f32",
+            ),
+            (
+                "slot of a texture",
+                with(
+                    0,
+                    texture_json("tex", 0, "read", F4, "unknown").replacen(
+                        r#""index":0"#,
+                        r#""index":6"#,
+                        1,
+                    ),
+                ),
+                "tex.binding: host 0, compiler 6",
+            ),
+            (
+                "space of a texture",
+                with(
+                    0,
+                    texture_json("tex", 0, "read", F4, "unknown").replacen(
+                        r#""space":0"#,
+                        r#""space":1"#,
+                        1,
+                    ),
+                ),
+                "tex.group: host 0, compiler 1",
+            ),
+            (
+                "a texture the document reports as a buffer",
+                with(0, storage_json("tex", 0, F32_LAYOUT, "read")),
+                "tex.kind: host texture, compiler a buffer",
+            ),
+            (
+                "a texture the document reports as a sampler",
+                with(0, sampler_json("tex", 0)),
+                "tex.kind: host texture, compiler a sampler",
+            ),
+            (
+                "a texture the document names otherwise",
+                with(0, texture_json("tex2", 0, "read", F4, "unknown")),
+                "missing compiler binding tex",
+            ),
+        ] {
+            assert_eq!(any_mismatch(&json, &kernel), expected, "{what}");
+        }
+        // A texture the descriptor does not have.
+        let mut parameters = texture_parameters();
+        parameters.push(texture_json("extra", 7, "read", F4, "unknown"));
+        assert_eq!(
+            any_mismatch(&document3("compute", &parameters, &[]), &kernel),
+            "unexpected compiler resource bindings"
+        );
+    }
+
+    #[test]
+    fn a_sampler_that_differs_is_a_mismatch_naming_the_field() {
+        let kernel = texture_kernel();
+        let control = texture_parameters();
+        let with = |parameter: String| {
+            let mut parameters = control.clone();
+            parameters[3] = parameter;
+            document3("compute", &parameters, &[])
+        };
+        for (what, json, expected) in [
+            (
+                "a moved slot",
+                with(sampler_json("samp", 5)),
+                "samp.binding: host 3, compiler 5",
+            ),
+            (
+                "a moved space",
+                with(sampler_json("samp", 3).replacen(r#""space":0"#, r#""space":2"#, 1)),
+                "samp.group: host 0, compiler 2",
+            ),
+            (
+                "a sampler the document reports as a texture",
+                with(texture_json("samp", 3, "read", F4, "unknown")),
+                "samp.kind: host sampler, compiler a texture",
+            ),
+            (
+                "a sampler the document names otherwise",
+                with(sampler_json("other", 3)),
+                "missing compiler binding samp",
+            ),
+        ] {
+            assert_eq!(any_mismatch(&json, &kernel), expected, "{what}");
+        }
+        let mut parameters = texture_parameters();
+        parameters.push(sampler_json("extra", 7));
+        assert_eq!(
+            any_mismatch(&document3("compute", &parameters, &[]), &kernel),
+            "unexpected compiler resource bindings"
+        );
+        // A descriptor with a sampler the document lacks.
+        let mut parameters = texture_parameters();
+        parameters.remove(3);
+        assert_eq!(
+            any_mismatch(&document3("compute", &parameters, &[]), &kernel),
+            "missing compiler binding samp"
+        );
+    }
+
+    #[test]
+    fn a_descriptor_that_contradicts_itself_is_a_mismatch_even_against_its_own_document() {
+        let document = texture_document();
+        let kernel_with_tex = |texture: ParameterDescriptor| {
+            let mut kernel = texture_kernel();
+            let mut parameters = kernel.parameters.to_vec();
+            parameters[0] = texture;
+            kernel.parameters = Box::leak(parameters.into_boxed_slice());
+            kernel
+        };
+        let kernel_with_rw = |texture: ParameterDescriptor| {
+            let mut kernel = texture_kernel();
+            let mut parameters = kernel.parameters.to_vec();
+            parameters[1] = texture;
+            kernel.parameters = Box::leak(parameters.into_boxed_slice());
+            kernel
+        };
+        let rgba = storage(TexelFormat::Rgba32Float, TextureAccess::ReadWrite);
+        let cases: Vec<(&str, KernelDescriptor, &str)> = vec![
+            (
+                "a class that is not the result type's",
+                kernel_with_tex(texture_parameter(
+                    "tex",
+                    Access::ReadOnly,
+                    VEC4,
+                    sampled(SampleClass::Uint),
+                    0,
+                )),
+                "tex.class: host u32, result type f32",
+            ),
+            (
+                "a format on a sampled texture",
+                kernel_with_tex(texture_parameter(
+                    "tex",
+                    Access::ReadOnly,
+                    VEC4,
+                    TextureLayout {
+                        format: Some(TexelFormat::Rgba32Float),
+                        ..sampled(SampleClass::Float)
+                    },
+                    0,
+                )),
+                "tex.format: a sampled texture has no format in the shader, host rgba32float",
+            ),
+            (
+                "a storage texture without a format",
+                kernel_with_rw(texture_parameter(
+                    "rw",
+                    Access::ReadWrite,
+                    VEC4,
+                    TextureLayout {
+                        format: None,
+                        ..rgba
+                    },
+                    1,
+                )),
+                "rw.format: a storage texture needs a format",
+            ),
+            (
+                "a read-write texture of a wide format",
+                kernel_with_rw(texture_parameter("rw", Access::ReadWrite, VEC4, rgba, 1)),
+                "rw.format: rgba32float does not fit class f32 and access readWrite",
+            ),
+            (
+                "a format of another class",
+                kernel_with_rw(texture_parameter(
+                    "rw",
+                    Access::ReadWrite,
+                    VEC4,
+                    TextureLayout {
+                        format: Some(TexelFormat::Rgba32Uint),
+                        access: TextureAccess::WriteOnly,
+                        ..rgba
+                    },
+                    1,
+                )),
+                "rw.format: rgba32uint does not fit class f32 and access write",
+            ),
+            (
+                "a sampled texture with write access",
+                kernel_with_tex(texture_parameter(
+                    "tex",
+                    Access::ReadWrite,
+                    VEC4,
+                    sampled(SampleClass::Float),
+                    0,
+                )),
+                "tex.access differs",
+            ),
+            (
+                "a texture with a buffer rule",
+                kernel_with_tex(parameter(
+                    "tex",
+                    ParameterKind::Texture,
+                    Access::ReadOnly,
+                    ResourceLayout::storage_v2(VEC4),
+                    0,
+                )),
+                "tex.rules: StorageV2 does not fit this parameter kind",
+            ),
+            (
+                "a texture result that is a matrix",
+                kernel_with_tex(texture_parameter(
+                    "tex",
+                    Access::ReadOnly,
+                    MAT4,
+                    sampled(SampleClass::Float),
+                    0,
+                )),
+                "tex.result: a texture result is a 32-bit scalar or a 2- or 4-wide vector",
+            ),
+            (
+                "a texture result that is three wide",
+                kernel_with_tex(texture_parameter(
+                    "tex",
+                    Access::ReadOnly,
+                    TypeLayout::vector("Vec3", ScalarKind::F32, 3),
+                    sampled(SampleClass::Float),
+                    0,
+                )),
+                "tex.result: a texture result is a 32-bit scalar or a 2- or 4-wide vector",
+            ),
+            (
+                "a format with more channels than the result type has",
+                kernel_with_rw(texture_parameter(
+                    "rw",
+                    Access::ReadWrite,
+                    UVEC2,
+                    TextureLayout {
+                        format: Some(TexelFormat::Rgba32Uint),
+                        access: TextureAccess::WriteOnly,
+                        ..storage(TexelFormat::Rgba32Uint, TextureAccess::WriteOnly)
+                    },
+                    1,
+                )),
+                "rw.format: rgba32uint has channel count 4, the result type has width 2",
+            ),
+            (
+                "a format with fewer channels than the result type has",
+                kernel_with_rw(texture_parameter(
+                    "rw",
+                    Access::ReadWrite,
+                    VEC4,
+                    storage(TexelFormat::R32Float, TextureAccess::ReadWrite),
+                    1,
+                )),
+                "rw.format: r32float has channel count 1, the result type has width 4",
+            ),
+            (
+                "a sampler with a layout",
+                {
+                    let mut kernel = texture_kernel();
+                    let mut parameters = kernel.parameters.to_vec();
+                    parameters[3].resource_layout = Some(ResourceLayout::storage_v1(F32_LAYOUT));
+                    kernel.parameters = Box::leak(parameters.into_boxed_slice());
+                    kernel
+                },
+                "samp: a sampler has no resource contract",
+            ),
+        ];
+        for (what, kernel, expected) in cases {
+            assert_eq!(any_mismatch(&document, &kernel), expected, "{what}");
+        }
+        // A buffer parameter that carries the texture rule.
+        let buffer = kernel_with(vec![parameter(
+            "out",
+            ParameterKind::Storage,
+            Access::ReadWrite,
+            ResourceLayout::texture_v1(F32_LAYOUT, sampled(SampleClass::Float)),
+            0,
+        )]);
+        let json = document3(
+            "compute",
+            &[storage_json("out", 0, F32_LAYOUT, "readWrite")],
+            &[],
+        );
+        assert!(
+            any_mismatch(&json, &buffer).starts_with("out.rules: TextureV1("),
+            "{}",
+            any_mismatch(&json, &buffer)
+        );
+        // Two descriptor bindings in one slot, across kinds.
+        let clash = kernel_with(vec![
+            texture_parameter(
+                "tex",
+                Access::ReadOnly,
+                VEC4,
+                sampled(SampleClass::Float),
+                0,
+            ),
+            sampler_parameter("samp", 0),
+        ]);
+        assert_eq!(
+            any_mismatch(
+                &document3(
+                    "compute",
+                    &[
+                        texture_json("tex", 0, "read", F4, "unknown"),
+                        sampler_json("samp", 1)
+                    ],
+                    &[]
+                ),
+                &clash
+            ),
+            "duplicate descriptor binding"
+        );
+    }
+
+    #[test]
+    fn a_pixel_kernel_may_have_no_outputs_in_its_descriptor_only_if_the_document_has_none() {
+        let no_outputs = pixel_kernel(vec![texture_parameter(
+            "tex",
+            Access::ReadOnly,
+            VEC4,
+            sampled(SampleClass::Float),
+            0,
+        )]);
+        let json = document3(
+            "fragment",
+            &[texture_json("tex", 0, "read", F4, "unknown")],
+            &[],
+        );
+        let compiled = read(&json, &no_outputs).unwrap();
+        assert!(compiled.reflection.cross_check_kernel(&no_outputs).is_ok());
+        assert_eq!(
+            any_mismatch(&fragment_document(), &no_outputs),
+            "unexpected compiler resource bindings"
+        );
+    }
 }
 
-/// The document's `schemaVersion`: 1 or 2, nothing else.
+/// The document's `schemaVersion`: 1, 2 or 3, nothing else.
 fn read_schema_version(root: &Json) -> Result<u32, Error> {
     match root.get("schemaVersion")?.u32()? {
-        version @ (1 | 2) => Ok(version),
+        version @ (1..=3) => Ok(version),
         _ => Err(invalid("unsupported native reflection schema version")),
     }
 }
@@ -2173,20 +3845,25 @@ fn cross_check_layout(
     rules: ShaderLayoutRules,
     resource: &ReflectedResource,
 ) -> Result<PodCrossCheck, Error> {
-    let host_fits = match rules {
-        ShaderLayoutRules::StorageV1 => host.is_storage_v1(),
-        ShaderLayoutRules::StorageV2 => host.is_storage_v2(),
-        ShaderLayoutRules::Std140V1 => host.is_std140_v1(),
+    let (host_fits, expected_kind) = match rules {
+        ShaderLayoutRules::StorageV1 => (
+            host.is_storage_v1(),
+            ReflectedResourceKind::StructuredBuffer,
+        ),
+        ShaderLayoutRules::StorageV2 => (
+            host.is_storage_v2(),
+            ReflectedResourceKind::StructuredBuffer,
+        ),
+        ShaderLayoutRules::Std140V1 => (host.is_std140_v1(), ReflectedResourceKind::ConstantBuffer),
+        // A texture is checked by `Reflection::cross_check_kernel` against the document's texture list, never as a
+        // buffer.
+        ShaderLayoutRules::TextureV1(_) => {
+            return Err(Error::Mismatch(format!("host layout is not {rules:?}")));
+        }
     };
     if !host_fits {
         return Err(Error::Mismatch(format!("host layout is not {rules:?}")));
     }
-    let expected_kind = match rules {
-        ShaderLayoutRules::StorageV1 | ShaderLayoutRules::StorageV2 => {
-            ReflectedResourceKind::StructuredBuffer
-        }
-        ShaderLayoutRules::Std140V1 => ReflectedResourceKind::ConstantBuffer,
-    };
     if resource.kind != expected_kind {
         return Err(Error::Mismatch(format!(
             "{}.kind: host {expected_kind:?}, compiler {:?}",

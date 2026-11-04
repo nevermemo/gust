@@ -17,12 +17,139 @@
 //! buffer; D80) is declared `Std140V1` ([`reflected_uniform_layout`]), so the cross-check holds it to std140 (padding
 //! fields spelled out, nested structs at multiples of 16) and to the reflection it came from.
 
-use gust::{ScalarKind, ShaderLayoutRules};
+use gust::{
+    ScalarKind, ShaderLayoutRules, TextureAccess, TextureDimension, TextureLayout,
+    texture::{Format, SampleClass},
+};
 
 use crate::{
     json::{self, Json},
     record::{FieldRecord, LayoutKindRecord, LayoutRecord, ResourceRecord},
 };
+
+/// The layout the reflection reports for the texture parameter `parameter` (a schema-3 document, mx.t0b, D91): the
+/// result type as the element, and a `TextureV1` rule that carries the format (`None` for a sampled texture, which
+/// has none in the shader), the dimension, the access and the sample class. It is what `export_unchecked` would put in
+/// the record of a texture parameter whose type the macro could not resolve.
+///
+/// The helper reports no byte layout for a texture's result (`size`, `alignment` and `stride` are absent), so the
+/// element's numbers are those of `gust::TypeLayout::scalar` and `vector`: 4 for a scalar, `4 * n` for a vector, with
+/// alignment 8 for two components and 16 for three or four. The completed descriptor goes through the same
+/// cross-check as any other, which compares it with this same document.
+// Its first caller is the record reader's texture arm, which comes with the macro's texture parameters (mx.t3): the
+// reader and `ParameterRecord::needs_fill` (record.rs) know storage and uniform parameters only today.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) fn reflected_texture_layout(
+    reflection_json: &str,
+    parameter: &str,
+) -> Result<ResourceRecord, String> {
+    let root = json::parse(reflection_json).map_err(|error| format!("reflection JSON: {error}"))?;
+    let resource = resource_named(&root, parameter)?;
+    let context = format!("reflection parameter `{parameter}`");
+    let ty = resource.field("type", &context)?;
+    let at = format!("{context}.type");
+    let kind = ty
+        .field("kind", &at)?
+        .as_str()
+        .ok_or_else(|| format!("{at}: `kind` must be a string"))?;
+    if kind != "texture" {
+        return Err(format!(
+            "{context}: the macro says texture, the reflection reports `{kind}`"
+        ));
+    }
+    let shape = ty.field("shape", &at)?.as_str();
+    if shape != Some("2d") {
+        return Err(format!("{at}: unsupported texture shape (only `2d`)"));
+    }
+    let access = match ty.field("access", &at)?.as_str() {
+        Some("read") => TextureAccess::Sampled,
+        Some("readWrite") => TextureAccess::ReadWrite,
+        Some("write") => TextureAccess::WriteOnly,
+        _ => return Err(format!("{at}: unsupported texture access")),
+    };
+    let format = match ty.field("format", &at)?.as_str() {
+        Some("unknown") => None,
+        Some(text) => Some(
+            Format::ALL
+                .into_iter()
+                .find(|format| format.slang_name() == text)
+                .ok_or_else(|| format!("{at}: unsupported texture format `{text}`"))?,
+        ),
+        None => return Err(format!("{at}: `format` must be a string")),
+    };
+    let element = texel_layout(ty.field("result", &at)?, &format!("{at}.result"))?;
+    let scalar = match element.kind {
+        LayoutKindRecord::Scalar(scalar) | LayoutKindRecord::Vector { scalar, .. } => scalar,
+        _ => return Err(format!("{at}.result: a scalar or a vector")),
+    };
+    let class = match format {
+        Some(format) => format.sample_class(),
+        None => match scalar {
+            ScalarKind::F32 => SampleClass::Float,
+            ScalarKind::U32 => SampleClass::Uint,
+            ScalarKind::I32 => SampleClass::Sint,
+        },
+    };
+    Ok(ResourceRecord {
+        rules: ShaderLayoutRules::TextureV1(TextureLayout {
+            format,
+            dimension: TextureDimension::D2,
+            access,
+            class,
+        }),
+        element_stride: element.stride,
+        element,
+    })
+}
+
+/// A texture result type (`scalar` or `vector`) without the byte layout the other element types carry.
+#[cfg_attr(not(test), allow(dead_code))]
+fn texel_layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
+    let kind = value
+        .field("kind", context)?
+        .as_str()
+        .ok_or_else(|| format!("{context}: `kind` must be a string"))?;
+    let scalar = scalar_type(value, context)?;
+    let prefix = match scalar {
+        ScalarKind::F32 => "",
+        ScalarKind::I32 => "I",
+        ScalarKind::U32 => "U",
+    };
+    let (name, kind, size, alignment) = match kind {
+        "scalar" => {
+            let name = match scalar {
+                ScalarKind::F32 => "f32",
+                ScalarKind::I32 => "i32",
+                ScalarKind::U32 => "u32",
+            };
+            (name.to_owned(), LayoutKindRecord::Scalar(scalar), 4, 4)
+        }
+        "vector" => {
+            let count = number(value, "elementCount", context)?;
+            if !(2..=4).contains(&count) {
+                return Err(format!("{context}: unsupported elementCount {count}"));
+            }
+            (
+                format!("{prefix}Vec{count}"),
+                LayoutKindRecord::Vector { scalar, count },
+                4 * count,
+                if count == 2 { 8 } else { 16 },
+            )
+        }
+        other => {
+            return Err(format!(
+                "{context}: unsupported texture result type `{other}` (a scalar or a vector)"
+            ));
+        }
+    };
+    Ok(LayoutRecord {
+        name,
+        size,
+        alignment,
+        stride: size,
+        kind,
+    })
+}
 
 /// The element layout the reflection reports for the storage parameter `parameter`, with `StorageV1` rules when the
 /// element holds no vector and no matrix and `StorageV2` rules when it does (the choice the macro's descriptor makes).
@@ -559,5 +686,131 @@ mod tests {
                 count: 2
             }
         );
+    }
+
+    /// The helper's own schema-3 output for the probe `name` on the WGSL target (`testdata/schema3/expected.txt`,
+    /// `== <name> <target> <stage>` heading and one document line).
+    fn schema3_document(name: &str) -> &'static str {
+        let heading = format!("== {name} wgsl ");
+        let mut lines = include_str!("testdata/schema3/expected.txt").lines();
+        while let Some(line) = lines.next() {
+            if line.starts_with(&heading) {
+                return lines.next().expect("a document line after the heading");
+            }
+        }
+        panic!("no `{heading}` section");
+    }
+
+    fn texture_rules(rules: ShaderLayoutRules) -> TextureLayout {
+        match rules {
+            ShaderLayoutRules::TextureV1(texture) => texture,
+            other => panic!("expected texture rules, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_sampled_texture_has_a_class_from_its_result_and_no_format() {
+        let float = reflected_texture_layout(schema3_document("sampled_float4"), "tex").unwrap();
+        assert_eq!(
+            texture_rules(float.rules),
+            TextureLayout {
+                format: None,
+                dimension: TextureDimension::D2,
+                access: TextureAccess::Sampled,
+                class: SampleClass::Float,
+            }
+        );
+        assert_eq!(float.element.name, "Vec4");
+        assert_eq!(
+            float.element.kind,
+            LayoutKindRecord::Vector {
+                scalar: ScalarKind::F32,
+                count: 4
+            }
+        );
+        assert_eq!(
+            (
+                float.element.size,
+                float.element.alignment,
+                float.element_stride
+            ),
+            (16, 16, 16)
+        );
+        let uint = reflected_texture_layout(schema3_document("sampled_uint"), "tex").unwrap();
+        let rules = texture_rules(uint.rules);
+        assert_eq!((rules.class, rules.format), (SampleClass::Uint, None));
+        assert_eq!(uint.element.kind, LayoutKindRecord::Scalar(ScalarKind::U32));
+        assert_eq!(uint.element.name, "u32");
+    }
+
+    #[test]
+    fn a_storage_texture_carries_its_exact_format_and_access() {
+        let document = schema3_document("storage_declared");
+        let read_write = reflected_texture_layout(document, "rw").unwrap();
+        assert_eq!(
+            texture_rules(read_write.rules),
+            TextureLayout {
+                format: Some(Format::Rgba32Float),
+                dimension: TextureDimension::D2,
+                access: TextureAccess::ReadWrite,
+                class: SampleClass::Float,
+            }
+        );
+        let write_only = reflected_texture_layout(document, "wo").unwrap();
+        assert_eq!(
+            texture_rules(write_only.rules),
+            TextureLayout {
+                format: Some(Format::Rg32Uint),
+                dimension: TextureDimension::D2,
+                access: TextureAccess::WriteOnly,
+                class: SampleClass::Uint,
+            }
+        );
+        assert_eq!(write_only.element.name, "UVec2");
+        assert_eq!(
+            (write_only.element.size, write_only.element.alignment),
+            (8, 8)
+        );
+        let inferred =
+            reflected_texture_layout(schema3_document("storage_inferred"), "rw").unwrap();
+        assert_eq!(texture_rules(inferred.rules).format, Some(Format::R32Uint));
+    }
+
+    #[test]
+    fn a_parameter_that_is_not_a_supported_texture_is_refused_with_the_reason() {
+        let document = schema3_document("storage_declared");
+        let error = reflected_texture_layout(document, "missing").unwrap_err();
+        assert!(error.contains("no resource named `missing`"), "{error}");
+        let buffer = schema3_document("sampled_float4");
+        let error = reflected_texture_layout(buffer, "out").unwrap_err();
+        assert!(
+            error.contains("the macro says texture, the reflection reports `resource`"),
+            "{error}"
+        );
+        for (what, edited, expected) in [
+            (
+                "shape",
+                document.replace("\"shape\":\"2d\"", "\"shape\":\"3d\""),
+                "unsupported texture shape",
+            ),
+            (
+                "access",
+                document.replace("\"access\":\"readWrite\"", "\"access\":\"append\""),
+                "unsupported texture access",
+            ),
+            (
+                "format",
+                document.replace("\"format\":\"rgba32f\"", "\"format\":\"bgra8\""),
+                "unsupported texture format `bgra8`",
+            ),
+            (
+                "element count",
+                document.replace("\"elementCount\":4", "\"elementCount\":5"),
+                "unsupported elementCount 5",
+            ),
+        ] {
+            let error = reflected_texture_layout(&edited, "rw").unwrap_err();
+            assert!(error.contains(expected), "{what}: {error}");
+        }
     }
 }

@@ -541,6 +541,22 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   broke D90), four should-fixes taken, the identity buffer deferred to mx.p1b. Main: 23 of 24 gates green on `db28395`
   (2026-11-04 22:00 to 22:51Z, RTX 5090); the Gpu step hit the known gust-algo STATUS_ACCESS_VIOLATION (the third time
   at a merge) and passed alone at 22:52 to 22:57Z (pin 333/32, gust-algo 49).
+- MX mx.t3 (`2b6c6b4`, fix round `7f615a7`, merge `c234b67`; D62, D64, D91, D120, MX plan §3.1 to §3.3): textures in the
+  macro. A `#[gpu]` kernel takes `Texture2D<T>`, `StorageTexture2D<F>` (the r32 formats), `WriteTexture2D<F>` and
+  `Sampler` parameters, with `load`, `store`, `sample`, `width` and `height` under the coordinate rules of §3.1; the
+  emitter declares them with `[format(..)]` where D91 and D120 need it, write-only textures as `WTexture2D`, and D62's
+  format table is checked per shape. Descriptors carry mx.t0b's `texture_v1` in place of mx.t1's storage stand-in, so
+  D17 compares real texture facts: it passes on the eight kernels of the new fixture `tests/fixtures/textures` (all nine
+  write formats; a tenth golden SPIR-V set under `spirv-val`). The artifact writer and cargo-gust's record reader know
+  the texture and sampler kinds (a writer golden `texture.kernel.json` that cargo-gust parses). The classifier keeps
+  storage textures out of `pixel`. Codes GUST-E0731 to E0736 (a type outside the dialect, a wrong coordinate or arity,
+  `sample` without a sampler, `sample` on integer texels, a method the texture lacks, a texture or sampler used as a
+  value), each in DIAGNOSTICS; E0732 and E0734 are pinned by unit tests only, since rustc adds its own error. Six ui
+  fixtures (check-ui pin 84). The macro-generated CPU twin runs in `crates/gust/tests/textures_twin.rs` (storage load
+  and store, a write-only store, nearest and linear samples, against hand-worked values). Opus merge after fixes: one
+  must-fix (`(t).width()` passed validation and emitted invalid Slang), five should-fixes and the nits taken. Tests:
+  gust-macros 428, gust lib 292, cargo-gust 213. GPU runs of `#[gpu]` texture kernels are mx.t4's. Main: 24 of 24 gates
+  green on `c234b67` (2026-11-04 22:59 to 23:47Z, RTX 5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

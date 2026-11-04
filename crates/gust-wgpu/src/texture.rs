@@ -68,7 +68,7 @@ pub(crate) fn wgpu_format(format: Format) -> Option<wgpu::TextureFormat> {
 }
 
 /// [`wgpu_format`] or the error of a format this backend does not map.
-fn mapped_format(what: &str, format: Format) -> Result<wgpu::TextureFormat, Error> {
+pub(crate) fn mapped_format(what: &str, format: Format) -> Result<wgpu::TextureFormat, Error> {
     wgpu_format(format).ok_or_else(|| Error::TextureFormat {
         parameter: what.to_owned(),
         expected: "a texture format this backend maps".to_owned(),
@@ -400,15 +400,14 @@ impl HeadlessDevice {
     /// module documentation): wgpu's own `sample_type` for a format of the class, on the device's enabled features.
     pub(crate) fn sampled_sample_type(
         &self,
-        parameter: &str,
+        parameter: &ParameterDescriptor,
         class: SampleClass,
     ) -> Result<wgpu::TextureSampleType, Error> {
         class_format(class)
             .and_then(|format| format.sample_type(None, Some(self.device.features())))
-            .ok_or_else(|| Error::TextureFormat {
-                parameter: parameter.to_owned(),
-                expected: "a sample class this backend maps".to_owned(),
-                actual: Format::R32Float,
+            .ok_or_else(|| Error::InvalidResourceLayout {
+                parameter: parameter.name.to_owned(),
+                actual: parameter.resource_layout.map(Box::new),
             })
     }
 
@@ -430,7 +429,7 @@ impl HeadlessDevice {
         })?;
         Ok(match (texture.access, texture.format) {
             (TextureAccess::Sampled, _) => wgpu::BindingType::Texture {
-                sample_type: self.sampled_sample_type(parameter.name, texture.class)?,
+                sample_type: self.sampled_sample_type(parameter, texture.class)?,
                 view_dimension: wgpu::TextureViewDimension::D2,
                 multisampled: false,
             },
@@ -484,7 +483,7 @@ impl HeadlessDevice {
         for side in [width, height] {
             if side > maximum {
                 return Err(Error::DeviceLimit {
-                    kernel: format!("{label} {width}x{height}"),
+                    kernel: format!("create_texture_2d {width}x{height}"),
                     limit: "max_texture_dimension_2d",
                     requested: u64::from(side),
                     maximum: u64::from(maximum),
@@ -495,7 +494,7 @@ impl HeadlessDevice {
         let allowed = allowed_uses(format, self.device.features());
         if !allowed.contains(uses) {
             return Err(Error::TextureUse {
-                parameter: format!("a {} texture", F::FORMAT),
+                parameter: "create_texture_2d".to_owned(),
                 required: uses,
                 actual: allowed,
             });
@@ -521,6 +520,7 @@ impl HeadlessDevice {
         #[cfg(not(target_arch = "wasm32"))]
         self.finish_scope(label, bytes, scope.pop())?;
         let view = raw.create_view(&wgpu::TextureViewDescriptor::default());
+        // mx.p1b: replace this identity buffer with a texture identity once graph.rs (mx.p1b's) can compare textures.
         let identity = self.allocate("GUST texture identity", 4, wgpu::BufferUsages::COPY_SRC)?;
         Ok(GpuTexture2d {
             raw,
@@ -592,6 +592,14 @@ impl HeadlessDevice {
     /// Blocks the calling thread until the copy has completed; not available on `wasm32`, where
     /// [`read_texture_async`](Self::read_texture_async) is the readback. The copy goes through a staging buffer
     /// whose rows are padded to 256 bytes (WebGPU's rule for a texture-to-buffer copy); the padding is removed here.
+    ///
+    /// # Errors
+    ///
+    /// - [`Error::ForeignPersistentBuffer`] for a texture of another device.
+    /// - [`Error::DeviceLimit`] naming `max_buffer_size` when the padded staging buffer (`padded row bytes * height`)
+    ///   is larger than the device's `max_buffer_size`: the readback is one copy, not row bands, so a very large
+    ///   texture (rgba32f at 8192 x 8192 is 1 GiB) cannot be read back on a device with the default 256 MiB limit.
+    /// - [`Error::OutOfMemory`] when the adapter has no memory for the staging buffer.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn read_texture<F: TextureFormat>(
         &self,
@@ -605,6 +613,8 @@ impl HeadlessDevice {
     /// [`read_texture`](Self::read_texture) without blocking the caller. On native the future completes only while
     /// something polls the device; each poll of it polls the device once (see
     /// [`read_typed_buffer_async`](Self::read_typed_buffer_async), which behaves the same way).
+    ///
+    /// The errors are those of [`read_texture`](Self::read_texture), the `max_buffer_size` one included.
     pub async fn read_texture_async<F: TextureFormat>(
         &self,
         texture: &GpuTexture2d<F>,
@@ -678,10 +688,9 @@ impl HeadlessDevice {
     /// [`Error::TextureFilter`] at submit. A [`Filter::Nearest`] sampler binds on every device.
     pub fn create_sampler(&self, options: SamplerOptions) -> Result<GpuSampler, Error> {
         // `Filter` and `Address` are `#[non_exhaustive]`: a later variant this backend has no mapping for is refused.
-        let unknown = || Error::TextureFilter {
-            parameter: "create_sampler".to_owned(),
+        let unknown = || Error::SamplerOptions {
             filter: options.filter,
-            feature: "a sampler option this backend maps (the options name a newer variant)",
+            address: options.address,
         };
         let filter = match options.filter {
             Filter::Nearest => wgpu::FilterMode::Nearest,
@@ -776,12 +785,27 @@ pub(crate) fn validate_texture_binding(
                 actual: texture.format,
             });
         }
-        None if texture.format.sample_class() != layout.class => {
-            return Err(Error::TextureFormat {
-                parameter: parameter.name.to_owned(),
-                expected: format!("a texture with {} texels", layout.class.name()),
-                actual: texture.format,
-            });
+        None => {
+            // A sampled parameter reads one texel type, as the typed call and the twin do: the class and the
+            // channel count must both match (`Texture2D<float4>` on an `r32float` texture is refused, not read as
+            // `(r, 0, 0, 1)`).
+            let channels = parameter
+                .resource_layout
+                .and_then(|layout| result_shape(layout.element))
+                .map(|(_, channels)| channels);
+            if texture.format.sample_class() != layout.class
+                || channels.is_some_and(|channels| texture.format.channels() != channels)
+            {
+                return Err(Error::TextureFormat {
+                    parameter: parameter.name.to_owned(),
+                    expected: format!(
+                        "a texture with {} {} texel channel(s)",
+                        channels.unwrap_or(1),
+                        layout.class.name()
+                    ),
+                    actual: texture.format,
+                });
+            }
         }
         _ => {}
     }

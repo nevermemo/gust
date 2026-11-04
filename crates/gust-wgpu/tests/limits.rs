@@ -608,6 +608,7 @@ fn open(index: usize, limits: gust_wgpu::LimitsPolicy) -> HeadlessDevice {
         backends: wgpu::Backends::VULKAN,
         adapter: gust_wgpu::AdapterChoice::Index(index),
         limits,
+        features: gust_wgpu::FeaturesPolicy::Default,
     })
     .expect("the adapter opens")
 }

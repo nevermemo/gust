@@ -125,6 +125,9 @@ pub enum Error {
     /// an encoder or submitted work. An indirect dispatch is never
     /// checked against `max_compute_workgroups_per_dimension`, because the host does
     /// not see its workgroup count; every other limit GUST checks applies to it.
+    ///
+    /// `kernel` is the qualified name of the kernel; for a limit met outside a launch it names the operation
+    /// (`create_texture_2d 5x1`, a buffer label).
     DeviceLimit {
         kernel: String,
         limit: &'static str,
@@ -190,6 +193,12 @@ pub enum Error {
         width: u32,
         height: u32,
         reason: String,
+    },
+    /// `create_sampler` was given a filter or an address mode this backend has no mapping for (both enums are
+    /// `#[non_exhaustive]`, so a newer `gust` can name one).
+    SamplerOptions {
+        filter: gust::texture::Filter,
+        address: gust::texture::Address,
     },
 }
 
@@ -434,6 +443,10 @@ impl fmt::Display for Error {
                 height,
                 reason,
             } => write!(formatter, "texture of {width}x{height} texels: {reason}"),
+            Self::SamplerOptions { filter, address } => write!(
+                formatter,
+                "this backend maps no sampler with filter {filter:?} and address mode {address:?}",
+            ),
         }
     }
 }

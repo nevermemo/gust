@@ -95,9 +95,20 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
     source.push_str("    pipeline: wgpu::ComputePipeline,\n");
     source.push_str("}\n\n");
     write_line(&mut source, format_args!("impl {pipeline_type} {{"));
-    source.push_str(
-        "    pub fn new(device: &wgpu::Device, descriptor: &gust::KernelDescriptor) -> Self {\n",
-    );
+    // A kernel with a sampler or a sampled float texture has two layout variants (module docs of `texture.rs`): `new`
+    // then takes whether the device enabled `float32-filterable` and renders the layout entries from it.
+    if resources
+        .iter()
+        .any(|parameter| follows_filtering(parameter))
+    {
+        source.push_str(
+            "    /// `float32_filterable` is whether `device` was opened with the `float32-filterable` feature\n    /// (`HeadlessDevice::float32_filterable`): float textures are then filterable and samplers filtering.\n    pub fn new(\n        device: &wgpu::Device,\n        descriptor: &gust::KernelDescriptor,\n        float32_filterable: bool,\n    ) -> Self {\n",
+        );
+    } else {
+        source.push_str(
+            "    pub fn new(device: &wgpu::Device, descriptor: &gust::KernelDescriptor) -> Self {\n",
+        );
+    }
     write_line(
         &mut source,
         format_args!(
@@ -125,7 +136,7 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
         source.push_str("                visibility: wgpu::ShaderStages::COMPUTE,\n");
         match parameter.kind {
             ParameterKind::Texture | ParameterKind::Sampler => {
-                render_texture_type(&mut source, parameter);
+                render_texture_type(&mut source, parameter)?;
             }
             _ => {
                 source.push_str("                ty: wgpu::BindingType::Buffer {\n");
@@ -251,17 +262,34 @@ pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
     Ok(source)
 }
 
-/// The `ty:` line of a texture or sampler layout entry, in the portable variant (the device without
-/// `float32-filterable`): a float texture is not filterable and a sampler is `NonFiltering`. A device that enabled the
-/// feature uses `filterable: true` and `Filtering` (`HeadlessDevice` picks per device; the generated host leaves that
-/// choice to its user). A write-only storage texture stays `WriteOnly`: wgpu refuses `ReadWrite` outside the `r32`
-/// formats (D120).
-fn render_texture_type(target: &mut String, parameter: &gust::ParameterDescriptor) {
+/// Whether the layout entry of `parameter` depends on `float32-filterable`: a sampler, or a sampled float texture (the
+/// two layout variants of `texture.rs`).
+fn follows_filtering(parameter: &gust::ParameterDescriptor) -> bool {
+    parameter.kind == ParameterKind::Sampler
+        || parameter
+            .resource_layout
+            .is_some_and(|layout| match layout.rules {
+                gust::ShaderLayoutRules::TextureV1(texture) => {
+                    texture.access == gust::TextureAccess::Sampled
+                        && texture.class == gust::texture::SampleClass::Float
+                }
+                _ => false,
+            })
+}
+
+/// The `ty:` line of a texture or sampler layout entry. The generated `new` takes `float32_filterable` when a kernel
+/// has a sampler or a sampled float texture ([`follows_filtering`]) and spells both variants from it: a float texture
+/// is `filterable: float32_filterable` and a sampler `Filtering` or `NonFiltering`, as `HeadlessDevice` picks per
+/// device. A write-only storage texture stays `WriteOnly`: wgpu refuses `ReadWrite` outside the `r32` formats (D120).
+fn render_texture_type(
+    target: &mut String,
+    parameter: &gust::ParameterDescriptor,
+) -> Result<(), Error> {
     if parameter.kind == ParameterKind::Sampler {
         target.push_str(
-            "                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),\n",
+            "                ty: wgpu::BindingType::Sampler(if float32_filterable {\n                    wgpu::SamplerBindingType::Filtering\n                } else {\n                    wgpu::SamplerBindingType::NonFiltering\n                }),\n",
         );
-        return;
+        return Ok(());
     }
     let texture = parameter
         .resource_layout
@@ -275,7 +303,7 @@ fn render_texture_type(target: &mut String, parameter: &gust::ParameterDescripto
             let sample_type = match texture.class {
                 gust::texture::SampleClass::Uint => "Uint",
                 gust::texture::SampleClass::Sint => "Sint",
-                _ => "Float { filterable: false }",
+                _ => "Float { filterable: float32_filterable }",
             };
             write_line(
                 target,
@@ -292,6 +320,8 @@ fn render_texture_type(target: &mut String, parameter: &gust::ParameterDescripto
             } else {
                 "WriteOnly"
             };
+            // The wgpu name comes from the backend's one mapping (`texture::wgpu_format`), not a second table.
+            let format = crate::texture::mapped_format(parameter.name, format)?;
             write_line(
                 target,
                 format_args!(
@@ -303,6 +333,7 @@ fn render_texture_type(target: &mut String, parameter: &gust::ParameterDescripto
         }
         (_, None) => unreachable!("a validated storage texture has a format"),
     }
+    Ok(())
 }
 
 fn render_struct_fields(

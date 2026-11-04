@@ -38,18 +38,28 @@ use gust::{
     },
 };
 use gust_wgpu::{
-    BufferBinding, BufferDispatch, DeviceOptions, Error, FeaturesPolicy, GpuBuffer,
-    GpuBufferAccess, GpuSampler, GpuSamplerBinding, GpuTexture2d, HeadlessDevice, StagedGraph,
-    render_wgpu_source,
+    AdapterChoice, BufferBinding, BufferDispatch, DeviceOptions, Error, FeaturesPolicy, GpuBuffer,
+    GpuBufferAccess, GpuSampler, GpuSamplerBinding, GpuTexture2d, HeadlessDevice, LimitsPolicy,
+    StagedGraph, render_wgpu_source,
 };
 
 fn device() -> HeadlessDevice {
     HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")
 }
 
+/// Options as `device()` opens (Vulkan, the portable limits) with the given optional features.
+fn options(features: FeaturesPolicy) -> DeviceOptions {
+    DeviceOptions {
+        backends: wgpu::Backends::VULKAN,
+        adapter: AdapterChoice::HighPerformance,
+        limits: LimitsPolicy::Default,
+        features,
+    }
+}
+
 /// A device opened with `FeaturesPolicy::Adapter`: it has `float32-filterable` when the adapter offers it.
 fn feature_device() -> HeadlessDevice {
-    HeadlessDevice::with_options_and_features(DeviceOptions::default(), FeaturesPolicy::Adapter)
+    HeadlessDevice::with_options(options(FeaturesPolicy::Adapter))
         .expect("Vulkan adapter required; this test must not silently skip")
 }
 
@@ -326,12 +336,23 @@ fn samplers_carry_their_options_and_device() {
 fn the_default_device_has_no_optional_feature() {
     let device = device();
     assert!(!device.float32_filterable());
-    let policy_default = HeadlessDevice::with_options_and_features(
-        DeviceOptions::default(),
-        FeaturesPolicy::Default,
-    )
+    // `FeaturesPolicy::Default` turns it off even through the native `DeviceOptions::default()` (Adapter limits too).
+    let policy_default = HeadlessDevice::with_options(DeviceOptions {
+        features: FeaturesPolicy::Default,
+        ..DeviceOptions::default()
+    })
     .unwrap();
     assert!(!policy_default.float32_filterable());
+}
+
+/// D90: `DeviceOptions::default()` opens the same features as `default_device()` (the policy is `Adapter` on native).
+#[test]
+fn the_default_options_enable_the_feature_when_the_adapter_offers_it() {
+    let device = HeadlessDevice::with_options(DeviceOptions::default()).unwrap();
+    assert_eq!(
+        device.float32_filterable(),
+        adapter_offers_float32_filterable(&device)
+    );
 }
 
 #[test]
@@ -610,6 +631,84 @@ void tex_two_wide(uint3 id : SV_DispatchThreadID)
     );
 }
 
+/// `load_v(tex, out)`: `out[i] = tex.Load((i % 3, i / 3, 0))` over a 3 x 2 `Texture2D<float4>`.
+struct LoadVec4;
+impl Kernel for LoadVec4 {
+    const DESCRIPTOR: KernelDescriptor = descriptor(
+        "load_v",
+        "tex_load_v",
+        &[
+            sampled("tex", VEC4, SampleClass::Float, 0),
+            buffer("out", F32, 1),
+        ],
+        r#"
+[[vk::binding(0, 0)]] Texture2D<float4> tex;
+[[vk::binding(1, 0)]] RWStructuredBuffer<float> out;
+[shader("compute")] [numthreads(64, 1, 1)]
+void tex_load_v(uint3 id : SV_DispatchThreadID)
+{
+    uint n; uint stride; out.GetDimensions(n, stride);
+    if (id.x < n / 4u)
+    {
+        float4 v = tex.Load(int3(int(id.x % 3u), int(id.x / 3u), 0));
+        out[4u * id.x] = v.x;
+        out[4u * id.x + 1u] = v.y;
+        out[4u * id.x + 2u] = v.z;
+        out[4u * id.x + 3u] = v.w;
+    }
+}
+"#,
+    );
+}
+
+/// `sum_load(a, b, out)`: `out[i] = a.Load((i, 0, 0)) + b.Load((i, 0, 0))` over 4 x 1 `Texture2D<float>`s. The same
+/// texture may be bound to both: two reads do not alias.
+struct SumLoad;
+impl Kernel for SumLoad {
+    const DESCRIPTOR: KernelDescriptor = descriptor(
+        "sum_load",
+        "tex_sum_load",
+        &[
+            sampled("a", F32, SampleClass::Float, 0),
+            sampled("b", F32, SampleClass::Float, 1),
+            buffer("out", F32, 2),
+        ],
+        r#"
+[[vk::binding(0, 0)]] Texture2D<float> a;
+[[vk::binding(1, 0)]] Texture2D<float> b;
+[[vk::binding(2, 0)]] RWStructuredBuffer<float> out;
+[shader("compute")] [numthreads(64, 1, 1)]
+void tex_sum_load(uint3 id : SV_DispatchThreadID)
+{
+    uint n; uint stride; out.GetDimensions(n, stride);
+    if (id.x < n) { out[id.x] = a.Load(int3(int(id.x), 0, 0)) + b.Load(int3(int(id.x), 0, 0)); }
+}
+"#,
+    );
+}
+
+/// `copy_in(tex, img)`: `img[(i, 0)] = tex.Load((i, 0, 0))`, a sampled and a read-write storage texture of one format.
+struct SampledAndStorage;
+impl Kernel for SampledAndStorage {
+    const DESCRIPTOR: KernelDescriptor = descriptor(
+        "copy_in",
+        "tex_copy_in",
+        &[
+            sampled("tex", F32, SampleClass::Float, 0),
+            storage_texture("img", F32, Format::R32Float, TextureAccess::ReadWrite, 1),
+        ],
+        r#"
+[[vk::binding(0, 0)]] Texture2D<float> tex;
+[[vk::binding(1, 0)]] [format("r32f")] RWTexture2D<float> img;
+[shader("compute")] [numthreads(64, 1, 1)]
+void tex_copy_in(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < 4u) { img[uint2(id.x, 0u)] = tex.Load(int3(int(id.x), 0, 0)); }
+}
+"#,
+    );
+}
+
 // ---- sampled textures and the two layout variants ----
 
 /// A 4 x 1 `R32Float` texture of 0, 10, 20, 40.
@@ -693,8 +792,8 @@ fn a_linear_sampler_needs_float32_filterable() {
         .unwrap();
     let result = run_sample(&featured, &texture, &linear);
     if featured.float32_filterable() {
-        // Output i samples texel coordinate i / 2 + 0.25 - 0.25 + ...: u = (i + 0.5) / 8, texel space 4u, minus the
-        // half-texel centre offset: (i + 0.5) / 2 - 0.5 = i / 2 - 0.25. Clamped at both ends.
+        // Output i samples u = (i + 0.5) / 8, which is 4u = (i + 0.5) / 2 texels from the left edge, and
+        // (i + 0.5) / 2 - 0.5 = i / 2 - 0.25 texels from the first texel centre. Clamped at both ends.
         let texels = [0.0f32, 10.0, 20.0, 40.0];
         let expected: Vec<f32> = (0..8)
             .map(|i| {
@@ -706,14 +805,20 @@ fn a_linear_sampler_needs_float32_filterable() {
             })
             .collect();
         let read = result.unwrap();
+        // Plan 3.5's bound: a hardware filter weighs texels with 8 fractional bits, so 2^-8 of the 40-wide range,
+        // plus two ulps of the largest value for the interpolation itself.
+        let tolerance = 40.0 / 256.0 + 2.0 * 40.0 * f32::EPSILON;
         for (index, (got, want)) in read.iter().zip(&expected).enumerate() {
-            // Hardware filters weigh texels with 8 fractional bits: up to 1/512 of the 40-wide range is 0.08.
             assert!(
-                (got - want).abs() < 0.25,
+                (got - want).abs() <= tolerance,
                 "output {index}: {got} against {want} (all: {read:?} against {expected:?})"
             );
         }
     } else {
+        eprintln!(
+            "bilinear values not checked: adapter {:?} lacks float32-filterable; the refusal is checked instead",
+            featured.adapter_info().name
+        );
         assert!(
             matches!(result, Err(Error::TextureFilter { .. })),
             "{result:?}"
@@ -722,9 +827,11 @@ fn a_linear_sampler_needs_float32_filterable() {
 }
 
 #[test]
-fn a_filterable_layout_variant_binds_the_same_texture_as_the_non_filterable_one() {
-    // The sampled float texture is `Float { filterable: false }` on the default device and
-    // `Float { filterable: true }` on a feature device; the same kernel descriptor serves both.
+fn the_same_descriptor_runs_under_each_device_layout_variant_with_one_pipeline_each() {
+    // One descriptor serves both devices; each compiles its own pipeline for its own variant. That the variants
+    // differ is not asserted here: wgpu validates the sampler and texture entries against each other, so the Linear
+    // branch of `a_linear_sampler_needs_float32_filterable` (a filtering sampler over a float texture) is what proves
+    // the filterable variant, and the Nearest runs above prove the non-filterable one.
     let plain = device();
     let featured = feature_device();
     for device in [&plain, &featured] {
@@ -739,7 +846,7 @@ fn a_filterable_layout_variant_binds_the_same_texture_as_the_non_filterable_one(
 // ---- integer textures: Load, a different format of the same class, and the format check ----
 
 #[test]
-fn a_sampled_uint_texture_loads_and_accepts_any_format_of_its_class() {
+fn a_sampled_texture_loads_and_needs_its_exact_texel_type() {
     let device = device();
     let uint_texture: GpuTexture2d<R32Uint> =
         device.create_texture_2d(5, 3, TextureUse::SAMPLED).unwrap();
@@ -756,22 +863,25 @@ fn a_sampled_uint_texture_loads_and_accepts_any_format_of_its_class() {
         .unwrap();
     assert_eq!(device.read_typed_buffer(&out).unwrap(), values);
 
-    // A two-channel texture of the same class is bound to the same parameter: the kernel reads the first channel.
+    // A two-channel texture of the same class is refused too (S1): `Texture2D<uint>` reads one `uint`, as the typed
+    // call (`Element = F::Texel`) and the twin do, not the first channel of a wider texel.
     let pair_texture: GpuTexture2d<Rg32Uint> =
         device.create_texture_2d(5, 3, TextureUse::SAMPLED).unwrap();
-    let pairs: Vec<UVec2> = (0..15).map(|i| UVec2::new(7 + i, 900 + i)).collect();
-    device.write_texture(&pair_texture, &pairs).unwrap();
     let out: GpuBuffer<u32> =
         device.create_typed_buffer("out", &[0u32; 15], GpuBufferAccess::ReadWrite);
     let bindings = [
         pair_texture.bind(Access::ReadOnly, LengthRule::Independent),
         BufferBinding::read_write(&out),
     ];
-    device
-        .dispatch_buffers(&LoadUint::DESCRIPTOR, 15, &bindings)
-        .unwrap();
-    let firsts: Vec<u32> = pairs.iter().map(|pair| pair.x).collect();
-    assert_eq!(device.read_typed_buffer(&out).unwrap(), firsts);
+    match device.dispatch_buffers(&LoadUint::DESCRIPTOR, 15, &bindings) {
+        Err(Error::TextureFormat {
+            parameter, actual, ..
+        }) => {
+            assert_eq!(parameter, "tex");
+            assert_eq!(actual, Format::Rg32Uint);
+        }
+        other => panic!("expected TextureFormat, got {other:?}"),
+    }
 
     // A texture of another class is refused.
     let float_texture: GpuTexture2d<R32Float> =
@@ -791,6 +901,133 @@ fn a_sampled_uint_texture_loads_and_accepts_any_format_of_its_class() {
         }
         other => panic!("expected TextureFormat, got {other:?}"),
     }
+}
+
+#[test]
+fn a_float4_texture_parameter_needs_a_four_channel_texture() {
+    let device = device();
+    let wide: GpuTexture2d<Rgba32Float> =
+        device.create_texture_2d(3, 2, TextureUse::SAMPLED).unwrap();
+    let texels: Vec<Vec4> = (0..6)
+        .map(|i| Vec4::new(i as f32, -(i as f32), 0.5, 100.0 + i as f32))
+        .collect();
+    device.write_texture(&wide, &texels).unwrap();
+    // The kernel writes the four channels of texel `i` to `out[4i..4i+4]`.
+    let out: GpuBuffer<f32> =
+        device.create_typed_buffer("out", &[0.0f32; 24], GpuBufferAccess::ReadWrite);
+    let bindings = [
+        wide.bind(Access::ReadOnly, LengthRule::Independent),
+        BufferBinding::read_write(&out).independent_length(),
+    ];
+    device
+        .dispatch_buffers(&LoadVec4::DESCRIPTOR, 6, &bindings)
+        .unwrap();
+    let read = device.read_typed_buffer(&out).unwrap();
+    let flat: Vec<f32> = texels.iter().flat_map(|t| [t.x, t.y, t.z, t.w]).collect();
+    assert_eq!(read, flat);
+
+    // An `r32float` texture has the class but not the width: refused, not read as `(r, 0, 0, 1)`.
+    let narrow: GpuTexture2d<R32Float> =
+        device.create_texture_2d(3, 2, TextureUse::SAMPLED).unwrap();
+    let bindings = [
+        narrow.bind(Access::ReadOnly, LengthRule::Independent),
+        BufferBinding::read_write(&out).independent_length(),
+    ];
+    match device.dispatch_buffers(&LoadVec4::DESCRIPTOR, 6, &bindings) {
+        Err(Error::TextureFormat {
+            parameter, actual, ..
+        }) => {
+            assert_eq!(parameter, "tex");
+            assert_eq!(actual, Format::R32Float);
+        }
+        other => panic!("expected TextureFormat, got {other:?}"),
+    }
+    // So is a two-channel one.
+    let pair: GpuTexture2d<Rg32Float> =
+        device.create_texture_2d(3, 2, TextureUse::SAMPLED).unwrap();
+    let bindings = [
+        pair.bind(Access::ReadOnly, LengthRule::Independent),
+        BufferBinding::read_write(&out).independent_length(),
+    ];
+    let result = device.dispatch_buffers(&LoadVec4::DESCRIPTOR, 6, &bindings);
+    assert!(
+        matches!(
+            result,
+            Err(Error::TextureFormat {
+                actual: Format::Rg32Float,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn one_texture_bound_to_two_sampled_parameters_is_accepted() {
+    let device = device();
+    let texture = ramp(&device);
+    let out: GpuBuffer<f32> =
+        device.create_typed_buffer("out", &[0.0f32; 4], GpuBufferAccess::ReadWrite);
+    let bindings = [
+        texture.bind(Access::ReadOnly, LengthRule::Independent),
+        texture.bind(Access::ReadOnly, LengthRule::Independent),
+        BufferBinding::read_write(&out),
+    ];
+    device
+        .dispatch_buffers(&SumLoad::DESCRIPTOR, 4, &bindings)
+        .unwrap();
+    assert_eq!(
+        device.read_typed_buffer(&out).unwrap(),
+        [0.0, 20.0, 40.0, 80.0]
+    );
+}
+
+#[test]
+fn one_texture_bound_sampled_and_as_storage_is_aliased() {
+    let device = device();
+    let texture: GpuTexture2d<R32Float> = device
+        .create_texture_2d(4, 1, TextureUse::SAMPLED.union(TextureUse::STORAGE))
+        .unwrap();
+    let bindings = [
+        texture.bind(Access::ReadOnly, LengthRule::Independent),
+        texture.bind(Access::ReadWrite, LengthRule::Independent),
+    ];
+    let result = device.dispatch_buffers(&SampledAndStorage::DESCRIPTOR, 4, &bindings);
+    assert!(
+        matches!(result, Err(Error::AliasedBinding { .. })),
+        "{result:?}"
+    );
+    assert_cold(&device);
+}
+
+#[test]
+fn a_texture_whose_readback_exceeds_max_buffer_size_is_a_device_limit() {
+    let device = device();
+    // 67 x 3 r32float: 3 rows of 512 padded bytes = 1536 bytes of staging.
+    let texture: GpuTexture2d<R32Float> = device
+        .create_texture_2d(WIDTH, HEIGHT, TextureUse::SAMPLED)
+        .unwrap();
+    let device = lowered(device, |limits| limits.max_buffer_size = 1024);
+    match device.read_texture(&texture) {
+        Err(Error::DeviceLimit {
+            limit,
+            requested,
+            maximum,
+            ..
+        }) => assert_eq!((limit, requested, maximum), ("max_buffer_size", 1536, 1024)),
+        other => panic!("expected DeviceLimit, got {other:?}"),
+    }
+    let asynchronous = drive(device.read_texture_async(&texture));
+    assert!(
+        matches!(
+            asynchronous,
+            Err(Error::DeviceLimit {
+                limit: "max_buffer_size",
+                ..
+            })
+        ),
+        "{asynchronous:?}"
+    );
 }
 
 #[test]
@@ -1234,7 +1471,16 @@ fn a_texture_side_above_the_limit_is_an_error_at_creation_and_at_launch() {
 fn the_generated_host_renders_texture_and_sampler_bindings() {
     let sample = render_wgpu_source(&Sample::DESCRIPTOR).unwrap();
     assert!(sample.contains("wgpu::BindingType::Texture"), "{sample}");
-    assert!(sample.contains("filterable: false"), "{sample}");
+    // Both layout variants are rendered, chosen by the `float32_filterable` argument of `new` (S2).
+    assert!(sample.contains("float32_filterable: bool"), "{sample}");
+    assert!(
+        sample.contains("Float { filterable: float32_filterable }"),
+        "{sample}"
+    );
+    assert!(
+        sample.contains("wgpu::SamplerBindingType::Filtering"),
+        "{sample}"
+    );
     assert!(
         sample.contains("wgpu::SamplerBindingType::NonFiltering"),
         "{sample}"
@@ -1268,4 +1514,31 @@ fn the_generated_host_renders_texture_and_sampler_bindings() {
         read_write.contains("wgpu::TextureFormat::R32Float"),
         "{read_write}"
     );
+}
+
+/// The generated `new` takes `float32_filterable` only when a layout entry depends on it (S2): a sampler or a sampled
+/// float texture. A kernel with a sampled `uint` texture or storage textures keeps the two-argument form.
+#[test]
+fn the_generated_host_takes_the_feature_only_when_the_layout_depends_on_it() {
+    // A sampled float texture without a sampler is filterable only on a feature device.
+    let sum = render_wgpu_source(&SumLoad::DESCRIPTOR).unwrap();
+    assert!(sum.contains("float32_filterable: bool"), "{sum}");
+    assert!(
+        sum.contains("Float { filterable: float32_filterable }"),
+        "{sum}"
+    );
+    assert!(!sum.contains("SamplerBindingType"), "{sum}");
+    for (name, source) in [
+        ("load_u", render_wgpu_source(&LoadUint::DESCRIPTOR).unwrap()),
+        ("fill", render_wgpu_source(&Fill::DESCRIPTOR).unwrap()),
+        ("rw", render_wgpu_source(&ReadWrite::DESCRIPTOR).unwrap()),
+    ] {
+        assert!(!source.contains("float32_filterable"), "{name}: {source}");
+        assert!(
+            source.contains(
+                "pub fn new(device: &wgpu::Device, descriptor: &gust::KernelDescriptor) -> Self"
+            ),
+            "{name}: {source}"
+        );
+    }
 }

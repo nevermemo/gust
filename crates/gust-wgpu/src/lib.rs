@@ -1124,28 +1124,22 @@ impl HeadlessDevice {
             backends,
             adapter: AdapterChoice::HighPerformance,
             limits: LimitsPolicy::Default,
+            features: FeaturesPolicy::Default,
         })
         .await
     }
 
     /// Open the device `options` describe, with the adapter retry of [`new`](Self::new). Unlike `new`, which is
-    /// fixed to Vulkan, the high-performance adapter and wgpu's default limits, the options choose the backends, the
-    /// adapter and whether the adapter's own buffer limits are requested (see [`DeviceOptions`]).
+    /// fixed to Vulkan, the high-performance adapter, wgpu's default limits and no optional feature, the options
+    /// choose the backends, the adapter, whether the adapter's own buffer limits are requested and whether
+    /// `float32-filterable` is enabled where the adapter offers it, so that a linear sampler can be bound
+    /// ([`float32_filterable`](Self::float32_filterable) reports the result; see [`DeviceOptions`]).
     pub async fn new_async_with(options: DeviceOptions) -> Result<Self, Error> {
-        Self::new_async_with_features(options, FeaturesPolicy::Default).await
-    }
-
-    /// [`new_async_with`](Self::new_async_with) with the optional device features `features` asks for (slice mx.t2):
-    /// [`FeaturesPolicy::Adapter`] enables `float32-filterable` where the adapter offers it, so that a linear sampler
-    /// can be bound ([`float32_filterable`](Self::float32_filterable) reports the result).
-    pub async fn new_async_with_features(
-        options: DeviceOptions,
-        features: FeaturesPolicy,
-    ) -> Result<Self, Error> {
         let DeviceOptions {
             backends,
             adapter,
             limits,
+            features,
         } = options;
         let adapter = retry_no_adapter(
             ADAPTER_ATTEMPTS,

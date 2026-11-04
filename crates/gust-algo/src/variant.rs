@@ -4,17 +4,21 @@
 //! shared-memory form (`Workgroup<[T; 256]>` and barriers), whose kernels are `cpu = "unsupported"` (D101). Both give
 //! the same results, integers bit for bit and floats within the bound of [`crate::bound`]; they differ in the
 //! dispatches they take. The public functions of [`reduce`](crate::reduce), [`scan`](crate::scan) and
-//! [`compact`](crate::compact) run the variant [`shipped`] names for their operation: v1 only where m7.r4 measured it
-//! faster than v0 on the RTX 5090 by at least 10 % at 1e6, 1e7 and 1e8 elements, v0 everywhere else. The `*_with`
-//! functions of `reduce` and `scan` run either on request (the measurement, the tests).
+//! [`compact`](crate::compact) run the variant [`shipped`] names for their operation. The rule is the plan's (section
+//! 5.5): v1 ships for an operation only where it is faster than v0 on both adapters at 1e6, 1e7 and 1e8 elements, and
+//! v0 stays everywhere else. The `*_with` functions of `reduce` and `scan` run either on request (the measurement, the
+//! tests).
 //!
-//! The choice is provisional. Plan section 5.5 asks for both adapters; the RTX 5090 half selected v1 for all six
-//! operations, and the Radeon 890M half is owed and may change [`shipped`]. The statistic is the median over runs of
-//! the per-run median ratio (v0 / v1, interleaved, end to end), chosen after the runs and not pre-registered; the
-//! lowest single run was `min_f32` at 1e8 with 1.085, under the 1.10 line, and the next ones were `sum_i32` (1.120) and
-//! `max_f32` (1.137) at 1e8. At 1e6 and 1e7 a reduction costs about 600 microseconds a call and the memory traffic only
-//! tens, so v1's win there is mostly per-call overhead (one dispatch fewer and one pooled zeroing fewer); re-measure if
-//! the pool's zeroing changes. The log and notes are in `plans/m7/probe/r4` of the work area.
+//! The choice is made (D121); both halves of the measurement ran. On the RTX 5090 v1 was at least 10 % ahead for all
+//! six operations; that margin was the slice brief's and the 5090 half used it. On the Radeon 890M v1 was faster for
+//! every operation and size, but the reductions are only 1.01 to 1.03 ahead at 1e8, where both forms are bound by the
+//! shared system memory, so the 10 % margin is not met there. D121 does not apply it there, because v0 is faster
+//! nowhere, and keeps v1. The statistic is the median over runs of the per-run median ratio (v0 / v1, interleaved, end
+//! to end), chosen after the runs and not pre-registered. On the 5090 the lowest single run was `min_f32` at 1e8 with
+//! 1.085, and the next ones were `sum_i32` (1.120) and `max_f32` (1.137) at 1e8. At 1e6 and 1e7 a reduction costs
+//! about 600 microseconds a call on the 5090 and the memory traffic only tens, so v1's win there is mostly per-call
+//! overhead (one dispatch fewer and one pooled zeroing fewer); re-measure if the pool's zeroing changes. The logs and
+//! notes are in `plans/m7/probe/r4` of the work area.
 //!
 //! A v1 request falls back to v0 for an input or a device its launch cannot take: a device with less workgroup
 //! memory than the v1 kernels declare (3072 bytes), a first dispatch past the device's workgroup
@@ -57,10 +61,11 @@ pub const OPERATIONS: [Operation; 6] = [
     Operation::Exclusive,
 ];
 
-/// The variant the public function of `operation` runs: the outcome of the m7.r4 measurement on the RTX 5090 alone
-/// (the log is `plans/m7/probe/r4` of the work area). The rule is plan section 5.5: v1 ships for an operation only
-/// where it is at least 10 % faster at every measured size. Provisional: the Radeon 890M half of the measurement is
-/// owed and may change this.
+/// The variant the public function of `operation` runs: the outcome of the m7.r4 measurement on the RTX 5090 and the
+/// Radeon 890M (the logs are `plans/m7/probe/r4` of the work area; D121). The rule is plan section 5.5: v1 ships for
+/// an operation only where it is faster than v0 on both adapters at 1e6, 1e7 and 1e8 elements. It is faster on both
+/// for every operation, so all six run v1; the reductions are only 1.01 to 1.03 ahead at 1e8 on the 890M, and D121
+/// keeps v1 there.
 pub const fn shipped(operation: Operation) -> Variant {
     match operation {
         Operation::Sum

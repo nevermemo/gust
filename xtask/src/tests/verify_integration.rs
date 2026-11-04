@@ -25,6 +25,7 @@ fn the_full_gate_runs_check_precompiled_check_web_and_check_difftest_and_no_othe
                     steps,
                     [
                         Integration::Run("check-precompiled"),
+                        Integration::Run("check-release"),
                         Integration::Run("check-web"),
                         Integration::Run("check-difftest")
                     ]
@@ -34,6 +35,7 @@ fn the_full_gate_runs_check_precompiled_check_web_and_check_difftest_and_no_othe
                     steps,
                     [
                         Integration::Run("check-precompiled"),
+                        Integration::Run("check-release"),
                         Integration::Skip("check-web"),
                         Integration::Run("check-difftest")
                     ]
@@ -63,6 +65,7 @@ fn check_web_is_skipped_only_when_the_flag_is_given() {
     );
     // The differential batch and the precompiled check are never skippable.
     assert!(with.contains(&Integration::Run("check-precompiled")));
+    assert!(with.contains(&Integration::Run("check-release")));
     assert!(with.contains(&Integration::Run("check-difftest")));
 }
 
@@ -94,6 +97,7 @@ fn verify_inner_runs_the_whole_integration_checks_last() {
     for needle in [
         "check_difftest_report(&[])",
         "check_precompiled_report(&[])",
+        "check_release_report(&[])",
         "check_web_report(&[])",
     ] {
         assert!(

@@ -1,12 +1,18 @@
-use std::{fs, path::PathBuf};
+use std::{
+    ffi::OsString,
+    fs,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use super::{
     DependencyKind, DocDebt, DocMessage, HELLO_DIR, HELLO_OUTPUT, Member, Options, PackageSpec,
-    consumer_lock_problems, doc_messages, doc_problems, docsrs_request, dry_run_problems,
-    existing_crate_lines, fixture_dependency_problems, has_nightly, metadata_problems,
-    package_allows, package_files, package_problems, parse_args, parse_metadata,
-    patch_config_arguments, patched_manifest, readme_blocks, readme_problems, recipe_ran,
-    required_file_problems, section_value, size_problems, unused_library_patches,
+    WorkDir, caret_satisfied, consumer_lock_problems, doc_messages, doc_problems, docsrs_request,
+    dry_run_problems, existing_crate_lines, finish_outcome, fixture_dependency_problems,
+    has_nightly, helper_choice, metadata_problems, package_allows, package_files, package_problems,
+    parse_args, parse_metadata, patch_config_arguments, patched_manifest, readme_blocks,
+    readme_problems, recipe_ran, required_file_problems, section_value, size_problems,
+    unused_library_patches, verify_problems,
 };
 use crate::workspace::workspace_root;
 
@@ -42,6 +48,14 @@ fn a_test_module_or_test_data_in_src_is_off_the_allow_list() {
         "src/slang/deep/testdata/x.txt",
     ] {
         assert!(!package_allows(&spec, file), "{file}");
+    }
+    // `testdata` is a path component, not a prefix: a module whose name merely starts with it ships.
+    for file in [
+        "src/testdata_loader.rs",
+        "src/testdatabase/mod.rs",
+        "src/contests/a.rs",
+    ] {
+        assert!(package_allows(&spec, file), "{file}");
     }
     let problems = package_problems(
         &spec,
@@ -349,21 +363,32 @@ fn rustdoc_diagnostics_are_read_from_the_json_lines() {
 const DEBT: [DocDebt; 2] = [
     DocDebt {
         needle: "redundant explicit link target",
+        file: "src/lib.rs",
         stable: true,
     },
     DocDebt {
         needle: "links to private item",
+        file: "src/other.rs",
         stable: false,
     },
 ];
+
+fn message_at(level: &str, text: &str, location: &str) -> DocMessage {
+    DocMessage {
+        level: level.to_owned(),
+        text: text.to_owned(),
+        location: location.to_owned(),
+    }
+}
 
 #[test]
 fn known_doc_debt_is_admitted_and_everything_else_is_a_problem() {
     let known = [
         message("warning", "redundant explicit link target"),
-        message(
+        message_at(
             "warning",
             "public documentation for `x` links to private item `y`",
+            "crates/b/src/other.rs:9",
         ),
         message("warning", "`gust` (lib doc) generated 2 warnings"),
     ];
@@ -390,7 +415,9 @@ fn a_debt_entry_that_no_longer_occurs_is_a_problem_in_the_run_that_shows_it() {
     let problems = doc_problems("stable", &[], false, &DEBT);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
-        problems[0].contains("redundant explicit link target") && problems[0].contains("delete")
+        problems[0].contains("redundant explicit link target")
+            && problems[0].contains("src/lib.rs")
+            && problems[0].contains("delete")
     );
     // The docs.rs-shaped run owes both.
     assert_eq!(doc_problems("nightly", &[], true, &DEBT).len(), 2);
@@ -501,15 +528,44 @@ fn the_readme_section_needs_exactly_one_block_of_each_kind() {
 }
 
 #[test]
-fn the_fixture_depends_on_publishable_members_at_their_exact_version() {
+fn the_fixture_depends_on_publishable_members_with_a_caret_requirement_the_release_satisfies() {
     let set = members();
-    let good = "[package]\nname = \"h\"\n\n[dependencies]\nalpha = \"=1.2.0\"\n";
-    assert!(fixture_dependency_problems(good, &set).is_empty());
-    let loose = "[dependencies]\nalpha = \"1.2\"\n";
-    assert!(fixture_dependency_problems(loose, &set)[0].contains("must pin \"=1.2.0\""));
-    let renamed = "[dependencies]\ngust-compute = \"=1.2.0\"\n";
+    for good in [
+        "\"1.2\"",
+        "\"^1.2\"",
+        "\"1\"",
+        "\"1.2.0\"",
+        "\"^1.2.0\"",
+        "{ version = \"1.2\", features = [\"x\"] }",
+    ] {
+        let manifest = format!("[package]\nname = \"h\"\n\n[dependencies]\nalpha = {good}\n");
+        assert!(
+            fixture_dependency_problems(&manifest, &set).is_empty(),
+            "{good}"
+        );
+    }
+    // The release is 1.2.0: a requirement it does not satisfy, or one that is no caret requirement, is refused.
+    for bad in [
+        "\"1.3\"",
+        "\"2\"",
+        "\"=1.2.0\"",
+        "\"~1.2\"",
+        "\">=1.2\"",
+        "\"*\"",
+        "\"0.1\"",
+        "{ path = \"x\" }",
+    ] {
+        let manifest = format!("[dependencies]\nalpha = {bad}\n");
+        let problems = fixture_dependency_problems(&manifest, &set);
+        assert_eq!(problems.len(), 1, "{bad}: {problems:?}");
+        assert!(
+            problems[0].contains("caret requirement"),
+            "{bad}: {problems:?}"
+        );
+    }
+    let renamed = "[dependencies]\ngust-compute = \"1.2\"\n";
     assert!(fixture_dependency_problems(renamed, &set)[0].contains("no publishable member"));
-    let unpublished = "[dependencies]\nexample = \"=0.1.0\"\n";
+    let unpublished = "[dependencies]\nexample = \"0.1\"\n";
     assert!(fixture_dependency_problems(unpublished, &set)[0].contains("no publishable member"));
     assert!(
         fixture_dependency_problems("[package]\nname = \"h\"\n", &set)[0]
@@ -529,6 +585,8 @@ fn the_consumer_manifest_patches_every_package_onto_its_tree() {
     ];
     let manifest = patched_manifest("[package]\r\nname = \"h\"\r\n", &trees);
     assert!(manifest.starts_with("[package]\nname = \"h\"\n\n# Added by"));
+    // The consumer is its own workspace, declared before the patch table.
+    assert!(manifest.contains("\n[workspace]\n\n[patch.crates-io]\n"));
     assert!(
         manifest.contains("[patch.crates-io]\nalpha = { path = \"C:/w/unpacked/alpha-1.2.0\" }\n")
     );
@@ -572,4 +630,254 @@ fn the_recipe_result_is_one_exact_line() {
     assert!(recipe_ran(&format!("{HELLO_OUTPUT}\r\n")));
     assert!(!recipe_ran("hello-gust: [0.0, 0.0, 0.0, 0.0]\n"));
     assert!(!recipe_ran(&format!("x {HELLO_OUTPUT}\n")));
+}
+
+#[test]
+fn a_debt_entry_admits_one_warning_in_its_file_and_a_second_match_fails() {
+    // The same message in another file is no debt, and the entry then also did not occur.
+    let elsewhere = [message_at(
+        "warning",
+        "redundant explicit link target",
+        "crates/c/src/lib2.rs:5",
+    )];
+    let problems = doc_problems("stable", &elsewhere, false, &DEBT);
+    assert_eq!(problems.len(), 2, "{problems:?}");
+    assert!(
+        problems[0].contains("crates/c/src/lib2.rs:5"),
+        "{problems:?}"
+    );
+    assert!(problems[1].contains("no longer occurs"), "{problems:?}");
+    // Two warnings of the admitted kind: the first is the debt, the second is new (also in another file).
+    let twice = [
+        message_at(
+            "warning",
+            "redundant explicit link target",
+            "crates/a/src/lib.rs:108",
+        ),
+        message_at(
+            "warning",
+            "redundant explicit link target",
+            "crates/a/src/lib.rs:300",
+        ),
+    ];
+    let problems = doc_problems("stable", &twice, false, &DEBT);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("lib.rs:300") && problems[0].contains("another"),
+        "{problems:?}"
+    );
+    // The line number plays no part, so an edit above the warning does not break the entry.
+    let moved = [message_at(
+        "warning",
+        "redundant explicit link target",
+        "crates/a/src/lib.rs:9999",
+    )];
+    assert!(doc_problems("stable", &moved, false, &DEBT).is_empty());
+}
+
+#[test]
+fn caret_requirements_follow_cargos_rules() {
+    assert!(caret_satisfied("0.1", "0.1.0") && caret_satisfied("0.1", "0.1.9"));
+    assert!(caret_satisfied("^0.1.0", "0.1.4") && !caret_satisfied("0.1", "0.2.0"));
+    assert!(!caret_satisfied("0.1.2", "0.1.1") && caret_satisfied("0.1.2", "0.1.2"));
+    assert!(caret_satisfied("0", "0.9.9") && !caret_satisfied("0", "1.0.0"));
+    assert!(caret_satisfied("1", "1.9.0") && !caret_satisfied("1.3", "1.2.9"));
+    assert!(caret_satisfied("0.0.3", "0.0.3") && !caret_satisfied("0.0.3", "0.0.4"));
+    assert!(
+        caret_satisfied("0.1", "0.1.0-rc.1"),
+        "a pre-release suffix is ignored"
+    );
+    for bad in ["=0.1.0", ">=0.1", "~0.1", "*", "0.1.x", "", "1.2.3.4"] {
+        assert!(!caret_satisfied(bad, "0.1.0"), "{bad}");
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The work directory (S4)
+
+/// A fresh name below the temporary directory, for a test to use as a repository root or a work directory.
+fn scratch(label: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos());
+    std::env::temp_dir().join(format!(
+        "gust-release-test-{label}-{}-{nanos}",
+        std::process::id()
+    ))
+}
+
+#[test]
+fn a_work_directory_inside_the_repository_is_refused() {
+    let root = scratch("repo");
+    let inside = root.join("target").join("work");
+    let error = WorkDir::create(
+        "check-release",
+        "p",
+        &root,
+        &scratch("parent"),
+        Some(&inside),
+    )
+    .err()
+    .expect("inside the repository");
+    assert!(error.contains("outside the repository"), "{error}");
+    assert!(error.starts_with("check-release:"), "{error}");
+    assert!(!inside.exists(), "a refused directory is not created");
+}
+
+#[test]
+fn a_work_directory_with_content_is_refused_and_never_deleted() {
+    let root = scratch("repo");
+    let work = scratch("full");
+    fs::create_dir_all(&work).unwrap();
+    fs::write(work.join("keep.txt"), "mine").unwrap();
+    let error = WorkDir::create(
+        "check-precompiled E8",
+        "p",
+        &root,
+        &scratch("parent"),
+        Some(&work),
+    )
+    .err()
+    .expect("not empty");
+    assert!(
+        error.starts_with("check-precompiled E8:") && error.contains("not empty"),
+        "{error}"
+    );
+    assert!(
+        work.join("keep.txt").is_file(),
+        "the content of a refused directory survives"
+    );
+    fs::remove_dir_all(&work).unwrap();
+}
+
+#[test]
+fn an_empty_or_new_work_directory_is_used_and_deleted_by_finish() {
+    let root = scratch("repo");
+    // An existing empty directory.
+    let empty = scratch("empty");
+    fs::create_dir_all(&empty).unwrap();
+    let work = WorkDir::create(
+        "check-release",
+        "p",
+        &root,
+        &scratch("parent"),
+        Some(&empty),
+    )
+    .unwrap();
+    fs::create_dir_all(work.path.join("a")).unwrap();
+    fs::write(work.path.join("a").join("f.txt"), "x").unwrap();
+    assert_eq!(work.finish(Ok("done".to_owned())), Ok("done".to_owned()));
+    assert!(!empty.exists(), "deleted by finish, with its content");
+    // A directory that does not exist yet.
+    let new = scratch("new");
+    let work =
+        WorkDir::create("check-release", "p", &root, &scratch("parent"), Some(&new)).unwrap();
+    assert!(new.is_dir());
+    assert_eq!(work.finish(Err("boom".to_owned())), Err("boom".to_owned()));
+    assert!(!new.exists(), "a failed run deletes it too");
+}
+
+#[test]
+fn the_default_work_directory_is_below_the_target_directory_or_else_the_temporary_directory() {
+    let root = scratch("repo");
+    // A cargo target directory outside the repository holds the work directory.
+    let outside = scratch("target");
+    let work = WorkDir::create("check-release", "gust-x", &root, &outside, None).unwrap();
+    assert!(work.path.starts_with(&outside), "{}", work.path.display());
+    let name = work
+        .path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert!(name.starts_with("gust-x-"), "{name}");
+    let first = work.path.clone();
+    assert!(work.finish(Ok(String::new())).is_ok());
+    assert!(!first.exists());
+    fs::remove_dir_all(&outside).unwrap();
+    // A target directory inside the repository (the default `<repo>/target`, as on CI) falls back to the temporary
+    // directory.
+    let inside = root.join("target");
+    let work = WorkDir::create("check-release", "gust-x", &root, &inside, None).unwrap();
+    assert!(
+        work.path.starts_with(std::env::temp_dir()),
+        "{}",
+        work.path.display()
+    );
+    assert!(!work.path.starts_with(&root));
+    assert!(work.finish(Ok(String::new())).is_ok());
+}
+
+#[test]
+fn a_failed_deletion_fails_the_run_and_both_failures_are_shown() {
+    assert_eq!(
+        finish_outcome(Ok("s".to_owned()), Ok(())),
+        Ok("s".to_owned())
+    );
+    assert_eq!(
+        finish_outcome(Err("run".to_owned()), Ok(())),
+        Err("run".to_owned())
+    );
+    // A run that passed but left its directory behind did not pass.
+    assert_eq!(
+        finish_outcome(Ok("s".to_owned()), Err("could not delete".to_owned())),
+        Err("could not delete".to_owned())
+    );
+    assert_eq!(
+        finish_outcome(Err("run".to_owned()), Err("could not delete".to_owned())),
+        Err("run\ncould not delete".to_owned())
+    );
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The reflection helper of the full run (S2) and the verification judgement of R1 (S5)
+
+#[test]
+fn the_helper_is_inherited_defaulted_or_missing_by_name() {
+    let helper = scratch("helper");
+    fs::write(&helper, "x").unwrap();
+    let default = scratch("default-helper");
+    // A variable that names a file is the caller's: the children inherit it and nothing is added.
+    assert_eq!(
+        helper_choice(Some(OsString::from(&helper)), &default),
+        Ok(None)
+    );
+    // A variable that names nothing is refused, with the default named as the way out.
+    let error = helper_choice(Some(OsString::from("nowhere/helper")), &default).unwrap_err();
+    assert!(
+        error.contains("nowhere") && error.contains(&default.display().to_string()),
+        "{error}"
+    );
+    // Unset: the default is handed to the children when it exists.
+    assert_eq!(helper_choice(None, &helper), Ok(Some(helper.clone())));
+    // Unset and no default: the failure names both.
+    let error = helper_choice(None, &default).unwrap_err();
+    assert!(
+        error.contains("GUST_SLANG_REFLECT") && error.contains(&default.display().to_string()),
+        "{error}"
+    );
+    fs::remove_file(&helper).unwrap();
+}
+
+#[test]
+fn r1_requires_a_verifying_line_for_every_package() {
+    let set = members();
+    let both: Vec<&Member> = ["alpha", "tool"]
+        .iter()
+        .map(|name| member(&set, name))
+        .collect();
+    let stderr = "   Packaging alpha v1.2.0\n   Verifying alpha v1.2.0 (C:\\w)\n   Verifying tool v1.2.0 (C:\\w)\n";
+    assert!(verify_problems(stderr, &both).is_empty());
+    // A missing line and a line of another version do not count.
+    let missing = "   Verifying alpha v1.2.0 (C:\\w)\n";
+    let problems = verify_problems(missing, &both);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("`tool`") && problems[0].contains("Verifying"),
+        "{problems:?}"
+    );
+    let wrong = "   Verifying alpha v1.2.1\n   Verifying tool v1.2.0\n";
+    assert_eq!(verify_problems(wrong, &both).len(), 1);
+    assert_eq!(verify_problems("", &both).len(), 2);
+    assert!(verify_problems("", &[]).is_empty());
 }

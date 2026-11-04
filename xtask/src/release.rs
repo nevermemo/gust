@@ -67,23 +67,27 @@ const MAX_CRATE_BYTES: u64 = 2 * 1024 * 1024;
 const REQUIRED_FILES: [&str; 3] = ["LICENSE-MIT", "LICENSE-APACHE", "README.md"];
 
 /// rustdoc warnings that exist today and belong to slice mr.b2 (the documentation sweep, which edits `crates/**`).
-/// R5 admits exactly these and nothing else, and fails when one of them no longer occurs, so that the entry is
-/// deleted with the fix and the debt cannot go stale. `stable` is whether the plain stable run shows it (else only
-/// the run with the docs.rs features does).
+/// R5 admits exactly these and nothing else: an entry admits one warning, at a file that ends in `file` (no line
+/// number, so an edit above it does not break the entry), and a second match fails. R5 also fails when one of them no
+/// longer occurs, so that the entry is deleted with the fix and the debt cannot go stale. `stable` is whether the
+/// plain stable run shows it (else only the run with the docs.rs features does).
 pub(crate) const KNOWN_DOC_DEBT: [DocDebt; 3] = [
-    // `crates/gust/src/lib.rs:108`.
+    // The redundant link at about line 108.
     DocDebt {
         needle: "redundant explicit link target",
+        file: "crates/gust/src/lib.rs",
         stable: true,
     },
-    // `crates/gust-wgpu/src/lib.rs:782`: `kind::Uniform` is not in scope there.
+    // `kind::Uniform` is not in scope there (about line 782).
     DocDebt {
         needle: "unresolved link to `kind::Uniform`",
+        file: "crates/gust-wgpu/src/lib.rs",
         stable: true,
     },
-    // `crates/gust/src/reflect/mod.rs:248`: only with the `slang-runtime` feature that docs.rs turns on.
+    // Only with the `slang-runtime` feature that docs.rs turns on (about line 248).
     DocDebt {
         needle: "links to private item `slang::compile_copy`",
+        file: "crates/gust/src/reflect/mod.rs",
         stable: false,
     },
 ];
@@ -129,11 +133,11 @@ pub(crate) fn package_files(stdout: &str) -> Vec<String> {
 }
 
 /// Whether `file` (relative, forward slashes) is a unit-test module or test data: a path component `tests` or
-/// one that starts with `testdata`, or a file name ending in `_tests.rs`. Those read repository paths and do not
-/// ship (mr.a).
+/// `testdata` (also as the file `testdata.rs`), or a file name ending in `_tests.rs`. Those read repository paths
+/// and do not ship (mr.a). A name that merely starts with `testdata` is no test data.
 fn is_test_source(file: &str) -> bool {
     file.split('/')
-        .any(|part| part == "tests" || part.starts_with("testdata"))
+        .any(|part| part == "tests" || part == "testdata" || part == "testdata.rs")
         || file.ends_with("_tests.rs")
 }
 
@@ -573,6 +577,8 @@ pub(crate) fn metadata_problems(members: &[Member]) -> Vec<String> {
 pub(crate) struct DocDebt {
     /// Text of the message.
     pub(crate) needle: &'static str,
+    /// The end of the path of the file that the warning points at (forward slashes, no line number).
+    pub(crate) file: &'static str,
     /// Whether the plain stable run shows it; otherwise only the run with the docs.rs features does.
     pub(crate) stable: bool,
 }
@@ -633,6 +639,16 @@ fn is_summary(message: &DocMessage) -> bool {
     message.text.contains(" generated ") && message.text.contains("warning")
 }
 
+/// Whether the warning `message` is the one that `entry` admits: its text holds the needle and its file ends in the
+/// entry's file.
+fn debt_matches(entry: &DocDebt, message: &DocMessage) -> bool {
+    let file = message
+        .location
+        .rsplit_once(':')
+        .map_or(message.location.as_str(), |(file, _)| file);
+    message.level == "warning" && message.text.contains(entry.needle) && file.ends_with(entry.file)
+}
+
 /// The problems of one `cargo doc` run: every diagnostic that is not known debt, and every debt entry of this run
 /// that did not occur. `with_features` is whether this is the docs.rs-shaped run; `debt` is [`KNOWN_DOC_DEBT`] in
 /// production.
@@ -643,13 +659,20 @@ pub(crate) fn doc_problems(
     debt: &[DocDebt],
 ) -> Vec<String> {
     let mut problems = Vec::new();
-    let mut seen = vec![false; debt.len()];
+    let mut seen = vec![0_usize; debt.len()];
     for message in messages.iter().filter(|message| !is_summary(message)) {
-        let known = debt
-            .iter()
-            .position(|entry| message.level == "warning" && message.text.contains(entry.needle));
+        let known = debt.iter().position(|entry| debt_matches(entry, message));
         match known {
-            Some(index) => seen[index] = true,
+            Some(index) => {
+                seen[index] += 1;
+                if seen[index] > 1 {
+                    problems.push(format!(
+                        "R5 {label}: {}: {} ({}); the known rustdoc warning `{}` admits one occurrence in `{}`, 
+                         this is another",
+                        message.level, message.text, message.location, debt[index].needle, debt[index].file
+                    ));
+                }
+            }
             None => problems.push(format!(
                 "R5 {label}: {}: {} ({})",
                 message.level, message.text, message.location
@@ -657,10 +680,11 @@ pub(crate) fn doc_problems(
         }
     }
     for (entry, seen) in debt.iter().zip(seen) {
-        if !seen && (entry.stable || with_features) {
+        if seen == 0 && (entry.stable || with_features) {
             problems.push(format!(
-                "R5 {label}: the known rustdoc warning `{}` no longer occurs; delete its entry from KNOWN_DOC_DEBT",
-                entry.needle
+                "R5 {label}: the known rustdoc warning `{}` in `{}` no longer occurs; delete its entry from 
+                 KNOWN_DOC_DEBT",
+                entry.needle, entry.file
             ));
         }
     }
@@ -811,9 +835,9 @@ fn section_entries<'a>(manifest: &'a str, section: &str) -> Vec<(&'a str, &'a st
     entries
 }
 
-/// The problems of the fixture's `[dependencies]`: each is a publishable member of the workspace, at its exact
-/// version, and the fixture depends on every library crate of the workspace's release that it is made for (at least
-/// one dependency).
+/// The problems of the fixture's `[dependencies]`: there is at least one, and each is a publishable member of the
+/// workspace with the plain or caret requirement that D107 gives users (`"0.1"`) and that the version being released
+/// satisfies. Whether the fixture names every crate a user needs is for R7's build to show.
 pub(crate) fn fixture_dependency_problems(manifest: &str, members: &[Member]) -> Vec<String> {
     let mut problems = Vec::new();
     let dependencies = section_entries(manifest, "dependencies");
@@ -830,16 +854,72 @@ pub(crate) fn fixture_dependency_problems(manifest: &str, members: &[Member]) ->
                  change the README block and the fixture together)"
             )),
             Some(member) => {
-                let exact = format!("\"={}\"", member.version);
-                if !line.contains(&exact) {
+                let satisfied = dependency_requirement(line)
+                    .is_some_and(|requirement| caret_satisfied(&requirement, &member.version));
+                if !satisfied {
                     problems.push(format!(
-                        "R7: the fixture's `{key}` line must pin {exact}, the version being released"
+                        "R7: the fixture's `{key}` line must give a caret requirement such as \"0.1\" that the \
+                         version being released ({}) satisfies",
+                        member.version
                     ));
                 }
             }
         }
     }
     problems
+}
+
+/// The version requirement of a dependency line `key = "req"` or `key = { version = "req", .. }`.
+fn dependency_requirement(line: &str) -> Option<String> {
+    let value = line.split_once('=')?.1.trim();
+    let quoted = |text: &str| {
+        let text = text.trim_start().strip_prefix('"')?;
+        Some(text[..text.find('"')?].to_owned())
+    };
+    if value.starts_with('"') {
+        return quoted(value);
+    }
+    let after = value
+        .split_once("version")?
+        .1
+        .trim_start()
+        .strip_prefix('=')?;
+    quoted(after)
+}
+
+/// Whether the caret requirement `requirement` (`0.1`, `^0.1.0`; any other operator is refused) is satisfied by
+/// `version` (`major.minor.patch`, a pre-release suffix ignored): at least the requirement, below the next version
+/// that cargo counts as breaking.
+fn caret_satisfied(requirement: &str, version: &str) -> bool {
+    let numbers = |text: &str| -> Option<Vec<u64>> {
+        let core = text.split(['-', '+']).next()?;
+        let parts: Option<Vec<u64>> = core.split('.').map(|part| part.parse().ok()).collect();
+        parts.filter(|parts| (1..=3).contains(&parts.len()))
+    };
+    let requirement = requirement.trim();
+    let requirement = requirement.strip_prefix('^').unwrap_or(requirement);
+    let (Some(required), Some(actual)) = (numbers(requirement), numbers(version)) else {
+        return false;
+    };
+    if actual.len() != 3 {
+        return false;
+    }
+    let mut lower = [0_u64; 3];
+    lower[..required.len()].copy_from_slice(&required);
+    let mut upper = lower;
+    let bump = if lower[0] > 0 || required.len() == 1 {
+        0
+    } else if lower[1] > 0 || required.len() == 2 {
+        1
+    } else {
+        2
+    };
+    upper[bump] += 1;
+    for slot in upper.iter_mut().skip(bump + 1) {
+        *slot = 0;
+    }
+    let actual = [actual[0], actual[1], actual[2]];
+    actual >= lower && actual < upper
 }
 
 /// The fixture's `Cargo.toml` plus a `[patch.crates-io]` table that points every publishable package at its unpacked
@@ -849,9 +929,11 @@ pub(crate) fn patched_manifest(fixture: &str, trees: &[(String, String)]) -> Str
     if !manifest.ends_with('\n') {
         manifest.push('\n');
     }
+    // The empty `[workspace]` makes the consumer its own workspace, so that a work directory below some other
+    // workspace (a `--work-dir` under a checkout, say) does not fail.
     manifest.push_str(
-        "\n# Added by `cargo xtask check-release`: the packages are not on the registry yet; these are the unpacked \
-         .crate files.\n[patch.crates-io]\n",
+        "\n# Added by `cargo xtask check-release`: the consumer is its own workspace, and the packages are not on the \
+         registry yet; these are the unpacked .crate files.\n[workspace]\n\n[patch.crates-io]\n",
     );
     for (name, tree) in trees {
         manifest.push_str(&format!("{name} = {{ path = \"{tree}\" }}\n"));
@@ -984,59 +1066,117 @@ fn cargo_program() -> OsString {
     env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"))
 }
 
-/// The directory that holds the run's files, deleted when this value is dropped (also when a check fails).
-struct WorkDir {
-    path: PathBuf,
+/// The directory that holds a run's files. It is deleted by [`WorkDir::finish`], whose failure is reported; the drop
+/// is only the fallback for a run that panics. Shared by `check-release` and E8 of `check-precompiled`.
+pub(crate) struct WorkDir {
+    pub(crate) path: PathBuf,
+    label: String,
+    deleted: bool,
 }
 
 impl WorkDir {
-    /// `requested`, or a new directory under the cargo target directory `target` (under the temporary directory when
-    /// `target` lies inside the repository). It must lie outside the repository and not exist yet or be empty; a
-    /// directory with content is never deleted.
-    fn create(root: &Path, target: &Path, requested: Option<&Path>) -> Result<Self, String> {
+    /// `requested`, or a new directory `<prefix>-<pid>-<nonce>` under `parent` (under the temporary directory when
+    /// `parent` lies inside the repository `root`). It must lie outside the repository and not exist yet or be
+    /// empty; a directory with content is never deleted. `label` starts every message.
+    pub(crate) fn create(
+        label: &str,
+        prefix: &str,
+        root: &Path,
+        parent: &Path,
+        requested: Option<&Path>,
+    ) -> Result<Self, String> {
         let path = match requested {
             Some(path) => path.to_path_buf(),
             None => {
                 let nanos = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map_or(0, |elapsed| elapsed.as_nanos());
-                let name = format!("gust-release-{}-{nanos}", std::process::id());
-                if is_inside(root, target) {
+                let name = format!("{prefix}-{}-{nanos}", std::process::id());
+                if is_inside(root, parent) {
                     env::temp_dir().join(name)
                 } else {
-                    target.join(name)
+                    parent.join(name)
                 }
             }
         };
         let path = std::path::absolute(&path)
-            .map_err(|error| format!("check-release: {}: {error}", path.display()))?;
+            .map_err(|error| format!("{label}: {}: {error}", path.display()))?;
         if is_inside(root, &path) {
-            return Err("check-release: the work directory must lie outside the repository (a consumer inside it \
-                        would read the repository's cargo configuration and workspace)"
-                .to_owned());
+            return Err(format!(
+                "{label}: the work directory must lie outside the repository (a consumer inside it would read the \
+                 repository's cargo configuration and workspace)"
+            ));
         }
         if path.exists() {
             let empty = fs::read_dir(&path)
-                .map_err(|error| format!("check-release: {}: {error}", path.display()))?
+                .map_err(|error| format!("{label}: {}: {error}", path.display()))?
                 .next()
                 .is_none();
             if !empty {
                 return Err(format!(
-                    "check-release: the work directory {} is not empty; check-release deletes its work directory \
-                     when it ends, so choose a new or empty one",
+                    "{label}: the work directory {} is not empty; the run deletes its work directory when it ends, \
+                     so choose a new or empty one",
                     path.display()
                 ));
             }
         }
         fs::create_dir_all(&path)
-            .map_err(|error| format!("check-release: {}: {error}", path.display()))?;
-        Ok(Self { path })
+            .map_err(|error| format!("{label}: {}: {error}", path.display()))?;
+        Ok(Self {
+            path,
+            label: label.to_owned(),
+            deleted: false,
+        })
+    }
+
+    /// Deletes the directory. `Ok` only when it is gone; a failure (a locked file, say) names the directory that is
+    /// left behind.
+    pub(crate) fn delete(&mut self) -> Result<(), String> {
+        if self.deleted {
+            return Ok(());
+        }
+        match fs::remove_dir_all(&self.path) {
+            Ok(()) => {}
+            Err(_) if !self.path.exists() => {}
+            Err(error) => {
+                return Err(format!(
+                    "{}: could not delete the work directory {} ({:.1} MiB left behind): {error}; delete it by hand",
+                    self.label,
+                    self.path.display(),
+                    directory_size(&self.path) as f64 / (1024.0 * 1024.0)
+                ));
+            }
+        }
+        self.deleted = true;
+        Ok(())
+    }
+
+    /// Deletes the directory and returns `outcome`, or the deletion's failure (also when the run failed).
+    pub(crate) fn finish(mut self, outcome: Result<String, String>) -> Result<String, String> {
+        let deletion = self.delete();
+        finish_outcome(outcome, deletion)
     }
 }
 
 impl Drop for WorkDir {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        if !self.deleted {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+/// The result of a run together with the result of deleting its work directory: a failure of either is a failure,
+/// and both are shown when both failed.
+pub(crate) fn finish_outcome(
+    outcome: Result<String, String>,
+    deletion: Result<(), String>,
+) -> Result<String, String> {
+    match (outcome, deletion) {
+        (Ok(summary), Ok(())) => Ok(summary),
+        (Ok(_), Err(failure)) => Err(failure),
+        (Err(failure), Ok(())) => Err(failure),
+        (Err(failure), Err(deleting)) => Err(format!("{failure}\n{deleting}")),
     }
 }
 
@@ -1074,6 +1214,8 @@ struct Run<'a> {
     cargo: OsString,
     work: &'a Path,
     check_only: bool,
+    /// The reflection helper that the children of the full run get as `GUST_SLANG_REFLECT` when the caller set none.
+    helper: Option<PathBuf>,
 }
 
 impl Run<'_> {
@@ -1099,6 +1241,15 @@ impl Run<'_> {
     fn cargo_in(&self, directory: &Path, target: &Path, args: &[&str]) -> Command {
         let mut command = self.command(&self.cargo, directory);
         command.args(args).env("CARGO_TARGET_DIR", target);
+        command
+    }
+
+    /// `command` with `GUST_SLANG_REFLECT` set to the default helper when the caller set none (see [`helper_choice`]).
+    /// That is the child's environment only, not this process's.
+    fn bridge(&self, mut command: Command) -> Command {
+        if let Some(helper) = &self.helper {
+            command.env(HELPER_VARIABLE, helper);
+        }
         command
     }
 
@@ -1192,32 +1343,54 @@ pub(crate) fn check_release_report(args: &[String]) -> Result<String, String> {
         publishable[0].version
     );
 
+    // The full run needs Slang and a reflection helper: refuse before the first step, not after minutes of work.
+    let helper = if options.check_only {
+        None
+    } else {
+        slang_environment(&root)?
+    };
     let work = WorkDir::create(
+        "check-release",
+        "gust-release",
         &root,
         &metadata.target_directory,
         options.work_dir.as_deref(),
     )?;
-    let run = Run {
-        root: &root,
-        cargo,
-        work: &work.path,
-        check_only: options.check_only,
+    let outcome = {
+        let run = Run {
+            root: &root,
+            cargo,
+            work: &work.path,
+            check_only: options.check_only,
+            helper,
+        };
+        release_steps(&run, &metadata, &publishable)
     };
+    // "deleted" is said only after the deletion succeeded.
+    work.finish(outcome)
+        .map(|summary| format!("{summary}, deleted."))
+}
 
-    let listing = r2_lists(&run, &publishable)?;
-    let crates = r1_package(&run, &metadata.target_directory, &publishable)?;
-    let unpacked = r2_unpacked(&run, &publishable)?;
-    let sizes = r6_sizes(&crates, &publishable)?;
-    let docs = r5_docs(&run, &publishable)?;
-    let recipe = r7_recipe(&run, &metadata.members, &publishable, &unpacked)?;
-    let dry = r8_dry_run(&run, &publishable)?;
+/// R1, R2, R5 to R8 in the work directory of `run`. Returns the summary up to the size of the work directory.
+fn release_steps(
+    run: &Run,
+    metadata: &Metadata,
+    publishable: &[&Member],
+) -> Result<String, String> {
+    let listing = r2_lists(run, publishable)?;
+    let crates = r1_package(run, &metadata.target_directory, publishable)?;
+    let unpacked = r2_unpacked(run, publishable)?;
+    let sizes = r6_sizes(&crates, publishable)?;
+    let docs = r5_docs(run, publishable)?;
+    let recipe = r7_recipe(run, &metadata.members, publishable, &unpacked)?;
+    let dry = r8_dry_run(run, publishable)?;
 
-    let size = directory_size(&work.path);
+    let size = directory_size(run.work);
     Ok(format!(
         "check-release passed{}: R1 {} packages built and verified in one cargo package call. R2 {listing}. R3/R4 \
          metadata, one version, exact pins, publish flags. R5 {docs}. R6 {sizes}. R7 {recipe}. R8 {dry}. Work \
-         directory {:.1} MiB, deleted.",
-        if options.check_only {
+         directory {:.1} MiB",
+        if run.check_only {
             " (--check-only: no Slang, no adapter)"
         } else {
             ""
@@ -1257,6 +1430,23 @@ fn r2_lists(run: &Run, publishable: &[&Member]) -> Result<String, String> {
     ))
 }
 
+/// R1's judgement: cargo's stderr must show a `Verifying <name> v<version>` line for every package, or the package
+/// was not built from its packed tree (`--no-verify`, or a cargo that skips it).
+pub(crate) fn verify_problems(stderr: &str, members: &[&Member]) -> Vec<String> {
+    members
+        .iter()
+        .filter(|member| {
+            !stderr.contains(&format!("Verifying {} v{}", member.name, member.version))
+        })
+        .map(|member| {
+            format!(
+                "R1: cargo did not verify `{}` v{} (no `Verifying` line)",
+                member.name, member.version
+            )
+        })
+        .collect()
+}
+
 /// R1: the one-call package with verification. Returns the directory with a copy of each `.crate`.
 fn r1_package(run: &Run, target: &Path, publishable: &[&Member]) -> Result<PathBuf, String> {
     let mut args = vec!["package", "--locked", "--allow-dirty", "--color", "never"];
@@ -1269,16 +1459,7 @@ fn r1_package(run: &Run, target: &Path, publishable: &[&Member]) -> Result<PathB
         run.cargo(&args),
     )?;
     let stderr = String::from_utf8_lossy(&output.stderr);
-    let mut problems = Vec::new();
-    for member in publishable {
-        if !stderr.contains(&format!("Verifying {} v{}", member.name, member.version)) {
-            problems.push(format!(
-                "R1: cargo did not verify `{}` (no `Verifying` line)",
-                member.name
-            ));
-        }
-    }
-    problems_to_error("R1", &problems)?;
+    problems_to_error("R1", &verify_problems(&stderr, publishable))?;
     let crates = run.work.join("crates");
     fs::create_dir_all(&crates).map_err(|error| format!("check-release R1: {error}"))?;
     for member in publishable {
@@ -1510,12 +1691,17 @@ fn r7_recipe(
         consumer.join("src").join("main.rs"),
         &fixture_source.replace("\r\n", "\n"),
     )?;
-    if let Ok(lock) = fs::read_to_string(
-        run.root
-            .join(crate::precompiled::PRECOMPILED_DIR)
-            .join("Cargo.lock"),
-    ) {
-        write(consumer.join("Cargo.lock"), &lock)?;
+    let seed = run
+        .root
+        .join(crate::precompiled::PRECOMPILED_DIR)
+        .join("Cargo.lock");
+    match fs::read_to_string(&seed) {
+        Ok(lock) => write(consumer.join("Cargo.lock"), &lock)?,
+        Err(error) => println!(
+            "check-release R7: skipping the lock seed: {} is not readable ({error}); cargo resolves wgpu and the \
+             rest afresh, so the run may differ from the tested versions",
+            seed.display()
+        ),
     }
     let consumer_target = run.work.join("hello-target");
 
@@ -1580,8 +1766,7 @@ fn r7_recipe(
         ));
     }
 
-    // The full run: Slang and the GPU.
-    slang_environment_problems()?;
+    // The full run: Slang and the GPU (the environment was checked before the first step).
     let dev_binary = consumer_target
         .join("debug")
         .join(format!("{package}{EXE_SUFFIX}"));
@@ -1590,7 +1775,7 @@ fn r7_recipe(
         "R7",
         &format!("{tool_name} gust build -p {package} (needs Slang)"),
         {
-            let mut command = run.command(&installed, &consumer);
+            let mut command = run.bridge(run.command(&installed, &consumer));
             command
                 .args(["gust", "build", "-p", &package])
                 .env("CARGO_TARGET_DIR", &consumer_target);
@@ -1636,7 +1821,7 @@ fn run_recipe(run: &Run, what: &str, binary: &Path, directory: &Path) -> Result<
     let output = run.step(
         "R7",
         &format!("run the {what}"),
-        run.command(binary, directory),
+        run.bridge(run.command(binary, directory)),
     )?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     if recipe_ran(&stdout) {
@@ -1648,8 +1833,45 @@ fn run_recipe(run: &Run, what: &str, binary: &Path, directory: &Path) -> Result<
     ))
 }
 
-/// The full run needs `slangc` and the reflection helper in the environment, as the README says (§ run-time bridge).
-fn slang_environment_problems() -> Result<(), String> {
+/// The variable that names the reflection helper (the run-time bridge, README).
+const HELPER_VARIABLE: &str = "GUST_SLANG_REFLECT";
+
+/// The helper that `cargo xtask verify` and `build-slang-reflect` build by default.
+fn default_helper(root: &Path) -> PathBuf {
+    root.join("target")
+        .join("slang-reflect")
+        .join(format!("gust-slang-reflect{EXE_SUFFIX}"))
+}
+
+/// Which reflection helper the children of the full run use. `variable` is `GUST_SLANG_REFLECT` of the caller and
+/// `default` the file that `verify` builds. A variable that is set must name a file (the children inherit it:
+/// `Ok(None)`); when it is unset the default is handed to the children if it exists, else the run fails naming both.
+fn helper_choice(variable: Option<OsString>, default: &Path) -> Result<Option<PathBuf>, String> {
+    if let Some(value) = variable {
+        let path = PathBuf::from(&value);
+        if path.is_file() {
+            return Ok(None);
+        }
+        return Err(format!(
+            "check-release R7: {HELPER_VARIABLE} is set to {}, which is not a file; name the reflection helper \
+             (`cargo gust slang build-helper` prints it), unset the variable to use {}, or use --check-only",
+            path.display(),
+            default.display()
+        ));
+    }
+    if default.is_file() {
+        return Ok(Some(default.to_path_buf()));
+    }
+    Err(format!(
+        "check-release R7: the full run needs the reflection helper: {HELPER_VARIABLE} is unset and the default {} \
+         does not exist (`cargo xtask verify` or `cargo xtask build-slang-reflect` builds it); or use --check-only",
+        default.display()
+    ))
+}
+
+/// The full run needs `slangc` and the reflection helper (README, run-time bridge). Returns the helper to hand to the
+/// children, if the caller's environment names none.
+fn slang_environment(root: &Path) -> Result<Option<PathBuf>, String> {
     let slangc = Command::new("slangc")
         .arg("-version")
         .stdin(Stdio::null())
@@ -1659,13 +1881,7 @@ fn slang_environment_problems() -> Result<(), String> {
                     install`), or use --check-only"
             .to_owned());
     }
-    let helper = env::var_os("GUST_SLANG_REFLECT").map(PathBuf::from);
-    if !helper.as_deref().is_some_and(Path::is_file) {
-        return Err("check-release R7: the full run needs GUST_SLANG_REFLECT to name the reflection helper (`cargo \
-                    gust slang build-helper` prints it), or use --check-only"
-            .to_owned());
-    }
-    Ok(())
+    helper_choice(env::var_os(HELPER_VARIABLE), &default_helper(root))
 }
 
 /// R8: the publish dry run.

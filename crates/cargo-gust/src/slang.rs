@@ -42,35 +42,31 @@
 //!   finish can delete the file the other is about to extract; the second then fails and a rerun succeeds.
 
 use std::{
-    env,
-    ffi::OsString,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
 };
 
-use crate::{
-    sha256::sha256_hex,
-    tools::{executable_name, find_on_path},
-};
+use gust::toolchain;
 
-/// The Slang release `cargo gust` works with. Slice m4.r ran the Gpu, Slangc, Spirv and Reflect suites,
-/// `check-artifacts`, `check-precompiled` and `check-web` on it (STATUS.md records the run); `cargo xtask check-full`
-/// runs at the M4 close. The pin moves only with a new run of those. `cargo xtask` reads this constant and
-/// [`VALIDATED_BUILDS`] from this file (xtask/src/verify.rs, `PinRule`), so one rule serves both tools. Moving the
-/// constant into `gust` is an M4 close note.
-pub(crate) const SLANG_VERSION: &str = "2026.20";
+use crate::{sha256::sha256_hex, tools::executable_name};
 
-/// Other `slangc -version` tags that count as the pin. The release archive prints the bare pin, so the list ships
-/// empty: 2026.20 was validated with the release archive itself. The mechanism stays for a later source build that
-/// `cargo xtask check-full` validates (the pin rule takes the list as a parameter, so tests exercise it with a
-/// synthetic tag). Adding a tag here is a decision, like moving the pin: no pattern admits unlisted builds. Keep the
-/// list a plain array of string literals: xtask parses it from this source (the tags of the list, with comments
-/// ignored).
-pub(crate) const VALIDATED_BUILDS: &[&str] = &[];
+/// The environment the rules read: `gust::toolchain` owns the cache-root and lookup rules (D109), and this tool
+/// calls them.
+pub(crate) use toolchain::Env;
+/// The pin rule of `gust::toolchain` (exact equality, or a listed validated build), shared with the run-time bridge and
+/// with `cargo xtask`.
+pub(crate) use toolchain::matches_pin;
 
-/// The variable that names the cache root.
-pub(crate) const HOME_VARIABLE: &str = "GUST_SLANG_HOME";
+/// The Slang release `cargo gust` works with: `gust::toolchain::SLANG_PIN`, the one home of the pin. Slice m4.r ran
+/// the Gpu, Slangc, Spirv and Reflect suites, `check-artifacts`, `check-precompiled` and `check-web` on it (STATUS.md
+/// records the run); `cargo xtask check-full` runs at the M4 close. The pin moves only with a new run of those.
+/// `cargo xtask` and the `gpu-software` workflow read it from `crates/gust/src/toolchain.rs`.
+pub(crate) const SLANG_VERSION: &str = toolchain::SLANG_PIN;
+
+/// Other `slangc -version` tags that count as the pin: `gust::toolchain::VALIDATED_BUILDS`, which ships empty (the
+/// release archive prints the bare pin). Tests exercise the mechanism with a synthetic tag.
+pub(crate) const VALIDATED_BUILDS: &[&str] = toolchain::VALIDATED_BUILDS;
 
 /// One release archive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,82 +127,9 @@ pub(crate) fn download_url(asset: &Asset) -> String {
     )
 }
 
-/// Whether the version `slangc -version` printed is the pin.
-///
-/// The rule is exact equality, or a tag in `validated` that belongs to this pin. The release archive prints the bare
-/// pin (`2026.20`); a source build that `check-full` validated would print a `git describe` tag such as
-/// `2026.20-1-gabcdef012` and be listed in [`VALIDATED_BUILDS`], which every caller outside the tests passes as
-/// `validated`. Any other build of the same base version, a different base version or a prefix of the pin does not
-/// match.
-pub(crate) fn matches_pin(pin: &str, reported: &str, validated: &[&str]) -> bool {
-    reported == pin || (reported.starts_with(pin) && validated.contains(&reported))
-}
-
-/// The part of the process environment the manager reads. Tests build it by hand.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct Env {
-    pub(crate) slang_home: Option<OsString>,
-    pub(crate) cargo_home: Option<OsString>,
-    /// `HOME`, or `USERPROFILE` on Windows.
-    pub(crate) home: Option<OsString>,
-    pub(crate) path: Option<OsString>,
-}
-
-impl Env {
-    pub(crate) fn from_process() -> Self {
-        let home = if cfg!(windows) {
-            env::var_os("USERPROFILE").or_else(|| env::var_os("HOME"))
-        } else {
-            env::var_os("HOME")
-        };
-        Self {
-            slang_home: env::var_os(HOME_VARIABLE),
-            cargo_home: env::var_os("CARGO_HOME"),
-            home,
-            path: env::var_os("PATH"),
-        }
-    }
-}
-
-/// `GUST_SLANG_HOME`, when it is set: it must be a non-empty absolute path.
-fn explicit_root(env: &Env) -> Result<Option<PathBuf>, String> {
-    let Some(value) = &env.slang_home else {
-        return Ok(None);
-    };
-    if value.is_empty() {
-        return Err(format!(
-            "{HOME_VARIABLE} is set but empty; give an absolute directory or unset it"
-        ));
-    }
-    let path = PathBuf::from(value);
-    if !path.is_absolute() {
-        return Err(format!(
-            "{HOME_VARIABLE} must be an absolute path, not `{}`",
-            path.display()
-        ));
-    }
-    Ok(Some(path))
-}
-
-/// `<CARGO_HOME or ~/.cargo>/gust/slang`, when either is known and absolute.
-fn default_root(env: &Env) -> Option<PathBuf> {
-    let base = match &env.cargo_home {
-        Some(value) if !value.is_empty() => PathBuf::from(value),
-        _ => PathBuf::from(env.home.as_ref().filter(|home| !home.is_empty())?).join(".cargo"),
-    };
-    base.is_absolute().then(|| base.join("gust").join("slang"))
-}
-
-/// The cache root `install` writes to: `GUST_SLANG_HOME`, else the default.
+/// The cache root `install` writes to: `GUST_SLANG_HOME`, else the default (`gust::toolchain::cache_root_in`).
 pub(crate) fn install_root(env: &Env) -> Result<PathBuf, String> {
-    if let Some(root) = explicit_root(env)? {
-        return Ok(root);
-    }
-    default_root(env).ok_or_else(|| {
-        format!(
-            "cannot tell where to install Slang: set {HOME_VARIABLE} to an absolute directory (CARGO_HOME and the home directory are not usable)"
-        )
-    })
+    toolchain::cache_root_in(env)
 }
 
 /// `bin/slangc` of an extracted release.
@@ -217,11 +140,6 @@ pub(crate) fn slangc_in(install_dir: &Path) -> PathBuf {
 /// The directory `build-helper` writes the helper to for a managed install.
 pub(crate) fn helper_dir(root: &Path, version: &str) -> PathBuf {
     root.join("helper").join(version)
-}
-
-/// The helper executable `build-helper` writes for a managed install.
-pub(crate) fn managed_helper(root: &Path, version: &str) -> PathBuf {
-    helper_dir(root, version).join(executable_name("gust-slang-reflect"))
 }
 
 /// Where a located `slangc` came from.
@@ -327,12 +245,13 @@ pub(crate) fn locate_with(
     validated: &[&str],
 ) -> Result<Located, String> {
     // `GUST_SLANG_HOME`, when set, is the only cache root (section 2.5 reads "or"): an install elsewhere is not looked at.
-    let root = match explicit_root(env)? {
-        Some(root) => Some((Source::Home, root)),
-        None => default_root(env).map(|root| (Source::Cache, root)),
+    let source = if env.slang_home.is_some() {
+        Source::Home
+    } else {
+        Source::Cache
     };
-    if let Some((source, root)) = root
-        && slangc_in(&root.join(SLANG_VERSION)).is_file()
+    if let Some(root) = toolchain::lookup_root_in(env)?
+        && toolchain::managed_slangc(&root).is_file()
     {
         let install_dir = root.join(SLANG_VERSION);
         let slangc = slangc_in(&install_dir);
@@ -343,7 +262,7 @@ pub(crate) fn locate_with(
                 install_dir.display()
             )
         })?;
-        if !matches_pin(SLANG_VERSION, &version, validated) {
+        if !matches_pin(&version, validated) {
             return Err(format!(
                 "{} reports Slang `{version}`, not {SLANG_VERSION}; remove {} and run `cargo gust slang install`",
                 slangc.display(),
@@ -358,7 +277,8 @@ pub(crate) fn locate_with(
             root: Some(root),
         });
     }
-    let Some(slangc) = find_on_path(&executable_name("slangc"), env.path.as_deref()) else {
+    let Some(slangc) = toolchain::find_on_path(&executable_name("slangc"), env.path.as_deref())
+    else {
         return Err(format!(
             "Slang {SLANG_VERSION} was not found (no {SLANG_VERSION} directory in the cache and no slangc on PATH): {}",
             install_hint(env)
@@ -371,7 +291,7 @@ pub(crate) fn locate_with(
             install_hint(env)
         )
     })?;
-    let pinned = matches_pin(SLANG_VERSION, &version, validated);
+    let pinned = matches_pin(&version, validated);
     if !pinned && !allow_mismatch {
         return Err(format!(
             "the slangc on PATH ({}) is Slang `{version}`, not {SLANG_VERSION}: {}, or pass --allow-slang-mismatch to use it anyway",
@@ -620,43 +540,10 @@ pub(crate) fn install(
     Ok(Installed::Fresh(version_dir))
 }
 
-/// The first line of `slangc -version` output, if it is a version.
-pub(crate) fn parse_slangc_version(output: &str) -> Result<String, String> {
-    let line = output
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or_default();
-    let looks_like_version =
-        line.starts_with(|c: char| c.is_ascii_digit()) && !line.contains(char::is_whitespace);
-    if looks_like_version {
-        Ok(line.to_owned())
-    } else {
-        Err(format!("unexpected `-version` output: `{line}`"))
-    }
-}
-
-/// Run `<slangc> -version`.
+/// Run `<slangc> -version` (`gust::toolchain::slangc_version`, which retries a busy executable); the error is the
+/// text of its [`toolchain::VersionError`].
 pub(crate) fn slangc_version(slangc: &Path) -> Result<String, String> {
-    let output = Command::new(slangc)
-        .arg("-version")
-        .output()
-        .map_err(|error| format!("cannot run `{}`: {error}", slangc.display()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "`{} -version` failed: {}",
-            slangc.display(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    // slangc has printed the version on stdout; fall back to stderr rather than fail on a build that uses it.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let text = if stdout.trim().is_empty() {
-        String::from_utf8_lossy(&output.stderr)
-    } else {
-        stdout
-    };
-    parse_slangc_version(&text)
+    toolchain::slangc_version(slangc).map_err(|error| error.to_string())
 }
 
 #[cfg(test)]

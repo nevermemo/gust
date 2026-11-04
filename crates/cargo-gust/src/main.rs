@@ -70,8 +70,9 @@
 //! this module, so those are checked in full at export and are not listed.
 //!
 //! The Slang version recorded is the build tag the helper writes into every reflection JSON (`compiler`): the build
-//! that actually compiled. With `--allow-slang-mismatch` that can differ from the pin (`SLANG_VERSION` in `slang.rs`),
-//! and then the manifest says so by carrying the other tag; `build` and `locate` print a note every time.
+//! that actually compiled. With `--allow-slang-mismatch` that can differ from the pin (`SLANG_PIN` in
+//! `gust::toolchain`), and then the manifest says so by carrying the other tag; `build` and `locate` print a note
+//! every time.
 //!
 //! # The pinned Slang
 //!
@@ -104,12 +105,22 @@
 //!
 //! # Installing
 //!
-//! The tool needs `gust`'s run-time Slang bridge (the `slang-runtime` feature), which a strict profile refuses. A plain
-//! `cargo install` builds in release, which infers the `native` profile, so install with the profile named:
+//! The tool needs `gust`'s run-time Slang bridge (the `slang-runtime` feature), which a strict profile refuses, and a
+//! plain `cargo install` builds in release, which infers the `native` profile. The tool therefore enables the internal
+//! `cargo-gust-bridge` feature of `gust` (D108): with it, a release build without `GUST_PROFILE` is built as `dev`
+//! (the build prints a `cargo:warning` saying so), and no variable is needed:
 //!
 //! ```sh
-//! GUST_PROFILE=dev cargo install cargo-gust
+//! cargo install cargo-gust --locked --version ~0.1
+//! cargo gust slang install        # the pinned Slang into <CARGO_HOME>/gust/slang/<pin>, SHA-256 checked
+//! cargo gust slang build-helper   # the native reflection helper, compiled against that Slang
+//! cargo gust doctor               # names every gap, and the versions of cargo-gust and gust-compute
 //! ```
+//!
+//! Where the run-time bridge and this tool look for `slangc` and the helper is `gust::toolchain`'s one rule (D109):
+//! `GUST_SLANG_REFLECT` for the helper, then the managed cache (`GUST_SLANG_HOME`, else
+//! `<CARGO_HOME or ~/.cargo>/gust/slang`), then, in a GUST checkout only, `target/slang-reflect`. There is no
+//! current-directory lookup.
 //!
 //! # Limits
 //!

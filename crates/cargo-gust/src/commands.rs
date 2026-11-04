@@ -94,9 +94,7 @@ fn collect_plan(ctx: &Context) -> CollectPlan {
 /// `--recompile` only needs the helper's build tag.
 fn require_helper() -> Result<PathBuf, String> {
     let env = Env::from_process();
-    // Which install the managed helper belongs to; a missing or mismatched slangc must not stop this lookup.
-    let located = slang::locate(&env, true, &slang::slangc_version).ok();
-    let candidate = toolchain::helper_candidate(located.as_ref());
+    let candidate = toolchain::helper_candidate();
     tools::locate_executable(&candidate, env.path.as_deref()).ok_or_else(|| {
         format!(
             "the native Slang helper was not found (looked for {}); {}",
@@ -318,7 +316,7 @@ pub(crate) fn render_report(report: &Report, kernels: usize) -> Vec<String> {
 pub(crate) fn doctor() -> Result<i32, String> {
     let env = Env::from_process();
     let slangc = slang::locate(&env, false, &slang::slangc_version);
-    let candidate = toolchain::helper_candidate(slangc.as_ref().ok());
+    let candidate = toolchain::helper_candidate();
     let path_var = env.path.clone();
     let helper_found = tools::locate_executable(&candidate, path_var.as_deref());
     let helper_slang = helper_found.as_deref().map(tools::helper_slang_version);

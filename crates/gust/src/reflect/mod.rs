@@ -244,29 +244,30 @@ pub struct CompiledReflection {
     pub workgroup_size: [u32; 3],
 }
 
+/// The native helper that [`compile_reflected`] launches, by the rules of `crate::toolchain` (D109):
+/// `GUST_SLANG_REFLECT`, else the managed helper `<root>/helper/<pin>/gust-slang-reflect` of the Slang cache, else the
+/// repository checkout's `target/slang-reflect` (only when this crate is built from a GUST checkout), else the bare
+/// executable name, which the launch looks up on `PATH`. There is no current-directory lookup.
+///
+/// This accessor never fails: when the variables are unusable (a relative or empty `GUST_SLANG_REFLECT`, a bad
+/// `GUST_SLANG_HOME`) it returns `GUST_SLANG_REFLECT` as given, or the bare name, and [`compile_reflected`] is the
+/// call that reports the problem.
 #[cfg(feature = "slang-runtime")]
 pub fn native_compiler_path() -> PathBuf {
-    if let Some(path) = std::env::var_os("GUST_SLANG_REFLECT") {
-        return path.into();
-    }
-    let executable = format!("gust-slang-reflect{}", std::env::consts::EXE_SUFFIX);
-    let local = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../target/slang-reflect")
-        .join(&executable);
-    if local.is_file() {
-        local
-    } else {
-        executable.into()
-    }
+    crate::toolchain::helper_candidate_in(&crate::toolchain::Env::from_process())
 }
 
 #[cfg(feature = "slang-runtime")]
-/// Compile and reflect the same linked program using the native Slang helper.
+/// Compile and reflect the same linked program using the native Slang helper ([`native_compiler_path`]). An unusable
+/// `GUST_SLANG_REFLECT` or `GUST_SLANG_HOME` is an error here, with the variable and its value in the text.
 pub fn compile_reflected(
     kernel: &KernelDescriptor,
     target: Target,
 ) -> Result<CompiledReflection, Error> {
-    compile_reflected_with_helper(kernel, target, native_compiler_path())
+    let helper = crate::toolchain::helper_path()
+        .map_err(|reason| Error::Compiler(slang::Error::Toolchain(reason)))?
+        .unwrap_or_else(crate::toolchain::bare_helper_name);
+    compile_reflected_with_helper(kernel, target, helper)
 }
 
 #[cfg(feature = "slang-runtime")]
@@ -580,12 +581,13 @@ impl CompiledReflection {
 /// the shape's, as it is there (mx.k).
 #[cfg(feature = "slang-runtime")]
 fn slangc_reflection_command(
-    source: &std::path::Path,
+    slangc: &Path,
+    source: &Path,
     target: Target,
     entry: &str,
     shape: crate::Shape,
 ) -> Command {
-    let mut command = Command::new("slangc");
+    let mut command = Command::new(slangc);
     command.arg(source).args([
         "-target",
         target_name(target),
@@ -612,7 +614,9 @@ pub fn reflect(kernel: &KernelDescriptor, target: Target) -> Result<Reflection, 
         Target::Spirv => "spv",
     };
     slang::write_compile_inputs(directory.path(), kernel.slang_source, &kernel.source)?;
-    let mut command = slangc_reflection_command(&source, target, kernel.entry_point, kernel.shape);
+    let slangc = slang::pinned_slangc().map_err(Error::Compiler)?;
+    let mut command =
+        slangc_reflection_command(&slangc, &source, target, kernel.entry_point, kernel.shape);
     command
         .arg("-reflection-json")
         .arg(&json)
@@ -1473,6 +1477,7 @@ mod tests {
                 (crate::Shape::Pixel, "fragment"),
             ] {
                 let command = slangc_reflection_command(
+                    std::path::Path::new("slangc"),
                     std::path::Path::new("kernel.slang"),
                     target,
                     "entry",

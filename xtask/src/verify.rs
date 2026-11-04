@@ -14,8 +14,9 @@ use crate::{
     lint::lint,
     precompiled::check_precompiled_report,
     process::{
-        CheckRecord, report_check, require_command, require_tests_ran, run_cargo_test_captured,
-        run_checked, run_checked_owned, sum_test_results, without_colors,
+        CheckRecord, HELPER_VARIABLE, report_check, repository_helper, require_command,
+        require_tests_ran, run_cargo_test_captured, run_checked, run_checked_owned,
+        sum_test_results, without_colors,
     },
     reflect::{BuildOptions, build_slang_reflect},
     release::check_release_report,
@@ -369,9 +370,6 @@ fn verify_inner(
     Ok(())
 }
 
-/// The variable that names the reflection helper the tests use (`gust::reflect::native_compiler_path`).
-const HELPER_VARIABLE: &str = "GUST_SLANG_REFLECT";
-
 /// The helper file `GUST_SLANG_REFLECT` names, when it is set and the file exists. Anything else (unset, empty, a
 /// missing file) is `None`, and the caller builds the helper into the default place as before.
 pub(crate) fn environment_helper(value: Option<OsString>) -> Option<PathBuf> {
@@ -396,29 +394,28 @@ pub(crate) fn helper_plan(root: &Path, value: Option<OsString>) -> HelperPlan {
     let Some(path) = environment_helper(value) else {
         return HelperPlan::Build;
     };
-    let default = default_helper(root);
+    let default = repository_helper(root);
     match (fs::canonicalize(&path), fs::canonicalize(&default)) {
         (Ok(named), Ok(default)) if named == default => HelperPlan::Build,
         _ => HelperPlan::Use(path),
     }
 }
 
-/// The file `cargo xtask build-slang-reflect` writes by default: `<root>/target/slang-reflect/gust-slang-reflect`.
-fn default_helper(root: &Path) -> PathBuf {
-    root.join("target")
-        .join("slang-reflect")
-        .join(format!("gust-slang-reflect{}", env::consts::EXE_SUFFIX))
-}
+/// The file that holds the pin, the one place the version lives: `gust::toolchain` (D109, mr.t2).
+const PIN_SOURCE: &str = "crates/gust/src/toolchain.rs";
 
-/// The file that holds the pin of `cargo gust`, the one place the version lives (the workflows read it there too).
-const PIN_SOURCE: &str = "crates/cargo-gust/src/slang.rs";
+/// The declaration of the constant that holds the pin in [`PIN_SOURCE`].
+const PIN_DECLARATION: &str = "pub const SLANG_PIN: &str = \"";
 
-/// The Slang version `cargo gust` is pinned to: the string of the one `SLANG_VERSION` constant in `source`. `None`
-/// when there is not exactly one such line or its value is empty.
+/// The declaration of the list of validated builds in [`PIN_SOURCE`].
+const VALIDATED_DECLARATION: &str = "pub const VALIDATED_BUILDS: &[&str] = &[";
+
+/// The Slang version `cargo gust` is pinned to: the string of the one `SLANG_PIN` constant in `source`. `None` when
+/// there is not exactly one such line or its value is empty.
 pub(crate) fn slang_pin(source: &str) -> Option<String> {
     let mut found = source.lines().filter_map(|line| {
-        line.trim()
-            .strip_prefix("pub(crate) const SLANG_VERSION: &str = \"")?
+        let line = line.trim();
+        line.strip_prefix(PIN_DECLARATION)?
             .strip_suffix("\";")
             .map(str::to_owned)
     });
@@ -427,13 +424,11 @@ pub(crate) fn slang_pin(source: &str) -> Option<String> {
 }
 
 /// The other `slangc -version` tags that count as the pin: the strings of the `VALIDATED_BUILDS` list of `source`
-/// (empty when the list is empty). Together with [`slang_pin`] this is the rule of `matches_pin` in `slang.rs`,
+/// (empty when the list is empty). Together with [`slang_pin`] this is the rule of `matches_pin` in `gust::toolchain`,
 /// read from the same source so the two cannot drift: adding a validated build there admits it here too. `None`
 /// when the constant is missing or not closed.
 pub(crate) fn slang_validated_builds(source: &str) -> Option<Vec<String>> {
-    let rest = source
-        .split_once("pub(crate) const VALIDATED_BUILDS: &[&str] = &[")?
-        .1;
+    let rest = source.split_once(VALIDATED_DECLARATION)?.1;
     let list = rest.split_once("];")?.0;
     let mut builds = Vec::new();
     for line in list.lines() {
@@ -452,7 +447,8 @@ pub(crate) struct PinRule {
 }
 
 impl PinRule {
-    /// The rule of `matches_pin` in `slang.rs`: the tag is the pin, or it extends the pin and is a validated build.
+    /// The rule of `matches_pin` in `gust::toolchain`: the tag is the pin, or it extends the pin and is a validated
+    /// build.
     pub(crate) fn admits(&self, tag: &str) -> bool {
         tag == self.pin || (tag.starts_with(&self.pin) && self.validated.iter().any(|v| v == tag))
     }
@@ -461,7 +457,7 @@ impl PinRule {
 pub(crate) fn pin_rule_of(source: &str) -> Result<PinRule, String> {
     Ok(PinRule {
         pin: slang_pin(source)
-            .ok_or_else(|| format!("cannot read the one SLANG_VERSION constant of {PIN_SOURCE}"))?,
+            .ok_or_else(|| format!("cannot read the one SLANG_PIN constant of {PIN_SOURCE}"))?,
         validated: slang_validated_builds(source)
             .ok_or_else(|| format!("cannot read the VALIDATED_BUILDS list of {PIN_SOURCE}"))?,
     })
@@ -585,7 +581,7 @@ pub(crate) fn prepare_helper_with(
     match helper_plan(root, variable) {
         HelperPlan::Build => {
             build()?;
-            let built = version_of(&default_helper(root))?;
+            let built = version_of(&repository_helper(root))?;
             check_helper_pin(&built, &rule, "the helper built into target/slang-reflect")
         }
         HelperPlan::Use(helper) => {

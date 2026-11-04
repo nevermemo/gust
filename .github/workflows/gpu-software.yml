@@ -3,8 +3,8 @@
 # evidence, and never a required check: a red run is visible on every pull request and blocks nothing.
 #
 # Order: Mesa from the Ubuntu snapshot service (pinned by snapshot id and package version, drift-checked), Slang and the
-# reflection helper from the pinned-Slang manager (`cargo gust slang install` and `build-helper`; the version and the
-# archive hash live in crates/cargo-gust/src/slang.rs and nowhere else), doctor, then `cargo xtask verify --mode gpu
+# reflection helper from the pinned-Slang manager (`cargo gust slang install` and `build-helper`; the version is `SLANG_PIN` in
+# crates/gust/src/toolchain.rs and the archive hash lives in crates/cargo-gust/src/slang.rs, nowhere else), doctor, then `cargo xtask verify --mode gpu
 # --record`, which also checks the `test result:` lines against the pinned counts (GPU_SUITE_PIN, in
 # xtask/src/verify.rs; `cargo xtask test --suite Gpu` checks the same pin), then assertions on the record. The Mesa
 # install retries each download five times and the whole install once more after 60 s (the snapshot service has
@@ -142,14 +142,15 @@ jobs:
           restore-keys: |
             gpu-software-cargo-${{ runner.os }}-${{ env.RUSTUP_TOOLCHAIN }}-
       - name: Read the Slang pin
-        # The cache key below is the manager's pin, read out of crates/cargo-gust/src/slang.rs: the version
-        # (SLANG_VERSION) and the SHA-256 of the linux x86_64 archive of that version. It is not a hash of the file:
-        # an unrelated edit of slang.rs would then drop the cache, and this key says in the log which Slang it is. The
-        # step fails (never guesses) when either value cannot be read, so a change of the table layout is loud.
+        # The cache key below is the manager's pin: the version (SLANG_PIN, read out of crates/gust/src/toolchain.rs) and
+        # the SHA-256 of the linux x86_64 archive of that version (read out of crates/cargo-gust/src/slang.rs). It is not
+        # a hash of a file: an unrelated edit would then drop the cache, and this key says in the log which Slang it is.
+        # The step fails (never guesses) when either value cannot be read, so a change of the layout is loud.
         run: |
           set -euo pipefail
           file=crates/cargo-gust/src/slang.rs
-          version=$(tr -d '\r' < "$file" | sed -n 's/^pub(crate) const SLANG_VERSION: &str = "\([^"]*\)";$/\1/p')
+          pin_file=crates/gust/src/toolchain.rs
+          version=$(tr -d '\r' < "$pin_file" | sed -n 's/^pub const SLANG_PIN: &str = "\([^"]*\)";$/\1/p')
           sha256=$(tr -d '\r' < "$file" | awk -F'"' '
             /Asset \{/ { current = 0; os = ""; arch = "" }
             /^ *version: SLANG_VERSION,/ { current = 1 }
@@ -159,14 +160,14 @@ jobs:
           one() {
             count=$(printf '%s\n' "$1" | grep -c . || true)
             if [ "$count" -ne 1 ]; then
-              echo "::error::expected exactly one $2 in $file, found $count"
+              echo "::error::expected exactly one $2 in ${3:-$file}, found $count"
               exit 1
             fi
           }
-          one "$version" "SLANG_VERSION line"
+          one "$version" "SLANG_PIN line" "$pin_file"
           one "$sha256" "linux x86_64 sha256 line of the pinned version"
           if ! printf '%s\n' "$version" | grep -Eq '^[0-9]+(\.[0-9]+)+$'; then
-            echo "::error::cannot read SLANG_VERSION from $file (got '$version')"
+            echo "::error::cannot read SLANG_PIN from $pin_file (got '$version')"
             exit 1
           fi
           if ! printf '%s\n' "$sha256" | grep -Eq '^[0-9a-f]{64}$'; then

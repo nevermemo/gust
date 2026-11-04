@@ -430,15 +430,15 @@ fn slangc_prints_its_version_on_standard_error_and_that_counts() {
 
 // ---- the helper must be the pin's (slice m4.r) -------------------------------------------------------------------
 
-/// The text of the one line of `slang.rs` that holds the pin, with a pin that does not follow the real one.
+/// The text of the lines of `gust::toolchain` that hold the pin, with a pin that does not follow the real one.
 fn pin_source(pin: &str) -> String {
     format!(
-        "/// The release.\npub(crate) const SLANG_VERSION: &str = \"{pin}\";\n\n/// Other tags.\npub(crate) const VALIDATED_BUILDS: &[&str] = &[];\n"
+        "/// The release.\npub const SLANG_PIN: &str = \"{pin}\";\n\n/// Other tags.\npub const VALIDATED_BUILDS: &[&str] = &[];\n"
     )
 }
 
 #[test]
-fn the_pin_is_the_string_of_the_one_slang_version_constant() {
+fn the_pin_is_the_string_of_the_one_slang_pin_constant() {
     assert_eq!(
         slang_pin(&pin_source("2026.99")).as_deref(),
         Some("2026.99")
@@ -452,10 +452,10 @@ fn the_pin_is_the_string_of_the_one_slang_version_constant() {
     let twice = format!("{}{}", pin_source("2026.99"), pin_source("2026.98"));
     assert_eq!(slang_pin(&twice), None);
     assert_eq!(
-        slang_pin("pub(crate) const SLANG_VERSION: &[&str] = &[\"2026.99\"];\n"),
+        slang_pin("pub const SLANG_PIN: &[&str] = &[\"2026.99\"];\n"),
         None
     );
-    assert_eq!(slang_pin("// SLANG_VERSION: &str = \"2026.99\";\n"), None);
+    assert_eq!(slang_pin("// SLANG_PIN: &str = \"2026.99\";\n"), None);
     // The real file has one, of the shape of a Slang release.
     let real = pin_rule(&crate::workspace::workspace_root().unwrap())
         .unwrap()
@@ -489,7 +489,7 @@ fn the_validated_builds_are_read_from_the_source_that_holds_the_pin() {
         Some(Vec::new())
     );
     // A list over several lines, with comments, CRLF as the checkout has it.
-    let listed = "pub(crate) const VALIDATED_BUILDS: &[&str] = &[\n    \"2026.99-1-gabc\", // the first\n    // \"2026.99-9-gnot\",\n    \"2026.99-2-gdef\",\n];\n"
+    let listed = "pub const VALIDATED_BUILDS: &[&str] = &[\n    \"2026.99-1-gabc\", // the first\n    // \"2026.99-9-gnot\",\n    \"2026.99-2-gdef\",\n];\n"
         .replace('\n', "\r\n");
     assert_eq!(
         slang_validated_builds(&listed),
@@ -501,9 +501,10 @@ fn the_validated_builds_are_read_from_the_source_that_holds_the_pin() {
     // No constant, or one that is not closed: no rule.
     assert_eq!(slang_validated_builds(""), None);
     assert_eq!(
-        slang_validated_builds("pub(crate) const VALIDATED_BUILDS: &[&str] = &["),
+        slang_validated_builds("pub const VALIDATED_BUILDS: &[&str] = &["),
         None
     );
+    // The spelling of the home before mr.t2 is no pin any more.
     assert!(pin_rule_of("pub(crate) const SLANG_VERSION: &str = \"2026.99\";\n").is_err());
     // The rule of `matches_pin`: the pin itself, or a listed build that extends it; nothing else.
     let listed = rule("2026.99", &["2026.99-1-gabc"]);
@@ -564,7 +565,7 @@ fn a_helper_is_refused_unless_its_tag_is_the_pin_and_its_schema_is_the_current_o
     assert!(check_helper_pin(&helper("2026.20-1-g0a1b2c3d4"), &pin, "h").is_err());
     assert!(check_helper_pin("gust-slang-reflect schema=3\n", &pin, "h").is_err());
     assert!(check_helper_pin("", &pin, "h").is_err());
-    // A validated build of the pin is the pin for the helper too (the one rule of slang.rs).
+    // A validated build of the pin is the pin for the helper too (the one rule of `gust::toolchain`).
     let validated = rule("2026.20", &["2026.20-1-g0a1b2c3d4"]);
     assert_eq!(
         check_helper_pin(&helper("2026.20-1-g0a1b2c3d4"), &validated, "h"),
@@ -615,14 +616,14 @@ fn a_slangc_is_refused_unless_it_reports_the_pin() {
     assert!(check_slangc_pin("\n \n", &pin).is_err());
 }
 
-/// A checkout with a pin in `slang.rs`, and the files `helper_plan` looks at.
+/// A checkout with a pin in `crates/gust/src/toolchain.rs`, and the files `helper_plan` looks at.
 fn pinned_checkout(name: &str, pin: &str) -> std::path::PathBuf {
     let root = scratch(name);
     let source = root
         .join("crates")
-        .join("cargo-gust")
+        .join("gust")
         .join("src")
-        .join("slang.rs");
+        .join("toolchain.rs");
     std::fs::create_dir_all(source.parent().unwrap()).unwrap();
     std::fs::write(source, pin_source(pin)).unwrap();
     root

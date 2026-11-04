@@ -1,6 +1,9 @@
 use super::*;
 use crate::store::tests::Scratch;
-use std::cell::{Cell, RefCell};
+use std::{
+    cell::{Cell, RefCell},
+    ffi::OsString,
+};
 
 fn env_with(slang_home: Option<&Path>, cargo_home: Option<&Path>, path: Option<&OsString>) -> Env {
     Env {
@@ -8,6 +11,7 @@ fn env_with(slang_home: Option<&Path>, cargo_home: Option<&Path>, path: Option<&
         cargo_home: cargo_home.map(|path| path.as_os_str().to_owned()),
         home: None,
         path: path.cloned(),
+        helper: None,
     }
 }
 
@@ -104,7 +108,7 @@ fn the_asset_table_has_the_three_pinned_archives_with_their_digests() {
 fn the_shipped_list_of_validated_builds_is_empty_and_the_release_is_the_pin() {
     // 2026.20 was validated with the release archive, which prints the bare pin; no source build is listed.
     assert!(VALIDATED_BUILDS.is_empty(), "{VALIDATED_BUILDS:?}");
-    assert!(matches_pin(SLANG_VERSION, "2026.20", VALIDATED_BUILDS));
+    assert!(matches_pin("2026.20", VALIDATED_BUILDS));
     // So with the shipped list a `git describe` build of the pin is not the pin, whatever it looks like, and neither is
     // the 2026.20 source build that the earlier pin listed.
     for reported in [
@@ -113,30 +117,18 @@ fn the_shipped_list_of_validated_builds_is_empty_and_the_release_is_the_pin() {
         "2026.13.1",
         "2026.13.1-1-g84792eb15",
     ] {
-        assert!(
-            !matches_pin(SLANG_VERSION, reported, VALIDATED_BUILDS),
-            "{reported}"
-        );
+        assert!(!matches_pin(reported, VALIDATED_BUILDS), "{reported}");
     }
 }
 
 #[test]
 fn the_pin_matches_exactly_or_a_listed_validated_build_and_nothing_else() {
     for reported in ["2026.20", SYNTHETIC_BUILD] {
-        assert!(
-            matches_pin("2026.20", reported, SYNTHETIC_VALIDATED),
-            "{reported}"
-        );
+        assert!(matches_pin(reported, SYNTHETIC_VALIDATED), "{reported}");
     }
     // The exact pin matches with or without a list.
-    assert!(matches_pin("2026.20", "2026.20", &[]));
-    // A validated build belongs to its own pin: it is not the pin of another version.
-    assert!(!matches_pin(
-        "2026.21",
-        SYNTHETIC_BUILD,
-        SYNTHETIC_VALIDATED
-    ));
-    assert!(!matches_pin("2026.20", SYNTHETIC_BUILD, &[]));
+    assert!(matches_pin("2026.20", &[]));
+    assert!(!matches_pin(SYNTHETIC_BUILD, &[]));
     for reported in [
         "",
         "2026.2",
@@ -161,31 +153,14 @@ fn the_pin_matches_exactly_or_a_listed_validated_build_and_nothing_else() {
         "2026.19-1-g0a1b2c3d4",
         "12026.20",
     ] {
-        assert!(
-            !matches_pin("2026.20", reported, SYNTHETIC_VALIDATED),
-            "{reported:?}"
-        );
+        assert!(!matches_pin(reported, SYNTHETIC_VALIDATED), "{reported:?}");
     }
 }
 
 #[test]
-fn slangc_version_output_is_one_version_token() {
-    assert_eq!(parse_slangc_version("2026.20\n").unwrap(), "2026.20");
-    assert_eq!(
-        parse_slangc_version("\r\n 2026.20-1-g0a1b2c3d4 \r\n").unwrap(),
-        "2026.20-1-g0a1b2c3d4"
-    );
-    for bad in ["", "\n", "error: no input files", "slangc 2026.20", "v1"] {
-        let error = parse_slangc_version(bad).unwrap_err();
-        assert!(
-            error.contains("unexpected `-version` output"),
-            "{bad:?}: {error}"
-        );
-    }
-}
-
-#[test]
-fn the_cache_root_is_gust_slang_home_or_the_cargo_home_or_the_dot_cargo_of_the_home() {
+fn the_install_root_is_the_cache_root_of_gust_toolchain() {
+    // The rules (GUST_SLANG_HOME, CARGO_HOME, the home directory, refusals) are `gust::toolchain`'s and are tested
+    // there table by table; this tool must return exactly what that function returns.
     let scratch = Scratch::new("roots");
     let home = scratch.0.join("slang-home");
     let cargo = scratch.0.join("cargo");
@@ -203,25 +178,16 @@ fn the_cache_root_is_gust_slang_home_or_the_cargo_home_or_the_dot_cargo_of_the_h
         install_root(&env).unwrap(),
         user.join(".cargo").join("gust").join("slang")
     );
-    // An empty CARGO_HOME counts as unset.
-    env.cargo_home = Some(OsString::new());
-    assert_eq!(
-        install_root(&env).unwrap(),
-        user.join(".cargo").join("gust").join("slang")
-    );
-    env.home = None;
-    assert!(install_root(&env).unwrap_err().contains("GUST_SLANG_HOME"));
-    // A relative or empty GUST_SLANG_HOME is refused rather than resolved against the current directory.
-    env.slang_home = Some(OsString::from("relative/dir"));
-    let error = install_root(&env).unwrap_err();
-    assert!(error.contains("absolute"), "{error}");
-    env.slang_home = Some(OsString::new());
-    assert!(install_root(&env).unwrap_err().contains("empty"));
-    // A relative CARGO_HOME is not used.
-    env.slang_home = None;
-    env.cargo_home = Some(OsString::from("rel"));
-    env.home = None;
-    assert!(install_root(&env).is_err());
+    for slang_home in [OsString::new(), OsString::from("relative/dir")] {
+        env.slang_home = Some(slang_home);
+        assert_eq!(
+            install_root(&env),
+            toolchain::cache_root_in(&env),
+            "{:?}",
+            env.slang_home
+        );
+        assert!(install_root(&env).is_err());
+    }
 }
 
 #[test]
@@ -233,11 +199,18 @@ fn managed_paths_are_keyed_by_the_version() {
             .join("bin")
             .join(executable_name("slangc"))
     );
+    // `build-helper` writes into `helper_dir`, and the bridge reads `gust::toolchain::managed_helper`: one place.
     assert_eq!(
-        managed_helper(root, "2026.20"),
-        root.join("helper")
-            .join("2026.20")
-            .join(executable_name("gust-slang-reflect"))
+        helper_dir(root, "2026.20"),
+        root.join("helper").join("2026.20")
+    );
+    assert_eq!(
+        toolchain::managed_helper(root).parent(),
+        Some(helper_dir(root, SLANG_VERSION).as_path())
+    );
+    assert_eq!(
+        slangc_in(&root.join(SLANG_VERSION)),
+        toolchain::managed_slangc(root)
     );
 }
 

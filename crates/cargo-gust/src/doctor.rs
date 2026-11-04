@@ -15,6 +15,10 @@ use crate::{
     tools::helper_hint,
 };
 
+/// The version of `gust-compute` (the `gust` crate) this tool is built against: the library's own, from
+/// `gust::toolchain`.
+const GUST_COMPUTE_VERSION: &str = gust::toolchain::GUST_VERSION;
+
 /// The values `GUST_PROFILE` may take.
 const PROFILES: [&str; 4] = ["dev", "native", "web", "cpu"];
 
@@ -85,7 +89,7 @@ fn path_slangc_warning(facts: &Facts) -> Option<String> {
     let (path, version) = facts.path_slangc.as_ref()?;
     let managed = located.slangc.parent().unwrap_or(&located.slangc);
     let cause = match version {
-        Ok(version) if matches_pin(&facts.pin, version, VALIDATED_BUILDS) => return None,
+        Ok(version) if matches_pin(version, VALIDATED_BUILDS) => return None,
         Ok(version) => format!("is Slang `{version}`, not the pin {}", facts.pin),
         Err(error) => format!(
             "cannot report its version ({error}); the pin is {}",
@@ -102,7 +106,11 @@ fn path_slangc_warning(facts: &Facts) -> Option<String> {
 
 /// The report, one entry per line, and whether everything `cargo gust build` needs is in place.
 pub(crate) fn lines(facts: &Facts) -> (Vec<String>, bool) {
-    let mut out = vec![format!("cargo-gust {}", facts.version)];
+    // Both versions: the tool and the library whose run-time bridge it links (`gust-compute`, the `gust` crate).
+    let mut out = vec![
+        format!("cargo-gust {}", facts.version),
+        format!("gust-compute {GUST_COMPUTE_VERSION}"),
+    ];
     let mut healthy = true;
     match &facts.slangc {
         Ok(located) => {
@@ -213,7 +221,7 @@ pub(crate) fn lines(facts: &Facts) -> (Vec<String>, bool) {
             .to_owned(),
     );
     out.push(
-        "install: GUST_PROFILE=dev cargo install cargo-gust (a plain install builds in release, infers `native` and refuses this tool's slang-runtime feature)"
+        "install: cargo install cargo-gust --locked --version ~0.1 (this tool enables gust's internal cargo-gust-bridge feature, so a plain release install needs no GUST_PROFILE)"
             .to_owned(),
     );
     (out, healthy)
@@ -286,6 +294,11 @@ mod tests {
         let (text, healthy) = lines(&facts());
         assert!(healthy);
         assert_eq!(text[0], "cargo-gust 0.1.0");
+        // The library's version comes from `gust` itself, so the test follows it.
+        assert_eq!(
+            text[1],
+            format!("gust-compute {}", gust::toolchain::GUST_VERSION)
+        );
         assert!(
             text.contains(&"helper: found at /tools/gust-slang-reflect".to_owned()),
             "{text:?}"
@@ -315,7 +328,7 @@ mod tests {
         assert!(
             text.last()
                 .unwrap()
-                .starts_with("install: GUST_PROFILE=dev cargo install cargo-gust")
+                .starts_with("install: cargo install cargo-gust --locked --version ~0.1")
         );
     }
 

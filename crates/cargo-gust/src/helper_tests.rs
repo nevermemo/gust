@@ -103,7 +103,8 @@ fn the_schema_3_expectations_cover_every_probe_input_and_both_targets() {
 /// fails, never skips, when there is no helper (the rule of the Reflect tests). The Reflect suite runs it
 /// (`REFLECTION_TESTS` in xtask), after it has prepared the helper; by hand:
 /// `GUST_SLANG_REFLECT=<helper> cargo test -p cargo-gust -- --ignored schema_3_output`. The helper is the one
-/// `gust::reflect::native_compiler_path` names (`GUST_SLANG_REFLECT`, else `target/slang-reflect`). The expected text
+/// `gust::reflect::native_compiler_path` names (`GUST_SLANG_REFLECT`, else the managed helper of the Slang cache, else
+/// `target/slang-reflect` of a GUST checkout). The expected text
 /// holds the Slang build tag and the artifact fingerprints of the pinned Slang, so a pin bump re-blesses it: set
 /// `GUST_SCHEMA3_ACTUAL=<file>` to have the test write what the helper printed, review it, and copy it over
 /// `expected.txt`.

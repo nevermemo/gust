@@ -2,7 +2,7 @@
 //!
 //! Support surface for `cargo-gust` and the run-time bridge, outside the pre-1.0 promise (hence the
 //! `#![doc(hidden)]` below). The module is std-only and has no `crate::` or `super::` path, so an integration test can
-//! compile this very file with `#[path = "../src/toolchain.rs"]`; the eventual `mod` line in `lib.rs` is gated on
+//! compile this very file with `#[path = "../src/toolchain.rs"]`; the `mod` line in `lib.rs` is gated on
 //! `slang-runtime`, and nothing in here needs the feature.
 //!
 //! # Where things live
@@ -27,7 +27,7 @@
 //! repository fail that test, so none of them looks at a path that belongs to someone else's tree.
 //!
 //! The managed helper is used whenever a cache root can be named, whichever `slangc` was chosen. That differs from
-//! `cargo-gust` today (its `toolchain.rs` reads `<root>/helper/<pin>` only when the located `slangc` is a managed
+//! what `cargo-gust` did before mr.t2 (it read `<root>/helper/<pin>` only when the located `slangc` was a managed
 //! one), so a `GUST_SLANG_HOME` without the pin, a `slangc` from `PATH` and a stale `<home>/helper/<pin>` now give
 //! that helper where the checkout's or none was found before.
 //!
@@ -48,7 +48,8 @@ use std::{
     ffi::{OsStr, OsString},
     fmt, fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output},
+    time::Duration,
 };
 
 /// The Slang release GUST works with. This is the one home of the pin; `cargo-gust` and `cargo xtask` read it here.
@@ -66,6 +67,57 @@ const HELPER_NAME: &str = "gust-slang-reflect";
 /// pin). Ships empty (D72): 2026.20 was validated with the release archive, which prints the bare pin. Adding a tag
 /// is a decision, like moving the pin. Keep it a plain array of string literals.
 pub const VALIDATED_BUILDS: &[&str] = &[];
+
+/// The version of this crate (`gust-compute`), for `cargo gust doctor`. It is expanded while this crate compiles, so a
+/// caller gets the library's version, not its own.
+pub const GUST_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// How often a busy executable is tried before its error is returned (see [`output_retrying_busy`]).
+pub const BUSY_TRIES: u32 = 5;
+
+/// The wait after the first busy failure; each further wait doubles (10, 20, 40, 80 ms).
+pub const BUSY_FIRST_BACKOFF: Duration = Duration::from_millis(10);
+
+/// Run `command` to completion, trying again when the executable is busy (`ETXTBSY`, `ExecutableFileBusy`).
+///
+/// This is the one launch helper: every launch of `slangc` or of the reflection helper goes through here, in this
+/// module, in `gust::slang` and `gust::reflect`, and in `cargo-gust` (`<helper> --version`). The launches of `cargo
+/// xtask` (`verify.rs`) are the known gap: `xtask` has no `gust` dependency.
+///
+/// A file that was just written and made executable (a helper installed or downloaded by this process, a script in a
+/// test) can fail to `exec` for a short while on Linux: another thread's `fork` copies the write descriptor into its
+/// child, and the child holds it until its own `exec`. The window is outside this process's control, since no lock
+/// here can cover a `fork` in code that is not ours, so the launch is retried a bounded number of times.
+/// Any other error, and the last busy error, is returned unchanged; a launch that succeeds is not touched.
+pub fn output_retrying_busy(command: &mut Command) -> std::io::Result<Output> {
+    retry_busy(BUSY_TRIES, BUSY_FIRST_BACKOFF, std::thread::sleep, || {
+        command.output()
+    })
+}
+
+/// Call `spawn` up to `tries` times while it fails with `ExecutableFileBusy`, calling `sleep` between the calls with
+/// `first_backoff`, then double that. Any other result, and the busy error of the last try, is returned.
+pub fn retry_busy<T>(
+    tries: u32,
+    first_backoff: Duration,
+    mut sleep: impl FnMut(Duration),
+    mut spawn: impl FnMut() -> std::io::Result<T>,
+) -> std::io::Result<T> {
+    let mut backoff = first_backoff;
+    let mut attempt = 1;
+    loop {
+        match spawn() {
+            Err(error)
+                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < tries =>
+            {
+                sleep(backoff);
+                backoff *= 2;
+                attempt += 1;
+            }
+            result => return result,
+        }
+    }
+}
 
 /// The part of the process environment the rules read. Tests build it by hand, so they never touch the real one.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -177,6 +229,11 @@ pub fn managed_helper(root: &Path) -> PathBuf {
         .join(executable_name(HELPER_NAME))
 }
 
+/// The bare executable name of the helper: the last resort of the lookup, which then goes to `PATH`.
+pub fn bare_helper_name() -> PathBuf {
+    executable_name(HELPER_NAME).into()
+}
+
 /// The first directory of `path_var` that holds a regular file called `file_name`. Empty and relative entries are
 /// skipped (no current-directory lookup).
 pub fn find_on_path(file_name: &str, path_var: Option<&OsStr>) -> Option<PathBuf> {
@@ -254,13 +311,35 @@ pub fn helper_path_in(env: &Env, manifest_dir: &Path) -> Result<Option<PathBuf>,
     Ok(checkout_helper(manifest_dir))
 }
 
-/// [`helper_path_in`] for the process environment and this crate's compile-time manifest directory.
+/// [`helper_path_in`] for a given environment and this crate's compile-time manifest directory. A caller in another
+/// crate (`cargo-gust`) uses this one: its own manifest directory would never be the checkout's `crates/gust`.
+pub fn helper_path_with(env: &Env) -> Result<Option<PathBuf>, String> {
+    helper_path_in(env, Path::new(env!("CARGO_MANIFEST_DIR")))
+}
+
+/// The helper to look for, when the caller must not fail: [`helper_path_with`]'s answer; the bare executable name when
+/// there is none (the launch then goes to `PATH`); and, when a variable is unusable, `GUST_SLANG_REFLECT` as given (or
+/// the bare name), so that the lookup reports that path as missing. A caller that has to refuse the unusable variable
+/// with its reason calls [`helper_path_with`].
+pub fn helper_candidate_in(env: &Env) -> PathBuf {
+    match helper_path_with(env) {
+        Ok(Some(path)) => path,
+        Ok(None) => bare_helper_name(),
+        Err(_) => env
+            .helper
+            .clone()
+            .map_or_else(bare_helper_name, PathBuf::from),
+    }
+}
+
+/// [`helper_path_with`] for the process environment.
 pub fn helper_path() -> Result<Option<PathBuf>, String> {
-    helper_path_in(&Env::from_process(), Path::new(env!("CARGO_MANIFEST_DIR")))
+    helper_path_with(&Env::from_process())
 }
 
 /// Why a `slangc` is not the pinned one.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VersionError {
     /// `<slangc> -version` could not be run, or exited with a failure.
     Run(String),
@@ -309,14 +388,11 @@ pub fn parse_version_output(output: &str) -> Result<String, VersionError> {
     }
 }
 
-/// Run `<slangc> -version` and return the version it prints.
+/// Run `<slangc> -version` and return the version it prints. The launch goes through [`output_retrying_busy`].
 pub fn slangc_version(slangc: &Path) -> Result<String, VersionError> {
-    let output = Command::new(slangc)
-        .arg("-version")
-        .output()
-        .map_err(|error| {
-            VersionError::Run(format!("cannot run `{}`: {error}", slangc.display()))
-        })?;
+    let output = output_retrying_busy(Command::new(slangc).arg("-version")).map_err(|error| {
+        VersionError::Run(format!("cannot run `{}`: {error}", slangc.display()))
+    })?;
     if !output.status.success() {
         return Err(VersionError::Run(format!(
             "`{} -version` failed: {}",
@@ -335,7 +411,8 @@ pub fn slangc_version(slangc: &Path) -> Result<String, VersionError> {
 }
 
 /// Whether the version `slangc -version` printed is the pin: exact equality, or a tag in `validated` that extends the
-/// pin. The same rule as `matches_pin` of `cargo-gust` and `PinRule::admits` of `cargo xtask`, which mr.t2 points here.
+/// pin. `cargo-gust` re-exports this function and `PinRule::admits` of `cargo xtask` reads the same pin and list from
+/// this file, so the rule has one home.
 pub fn matches_pin(reported: &str, validated: &[&str]) -> bool {
     reported == SLANG_PIN || (reported.starts_with(SLANG_PIN) && validated.contains(&reported))
 }

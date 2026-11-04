@@ -151,6 +151,8 @@ mod runtime;
 pub mod slang;
 pub mod spirv;
 pub mod texture;
+#[cfg(feature = "slang-runtime")]
+pub mod toolchain;
 
 pub use abi::{
     GpuPod, MATRIX_LAYOUT, MatrixLayout, ResourceLayout, ScalarKind, ShaderLayoutRules,

@@ -1,20 +1,16 @@
 //! `gust::toolchain` (D109, slice mr.t1): the one owner of the toolchain-location rules.
 //!
-//! The module is not in `lib.rs` yet (mr.t2 wires it), so this test compiles the source file itself. The file is
-//! std-only and has no `crate::` path, so it builds standalone here with or without the `slang-runtime` feature (the
-//! eventual `mod` line is the one gated on it). Its items are `pub` for the day it is `pub mod toolchain`, which a
-//! private module of a test crate reports as unused where this file does not call them, hence the `allow`.
+//! The module is `gust::toolchain` in `lib.rs` (mr.t2, behind the `slang-runtime` feature), and this test compiles the
+//! source file itself, so it runs with or without that feature. The file is std-only and has no `crate::` path, so it
+//! builds standalone here. Its items are `pub`, which a private module of a test crate reports as unused where this
+//! file does not call them, hence the `allow`.
 //!
 //! The rules are tested on a hand-built [`Env`], so no case reads or writes the process environment and none can race
 //! another. The one place that reads the real environment, `Env::from_process`, is tested in child processes whose
 //! environment this test sets for the child alone.
 //!
-//! The root table copies the cache-root cases of `crates/cargo-gust/src/slang_tests.rs`, which test the rules of
-//! `slang.rs:171-224`, one row each, so the two owners can be compared case by case until mr.t2 deletes the copy:
-//! `slang_tests.rs:188-225` (`the_cache_root_is_...`), `:228-242` (`managed_paths_are_keyed_by_the_version`) and
-//! `:245-293` (`locate_prefers_gust_slang_home_then_the_cache_then_path`, its path selection; the version judgement of
-//! that function is `check_slangc_version` here). `:172-185` (`slangc_version_output_is_one_version_token`) is the
-//! `-version` parse table.
+//! The root table is the one place that tests the cache-root cases: mr.t1 copied them from `cargo-gust`'s `slang.rs`,
+//! and since mr.t2 `cargo-gust` calls this module and keeps no copy of the rules.
 
 #[allow(dead_code)]
 #[path = "../src/toolchain.rs"]

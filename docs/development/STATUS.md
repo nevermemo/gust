@@ -396,6 +396,21 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   a code; an extra binding has no descriptor entry yet (mx.p1a). Opus merge after fixes; the must-fix (slot
   numbering), three should-fixes and four nits were taken.
   Main: 23 gate steps green on `7ed260f` (2026-11-04 01:15 to 01:54Z, RTX 5090), check-examples and the export compare green.
+- MR mr.r (`dadf4f5`, fix round `b521215`, merge `9cc2f60`; D107, plan §3.3): `cargo xtask
+  check-release [--check-only] [--work-dir DIR]`, the permanent release gate (xtask/src/release.rs). It finds the
+  publishable members and their names in `cargo metadata`, so it passes unchanged after the D48 rename, and runs:
+  R1 one `cargo package --locked` of all four with verification; R2 each package's file list against one allow-list
+  (E8 now uses the same list and the same work directory, which reports a failed deletion); R3 metadata, one
+  version, exact internal pins; R4 every other member unpublished; R5 `cargo doc` with `-D warnings` on stable and
+  `+nightly --cfg docsrs`, where three warnings mr.b2 owes are listed by file and must each occur exactly once; R6
+  each `.crate` under 2 MiB; R7 the README's "Install from crates.io" recipe word for word (its blocks equal the
+  fixture `xtask/src/release/hello-gust/`, users depend on `"0.1"` per D107) built against the unpacked crates,
+  `cargo install` of the unpacked `cargo-gust` without `GUST_PROFILE`, `cargo gust build`, the release build and
+  both runs on the GPU; R8 `cargo publish --dry-run --locked` (it warns that an unrelated `gust` 0.1.0 exists, as
+  expected before the rename). `--check-only` skips what needs Slang or a GPU and prints each skip. CI runs it in a
+  new `release` job; `check-full` runs it in full. Opus merge after fixes; no must-fix, five should-fixes and five
+  nits taken.
+  Main: 23 gate steps green on `9cc2f60` (2026-11-04 02:08 to 02:39Z, RTX 5090), check-examples and the full check-release green.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).

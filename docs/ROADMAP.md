@@ -41,8 +41,8 @@ m7.rb (blocking readbacks wait for their own completion, D97, merge `893d959`), 
 `b88bfb0`), m7.r2 (scan v0, merge `09203ae`), m7.r3 (compaction v0, merge `8027169`), m7.a1 (the map API, D99,
 merge `5609536`), m7.t14 (compaction in component-pool, merge `f96aff1`) and m7.g1 (shared memory and barriers,
 D100 and D101, merge `1516c94`) and m7.a2 (map examples, merge `44299e5`; its README table is provisional until a
-quiet-window run) and m7.r4 (shared-memory v1, merge `d6b425f`; v1 ships for all six operations, provisional until
-the Radeon 890M half) and m7.d (multi-dimensional dispatch, D102, merge `853aade`) and m7.p (`par_for!`, D103,
+quiet-window run) and m7.r4 (shared-memory v1, merge `d6b425f`; v1 ships for all six operations, kept after
+the Radeon 890M half, D121) and m7.d (multi-dimensional dispatch, D102, merge `853aade`) and m7.p (`par_for!`, D103,
 merge `910ee1c`) and m6.u2f (`cargo gust build` on uniform kernels, D104) and m7.t1 (tidy pass 1, merge
 `1278b61`) and m7.f1 (ETXTBSY retry, merge `96051c8`) and m7.lv (uniform and vector layouts in the export
 record, D116, merge `9d47f67`) and m7.t2 (one element-type lookup, merge `6b0d59a`). S7.4 ended C (D118: no

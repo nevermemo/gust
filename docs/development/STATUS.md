@@ -461,6 +461,20 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   the must-fix (concurrent runs deleting each other's entry), two should-fixes and the nits taken.
   Main: 23 gate steps green on `b719a30` (2026-11-04 09:49 to 10:20Z, RTX 5090) and check-release --check-only green in
   the shared main target (10:20 to 10:24Z; registry/src clean after).
+- MX X-S3 (spike, D120; MX plan §1a): the pixel output model ended in outcome B on both adapters. Grid, render
+  targets with `LoadOp::Load` and two copies, and fragment storage writes gave bit-identical outputs on the RTX 5090
+  and the Radeon 890M; the storage-write call took 0.12 to 0.76 of the render-target call on the 5090 and 0.45 to 0.81
+  on the 890M (the copies are the difference). mx.p1b therefore writes pixel outputs as storage, with no transient
+  textures. The validation cases came out as expected (a wider `read_write` format is refused, the layout variants
+  hold, an overwritten uniform shows only its last value). Quiet window 2026-11-04 10:28 to 10:30Z. Hand-written WGSL
+  in a scratch crate in the work area; nothing in the repository changed.
+- M7 m7.r4, the Radeon 890M half (D121; plan §5.5): v0 against v1 on the integrated Radeon 890M (Vulkan,
+  `AdapterChoice::LowPower`), 3 interleaved runs of 200 repetitions at 1e6, 1e7 and 1e8, release build of the m7.r4
+  harness on `6d64fec` in a throwaway worktree. v1 was faster everywhere: the median over runs of v0 / v1 was 1.20
+  to 1.26, 1.13 to 1.17 and 1.01 to 1.03 for the nine reductions at the three sizes (worst single run 1.003,
+  `max_f32` at 1e8) and 9.8 to 67 for the two scans; every scan total matched the host sum for both variants. The
+  reductions at 1e8 are memory-bound on shared system memory, so the brief's 10 % margin is not met there; D121 keeps
+  v1 for all six operations. Quiet window 2026-11-04 10:30 to 10:42Z. The variant docs drop "provisional" in m7.x.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).

@@ -222,8 +222,8 @@ test module; do not mix that mechanical move with behavior changes.
   (still open); `Call::element_count()` is the x axis only, a trap for buffer sizing; for m7.g2 the
   twin walks the grid x-fastest, so a 2D workgroup is not contiguous and a lockstep twin must group by workgroup;
   the twin at 2^32 invocations has not run (validate only).
-- m7.r4 follow-ups: the Radeon 890M half of the plan §5.5 measurement (it may change `variant::shipped`); a
-  pre-registered statistic for the re-run; re-measure if the pool's zeroing or an unzeroed `GpuVec` constructor
+- m7.r4 follow-ups: a pre-registered statistic for any re-run (the 890M half, D121, kept v1 on a reading chosen
+  after the run); re-measure if the pool's zeroing or an unzeroed `GpuVec` constructor
   lands (the small-size win is per-call overhead); a public way to learn which variant (and so which f32 bound) ran.
 - m7.a2 follow-ups: the README map table's published run in a quiet window (replaces the provisional smoke table);
   a `#[gpu] fn` from an artifact under `native` (the workspace profile pin requires `slang-runtime` on every

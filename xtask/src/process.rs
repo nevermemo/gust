@@ -41,7 +41,7 @@ pub(crate) const HELPER_VARIABLE: &str = "GUST_SLANG_REFLECT";
 
 /// The helper that `cargo xtask build-slang-reflect` writes by default:
 /// `<root>/target/slang-reflect/gust-slang-reflect`.
-fn repository_helper(root: &Path) -> std::path::PathBuf {
+pub(crate) fn repository_helper(root: &Path) -> std::path::PathBuf {
     root.join("target").join("slang-reflect").join(format!(
         "gust-slang-reflect{}",
         std::env::consts::EXE_SUFFIX

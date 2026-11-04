@@ -3,29 +3,19 @@
 //! Lookups take the `PATH` value as an argument, so a test never changes the process environment.
 
 use std::{
-    env::consts::EXE_SUFFIX,
     ffi::OsStr,
     path::{Path, PathBuf},
     process::Command,
 };
 
-/// The first directory of `path_var` that holds a regular file called `file_name`.
-pub(crate) fn find_on_path(file_name: &str, path_var: Option<&OsStr>) -> Option<PathBuf> {
-    let path_var = path_var?;
-    std::env::split_paths(path_var)
-        .filter(|directory| !directory.as_os_str().is_empty())
-        .map(|directory| directory.join(file_name))
-        .find(|candidate| candidate.is_file())
-}
-
-/// The executable file name of a tool called `name` on this platform.
-pub(crate) fn executable_name(name: &str) -> String {
-    format!("{name}{EXE_SUFFIX}")
-}
+// The one `PATH` rule is `gust::toolchain`'s (D109): the first absolute directory that holds a regular file of the
+// name; an empty or relative entry is skipped, so there is no current-directory lookup. `executable_name` adds the
+// platform's suffix.
+pub(crate) use gust::toolchain::{executable_name, find_on_path};
 
 /// The helper executable to use, or `None` when it is not there. `helper` is what
-/// `gust::reflect::native_compiler_path` returned: an explicit path (from `GUST_SLANG_REFLECT`, or the repository's
-/// `target/slang-reflect`), or a bare file name to look up on `PATH`.
+/// `gust::toolchain::helper_candidate_in` returned: an explicit path (from `GUST_SLANG_REFLECT`, the managed cache or
+/// the repository's `target/slang-reflect`), or a bare file name to look up on `PATH`.
 pub(crate) fn locate_executable(helper: &Path, path_var: Option<&OsStr>) -> Option<PathBuf> {
     let is_bare = helper
         .parent()
@@ -106,11 +96,10 @@ pub(crate) fn helper_slang_version(helper: &Path) -> Result<String, String> {
     parse_helper_version(&helper_version_output(helper)?)
 }
 
-/// Run `<helper> --version` and return what it printed on standard output.
+/// Run `<helper> --version` and return what it printed on standard output. The launch goes through
+/// `gust::toolchain::output_retrying_busy`, since `build-helper` runs it right after linking the executable.
 pub(crate) fn helper_version_output(helper: &Path) -> Result<String, String> {
-    let output = Command::new(helper)
-        .arg("--version")
-        .output()
+    let output = gust::toolchain::output_retrying_busy(Command::new(helper).arg("--version"))
         .map_err(|error| format!("cannot run the helper `{}`: {error}", helper.display()))?;
     if !output.status.success() {
         return Err(format!(
@@ -185,6 +174,33 @@ mod tests {
         assert_eq!(find_on_path("tool", None), None);
         assert_eq!(find_on_path("missing", Some(&joined)), None);
         assert_eq!(find_on_path("tool", Some(OsStr::new(""))), None);
+    }
+
+    /// A relative `PATH` entry is a current-directory lookup (D109) and is skipped, even when the file is there: the
+    /// test starts from a file that exists in the working directory and names the directory `.`.
+    #[test]
+    fn a_relative_path_entry_is_skipped() {
+        let present = fs::read_dir(".")
+            .unwrap()
+            .map(|entry| entry.unwrap())
+            .find(|entry| entry.file_type().unwrap().is_file())
+            .expect("the working directory holds a file")
+            .file_name();
+        let present = present.to_str().unwrap();
+        // The control: the file is really reachable through the relative entry.
+        assert!(Path::new(".").join(present).is_file());
+        for relative in [".", "./", "nowhere/.."] {
+            assert_eq!(
+                find_on_path(present, Some(OsStr::new(relative))),
+                None,
+                "{relative}"
+            );
+        }
+        // The bare helper name goes through the same rule.
+        assert_eq!(
+            locate_executable(Path::new(present), Some(OsStr::new("."))),
+            None
+        );
     }
 
     #[test]

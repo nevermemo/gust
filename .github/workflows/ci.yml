@@ -126,7 +126,7 @@ jobs:
 
   slang:
     # The pinned-Slang manager end to end (D46, R4.8, slice m4.f). `cargo gust slang install` downloads the pinned Slang
-    # (version and archive hashes: crates/cargo-gust/src/slang.rs, the one place they live) from Slang's own GitHub
+    # (version: SLANG_PIN in crates/gust/src/toolchain.rs; archive hashes: crates/cargo-gust/src/slang.rs) from Slang's own GitHub
     # release (the archive's SHA-256 is checked before anything is extracted), `build-helper`
     # compiles the native reflection helper against it with g++ (`CXX` below: without it build-helper takes the first of
     # cl, clang++, c++, g++ on PATH, and the runner may have clang++), and the Slangc tier runs with that slangc

@@ -27,7 +27,7 @@
 //! repository fail that test, so none of them looks at a path that belongs to someone else's tree.
 //!
 //! The managed helper is used whenever a cache root can be named, whichever `slangc` was chosen. That differs from
-//! `cargo-gust` today (its `toolchain.rs` reads `<root>/helper/<pin>` only when the located `slangc` is a managed
+//! what `cargo-gust` did before mr.t2 (it read `<root>/helper/<pin>` only when the located `slangc` was a managed
 //! one), so a `GUST_SLANG_HOME` without the pin, a `slangc` from `PATH` and a stale `<home>/helper/<pin>` now give
 //! that helper where the checkout's or none was found before.
 //!
@@ -81,12 +81,14 @@ pub const BUSY_FIRST_BACKOFF: Duration = Duration::from_millis(10);
 /// Run `command` to completion, trying again when the executable is busy (`ETXTBSY`, `ExecutableFileBusy`).
 ///
 /// This is the one launch helper: every launch of `slangc` or of the reflection helper goes through here, in this
-/// module and in `gust::slang` and `gust::reflect`. A file that was just written and made executable (a helper
-/// installed or downloaded by this process, a script in a test) can fail to `exec` for a short while on Linux: another
-/// thread's `fork` copies the write descriptor into its child, and the child holds it until its own `exec`. The window
-/// is outside this process's control, since no lock here can cover a `fork` in code that is not ours, so the launch is
-/// retried a bounded number of times. Any other error, and the last busy error, is returned unchanged; a launch that
-/// succeeds is not touched.
+/// module, in `gust::slang` and `gust::reflect`, and in `cargo-gust` (`<helper> --version`). The launches of `cargo
+/// xtask` (`verify.rs`) are the known gap: `xtask` has no `gust` dependency.
+///
+/// A file that was just written and made executable (a helper installed or downloaded by this process, a script in a
+/// test) can fail to `exec` for a short while on Linux: another thread's `fork` copies the write descriptor into its
+/// child, and the child holds it until its own `exec`. The window is outside this process's control, since no lock
+/// here can cover a `fork` in code that is not ours, so the launch is retried a bounded number of times.
+/// Any other error, and the last busy error, is returned unchanged; a launch that succeeds is not touched.
 pub fn output_retrying_busy(command: &mut Command) -> std::io::Result<Output> {
     retry_busy(BUSY_TRIES, BUSY_FIRST_BACKOFF, std::thread::sleep, || {
         command.output()
@@ -227,6 +229,11 @@ pub fn managed_helper(root: &Path) -> PathBuf {
         .join(executable_name(HELPER_NAME))
 }
 
+/// The bare executable name of the helper: the last resort of the lookup, which then goes to `PATH`.
+pub fn bare_helper_name() -> PathBuf {
+    executable_name(HELPER_NAME).into()
+}
+
 /// The first directory of `path_var` that holds a regular file called `file_name`. Empty and relative entries are
 /// skipped (no current-directory lookup).
 pub fn find_on_path(file_name: &str, path_var: Option<&OsStr>) -> Option<PathBuf> {
@@ -310,6 +317,21 @@ pub fn helper_path_with(env: &Env) -> Result<Option<PathBuf>, String> {
     helper_path_in(env, Path::new(env!("CARGO_MANIFEST_DIR")))
 }
 
+/// The helper to look for, when the caller must not fail: [`helper_path_with`]'s answer; the bare executable name when
+/// there is none (the launch then goes to `PATH`); and, when a variable is unusable, `GUST_SLANG_REFLECT` as given (or
+/// the bare name), so that the lookup reports that path as missing. A caller that has to refuse the unusable variable
+/// with its reason calls [`helper_path_with`].
+pub fn helper_candidate_in(env: &Env) -> PathBuf {
+    match helper_path_with(env) {
+        Ok(Some(path)) => path,
+        Ok(None) => bare_helper_name(),
+        Err(_) => env
+            .helper
+            .clone()
+            .map_or_else(bare_helper_name, PathBuf::from),
+    }
+}
+
 /// [`helper_path_with`] for the process environment.
 pub fn helper_path() -> Result<Option<PathBuf>, String> {
     helper_path_with(&Env::from_process())
@@ -317,6 +339,7 @@ pub fn helper_path() -> Result<Option<PathBuf>, String> {
 
 /// Why a `slangc` is not the pinned one.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum VersionError {
     /// `<slangc> -version` could not be run, or exited with a failure.
     Run(String),
@@ -388,7 +411,8 @@ pub fn slangc_version(slangc: &Path) -> Result<String, VersionError> {
 }
 
 /// Whether the version `slangc -version` printed is the pin: exact equality, or a tag in `validated` that extends the
-/// pin. The same rule as `matches_pin` of `cargo-gust` and `PinRule::admits` of `cargo xtask`, which mr.t2 points here.
+/// pin. `cargo-gust` re-exports this function and `PinRule::admits` of `cargo xtask` reads the same pin and list from
+/// this file, so the rule has one home.
 pub fn matches_pin(reported: &str, validated: &[&str]) -> bool {
     reported == SLANG_PIN || (reported.starts_with(SLANG_PIN) && validated.contains(&reported))
 }

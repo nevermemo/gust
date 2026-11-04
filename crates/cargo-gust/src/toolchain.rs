@@ -17,31 +17,18 @@ use crate::{
 };
 
 /// What to do about a helper that does not match; part of every refusal.
-pub(crate) const REBUILD_HINT: &str = "run `cargo gust slang build-helper` (add `--sdk-root <dir>` for a Slang that cargo gust did not install)";
-
-/// The bare executable name of the helper: the last resort of the lookup, which then goes to `PATH`.
-fn bare_helper() -> PathBuf {
-    PathBuf::from(rules::executable_name("gust-slang-reflect"))
-}
+pub(crate) const REBUILD_HINT: &str = "run `cargo gust slang build-helper` (add `--sdk-root <dir>` for a Slang that cargo gust did not install), or point GUST_SLANG_REFLECT at a helper built against that Slang";
 
 /// The helper to look for, by the rules of `gust::toolchain`: `GUST_SLANG_REFLECT` when set, else the helper that
 /// `build-helper` wrote under the Slang cache root for the pin, else the repository checkout's `target/slang-reflect`,
 /// else the bare name. The managed helper is used whenever a cache root can be named, whichever `slangc` was located
-/// (`cargo-gust` used to read it only beside a managed `slangc`); `located` is kept for the callers and not read.
+/// (`cargo-gust` used to read it only beside a managed `slangc`).
 ///
 /// An unusable `GUST_SLANG_REFLECT` or `GUST_SLANG_HOME` gives the variable's value as given (the lookup then reports
-/// that path as missing); [`require`] is the call that refuses it with the reason.
-pub(crate) fn helper_candidate(_located: Option<&Located>) -> PathBuf {
-    helper_candidate_in(&Env::from_process())
-}
-
-/// [`helper_candidate`] for a given environment.
-fn helper_candidate_in(env: &Env) -> PathBuf {
-    match rules::helper_path_with(env) {
-        Ok(Some(path)) => path,
-        Ok(None) => bare_helper(),
-        Err(_) => env.helper.clone().map_or_else(bare_helper, PathBuf::from),
-    }
+/// that path as missing); [`require`] is the call that refuses it with the reason. The rule is
+/// `gust::toolchain::helper_candidate_in`, the one the run-time bridge uses (`reflect::native_compiler_path`).
+pub(crate) fn helper_candidate() -> PathBuf {
+    rules::helper_candidate_in(&Env::from_process())
 }
 
 /// `Ok` when the helper's Slang build tag is the version of the located `slangc`.
@@ -88,7 +75,7 @@ fn require_with(
 ) -> Result<Toolchain, String> {
     let slangc = slang::locate(env, allow_mismatch, slangc_version)?;
     // An unusable variable is an error here, not a path to look for.
-    let candidate = rules::helper_path_with(env)?.unwrap_or_else(bare_helper);
+    let candidate = rules::helper_path_with(env)?.unwrap_or_else(rules::bare_helper_name);
     let helper = tools::locate_executable(&candidate, env.path.as_deref()).ok_or_else(|| {
         format!(
             "the native Slang helper was not found (looked for {}); {}",
@@ -186,19 +173,19 @@ mod tests {
         let home = PathBuf::from(setup.env.slang_home.clone().unwrap());
         // The managed helper beside the pinned install.
         assert_eq!(
-            helper_candidate_in(&setup.env),
+            rules::helper_candidate_in(&setup.env),
             rules::managed_helper(&home)
         );
         // The managed helper is used even when the slangc is not a managed one: cargo-gust used to look for it
         // only beside a managed slangc (mr.t1 review S4). Here the cache has the helper and no slangc.
         fs::remove_file(rules::managed_slangc(&home)).unwrap();
         assert_eq!(
-            helper_candidate_in(&setup.env),
+            rules::helper_candidate_in(&setup.env),
             rules::managed_helper(&home)
         );
         // GUST_SLANG_REFLECT beats it.
         let named = setup.named_helper();
-        assert_eq!(helper_candidate_in(&setup.env), named);
+        assert_eq!(rules::helper_candidate_in(&setup.env), named);
     }
 
     #[test]
@@ -215,7 +202,7 @@ mod tests {
                     && error.contains(value),
                 "{value}: {error}"
             );
-            assert_eq!(helper_candidate_in(&setup.env), PathBuf::from(value));
+            assert_eq!(rules::helper_candidate_in(&setup.env), PathBuf::from(value));
         }
         setup.env.helper = Some(OsString::new());
         let error = require_with(&setup.env, false, &pinned, &|_| unreachable!()).unwrap_err();

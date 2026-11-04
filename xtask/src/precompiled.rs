@@ -99,11 +99,11 @@ pub(crate) const VERIFIED_PREFIX: &str = "verified: GPU result equals the host r
 pub(crate) const ADAPTER_PREFIX: &str = "adapter: ";
 
 /// The byte strings that the run-time Slang bridge brings into a binary (E2). `gust-slang-reflect` (the name of the
-/// native helper, `reflect::native_compiler_path`) and `kernel.artifact` (`compile_reflected_with_helper`) are string
-/// literals of code gated by the `slang-runtime` feature of `gust`. `kernel.slang` is not gated: `KERNEL_FILE` in
-/// `gust/src/slang/mod.rs` is used by the ungated `compile_copy` and `directive_file_is_usable` too, so it is absent
-/// from the measured binary only because the release linker drops dead code. It stays a marker for that measured
-/// reason and is the weakest of the three. They were picked by measurement: the same `app` built with the bridge (the
+/// native helper, `HELPER_NAME` of `gust::toolchain`) and `kernel.artifact` (`compile_reflected_with_helper`) are
+/// string literals of code gated by the `slang-runtime` feature of `gust`. `kernel.slang` is not gated:
+/// `KERNEL_FILE` in `gust/src/slang/mod.rs` is used by the ungated `compile_copy` and `directive_file_is_usable` too,
+/// so it is absent from the measured binary only because the release linker drops dead code. It stays a marker for
+/// that measured reason and is the weakest of the three. They were picked by measurement: the same `app` built with the bridge (the
 /// control of E2) holds all three, the one without holds none.
 ///
 /// `slangc` and `GUST_SLANG_REFLECT` are not markers, although they look like the obvious ones. The ungated `Display`

@@ -52,16 +52,24 @@ static VERIFIED_SLANGC: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 /// another Slang. The check runs once per `slangc` per process.
 #[cfg(feature = "slang-runtime")]
 pub(crate) fn pinned_slangc() -> Result<PathBuf, Error> {
+    pinned_slangc_in(&crate::toolchain::Env::from_process())
+}
+
+/// [`pinned_slangc`] for a given environment, so a test names the `PATH` and the cache without touching the process's.
+/// [`Error::Toolchain`] for an unusable `GUST_SLANG_HOME`.
+#[cfg(feature = "slang-runtime")]
+pub(crate) fn pinned_slangc_in(env: &crate::toolchain::Env) -> Result<PathBuf, Error> {
+    let slangc = crate::toolchain::slangc_path_in(env)
+        .map_err(Error::Toolchain)?
+        .ok_or(Error::CompilerNotFound)?;
+    verified_slangc(slangc)
+}
+
+/// The proof half of [`pinned_slangc_in`]: `slangc` itself when its `-version` is the pin or a listed build.
+#[cfg(feature = "slang-runtime")]
+fn verified_slangc(slangc: PathBuf) -> Result<PathBuf, Error> {
     use crate::toolchain;
 
-    let slangc = toolchain::slangc_path()
-        .map_err(|reason| {
-            Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                reason,
-            ))
-        })?
-        .ok_or(Error::CompilerNotFound)?;
     if VERIFIED_SLANGC
         .lock()
         .is_ok_and(|verified| verified.contains(&slangc))
@@ -88,7 +96,7 @@ fn pin_verdict(verdict: Result<(), crate::toolchain::VersionError>) -> Result<()
             pinned: SLANG_PIN,
         }),
         Err(VersionError::Run(reason) | VersionError::Output(reason)) => {
-            Err(Error::Io(std::io::Error::other(reason)))
+            Err(Error::Toolchain(reason))
         }
     }
 }
@@ -124,6 +132,7 @@ impl Target {
 }
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
     CompilerNotFound,
     Io(std::io::Error),
@@ -133,6 +142,9 @@ pub enum Error {
     },
     InvalidSpirvLength(usize),
     InvalidSpirv(&'static str),
+    /// The toolchain cannot be located or asked: a bad `GUST_SLANG_HOME` or `GUST_SLANG_REFLECT`, or a `slangc` whose
+    /// `-version` fails or prints no version. The text names the variable or the executable.
+    Toolchain(String),
     /// The `slangc` that would run reports another Slang than the pinned one (D72). Both versions are named; the
     /// run-time bridge compiles with the pin only.
     SlangVersionMismatch {
@@ -150,9 +162,10 @@ impl fmt::Display for Error {
         match self {
             Self::CompilerNotFound => write!(
                 formatter,
-                "could not launch `slangc`; install Slang and make slangc available on PATH"
+                "could not launch `slangc`; install the pinned Slang with `cargo gust slang install`, or make a slangc of it available on PATH"
             ),
             Self::Io(error) => write!(formatter, "Slang artifact I/O failed: {error}"),
+            Self::Toolchain(reason) => write!(formatter, "Slang toolchain: {reason}"),
             Self::CompilationFailed {
                 target,
                 diagnostics,
@@ -320,6 +333,29 @@ fn compile_at(
     shape: Shape,
     target: Target,
 ) -> Result<Vec<u8>, Error> {
+    compile_at_in(
+        &crate::toolchain::Env::from_process(),
+        directory,
+        source,
+        entry,
+        origin,
+        shape,
+        target,
+    )
+}
+
+/// [`compile_at`] with the environment that names the `slangc` given, so a test proves the compile asks for the pinned
+/// one ([`pinned_slangc_in`]) before it launches anything.
+#[cfg(feature = "slang-runtime")]
+fn compile_at_in(
+    env: &crate::toolchain::Env,
+    directory: &Path,
+    source: &str,
+    entry: &str,
+    origin: &SourceOrigin,
+    shape: Shape,
+    target: Target,
+) -> Result<Vec<u8>, Error> {
     let source_path = directory.join(KERNEL_FILE);
     let map_path = directory.join("kernel.map.json");
     let output_path = directory.join(format!("kernel.{}", target.extension()));
@@ -327,7 +363,7 @@ fn compile_at(
     let line_directives = write_compile_inputs(directory, source, origin)? != source;
     fs::write(&map_path, source_map.json(origin, line_directives))?;
 
-    let slangc = pinned_slangc()?;
+    let slangc = pinned_slangc_in(env)?;
     let mut command = slangc_command(&slangc, &source_path, target, entry, shape);
     let result = output_retrying_busy(command.arg("-o").arg(&output_path));
     let output = match result {
@@ -815,7 +851,7 @@ mod tests {
     }
 
     /// The verdict of the version check becomes the typed error: a pin passes, a mismatch carries the executable, what
-    /// it printed and the pin, and a `slangc` that cannot answer is an I/O error with the reason.
+    /// it printed and the pin, and a `slangc` that cannot answer is a toolchain error with the reason.
     #[cfg(feature = "slang-runtime")]
     #[test]
     fn the_version_verdict_maps_to_the_typed_error() {
@@ -844,10 +880,131 @@ mod tests {
         ] {
             let text = unanswered.to_string();
             match pin_verdict(Err(unanswered)) {
-                Err(Error::Io(error)) => assert_eq!(error.to_string(), text),
+                Err(Error::Toolchain(reason)) => assert_eq!(reason, text),
                 other => panic!("{other:?}"),
             }
         }
+    }
+
+    /// A toolchain problem is not printed as an I/O failure, and its text keeps the reason.
+    #[test]
+    fn a_toolchain_error_names_its_reason_and_is_not_an_io_failure() {
+        let text =
+            Error::Toolchain("GUST_SLANG_HOME must be an absolute path".to_owned()).to_string();
+        assert!(
+            text.contains("GUST_SLANG_HOME must be an absolute path"),
+            "{text}"
+        );
+        assert!(!text.contains("I/O"), "{text}");
+        let missing = Error::CompilerNotFound.to_string();
+        assert!(missing.contains("cargo gust slang install"), "{missing}");
+        for marker in ["gust-slang-reflect", "kernel.slang", "kernel.artifact"] {
+            assert!(
+                !missing.contains(marker) && !text.contains(marker),
+                "{marker}"
+            );
+        }
+    }
+
+    /// A fake `slangc` in `directory` whose `-version` prints `version` (a script, so it runs wherever the test does;
+    /// the temporary directory must allow execution).
+    #[cfg(feature = "slang-runtime")]
+    fn fake_slangc(directory: &Path, version: &str) -> PathBuf {
+        fs::create_dir_all(directory).unwrap();
+        let (path, script) = if cfg!(windows) {
+            (
+                directory.join("slangc.cmd"),
+                format!("@echo off\r\necho {version}\r\n"),
+            )
+        } else {
+            (
+                directory.join("slangc"),
+                format!("#!/bin/sh\necho {version}\n"),
+            )
+        };
+        fs::write(&path, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        path
+    }
+
+    /// A `slangc` that prints another Slang is refused with both versions, and the refusal is not remembered (an
+    /// install of the pin in the meantime is picked up); the pin passes.
+    #[cfg(feature = "slang-runtime")]
+    #[test]
+    fn a_slangc_of_another_slang_is_refused_and_the_pin_passes() {
+        let directory = TemporaryDirectory::create().unwrap();
+        let other = fake_slangc(&directory.path().join("other"), "2026.13.1");
+        for _ in 0..2 {
+            match verified_slangc(other.clone()) {
+                Err(Error::SlangVersionMismatch {
+                    slangc,
+                    found,
+                    pinned,
+                }) => {
+                    assert_eq!(slangc, other);
+                    assert_eq!(found, "2026.13.1");
+                    assert_eq!(pinned, SLANG_PIN);
+                }
+                result => panic!("{result:?}"),
+            }
+        }
+        let pin = fake_slangc(&directory.path().join("pin"), SLANG_PIN);
+        assert_eq!(verified_slangc(pin.clone()).unwrap(), pin);
+    }
+
+    /// An unusable `GUST_SLANG_HOME` is a toolchain error naming the variable, not an I/O failure.
+    #[cfg(feature = "slang-runtime")]
+    #[test]
+    fn an_unusable_slang_home_is_a_toolchain_error() {
+        let env = crate::toolchain::Env {
+            slang_home: Some("relative/dir".into()),
+            ..Default::default()
+        };
+        match pinned_slangc_in(&env) {
+            Err(Error::Toolchain(reason)) => {
+                assert!(reason.contains("GUST_SLANG_HOME"), "{reason}")
+            }
+            result => panic!("{result:?}"),
+        }
+    }
+
+    /// The compile asks for the pinned `slangc` before it launches anything: with only a `slangc` of another Slang on
+    /// the `PATH` of the environment it is given, `compile_at_in` fails with the mismatch (a revert to a bare `slangc`
+    /// would run the fake and fail otherwise). Unix only: the lookup needs a file called `slangc`, and on Windows that
+    /// is an `.exe`, which a script cannot be.
+    #[cfg(all(feature = "slang-runtime", unix))]
+    #[test]
+    fn the_compile_asks_for_the_pinned_slangc_before_it_launches_anything() {
+        let directory = TemporaryDirectory::create().unwrap();
+        let bin = directory.path().join("bin");
+        fake_slangc(&bin, "2026.13.1");
+        let env = crate::toolchain::Env {
+            path: Some(bin.into_os_string()),
+            ..Default::default()
+        };
+        assert!(matches!(
+            pinned_slangc_in(&env),
+            Err(Error::SlangVersionMismatch { ref found, .. }) if found == "2026.13.1"
+        ));
+        let work = directory.path().join("work");
+        fs::create_dir_all(&work).unwrap();
+        let result = compile_at_in(
+            &env,
+            &work,
+            "[shader(\"compute\")] void main() {}",
+            "main",
+            &SourceOrigin::UNKNOWN,
+            Shape::Grid,
+            Target::Wgsl,
+        );
+        assert!(
+            matches!(result, Err(Error::SlangVersionMismatch { ref found, .. }) if found == "2026.13.1"),
+            "{result:?}"
+        );
     }
 
     fn mapped_kernel(source: &str, diagnostic: &str) -> Option<String> {

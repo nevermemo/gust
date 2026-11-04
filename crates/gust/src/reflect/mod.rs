@@ -254,17 +254,7 @@ pub struct CompiledReflection {
 /// call that reports the problem.
 #[cfg(feature = "slang-runtime")]
 pub fn native_compiler_path() -> PathBuf {
-    match crate::toolchain::helper_path() {
-        Ok(Some(path)) => path,
-        Ok(None) => bare_helper_name(),
-        Err(_) => std::env::var_os(crate::toolchain::HELPER_VARIABLE)
-            .map_or_else(bare_helper_name, PathBuf::from),
-    }
-}
-
-#[cfg(feature = "slang-runtime")]
-fn bare_helper_name() -> PathBuf {
-    crate::toolchain::executable_name("gust-slang-reflect").into()
+    crate::toolchain::helper_candidate_in(&crate::toolchain::Env::from_process())
 }
 
 #[cfg(feature = "slang-runtime")]
@@ -275,13 +265,8 @@ pub fn compile_reflected(
     target: Target,
 ) -> Result<CompiledReflection, Error> {
     let helper = crate::toolchain::helper_path()
-        .map_err(|reason| {
-            Error::Compiler(slang::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                reason,
-            )))
-        })?
-        .unwrap_or_else(bare_helper_name);
+        .map_err(|reason| Error::Compiler(slang::Error::Toolchain(reason)))?
+        .unwrap_or_else(crate::toolchain::bare_helper_name);
     compile_reflected_with_helper(kernel, target, helper)
 }
 

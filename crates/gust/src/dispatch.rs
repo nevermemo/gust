@@ -4,7 +4,8 @@
 //! `Uniform<T>`/`ConstantBuffer<T>` parameter included (slice m6.u2; the host types for the uniform are here and in
 //! the backends); `call` turns
 //! typed buffer references into a [`Call`]: the kernel, the element count and one erased [`TypedDevice::Binding`] per
-//! storage or uniform parameter. This module holds only what that generated code and the backends share:
+//! storage, uniform or texture parameter (a sampler parameter travels beside them, see [`SamplerArg`]). This module
+//! holds only what that generated code and the backends share:
 //!
 //! - [`TypedDevice`]: extension of [`Device`] that names the erased, `Copy` binding of one device. [`Device`] itself is
 //!   unchanged, so existing backends compile as before.
@@ -55,12 +56,13 @@ use core::marker::PhantomData;
 
 use crate::{Access, Device, GpuPod, Kernel, KernelDescriptor, ParameterKind};
 
-/// What a binding of a typed call binds: a storage buffer or a uniform (constant) buffer.
+/// What a binding of a typed call binds: a storage buffer, a uniform (constant) buffer or a texture.
 ///
 /// Every backend binding carries its kind, and the backend checks it against the kind of the descriptor parameter it
 /// is bound to ([`BindingKind::of`]) before anything else, so a hand-built [`Call`] that puts a storage buffer in a
 /// uniform parameter is rejected at run time. The typed surface rules that out at compile time through
-/// [`Resource::Kind`].
+/// [`Resource::Kind`]. A sampler has no binding kind: it is not a [`Resource`] but the call's own argument kind
+/// ([`SamplerArg`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BindingKind {
@@ -68,23 +70,31 @@ pub enum BindingKind {
     Storage,
     /// A uniform (constant) buffer holding exactly one value: [`ParameterKind::Uniform`].
     Uniform,
+    /// A 2-D texture, sampled or storage: [`ParameterKind::Texture`] (decision D64). It has a width and a height and
+    /// no element count, so the length rule does not apply to it.
+    Texture,
 }
 
 impl BindingKind {
-    /// The binding kind a parameter of `kind` takes; `None` for a parameter that is not bound as a resource.
+    /// The binding kind a parameter of `kind` takes; `None` for a parameter that is not bound as a resource (the
+    /// invocation id, a plain value and a sampler).
     pub const fn of(kind: ParameterKind) -> Option<Self> {
         match kind {
             ParameterKind::Storage => Some(Self::Storage),
             ParameterKind::Uniform => Some(Self::Uniform),
-            ParameterKind::Invocation | ParameterKind::Value => None,
+            ParameterKind::Texture => Some(Self::Texture),
+            // `ParameterKind` is `#[non_exhaustive]` for other crates only; within this crate the arms below are
+            // exhaustive, so a new kind is a compile error here and not a silent `None`.
+            ParameterKind::Invocation | ParameterKind::Value | ParameterKind::Sampler => None,
         }
     }
 }
 
 /// The marker types of [`Resource::Kind`].
 ///
-/// They are named by path (`gust::kind::Storage`, `gust::kind::Uniform`) because `gust::Storage` and `gust::Uniform`
-/// are the kernel-side parameter types. The trait is sealed: the two kinds are the only ones a binding can have.
+/// They are named by path (`gust::kind::Storage`, `gust::kind::Uniform`, `gust::kind::Texture`) because
+/// `gust::Storage` and `gust::Uniform` are the kernel-side parameter types. The trait is sealed: the three kinds are
+/// the only ones a binding can have.
 pub mod kind {
     use super::BindingKind;
 
@@ -92,7 +102,7 @@ pub mod kind {
         pub trait Sealed {}
     }
 
-    /// The kind of a [`Resource`](super::Resource): [`Storage`] or [`Uniform`].
+    /// The kind of a [`Resource`](super::Resource): [`Storage`], [`Uniform`] or [`Texture`].
     pub trait ResourceKind: sealed::Sealed + 'static {
         /// The [`BindingKind`] a binding of this resource carries.
         const BINDING: BindingKind;
@@ -106,8 +116,15 @@ pub mod kind {
     #[derive(Clone, Copy, Debug)]
     pub enum Uniform {}
 
+    /// Marker: the resource is a 2-D texture (a width and a height, always `Independent` for the length rule). The
+    /// typed call bounds a texture parameter with `Kind = gust::kind::Texture`, so a buffer where a texture is
+    /// expected, or a texture where a buffer is expected, is a compile error.
+    #[derive(Clone, Copy, Debug)]
+    pub enum Texture {}
+
     impl sealed::Sealed for Storage {}
     impl sealed::Sealed for Uniform {}
+    impl sealed::Sealed for Texture {}
 
     impl ResourceKind for Storage {
         const BINDING: BindingKind = BindingKind::Storage;
@@ -115,6 +132,10 @@ pub mod kind {
 
     impl ResourceKind for Uniform {
         const BINDING: BindingKind = BindingKind::Uniform;
+    }
+
+    impl ResourceKind for Texture {
+        const BINDING: BindingKind = BindingKind::Texture;
     }
 }
 
@@ -126,7 +147,80 @@ pub trait TypedDevice: Device {
     type Binding<'r>: Copy;
 }
 
-/// A device that can run kernel `K`, which has `N` storage and uniform parameters.
+/// A [`TypedDevice`] that can also bind a sampler (decision D64, slice mx.t1).
+///
+/// A sampler is not a [`Resource`]: [`GpuPod`] needs a non-zero size and [`Resource::Element`] is a `GpuPod`, and a
+/// sampler holds no elements. It is the call's own argument kind, [`SamplerArg`], and its erased view is
+/// [`SamplerDevice::SamplerBinding`]. The trait is separate from [`TypedDevice`] so that a backend with no samplers
+/// (and every implementor that existed before textures) compiles unchanged; a backend that has them implements both.
+pub trait SamplerDevice: TypedDevice {
+    /// Erased, backend-specific, `Copy` view of one bound sampler for one dispatch.
+    type SamplerBinding<'r>: Copy;
+}
+
+/// A sampler of one backend: the argument a typed call passes for a kernel's `Sampler` parameter.
+///
+/// It plays the part for a sampler that [`Resource`] plays for a buffer, without being one. A generated call bounds a
+/// `Sampler` parameter with `S: SamplerArg<Device = D>`, where `D` is the device of the call's resources, so a sampler
+/// of another device type is a compile error, and so is a buffer or a texture in its place (neither implements this
+/// trait). Like a buffer, a sampler also belongs to one device *instance*, which the backend checks at submit.
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is not a GUST sampler of a typed device",
+    label = "typed calls take the sampler type of a GUST backend; create it through that backend, and pass buffers and textures only where the kernel has a buffer or a texture"
+)]
+pub trait SamplerArg {
+    /// The device type this sampler belongs to; it must be the device of the call's other arguments.
+    type Device: SamplerDevice;
+
+    /// The erased binding of this sampler for one dispatch.
+    fn bind(&self) -> <Self::Device as SamplerDevice>::SamplerBinding<'_>;
+}
+
+mod sampler_set {
+    pub trait Sealed {}
+}
+
+/// The sampler bindings a [`Call`] carries beside its resource bindings: `()` for a call of a kernel with no sampler
+/// parameter, and `[SamplerBinding<'r>; S]` for one with `S` (the [`SampledCall`] shape). The trait is sealed: those
+/// two shapes are all there is.
+///
+/// A backend's validation function bounds its `Call`'s `X` by this trait, so that it can check every sampler binding
+/// (the device instance a sampler belongs to) in the one place that validates a call, whatever the shape of `X`. A
+/// backend `Run` impl that validates through that function cannot skip the sampler check.
+pub trait SamplerSet: sampler_set::Sealed {
+    /// One erased sampler binding; [`Infallible`](core::convert::Infallible) when there is none.
+    type Binding: Copy;
+
+    /// The sampler bindings, in the order of the kernel's sampler parameters.
+    fn sampler_bindings(&self) -> &[Self::Binding];
+}
+
+impl sampler_set::Sealed for () {}
+
+impl SamplerSet for () {
+    type Binding = core::convert::Infallible;
+
+    fn sampler_bindings(&self) -> &[core::convert::Infallible] {
+        &[]
+    }
+}
+
+impl<B: Copy, const S: usize> sampler_set::Sealed for [B; S] {}
+
+impl<B: Copy, const S: usize> SamplerSet for [B; S] {
+    type Binding = B;
+
+    fn sampler_bindings(&self) -> &[B] {
+        self
+    }
+}
+
+/// A device that can run kernel `K`, which has `N` storage, uniform and texture parameters.
+///
+/// The third parameter `X` is the call's sampler bindings: `()` for a call with no sampler (the default, so every
+/// `Run<K, N>` written before textures means what it did) and `[D::SamplerBinding; S]` for a kernel with `S` sampler
+/// parameters, which [`SampledCall`] names. A backend that runs such kernels implements `Run<K, N, [..; S]>` beside
+/// `Run<K, N>`.
 ///
 /// GPU backends implement this for every `K`; a CPU backend implements it per kernel, next to the body it executes
 /// (M3). Generated `submit` and `dispatch` functions require the device of their first buffer to implement
@@ -140,13 +234,15 @@ pub trait TypedDevice: Device {
     label = "this device has no executable form of the kernel; GPU devices run every kernel that has a typed call, CPU twins only those emitted for them",
     note = "a kernel runs on `CpuDevice` in a test build of its crate, under `--cfg gust_dual`, and in every build under `GUST_PROFILE=cpu`; it never does when it is `#[kernel(cpu = \"unsupported\")]`, so if this build is `GUST_PROFILE=cpu` the kernel opted out of the CPU"
 )]
-pub trait Run<K: Kernel, const N: usize>: TypedDevice {
+pub trait Run<K: Kernel, const N: usize, X = ()>: TypedDevice {
     /// Start the call and return a job to wait on.
-    fn submit_call<'d>(&'d self, call: &Call<'_, Self, K, N>)
-    -> Result<Self::Job<'d>, Self::Error>;
+    fn submit_call<'d>(
+        &'d self,
+        call: &Call<'_, Self, K, N, X>,
+    ) -> Result<Self::Job<'d>, Self::Error>;
 
     /// Start the call and wait for it to finish.
-    fn dispatch_call(&self, call: &Call<'_, Self, K, N>) -> Result<(), Self::Error> {
+    fn dispatch_call(&self, call: &Call<'_, Self, K, N, X>) -> Result<(), Self::Error> {
         use crate::Job as _;
         self.submit_call(call)?.wait()
     }
@@ -598,37 +694,34 @@ impl<'r, R: Resource> Arg<'r, R> {
     }
 }
 
-/// The descriptor and parameter count a `Call<_, K, N>` carries, derived from `K` and `N` alone.
-struct Described<K, const N: usize>(PhantomData<fn() -> K>);
+/// The descriptor and parameter counts a `Call<_, K, N, X>` carries, derived from `K`, `N` and the sampler count `S`.
+struct Described<K, const N: usize, const S: usize>(PhantomData<fn() -> K>);
 
-impl<K: Kernel, const N: usize> Described<K, N> {
+impl<K: Kernel, const N: usize, const S: usize> Described<K, N, S> {
     /// `&K::DESCRIPTOR` as a `'static` reference. A `const` item's borrow is extended to `'static`, so no generic
     /// caller needs constant promotion of an associated constant (plan F12).
     const DESCRIPTOR: &'static KernelDescriptor = &K::DESCRIPTOR;
 
-    /// Evaluated whenever `Call::new` is instantiated: the kernel's storage plus uniform parameters must number `N`.
+    /// Evaluated whenever `Call::new` (or `Call::new_with_samplers`) is instantiated: the kernel's storage, uniform and
+    /// texture parameters must number `N`, and its sampler parameters `S`.
     const BOUND_PARAMETERS_MATCH: () = assert!(
-        K::DESCRIPTOR.storage_parameter_count() + K::DESCRIPTOR.uniform_parameter_count() == N,
-        "Call<_, K, N>: N must equal the number of storage plus uniform parameters of K::DESCRIPTOR"
+        K::DESCRIPTOR.storage_parameter_count()
+            + K::DESCRIPTOR.uniform_parameter_count()
+            + K::DESCRIPTOR.texture_parameter_count()
+            == N
+            && K::DESCRIPTOR.sampler_parameter_count() == S,
+        "Call<_, K, N, X>: N must equal the number of storage, uniform and texture parameters of K::DESCRIPTOR, and the samplers must number its sampler parameters"
     );
 }
 
 impl KernelDescriptor {
-    /// Number of `Storage` parameters (a typed call binds the uniform parameters too).
+    /// Number of `Storage` parameters (a typed call binds the uniform and texture parameters too).
     ///
     /// Not part of the stable surface: `#[gpu]` expansions use it in a constant assertion that the generated
-    /// typed call takes as many arguments as the descriptor has storage and uniform parameters.
+    /// typed call takes as many arguments as the descriptor has storage, uniform and texture parameters.
     #[doc(hidden)]
     pub const fn storage_parameter_count(&self) -> usize {
-        let mut index = 0;
-        let mut count = 0;
-        while index < self.parameters.len() {
-            if matches!(self.parameters[index].kind, ParameterKind::Storage) {
-                count += 1;
-            }
-            index += 1;
-        }
-        count
+        self.count_parameters(ParameterKind::Storage)
     }
 
     /// Number of `Uniform` parameters (the other ones a typed call binds).
@@ -636,10 +729,39 @@ impl KernelDescriptor {
     /// Not part of the stable surface, like [`KernelDescriptor::storage_parameter_count`].
     #[doc(hidden)]
     pub const fn uniform_parameter_count(&self) -> usize {
+        self.count_parameters(ParameterKind::Uniform)
+    }
+
+    /// Number of `Texture` parameters (resources of kind `kind::Texture`; a typed call binds them among its `N`).
+    ///
+    /// Not part of the stable surface, like [`KernelDescriptor::storage_parameter_count`].
+    #[doc(hidden)]
+    pub const fn texture_parameter_count(&self) -> usize {
+        self.count_parameters(ParameterKind::Texture)
+    }
+
+    /// Number of `Sampler` parameters. A sampler is not one of the `N` resources of a call: the call carries it as its
+    /// own argument kind ([`SampledCall`]).
+    ///
+    /// Not part of the stable surface, like [`KernelDescriptor::storage_parameter_count`].
+    #[doc(hidden)]
+    pub const fn sampler_parameter_count(&self) -> usize {
+        self.count_parameters(ParameterKind::Sampler)
+    }
+
+    const fn count_parameters(&self, wanted: ParameterKind) -> usize {
         let mut index = 0;
         let mut count = 0;
         while index < self.parameters.len() {
-            if matches!(self.parameters[index].kind, ParameterKind::Uniform) {
+            // `==` on a derived `PartialEq` is not a `const fn`; `matches!` on each kind is.
+            let same = matches!(
+                (self.parameters[index].kind, wanted),
+                (ParameterKind::Storage, ParameterKind::Storage)
+                    | (ParameterKind::Uniform, ParameterKind::Uniform)
+                    | (ParameterKind::Texture, ParameterKind::Texture)
+                    | (ParameterKind::Sampler, ParameterKind::Sampler)
+            );
+            if same {
                 count += 1;
             }
             index += 1;
@@ -648,19 +770,31 @@ impl KernelDescriptor {
     }
 }
 
-/// A typed kernel call: the kernel, the extent and one binding per storage or uniform parameter.
+/// A typed kernel call: the kernel, the extent, one binding per storage, uniform or texture parameter and, for a
+/// kernel with samplers, one sampler binding per sampler parameter.
 ///
 /// It is a plain value (build once, submit as often as needed) and what the generated `call` returns, what
 /// [`Run::submit_call`] consumes and what the staged graph records. The descriptor is `K::DESCRIPTOR` and `N` is
-/// the kernel's number of storage plus uniform parameters: [`Call::new`] takes neither as an argument. A call made by
-/// [`Call::new`] covers `element_count` invocations along x; one made by [`Call::new_extent`] covers an [`Extent`].
+/// the kernel's number of storage, uniform and texture parameters: [`Call::new`] takes neither as an argument. A call
+/// made by [`Call::new`] covers `element_count` invocations along x; one made by [`Call::new_extent`] covers an
+/// [`Extent`].
+///
+/// `X` holds the sampler bindings and defaults to `()`, so `Call<'r, D, K, N>` is the call of a kernel with no sampler
+/// exactly as before textures. A kernel with `S` samplers takes `Call<'r, D, K, N, [D::SamplerBinding<'r>; S]>`, which
+/// [`SampledCall`] spells and [`Call::new_with_samplers`] builds. A sampler is not a [`Resource`], so it is not among
+/// the `N` and has no length rule.
 #[must_use = "a `Call` does nothing until a device runs it"]
-pub struct Call<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> {
+pub struct Call<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize, X = ()> {
     kernel: &'static KernelDescriptor,
     extent: Extent,
     bindings: [D::Binding<'r>; N],
+    samplers: X,
     _kernel: PhantomData<fn() -> K>,
 }
+
+/// The call of a kernel with `S` sampler parameters (decision D64): [`Call`] with the sampler bindings of device `D`.
+pub type SampledCall<'r, D, K, const N: usize, const S: usize> =
+    Call<'r, D, K, N, [<D as SamplerDevice>::SamplerBinding<'r>; S]>;
 
 impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// Build the call of kernel `K`: `bindings` are its storage and uniform parameters in declaration order.
@@ -830,15 +964,52 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// [`Call::new`] over an [`Extent`] instead of an element count (slice m7.d): `Call::new(n, ..)` is
     /// `Call::new_extent(Extent::linear(n), ..)`.
     pub const fn new_extent(extent: Extent, bindings: [D::Binding<'r>; N]) -> Self {
-        let () = Described::<K, N>::BOUND_PARAMETERS_MATCH;
+        let () = Described::<K, N, 0>::BOUND_PARAMETERS_MATCH;
         Self {
-            kernel: Described::<K, N>::DESCRIPTOR,
+            kernel: Described::<K, N, 0>::DESCRIPTOR,
             extent,
             bindings,
+            samplers: (),
             _kernel: PhantomData,
         }
     }
+}
 
+impl<'r, D: SamplerDevice + ?Sized, K: Kernel, const N: usize, const S: usize>
+    Call<'r, D, K, N, [D::SamplerBinding<'r>; S]>
+{
+    /// [`Call::new`] for a kernel with `S` sampler parameters (decision D64): `bindings` are its storage, uniform and
+    /// texture parameters in declaration order, `samplers` its sampler parameters in declaration order.
+    ///
+    /// The descriptor is `K::DESCRIPTOR`; `N` must equal its storage, uniform and texture parameters and `S` its
+    /// sampler parameters, checked by a constant assertion when the call is instantiated, like [`Call::new`]. A kernel
+    /// with a sampler cannot be built by [`Call::new`], which asserts it has none.
+    pub const fn new_with_samplers(
+        element_count: u32,
+        bindings: [D::Binding<'r>; N],
+        samplers: [D::SamplerBinding<'r>; S],
+    ) -> Self {
+        Self::new_extent_with_samplers(Extent::linear(element_count), bindings, samplers)
+    }
+
+    /// [`SampledCall::new_with_samplers`] over an [`Extent`].
+    pub const fn new_extent_with_samplers(
+        extent: Extent,
+        bindings: [D::Binding<'r>; N],
+        samplers: [D::SamplerBinding<'r>; S],
+    ) -> Self {
+        let () = Described::<K, N, S>::BOUND_PARAMETERS_MATCH;
+        Self {
+            kernel: Described::<K, N, S>::DESCRIPTOR,
+            extent,
+            bindings,
+            samplers,
+            _kernel: PhantomData,
+        }
+    }
+}
+
+impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize, X> Call<'r, D, K, N, X> {
     /// The descriptor of `K`.
     pub const fn kernel(&self) -> &'static KernelDescriptor {
         self.kernel
@@ -857,22 +1028,33 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
         self.extent
     }
 
-    /// One binding per storage or uniform parameter, in declaration order.
+    /// One binding per storage, uniform or texture parameter, in declaration order.
     pub const fn bindings(&self) -> &[D::Binding<'r>; N] {
         &self.bindings
     }
+
+    /// The sampler bindings, one per sampler parameter in declaration order: `()` for a kernel with none.
+    pub const fn samplers(&self) -> &X {
+        &self.samplers
+    }
 }
 
-impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> fmt::Debug for Call<'r, D, K, N>
+impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize, X: fmt::Debug> fmt::Debug
+    for Call<'r, D, K, N, X>
 where
     D::Binding<'r>: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Call")
+        let mut shown = f.debug_struct("Call");
+        shown
             .field("kernel", &self.kernel.name)
             .field("extent", &self.extent)
-            .field("bindings", &self.bindings)
-            .finish()
+            .field("bindings", &self.bindings);
+        // A call with no sampler keeps the output it had before textures.
+        if size_of::<X>() != 0 {
+            shown.field("samplers", &self.samplers);
+        }
+        shown.finish()
     }
 }
 
@@ -1818,8 +2000,18 @@ mod tests {
             BindingKind::of(ParameterKind::Uniform),
             Some(BindingKind::Uniform)
         );
+        assert_eq!(
+            BindingKind::of(ParameterKind::Texture),
+            Some(BindingKind::Texture)
+        );
         assert_eq!(BindingKind::of(ParameterKind::Invocation), None);
         assert_eq!(BindingKind::of(ParameterKind::Value), None);
+        // A sampler is not a resource: it has no binding kind, and the call carries it as its own argument kind.
+        assert_eq!(BindingKind::of(ParameterKind::Sampler), None);
+        assert_eq!(
+            <kind::Texture as kind::ResourceKind>::BINDING,
+            BindingKind::Texture
+        );
         assert_eq!(
             <kind::Storage as kind::ResourceKind>::BINDING,
             BindingKind::Storage

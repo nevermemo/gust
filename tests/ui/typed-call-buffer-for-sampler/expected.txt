@@ -1,0 +1,10 @@
+# Keys matched against the one error of `cargo check --message-format json` (see
+# gpupod-missing/expected.txt). The primary span is the buffer argument in this file; the message
+# and the label are the `on_unimplemented` text of `SamplerArg`, and the bound is named by the
+# child note. A buffer (and a texture) is not a `SamplerArg`.
+code: E0277
+file: typed-call-buffer-for-sampler/src/main.rs
+line: 165
+message: `Buffer<f32>` is not a GUST sampler of a typed device
+message: required by a bound in `blur_call`
+label: typed calls take the sampler type of a GUST backend

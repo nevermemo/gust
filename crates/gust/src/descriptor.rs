@@ -171,12 +171,32 @@ pub struct ResourceBinding {
     pub binding: u32,
 }
 
+/// What a kernel parameter is, and so how the host binds it.
+///
+/// API change (mx.t1): the enum is `#[non_exhaustive]` and has two new variants, [`Texture`](Self::Texture) and
+/// [`Sampler`](Self::Sampler). A `match` outside this crate must add a wildcard arm. Constructing a variant is
+/// unchanged. Inside the workspace every such `match` already had one (`gust-wgpu`'s `validate_kernel` and `gust`'s
+/// own `reflect`), so none of them changed, and both refuse the two new kinds. `cargo-gust`'s record reader and the
+/// artifact writer do not know the two new kind names either, so they refuse a texture or sampler parameter today;
+/// teaching them the names is later work (the first producer of such a descriptor, the macro, comes with it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ParameterKind {
+    /// The invocation id parameter: not a resource, not bound.
     Invocation,
+    /// A storage buffer, bound through a [`Resource`](crate::Resource) of kind `kind::Storage`.
     Storage,
+    /// A uniform (constant) buffer, bound through a resource of kind `kind::Uniform`.
     Uniform,
+    /// A plain value parameter (not a resource).
     Value,
+    /// A 2-D texture: sampled (`Texture2D<T>`), storage read-write (`StorageTexture2D<F>`) or storage write-only
+    /// (`WriteTexture2D<F>`), bound through a resource of kind `kind::Texture` (decision D64). It has a shader
+    /// binding, and the typed call counts it among its `N` resource arguments.
+    Texture,
+    /// A sampler (`Sampler`). It has a shader binding but is not a [`Resource`](crate::Resource): it is the call's own
+    /// argument kind ([`SamplerArg`](crate::SamplerArg)), counted separately from the resources.
+    Sampler,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

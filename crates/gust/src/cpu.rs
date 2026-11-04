@@ -41,9 +41,10 @@ use core::time::Duration;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use crate::texture::TextureUse;
 use crate::{
     Access, BindingKind, Call, Device, Extent, GpuPod, Invocation, Job, JobStatus, Kernel,
-    KernelDescriptor, LengthRule, ParameterKind, Resource, ResourceLayout, TypeLayout,
+    KernelDescriptor, LengthRule, ParameterKind, Resource, ResourceLayout, SamplerSet, TypeLayout,
     TypeLayoutKind, TypedDevice, UVec3, kind,
 };
 
@@ -169,8 +170,13 @@ impl Default for CpuDevice {
 /// What the erased binding points at: the cell, its element type and its current length.
 trait CpuData {
     fn as_any(&self) -> &dyn Any;
-    /// The length right now (a uniform holds one value); `None` while the cell is mutably borrowed outside this call.
+    /// The length right now (a uniform holds one value, a texture `width * height` texels); `None` while the cell is
+    /// mutably borrowed outside this call.
     fn current_len(&self) -> Option<usize>;
+    /// The uses a texture was created with; `None` for anything that is not a texture.
+    fn texture_uses(&self) -> Option<TextureUse> {
+        None
+    }
 }
 
 /// The cell of a [`CpuUniform`]: its own type, so that it cannot be mistaken for the cell of a buffer.
@@ -353,7 +359,7 @@ impl Job for CpuJob {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Error {
-    /// The binding's kind (storage buffer or uniform) is not the one the descriptor declares for the parameter.
+    /// The binding's kind (storage buffer, uniform or texture) is not the one the descriptor declares for the parameter.
     BindingKind {
         /// The kernel parameter.
         parameter: &'static str,
@@ -456,6 +462,43 @@ pub enum Error {
         /// The operating system's message.
         message: String,
     },
+    /// A texture parameter is bound to a texture that was not created for the use the kernel makes of it (slice mx.t1):
+    /// a sampled parameter needs [`TextureUse::SAMPLED`], a storage one [`TextureUse::STORAGE`]. The counterpart of
+    /// `gust_wgpu::Error::TextureUse`.
+    TextureUse {
+        /// The kernel parameter.
+        parameter: &'static str,
+        /// The use the parameter needs.
+        required: TextureUse,
+        /// The uses the texture has.
+        actual: TextureUse,
+    },
+    /// [`CpuDevice::texture_2d`] was asked for a texture with a zero side, or one with more than `u32::MAX` texels.
+    TextureSize {
+        /// The width asked for.
+        width: u32,
+        /// The height asked for.
+        height: u32,
+    },
+    /// [`CpuTexture2d::write`](texture::CpuTexture2d::write) got a slice that is not `width * height` texels long.
+    TextureLength {
+        /// The number of texels the texture has.
+        expected: usize,
+        /// The number of texels given.
+        actual: usize,
+    },
+    /// A texel address outside the texture, from [`CpuTexture2d::load`](texture::CpuTexture2d::load) or `store`. A
+    /// kernel's own `load` and `store` panic instead (KM-11).
+    TextureCoordinate {
+        /// The x asked for.
+        x: u32,
+        /// The y asked for.
+        y: u32,
+        /// The texture's width.
+        width: u32,
+        /// The texture's height.
+        height: u32,
+    },
 }
 
 impl fmt::Display for Error {
@@ -536,6 +579,31 @@ impl fmt::Display for Error {
             Self::ThreadSpawn { message } => write!(
                 f,
                 "could not start a worker thread for the parallel map ({message}); set GUST_CPU_THREADS=1 to run on the calling thread"
+            ),
+            Self::TextureUse {
+                parameter,
+                required,
+                actual,
+            } => write!(
+                f,
+                "parameter `{parameter}` needs a texture created with {required:?}, got one created with {actual:?}"
+            ),
+            Self::TextureSize { width, height } => write!(
+                f,
+                "a texture of {width}x{height} texels is not allowed: both sides must be non-zero and the texel count at most u32::MAX"
+            ),
+            Self::TextureLength { expected, actual } => write!(
+                f,
+                "the texture holds {expected} texels, {actual} were given"
+            ),
+            Self::TextureCoordinate {
+                x,
+                y,
+                width,
+                height,
+            } => write!(
+                f,
+                "the texel ({x}, {y}) is outside the {width}x{height} texture"
             ),
         }
     }
@@ -618,12 +686,20 @@ fn launch_invocations(size: [u32; 3], extent: Extent) -> u128 {
 /// that is wrong in two ways reports the same cause on both backends. One difference: `Borrowed` (a buffer that is
 /// borrowed outside the call; a GPU buffer cannot be) is reported after access and before length.
 ///
+/// The call's sampler bindings (the `X` of a [`SampledCall`](crate::SampledCall); none for `()`) are checked here too,
+/// after the resource bindings: a sampler of another device instance is [`Error::WrongDevice`] naming the kernel's
+/// sampler parameter. A `Run` impl that validates through this function cannot skip that check.
+///
 /// Macro support.
 #[doc(hidden)]
-pub fn validate<K: Kernel, const N: usize>(
+pub fn validate<K: Kernel, const N: usize, X>(
     device: &CpuDevice,
-    call: &Call<'_, CpuDevice, K, N>,
-) -> Result<(), Error> {
+    call: &Call<'_, CpuDevice, K, N, X>,
+) -> Result<(), Error>
+where
+    X: SamplerSet,
+    X::Binding: texture::SamplerOwner,
+{
     let kernel = call.kernel();
     let size = kernel.workgroup_size;
     if size.contains(&0) {
@@ -635,9 +711,10 @@ pub fn validate<K: Kernel, const N: usize>(
         .iter()
         .filter(|parameter| BindingKind::of(parameter.kind).is_some())
         .collect();
-    // `Run<K, N>` makes a mismatch unreachable (`Call::new` asserts `N` equals the storage plus uniform parameter
-    // count at compile time); a hand-built `Call` cannot differ either. The assertion documents that the zip below is
-    // total.
+    // `Run<K, N>` makes a mismatch unreachable (`Call::new` asserts `N` equals the storage, uniform and texture
+    // parameter count at compile time); a hand-built `Call` cannot differ either. The assertion documents that the zip
+    // below is total. A sampler parameter is not one of them (`BindingKind::of` is `None` for it); the sampler
+    // bindings are checked after the loop.
     debug_assert_eq!(parameters.len(), N);
     // A shared buffer holds exactly `x * y * z` elements. A product that overflows a `u64` or a `usize` is larger than
     // any buffer, so it saturates: the length check then fails for every buffer, as it must.
@@ -680,13 +757,34 @@ pub fn validate<K: Kernel, const N: usize>(
                 actual: binding.access,
             });
         }
+        // A texture must have been created for the use the kernel makes of it: a read-only parameter is a sampled
+        // texture, a read-write one a storage texture (the descriptor's access is all a texture parameter has until
+        // the texture layout of mx.t0b names the write-only form). A texture parameter with no access is malformed.
+        if parameter.kind == ParameterKind::Texture {
+            let required = match parameter.access {
+                Access::ReadOnly => TextureUse::SAMPLED,
+                Access::ReadWrite => TextureUse::STORAGE,
+                Access::NotApplicable => {
+                    return Err(Error::InvalidResourceLayout { parameter: name });
+                }
+            };
+            let actual = binding.data.texture_uses().unwrap_or(TextureUse::NONE);
+            if !actual.contains(required) {
+                return Err(Error::TextureUse {
+                    parameter: name,
+                    required,
+                    actual,
+                });
+            }
+        }
         let len = binding
             .data
             .current_len()
             .ok_or(Error::Borrowed { parameter: name })?;
-        // A uniform has no element count; its one value is never empty, so only the borrow above applies.
+        // A uniform has no element count; its one value is never empty, so only the borrow above applies. A texture
+        // has a width and a height instead, and no length rule either.
         match binding.length {
-            _ if binding.kind == BindingKind::Uniform => {}
+            _ if matches!(binding.kind, BindingKind::Uniform | BindingKind::Texture) => {}
             LengthRule::Shared if len != expected => {
                 return Err(Error::BufferLength {
                     parameter: name,
@@ -698,6 +796,18 @@ pub fn validate<K: Kernel, const N: usize>(
                 return Err(Error::IndependentLengthEmpty { parameter: name });
             }
             _ => {}
+        }
+    }
+    // Each sampler binding belongs to this device instance, named by the kernel's sampler parameter in order.
+    let sampler_parameters = kernel
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.kind == ParameterKind::Sampler);
+    for (parameter, binding) in sampler_parameters.zip(call.samplers().sampler_bindings()) {
+        if texture::SamplerOwner::owner(binding) != device.id {
+            return Err(Error::WrongDevice {
+                parameter: parameter.name,
+            });
         }
     }
     // One buffer may be bound twice only when both bindings are read-only; the pair is named in declaration order.
@@ -1079,6 +1189,8 @@ pub fn __no_hook() {}
 
 #[doc(hidden)]
 pub mod parallel;
+
+pub mod texture;
 
 #[cfg(test)]
 mod tests {

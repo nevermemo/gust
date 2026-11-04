@@ -150,6 +150,7 @@ pub mod reflect;
 mod runtime;
 pub mod slang;
 pub mod spirv;
+pub mod texture;
 
 pub use abi::{
     GpuPod, MATRIX_LAYOUT, MatrixLayout, ResourceLayout, ScalarKind, ShaderLayoutRules,
@@ -161,7 +162,8 @@ pub use descriptor::{
     ParameterKind, ResourceBinding, Shape, SourceOrigin,
 };
 pub use dispatch::{
-    Arg, BindingKind, Call, Extent, Independent, LengthRule, Resource, Run, TypedDevice, kind,
+    Arg, BindingKind, Call, Extent, Independent, LengthRule, Resource, Run, SampledCall,
+    SamplerArg, SamplerDevice, SamplerSet, TypedDevice, kind,
 };
 pub use gust_macros::{gpu, par_for};
 pub use job::{Device, Job, JobStatus};
@@ -175,10 +177,17 @@ pub use runtime::{
     atomic_add, atomic_compare_exchange, atomic_exchange, atomic_max, atomic_min, float, int, uint,
     workgroup_barrier,
 };
+pub use texture::{
+    Sampler, SamplerOptions, StorageTexture2D, Texture2D, TextureUse, WriteTexture2D,
+};
 
 /// Names automatically imported into every `#[gpu]` module.
 pub mod prelude {
     pub use crate::math::{IVec2, IVec4, Mat2, Mat3, Mat4, UVec2, UVec4, Vec2, Vec3, Vec4};
+    pub use crate::texture::{
+        R32Float, R32Sint, R32Uint, Rg32Float, Rg32Sint, Rg32Uint, Rgba32Float, Rgba32Sint,
+        Rgba32Uint, Sampler, StorageTexture2D, Texture2D, WriteTexture2D,
+    };
     pub use crate::{
         ConstantBuffer, GroupId, Invocation, LocalId, RWStructuredBuffer, SV_DispatchThreadID,
         SV_GroupID, SV_GroupThreadID, Storage, StorageMut, StructuredBuffer, UVec3, Uniform,

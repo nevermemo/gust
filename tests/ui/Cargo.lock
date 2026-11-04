@@ -243,19 +243,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "par-for-three-wide"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "par-for-three-wide"
-version = "0.0.0"
-dependencies = [
- "gust",
 ]
 
 [[package]]
@@ -349,6 +349,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "typed-call-buffer-for-sampler"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "typed-call-buffer-for-texture"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "typed-call-buffer-for-uniform"
 version = "0.0.0"
 dependencies = [
@@ -399,6 +413,27 @@ dependencies = [
 
 [[package]]
 name = "typed-call-ok"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "typed-call-sampler-for-buffer"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "typed-call-texture-for-buffer"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
+name = "typed-call-texture-ok"
 version = "0.0.0"
 dependencies = [
  "gust",

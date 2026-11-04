@@ -6,6 +6,7 @@ use syn::visit::{self, Visit};
 
 use crate::diagnostics::{self, Code};
 use crate::math_types;
+use crate::profile::{BodyChecks, StageProfile};
 
 mod barrier;
 
@@ -423,7 +424,18 @@ pub(crate) fn is_gpu_attribute(attribute: &syn::Attribute) -> bool {
         .is_some_and(|segment| segment.ident == "gpu")
 }
 
+/// [`validate_module_in`] for the `grid` profile, the entry point of the tests; the expander passes its profile.
+#[cfg(test)]
 pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
+    validate_module_in(&crate::profile::GRID, module)
+}
+
+/// Validates a module whose kernels have the shape of the profile `stage`: the profile decides which parameter is
+/// the invocation, which options a kernel may carry and which constructs it may declare.
+pub(crate) fn validate_module_in(
+    stage: &dyn StageProfile,
+    module: &syn::ItemMod,
+) -> syn::Result<()> {
     let Some((_, items)) = &module.content else {
         return Err(diagnostics::error(
             Code::InlineModuleRequired,
@@ -474,7 +486,7 @@ pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
                          already is GPU code, and its functions are helpers or `#[kernel]`s",
                     ));
                 }
-                validate_function(function, &function_names, &result_helpers)?
+                validate_function(stage, function, &function_names, &result_helpers)?
             }
             syn::Item::Struct(item) => validate_struct(item)?,
             _ => {
@@ -495,13 +507,13 @@ pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
         .collect();
     // The shape of the uniform parameters and of the structs they reach comes before the padding checks: a `Mat2` in
     // a uniform struct is E0205 whatever else is wrong with its layout.
-    crate::uniform::check_parameters(items)?;
+    crate::uniform::check_parameters(stage, items)?;
     for item in items {
         if let syn::Item::Struct(item) = item {
             check_padding(item, &structs)?;
         }
     }
-    crate::uniform::check_padding(items)?;
+    crate::uniform::check_padding(stage, items)?;
     Ok(())
 }
 
@@ -679,16 +691,25 @@ fn validate_struct(item: &syn::ItemStruct) -> syn::Result<()> {
 }
 
 fn validate_function(
+    stage: &dyn StageProfile,
     function: &syn::ItemFn,
     function_names: &HashSet<String>,
     result_helpers: &HashSet<String>,
 ) -> syn::Result<()> {
-    use crate::slang::{ParameterFlavor, parameter_flavor};
+    use crate::slang::{ParameterFlavor, parameter_flavor_in};
 
-    let is_kernel = crate::expand::kernel_options(function)?.is_some();
+    // What the profile makes of each parameter (a receiver is none; `validate_function` rejects it later).
+    let flavor_of = |argument: &syn::FnArg| match argument {
+        syn::FnArg::Typed(argument) => Some(parameter_flavor_in(stage, &argument.ty)),
+        syn::FnArg::Receiver(_) => None,
+    };
+    let is_kernel = crate::expand::kernel_attribute_in(stage, function)?.is_some();
     if !is_kernel
-        && let Some(argument) = function.sig.inputs.iter().find(|argument| matches!(argument,
-            syn::FnArg::Typed(argument) if parameter_flavor(&argument.ty) == ParameterFlavor::Workgroup))
+        && let Some(argument) = function
+            .sig
+            .inputs
+            .iter()
+            .find(|argument| flavor_of(argument) == Some(ParameterFlavor::Workgroup))
     {
         return Err(diagnostics::error(
             Code::WorkgroupParameterOnHelper,
@@ -697,32 +718,68 @@ fn validate_function(
              array on the kernel and pass the helper the values it needs",
         ));
     }
-    let invocations = function.sig.inputs.iter().filter(|argument| matches!(argument,
-        syn::FnArg::Typed(argument) if parameter_flavor(&argument.ty) == ParameterFlavor::Invocation)).count();
+    let invocations = function
+        .sig
+        .inputs
+        .iter()
+        .filter(|argument| flavor_of(argument) == Some(ParameterFlavor::Invocation))
+        .count();
     if is_kernel {
         if invocations != 1 {
             return Err(diagnostics::error(
                 Code::KernelDispatchParameter,
                 &function.sig,
-                "a GPU kernel requires exactly one dispatch-thread parameter (`LocalId` and `GroupId` are derived \
-                 from it, so a kernel that takes either needs it)",
+                stage.binding_rules().missing_dispatch_validate,
             ));
         }
         if !matches!(&function.sig.output, syn::ReturnType::Default)
-            && !matches!(&function.sig.output, syn::ReturnType::Type(_, ty) if matches!(ty.as_ref(), syn::Type::Tuple(tuple) if tuple.elems.is_empty())) {
+            && !matches!(&function.sig.output, syn::ReturnType::Type(_, ty) if matches!(ty.as_ref(), syn::Type::Tuple(tuple) if tuple.elems.is_empty()))
+        {
             return Err(diagnostics::error(
                 Code::KernelReturnsUnit,
                 &function.sig.output,
                 "GPU kernels must return unit",
             ));
         }
-    } else if function.sig.inputs.iter().any(|argument| matches!(argument,
-        syn::FnArg::Typed(argument) if matches!(parameter_flavor(&argument.ty), ParameterFlavor::StorageRead | ParameterFlavor::StorageReadWrite | ParameterFlavor::Uniform))) {
+    } else if function.sig.inputs.iter().any(|argument| {
+        matches!(
+            flavor_of(argument),
+            Some(
+                ParameterFlavor::StorageRead
+                    | ParameterFlavor::StorageReadWrite
+                    | ParameterFlavor::Uniform
+            )
+        )
+    }) {
         return Err(diagnostics::error(
             Code::HelperResourceParameter,
             &function.sig,
             "GPU helper functions currently accept value parameters only; access resources in the kernel",
         ));
+    }
+    if is_kernel {
+        // The constructs the shape refuses, judged from what the kernel declares (the profile never reads the body).
+        let mut checks = BodyChecks {
+            workgroup_memory: function
+                .sig
+                .inputs
+                .iter()
+                .any(|argument| flavor_of(argument) == Some(ParameterFlavor::Workgroup)),
+            barrier: barrier::has_barrier(function),
+            atomics: !atomic_buffer_names(function).is_empty(),
+            forbidden: Vec::new(),
+        };
+        stage.validate_body(&mut checks);
+        if let Some(sentence) = checks.forbidden.into_iter().next() {
+            // Placeholder: GUST-E0811 is the code of an unsupported expression, used here so a refusal by a profile
+            // has one. The code and the text of the refusal of a construct a shape does not take are mx.c's
+            // (`diagnostics.rs`, `DIAGNOSTICS`).
+            return Err(diagnostics::error(
+                Code::UnsupportedExpression,
+                &function.sig,
+                sentence,
+            ));
+        }
     }
     if function.sig.asyncness.is_some() {
         return Err(diagnostics::error(
@@ -752,7 +809,7 @@ fn validate_function(
         if let syn::FnArg::Typed(argument) = argument
             && let syn::Pat::Ident(name) = argument.pat.as_ref()
         {
-            match parameter_flavor(&argument.ty) {
+            match parameter_flavor_in(stage, &argument.ty) {
                 ParameterFlavor::Invocation => {
                     visitor.invocations.insert(name.ident.to_string());
                 }
@@ -802,18 +859,22 @@ fn validate_function(
     }
     visitor.visit_item_fn(function);
     visitor.finish()?;
-    check_workgroup_rules(function, is_kernel)
+    check_workgroup_rules(stage, function, is_kernel)
 }
 
 /// The workgroup rules of a function the generic validation accepted (see `barrier`): the barrier positions (E0414),
 /// no `return` (E0415) and no `break` or `continue` in a barrier loop (E0416), then the CPU strategy (E0717) and the
 /// memory limit (E0718) of a kernel that uses workgroup memory or a barrier.
-fn check_workgroup_rules(function: &syn::ItemFn, is_kernel: bool) -> syn::Result<()> {
-    use crate::slang::{ParameterFlavor, parameter_flavor};
+fn check_workgroup_rules(
+    stage: &dyn StageProfile,
+    function: &syn::ItemFn,
+    is_kernel: bool,
+) -> syn::Result<()> {
+    use crate::slang::{ParameterFlavor, parameter_flavor_in};
 
     let has_memory = function.sig.inputs.iter().any(|argument| {
         matches!(argument, syn::FnArg::Typed(argument)
-            if parameter_flavor(&argument.ty) == ParameterFlavor::Workgroup)
+            if parameter_flavor_in(stage, &argument.ty) == ParameterFlavor::Workgroup)
     });
     let barrier_kernel = is_kernel && (has_memory || barrier::has_barrier(function));
     barrier::check(function, is_kernel, barrier_kernel)?;
@@ -833,7 +894,7 @@ fn check_workgroup_rules(function: &syn::ItemFn, is_kernel: bool) -> syn::Result
             ),
         ));
     }
-    let twin = crate::expand::kernel_attribute(function)?.map(|(_, twin)| twin);
+    let twin = crate::expand::kernel_attribute_in(stage, function)?.map(|(_, twin)| twin);
     if !matches!(twin, Some(crate::expand::CpuTwin::Unsupported)) {
         let construct = if has_memory {
             "`Workgroup<[T; N]>` memory"

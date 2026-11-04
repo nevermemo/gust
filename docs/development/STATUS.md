@@ -370,6 +370,17 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   (tests/ui.rs) still without the two new fixtures; `6c83aab` adds them.
   Main: 20 of 23 gate steps green on `6b0d59a` (22:21 to 22:52Z, RTX 5090); xtask-test, unit and slangc failed
   on those pins and passed with fmt and clippy on the fix (22:55 to 23:05Z), and check-examples green.
+- MR mr.c (`9c19a08`, fix round `e421426`, merge `e85e1b5`; D108, D117): the `cargo-gust-bridge` feature.
+  `gust` gains the internal feature `cargo-gust-bridge`, which `cargo-gust` enables on its `gust` dependency, so
+  `cargo install cargo-gust --locked` builds with `GUST_PROFILE` unset: a release build with the bridge infers `dev`
+  (not on `wasm32`) and prints one warning, and an explicit `native`, `web` or `cpu` is unchanged. The kill rule did
+  not fire: from `tests/precompiled/app` the feature is not in the graph. check-precompiled gains E6g (`dev` and the
+  warning), E6h (refused under `native`), E6i (this repository's `--workspace --release` check is `dev` with the
+  warning) and E6j (a mistaken `cargo-gust` dependency, D117). Install proof: with `GUST_PROFILE` unset,
+  `cargo install --locked` into a scratch root, then `--version` and `doctor`. The review's must-fix was the record
+  (D117); its should-fixes (the evidence line, the stale sentences in README, lib.rs and VALIDATION, every gate on
+  the final tree) and three nits were taken, and the ci.yml comment is mr.r's.
+  Main: 23 gate steps green on `e85e1b5` (2026-11-03 23:34 to 2026-11-04 00:16Z, RTX 5090) and check-examples green.
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).

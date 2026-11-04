@@ -273,6 +273,72 @@ pub enum ShaderLayoutRules {
     /// The constant-buffer ABI ([`TypeLayout::is_std140_v1`]): `StorageV2` with structs rounded up to 16 and no 2x2
     /// matrix.
     Std140V1,
+    /// The texture rule (mx.t0b, decision D91): the facts of a 2-D texture binding that the reflection can witness,
+    /// in a [`TextureLayout`]. The resource's `element` is the texture's result type (`float`, `uint4`, ...) and its
+    /// `element_stride` the stride of that element. Only [`ResourceLayout::texture_v1`] builds it.
+    TextureV1(TextureLayout),
+}
+
+/// The dimensionality of a texture binding. Only 2-D textures exist in the dialect (D62).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum TextureDimension {
+    /// A plain 2-D texture: no array, multisample or mip-chain variant.
+    D2,
+}
+
+impl TextureDimension {
+    /// The spelling used in the reflection JSON (`shape`): `2d`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::D2 => "2d",
+        }
+    }
+}
+
+/// How a kernel uses a texture binding, which is also how the reflection spells it (`access`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum TextureAccess {
+    /// A sampled `Texture2D<T>`: reflection access `read`.
+    Sampled,
+    /// A storage texture the kernel may read and write (`RWTexture2D<T>`): reflection access `readWrite`.
+    ReadWrite,
+    /// A storage texture the kernel only writes (`WTexture2D<T>`): reflection access `write`.
+    WriteOnly,
+}
+
+impl TextureAccess {
+    /// The spelling used in the reflection JSON (`access`): `read`, `readWrite` or `write`.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Sampled => "read",
+            Self::ReadWrite => "readWrite",
+            Self::WriteOnly => "write",
+        }
+    }
+
+    /// Whether the access is a storage access, which carries a texel format in the shader.
+    pub const fn is_storage(self) -> bool {
+        !matches!(self, Self::Sampled)
+    }
+}
+
+/// What the descriptor says about a texture binding, for the cross-check against the helper's reflection (D17, D91).
+///
+/// A **sampled** texture is compared by slot, dimension and sample class: its shader type has no format, so its
+/// `format` is `None` and the concrete format is checked at submit against the bound texture. A **storage** or
+/// **write-only** texture is compared by slot, access, result type and exact `format`, which is `Some`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextureLayout {
+    /// The exact texel format of a storage texture; `None` for a sampled one.
+    pub format: Option<crate::texture::Format>,
+    /// The dimensionality; always [`TextureDimension::D2`] today.
+    pub dimension: TextureDimension,
+    /// How the kernel uses the texture.
+    pub access: TextureAccess,
+    /// The class of value a read yields; for a sampled texture it comes from the result type, for a storage texture
+    /// it is the format's.
+    pub class: crate::texture::SampleClass,
 }
 
 /// Element ABI attached to one shader resource binding.
@@ -306,6 +372,17 @@ impl ResourceLayout {
         Self {
             rules: ShaderLayoutRules::Std140V1,
             element_stride: element.size,
+            element,
+        }
+    }
+
+    /// The layout of a 2-D texture binding (D64, D91): `element` is the texture's result type in the shader (a 32-bit
+    /// scalar or a 2- to 4-wide vector of one), `texture` the facts the reflection witnesses. A sampled texture has
+    /// `texture.format == None` and a storage one `Some(format)`.
+    pub const fn texture_v1(element: TypeLayout, texture: TextureLayout) -> Self {
+        Self {
+            rules: ShaderLayoutRules::TextureV1(texture),
+            element_stride: element.stride,
             element,
         }
     }
@@ -810,6 +887,47 @@ mod tests {
         assert_eq!(uniform.rules, ShaderLayoutRules::Std140V1);
         assert_eq!(uniform.element_stride, 128);
         assert_eq!(uniform.element, CB_P);
+    }
+
+    #[test]
+    fn a_texture_layout_carries_the_facts_the_reflection_witnesses() {
+        use crate::texture::{Format, SampleClass};
+        let element = <crate::math::Vec4 as GpuPod>::LAYOUT;
+        let sampled = TextureLayout {
+            format: None,
+            dimension: TextureDimension::D2,
+            access: TextureAccess::Sampled,
+            class: SampleClass::Float,
+        };
+        let layout = ResourceLayout::texture_v1(element, sampled);
+        assert_eq!(layout.rules, ShaderLayoutRules::TextureV1(sampled));
+        // The element is the result type and the stride its stride, as for a buffer.
+        assert_eq!((layout.element, layout.element_stride), (element, 16));
+        let storage = TextureLayout {
+            format: Some(Format::R32Uint),
+            access: TextureAccess::ReadWrite,
+            class: SampleClass::Uint,
+            ..sampled
+        };
+        assert_ne!(
+            ResourceLayout::texture_v1(F, storage),
+            ResourceLayout::texture_v1(F, sampled)
+        );
+        assert_ne!(
+            ShaderLayoutRules::TextureV1(storage),
+            ShaderLayoutRules::StorageV2
+        );
+        // The names are the reflection's.
+        assert_eq!(TextureDimension::D2.name(), "2d");
+        let names = [
+            TextureAccess::Sampled,
+            TextureAccess::ReadWrite,
+            TextureAccess::WriteOnly,
+        ]
+        .map(TextureAccess::name);
+        assert_eq!(names, ["read", "readWrite", "write"]);
+        assert!(!TextureAccess::Sampled.is_storage());
+        assert!(TextureAccess::ReadWrite.is_storage() && TextureAccess::WriteOnly.is_storage());
     }
 
     // `GpuPod` for the buffer-eligible math types: the model's numbers are Rust's.

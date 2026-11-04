@@ -724,3 +724,764 @@ fn the_real_helper_output_passes_the_cross_check_for_storage_v2_and_std140_v1() 
         );
     }
 }
+
+/// Slice mx.t0b (decision D91): reflection schema 3, the textures, samplers, stage and fragment targets of the native
+/// helper, through `cross_check_kernel` and `verify_artifact`. Two kinds of evidence, kept apart:
+///
+/// - the real helper (`compile_reflected`, both targets) on hand-written Slang, with a hand-written descriptor, and
+///   the descriptor tampered one field at a time (the Reflect tier needs the helper);
+/// - the committed documents under `tests/fixtures/schema3/`, which are the helper's own output for the probe inputs
+///   of `crates/cargo-gust/src/testdata/schema3`, read through `verify_artifact` with the two identity hashes
+///   recomputed for the stand-in source and artifact bytes (no Slang needed).
+mod schema_three {
+    use gust::{
+        Access, Artifact, Format as ArtifactFormat, GpuPod, KernelDescriptor, ParameterDescriptor,
+        ParameterKind, ReflectedTypeKind, ResourceBinding, ResourceLayout, ScalarKind, Shape,
+        SourceOrigin, TextureAccess, TextureDimension, TextureLayout, TypeLayout,
+        artifact::{Verified, verify_artifact},
+        math::{UVec2, UVec4, Vec4},
+        reflect::{Error, Stage, compile_reflected},
+        slang::Target,
+        texture::{Format, SampleClass},
+    };
+
+    const F32: TypeLayout = <f32 as GpuPod>::LAYOUT;
+    const U32: TypeLayout = <u32 as GpuPod>::LAYOUT;
+    const I32: TypeLayout = <i32 as GpuPod>::LAYOUT;
+    const VEC4: TypeLayout = <Vec4 as GpuPod>::LAYOUT;
+    const UVEC2: TypeLayout = <UVec2 as GpuPod>::LAYOUT;
+    const UVEC4: TypeLayout = <UVec4 as GpuPod>::LAYOUT;
+
+    fn bound(index: u32) -> Option<ResourceBinding> {
+        Some(ResourceBinding {
+            group: 0,
+            binding: index,
+        })
+    }
+
+    fn sampled(class: SampleClass) -> TextureLayout {
+        TextureLayout {
+            format: None,
+            dimension: TextureDimension::D2,
+            access: TextureAccess::Sampled,
+            class,
+        }
+    }
+
+    fn storage(format: Format, access: TextureAccess) -> TextureLayout {
+        TextureLayout {
+            format: Some(format),
+            dimension: TextureDimension::D2,
+            access,
+            class: format.sample_class(),
+        }
+    }
+
+    fn texture(
+        name: &'static str,
+        access: Access,
+        element: TypeLayout,
+        layout: TextureLayout,
+        index: u32,
+    ) -> ParameterDescriptor {
+        ParameterDescriptor {
+            name,
+            rust_type: "Texture",
+            kind: ParameterKind::Texture,
+            access,
+            resource_layout: Some(ResourceLayout::texture_v1(element, layout)),
+            binding: bound(index),
+        }
+    }
+
+    fn sampler(name: &'static str, index: u32) -> ParameterDescriptor {
+        ParameterDescriptor {
+            name,
+            rust_type: "Sampler",
+            kind: ParameterKind::Sampler,
+            access: Access::NotApplicable,
+            resource_layout: None,
+            binding: bound(index),
+        }
+    }
+
+    fn buffer(name: &'static str, element: TypeLayout, index: u32) -> ParameterDescriptor {
+        ParameterDescriptor {
+            name,
+            rust_type: "RWStructuredBuffer<T>",
+            kind: ParameterKind::Storage,
+            access: Access::ReadWrite,
+            resource_layout: Some(ResourceLayout::storage_v1(element)),
+            binding: bound(index),
+        }
+    }
+
+    /// An output of a pixel kernel: a storage parameter without a binding, a colour target by its position.
+    fn output(name: &'static str, element: TypeLayout) -> ParameterDescriptor {
+        ParameterDescriptor {
+            name,
+            rust_type: "RWStructuredBuffer<T>",
+            kind: ParameterKind::Storage,
+            access: Access::ReadWrite,
+            resource_layout: Some(ResourceLayout::storage_v1(element)),
+            binding: None,
+        }
+    }
+
+    fn kernel(
+        shape: Shape,
+        entry_point: &'static str,
+        slang_source: &'static str,
+        parameters: Vec<ParameterDescriptor>,
+    ) -> KernelDescriptor {
+        KernelDescriptor {
+            module: "m",
+            name: "k",
+            entry_point,
+            shape,
+            workgroup_size: [8, 8, 1],
+            parameters: Box::leak(parameters.into_boxed_slice()),
+            slang_source,
+            source: SourceOrigin::UNKNOWN,
+            artifacts: &[],
+        }
+    }
+
+    /// `kernel` with the parameter at `index` changed by `edit`.
+    fn with(
+        kernel: &KernelDescriptor,
+        index: usize,
+        edit: impl FnOnce(&mut ParameterDescriptor),
+    ) -> KernelDescriptor {
+        let mut parameters = kernel.parameters.to_vec();
+        edit(&mut parameters[index]);
+        KernelDescriptor {
+            parameters: Box::leak(parameters.into_boxed_slice()),
+            ..*kernel
+        }
+    }
+
+    /// `kernel` with the parameter at `index` given the texture layout `layout` over `element`.
+    fn retextured(
+        kernel: &KernelDescriptor,
+        index: usize,
+        element: TypeLayout,
+        layout: TextureLayout,
+    ) -> KernelDescriptor {
+        with(kernel, index, |p| {
+            p.resource_layout = Some(ResourceLayout::texture_v1(element, layout));
+        })
+    }
+
+    fn message(error: Error) -> String {
+        match error {
+            Error::Mismatch(message) => message,
+            other => panic!("expected a mismatch, got {other:?}"),
+        }
+    }
+
+    // ---- the real helper ----
+
+    const COMPUTE: &str = "[[vk::binding(0, 0)]] Texture2D<float4> tex;\n[[vk::binding(1, 0)]] [format(\"r32f\")] RWTexture2D<float> rw;\n[[vk::binding(2, 0)]] [format(\"rg32ui\")] WTexture2D<uint2> wo;\n[[vk::binding(3, 0)]] SamplerState samp;\n[[vk::binding(4, 0)]] RWStructuredBuffer<float> out;\n[shader(\"compute\")]\n[numthreads(8, 8, 1)]\nvoid main(uint3 id : SV_DispatchThreadID)\n{\n    float4 t = tex.SampleLevel(samp, float2(0.5, 0.5), 0.0);\n    uint2 p = uint2(id.x, id.y);\n    rw[p] = rw[p] + t.x;\n    wo.Store(p, p);\n    out[id.x] = t.y;\n}\n";
+
+    fn compute_kernel() -> KernelDescriptor {
+        kernel(
+            Shape::Grid,
+            "main",
+            COMPUTE,
+            vec![
+                texture(
+                    "tex",
+                    Access::ReadOnly,
+                    VEC4,
+                    sampled(SampleClass::Float),
+                    0,
+                ),
+                texture(
+                    "rw",
+                    Access::ReadWrite,
+                    F32,
+                    storage(Format::R32Float, TextureAccess::ReadWrite),
+                    1,
+                ),
+                texture(
+                    "wo",
+                    Access::ReadWrite,
+                    UVEC2,
+                    storage(Format::Rg32Uint, TextureAccess::WriteOnly),
+                    2,
+                ),
+                sampler("samp", 3),
+                buffer("out", F32, 4),
+            ],
+        )
+    }
+
+    const FRAGMENT: &str = "[[vk::binding(0, 0)]] Texture2D<float4> tex;\n[[vk::binding(1, 0)]] SamplerState samp;\nstruct Out\n{\n    float4 color : SV_Target0;\n    uint id : SV_Target1;\n};\n[shader(\"fragment\")]\nOut main(float4 pos : SV_Position)\n{\n    Out o;\n    o.color = tex.SampleLevel(samp, float2(pos.x / 64.0, pos.y / 64.0), 0.0);\n    o.id = uint(pos.x);\n    return o;\n}\n";
+
+    fn fragment_kernel() -> KernelDescriptor {
+        kernel(
+            Shape::Pixel,
+            "main",
+            FRAGMENT,
+            vec![
+                texture(
+                    "tex",
+                    Access::ReadOnly,
+                    VEC4,
+                    sampled(SampleClass::Float),
+                    0,
+                ),
+                sampler("samp", 1),
+                output("color", VEC4),
+                output("id", U32),
+            ],
+        )
+    }
+
+    #[test]
+    fn native_reflects_textures_samplers_and_the_compute_stage() {
+        let descriptor = compute_kernel();
+        for target in [Target::Wgsl, Target::Spirv] {
+            let compiled = compile_reflected(&descriptor, target)
+                .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+            let reflection = &compiled.reflection;
+            assert_eq!(reflection.schema_version, 3, "{target:?}");
+            assert_eq!(reflection.stage, Stage::Compute, "{target:?}");
+            assert_eq!(compiled.workgroup_size, [8, 8, 1], "{target:?}");
+            let textures: Vec<_> = reflection
+                .textures
+                .iter()
+                .map(|t| (t.name.as_str(), t.binding, t.access, t.format))
+                .collect();
+            assert_eq!(
+                textures,
+                [
+                    ("tex", 0, TextureAccess::Sampled, None),
+                    ("rw", 1, TextureAccess::ReadWrite, Some(Format::R32Float)),
+                    ("wo", 2, TextureAccess::WriteOnly, Some(Format::Rg32Uint)),
+                ],
+                "{target:?}"
+            );
+            assert_eq!(
+                reflection.textures[2].result.kind,
+                ReflectedTypeKind::Vector {
+                    scalar: ScalarKind::U32,
+                    count: 2
+                },
+                "{target:?}"
+            );
+            assert_eq!(reflection.samplers.len(), 1, "{target:?}");
+            assert_eq!(
+                (
+                    reflection.samplers[0].name.as_str(),
+                    reflection.samplers[0].binding
+                ),
+                ("samp", 3),
+                "{target:?}"
+            );
+            // Only the buffer has a layout report.
+            let reports = reflection
+                .cross_check_kernel(&descriptor)
+                .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+            assert_eq!(reports.len(), 1, "{target:?}");
+            assert!(reports[0].is_full_abi_match(), "{target:?}");
+        }
+    }
+
+    #[test]
+    fn native_reflects_a_fragment_stage_with_its_targets_and_no_workgroup() {
+        let descriptor = fragment_kernel();
+        for target in [Target::Wgsl, Target::Spirv] {
+            let compiled = compile_reflected(&descriptor, target)
+                .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+            let reflection = &compiled.reflection;
+            assert_eq!(reflection.schema_version, 3, "{target:?}");
+            assert_eq!(reflection.stage, Stage::Fragment, "{target:?}");
+            assert_eq!(compiled.workgroup_size, [0, 0, 0], "{target:?}");
+            let targets: Vec<_> = reflection
+                .targets
+                .iter()
+                .map(|t| (t.index, t.ty.kind.clone()))
+                .collect();
+            assert_eq!(
+                targets,
+                [
+                    (
+                        0,
+                        ReflectedTypeKind::Vector {
+                            scalar: ScalarKind::F32,
+                            count: 4
+                        }
+                    ),
+                    (1, ReflectedTypeKind::Scalar(ScalarKind::U32)),
+                ],
+                "{target:?}"
+            );
+            assert!(
+                reflection
+                    .cross_check_kernel(&descriptor)
+                    .unwrap()
+                    .is_empty(),
+                "{target:?}"
+            );
+        }
+    }
+
+    /// The tamper cases of plan section 3.3, on the real helper's output: the program is untouched and the descriptor
+    /// is changed one field at a time, so every failure below is the one edit. Each is `Mismatch` and names the field.
+    #[test]
+    fn native_output_against_a_tampered_descriptor_is_a_mismatch_naming_the_field() {
+        let compute = compute_kernel();
+        let fragment = fragment_kernel();
+        let swapped_outputs = KernelDescriptor {
+            parameters: Box::leak(
+                vec![
+                    fragment.parameters[0],
+                    fragment.parameters[1],
+                    fragment.parameters[3],
+                    fragment.parameters[2],
+                ]
+                .into_boxed_slice(),
+            ),
+            ..fragment
+        };
+        let cases: Vec<(&str, KernelDescriptor, KernelDescriptor, &str)> = vec![
+            (
+                "a compute reflection against a pixel descriptor",
+                compute,
+                KernelDescriptor {
+                    shape: Shape::Pixel,
+                    ..compute
+                },
+                "stage: host fragment, compiler compute",
+            ),
+            (
+                "a fragment reflection against a grid descriptor",
+                fragment,
+                KernelDescriptor {
+                    shape: Shape::Grid,
+                    ..fragment
+                },
+                "stage: host compute, compiler fragment",
+            ),
+            (
+                "a target type swapped",
+                fragment,
+                with(&fragment, 3, |p| {
+                    p.resource_layout = Some(ResourceLayout::storage_v1(I32));
+                }),
+                "targets[1].type: host i32, compiler u32",
+            ),
+            (
+                "the targets in the other order",
+                fragment,
+                swapped_outputs,
+                "targets[0].type: host u32, compiler f32x4",
+            ),
+            (
+                "a target dropped",
+                fragment,
+                KernelDescriptor {
+                    parameters: &fragment.parameters[..3],
+                    ..fragment
+                },
+                "targets: host 1 outputs, compiler 2",
+            ),
+            (
+                "a texture access swapped",
+                compute,
+                retextured(
+                    &compute,
+                    1,
+                    F32,
+                    storage(Format::R32Float, TextureAccess::WriteOnly),
+                ),
+                "rw.access: host write, compiler readWrite",
+            ),
+            (
+                "a texture format swapped",
+                compute,
+                retextured(
+                    &compute,
+                    2,
+                    UVEC2,
+                    storage(Format::Rgba32Uint, TextureAccess::WriteOnly),
+                ),
+                "wo.format: host rgba32uint, compiler rg32uint",
+            ),
+            (
+                "a storage texture's result type swapped",
+                compute,
+                retextured(
+                    &compute,
+                    1,
+                    I32,
+                    storage(Format::R32Sint, TextureAccess::ReadWrite),
+                ),
+                "rw.result: host i32, compiler f32",
+            ),
+            (
+                "a sampled texture's class swapped",
+                compute,
+                retextured(&compute, 0, UVEC4, sampled(SampleClass::Uint)),
+                "tex.class: host u32, compiler f32",
+            ),
+            (
+                "a texture slot moved",
+                compute,
+                with(&compute, 0, |p| p.binding = bound(6)),
+                "tex.binding: host 6, compiler 0",
+            ),
+            (
+                "a sampler slot moved",
+                compute,
+                with(&compute, 3, |p| p.binding = bound(5)),
+                "samp.binding: host 5, compiler 3",
+            ),
+        ];
+        for target in [Target::Wgsl, Target::Spirv] {
+            let compute_reflection = compile_reflected(&compute, target).unwrap().reflection;
+            let fragment_reflection = compile_reflected(&fragment, target).unwrap().reflection;
+            for (what, program, tampered, expected) in &cases {
+                let reflection = if program.shape == Shape::Grid {
+                    &compute_reflection
+                } else {
+                    &fragment_reflection
+                };
+                // The control: the same reflection passes against the program's own descriptor.
+                reflection
+                    .cross_check_kernel(program)
+                    .unwrap_or_else(|error| panic!("{what}, {target:?}: control: {error}"));
+                let error = reflection.cross_check_kernel(tampered).unwrap_err();
+                assert_eq!(&message(error), expected, "{what}, {target:?}");
+            }
+        }
+    }
+
+    /// A target index that is not the output's position: the helper reports `SV_Target0` and `SV_Target2`.
+    #[test]
+    fn native_target_indices_with_a_gap_are_not_outputs_in_parameter_order() {
+        const GAP: &str = "struct Out\n{\n    uint u : SV_Target0;\n    float4 v : SV_Target2;\n};\n[shader(\"fragment\")]\nOut main(float4 pos : SV_Position)\n{\n    Out o;\n    o.u = uint(pos.x);\n    o.v = pos;\n    return o;\n}\n";
+        let descriptor = kernel(
+            Shape::Pixel,
+            "main",
+            GAP,
+            vec![output("u", U32), output("v", VEC4)],
+        );
+        for target in [Target::Wgsl, Target::Spirv] {
+            let compiled = compile_reflected(&descriptor, target).unwrap();
+            let indices: Vec<_> = compiled
+                .reflection
+                .targets
+                .iter()
+                .map(|t| t.index)
+                .collect();
+            assert_eq!(indices, [0, 2], "{target:?}");
+            let error = compiled
+                .reflection
+                .cross_check_kernel(&descriptor)
+                .unwrap_err();
+            assert_eq!(
+                message(error),
+                "targets[1].index: host 1, compiler 2",
+                "{target:?}"
+            );
+        }
+    }
+
+    // ---- the committed documents, through the precompiled path ----
+
+    const SOURCE: &str = "// schema 3 fixture source\n";
+    const BYTES: &[u8] = b"fn main() {}\n";
+
+    fn fnv1a64(bytes: &[u8]) -> String {
+        let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+            (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
+        });
+        format!("{hash:016x}")
+    }
+
+    /// `document` with the value of the string member `key` replaced by `value`.
+    fn set_member(document: &str, key: &str, value: &str) -> String {
+        let marker = format!("\"{key}\":\"");
+        let start = document.find(&marker).expect("the member is there") + marker.len();
+        let end = start + document[start..].find('"').expect("a closing quote");
+        format!("{}{value}{}", &document[..start], &document[end..])
+    }
+
+    /// The committed document `name`, its two identity hashes recomputed for `SOURCE` and `BYTES`: the helper hashed
+    /// the probe's own text and the artifact it wrote, neither of which is committed.
+    fn fixture(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/schema3")
+            .join(name);
+        let document = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{}: {error}", path.display()));
+        let document = set_member(&document, "sourceHash", &fnv1a64(SOURCE.as_bytes()));
+        set_member(&document, "artifactHash", &fnv1a64(BYTES))
+    }
+
+    fn verify_with(
+        name: &str,
+        descriptor: &KernelDescriptor,
+        bytes: &'static [u8],
+    ) -> Result<Verified, Error> {
+        let reflection: &'static str = Box::leak(fixture(name).into_boxed_str());
+        let descriptor = KernelDescriptor {
+            slang_source: SOURCE,
+            ..*descriptor
+        };
+        verify_artifact(
+            &descriptor,
+            &Artifact {
+                format: ArtifactFormat::Wgsl,
+                key: "0000000000000000",
+                bytes,
+                reflection,
+            },
+        )
+    }
+
+    fn verify(name: &str, descriptor: &KernelDescriptor) -> Result<Verified, Error> {
+        verify_with(name, descriptor, BYTES)
+    }
+
+    #[test]
+    fn a_committed_sampled_texture_document_verifies_and_is_held_to_its_class() {
+        let float = kernel(
+            Shape::Grid,
+            "gpu_sampled_float4",
+            "",
+            vec![
+                texture(
+                    "tex",
+                    Access::ReadOnly,
+                    VEC4,
+                    sampled(SampleClass::Float),
+                    0,
+                ),
+                buffer("out", F32, 1),
+            ],
+        );
+        let verified = verify("sampled_float4.wgsl.json", &float).unwrap();
+        assert_eq!(verified.compiled.reflection.schema_version, 3);
+        assert_eq!(verified.compiled.workgroup_size, [8, 8, 1]);
+        assert_eq!(verified.cross_checks.len(), 1);
+        // The same document is not a `uint` texture, and not a pixel kernel's.
+        let uint = retextured(&float, 0, UVEC4, sampled(SampleClass::Uint));
+        assert_eq!(
+            message(verify("sampled_float4.wgsl.json", &uint).unwrap_err()),
+            "tex.class: host u32, compiler f32"
+        );
+        let pixel = KernelDescriptor {
+            shape: Shape::Pixel,
+            ..float
+        };
+        assert_eq!(
+            message(verify("sampled_float4.wgsl.json", &pixel).unwrap_err()),
+            "stage: host fragment, compiler compute"
+        );
+        // A scalar `uint` texture.
+        let scalar = kernel(
+            Shape::Grid,
+            "gpu_sampled_uint",
+            "",
+            vec![
+                texture("tex", Access::ReadOnly, U32, sampled(SampleClass::Uint), 0),
+                buffer("out", U32, 1),
+            ],
+        );
+        verify("sampled_uint.wgsl.json", &scalar).unwrap();
+        let as_float = retextured(&scalar, 0, F32, sampled(SampleClass::Float));
+        assert_eq!(
+            message(verify("sampled_uint.wgsl.json", &as_float).unwrap_err()),
+            "tex.class: host f32, compiler u32"
+        );
+    }
+
+    #[test]
+    fn a_committed_storage_texture_document_is_held_to_access_result_and_format() {
+        let inferred = kernel(
+            Shape::Grid,
+            "gpu_storage_inferred",
+            "",
+            vec![texture(
+                "rw",
+                Access::ReadWrite,
+                U32,
+                storage(Format::R32Uint, TextureAccess::ReadWrite),
+                0,
+            )],
+        );
+        verify("storage_inferred.wgsl.json", &inferred).unwrap();
+        for (what, tampered, expected) in [
+            (
+                "access",
+                retextured(
+                    &inferred,
+                    0,
+                    U32,
+                    storage(Format::R32Uint, TextureAccess::WriteOnly),
+                ),
+                "rw.access: host write, compiler readWrite",
+            ),
+            (
+                "result",
+                retextured(
+                    &inferred,
+                    0,
+                    F32,
+                    storage(Format::R32Float, TextureAccess::ReadWrite),
+                ),
+                "rw.result: host f32, compiler u32",
+            ),
+            (
+                "format",
+                retextured(
+                    &inferred,
+                    0,
+                    I32,
+                    storage(Format::R32Sint, TextureAccess::ReadWrite),
+                ),
+                "rw.result: host i32, compiler u32",
+            ),
+        ] {
+            assert_eq!(
+                message(verify("storage_inferred.wgsl.json", &tampered).unwrap_err()),
+                expected,
+                "{what}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_committed_document_with_a_wide_read_write_texture_cannot_be_matched_by_a_descriptor() {
+        // The helper reports a read-write `rgba32f` texture (Slang allows it); the dialect does not (D120), so no
+        // descriptor of the dialect matches it: the read-write host layout is refused as a malformed descriptor, and
+        // a write-only one differs in access.
+        let declared = kernel(
+            Shape::Grid,
+            "gpu_storage_declared",
+            "",
+            vec![
+                texture(
+                    "rw",
+                    Access::ReadWrite,
+                    VEC4,
+                    storage(Format::Rgba32Float, TextureAccess::ReadWrite),
+                    0,
+                ),
+                texture(
+                    "wo",
+                    Access::ReadWrite,
+                    UVEC2,
+                    storage(Format::Rg32Uint, TextureAccess::WriteOnly),
+                    1,
+                ),
+            ],
+        );
+        assert_eq!(
+            message(verify("storage_declared.wgsl.json", &declared).unwrap_err()),
+            "rw.format: rgba32float does not fit class f32 and access readWrite"
+        );
+        let write_only = retextured(
+            &declared,
+            0,
+            VEC4,
+            storage(Format::Rgba32Float, TextureAccess::WriteOnly),
+        );
+        assert_eq!(
+            message(verify("storage_declared.wgsl.json", &write_only).unwrap_err()),
+            "rw.access: host write, compiler readWrite"
+        );
+    }
+
+    #[test]
+    fn a_committed_fragment_document_verifies_and_its_targets_are_compared() {
+        let fragment = kernel(
+            Shape::Pixel,
+            "gpu_sampler_fragment",
+            "",
+            vec![
+                texture(
+                    "tex",
+                    Access::ReadOnly,
+                    VEC4,
+                    sampled(SampleClass::Float),
+                    0,
+                ),
+                sampler("samp", 1),
+                output("color", VEC4),
+            ],
+        );
+        let verified = verify("sampler_fragment.wgsl.json", &fragment).unwrap();
+        assert_eq!(verified.compiled.reflection.stage, Stage::Fragment);
+        assert_eq!(verified.compiled.workgroup_size, [0, 0, 0]);
+        assert!(verified.cross_checks.is_empty());
+        for (what, tampered, expected) in [
+            (
+                "the stage",
+                KernelDescriptor {
+                    shape: Shape::Grid,
+                    ..fragment
+                },
+                "stage: host compute, compiler fragment",
+            ),
+            (
+                "a target type",
+                with(&fragment, 2, |p| {
+                    p.resource_layout = Some(ResourceLayout::storage_v1(UVEC4));
+                }),
+                "targets[0].type: host u32x4, compiler f32x4",
+            ),
+            (
+                "a sampler slot",
+                with(&fragment, 1, |p| p.binding = bound(4)),
+                "samp.binding: host 4, compiler 1",
+            ),
+            (
+                "a target dropped",
+                KernelDescriptor {
+                    parameters: &fragment.parameters[..2],
+                    ..fragment
+                },
+                "targets: host 0 outputs, compiler 1",
+            ),
+        ] {
+            assert_eq!(
+                message(verify("sampler_fragment.wgsl.json", &tampered).unwrap_err()),
+                expected,
+                "{what}"
+            );
+        }
+        // The gap in the indices: `SV_Target0` and `SV_Target2`.
+        let gap = kernel(
+            Shape::Pixel,
+            "gpu_fragment_gap",
+            "",
+            vec![output("u", U32), output("v", VEC4)],
+        );
+        assert_eq!(
+            message(verify("fragment_gap.wgsl.json", &gap).unwrap_err()),
+            "targets[1].index: host 1, compiler 2"
+        );
+    }
+
+    #[test]
+    fn a_committed_schema_three_document_is_refused_for_other_artifact_bytes() {
+        // The identity check is as strict for schema 3 as for 1 and 2: the document is the one of these bytes.
+        let descriptor = kernel(
+            Shape::Pixel,
+            "gpu_fragment_gap",
+            "",
+            vec![output("u", U32), output("v", VEC4)],
+        );
+        match verify_with("fragment_gap.wgsl.json", &descriptor, b"fn other() {}\n") {
+            Err(Error::Invalid(message)) => {
+                assert!(message.contains("artifact hash"), "{message}");
+            }
+            other => panic!("expected an identity failure, got {other:?}"),
+        }
+    }
+}

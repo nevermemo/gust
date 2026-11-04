@@ -154,7 +154,8 @@ pub mod texture;
 
 pub use abi::{
     GpuPod, MATRIX_LAYOUT, MatrixLayout, ResourceLayout, ScalarKind, ShaderLayoutRules,
-    StructFieldLayout, TypeLayout, TypeLayoutKind, pod_slice_as_bytes,
+    StructFieldLayout, TextureAccess, TextureDimension, TextureLayout, TypeLayout, TypeLayoutKind,
+    pod_slice_as_bytes,
 };
 pub use artifact::{Artifact, Format};
 pub use descriptor::{

@@ -36,8 +36,33 @@ pub(crate) fn profile_override_note(preset: Option<&OsStr>) -> Option<String> {
     })
 }
 
-/// Gives `command`, a cargo child that builds workspace crates, `GUST_PROFILE=dev`, and logs once per process when
-/// that overrides a different value of the parent.
+/// The variable that names the native reflection helper (`gust::toolchain::HELPER_VARIABLE`, D109).
+pub(crate) const HELPER_VARIABLE: &str = "GUST_SLANG_REFLECT";
+
+/// The helper that `cargo xtask build-slang-reflect` writes by default:
+/// `<root>/target/slang-reflect/gust-slang-reflect`.
+fn repository_helper(root: &Path) -> std::path::PathBuf {
+    root.join("target").join("slang-reflect").join(format!(
+        "gust-slang-reflect{}",
+        std::env::consts::EXE_SUFFIX
+    ))
+}
+
+/// The value xtask exports as `GUST_SLANG_REFLECT` to its cargo children: the repository's own helper
+/// ([`repository_helper`] of `root`) when the parent environment does not name one (`preset` is `None`) and that file
+/// exists. A named helper, even a wrong one, is the parent's decision and is passed on untouched, and with no helper
+/// built there is nothing to export (the children then follow `gust::toolchain`'s rules).
+pub(crate) fn helper_export(preset: Option<&OsStr>, root: &Path) -> Option<std::path::PathBuf> {
+    if preset.is_some() {
+        return None;
+    }
+    let helper = repository_helper(root);
+    helper.is_file().then_some(helper)
+}
+
+/// Gives `command`, a cargo child that builds workspace crates, `GUST_PROFILE=dev` and, when the repository's
+/// reflection helper exists and the parent names none, `GUST_SLANG_REFLECT` ([`helper_export`]); logs once per process
+/// when the profile overrides a different value of the parent.
 pub(crate) fn set_workspace_profile(command: &mut Command) -> &mut Command {
     static NOTED: Once = Once::new();
     NOTED.call_once(|| {
@@ -46,6 +71,11 @@ pub(crate) fn set_workspace_profile(command: &mut Command) -> &mut Command {
             eprintln!("{note}");
         }
     });
+    if let Ok(root) = crate::workspace::workspace_root()
+        && let Some(helper) = helper_export(std::env::var_os(HELPER_VARIABLE).as_deref(), &root)
+    {
+        command.env(HELPER_VARIABLE, helper);
+    }
     command.env(PROFILE_VARIABLE, WORKSPACE_PROFILE)
 }
 
@@ -378,3 +408,54 @@ mod test_counts_tests;
 #[cfg(test)]
 #[path = "tests/workspace_profile.rs"]
 mod workspace_profile_tests;
+
+#[cfg(test)]
+mod helper_export_tests {
+    use std::{ffi::OsStr, fs};
+
+    use super::{helper_export, repository_helper};
+
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let root =
+            std::env::temp_dir().join(format!("gust-xtask-helper-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    #[test]
+    fn the_repository_helper_is_exported_only_when_it_exists_and_the_parent_names_none() {
+        let root = scratch("export");
+        // Nothing built: nothing to export.
+        assert_eq!(helper_export(None, &root), None);
+        let helper = repository_helper(&root);
+        fs::create_dir_all(helper.parent().unwrap()).unwrap();
+        fs::write(&helper, "x").unwrap();
+        assert_eq!(helper_export(None, &root), Some(helper.clone()));
+        // The path is `<root>/target/slang-reflect/gust-slang-reflect` with the platform's suffix.
+        assert_eq!(
+            helper,
+            root.join("target").join("slang-reflect").join(format!(
+                "gust-slang-reflect{}",
+                std::env::consts::EXE_SUFFIX
+            ))
+        );
+        // A helper the parent names, even an empty or missing one, is the parent's decision.
+        for preset in ["", "elsewhere"] {
+            assert_eq!(
+                helper_export(Some(OsStr::new(preset)), &root),
+                None,
+                "{preset:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_directory_with_the_helper_name_is_not_a_helper() {
+        let root = scratch("directory");
+        fs::create_dir_all(repository_helper(&root)).unwrap();
+        assert_eq!(helper_export(None, &root), None);
+        let _ = fs::remove_dir_all(&root);
+    }
+}

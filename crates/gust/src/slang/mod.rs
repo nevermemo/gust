@@ -10,13 +10,17 @@
 //! feature, which is off by default (D44). `Target`, `Error`, `decode_spirv` and `compile_copy` stay outside
 //! the feature, because [`crate::artifact`] verifies a precompiled artifact without a compiler.
 
-use std::{error, fmt, fs, path::Path};
+use std::{
+    error, fmt, fs,
+    path::{Path, PathBuf},
+};
 #[cfg(feature = "slang-runtime")]
 use std::{
-    path::PathBuf,
-    process::{Command, Output},
-    sync::atomic::{AtomicU64, Ordering},
-    time::Duration,
+    process::Command,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 #[cfg(feature = "slang-runtime")]
@@ -31,49 +35,60 @@ mod source_map;
 #[cfg(feature = "slang-runtime")]
 static NEXT_INVOCATION: AtomicU64 = AtomicU64::new(1);
 
-/// How often a busy executable is tried before its error is returned (see [`output_retrying_busy`]).
+/// Every launch of `slangc` or of the reflection helper goes through the one retry helper of [`crate::toolchain`],
+/// which tries again while the executable is busy (`ETXTBSY`).
 #[cfg(feature = "slang-runtime")]
-const BUSY_TRIES: u32 = 5;
-/// The wait after the first busy failure; each further wait doubles (10, 20, 40, 80 ms).
-#[cfg(feature = "slang-runtime")]
-const BUSY_FIRST_BACKOFF: Duration = Duration::from_millis(10);
+pub(crate) use crate::toolchain::output_retrying_busy;
 
-/// Run `command` to completion, trying again when the executable is busy (`ETXTBSY`, `ExecutableFileBusy`).
-///
-/// Every launch of `slangc` or of the reflection helper goes through here. A file that was just written and made
-/// executable (a helper installed or downloaded by this process, a script in a test) can fail to `exec` for a short
-/// while on Linux: another thread's `fork` copies the write descriptor into its child, and the child holds it until
-/// its own `exec`. The window is outside this process's control, since no lock here can cover a `fork` in code
-/// that is not ours, so the launch is retried a bounded number of times. Any other error, and the last busy
-/// error, is returned unchanged; a launch that succeeds is not touched.
+/// The `slangc` that `-version` has already shown to be the pinned Slang (or a listed build), so a compile costs no
+/// extra process after the first. Only successes are kept: a mismatch is checked again, which is what an install of
+/// the pin in the meantime needs.
 #[cfg(feature = "slang-runtime")]
-pub(crate) fn output_retrying_busy(command: &mut Command) -> std::io::Result<Output> {
-    retry_busy(BUSY_TRIES, BUSY_FIRST_BACKOFF, std::thread::sleep, || {
-        command.output()
-    })
+static VERIFIED_SLANGC: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+
+/// The `slangc` to launch, and a proof that it is the pinned Slang (D72, D109): the managed one for the pin, else the
+/// first on `PATH` ([`crate::toolchain::slangc_path`]), whose `-version` must be the pin or a listed validated build.
+/// [`Error::CompilerNotFound`] when there is none; [`Error::SlangVersionMismatch`] naming both versions when it is
+/// another Slang. The check runs once per `slangc` per process.
+#[cfg(feature = "slang-runtime")]
+pub(crate) fn pinned_slangc() -> Result<PathBuf, Error> {
+    use crate::toolchain;
+
+    let slangc = toolchain::slangc_path()
+        .map_err(|reason| {
+            Error::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                reason,
+            ))
+        })?
+        .ok_or(Error::CompilerNotFound)?;
+    if VERIFIED_SLANGC
+        .lock()
+        .is_ok_and(|verified| verified.contains(&slangc))
+    {
+        return Ok(slangc);
+    }
+    pin_verdict(toolchain::check_slangc_version(&slangc))?;
+    if let Ok(mut verified) = VERIFIED_SLANGC.lock() {
+        verified.push(slangc.clone());
+    }
+    Ok(slangc)
 }
 
-/// Call `spawn` up to `tries` times while it fails with `ExecutableFileBusy`, calling `sleep` between the calls with
-/// `first_backoff`, then double that. Any other result, and the busy error of the last try, is returned.
+/// [`crate::toolchain::check_slangc_version`]'s answer as this module's error.
 #[cfg(feature = "slang-runtime")]
-fn retry_busy<T>(
-    tries: u32,
-    first_backoff: Duration,
-    mut sleep: impl FnMut(Duration),
-    mut spawn: impl FnMut() -> std::io::Result<T>,
-) -> std::io::Result<T> {
-    let mut backoff = first_backoff;
-    let mut attempt = 1;
-    loop {
-        match spawn() {
-            Err(error)
-                if error.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < tries =>
-            {
-                sleep(backoff);
-                backoff *= 2;
-                attempt += 1;
-            }
-            result => return result,
+fn pin_verdict(verdict: Result<(), crate::toolchain::VersionError>) -> Result<(), Error> {
+    use crate::toolchain::{SLANG_PIN, VersionError};
+
+    match verdict {
+        Ok(()) => Ok(()),
+        Err(VersionError::Mismatch { slangc, found }) => Err(Error::SlangVersionMismatch {
+            slangc,
+            found,
+            pinned: SLANG_PIN,
+        }),
+        Err(VersionError::Run(reason) | VersionError::Output(reason)) => {
+            Err(Error::Io(std::io::Error::other(reason)))
         }
     }
 }
@@ -112,9 +127,22 @@ impl Target {
 pub enum Error {
     CompilerNotFound,
     Io(std::io::Error),
-    CompilationFailed { target: Target, diagnostics: String },
+    CompilationFailed {
+        target: Target,
+        diagnostics: String,
+    },
     InvalidSpirvLength(usize),
     InvalidSpirv(&'static str),
+    /// The `slangc` that would run reports another Slang than the pinned one (D72). Both versions are named; the
+    /// run-time bridge compiles with the pin only.
+    SlangVersionMismatch {
+        /// The executable that was asked.
+        slangc: PathBuf,
+        /// What its `-version` printed.
+        found: String,
+        /// The Slang version GUST is pinned to.
+        pinned: &'static str,
+    },
 }
 
 impl fmt::Display for Error {
@@ -140,6 +168,16 @@ impl fmt::Display for Error {
             Self::InvalidSpirv(reason) => {
                 write!(formatter, "Slang returned invalid SPIR-V: {reason}")
             }
+            Self::SlangVersionMismatch {
+                slangc,
+                found,
+                pinned,
+            } => write!(
+                formatter,
+                "{} reports Slang `{found}`, not the pinned {pinned}; install the pin with \
+                 `cargo gust slang install`",
+                slangc.display()
+            ),
         }
     }
 }
@@ -249,8 +287,14 @@ fn compile_in_directory(
 /// `abi::MATRIX_LAYOUT` is column-major, so both paths pin it (the helper through `defaultMatrixLayoutMode`). The
 /// stage is the shape's, not a constant (mx.k): `compute` for a `grid` kernel.
 #[cfg(feature = "slang-runtime")]
-fn slangc_command(source: &Path, target: Target, entry: &str, shape: Shape) -> Command {
-    let mut command = Command::new("slangc");
+fn slangc_command(
+    slangc: &Path,
+    source: &Path,
+    target: Target,
+    entry: &str,
+    shape: Shape,
+) -> Command {
+    let mut command = Command::new(slangc);
     command.arg(source).args([
         "-target",
         target.slang_name(),
@@ -283,7 +327,8 @@ fn compile_at(
     let line_directives = write_compile_inputs(directory, source, origin)? != source;
     fs::write(&map_path, source_map.json(origin, line_directives))?;
 
-    let mut command = slangc_command(&source_path, target, entry, shape);
+    let slangc = pinned_slangc()?;
+    let mut command = slangc_command(&slangc, &source_path, target, entry, shape);
     let result = output_retrying_busy(command.arg("-o").arg(&output_path));
     let output = match result {
         Ok(output) => output,
@@ -741,6 +786,69 @@ pub fn probe(target: Target) -> TargetProbe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "slang-runtime")]
+    use crate::toolchain::{BUSY_FIRST_BACKOFF, BUSY_TRIES, SLANG_PIN, retry_busy};
+    #[cfg(feature = "slang-runtime")]
+    use std::time::Duration;
+
+    /// A `slangc` of another version is a typed error that names the executable, both versions and the install
+    /// command (D72's follow-up); the pin's own text names the pin.
+    #[test]
+    fn a_version_mismatch_names_both_versions_and_the_install_command() {
+        let error = Error::SlangVersionMismatch {
+            slangc: PathBuf::from("/vulkan/Bin/slangc"),
+            found: "2026.13.1".to_owned(),
+            pinned: "2026.20",
+        };
+        let text = error.to_string();
+        assert!(
+            text.contains("/vulkan/Bin/slangc")
+                && text.contains("Slang `2026.13.1`")
+                && text.contains("not the pinned 2026.20")
+                && text.contains("cargo gust slang install"),
+            "{text}"
+        );
+        // None of the bridge markers of check-precompiled (E2) may be spelled by this ungated text.
+        for marker in ["gust-slang-reflect", "kernel.slang", "kernel.artifact"] {
+            assert!(!text.contains(marker), "{marker}");
+        }
+    }
+
+    /// The verdict of the version check becomes the typed error: a pin passes, a mismatch carries the executable, what
+    /// it printed and the pin, and a `slangc` that cannot answer is an I/O error with the reason.
+    #[cfg(feature = "slang-runtime")]
+    #[test]
+    fn the_version_verdict_maps_to_the_typed_error() {
+        use crate::toolchain::VersionError;
+
+        assert!(pin_verdict(Ok(())).is_ok());
+        let mismatch = VersionError::Mismatch {
+            slangc: PathBuf::from("/s/slangc"),
+            found: "2026.13.1".to_owned(),
+        };
+        match pin_verdict(Err(mismatch)) {
+            Err(Error::SlangVersionMismatch {
+                slangc,
+                found,
+                pinned,
+            }) => {
+                assert_eq!(slangc, PathBuf::from("/s/slangc"));
+                assert_eq!(found, "2026.13.1");
+                assert_eq!(pinned, SLANG_PIN);
+            }
+            other => panic!("{other:?}"),
+        }
+        for unanswered in [
+            VersionError::Run("cannot run `/s/slangc`: nope".to_owned()),
+            VersionError::Output("unexpected `-version` output: `x`".to_owned()),
+        ] {
+            let text = unanswered.to_string();
+            match pin_verdict(Err(unanswered)) {
+                Err(Error::Io(error)) => assert_eq!(error.to_string(), text),
+                other => panic!("{other:?}"),
+            }
+        }
+    }
 
     fn mapped_kernel(source: &str, diagnostic: &str) -> Option<String> {
         map_slang_diagnostic(
@@ -761,7 +869,13 @@ mod tests {
             (Target::Spirv, Some("-fvk-use-entrypoint-name")),
         ] {
             for (shape, stage) in [(Shape::Grid, "compute"), (Shape::Pixel, "fragment")] {
-                let command = slangc_command(Path::new("kernel.slang"), target, "gpu_m_k", shape);
+                let command = slangc_command(
+                    Path::new("slangc"),
+                    Path::new("kernel.slang"),
+                    target,
+                    "gpu_m_k",
+                    shape,
+                );
                 let mut expected = vec![
                     "kernel.slang",
                     "-target",

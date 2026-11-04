@@ -1,7 +1,7 @@
 use std::{
     env,
     ffi::OsString,
-    fs,
+    fs, io,
     path::{Path, PathBuf},
     process::Command,
 };
@@ -410,15 +410,35 @@ fn default_helper(root: &Path) -> PathBuf {
         .join(format!("gust-slang-reflect{}", env::consts::EXE_SUFFIX))
 }
 
-/// The file that holds the pin of `cargo gust`, the one place the version lives (the workflows read it there too).
-const PIN_SOURCE: &str = "crates/cargo-gust/src/slang.rs";
+/// The file that holds the pin, the one place the version lives: `gust::toolchain` (D109, mr.t2).
+const PIN_SOURCE: &str = "crates/gust/src/toolchain.rs";
 
-/// The Slang version `cargo gust` is pinned to: the string of the one `SLANG_VERSION` constant in `source`. `None`
-/// when there is not exactly one such line or its value is empty.
+/// Where the pin lived before mr.t2, `cargo-gust`'s manager. It is read only when [`PIN_SOURCE`] does not exist (a
+/// tree older than mr.t2, and the checkouts that the tests of `verify` build by hand); a tree that has the new file
+/// never reads this one.
+const LEGACY_PIN_SOURCE: &str = "crates/cargo-gust/src/slang.rs";
+
+/// The spellings of the constant that holds the pin: `gust::toolchain`'s, then the one `slang.rs` had.
+const PIN_DECLARATIONS: [&str; 2] = [
+    "pub const SLANG_PIN: &str = \"",
+    "pub(crate) const SLANG_VERSION: &str = \"",
+];
+
+/// The spellings of the list of validated builds, in the same two homes.
+const VALIDATED_DECLARATIONS: [&str; 2] = [
+    "pub const VALIDATED_BUILDS: &[&str] = &[",
+    "pub(crate) const VALIDATED_BUILDS: &[&str] = &[",
+];
+
+/// The Slang version `cargo gust` is pinned to: the string of the one `SLANG_PIN` constant in `source` (or, for a tree
+/// older than mr.t2, of the one `SLANG_VERSION` constant). `None` when there is not exactly one such line or its
+/// value is empty.
 pub(crate) fn slang_pin(source: &str) -> Option<String> {
     let mut found = source.lines().filter_map(|line| {
-        line.trim()
-            .strip_prefix("pub(crate) const SLANG_VERSION: &str = \"")?
+        let line = line.trim();
+        PIN_DECLARATIONS
+            .iter()
+            .find_map(|declaration| line.strip_prefix(declaration))?
             .strip_suffix("\";")
             .map(str::to_owned)
     });
@@ -427,12 +447,13 @@ pub(crate) fn slang_pin(source: &str) -> Option<String> {
 }
 
 /// The other `slangc -version` tags that count as the pin: the strings of the `VALIDATED_BUILDS` list of `source`
-/// (empty when the list is empty). Together with [`slang_pin`] this is the rule of `matches_pin` in `slang.rs`,
+/// (empty when the list is empty). Together with [`slang_pin`] this is the rule of `matches_pin` in `gust::toolchain`,
 /// read from the same source so the two cannot drift: adding a validated build there admits it here too. `None`
 /// when the constant is missing or not closed.
 pub(crate) fn slang_validated_builds(source: &str) -> Option<Vec<String>> {
-    let rest = source
-        .split_once("pub(crate) const VALIDATED_BUILDS: &[&str] = &[")?
+    let rest = VALIDATED_DECLARATIONS
+        .iter()
+        .find_map(|declaration| source.split_once(declaration))?
         .1;
     let list = rest.split_once("];")?.0;
     let mut builds = Vec::new();
@@ -452,7 +473,8 @@ pub(crate) struct PinRule {
 }
 
 impl PinRule {
-    /// The rule of `matches_pin` in `slang.rs`: the tag is the pin, or it extends the pin and is a validated build.
+    /// The rule of `matches_pin` in `gust::toolchain`: the tag is the pin, or it extends the pin and is a validated
+    /// build.
     pub(crate) fn admits(&self, tag: &str) -> bool {
         tag == self.pin || (tag.starts_with(&self.pin) && self.validated.iter().any(|v| v == tag))
     }
@@ -461,15 +483,26 @@ impl PinRule {
 pub(crate) fn pin_rule_of(source: &str) -> Result<PinRule, String> {
     Ok(PinRule {
         pin: slang_pin(source)
-            .ok_or_else(|| format!("cannot read the one SLANG_VERSION constant of {PIN_SOURCE}"))?,
+            .ok_or_else(|| format!("cannot read the one SLANG_PIN constant of {PIN_SOURCE}"))?,
         validated: slang_validated_builds(source)
             .ok_or_else(|| format!("cannot read the VALIDATED_BUILDS list of {PIN_SOURCE}"))?,
     })
 }
 
 fn pin_rule(root: &Path) -> Result<PinRule, String> {
-    let source = fs::read_to_string(root.join(PIN_SOURCE))
-        .map_err(|error| format!("cannot read {PIN_SOURCE}: {}", error.kind()))?;
+    let source = match fs::read_to_string(root.join(PIN_SOURCE)) {
+        Ok(source) => source,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            fs::read_to_string(root.join(LEGACY_PIN_SOURCE)).map_err(|legacy| {
+                format!(
+                    "cannot read {PIN_SOURCE} ({}) or {LEGACY_PIN_SOURCE} ({})",
+                    error.kind(),
+                    legacy.kind()
+                )
+            })?
+        }
+        Err(error) => return Err(format!("cannot read {PIN_SOURCE}: {}", error.kind())),
+    };
     pin_rule_of(&source)
 }
 

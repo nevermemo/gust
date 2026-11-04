@@ -411,6 +411,16 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   new `release` job; `check-full` runs it in full. Opus merge after fixes; no must-fix, five should-fixes and five
   nits taken.
   Main: 23 gate steps green on `9cc2f60` (2026-11-04 02:08 to 02:39Z, RTX 5090), check-examples and the full check-release green.
+- MR mr.d (`7a925dc`, fix round `b9357d2`, merge `7598a3c`): docs that work from crates.io, prose only.
+  The root README gains the "Install from crates.io" path around check-release's code blocks (the dev run with a
+  user feature, the release build, renamed dependencies and the two-direct-`gust` clash), with a note that the
+  packages are not on crates.io yet: the prose uses the release names (D48) and the blocks keep today's names until
+  mr.n. New "Platforms", "Stability" and "Minimum Rust" (1.90, the `msrv` CI job; gates on stable 1.98.0) sections;
+  `CHANGELOG.md` (0.1.0) and `docs/development/RELEASE.md` (the steps, which are the owner's acts, and the
+  post-publish check) are new; ARCHITECTURE names package and library names; the crate READMEs install with
+  `--version "~0.1"`. Opus merge after fixes: the must-fix (the README said the crates were published), three
+  should-fixes and ten nits taken.
+  Main: docs-check, lint, xtask tests and check-release --check-only green on `7598a3c` (2026-11-04 03:38 to 03:42Z; Markdown-only slice).
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).

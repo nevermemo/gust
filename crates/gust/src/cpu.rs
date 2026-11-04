@@ -74,6 +74,14 @@ impl CpuDevice {
         }
     }
 
+    /// A buffer of this device that takes `values` over without a copy (the zeroed output of a map call).
+    pub(crate) fn buffer_from_vec<T: GpuPod>(&self, values: Vec<T>) -> CpuBuffer<T> {
+        CpuBuffer {
+            owner: self.id,
+            cells: RefCell::new(values),
+        }
+    }
+
     /// A uniform of this device holding `value`.
     ///
     /// `T` follows the rule of `gust_wgpu::HeadlessDevice::create_uniform`: a padding-free `Std140V1` type with
@@ -436,6 +444,12 @@ pub enum Error {
         /// What the twin allows.
         maximum: u64,
     },
+    /// `GUST_CPU_THREADS` is set to something other than a positive integer (slice m7.c). The parallel map reports
+    /// the value instead of falling back to a default, so a typo cannot silently change the thread count.
+    InvalidThreads {
+        /// The value found (non-Unicode text is shown lossily).
+        value: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -508,6 +522,10 @@ impl fmt::Display for Error {
             } => write!(
                 f,
                 "kernel `{kernel}` needs {requested} for `{limit}`, the limit is {maximum}; split the work into several dispatches"
+            ),
+            Self::InvalidThreads { value } => write!(
+                f,
+                "the environment variable `GUST_CPU_THREADS` must be a positive integer, got `{value}`"
             ),
         }
     }
@@ -1048,6 +1066,9 @@ pub use crate::__gust_overflow_checks as overflow_checks;
 /// Macro support: the probe hook of the default expansion does nothing.
 #[doc(hidden)]
 pub fn __no_hook() {}
+
+#[doc(hidden)]
+pub mod parallel;
 
 #[cfg(test)]
 mod tests {

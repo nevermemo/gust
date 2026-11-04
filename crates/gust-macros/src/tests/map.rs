@@ -181,6 +181,66 @@ fn cpu_profile_names_no_gpu_api_and_has_the_chunk_body() {
     assert!(text.contains("!=0;"));
 }
 
+/// The chunked `cpu` map (m7.c): `map_on` and `map_on_async` are concrete over `CpuDevice`, check lengths and the
+/// thread count before uploading, borrow the inputs as whole-length slices, and run the chunk body through
+/// `run_map_into_vec`; the chunk body records the element it evaluates. No other profile has any of it.
+#[test]
+fn cpu_profile_map_runs_the_chunk_body_in_parallel_pieces() {
+    let text = expanded(SAXPY, Profile::Cpu);
+    for needle in [
+        "pubfnmap_on<__GustA0,__GustA1,__GustA2>(__gust_device:&::gust::cpu::CpuDevice,",
+        "pubasyncfnmap_on_async<__GustA0,__GustA1,__GustA2>(__gust_device:&::gust::cpu::CpuDevice,",
+        "::gust::cpu::parallel::map_threads(__gust_n)",
+        "::gust::cpu::parallel::require_own_index::<map_kernel>();",
+        "::gust::cpu::parallel::input::<::core::primitive::f32,_>(",
+        "let__gust_s0:&[::core::primitive::f32]=&__gust_r0;",
+        "::gust::cpu::parallel::run_map_into_vec(__gust_out,__gust_threads,",
+        "__gust_map_cpu_chunk(__gust_lo,__gust_hi,__gust_s0,__gust_s1,__gust_s2,__gust_chunk,__gust_cur)",
+        "__gust_cur:&::core::cell::Cell<u32>,",
+        "__gust_cur.set(__gust_i);",
+    ] {
+        assert!(text.contains(needle), "missing {needle}");
+    }
+    // Not generic over the device, and no trip through the sequential `Run` impl (which stays for typed calls).
+    for absent in ["__GustD", "MapHost+::gust::Run", "::dispatch(", "::submit("] {
+        assert!(!text.contains(absent), "the cpu map must not have {absent}");
+    }
+    // The element count and the thread count are checked before anything is bound, and an empty call returns early.
+    let order = [
+        "element_count",
+        "map_threads",
+        "Vec::new()",
+        "bind(a,__gust_device)",
+        "::zeroed::<::core::primitive::f32>",
+    ];
+    let positions: Vec<usize> = order
+        .iter()
+        .map(|needle| {
+            text.find(needle)
+                .unwrap_or_else(|| panic!("missing {needle}"))
+        })
+        .collect();
+    assert!(
+        positions.windows(2).all(|pair| pair[0] < pair[1]),
+        "{positions:?}"
+    );
+    // A `bool` input is the converted `u32` slice and a `bool` result is converted back.
+    let flag = expanded(
+        "pub fn pick(flag: bool, x: u32) -> bool { flag && x > 1u32 }",
+        Profile::Cpu,
+    );
+    assert!(
+        flag.contains("::gust::cpu::parallel::input::<::core::primitive::u32,_>("),
+        "{flag}"
+    );
+    assert!(flag.contains("let__gust_s0:&[::core::primitive::u32]=&__gust_r0;"));
+    assert!(flag.contains(".map(|__gust_word|__gust_word!=0u32)"));
+    // Every other profile is unchanged: generic over the device, through the kernel's `Run` impl.
+    let other = expanded(SAXPY, Profile::Other);
+    assert!(!other.contains("gust::cpu::parallel"));
+    assert!(!other.contains("__gust_cur"));
+}
+
 #[test]
 fn elements_are_the_buffer_types_and_bool_is_a_u32_word() {
     let text = expanded(SAXPY, Profile::Other);

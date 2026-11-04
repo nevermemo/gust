@@ -28,9 +28,10 @@
 //! and broadcasts.
 //!
 //! Profiles. Under `GUST_PROFILE=cpu` the host functions name only `::gust::cpu` (no GPU API), `map_gpu` and
-//! `map_async` are not emitted, and the CPU-only chunk body of the plan's section 6 is emitted for m7.c. Under every
-//! other profile `map`, `map_on`, `map_gpu`, `map_gpu_on`, `map_async` and `map_on_async` are emitted; the blocking
-//! ones are not emitted on `wasm32` (nothing may block there, D69).
+//! `map_async` are not emitted, and `map_on` and `map_on_async` are concrete over `CpuDevice` and run the CPU-only
+//! chunk body of the plan's section 6 (`__gust_map_cpu_chunk`) in parallel pieces of the output through
+//! `gust::cpu::parallel` (m7.c). Under every other profile `map`, `map_on`, `map_gpu`, `map_gpu_on`, `map_async` and
+//! `map_on_async` are emitted; the blocking ones are not emitted on `wasm32` (nothing may block there, D69).
 
 use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
@@ -679,6 +680,84 @@ fn host_items(signature: &Signature, profile: Profile) -> TokenStream {
     };
     let doc_async = "[`map_on`] that does not block: submit, then await the read-back, as a `Vec`.";
 
+    // `map_on` and `map_on_async`. The `cpu` profile has one device, so they are concrete there and the work is the
+    // parallel chunked run of `gust::cpu::parallel` (m7.c); every other profile is generic over the device and goes
+    // through the kernel's `Run` impl, which on the CPU twin stays sequential.
+    let on_items = if cpu {
+        let device = quote!(::gust::cpu::CpuDevice);
+        let cpu_shape = shape(signature, &device);
+        let cpu_body = cpu_body(signature, &cpu_shape);
+        let (cpu_arguments, cpu_parameters, cpu_bounds) = (
+            &cpu_shape.argument_types,
+            &cpu_shape.parameters,
+            &cpu_shape.bounds,
+        );
+        let doc_on_cpu = format!(
+            "[`{name}`] over the elements of the arguments on `device`, as a `Vec`, in parallel chunks of the output \
+             (`GUST_CPU_THREADS`, see `docs/SEMANTICS.md`): the result is the one a single thread gives, and if \
+             elements panic, the panic of the lowest index is raised. `Err` before any work when the lengths differ \
+             (`gust::map::Error::LengthMismatch`), the count does not fit `u32` or `GUST_CPU_THREADS` is invalid; an \
+             empty call returns an empty `Vec`."
+        );
+        let doc_async_cpu = "[`map_on`] as an `async fn`: the CPU work runs inside the first poll, since there is \
+             nothing to wait for.";
+        quote! {
+            #[doc = #doc_on_cpu]
+            #not_wasm
+            #[allow(clippy::too_many_arguments)]
+            pub fn map_on<#(#cpu_arguments),*>(
+                __gust_device: &#device,
+                #(#cpu_parameters),*
+            ) -> ::core::result::Result<::std::vec::Vec<#result_host>, ::gust::map::Error>
+            where
+                #(#cpu_bounds,)*
+            {
+                #cpu_body
+            }
+
+            #[doc = #doc_async_cpu]
+            #[allow(clippy::too_many_arguments, clippy::unused_async)]
+            pub async fn map_on_async<#(#cpu_arguments),*>(
+                __gust_device: &#device,
+                #(#cpu_parameters),*
+            ) -> ::core::result::Result<::std::vec::Vec<#result_host>, ::gust::map::Error>
+            where
+                #(#cpu_bounds,)*
+            {
+                #cpu_body
+            }
+        }
+    } else {
+        quote! {
+            #[doc = #doc_on]
+            #not_wasm
+            #[allow(clippy::too_many_arguments)]
+            pub fn map_on<#generic_device, #(#generic_arguments),*>(
+                __gust_device: &#generic_device,
+                #(#generic_parameters),*
+            ) -> ::core::result::Result<::std::vec::Vec<#result_host>, ::gust::map::Error>
+            where
+                #run_bound,
+                #(#generic_bounds,)*
+            {
+                #sync_body
+            }
+
+            #[doc = #doc_async]
+            #[allow(clippy::too_many_arguments)]
+            pub async fn map_on_async<#generic_device, #(#generic_arguments),*>(
+                __gust_device: &#generic_device,
+                #(#generic_parameters),*
+            ) -> ::core::result::Result<::std::vec::Vec<#result_host>, ::gust::map::Error>
+            where
+                #run_bound,
+                #(#generic_bounds,)*
+            {
+                #async_body
+            }
+        }
+    };
+
     let mut items = TokenStream::new();
     items.extend(quote! {
         /// The descriptor of the generated kernel.
@@ -690,32 +769,7 @@ fn host_items(signature: &Signature, profile: Profile) -> TokenStream {
         pub const OWN_INDEX: bool = true;
         impl ::gust::map::OwnIndex for #kernel {}
 
-        #[doc = #doc_on]
-        #not_wasm
-        #[allow(clippy::too_many_arguments)]
-        pub fn map_on<#generic_device, #(#generic_arguments),*>(
-            __gust_device: &#generic_device,
-            #(#generic_parameters),*
-        ) -> ::core::result::Result<::std::vec::Vec<#result_host>, ::gust::map::Error>
-        where
-            #run_bound,
-            #(#generic_bounds,)*
-        {
-            #sync_body
-        }
-
-        #[doc = #doc_async]
-        #[allow(clippy::too_many_arguments)]
-        pub async fn map_on_async<#generic_device, #(#generic_arguments),*>(
-            __gust_device: &#generic_device,
-            #(#generic_parameters),*
-        ) -> ::core::result::Result<::std::vec::Vec<#result_host>, ::gust::map::Error>
-        where
-            #run_bound,
-            #(#generic_bounds,)*
-        {
-            #async_body
-        }
+        #on_items
 
         #[doc = #doc_map]
         #not_wasm
@@ -801,10 +855,96 @@ fn host_items(signature: &Signature, profile: Profile) -> TokenStream {
     items
 }
 
-/// The CPU-only chunk body of the plan's section 6 (consumed by m7.c, `cpu` profile only): the function over the
-/// element indexes `lo..hi`, reading whole-length input slices at the global index (a one-element slice at index 0, a
-/// broadcast) and writing only `chunk[i - lo]`, the invocation's own element. Nothing calls it in M7; it is the hook
-/// that the parallel CPU execution will take, and a test pins its result against the sequential kernel.
+/// The body of a `cpu` profile `map_on` and `map_on_async` (slice m7.c): the checks and the binding of every other map
+/// call, but the work is `gust::cpu::parallel::run_map_into_vec` over [`cpu_chunk`]. The inputs are borrowed as
+/// whole-length slices (a broadcast is the slice of one element, a `bool` the converted `u32` words) and shared by
+/// every chunk; the output is the zeroed buffer of the device, split into disjoint pieces by the runner. Lengths and
+/// the thread count are checked before anything is uploaded, so an error leaves nothing behind.
+fn cpu_body(signature: &Signature, shape: &Shape) -> TokenStream {
+    let kernel = format_ident!("{}", KERNEL);
+    let device_type = quote!(::gust::cpu::CpuDevice);
+    let map_error = quote!(<#device_type as ::gust::map::MapHost>::map_error);
+    let count = signature.parameters.len();
+    let counted: Vec<TokenStream> = signature
+        .parameters
+        .iter()
+        .map(|parameter| {
+            let (name, label) = (&parameter.name, parameter.name.unraw().to_string());
+            let element = &parameter.element.host;
+            quote!((#label, ::gust::map::MapArg::<#element, #device_type>::shape(&#name)))
+        })
+        .collect();
+    let bound: Vec<syn::Ident> = (0..count)
+        .map(|index| format_ident!("__gust_b{}", index))
+        .collect();
+    let borrowed: Vec<syn::Ident> = (0..count)
+        .map(|index| format_ident!("__gust_r{}", index))
+        .collect();
+    let slices: Vec<syn::Ident> = (0..count)
+        .map(|index| format_ident!("__gust_s{}", index))
+        .collect();
+    let bindings = signature.parameters.iter().zip(&bound).map(|(parameter, local)| {
+        let (name, element) = (&parameter.name, &parameter.element.host);
+        quote! {
+            let #local = ::gust::map::MapArg::<#element, #device_type>::bind(#name, __gust_device)?;
+        }
+    });
+    let reads = signature
+        .parameters
+        .iter()
+        .zip(&shape.argument_types)
+        .zip(bound.iter().zip(borrowed.iter().zip(&slices)))
+        .map(|((parameter, argument), (local, (borrow, slice)))| {
+            let (host, buffer) = (&parameter.element.host, &parameter.element.buffer);
+            let label = parameter.name.unraw().to_string();
+            quote! {
+                let #borrow = ::gust::cpu::parallel::input::<#buffer, _>(
+                    __gust_device,
+                    ::gust::map::resource::<#host, #device_type, #argument>(&#local),
+                    #label,
+                )
+                .map_err(#map_error)?;
+                let #slice: &[#buffer] = &#borrow;
+            }
+        });
+    let result = &signature.result.buffer;
+    let convert = if signature.result.boolean {
+        quote!(
+            __gust_host
+                .into_iter()
+                .map(|__gust_word| __gust_word != 0u32)
+                .collect()
+        )
+    } else {
+        quote!(__gust_host)
+    };
+    quote! {
+        let __gust_n = ::gust::map::element_count(&[#(#counted),*])?;
+        let __gust_threads = ::gust::cpu::parallel::map_threads(__gust_n).map_err(#map_error)?;
+        if __gust_n == 0u32 {
+            return ::core::result::Result::Ok(::std::vec::Vec::new());
+        }
+        ::gust::cpu::parallel::require_own_index::<#kernel>();
+        #(#bindings)*
+        #(#reads)*
+        let __gust_out = <#device_type as ::gust::map::MapHost>::zeroed::<#result>(__gust_device, __gust_n)
+            .map_err(#map_error)?;
+        let __gust_host = ::gust::cpu::parallel::run_map_into_vec(
+            __gust_out,
+            __gust_threads,
+            |__gust_lo, __gust_hi, __gust_chunk, __gust_cur| {
+                __gust_map_cpu_chunk(__gust_lo, __gust_hi, #(#slices,)* __gust_chunk, __gust_cur)
+            },
+        );
+        ::core::result::Result::Ok(#convert)
+    }
+}
+
+/// The CPU-only chunk body of the plan's section 6 (`cpu` profile only; the parallel `map_on` of [`cpu_body`] runs it):
+/// the function over the element indexes `lo..hi`, reading whole-length input slices at the global index (a
+/// one-element slice at index 0, a broadcast) and writing only `chunk[i - lo]`, the invocation's own element. The
+/// generator owns `i`. It sets `cur` to `i` before it evaluates element `i`, so that the runner can name the element
+/// of a panic and re-raise the lowest one.
 fn cpu_chunk(signature: &Signature) -> TokenStream {
     let name = &signature.name;
     let inputs: Vec<syn::Ident> = (0..signature.parameters.len())
@@ -848,8 +988,10 @@ fn cpu_chunk(signature: &Signature) -> TokenStream {
             __gust_hi: u32,
             #(#slices,)*
             __gust_chunk: &mut [#chunk_element],
+            __gust_cur: &::core::cell::Cell<u32>,
         ) {
             for __gust_i in __gust_lo..__gust_hi {
+                __gust_cur.set(__gust_i);
                 #(#reads)*
                 let __gust_r = #name(#(#arguments),*);
                 __gust_chunk[(__gust_i - __gust_lo) as usize] = #store;

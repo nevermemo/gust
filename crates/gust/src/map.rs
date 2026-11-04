@@ -405,7 +405,7 @@ impl MapHost for crate::cpu::CpuDevice {
         // pattern is a valid `T` (the contract of the trait's safety section).
         #[allow(unsafe_code)]
         let zero: T = unsafe { core::mem::zeroed() };
-        Ok(self.buffer(&vec![zero; len as usize]))
+        Ok(self.buffer_from_vec(vec![zero; len as usize]))
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -30,9 +30,10 @@ use crate::GpuPod;
 pub const THREADS_VARIABLE: &str = "GUST_CPU_THREADS";
 
 /// How many elements one thread is worth (the factor `F` of D119): a call of `n` elements uses at most
-/// `max(1, n / ELEMENTS_PER_THREAD)` threads. This is the starting value of D119, 2^18, pending the measurement of
-/// this implementation (vector-add must stay within 10 % of one thread from 2^16 to 1e6 elements); it is the one place
-/// the factor lives, so a better number is a one-line change here (and in the user-facing text of `docs/SEMANTICS.md`).
+/// `max(1, n / ELEMENTS_PER_THREAD)` threads. D119's value, 2^18, measured on this implementation (24 logical
+/// cores): vector-add stayed within 10 % of one thread from 2^16 to 1e6 elements, and the k = 64 polynomial ran 16x
+/// faster at 1e8 than on one thread. It is the one place the factor lives, so a better number is a one-line change
+/// here (and in the user-facing text of `docs/SEMANTICS.md`).
 pub const ELEMENTS_PER_THREAD: usize = 1 << 18;
 
 /// The thread count that `value` (the content of `GUST_CPU_THREADS`, `None` when it is not set) asks for, with

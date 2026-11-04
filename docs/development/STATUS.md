@@ -449,6 +449,18 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   9.6x at 1e7; vector-add 2 to 9x; every result bit-exact with one thread; the lowest failing index re-raised (48
   cases, 0 failed). Spawning costs about 0.1 ms per thread, so m7.c also bounds the thread count by the input and
   measures that bound (D119). Quiet window 2026-11-04 08:09Z, alone. The scratch crate stays local, never merged.
+- MR mr.r2 (`62dc2fa`, fix round `e67a1b1`, merge `b719a30`): check-release packages in a target of its own.
+  R1's one-call `cargo package` and R8's `cargo publish --dry-run` verify each crate against cargo's temporary
+  registry, and cargo fingerprints a registry crate by name and version, so a build left in the caller's target by an
+  earlier run was reused although the source changed (seen on the mx.k merge: cargo-gust built against a `gust`
+  without `Shape`). Both now build in `<work>/package-target`, new each run. Cargo also unpacks that registry into
+  `$CARGO_HOME/registry/src/<hash>/`; check-release deletes only the entry that its own build's dep-info names (so a
+  concurrent run's entry is never touched) and fails, naming the entry, when that entry existed before the run (a
+  reused `--work-dir`). Reproduced first as pre-registered: a probe constant used by cargo-gust failed R1 on the old
+  code (E0425) and passed on the new. The fail-closed path is covered by a unit test only. Opus merge after fixes:
+  the must-fix (concurrent runs deleting each other's entry), two should-fixes and the nits taken.
+  Main: 23 gate steps green on `b719a30` (2026-11-04 09:49 to 10:20Z, RTX 5090) and check-release --check-only green in
+  the shared main target (10:20 to 10:24Z; registry/src clean after).
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).

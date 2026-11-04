@@ -550,13 +550,15 @@ fn fresh_smoke_directory(root: &Path) -> Result<PathBuf, String> {
     Ok(directory)
 }
 
-/// The files `export-artifacts --hash-manifest` and `--compare` cover: the WGSL and SPIR-V the examples write.
-const EXPORT_EXTENSIONS: [&str; 2] = ["wgsl", "spv"];
+/// The files `export-artifacts --hash-manifest` and `--compare` cover: what the examples write to `generated-wgpu/`.
+/// The `.slang` files are the emitter's own output (slangc can normalise a change away in the `.wgsl` and `.spv`),
+/// the `.rs` files the generated host text.
+const EXPORT_EXTENSIONS: [&str; 4] = ["slang", "rs", "wgsl", "spv"];
 
 /// The options of `export-artifacts`: with neither flag it only runs the examples.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct ExportOptions {
-    /// `--hash-manifest PATH`: write the SHA-256 of every exported `.wgsl` and `.spv` file to PATH.
+    /// `--hash-manifest PATH`: write the SHA-256 of every exported `.slang`, `.rs`, `.wgsl` and `.spv` file to PATH.
     pub(crate) hash_manifest: Option<PathBuf>,
     /// `--compare PATH`: require the exports to equal the manifest at PATH, name for name and byte for byte.
     pub(crate) compare: Option<PathBuf>,
@@ -584,6 +586,13 @@ impl ExportOptions {
             }
             index += 1;
         }
+        if options.hash_manifest.is_some() && options.hash_manifest == options.compare {
+            return Err(
+                "--hash-manifest and --compare name the same file, so the comparison would read what was just \
+                 written and always pass"
+                    .to_owned(),
+            );
+        }
         Ok(options)
     }
 
@@ -599,7 +608,7 @@ fn is_export_file(path: &Path) -> bool {
         .is_some_and(|extension| EXPORT_EXTENSIONS.contains(&extension))
 }
 
-/// Deletes the `.wgsl` and `.spv` files of the generated directory (ignored by git, never committed), so that a file
+/// Deletes the export files (see [`EXPORT_EXTENSIONS`]) of the generated directory (ignored by git, never committed), so that a file
 /// the examples stopped writing cannot survive into a manifest. A missing directory is fine.
 pub(crate) fn clear_exports(directory: &Path) -> Result<(), String> {
     let entries = match fs::read_dir(directory) {
@@ -616,7 +625,7 @@ pub(crate) fn clear_exports(directory: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// The manifest of the exports in `directory`: one `<sha256>  <file name>` line per `.wgsl` or `.spv` file, sorted by
+/// The manifest of the exports in `directory`: one `<sha256>  <file name>` line per export file, sorted by
 /// name, each line ending in a line feed. An empty directory is an error: a baseline of nothing proves nothing.
 pub(crate) fn hash_manifest(directory: &Path) -> Result<String, String> {
     let mut entries = Vec::new();
@@ -636,10 +645,7 @@ pub(crate) fn hash_manifest(directory: &Path) -> Result<String, String> {
         entries.push((name, sha256_hex(&bytes)));
     }
     if entries.is_empty() {
-        return Err(format!(
-            "{} holds no .wgsl or .spv export",
-            directory.display()
-        ));
+        return Err(format!("{} holds no export file", directory.display()));
     }
     entries.sort();
     Ok(entries

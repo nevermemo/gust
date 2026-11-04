@@ -486,7 +486,8 @@ pub(crate) fn emit_kernel_in(
     for argument in &kernel.sig.inputs {
         let (name, ty) = typed_argument(argument)?;
         let name = emit_ident(name);
-        match parameter_flavor_in(stage, ty) {
+        let flavor = parameter_flavor_in(stage, ty);
+        match flavor {
             ParameterFlavor::Invocation => invocation = Some(name),
             ParameterFlavor::LocalId => derived_ids.push((name, false)),
             ParameterFlavor::GroupId => derived_ids.push((name, true)),
@@ -500,9 +501,13 @@ pub(crate) fn emit_kernel_in(
                 )
                 .unwrap();
             }
-            ParameterFlavor::StorageRead | ParameterFlavor::StorageReadWrite => {
+            // A resource the shape numbers (`gets_slot`, the rule of the descriptor and the record) is declared
+            // with the next binding; one it leaves out is not declared at all.
+            ParameterFlavor::StorageRead | ParameterFlavor::StorageReadWrite
+                if rules.gets_slot(flavor) =>
+            {
                 let element = wrapper_element_type(ty)?;
-                let wrapper = if parameter_flavor_in(stage, ty) == ParameterFlavor::StorageRead {
+                let wrapper = if flavor == ParameterFlavor::StorageRead {
                     "StructuredBuffer"
                 } else {
                     "RWStructuredBuffer"
@@ -520,7 +525,7 @@ pub(crate) fn emit_kernel_in(
                 resources.push(name);
                 binding += 1;
             }
-            ParameterFlavor::Uniform => {
+            ParameterFlavor::Uniform if rules.gets_slot(flavor) => {
                 let element = wrapper_element_type(ty)?;
                 writeln!(
                     output,
@@ -530,6 +535,9 @@ pub(crate) fn emit_kernel_in(
                 .unwrap();
                 binding += 1;
             }
+            ParameterFlavor::StorageRead
+            | ParameterFlavor::StorageReadWrite
+            | ParameterFlavor::Uniform => {}
             ParameterFlavor::Value => {
                 return Err(diagnostics::error(
                     Code::EntryPointParameter,
@@ -557,7 +565,7 @@ pub(crate) fn emit_kernel_in(
         diagnostics::error(
             Code::EntryPointDispatchParameter,
             &kernel.sig,
-            "a Slang kernel requires an `SV_DispatchThreadID` (or legacy `Invocation`) parameter",
+            rules.missing_dispatch_emit,
         )
     })?;
     let entry_point = format!("gpu_{}_{}", module.ident, kernel.sig.ident);

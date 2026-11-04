@@ -37,6 +37,9 @@ impl StageProfile for GridProfile {
     fn binding_rules(&self) -> BindingRules {
         BindingRules::new(
             "Slang compute entry points currently accept resources and SV_DispatchThreadID only",
+            "a Slang kernel requires an `SV_DispatchThreadID` (or legacy `Invocation`) parameter",
+            "a GPU kernel requires exactly one dispatch-thread parameter (`LocalId` and `GroupId` are derived from it, \
+             so a kernel that takes either needs it)",
             &[
                 ParameterFlavor::StorageRead,
                 ParameterFlavor::StorageReadWrite,

@@ -15,7 +15,8 @@ use syn::ext::IdentExt as _;
 use crate::{
     diagnostics::{self, Code},
     math_types,
-    slang::{ParameterFlavor, parameter_flavor, wrapper_element_type},
+    profile::StageProfile,
+    slang::{ParameterFlavor, parameter_flavor_in, wrapper_element_type},
 };
 
 /// The alignment of a constant-buffer struct at least: structs are rounded up to 16 (std140).
@@ -45,20 +46,23 @@ struct Resource<'a> {
 
 /// Every storage and uniform parameter of every kernel of the module, with its element type. A resource type with no
 /// element (`StructuredBuffer` alone) is left out: the emitter reports it.
-fn kernel_resources(items: &[syn::Item]) -> syn::Result<Vec<Resource<'_>>> {
+fn kernel_resources<'a>(
+    stage: &dyn StageProfile,
+    items: &'a [syn::Item],
+) -> syn::Result<Vec<Resource<'a>>> {
     let mut resources = Vec::new();
     for item in items {
         let syn::Item::Fn(function) = item else {
             continue;
         };
-        if crate::expand::kernel_options(function)?.is_none() {
+        if crate::expand::kernel_attribute_in(stage, function)?.is_none() {
             continue;
         }
         for argument in &function.sig.inputs {
             let syn::FnArg::Typed(argument) = argument else {
                 continue;
             };
-            let flavor = parameter_flavor(&argument.ty);
+            let flavor = parameter_flavor_in(stage, &argument.ty);
             if !matches!(
                 flavor,
                 ParameterFlavor::StorageRead
@@ -126,9 +130,9 @@ pub(crate) struct Reach {
 
 /// The reach of the kernels of a module. Total on any module: an element that is no module struct reaches nothing
 /// (the checks of [`check_parameters`] reject a uniform one).
-pub(crate) fn reach(items: &[syn::Item]) -> syn::Result<Reach> {
+pub(crate) fn reach(stage: &dyn StageProfile, items: &[syn::Item]) -> syn::Result<Reach> {
     let structs = module_structs(items);
-    let resources = kernel_resources(items)?;
+    let resources = kernel_resources(stage, items)?;
     let roots = |uniform: bool| {
         resources
             .iter()
@@ -143,9 +147,9 @@ pub(crate) fn reach(items: &[syn::Item]) -> syn::Result<Reach> {
 }
 
 /// E0206, E0207 and E0205: the shape of the uniform parameters and of the structs they reach.
-pub(crate) fn check_parameters(items: &[syn::Item]) -> syn::Result<()> {
+pub(crate) fn check_parameters(stage: &dyn StageProfile, items: &[syn::Item]) -> syn::Result<()> {
     let structs = module_structs(items);
-    for resource in kernel_resources(items)? {
+    for resource in kernel_resources(stage, items)? {
         if resource.flavor == ParameterFlavor::Uniform
             && struct_name(resource.element, &structs).is_none()
         {
@@ -157,7 +161,7 @@ pub(crate) fn check_parameters(items: &[syn::Item]) -> syn::Result<()> {
             ));
         }
     }
-    let reach = reach(items)?;
+    let reach = reach(stage, items)?;
     for item in items {
         let syn::Item::Struct(item) = item else {
             continue;
@@ -294,9 +298,9 @@ fn padding_fields(bytes: u32) -> String {
 /// E0209: a struct a uniform reaches has no gap before a field and no tail in its constant-buffer layout. The model
 /// covers scalars, vectors, `Mat4` and the module's structs; a struct with a field the macro cannot see into is left to
 /// the `const` assertions of the expansion, which fail compilation instead.
-pub(crate) fn check_padding(items: &[syn::Item]) -> syn::Result<()> {
+pub(crate) fn check_padding(stage: &dyn StageProfile, items: &[syn::Item]) -> syn::Result<()> {
     let structs = module_structs(items);
-    let reach = reach(items)?;
+    let reach = reach(stage, items)?;
     for item in items {
         let syn::Item::Struct(item) = item else {
             continue;

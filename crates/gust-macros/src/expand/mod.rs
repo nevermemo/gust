@@ -167,7 +167,7 @@ pub(crate) fn expand_validated(
         .as_ref()
         .expect("validated inline module")
         .1;
-    let uniform_structs = crate::uniform::reach(original_items)?.uniform;
+    let uniform_structs = crate::uniform::reach(stage, original_items)?.uniform;
     let structs_by_name = crate::uniform::module_structs(original_items);
     for item in items.iter_mut() {
         let syn::Item::Struct(item) = item else {
@@ -732,18 +732,21 @@ fn find_function<'a>(module: &'a syn::ItemMod, name: &str) -> &'a syn::ItemFn {
 }
 
 /// The options the Slang emitter needs. Every caller other than the expander wants only these; the `cpu`
-/// option is parsed (and rejected when it is wrong) by [`kernel_attribute`], which this wraps.
+/// option is parsed (and rejected when it is wrong) by `kernel_attribute`, which this wraps. For the `grid` profile and
+/// for tests only: the call sites of the macro pass their profile to `kernel_attribute_in`.
+#[cfg(test)]
 pub fn kernel_options(function: &syn::ItemFn) -> syn::Result<Option<KernelOptions>> {
     Ok(kernel_attribute(function)?.map(|(options, _)| options))
 }
 
 /// All options of a `#[kernel]` attribute: `workgroup_size(x, y, z)` and `cpu = "unsupported"`, each at
-/// most once. `None` when the function has no `#[kernel]`.
+/// most once. `None` when the function has no `#[kernel]`. For the `grid` profile and for tests only.
+#[cfg(test)]
 pub fn kernel_attribute(function: &syn::ItemFn) -> syn::Result<Option<(KernelOptions, CpuTwin)>> {
     kernel_attribute_in(&GRID, function)
 }
 
-/// [`kernel_attribute`] with the options the profile `stage` accepts (D63): which of them exist, the workgroup size of
+/// `kernel_attribute` with the options the profile `stage` accepts (D63): which of them exist, the workgroup size of
 /// a kernel that gives none, and the text of the error for any other option.
 pub(crate) fn kernel_attribute_in(
     stage: &dyn StageProfile,
@@ -930,6 +933,19 @@ fn parameter_facts(
         })
         .filter_map(Result::transpose)
         .collect()
+}
+
+/// The name and descriptor binding of each parameter the descriptor lists, for the test that the emitter numbers the
+/// same slots.
+#[cfg(test)]
+pub(crate) fn parameter_bindings(
+    stage: &dyn StageProfile,
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
+) -> syn::Result<Vec<(String, Option<u32>)>> {
+    Ok(parameter_facts(stage, inputs)?
+        .into_iter()
+        .map(|fact| (fact.name, fact.binding))
+        .collect())
 }
 
 fn parameter_descriptors(

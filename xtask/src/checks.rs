@@ -738,8 +738,8 @@ pub(crate) fn export_artifacts() -> Result<(), String> {
 }
 
 /// Runs every example, which exports its Slang, WGSL and SPIR-V to `generated-wgpu/`. With `--hash-manifest PATH`
-/// or `--compare PATH` the `.wgsl` and `.spv` files of that directory are deleted first (so a stale file cannot
-/// survive), and afterwards the SHA-256 of each is written to PATH (sorted) and/or compared with the manifest at PATH,
+/// or `--compare PATH` the `.slang`, `.rs`, `.wgsl` and `.spv` files of that directory are deleted first (so a stale
+/// file cannot survive), and afterwards the SHA-256 of each is written to PATH (sorted) and/or compared with the manifest at PATH,
 /// which fails on any missing, unexpected or changed file. The byte-identical gate of mx.p0 (plan section 2.3).
 pub(crate) fn export_artifacts_with(args: &[String]) -> Result<(), String> {
     let options = ExportOptions::parse(args)?;

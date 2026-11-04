@@ -317,6 +317,8 @@ fn export_options_take_both_flags_and_refuse_the_rest() {
             .unwrap_err()
             .contains("needs a value")
     );
+    let same = ExportOptions::parse(&args(&["--compare", "x.txt", "--hash-manifest", "x.txt"]));
+    assert!(same.unwrap_err().contains("same file"));
     assert!(
         ExportOptions::parse(&args(&["--bogus"]))
             .unwrap_err()
@@ -325,28 +327,29 @@ fn export_options_take_both_flags_and_refuse_the_rest() {
 }
 
 #[test]
-fn the_hash_manifest_lists_wgsl_and_spv_files_sorted_and_skips_the_rest() {
+fn the_hash_manifest_lists_slang_rs_wgsl_and_spv_files_sorted_and_skips_the_rest() {
     let dir = export_directory("manifest");
     std::fs::write(dir.join("b__run.spv"), b"two").unwrap();
     std::fs::write(dir.join("a__run.wgsl"), b"one").unwrap();
-    std::fs::write(dir.join("a__run.slang"), b"not hashed").unwrap();
+    std::fs::write(dir.join("a__run.slang"), b"three").unwrap();
+    std::fs::write(dir.join("a__run.rs"), b"four").unwrap();
+    std::fs::write(dir.join("a__run.json"), b"not hashed").unwrap();
     let manifest = hash_manifest(&dir).unwrap();
     let lines = manifest.lines().collect::<Vec<_>>();
-    assert_eq!(lines.len(), 2, "{manifest}");
+    assert_eq!(lines.len(), 4, "{manifest}");
+    assert!(lines[0].ends_with("  a__run.rs"), "{manifest}");
+    assert!(lines[1].ends_with("  a__run.slang"), "{manifest}");
     assert_eq!(
-        lines[0],
+        lines[2],
         "7692c3ad3540bb803c020b3aee66cd8887123234ea0c6e7143c0add73ff431ed  a__run.wgsl"
     );
-    assert!(lines[1].ends_with("  b__run.spv"), "{manifest}");
-    assert_eq!(parse_manifest(&manifest).unwrap().len(), 2);
+    assert!(lines[3].ends_with("  b__run.spv"), "{manifest}");
+    assert_eq!(parse_manifest(&manifest).unwrap().len(), 4);
     clear_exports(&dir).unwrap();
-    assert!(dir.join("a__run.slang").exists());
+    assert!(dir.join("a__run.json").exists());
+    assert!(!dir.join("a__run.slang").exists());
     assert!(!dir.join("b__run.spv").exists());
-    assert!(
-        hash_manifest(&dir)
-            .unwrap_err()
-            .contains("no .wgsl or .spv")
-    );
+    assert!(hash_manifest(&dir).unwrap_err().contains("no export file"));
     std::fs::remove_dir_all(&dir).unwrap();
     clear_exports(&dir).unwrap();
 }

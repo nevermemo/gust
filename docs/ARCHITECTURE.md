@@ -45,6 +45,16 @@ kernel. It includes the module's struct declarations, non-kernel helper function
 that kernel's resources, and one prefixed compute entry point. Helpers and user
 identifiers are not fully hygienically renamed yet.
 
+What differs between kinds of shader stage lives behind the `StageProfile` trait of
+`crates/gust-macros/src/profile/` (D63). Its 14 methods answer, from facts and never from the
+`syn` body, what a stage names its parameters (the invocation and the ids derived from it), which
+resources get a binding slot and in what order, which `#[kernel(..)]` options it accepts, which
+constructs it refuses, the text of the entry signature, prologue and epilogue, any extra binding,
+how the CPU twin runs it, how it is reflected and how exact its CPU contract is. The emitter, the
+validator, the expander and the option parser call it at those points and walk the body
+themselves. `grid` (the compute grid of `#[kernel]`) is the only profile until P1, and its answers
+are exactly the text the call sites wrote before the trait existed.
+
 The original kernel function is renamed to a private `__gpu_typecheck_*` item in
 the expanded Rust module. In a production build it is compiled only to make rustc
 check the user's body. There is deliberately no public `.cpu(...)` wrapper.

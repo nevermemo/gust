@@ -39,6 +39,10 @@ pub(crate) enum Builtin {
 pub(crate) struct BindingRules {
     /// The refusal text for a plain value parameter of a kernel (GUST-E0801).
     pub(crate) value_refusal: &'static str,
+    /// The refusal text for a kernel without the dispatch-thread parameter, from the emitter.
+    pub(crate) missing_dispatch_emit: &'static str,
+    /// The refusal text for a kernel without exactly one dispatch-thread parameter, from the validator.
+    pub(crate) missing_dispatch_validate: &'static str,
     /// The parameter flavors that take a binding slot in descriptor set 0, numbered in declaration order.
     slotted: &'static [ParameterFlavor],
 }
@@ -46,10 +50,14 @@ pub(crate) struct BindingRules {
 impl BindingRules {
     pub(crate) const fn new(
         value_refusal: &'static str,
+        missing_dispatch_emit: &'static str,
+        missing_dispatch_validate: &'static str,
         slotted: &'static [ParameterFlavor],
     ) -> Self {
         Self {
             value_refusal,
+            missing_dispatch_emit,
+            missing_dispatch_validate,
             slotted,
         }
     }
@@ -117,7 +125,8 @@ pub(crate) struct DerivedId {
     pub(crate) group: bool,
 }
 
-/// A resource the shape declares beside the kernel's own, taking the next binding slot.
+/// A resource the shape declares beside the kernel's own, taking the next binding slot. The emitter numbers it; its
+/// entry in the descriptor and the export record is mx.p1a's (no profile returns one before then).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExtraBinding {
     pub(crate) name: String,

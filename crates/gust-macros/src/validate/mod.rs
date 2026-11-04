@@ -507,13 +507,13 @@ pub(crate) fn validate_module_in(
         .collect();
     // The shape of the uniform parameters and of the structs they reach comes before the padding checks: a `Mat2` in
     // a uniform struct is E0205 whatever else is wrong with its layout.
-    crate::uniform::check_parameters(items)?;
+    crate::uniform::check_parameters(stage, items)?;
     for item in items {
         if let syn::Item::Struct(item) = item {
             check_padding(item, &structs)?;
         }
     }
-    crate::uniform::check_padding(items)?;
+    crate::uniform::check_padding(stage, items)?;
     Ok(())
 }
 
@@ -729,8 +729,7 @@ fn validate_function(
             return Err(diagnostics::error(
                 Code::KernelDispatchParameter,
                 &function.sig,
-                "a GPU kernel requires exactly one dispatch-thread parameter (`LocalId` and `GroupId` are derived \
-                 from it, so a kernel that takes either needs it)",
+                stage.binding_rules().missing_dispatch_validate,
             ));
         }
         if !matches!(&function.sig.output, syn::ReturnType::Default)
@@ -772,6 +771,9 @@ fn validate_function(
         };
         stage.validate_body(&mut checks);
         if let Some(sentence) = checks.forbidden.into_iter().next() {
+            // Placeholder: GUST-E0811 is the code of an unsupported expression, used here so a refusal by a profile
+            // has one. The code and the text of the refusal of a construct a shape does not take are mx.c's
+            // (`diagnostics.rs`, `DIAGNOSTICS`).
             return Err(diagnostics::error(
                 Code::UnsupportedExpression,
                 &function.sig,
@@ -857,18 +859,22 @@ fn validate_function(
     }
     visitor.visit_item_fn(function);
     visitor.finish()?;
-    check_workgroup_rules(function, is_kernel)
+    check_workgroup_rules(stage, function, is_kernel)
 }
 
 /// The workgroup rules of a function the generic validation accepted (see `barrier`): the barrier positions (E0414),
 /// no `return` (E0415) and no `break` or `continue` in a barrier loop (E0416), then the CPU strategy (E0717) and the
 /// memory limit (E0718) of a kernel that uses workgroup memory or a barrier.
-fn check_workgroup_rules(function: &syn::ItemFn, is_kernel: bool) -> syn::Result<()> {
-    use crate::slang::{ParameterFlavor, parameter_flavor};
+fn check_workgroup_rules(
+    stage: &dyn StageProfile,
+    function: &syn::ItemFn,
+    is_kernel: bool,
+) -> syn::Result<()> {
+    use crate::slang::{ParameterFlavor, parameter_flavor_in};
 
     let has_memory = function.sig.inputs.iter().any(|argument| {
         matches!(argument, syn::FnArg::Typed(argument)
-            if parameter_flavor(&argument.ty) == ParameterFlavor::Workgroup)
+            if parameter_flavor_in(stage, &argument.ty) == ParameterFlavor::Workgroup)
     });
     let barrier_kernel = is_kernel && (has_memory || barrier::has_barrier(function));
     barrier::check(function, is_kernel, barrier_kernel)?;
@@ -888,7 +894,7 @@ fn check_workgroup_rules(function: &syn::ItemFn, is_kernel: bool) -> syn::Result
             ),
         ));
     }
-    let twin = crate::expand::kernel_attribute(function)?.map(|(_, twin)| twin);
+    let twin = crate::expand::kernel_attribute_in(stage, function)?.map(|(_, twin)| twin);
     if !matches!(twin, Some(crate::expand::CpuTwin::Unsupported)) {
         let construct = if has_memory {
             "`Workgroup<[T; N]>` memory"

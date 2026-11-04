@@ -4,7 +4,7 @@
 
 use crate::{
     diagnostics::testing::parse_str,
-    expand::{kernel_attribute_in, kernel_options},
+    expand::{kernel_attribute_in, kernel_options, parameter_bindings},
     profile::{
         BindingRules, BodyChecks, Builtin, ContractTier, ExtraBinding, GRID, KernelFacts,
         OptionRules, OwnIndexWrite, ReflectionKind, Shape, StageProfile, TwinHarness,
@@ -158,6 +158,8 @@ impl StageProfile for Probe {
     fn binding_rules(&self) -> BindingRules {
         BindingRules::new(
             "the probe stage takes no value parameters",
+            "the probe stage requires a `Pixel` parameter",
+            "the probe stage requires exactly one `Pixel` parameter",
             &[
                 ParameterFlavor::StorageRead,
                 ParameterFlavor::StorageReadWrite,
@@ -262,6 +264,59 @@ fn the_emitter_reads_the_stage_the_entry_signature_the_statements_and_the_bindin
         source.ends_with("    return float4(0.0, 0.0, 0.0, 1.0);\n}\n"),
         "{source}"
     );
+}
+
+/// A profile that leaves a kind of resource out of `slotted` (the probe's uniform) declares none of it, and the slots
+/// of the others are the descriptor's: both come from `gets_slot`.
+#[test]
+fn the_emitter_numbers_the_slots_the_descriptor_numbers() {
+    let module = module(
+        "mod shade {
+            #[repr(C, align(16))]
+            pub struct P { pub a: f32, pub b: f32, pub c: f32, pub d: f32 }
+            #[kernel(cpu = \"unsupported\")]
+            pub fn paint(
+                px: Pixel,
+                a: StructuredBuffer<float>,
+                u: Uniform<P>,
+                mut out: RWStructuredBuffer<float>,
+            ) {
+                out[px.x] = a[px.x];
+            }
+        }",
+    );
+    let kernel = kernel_ref(&module);
+    let options = kernel_attribute_in(&Probe, kernel).unwrap().unwrap().0;
+    let source = emit_kernel_in(&Probe, &module, kernel, options)
+        .unwrap()
+        .source;
+    assert!(!source.contains("ConstantBuffer<P>"), "{source}");
+    assert!(
+        source.contains("[[vk::binding(0, 0)]] StructuredBuffer<float> a;\n"),
+        "{source}"
+    );
+    assert!(
+        source.contains("[[vk::binding(1, 0)]] RWStructuredBuffer<float> out;\n"),
+        "{source}"
+    );
+    // The profile's own extra binding takes the next slot, after the two resources.
+    assert!(
+        source.contains("[[vk::binding(2, 0)]] ConstantBuffer<uint> __probe;\n"),
+        "{source}"
+    );
+    let bindings = parameter_bindings(&Probe, &kernel.sig.inputs).unwrap();
+    assert_eq!(
+        bindings,
+        [
+            ("px".to_owned(), None),
+            ("a".to_owned(), Some(0)),
+            ("u".to_owned(), None),
+            ("out".to_owned(), Some(1)),
+        ]
+    );
+    // `grid` slots the uniform too: the same module numbers it 1 and the output 2.
+    let grid = parameter_bindings(&GRID, &kernel.sig.inputs).unwrap();
+    assert!(grid.contains(&("u".to_owned(), Some(1))), "{grid:?}");
 }
 
 fn kernel_ref(module: &syn::ItemMod) -> &syn::ItemFn {

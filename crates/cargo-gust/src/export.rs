@@ -184,6 +184,7 @@ pub(crate) fn plan(
             module: record.module.clone(),
             name: record.name.clone(),
             entry_point: record.entry_point.clone(),
+            shape: record.shape,
             clean_sha256: record.clean_sha256(),
             export_unchecked: record.unchecked_parameters(),
             formats: entries,

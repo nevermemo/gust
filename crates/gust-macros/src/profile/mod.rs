@@ -170,11 +170,8 @@ pub(crate) enum ContractTier {
 
 /// The rules of one execution shape. Fourteen methods: each is a table or a short function over facts.
 pub(crate) trait StageProfile {
-    /// The shape this profile implements.
-    #[allow(
-        dead_code,
-        reason = "named by a later slice (mx.k) that records the shape; no reader yet"
-    )]
+    /// The shape this profile implements: the expansion writes it into the descriptor and, for a shape other than
+    /// `grid`, into the export record (mx.k).
     fn shape(&self) -> Shape;
 
     /// The Slang stage of the entry point: the argument of `[shader("..")]`.

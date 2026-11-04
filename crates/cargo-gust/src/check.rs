@@ -233,6 +233,14 @@ fn compare_entry(
             ));
         }
     }
+    if entry.shape != record.shape {
+        report.problems.push(format!(
+            "kernel `{name}` (key {}): the manifest has shape `{}`, the source has `{}`; run `cargo gust build`",
+            record.key,
+            entry.shape.name(),
+            record.shape.name()
+        ));
+    }
     let clean = record.clean_sha256();
     if entry.clean_sha256 != clean {
         report.problems.push(format!(

@@ -58,6 +58,7 @@ const PROBE_LEN: KernelDescriptor = KernelDescriptor {
     module: "gpu_vec_tests",
     name: "probe_len",
     entry_point: "gpu_vec_probe_len",
+    shape: gust::Shape::Grid,
     workgroup_size: [1, 1, 1],
     parameters: &[
         storage("src", Access::ReadOnly, 0),
@@ -85,6 +86,7 @@ const ADD_ONE: KernelDescriptor = KernelDescriptor {
     module: "gpu_vec_tests",
     name: "add_one",
     entry_point: "gpu_vec_add_one",
+    shape: gust::Shape::Grid,
     workgroup_size: [64, 1, 1],
     parameters: &[
         storage("src", Access::ReadOnly, 0),

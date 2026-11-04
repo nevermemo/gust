@@ -184,6 +184,7 @@ mod tests {
         module: "vec_tail_tests",
         name: "add_one",
         entry_point: "vec_tail_add_one",
+        shape: gust::Shape::Grid,
         workgroup_size: [64, 1, 1],
         parameters: &[
             storage("src", Access::ReadOnly, 0),

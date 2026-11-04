@@ -152,6 +152,18 @@ mod tests {
                 "// \u{fc}n\u{ef} \u{65e5}\u{672c} \u{1f600}\n",
                 "f3edb671848d99cc",
             ),
+            // One body under two shapes (mx.k, D89): the same entry point and body line, the stage attribute and
+            // the signature differ, and so do the keys. The formula has no shape in it.
+            (
+                "gpu_demo_run",
+                "[shader(\"compute\")]\n[numthreads(64, 1, 1)]\nvoid gpu_demo_run(uint3 id : SV_DispatchThreadID)\n{\n    uint i = id.x;\n}\n",
+                "4be1a569519007e0",
+            ),
+            (
+                "gpu_demo_run",
+                "[shader(\"fragment\")]\nOut gpu_demo_run(float4 pos : SV_Position)\n{\n    uint i = id.x;\n}\n",
+                "76d7388ee1e8f383",
+            ),
         ] {
             assert_eq!(
                 format!("{:016x}", content_key(entry_point, text)),
@@ -159,6 +171,24 @@ mod tests {
                 "{entry_point:?}"
             );
         }
+    }
+
+    /// The key formula is unchanged by shapes (D89): the stage is in the Slang text, so the same entry point and body
+    /// under two shapes are two keys, and `KernelDescriptor::shape` is not an input of the key.
+    #[test]
+    fn one_body_under_two_shapes_gives_two_keys() {
+        let entry = "gpu_demo_run";
+        let grid = "[shader(\"compute\")]\n[numthreads(64, 1, 1)]\nvoid gpu_demo_run(uint3 id : SV_DispatchThreadID)\n{\n    uint i = id.x;\n}\n";
+        let pixel = "[shader(\"fragment\")]\nOut gpu_demo_run(float4 pos : SV_Position)\n{\n    uint i = id.x;\n}\n";
+        assert_ne!(content_key(entry, grid), content_key(entry, pixel));
+        assert_eq!(
+            format!("{:016x}", content_key(entry, grid)),
+            "4be1a569519007e0"
+        );
+        assert_eq!(
+            format!("{:016x}", content_key(entry, pixel)),
+            "76d7388ee1e8f383"
+        );
     }
 
     #[test]

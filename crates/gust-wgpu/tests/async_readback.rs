@@ -60,6 +60,7 @@ const SLOW: KernelDescriptor = KernelDescriptor {
     module: "async_readback_tests",
     name: "slow_steps",
     entry_point: "async_readback_slow",
+    shape: gust::Shape::Grid,
     workgroup_size: [64, 1, 1],
     parameters: PARAMETERS,
     slang_source: r#"

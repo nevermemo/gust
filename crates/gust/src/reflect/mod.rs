@@ -198,13 +198,7 @@ pub fn compile_reflected_with_helper(
     // hash is of that text, which `from_output` checks against the same copy.
     let compiled_source =
         slang::write_compile_inputs(directory.path(), kernel.slang_source, &kernel.source)?;
-    let mut command = Command::new(helper.as_ref());
-    command
-        .arg(&source)
-        .arg(kernel.entry_point)
-        .arg(target_name(target))
-        .arg(&artifact)
-        .arg(&json);
+    let mut command = helper_command(helper.as_ref(), kernel, target, &source, &artifact, &json);
     let output =
         slang::output_retrying_busy(&mut command).map_err(|source| Error::HelperUnavailable {
             helper: helper.as_ref().to_owned(),
@@ -234,6 +228,29 @@ pub fn compile_reflected_with_helper(
     )
 }
 
+/// The helper's command line: source, entry point, target, artifact path, reflection path, and the stage of the
+/// kernel's shape. The stage argument is optional for the helper (mx.t0a: it defaults to `compute`); it is passed
+/// every time (mx.k), so that a kernel that is not a compute kernel never relies on the default.
+#[cfg(feature = "slang-runtime")]
+fn helper_command(
+    helper: &Path,
+    kernel: &KernelDescriptor,
+    target: Target,
+    source: &Path,
+    artifact: &Path,
+    json: &Path,
+) -> Command {
+    let mut command = Command::new(helper);
+    command
+        .arg(source)
+        .arg(kernel.entry_point)
+        .arg(target_name(target))
+        .arg(artifact)
+        .arg(json)
+        .arg(kernel.shape.slang_stage());
+    command
+}
+
 /// What [`compile_reflected_clean`] produced: the parsed result and the helper's JSON, verbatim.
 #[cfg(feature = "slang-runtime")]
 #[derive(Debug)]
@@ -259,13 +276,7 @@ pub fn compile_reflected_clean(
 ) -> Result<CleanCompilation, Error> {
     let helper = helper.as_ref();
     compile_clean_with(kernel, target, helper, |source, artifact, json| {
-        let mut command = Command::new(helper);
-        command
-            .arg(source)
-            .arg(kernel.entry_point)
-            .arg(target_name(target))
-            .arg(artifact)
-            .arg(json);
+        let mut command = helper_command(helper, kernel, target, source, artifact, json);
         slang::output_retrying_busy(&mut command)
     })
 }
@@ -444,9 +455,15 @@ impl CompiledReflection {
 }
 
 /// The `slangc` command of the CLI reflection path up to its output options. The matrix layout is named for the same
-/// reason as in `slang::slangc_command`: the CLI and the native helper must agree on it (M6 spike V1).
+/// reason as in `slang::slangc_command`: the CLI and the native helper must agree on it (M6 spike V1). The stage is
+/// the shape's, as it is there (mx.k).
 #[cfg(feature = "slang-runtime")]
-fn slangc_reflection_command(source: &std::path::Path, target: Target, entry: &str) -> Command {
+fn slangc_reflection_command(
+    source: &std::path::Path,
+    target: Target,
+    entry: &str,
+    shape: crate::Shape,
+) -> Command {
     let mut command = Command::new("slangc");
     command.arg(source).args([
         "-target",
@@ -454,7 +471,7 @@ fn slangc_reflection_command(source: &std::path::Path, target: Target, entry: &s
         "-entry",
         entry,
         "-stage",
-        "compute",
+        shape.slang_stage(),
         "-matrix-layout-column-major",
     ]);
     if target == Target::Spirv {
@@ -474,7 +491,7 @@ pub fn reflect(kernel: &KernelDescriptor, target: Target) -> Result<Reflection, 
         Target::Spirv => "spv",
     };
     slang::write_compile_inputs(directory.path(), kernel.slang_source, &kernel.source)?;
-    let mut command = slangc_reflection_command(&source, target, kernel.entry_point);
+    let mut command = slangc_reflection_command(&source, target, kernel.entry_point, kernel.shape);
     command
         .arg("-reflection-json")
         .arg(&json)
@@ -806,6 +823,7 @@ mod tests {
         module: "m",
         name: "k",
         entry_point: "entry",
+        shape: crate::Shape::Grid,
         workgroup_size: [1, 1, 1],
         parameters: &[],
         slang_source: SOURCE,
@@ -825,24 +843,70 @@ mod tests {
             (Target::Wgsl, None),
             (Target::Spirv, Some("-fvk-use-entrypoint-name")),
         ] {
-            let command =
-                slangc_reflection_command(std::path::Path::new("kernel.slang"), target, "entry");
-            let mut expected = vec![
-                "kernel.slang",
-                "-target",
-                target_name(target),
-                "-entry",
-                "entry",
-                "-stage",
-                "compute",
-                "-matrix-layout-column-major",
-            ];
-            expected.extend(spirv_flag);
-            let actual: Vec<String> = command
+            for (shape, stage) in [
+                (crate::Shape::Grid, "compute"),
+                (crate::Shape::Pixel, "fragment"),
+            ] {
+                let command = slangc_reflection_command(
+                    std::path::Path::new("kernel.slang"),
+                    target,
+                    "entry",
+                    shape,
+                );
+                let mut expected = vec![
+                    "kernel.slang",
+                    "-target",
+                    target_name(target),
+                    "-entry",
+                    "entry",
+                    "-stage",
+                    stage,
+                    "-matrix-layout-column-major",
+                ];
+                expected.extend(spirv_flag);
+                let actual: Vec<String> = command
+                    .get_args()
+                    .map(|argument| argument.to_string_lossy().into_owned())
+                    .collect();
+                assert_eq!(actual, expected, "{target:?} {shape:?}");
+            }
+        }
+    }
+
+    /// The helper is told the stage explicitly, as its seventh argument (mx.t0a), whatever the shape: a helper that
+    /// defaults to compute and a kernel that is not compute can no longer agree by accident.
+    #[cfg(feature = "slang-runtime")]
+    #[test]
+    fn the_helper_is_given_the_stage_of_the_shape_explicitly() {
+        for (shape, stage) in [
+            (crate::Shape::Grid, "compute"),
+            (crate::Shape::Pixel, "fragment"),
+        ] {
+            let kernel = KernelDescriptor { shape, ..KERNEL };
+            let command = helper_command(
+                Path::new("helper"),
+                &kernel,
+                Target::Spirv,
+                Path::new("kernel.slang"),
+                Path::new("kernel.artifact"),
+                Path::new("reflection.json"),
+            );
+            let arguments: Vec<String> = command
                 .get_args()
                 .map(|argument| argument.to_string_lossy().into_owned())
                 .collect();
-            assert_eq!(actual, expected, "{target:?}");
+            assert_eq!(
+                arguments,
+                [
+                    "kernel.slang",
+                    "entry",
+                    "spirv",
+                    "kernel.artifact",
+                    "reflection.json",
+                    stage
+                ],
+                "{shape:?}"
+            );
         }
     }
 

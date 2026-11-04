@@ -1095,6 +1095,7 @@ mod tests {
             module: "cpu_tests",
             name,
             entry_point: name,
+            shape: crate::Shape::Grid,
             workgroup_size,
             parameters,
             slang_source: "",

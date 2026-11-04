@@ -19,6 +19,8 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "slang-runtime")]
+use crate::Shape;
 use crate::{KernelDescriptor, SourceOrigin};
 #[cfg(feature = "slang-runtime")]
 use source_map::{SourceMap, SourceMapSegment};
@@ -163,6 +165,7 @@ pub fn compile(kernel: &KernelDescriptor, target: Target) -> Result<Vec<u8>, Err
         kernel.slang_source,
         kernel.entry_point,
         &kernel.source,
+        kernel.shape,
         target,
     )
 }
@@ -192,9 +195,22 @@ pub fn compile_wgsl(kernel: &KernelDescriptor) -> Result<String, Error> {
         .map_err(|error| Error::Io(std::io::Error::new(std::io::ErrorKind::InvalidData, error)))
 }
 
+/// Compile Slang text that has no descriptor: a `grid` (compute) entry point, as every kernel is today. A text of
+/// another shape goes through [`compile_source_as`].
 #[cfg(feature = "slang-runtime")]
 pub fn compile_source(source: &str, entry: &str, target: Target) -> Result<Vec<u8>, Error> {
-    compile_with_origin(source, entry, &SourceOrigin::UNKNOWN, target)
+    compile_source_as(source, entry, Shape::Grid, target)
+}
+
+/// [`compile_source`] for an entry point of `shape`: slangc gets that shape's `-stage`.
+#[cfg(feature = "slang-runtime")]
+pub fn compile_source_as(
+    source: &str,
+    entry: &str,
+    shape: Shape,
+    target: Target,
+) -> Result<Vec<u8>, Error> {
+    compile_with_origin(source, entry, &SourceOrigin::UNKNOWN, shape, target)
 }
 
 #[cfg(feature = "slang-runtime")]
@@ -202,9 +218,17 @@ fn compile_with_origin(
     source: &str,
     entry: &str,
     origin: &SourceOrigin,
+    shape: Shape,
     target: Target,
 ) -> Result<Vec<u8>, Error> {
-    compile_in_directory(TemporaryDirectory::create()?, source, entry, origin, target)
+    compile_in_directory(
+        TemporaryDirectory::create()?,
+        source,
+        entry,
+        origin,
+        shape,
+        target,
+    )
 }
 
 #[cfg(feature = "slang-runtime")]
@@ -213,17 +237,19 @@ fn compile_in_directory(
     source: &str,
     entry: &str,
     origin: &SourceOrigin,
+    shape: Shape,
     target: Target,
 ) -> Result<Vec<u8>, Error> {
     // The guard removes the directory when this returns, on every path.
-    compile_at(&directory.0, source, entry, origin, target)
+    compile_at(&directory.0, source, entry, origin, shape, target)
 }
 
 /// The `slangc` command up to the output options. The matrix layout is named, not left to the default: the command
 /// line defaults to column-major today and the native API of the reflection helper to row-major (M6 spike V1), and
-/// `abi::MATRIX_LAYOUT` is column-major, so both paths pin it (the helper through `defaultMatrixLayoutMode`).
+/// `abi::MATRIX_LAYOUT` is column-major, so both paths pin it (the helper through `defaultMatrixLayoutMode`). The
+/// stage is the shape's, not a constant (mx.k): `compute` for a `grid` kernel.
 #[cfg(feature = "slang-runtime")]
-fn slangc_command(source: &Path, target: Target, entry: &str) -> Command {
+fn slangc_command(source: &Path, target: Target, entry: &str, shape: Shape) -> Command {
     let mut command = Command::new("slangc");
     command.arg(source).args([
         "-target",
@@ -231,7 +257,7 @@ fn slangc_command(source: &Path, target: Target, entry: &str) -> Command {
         "-entry",
         entry,
         "-stage",
-        "compute",
+        shape.slang_stage(),
         "-matrix-layout-column-major",
     ]);
     if target == Target::Spirv {
@@ -247,6 +273,7 @@ fn compile_at(
     source: &str,
     entry: &str,
     origin: &SourceOrigin,
+    shape: Shape,
     target: Target,
 ) -> Result<Vec<u8>, Error> {
     let source_path = directory.join(KERNEL_FILE);
@@ -256,7 +283,7 @@ fn compile_at(
     let line_directives = write_compile_inputs(directory, source, origin)? != source;
     fs::write(&map_path, source_map.json(origin, line_directives))?;
 
-    let mut command = slangc_command(&source_path, target, entry);
+    let mut command = slangc_command(&source_path, target, entry, shape);
     let result = output_retrying_busy(command.arg("-o").arg(&output_path));
     let output = match result {
         Ok(output) => output,
@@ -733,23 +760,52 @@ mod tests {
             (Target::Wgsl, None),
             (Target::Spirv, Some("-fvk-use-entrypoint-name")),
         ] {
-            let command = slangc_command(Path::new("kernel.slang"), target, "gpu_m_k");
-            let mut expected = vec![
-                "kernel.slang",
-                "-target",
-                target.slang_name(),
-                "-entry",
-                "gpu_m_k",
-                "-stage",
-                "compute",
-                "-matrix-layout-column-major",
-            ];
-            expected.extend(spirv_flag);
-            let actual: Vec<String> = command
-                .get_args()
-                .map(|argument| argument.to_string_lossy().into_owned())
-                .collect();
-            assert_eq!(actual, expected, "{target:?}");
+            for (shape, stage) in [(Shape::Grid, "compute"), (Shape::Pixel, "fragment")] {
+                let command = slangc_command(Path::new("kernel.slang"), target, "gpu_m_k", shape);
+                let mut expected = vec![
+                    "kernel.slang",
+                    "-target",
+                    target.slang_name(),
+                    "-entry",
+                    "gpu_m_k",
+                    "-stage",
+                    stage,
+                    "-matrix-layout-column-major",
+                ];
+                expected.extend(spirv_flag);
+                let actual: Vec<String> = command
+                    .get_args()
+                    .map(|argument| argument.to_string_lossy().into_owned())
+                    .collect();
+                assert_eq!(actual, expected, "{target:?} {shape:?}");
+            }
+        }
+    }
+
+    /// The stage is the shape's, end to end: a fragment entry point compiles as `pixel` to both targets, and the same
+    /// text is refused as `grid` (a stage mismatch is slangc's error, which `-stage compute` used to make for every
+    /// shape but one).
+    #[cfg(feature = "slang-runtime")]
+    #[test]
+    fn a_fragment_entry_point_compiles_under_the_pixel_shape_only() {
+        const FRAGMENT: &str = concat!(
+            "struct Out\n{\n    float4 t0 : SV_Target0;\n};\n\n",
+            "[shader(\"fragment\")]\n",
+            "Out gpu_k_run(float4 pos : SV_Position)\n",
+            "{\n    Out o;\n    o.t0 = float4(pos.x, 0.0, 0.0, 1.0);\n    return o;\n}\n",
+        );
+        for target in [Target::Wgsl, Target::Spirv] {
+            let bytes = compile_source_as(FRAGMENT, "gpu_k_run", Shape::Pixel, target)
+                .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+            assert!(!bytes.is_empty(), "{target:?}");
+            if target == Target::Wgsl {
+                let text = String::from_utf8(bytes).unwrap();
+                assert!(text.contains("@fragment"), "{text}");
+            }
+            assert!(
+                compile_source(FRAGMENT, "gpu_k_run", target).is_err(),
+                "{target:?}: the default (grid) stage must not accept a fragment entry point"
+            );
         }
     }
 
@@ -877,6 +933,7 @@ mod tests {
             "this is not Slang;",
             "missing",
             &SourceOrigin::UNKNOWN,
+            Shape::Grid,
             Target::Wgsl,
         )
         .unwrap_err();
@@ -896,6 +953,7 @@ mod tests {
                 "",
                 "missing",
                 &SourceOrigin::UNKNOWN,
+                Shape::Grid,
                 Target::Wgsl,
             ),
             Err(Error::Io(_))
@@ -1024,6 +1082,7 @@ mod tests {
             source,
             "ok",
             &SourceOrigin::UNKNOWN,
+            Shape::Grid,
             Target::Wgsl,
         )
         .unwrap();
@@ -1046,6 +1105,7 @@ mod tests {
                 &broken,
                 "broken",
                 &SourceOrigin::UNKNOWN,
+                Shape::Grid,
                 Target::Wgsl
             )
             .is_err()
@@ -1683,6 +1743,7 @@ mod tests {
             source,
             "k",
             &ANNOTATED_ORIGIN,
+            Shape::Grid,
             Target::Wgsl,
         )
         .unwrap_err();
@@ -1800,7 +1861,15 @@ mod tests {
             lines: LINES,
         };
         let directory = TemporaryDirectory::create().unwrap();
-        compile_at(directory.path(), source, "ok", &origin, Target::Wgsl).unwrap();
+        compile_at(
+            directory.path(),
+            source,
+            "ok",
+            &origin,
+            Shape::Grid,
+            Target::Wgsl,
+        )
+        .unwrap();
         let sidecar = fs::read_to_string(directory.path().join("kernel.map.json")).unwrap();
         assert!(
             sidecar.starts_with(

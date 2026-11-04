@@ -20,6 +20,7 @@ const KERNEL: KernelDescriptor = KernelDescriptor {
     module: "reflection_test",
     name: "write",
     entry_point: "write_value",
+    shape: gust::Shape::Grid,
     workgroup_size: [64, 1, 1],
     parameters: PARAMETERS,
     slang_source: r#"
@@ -245,6 +246,7 @@ const HANDWRITTEN_FAILING: KernelDescriptor = KernelDescriptor {
     module: "reflection_test",
     name: "handwritten_failure",
     entry_point: "handwritten_write",
+    shape: gust::Shape::Grid,
     workgroup_size: [64, 1, 1],
     parameters: PARAMETERS,
     slang_source: concat!(

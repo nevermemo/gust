@@ -72,13 +72,13 @@ use std::{
     fs, io,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::{
     checks::{RUSTFLAGS_VARIABLES, dual_target_dir, precompiled_dual_steps, run_dual_step},
     json::{self, Json},
     process::{PROFILE_VARIABLE, exit_code, set_workspace_profile},
+    release::{PackageSpec, WorkDir, package_files, package_problems},
     ui::{Expectation, judge, parse_expectation, parse_expected},
     workspace::{cargo_target_dir, workspace_root},
 };
@@ -2141,113 +2141,15 @@ fn e7_build_twice(fixture: &Fixture, check_only: bool) -> Result<String, String>
 // ---------------------------------------------------------------------------------------------------------------
 // E8
 
-/// One package of the distribution proof and what its `cargo package --list` may hold besides `Cargo.toml`,
-/// `Cargo.toml.orig`, `Cargo.lock`, `.cargo_vcs_info.json`, `src/**`, `README*` and `LICENSE*`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PackageSpec {
-    pub(crate) name: &'static str,
-    /// `build.rs` (`gust` only).
-    pub(crate) build_script: bool,
-    /// `gust-artifacts/**` (the kernels package only; `gust-wgpu` ships none, R2-5).
-    pub(crate) artifacts: bool,
-}
-
-/// The four packages, in the order they are unpacked and patched.
-pub(crate) const E8_PACKAGES: [PackageSpec; 4] = [
-    PackageSpec {
-        name: "gust-macros",
-        build_script: false,
-        artifacts: false,
-    },
-    PackageSpec {
-        name: "gust",
-        build_script: true,
-        artifacts: false,
-    },
-    PackageSpec {
-        name: "gust-wgpu",
-        build_script: false,
-        artifacts: false,
-    },
-    PackageSpec {
-        name: "kernels",
-        build_script: false,
-        artifacts: true,
-    },
+/// The packages of the distribution proof, in the order they are unpacked and patched. What their `cargo package
+/// --list` may hold is decided by `package_problems` of `release.rs`, the one home of the allow-lists (mr.r); the
+/// `kernels` package is the only one with `gust-artifacts/**`.
+pub(crate) const E8_PACKAGES: [PackageSpec<'static>; 4] = [
+    PackageSpec::library("gust-macros", false, false),
+    PackageSpec::library("gust", true, false),
+    PackageSpec::library("gust-wgpu", false, false),
+    PackageSpec::library("kernels", false, true),
 ];
-
-/// The file names of the output of `cargo package --list`: one per line, backslashes read as slashes.
-pub(crate) fn package_files(stdout: &str) -> Vec<String> {
-    stdout
-        .lines()
-        .map(|line| line.trim().replace('\\', "/"))
-        .filter(|line| !line.is_empty())
-        .collect()
-}
-
-/// Whether the allow-list of R2-4 admits `file` (a relative path with forward slashes) in the package `spec`.
-pub(crate) fn package_allows(spec: &PackageSpec, file: &str) -> bool {
-    if file.split('/').any(|part| part == ".." || part == ".") {
-        return false;
-    }
-    match file {
-        "Cargo.toml" | "Cargo.toml.orig" | "Cargo.lock" | ".cargo_vcs_info.json" => true,
-        "build.rs" => spec.build_script,
-        _ if file.starts_with("src/") => true,
-        _ if file.starts_with("gust-artifacts/") => spec.artifacts,
-        _ => {
-            let upper = file.to_ascii_uppercase();
-            !file.contains('/') && (upper.starts_with("README") || upper.starts_with("LICENSE"))
-        }
-    }
-}
-
-/// The problems of a package's files (its `--list` or its unpacked tree): a file off the allow-list (named), a
-/// `gust-artifacts/` entry in a package that must have none, a missing `Cargo.toml` or `src/lib.rs`, and, for the
-/// package with artifacts, a missing manifest or committed artifact file (`required` holds the names relative to
-/// `gust-artifacts/`).
-pub(crate) fn package_problems(
-    spec: &PackageSpec,
-    files: &[String],
-    required: &[String],
-) -> Vec<String> {
-    let mut problems = Vec::new();
-    for file in files {
-        if !package_allows(spec, file) {
-            problems.push(if file.starts_with("gust-artifacts/") {
-                format!(
-                    "`{}` lists `{file}`, but this package ships no gust-artifacts/ (R2-5)",
-                    spec.name
-                )
-            } else {
-                format!(
-                    "`{}` lists `{file}`, which is not on the allow-list (src/**, Cargo.toml, Cargo.toml.orig, Cargo.lock, .cargo_vcs_info.json{}{}, README*, LICENSE*)",
-                    spec.name,
-                    if spec.build_script { ", build.rs" } else { "" },
-                    if spec.artifacts { ", gust-artifacts/**" } else { "" }
-                )
-            });
-        }
-    }
-    for needed in ["Cargo.toml", "src/lib.rs"] {
-        if !files.iter().any(|file| file == needed) {
-            problems.push(format!("`{}` does not list `{needed}`", spec.name));
-        }
-    }
-    if spec.artifacts {
-        let mut wanted: Vec<String> = vec!["manifest.json".to_owned()];
-        wanted.extend(required.iter().cloned());
-        wanted.sort();
-        wanted.dedup();
-        for name in wanted {
-            let path = format!("gust-artifacts/{name}");
-            if !files.contains(&path) {
-                problems.push(format!("`{}` does not list `{path}`", spec.name));
-            }
-        }
-    }
-    problems
-}
 
 /// The strings that the packaged `kernels` must not contain as text: the CPU twin's types and function names.
 const TWIN_TEXT: [&str; 3] = ["fn cpu", "gust::cpu", "CpuDevice"];
@@ -2513,53 +2415,6 @@ pub(crate) fn is_inside(parent: &Path, child: &Path) -> bool {
     child == parent || child.starts_with(&format!("{parent}/"))
 }
 
-/// The directory E8 builds in, deleted when this value is dropped (also when the check fails).
-struct WorkDir {
-    path: PathBuf,
-}
-
-impl WorkDir {
-    /// `requested`, or `<temp>/gust-dist-<nonce>`. It must lie outside the repository and not exist yet or be empty;
-    /// a directory with content is never deleted.
-    fn create(root: &Path, requested: Option<&Path>) -> Result<Self, String> {
-        let path = match requested {
-            Some(path) => path.to_path_buf(),
-            None => {
-                let nanos = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_or(0, |elapsed| elapsed.as_nanos());
-                env::temp_dir().join(format!("gust-dist-{}-{nanos}", std::process::id()))
-            }
-        };
-        let path = std::path::absolute(&path)
-            .map_err(|error| format!("check-precompiled E8: {}: {error}", path.display()))?;
-        if is_inside(root, &path) {
-            return Err("check-precompiled E8: the work directory must lie outside the repository (a consumer inside it would read the repository's cargo configuration and workspace)".to_owned());
-        }
-        if path.exists() {
-            let empty = fs::read_dir(&path)
-                .map_err(|error| format!("check-precompiled E8: {}: {error}", path.display()))?
-                .next()
-                .is_none();
-            if !empty {
-                return Err(format!(
-                    "check-precompiled E8: the work directory {} is not empty; E8 deletes its work directory when it ends, so choose a new or empty one",
-                    path.display()
-                ));
-            }
-        }
-        fs::create_dir_all(&path)
-            .map_err(|error| format!("check-precompiled E8: {}: {error}", path.display()))?;
-        Ok(Self { path })
-    }
-}
-
-impl Drop for WorkDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
-    }
-}
-
 /// The relative paths (forward slashes) of the files below `directory`.
 fn relative_files(directory: &Path) -> io::Result<Vec<String>> {
     Ok(snapshot(directory)?.into_keys().collect())
@@ -2574,9 +2429,22 @@ fn run_step(step: &str, what: &str, mut command: Command) -> Result<Output, Stri
     Ok(output)
 }
 
-/// E8: the packages and the relocated consumer. Returns the summary.
+/// E8: the packages and the relocated consumer. Returns the summary. The work directory is deleted at the end, and
+/// a failure to delete it fails the check.
 fn e8_distribution(fixture: &Fixture, options: &Options) -> Result<String, String> {
-    let work = WorkDir::create(&fixture.root, options.work_dir.as_deref())?;
+    let work = WorkDir::create(
+        "check-precompiled E8",
+        "gust-dist",
+        &fixture.root,
+        &env::temp_dir(),
+        options.work_dir.as_deref(),
+    )?;
+    let outcome = e8_steps(fixture, options, &work.path);
+    work.finish(outcome)
+}
+
+/// E8 in the work directory `work`.
+fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String, String> {
     let read = |path: PathBuf| {
         fs::read_to_string(&path)
             .map_err(|error| format!("check-precompiled E8: {}: {error}", path.display()))
@@ -2642,8 +2510,8 @@ fn e8_distribution(fixture: &Fixture, options: &Options) -> Result<String, Strin
 
     // 2. Package and unpack outside the repository. The three repository crates go in one call: cargo then resolves
     // them against each other, which a single `-p gust` cannot (`gust-macros` is not on crates.io).
-    let repo_target = work.path.join("package-target");
-    let kernels_target = work.path.join("package-kernels-target");
+    let repo_target = work.join("package-target");
+    let kernels_target = work.join("package-kernels-target");
     let repo_target_arg = Fixture::target_dir_arg(&repo_target)?;
     let kernels_target_arg = Fixture::target_dir_arg(&kernels_target)?;
     run_step(
@@ -2682,8 +2550,8 @@ fn e8_distribution(fixture: &Fixture, options: &Options) -> Result<String, Strin
             kernels_target_arg,
         ]),
     )?;
-    let crates = work.path.join("crates");
-    let unpacked = work.path.join("unpacked");
+    let crates = work.join("crates");
+    let unpacked = work.join("unpacked");
     fs::create_dir_all(&crates)
         .and_then(|()| fs::create_dir_all(&unpacked))
         .map_err(|error| format!("check-precompiled E8: {error}"))?;
@@ -2735,7 +2603,7 @@ fn e8_distribution(fixture: &Fixture, options: &Options) -> Result<String, Strin
     }
 
     // 4. The consumer.
-    let consumer = work.path.join("consumer");
+    let consumer = work.join("consumer");
     fs::create_dir_all(consumer.join("src"))
         .map_err(|error| format!("check-precompiled E8: {error}"))?;
     let write = |path: PathBuf, text: &str| {
@@ -2798,7 +2666,7 @@ fn e8_distribution(fixture: &Fixture, options: &Options) -> Result<String, Strin
     }
 
     // 4b. The release build under `native` in the stripped environment of E1.
-    let target = work.path.join("target");
+    let target = work.join("target");
     let target_arg = Fixture::target_dir_arg(&target)?;
     let output = run_step(
         "E8",

@@ -202,6 +202,58 @@ Do not introduce shared `HeadlessDevice` fixtures until `cargo xtask measure-tes
 adapter/device setup is the bottleneck; cache-stat tests intentionally use isolated
 devices.
 
+## Install from crates.io
+
+Placeholder for the prose of slice mr.d; `cargo xtask check-release` builds these two blocks word for word.
+
+```toml
+[package]
+name = "hello-gust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gust = "0.1"
+gust-wgpu = "0.1"
+
+[features]
+# Run-time compile through the Slang toolchain, for development only (`cargo run --features gust-dev`).
+gust-dev = ["gust-wgpu/slang-runtime"]
+```
+
+```rust
+use gust::gpu;
+use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+
+#[gpu]
+mod vector_add {
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn add(
+        id: SV_DispatchThreadID,
+        a: StructuredBuffer<float>,
+        b: StructuredBuffer<float>,
+        mut out: RWStructuredBuffer<float>,
+    ) {
+        let i = id.x;
+        if i < out.len() {
+            out[i] = a[i] + b[i];
+        }
+    }
+}
+
+fn main() {
+    let a = [1.0f32, 2.0, 3.0, 4.0];
+    let b = [10.0f32, 20.0, 30.0, 40.0];
+    let device = HeadlessDevice::new().expect("a Vulkan compute adapter");
+    let ga = device.create_f32_buffer("a", &a, GpuBufferAccess::ReadOnly);
+    let gb = device.create_f32_buffer("b", &b, GpuBufferAccess::ReadOnly);
+    let out = device.create_f32_buffer("out", &[0.0; 4], GpuBufferAccess::ReadWrite);
+    vector_add::add::dispatch(&device, 4, &ga, &gb, &out).expect("dispatch");
+    let result = device.read_f32_buffer(&out).expect("read back");
+    println!("hello-gust: {result:?}");
+}
+```
+
 ## Authoring model
 
 The preferred source vocabulary deliberately resembles Slang:

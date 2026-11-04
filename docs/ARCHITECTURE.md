@@ -104,7 +104,7 @@ no GPU runtime. Each kernel dispatch runs on one thread, in ascending `global_id
 exception (`gust::cpu::parallel`, below). `cargo xtask check-cpu-target` is the evidence (the `Cpu` tier of
 docs/development/VALIDATION.md).
 
-The map generator (D60, slice m7.a1, amended by D99; `crates/gust-macros/src/expand/map.rs`).
+The map generator (D60, slice m7.a1, amended by D99 and D122; `crates/gust-macros/src/expand/map.rs`).
 `#[gpu]` on a free scalar function (an `fn`, not a module) builds a synthetic module and hands it to the same
 `expand_validated` path as a written module, so the body gets the validation and the lowering of any kernel. The module
 holds one kernel, `map_kernel`, which is grid-stride at `workgroup_size(256, 1, 1)` and binds every buffer
@@ -181,7 +181,7 @@ error, and argument order among buffers of one element type is not checked at al
 Generated names use the reserved `__gust_` prefix so that no user parameter name
 can collide.
 
-`gust::map` (D60, slice m7.a1, amended by D99) is the host side of the element-wise map.
+`gust::map` (D60, slice m7.a1, amended by D99 and D122) is the host side of the element-wise map.
 `MapHost: TypedDevice` is what a device offers it (`upload`, `zeroed`, `readback`, `readback_async` and `map_error`);
 `CpuDevice` implements it in `gust`, and `HeadlessDevice` in `gust-wgpu` (`map_host.rs`). `MapArg<H, D>` is what a call
 argument may be (a slice, a `&Vec`, a `&[T; N]`, `Broadcast`, or a `&R` for a `Resident` buffer), and the sealed
@@ -190,7 +190,7 @@ uploaded (`Error::LengthMismatch`, `TooLong`, `Empty`); `MixedDevices` is a resi
 `Device(Box)` a device failure (the enum is `#[non_exhaustive]`). A call over zero elements returns an empty `Vec` or
 `GpuVec`. An input of length one is read at index 0 (`Broadcast`). The generated functions are `map` and `map_on`
 (not emitted on `wasm32`), `map_gpu` and `map_gpu_on` (not emitted under `cpu`) and `map_async` and `map_on_async`
-(`map_async` is not emitted under `cpu` either, and was compiled for `wasm32` but never run in a browser); `map` and
+(`map_async` is not emitted under `cpu` either, and runs in headless Chrome inside `check-web`); `map` and
 `map_gpu` open the default device first.
 
 `gust::cpu::parallel` (slice m7.c, D119; `crates/gust/src/cpu/parallel.rs`) runs the map on the production CPU target

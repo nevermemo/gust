@@ -139,7 +139,8 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   particles stay a prefix of the pool, checked on the host only, until m7.t14 adds compaction. Opus merge after one
   fix round.
 - M7 m7.r2 (`900068e`, fix round `88793a0`, merge `09203ae`): scan v0 in `gust-algo`: `scan::inclusive` and
-  `scan::exclusive` over `u32` (wrapping, as `reduce::sum_wrapping`, which this slice adds), `2k + 1` dispatches in
+  `scan::exclusive` over `u32` (plain `+`: the GPU wraps, the debug twin panics; `reduce::sum_wrapping`, which this
+  slice adds, is the wrapping sum), `2k + 1` dispatches in
   one batch over `k` levels: 3 for n <= 65 536, 5 for n <= 2^24, 7 above. Deviation: the plan named 5 and 7 tiers
   only; a one-level input needs just 3. Golden `scan.slang` (6 entries) with its fixture; gust-algo GPU tests 12 to
   20 (`ALGO_GPU_TESTS`), including the 7-dispatch path at 2^25 on ones. Mutations fail a test: a skipped add-back,
@@ -230,8 +231,9 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   (`GpuVec` and `map_gpu_on`, one upload and one read-back counted as the device pool's hand-outs; a read-back that
   bypasses the pool would not be counted) and as host-slice calls, both against an independent `f64` reference
   within a derived 9u bound; tests from 0 to 65 537 elements and one large size. web-vector-add gains a `map_async`
-  path behind `default_device_async` (compiled for wasm32 and checked by check-web's tree guard; not run in a
-  browser). Committed artifacts for both examples; the web byte-copy test now accepts a superset manifest and still
+  path behind `default_device_async` (compiled for wasm32 and checked by check-web's tree guard; the full check-web
+  also runs it, see the erratum below). Committed artifacts for both examples; the web byte-copy test now accepts a
+  superset manifest and still
   compares the shared kernels, `schema` and `slang`. It fixes the m7.a1 map kernel id (renamed `__gust_gid`, with a
   regression test over the exported `.slang` and record). Exported kernels 20 (m7.t14 and m7.a2 three each). The
   README map table is provisional: a smoke run on the shared RTX 5090, labelled with its conditions and with what
@@ -242,6 +244,9 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   fix round.
   Main: 23 gate steps green on `44299e5` (10:23 to 10:57Z, RTX 5090); pins 249/29 and gust-algo 32;
   check-examples green.
+  Erratum (M7 close): the full check-web ran this path in headless Chrome at m7.a2's own gate; the page logs `GUST_OK`
+  only after `double_add::map_async` matches the host reference (lib.rs:145-160). The sentence "not run in a browser"
+  above was wrong. This does not prove the wasm32 `Job` contract (D69), which stays open (NEXT_TASKS).
 - M7 m7.r4 (`0c5d456`, fix round `b945ab0`, merge `d6b425f`): gust-algo v1 with shared memory. Block reduce (sum,
   min, max over u32/i32/f32 and the wrapping u32 sum) and tile scan (u32 inclusive and exclusive) with
   `Workgroup<[T; 256]>` and barriers, `cpu = "unsupported"` (D101); v0 stays the CPU form and the fallback
@@ -807,6 +812,50 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   it as a limitation (D39). The struct-literal dual kernels emit Slang that nothing compiles yet;
   m6.m1 makes them compile. Opus keep after one fix round; gates on main at `76c83d5`.
 
+### Done slices of M7 (summary)
+
+Map, residency, gust-algo, shared memory and barriers, multi-dimensional dispatch, `par_for!` and parallel CPU maps.
+Tier: Gpu (RTX 5090, Vulkan) for the code slices (docs slices ran partial gates), lavapipe in CI, the Radeon 890M
+for m7.r4 (D121) and the S7.6 limits.
+Per-slice entries above carry the mutations and gate runs. Decisions D84, D87, D96, D97, D99 to D104, D116, D118,
+D119, D121 to D125.
+- Runtime: m7.a0 `bcb4da4` (D84; device options, pool, `GpuVec`, `default_device`, fallible buffers; S7.6 outcome A,
+  limits measured on the 5090 and 890M, out-of-memory path unit-test only; D123). m7.rb `893d959` (D97; blocking
+  readbacks wait for their own completion, 8 errors in 2 903 iterations before, 0 in 3 153 after).
+- Dialect: m7.w `4797013` (D87; `wrapping_*`, GUST-E0325). m7.g1 `1516c94` (D100, D101; derived ids, `Workgroup`,
+  `workgroup_barrier`). m7.d `853aade` (D102; `Extent`, multi-dimensional dispatch). m7.p `910ee1c` (D103;
+  `par_for!`). m7.lv `9d47f67` (D116; uniform and vector layouts in the export record; retires D104).
+  m6.z2 `a496968` (D96) and m6.u2f `bee193a` (D104) ran inside M7.
+- Map and residency: m7.a1 `5609536` (D99, D122; `#[gpu]` on a scalar `fn` generates `map`, `map_on`, `map_gpu`,
+  `map_gpu_on`, `map_async`, `map_on_async`). m7.a2 `44299e5` (examples `map-chain` and `web-vector-add`'s
+  `map_async` path). README map table, published run on `ea258f9` (quiet window 2026-11-04 13:48 to 13:50Z): map
+  over host slices 0.61 to 0.93 of a hand-written dispatch's time, resident chains 1.3 to 2.9x faster than host
+  slices, no break-even for a cheap function up to 4.2e6 elements.
+- gust-algo (D124): m7.r1 `b5d2c68` reduce v0. m7.r2 `09203ae` scan v0 and `sum_wrapping`. m7.r3 `8027169`
+  compaction v0 (generic gather deferred to M9). m7.r4 `d6b425f` (lavapipe fix `9dda10d`) v1 with shared memory;
+  890M half in D121 (v0/v1 1.01 to 1.26 for reductions, 9.8 to 67 for scans); v1 shipped for all six operations.
+  Unpublished (D110).
+- Component pool (D125): m7.t13 `b88bfb0` (GPU active count to indirect dispatch, re-typed from the stash design;
+  no `active_count` check-feature entry) and m7.t14 `f96aff1` (retirement and compaction); the stash was dropped by
+  the owner on 2026-11-03 (backup patches in the work area). Only the RTX 5090 has a recorded run of the T13 and T14
+  GPU tests.
+- Parallel CPU: m7.c `88ac459` (D119; chunked `run_map_chunked`; k = 64 polynomial 16.1x at 1e8 over one thread,
+  vector-add 1.84x; bit-exact).
+- Spikes: S7.4 lockstep twin, outcome C (D118; 102 to 104 s at 1e6, m7.g2 dropped, barrier kernels keep
+  `cpu = "unsupported"`). S7.5 chunked CPU map, outcome A (D119). S7.6 limits (inside m7.a0). S7.7 (inside m7.r1).
+  Pre-plan spikes m7.s1 to m7.s3 fed the plan.
+- Tidy and close-out: m7.t1 `1278b61`, m7.f1 `96051c8` (Linux "Text file busy" retry), m7.t2 `6b0d59a`; m7.x1
+  `3ebd368` (feature area `dispatch`, `check-artifacts` over the M7 goldens), m7.x2 `1e648b7` (README, VALIDATION,
+  REPO_STRUCTURE), m7.x3 `07b851d` (SEMANTICS, ARCHITECTURE, NEXT_TASKS, skills, gust-algo docs).
+- Records at the close (plan §11.2), on `<CLOSE-SHA>`: (i) Gpu RTX 5090 `verify --mode gpu`, pin 297/31;
+  (ii) Gpu (software): lavapipe `gpu-software`, run `<LAVAPIPE-RUN>`; (iii) Cpu target `check-cpu-target`;
+  (iv) web: `check-web` builds `web-vector-add` and runs it in headless Chrome, which includes the `map_async` path
+  (`GUST_OK`, `<WEB-RESULT>`); (v) precompiled: `check-precompiled` and `check-artifacts`. `check-cpu` is twin evidence.
+- Open (also in NEXT_TASKS): the write-set race checker; storage barriers; decoupled look-back scan; generic gather
+  (M9); the thread-free lockstep twin idea; `as_entire_binding()` in `generated_host.rs`; `gust-wgpu` `Error` is not
+  `#[non_exhaustive]`; a `_wrapping` scan form; the 890M, DX12 and Metal are untried for T13 and T14; the browser run
+  covers `map_async` on one adapter (RTX 5090, Chrome) only.
+
 ### Done slices of M1 to M4 (summary); M4 closes after m4.z
 
 The slice entries of M1 to M4 moved verbatim to [history/STATUS-M1-M4.md](history/STATUS-M1-M4.md) on 2026-11-02
@@ -914,9 +963,8 @@ Tier: Gpu (RTX 5090) except where noted.
   of the committed artifact set (the m4.r known gaps), a `cargo gust doctor` warning for a `PATH` `slangc` of another
   version, and the wasm32 clippy guard of `gust-wgpu`.
 
-T13 remains deferred by owner; its work in progress is the git stash
-`WIP T13 active count deferred`, not the working tree. Do not apply, continue,
-validate, commit, or drop it without explicit direction.
+T13 landed in M7 (m7.t13 and m7.t14, D125). The owner dropped the git stash `WIP T13 active count deferred` on
+2026-11-03; backup patches are in the work area, outside the repository.
 
 ```text
 owner: Claude Code coordinator (monitored autonomy)
@@ -929,19 +977,19 @@ full_check_needed_before_commit: no
 ## Current baseline
 
 - Branch: `main`
-- Last complete compiler feature: T12, statement-only `match Result<T, T>`
-- Last full validation: `cargo xtask check-full` passed at `7dd9c3d` (M5 close after m5.f1, 2026-11-02, NVIDIA
-  GeForce RTX 5090 / Vulkan, driver 610.88, Slang v2026.20, 13:49 to 14:01Z; clean tree, nothing untracked; it includes
-  the whole `check-precompiled` and `check-web`, the 8-seed difftest and the release ledger guarded by name, and no
-  check was skipped), through the
-  shared cargo slot wrapper: workspace tests, the release-only tests required by name, every
-  example test with `--include-ignored`, `check-dual` in full mode, and 13 SPIR-V artifacts
-  through `spirv-val`. The runs before it were at `68c6f40` (m5.c2, 2026-11-02, one untracked log file), `27b342b` (M4 close after
-  m4.i) and `c964222` (2026-11-02, before the M4 sanity
-  fixes), then `5971c12` (M3 close, 2026-11-01, clean tree),
-  then `96e4b9d` (2026-11-01, before the M3 sanity fixes), then `634a50e` (M2 close, 2026-10-24) and the one before that (M1) at `a6cbb8f`, together with the Slangc
-  and Reflect suites. The local `.ai/VALIDATION.json` record stamps the commit and dirty
-  state and contains no machine paths.
+- Last complete compiler feature: M7 (map generator, `GpuVec` residency, `par_for!`, shared memory and barriers,
+  multi-dimensional dispatch, wrapping arithmetic, gust-algo); the last M7 compiler slice is m7.c (`88ac459`), and
+  mx.t1 (`00b72c7`, texture and sampler descriptors) merged after it
+- Last full validation: `cargo xtask check-full` passed at `<CLOSE-SHA>` (M7 close, <CHECK-FULL-TIME>, NVIDIA GeForce
+  RTX 5090 / Vulkan, driver <DRIVER>, Slang <SLANG>; clean tree), through the shared cargo slot wrapper: workspace
+  tests, the release-only tests required by name, every example test with `--include-ignored`, `check-dual` in full
+  mode, the SPIR-V artifacts through `spirv-val`, and `check-web` with the browser run. The runs before it were at
+  `f452a37` (M6 close, 2026-11-02, 19:32 to 20:12Z, driver 610.88, Slang v2026.20), `7dd9c3d` (M5 close after m5.f1,
+  2026-11-02, 13:49 to 14:01Z), `68c6f40` (m5.c2, 2026-11-02, one untracked log file), `27b342b` (M4 close after
+  m4.i) and `c964222` (2026-11-02, before the M4 sanity fixes), then `5971c12` (M3 close, 2026-11-01, clean tree),
+  then `96e4b9d` (2026-11-01, before the M3 sanity fixes), then `634a50e` (M2 close, 2026-10-24) and the one before
+  that (M1) at `a6cbb8f`, together with the Slangc and Reflect suites. The local `.ai/VALIDATION.json` record stamps
+  the commit and dirty state and contains no machine paths.
 - DX19 is closed: full validation, two independent reviews, and fixes (`027eef7`,
   `08a4843`, `3296885`).
 - CI (`unit` job: fmt, clippy, Unit suite; `msrv` job on Rust 1.90) passes on main;
@@ -953,7 +1001,7 @@ full_check_needed_before_commit: no
 - T10 atomics: [tasks/T10-atomics.md](tasks/T10-atomics.md)
 - T11 Result lowering: [tasks/T11-result.md](tasks/T11-result.md)
 - T12 Result match: [tasks/T12-result-match.md](tasks/T12-result-match.md)
-- T13 active count (deferred): [tasks/T13-active-count.md](tasks/T13-active-count.md)
+- T13 active count (landed in M7, m7.t13 and m7.t14): [tasks/T13-active-count.md](tasks/T13-active-count.md)
 - DX19 sidecar maps: [tasks/DX19-sidecar-diagnostic-maps.md](tasks/DX19-sidecar-diagnostic-maps.md)
 
 ## Latest DX evidence

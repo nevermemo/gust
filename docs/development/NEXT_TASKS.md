@@ -11,14 +11,6 @@ The ordered plan is [ROADMAP.md](../ROADMAP.md). Its "Now and next" table lists 
 claimable items of the current milestone; this file keeps deferred work and task detail
 that does not fit there.
 
-## Deferred
-
-### T13: GPU active count to indirect dispatch
-
-Landed in M7 slice m7.t13 (merge `b88bfb0`, 2026-11-03), re-typed from the stash's design; contract and status:
-[tasks/T13-active-count.md](tasks/T13-active-count.md). Compaction and retirement landed in m7.t14 (merge
-`f96aff1`). Kept for the record.
-
 ## Claimable DX
 
 ### DX20: Internal ownership splits
@@ -72,6 +64,9 @@ test module; do not mix that mechanical move with behavior changes.
   another, so a kernel in which two invocations write one location gives a clean twin
   result and proves nothing about the GPU (SEMANTICS section 5). The checker would
   record the written indices of a call in debug builds and report a repeated one.
+  Still open after M7: m7.c (D119) parallelises only generator-stamped map kernels, whose one write is the
+  invocation's own index by construction; the same checker (or a per-kernel proof) is what a chunked `par_for!`
+  or a parallel user kernel would need (see "m7.c follow-ups").
 - CPU limits (open after M5): decide whether the production CPU target emulates the device limits
   (workgroup count per dimension, invocations per workgroup, storage binding size) or
   keeps documenting the difference; today the CPU backend rejects only a launch above
@@ -169,10 +164,11 @@ test module; do not mix that mechanical move with behavior changes.
   `pod_slice_as_bytes` (the m6.g1 must-fix patched it by hand). Both dev-dependencies only, never in a production
   edge (D02), and a licence check first. Follow-ups, not M6 (sanity-fable and sanity-opus, 2026-11-02).
 - "Default limits" has two meanings since m7.a0: `HeadlessDevice::new()` keeps wgpu's portable defaults
-  (`LimitsPolicy::Default`), while `DeviceOptions::default()` and so `default_device()` take the adapter's own limits
-  on native (`LimitsPolicy::Adapter`; `crates/gust-wgpu/src/device.rs:43-95`). A kernel validated through one entry
-  point can exceed the other's limits, for example in a browser. Decide whether the two should agree or be named
-  differently before MR, and keep it in M8's portable-floor work (sanity-fable and sanity-opus, 2026-11-02).
+  (`LimitsPolicy::Default`), while `DeviceOptions::default()` and so `default_device()` take the adapter's own limits on
+  native (`LimitsPolicy::Adapter`; `LimitsPolicy` and `DeviceOptions` in `crates/gust-wgpu/src/device.rs`). A kernel
+  validated through one entry point can exceed the other's limits, for example in a browser. Decide whether the two
+  should agree or be named differently before MR, and keep it in M8's portable-floor work (sanity-fable and sanity-opus,
+  2026-11-02).
 - The crate-path question before m7.p: the macro writes `::gust::` in about 90 places
   (`crates/gust-macros/src`, tests excluded), MR renames the crates (D48) and m7.p adds more generated paths.
   Decide between `[lib] name = "gust"` on the renamed crate and a macro that resolves the imported crate path (the ROADMAP's MR row
@@ -237,13 +233,19 @@ test module; do not mix that mechanical move with behavior changes.
   scaling from 1e6 in all three runs (smoke and two published) while 1 and 256 multiply-adds scale linearly
   (not investigated); a `#[gpu] fn` from an artifact under `native` (the workspace profile pin requires
   `slang-runtime` on every
-  example's gust-wgpu, and `native` refuses it; tests/precompiled has no `#[gpu] fn`); `map_async` in a browser has
-  never run (web-vector-add is closed at compile level only), and it opens a second device through
+  example's gust-wgpu, and `native` refuses it; tests/precompiled has no `#[gpu] fn`); `map_async` runs in
+  headless Chrome inside `check-web` (web-vector-add awaits `double_add::map_async` and fails unless the page logs
+  `GUST_OK`), on one adapter and browser only, and it opens a second device through
   `default_device_async` beside the explicit one; the resident chain's count sees only pooled buffers, so a
   submission or read-back counter would close the gap (m7.a2 review).
 - m7.a1 follow-ups: a `#[diagnostic::on_unimplemented]` on `MapArg` so a type mismatch
   reads in GUST's words (re-pin the two check-ui fixtures); `missing_docs` fires on generated constants of both
   `#[gpu] mod` and `#[gpu] fn` (older); `TooLong` is unit-tested only.
+- m7.a0 follow-ups (filed at the M7 close): only `create_zeroed_buffer` has an `_async` sibling, and only on wasm32;
+  `try_create_typed_buffer` has none, and the wasm32 synchronous forms apply the size pre-check without the
+  out-of-memory scope. The out-of-memory path is unit-test only (no allocation was driven to a real device
+  out-of-memory), and the branch that reports a non-out-of-memory scope error as `Error::Poll` was never observed on
+  hardware (D123).
 - Storage barriers (`storageBarrier`: a workgroup barrier over storage memory): M7 has `workgroup_barrier()` only
   (D100, D101); the storage form comes with M8 (M7 plan sections 7 and 9, D23). It orders the accesses of one
   workgroup and gives no ordering between workgroups of a dispatch.
@@ -251,8 +253,10 @@ test module; do not mix that mechanical move with behavior changes.
   and belong with `gust-macros` and `cargo gust`; move them (m7.x3 review, older text).
 - A decoupled look-back scan: not built. It needs an inter-workgroup wait, which AGENTS.md rules out ("No GPU
   inter-workgroup spin waits"). `gust-algo`'s scan stays the multi-dispatch form of 2k + 1 dispatches (v0 and v1).
-- The scan `_wrapping` form the M7 plan promises after m7.w: the same Slang (D87), only the twins change; v0's scan
-  already wraps (m7.r4 or its own slice).
+- The scan `_wrapping` form the M7 plan promises after m7.w: not built. The GPU scan already wraps (plain `+` on
+  `u32` lowers to the same Slang as `wrapping_add`, D87); only the twin differs, and the debug twin panics on
+  overflow where `reduce::sum_wrapping` wraps (`crates/gust-algo/src/cpu.rs:91`). Add `scan::inclusive_wrapping` and
+  `exclusive_wrapping` (twins only) in its own slice or with M9.
 - M8: naga 30 rejects an `i32` lane id in `subgroupShuffle`, `subgroupBroadcast` and `quadBroadcast`, which WGSL
   allows and Slang emits; filed by the owner as https://github.com/gfx-rs/wgpu/issues/10818. The M8-S1 workaround
   rewrites the id to `u32` in the exported WGSL; drop it when a fixed naga is pinned.

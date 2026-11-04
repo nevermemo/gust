@@ -197,6 +197,7 @@ jobs:
     # and ends with the error, not that it computes anything. Not covered on CI: the runs of E1, E3 and E8, E7b, and
     # a successful dispatch. Runnable locally in sh form: `cargo --locked xtask check-precompiled --check-only`, then
     # the step below.
+    # E6i is a release check of the whole workspace, so it costs minutes here (mr.c review N4).
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -226,6 +227,25 @@ jobs:
           test "$code" -eq 1
           grep -q "^error: no GPU adapter: " run.err
           if grep -q "^verified:" run.out; then exit 1; fi
+
+  release:
+    # The permanent release gate (slice mr.r, D70 extended): `cargo xtask check-release --check-only` packages every
+    # publishable crate in one call with verification, judges the file lists, the metadata, the exact internal pins
+    # and the publish flags, builds the rustdoc of the library crates with warnings denied (the docs.rs-shaped nightly
+    # run only where a nightly toolchain is installed, which it is not here), and builds the README recipe
+    # (xtask/src/release/hello-gust) from the unpacked `.crate` files, plus the install of `cargo-gust` from its
+    # unpacked package, then a `cargo publish --dry-run`. It takes names from `cargo metadata`, so it needs no edit
+    # when the crates are renamed. Skipped here: the runs of the recipe, `cargo gust build` and the release build
+    # (Slang and an adapter; `cargo xtask check-release` and `check-full` run them locally). Needs the crates.io
+    # registry.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: Release checks R1 to R8
+        run: cargo --locked xtask check-release --check-only
 
   wasm:
     # The browser surface of gust-wgpu (D45, R4.9, slice m4.g2): `gust`, `gust-wgpu` and `examples/web-vector-add` lint

@@ -13,12 +13,16 @@ use super::{
     e6_problems, e7_steps, expansion_problem, files_written, gust_build_problems,
     has_build_script_warning, has_cargo_warning, identity_error, is_inside, is_slang_variable,
     judge_run, lock_problems, marker_counts, markers_missing, markers_present, mutate_wgsl,
-    package_allows, package_files, package_problems, parse_warning_expectation, retarget_paths,
-    section_version, slang_free_package_problems, slang_free_problems, snapshot_differences,
-    strip_path, tree_problems, unused_patch_lines, with_bridge_user_dependency,
-    with_bridge_user_member, with_tool_dependency,
+    parse_warning_expectation, retarget_paths, section_version, slang_free_package_problems,
+    slang_free_problems, snapshot_differences, strip_path, tree_problems, unused_patch_lines,
+    with_bridge_user_dependency, with_bridge_user_member, with_tool_dependency,
 };
-use crate::{process::PROFILE_VARIABLE, ui::parse_expected, workspace::workspace_root};
+use crate::{
+    process::PROFILE_VARIABLE,
+    release::{PackageSpec, package_allows, package_files, package_problems},
+    ui::parse_expected,
+    workspace::workspace_root,
+};
 
 fn os(text: &str) -> OsString {
     OsString::from(text)
@@ -941,7 +945,7 @@ fn a_gust_build_run_that_failed_or_pruned_is_a_problem() {
     assert!(pruned[0].contains("pruned"));
 }
 
-fn spec(name: &str) -> super::PackageSpec {
+fn spec(name: &str) -> PackageSpec<'static> {
     E8_PACKAGES
         .into_iter()
         .find(|spec| spec.name == name)

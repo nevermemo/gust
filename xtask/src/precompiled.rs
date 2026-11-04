@@ -79,6 +79,7 @@ use crate::{
     checks::{RUSTFLAGS_VARIABLES, dual_target_dir, precompiled_dual_steps, run_dual_step},
     json::{self, Json},
     process::{PROFILE_VARIABLE, exit_code, set_workspace_profile},
+    release::{PackageSpec, package_files, package_problems},
     ui::{Expectation, judge, parse_expectation, parse_expected},
     workspace::{cargo_target_dir, workspace_root},
 };
@@ -2141,113 +2142,15 @@ fn e7_build_twice(fixture: &Fixture, check_only: bool) -> Result<String, String>
 // ---------------------------------------------------------------------------------------------------------------
 // E8
 
-/// One package of the distribution proof and what its `cargo package --list` may hold besides `Cargo.toml`,
-/// `Cargo.toml.orig`, `Cargo.lock`, `.cargo_vcs_info.json`, `src/**`, `README*` and `LICENSE*`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PackageSpec {
-    pub(crate) name: &'static str,
-    /// `build.rs` (`gust` only).
-    pub(crate) build_script: bool,
-    /// `gust-artifacts/**` (the kernels package only; `gust-wgpu` ships none, R2-5).
-    pub(crate) artifacts: bool,
-}
-
-/// The four packages, in the order they are unpacked and patched.
-pub(crate) const E8_PACKAGES: [PackageSpec; 4] = [
-    PackageSpec {
-        name: "gust-macros",
-        build_script: false,
-        artifacts: false,
-    },
-    PackageSpec {
-        name: "gust",
-        build_script: true,
-        artifacts: false,
-    },
-    PackageSpec {
-        name: "gust-wgpu",
-        build_script: false,
-        artifacts: false,
-    },
-    PackageSpec {
-        name: "kernels",
-        build_script: false,
-        artifacts: true,
-    },
+/// The packages of the distribution proof, in the order they are unpacked and patched. What their `cargo package
+/// --list` may hold is decided by `package_problems` of `release.rs`, the one home of the allow-lists (mr.r); the
+/// `kernels` package is the only one with `gust-artifacts/**`.
+pub(crate) const E8_PACKAGES: [PackageSpec<'static>; 4] = [
+    PackageSpec::library("gust-macros", false, false),
+    PackageSpec::library("gust", true, false),
+    PackageSpec::library("gust-wgpu", false, false),
+    PackageSpec::library("kernels", false, true),
 ];
-
-/// The file names of the output of `cargo package --list`: one per line, backslashes read as slashes.
-pub(crate) fn package_files(stdout: &str) -> Vec<String> {
-    stdout
-        .lines()
-        .map(|line| line.trim().replace('\\', "/"))
-        .filter(|line| !line.is_empty())
-        .collect()
-}
-
-/// Whether the allow-list of R2-4 admits `file` (a relative path with forward slashes) in the package `spec`.
-pub(crate) fn package_allows(spec: &PackageSpec, file: &str) -> bool {
-    if file.split('/').any(|part| part == ".." || part == ".") {
-        return false;
-    }
-    match file {
-        "Cargo.toml" | "Cargo.toml.orig" | "Cargo.lock" | ".cargo_vcs_info.json" => true,
-        "build.rs" => spec.build_script,
-        _ if file.starts_with("src/") => true,
-        _ if file.starts_with("gust-artifacts/") => spec.artifacts,
-        _ => {
-            let upper = file.to_ascii_uppercase();
-            !file.contains('/') && (upper.starts_with("README") || upper.starts_with("LICENSE"))
-        }
-    }
-}
-
-/// The problems of a package's files (its `--list` or its unpacked tree): a file off the allow-list (named), a
-/// `gust-artifacts/` entry in a package that must have none, a missing `Cargo.toml` or `src/lib.rs`, and, for the
-/// package with artifacts, a missing manifest or committed artifact file (`required` holds the names relative to
-/// `gust-artifacts/`).
-pub(crate) fn package_problems(
-    spec: &PackageSpec,
-    files: &[String],
-    required: &[String],
-) -> Vec<String> {
-    let mut problems = Vec::new();
-    for file in files {
-        if !package_allows(spec, file) {
-            problems.push(if file.starts_with("gust-artifacts/") {
-                format!(
-                    "`{}` lists `{file}`, but this package ships no gust-artifacts/ (R2-5)",
-                    spec.name
-                )
-            } else {
-                format!(
-                    "`{}` lists `{file}`, which is not on the allow-list (src/**, Cargo.toml, Cargo.toml.orig, Cargo.lock, .cargo_vcs_info.json{}{}, README*, LICENSE*)",
-                    spec.name,
-                    if spec.build_script { ", build.rs" } else { "" },
-                    if spec.artifacts { ", gust-artifacts/**" } else { "" }
-                )
-            });
-        }
-    }
-    for needed in ["Cargo.toml", "src/lib.rs"] {
-        if !files.iter().any(|file| file == needed) {
-            problems.push(format!("`{}` does not list `{needed}`", spec.name));
-        }
-    }
-    if spec.artifacts {
-        let mut wanted: Vec<String> = vec!["manifest.json".to_owned()];
-        wanted.extend(required.iter().cloned());
-        wanted.sort();
-        wanted.dedup();
-        for name in wanted {
-            let path = format!("gust-artifacts/{name}");
-            if !files.contains(&path) {
-                problems.push(format!("`{}` does not list `{path}`", spec.name));
-            }
-        }
-    }
-    problems
-}
 
 /// The strings that the packaged `kernels` must not contain as text: the CPU twin's types and function names.
 const TWIN_TEXT: [&str; 3] = ["fn cpu", "gust::cpu", "CpuDevice"];

@@ -461,6 +461,19 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   the must-fix (concurrent runs deleting each other's entry), two should-fixes and the nits taken.
   Main: 23 gate steps green on `b719a30` (2026-11-04 09:49 to 10:20Z, RTX 5090) and check-release --check-only green in
   the shared main target (10:20 to 10:24Z; registry/src clean after).
+- MX mx.t1 (`e9c83ca`, fix round `a836136`, merge `00b72c7`; D64, MX plan §3.1, §3.2, §3.5): textures and samplers in
+  `gust`. `gust::texture` has the dialect types `Texture2D<T>`, `StorageTexture2D<F>` (the three r32 formats),
+  `WriteTexture2D<F>` (all nine), `Sampler`, `Format`, `TextureUse` and `SamplerOptions`, and no wgpu type. A texture is
+  a `Resource` of kind `Texture`; a sampler is its own call argument (`SamplerArg`, a sealed `SamplerSet` on a defaulted
+  parameter of `Call`), so a typed call refuses a texture, a sampler or a buffer in the wrong place at compile time
+  (five `tests/ui` fixtures; check-ui pin 59). The CPU twin has `CpuTexture2d<F>` and `CpuSampler` with `load`, `store`
+  and `sample` (nearest and bilinear, clamp and repeat, the error domain of a linear sample), each convention tested
+  with hand-worked values; `cpu::validate` refuses a sampler from another device. Descriptors carry a storage stand-in
+  for textures until mx.t0b's `texture_v1`; cargo-gust's record reader and the artifact writer refuse the texture and
+  sampler kinds until mx.t3. SEMANTICS §1, §4 and §5 gain the twin's texture rules; the ledger rows KM-12 to KM-14 wait
+  for mx.t4's measurement (the id guard keeps 11 rows). Opus merge after fixes: no must-fix, three should-fixes taken,
+  the fourth a plan edge (mx.t2 after mx.t0b). Main: 23 of 23 gates green on `00b72c7` (2026-11-04 14:00 to 14:44Z, RTX
+  5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

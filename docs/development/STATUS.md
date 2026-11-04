@@ -461,6 +461,18 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   the must-fix (concurrent runs deleting each other's entry), two should-fixes and the nits taken.
   Main: 23 gate steps green on `b719a30` (2026-11-04 09:49 to 10:20Z, RTX 5090) and check-release --check-only green in
   the shared main target (10:20 to 10:24Z; registry/src clean after).
+- M7 m7.c (`60e5aa3`, fix round `7f1b37f`, measured doc `3499303`, merge `88ac459`; D119): parallel CPU
+  execution for generator-stamped map kernels. Under the `cpu` target the map generator emits a chunk body that
+  `gust::cpu::parallel::run_map_chunked` runs over disjoint output chunks with `std::thread::scope` (safe Rust, std
+  only); reads see the whole input, the only write is the invocation's own index, and the lowest failing index is
+  re-raised. Threads: `GUST_CPU_THREADS`, else the machine's parallelism, bounded by
+  `max(1, n / ELEMENTS_PER_THREAD)` with the factor 2^18 (one on wasm32); a bad value or a failed spawn is a
+  `cpu::Error`. User kernels, `par_for!` and the test twin stay sequential, and under `cpu` `map_on` is concrete over
+  `&CpuDevice`. Measured in a quiet window (2026-11-04 10:42 to 10:47Z, 24 logical cores, release): the k = 64
+  polynomial 16.1x at 1e8 and 11.7x at 1e7 over one thread, vector-add 1.84x at 1e8; every result bit-exact with one
+  thread. The first run's vector-add cell at 2^17 read 0.85 with one thread on both sides (the same code path), so
+  the pre-registered re-run of the vector-add cells (21 runs) decided: 0.95 to 1.02 from 2^16 to 1e6, inside D119's
+  10 %. Opus merge after fixes, no must-fix; five should-fixes and three nits taken. Main: 22 of 23 gates green on `88ac459` (2026-11-04 10:54 to 11:33Z); the Gpu suite step died with the gust-algo STATUS_ACCESS_VIOLATION a second time (NEXT_TASKS), while gpu-verify in the same run passed the same tests (297 pinned, gust-algo 49), and gust-algo's tests alone passed three times after (one thread, then default threads twice).
 - MX X-S3 (spike, D120; MX plan §1a): the pixel output model ended in outcome B on both adapters. Grid, render
   targets with `LoadOp::Load` and two copies, and fragment storage writes gave bit-identical outputs on the RTX 5090
   and the Radeon 890M; the storage-write call took 0.12 to 0.76 of the render-target call on the 5090 and 0.45 to 0.81

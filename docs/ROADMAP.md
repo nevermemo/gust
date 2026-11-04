@@ -46,9 +46,9 @@ the Radeon 890M half, D121) and m7.d (multi-dimensional dispatch, D102, merge `8
 merge `910ee1c`) and m6.u2f (`cargo gust build` on uniform kernels, D104) and m7.t1 (tidy pass 1, merge
 `1278b61`) and m7.f1 (ETXTBSY retry, merge `96051c8`) and m7.lv (uniform and vector layouts in the export
 record, D116, merge `9d47f67`) and m7.t2 (one element-type lookup, merge `6b0d59a`). S7.4 ended C (D118: no
-lockstep twin, m7.g2 dropped) and S7.5 ended A (D119). Next: m7.c (parallel CPU map), then m7.x and the close. The
-wasm32 `Job` contract (D69) lands before m7.a's `map_async` reaches the browser. The MX plan is adopted (D88 to
-D95).
+lockstep twin, m7.g2 dropped) and S7.5 ended A (D119), and m7.c (parallel CPU map, merge `88ac459`) shipped.
+Next: m7.x, then the close. The wasm32 `Job` contract (D69) lands before m7.a's `map_async` reaches the browser.
+The MX plan is adopted (D88 to D95).
 
 **Done: M6, language breadth I** (closed 2026-11-02, D86). Plan adopted 2026-11-01 (owner-delegated) after an Opus
 review, one revision and a re-check; decisions D77 to D85. Sanity check by Fable and by Opus in the Codex slot (owner

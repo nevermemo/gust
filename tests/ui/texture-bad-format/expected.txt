@@ -5,3 +5,4 @@ code: none
 file: texture-bad-format/src/main.rs
 line: 7
 message: [GUST-E0731]
+message: a 3-wide texel has no texture format

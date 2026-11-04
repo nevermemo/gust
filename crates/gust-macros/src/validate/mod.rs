@@ -1219,8 +1219,12 @@ impl RestrictedVisitor {
                 (texture::Method::Store, _) => {
                     "a sampled texture is read-only: use `StorageTexture2D` or `WriteTexture2D` to write"
                 }
-                _ => {
+                (_, texture::Access::ReadWrite) => {
                     "`.sample(..)` filters a sampled `Texture2D`; a storage texture is read with `.load(x, y)`"
+                }
+                _ => {
+                    "`.sample(..)` filters a sampled `Texture2D`; a write-only texture has `.store(x, y, v)`, \
+                     `.width()` and `.height()` only"
                 }
             };
             self.reject(
@@ -1992,14 +1996,21 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             && let Some(name) = path.path.get_ident().map(ToString::to_string)
             && (self.textures.contains_key(&name) || self.samplers.contains(&name))
         {
+            let uses = if self.samplers.contains(&name) {
+                format!(
+                    "`{name}` is a sampler parameter: it is used as `texture.sample({name}, u, v)` only"
+                )
+            } else {
+                format!(
+                    "`{name}` is a texture parameter: it is used as `{name}.load(x, y)`, \
+                     `{name}.store(x, y, v)`, `{name}.sample(sampler, u, v)`, `{name}.width()` or \
+                     `{name}.height()` only"
+                )
+            };
             self.reject(
                 Code::TextureUse,
                 path,
-                &format!(
-                    "`{name}` is a texture or sampler parameter: it is used as `{name}.load(x, y)`, \
-                     `{name}.store(x, y, v)`, `t.sample({name}, u, v)`, `{name}.width()` or `{name}.height()` \
-                     only; it cannot be copied, passed or returned"
-                ),
+                &format!("{uses}; it cannot be copied, passed or returned"),
             );
             return;
         }

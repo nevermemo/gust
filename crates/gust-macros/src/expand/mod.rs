@@ -1069,7 +1069,7 @@ fn parameter_facts(
                 let spec = crate::slang::texture::texture_spec(flavor, &input.ty)
                     .map_err(|message| diagnostics::error(Code::TextureType, &input.ty, message))?;
                 let (element, record_element) = match (spec.sampled_texel, spec.format) {
-                    (Some(texel), _) => (texel.clone(), texel.clone()),
+                    (Some(texel), _) => (texel.clone(), crate::slang::texture::leaf_type(texel)),
                     (None, Some(format)) => (format.texel_type(), format.texel_leaf_type()),
                     (None, None) => unreachable!("a texture has a texel type or a format"),
                 };
@@ -1241,8 +1241,10 @@ struct ResourceArgument {
     name: syn::Ident,
     element: syn::Type,
     access: TokenStream,
-    /// `::gust::kind::Storage` or `::gust::kind::Uniform`: the `Kind` the bound of the generated call names.
+    /// `::gust::kind::Storage`, `Uniform` or `Texture`: the `Kind` the bound of the generated call names.
     kind: TokenStream,
+    /// Whether the parameter is a texture (its `kind` is `::gust::kind::Texture`).
+    texture: bool,
 }
 
 /// The typed host API of one kernel (roadmap M2): `call`, `submit` and `dispatch` on the handle, plus a
@@ -1342,6 +1344,7 @@ fn typed_call_items(
             element,
             access,
             kind,
+            texture: flavor.is_texture(),
         });
     }
     let total = arguments.len();
@@ -1360,10 +1363,7 @@ fn typed_call_items(
         })
         .collect();
     // The wording of a kernel without textures is the one it had before they existed.
-    let textured = !samplers.is_empty()
-        || arguments
-            .iter()
-            .any(|argument| argument.kind.to_string().contains("Texture"));
+    let textured = !samplers.is_empty() || arguments.iter().any(|argument| argument.texture);
     let order = if names.is_empty() {
         "no resource arguments".to_owned()
     } else if textured {

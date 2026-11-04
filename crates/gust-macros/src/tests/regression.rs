@@ -5606,3 +5606,68 @@ fn an_accepted_texture_kernel_emits_the_lowering_of_the_module_comment() {
     assert!(source.contains("out.Store(uint2("), "{source}");
     assert!(source.contains("out.GetDimensions("), "{source}");
 }
+
+#[test]
+fn a_parenthesised_receiver_of_width_and_height_lowers_like_a_bare_one() {
+    // Review mx.t3 M1: `(out).width()` used to pass validation and print `__gpu_width_(out)`, with no prologue local
+    // declared. The size local is named after the stripped identifier, so the two spellings are the same call.
+    let bare = translate(&texture_kernel(
+        "mut out: StorageTexture2D<R32Float>",
+        "if id.x < out.width() && id.y < out.height() { out.store(id.x, id.y, 1.0f32); }",
+    ))
+    .unwrap();
+    let wrapped = translate(&texture_kernel(
+        "mut out: StorageTexture2D<R32Float>",
+        "if id.x < (out).width() && id.y < ((out)).height() { out.store(id.x, id.y, 1.0f32); }",
+    ))
+    .unwrap();
+    assert_eq!(bare, wrapped);
+    assert!(!wrapped.contains("__gpu_width_("), "{wrapped}");
+    assert!(
+        wrapped.contains("out.GetDimensions(__gpu_width_out, __gpu_height_out);"),
+        "{wrapped}"
+    );
+    assert!(wrapped.contains("id.x < __gpu_width_out"), "{wrapped}");
+}
+
+#[test]
+fn the_messages_for_a_missing_method_and_a_misused_name_fit_the_type() {
+    let message = |parameters: &str, body: &str| {
+        translate(&texture_kernel(parameters, body))
+            .unwrap_err()
+            .to_string()
+    };
+    // `sample` on a write-only texture does not send it to `load`, which it does not have either.
+    let write_only = message(
+        "mut out: WriteTexture2D<R32Float>, filter: Sampler",
+        "let v = out.sample(filter, 0.5f32, 0.5f32);",
+    );
+    assert!(
+        write_only.contains("write-only texture has"),
+        "{write_only}"
+    );
+    assert!(!write_only.contains("read with `.load"), "{write_only}");
+    let storage = message(
+        "mut image: StorageTexture2D<R32Float>, filter: Sampler",
+        "let v = image.sample(filter, 0.5f32, 0.5f32);",
+    );
+    assert!(storage.contains("read with `.load(x, y)`"), "{storage}");
+    // A texture and a sampler each get the list of its own uses.
+    let texture = message("image: Texture2D<Vec4>", "let alias = image;");
+    assert!(
+        texture.contains("`image` is a texture parameter"),
+        "{texture}"
+    );
+    assert!(texture.contains("image.sample(sampler, u, v)"), "{texture}");
+    assert!(!texture.contains("sampler parameter"), "{texture}");
+    let sampler = message("filter: Sampler", "let alias = filter;");
+    assert!(
+        sampler.contains("`filter` is a sampler parameter"),
+        "{sampler}"
+    );
+    assert!(
+        sampler.contains("texture.sample(filter, u, v)"),
+        "{sampler}"
+    );
+    assert!(!sampler.contains(".load("), "{sampler}");
+}

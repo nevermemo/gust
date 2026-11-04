@@ -1239,7 +1239,7 @@ Decision: D63 (plan section 5.2, slice mx.c).
 A `shape` pin names a shape the kernel cannot take because of what it declares: workgroup memory, a workgroup barrier, an invocation id other than the global id (`LocalId`, `GroupId`), an atomic operation, a storage texture, an explicit `workgroup_size`, no output buffer, an output element that is no colour-target format (only `u32`, `i32`, `f32` and their 2- and 4-wide vectors are), or more than 8 outputs or 32 bytes of them (D62). The classifier is syntactic and conservative: what it does not recognise makes the kernel `grid`-only. The message names the construct that excludes the shape.
 Reached through `#[gpu]`.
 Rejected: `#[kernel(shape = pixel, workgroup_size(64, 1, 1))]`, `shape = pixel` on a kernel with a `Workgroup<[f32; 64]>` parameter or a nine-buffer output list.
-Fixtures (each pins its reason with a second `message:`): `tests/ui/shape-pixel-workgroup-size`, `tests/ui/shape-pixel-barrier`, `tests/ui/shape-pixel-atomic`, `tests/ui/shape-pixel-struct-output`, `tests/ui/shape-pixel-no-output`, `tests/ui/shape-pixel-too-many-outputs` (`cargo xtask check-ui`).
+Fixtures (each pins its reason with a second `message:`): `tests/ui/shape-pixel-workgroup-size`, `tests/ui/shape-pixel-barrier`, `tests/ui/shape-pixel-atomic`, `tests/ui/shape-pixel-struct-output`, `tests/ui/shape-pixel-no-output`, `tests/ui/shape-pixel-too-many-outputs`, `tests/ui/shape-pixel-storage-texture` (`cargo xtask check-ui`).
 Write instead: drop the pin (the kernel stays `grid`), or remove the construct the message names.
 Decision: D62, D63 (plan section 5.1 and 5.3, slice mx.c).
 
@@ -1346,7 +1346,7 @@ Decision: D62 (slice mx.t3).
 A method call on a texture parameter that the texture's access does not have, or a name that is no texture method. A sampled `Texture2D` has `load`, `sample`, `width` and `height`; a `StorageTexture2D` has `load`, `store`, `width` and `height`; a `WriteTexture2D` has `store`, `width` and `height`. The message names the missing method and the texture that has it.
 Reached through `#[gpu]`.
 Rejected: `image.store(..)` on a `Texture2D`, `out.load(..)` on a `WriteTexture2D`, `image.sample(..)` on a `StorageTexture2D`, `image.gather(..)`, `image.depth()`.
-No `check-ui` fixture: rustc reports its own type error beside the macro's, and `check-ui` pins exactly one error. The unit tests of `crates/gust-macros/src/tests/regression.rs` assert it.
+Fixture: `tests/ui/texture-method` (`image.clone()`, which is valid Rust, so only the macro refuses it; the other spellings are also rustc errors and have unit tests only).
 Write instead: use the access that has the method: `StorageTexture2D` to read and write, `WriteTexture2D` to write, `Texture2D` to read and sample.
 Decision: D62, D64 (slice mx.t3).
 

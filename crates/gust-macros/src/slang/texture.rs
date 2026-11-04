@@ -315,6 +315,23 @@ fn bare_name(ty: &syn::Type) -> Option<String> {
         .then(|| segment.ident.unraw().to_string())
 }
 
+/// A texel type by its last segment alone: `gust::math::Vec4` is `Vec4`, which is the spelling the export record's
+/// layout writer knows. The record then describes a path-spelled texel the way it describes a bare one.
+pub(crate) fn leaf_type(ty: &syn::Type) -> syn::Type {
+    if let syn::Type::Path(path) = ty
+        && path.qself.is_none()
+        && let Some(segment) = path.path.segments.last()
+    {
+        let mut leaf = segment.clone();
+        leaf.arguments = syn::PathArguments::None;
+        return syn::Type::Path(syn::TypePath {
+            qself: None,
+            path: syn::Path::from(leaf),
+        });
+    }
+    ty.clone()
+}
+
 fn format_named(name: &str) -> Option<&'static FormatInfo> {
     FORMATS.iter().find(|format| format.marker == name)
 }
@@ -489,10 +506,35 @@ pub(crate) fn is_texture_method(call: &syn::ExprMethodCall) -> bool {
         .is_some_and(|method| method.arity() == call.args.len())
 }
 
+/// The identifier of a receiver written as a bare name, with any parentheses or groups around it taken off:
+/// `out`, `(out)` and `((out))` are all `out`. `width()` and `height()` name a prologue local after it, so they must
+/// agree with the validator's `direct_name` about what a plain receiver is.
+fn receiver_ident(expression: &syn::Expr) -> Option<&syn::Ident> {
+    match expression {
+        syn::Expr::Path(path) if path.qself.is_none() => path.path.get_ident(),
+        syn::Expr::Paren(paren) => receiver_ident(&paren.expr),
+        syn::Expr::Group(group) => receiver_ident(&group.expr),
+        _ => None,
+    }
+}
+
 /// The Slang of a texture method call (the table in the module comment).
 pub(crate) fn emit_method(call: &syn::ExprMethodCall) -> syn::Result<String> {
     let method = Method::from_name(&call.method.to_string()).expect("guarded by is_texture_method");
     let receiver = super::emit_expression(&call.receiver)?;
+    // The size of a texture is a local named after the parameter (the prologue), so it is lowered from the stripped
+    // identifier and a parenthesised receiver gives the same name as a bare one.
+    let size_name = || {
+        receiver_ident(&call.receiver)
+            .map(super::emit_ident)
+            .ok_or_else(|| {
+                crate::diagnostics::error(
+                    crate::diagnostics::Code::TextureUse,
+                    call,
+                    "`width()` and `height()` are called on a texture parameter by name",
+                )
+            })
+    };
     let argument = |index: usize| super::emit_expression(&call.args[index]);
     Ok(match method {
         Method::Load => format!("{receiver}[uint2({}, {})]", argument(0)?, argument(1)?),
@@ -508,8 +550,8 @@ pub(crate) fn emit_method(call: &syn::ExprMethodCall) -> syn::Result<String> {
             argument(1)?,
             argument(2)?
         ),
-        Method::Width => format!("__gpu_width_{receiver}"),
-        Method::Height => format!("__gpu_height_{receiver}"),
+        Method::Width => format!("__gpu_width_{}", size_name()?),
+        Method::Height => format!("__gpu_height_{}", size_name()?),
     })
 }
 
@@ -522,8 +564,7 @@ struct DimensionUses<'a> {
 impl<'ast> Visit<'ast> for DimensionUses<'_> {
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
         if matches!(call.method.to_string().as_str(), "width" | "height")
-            && let syn::Expr::Path(path) = call.receiver.as_ref()
-            && let Some(ident) = path.path.get_ident()
+            && let Some(ident) = receiver_ident(&call.receiver)
         {
             let name = super::emit_ident(ident);
             if self.textures.contains(&name) && !self.used.contains(&name) {

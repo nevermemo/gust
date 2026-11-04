@@ -5,3 +5,4 @@ code: none
 file: texture-sample-argument/src/main.rs
 line: 9
 message: [GUST-E0733]
+message: passed by name

@@ -5,3 +5,4 @@ code: none
 file: texture-as-value/src/main.rs
 line: 8
 message: [GUST-E0736]
+message: `image` is a texture parameter

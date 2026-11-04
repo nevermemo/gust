@@ -36,9 +36,6 @@ use crate::{
 /// element's numbers are those of `gust::TypeLayout::scalar` and `vector`: 4 for a scalar, `4 * n` for a vector, with
 /// alignment 8 for two components and 16 for three or four. The completed descriptor goes through the same
 /// cross-check as any other, which compares it with this same document.
-// Its first caller is the record reader's texture arm, which comes with the macro's texture parameters (mx.t3): the
-// reader and `ParameterRecord::needs_fill` (record.rs) know storage and uniform parameters only today.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn reflected_texture_layout(
     reflection_json: &str,
     parameter: &str,
@@ -103,7 +100,6 @@ pub(crate) fn reflected_texture_layout(
 }
 
 /// A texture result type (`scalar` or `vector`) without the byte layout the other element types carry.
-#[cfg_attr(not(test), allow(dead_code))]
 fn texel_layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
     let kind = value
         .field("kind", context)?

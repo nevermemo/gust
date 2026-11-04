@@ -9,8 +9,8 @@ mod textures {
     //   WriteTexture2D<F>      write only: `store`; all nine formats
     //   Sampler                the filter state `sample` reads; it has no methods
     //
-    // No kernel here is pinned to a shape: a kernel with a texture is not a grid kernel's equal, but the texel address
-    // is the invocation's own id, and the guard against the texture's size is the kernel's.
+    // No kernel here is pinned to a shape. The texel address is the invocation's own id, and a dispatch that is a whole
+    // number of workgroups may be larger than the texture, so every kernel guards against the texture's size itself.
 
     // A cross blur of a sampled texture into a write-only one: four bilinear samples around the texel centre.
     #[kernel(workgroup_size(8, 8, 1))]
@@ -38,7 +38,8 @@ mod textures {
     // A storage texture read and written in place; the size is read from the texture itself.
     #[kernel(workgroup_size(8, 8, 1))]
     pub fn invert(id: SV_DispatchThreadID, mut image: StorageTexture2D<R32Float>) {
-        if id.x < image.width() && id.y < image.height() {
+        // `(image).width()` is the same call as `image.width()`: the receiver is the parameter either way.
+        if id.x < (image).width() && id.y < image.height() {
             let value = image.load(id.x, id.y);
             image.store(id.x, id.y, 1.0f32 - value);
         }
@@ -106,9 +107,11 @@ mod textures {
         mut two: WriteTexture2D<Rg32Float>,
         mut four: WriteTexture2D<Rgba32Float>,
     ) {
-        one.store(id.x, id.y, 1.0f32);
-        two.store(id.x, id.y, Vec2::new(1.0f32, 2.0f32));
-        four.store(id.x, id.y, Vec4::new(1.0f32, 2.0f32, 3.0f32, 4.0f32));
+        if id.x < one.width() && id.y < one.height() {
+            one.store(id.x, id.y, 1.0f32);
+            two.store(id.x, id.y, Vec2::new(1.0f32, 2.0f32));
+            four.store(id.x, id.y, Vec4::new(1.0f32, 2.0f32, 3.0f32, 4.0f32));
+        }
     }
 
     #[kernel(workgroup_size(8, 8, 1))]
@@ -118,9 +121,11 @@ mod textures {
         mut two: WriteTexture2D<Rg32Uint>,
         mut four: WriteTexture2D<Rgba32Uint>,
     ) {
-        one.store(id.x, id.y, id.x);
-        two.store(id.x, id.y, UVec2::new(id.x, id.y));
-        four.store(id.x, id.y, UVec4::new(id.x, id.y, 3u32, 4u32));
+        if id.x < one.width() && id.y < one.height() {
+            one.store(id.x, id.y, id.x);
+            two.store(id.x, id.y, UVec2::new(id.x, id.y));
+            four.store(id.x, id.y, UVec4::new(id.x, id.y, 3u32, 4u32));
+        }
     }
 
     #[kernel(workgroup_size(8, 8, 1))]
@@ -130,8 +135,10 @@ mod textures {
         mut two: WriteTexture2D<Rg32Sint>,
         mut four: WriteTexture2D<Rgba32Sint>,
     ) {
-        one.store(id.x, id.y, -1);
-        two.store(id.x, id.y, IVec2::new(-1, 2));
-        four.store(id.x, id.y, IVec4::new(-1, 2, -3, 4));
+        if id.x < one.width() && id.y < one.height() {
+            one.store(id.x, id.y, -1);
+            two.store(id.x, id.y, IVec2::new(-1, 2));
+            four.store(id.x, id.y, IVec4::new(-1, 2, -3, 4));
+        }
     }
 }

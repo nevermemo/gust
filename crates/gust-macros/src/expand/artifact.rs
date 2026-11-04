@@ -1768,6 +1768,91 @@ pub(super) mod tests {
         .json()
     }
 
+    /// The parameters of a texture kernel: a sampled `Texture2D<Vec4>`, a `Sampler` and a write-only
+    /// `WriteTexture2D<Rgba32Float>` (the shapes `tests/fixtures/textures.rs` has, D91).
+    fn texture_parameters() -> Vec<ParameterRecord> {
+        let texel: syn::Type = crate::diagnostics::testing::parse_str("Vec4").unwrap();
+        let facts = |format, access, class| TextureRecord {
+            format,
+            access,
+            class,
+        };
+        let parameter =
+            |name: &str, rust_type: &str, kind, access, binding, layout| ParameterRecord {
+                name: name.to_owned(),
+                rust_type: rust_type.to_owned(),
+                kind,
+                access,
+                binding,
+                layout,
+            };
+        vec![
+            parameter(
+                "id",
+                "SV_DispatchThreadID",
+                "invocation",
+                "not_applicable",
+                None,
+                None,
+            ),
+            parameter(
+                "image",
+                "Texture2D < Vec4 >",
+                "texture",
+                "read_only",
+                Some(0),
+                texture_resource(&texel, facts(None, "sampled", "f32")),
+            ),
+            parameter(
+                "bilinear",
+                "Sampler",
+                "sampler",
+                "not_applicable",
+                Some(1),
+                None,
+            ),
+            parameter(
+                "out",
+                "WriteTexture2D < Rgba32Float >",
+                "texture",
+                "read_write",
+                Some(2),
+                texture_resource(&texel, facts(Some("rgba32float"), "write_only", "f32")),
+            ),
+        ]
+    }
+
+    /// The texture kernel's record as `write` prints it.
+    fn texture_json() -> String {
+        let parameters = texture_parameters();
+        KernelRecord {
+            key: "0123456789abcdef",
+            module: "textures",
+            name: "run",
+            entry_point: "gpu_textures_run",
+            workgroup_size: [8, 8, 1],
+            parameters: &parameters,
+            file: "src/lib.rs",
+            lines: &[LineRecord {
+                slang_start: 3,
+                slang_end: 9,
+                rust_line: 12,
+            }],
+            shape: None,
+        }
+        .json()
+    }
+
+    /// cargo-gust's reader parses this same file (`record_tests.rs`), with the key of its own Slang in place of this.
+    #[test]
+    fn the_texture_and_sampler_record_matches_the_golden() {
+        assert_golden(
+            &texture_json(),
+            "texture.kernel.json",
+            &include_str!("../../tests/golden/texture.kernel.json").replace("\r\n", "\n"),
+        );
+    }
+
     #[test]
     fn the_uniform_and_vector_record_matches_the_golden() {
         assert_golden(

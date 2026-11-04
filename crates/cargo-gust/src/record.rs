@@ -619,6 +619,31 @@ fn parse_parameter(value: &Json, context: &str) -> Result<ParameterRecord, Strin
             element: parse_layout(layout.field("element", &at)?, &format!("{at}.element"))?,
         })
     };
+    // The layout and the kind agree: a sampler has none, and a `texture_v1` layout belongs to a texture only.
+    match (&layout, kind) {
+        (Some(_), ParameterKind::Sampler) => {
+            return Err(format!("{context}.layout: a sampler has no layout"));
+        }
+        (Some(ResourceRecord { rules, .. }), kind) => {
+            let texture_rules = matches!(rules, ShaderLayoutRules::TextureV1(_));
+            if texture_rules != (kind == ParameterKind::Texture) {
+                return Err(format!(
+                    "{context}.layout: `{}` rules do not belong to a {} parameter",
+                    if texture_rules {
+                        "texture_v1"
+                    } else {
+                        "buffer"
+                    },
+                    if kind == ParameterKind::Texture {
+                        "texture"
+                    } else {
+                        "non-texture"
+                    },
+                ));
+            }
+        }
+        (None, _) => {}
+    }
     Ok(ParameterRecord {
         name: string(value, "name", context)?,
         rust_type: string(value, "rust_type", context)?,

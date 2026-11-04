@@ -126,8 +126,9 @@ then emits each kernel's `Run` impl for `gust::cpu::CpuDevice` in every build an
 call `dispatch` on the CPU and run the kernel as plain Rust. A build holds one target: `gust-wgpu` fails to compile
 under `cpu` (a compile error that names the profile), and the `slang-runtime` feature is refused, so the binary
 contains no Slang bridge, helper or GPU runtime. A kernel marked `#[kernel(cpu = "unsupported")]` has no CPU form, and a
-`dispatch` on it does not compile. Kernels run on one thread, in ascending `global_id.x`. `cargo xtask check-cpu-target`
-is the evidence (the `Cpu` tier).
+`dispatch` on it does not compile. Kernels run on one thread, in ascending `global_id.x`, with one exception: the calls
+of an element-wise map (`#[gpu]` on a function) run in parallel chunks of the output (see "Current subset").
+`cargo xtask check-cpu-target` is the evidence (the `Cpu` tier).
 
 For the full release-readiness check (including ignored example tests, all nine
 examples, and mandatory external validation of all twenty SPIR-V exports):
@@ -160,6 +161,12 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-feature gpu-smoke` | Cheapest wgpu runtime sanity | wgpu crate unit tests only |
 | `cargo xtask check-feature gpu-semantics` | GPU semantic differential work | semantics, numeric, option, loops, struct-assignment tests |
 | `cargo xtask check-feature gpu-runtime` | Runtime/reflection gate work | wgpu `reflection`, `limits`, `typed` and `graph` integration tests |
+| `cargo xtask check-feature vectors` | Vector and matrix types (StorageV2 buffers); needs slangc, `spirv-val` and an adapter | gust-macros vector tests, `gust::math` unit tests, the `vectors` and `products` goldens, their SPIR-V made and validated with `spirv-val`, then wgpu `vectors` |
+| `cargo xtask check-feature uniforms` | Uniform parameters (`Uniform<T>`, Std140); as for `vectors` | gust-macros uniform tests, `uniforms_twin`, the `uniforms` golden, its SPIR-V validated, then wgpu `uniforms` and the uniform cases of `typed` and `graph` |
+| `cargo xtask check-feature map` | Element-wise maps, `GpuVec`, device options and the parallel CPU map | `gust` unit tests of `map::` and `cpu::parallel`, `gust` `tests/parallel.rs`, gust-macros map tests, wgpu `map`, `gpu_vec`, `device_options` and `limits` |
+| `cargo xtask check-feature workgroup` | Workgroup memory, barriers, `LocalId` and `GroupId` | gust-macros and `gust` unit tests named `workgroup`, then wgpu `workgroup` (the block reduce, the derived ids and the barrier in the SPIR-V) |
+| `cargo xtask check-feature algo` | The `gust-algo` library (reduce, scan, compact) | every `gust-algo` test: schedule, bound and golden tests and the CPU twins without an adapter, then the same cases on the first Vulkan adapter |
+| `cargo xtask check-feature dispatch` | `par_for!` and multi-dimensional dispatch (`Extent`) | gust-macros `par_for` unit tests, then wgpu `par_for`, `grid`, `concurrency` and `async_readback` |
 | `cargo xtask check-changed` | Dirty-tree routing | chooses a focused check from changed paths |
 | `cargo xtask check-format` | Formatting only | `cargo fmt --all -- --check` |
 | `cargo xtask check-lints` | Strict lints | workspace Clippy with warnings denied (`--locked`) |
@@ -759,8 +766,10 @@ pub fn block_sum(
   `for`, because every invocation of the workgroup must reach it (E0414). A kernel with a barrier has no `return`, no
   `break` or `continue` in a loop that holds a barrier, and no labelled jump or `?` (E0415, E0416).
   Helpers cannot take `Workgroup` (E0119). A barrier orders one workgroup only; nothing orders different workgroups.
-- Such a kernel has no CPU twin: it must say `cpu = "unsupported"` (E0717), and `cpu = "lockstep"` is rejected (E0709)
-  until a later slice defines that twin. Under `GUST_PROFILE=cpu` it has no `Run` implementation.
+- Such a kernel has no CPU twin: it must say `cpu = "unsupported"` (E0717), and `cpu = "lockstep"` is rejected (E0709).
+  No CPU strategy for barrier kernels exists: a threaded lockstep twin measured about 2.9 ms per barrier round of 256
+  threads, 102 to 104 s for a block reduce over 1e6 elements, so the lockstep twin was dropped (D118). Under
+  `GUST_PROFILE=cpu` such a kernel has no `Run` implementation.
 - Evidence (exists, m7.g1): on the RTX 5090 a 256-wide block reduce equals an integer host sum bit for bit at 1, 255,
   256, 257 and 65 537 elements, every invocation's ids equal `id % 256` and `id / 256`, and the barrier is an
   `OpControlBarrier` in the compiled SPIR-V (`gust-wgpu/tests/workgroup.rs`); 12 compile-fail fixtures and a passing
@@ -866,10 +875,16 @@ The direct syntax translator currently supports:
   `atomic_min`/`atomic_max` (T10);
 - bounded `for i in start..end` loops whose bounds type-check as 32-bit integers,
   with `break`/`continue` (the end bound is evaluated once; see D18);
-- one-, two- and three-dimensional runtime dispatch (`Extent`, m7.d) with explicit three-dimensional Slang
-  workgroup sizes in descriptors;
-- workgroup memory (`Workgroup<[T; N]>`), `LocalId`/`GroupId` and `workgroup_barrier()` (m7.g1), and `par_for!` loops
-  (m7.p): see their sections above.
+- `wrapping_add`, `wrapping_sub`, `wrapping_mul` and `wrapping_neg` on `u32` and `i32` (m7.w, D87): the plain Slang
+  operator on the GPU and Rust's own `wrapping_*` on the CPU twin, so both wrap the same way for every input. Any other
+  method with arguments is E0325, whose message lists the accepted ones, and `wrapping_div`, `wrapping_rem`, `checked_*`,
+  `overflowing_*` and `saturating_*` stay out. Related: an unannotated `let` whose initializer is only unsuffixed
+  integer literals is E0326, which asks for a suffix or a type annotation (D96; both in
+  [DIAGNOSTICS](docs/DIAGNOSTICS.md));
+- one-, two- and three-dimensional runtime dispatch (`Extent`, m7.d, D102; see "Running a kernel") with explicit
+  three-dimensional Slang workgroup sizes in descriptors;
+- workgroup memory (`Workgroup<[T; N]>`), `LocalId`/`GroupId` and `workgroup_barrier()` (m7.g1, D100, D101), and
+  `par_for!` loops (m7.p, D103): see their sections above.
 
 The validator intentionally rejects allocation, standard-library access, macros,
 closures, async/await, references (other than an atomic's `&mut buffer[index]`
@@ -881,9 +896,14 @@ limits of Slang itself.
 Struct literals in other expression positions, nested struct literals, and record
 update syntax (`..base`) are rejected; whole-struct buffer copies and field updates
 work. Option and Result values cannot be struct fields or buffer elements.
-Booleans are expression values, not host-shareable `GpuPod` fields. Only padding-free storage layouts are
-executable today (32-bit scalars, 2- and 4-wide vectors, 2x2 and 4x4 matrices and nested structs of these), plus
-`Std140V1` structs for uniforms; arrays and 3-wide buffer elements are not. See
+Booleans are expression values, not host-shareable `GpuPod` fields. A buffer element is a 32-bit scalar, a 2- or
+4-wide vector, a 2x2 or 4x4 matrix or a struct of these. `StorageV2` describes the padding that natural alignment
+implies, but a `GpuPod` type is the padding-free subset, so a struct with implicit padding is E0208 and no
+uninitialised byte is uploaded. A uniform is a `Std140V1` struct whose padding is written as fields (E0209) and holds
+no `Mat2` (E0205). Arrays and 3-wide vectors are not buffer elements (E0204 for the vectors). Since m7.lv (D116) the
+macro also writes these layouts into the export record, `storage_v2` for an element that holds a vector or a matrix and
+`std140_v1` for a uniform, and `cargo gust build` and `check` compare each with the reflection; before it, a `Vec4` or
+`Mat4` element failed `cargo gust build` and a uniform was not checked at export (D104, retired by D116). See
 [architecture](docs/ARCHITECTURE.md) for known semantic
 gaps (and [SEMANTICS](docs/SEMANTICS.md) for limits); successful Rust checking does not prove equivalence to Slang inference.
 
@@ -905,7 +925,35 @@ Around the translator, the host side currently provides:
   and checked against the buffer hazards, with a report of transfers, residency and
   edge counts;
 - `GpuPool<T>` and indirect dispatch whose workgroup count the GPU writes and the
-  host does not check.
+  host does not check;
+- `GpuVec<T>` and the buffer pool (m7.a0): a vector resident on one device, taken from that device's `BufferPool`
+  (power-of-two byte classes, a 1 GiB cap on idle bytes that evicts the least recently returned first) and returned on
+  drop. `from_slice` and `zeroed` use the default device, their `_on` forms a device you hold; `to_vec` and
+  `to_vec_async` read it back; `&gpu_vec` goes where a typed call takes a buffer, and bindings show the logical length,
+  not the pooled size. Resident arguments of two devices are `Error::MixedDevices`. Tests: `gust-wgpu/tests/gpu_vec.rs`;
+- device options (m7.a0, D84): `HeadlessDevice::with_options(DeviceOptions)` chooses the adapter (`AdapterChoice`:
+  `HighPerformance`, `LowPower`, `Index(n)` of `HeadlessDevice::enumerate`, or `NameContains(text)`) and the limits
+  (`LimitsPolicy::Default`, wgpu's portable ones, or `Adapter`, the adapter's own buffer, binding and workgroup limits).
+  `default_device()` opens `DeviceOptions::default()` once per process (native: Vulkan, high-performance, adapter
+  limits), and `set_default_options` changes that before the first use (after it, `Error::DefaultDeviceOpened`).
+  Tests: `gust-wgpu/tests/device_options.rs`;
+- fallible buffer constructors (m7.a0, D84): `try_create_typed_buffer`, `create_zeroed_buffer` and `GpuVec` check
+  `max_buffer_size` before any wgpu call (`Error::DeviceLimit`), and on native an allocation the adapter cannot serve is
+  `Error::OutOfMemory` (a unit test only, no hardware run); `create_typed_buffer` stays infallible and unchecked;
+- `gust-algo` (m7.r1 to m7.r4; a workspace crate with `publish = false`, D110): device-resident algorithms over
+  `GpuVec`, every one a GUST kernel. `reduce::sum`, `min` and `max` (`u32`, `i32`, `f32`) and `reduce::sum_wrapping`
+  (`u32`) read one element back, `reduce::sum_on_device` keeps it on the device; `scan::inclusive` and `exclusive`
+  (`u32`) return a new vector; `compact::count`, `indices` and `gather_u32`, `gather_i32` and `gather_f32` keep the count
+  on the device. Each reduction and scan has a v0 form (block-strided, with CPU twins in test and dual builds) and a v1
+  form (`Workgroup<[T; 256]>` and barriers, `cpu = "unsupported"`). The public functions run v1 for all six operations
+  (`gust_algo::variant::shipped`; D121: v1 was faster than v0 at 1e6, 1e7 and 1e8 elements on the RTX 5090 and on the
+  Radeon 890M) and fall back to v0 for an input or a device whose v1 launch does not fit; the `*_with` functions run
+  either on request. Integer sums and scans are exact where no partial sum (or prefix) overflows, `sum_wrapping` is
+  defined modulo 2^32 for every input, and `min` and `max` are exact. A float sum is within the per-level bound of
+  `gust_algo::bound` (`f32_sum_bound_v1` for v1, `f32_sum_bound` for v0) of the exact sum, not a bit pattern, and the
+  two variants differ bit for bit. The kernels compile at run time through the crate's `slang-runtime` feature; it ships
+  no precompiled artifacts. Tests: `cargo xtask check-feature algo` (the adapter cases are pinned by name in the Gpu
+  suite, see [VALIDATION](docs/development/VALIDATION.md)).
 
 Its CPU backend, `gust::cpu`, runs the Rust body of each kernel that has a typed call, unless it opts out with
 `#[kernel(cpu = "unsupported")]`: as a test twin (emitted under
@@ -913,8 +961,21 @@ Its CPU backend, `gust::cpu`, runs the Rust body of each kernel that has a typed
 The twin is test evidence next to the GPU and the independent host
 reference, never in place of them, and never GPU evidence; where it may differ from the
 GPU, [SEMANTICS](docs/SEMANTICS.md) lists the limitation. It does not yet provide a compile-time portable limit floor
-(roadmap M8) or an access mode in the buffer type, and a kernel with workgroup memory or a barrier has no CPU twin
-until the lockstep twin of a later M7 slice.
+(roadmap M8) or an access mode in the buffer type. A kernel with workgroup memory or a barrier has no CPU twin and says
+`cpu = "unsupported"` (E0717): no CPU strategy for barriers exists, and `cpu = "lockstep"` is rejected (E0709), because
+the threaded lockstep twin measured far too slow (S7.4, D118).
+
+Under `GUST_PROFILE=cpu` the calls of a generated map (`map`, `map_on` and `map_on_async`) run in parallel chunks of the
+output on scoped `std` threads (m7.c, D119). Each chunk writes only its own elements, so the result equals a single
+thread's bit for bit; if elements panic, the panic of the lowest index is raised and nothing is returned. The thread
+count is `GUST_CPU_THREADS` (a positive integer; anything else is an error that names the value) or else the machine's
+parallelism, then bounded by `min(threads, max(1, n / 2^18))`, so a short call stays on one thread; `wasm32` has one.
+Everything else on the CPU stays sequential: `par_for!` bodies, user-written kernels and the dual twin. The source
+comment of `gust::cpu::parallel::ELEMENTS_PER_THREAD` records the measurement behind the 2^18 (24 logical cores):
+vector-add within 10 % of one thread from 2^16 to 1e6 elements, and the 64-step polynomial map 16 times faster than one
+thread at 1e8. Tests: `gust/tests/parallel.rs` (equality with one thread, the lowest-index panic, the variable's
+parsing through functions that take the value) and the map case of `cargo xtask check-cpu-target`, which does not set
+`GUST_CPU_THREADS`.
 
 ## Workspace
 

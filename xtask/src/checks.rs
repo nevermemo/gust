@@ -1464,7 +1464,7 @@ pub(crate) fn rustflags_config_files(root: &Path, cargo_home: Option<&Path>) -> 
 }
 
 /// `$CARGO_HOME`, or `~/.cargo`.
-fn cargo_home() -> Option<PathBuf> {
+pub(crate) fn cargo_home() -> Option<PathBuf> {
     env::var_os("CARGO_HOME").map(PathBuf::from).or_else(|| {
         env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
             .map(|home| PathBuf::from(home).join(".cargo"))

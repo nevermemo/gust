@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     ffi::OsString,
     fs,
     path::PathBuf,
@@ -8,12 +9,12 @@ use std::{
 use super::{
     DependencyKind, DocDebt, DocMessage, HELLO_DIR, HELLO_OUTPUT, Member, Options, PackageSpec,
     RegistryCleanup, Run, WorkDir, caret_satisfied, clean_registry_src, consumer_lock_problems,
-    doc_messages, doc_problems, docsrs_request, dry_run_problems, existing_crate_lines,
-    finish_outcome, fixture_dependency_problems, has_nightly, helper_choice, metadata_problems,
-    package_allows, package_files, package_problems, parse_args, parse_metadata,
-    patch_config_arguments, patched_manifest, readme_blocks, readme_problems, recipe_ran,
-    registry_command, registry_entries, registry_target, required_file_problems, section_value,
-    size_problems, unused_library_patches, verify_problems,
+    dep_info_entries, doc_messages, doc_problems, docsrs_request, dry_run_problems,
+    existing_crate_lines, finish_outcome, fixture_dependency_problems, has_nightly, helper_choice,
+    metadata_problems, package_allows, package_files, package_problems, parse_args, parse_metadata,
+    patch_config_arguments, patched_manifest, r1_command, r8_command, readme_blocks,
+    readme_problems, recipe_ran, registry_entries, registry_target, required_file_problems,
+    section_value, size_problems, target_dep_info_entries, unused_library_patches, verify_problems,
 };
 use crate::workspace::workspace_root;
 
@@ -917,8 +918,8 @@ fn r1_and_r8_build_into_a_target_directory_inside_the_work_directory() {
         check_only: true,
         helper: None,
     };
-    let package = registry_command(&run, &["package"], &both);
-    let publish = registry_command(&run, &["publish", "--dry-run"], &both);
+    let package = r1_command(&run, &both);
+    let publish = r8_command(&run, &both);
     for (command, leading) in [(&package, "package"), (&publish, "publish")] {
         let target = PathBuf::from(
             env_of(command, "CARGO_TARGET_DIR").expect("the target is set on the command itself"),
@@ -945,7 +946,7 @@ fn r1_and_r8_build_into_a_target_directory_inside_the_work_directory() {
     assert_eq!(args_of(&publish)[1], "--dry-run");
 }
 
-fn packages(items: &[&str]) -> std::collections::BTreeSet<String> {
+fn packages(items: &[&str]) -> BTreeSet<String> {
     items.iter().map(|item| (*item).to_owned()).collect()
 }
 
@@ -968,8 +969,12 @@ fn fill_registry(src: &std::path::Path, entries: &[(&str, &[&str])]) {
     }
 }
 
+fn names(items: &[&str]) -> BTreeSet<String> {
+    packages(items)
+}
+
 #[test]
-fn a_new_entry_of_only_publishable_name_version_directories_is_deleted() {
+fn a_named_new_entry_of_only_publishable_name_version_directories_is_deleted() {
     let wanted = packages(&["alpha-1.2.0", "tool-1.2.0"]);
     let src = scratch("reg-new");
     fill_registry(&src, &[("index.crates.io-aaaa", &["serde-1.0.0/"])]);
@@ -979,7 +984,8 @@ fn a_new_entry_of_only_publishable_name_version_directories_is_deleted() {
         &src,
         &[("-dff94c00431122b2", &["alpha-1.2.0/", "tool-1.2.0/"])],
     );
-    let result = clean_registry_src(&src, &before, &wanted);
+    let named = names(&["-dff94c00431122b2", "index.crates.io-aaaa"]);
+    let result = clean_registry_src(&src, &before, &named, &wanted);
     assert_eq!(result.removed.len(), 1, "{result:?}");
     assert_eq!(result.removed[0].0, "-dff94c00431122b2");
     assert!(result.removed[0].1 > 0, "the size is reported");
@@ -987,36 +993,67 @@ fn a_new_entry_of_only_publishable_name_version_directories_is_deleted() {
         result.kept.is_empty() && result.failed.is_empty(),
         "{result:?}"
     );
+    assert!(!result.is_failure());
     assert!(!src.join("-dff94c00431122b2").exists());
     assert!(
         src.join("index.crates.io-aaaa")
             .join("serde-1.0.0")
             .is_dir(),
-        "the registry's own entry is untouched"
+        "the registry's own entry is untouched, though the dep-info names it"
     );
     assert!(result.describe().contains("-dff94c00431122b2"));
     fs::remove_dir_all(&src).unwrap();
 }
 
 #[test]
-fn an_index_entry_is_kept_even_when_it_is_new_and_looks_like_ours() {
-    let wanted = packages(&["alpha-1.2.0"]);
-    let src = scratch("reg-index");
+fn a_new_entry_that_no_dep_info_of_this_run_names_is_never_deleted() {
+    // Another run's entry: new since our listing and shaped like ours, but our builds never read it.
+    let wanted = packages(&["alpha-1.2.0", "tool-1.2.0"]);
+    let src = scratch("reg-other-run");
     fill_registry(&src, &[]);
     let before = registry_entries(&src);
-    fill_registry(&src, &[("index.crates.io-bbbb", &["alpha-1.2.0/"])]);
-    let result = clean_registry_src(&src, &before, &wanted);
-    assert_eq!(result, RegistryCleanup::default(), "skipped without a word");
+    fill_registry(&src, &[("-8888", &["alpha-1.2.0/", "tool-1.2.0/"])]);
+    let result = clean_registry_src(&src, &before, &names(&[]), &wanted);
+    assert_eq!(result, RegistryCleanup::default());
+    assert!(src.join("-8888").join("alpha-1.2.0").is_dir());
     assert!(
-        src.join("index.crates.io-bbbb")
-            .join("alpha-1.2.0")
-            .is_dir()
+        result.describe().contains("nothing deleted"),
+        "{}",
+        result.describe()
     );
+    // Naming an entry that does not exist (another cargo home's, say) is not an error either.
+    let result = clean_registry_src(&src, &before, &names(&["-9999"]), &wanted);
+    assert_eq!(result, RegistryCleanup::default());
     fs::remove_dir_all(&src).unwrap();
 }
 
 #[test]
-fn a_new_entry_with_any_other_content_is_kept_and_named() {
+fn a_named_entry_that_existed_before_the_run_fails_closed_and_is_not_deleted() {
+    let wanted = packages(&["alpha-1.2.0", "tool-1.2.0"]);
+    // What a killed run left under the same work directory name: shaped like ours, named by our dep-info, not new.
+    let src = scratch("reg-old");
+    fill_registry(&src, &[("-7777", &["alpha-1.2.0/", "tool-1.2.0/"])]);
+    let before = registry_entries(&src);
+    let result = clean_registry_src(&src, &before, &names(&["-7777"]), &wanted);
+    assert_eq!(result.reused, strings(&["-7777"]), "{result:?}");
+    assert!(result.removed.is_empty());
+    assert!(result.is_failure());
+    assert!(src.join("-7777").join("alpha-1.2.0").is_dir());
+    let said = result.describe();
+    assert!(
+        said.contains("-7777") && said.contains("stale") && said.contains("delete"),
+        "{said}"
+    );
+    // An old entry of another shape that the builds read (an older crates.io layout) is nothing to report.
+    fill_registry(&src, &[("github.com-1ecc", &["serde-1.0.0/"])]);
+    let before = registry_entries(&src);
+    let result = clean_registry_src(&src, &before, &names(&["github.com-1ecc"]), &wanted);
+    assert_eq!(result, RegistryCleanup::default());
+    fs::remove_dir_all(&src).unwrap();
+}
+
+#[test]
+fn a_named_new_entry_with_any_other_content_is_kept_and_named() {
     let wanted = packages(&["alpha-1.2.0", "tool-1.2.0"]);
     let src = scratch("reg-other");
     fill_registry(&src, &[]);
@@ -1034,15 +1071,27 @@ fn a_new_entry_with_any_other_content_is_kept_and_named() {
             ("-4444", &["tool-1.2.0"]),
             // nothing at all
             ("-5555", &[]),
+            // an index entry, even one that looks like ours
+            ("index.crates.io-bbbb", &["alpha-1.2.0/"]),
         ],
     );
     // A new entry that is itself a file.
     fs::write(src.join("-6666"), "x").unwrap();
-    let result = clean_registry_src(&src, &before, &wanted);
+    let named = names(&[
+        "-1111",
+        "-2222",
+        "-3333",
+        "-4444",
+        "-5555",
+        "-6666",
+        "index.crates.io-bbbb",
+    ]);
+    let result = clean_registry_src(&src, &before, &named, &wanted);
     assert!(
         result.removed.is_empty() && result.failed.is_empty(),
         "{result:?}"
     );
+    assert!(!result.is_failure());
     assert_eq!(result.kept.len(), 6, "{result:?}");
     for name in ["-1111", "-2222", "-3333", "-4444", "-5555", "-6666"] {
         assert!(src.join(name).exists(), "{name} survives");
@@ -1051,6 +1100,11 @@ fn a_new_entry_with_any_other_content_is_kept_and_named() {
             "{name} is named: {result:?}"
         );
     }
+    assert!(
+        src.join("index.crates.io-bbbb")
+            .join("alpha-1.2.0")
+            .is_dir()
+    );
     let said = result.describe();
     assert!(
         said.contains("-1111") && said.contains("serde-1.0.0"),
@@ -1061,18 +1115,57 @@ fn a_new_entry_with_any_other_content_is_kept_and_named() {
 }
 
 #[test]
-fn an_entry_that_existed_before_the_run_is_never_touched() {
-    let wanted = packages(&["alpha-1.2.0", "tool-1.2.0"]);
-    // What an earlier run left: the shape of a deletable entry, but not new.
-    let src = scratch("reg-old");
-    fill_registry(&src, &[("-7777", &["alpha-1.2.0/", "tool-1.2.0/"])]);
-    let before = registry_entries(&src);
-    let result = clean_registry_src(&src, &before, &wanted);
-    assert_eq!(result, RegistryCleanup::default());
-    assert!(src.join("-7777").join("alpha-1.2.0").is_dir());
-    assert!(result.describe().contains("no new entry"));
-    fs::remove_dir_all(&src).unwrap();
-    // A registry/src that does not exist is nothing to clean, not an error.
-    let missing = clean_registry_src(&scratch("reg-missing"), &packages(&[]), &wanted);
-    assert_eq!(missing, RegistryCleanup::default());
+fn dep_info_names_the_registry_src_entries_whatever_the_spelling() {
+    let windows = concat!(
+        "C:\\w\\package-target\\debug\\deps\\gust-1a2b.d: ",
+        "C:\\h\\.cargo\\registry\\src\\-dff94c\\gust-0.1.0\\src\\lib.rs ",
+        "C:\\h\\.cargo\\registry\\src\\-dff94c\\gust-macros-0.1.0\\src\\lib.rs\n",
+        "C:\\h\\.cargo\\registry\\src\\index.crates.io-1949\\serde-1.0.0\\src\\lib.rs:\n"
+    );
+    assert_eq!(
+        dep_info_entries(windows),
+        names(&["-dff94c", "index.crates.io-1949"])
+    );
+    let unix = "deps/x.d: /h/.cargo/registry/src/-0abc/gust-0.1.0/src/lib.rs\n";
+    assert_eq!(dep_info_entries(unix), names(&["-0abc"]));
+    // A path outside registry/src names nothing, and neither does an empty text.
+    let other = "deps/x.d: /h/work/crates/gust/src/lib.rs /h/.cargo/registry/cache/x.crate\n";
+    assert_eq!(dep_info_entries(other), names(&[]));
+    assert_eq!(dep_info_entries(""), names(&[]));
+}
+
+#[test]
+fn the_dep_info_files_below_a_target_name_the_entries_and_other_files_do_not() {
+    let target = scratch("target");
+    let deps = target
+        .join("package")
+        .join("tool-1.2.0")
+        .join("debug")
+        .join("deps");
+    fs::create_dir_all(&deps).unwrap();
+    fs::write(
+        deps.join("alpha-1a.d"),
+        "alpha.d: /h/.cargo/registry/src/-aaaa/alpha-1.2.0/src/lib.rs\n",
+    )
+    .unwrap();
+    fs::write(
+        deps.join("tool.d"),
+        "tool.d: /h/.cargo/registry/src/-bbbb/alpha-1.2.0/src/lib.rs\n",
+    )
+    .unwrap();
+    // Only `.d` files count: a log or a binary that happens to contain such a path does not.
+    fs::write(
+        deps.join("note.txt"),
+        "/h/.cargo/registry/src/-cccc/alpha-1.2.0/src/lib.rs",
+    )
+    .unwrap();
+    fs::write(
+        deps.join("libalpha.rlib"),
+        b"\xff\xfe /h/.cargo/registry/src/-dddd/x/",
+    )
+    .unwrap();
+    assert_eq!(target_dep_info_entries(&target), names(&["-aaaa", "-bbbb"]));
+    fs::remove_dir_all(&target).unwrap();
+    // A target that does not exist (the build failed before it was made) names nothing.
+    assert_eq!(target_dep_info_entries(&scratch("no-target")), names(&[]));
 }

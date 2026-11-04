@@ -7,10 +7,15 @@
 //! - **R1**: one multi-package `cargo package --locked` of every publishable member, with verification (cargo builds
 //!   each unpacked package; per crate it fails because a dependant needs the others on the registry, in one call the
 //!   members verify against each other, mr.m0 P1). The output must say `Verifying` for each package. R1 and R8 build
-//!   into a target directory of the work directory's, not the caller's: cargo fingerprints a registry crate by name
+//!   into a target directory inside the work directory, not the caller's: cargo fingerprints a registry crate by name
 //!   and version, not by source, so a build that an earlier run left in a shared target would be reused (mr.r2).
-//!   The copies that cargo unpacks into `$CARGO_HOME/registry/src` are deleted afterwards if this run made them
-//!   ([`clean_registry_src`]).
+//!   Cargo also unpacks the temporary registry into `$CARGO_HOME/registry/src/<hash of the registry's path>`, and the
+//!   path (so the hash) is unique to a run's work directory name. After the steps, pass or fail, the run deletes
+//!   exactly the entries that the `*.d` dep-info files in its own target name, if they are new and hold only the
+//!   publishable `<name>-<version>` directories; it never deletes an `index.*` entry or an entry that no dep-info of
+//!   its own names (that may be a concurrent run's). If its builds read such an entry that existed before the run (a
+//!   killed run's, under a work directory name used again), cargo may have built from a stale copy and the check
+//!   fails, naming the entry ([`clean_registry_src`]).
 //! - **R2**: `cargo package --list` and the unpacked `.crate` files against the allow-list ([`package_allows`], the one
 //!   home, which E8 of `check-precompiled` calls too), plus `LICENSE-MIT`, `LICENSE-APACHE` and `README.md`, no test
 //!   module or test data.
@@ -50,6 +55,7 @@ use std::{
 };
 
 use crate::{
+    checks::cargo_home,
     json::{self, Json},
     precompiled::{is_inside, lock_packages, snapshot, unused_patch_lines},
     process::{PROFILE_VARIABLE, exit_code},
@@ -1200,14 +1206,6 @@ fn directory_size(directory: &Path) -> u64 {
         .sum()
 }
 
-/// `$CARGO_HOME`, else `.cargo` in the home directory (what cargo resolves without `--config`).
-fn cargo_home() -> Option<PathBuf> {
-    env::var_os("CARGO_HOME").map(PathBuf::from).or_else(|| {
-        env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
-            .map(|home| PathBuf::from(home).join(".cargo"))
-    })
-}
-
 /// The names of the entries of `directory` (none when it cannot be read).
 pub(crate) fn registry_entries(directory: &Path) -> BTreeSet<String> {
     fs::read_dir(directory)
@@ -1223,24 +1221,29 @@ pub(crate) fn registry_entries(directory: &Path) -> BTreeSet<String> {
 /// What [`clean_registry_src`] did.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct RegistryCleanup {
-    /// The new entries it deleted, with their sizes in bytes.
+    /// The entries it deleted, with their sizes in bytes.
     pub(crate) removed: Vec<(String, u64)>,
-    /// The new entries it left alone, each with the reason.
+    /// The entries of this run's builds that it left alone, each with the reason.
     pub(crate) kept: Vec<String>,
     /// The deletions that failed.
     pub(crate) failed: Vec<String>,
+    /// The entries that this run's builds read although they existed before the run: cargo may have built from a
+    /// stale copy, so the run fails.
+    pub(crate) reused: Vec<String>,
     /// Set when there was nothing to look at (no cargo home).
     pub(crate) skipped: Option<String>,
 }
 
 impl RegistryCleanup {
+    /// Whether the run must fail whatever its steps said: a deletion failed, or a stale entry was read.
+    pub(crate) fn is_failure(&self) -> bool {
+        !self.failed.is_empty() || !self.reused.is_empty()
+    }
+
     /// One sentence for the summary and the failure text.
     pub(crate) fn describe(&self) -> String {
         if let Some(reason) = &self.skipped {
             return format!("cargo registry/src not cleaned: {reason}");
-        }
-        if self.removed.is_empty() && self.kept.is_empty() && self.failed.is_empty() {
-            return "cargo registry/src has no new entry".to_owned();
         }
         let mut parts = Vec::new();
         if !self.removed.is_empty() {
@@ -1252,10 +1255,20 @@ impl RegistryCleanup {
                 })
                 .collect();
             parts.push(format!(
-                "deleted {} new cargo registry/src entr{}: {}",
+                "deleted {} cargo registry/src entr{} that this run's builds read: {}",
                 list.len(),
                 if list.len() == 1 { "y" } else { "ies" },
                 list.join(", ")
+            ));
+        }
+        if !self.reused.is_empty() {
+            parts.push(format!(
+                "this run's builds read the cargo registry/src entr{} {}, which existed before the run (a killed \
+                 run, or a work directory name used before): cargo may have built from a stale copy of the \
+                 packages, so the result cannot be trusted; delete {} and run again",
+                if self.reused.len() == 1 { "y" } else { "ies" },
+                self.reused.join(", "),
+                if self.reused.len() == 1 { "it" } else { "them" }
             ));
         }
         if !self.kept.is_empty() {
@@ -1267,33 +1280,88 @@ impl RegistryCleanup {
         if !self.failed.is_empty() {
             parts.push(format!("could not delete: {}", self.failed.join("; ")));
         }
+        if parts.is_empty() {
+            return "no dep-info file of this run's builds names a cargo registry/src entry of the run; nothing \
+                    deleted"
+                .to_owned();
+        }
         parts.join("; ")
     }
 }
 
-/// Deletes the entries of `src` (cargo's `registry/src`) that were not in `before`, are not named `index.*` and hold
-/// only directories named like one of `packages` (`<name>-<version>`): the copies that cargo unpacks from the
-/// temporary registry of `cargo package` and `cargo publish`. The directory's name is a hash of the registry's path,
-/// so a run in a target directory of its own makes a new one each time. Any other new entry (another content, a
-/// file, a link, an empty directory) is never deleted and is named in the result. An entry that existed before is
-/// never touched: this run did not make it.
+/// The `registry/src` entry names that `dep_info` (the text of one rustc dep-info `.d` file) mentions: the component
+/// after `registry/src/` in any path, whichever way the paths are spelled (`\` or `/`).
+pub(crate) fn dep_info_entries(dep_info: &str) -> BTreeSet<String> {
+    const MARK: &str = "registry/src/";
+    let text = dep_info.replace('\\', "/");
+    let mut names = BTreeSet::new();
+    let mut rest = text.as_str();
+    while let Some(at) = rest.find(MARK) {
+        rest = &rest[at + MARK.len()..];
+        let name: String = rest
+            .chars()
+            .take_while(|c| *c != '/' && !c.is_whitespace())
+            .collect();
+        if !name.is_empty() {
+            names.insert(name);
+        }
+    }
+    names
+}
+
+/// The `registry/src` entries that the `*.d` files below `target` name: the ones this run's own builds read. Each run's
+/// temporary registry lies in its own target directory, so the hash in the entry's name is the run's alone; another
+/// run's entry is never named here.
+pub(crate) fn target_dep_info_entries(target: &Path) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let mut pending = vec![target.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            match entry.file_type() {
+                Ok(kind) if kind.is_dir() => pending.push(path),
+                Ok(kind) if kind.is_file() && path.extension().is_some_and(|ext| ext == "d") => {
+                    if let Ok(bytes) = fs::read(&path) {
+                        names.extend(dep_info_entries(&String::from_utf8_lossy(&bytes)));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    names
+}
+
+/// Deletes the entries of `src` (cargo's `registry/src`) that `named` lists (see [`target_dep_info_entries`]), that
+/// were not in `before`, are not named `index.*` and hold only directories named like one of `packages`
+/// (`<name>-<version>`): the copies that cargo unpacked from the temporary registry of `cargo package` and `cargo
+/// publish` for this run's builds. An entry that is named and shaped so, but existed before the run, is in
+/// [`RegistryCleanup::reused`] and is not deleted: this run did not make it, and its builds read it. A named entry of
+/// another shape is never deleted and is named in the result. An entry that no dep-info names is never touched (it
+/// may be another run's).
 pub(crate) fn clean_registry_src(
     src: &Path,
     before: &BTreeSet<String>,
+    named: &BTreeSet<String>,
     packages: &BTreeSet<String>,
 ) -> RegistryCleanup {
     let mut result = RegistryCleanup::default();
-    for name in registry_entries(src) {
-        if before.contains(&name) || name.starts_with("index.") {
+    for name in named {
+        if name.starts_with("index.") {
             continue;
         }
-        let path = src.join(&name);
-        let is_directory = fs::symlink_metadata(&path).is_ok_and(|meta| meta.file_type().is_dir());
-        if !is_directory {
-            result.kept.push(format!("{name} (not a directory)"));
+        let path = src.join(name);
+        let Ok(meta) = fs::symlink_metadata(&path) else {
             continue;
-        }
-        let children = registry_entries(&path);
+        };
+        let children = if meta.file_type().is_dir() {
+            registry_entries(&path)
+        } else {
+            BTreeSet::new()
+        };
         let ours = !children.is_empty()
             && children.iter().all(|child| {
                 packages.contains(child)
@@ -1301,25 +1369,33 @@ pub(crate) fn clean_registry_src(
                         .is_ok_and(|meta| meta.file_type().is_dir())
             });
         if !ours {
-            let listed: Vec<&str> = children.iter().map(String::as_str).take(4).collect();
-            result.kept.push(format!(
-                "{name} (holds {}{})",
-                if listed.is_empty() {
-                    "nothing".to_owned()
-                } else {
-                    listed.join(", ")
-                },
-                if children.len() > listed.len() {
-                    ", .."
-                } else {
-                    ""
-                }
-            ));
+            // Another registry that the builds read (an older crates.io entry, say): not ours, and not news when it
+            // is old.
+            if !before.contains(name) {
+                let listed: Vec<&str> = children.iter().map(String::as_str).take(4).collect();
+                result.kept.push(format!(
+                    "{name} (holds {}{})",
+                    if listed.is_empty() {
+                        "nothing".to_owned()
+                    } else {
+                        listed.join(", ")
+                    },
+                    if children.len() > listed.len() {
+                        ", .."
+                    } else {
+                        ""
+                    }
+                ));
+            }
+            continue;
+        }
+        if before.contains(name) {
+            result.reused.push(name.clone());
             continue;
         }
         let bytes = directory_size(&path);
         match fs::remove_dir_all(&path) {
-            Ok(()) => result.removed.push((name, bytes)),
+            Ok(()) => result.removed.push((name.clone(), bytes)),
             Err(error) => result.failed.push(format!("{name}: {error}")),
         }
     }
@@ -1348,9 +1424,15 @@ impl RegistryWatch {
         }
     }
 
-    fn finish(self) -> RegistryCleanup {
+    /// The cleanup, for the entries that the dep-info files below `target` name.
+    fn finish(self, target: &Path) -> RegistryCleanup {
         match self.src {
-            Some(src) => clean_registry_src(&src, &self.before, &self.packages),
+            Some(src) => clean_registry_src(
+                &src,
+                &self.before,
+                &target_dep_info_entries(target),
+                &self.packages,
+            ),
             None => RegistryCleanup {
                 skipped: Some("neither CARGO_HOME nor the home directory is set".to_owned()),
                 ..RegistryCleanup::default()
@@ -1545,11 +1627,11 @@ fn release_steps(
 ) -> Result<String, String> {
     let watch = RegistryWatch::begin(publishable);
     let outcome = all_steps(run, metadata, publishable);
-    let cleanup = watch.finish();
+    let cleanup = watch.finish(&registry_target(run.work));
     let said = cleanup.describe();
     println!("check-release: {said}");
     match outcome {
-        Ok(summary) if cleanup.failed.is_empty() => Ok(format!(
+        Ok(summary) if !cleanup.is_failure() => Ok(format!(
             "{summary}. Registry leftovers: {said}. Work directory {:.1} MiB",
             directory_size(run.work) as f64 / (1024.0 * 1024.0)
         )),
@@ -1645,12 +1727,22 @@ fn registry_command(run: &Run, leading: &[&str], publishable: &[&Member]) -> Com
     run.cargo_in(run.root, &registry_target(run.work), &args)
 }
 
+/// The command that R1 runs.
+fn r1_command(run: &Run, publishable: &[&Member]) -> Command {
+    registry_command(run, &["package"], publishable)
+}
+
+/// The command that R8 runs.
+fn r8_command(run: &Run, publishable: &[&Member]) -> Command {
+    registry_command(run, &["publish", "--dry-run"], publishable)
+}
+
 /// R1: the one-call package with verification. Returns the directory with a copy of each `.crate`.
 fn r1_package(run: &Run, publishable: &[&Member]) -> Result<PathBuf, String> {
     let output = run.step(
         "R1",
         "cargo package --locked (one call, with verification)",
-        registry_command(run, &["package"], publishable),
+        r1_command(run, publishable),
     )?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     problems_to_error("R1", &verify_problems(&stderr, publishable))?;
@@ -2083,7 +2175,7 @@ fn r8_dry_run(run: &Run, publishable: &[&Member]) -> Result<String, String> {
     let output = run.step(
         "R8",
         "cargo publish --dry-run --locked (one call)",
-        registry_command(run, &["publish", "--dry-run"], publishable),
+        r8_command(run, publishable),
     )?;
     let stderr = String::from_utf8_lossy(&output.stderr);
     problems_to_error("R8", &dry_run_problems(&stderr, publishable.len()))?;

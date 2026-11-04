@@ -233,8 +233,10 @@ test module; do not mix that mechanical move with behavior changes.
 - m7.c follow-ups: the `cpu` map copies its host slices once in `bind` before the chunked read; borrowing them
   would cut vector-add's serial part (m7.c review). `par_for!` and user kernels stay sequential on the `cpu` target
   (D119); a chunked `par_for!` would need its own write-set proof.
-- m7.a2 follow-ups: the README map table's published run in a quiet window (replaces the provisional smoke table);
-  a `#[gpu] fn` from an artifact under `native` (the workspace profile pin requires `slang-runtime` on every
+- m7.a2 follow-ups: the README map table's 64-multiply-add cell at 4.2e6 takes three to four times linear
+  scaling from 1e6 in all three runs (smoke and two published) while 1 and 256 multiply-adds scale linearly
+  (not investigated); a `#[gpu] fn` from an artifact under `native` (the workspace profile pin requires
+  `slang-runtime` on every
   example's gust-wgpu, and `native` refuses it; tests/precompiled has no `#[gpu] fn`); `map_async` in a browser has
   never run (web-vector-add is closed at compile level only), and it opens a second device through
   `default_device_async` beside the explicit one; the resident chain's count sees only pooled buffers, so a

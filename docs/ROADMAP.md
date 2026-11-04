@@ -40,16 +40,16 @@ Done: m7.w (wrapping arithmetic and GUST-E0325, D87, merge `4797013`) and m7.r1 
 m7.rb (blocking readbacks wait for their own completion, D97, merge `893d959`), m7.t13 (T13 active count, merge
 `b88bfb0`), m7.r2 (scan v0, merge `09203ae`), m7.r3 (compaction v0, merge `8027169`), m7.a1 (the map API, D99,
 merge `5609536`), m7.t14 (compaction in component-pool, merge `f96aff1`) and m7.g1 (shared memory and barriers,
-D100 and D101, merge `1516c94`) and m7.a2 (map examples, merge `44299e5`; its README table is provisional until a
-quiet-window run) and m7.r4 (shared-memory v1, merge `d6b425f`; v1 ships for all six operations, kept after
+D100 and D101, merge `1516c94`) and m7.a2 (map examples, merge `44299e5`; its README table now comes
+from two quiet-window runs) and m7.r4 (shared-memory v1, merge `d6b425f`; v1 ships for all six operations, kept after
 the Radeon 890M half, D121) and m7.d (multi-dimensional dispatch, D102, merge `853aade`) and m7.p (`par_for!`, D103,
 merge `910ee1c`) and m6.u2f (`cargo gust build` on uniform kernels, D104) and m7.t1 (tidy pass 1, merge
 `1278b61`) and m7.f1 (ETXTBSY retry, merge `96051c8`) and m7.lv (uniform and vector layouts in the export
 record, D116, merge `9d47f67`) and m7.t2 (one element-type lookup, merge `6b0d59a`). S7.4 ended C (D118: no
 lockstep twin, m7.g2 dropped) and S7.5 ended A (D119), and m7.c (parallel CPU map, merge `88ac459`) shipped.
-m7.x (the close-out wiring and docs, merges `3ebd368`, `1e648b7` and `07b851d`) shipped. Next: the README
-map table's quiet-window run, then the M7 close. The wasm32 `Job` contract (D69) lands before m7.a's `map_async`
-reaches the browser. The MX plan is adopted (D88 to D95).
+m7.x (the close-out wiring and docs, merges `3ebd368`, `1e648b7` and `07b851d`) shipped, and the README
+map table comes from two quiet-window runs on `ea258f9`. Next: the M7 close. The wasm32 `Job` contract (D69)
+lands before m7.a's `map_async` reaches the browser. The MX plan is adopted (D88 to D95).
 
 **Done: M6, language breadth I** (closed 2026-11-02, D86). Plan adopted 2026-11-01 (owner-delegated) after an Opus
 review, one revision and a re-check; decisions D77 to D85. Sanity check by Fable and by Opus in the Codex slot (owner

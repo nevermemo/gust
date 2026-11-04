@@ -461,6 +461,14 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   the must-fix (concurrent runs deleting each other's entry), two should-fixes and the nits taken.
   Main: 23 gate steps green on `b719a30` (2026-11-04 09:49 to 10:20Z, RTX 5090) and check-release --check-only green in
   the shared main target (10:20 to 10:24Z; registry/src clean after).
+- M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
+  `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
+  55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a
+  hand-written dispatch; the resident chain is 1.3 to 2.9 times faster than host slices; a cheap function never beats
+  the CPU up to 4.2e6; 64 multiply-adds win from 1e4 to 1e6 and 256 from 6.6e4 to 4.2e6. The 64-multiply-add cell at
+  4.2e6 takes three to four times linear scaling from 1e6 in both runs and the smoke run (70.0 and 50.9 ms), so it is
+  not faster there; unexplained, in NEXT_TASKS. The probe's header still prints the smoke run's base and "shared
+  machine" lines; the README states the true conditions.
 - M7 m7.x (the close-out, plan §11; three lanes). m7.x1 (`097c75f`, fix round `e61d237`, merge `3ebd368`): a
   feature area `dispatch` (the `par_for!` and multi-dimensional dispatch tests of gust-macros, gust and gust-wgpu,
   one counted call per filter so a filter that matches nothing fails); `map` also runs m7.c's tests; `check-changed`
@@ -475,7 +483,9 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   SEMANTICS map section and the M7 entries of "What is proven" (compaction's count and indices measured, as they run
   v1), ARCHITECTURE for map, the generator, `par_for!`, `GpuVec` and the pool, `cpu::parallel` and gust-algo,
   NEXT_TASKS (stale items, storage barriers and the decoupled look-back), three skills, and gust-algo's variant docs
-  without "provisional" (D121). Opus merge after fixes on each; every must-fix taken. Main: 23 of 23 gates green on `1e648b7` (m7.x1 and m7.x2; 2026-11-04 13:01 to 13:41Z), and on the m7.x3 merge (docs and doc comments only) fmt, gust-algo lib and doc tests, docs-check, lint and clippy.
+  without "provisional" (D121). Opus merge after fixes on each; every must-fix taken. Main: 23 of 23 gates green on
+  `1e648b7` (m7.x1 and m7.x2; 2026-11-04 13:01 to 13:41Z), and on the m7.x3 merge (docs and doc comments only) fmt,
+  gust-algo lib and doc tests, docs-check, lint and clippy.
 - M7 m7.c (`60e5aa3`, fix round `7f1b37f`, measured doc `3499303`, merge `88ac459`; D119): parallel CPU
   execution for generator-stamped map kernels. Under the `cpu` target the map generator emits a chunk body that
   `gust::cpu::parallel::run_map_chunked` runs over disjoint output chunks with `std::thread::scope` (safe Rust, std

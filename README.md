@@ -688,26 +688,27 @@ the blocking `map` and `map_on` are not emitted). Mismatched lengths are an erro
 `examples/map-chain` runs three such maps as a resident chain and as host-slice calls.
 
 Map is for resident chains and compute-dense functions. For a cheap function (one multiply-add per element) a map over
-host slices did not beat the CPU at any size this run measured, up to 4.2e6 elements; the planning break-even of the
-design study was about 1e7 elements.
+host slices did not beat the CPU at any size measured, up to 4.2e6 elements; the planning break-even of the design study
+was about 1e7 elements.
 
-Provisional, shared machine, 2026-11-03 (smoke run of an out-of-repository probe, `plans/m7/probe/a2` of the work
-area, on the lane/m7.a2 tree at base `5609536`; the published run replaces this table. NVIDIA GeForce RTX 5090,
-Vulkan, release build with `-C target-cpu=native`, 24 logical cores, 2 warm-up and 5 timed rounds per cell with the
-backends interleaved, median of the timed rounds; other lanes were using the GPU and the CPU, so read the ratios, not
-the milliseconds. Every map time includes the zero-fill of the map's output buffer, which the generated call does
-before the kernel runs; "faster than the CPU" below means a time under 0.9 of the best CPU form):
+Measured 2026-11-04 on an NVIDIA GeForce RTX 5090 (Vulkan) with 24 logical cores, release build with
+`-C target-cpu=native`: two runs of an out-of-repository probe (`plans/m7/probe/a2` of the work area) built against
+`ea258f9`, in a quiet window (no other build, test or GPU job of this project ran; the GPU was at 0 % before each run).
+3 warm-up and 11 timed rounds per cell (5 at 4.2e6), the backends interleaved per round, median of the timed rounds;
+each result gives run 1 / run 2. Every map time includes the zero-fill of the map's output buffer, which the generated
+call does before the kernel runs; "faster than the CPU" below means a time under 0.9 of the best CPU form (one thread,
+or rayon on 24 threads):
 
-| Measurement | n | Result (median ms) |
+| Measurement | n | Result (median, run 1 / run 2) |
 |---|---|---|
-| map over host slices (`a + b`) versus a hand-written typed dispatch | 1e3 to 4.2e6 (six sizes) | map / hand 0.76 / 1.05 / 0.77 / 0.79 / 0.49 / 0.50 at 1e3 / 1e4 / 6.6e4 / 1e5 / 1e6 / 4.2e6, so 0.49 to 1.05: at 1e4 map is the slower one; at 1e6 map 3.68 and hand 7.59, at 4.2e6 map 14.1 and hand 28.5 (map reuses pooled buffers, the hand-written path allocates three per call) |
-| resident three-step chain versus the same chain over host slices | 1e5 / 1e6 / 4.2e6 | resident 1.36 / 3.92 / 15.5, host slices 1.93 / 10.2 / 42.5 (host slices / resident 1.42 / 2.60 / 2.73) |
-| per-call floor (whole call, host slice in, `Vec` out) | 1 / 256 | 0.36 / 0.33 (minimum 0.20 / 0.19) |
-| break-even against the best CPU form (one thread or rayon on 24 threads), 1 multiply-add per element | up to 4.2e6 | none: map is 1.8x slower than the best CPU form at 1e6 and 2.7x at 4.2e6 |
-| break-even, 64 multiply-adds per element | 1e4 to 4.2e6 | map is faster from 1e4 (0.86 of the best CPU time) to 1e6 (0.41); at 4.2e6 this run has it 1.2x slower, an outlier this run does not explain (5 samples) |
-| break-even, 256 multiply-adds per element | 6.6e4 to 4.2e6 | map is faster from 6.6e4 (0.32 of the best CPU time) to 4.2e6 (0.44) |
+| map over host slices (`a + b`) versus a hand-written typed dispatch | 1e3 to 4.2e6 (six sizes) | map / hand 0.93 / 0.90 at 1e3, 0.88 / 0.93 at 1e4, 0.84 / 0.89 at 6.6e4, 0.83 / 0.72 at 1e5, 0.64 / 0.64 at 1e6 and 0.61 / 0.62 at 4.2e6; at 4.2e6 map 13.5 / 13.1 ms and hand 22.3 / 21.0 ms (map reuses pooled buffers, the hand-written path allocates three per call) |
+| resident three-step chain versus the same chain over host slices | 1e3 to 4.2e6 (six sizes) | host slices / resident 1.54 / 1.32 at 1e3, rising to 2.59 / 2.49 at 1e6 and 2.86 / 2.79 at 4.2e6 (resident 10.5 / 10.7 ms, host slices 30.1 / 29.9 ms) |
+| per-call floor (whole call, host slice in, `Vec` out) | 1 / 256 | 0.33 / 0.36 and 0.30 / 0.33 ms (minimum 0.22 to 0.23) |
+| break-even, 1 multiply-add per element | up to 4.2e6 | none: map takes 1.97 / 2.00 times the best CPU time at 1e6 and 2.92 / 2.99 at 4.2e6 |
+| break-even, 64 multiply-adds per element | 1e3 to 4.2e6 | map is faster from 1e4 (0.79 / 0.58 of the best CPU time) to 1e6 (0.27 / 0.29) and slower at 1e3 (4.24 / 3.07); at 4.2e6 it is not faster (1.36 / 0.97): map takes 70.0 / 50.9 ms there against 4.0 / 4.4 ms at 1e6, three to four times linear scaling, also seen in the smoke run of 2026-11-03 and not explained |
+| break-even, 256 multiply-adds per element | 1e3 to 4.2e6 | map is faster from 6.6e4 (0.37 / 0.15 of the best CPU time) to 4.2e6 (0.40 / 0.37); at 1e4 the runs disagree (1.24 / 0.60) and at 1e3 it is not faster (2.08 / 1.02) |
 
-What the smoke run checked: for the rows that compare map with hand-written code and with the CPU (the first and the
+What the runs checked: for the rows that compare map with hand-written code and with the CPU (the first and the
 break-even rows), one call per cell was compared with the plain Rust function on the CPU (the dense loops with a
 tolerance of 1e-4 that is not derived), not every timed result. The resident-versus-host-slices row compared the two GPU
 chains with each other only, and the per-call floor row checked nothing.

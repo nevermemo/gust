@@ -58,9 +58,10 @@ describes the intended behaviour and is not evidence.
   target of a build (D21). The macro emits the twin's `Run` impl for `CpuDevice` in every build and uses no artifact.
   The build holds no Slang compiler, helper or GPU runtime: the build script of `gust` refuses `slang-runtime`, and
   `gust-wgpu` fails to compile (`require_gpu_target`). The contract is the twin's, stated once for production:
-  - *Execution.* One thread per dispatch (a generated map is the exception, see *Parallelism*). Invocations run in ascending `global_id.x`, in whole workgroups, as in the
-    twin (sections 5 and 6). A result that is order-dependent on the GPU (a contended exchange or compare-exchange) is
-    the sequential member of the GPU's set. Compare-exchange never fails spuriously here.
+  - *Execution.* One thread per dispatch (a generated map is the exception, see *Parallelism*). Invocations run in
+    ascending `global_id.x`, in whole workgroups, as in the twin (sections 5 and 6). A result that is order-dependent
+    on the GPU (a contended exchange or compare-exchange) is the sequential member of the GPU's set. Compare-exchange
+    never fails spuriously here.
   - *Integers.* The same as the GPU inside the domain (section 3). Outside it the target follows the `overflow-checks`
     of the crate that defines the kernel (D43). In the default release profile `+ - *`, negation and shift amounts
     wrap and mask as the GPU does, and in a checked build they panic. Zero divisors and `MIN / -1` panic in every
@@ -79,10 +80,11 @@ describes the intended behaviour and is not evidence.
     thread gives. If elements panic, the panic of the lowest index is raised with its own payload and nothing is
     returned (under `panic = "abort"` the process aborts at the first panic, as everywhere). The thread count is
     `GUST_CPU_THREADS` (a positive integer; anything else is an `Err` naming the variable and the value) or else the
-    machine's parallelism, then bounded by the input: `min(threads, max(1, n / 2^18))`, so a short call stays on one
-    thread; `wasm32` has one. Everything else is sequential: `par_for!` bodies, user-written kernels and the dual
-    twin (so `check-dual` keeps its meaning). Independent dispatches on independent devices still run on any thread the
-    caller owns.
+    machine's parallelism, then bounded by the input: `min(threads, max(1, n / 2^18))` (the factor is
+    `gust::cpu::parallel::ELEMENTS_PER_THREAD`), so a short call stays on one thread; `wasm32` has one. If the
+    operating system cannot start a worker thread the call is an `Err`. Everything else is sequential: `par_for!`
+    bodies, user-written kernels, a direct dispatch of the generated `map_kernel`, and the dual twin (so `check-dual`
+    keeps its meaning). Independent dispatches on independent devices still run on any thread the caller owns.
   - *Evidence.* `cargo xtask check-cpu-target` builds a fixture in release under `cpu`, runs three kernels against
     independent host references, scans the binary for the compiler, the helper and the GPU runtime, and checks the
     refusals. That is `Cpu` evidence, never GPU evidence (D42).

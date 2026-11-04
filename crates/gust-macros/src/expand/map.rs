@@ -935,7 +935,8 @@ fn cpu_body(signature: &Signature, shape: &Shape) -> TokenStream {
             |__gust_lo, __gust_hi, __gust_chunk, __gust_cur| {
                 __gust_map_cpu_chunk(__gust_lo, __gust_hi, #(#slices,)* __gust_chunk, __gust_cur)
             },
-        );
+        )
+        .map_err(#map_error)?;
         ::core::result::Result::Ok(#convert)
     }
 }

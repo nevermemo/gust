@@ -30,8 +30,9 @@ use crate::GpuPod;
 pub const THREADS_VARIABLE: &str = "GUST_CPU_THREADS";
 
 /// How many elements one thread is worth (the factor `F` of D119): a call of `n` elements uses at most
-/// `max(1, n / ELEMENTS_PER_THREAD)` threads. Chosen by measurement (plans/m7, `time-m7c.sh`); one constant, so a
-/// better number is a one-line change.
+/// `max(1, n / ELEMENTS_PER_THREAD)` threads. This is the starting value of D119, 2^18, pending the measurement of
+/// this implementation (vector-add must stay within 10 % of one thread from 2^16 to 1e6 elements); it is the one place
+/// the factor lives, so a better number is a one-line change here (and in the user-facing text of `docs/SEMANTICS.md`).
 pub const ELEMENTS_PER_THREAD: usize = 1 << 18;
 
 /// The thread count that `value` (the content of `GUST_CPU_THREADS`, `None` when it is not set) asks for, with
@@ -124,32 +125,63 @@ where
 /// (`resume_unwind`). The output is then partly written and must be dropped by the caller, which the generated map
 /// does by unwinding.
 ///
+/// If the operating system cannot start a worker thread the call is [`Error::ThreadSpawn`]: the pieces already
+/// started finish, nothing is returned, and no panic is raised even if a started piece panicked.
+///
 /// # Panics
 ///
 /// If the body panics (as above), and if `out` is longer than `u32::MAX` elements.
-pub fn run_map_chunked<R, C>(out: &mut [R], threads: usize, chunk: C)
+pub fn run_map_chunked<R, C>(out: &mut [R], threads: usize, chunk: C) -> Result<(), Error>
+where
+    R: Send,
+    C: Fn(u32, u32, &mut [R], &Cell<u32>) + Sync,
+{
+    run_map_chunked_gated(out, threads, chunk, &|_| Ok(()))
+}
+
+/// [`run_map_chunked`] with a gate asked before each worker thread is started (by piece number, from 1); an `Err` from
+/// it stands for a failed spawn. The tests use it to force the failure, which a real machine cannot be made to give.
+fn run_map_chunked_gated<R, C>(
+    out: &mut [R],
+    threads: usize,
+    chunk: C,
+    gate: &dyn Fn(usize) -> std::io::Result<()>,
+) -> Result<(), Error>
 where
     R: Send,
     C: Fn(u32, u32, &mut [R], &Cell<u32>) + Sync,
 {
     let len = out.len();
     if len == 0 {
-        return;
+        return Ok(());
     }
     let end = index(len);
     let threads = threads.clamp(1, len);
     if threads == 1 {
         chunk(0, end, out, &Cell::new(0));
-        return;
+        return Ok(());
     }
     let size = len.div_ceil(threads);
     let chunk = &chunk;
-    let failures: Vec<Option<Failure>> = std::thread::scope(|scope| {
+    let failures: Result<Vec<Option<Failure>>, Error> = std::thread::scope(|scope| {
         let mut pieces = out.chunks_mut(size).enumerate();
         let first = pieces.next();
-        let handles: Vec<_> = pieces
-            .map(|(number, piece)| scope.spawn(move || run_guarded(chunk, number * size, piece)))
-            .collect();
+        let mut handles = Vec::with_capacity(threads);
+        for (number, piece) in pieces {
+            let started = gate(number).and_then(|()| {
+                std::thread::Builder::new()
+                    .spawn_scoped(scope, move || run_guarded(chunk, number * size, piece))
+            });
+            match started {
+                Ok(handle) => handles.push(handle),
+                // The scope joins the threads already started when it ends.
+                Err(error) => {
+                    return Err(Error::ThreadSpawn {
+                        message: error.to_string(),
+                    });
+                }
+            }
+        }
         let mut failures = Vec::with_capacity(handles.len() + 1);
         if let Some((_, piece)) = first {
             failures.push(run_guarded(chunk, 0, piece));
@@ -161,26 +193,31 @@ where
                     .expect("a chunk catches its own panic, so its thread ends normally"),
             );
         }
-        failures
+        Ok(failures)
     });
-    if let Some(failure) = failures
+    if let Some(failure) = failures?
         .into_iter()
         .flatten()
         .min_by_key(|failure| failure.index)
     {
         resume_unwind(failure.payload);
     }
+    Ok(())
 }
 
 /// [`run_map_chunked`] over the contents of a buffer that the caller owns, returned as a `Vec` when the body is done.
 /// The generated map creates the output with `MapHost::zeroed` and hands it here, so the result needs no copy.
-pub fn run_map_into_vec<R, C>(mut out: CpuBuffer<R>, threads: usize, chunk: C) -> Vec<R>
+pub fn run_map_into_vec<R, C>(
+    mut out: CpuBuffer<R>,
+    threads: usize,
+    chunk: C,
+) -> Result<Vec<R>, Error>
 where
     R: GpuPod + Send,
     C: Fn(u32, u32, &mut [R], &Cell<u32>) + Sync,
 {
-    run_map_chunked(out.cells.get_mut(), threads, chunk);
-    out.cells.into_inner()
+    run_map_chunked(out.cells.get_mut(), threads, chunk)?;
+    Ok(out.cells.into_inner())
 }
 
 /// Borrows the contents of an input of the map call for reading, after checking that it belongs to `device`
@@ -205,3 +242,60 @@ where
 /// Compile-time proof that the kernel `K` carries the generator's own-index stamp (`gust::map::OwnIndex`): the
 /// chunked execution is defined for stamped kernels only, and the generated map names its kernel here.
 pub fn require_own_index<K: crate::map::OwnIndex>() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn fill(lo: u32, hi: u32, piece: &mut [u32], current: &Cell<u32>) {
+        for i in lo..hi {
+            current.set(i);
+            piece[(i - lo) as usize] = i + 1;
+        }
+    }
+
+    /// A worker thread that cannot be started is an `Err` naming the cause, not a panic, whichever piece it is, and the
+    /// threads that did start are joined before the call returns (the counter shows they ran to the end).
+    #[test]
+    fn a_failed_spawn_is_an_error_and_not_a_panic() {
+        for failing in [1, 2, 3] {
+            let mut out = vec![0u32; 1000];
+            let ran = AtomicUsize::new(0);
+            let result = run_map_chunked_gated(
+                &mut out,
+                4,
+                |lo, hi, piece, current| {
+                    ran.fetch_add(1, Ordering::SeqCst);
+                    fill(lo, hi, piece, current);
+                },
+                &|number| {
+                    if number == failing {
+                        Err(io::Error::other("no more threads"))
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            let error = result.unwrap_err();
+            assert_eq!(
+                error,
+                Error::ThreadSpawn {
+                    message: "no more threads".to_owned()
+                }
+            );
+            assert!(error.to_string().contains("no more threads"));
+            // Pieces 1..failing started; the failing piece and the ones after it never did; piece 0 is not run.
+            assert_eq!(ran.load(Ordering::SeqCst), failing - 1);
+        }
+    }
+
+    /// With the gate open the same call succeeds, so the failure above comes from the gate alone.
+    #[test]
+    fn an_open_gate_runs_every_piece() {
+        let mut out = vec![0u32; 1000];
+        run_map_chunked_gated(&mut out, 4, fill, &|_| Ok(())).unwrap();
+        assert!(out.iter().enumerate().all(|(i, v)| *v == i as u32 + 1));
+    }
+}

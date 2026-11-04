@@ -7,7 +7,7 @@ use std::cell::Cell;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use gust::{
-    cpu::CpuDevice,
+    cpu::{CpuDevice, parallel::ELEMENTS_PER_THREAD},
     map::{Broadcast, Error},
 };
 
@@ -22,8 +22,8 @@ pub fn pick(flag: bool, x: u32, y: u32) -> u32 {
 }
 
 #[gust::gpu]
-pub fn quotient(a: u32, b: u32) -> u32 {
-    a / b
+pub fn both(a: u32, b: u32, c: u32) -> u32 {
+    a % b + a / c
 }
 
 #[gust::gpu]
@@ -34,9 +34,9 @@ pub fn is_multiple(a: u32, b: u32) -> bool {
 /// More than one workgroup (256 wide) and not a multiple of it.
 const ELEMENTS: usize = 1000;
 
-/// Long enough for several threads at the default bound of the parallel map (one thread per 2^18 elements, so four
-/// threads here on a machine that has them) and not divisible by the thread count.
-const MANY: usize = 1_048_583;
+/// Long enough for several threads at the default bound of the parallel map (`ELEMENTS_PER_THREAD` elements per thread)
+/// and not divisible by the thread count: four threads' worth of elements and a remainder.
+const MANY: usize = 4 * ELEMENTS_PER_THREAD + 7;
 
 /// Runs the map calls and compares them with host references. Small integers, so every float result is exact.
 pub fn run() -> Result<(), String> {
@@ -101,32 +101,60 @@ fn parallel() -> Result<(), String> {
     if !multiples.iter().zip(numbers.iter().zip(&divisors)).all(|(got, (a, b))| *got == (a % b == 0)) {
         return Err("the parallel is_multiple::map differs from the host reference".to_owned());
     }
-    // Zero divisors at 9 and 777 (and one far into the input): the call panics, nothing is returned, and the next
-    // call is clean. The hook is silenced so that the expected panics do not clutter the output.
-    let mut zeros = divisors.clone();
-    zeros[9] = 0;
-    zeros[777] = 0;
-    zeros[MANY - 3] = 0;
+    panics_report_the_lowest_index(&numbers, &divisors)?;
+    Ok(())
+}
+
+/// Two different panics in one call, `a % b` with `b == 0` ("remainder") and `a / c` with `c == 0` ("divide"), placed
+/// so that they land in different chunks when there are several threads: the lower index must be the one that comes
+/// out, whichever of the two it is, then nothing is returned and the next call is clean. The first panic is in the
+/// second chunk and the other in the last (the same chunk when the machine has fewer than three threads, where the
+/// order within a chunk is the check). The hook is silenced so that the expected panics do not clutter the output.
+fn panics_report_the_lowest_index(numbers: &[u32], divisors: &[u32]) -> Result<(), String> {
+    let threads = gust::cpu::parallel::map_threads(MANY as u32).map_err(|error| error.to_string())?;
+    let size = MANY.div_ceil(threads);
+    let low = (size + 5).min(MANY - 10);
+    let high = MANY - 3;
+    let clean: Vec<u32> = (0..MANY as u32).map(|i| i % 5 + 1).collect();
+
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
-    let panicked = catch_unwind(AssertUnwindSafe(|| quotient::map(&numbers, &zeros)));
-    std::panic::set_hook(hook);
-    match panicked {
-        Err(payload) => {
-            let text = payload
-                .downcast_ref::<&str>()
-                .map(|text| (*text).to_owned())
-                .or_else(|| payload.downcast_ref::<String>().cloned())
-                .unwrap_or_default();
-            if !text.contains("divide by zero") {
-                return Err(format!("the panic of quotient::map is not the division by zero: {text:?}"));
-            }
-        }
-        Ok(_) => return Err("quotient::map with zero divisors returned a value".to_owned()),
+    let mut texts = Vec::new();
+    for (remainder_at, divide_at, expected) in [(low, high, "remainder"), (high, low, "divide by zero")] {
+        let mut remainders = divisors.to_vec();
+        remainders[remainder_at] = 0;
+        let mut divides = clean.clone();
+        divides[divide_at] = 0;
+        let panicked = catch_unwind(AssertUnwindSafe(|| both::map(numbers, &remainders, &divides)));
+        texts.push((expected, panicked.map_err(|payload| panic_text(&*payload))));
     }
-    let quotients = quotient::map(&numbers, &divisors).map_err(|error| format!("quotient::map after a panic: {error}"))?;
-    if !quotients.iter().zip(numbers.iter().zip(&divisors)).all(|(got, (a, b))| *got == a / b) {
-        return Err("quotient::map after a panic differs from the host reference".to_owned());
+    std::panic::set_hook(hook);
+
+    for (expected, outcome) in texts {
+        match outcome {
+            Err(text) if text.contains(expected) => {}
+            Err(text) => {
+                return Err(format!("both::map reported {text:?} where the lowest index panics with {expected:?}"));
+            }
+            Ok(_) => return Err("both::map with zero divisors returned a value".to_owned()),
+        }
+    }
+    let results = both::map(numbers, divisors, &clean).map_err(|error| format!("both::map after a panic: {error}"))?;
+    let all_match = results
+        .iter()
+        .zip(numbers.iter().zip(divisors.iter().zip(&clean)))
+        .all(|(got, (a, (b, c)))| *got == a % b + a / c);
+    if !all_match {
+        return Err("both::map after a panic differs from the host reference".to_owned());
     }
     Ok(())
+}
+
+/// The message of a panic payload (`&str` for a constant message, `String` for a formatted one).
+fn panic_text(payload: &(dyn std::any::Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|text| (*text).to_owned())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_default()
 }

@@ -14,8 +14,8 @@ use std::time::Duration;
 use gust::cpu::{
     CpuDevice, Error,
     parallel::{
-        ELEMENTS_PER_THREAD, bounded_threads, input, run_map_chunked, run_map_into_vec,
-        threads_from,
+        ELEMENTS_PER_THREAD, bounded_threads, input, run_map_chunked as try_run_map_chunked,
+        run_map_into_vec as try_run_map_into_vec, threads_from,
     },
 };
 use gust::map::MapHost;
@@ -335,11 +335,11 @@ fn the_thread_count_is_bounded_by_the_input() {
     assert_eq!(bounded_threads(24, 2 * f - 1), 1);
     assert_eq!(bounded_threads(24, 2 * f), 2);
     assert_eq!(bounded_threads(24, 4 * f + 3), 4);
-    assert_eq!(bounded_threads(24, 1_000_000), 3);
-    assert_eq!(bounded_threads(24, 100_000_000), 24);
-    assert_eq!(bounded_threads(4, 100_000_000), 4);
-    assert_eq!(bounded_threads(1, 100_000_000), 1);
-    assert_eq!(bounded_threads(0, 100_000_000), 1);
+    assert_eq!(bounded_threads(24, 3 * f + 1), 3);
+    assert_eq!(bounded_threads(24, 100 * f), 24);
+    assert_eq!(bounded_threads(4, 100 * f), 4);
+    assert_eq!(bounded_threads(1, 100 * f), 1);
+    assert_eq!(bounded_threads(0, 100 * f), 1);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -367,4 +367,24 @@ fn an_input_of_another_device_is_refused_and_a_borrowed_one_is_reported() {
     );
     drop(writing);
     assert!(input::<f32, _>(&device, &buffer, "x").is_ok());
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Helpers: the runner returns a `Result` (a failed thread spawn); the tests below expect the spawns to work.
+// ---------------------------------------------------------------------------------------------------------------
+
+fn run_map_chunked<R, C>(out: &mut [R], threads: usize, chunk: C)
+where
+    R: Send,
+    C: Fn(u32, u32, &mut [R], &std::cell::Cell<u32>) + Sync,
+{
+    try_run_map_chunked(out, threads, chunk).expect("worker threads start");
+}
+
+fn run_map_into_vec<R, C>(out: gust::cpu::CpuBuffer<R>, threads: usize, chunk: C) -> Vec<R>
+where
+    R: gust::GpuPod + Send,
+    C: Fn(u32, u32, &mut [R], &std::cell::Cell<u32>) + Sync,
+{
+    try_run_map_into_vec(out, threads, chunk).expect("worker threads start")
 }

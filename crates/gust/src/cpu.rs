@@ -450,6 +450,12 @@ pub enum Error {
         /// The value found (non-Unicode text is shown lossily).
         value: String,
     },
+    /// The operating system could not start a worker thread for the parallel map (slice m7.c). Nothing is returned;
+    /// set `GUST_CPU_THREADS=1` to run the map on the calling thread.
+    ThreadSpawn {
+        /// The operating system's message.
+        message: String,
+    },
 }
 
 impl fmt::Display for Error {
@@ -526,6 +532,10 @@ impl fmt::Display for Error {
             Self::InvalidThreads { value } => write!(
                 f,
                 "the environment variable `GUST_CPU_THREADS` must be a positive integer, got `{value}`"
+            ),
+            Self::ThreadSpawn { message } => write!(
+                f,
+                "could not start a worker thread for the parallel map ({message}); set GUST_CPU_THREADS=1 to run on the calling thread"
             ),
         }
     }

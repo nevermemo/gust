@@ -863,9 +863,10 @@ coretests entry above has the same shape.
 - **The parallel CPU map** (m7.c, D119; `crates/gust/tests/parallel.rs`, and `tests/cpu-target` through
   `cargo xtask check-cpu-target`; Cpu). Not a GPU statement and not compared with one. Label: none of section 2's;
   these are tests that need no adapter, for the runner's promises. No step of the Unit suite runs
-  `crates/gust/tests/parallel.rs`: the workspace test does (`cargo xtask check-workspace`, `verify --mode smoke` and
-  `verify --mode full`, so `check-full`). The unit tests inside `cpu/parallel.rs` run in `verify --mode fast` and in
-  the Slangc suite (`cargo test -p gust --lib`), and the Cpu half runs in the Cpu suite.
+  `crates/gust/tests/parallel.rs`: `cargo xtask check-feature map` and the workspace test do (`cargo xtask
+  check-workspace`, `verify --mode smoke` and `verify --mode full`, so `check-full`). The unit tests inside
+  `cpu/parallel.rs` run in `check-feature map`, `verify --mode fast` and the Slangc suite (`cargo test -p gust
+  --lib`), and the Cpu half runs in the Cpu suite.
   `every_thread_count_gives_the_bits_of_one_thread` runs a chain of dependent `f32` operations over twelve lengths
   from 0 to 1 000 003, around `ELEMENTS_PER_THREAD`, and compares the bits of 1, 2, 3, 4, 7 and the machine's threads
   with those of one thread. The panic of the lowest failing index comes out with its own payload and nothing is returned

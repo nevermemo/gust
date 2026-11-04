@@ -421,6 +421,23 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   `--version "~0.1"`. Opus merge after fixes: the must-fix (the README said the crates were published), three
   should-fixes and ten nits taken.
   Main: docs-check, lint, xtask tests and check-release --check-only green on `7598a3c` (2026-11-04 03:38 to 03:42Z; Markdown-only slice).
+- MX mx.k (`59c47c6`, fix round `f2fe244`, merge `289d958`; D89, plan §5.4): the shape in the
+  descriptor, the record and the manifest. `gust::Shape` (`#[non_exhaustive]`: `Grid`, `Pixel`) and
+  `KernelDescriptor::shape`, which the macro sets from the stage profile; new public `Shape::{name, from_name,
+  slang_stage}` and `gust::slang::compile_source_as`. Record schema 3 is schema 2's grammar plus an optional `shape`,
+  written only for a non-grid kernel, so every grid record keeps schema 1 or 2 byte for byte; readers accept 1 to 3,
+  read a missing `shape` as `grid` and refuse `shape` under 1 or 2. Manifest schema 2 (a `shape` on every kernel) is
+  written only when a non-grid kernel exists; `cargo gust check` compares each entry's shape with its record's.
+  `gust::slang`, `gust::reflect`, the helper's argv and cargo-gust take the Slang stage from the shape;
+  `KernelCacheKey` has `shape`; `GOLDEN_KEYS` pins one body under two shapes as two keys. The helper is now required
+  at schema 3 (xtask and cargo-gust refuse an older one with a rebuild hint, and gust's reflection names it), since
+  an older helper cannot take the stage argument. No pixel kernel exists yet: a hand-written pixel descriptor fails
+  closed at the helper. Byte-identical gate held (80 exports, every artifact, the schema 1 and 2 goldens). Opus merge
+  after fixes; no must-fix, two should-fixes and two nits taken.
+  Main: 20 of 23 gate steps green on `289d958` (2026-11-04 03:55 to 04:28Z, RTX 5090); the Gpu suite and verify --mode
+  gpu failed on the pin, fixed in `c9862eb` (GPU_SUITE_PIN 297/31), then green with fmt, xtask test and lint (04:36 to
+  04:45Z); check-examples and the 80-export compare green; check-release --check-only green in a fresh target directory
+  (04:47 to 04:52Z; in the shared one cargo reused a stale gust build from its temporary registry, an mr.p item).
 - M6 close (D86, 2026-11-02): Fable and Opus in the Codex slot (owner decision; Codex quota out until
   2026-11-05T06:32, then a confirming pass) both said "proceed with fixes" (plans: sanity-fable, sanity-opus,
   close-rulings). No delivery gap; the gaps were in the record, plus the older literal-local typing bug (m6.z2).

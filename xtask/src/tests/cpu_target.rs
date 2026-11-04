@@ -5,9 +5,9 @@ use std::{
 
 use super::{
     CPU_PROFILE, CPU_TARGET_DIR, Call, Dirs, FINAL_LINE, FLIPS, FORBIDDEN, KERNELS,
-    MAP_LINE_PREFIX, Profile, REFUSAL_FILE, REFUSAL_ITEM, SCAN_CONTROL, STEPS, all_calls,
-    e_a_build, e_b_tree, e_c_build, e_d_check, e_e_check, e_f_check, e_g_check, e_h_build,
-    e_i_test, executable_of, judge_run, match_problems, match_summary, parse_match_line,
+    MAP_LINE_PREFIX, PAR_FOR_LINE_PREFIX, Profile, REFUSAL_FILE, REFUSAL_ITEM, SCAN_CONTROL, STEPS,
+    all_calls, e_a_build, e_b_tree, e_c_build, e_d_check, e_e_check, e_f_check, e_g_check,
+    e_h_build, e_i_test, executable_of, judge_run, match_problems, match_summary, parse_match_line,
     passed_tests, refusal_line, relative_to, scan, scan_problems, tree_problems, with_located_line,
 };
 use crate::{
@@ -46,6 +46,7 @@ CPU target: matches (polynomial::evaluate, 1000 elements, max ULP 0)
 CPU target: matches (atomic_counter::increment, 257 invocations, max ULP 0)
 CPU target: matches (vector_ops::blend, 1000 elements, max ULP 0)
 CPU target: map calls match (scale_add, pick, 1000 elements)
+CPU target: par_for calls match (1D 1000 elements, 2D 37 x 21 cells)
 CPU target: all kernels match
 ";
 
@@ -108,7 +109,7 @@ fn the_output_of_a_good_run_has_no_problem() {
     );
     assert_eq!(
         match_summary(GOOD),
-        "vector_add::add 1000 elements, max ULP 0; polynomial::evaluate 1000 elements, max ULP 0; atomic_counter::increment 257 invocations, max ULP 0; vector_ops::blend 1000 elements, max ULP 0"
+        "vector_add::add 1000 elements, max ULP 0; polynomial::evaluate 1000 elements, max ULP 0; atomic_counter::increment 257 invocations, max ULP 0; vector_ops::blend 1000 elements, max ULP 0; map calls match (scale_add, pick, 1000 elements); par_for calls match (1D 1000 elements, 2D 37 x 21 cells)"
     );
 }
 
@@ -140,10 +141,11 @@ fn a_run_that_stopped_early_names_every_missing_kernel_and_the_final_line() {
             "no `matches` line for the kernel `atomic_counter::increment`".to_owned(),
             "no `matches` line for the kernel `vector_ops::blend`".to_owned(),
             format!("the map case did not run: the line `{MAP_LINE_PREFIX}..` is missing"),
+            format!("the par_for case did not run: the line `{PAR_FOR_LINE_PREFIX}..` is missing"),
             format!("the final line `{FINAL_LINE}` is missing"),
         ]
     );
-    assert_eq!(match_problems("").len(), KERNELS.len() + 2);
+    assert_eq!(match_problems("").len(), KERNELS.len() + 3);
 }
 
 #[test]
@@ -170,6 +172,69 @@ fn a_run_without_the_map_line_or_with_it_twice_is_a_problem() {
     );
     // A `matches` line of the map case is not a kernel line, and the prefixes do not overlap.
     assert!(!MAP_LINE_PREFIX.starts_with("CPU target: matches"));
+}
+
+#[test]
+fn a_run_without_the_par_for_line_or_with_it_twice_is_a_problem() {
+    // The par_for case prints a line of its own, required exactly once like the map line: an app that skipped the case
+    // and still printed the final line must not pass.
+    let without: String = GOOD
+        .lines()
+        .filter(|line| !line.starts_with(PAR_FOR_LINE_PREFIX))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(
+        match_problems(&without),
+        [format!(
+            "the par_for case did not run: the line `{PAR_FOR_LINE_PREFIX}..` is missing"
+        )]
+    );
+    let twice =
+        format!("{GOOD}CPU target: par_for calls match (1D 1000 elements, 2D 37 x 21 cells)\n");
+    assert_eq!(
+        match_problems(&twice),
+        [format!(
+            "the line `{PAR_FOR_LINE_PREFIX}..` occurs 2 times, expected one"
+        )]
+    );
+    // Each case needs its own line: the map line does not stand in for the par_for line, nor the reverse.
+    let swapped = GOOD.replace(PAR_FOR_LINE_PREFIX, MAP_LINE_PREFIX);
+    assert_eq!(
+        match_problems(&swapped),
+        [
+            format!("the line `{MAP_LINE_PREFIX}..` occurs 2 times, expected one"),
+            format!("the par_for case did not run: the line `{PAR_FOR_LINE_PREFIX}..` is missing"),
+        ]
+    );
+    // Neither is a kernel line, and the prefixes do not overlap.
+    assert!(!PAR_FOR_LINE_PREFIX.starts_with("CPU target: matches"));
+    assert!(!MAP_LINE_PREFIX.starts_with(PAR_FOR_LINE_PREFIX));
+    assert!(!PAR_FOR_LINE_PREFIX.starts_with(MAP_LINE_PREFIX));
+}
+
+#[test]
+fn the_fixture_prints_the_map_and_par_for_lines_the_check_requires_and_runs_the_parallel_cases_first()
+ {
+    // A rename of a printed line fails here, not in a run. The parallel map cases (m7.c) run before the map line is
+    // printed, so the line proves them: `parallel()?` returns the error of a failing case and `app` exits 1 without
+    // the final line.
+    let map_case = fixture_root_file("tests/cpu-target/kernels/src/map_case.rs");
+    let line_at = map_case
+        .find(&format!("println!(\"{MAP_LINE_PREFIX}"))
+        .expect("map_case.rs prints the map line");
+    let parallel_at = map_case
+        .find("    parallel()?;")
+        .expect("map_case.rs runs the parallel map cases");
+    assert!(parallel_at < line_at);
+    let par_for_case = fixture_root_file("tests/cpu-target/kernels/src/par_for_case.rs");
+    assert!(par_for_case.contains(&format!("println!(\"{PAR_FOR_LINE_PREFIX}")));
+    let app = fixture_root_file("tests/cpu-target/app/src/main.rs");
+    for call in [
+        "kernels::map_case::run()?;",
+        "kernels::par_for_case::run()?;",
+    ] {
+        assert!(app.contains(call), "{call}");
+    }
 }
 
 #[test]

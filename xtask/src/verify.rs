@@ -302,9 +302,11 @@ fn verify_inner(
             .map(|name| name.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         compare_artifact_names(EXPECTED_SPIRV, &found)?;
-        // The goldens of tests/fixtures (vectors, products, uniforms) are compiled here and validated like the
-        // examples' files: no example uses a vector or a uniform, so nothing else covers their SPIR-V. Their expected
-        // names are kept apart from EXPECTED_SPIRV.
+        // The goldens of tests/fixtures (M6: vectors, products, uniforms; M7: map, grid, workgroup, par_for, reduce,
+        // scan, compact) are compiled here and validated like the examples' files: no example uses a vector or a
+        // uniform, and the M7 kernels are exported by tests and libraries, so nothing else covers their SPIR-V. A
+        // golden of several kernels is compiled one section at a time (shader::golden_sections). Their expected names
+        // are kept apart from EXPECTED_SPIRV.
         for (area, stems, expected) in GOLDEN_SPIRV_SETS {
             spv.extend(compile_golden_spirv(root, area, stems, expected)?);
         }

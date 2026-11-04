@@ -104,7 +104,8 @@ test module; do not mix that mechanical move with behavior changes.
 - `gust::slang` checks `slangc -version` against the pin (D72). Then remove the `__gust_keep` wrapper behind the
   naga comparison and a GPU read-back (m4.z measured that 2026.20 no longer needs it; 13.1 fails 13 of 30 shapes).
 - `gust::Job` on wasm32 as D69 states: `status` from `on_submitted_work_done`, `wait` returns an error,
-  `Device::dispatch` and `dispatch_call` gated. Until then `WgpuJob::wait` is a documented no-op.
+  `Device::dispatch` and `dispatch_call` gated. Until then `WgpuJob::wait` is a documented no-op. It must land
+  before MR publishes (see "Before MR publishes", M7 follow-ups).
 - The wasm32 `disallowed-methods` ban (`std::thread::sleep`, `Instant::now`) for `gust` and `web-vector-add`, as
   `gust-wgpu` has it (m4.z).
 - Browser automation in CI (S4, D69): measure a software WebGPU adapter on a Linux runner first.
@@ -182,8 +183,10 @@ test module; do not mix that mechanical move with behavior changes.
   `as_buffer().as_wgpu_buffer()` shows its whole size class to the kernel (`arrayLength`, the previous owner's
   tail). m7.p did not size them: `generated_host.rs` still emits `as_entire_binding()` (m7.a0 review). Open; the next
   slice that changes the generated host code takes it, with a test that reads `arrayLength` of a pooled `GpuVec`.
-- `#[non_exhaustive]` on the public error enums (gust-wgpu `Error`, `gust::slang::Error`, `gust::reflect::Error`)
-  before the first release (MR).
+- Before MR publishes (M7 sanity, Fable/Opus): the wasm32 `Job` contract (D69; see the M4 follow-ups);
+  `#[non_exhaustive]` on the public error enums (gust-wgpu `Error`, `gust::slang::Error`, `gust::reflect::Error`);
+  and a way to query which gust-algo variant ran, since v1 switches to v0 above about 2^28 elements without any sign,
+  and the float bound changes with it (see the m7.r4 follow-ups).
 - `HeadlessDevice::enumerate(Backends::VULKAN)` returned no adapter once (the M6 close gates, `gpu-verify` at
   `f452a37`), then passed in `check-full` of the same run and 20 of 20 reruns. Seen again in m7.w's fix round
   (`an_adapter_that_does_not_exist_is_no_adapter` in check-fast, "index 0 is one past the adapters"; green on
@@ -212,12 +215,16 @@ test module; do not mix that mechanical move with behavior changes.
   second time). Both times the same tests passed later in the same gate run, and on `88ac459` the binary alone passed
   with one thread and twice with default threads. Not reproduced alone, so the faulting test is unknown. Next: a
   slice that runs the deepest GPU tests serially (one device, or a test lock), and a run under a second GPU process.
+  Both runs were re-run green at their merges. This is the probe slice (M7 sanity, Fable/Opus): the deepest gust-algo
+  GPU tests serially, and beside a second GPU process. It also times the dense64 cell (m7.a2 follow-ups).
 - m7.p follow-ups: `doctor` and `check` list only a `par_for!` kernel's origin site (`Record.sites` holds them all);
   the naga layout gate skips `par_for!` kernels (take their descriptors through the hidden `descriptor;` form, or
   delete it); the over-cap error is `map::Error::Device`, not an extent variant (needs `Extent` in
   `crates/gust/src/map.rs`); a `macro_rules!` that passes one body in from two sites gives two calls with one call
   line; the GPU tests of a taller workgroup cannot see a missing axis in the guard (only the twin can); xtask does not
   check the cpu-target `par_for` line.
+- Gate honesty (M7 sanity, Fable/Opus): xtask does not assert the cpu-target `par_for` line (m7.p, above); the
+  lavapipe schedule skip shows only on stderr, so put it in the gate summary.
 - m7.d follow-ups: staged graphs are 1D only, and graph.rs validates with the x axis before `prepare_batch`, so a
   16x16 dispatch with a shared buffer fails with `BufferLength` and a zero y or z axis is refused rather than `Ok`
   (still open); `Call::element_count()` is the x axis only, a trap for buffer sizing; for m7.g2 the
@@ -225,13 +232,19 @@ test module; do not mix that mechanical move with behavior changes.
   the twin at 2^32 invocations has not run (validate only).
 - m7.r4 follow-ups: a pre-registered statistic for any re-run (the 890M half, D121, kept v1 on a reading chosen
   after the run); re-measure if the pool's zeroing or an unzeroed `GpuVec` constructor
-  lands (the small-size win is per-call overhead); a public way to learn which variant (and so which f32 bound) ran.
+  lands (the small-size win is per-call overhead); a public way to learn which variant (and so which f32 bound) ran
+  (filed under "Before MR publishes"). Measure the cost of the map output's zero-fill: per r4's notes, v1's small-size
+  win is mostly one zeroing fewer (M7 sanity, Fable/Opus).
 - m7.c follow-ups: the `cpu` map copies its host slices once in `bind` before the chunked read; borrowing them
   would cut vector-add's serial part (m7.c review). `par_for!` and user kernels stay sequential on the `cpu` target
-  (D119); a chunked `par_for!` would need its own write-set proof.
+  (D119); a chunked `par_for!` would need its own write-set proof. Parallel CPU map (M7 sanity, Fable/Opus): the
+  chunk floor F = 2^18 is counted in elements, not work, so the 64-step polynomial gets 3 threads at 1e6. Benchmark
+  against rayon (the a2 bench has `cpun`), and consider a work hint.
 - m7.a2 follow-ups: the README map table's 64-multiply-add cell at 4.2e6 takes three to four times linear
   scaling from 1e6 in all three runs (smoke and two published) while 1 and 256 multiply-adds scale linearly
-  (not investigated); a `#[gpu] fn` from an artifact under `native` (the workspace profile pin requires
+  (not investigated). Probe slice (M7 sanity, Fable/Opus): time the dense64 cell at 4.2e6 with timestamp queries; in
+  run 1 dense64 took 69.95 ms and dense256 took 69.88 ms, and across runs the cell took 43.6, 50.9 and 70.0 ms.
+  Also: a `#[gpu] fn` from an artifact under `native` (the workspace profile pin requires
   `slang-runtime` on every
   example's gust-wgpu, and `native` refuses it; tests/precompiled has no `#[gpu] fn`); `map_async` runs in
   headless Chrome inside `check-web` (web-vector-add awaits `double_add::map_async` and fails unless the page logs
@@ -250,7 +263,14 @@ test module; do not mix that mechanical move with behavior changes.
   (D100, D101); the storage form comes with M8 (M7 plan sections 7 and 9, D23). It orders the accesses of one
   workgroup and gives no ordering between workgroups of a dispatch.
 - docs/ARCHITECTURE.md: the paragraphs "Shapes" (mx.k) and "Layouts in the record" (m7.lv) sit under `### gust-algo`
-  and belong with `gust-macros` and `cargo gust`; move them (m7.x3 review, older text).
+  and belong with `gust-macros` and `cargo gust`; move them (m7.x3 review, older text). STATUS tidy (M7 sanity,
+  Fable/Opus): the "Latest DX evidence" section is dated 2026-10-23 and needs the same cleanup.
+- Oracles to adopt (M7 sanity, Fable/Opus): naga's uniformity analysis, as a second rejecter for D101; the WebGPU CTS
+  barrier and memory-model tests; Decoupled Fallback (Smith, Levien and Owens), whose bounded spin may fit a reworded
+  no-forward-progress rule; cubecl-reduce, for speed only; wgpu's `util` helpers for readback staging.
+- The a2 bench's log header template says "base ... plus the working tree" and "shared machine: yes ...
+  provisional", but the published runs were built on a clean `ea258f9` in a quiet window; fix the template text
+  (M7 sanity, Fable/Opus).
 - A decoupled look-back scan: not built. It needs an inter-workgroup wait, which AGENTS.md rules out ("No GPU
   inter-workgroup spin waits"). `gust-algo`'s scan stays the multi-dispatch form of 2k + 1 dispatches (v0 and v1).
 - The scan `_wrapping` form the M7 plan promises after m7.w: not built. The GPU scan already wraps (plain `+` on

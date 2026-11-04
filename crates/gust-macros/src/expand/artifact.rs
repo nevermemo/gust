@@ -1032,7 +1032,7 @@ impl Json {
     }
 }
 
-/// A JSON string literal: `"`, `` and control characters escaped, everything else as UTF-8.
+/// A JSON string literal: `"`, `\` and control characters escaped, everything else as UTF-8.
 fn write_string(out: &mut String, text: &str) {
     out.push('"');
     for c in text.chars() {

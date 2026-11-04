@@ -460,9 +460,10 @@ fn pin_rule(root: &Path) -> Result<PinRule, String> {
     pin_rule_of(&source)
 }
 
-/// The reflection schemas xtask accepts from the helper: `schema=2` since m6.r, `schema=3` since mx.t0a (the same
-/// documents for every buffer kernel; schema 3 only adds textures, samplers and the fragment stage).
-const HELPER_SCHEMAS: [&str; 2] = ["2", "3"];
+/// The reflection schema xtask requires of the helper: `schema=3` (mx.t0a). Since mx.k every compile passes the
+/// kernel's stage as a seventh argument, which a helper of schema 2 refuses with its usage text, so an older helper is
+/// refused here, at the gate, and not at its first compile.
+const HELPER_SCHEMA: &str = "3";
 
 /// Fails unless the helper writes the schema xtask reads and was built against the Slang the pin names (the pin
 /// itself, or a validated build, see [`PinRule`]). `which` says what the helper is, for the message, which names both
@@ -489,15 +490,11 @@ pub(crate) fn check_helper_pin(
     let schema = helper_output
         .split_whitespace()
         .find_map(|word| word.strip_prefix("schema="));
-    if !schema.is_some_and(|schema| HELPER_SCHEMAS.contains(&schema)) {
-        let accepted = HELPER_SCHEMAS
-            .iter()
-            .map(|schema| format!("`schema={schema}`"))
-            .collect::<Vec<_>>()
-            .join(" or ");
+    if schema != Some(HELPER_SCHEMA) {
         return Err(format!(
-            "{which} prints `schema={}`, but xtask needs {accepted}; rebuild it with the current \
-             `cargo gust slang build-helper`",
+            "{which} prints `schema={}`, but xtask needs `schema={HELPER_SCHEMA}` (a helper of an older schema \
+             cannot take the stage argument); rebuild it with the current `cargo gust slang build-helper --force` \
+             (`cargo xtask build-slang-reflect --force` in the GUST repository)",
             schema.unwrap_or("<none>")
         ));
     }
@@ -629,7 +626,7 @@ pub(crate) fn printed_text(record: &CheckRecord) -> String {
     format!("{}\n{}", record.stdout, record.stderr)
 }
 
-/// The Slang build tag a helper reports: the `slang=<tag>` word of `gust-slang-reflect schema=2 slang=2026.20`.
+/// The Slang build tag a helper reports: the `slang=<tag>` word of `gust-slang-reflect schema=3 slang=2026.20`.
 pub(crate) fn helper_tag(output: &str) -> Option<&str> {
     output
         .split_whitespace()

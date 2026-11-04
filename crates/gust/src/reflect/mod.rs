@@ -210,11 +210,12 @@ pub fn compile_reflected_with_helper(
             diagnostics: annotated_failure(
                 kernel,
                 format!(
-                    "{}\n{}\ncompiler exit: {}\nreflection helper: {}",
+                    "{}\n{}\ncompiler exit: {}\nreflection helper: {}{}",
                     String::from_utf8_lossy(&output.stderr),
                     String::from_utf8_lossy(&output.stdout),
                     output.status,
                     helper.as_ref().display(),
+                    outdated_helper_note(&output),
                 ),
             ),
         }));
@@ -249,6 +250,24 @@ fn helper_command(
         .arg(json)
         .arg(kernel.shape.slang_stage());
     command
+}
+
+/// A line for the diagnostics of a failed helper run when the helper answered with its usage text and that text has no
+/// stage argument: a helper from before reflection schema 3 (mx.t0a) takes five arguments and refuses the seventh
+/// that [`helper_command`] always passes (mx.k). Empty for any other failure.
+#[cfg(feature = "slang-runtime")]
+fn outdated_helper_note(output: &std::process::Output) -> &'static str {
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+    let (stderr, stdout) = (text(&output.stderr), text(&output.stdout));
+    let usage = stderr.contains("usage: gust-slang-reflect")
+        || stdout.contains("usage: gust-slang-reflect");
+    let has_stage = stderr.contains("[compute|fragment]") || stdout.contains("[compute|fragment]");
+    if usage && !has_stage {
+        "\nthe reflection helper predates reflection schema 3 and does not take the stage argument; rebuild it \
+         (`cargo gust slang build-helper --force`, or `cargo xtask build-slang-reflect --force` in the GUST repository)"
+    } else {
+        ""
+    }
 }
 
 /// What [`compile_reflected_clean`] produced: the parsed result and the helper's JSON, verbatim.
@@ -302,11 +321,12 @@ fn compile_clean_with(
         let clean_failure = Error::Compiler(slang::Error::CompilationFailed {
             target,
             diagnostics: format!(
-                "{}\n{}\ncompiler exit: {}\nreflection helper: {}\noriginating Rust kernel: {}",
+                "{}\n{}\ncompiler exit: {}\nreflection helper: {}{}\noriginating Rust kernel: {}",
                 String::from_utf8_lossy(&output.stderr),
                 String::from_utf8_lossy(&output.stdout),
                 output.status,
                 helper.display(),
+                outdated_helper_note(&output),
                 kernel.qualified_name(),
             ),
         });
@@ -907,6 +927,61 @@ mod tests {
                 ],
                 "{shape:?}"
             );
+        }
+    }
+
+    /// A failed helper run that printed `stderr`.
+    #[cfg(feature = "slang-runtime")]
+    fn failure_output(stderr: &str) -> std::process::Output {
+        #[cfg(unix)]
+        use std::os::unix::process::ExitStatusExt;
+        #[cfg(windows)]
+        use std::os::windows::process::ExitStatusExt;
+        #[cfg(unix)]
+        let status = std::process::ExitStatus::from_raw(1 << 8);
+        #[cfg(windows)]
+        let status = std::process::ExitStatus::from_raw(1);
+        std::process::Output {
+            status,
+            stdout: Vec::new(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    /// A helper from before schema 3 answers the seventh argument with its usage text, which has no stage: the error
+    /// says the helper must be rebuilt (mx.k). Any other failure, and the usage text of a current helper, are not
+    /// given the note.
+    #[cfg(feature = "slang-runtime")]
+    #[test]
+    fn a_helper_that_refuses_the_stage_argument_is_reported_as_outdated() {
+        let old = "usage: gust-slang-reflect <source> <entry> <wgsl|spirv> <artifact> <json>, or <layout.slang>, or \
+                   --version";
+        let current = "usage: gust-slang-reflect <source> <entry> <wgsl|spirv> <artifact> <json> [compute|fragment], \
+                       or <layout.slang>, or --version";
+        assert!(
+            outdated_helper_note(&failure_output(old)).contains("predates reflection schema 3")
+        );
+        assert_eq!(outdated_helper_note(&failure_output(current)), "");
+        assert_eq!(
+            outdated_helper_note(&failure_output("error: unsupported stage: x")),
+            ""
+        );
+        let error = compile_clean_with(
+            &KERNEL,
+            Target::Wgsl,
+            Path::new("fake-helper"),
+            |_, _, _| Ok(failure_output(old)),
+        )
+        .unwrap_err();
+        match error {
+            Error::Compiler(slang::Error::CompilationFailed { diagnostics, .. }) => {
+                assert!(
+                    diagnostics.contains("predates reflection schema 3")
+                        && diagnostics.contains("cargo xtask build-slang-reflect --force"),
+                    "{diagnostics}"
+                );
+            }
+            other => panic!("expected the helper's failure, got {other:?}"),
         }
     }
 

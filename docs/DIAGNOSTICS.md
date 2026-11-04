@@ -1105,13 +1105,14 @@ Decision: D02.
 ### GUST-E0709 unknown `cpu` value
 
 `cpu` opts a kernel out of its CPU twin, which the macro otherwise emits under `cfg(test)` or
-`--cfg gust_dual`. The only value is `"unsupported"`. `"lockstep"` is the name of the CPU twin that runs a barrier
-kernel one workgroup at a time on scoped threads; it does not exist yet, and the message says so.
+`--cfg gust_dual`. The only value is `"unsupported"`. `"lockstep"` would name a CPU twin that runs a barrier kernel
+one workgroup at a time on scoped threads; GUST defines no CPU strategy for barrier kernels (D118), so it is rejected
+like any other unknown value, and the message says that.
 Reached through `#[gpu]`.
 Rejected: `#[kernel(cpu = "off")]`, `#[kernel(cpu = "lockstep")]`.
 Fixture: `tests/ui/kernel-cpu-bad-value` and `tests/ui/kernel-cpu-lockstep` (`cargo xtask check-ui`, `code: none` plus the message).
 Write instead: `#[kernel(cpu = "unsupported")]`, or no `cpu` option to keep the twin.
-Decision: D26, D40.
+Decision: D26, D40, D118.
 
 ### GUST-E0710 duplicate `cpu`
 
@@ -1182,12 +1183,12 @@ Decision: D60.
 
 ### GUST-E0717 barrier kernel without `cpu = "unsupported"`
 
-A kernel that declares `Workgroup<[T; N]>` memory or calls `workgroup_barrier()` cannot run on the CPU twin of this release: the twin runs the invocations one after the other, and a barrier needs all of them in flight together. The kernel therefore says so, with `cpu = "unsupported"`. It then has no `Run` impl for `CpuDevice` in any profile, so under `GUST_PROFILE=cpu` it behaves like every other unsupported kernel. A lockstep twin is a later slice; until it exists `cpu = "lockstep"` is GUST-E0709. The message names the construct and the fix.
+A kernel that declares `Workgroup<[T; N]>` memory or calls `workgroup_barrier()` cannot run on the CPU twin: the twin runs the invocations one after the other, and a barrier needs all of them in flight together. GUST defines no CPU strategy for such a kernel (D118), so the kernel says so, with `cpu = "unsupported"`. It then has no `Run` impl for `CpuDevice` in any profile, so under `GUST_PROFILE=cpu` it behaves like every other unsupported kernel. `cpu = "lockstep"` is not a strategy either and is GUST-E0709. The message names the construct and the fix.
 Reached through `#[gpu]`.
 Rejected: `#[kernel(workgroup_size(256, 1, 1))]` on a kernel with a `Workgroup` parameter or a `workgroup_barrier();` call.
 Fixture: `tests/ui/barrier-kernel-no-cpu-strategy` (`cargo xtask check-ui`, `code: none` plus the message).
 Write instead: `#[kernel(workgroup_size(256, 1, 1), cpu = "unsupported")]`.
-Decision: D42 (M7 plan 4.2 rule 5, slice m7.g1).
+Decision: D42 (M7 plan 4.2 rule 5, slice m7.g1), D118.
 
 ### GUST-E0718 workgroup memory over the limit
 

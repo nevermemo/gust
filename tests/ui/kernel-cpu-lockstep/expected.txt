@@ -5,4 +5,4 @@
 code: none
 file: kernel-cpu-lockstep/src/main.rs
 line: 7
-message: [GUST-E0709] `cpu = "lockstep"` is not available yet
+message: [GUST-E0709] `cpu = "lockstep"` is not a CPU strategy: GUST defines none for barrier kernels (D118)

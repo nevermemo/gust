@@ -72,6 +72,21 @@ pub(crate) const GPU_SEMANTICS_TESTS: [&str; 8] = [
     "coretests",
 ];
 
+/// The test modules of `gust-macros` that `check-feature dispatch` runs, as name filters (`par_for_tests` is the module
+/// of `tests/par_for.rs`: the `par_for!` expansion, its golden, the export records and GUST-E0719/E0720; `grid_tests`
+/// that of `tests/grid.rs`: the multi-dimensional kernels and their golden). Each is its own cargo call, counted.
+pub(crate) const DISPATCH_MACRO_MODULES: [&str; 2] = ["par_for_tests::", "grid_tests::"];
+
+/// The name filters of the `gust` library tests of `check-feature dispatch` (libtest ORs them): the `dispatch` module
+/// (`Extent` and the extent of a call), every test whose name says `extent`, and the CPU invocations of a two- and
+/// three-dimensional extent.
+pub(crate) const DISPATCH_CORE_FILTERS: [&str; 3] = ["dispatch::", "extent", "dimensions"];
+
+/// The `gust-wgpu` integration tests of `check-feature dispatch`, by file name under crates/gust-wgpu/tests: `par_for!`
+/// on the GPU, multi-dimensional grids, concurrent calls and the asynchronous readback.
+pub(crate) const DISPATCH_GPU_TESTS: [&str; 4] =
+    ["par_for", "grid", "concurrency", "async_readback"];
+
 /// The name filters of the `gust-macros` tests of `check-feature vectors` (libtest ORs them): the vector and matrix
 /// types, the product and negation overloads, the goldens and their rejections.
 pub(crate) const VECTOR_MACRO_FILTERS: [&str; 8] = [
@@ -100,11 +115,116 @@ pub(crate) const UNIFORM_MACRO_FILTERS: [&str; 3] = ["uniform", "std140", "const
 pub(crate) const UNIFORM_GOLDEN_STEMS: [&str; 1] = ["uniforms"];
 pub(crate) const UNIFORM_GOLDEN_SPIRV: [&str; 1] = ["uniforms__run.spv"];
 
+/// The goldens of M7 (`tests/fixtures`) that `verify` compiles to SPIR-V and validates, with the names of the files
+/// that must come out of them, sorted. A golden that holds several kernels is compiled one section at a time
+/// (`shader::golden_sections`); an entry that does not carry the golden's name keeps its own
+/// (`map__<function>_map_kernel`, `par_for__<hashed module>_run`, see `shader::golden_file_name`). A golden that gains
+/// or loses a kernel changes its list in the same commit.
+pub(crate) const MAP_GOLDEN_STEMS: [&str; 1] = ["map"];
+pub(crate) const MAP_GOLDEN_SPIRV: [&str; 5] = [
+    "map__add_one_map_kernel.spv",
+    "map__clamp_signed_map_kernel.spv",
+    "map__even_and_map_kernel.spv",
+    "map__mirror_map_kernel.spv",
+    "map__saxpy_map_kernel.spv",
+];
+
+pub(crate) const GRID_GOLDEN_STEMS: [&str; 1] = ["grid"];
+pub(crate) const GRID_GOLDEN_SPIRV: [&str; 3] =
+    ["grid__cells.spv", "grid__corner.spv", "grid__volume.spv"];
+
+pub(crate) const WORKGROUP_GOLDEN_STEMS: [&str; 1] = ["workgroup"];
+pub(crate) const WORKGROUP_GOLDEN_SPIRV: [&str; 2] =
+    ["workgroup__block_sum.spv", "workgroup__local_ids.spv"];
+
+pub(crate) const PAR_FOR_GOLDEN_STEMS: [&str; 1] = ["par_for"];
+pub(crate) const PAR_FOR_GOLDEN_SPIRV: [&str; 10] = [
+    "par_for____gust_pf_0ed359173a83349f_run.spv",
+    "par_for____gust_pf_58ff63fbf2b09015_run.spv",
+    "par_for____gust_pf_610d503f9f8cc550_run.spv",
+    "par_for____gust_pf_630275d089043ce5_run.spv",
+    "par_for____gust_pf_7e03716763028642_run.spv",
+    "par_for____gust_pf_93f80c0c6a554f60_run.spv",
+    "par_for____gust_pf_e626553f08c28179_run.spv",
+    "par_for____gust_pf_f38e4a1a0a82c685_run.spv",
+    "par_for____gust_pf_fd9f3f4a5ddb914a_run.spv",
+    "par_for____gust_pf_fee81667ae515719_run.spv",
+];
+
+pub(crate) const REDUCE_GOLDEN_STEMS: [&str; 1] = ["reduce"];
+pub(crate) const REDUCE_GOLDEN_SPIRV: [&str; 30] = [
+    "reduce__max_f32_block.spv",
+    "reduce__max_f32_final.spv",
+    "reduce__max_f32_pass.spv",
+    "reduce__max_i32_block.spv",
+    "reduce__max_i32_final.spv",
+    "reduce__max_i32_pass.spv",
+    "reduce__max_u32_block.spv",
+    "reduce__max_u32_final.spv",
+    "reduce__max_u32_pass.spv",
+    "reduce__min_f32_block.spv",
+    "reduce__min_f32_final.spv",
+    "reduce__min_f32_pass.spv",
+    "reduce__min_i32_block.spv",
+    "reduce__min_i32_final.spv",
+    "reduce__min_i32_pass.spv",
+    "reduce__min_u32_block.spv",
+    "reduce__min_u32_final.spv",
+    "reduce__min_u32_pass.spv",
+    "reduce__sum_f32_block.spv",
+    "reduce__sum_f32_final.spv",
+    "reduce__sum_f32_pass.spv",
+    "reduce__sum_i32_block.spv",
+    "reduce__sum_i32_final.spv",
+    "reduce__sum_i32_pass.spv",
+    "reduce__sum_u32_block.spv",
+    "reduce__sum_u32_final.spv",
+    "reduce__sum_u32_pass.spv",
+    "reduce__sum_wrapping_u32_block.spv",
+    "reduce__sum_wrapping_u32_final.spv",
+    "reduce__sum_wrapping_u32_pass.spv",
+];
+
+pub(crate) const SCAN_GOLDEN_STEMS: [&str; 1] = ["scan"];
+pub(crate) const SCAN_GOLDEN_SPIRV: [&str; 11] = [
+    "scan__add_back_exclusive_u32.spv",
+    "scan__add_back_inclusive_u32.spv",
+    "scan__add_back_sums_u32.spv",
+    "scan__add_carry_u32.spv",
+    "scan__scan_chunks_u32.spv",
+    "scan__scan_sums_u32.spv",
+    "scan__scan_tiles_exclusive_u32.spv",
+    "scan__scan_tiles_inclusive_u32.spv",
+    "scan__scan_tiles_sums_u32.spv",
+    "scan__scan_tiles_top_u32.spv",
+    "scan__scan_top_u32.spv",
+];
+
+pub(crate) const COMPACT_GOLDEN_STEMS: [&str; 1] = ["compact"];
+pub(crate) const COMPACT_GOLDEN_SPIRV: [&str; 5] = [
+    "compact__flags_to_mask_u32.spv",
+    "compact__gather_f32.spv",
+    "compact__gather_i32.spv",
+    "compact__gather_u32.spv",
+    "compact__scatter_indices_u32.spv",
+];
+
 /// Every golden set `verify` exports and validates after the examples' SPIR-V: the area (the directory under the
 /// target directory's `golden-spirv`), the fixture stems and the expected file names.
-pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 2] = [
+pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 9] = [
     ("vectors", &VECTOR_GOLDEN_STEMS, &VECTOR_GOLDEN_SPIRV),
     ("uniforms", &UNIFORM_GOLDEN_STEMS, &UNIFORM_GOLDEN_SPIRV),
+    ("map", &MAP_GOLDEN_STEMS, &MAP_GOLDEN_SPIRV),
+    ("grid", &GRID_GOLDEN_STEMS, &GRID_GOLDEN_SPIRV),
+    (
+        "workgroup",
+        &WORKGROUP_GOLDEN_STEMS,
+        &WORKGROUP_GOLDEN_SPIRV,
+    ),
+    ("par_for", &PAR_FOR_GOLDEN_STEMS, &PAR_FOR_GOLDEN_SPIRV),
+    ("reduce", &REDUCE_GOLDEN_STEMS, &REDUCE_GOLDEN_SPIRV),
+    ("scan", &SCAN_GOLDEN_STEMS, &SCAN_GOLDEN_SPIRV),
+    ("compact", &COMPACT_GOLDEN_STEMS, &COMPACT_GOLDEN_SPIRV),
 ];
 
 /// The cargo calls of `cargo xtask check-cpu` (a step of the Unit suite): the non-ignored,
@@ -293,6 +413,10 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
         "map" => {
             run_direct(&root, "cargo", &["test", "-p", "gust", "--lib", "map::"])?;
             run_counted(&root, &["test", "-p", "gust-macros", "--lib", "map_tests"])?;
+            // The parallel CPU map (m7.c, D119): the runner's unit tests and the integration tests of the thread
+            // count, the lowest failing index and the bit equality with one thread. Counted: no adapter is needed.
+            run_counted(&root, &["test", "-p", "gust", "--lib", "cpu::parallel"])?;
+            run_counted(&root, &["test", "-p", "gust", "--test", "parallel"])?;
             run_direct(
                 &root,
                 "cargo",
@@ -310,6 +434,22 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                     "limits",
                 ],
             )
+        }
+        "dispatch" => {
+            // The macros: each module is its own call, so a module that lost its tests fails by itself.
+            for module in DISPATCH_MACRO_MODULES {
+                run_counted(&root, &["test", "-p", "gust-macros", "--lib", module])?;
+            }
+            // Extent and the dispatch types of gust (the recording device, the extent of a call, the CPU
+            // invocations of a multi-dimensional extent).
+            let mut core = vec!["test", "-p", "gust", "--lib", "--"];
+            core.extend(DISPATCH_CORE_FILTERS);
+            run_counted(&root, &core)?;
+            // The GPU tests, one binary per call: a binary that ran no test fails by itself.
+            for test in DISPATCH_GPU_TESTS {
+                run_counted(&root, &["test", "-p", "gust-wgpu", "--test", test])?;
+            }
+            Ok(())
         }
         "workgroup" => {
             run_counted(&root, &["test", "-p", "gust-macros", "--lib", "workgroup"])?;
@@ -485,8 +625,54 @@ fn select_changed_checks(paths: &[String]) -> Vec<ChangedCheck> {
     if any(&[
         "tests/fixtures/workgroup",
         "crates/gust-wgpu/tests/workgroup.rs",
+        "crates/gust-macros/src/validate/barrier.rs",
+        "crates/gust-macros/src/tests/workgroup.rs",
     ]) {
         checks.push(ChangedCheck::Feature("workgroup"));
+    }
+    // M7 areas. A specific area is added to the broader check the path already had (macro, wgpu, core), never
+    // instead of it; a golden fixture alone selects only its area, as the workgroup and loops fixtures do.
+    let fixture = |stems: &[&str]| {
+        paths.iter().any(|path| {
+            path.strip_prefix("tests/fixtures/").is_some_and(|rest| {
+                stems.iter().any(|stem| {
+                    rest.strip_prefix(stem)
+                        .is_some_and(|tail| tail.starts_with('.'))
+                })
+            })
+        })
+    };
+    if has("crates/gust-algo/") || fixture(&["reduce", "scan", "compact"]) {
+        checks.push(ChangedCheck::Feature("algo"));
+    }
+    if fixture(&["map"])
+        || any(&[
+            "crates/gust/src/map.rs",
+            "crates/gust/src/cpu/parallel.rs",
+            "crates/gust/tests/parallel.rs",
+            "crates/gust-macros/src/expand/map.rs",
+            "crates/gust-macros/src/tests/map.rs",
+            "crates/gust-wgpu/src/map_host.rs",
+            "crates/gust-wgpu/tests/map.rs",
+            "crates/gust-wgpu/tests/gpu_vec.rs",
+            "crates/gust-wgpu/tests/device_options.rs",
+        ])
+    {
+        checks.push(ChangedCheck::Feature("map"));
+    }
+    if fixture(&["par_for", "grid"])
+        || any(&[
+            "crates/gust/src/dispatch.rs",
+            "crates/gust-macros/src/par_for.rs",
+            "crates/gust-macros/src/tests/par_for.rs",
+            "crates/gust-macros/src/tests/grid.rs",
+            "crates/gust-wgpu/tests/par_for.rs",
+            "crates/gust-wgpu/tests/grid.rs",
+            "crates/gust-wgpu/tests/concurrency.rs",
+            "crates/gust-wgpu/tests/async_readback.rs",
+        ])
+    {
+        checks.push(ChangedCheck::Feature("dispatch"));
     }
     if has("crates/gust-macros/") || (has("tests/fixtures/") && checks.is_empty()) {
         checks.push(ChangedCheck::Feature("macro"));
@@ -666,7 +852,10 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "result: Result lowering/match regressions plus WGSL, SPIR-V, and real-GPU Result tests"
         }
         "map" => {
-            "map: the map calls of `#[gpu]` on a function and their device side: gust::map unit tests, the gust-macros map tests (expansion, diagnostics and the golden of the generated kernels), the map calls on the GPU against their CPU twins (crates/gust-wgpu/tests/map.rs), then GpuVec and the buffer pool, device options and adapter choice, and the launch and buffer limits on the GPU"
+            "map: the map calls of `#[gpu]` on a function and their device side: gust::map unit tests, the gust-macros map tests (expansion, diagnostics and the golden of the generated kernels), the parallel CPU map of m7.c (the gust::cpu::parallel unit tests and crates/gust/tests/parallel.rs: thread count, bit equality with one thread, the lowest failing index; counted, no adapter needed), the map calls on the GPU against their CPU twins (crates/gust-wgpu/tests/map.rs), then GpuVec and the buffer pool, device options and adapter choice, and the launch and buffer limits on the GPU"
+        }
+        "dispatch" => {
+            "dispatch: multi-dimensional dispatch and `par_for!` (m7.p, m7.d), each call counted so that a missing test file fails by itself: the gust-macros tests `par_for_tests::` (expansion, golden, export records, GUST-E0719 and E0720) and `grid_tests::` (the multi-dimensional kernels and their golden), the gust library tests of Extent (`dispatch::`, names with `extent`, the CPU invocations of a two- and three-dimensional extent), then crates/gust-wgpu/tests/par_for.rs, grid.rs, concurrency.rs and async_readback.rs on the first Vulkan adapter"
         }
         "workgroup" => {
             "workgroup: workgroup shared memory, the workgroup barrier and the local and group ids (m7.g1): the gust-macros workgroup tests (validator rules, expansion, the golden of the generated kernels, one rejection per diagnostic), the gust unit tests of the Workgroup runtime type, then crates/gust-wgpu/tests/workgroup.rs on the first Vulkan adapter (a block reduce against an independent host sum, the derived ids, the barrier in the SPIR-V validated with spirv-val and in the WGSL)"
@@ -684,7 +873,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "examples: every example test (ordinary and ignored, `--include-ignored`; a package that runs no test fails) and example binaries; use for major behavior confidence"
         }
         "artifacts" => {
-            "artifacts: example binaries plus exported SPIR-V validation (the examples' files and the vectors and uniforms goldens, compiled here), each module with an informational OpCopyLogical count (never a failure)"
+            "artifacts: example binaries plus exported SPIR-V validation (the examples' files and the goldens of vectors, products, uniforms, map, grid, workgroup, par_for, reduce, scan and compact, compiled here one section at a time), each module with an informational OpCopyLogical count (never a failure)"
         }
         "full" => {
             "full: release evidence (the Full mode of verify, as `cargo xtask check-full [--skip-web]`): everything above, check-dual in full mode, the artifact export with spirv-val, then the whole check-precompiled and check-web; writes .ai/VALIDATION.json, with `skipped_checks` naming a check that --skip-web left out"
@@ -714,7 +903,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "check-dual: the dual test build (`--cfg gust_dual`, D26) and its cross-crate proof, with its own target directory <target>/dual: tests/dual is formatted (`cargo fmt --check`) and passes clippy with -D warnings (the root fmt and CI clippy do not reach that workspace), as do vector-add and polynomial with the cfg (CI's clippy compiles their dual code out); the workspace builds with the cfg; in tests/dual a consumer's test (E1) and production binary (E3) each fail with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib` without the cfg, and with it (E2) the test passes. Without `--check-only` it then runs `cargo run` of vector-add and polynomial with the cfg, which must print the `CPU twin: matches (N elements, max ULP k)` line (polynomial also the twin's time beside run_cpu's), and of vector-add without the cfg, which must not mention the twin; that part needs a Vulkan GPU, and `check-full` runs it. Refuses to run while RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS or CARGO_BUILD_RUSTFLAGS is set (it delivers the cfg through CARGO_ENCODED_RUSTFLAGS). `--check-only` is the CPU-only mode CI runs; it needs cargo only"
         }
         "check-cpu-target" => {
-            "check-cpu-target: the production CPU target (D21, D51) on the fixture workspace tests/cpu-target, with cargo only (no slangc, no GPU), in <target>/cpu-target, cpu-target-dual and cpu-target-flip: E-a builds `app` in release under GUST_PROFILE=cpu and runs it (one `CPU target: matches` line per kernel, the `CPU target: map calls match (..)` line of the map case exactly once, the final line); E-b scans that binary for slangc, gust-slang-reflect, wgpu and vulkan (any letter case, with a control string) and reads `cargo tree -e features -p app`; E-c builds and runs it under cpu with --cfg gust_dual; E-d to E-g judge the four refusals on tests/cpu-target/e-*-expected.txt (E-e is the E0080 of gust-wgpu's require_gpu_target); E-h flips the profile cpu, unset, cpu, unset, cpu, unset in one directory; E-i runs cargo test -p kernels under cpu. Stops at the first failing step and names it. The Cpu suite is this command; CI's unit job runs it"
+            "check-cpu-target: the production CPU target (D21, D51) on the fixture workspace tests/cpu-target, with cargo only (no slangc, no GPU), in <target>/cpu-target, cpu-target-dual and cpu-target-flip: E-a builds `app` in release under GUST_PROFILE=cpu and runs it (one `CPU target: matches` line per kernel, the `CPU target: map calls match (..)` line of the map case (which includes the parallel map of m7.c) and the `CPU target: par_for calls match (..)` line of the par_for case, each exactly once, the final line); E-b scans that binary for slangc, gust-slang-reflect, wgpu and vulkan (any letter case, with a control string) and reads `cargo tree -e features -p app`; E-c builds and runs it under cpu with --cfg gust_dual; E-d to E-g judge the four refusals on tests/cpu-target/e-*-expected.txt (E-e is the E0080 of gust-wgpu's require_gpu_target); E-h flips the profile cpu, unset, cpu, unset, cpu, unset in one directory; E-i runs cargo test -p kernels under cpu. Stops at the first failing step and names it. The Cpu suite is this command; CI's unit job runs it"
         }
         "bless" => {
             "bless: reruns the Slang golden tests with BLESS_GOLDEN=1, which rewrites changed fixtures and fails with the diff; review before committing"
@@ -723,7 +912,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "test: `cargo xtask test --suite Unit|Cpu|Slangc|Spirv|Reflect|Gpu|Full` runs one evidence tier of VALIDATION.md"
         }
         "all" => {
-            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, result, vectors, uniforms, map, workgroup, algo, examples, artifacts, full, changed, workspace, format, lints, lint, docs-check, check-arch, check-ui, check-cpu, check-dual, check-cpu-target, bless, test"
+            "known areas: macro, core, wgpu, gpu-smoke, gpu-semantics, gpu-runtime, reflection, loops, result, vectors, uniforms, map, dispatch, workgroup, algo, examples, artifacts, full, changed, workspace, format, lints, lint, docs-check, check-arch, check-ui, check-cpu, check-dual, check-cpu-target, bless, test"
         }
         _ => return Err(format!("unknown check area `{area}`")),
     };

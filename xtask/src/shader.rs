@@ -397,15 +397,52 @@ pub(crate) fn compute_entries(slang: &str) -> Vec<String> {
 }
 
 /// `<stem>__<kernel>.spv` for the entry `gpu_<stem>_<kernel>` of the golden `<stem>.slang`, the spelling of the files
-/// the examples export (`<module>__<kernel>.spv`).
+/// the examples export (`<module>__<kernel>.spv`). An entry that does not carry the stem after `gpu_` (the map golden
+/// holds the kernels of several functions, `gpu_<function>_map_kernel`; the `par_for!` golden those of hashed modules,
+/// `gpu___gust_pf_<hash>_run`) keeps all of its name after `gpu_`: `<stem>__<function>_map_kernel.spv`. The expected
+/// names are pinned, so an entry that moved to the wrong golden is still caught by [`compare_golden_names`].
 pub(crate) fn golden_file_name(stem: &str, entry: &str) -> Result<String, String> {
-    let prefix = format!("gpu_{stem}_");
-    match entry.strip_prefix(&prefix) {
-        Some(kernel) if !kernel.is_empty() => Ok(format!("{stem}__{kernel}.spv")),
-        _ => Err(format!(
-            "the entry `{entry}` of tests/fixtures/{stem}.slang does not start with `{prefix}`"
-        )),
+    let after_gpu = entry.strip_prefix("gpu_").filter(|rest| !rest.is_empty());
+    let Some(after_gpu) = after_gpu else {
+        return Err(format!(
+            "the entry `{entry}` of tests/fixtures/{stem}.slang does not start with `gpu_` and a name"
+        ));
+    };
+    let kernel = match after_gpu.strip_prefix(&format!("{stem}_")) {
+        Some("") => {
+            return Err(format!(
+                "the entry `{entry}` of tests/fixtures/{stem}.slang has no kernel name after `gpu_{stem}_`"
+            ));
+        }
+        Some(kernel) => kernel,
+        None => after_gpu,
+    };
+    Ok(format!("{stem}__{kernel}.spv"))
+}
+
+/// The marker line that starts a section of a golden: the generator writes the Slang of each kernel (or, for
+/// `par_for!`, each call) after `// ==== kernel <name> ====` or `// ==== call <n> ====`.
+fn is_section_marker(line: &str) -> bool {
+    let line = line.trim_end();
+    line.starts_with("// ==== ") && line.ends_with(" ====")
+}
+
+/// The sections of a golden, each a complete Slang module: the goldens that hold several kernels declare the same
+/// buffer names once per kernel (and `par_for!` the same extent struct once per call), so slangc can only compile one
+/// section at a time. A golden without a marker line (vectors, products, uniforms) is one section; text before the
+/// first marker line is a section of its own only when it is not blank.
+pub(crate) fn golden_sections(slang: &str) -> Vec<String> {
+    let mut sections: Vec<String> = vec![String::new()];
+    for line in slang.split_inclusive('\n') {
+        if is_section_marker(line) && !sections.last().is_some_and(|last| last.trim().is_empty()) {
+            sections.push(String::new());
+        }
+        if let Some(last) = sections.last_mut() {
+            last.push_str(line);
+        }
     }
+    sections.retain(|section| !section.trim().is_empty());
+    sections
 }
 
 /// Compares the SPIR-V files made from the goldens with the expected names and names the differences separately,
@@ -466,22 +503,39 @@ pub(crate) fn compile_golden_spirv(
         let source = fixtures.join(format!("{stem}.slang"));
         let text = fs::read_to_string(&source)
             .map_err(|error| format!("could not read {}: {error}", source.display()))?;
-        let entries = compute_entries(&text);
-        if entries.is_empty() {
+        if compute_entries(&text).is_empty() {
             return Err(format!(
                 "tests/fixtures/{stem}.slang has no compute entry point"
             ));
         }
-        for entry in entries {
-            let file = golden_file_name(stem, &entry)?;
-            slangc(&SlangcOptions {
-                source: source.clone(),
-                entry,
-                target: ShaderTarget::Spirv,
-                out: directory.join(&file),
-                extra: vec!["-fvk-use-entrypoint-name".to_owned()],
-            })?;
-            found.push(file);
+        // A golden of one section is compiled from its own file; a golden of several is split, and each section is
+        // written next to the SPIR-V (`<stem>.<n>.slang`) and compiled alone ([`golden_sections`]).
+        let sections = golden_sections(&text);
+        for (index, section) in sections.iter().enumerate() {
+            let section_source = if sections.len() == 1 {
+                source.clone()
+            } else {
+                let path = directory.join(format!("{stem}.{index}.slang"));
+                fs::write(&path, section)
+                    .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+                path
+            };
+            for entry in compute_entries(section) {
+                let file = golden_file_name(stem, &entry)?;
+                if found.contains(&file) {
+                    return Err(format!(
+                        "tests/fixtures/{stem}.slang: two entries make the file {file}"
+                    ));
+                }
+                slangc(&SlangcOptions {
+                    source: section_source.clone(),
+                    entry,
+                    target: ShaderTarget::Spirv,
+                    out: directory.join(&file),
+                    extra: vec!["-fvk-use-entrypoint-name".to_owned()],
+                })?;
+                found.push(file);
+            }
         }
     }
     compare_golden_names(expected, &found)?;

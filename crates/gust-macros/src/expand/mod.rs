@@ -853,8 +853,8 @@ pub(crate) fn kernel_attribute_in(
                 return Err(diagnostics::meta_error(
                     &meta,
                     Code::UnknownCpuValue,
-                    "`cpu = \"lockstep\"` is not available yet (the lockstep CPU twin of a barrier kernel is a later \
-                     slice); the only value is `\"unsupported\"`",
+                    "`cpu = \"lockstep\"` is not a CPU strategy: GUST defines none for barrier kernels (D118); the only \
+                     value is `\"unsupported\"`",
                 ));
             }
             if value.value() != "unsupported" {

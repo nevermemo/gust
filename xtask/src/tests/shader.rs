@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use super::{
     ExportOptions, MATRIX_LAYOUT_FLAG, ShaderTarget, SlangcOptions, SpirvValOptions,
     check_spirv_header, clear_exports, compare_golden_names, compare_manifests, compute_entries,
-    count_copy_logical, golden_file_name, hash_manifest, parse_manifest, sidecar,
+    count_copy_logical, golden_file_name, golden_sections, hash_manifest, parse_manifest, sidecar,
 };
 
 fn args(values: &[&str]) -> Vec<String> {
@@ -259,17 +259,121 @@ fn a_golden_entry_names_its_spirv_file_like_the_examples_do() {
         golden_file_name("uniforms", "gpu_uniforms_scale_all").unwrap(),
         "uniforms__scale_all.spv"
     );
+    // The goldens of M7 whose entries do not carry the golden's name keep all of their own after `gpu_` (m7.x1): the map
+    // golden holds the kernels of several functions, the `par_for!` golden those of hashed modules.
+    assert_eq!(
+        golden_file_name("map", "gpu_saxpy_map_kernel").unwrap(),
+        "map__saxpy_map_kernel.spv"
+    );
+    assert_eq!(
+        golden_file_name("par_for", "gpu___gust_pf_93f80c0c6a554f60_run").unwrap(),
+        "par_for____gust_pf_93f80c0c6a554f60_run.spv"
+    );
+    // A stem that is also the start of a kernel's own name is stripped once, and only when something follows it.
+    assert_eq!(
+        golden_file_name("scan", "gpu_scan_scan_chunks_u32").unwrap(),
+        "scan__scan_chunks_u32.spv"
+    );
+    assert_eq!(
+        golden_file_name("scan", "gpu_scan_top").unwrap(),
+        "scan__top.spv"
+    );
     for entry in [
         "run",
-        "gpu_run",
+        "gpu_",
         "gpu_vectors_",
-        "gpu_products_run",
         "vectors_run",
+        "Gpu_vectors_run",
     ] {
         assert!(
             golden_file_name("vectors", entry).is_err(),
             "{entry} should be refused"
         );
+    }
+}
+
+#[test]
+fn a_golden_without_marker_lines_is_one_section() {
+    let slang = "[shader(\"compute\")]\nvoid gpu_vectors_run() {}\n";
+    assert_eq!(golden_sections(slang), [slang]);
+    assert!(golden_sections("").is_empty());
+    assert!(golden_sections("\n\n").is_empty());
+}
+
+#[test]
+fn a_golden_of_several_kernels_is_split_at_its_marker_lines() {
+    // The marker lines of the generators: `kernel <name>` (map, grid, workgroup, reduce, scan, compact) and
+    // `call <n>` (par_for!). Each section keeps its marker and ends before the next one; CRLF lines work too.
+    let slang = "// ==== kernel a ====\nstruct S {};\n[shader(\"compute\")]\nvoid gpu_g_a() {}\n\n\
+                 // ==== kernel b ====\nstruct S {};\n[shader(\"compute\")]\nvoid gpu_g_b() {}\n";
+    let sections = golden_sections(slang);
+    assert_eq!(sections.len(), 2);
+    assert!(sections[0].starts_with("// ==== kernel a ====\n"));
+    assert!(sections[0].contains("gpu_g_a") && !sections[0].contains("gpu_g_b"));
+    assert!(sections[1].starts_with("// ==== kernel b ====\n"));
+    assert!(sections[1].contains("gpu_g_b") && !sections[1].contains("gpu_g_a"));
+    assert_eq!(sections.concat(), slang);
+    let crlf = slang.replace('\n', "\r\n");
+    let sections = golden_sections(&crlf);
+    assert_eq!(sections.len(), 2);
+    assert_eq!(sections.concat(), crlf);
+    let calls = "// ==== call 1 ====\n[shader(\"compute\")]\nvoid gpu_x_run() {}\n// ==== call 2 ====\n[shader(\"compute\")]\nvoid gpu_y_run() {}\n";
+    assert_eq!(golden_sections(calls).len(), 2);
+    // Text before the first marker is a section of its own, and a comment that only looks like a marker is not one.
+    let preamble =
+        "struct Shared {};\n// ==== kernel a ====\nvoid gpu_g_a() {}\n// ==== not a marker\n";
+    let sections = golden_sections(preamble);
+    assert_eq!(sections.len(), 2);
+    assert_eq!(sections.concat(), preamble);
+}
+
+#[test]
+fn the_committed_goldens_of_m7_split_into_sections_that_each_hold_their_entries() {
+    // The reason for the split: the sections of a golden declare the same buffer names, so a golden of several
+    // kernels is not one Slang module. Every entry must lie in exactly one section, and a section of the multi-kernel
+    // goldens must hold at most one entry (the single-module workgroup golden is split too, harmlessly).
+    for (name, text, kernels) in [
+        ("map", include_str!("../../../tests/fixtures/map.slang"), 5),
+        (
+            "grid",
+            include_str!("../../../tests/fixtures/grid.slang"),
+            3,
+        ),
+        (
+            "par_for",
+            include_str!("../../../tests/fixtures/par_for.slang"),
+            10,
+        ),
+        (
+            "reduce",
+            include_str!("../../../tests/fixtures/reduce.slang"),
+            30,
+        ),
+        (
+            "scan",
+            include_str!("../../../tests/fixtures/scan.slang"),
+            11,
+        ),
+        (
+            "compact",
+            include_str!("../../../tests/fixtures/compact.slang"),
+            5,
+        ),
+    ] {
+        let sections = golden_sections(text);
+        assert_eq!(sections.len(), kernels, "{name}");
+        assert_eq!(sections.concat(), text, "{name}: the split loses text");
+        for section in &sections {
+            assert_eq!(compute_entries(section).len(), 1, "{name}: {section}");
+        }
+    }
+    for name in ["vectors", "products", "uniforms"] {
+        let text = match name {
+            "vectors" => include_str!("../../../tests/fixtures/vectors.slang"),
+            "products" => include_str!("../../../tests/fixtures/products.slang"),
+            _ => include_str!("../../../tests/fixtures/uniforms.slang"),
+        };
+        assert_eq!(golden_sections(text), [text], "{name} stays one section");
     }
 }
 

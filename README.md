@@ -131,7 +131,7 @@ of an element-wise map (`#[gpu]` on a function) run in parallel chunks of the ou
 `cargo xtask check-cpu-target` is the evidence (the `Cpu` tier).
 
 For the full release-readiness check (including ignored example tests, all nine
-examples, and mandatory external validation of all twenty SPIR-V exports):
+examples, and mandatory external validation of the twenty SPIR-V files of the examples and of nine golden sets):
 
 ```sh
 cargo xtask check-full
@@ -167,8 +167,8 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-feature map` | Element-wise maps, `GpuVec`, device options and the parallel CPU map | `gust` unit tests of `map::` and `cpu::parallel`, `gust` `tests/parallel.rs`, gust-macros map tests, wgpu `map`, `gpu_vec`, `device_options` and `limits` |
 | `cargo xtask check-feature workgroup` | Workgroup memory, barriers, `LocalId` and `GroupId` | gust-macros and `gust` unit tests named `workgroup`, then wgpu `workgroup` (the block reduce, the derived ids and the barrier in the SPIR-V) |
 | `cargo xtask check-feature algo` | The `gust-algo` library (reduce, scan, compact) | every `gust-algo` test: schedule, bound and golden tests and the CPU twins without an adapter, then the same cases on the first Vulkan adapter |
-| `cargo xtask check-feature dispatch` | `par_for!` and multi-dimensional dispatch (`Extent`) | gust-macros `par_for` unit tests, then wgpu `par_for`, `grid`, `concurrency` and `async_readback` |
-| `cargo xtask check-changed` | Dirty-tree routing | chooses a focused check from changed paths |
+| `cargo xtask check-feature dispatch` | `par_for!` and multi-dimensional dispatch (`Extent`) | gust-macros tests `par_for_tests::` and `grid_tests::`, the `gust` library tests of `dispatch::` and of the CPU invocations of a multi-dimensional extent (each module or filter its own counted call), then wgpu `par_for`, `grid`, `concurrency` and `async_readback` |
+| `cargo xtask check-changed` | Dirty-tree routing | chooses focused checks from changed paths: `macro`, `core`, `wgpu`, `reflection` and `examples` by crate or directory, and `loops`, `workgroup`, `algo`, `map` and `dispatch` by their fixtures, tests and sources (a build, CI or `xtask` change selects `check-fast`; no match, `check-workspace`) |
 | `cargo xtask check-format` | Formatting only | `cargo fmt --all -- --check` |
 | `cargo xtask check-lints` | Strict lints | workspace Clippy with warnings denied (`--locked`) |
 | `cargo xtask lint` | Policy lint | no tracked shell or PowerShell scripts (D27) and no machine-specific paths in tracked text (Windows, Unix and WSL home paths; two test files may spell placeholder names only); scans tracked files only. Also the release rules, with package names read from `cargo metadata`: every package that can be published has `description`, `license`, `repository`, `documentation`, `readme`, `keywords` and `categories`, its own `README.md`, and byte-equal copies of `LICENSE-MIT` and `LICENSE-APACHE`; and every `path =` dependency on a package under `crates/` calls it by that package's name (or `package =`), so a manifest written before the crate rename fails here |
@@ -185,7 +185,7 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-fast` | Fast routine confidence | policy lint, docs-check, check-arch, check-ui, helper version check, fmt check, macro tests, core lib tests, wgpu tests (all `--locked`) |
 | `cargo xtask check-workspace` | Default workspace confidence | `--locked` workspace tests with example packages excluded entirely |
 | `cargo xtask check-examples` | Major example behavior confidence | every example test (`-- --include-ignored`, counted: no passed test or an ignored one fails it) plus example binaries |
-| `cargo xtask check-artifacts` | Artifact/export confidence | example binaries plus external SPIR-V validation of their files and of the vectors, products and uniforms goldens, with an `OpCopyLogical` count each |
+| `cargo xtask check-artifacts` | Artifact/export confidence | example binaries plus external SPIR-V validation of their twenty files and of the files of nine golden sets (vectors and products, uniforms, map, grid, workgroup, `par_for`, reduce, scan, compact), with an `OpCopyLogical` count each |
 | `cargo xtask check-full [--skip-web]` | Release confidence | full staged verification, then the whole `check-precompiled` and `check-web`, then `check-difftest`; `--skip-web` leaves out `check-web` only and records it |
 | `cargo xtask status` | Resume context | git status, active claim, validation summary, suggested check |
 | `cargo xtask doctor` | Environment readiness | required tools and reflection helper status; exits non-zero when cargo, rustc, slangc or the helper is missing |

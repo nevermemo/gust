@@ -148,10 +148,12 @@ test module; do not mix that mechanical move with behavior changes.
   when they agree, otherwise a compile error asking for a suffix or an annotation; a GPU regression case for
   `d /= y` with `y >= 2^31`, a signed comparison and `>>`; the difftest emitter writes some unannotated lets
   (sanity-opus, widened and made a blocker for m7.a; sanity-fable, scheduled before MR; 2026-11-02).
-- shader-slang/slang#14198 (open, opened by the owner on 2026-11-02): WGSL emits `^` on `bool` and `vecN<bool>`
-  operands, which WGSL does not define; the PR makes it `!=`. Once it is in a Slang release the pin adopts, the bool
-  overloads of `__gust_xor` and `__gust_xor_assign` can go (a pin bump with the usual re-bless; D46). Until then the
-  overloads stay. Recorded here because the repository did not mention it (sanity-fable and sanity-opus, 2026-11-02).
+- shader-slang/slang#14324 (open, opened by a Slang maintainer on 2026-11-04): WGSL emits `^` on `bool` and `vecN<bool>`
+  operands, which WGSL does not define; the PR makes it `!=`. It carries the owner's fix from shader-slang/slang#14198
+  unchanged, with its authorship kept, and replaces that PR's emitted-text test with a run-time test on every target;
+  #14198 was closed in its favour. Once it is in a Slang release the pin adopts, the bool overloads of `__gust_xor` and
+  `__gust_xor_assign` can go (a pin bump with the usual re-bless; D46). Until then the overloads stay. Recorded here
+  because the repository did not mention it (sanity-fable and sanity-opus, 2026-11-02).
 - SPIR-V is never executed by any M6 case: the Spirv tier of M6 is `spirv-val` of the exported modules, and
   `gust-wgpu` runs WGSL. The matrix layout decorations of the SPIR-V goldens and Std140 uniforms in SPIR-V have never
   been dispatched, yet MR ships SPIR-V to Vulkan users. Dispatch the three goldens (vectors and products, uniforms)

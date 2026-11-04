@@ -479,6 +479,19 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   for mx.t4's measurement (the id guard keeps 11 rows). Opus merge after fixes: no must-fix, three should-fixes taken,
   the fourth a plan edge (mx.t2 after mx.t0b). Main: 23 of 23 gates green on `00b72c7` (2026-11-04 14:00 to 14:44Z, RTX
   5090).
+- MX mx.t0b (`8ba6482`, fix round `55c5072`, merge `3bea3a3`; D17, D91, D120, MX plan §3.3): helper schema 3 on the Rust
+  side. The reflection reader reads schema 3's texture and sampler bindings, the entry point's stage and a fragment's
+  targets; every schema-1 and schema-2 fixture reads as before. `cross_check_kernel` checks a sampled `Texture2D<T>` by
+  slot, dimension, sample class and result width, a storage or write-only texture by slot, access, result type and exact
+  format, a sampler by slot, and the stage against the descriptor's shape; each mismatch names the field.
+  `ResourceLayout::texture_v1` carries the texture layout, the descriptor coherence check compares a format's channel
+  count with the result width, and cargo-gust's `fill` learns the layout for `export_unchecked`. X-S2 ended A, so the
+  helper's facts are the D17 witness and no CLI-JSON gate is built. Tamper tests (stage, target, access, format, sampler
+  slot, result width) run over six schema-3 fixtures that are byte copies of the helper's output. mx.t1's storage
+  stand-in for textures in descriptors stays until mx.t3, which also teaches cargo-gust's record reader and the artifact
+  writer the texture kinds. Opus merge after fixes: one must-fix (a public doc linking a private item, which
+  check-release R5 refuses), three should-fixes taken, the fourth owned by mx.t3. Tests: gust lib 292, reflection 24,
+  cargo-gust 210. Main: 24 of 24 gates green on `3bea3a3` (2026-11-04 16:51 to 17:40Z, RTX 5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

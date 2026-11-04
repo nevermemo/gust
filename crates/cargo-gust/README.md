@@ -8,14 +8,17 @@ GUST is an experimental Rust to Slang compute subsystem. It is pre-1.0: expect t
 between 0.x releases.
 
 ```sh
-cargo install cargo-gust --locked
-cargo gust doctor            # reports the Slang install and the native reflection helper
-cargo gust slang install     # installs the pinned Slang release
-cargo gust build             # writes gust-artifacts/ for the kernels of this crate
+cargo install cargo-gust --locked --version "~0.1"
+cargo gust doctor              # reports the Slang install and the native reflection helper
+cargo gust slang install       # installs the pinned Slang release
+cargo gust slang build-helper  # builds the native reflection helper (needs a C++ compiler)
+cargo gust build               # writes gust-artifacts/ for the kernels of this crate
 ```
 
 This is a binary-only crate, so it has no docs.rs page; `cargo gust --help` lists the commands. The library it works
-with is `gust-compute` (library name `gust`): <https://github.com/nevermemo/gust/blob/main/README.md>.
+with is `gust-compute` (library name `gust`): <https://github.com/nevermemo/gust/blob/main/README.md>. A first program,
+from the install to a release build, is in its section "Install from crates.io"
+(<https://github.com/nevermemo/gust/blob/main/README.md#install-from-cratesio>). Minimum supported Rust: 1.90.
 
 The tests of this crate read files of the repository, so they run from a checkout, not from this package.
 

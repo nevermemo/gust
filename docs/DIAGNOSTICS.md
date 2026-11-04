@@ -14,7 +14,12 @@ the words. Renumbering or retiring a code needs a row in [DECISIONS.md](DECISION
 Search this page for the code to find what it rejects and what to write instead.
 Decision: D31.
 
-The promise starts with the first crates.io release (D33). Until then a code may still be
+This page is not part of the published packages. If you installed GUST from crates.io, read it on GitHub
+(<https://github.com/nevermemo/gust/blob/main/docs/DIAGNOSTICS.md>) and search it for the code in your error. The
+codes come from the `#[gpu]` macro of the package `gust-compute-macros`, which you get by adding `gust-compute` (see
+"Install from crates.io" in the [README](../README.md)).
+
+The promise starts with the first crates.io release, 0.1.0 (D33). Until then a code may still be
 split or renumbered, and each change is listed here:
 
 - `f20d313`: E0602 narrowed from any wrong shape of an atomic's first argument to "not a

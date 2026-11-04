@@ -1,0 +1,137 @@
+# Release checklist: publishing the GUST crates to crates.io
+
+This is the procedure for the first release (0.1.0) and the template for later ones. Publishing, tagging, the GitHub
+release and yanking are the owner's acts (D115); the coordinator prepares everything up to a green gate and the
+commands below. The crate names are the published ones (D48, D106): `gust-compute-macros`, `gust-compute`,
+`gust-compute-wgpu` and `cargo-gust`. This list is the slice mr.p of the roadmap row MR ([ROADMAP](../ROADMAP.md));
+the decisions behind it are D106 to D115 in [DECISIONS](../DECISIONS.md).
+
+## Who does what
+
+The coordinator prepares, before step 0:
+
+- the rename of the packages (mr.n) and the last code slice, merged, with the closing commit `<C>` recorded;
+- `cargo xtask check-full` and the full `cargo xtask check-release` green on `<C>`, recorded in [STATUS](STATUS.md);
+- `CHANGELOG.md` on `<C>`: the 0.1.0 heading reads `## 0.1.0` (no "not yet published") and its text matches the tree.
+
+The owner does, in this order:
+
+- step 0, once: require the checks `unit`, `msrv` and `release` on `main` (owner decision Q4; `slang` later);
+- step 1: confirm the commit and the clean tree, and run the full gate again on that checkout;
+- steps 2 to 4: `cargo login`, `cargo publish`, `cargo yank`;
+- steps 5 and 6: the post-publish consumer (the coordinator may run it for the record), the tag, the GitHub release.
+
+The coordinator then records the outcome (mr.z): docs.rs status (step 7), the report of step 8 in STATUS, the DECISIONS
+rows and the ROADMAP row MR.
+
+Never put a registry token in the repository, in a file the agents read, in a command line, or in a chat. `cargo login`
+asks for it on the owner's terminal and stores it in the owner's cargo home.
+
+## What the gate proves
+
+`cargo xtask check-release` (D113) is the release gate. CI runs `--check-only` on every pull request and push (the job
+`release`); `check-full` and the owner's step 1 run the full command. It works on the packages that `cargo metadata`
+says are publishable, so it needs no edit when a package is renamed.
+
+- R1: one `cargo package --locked` call for all four packages, with verification (cargo builds each unpacked package).
+- R2: the file list of each package against the allow-list: `src/**` without test modules, `README.md`,
+  `LICENSE-MIT`, `LICENSE-APACHE`, `build.rs` for `gust-compute`, `assets/**` for `cargo-gust`, no test data.
+- R3 and R4: the metadata fields, one version for the four, every internal dependency exact (`=0.1.0`), and every
+  other workspace member `publish = false`.
+- R5: `cargo doc --no-deps` of the library crates with rustdoc warnings denied, on stable and, when a nightly
+  toolchain is installed, with the docs.rs features and `--cfg docsrs`.
+- R6: each `.crate` file under 2 MiB.
+- R7: the README recipe ("Install from crates.io") built word for word from the unpacked `.crate` files, plus a
+  `cargo install` of the unpacked `cargo-gust`. The full mode also runs `cargo gust build`, builds the release form
+  and runs both on the GPU. `--check-only` prints what it did not run.
+- R8: `cargo publish --dry-run --locked` for the four packages in one call.
+
+It cannot prove that the crates.io index accepts the upload, that docs.rs builds the pages, or that the owner's token
+has the right scope; steps 2, 3 and 7 are where those show.
+
+## Steps
+
+Run from a clean checkout of `<C>`, not from a worktree that lanes use, with the pinned Slang and the helper reachable
+for step 1 (`cargo gust doctor` green).
+
+```sh
+# 0. On GitHub: branch protection on main requires the checks unit, msrv and release (owner decision Q4). Once.
+
+# 1. Confirm the commit, the clean tree and the full gate (needs Slang, the helper, a GPU and the registry)
+git status --short --branch            # clean, on main at <C>
+cargo gust doctor
+cargo --locked xtask check-release     # the full gate: packaging, docs, dry run, the README recipe built and run
+
+# 2. Log in once: a token from https://crates.io/settings/tokens, scope publish-update, for the four crates
+cargo login
+
+# 3. Publish in dependency order; cargo waits for the index between crates
+cargo publish --locked -p gust-compute-macros
+cargo publish --locked -p gust-compute
+cargo publish --locked -p gust-compute-wgpu
+cargo publish --locked -p cargo-gust
+#    One call is possible too (cargo 1.90 or newer): cargo publish --locked --workspace. The per-crate form can be
+#    stopped between crates, which is why it is the default.
+
+# 4. Yank the 0.0.0 placeholders now that 0.1.0 is up (owner decision Q7)
+cargo yank --version 0.0.0 gust-compute-macros
+cargo yank --version 0.0.0 gust-compute
+cargo yank --version 0.0.0 gust-compute-wgpu
+cargo yank --version 0.0.0 cargo-gust
+```
+
+### 5. Post-publish verification
+
+From an empty directory, on a machine with no checkout and no `slangc` on `PATH`, repeat the README as a user would.
+This is the same recipe that R7 built from the packaged files, now from crates.io.
+
+```sh
+cargo install cargo-gust --locked --version "~0.1"
+cargo gust slang install
+cargo gust slang build-helper          # prints the helper path
+cargo gust slang locate                # prints the slangc to put on PATH
+export GUST_SLANG_REFLECT=<the helper path>          # until the run-time bridge reads the managed cache itself
+export PATH="<the folder of that slangc>:$PATH"      # (the README says the same)
+cargo new --bin hello-gust && cd hello-gust
+cargo add gust-compute gust-compute-wgpu
+#    paste the README blocks: the [features] gust-dev line into Cargo.toml, the kernel into src/main.rs
+cargo run --features gust-dev          # development path: run-time compile through the managed toolchain
+cargo gust build -p hello-gust         # release path: writes gust-artifacts/
+cargo build --release && ./target/release/hello-gust
+cargo gust doctor
+```
+
+Both runs must print `hello-gust: [11.0, 22.0, 33.0, 44.0]`. Note the adapter that ran them. If `cargo add` writes a
+dependency line that differs from the README's, the README is what is wrong; fix it on `main`.
+
+```sh
+# 6. Tag the published commit after all four crates are up, then the GitHub release (owner decision Q6; public acts)
+git tag -a v0.1.0 -m "GUST 0.1.0: first public release"
+git push origin v0.1.0
+#    Create the GitHub release v0.1.0 with the text of the 0.1.0 entry of CHANGELOG.md.
+```
+
+7. docs.rs: <https://docs.rs/gust-compute>, <https://docs.rs/gust-compute-macros> and
+   <https://docs.rs/gust-compute-wgpu> build green. `cargo-gust` is binary-only and has no docs.rs page; its
+   `documentation` field points at its README. A docs.rs failure is a finding for the next patch release, not a reason
+   to yank.
+8. Report to the coordinator: the four versions, the yank, the tag, the required checks, the docs.rs status and the
+   adapter of step 5. The coordinator records them in STATUS (mr.z).
+
+## If a step fails
+
+crates.io keeps every uploaded version forever: nothing published can be retracted, only yanked.
+
+- A transient failure (network, an index delay) with no change needed in the repository: run the failed command again.
+  Cargo refuses a version that is already up, so the commands are safe to repeat.
+- A failure that needs a change (a packaging error, a broken crate): fix it on `main` and release 0.1.1. The four
+  packages share one version and pin each other exactly (D107), so 0.1.1 is published for the remaining crates and
+  for the ones already up, and the procedure restarts at step 1.
+- Yank a version only when that crate is broken for users, and for the 0.0.0 placeholders. Never yank to fix a name or
+  a metadata mistake; a patch release fixes those.
+
+## After 0.1.0
+
+A later release repeats steps 1 to 8 with the new version: bump `[workspace.package]` and the three exact pins in
+`[workspace.dependencies]` together, add the `CHANGELOG.md` entry, run the full gate on the commit, and publish in the
+same order. A breaking change bumps the minor version of all four (D111).

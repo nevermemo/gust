@@ -47,10 +47,10 @@ shader module, bind-group layout, pipeline layout, and compute pipeline.
 Requirements (for authors and for this repository's checks; a crate that builds with committed `gust-artifacts/` under
 a strict profile needs neither Slang nor the helper, D45):
 
-- The stable Rust toolchain (this checkout was validated with Rust 1.98.0;
-  the manifest's older minimum is not independently verified)
+- The stable Rust toolchain: 1.90 or newer (the `msrv` CI job builds the workspace on 1.90.0); this checkout's checks
+  ran on stable 1.98.0 (see "Minimum Rust")
 - Outside this checkout, `cargo install cargo-gust --locked` installs the `cargo gust` tool; it works without
-  `GUST_PROFILE`
+  `GUST_PROFILE` ("Install from crates.io" has the whole setup for a crate of your own)
 - `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.20 (`cargo gust slang install` installs it, and
   `cargo gust doctor` names a `slangc` of another version). `cargo gust` finds its managed install itself (in
   `GUST_SLANG_HOME` when set), but `cargo xtask` and the run-time bridge launch plain `slangc`, so put the install's
@@ -93,10 +93,10 @@ Compiling a kernel at run time (launching `slangc` and the native reflection hel
 enable it in their manifests, and `gust` and `gust-wgpu` enable it for their own tests through a
 dev-dependency on themselves, so `cargo run -p vector-add`, `cargo test -p gust-wgpu` and
 `cargo test --workspace` need no flag. A crate of your own that runs kernels this way during
-development puts the feature on a `[dev-dependencies]` entry,
-`gust-wgpu = { version = "...", features = ["slang-runtime"] }`, or passes
+development has a feature of its own, `gust-dev = ["gust-wgpu/slang-runtime"]` ("Install from crates.io"), or passes
 `--features gust-wgpu/slang-runtime`, so that its normal dependencies, and a release build, hold no
-process-spawning compiler. Check that state with
+process-spawning compiler. A `[dev-dependencies]` entry with the feature serves `cargo test` and examples, but never
+`cargo run` of a binary. Check that state with
 `cargo check -p gust -p gust-wgpu --no-default-features --lib` (the Unit suite runs it).
 
 Build profiles (D44, D51): the environment variable `GUST_PROFILE` is `dev`, `native`, `web` or `cpu`, and
@@ -137,10 +137,11 @@ cargo xtask check-full
 
 It also runs the format check, clippy and tests of the differential-test harness (`tests/difftest`, a workspace of
 its own), the whole `check-precompiled` (the fixture `tests/precompiled`, with a GPU, Slang and the crates.io
-registry), the whole `check-web` (the browser WebGPU run: wasm32 target, `wasm-bindgen-cli`, Chrome with a WebGPU
-adapter) and, last, `check-difftest` (generated kernels on an interpreter, the CPU twin and the GPU: all 8 seeds, 128
-programs, and the `short_circuit` GPU test). Nothing is skipped silently: a missing tool or adapter fails the run and
-names the cause, and the tools of `check-web` are looked up first, so a missing one fails in seconds. On a machine without a browser,
+registry), the whole `check-release` (packaging, docs and the crates.io recipe run on the GPU, with the registry), the
+whole `check-web` (the browser WebGPU run: wasm32 target, `wasm-bindgen-cli`, Chrome with a WebGPU adapter) and, last,
+`check-difftest` (generated kernels on an interpreter, the CPU twin and the GPU: all 8 seeds, 128 programs, and the
+`short_circuit` GPU test). Nothing is skipped silently: a missing tool or adapter fails the run and names the cause,
+and the tools of `check-web` are looked up first, so a missing one fails in seconds. On a machine without a browser,
 `cargo xtask check-full --skip-web` leaves out `check-web` only, says so, and records `skipped_checks` in the file
 below; `cargo xtask status` then shows `skipped=check-web`.
 
@@ -161,7 +162,8 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-changed` | Dirty-tree routing | chooses a focused check from changed paths |
 | `cargo xtask check-format` | Formatting only | `cargo fmt --all -- --check` |
 | `cargo xtask check-lints` | Strict lints | workspace Clippy with warnings denied (`--locked`) |
-| `cargo xtask lint` | Policy lint | no tracked shell or PowerShell scripts (D27) and no machine-specific paths in tracked text (Windows, Unix and WSL home paths; two test files may spell placeholder names only); scans tracked files only |
+| `cargo xtask lint` | Policy lint | no tracked shell or PowerShell scripts (D27) and no machine-specific paths in tracked text (Windows, Unix and WSL home paths; two test files may spell placeholder names only); scans tracked files only. Also the release rules, with package names read from `cargo metadata`: every package that can be published has `description`, `license`, `repository`, `documentation`, `readme`, `keywords` and `categories`, its own `README.md`, and byte-equal copies of `LICENSE-MIT` and `LICENSE-APACHE`; and every `path =` dependency on a package under `crates/` calls it by that package's name (or `package =`), so a manifest written before the crate rename fails here |
+| `cargo xtask check-release [--check-only] [--work-dir DIR]` | Release gate (D113); `--check-only` needs no Slang and no adapter | packages every publishable crate in one `cargo package --locked` call with verification, judges the file lists, metadata, equal versions, exact internal pins and `publish` flags, builds the rustdoc of the library crates with warnings denied, checks each `.crate` size, builds the "Install from crates.io" recipe word for word from the unpacked `.crate` files (installing `cargo-gust` from its unpacked package too) and ends with `cargo publish --dry-run --locked`. The full mode also runs the recipe on a GPU and builds its release form; needs the crates.io registry. CI runs the `--check-only` form as the job `release`; `check-full` runs the full one. Steps for an actual release: [RELEASE](docs/development/RELEASE.md) |
 | `cargo xtask docs-check` | Docs consistency | relative Markdown links in project `.md` files resolve to project files (anchors and external links are not checked), no merge-conflict markers, `docs/DECISIONS.md` ids unique and increasing with the right "Next id"; also sees untracked files that are not ignored |
 | `cargo xtask check-arch` | Architecture guardrails (D02) | per-crate dependency allow-list read from `cargo metadata`, allow-listed external packages must resolve from crates.io in `Cargo.lock` (catches `[patch]`/`[replace]` redirects), no `ir` / `*_ir` module or file under `crates/` outside a `future/` path, no SPIR-V library in the compiler crates; also sees untracked files that are not ignored |
 | `cargo xtask check-ui` | Diagnostic text for misuse (D27) | compiles each crate of the separate `tests/ui` workspace; a crate with `expected.txt` must fail with exactly one error (read from cargo's JSON) that satisfies every listed key (`code`, `file`, `line`, `message`, `label`; `code: none` matches a macro error without a rustc code and needs a `message:`), one without it must compile |
@@ -204,7 +206,53 @@ devices.
 
 ## Install from crates.io
 
-Placeholder for the prose of slice mr.d; `cargo xtask check-release` builds these two blocks word for word.
+GUST is published as four packages that always share one version (0.1.0 is the first release):
+
+| Package | Library name | What it is |
+| --- | --- | --- |
+| `gust-compute` | `gust` | The `#[gpu]` attribute, `par_for!`, typed buffers and calls, the CPU runtime |
+| `gust-compute-wgpu` | `gust_wgpu` | The headless wgpu backend that runs the kernels |
+| `gust-compute-macros` | `gust_macros` | The proc macros; `gust-compute` uses them and you never depend on them |
+| `cargo-gust` | none (a binary) | The `cargo gust` tool: precompiled artifacts and the pinned Slang |
+
+The package name and the library name differ, so you add one and write the other: `cargo add gust-compute
+gust-compute-wgpu`, then `use gust::gpu;` and `use gust_wgpu::...` in the code. Every `use gust::` snippet in this
+README assumes that `cargo add` line. Do not run `cargo add gust`: that name belongs to an unrelated crate.
+
+A kernel runs in one of two ways (D44, D45). During development it is compiled at run time through Slang, which needs
+the pinned Slang release and a native helper (set up below). In a release build it was compiled ahead of time by
+`cargo gust build` and is embedded from the committed `gust-artifacts/` directory, so the release binary needs neither
+Slang, nor the helper, nor `cargo-gust`.
+
+### Set up the tools
+
+```sh
+cargo install cargo-gust --locked --version "~0.1"
+cargo gust slang install        # downloads Slang 2026.20, checks its SHA-256, unpacks it into the cargo home
+cargo gust slang build-helper   # compiles the native reflection helper against that Slang and prints its path
+cargo gust doctor               # names whatever is still missing
+```
+
+`cargo install` needs no environment variable. Slang is downloaded from its own release page and never shipped inside
+the crates ([licence notes](docs/development/LICENSES-SLANG.md)). `build-helper` compiles one C++ file, so it needs a
+C++ compiler: MSVC on Windows, g++ or clang++ elsewhere. Only the development path and the author who runs
+`cargo gust build` need the last three commands; a release build of your crate, and the people who run it, need none
+of this.
+
+The run-time compiler does not look into that cache by itself yet: it launches `slangc` from `PATH` and takes the
+helper from `GUST_SLANG_REFLECT`. Give it both (`cargo gust` itself needs neither):
+
+```sh
+export GUST_SLANG_REFLECT=<the path that build-helper printed>
+export PATH="<the folder of the slangc that `cargo gust slang locate` prints>:$PATH"
+```
+
+In PowerShell write `$env:GUST_SLANG_REFLECT = "<path>"` and `$env:PATH = "<folder>;$env:PATH"`.
+
+### A first program
+
+Make a binary crate (`cargo new hello-gust`) and give it this `Cargo.toml`. The two code blocks of this section are the
+recipe that `cargo xtask check-release` builds from the packaged crates; its full mode also runs them on a GPU.
 
 ```toml
 [package]
@@ -220,6 +268,14 @@ gust-wgpu = "0.1"
 # Run-time compile through the Slang toolchain, for development only (`cargo run --features gust-dev`).
 gust-dev = ["gust-wgpu/slang-runtime"]
 ```
+
+`gust-dev` is a feature of your own crate that turns on the backend's run-time compiler, and it has to be your own
+feature. A `slang-runtime` feature on the dependency line makes `cargo build --release` fail, because a release build
+refuses the run-time compiler (D44). One on a `[dev-dependencies]` entry never reaches `cargo run`, which then stops
+with "built without the `slang-runtime` feature". The dependencies say `0.1` and nothing more: the library crates pin
+each other to one exact version, so a range cannot mix two releases.
+
+And this `src/main.rs`:
 
 ```rust
 use gust::gpu;
@@ -254,9 +310,90 @@ fn main() {
 }
 ```
 
+### Run it while you develop
+
+```sh
+cargo run --features gust-dev
+```
+
+The first call of the kernel compiles it through Slang, so this needs the tools and the two environment variables
+above and a Vulkan compute adapter (see "Platforms"). It prints `hello-gust: [11.0, 22.0, 33.0, 44.0]`.
+
+### Build it for release
+
+```sh
+cargo gust build -p hello-gust    # compiles the kernels with Slang, verifies them and writes gust-artifacts/
+cargo build --release
+./target/release/hello-gust       # target\release\hello-gust.exe on Windows
+```
+
+A release build with `GUST_PROFILE` unset is the strict `native` profile (`web` on wasm32): every `#[gpu]` kernel needs
+its artifact, and the binary holds no Slang bridge (the build profiles are described under "Try it"). Commit
+`gust-artifacts/`; `cargo gust check` fails when it no longer matches the sources. The first `cargo gust build` of a
+crate runs `cargo clean -p` for it once and says so.
+
+### Renamed dependencies and name clashes
+
+The macro writes `::gust::` and `::gust_wgpu::` paths into your crate, and they resolve because the libraries are
+called `gust` and `gust_wgpu`. Two things follow.
+
+- If you rename a dependency in your manifest, for example `g = { package = "gust-compute", version = "0.1" }`, add
+  `extern crate g as gust;` at the root of your crate. If `gust-compute-wgpu` is renamed too (say to `gw`), also add
+  `extern crate gw as gust_wgpu;`. A doctest that uses `#[gpu]` needs the same lines inside it. The checks for 0.1.0
+  built and ran a consumer with one and with both dependencies renamed this way, on the GPU, and passed such a doctest.
+- Two direct dependencies whose library is called `gust` cannot be used together: `gust-compute` and the unrelated
+  crate `gust`. Cargo resolves them, but rustc stops at the first `use gust::...` with `error[E0464]: multiple
+  candidates for rmeta dependency gust found`. The remedy is to rename the other dependency with `package =` in your
+  manifest; the checks measured the error, not that remedy. A transitive dependency on the other `gust` builds, and
+  `cargo doc` of both only warns about an output filename collision.
+
+## Platforms
+
+- **Supported:** Vulkan on Windows and Linux. The native backend asks wgpu for Vulkan only, so
+  `HeadlessDevice::new()` needs a Vulkan compute adapter. In the browser the backend uses WebGPU through
+  `wasm32-unknown-unknown` (`examples/web-vector-add`, the strict `web` profile, `cargo xtask check-web`).
+- **Not supported in 0.1.0:** macOS and Metal (no Metal backend is compiled), and DX12 is not claimed. Software
+  adapters such as Mesa lavapipe run the GPU tests in CI as `Gpu (software)` evidence; they are not a target.
+- **CPU:** a `GUST_PROFILE=cpu` build contains no GPU runtime and runs the kernels as plain Rust (see "Try it").
+- **SPIR-V:** SPIR-V is exported (`cargo gust build --format spirv`) and validated with `spirv-val`; the runtime
+  executes the WGSL. Running the exported SPIR-V is planned for a 0.1.x release (D114).
+
+## Stability
+
+GUST is an experimental compiler and 0.1 is its first release. It follows SemVer for 0.x (D111): a change that breaks
+existing code bumps the minor version (0.2.0), and a patch release only adds or fixes. The four packages are released
+together at one version and depend on each other with exact versions, so upgrade them together. Each release is
+described in [CHANGELOG](CHANGELOG.md).
+
+The promise covers:
+
+- the public API of `gust-compute` and `gust-compute-wgpu`: `#[gpu]` and `par_for!`, the typed call surface, the
+  buffer, device and map types, the CPU runtime, the artifact types and the error enums (which may gain variants, so
+  match them with a wildcard arm);
+- the commands of `cargo-gust` and the lines they print, which scripts and CI read;
+- the file formats: `gust-artifacts/manifest.json`, the record files and the reflection records; a newer release reads
+  every older schema (D82, D89, D91);
+- the diagnostic codes, `GUST-E....` ([DIAGNOSTICS](docs/DIAGNOSTICS.md)): a code keeps its meaning, the message text
+  may be reworded.
+
+It does not cover the support surface, which is public only because generated code or `cargo-gust` needs it:
+`gust::profile`, `gust::spirv`, `gust::slang::probe`, `gust_wgpu::render_wgpu_source`, the `__gust_*` names that the
+macro emits, the hidden `descriptor;` form of `par_for!`, the internal `cargo-gust-bridge` feature and the module
+`gust::toolchain` (the rules for finding Slang that `cargo-gust` shares with the run-time bridge, D109). The
+`cargo xtask` commands and the evidence tiers belong to this repository and are not published.
+
+## Minimum Rust
+
+The minimum Rust version is 1.90 (`rust-version` in all four packages, D30). The `msrv` CI job runs `cargo check
+--workspace --all-targets --locked` on exactly 1.90.0, so it shows that the code compiles there; it runs no tests. The
+release checklist makes that job a required check on `main` ([RELEASE](docs/development/RELEASE.md)). The repository's
+other checks run on current stable, 1.98.0 at the time of writing. A project of your own resolves its own dependency
+versions, which can be newer than this repository's lockfile; if one of them needs a newer compiler, cargo says so.
+
 ## Authoring model
 
-The preferred source vocabulary deliberately resembles Slang:
+The preferred source vocabulary deliberately resembles Slang (the snippet needs `cargo add gust-compute`; the library
+is named `gust`):
 
 ```rust
 use gust::gpu;
@@ -514,7 +651,7 @@ not apply to it, and the kernel that writes the arguments must clamp. See the co
 
 `#[gpu]` on a free function of scalars (or vectors) generates the kernel, the buffers, the bounds handling and the
 dispatch of an element-wise call (D60). The function stays an ordinary Rust function; its module of the same name
-holds the calls:
+holds the calls (this snippet needs `cargo add gust-compute` too):
 
 ```rust
 use gust::{gpu, map::Broadcast};

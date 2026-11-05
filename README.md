@@ -90,7 +90,7 @@ major changes and release validation, but the ordinary workspace loop prioritize
 compiler/runtime feedback over full example proofs.
 
 Compiling a kernel at run time (launching `slangc` and the native reflection helper) is the
-`slang-runtime` feature of `gust` and `gust-wgpu`, off by default (D44). The nine examples
+`slang-runtime` feature of `gust` and `gust-wgpu`, off by default (D44). The ten examples
 enable it in their manifests, and `gust` and `gust-wgpu` enable it for their own tests through a
 dev-dependency on themselves, so `cargo run -p vector-add`, `cargo test -p gust-wgpu` and
 `cargo test --workspace` need no flag. A crate of your own that runs kernels this way during
@@ -176,7 +176,7 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask docs-check` | Docs consistency | relative Markdown links in project `.md` files resolve to project files (anchors and external links are not checked), no merge-conflict markers, `docs/DECISIONS.md` ids unique and increasing with the right "Next id"; also sees untracked files that are not ignored |
 | `cargo xtask check-arch` | Architecture guardrails (D02) | per-crate dependency allow-list read from `cargo metadata`, allow-listed external packages must resolve from crates.io in `Cargo.lock` (catches `[patch]`/`[replace]` redirects), no `ir` / `*_ir` module or file under `crates/` outside a `future/` path, no SPIR-V library in the compiler crates; also sees untracked files that are not ignored |
 | `cargo xtask check-ui` | Diagnostic text for misuse (D27) | compiles each crate of the separate `tests/ui` workspace; a crate with `expected.txt` must fail with exactly one error (read from cargo's JSON) that satisfies every listed key (`code`, `file`, `line`, `message`, `label`; `code: none` matches a macro error without a rustc code and needs a `message:`), one without it must compile |
-| `cargo xtask check-cpu` | CPU-twin evidence (no slangc, no GPU) | `--locked` tests of the examples with CPU twins (`vector-add`, `polynomial`, `signal-pipeline`, `particle-step`, `typed-pipeline`, `atomic-counter`, `staged-graph`, `component-pool`, `map-chain`), whose non-ignored tests run each macro-emitted CPU twin against its host reference; part of the Unit suite. Each call fails when it reports no passed test (the test-count guard), and when a twin test or derivation-domain guard of the example is not reported `ok` by name |
+| `cargo xtask check-cpu` | CPU-twin evidence (no slangc, no GPU) | `--locked` tests of the examples with CPU twins (`vector-add`, `polynomial`, `signal-pipeline`, `particle-step`, `typed-pipeline`, `atomic-counter`, `staged-graph`, `component-pool`, `map-chain`, `texture-threshold`), whose non-ignored tests run each macro-emitted CPU twin against its host reference; part of the Unit suite. Each call fails when it reports no passed test (the test-count guard), and when a twin test or derivation-domain guard of the example is not reported `ok` by name |
 | `cargo xtask check-difftest [--seeds <list\|range\|random:N>] [--cpu-only] [--report PATH]` | Differential test of generated scalar kernels (`tests/difftest`, `docs/development/DIFFTEST.md`); `--cpu-only` needs no slangc and no GPU | runs `difftest-run` and fails unless its report has the requested seeds and mode, `programs_executed` equal to 16 times the seeds, no mismatch (named by seed) and, without `--cpu-only`, an adapter; without `--cpu-only` it also runs the `short_circuit` GPU test. `--cpu-only --seeds 1-4` is the last step of the Unit suite; the Gpu suite and `check-full` run all 8 seeds |
 | `cargo xtask check-dual [--check-only]` | Cross-crate dual-build evidence; `--check-only` needs no slangc and no GPU | refuses a preset `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` or `CARGO_BUILD_RUSTFLAGS`; checks `tests/dual` with fmt and clippy, builds the workspace with `--cfg gust_dual` (through `CARGO_ENCODED_RUSTFLAGS`) in `<target>/dual`, runs clippy `-D warnings` on vector-add and polynomial with the cfg, then checks the `tests/dual` fixture: without the cfg a dependent's own `cfg(test)` (E1) and a production binary (E3) get no CPU twin of a library kernel (one E0277 each); with it the twin test runs and passes (E2). The full mode (GPU) also runs vector-add and polynomial with the cfg, which must print `CPU twin: matches (N elements, max ULP k)`, and vector-add without it, which must not. CI's `unit` job runs `--check-only`; `check-full` runs the full mode |
 | `cargo xtask check-cpu-target` | Production CPU target evidence (`Cpu` tier; no slangc, no GPU) | builds the fixture `tests/cpu-target` in release under `GUST_PROFILE=cpu` and runs it against host references (E-a); scans the binary for `slangc`, `gust-slang-reflect`, `wgpu` and `vulkan` and reads `cargo tree -e features` (E-b); builds with `--cfg gust_dual` (E-c); checks four refusals (E-d to E-g: the missing twin without the profile, `gust-wgpu` under `cpu`, the bridge feature under `cpu`, an opted-out kernel); flips the profile six times in one target directory (E-h); runs `cargo test -p kernels` under `cpu` (E-i). Stops at the first failing step and names it. CI runs it as the job `cpu-target`, beside `unit` |
@@ -780,7 +780,7 @@ pub fn block_sum(
 
 ## Examples
 
-The workspace contains nine runnable programs (and `web-vector-add`, a browser module run by
+The workspace contains ten runnable programs (and `web-vector-add`, a browser module run by
 `cargo xtask check-web`):
 
 - `vector-add` uses the preferred Slang-shaped Rust vocabulary, runs through the
@@ -817,6 +817,10 @@ The workspace contains nine runnable programs (and `web-vector-add`, a browser m
   one upload and one read-back (a read-back that bypasses the pool would not be counted), and prints both
   times with their conditions. See
   [Element-wise maps](#element-wise-maps).
+- `texture-threshold` reads an `r32float` storage texture (37 by 21 texels, not a multiple of the workgroup),
+  counts the texels brighter than one half into a buffer with `atomic_add`, and writes a 0 or 1 mask to a
+  write-only `r32uint` texture. It checks the mask and the count against a host loop on the GPU and on the CPU
+  twin, and exports its Slang, WGSL, SPIR-V and readable wgpu host code.
 
 Release-mode benchmark examples use fixed sizes selected in each example's
 `main` function, kept within the default limit of 65 535 workgroups per dispatch
@@ -830,6 +834,7 @@ GUST_PROFILE=dev cargo run --release -p polynomial
 GUST_PROFILE=dev cargo run --release -p signal-pipeline
 GUST_PROFILE=dev cargo run --release -p typed-pipeline
 GUST_PROFILE=dev cargo run --release -p map-chain
+GUST_PROFILE=dev cargo run --release -p texture-threshold
 ```
 
 CPU numbers in those examples measure separate host implementations. That makes
@@ -1003,6 +1008,7 @@ examples/
   component-pool/
   atomic-counter/
   map-chain/
+  texture-threshold/
   web-vector-add/
 tests/fixtures/         reviewed golden Slang and GPU semantics fixtures
 tests/ui/               compile-fail fixtures for the stable diagnostics (check-ui)

@@ -1,0 +1,15 @@
+[package]
+name = "texture-threshold"
+description = "Storage texture in, a counter buffer and a write-only texture out: texels above a threshold"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+gust.workspace = true
+gust-wgpu = { workspace = true, features = ["slang-runtime"] }
+
+[lints]
+workspace = true

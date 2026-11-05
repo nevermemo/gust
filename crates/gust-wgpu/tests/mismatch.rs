@@ -19,7 +19,8 @@
 //!
 //! Two kinds of adapter run this file (slice m5.b, D52): hardware and software (`device_type` `Cpu`, lavapipe).
 //! An enforced row and every `DOMAIN` control have one pin that holds on both. An unenforced row (KM-07, KM-08,
-//! KM-11 and the NaN casts of KM-05 and KM-06) has its hardware observation in `Case::gpu` and, where lavapipe
+//! KM-11, KM-12 to KM-14 and the NaN casts of KM-05 and KM-06) has its hardware observation in `Case::gpu` and, where
+//! lavapipe
 //! differs, its software observation in `Case::software`; the NOTE compares with the running kind's pin. Each run
 //! writes one `LEDGER` line per case to `ledger-<kind>.txt` under the target's tmp directory.
 //!
@@ -35,9 +36,51 @@ use std::{
     panic::{AssertUnwindSafe, catch_unwind},
 };
 
+use gust::cpu::texture::linear_error_bound;
 use gust::cpu::{CpuBuffer, CpuDevice, Error as CpuError, OverflowChecks};
+use gust::texture::{Address, Filter, R32Float, R32Uint, SamplerOptions, TextureUse};
 use gust::{GpuPod, Independent, KernelDescriptor};
-use gust_wgpu::{BufferBinding, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{BufferBinding, DeviceOptions, GpuBufferAccess, HeadlessDevice};
+
+// KM-12 to KM-14 (slice mx.t4, D62, D64): the three texture constructs whose GPU outcome the specification leaves open
+// or bounds. As in the fixture, every operand comes from a buffer, so the validator cannot reject a kernel and the
+// compiler cannot fold it. `at` is the texel address `[x, y]` for the first two kernels and the normalised
+// coordinate `[u, v]` for `sample_at`.
+#[gust::gpu]
+mod texture_edges {
+    // KM-12: `load` at the address of `at`; the loaded texel goes to `seen`.
+    #[kernel(workgroup_size(1, 1, 1))]
+    pub fn load_texel(
+        id: SV_DispatchThreadID,
+        at: StructuredBuffer<u32>,
+        image: StorageTexture2D<R32Uint>,
+        mut seen: RWStructuredBuffer<u32>,
+    ) {
+        seen[id.x] = image.load(at[0u32], at[1u32]);
+    }
+
+    // KM-12: `store` of 77 at the address of `at`.
+    #[kernel(workgroup_size(1, 1, 1))]
+    pub fn store_texel(
+        id: SV_DispatchThreadID,
+        at: StructuredBuffer<u32>,
+        mut image: StorageTexture2D<R32Uint>,
+    ) {
+        image.store(at[0u32], at[1u32], 77u32 + id.x);
+    }
+
+    // KM-13 and KM-14: one `sample` at the coordinate of `at`; the filter is the sampler's.
+    #[kernel(workgroup_size(1, 1, 1))]
+    pub fn sample_at(
+        id: SV_DispatchThreadID,
+        image: Texture2D<f32>,
+        filter: Sampler,
+        at: StructuredBuffer<f32>,
+        mut out: RWStructuredBuffer<f32>,
+    ) {
+        out[id.x] = image.sample(filter, at[0u32], at[1u32]);
+    }
+}
 
 // ---- overflow-checks detection (the consumer-side macro of gust::cpu, D38) ----
 
@@ -178,6 +221,14 @@ enum Kind {
     ContendedExchange,
     ContendedCompareExchange,
     UncontendedCompareExchange,
+    /// KM-12: `load` at the texel `(operands.1, operands.2)` of the 4 x 2 texture, outside it.
+    TexLoadOob,
+    /// KM-12: `store` of 77 there; the observation is the row-major index of the texel that holds 77 afterwards.
+    TexStoreOob,
+    /// KM-13: a linear `sample` at `(f32::from_bits(operands.1), f32::from_bits(operands.2))`.
+    LinearSample,
+    /// KM-14: a nearest `sample` at `u = f32::from_bits(operands.1)`, `v = 0.5`.
+    NearestSample,
 }
 
 struct Case {
@@ -1410,6 +1461,103 @@ fn cases() -> Vec<Case> {
         |_| v(1),
     ));
 
+    // ---- KM-12 a texel address outside the texture ----
+    // The texture is 4 x 2 (`TEX_W` x `TEX_H`) and holds 10, 11, .. 17 row-major. The address `(4, 0)` has a flat
+    // index (it would be `(0, 1)` of a flat array) and `(0, 2)` has none: both are outside.
+    // Measured on an NVIDIA RTX 5090 (Vulkan): a load outside returns 0 and a store outside changes no texel. Both are
+    // observations of one adapter kind (D52), not requirements; the twin and plain Rust panic.
+    add(case(
+        "KM-12",
+        "load tex[x = width, y = 0] (4 x 2)",
+        TexLoadOob,
+        (0, TEX_W, 0),
+        v(0),
+        |_| p(OOB),
+    ));
+    add(case(
+        "KM-12",
+        "load tex[x = 0, y = height] (4 x 2)",
+        TexLoadOob,
+        (0, 0, TEX_H),
+        v(0),
+        |_| p(OOB),
+    ));
+    add(case(
+        "KM-12",
+        "store tex[x = width, y = 0] = 77: row-major index of the texel holding 77 (none: 0xffffffff)",
+        TexStoreOob,
+        (0, TEX_W, 0),
+        v(u32::MAX),
+        |_| p(OOB),
+    ));
+    add(case(
+        "KM-12",
+        "store tex[x = 0, y = height] = 77: row-major index of the texel holding 77 (none: 0xffffffff)",
+        TexStoreOob,
+        (0, 0, TEX_H),
+        v(u32::MAX),
+        |_| p(OOB),
+    ));
+
+    // ---- KM-13 linear sample weights ----
+    // A 3 x 2 `r32float` texture, clamp-to-edge: the formula in `f32` (plain Rust and the twin) against the GPU, whose
+    // result is pinned as an observation and, on every adapter, held to `linear_error_bound`.
+    // Measured: the GPU is within the bound but not equal to the formula at the first probe (it rounds the weights).
+    add(case(
+        "KM-13",
+        "linear sample of a 3 x 2 texture at (0.37, 0.61)",
+        LinearSample,
+        (0, f(0.37), f(0.61)),
+        v(0x4076_0000),
+        |_| v(linear_probe(0.37, 0.61).0.to_bits()),
+    ));
+    add(case(
+        "KM-13",
+        "linear sample of a 3 x 2 texture at (0.93, 0.08)",
+        LinearSample,
+        (0, f(0.93), f(0.08)),
+        v(0x4080_0000),
+        |_| v(linear_probe(0.93, 0.08).0.to_bits()),
+    ));
+
+    // ---- KM-14 nearest sample within one ulp of a texel edge ----
+    // A 4 x 1 `r32float` texture of 10, 20, 30, 40 under clamp-to-edge. The edges between texels are at u = 0.25, 0.5
+    // and 0.75; the formula picks the texel `floor(u * 4)`, so one ulp below an edge is the texel on its left.
+    // Measured: the GPU picked the formula's texel on all four probes. A GPU may pick the neighbour (SEMANTICS), so the
+    // pin is an observation.
+    add(case(
+        "KM-14",
+        "nearest sample at u = 0.5 - 1 ulp (4 x 1)",
+        NearestSample,
+        (0, 0.5f32.next_down().to_bits(), 0),
+        v(0x41a0_0000),
+        |_| v(nearest_probe(0.5f32.next_down()).to_bits()),
+    ));
+    add(case(
+        "KM-14",
+        "nearest sample at u = 0.5 exactly (4 x 1)",
+        NearestSample,
+        (0, f(0.5), 0),
+        v(0x41f0_0000),
+        |_| v(nearest_probe(0.5).to_bits()),
+    ));
+    add(case(
+        "KM-14",
+        "nearest sample at u = 0.75 - 1 ulp (4 x 1)",
+        NearestSample,
+        (0, 0.75f32.next_down().to_bits(), 0),
+        v(0x41f0_0000),
+        |_| v(nearest_probe(0.75f32.next_down()).to_bits()),
+    ));
+    add(case(
+        "KM-14",
+        "nearest sample at u = 0.25 + 1 ulp (4 x 1)",
+        NearestSample,
+        (0, 0.25f32.next_up().to_bits(), 0),
+        v(0x41a0_0000),
+        |_| v(nearest_probe(0.25f32.next_up()).to_bits()),
+    ));
+
     rows
 }
 
@@ -1505,6 +1653,20 @@ fn rust_observed(case: &Case) -> Observed {
                 sink[index] = 77;
                 sink[3]
             }
+            // A texture as nested vectors (the plain Rust column of KM-12): the row, then the column.
+            Kind::TexLoadOob => {
+                let rows = black_box(texel_rows());
+                rows[b as usize][a as usize]
+            }
+            Kind::TexStoreOob => {
+                let mut rows = black_box(texel_rows());
+                rows[b as usize][a as usize] = 77;
+                row_major_index_of_77(&rows)
+            }
+            Kind::LinearSample => linear_probe(f32::from_bits(a), f32::from_bits(b))
+                .0
+                .to_bits(),
+            Kind::NearestSample => nearest_probe(f32::from_bits(a)).to_bits(),
             // The sequential host loop: ascending ids, as the CPU twin runs them.
             Kind::ContendedExchange => {
                 let mut cell = black_box(9999u32);
@@ -1657,6 +1819,14 @@ fn twin_observed(case: &Case) -> Observed {
                 let sink = twin_out_of_bounds(OOB_STORE_SOURCE_LEN).1;
                 sink[0] | sink[1] | sink[2]
             }
+            Kind::TexLoadOob => twin_texel_load(operands.1, operands.2),
+            Kind::TexStoreOob => twin_texel_store(operands.1, operands.2),
+            Kind::LinearSample => twin_sample(
+                Filter::Linear,
+                f32::from_bits(operands.1),
+                f32::from_bits(operands.2),
+            ),
+            Kind::NearestSample => twin_sample(Filter::Nearest, f32::from_bits(operands.1), 0.5),
             Kind::ContendedExchange => twin_contended(9999, CONTENDERS, |d, count, cell| {
                 mismatch::contend_exchange::dispatch(d, count, cell)
             }),
@@ -1672,6 +1842,172 @@ fn twin_observed(case: &Case) -> Observed {
         Ok(bits) => Observed::Value(bits),
         Err(payload) => Observed::Panic(panic_message(payload.as_ref())),
     }
+}
+
+// ---- KM-12 to KM-14: the texture probes (slice mx.t4) ----
+
+/// The 4 x 2 texture of KM-12.
+const TEX_W: u32 = 4;
+const TEX_H: u32 = 2;
+
+/// The texel `(x, y)` of the KM-12 texture: 10 plus the row-major index.
+fn texel_value(x: u32, y: u32) -> u32 {
+    10 + y * TEX_W + x
+}
+
+/// The KM-12 texture as nested vectors, row then column.
+fn texel_rows() -> Vec<Vec<u32>> {
+    (0..TEX_H)
+        .map(|y| (0..TEX_W).map(|x| texel_value(x, y)).collect())
+        .collect()
+}
+
+/// The KM-12 texture row-major.
+fn texel_contents() -> Vec<u32> {
+    texel_rows().into_iter().flatten().collect()
+}
+
+/// The row-major index of the first texel that holds 77, or `u32::MAX` when none does.
+fn row_major_index_of_77(rows: &[Vec<u32>]) -> u32 {
+    rows.iter()
+        .flatten()
+        .position(|&texel| texel == 77)
+        .map_or(u32::MAX, |index| index as u32)
+}
+
+/// The 3 x 2 texture of KM-13, row-major.
+const LINEAR_W: u32 = 3;
+const LINEAR_H: u32 = 2;
+const LINEAR_TEXELS: [f32; 6] = [0.0, 10.0, 4.0, 6.0, 1.0, 12.5];
+
+/// The 4 x 1 texture of KM-14.
+const NEAREST_W: u32 = 4;
+const NEAREST_TEXELS: [f32; 4] = [10.0, 20.0, 30.0, 40.0];
+
+/// KM-13 in plain Rust: the linear formula of docs/SEMANTICS.md (clamp-to-edge) in `f32` in its written order, and the
+/// four texels it reads (the input of `linear_error_bound`).
+fn linear_probe(u: f32, v: f32) -> (f32, [f32; 4]) {
+    let x = u.clamp(0.0, 1.0) * LINEAR_W as f32 - 0.5;
+    let y = v.clamp(0.0, 1.0) * LINEAR_H as f32 - 0.5;
+    let (x0, y0) = (x.floor(), y.floor());
+    let (fx, fy) = (x - x0, y - y0);
+    let at = |i: f32, j: f32| {
+        let column = i.clamp(0.0, (LINEAR_W - 1) as f32) as usize;
+        let row = j.clamp(0.0, (LINEAR_H - 1) as f32) as usize;
+        LINEAR_TEXELS[row * LINEAR_W as usize + column]
+    };
+    let (t00, t10) = (at(x0, y0), at(x0 + 1.0, y0));
+    let (t01, t11) = (at(x0, y0 + 1.0), at(x0 + 1.0, y0 + 1.0));
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    (
+        lerp(lerp(t00, t10, fx), lerp(t01, t11, fx), fy),
+        [t00, t10, t01, t11],
+    )
+}
+
+/// KM-14 in plain Rust: the texel `min(floor(u * 4), 3)` of the 4 x 1 texture, clamp-to-edge.
+fn nearest_probe(u: f32) -> f32 {
+    let x = u.clamp(0.0, 1.0) * NEAREST_W as f32;
+    NEAREST_TEXELS[(x.floor() as usize).min(NEAREST_W as usize - 1)]
+}
+
+/// The texture of a sampling probe: KM-13 (linear) or KM-14 (nearest), with its size.
+fn probe_texture(filter: Filter) -> (&'static [f32], u32, u32) {
+    match filter {
+        Filter::Linear => (&LINEAR_TEXELS, LINEAR_W, LINEAR_H),
+        Filter::Nearest => (&NEAREST_TEXELS, NEAREST_W, 1),
+        other => panic!("the ledger has no probe for the filter {other:?}"),
+    }
+}
+
+/// KM-12 on the twin: `load` at `(x, y)` of the KM-12 texture. The twin panics outside it, so a value is only
+/// returned inside.
+fn twin_texel_load(x: u32, y: u32) -> u32 {
+    let cpu = CpuDevice::new();
+    let image = cpu
+        .texture_2d::<R32Uint>(TEX_W, TEX_H, TextureUse::STORAGE)
+        .unwrap();
+    image.write(&texel_contents()).unwrap();
+    let at = cpu.buffer(&[x, y]);
+    let seen = cpu.buffer(&[0xAAAA_AAAAu32]);
+    texture_edges::load_texel::dispatch(&cpu, 1, Independent(&at), &image, Independent(&seen))
+        .unwrap_or_else(|error| panic!("the twin refused the call: {error}"));
+    seen.read()[0]
+}
+
+/// KM-12 on the twin: `store` of 77 at `(x, y)`; the row-major index of the texel that holds 77.
+fn twin_texel_store(x: u32, y: u32) -> u32 {
+    let cpu = CpuDevice::new();
+    let image = cpu
+        .texture_2d::<R32Uint>(TEX_W, TEX_H, TextureUse::STORAGE)
+        .unwrap();
+    image.write(&texel_contents()).unwrap();
+    let at = cpu.buffer(&[x, y]);
+    texture_edges::store_texel::dispatch(&cpu, 1, Independent(&at), &image)
+        .unwrap_or_else(|error| panic!("the twin refused the call: {error}"));
+    row_major_index_of_77(&[image.read()])
+}
+
+/// KM-13 and KM-14 on the twin: one `sample` of the probe's texture, as bits.
+fn twin_sample(filter: Filter, u: f32, v: f32) -> u32 {
+    let cpu = CpuDevice::new();
+    let (texels, width, height) = probe_texture(filter);
+    let image = cpu
+        .texture_2d::<R32Float>(width, height, TextureUse::SAMPLED)
+        .unwrap();
+    image.write(texels).unwrap();
+    let sampler = cpu.sampler(SamplerOptions::new(filter, Address::ClampToEdge));
+    let at = cpu.buffer(&[u, v]);
+    let out = cpu.buffer(&[f32::from_bits(0xAAAA_AAAA)]);
+    texture_edges::sample_at::dispatch(&cpu, 1, &image, &sampler, Independent(&at), &out)
+        .unwrap_or_else(|error| panic!("the twin refused the call: {error}"));
+    out.read()[0].to_bits()
+}
+
+/// KM-12 on the GPU: `load` at `(x, y)`; the loaded texel (`0xAAAAAAAA` if the kernel never wrote it).
+fn gpu_texel_load(device: &HeadlessDevice, x: u32, y: u32) -> u32 {
+    let image = device
+        .create_texture_2d::<R32Uint>(TEX_W, TEX_H, TextureUse::STORAGE)
+        .unwrap();
+    device.write_texture(&image, &texel_contents()).unwrap();
+    let at = device.create_typed_buffer("texel at", &[x, y], GpuBufferAccess::ReadOnly);
+    let seen =
+        device.create_typed_buffer("texel seen", &[0xAAAA_AAAAu32], GpuBufferAccess::ReadWrite);
+    texture_edges::load_texel::dispatch(device, 1, Independent(&at), &image, Independent(&seen))
+        .unwrap();
+    device.read_typed_buffer(&seen).unwrap()[0]
+}
+
+/// KM-12 on the GPU: `store` of 77 at `(x, y)`; the row-major index of the texel that holds 77 (`u32::MAX`: none).
+fn gpu_texel_store(device: &HeadlessDevice, x: u32, y: u32) -> u32 {
+    let image = device
+        .create_texture_2d::<R32Uint>(TEX_W, TEX_H, TextureUse::STORAGE)
+        .unwrap();
+    device.write_texture(&image, &texel_contents()).unwrap();
+    let at = device.create_typed_buffer("texel at", &[x, y], GpuBufferAccess::ReadOnly);
+    texture_edges::store_texel::dispatch(device, 1, Independent(&at), &image).unwrap();
+    row_major_index_of_77(&[device.read_texture(&image).unwrap()])
+}
+
+/// KM-13 and KM-14 on the GPU: one `sample` of the probe's texture, as bits.
+fn gpu_sample(device: &HeadlessDevice, filter: Filter, u: f32, v: f32) -> u32 {
+    let (texels, width, height) = probe_texture(filter);
+    let image = device
+        .create_texture_2d::<R32Float>(width, height, TextureUse::SAMPLED)
+        .unwrap();
+    device.write_texture(&image, texels).unwrap();
+    let sampler = device
+        .create_sampler(SamplerOptions::new(filter, Address::ClampToEdge))
+        .unwrap();
+    let at = device.create_typed_buffer("sample at", &[u, v], GpuBufferAccess::ReadOnly);
+    let out = device.create_typed_buffer(
+        "sample out",
+        &[f32::from_bits(0xAAAA_AAAA)],
+        GpuBufferAccess::ReadWrite,
+    );
+    texture_edges::sample_at::dispatch(device, 1, &image, &sampler, Independent(&at), &out)
+        .unwrap();
+    device.read_typed_buffer(&out).unwrap()[0].to_bits()
 }
 
 // ---- the GPU column ----
@@ -1921,6 +2257,35 @@ fn gpu_observed(device: &HeadlessDevice, cases: &[Case]) -> Vec<Vec<u32>> {
     for n in of_kind(Kind::OobStoreElsewhere) {
         out[n] = vec![sink[0] | sink[1] | sink[2]];
     }
+    // KM-12 to KM-14 (slice mx.t4). A linear read of a 32-bit float texture needs `float32-filterable`, which this
+    // ledger's device does not enable: the linear rows run on a second device of the same adapter that opened with
+    // `DeviceOptions::default()`. An adapter without the feature cannot be measured for KM-13, and the test says so.
+    for n in of_kind(Kind::TexLoadOob) {
+        let (_, x, y) = cases[n].operands;
+        out[n] = vec![gpu_texel_load(device, x, y)];
+    }
+    for n in of_kind(Kind::TexStoreOob) {
+        let (_, x, y) = cases[n].operands;
+        out[n] = vec![gpu_texel_store(device, x, y)];
+    }
+    for n in of_kind(Kind::NearestSample) {
+        let u = f32::from_bits(cases[n].operands.1);
+        out[n] = vec![gpu_sample(device, Filter::Nearest, u, 0.5)];
+    }
+    let linear = of_kind(Kind::LinearSample);
+    if !linear.is_empty() {
+        let filtering = HeadlessDevice::with_options(DeviceOptions::default())
+            .expect("Vulkan adapter required; this test must not silently skip");
+        assert!(
+            filtering.float32_filterable(),
+            "KM-13 measures a linear sample of a float32 texture, which needs float32-filterable; this adapter does not offer it"
+        );
+        for n in linear {
+            let (_, u, v) = cases[n].operands;
+            let (u, v) = (f32::from_bits(u), f32::from_bits(v));
+            out[n] = vec![gpu_sample(&filtering, Filter::Linear, u, v)];
+        }
+    }
     for n in of_kind(Kind::ContendedExchange) {
         out[n] = run_contended(
             device,
@@ -1957,13 +2322,15 @@ fn gpu_observed(device: &HeadlessDevice, cases: &[Case]) -> Vec<Vec<u32>> {
 /// type closest to the truncated source that the source float type represents exactly, e.g.
 /// `2147483520i`, `4294967040u`, `-1e20f` gives `i32::MIN`): those are enforced, including the
 /// finite KM-05 and KM-06 cases. Only the NaN conversions are indeterminate, and NaN or infinity
-/// results and comparisons (KM-07), denormal handling (KM-08) and out-of-bounds access (KM-11)
-/// are unspecified or implementation-dependent: the pinned GPU value there is a measured
+/// results and comparisons (KM-07), denormal handling (KM-08), out-of-bounds access (KM-11), a
+/// texel address outside a texture (KM-12), the weights of a linear sample (KM-13) and a nearest
+/// sample within an ulp of a texel edge (KM-14) are unspecified or implementation-dependent (KM-13
+/// is also held to `linear_error_bound` on every adapter, see the test): the pinned GPU value there is a measured
 /// one-adapter observation per adapter kind, and a different value is reported as a NOTE, never a failure
 /// (owner ruling D39). The plain Rust column is always enforced.
 fn gpu_is_enforced(id: &str, kind: Kind, first: u32) -> bool {
     match id {
-        "KM-07" | "KM-08" | "KM-11" => false,
+        "KM-07" | "KM-08" | "KM-11" | "KM-12" | "KM-13" | "KM-14" => false,
         "KM-05" | "KM-06" => {
             !(matches!(kind, Kind::CastInt | Kind::CastUint) && f32::from_bits(first).is_nan())
         }
@@ -2103,6 +2470,22 @@ fn known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome() {
                 show(&twin)
             ));
         }
+        if case.kind == Kind::LinearSample {
+            // The error domain of docs/SEMANTICS.md holds on every adapter, whatever the pin says (D52: a
+            // specification bound is not an observation).
+            let (_, u, v) = case.operands;
+            let (formula, corners) = linear_probe(f32::from_bits(u), f32::from_bits(v));
+            let bound = linear_error_bound(corners);
+            let observed = f32::from_bits(gpu[0]);
+            let distance = (observed - formula).abs();
+            let within = distance <= bound;
+            if !within {
+                failures.push(format!(
+                    "{} `{}`: the GPU returned {observed:e}, {distance:e} from the formula {formula:e}, outside the error domain {bound:e}",
+                    case.id, case.what
+                ));
+            }
+        }
         if case.id == "DOMAIN" {
             // Inside the defined domain nothing may differ: the pins themselves must agree.
             for each in [OverflowChecks::Checked, OverflowChecks::Wrapping] {
@@ -2189,7 +2572,7 @@ fn every_pinned_ledger_id_is_documented_and_every_documented_id_is_pinned() {
         documented, pinned,
         "docs/SEMANTICS.md ledger ids and the ids pinned in tests/mismatch.rs differ"
     );
-    assert_eq!(pinned.len(), 11, "KM-01 to KM-11");
+    assert_eq!(pinned.len(), 14, "KM-01 to KM-14");
     // Every row has at least one case that is not a control, and ids follow KM-nn.
     for id in &pinned {
         assert!(

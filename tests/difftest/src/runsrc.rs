@@ -12,9 +12,10 @@ use std::path::Path;
 
 use crate::ast::{Program, Ty};
 use crate::emit::{
-    BUFFER_NAMES, emit_crate_source, lock_for, manifest, module_name, path_for_toml,
+    BUFFER_NAMES, emit_crate_source_in, lock_for, manifest, module_name, path_for_toml,
 };
 use crate::generator::DIFFTEST_FORMAT;
+use crate::shapes::{PIXEL_KERNEL, POISON, ShapePlan};
 
 const PRELUDE: &str = include_str!("run_prelude.txt");
 
@@ -91,15 +92,115 @@ fn zero(ty: Ty) -> &'static str {
     }
 }
 
+/// The pixel half of a runner (`--shapes grid,pixel`): the twin and the GPU on `k_px`, whose output starts as
+/// [`POISON`] so that an element the pass never wrote differs from the grid result. Returns the `PixelOutcome`
+/// expression's setup; the caller names the result `pixel`.
+fn pixel_runner(planned: &Planned) -> String {
+    let program = &planned.program;
+    let module = module_name(program);
+    let out_ty = program.out_ty();
+    let kernel = PIXEL_KERNEL;
+    let mut out = String::new();
+    let _ = writeln!(
+        out,
+        "        let poison: Vec<{}> = vec![{}; data.count as usize];",
+        rust_ty(out_ty),
+        from_word(out_ty, &format!("0x{POISON:08X}u32"))
+    );
+    let _ = writeln!(
+        out,
+        "        let pixel_twin = catch_unwind(AssertUnwindSafe(|| -> Result<(Vec<u32>, u128), String> {{"
+    );
+    let _ = writeln!(out, "            let cpu = CpuDevice::new();");
+    let mut twin_args = String::new();
+    for name in &BUFFER_NAMES[..program.inputs.len()] {
+        let _ = writeln!(out, "            let c{name} = cpu.buffer(&{name});");
+        let _ = write!(twin_args, ", &c{name}");
+    }
+    let _ = writeln!(out, "            let cout = cpu.buffer(&poison);");
+    let _ = writeln!(out, "            let start = Instant::now();");
+    let _ = writeln!(
+        out,
+        "            super::{module}::{kernel}::dispatch(&cpu, data.count{twin_args}, &cout).map_err(|e| format!(\"pixel twin dispatch: {{e:?}}\"))?;"
+    );
+    let _ = writeln!(out, "            let ns = start.elapsed().as_nanos();");
+    let _ = writeln!(
+        out,
+        "            Ok((cout.read().iter().map(|&v| {}).collect(), ns))",
+        to_word(out_ty, "v")
+    );
+    let _ = writeln!(
+        out,
+        "        }})).unwrap_or_else(|p| Err(panic_text(\"pixel twin\", p)));"
+    );
+    let _ = writeln!(
+        out,
+        "        let pixel_gpu = device.map(|device| catch_unwind(AssertUnwindSafe(|| -> Result<GpuRun, String> {{"
+    );
+    let _ = writeln!(
+        out,
+        "            let descriptor = &super::{module}::{kernel}::DESCRIPTOR;"
+    );
+    let mut bindings = String::new();
+    for name in &BUFFER_NAMES[..program.inputs.len()] {
+        let _ = writeln!(
+            out,
+            "            let g{name} = device.create_typed_buffer(\"{name}\", &{name}, GpuBufferAccess::ReadOnly);"
+        );
+        let _ = write!(bindings, "BufferBinding::read_only(&g{name}), ");
+    }
+    let _ = writeln!(
+        out,
+        "            let gout = device.create_typed_buffer(\"out\", &poison, GpuBufferAccess::ReadWrite);"
+    );
+    let _ = writeln!(
+        out,
+        "            let bindings = [{bindings}BufferBinding::read_write(&gout)];"
+    );
+    let _ = writeln!(out, "            let start = Instant::now();");
+    let _ = writeln!(
+        out,
+        "            device.dispatch_buffers(descriptor, data.count, &bindings).map_err(|e| format!(\"pixel dispatch: {{e:?}}\"))?;"
+    );
+    let _ = writeln!(
+        out,
+        "            let first_ns = start.elapsed().as_nanos();"
+    );
+    let _ = writeln!(
+        out,
+        "            let values = device.read_typed_buffer(&gout).map_err(|e| format!(\"pixel readback: {{e:?}}\"))?;"
+    );
+    let _ = writeln!(out, "            let start = Instant::now();");
+    let _ = writeln!(
+        out,
+        "            device.dispatch_buffers(descriptor, data.count, &bindings).map_err(|e| format!(\"second pixel dispatch: {{e:?}}\"))?;"
+    );
+    let _ = writeln!(out, "            let warm_ns = start.elapsed().as_nanos();");
+    let _ = writeln!(out, "            Ok(GpuRun {{");
+    let _ = writeln!(
+        out,
+        "                bits: values.iter().map(|&v| {}).collect(),",
+        to_word(out_ty, "v")
+    );
+    let _ = writeln!(out, "                first_ns,");
+    let _ = writeln!(out, "                warm_ns,");
+    let _ = writeln!(out, "            }})");
+    let _ = writeln!(
+        out,
+        "        }})).unwrap_or_else(|p| Err(panic_text(\"pixel gpu\", p))));"
+    );
+    out
+}
+
 /// The runner function of one program.
-fn runner(planned: &Planned) -> String {
+fn runner(planned: &Planned, pixel: bool) -> String {
     let program = &planned.program;
     let module = module_name(program);
     let out_ty = program.out_ty();
     let mut out = String::new();
     let _ = writeln!(
         out,
-        "    fn run_{module}(data: &Data, gpu: Option<&HeadlessDevice>) -> Outcome {{"
+        "    fn run_{module}(data: &Data, device: Option<&HeadlessDevice>) -> Outcome {{"
     );
     for (k, input) in program.inputs.iter().enumerate() {
         let name = BUFFER_NAMES[k];
@@ -147,7 +248,7 @@ fn runner(planned: &Planned) -> String {
     // and the pipeline, which validates the WGSL with wgpu's default capabilities) and a second one for the warm time.
     let _ = writeln!(
         out,
-        "        let gpu = gpu.map(|device| catch_unwind(AssertUnwindSafe(|| -> Result<GpuRun, String> {{"
+        "        let gpu = device.map(|device| catch_unwind(AssertUnwindSafe(|| -> Result<GpuRun, String> {{"
     );
     let _ = writeln!(
         out,
@@ -216,13 +317,26 @@ fn runner(planned: &Planned) -> String {
         out,
         "        }})).unwrap_or_else(|p| Err(panic_text(\"gpu\", p))));"
     );
-    let _ = writeln!(out, "        Outcome {{ twin, gpu }}");
+    if pixel {
+        out.push_str(&pixel_runner(planned));
+        let _ = writeln!(
+            out,
+            "        Outcome {{ twin, gpu, pixel: Some(PixelOutcome {{ twin: pixel_twin, gpu: pixel_gpu }}) }}"
+        );
+    } else {
+        let _ = writeln!(out, "        Outcome {{ twin, gpu, pixel: None }}");
+    }
     let _ = writeln!(out, "    }}");
     out
 }
 
 /// The `#[cfg(test)]` module of a run crate.
 pub fn run_tests_source(plan: &[Planned]) -> String {
+    run_tests_source_in(plan, &ShapePlan::default())
+}
+
+/// [`run_tests_source`] with the shapes of `shapes`: a program with a `k_px` also runs it.
+pub fn run_tests_source_in(plan: &[Planned], shapes: &ShapePlan) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "#[cfg(test)]");
     let _ = writeln!(out, "mod difftest_run {{");
@@ -233,7 +347,10 @@ pub fn run_tests_source(plan: &[Planned]) -> String {
     );
     for planned in plan {
         out.push('\n');
-        out.push_str(&runner(planned));
+        out.push_str(&runner(
+            planned,
+            shapes.runs_pixel(&module_name(&planned.program)),
+        ));
     }
     let _ = writeln!(out, "\n    const CASES: &[Case] = &[");
     for planned in plan {
@@ -255,11 +372,22 @@ pub fn run_tests_source(plan: &[Planned]) -> String {
 
 /// The `src/lib.rs` of a run crate: the kernels of `emit_crate_source`, then the test module.
 pub fn run_crate_source(plan: &[Planned]) -> String {
-    let programs: Vec<Program> = plan.iter().map(|p| p.program.clone()).collect();
-    let mut out = emit_crate_source(&programs);
+    run_crate_source_in(plan, &ShapePlan::default())
+}
+
+/// [`run_crate_source`] with the shapes of `shapes`. The kernels come first, so a line of the kernel source is the same
+/// line of the crate source (the build log's `src/lib.rs:L` maps to a module through [`kernel_source_in`]).
+pub fn run_crate_source_in(plan: &[Planned], shapes: &ShapePlan) -> String {
+    let mut out = kernel_source_in(plan, shapes);
     out.push('\n');
-    out.push_str(&run_tests_source(plan));
+    out.push_str(&run_tests_source_in(plan, shapes));
     out
+}
+
+/// The kernel modules of a run crate (`emit_crate_source_in` over the plan's programs).
+pub fn kernel_source_in(plan: &[Planned], shapes: &ShapePlan) -> String {
+    let programs: Vec<Program> = plan.iter().map(|p| p.program.clone()).collect();
+    emit_crate_source_in(&programs, shapes)
 }
 
 /// The content of `data/<module>.txt` for one program.
@@ -299,13 +427,27 @@ pub fn write_run_crate(
     plan: &[Planned],
     repo_root: &Path,
 ) -> io::Result<()> {
+    write_run_crate_in(dir, package, plan, repo_root, &ShapePlan::default())
+}
+
+/// [`write_run_crate`] for the shapes of `shapes`.
+pub fn write_run_crate_in(
+    dir: &Path,
+    package: &str,
+    plan: &[Planned],
+    repo_root: &Path,
+    shapes: &ShapePlan,
+) -> io::Result<()> {
     let root = path_for_toml(repo_root).map_err(io::Error::other)?;
     let lock = lock_for(package).map_err(io::Error::other)?;
     std::fs::create_dir_all(dir.join("src"))?;
     std::fs::create_dir_all(dir.join("data"))?;
     write_if_changed(&dir.join("Cargo.toml"), &manifest(&root, package))?;
     write_if_changed(&dir.join("Cargo.lock"), &lock)?;
-    write_if_changed(&dir.join("src").join("lib.rs"), &run_crate_source(plan))?;
+    write_if_changed(
+        &dir.join("src").join("lib.rs"),
+        &run_crate_source_in(plan, shapes),
+    )?;
     let mut wanted = Vec::new();
     for planned in plan {
         let name = format!("{}.txt", module_name(&planned.program));
@@ -324,6 +466,7 @@ pub fn write_run_crate(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::emit::emit_crate_source;
     use crate::generator::generate_batch;
     use crate::interp::run_full;
 

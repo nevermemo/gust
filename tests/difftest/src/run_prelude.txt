@@ -24,9 +24,16 @@
         warm_ns: u128,
     }
 
+    /// The `k_px` run of a program (`--shapes grid,pixel`): the twin and the GPU on the pixel kernel.
+    struct PixelOutcome {
+        twin: Result<(Vec<u32>, u128), String>,
+        gpu: Option<Result<GpuRun, String>>,
+    }
+
     struct Outcome {
         twin: Result<(Vec<u32>, u128), String>,
         gpu: Option<Result<GpuRun, String>>,
+        pixel: Option<PixelOutcome>,
     }
 
     struct Case {
@@ -162,6 +169,47 @@
                 field("wgsl_validated", "false".to_owned());
                 for key in ["gpu_first_ns", "gpu_warm_ns"] {
                     field(key, "0".to_owned());
+                }
+            }
+        }
+        if let Some(pixel) = &outcome.pixel {
+            field("pixel_status", json_text("run"));
+            match &pixel.twin {
+                Ok((bits, ns)) => {
+                    field("pixel_twin", json_words(bits));
+                    field("pixel_twin_error", "null".to_owned());
+                    field("pixel_twin_ns", ns.to_string());
+                }
+                Err(message) => {
+                    field("pixel_twin", "null".to_owned());
+                    field("pixel_twin_error", json_text(message));
+                    field("pixel_twin_ns", "0".to_owned());
+                }
+            }
+            match &pixel.gpu {
+                None => {
+                    for key in ["pixel_gpu", "pixel_gpu_error"] {
+                        field(key, "null".to_owned());
+                    }
+                    field("pixel_wgsl_validated", "false".to_owned());
+                    for key in ["pixel_gpu_first_ns", "pixel_gpu_warm_ns"] {
+                        field(key, "0".to_owned());
+                    }
+                }
+                Some(Ok(run)) => {
+                    field("pixel_gpu", json_words(&run.bits));
+                    field("pixel_gpu_error", "null".to_owned());
+                    field("pixel_wgsl_validated", "true".to_owned());
+                    field("pixel_gpu_first_ns", run.first_ns.to_string());
+                    field("pixel_gpu_warm_ns", run.warm_ns.to_string());
+                }
+                Some(Err(message)) => {
+                    field("pixel_gpu", "null".to_owned());
+                    field("pixel_gpu_error", json_text(message));
+                    field("pixel_wgsl_validated", "false".to_owned());
+                    for key in ["pixel_gpu_first_ns", "pixel_gpu_warm_ns"] {
+                        field(key, "0".to_owned());
+                    }
                 }
             }
         }

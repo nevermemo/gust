@@ -23,6 +23,7 @@ pub mod reduce;
 #[cfg(test)]
 mod reparse;
 pub mod runsrc;
+pub mod shapes;
 pub mod shrink;
 #[cfg(test)]
 mod soundness;

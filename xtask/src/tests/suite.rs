@@ -649,7 +649,8 @@ fn check_cpu_is_a_unit_step_of_locked_example_test_runs() {
             ["test", "--locked", "-p", "staged-graph"],
             ["test", "--locked", "-p", "component-pool"],
             ["test", "--locked", "-p", "map-chain"],
-            ["test", "--locked", "-p", "texture-threshold"]
+            ["test", "--locked", "-p", "texture-threshold"],
+            ["test", "--locked", "-p", "shape-bench"]
         ]
     );
     // The step is in Unit (after check-ui) and so in Slangc, which contains Unit; CI runs Unit.
@@ -864,6 +865,17 @@ fn the_tiers_wire_the_difftest_batch_in() {
         (Mode::Gpu, 128)
     );
     assert!(steps(options.mode).contains(&DifftestStep::ShortCircuitGpu));
+
+    // No suite asks for the pixel shape (slice mx.p1c): the Unit, Slangc and Gpu suites stay grid-only, and `check-full`
+    // adds `--shapes grid,pixel` itself, in `check_difftest_report` (a test in difftest.rs pins that).
+    for suite in [Suite::Unit, Suite::Slangc, Suite::Gpu] {
+        for step in suite.steps() {
+            if let Step::CheckDifftest(args) = step {
+                assert!(!args.contains(&"--shapes"), "{suite:?}: {args:?}");
+                assert!(!Options::parse_with(&owned(args), 1).unwrap().pixel);
+            }
+        }
+    }
 
     // Neither the Cpu tier nor the Spirv and Reflect tiers run it; Full runs it through verify (integration checks).
     for suite in [Suite::Cpu, Suite::Spirv, Suite::Reflect, Suite::Full] {

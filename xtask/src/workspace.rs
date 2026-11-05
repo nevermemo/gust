@@ -15,6 +15,7 @@ pub(crate) const EXAMPLES: &[&str] = &[
     "component-pool",
     "map-chain",
     "texture-threshold",
+    "shape-bench",
 ];
 
 pub(crate) const SMOKE_EXAMPLES: &[&str] = &["vector-add", "typed-pipeline"];
@@ -30,6 +31,7 @@ pub(crate) const WORKSPACE_EXCLUDES: &[&str] = &[
     "component-pool",
     "map-chain",
     "texture-threshold",
+    "shape-bench",
 ];
 
 /// SPIR-V files the examples export to `generated-wgpu/`, one `<module>__<kernel>.spv` per

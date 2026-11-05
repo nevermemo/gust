@@ -6,6 +6,10 @@
 //! file per program into `DIFFTEST_OUT`; this module asserts that exactly one file per planned program exists, compares
 //! the three outputs (`classify`), and writes the report. Nothing here is GPU evidence by itself: a report says what
 //! ran (`mode`, `adapter`, `programs_executed`) and what disagreed.
+//!
+//! With `--shapes grid,pixel` every program also gets a pixel kernel (`k_px`). The macro's classifier decides which
+//! programs may have one: a build that it refuses is followed by exactly one rebuild without the refused kernels, and
+//! the report counts those programs as `grid`-only with the classifier's own reason (`shapes` in the report).
 
 use std::collections::BTreeMap;
 use std::io::Read;
@@ -15,13 +19,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::ast::{Expr, Program, Stmt, operator_counts};
-use crate::classify::{CLASSES, Mismatch, Raw, classify, discard_class, read_results};
+use crate::classify::{CLASSES, Mismatch, PixelRaw, Raw, classify, discard_class, read_results};
 use crate::corpus::fnv1a64;
 use crate::emit::{manifest, package_name};
 use crate::generator::{DIFFTEST_FORMAT, PROGRAMS_PER_SEED, generate_batch};
 use crate::interp::{Coverage, run_covered, run_full};
 use crate::json::Json;
-use crate::runsrc::{Planned, write_run_crate};
+use crate::runsrc::{Planned, kernel_source_in, write_run_crate_in};
+use crate::shapes::{Shape, ShapePlan, assign, module_ranges, refusals};
 
 /// Parses `1-4`, `3`, `1,3,5-6` into the sorted, duplicate-free list of seeds.
 pub fn parse_seeds(text: &str) -> Result<Vec<u64>, String> {
@@ -61,9 +66,22 @@ pub fn parse_seeds(text: &str) -> Result<Vec<u64>, String> {
 /// stale check can pass), so the name is derived from everything that makes the crate's content differ: the seeds
 /// and the format. The same seeds give the same name on every run, which keeps the build incremental.
 pub fn crate_identity(seeds: &[u64], format: u32) -> Result<(String, String), String> {
+    crate_identity_in(seeds, format, &[Shape::Grid])
+}
+
+/// [`crate_identity`] for the shapes of a batch: a batch with `pixel` is another crate than the same seeds without it.
+/// The key of a `grid`-only batch is the one it always had.
+pub fn crate_identity_in(
+    seeds: &[u64],
+    format: u32,
+    shapes: &[Shape],
+) -> Result<(String, String), String> {
     let mut key = format!("format={format};seeds=");
     for seed in seeds {
         key.push_str(&format!("{seed},"));
+    }
+    if shapes.contains(&Shape::Pixel) {
+        key.push_str(";shapes=grid,pixel");
     }
     let hash = fnv1a64(key.as_bytes());
     let suffix = format!("run-{hash:016x}");
@@ -113,6 +131,8 @@ pub fn unique_package_names(root: &Path) -> Result<Vec<String>, String> {
 pub struct Options {
     pub seeds: Vec<u64>,
     pub cpu_only: bool,
+    /// The shapes to run (`--shapes`): `[Grid]`, or `[Grid, Pixel]` to run every program's `k_px` too.
+    pub shapes: Vec<Shape>,
     /// The cargo target directory, the one the batch crate also builds into.
     pub target_dir: PathBuf,
     /// The repository root (the generated manifest points at its `crates/`).
@@ -410,6 +430,65 @@ fn milliseconds(ns: u64) -> f64 {
     ns as f64 / 1e6
 }
 
+/// The `shapes` key of the report: what was requested, how many programs ran as `pixel`, and the programs that stayed
+/// `grid`-only with the macro classifier's reason (counted by reason, and listed).
+pub fn shapes_json(shapes: &ShapePlan, programs: usize) -> Json {
+    let mut by_reason: BTreeMap<&str, u64> = BTreeMap::new();
+    for only in shapes.grid_only.values() {
+        *by_reason.entry(only.reason.as_str()).or_default() += 1;
+    }
+    let grid_only = shapes.grid_only.len();
+    let pixel = if shapes.pixel {
+        programs.saturating_sub(grid_only)
+    } else {
+        0
+    };
+    Json::obj(vec![
+        (
+            "requested",
+            Json::Arr(shapes.requested().into_iter().map(Json::str).collect()),
+        ),
+        (
+            "programs_by_shape",
+            Json::obj(vec![
+                ("grid", Json::uint(programs as u64)),
+                ("pixel", Json::uint(pixel as u64)),
+            ]),
+        ),
+        (
+            "grid_only",
+            Json::obj(vec![
+                ("total", Json::uint(grid_only as u64)),
+                (
+                    "by_reason",
+                    Json::Obj(
+                        by_reason
+                            .iter()
+                            .map(|(k, v)| ((*k).to_owned(), Json::uint(*v)))
+                            .collect(),
+                    ),
+                ),
+                (
+                    "programs",
+                    Json::Arr(
+                        shapes
+                            .grid_only
+                            .iter()
+                            .map(|(program, only)| {
+                                Json::obj(vec![
+                                    ("program", Json::str(program)),
+                                    ("reason", Json::str(&only.reason)),
+                                    ("message", Json::str(&only.message)),
+                                ])
+                            })
+                            .collect(),
+                    ),
+                ),
+            ]),
+        ),
+    ])
+}
+
 /// Builds the report from the pieces of a run. Pure: the tests build reports from synthetic results.
 pub fn build_report(
     options: &Options,
@@ -418,6 +497,7 @@ pub fn build_report(
     mismatches: &[Mismatch],
     coverage: Json,
     cargo: &CargoRun,
+    shapes: &ShapePlan,
 ) -> Outcome {
     let requested = options.seeds.len() * PROGRAMS_PER_SEED;
     let executed = raws.len();
@@ -464,7 +544,9 @@ pub fn build_report(
             milliseconds(total) / raws.len() as f64
         }
     };
-    let timing = Json::obj(vec![
+    let pixel_raws: Vec<&PixelRaw> = raws.iter().filter_map(|r| r.pixel.as_ref()).collect();
+    let pixel_ms = |f: fn(&PixelRaw) -> u64| milliseconds(pixel_raws.iter().map(|p| f(p)).sum());
+    let mut timing = vec![
         (
             "generation_ms",
             Json::Float(seed_plans.iter().map(|p| p.generate_ms).sum()),
@@ -500,7 +582,19 @@ pub fn build_report(
             "gpu_warm_dispatch_ms_max",
             Json::Float(milliseconds(max(|r| r.gpu_warm_ns))),
         ),
-    ]);
+    ];
+    if shapes.pixel {
+        timing.push(("pixel_twin_ms_total", Json::Float(pixel_ms(|p| p.twin_ns))));
+        timing.push((
+            "pixel_gpu_first_dispatch_ms_total",
+            Json::Float(pixel_ms(|p| p.gpu_first_ns)),
+        ));
+        timing.push((
+            "pixel_gpu_warm_dispatch_ms_total",
+            Json::Float(pixel_ms(|p| p.gpu_warm_ns)),
+        ));
+    }
+    let timing = Json::obj(timing);
     let passed = mismatches.is_empty() && executed == requested;
     let report = Json::obj(vec![
         ("tool", Json::str("difftest-run")),
@@ -526,6 +620,7 @@ pub fn build_report(
                 ("by_reason", reason_json),
             ]),
         ),
+        ("shapes", shapes_json(shapes, requested)),
         ("mismatch_count", Json::uint(mismatches.len() as u64)),
         (
             "mismatches",
@@ -559,25 +654,70 @@ pub fn execute_plan_within(
     env: &[(&str, &Path)],
     deadline: Option<Duration>,
 ) -> Result<(Vec<Raw>, CargoRun), String> {
+    let (raws, cargo, _) = execute_shapes(options, package, name, plan, env, deadline)?;
+    Ok((raws, cargo))
+}
+
+/// [`execute_plan_within`] that also returns the [`ShapePlan`] the run ended with: which programs ran a `k_px` and which
+/// stayed `grid`-only. When `options.shapes` holds `pixel` and the first build is refused by the macro's classifier
+/// (`GUST-E072x`), the refused programs are set aside and the crate is built once more; any other build failure is an
+/// error.
+pub fn execute_shapes(
+    options: &Options,
+    package: &str,
+    name: &str,
+    plan: &[Planned],
+    env: &[(&str, &Path)],
+    deadline: Option<Duration>,
+) -> Result<(Vec<Raw>, CargoRun, ShapePlan), String> {
     let batches = options.target_dir.join("difftest");
     let dir = batches.join(name);
-    write_run_crate(&dir, package, plan, &options.repo_root)
+    let mut shapes = ShapePlan::new(&options.shapes);
+    write_run_crate_in(&dir, package, plan, &options.repo_root, &shapes)
         .map_err(|e| format!("{}: {e}", dir.display()))?;
     unique_package_names(&batches)?;
 
     let out = dir.join("out");
     let _ = std::fs::remove_dir_all(&out);
     std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
-    let build_s = cargo_step(
-        &dir,
-        &options.target_dir,
-        &["test", "--no-run"],
-        None,
-        options.cpu_only,
-        &dir.join("build.log"),
-        &[],
-        deadline,
-    )?;
+    let build = || {
+        cargo_step(
+            &dir,
+            &options.target_dir,
+            &["test", "--no-run"],
+            None,
+            options.cpu_only,
+            &dir.join("build.log"),
+            &[],
+            deadline,
+        )
+    };
+    let first = Instant::now();
+    let build_s = match build() {
+        Ok(seconds) => seconds,
+        Err(error) if shapes.pixel && !error.starts_with(TIMED_OUT) => {
+            let log = std::fs::read_to_string(dir.join("build.log")).unwrap_or_default();
+            let found = refusals(&log);
+            let ranges = module_ranges(&kernel_source_in(plan, &shapes));
+            let refused = assign(&found, &ranges);
+            if found.is_empty() || refused.len() < found.len() {
+                // Not (only) the classifier: a failure of another kind, or a refusal that belongs to no module.
+                return Err(error);
+            }
+            shapes.grid_only = refused;
+            write_run_crate_in(&dir, package, plan, &options.repo_root, &shapes)
+                .map_err(|e| format!("{}: {e}", dir.display()))?;
+            let seconds = first.elapsed().as_secs_f64();
+            seconds
+                + build().map_err(|e| {
+                    format!(
+                        "{e}\n(the rebuild after setting aside {} grid-only programs)",
+                        shapes.grid_only.len()
+                    )
+                })?
+        }
+        Err(error) => return Err(error),
+    };
     let run_s = cargo_step(
         &dir,
         &options.target_dir,
@@ -589,7 +729,34 @@ pub fn execute_plan_within(
         deadline,
     )?;
     let raws = read_results(&out, plan)?;
-    Ok((raws, CargoRun { build_s, run_s }))
+    check_pixel_presence(plan, &raws, &shapes)?;
+    Ok((raws, CargoRun { build_s, run_s }, shapes))
+}
+
+/// Every program that was built with a `k_px` has pixel results in its file, and no other program has: a run that
+/// silently dropped the pixel half would otherwise pass as `grid`-only.
+pub fn check_pixel_presence(
+    plan: &[Planned],
+    raws: &[Raw],
+    shapes: &ShapePlan,
+) -> Result<(), String> {
+    for (planned, raw) in plan.iter().zip(raws) {
+        let module = crate::emit::module_name(&planned.program);
+        let expected = shapes.runs_pixel(&module);
+        if expected != raw.pixel.is_some() {
+            return Err(format!(
+                "{}: the result file {} pixel outputs, and the plan {} a `k_px` for it",
+                raw.program,
+                if raw.pixel.is_some() {
+                    "holds"
+                } else {
+                    "lacks"
+                },
+                if expected { "built" } else { "did not build" },
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Runs a batch end to end. `Err` is a harness failure (build, test run, missing files); a program that disagrees is
@@ -611,8 +778,8 @@ pub fn run(options: &Options) -> Result<Outcome, String> {
         ));
     }
 
-    let (package, name) = crate_identity(&options.seeds, DIFFTEST_FORMAT)?;
-    let (raws, cargo) = execute_plan(options, &package, &name, &plan, &[])?;
+    let (package, name) = crate_identity_in(&options.seeds, DIFFTEST_FORMAT, &options.shapes)?;
+    let (raws, cargo, shapes) = execute_shapes(options, &package, &name, &plan, &[], None)?;
     let mut mismatches = Vec::new();
     for (planned, raw) in plan.iter().zip(&raws) {
         mismatches.extend(classify(planned, raw, options.cpu_only));
@@ -626,6 +793,7 @@ pub fn run(options: &Options) -> Result<Outcome, String> {
         &mismatches,
         coverage,
         &cargo,
+        &shapes,
     ))
 }
 
@@ -681,7 +849,7 @@ pub fn template_manifest() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runsrc::plan_seed;
+    use crate::runsrc::{plan_seed, write_run_crate};
 
     /// Not a test: the process that `a_hung_step_...` starts (this test binary again, with the variables set). It
     /// writes its pid, says it is ready and sleeps; the "outer" role also starts an "inner" copy of itself.
@@ -873,10 +1041,19 @@ mod tests {
         let options = Options {
             seeds: vec![1, 2],
             cpu_only: true,
+            shapes: vec![Shape::Grid],
             target_dir: PathBuf::new(),
             repo_root: PathBuf::new(),
         };
-        let outcome = build_report(&options, &plans, &[], &[], Json::Null, &CargoRun::default());
+        let outcome = build_report(
+            &options,
+            &plans,
+            &[],
+            &[],
+            Json::Null,
+            &CargoRun::default(),
+            &ShapePlan::new(&options.shapes),
+        );
         // No results were read, so a report cannot pass.
         assert!(!outcome.passed);
         let report = &outcome.report;
@@ -939,5 +1116,186 @@ mod tests {
             // The evaluations are zero exactly when no program executes the operator.
             assert_eq!(evaluations == 0, executing == 0);
         }
+    }
+
+    fn raw_with(program: &str, pixel: bool) -> Raw {
+        Raw {
+            program: program.into(),
+            seed: 1,
+            attempt: 0,
+            index: 0,
+            count: 1,
+            out_ty: "u32".into(),
+            mode: "cpu-only".into(),
+            adapter: None,
+            interp: vec![1],
+            twin: Ok(vec![1]),
+            gpu: None,
+            wgsl_validated: false,
+            twin_ns: 0,
+            gpu_first_ns: 0,
+            gpu_warm_ns: 0,
+            pixel: pixel.then(|| PixelRaw {
+                twin: Ok(vec![1]),
+                gpu: None,
+                wgsl_validated: false,
+                twin_ns: 4_000_000,
+                gpu_first_ns: 0,
+                gpu_warm_ns: 0,
+            }),
+        }
+    }
+
+    fn pixel_plan() -> ShapePlan {
+        ShapePlan::new(&[Shape::Grid, Shape::Pixel])
+    }
+
+    #[test]
+    fn a_pixel_batch_is_another_crate_than_the_same_seeds_without_pixel() {
+        let grid = crate_identity(&[1, 2], DIFFTEST_FORMAT).unwrap();
+        // A grid-only batch keeps the name it always had.
+        assert_eq!(
+            crate_identity_in(&[1, 2], DIFFTEST_FORMAT, &[Shape::Grid]).unwrap(),
+            grid
+        );
+        let pixel =
+            crate_identity_in(&[1, 2], DIFFTEST_FORMAT, &[Shape::Grid, Shape::Pixel]).unwrap();
+        assert_ne!(pixel, grid);
+        assert!(pixel.0.starts_with("difftest-case-run-"), "{}", pixel.0);
+    }
+
+    #[test]
+    fn the_presence_of_pixel_results_must_match_the_plan_both_ways() {
+        let plan = plan_seed(1).unwrap();
+        let name = |k: usize| crate::emit::module_name(&plan[k].program);
+        let mut shapes = pixel_plan();
+        shapes.grid_only.insert(
+            name(1),
+            crate::shapes::GridOnly {
+                reason: "r".into(),
+                message: "m".into(),
+            },
+        );
+        let planned = &plan[..3];
+        let good = [
+            raw_with(&name(0), true),
+            raw_with(&name(1), false),
+            raw_with(&name(2), true),
+        ];
+        assert_eq!(check_pixel_presence(planned, &good, &shapes), Ok(()));
+        // A pixel half that went missing from the file of a program that was built with a `k_px`.
+        let dropped = [
+            raw_with(&name(0), false),
+            raw_with(&name(1), false),
+            raw_with(&name(2), true),
+        ];
+        let error = check_pixel_presence(planned, &dropped, &shapes).unwrap_err();
+        assert!(
+            error.contains(&name(0)) && error.contains("lacks"),
+            "{error}"
+        );
+        // Pixel results for a program that the plan set aside.
+        let extra = [
+            raw_with(&name(0), true),
+            raw_with(&name(1), true),
+            raw_with(&name(2), true),
+        ];
+        let error = check_pixel_presence(planned, &extra, &shapes).unwrap_err();
+        assert!(
+            error.contains(&name(1)) && error.contains("holds"),
+            "{error}"
+        );
+        // Without `pixel` requested, no file may hold pixel results.
+        let grid_only = ShapePlan::new(&[Shape::Grid]);
+        assert_eq!(
+            check_pixel_presence(&planned[..1], &[raw_with(&name(0), false)], &grid_only),
+            Ok(())
+        );
+        assert!(
+            check_pixel_presence(&planned[..1], &[raw_with(&name(0), true)], &grid_only).is_err()
+        );
+    }
+
+    #[test]
+    fn the_report_names_the_shapes_the_pixel_programs_and_the_grid_only_reasons() {
+        let plans = vec![plan_seed_timed(1).unwrap()];
+        let options = Options {
+            seeds: vec![1],
+            cpu_only: true,
+            shapes: vec![Shape::Grid, Shape::Pixel],
+            target_dir: PathBuf::new(),
+            repo_root: PathBuf::new(),
+        };
+        let mut shapes = pixel_plan();
+        for (program, reason) in [
+            ("s1_a0", "GUST-E0726: a"),
+            ("s1_a1", "GUST-E0726: a"),
+            ("s1_a2", "GUST-E0724: b"),
+        ] {
+            shapes.grid_only.insert(
+                program.into(),
+                crate::shapes::GridOnly {
+                    reason: reason.into(),
+                    message: format!("{reason} in full"),
+                },
+            );
+        }
+        let raws: Vec<Raw> = (0..16)
+            .map(|k| raw_with(&format!("s1_a{k}"), true))
+            .collect();
+        let outcome = build_report(
+            &options,
+            &plans,
+            &raws,
+            &[],
+            Json::Null,
+            &CargoRun::default(),
+            &shapes,
+        );
+        let section = outcome.report.get("shapes").unwrap();
+        let requested: Vec<&str> = section
+            .get("requested")
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert_eq!(requested, ["grid", "pixel"]);
+        let by_shape = section.get("programs_by_shape").unwrap();
+        assert_eq!(by_shape.get("grid").unwrap().as_u64(), Some(16));
+        assert_eq!(by_shape.get("pixel").unwrap().as_u64(), Some(13));
+        let only = section.get("grid_only").unwrap();
+        assert_eq!(only.get("total").unwrap().as_u64(), Some(3));
+        let by_reason = only.get("by_reason").unwrap();
+        assert_eq!(by_reason.get("GUST-E0726: a").unwrap().as_u64(), Some(2));
+        assert_eq!(by_reason.get("GUST-E0724: b").unwrap().as_u64(), Some(1));
+        assert_eq!(only.get("programs").unwrap().as_array().unwrap().len(), 3);
+        // The pixel timing is reported only when pixel ran.
+        let timing = outcome.report.get("timing").unwrap();
+        assert!(
+            matches!(timing.get("pixel_twin_ms_total"), Some(Json::Float(v)) if (v - 64.0).abs() < 1e-9),
+            "{timing:?}"
+        );
+        let plain = build_report(
+            &options,
+            &plans,
+            &[],
+            &[],
+            Json::Null,
+            &CargoRun::default(),
+            &ShapePlan::new(&[Shape::Grid]),
+        );
+        let section = plain.report.get("shapes").unwrap();
+        let by_shape = section.get("programs_by_shape").unwrap();
+        assert_eq!(by_shape.get("pixel").unwrap().as_u64(), Some(0));
+        assert!(
+            plain
+                .report
+                .get("timing")
+                .unwrap()
+                .get("pixel_twin_ms_total")
+                .is_none()
+        );
     }
 }

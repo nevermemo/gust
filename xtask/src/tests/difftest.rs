@@ -1,9 +1,10 @@
 use std::path::Path;
 
 use super::{
-    DEFAULT_SEEDS, DifftestStep, Mode, Options, PROGRAMS_PER_SEED, SHORT_CIRCUIT_GPU_TEST,
-    batch_args, judge_batch, parse_report, parse_seeds, random_seeds, report_problems, seed_list,
-    short_circuit_args, short_circuit_problems, steps,
+    DEFAULT_SEEDS, DifftestStep, FULL_SHAPES, Mode, Options, PROGRAMS_PER_SEED,
+    SHORT_CIRCUIT_GPU_TEST, batch_args, judge_batch, parse_report, parse_seeds, parse_shapes,
+    random_seeds, report_problems, seed_list, short_circuit_args, short_circuit_problems, steps,
+    with_full_shapes,
 };
 
 fn owned(args: &[&str]) -> Vec<String> {
@@ -607,6 +608,200 @@ fn the_short_circuit_run_must_report_the_gpu_test_ok() {
     );
 }
 
+// ---- shapes (slice mx.p1c) ----
+
+#[test]
+fn shapes_name_grid_and_each_shape_once() {
+    assert_eq!(parse_shapes("grid"), Ok(false));
+    assert_eq!(parse_shapes("grid,pixel"), Ok(true));
+    assert_eq!(parse_shapes("pixel,grid"), Ok(true));
+    assert_eq!(parse_shapes(FULL_SHAPES), Ok(true));
+    for bad in [
+        "pixel",
+        "",
+        "grid,grid",
+        "grid,pixel,pixel",
+        "grid,cpu",
+        "Grid",
+    ] {
+        assert!(parse_shapes(bad).is_err(), "{bad:?}");
+    }
+    assert!(options(&["--shapes", "grid,pixel"]).pixel);
+    assert!(!options(&["--shapes", "grid"]).pixel);
+    for bad in [
+        &["--shapes"][..],
+        &["--shapes", "grid", "--shapes", "grid,pixel"],
+        &["--shapes", "pixel"],
+    ] {
+        assert!(Options::parse_with(&owned(bad), 1).is_err(), "{bad:?}");
+    }
+}
+
+/// The command, the pull-request list and the Gpu suite stay grid-only; only the Full mode of `verify` asks for pixel.
+#[test]
+fn only_the_full_mode_asks_for_pixel_by_default() {
+    // The command line: no `--shapes`, the call the harness gets is the one it always got.
+    assert!(!options(&[]).pixel);
+    let plain = batch_args(&options(&[]), Path::new("T"), Path::new("R.json"));
+    assert!(!plain.iter().any(|arg| arg == "--shapes"), "{plain:?}");
+    // `verify --mode full` reaches `check_difftest_report(&[])`, which adds the shapes; named shapes are kept.
+    let full = Options::parse_with(&with_full_shapes(&[]), 1).unwrap();
+    assert!(full.pixel);
+    assert_eq!(full.mode, Mode::Gpu);
+    assert_eq!(full.expected_programs(), 128);
+    let named = with_full_shapes(&owned(&["--shapes", "grid"]));
+    assert!(!Options::parse_with(&named, 1).unwrap().pixel);
+    // The call carries the shapes to the harness, once, before the mode flag.
+    let args = batch_args(&full, Path::new("T"), Path::new("R.json"));
+    let at = args.iter().position(|arg| arg == "--shapes").unwrap();
+    assert_eq!(args[at + 1], "grid,pixel");
+    assert_eq!(args.iter().filter(|arg| *arg == "--shapes").count(), 1);
+    // `verify` is the one caller of `check_difftest_report`, and it passes no arguments.
+    let verify = repo_file(include_str!("../verify.rs"));
+    assert_eq!(verify.matches("check_difftest_report(&[])").count(), 1);
+    // Neither workflow runs the shapes: the pull-request list and the nightly list stay grid-only.
+    for workflow in [
+        include_str!("../../../.github/workflows/ci.yml"),
+        include_str!("../../../.github/workflows/gpu-software.yml"),
+    ] {
+        assert!(!workflow.contains("--shapes"), "a workflow runs --shapes");
+    }
+}
+
+/// A report as `good` builds it, with the `shapes` section the harness writes.
+fn shaped(mode: &str, seeds: &[u64], pixel: u64, grid_only: &[(&str, u64)]) -> String {
+    let programs = PROGRAMS_PER_SEED * seeds.len() as u64;
+    let total: u64 = grid_only.iter().map(|entry| entry.1).sum();
+    let reasons = grid_only
+        .iter()
+        .map(|(reason, count)| format!("{reason:?}:{count}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let section = format!(
+        "\"shapes\":{{\"requested\":[\"grid\",\"pixel\"],\"programs_by_shape\":{{\"grid\":{programs},\"pixel\":{pixel}}},\
+         \"grid_only\":{{\"total\":{total},\"by_reason\":{{{reasons}}},\"programs\":[]}}}},\"mismatch_count\""
+    );
+    good(mode, seeds).replacen("\"mismatch_count\"", &section, 1)
+}
+
+fn pixel_options(args: &[&str]) -> Options {
+    let mut all = vec!["--shapes", "grid,pixel"];
+    all.extend_from_slice(args);
+    options(&all)
+}
+
+#[test]
+fn a_pixel_report_that_matches_the_request_passes_and_says_what_stayed_grid_only() {
+    let report = shaped(
+        "gpu",
+        &[1, 2],
+        29,
+        &[(
+            "GUST-E0726: makes the write to the output .. conditional",
+            3,
+        )],
+    );
+    let parsed = parse_report(&report).unwrap();
+    let shapes = parsed.shapes.as_ref().unwrap();
+    assert_eq!(shapes.requested, ["grid", "pixel"]);
+    assert_eq!(
+        (
+            shapes.grid_programs,
+            shapes.pixel_programs,
+            shapes.grid_only_total
+        ),
+        (32, 29, 3)
+    );
+    let judgement = judge_batch(&pixel_options(&["--seeds", "1-2"]), Some(0), Ok(report));
+    assert!(judgement.problems.is_empty(), "{:?}", judgement.problems);
+    let text = judgement.summary.join("\n");
+    assert!(
+        text.contains(
+            "29 programs ran as pixel and were compared with their grid run, 3 stayed grid-only"
+        ),
+        "{text}"
+    );
+    assert!(text.contains("grid-only 3 x GUST-E0726"), "{text}");
+    // A grid-only request on a grid-only report still passes without the section (the form of a report written before
+    // `--shapes`) and with it.
+    let old = good("gpu", &[1]);
+    assert!(parse_report(&old).unwrap().shapes.is_none());
+    assert!(problems(&options(&["--seeds", "1"]), Some(0), Ok(old)).is_empty());
+}
+
+#[test]
+fn a_pixel_request_fails_unless_the_report_proves_the_pixel_runs() {
+    let ask = pixel_options(&["--seeds", "1"]);
+    let found = |report: String| problems(&ask, Some(0), Ok(report));
+    // No section at all: the pixel half cannot have run.
+    let none = found(good("gpu", &[1]));
+    assert!(
+        none.iter().any(|p| p.contains("no `shapes` section")),
+        "{none:?}"
+    );
+    // The section is for another request.
+    let grid = shaped("gpu", &[1], 0, &[]).replace("[\"grid\",\"pixel\"]", "[\"grid\"]");
+    assert!(
+        found(grid)
+            .iter()
+            .any(|p| p.contains("ran shapes [grid], this run asked for [grid,pixel]"))
+    );
+    // Every program grid-only: nothing was compared.
+    let vacuous = found(shaped("gpu", &[1], 0, &[("GUST-E0723: r", 16)]));
+    assert_eq!(vacuous.len(), 1, "{vacuous:?}");
+    assert!(vacuous[0].contains("no program ran as pixel"));
+    // The pixel and grid-only programs must add up to the programs of the run.
+    let lost = found(shaped("gpu", &[1], 12, &[("GUST-E0723: r", 3)]));
+    assert!(
+        lost.iter().any(|p| p.contains(
+            "12 pixel programs and 3 grid-only programs do not add up to the 16 programs"
+        )),
+        "{lost:?}"
+    );
+    // The reasons must add up to the grid-only count, and the grid run must cover every program.
+    let reasons = shaped("gpu", &[1], 13, &[("GUST-E0723: r", 3)])
+        .replace("\"GUST-E0723: r\":3", "\"GUST-E0723: r\":2");
+    assert!(
+        found(reasons)
+            .iter()
+            .any(|p| p.contains("counts 3 programs but its reasons add up to 2"))
+    );
+    let grid_count = shaped("gpu", &[1], 16, &[]).replace("\"grid\":16", "\"grid\":15");
+    assert!(
+        found(grid_count)
+            .iter()
+            .any(|p| p.contains("programs_by_shape.grid is 15, expected 16"))
+    );
+    // A grid-only request must not be given a report that ran pixel.
+    let extra = shaped("gpu", &[1], 16, &[]).replace("[\"grid\",\"pixel\"]", "[\"grid\"]");
+    let ask_grid = options(&["--seeds", "1"]);
+    let found_grid = problems(&ask_grid, Some(0), Ok(extra));
+    assert!(
+        found_grid
+            .iter()
+            .any(|p| p.contains("a grid-only run reports 16 pixel programs")),
+        "{found_grid:?}"
+    );
+}
+
+#[test]
+fn a_pixel_mismatch_names_its_shape_and_a_grid_one_does_not() {
+    let ask = pixel_options(&["--seeds", "1"]);
+    let report = shaped("gpu", &[1], 16, &[]).replace(
+        "\"mismatch_count\":0,\"mismatches\":[]",
+        "\"mismatch_count\":1,\"mismatches\":[{\"program\":\"s1_a4\",\"seed\":1,\"index\":3,\"attempt\":4,\
+         \"shape\":\"pixel\",\"kind\":\"pixel-vs-grid\",\"elements_differing\":2,\"first_element\":5,\
+         \"message\":\"element 5: grid 1, pixel 0\"}]",
+    );
+    let found = problems(&ask, Some(1), Ok(report));
+    assert_eq!(
+        found,
+        [
+            "seed 1 program s1_a4 (index 3, attempt 4, shape pixel): pixel-vs-grid: 2 element(s) differ: element 5: grid 1, pixel 0"
+        ]
+    );
+}
+
 // ---- reports written by the real harness ----
 
 const REAL_CPU_ONLY: &str = include_str!("difftest_report_cpu_only.json");
@@ -687,4 +882,40 @@ fn reports_written_by_the_real_harness_parse_and_pass() {
         "{:?}",
         found.problems
     );
+}
+
+const REAL_PIXEL: &str = include_str!("difftest_report_pixel.json");
+
+/// A report `difftest-run --seeds 1-8 --shapes grid,pixel` wrote on the RTX 5090 (slice mx.p1c, 2026-11-05: 128
+/// programs, every one also ran as a pixel kernel, none stayed grid-only) parses into the shape accounting and passes the
+/// rules of a pixel request; it fails a grid-only request (the report says pixel) and a pixel request when read as a
+/// report without it.
+#[test]
+fn a_report_written_with_the_pixel_shape_parses_and_passes() {
+    let report = parse_report(REAL_PIXEL).unwrap();
+    assert_eq!((report.mode.as_str(), report.passed), ("gpu", true));
+    assert_eq!(
+        (report.programs_requested, report.programs_executed),
+        (128, 128)
+    );
+    let found = judge_batch(
+        &options(&["--seeds", "1-8", "--shapes", "grid,pixel"]),
+        Some(0),
+        Ok(REAL_PIXEL.to_owned()),
+    );
+    assert!(found.problems.is_empty(), "{:?}", found.problems);
+    // Asked for the grid only, the same report is the wrong report.
+    let found = judge_batch(
+        &options(&["--seeds", "1-8"]),
+        Some(0),
+        Ok(REAL_PIXEL.to_owned()),
+    );
+    assert!(!found.problems.is_empty(), "{:?}", found.problems);
+    // The grid-only reports above carry no shapes block with pixel programs.
+    let found = judge_batch(
+        &options(&["--seeds", "1-2", "--shapes", "grid,pixel"]),
+        Some(0),
+        Ok(REAL_GPU.to_owned()),
+    );
+    assert!(!found.problems.is_empty(), "{:?}", found.problems);
 }

@@ -8,7 +8,8 @@ use std::process::Command;
 
 use difftest::emit::{lock_for, package_name, write_crate};
 use difftest::generator::generate_batch;
-use difftest::runsrc::{plan_seed, write_run_crate};
+use difftest::runsrc::{plan_seed, write_run_crate, write_run_crate_in};
+use difftest::shapes::{Shape, ShapePlan, refusals};
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -125,4 +126,47 @@ fn the_round_trip_check_fails_when_the_gpu_validator_rejects_a_module() {
     let (ok, output) = cargo_check(&dir);
     assert!(!ok, "cargo check accepted a module outside the dialect");
     assert!(output.contains("[GUST-E"), "{}", tail(&output));
+}
+
+#[test]
+fn run_crates_with_a_pixel_kernel_per_module_pass_cargo_check_with_their_test_module() {
+    // The crate `difftest-run --shapes grid,pixel` builds first: every module has its `k_px` beside the `workgroup_size`
+    // kernel (the E0707 sibling-kernel fix is what lets them share a module) and the generated test module runs both.
+    let dir = work_dir().join("roundtrip-run-pixel");
+    let mut plan = Vec::new();
+    for seed in 1..=8 {
+        plan.extend(plan_seed(seed).unwrap());
+    }
+    assert_eq!(plan.len(), 128);
+    let package = package_name("run-roundtrip-pixel").unwrap();
+    let shapes = ShapePlan::new(&[Shape::Grid, Shape::Pixel]);
+    write_run_crate_in(&dir, &package, &plan, &repo_root(), &shapes).unwrap();
+    let source = std::fs::read_to_string(dir.join("src").join("lib.rs")).unwrap();
+    assert_eq!(source.matches("fn k_px(").count(), 128);
+    let (ok, output) = cargo_check_with(&dir, &["--tests"]);
+    assert!(ok, "cargo check --tests failed:\n{}", tail(&output));
+    let lock = std::fs::read_to_string(dir.join("Cargo.lock")).unwrap();
+    assert_eq!(lock, lock_for(&package).unwrap());
+}
+
+#[test]
+fn a_return_in_one_pixel_kernel_is_one_refusal_that_the_harness_parses() {
+    // Mutation check (slice mx.p1c): a `return;` at the top of one `k_px` is outside the pixel contract (every path writes
+    // `out[id.x]`, E0727). The macro refuses that module and no other, and `refusals` finds it at the attribute's line.
+    let dir = work_dir().join("roundtrip-run-pixel-mutant");
+    let plan = plan_seed(1).unwrap();
+    let package = package_name("run-roundtrip-pixel-mutant").unwrap();
+    let shapes = ShapePlan::new(&[Shape::Grid, Shape::Pixel]);
+    write_run_crate_in(&dir, &package, &plan, &repo_root(), &shapes).unwrap();
+    let lib = dir.join("src").join("lib.rs");
+    let text = std::fs::read_to_string(&lib).unwrap();
+    let at = text.find("fn k_px(").expect("a k_px");
+    let open = at + text[at..].find("{\n").expect("its body") + 2;
+    let mutant = format!("{}        return;\n{}", &text[..open], &text[open..]);
+    std::fs::write(&lib, mutant).unwrap();
+    let (ok, output) = cargo_check_with(&dir, &["--tests"]);
+    assert!(!ok, "cargo check accepted a return in a pixel kernel");
+    let found = refusals(&output);
+    assert_eq!(found.len(), 1, "{found:?}\n{}", tail(&output));
+    assert_eq!(found[0].code, "GUST-E0727", "{found:?}");
 }

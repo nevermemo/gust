@@ -6,8 +6,15 @@
 //! runs the `short_circuit` test of the harness crate with `--ignored`, the one test no other gate runs.
 //!
 //! ```text
-//! cargo xtask check-difftest [--seeds <list|range|random:N>] [--cpu-only] [--report PATH]
+//! cargo xtask check-difftest [--seeds <list|range|random:N>] [--shapes grid,pixel] [--cpu-only] [--report PATH]
 //! ```
+//!
+//! `--shapes grid,pixel` (slice mx.p1c) has the harness give every generated program a second kernel, its pixel form,
+//! and compare it bit for bit with the grid run. Without `--shapes` the command is the grid-only run it always was. The
+//! Full mode of `verify` (`check-full`) reaches this file through [`check_difftest_report`], which adds
+//! `--shapes grid,pixel` when the caller named no shapes; the command line, the pull-request list and the Gpu suite do
+//! not (tests pin all three). The report must say which programs ran as pixel and which stayed grid-only, with the
+//! classifier's reason, and at least one program must have run as pixel.
 //!
 //! The default is all eight seeds of `tests/difftest/seeds.txt` on the machine's adapter. `--cpu-only` compares the
 //! interpreter with the CPU twin only (the Unit tier: no adapter, no Slang) and never runs the GPU test. `random:N`
@@ -46,7 +53,10 @@ const MAX_RANDOM_SEEDS: usize = 64;
 /// A range such as `1-4` may span at most this many seeds (the harness refuses larger ones too).
 const MAX_RANGE: u64 = 4096;
 
-const USAGE: &str = "usage: cargo xtask check-difftest [--seeds <list|range|random:N>] [--cpu-only] [--report PATH]";
+const USAGE: &str = "usage: cargo xtask check-difftest [--seeds <list|range|random:N>] [--shapes grid,pixel] [--cpu-only] [--report PATH]";
+
+/// The shapes `--shapes` names for the Full mode of `verify` when the caller names none.
+pub(crate) const FULL_SHAPES: &str = "grid,pixel";
 
 /// Which parties run: all three on the adapter, or the interpreter against the CPU twin only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -90,6 +100,34 @@ pub(crate) struct Options {
     pub(crate) report: Option<PathBuf>,
     /// Set for `random:N`, so the summary can say the seeds were drawn.
     pub(crate) random: bool,
+    /// `--shapes grid,pixel`: every program also runs as a pixel kernel (`grid` always runs: it is the oracle).
+    pub(crate) pixel: bool,
+}
+
+/// Parses the value of `--shapes`: `grid` or `grid,pixel` (either order, each once). `grid` is the shape every other one
+/// is compared with, so it must be named. Returns whether `pixel` is among them.
+pub(crate) fn parse_shapes(text: &str) -> Result<bool, String> {
+    let (mut grid, mut pixel) = (false, false);
+    for part in text.split(',') {
+        let seen = match part.trim() {
+            "grid" => &mut grid,
+            "pixel" => &mut pixel,
+            other => {
+                return Err(format!(
+                    "unknown shape {other:?}; the shapes are `grid` and `pixel`\n{USAGE}"
+                ));
+            }
+        };
+        if std::mem::replace(seen, true) {
+            return Err(format!("shape {:?} named twice\n{USAGE}", part.trim()));
+        }
+    }
+    if !grid {
+        return Err(format!(
+            "`--shapes` must name `grid`, the shape every other one is compared with\n{USAGE}"
+        ));
+    }
+    Ok(pixel)
 }
 
 impl Options {
@@ -101,6 +139,7 @@ impl Options {
     pub(crate) fn parse_with(args: &[String], entropy: u64) -> Result<Self, String> {
         let mut spec: Option<String> = None;
         let mut cpu_only = false;
+        let mut shapes: Option<String> = None;
         let mut report = None;
         let mut iter = args.iter();
         while let Some(arg) = iter.next() {
@@ -112,6 +151,12 @@ impl Options {
                     }
                 }
                 "--cpu-only" => cpu_only = true,
+                "--shapes" => {
+                    let value = iter.next().ok_or("--shapes needs a value")?;
+                    if shapes.replace(value.clone()).is_some() {
+                        return Err(format!("--shapes given twice\n{USAGE}"));
+                    }
+                }
                 "--report" => {
                     let value = iter.next().ok_or("--report needs a path")?;
                     if value.is_empty() || report.replace(PathBuf::from(value)).is_some() {
@@ -126,11 +171,17 @@ impl Options {
             Some(count) => (random_seeds(count, entropy)?, true),
             None => (parse_seeds(spec)?, false),
         };
+        let pixel = shapes
+            .as_deref()
+            .map(parse_shapes)
+            .transpose()?
+            .unwrap_or(false);
         Ok(Self {
             seeds,
             mode: if cpu_only { Mode::CpuOnly } else { Mode::Gpu },
             report,
             random,
+            pixel,
         })
     }
 
@@ -234,6 +285,10 @@ pub(crate) fn batch_args(options: &Options, target: &Path, report: &Path) -> Vec
     .map(|arg| (*arg).to_owned())
     .collect();
     args.push(seed_list(&options.seeds));
+    if options.pixel {
+        args.push("--shapes".to_owned());
+        args.push(FULL_SHAPES.to_owned());
+    }
     if options.mode == Mode::CpuOnly {
         args.push("--cpu-only".to_owned());
     }
@@ -271,6 +326,19 @@ pub(crate) struct MismatchRecord {
     pub(crate) kind: String,
     pub(crate) elements_differing: u64,
     pub(crate) message: String,
+    /// `grid` or `pixel`; a report from before `--shapes` has no such field, and its mismatches are `grid`.
+    pub(crate) shape: String,
+}
+
+/// The `shapes` section of a report: what the run was asked for, how many programs ran as pixel, and the programs that
+/// stayed `grid`-only, counted by the classifier's reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ShapesRecord {
+    pub(crate) requested: Vec<String>,
+    pub(crate) grid_programs: u64,
+    pub(crate) pixel_programs: u64,
+    pub(crate) grid_only_total: u64,
+    pub(crate) grid_only_by_reason: Vec<(String, u64)>,
 }
 
 /// The fields of `report.json` this command judges and prints.
@@ -290,6 +358,8 @@ pub(crate) struct Report {
     pub(crate) mismatches: Vec<MismatchRecord>,
     pub(crate) cargo_build_s: f64,
     pub(crate) cargo_run_s: f64,
+    /// Absent in a report from before `--shapes`.
+    pub(crate) shapes: Option<ShapesRecord>,
 }
 
 fn field<'a>(json: &'a Json, key: &str) -> Result<&'a Json, String> {
@@ -390,10 +460,18 @@ pub(crate) fn parse_report(source: &str) -> Result<Report, String> {
                 kind: text(entry, "kind")?,
                 elements_differing: uint(entry, "elements_differing")?,
                 message: text(entry, "message")?,
+                shape: match entry.get("shape") {
+                    None => "grid".to_owned(),
+                    Some(_) => text(entry, "shape")?,
+                },
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
     let timing = field(&json, "timing")?;
+    let shapes = match json.get("shapes") {
+        None => None,
+        Some(section) => Some(parse_shapes_record(section)?),
+    };
     Ok(Report {
         mode: text(&json, "mode")?,
         passed,
@@ -408,7 +486,103 @@ pub(crate) fn parse_report(source: &str) -> Result<Report, String> {
         mismatches,
         cargo_build_s: float(timing, "cargo_build_s")?,
         cargo_run_s: float(timing, "cargo_run_s")?,
+        shapes,
     })
+}
+
+fn parse_shapes_record(section: &Json) -> Result<ShapesRecord, String> {
+    let requested = array(section, "requested")?
+        .iter()
+        .map(|shape| {
+            shape
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| "report.json `shapes.requested` holds a non-string".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let by_shape = field(section, "programs_by_shape")?;
+    let grid_only = field(section, "grid_only")?;
+    let by_reason = match field(grid_only, "by_reason")? {
+        Json::Object(members) => members
+            .iter()
+            .map(|(name, value)| match value {
+                Json::Number(count) => count
+                    .parse()
+                    .map(|count| (name.clone(), count))
+                    .map_err(|_| format!("report.json grid-only reason {name:?} is not a count")),
+                _ => Err(format!(
+                    "report.json grid-only reason {name:?} is not a number"
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        _ => return Err("report.json `shapes.grid_only.by_reason` is not an object".into()),
+    };
+    Ok(ShapesRecord {
+        requested,
+        grid_programs: uint(by_shape, "grid")?,
+        pixel_programs: uint(by_shape, "pixel")?,
+        grid_only_total: uint(grid_only, "total")?,
+        grid_only_by_reason: by_reason,
+    })
+}
+
+/// What is wrong with the `shapes` section of `report` for a run that asked for `options`. A report without the section
+/// is the grid-only form and is valid only for a grid-only request.
+fn shapes_problems(report: &Report, options: &Options) -> Vec<String> {
+    let mut problems = Vec::new();
+    let expected = options.expected_programs();
+    let Some(shapes) = &report.shapes else {
+        if options.pixel {
+            problems.push(
+                "the report has no `shapes` section, and this run asked for `--shapes grid,pixel`"
+                    .into(),
+            );
+        }
+        return problems;
+    };
+    let wanted: &[&str] = if options.pixel {
+        &["grid", "pixel"]
+    } else {
+        &["grid"]
+    };
+    if shapes.requested != wanted {
+        problems.push(format!(
+            "the report ran shapes [{}], this run asked for [{}]",
+            shapes.requested.join(","),
+            wanted.join(",")
+        ));
+    }
+    if shapes.grid_programs != expected {
+        problems.push(format!(
+            "shapes.programs_by_shape.grid is {}, expected {expected}",
+            shapes.grid_programs
+        ));
+    }
+    let reasons: u64 = shapes.grid_only_by_reason.iter().map(|entry| entry.1).sum();
+    if reasons != shapes.grid_only_total {
+        problems.push(format!(
+            "shapes.grid_only counts {} programs but its reasons add up to {reasons}",
+            shapes.grid_only_total
+        ));
+    }
+    if options.pixel {
+        if shapes.pixel_programs + shapes.grid_only_total != expected {
+            problems.push(format!(
+                "{} pixel programs and {} grid-only programs do not add up to the {expected} programs of the run",
+                shapes.pixel_programs, shapes.grid_only_total
+            ));
+        }
+        if shapes.pixel_programs == 0 {
+            problems
+                .push("no program ran as pixel: the run says nothing about the pixel shape".into());
+        }
+    } else if shapes.pixel_programs != 0 || shapes.grid_only_total != 0 {
+        problems.push(format!(
+            "a grid-only run reports {} pixel programs and {} grid-only programs",
+            shapes.pixel_programs, shapes.grid_only_total
+        ));
+    }
+    problems
 }
 
 /// Everything wrong with `report` for a run that asked for `options`; empty when the report is a pass. The count rule
@@ -476,9 +650,15 @@ pub(crate) fn report_problems(report: &Report, options: &Options) -> Vec<String>
             report.mismatches.len()
         ));
     }
+    problems.extend(shapes_problems(report, options));
     for mismatch in &report.mismatches {
+        let shape = if mismatch.shape == "grid" {
+            String::new()
+        } else {
+            format!(", shape {}", mismatch.shape)
+        };
         problems.push(format!(
-            "seed {} program {} (index {}, attempt {}): {}: {} element(s) differ: {}",
+            "seed {} program {} (index {}, attempt {}{shape}): {}: {} element(s) differ: {}",
             mismatch.seed,
             mismatch.program,
             mismatch.index,
@@ -588,6 +768,20 @@ fn report_summary(report: &Report, options: &Options) -> Vec<String> {
         "  discards: {} in all ({classes})",
         report.discards_total
     ));
+    if let Some(shapes) = &report.shapes
+        && options.pixel
+    {
+        let mut line = format!(
+            "  shapes {}: {} programs ran as pixel and were compared with their grid run, {} stayed grid-only",
+            shapes.requested.join(","),
+            shapes.pixel_programs,
+            shapes.grid_only_total
+        );
+        for (reason, count) in &shapes.grid_only_by_reason {
+            line.push_str(&format!("\n    grid-only {count} x {reason}"));
+        }
+        lines.push(line);
+    }
     lines.push(format!(
         "  harness timing: cargo build {:.1} s, cargo run {:.1} s",
         report.cargo_build_s, report.cargo_run_s
@@ -611,14 +805,29 @@ pub(crate) fn short_circuit_problems(args: &[String], stdout: &str) -> Vec<Strin
     problems
 }
 
-/// `cargo xtask check-difftest`.
+/// `cargo xtask check-difftest`: grid-only unless `--shapes` says otherwise.
 pub(crate) fn check_difftest(args: &[String]) -> Result<(), String> {
-    println!("{}", check_difftest_report(args)?);
+    println!("{}", difftest_summary(args)?);
     Ok(())
 }
 
-/// [`check_difftest`] returning the pass summary instead of printing it, so `verify --mode full` can record it.
+/// The Full mode of `verify` (`check-full`) calls this with no arguments: it returns the pass summary instead of
+/// printing it, so the record can hold it, and it runs `--shapes grid,pixel` unless the caller names shapes.
 pub(crate) fn check_difftest_report(args: &[String]) -> Result<String, String> {
+    difftest_summary(&with_full_shapes(args))
+}
+
+/// `args` with `--shapes grid,pixel` added when they name no shapes.
+pub(crate) fn with_full_shapes(args: &[String]) -> Vec<String> {
+    let mut all = args.to_vec();
+    if !all.iter().any(|arg| arg == "--shapes") {
+        all.push("--shapes".to_owned());
+        all.push(FULL_SHAPES.to_owned());
+    }
+    all
+}
+
+fn difftest_summary(args: &[String]) -> Result<String, String> {
     let options = Options::parse(args)?;
     let root = workspace_root()?;
     let target = std::path::absolute(root.join(cargo_target_dir(&root)))

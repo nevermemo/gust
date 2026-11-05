@@ -180,10 +180,10 @@ test module; do not mix that mechanical move with behavior changes.
   `as_buffer().as_wgpu_buffer()` shows its whole size class to the kernel (`arrayLength`, the previous owner's
   tail). m7.p did not size them: `generated_host.rs` still emits `as_entire_binding()` (m7.a0 review). Open; the next
   slice that changes the generated host code takes it, with a test that reads `arrayLength` of a pooled `GpuVec`.
-- Before MR publishes (M7 sanity, Fable/Opus): the wasm32 `Job` contract (D69; see the M4 follow-ups);
-  `#[non_exhaustive]` on `DeviceOptions`, with builder methods (mx.t2 review; the public error enums have it since
-  mr.b1); and a way to query which gust-algo variant ran, since v1 switches to v0 above about 2^28 elements without any
-  sign, and the float bound changes with it (see the m7.r4 follow-ups).
+- Before MR publishes (M7 sanity, Fable/Opus): the wasm32 `Job` contract (D69; see the M4 follow-ups); and a way to
+  query which gust-algo variant ran, since v1 switches to v0 above about 2^28 elements without any sign, and the float
+  bound changes with it (see the m7.r4 follow-ups). Done in mr.b3: `#[non_exhaustive]` on `DeviceOptions`,
+  `SamplerOptions` and `FeaturesPolicy`, with builder methods.
 - mr.b2 follow-ups (Opus review): two examples call items mr.b2 hid (`render_wgpu_source`,
   `gust::spirv::words_as_le_bytes`), which works but teaches support surface; and struct variants of the public error
   enums can still be built and destructured outside the crate (gust-algo builds `DeviceLimit`), so a new field is
@@ -225,8 +225,8 @@ test module; do not mix that mechanical move with behavior changes.
   GPU tests serially, and beside a second GPU process. It also times the dense64 cell (m7.a2 follow-ups).
 - mx.p1b follow-ups: each pixel call creates its own attachment (64 MiB at n = 2^26), which wgpu zero-fills before the
   pass, so a batch of k cap-sized calls holds k times that until the submission ends; the cheap form is one attachment
-  per batch, sized to its largest call (no pass writes it), and a cached one later (dropped, never `destroy`ed). The
-  attachment is created outside an error scope, so running out of memory there is a wgpu panic, not an `Error`. The
+  per batch, sized to its largest call (no pass writes it), and a cached one later (dropped, never `destroy`ed). Since
+  mr.b3 the attachment is created in an out-of-memory scope, so running out of memory there is `Error::OutOfMemory`. The
   generated host refuses pixel kernels (`ShapeUnsupported`); MX ships no pixel snippet. Twice in this slice's runs, a
   Gpu-suite test failed once with `NoAdapter` (`limits`, `device_options`) and passed alone and on rerun: adapter
   enumeration can fail transiently while other GPU work runs.

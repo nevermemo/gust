@@ -1,6 +1,6 @@
 # Current status
 
-## Active: roadmap M7 (2026-11-03)
+## Active: roadmap MR (2026-11-05)
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done; M0.15
@@ -34,6 +34,11 @@ reader accepts schema 1 and 2, and the helper keeps schema 1 for scalar-only pro
 committed artifacts stay byte-identical. The keyword and construct spikes and the pure-Rust math
 types ran beside M4; M6 closed on 2026-11-02 (D86) after two sanity checks; its decisions are
 D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
+
+M7 (GPU concepts in Rust) closed on 2026-11-04 (D126). MX (execution shapes and textures) closed on 2026-11-05 (D129)
+after a sanity check by Fable and Opus in the Codex slot (both "proceed with fixes"), the fixes in slices mx.z and
+mr.b3, and `check-full` at `27a461a`. MR (the first public release) is active: the rename mr.n, then the owner's publish
+preparation.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so
@@ -689,17 +694,22 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   check-release and check-web (`GUST_OK nvidia blackwell`, grid and pixel at 1000 and 8197 elements). The run before it,
   at `e769077`, failed in the textures binary with the validation layer's access violation under concurrency
   (NEXT_TASKS, m7.av); `verify --mode gpu`, check-cpu-target and `check-feature reflection` passed there (12:49 to
-  12:58Z). (ii) The software adapter: gpu-software run 42033705296 on `27a461a` (llvmpipe, LLVM 20.1.2, Mesa 25.2.8)
-  passed the extended suite, the `pixel` and texture tests included; the identity tests skip sizes above 1 000 003
-  there. (iii) The shape benchmark in a quiet window (14:19 to 14:31Z on `27a461a`, release, 5 runs of 20 timed
-  dispatches): `pixel` takes 0.7 to 2 times the best `grid` width for the memory-bound K1, K2 and K4, 6.5 to 11 times
-  for K3 at 1024 and above and 8.5 to 21 times for K3L; all 25 cells had the same bits in both shapes. This is X-S1's
-  result on the RTX 5090, so `pixel` is not a speed path for ALU-bound kernels on this GPU; the table is in the work
-  area (plans/shapes/probe/bench). The 890M row is owner-run only. (iv) In the same window, m7.av's dense64 timing:
-  13.1 ms warm at 4194304 elements; after an idle gap of 100 ms to 1 s about 15 ms (one 1 s row 37 ms), and after 3 s
-  68 ms whether the CPU slept or spun, with the GPU back at P8 and the PCIe link down-trained. So the slow call follows
-  the GPU's idle state, not the CPU or GUST (the first row of that table, with no gap, also read 68 ms, unexplained;
-  NEXT_TASKS, m7.av follow-ups). Next: the MX sanity check (Fable and Codex).
+  12:58Z). (ii) Gpu (software: llvmpipe, LLVM 20.1.2, Mesa 25.2.8; shapes grid, pixel): gpu-software run 42061990249,
+  the extended list, on `6d7e89a`: the Gpu suite with the `pixel` and texture tests, check-examples (texture-threshold,
+  the shape-bench smoke) and the ledger rows KM-12 to KM-14. On this `Cpu` adapter the identity tests skip sizes above
+  1000003 and the 2^26 cap test dispatches nothing (VALIDATION). Corrected at the MX close: this record first cited run
+  42033705296, a pull-request-list run, as the extended suite. Records (i) verify-gpu, (iii) and (vi) ran on `e769077`,
+  which differs from `27a461a` only in tests/difftest. (iii) The shape benchmark in a quiet window (14:19 to 14:31Z on
+  `27a461a`, release, 5 runs of 20 timed dispatches): in render-pass time (GPU timestamps of the pass, not the whole
+  call), `pixel` takes 0.7 to 2 times the best `grid` width for the memory-bound K1, K2 and K4, 6.5 to 11 times for K3
+  at 1024 and above and 8.5 to 21 times for K3L; all 25 cells had the same bits in both shapes; two cells varied widely
+  between runs (K1 at 4096, 47 %; K2 at 8192, 77 %). This is X-S1's result on the RTX 5090, so `pixel` is not a speed
+  path for ALU-bound kernels on this GPU; the table is in the work area (plans/shapes/probe/bench). The 890M row is
+  owner-run only. (iv) In the same window, m7.av's dense64 timing: 13.1 ms warm at 4194304 elements; after an idle gap
+  of 100 ms to 1 s about 15 ms (one 1 s row 37 ms), and after 3 s 68 ms whether the CPU slept or spun, with the GPU back
+  at P8 and the PCIe link down-trained. So the slow call follows the GPU's idle state, not the CPU or GUST (the first
+  row of that table, with no gap, also read 68 ms, unexplained; NEXT_TASKS, m7.av follow-ups). The sanity check and its
+  fixes followed (D129, mx.z).
 - MR mr.b1 (`7ad4aec`, fix round `0c57b76`, merge `440892b`; MR plan S2): `#[non_exhaustive]` on `gust::reflect::Error`
   and `gust_wgpu::Error` (`gust::slang::Error` had it since mr.t2), and a doc comment on every variant of the three,
   checked against the sites that return it. The dead `gust_wgpu::Error::Slang` is removed: nothing constructed it, and a
@@ -721,6 +731,29 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   R5 keeps its check with `KNOWN_DOC_DEBT` empty, so new rustdoc debt fails it. Opus merge after fixes: no must-fix,
   eight should-fixes (doc accuracy, the generated items, a dev-profile fixture) and the nits taken. Main: 24 of 24 gates
   green on `16d62b3` (2026-11-05 15:47 to 16:51Z, RTX 5090).
+- MX mx.z (`6ef61cc`, fix round `fdcbddd`, merge `a586386`; D129): the MX close fixes. VALIDATION rows for
+  `tests/pixel.rs`, `tests/shape_refusal.rs` and the `render.rs` fragment-count test, each with what a `Cpu` (software)
+  adapter skips; NEXT_TASKS items the close records settled are closed, and new items filed (no typed refusal in a
+  browser for missing fragment storage writes, which only a compatibility-mode device could lack; D92's 8-bit filter
+  weights against Vulkan's guaranteed 4 `subTexelPrecisionBits`; the 890M run as an owner item); gpu-software runs
+  `check-difftest --seeds 1-2 --shapes grid,pixel` on both lists (`if: !cancelled()`; 25 s on lavapipe, 32 programs as
+  `pixel`, 0 mismatches), with the xtask pin renamed to `only_full_and_one_gpu_software_step_ask_for_pixel`; README
+  Stability and CHANGELOG state the evidence of `pixel` and textures. Opus merge after fixes: no must-fix, four
+  should-fixes and the nits taken. Main: 25 of 25 gates green on `4467dc4` (2026-11-05 18:13 to 19:15Z, RTX 5090).
+- MR mr.b3 (`30628bc`, fix round `7b5efa9`, merge `4467dc4`; D129, close ruling 6): the pre-publish API items of the MX
+  sanity check. A `pixel` call creates its attachment inside an out-of-memory error scope, as `create_texture_2d` does,
+  so running out of memory there is `Error::OutOfMemory` with the label `GUST pixel attachment` and its size, not a wgpu
+  panic (the scope's tail is `device::finish_popped_scope`, shared with the other allocations); the texture view and the
+  bind group stay outside it, since neither allocates device memory of the attachment's size. A unit test runs the same
+  scope with `ErrorFilter::Validation` over a texture one row taller than `max_texture_dimension_2d` and checks that the
+  `Err` names the attachment and that no error reached the uncaptured-error handler; the out-of-memory filter itself is
+  not forced. `DeviceOptions` and `SamplerOptions` are `#[non_exhaustive]`, built from `Default` with `with_*` methods
+  (`with_backends`, `with_adapter`, `with_limits`, `with_features`; `with_filter`, `with_address`), and `FeaturesPolicy`
+  is `#[non_exhaustive]`; the workspace tests and ARCHITECTURE use the builder form. Gpu pin 379/34 (`da62379`: the
+  lane's gates had no `verify-gpu`, and lavapipe run 42078500116 caught the missing bump). Opus merge after fixes: no
+  must-fix, three should-fixes (the test, the `Poll` text, the `OutOfMemory` doc for textures) and the nits taken but
+  one (the view and the bind group, above). Main: 25 of 25 gates green on `4467dc4` (2026-11-05 18:13 to 19:15Z,
+  RTX 5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a
@@ -1223,9 +1256,9 @@ full_check_needed_before_commit: no
 ## Current baseline
 
 - Branch: `main`
-- Last complete compiler feature: M7 (map generator, `GpuVec` residency, `par_for!`, shared memory and barriers,
-  multi-dimensional dispatch, wrapping arithmetic, gust-algo); the last M7 compiler slice is m7.c (`88ac459`), and
-  mx.t1 (`00b72c7`, texture and sampler descriptors) merged after it
+- Last complete compiler feature: MX (execution shapes and textures: the stage-profile trait, the `pixel` shape,
+  textures and samplers, the classifier and the shape pin; D129); before it M7 (map generator, `GpuVec` residency,
+  `par_for!`, shared memory and barriers, multi-dimensional dispatch, wrapping arithmetic, gust-algo; D126)
 - Last full validation: `cargo xtask check-full` passed at `27a461a` (MX close records, 2026-11-05, 13:14 to 13:46Z,
   NVIDIA GeForce RTX 5090 / Vulkan, driver 610.88, Slang v2026.20; clean tree), through the shared cargo slot wrapper:
   workspace tests, the release-only tests required by name, every example test with `--include-ignored`, `check-dual` in

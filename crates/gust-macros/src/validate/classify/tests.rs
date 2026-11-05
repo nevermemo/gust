@@ -975,3 +975,6 @@ fn a_refused_pin_counts_the_other_constructs_that_rule_the_shape_out() {
     let text = expanded(&several).unwrap_err().to_string();
     assert!(text.contains("and 2 more constructs rule it out"), "{text}");
 }
+
+// The ledger of accepted constructs, and the tests that tie it to the validator and the emitter (D94).
+mod ledger_tests;

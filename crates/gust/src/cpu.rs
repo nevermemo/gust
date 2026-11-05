@@ -404,7 +404,7 @@ pub enum Error {
         /// The access the binding carries.
         actual: Access,
     },
-    /// The buffer belongs to another device instance.
+    /// The buffer, texture or sampler belongs to another device instance.
     WrongDevice {
         /// The kernel parameter.
         parameter: &'static str,

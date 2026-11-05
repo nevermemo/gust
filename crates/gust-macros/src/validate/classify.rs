@@ -25,6 +25,14 @@
 //!   (`bool`, a struct and a 3-wide vector are `grid`-only for now), and the limit that binds is the device's number
 //!   of storage buffers per shader stage, checked when the kernel runs.
 //!
+//! - Nothing the classifier has not been told about. The rules above look for the shape-dependent constructs they
+//!   know, so by themselves they would give `pixel` to a construct that the validator starts to accept later. The
+//!   ledger in [`kinds`] lists every kind of expression, statement, pattern and built-in method that kernels hold today,
+//!   with the decision for each, and a node of any other kind makes the kernel `grid`-only (D94: anything unrecognised
+//!   is `grid`-only). The parameters are the same: [`ParameterFlavor`] is matched without a catch-all, so a new flavor
+//!   does not compile until it has a decision. The tests of the ledger probe the validator and the emitter with one
+//!   program per kind of `syn` and fail when the accepted set and the ledger differ.
+//!
 //! The result is the descriptor's `compatible_shapes` (nothing at run time reads it) and the check of the pin
 //! `#[kernel(shape = ..)]` (plan 5.2 and 5.3).
 
@@ -40,6 +48,8 @@ use super::{atomic_buffer_names, atomic_operation_name};
 use crate::diagnostics::{self, Code};
 use crate::profile::StageProfile;
 use crate::slang::{ParameterFlavor, local_binding, parameter_flavor_in, wrapper_element_type};
+
+mod kinds;
 
 /// An execution shape a kernel can take. `cpu` is a target (D51), never a shape.
 ///
@@ -125,6 +135,8 @@ pub(crate) enum Why {
     ConditionalWrite,
     /// A `return` in the kernel body.
     Return,
+    /// A construct of a kind the classifier has no rule for (the ledger in [`kinds`]): D94, `grid`-only.
+    Unrecognised,
     /// A read of an output element.
     OutputRead,
     /// A compound assignment to an output element.
@@ -157,6 +169,7 @@ impl Why {
             | Self::StorageTexture
             | Self::TargetElement
             | Self::NoOutput
+            | Self::Unrecognised
             | Self::WorkgroupSize => Code::ShapeExcluded,
         }
     }
@@ -203,6 +216,11 @@ impl Why {
                  path"
             ),
             Self::Return => "returns early, and a pixel kernel has no `return`".to_owned(),
+            Self::Unrecognised => {
+                "is a construct the shape classifier has no rule for yet, and anything \
+                                   unrecognised is `grid`-only (D94)"
+                    .to_owned()
+            }
             Self::OutputRead => {
                 format!("reads the output {detail}, which a pixel kernel may only write")
             }
@@ -312,7 +330,13 @@ pub(crate) fn classify(
             ParameterFlavor::StorageTexture | ParameterFlavor::WriteTexture => {
                 found.exclude(Why::StorageTexture, argument, "");
             }
-            _ => {}
+            // No catch-all (D94): a flavor added to the validator does not compile here until it has a decision.
+            // These are inputs and plain values, which a fragment reads like a compute thread does.
+            ParameterFlavor::StorageRead
+            | ParameterFlavor::Uniform
+            | ParameterFlavor::SampledTexture
+            | ParameterFlavor::Sampler
+            | ParameterFlavor::Value => {}
         }
     }
 
@@ -328,8 +352,9 @@ pub(crate) fn classify(
     for atomic in &scan.atomics {
         found.exclude(Why::Atomic, atomic, "");
     }
-    for statement in &scan.returns {
-        found.exclude(Why::Return, statement, "");
+    // The ledger's decisions: a `return`, and any node of a kind nobody has decided about (D94), in source order.
+    for (why, node) in kinds::scan(&function.block) {
+        found.exclude(why, node, "");
     }
     for assignment in &scan.id_assignments {
         found.exclude(Why::MutableInvocation, assignment, "assigns to");
@@ -665,7 +690,6 @@ struct Alias {
 #[derive(Default)]
 struct BodyScan {
     id: String,
-    returns: Vec<TokenStream>,
     barriers: Vec<TokenStream>,
     atomics: Vec<TokenStream>,
     aliases: Vec<Alias>,
@@ -675,11 +699,6 @@ struct BodyScan {
 }
 
 impl<'ast> Visit<'ast> for BodyScan {
-    fn visit_expr_return(&mut self, expression: &'ast syn::ExprReturn) {
-        self.returns.push(expression.to_token_stream());
-        visit::visit_expr_return(self, expression);
-    }
-
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
         if is_barrier_call(call) {
             self.barriers.push(call.to_token_stream());

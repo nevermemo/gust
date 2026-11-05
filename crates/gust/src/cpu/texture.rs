@@ -326,18 +326,48 @@ impl CpuDevice {
         })
     }
 
-    /// [`CpuTexture2d::write`], spelled as the device call `gust-wgpu` has.
+    /// [`CpuTexture2d::write`], spelled as the device call `gust-wgpu` has. [`Error::WrongDevice`] (naming `texture`)
+    /// when the texture belongs to another device instance, as `gust-wgpu` refuses a texture of another device; the
+    /// other errors are those of [`CpuTexture2d::write`].
     pub fn write_texture<F: TextureFormat>(
         &self,
         texture: &CpuTexture2d<F>,
         texels: &[F::Texel],
     ) -> Result<(), Error> {
+        self.require_own_texture(texture)?;
         texture.write(texels)
     }
 
-    /// [`CpuTexture2d::read`], spelled as the device call `gust-wgpu` has.
-    pub fn read_texture<F: TextureFormat>(&self, texture: &CpuTexture2d<F>) -> Vec<F::Texel> {
-        texture.read()
+    /// [`CpuTexture2d::read`], spelled as the device call `gust-wgpu` has, with the same `Result` shape.
+    /// [`Error::WrongDevice`] (naming `texture`) when the texture belongs to another device instance, and
+    /// [`Error::Borrowed`] (naming `texture`) when it is mutably borrowed, which only a running kernel call does;
+    /// [`CpuTexture2d::read`] panics there instead.
+    pub fn read_texture<F: TextureFormat>(
+        &self,
+        texture: &CpuTexture2d<F>,
+    ) -> Result<Vec<F::Texel>, Error> {
+        self.require_own_texture(texture)?;
+        texture
+            .cell
+            .texels
+            .try_borrow()
+            .map(|texels| texels.clone())
+            .map_err(|_| Error::Borrowed {
+                parameter: "texture",
+            })
+    }
+
+    /// [`Error::WrongDevice`] (naming `texture`) unless `texture` belongs to this device instance.
+    fn require_own_texture<F: TextureFormat>(
+        &self,
+        texture: &CpuTexture2d<F>,
+    ) -> Result<(), Error> {
+        if texture.owner != self.id {
+            return Err(Error::WrongDevice {
+                parameter: "texture",
+            });
+        }
+        Ok(())
     }
 
     /// A sampler of this device with the given options.
@@ -756,13 +786,67 @@ mod tests {
         assert_eq!(texture.uses(), TextureUse::SAMPLED | TextureUse::STORAGE);
         assert_eq!(texture.read(), [0; 6]);
         device.write_texture(&texture, &[1, 2, 3, 4, 5, 6]).unwrap();
-        assert_eq!(device.read_texture(&texture), [1, 2, 3, 4, 5, 6]);
+        assert_eq!(device.read_texture(&texture).unwrap(), [1, 2, 3, 4, 5, 6]);
         // Row-major: (2, 1) is the last one, (0, 1) the fourth.
         assert_eq!(texture.load(2, 1).unwrap(), 6);
         assert_eq!(texture.load(0, 1).unwrap(), 4);
         texture.store(1, 0, 99).unwrap();
         assert_eq!(texture.read(), [1, 99, 3, 4, 5, 6]);
         assert!(format!("{texture:?}").contains("R32Uint"));
+    }
+
+    // gust-wgpu refuses a texture of another device (`Error::ForeignPersistentBuffer`); the twin refuses it with
+    // the variant CPU buffers use for a resource of another device instance.
+    #[test]
+    fn write_texture_refuses_a_texture_of_another_device_and_changes_nothing() {
+        let (device, other) = (CpuDevice::new(), CpuDevice::new());
+        let texture = other
+            .texture_2d::<R32Uint>(2, 1, TextureUse::SAMPLED)
+            .unwrap();
+        texture.write(&[7, 8]).unwrap();
+        assert_eq!(
+            device.write_texture(&texture, &[1, 2]).unwrap_err(),
+            Error::WrongDevice {
+                parameter: "texture"
+            }
+        );
+        assert_eq!(texture.read(), [7, 8]);
+        // The owner still can, and a wrong length stays its own error on the owner.
+        other.write_texture(&texture, &[1, 2]).unwrap();
+        assert_eq!(texture.read(), [1, 2]);
+        assert_eq!(
+            other.write_texture(&texture, &[1]).unwrap_err(),
+            Error::TextureLength {
+                expected: 2,
+                actual: 1
+            }
+        );
+    }
+
+    #[test]
+    fn read_texture_refuses_a_texture_of_another_device_and_a_borrowed_one() {
+        let (device, other) = (CpuDevice::new(), CpuDevice::new());
+        let texture = other
+            .texture_2d::<R32Uint>(2, 1, TextureUse::SAMPLED)
+            .unwrap();
+        texture.write(&[7, 8]).unwrap();
+        assert_eq!(
+            device.read_texture(&texture).unwrap_err(),
+            Error::WrongDevice {
+                parameter: "texture"
+            }
+        );
+        assert_eq!(other.read_texture(&texture).unwrap(), [7, 8]);
+        // A mutable borrow (a running kernel call) is an error, not a panic, as the `Result` shape promises.
+        let held = texture.cell.texels.borrow_mut();
+        assert_eq!(
+            other.read_texture(&texture).unwrap_err(),
+            Error::Borrowed {
+                parameter: "texture"
+            }
+        );
+        drop(held);
+        assert_eq!(other.read_texture(&texture).unwrap(), [7, 8]);
     }
 
     #[test]

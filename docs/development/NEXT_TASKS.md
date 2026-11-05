@@ -184,6 +184,10 @@ test module; do not mix that mechanical move with behavior changes.
   `#[non_exhaustive]` on `DeviceOptions`, with builder methods (mx.t2 review; the public error enums have it since
   mr.b1); and a way to query which gust-algo variant ran, since v1 switches to v0 above about 2^28 elements without any
   sign, and the float bound changes with it (see the m7.r4 follow-ups).
+- mr.b2 follow-ups (Opus review): two examples call items mr.b2 hid (`render_wgpu_source`,
+  `gust::spirv::words_as_le_bytes`), which works but teaches support surface; and struct variants of the public error
+  enums can still be built and destructured outside the crate (gust-algo builds `DeviceLimit`), so a new field is
+  breaking: variant-level `#[non_exhaustive]` is for MR to decide before publishing.
 - mr.t2 follow-ups (Opus review): xtask still starts the helper without the ETXTBSY retry (the two launches in
   `xtask/src/verify.rs`; xtask has no `gust` dependency); a third copy of `HELPER_VARIABLE` and `default_helper` is left
   in `xtask/src/release.rs`; `gust::slang` now checks the `slangc` version, so D72's `__gust_keep` follow-up can be

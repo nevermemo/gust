@@ -681,7 +681,7 @@ fn a_path_outside_the_root_or_not_at_the_start_of_a_string_stays() {
 /// The `compiler-message` line of an error of `target`, with the primary span at `file_json` (JSON text).
 fn error_line(target: &str, code: &str, message: &str, file_json: &str, line: u64) -> String {
     format!(
-        r#"{{"reason":"compiler-message","target":{{"kind":["lib"],"crate_types":["lib"],"name":"{target}"}},"message":{{"rendered":"error\n","children":[{{"children":[],"code":null,"level":"note","message":"inside `require_gpu_target`","rendered":null,"spans":[]}}],"code":{{"code":"{code}","explanation":null}},"level":"error","message":"{message}","spans":[{{"column_end":1,"column_start":1,"expansion":null,"file_name":"{file_json}","is_primary":true,"label":null,"line_end":{line},"line_start":{line}}}]}}}}"#
+        r#"{{"reason":"compiler-message","target":{{"kind":["lib"],"crate_types":["lib"],"name":"{target}"}},"message":{{"rendered":"error\n","children":[{{"children":[],"code":null,"level":"note","message":"inside `gust::profile::require_gpu_target`","rendered":null,"spans":[]}}],"code":{{"code":"{code}","explanation":null}},"level":"error","message":"{message}","spans":[{{"column_end":1,"column_start":1,"expansion":null,"file_name":"{file_json}","is_primary":true,"label":null,"line_end":{line},"line_start":{line}}}]}}}}"#
     )
 }
 

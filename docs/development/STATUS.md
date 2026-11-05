@@ -709,6 +709,18 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   variant. Variant-level `#[non_exhaustive]` on struct variants is left for mr.b2 or later (gust-algo builds
   `DeviceLimit`). Opus merge after fixes: one must-fix (the `Slang` doc described a path that does not exist), six
   should-fixes and the nits taken. Main: 24 of 24 gates green on `440892b` (2026-11-05 14:48 to 15:43Z, RTX 5090).
+- MR mr.b2 (`3c0f22a`, fix round `633dfb2`, R5 text `81cb9ad`, merge `16d62b3`; MR plan §2.3, S3): the doc sweep and the
+  support surface. `gust` and `gust-wgpu` carry `#![warn(missing_docs)]`, and every public item is documented (143 in
+  gust, 135 in gust-wgpu). The support surface of §2.3 is `#[doc(hidden)]` and named in each crate root (`profile`,
+  `spirv`, `slang::probe`, `TargetProbe`, `render_wgpu_source` and the macro's support items); each crate root has a
+  stability paragraph with one wording for the support surface (no stability promise; a patch release may change it).
+  The macro gives its generated `DESCRIPTOR` and `MODULE_DESCRIPTOR` a doc comment, so a user crate with
+  `#![deny(missing_docs)]` compiles over `#[gpu]` modules and functions: check-ui fixtures `missing-docs-mod-ok`,
+  `missing-docs-fn-ok` (cpu profile) and `missing-docs-fn-dev-ok` (dev profile, with `gust-wgpu`, which covers the
+  generated map functions); without the generated docs all three fail (13 errors, a local negative run). check-release's
+  R5 keeps its check with `KNOWN_DOC_DEBT` empty, so new rustdoc debt fails it. Opus merge after fixes: no must-fix,
+  eight should-fixes (doc accuracy, the generated items, a dev-profile fixture) and the nits taken. Main: 24 of 24 gates
+  green on `16d62b3` (2026-11-05 15:47 to 16:51Z, RTX 5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

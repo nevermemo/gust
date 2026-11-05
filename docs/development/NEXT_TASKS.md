@@ -232,6 +232,11 @@ test module; do not mix that mechanical move with behavior changes.
   generated host refuses pixel kernels (`ShapeUnsupported`); MX ships no pixel snippet. Twice in this slice's runs, a
   Gpu-suite test failed once with `NoAdapter` (`limits`, `device_options`) and passed alone and on rerun: adapter
   enumeration can fail transiently while other GPU work runs.
+- mx.p1c follow-ups: a mismatch-ledger row (DIFFTEST §7) for `pixel` against `grid` in `f32`, if a corpus program ever
+  shows a bit difference (D128 records it as an observation). The grid-only rebuild path of `--shapes`
+  (`execute_shapes`) is tested only in parts, because the corpus has no program the classifier refuses. The shape-bench
+  smoke once showed K3L at 1024 elements at 0.42 ms as `pixel` against 0.023 ms as `grid`, unexplained; the quiet-GPU
+  table decides whether it is noise.
 - m7.av follow-ups (the access violation above; STATUS m7.av to m7.av4c): the crash is in the Vulkan validation layer of
   Vulkan SDK 1.4.357.0 (its bundled mimalloc 3.3.2), needs concurrent tests, and disappears with the layer disabled; it
   is a fault of the test environment, not of GUST, wgpu or the driver. Gates keep validation on, because the layer

@@ -658,6 +658,22 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   (the pixel expectation shifted by one, not committed) made `check-web` print `GUST_FAIL`. Opus merge after fixes: one
   must-fix (a comment said browsers refuse with `ShapeUnsupported`), three should-fixes and the nits taken. Main: 24 of
   24 gates green on `7dc0dc1` (2026-11-05 09:35 to 10:22Z, RTX 5090).
+- MX mx.p1c (`a704768`, fix round `5b5f1ac`, merge `eb009af`; D61, D62, D127, D128, MX plan §4.5): the cross-shape
+  difftest and the shape benchmark. `cargo xtask check-difftest --shapes grid,pixel` runs every program that the
+  classifier accepts a second time as a `pixel` kernel (`tests/difftest/src/shapes.rs`); a refusal E0723 to E0728 files
+  the program as grid-only and rebuilds the module once without it. Only `check-full` asks for `pixel`, and a source pin
+  in the xtask tests holds that; the default `check-difftest` and `k` are unchanged. Integer and `bool` outputs of the
+  two shapes must be equal bit for bit; an `f32` output of each shape is judged against the interpreter's interval, and
+  a bit difference is reported as an observation (D128). On the RTX 5090, seeds 1-8: 128 pixel programs, 0 grid-only, 0
+  mismatches, and 0 of the 36 `f32` programs differed in a bit. Of the examples' 21 kernels, the classifier accepts 4
+  and files 17 as grid-only (E0723 4, E0725 3, E0726 2, E0728 8). `examples/shape-bench` times X-S1's kernels K1 to K4
+  and K3L (K3 without `fma`, which the dialect lacks) as grid at widths 64, 128 and 256 against pixel; its smoke mode in
+  check-examples asserts that every element was written and is finite, and bit equality for the integer kernel, with no
+  time threshold. The smoke found the same bits in all 10 cells; an earlier K3 form (an unfused multiply-add chain after
+  a division, not kept) differed by up to 4 ulp with identical emitted code, which led to D128. The full bench table
+  waits for a quiet GPU (MX close). Opus merge after fixes: three must-fixes (the `f32` comparison, the docs, an
+  observed-maximum bound), seven should-fixes and the nits taken. Main: 24 of 24 gates green on `eb009af` (2026-11-05
+  11:47 to 12:43Z, RTX 5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

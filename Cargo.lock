@@ -647,6 +647,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "shape-bench"
+version = "0.1.0"
+dependencies = [
+ "gust",
+ "gust-wgpu",
+]
+
+[[package]]
 name = "signal-pipeline"
 version = "0.1.0"
 dependencies = [

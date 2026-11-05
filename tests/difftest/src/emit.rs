@@ -14,6 +14,7 @@ use std::path::Path;
 
 use crate::ast::{COMPONENT_LETTERS, Expr, Program, Stmt, Ty, UnOp};
 use crate::generator::DIFFTEST_FORMAT;
+use crate::shapes::{PIXEL_KERNEL, ShapePlan};
 
 /// The lockfile every generated crate is built with (`--locked`). It is generated from `template/Cargo.toml`,
 /// which `manifest("../../..", CRATE_NAME)` reproduces byte for byte (a unit test checks both).
@@ -243,6 +244,13 @@ fn emit_block(stmts: &[Stmt], level: usize, out: &mut String) {
 
 /// The kernel crate's text for one program: a documented `#[gust::gpu]` module with the kernel `k`.
 pub fn emit_module(program: &Program) -> String {
+    emit_module_in(program, false)
+}
+
+/// [`emit_module`], and with `pixel` a second kernel `k_px` after `k`: the same parameters and body under
+/// `#[kernel(shape = pixel)]` (a pixel kernel takes no workgroup size). The text of `k` does not change, so the corpus
+/// hashes do not either.
+pub fn emit_module_in(program: &Program, pixel: bool) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -254,8 +262,19 @@ pub fn emit_module(program: &Program) -> String {
     );
     let _ = writeln!(out, "#[gust::gpu]");
     let _ = writeln!(out, "pub mod {} {{", module_name(program));
-    let _ = writeln!(out, "{INDENT}#[kernel(workgroup_size(64, 1, 1))]");
-    let _ = writeln!(out, "{INDENT}pub fn k(");
+    emit_kernel(program, "workgroup_size(64, 1, 1)", "k", &mut out);
+    if pixel {
+        out.push('\n');
+        emit_kernel(program, "shape = pixel", PIXEL_KERNEL, &mut out);
+    }
+    let _ = writeln!(out, "}}");
+    out
+}
+
+/// One kernel of a module, at module depth.
+fn emit_kernel(program: &Program, option: &str, name: &str, out: &mut String) {
+    let _ = writeln!(out, "{INDENT}#[kernel({option})]");
+    let _ = writeln!(out, "{INDENT}pub fn {name}(");
     let _ = writeln!(out, "{INDENT}{INDENT}id: SV_DispatchThreadID,");
     for (k, input) in program.inputs.iter().enumerate() {
         let _ = writeln!(
@@ -273,7 +292,7 @@ pub fn emit_module(program: &Program) -> String {
     let _ = writeln!(out, "{INDENT}) {{");
     let _ = writeln!(out, "{INDENT}{INDENT}let i = id.x;");
     let _ = writeln!(out, "{INDENT}{INDENT}if i < out.len() {{");
-    emit_block(&program.body, 3, &mut out);
+    emit_block(&program.body, 3, out);
     let pad = INDENT.repeat(3);
     if program.result.ty() == Ty::Bool {
         let _ = writeln!(out, "{pad}if {} {{", emit_expr(&program.result));
@@ -286,8 +305,6 @@ pub fn emit_module(program: &Program) -> String {
     }
     let _ = writeln!(out, "{INDENT}{INDENT}}}");
     let _ = writeln!(out, "{INDENT}}}");
-    let _ = writeln!(out, "}}");
-    out
 }
 
 /// The `src/lib.rs` of a generated crate holding all `programs`.
@@ -296,6 +313,11 @@ pub fn emit_module(program: &Program) -> String {
 /// zero-dividing operation it can see statically, even in a branch that no input reaches; the interpreter's
 /// domain filter is per input, not per path.
 pub fn emit_crate_source(programs: &[Program]) -> String {
+    emit_crate_source_in(programs, &ShapePlan::default())
+}
+
+/// [`emit_crate_source`] with the kernels of `shapes`: a module gets its `k_px` when the plan runs pixel for it.
+pub fn emit_crate_source_in(programs: &[Program], shapes: &ShapePlan) -> String {
     let mut out = String::new();
     let _ = writeln!(
         out,
@@ -307,7 +329,10 @@ pub fn emit_crate_source(programs: &[Program]) -> String {
     );
     for program in programs {
         out.push('\n');
-        out.push_str(&emit_module(program));
+        out.push_str(&emit_module_in(
+            program,
+            shapes.runs_pixel(&module_name(program)),
+        ));
     }
     out
 }
@@ -836,5 +861,52 @@ pub mod s9_a4 {
         assert!(package_name("Bad_Name").is_err());
         assert!(lock_for("bad name\"").is_err());
         assert!(lock_for("").is_err());
+    }
+
+    #[test]
+    fn the_pixel_form_adds_one_k_px_per_module_and_leaves_the_grid_text_alone() {
+        use crate::shapes::{GridOnly, Shape, module_ranges};
+        let batch = generate_batch(1).unwrap();
+        let programs = &batch.programs[..3];
+        let grid = emit_crate_source(programs);
+        // `grid` only: the text is the one the corpus hashes were taken from.
+        let only_grid = ShapePlan::new(&[Shape::Grid]);
+        assert_eq!(emit_crate_source_in(programs, &only_grid), grid);
+        let mut plan = ShapePlan::new(&[Shape::Grid, Shape::Pixel]);
+        let both = emit_crate_source_in(programs, &plan);
+        assert_eq!(both.matches("#[kernel(shape = pixel)]").count(), 3);
+        assert_eq!(both.matches("pub fn k_px(").count(), 3);
+        // The pixel kernel takes no workgroup size (the classifier excludes `pixel` for an explicit one).
+        assert_eq!(
+            both.matches("workgroup_size").count(),
+            grid.matches("workgroup_size").count()
+        );
+        // The pixel kernel is the grid kernel under another name and attribute, nothing else.
+        for program in programs {
+            let k = emit_module(program);
+            let kpx = emit_module_in(program, true);
+            let (head, px) = kpx.split_once("\n    #[kernel(shape = pixel)]\n").unwrap();
+            assert!(k.starts_with(head.trim_end_matches('\n')), "{kpx}");
+            let k_part = k
+                .split_once("    #[kernel(workgroup_size(64, 1, 1))]\n")
+                .unwrap()
+                .1;
+            assert_eq!(px.replace("pub fn k_px(", "pub fn k("), k_part);
+        }
+        // A module the macro refused is emitted without its `k_px`.
+        let refused = module_name(&programs[1]);
+        plan.grid_only.insert(
+            refused.clone(),
+            GridOnly {
+                reason: "r".into(),
+                message: "m".into(),
+            },
+        );
+        let some = emit_crate_source_in(programs, &plan);
+        assert_eq!(some.matches("pub fn k_px(").count(), 2);
+        // The module ranges the harness maps build errors with are the modules this text really has.
+        let names: Vec<String> = module_ranges(&some).into_iter().map(|r| r.0).collect();
+        let expected: Vec<String> = programs.iter().map(module_name).collect();
+        assert_eq!(names, expected);
     }
 }

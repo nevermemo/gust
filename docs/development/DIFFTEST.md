@@ -364,9 +364,12 @@ tests/difftest/template/Cargo.lock" instead of cargo's message.
 ## The batch runner (`difftest-run`)
 
 ```text
-difftest-run --seeds 1-2 [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR]
+difftest-run --seeds 1-2 [--shapes grid,pixel] [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR]
 difftest-run --refresh-lock [--repo-root DIR]
 ```
+
+`--shapes` takes `grid` (the default) or `grid,pixel`; see Shapes below. `--shrink` refuses it (the reducer carries no
+pixel kernel).
 
 `--seeds` takes a range, a list or both (`1-4`, `3`, `1,3,5-6`); the report goes to stdout without `--report`. The
 target directory is `--target-dir`, else `CARGO_TARGET_DIR`, else `tests/difftest/target`. Exit status: 0 every program
@@ -415,6 +418,7 @@ first one, and a message with the values (and for `f32` their bits).
 | `gpu-outside-interval` | an `f32` GPU element is not finite, or outside its interval |
 | `twin-error`, `gpu-error` | the twin or the GPU path panicked or returned an error (the message is kept) |
 | `gpu-not-validated` | a GPU output without the mark that wgpu created the module (WGSL validation with wgpu's default capabilities) |
+| `pixel-vs-grid` | (`--shapes grid,pixel` only; `u32`, `i32` and `bool` outputs) the GPU bits of the pixel kernel differ from the GPU bits of the grid kernel of the same program. An `f32` output has no such kind: each shape is judged against the interpreter's interval (`gpu-outside-interval`, with the `shape` field), and the bit difference between the shapes is only recorded under `shapes.float_pixel_vs_grid` (D128) |
 | `transport` | the interpreter output stored in the result file is not the one the harness computed: a bug of the harness itself |
 
 WGSL validation: every kernel's first dispatch makes wgpu create the shader module and the compute pipeline with the
@@ -422,13 +426,86 @@ default capabilities (never `Capabilities::all()`); a validation error panics, i
 `wgsl_validated` is true exactly when the first dispatch succeeded; the harness does not compile each kernel to WGSL
 a second time (that would double the slangc time, see the cost table).
 
+### Shapes (`--shapes`, slice mx.p1c)
+
+By default every program runs as the `grid` kernel `k` (a compute dispatch). With `--shapes grid,pixel` every module
+also gets a second kernel `k_px` after `k`: the same parameters and body under `#[kernel(shape = pixel)]` (no
+`workgroup_size`), run as a full-screen fragment pass with storage writes (D120, D127 Option S). The text of `k` is not
+touched, so the committed seed hashes of the grid form are unchanged, and a batch with `pixel` is another crate (its
+identity includes the shapes) from the same seeds without it.
+
+- **Which programs can be pixel kernels is the macro's decision, not the harness's.** The batch builds every `k_px`; the
+  macro's own classifier refuses a pin it cannot honour with a `GUST-E0723` to `GUST-E0728` error, the harness reads
+  those from the build log, rebuilds once without the refused `k_px`, and reports each such program as `grid`-only with
+  the macro's message as the reason (`shapes.grid_only`, below). It does not guess in advance. Measured (seeds 1 to 8,
+  2026-11-05): 128 programs ran as pixel kernels, none stayed grid-only. A hand mutation records the other path: a
+  `return;` at the top of one `k_px` gives exactly one refusal, `GUST-E0727`, at that module's attribute (the permanent
+  test is `tests/roundtrip.rs::a_return_in_one_pixel_kernel_is_one_refusal_that_the_harness_parses`).
+- **The pixel run.** The dispatch is one 1-D call of `count` elements (the element index is `y * 8192 + x`, so a corpus
+  program of fewer than 4096 elements is one row). The output buffer starts as `0xA5A5A5A5` (the grid output starts at zero),
+  so an element the pass never wrote differs from the grid result instead of matching it by accident. The CPU twin
+  runs `k_px::dispatch`, the GPU runs it through `dispatch_buffers` twice (first and warm), as for the grid kernel.
+- **Classification.** The pixel twin and the pixel GPU are held to the interpreter by the same rules as the grid ones.
+  For `u32`, `i32` and `bool` outputs the pixel GPU bits must also equal the grid GPU bits when both exist
+  (`pixel-vs-grid`). For `f32` they need not (D128): a device may fuse `a * b + c` and round `x / y` within 2.5 ulp
+  differently in the compute and the fragment stage (SEMANTICS section 4), so each shape is judged against the
+  interval only, and the bit difference is an observation in the report (programs compared, programs with a
+  difference, elements, the largest distance in ulps, the first element). It is never a mismatch (D39). The record
+  that makes this necessary: an earlier form of `examples/shape-bench`'s K3 (an unfused multiply-add chain fed by a
+  division; measured 2026-11-05, not kept) differed between the shapes by up to 4 ulp in 9 % to 11 % of the words on the
+  RTX 5090 (driver 610.88), with identical Slang, WGSL and SPIR-V for both stages, which makes it the driver's lowering
+  per stage. The bench's K3 is now X-S1's form (no division, exact coefficients, no `fma`: the dialect has none) and
+  writes the same bits in both shapes, as do the difftest corpus programs (below). A grid GPU error is not
+  blamed on the pixel shape. Every mismatch has a `shape` field (`grid` or `pixel`; the grid findings of older reports
+  have none and mean `grid`). A `pixel-vs-grid` finding cannot be shrunk: `--shrink` runs the grid kernel only.
+- **What this does not show: stray fragments.** Two things already drop a write outside the `n` elements: every corpus
+  kernel's own guard (`if i < out.len()`), and the device's robust buffer access (`robustBufferAccess2`), which makes an
+  out-of-bounds write harmless and invisible. A fragment that ran outside the `n` elements, or twice, would therefore
+  not change a value, and this batch claims value identity (integers) and interval membership (`f32`) only. It also cannot see a second row: every
+  corpus program has `n < 8192`, so no program reaches a row after the first. The fragment-count claim (each element is
+  written exactly once) is the atomic fragment-count test of slice mx.p1b (M2), not this batch.
+- **How much of the examples is `grid`-only.** Plan risk 11 asked for the grid-only reasons over the examples as well
+  as the corpus. Measured 2026-11-05 by pinning every `#[kernel(workgroup_size(..))]` of the ten examples that have one
+  (21 kernels) to `shape = pixel` in a scratch edit, compiling, and taking the macro's reasons (it reports the first
+  construct that rules a kernel out; the edit was reverted, and the refused kernel was put back before the next round so
+  that the kernels after it were classified too): 4 kernels are accepted (`vector_add::add`, `polynomial::evaluate`,
+  `signal_pipeline::transform` and the `web-vector-add` kernel) and 17 stay `grid`-only. By code: `GUST-E0723` 4
+  (`atomic_add` twice, a storage texture, an element type that is not a scalar), `GUST-E0725` 3 (a write at an index
+  other than the element's own: `mark_live`, `gather_particles`, `scatter_particles`), `GUST-E0726` 2 (a conditional
+  write to the output: `staged::transform`, `staged::summarize`), `GUST-E0728` 8 (a component write, or a read of the
+  output: `calibrate`, `scalar_order`, `field_order`, `prepare_dispatch`, `classify`, `integrate`, `step`, `finalize`).
+  `GUST-E0724` and `GUST-E0727` did not occur. The generated corpus has no `grid`-only program (128 of 128 ran as
+  pixel), because every generated kernel writes `out[id.x]` once, whole, on every path; the examples are the realistic
+  counter-weight.
+- **One module per program, both kernels.** A module that holds a `workgroup_size` kernel and a `shape = pixel` kernel
+  needs the sibling-kernel fix of mx.p1b (E0707); the batch needs it and does not work around it.
+
+Gates: `check-full` runs `check-difftest --seeds 1-8 --shapes grid,pixel`. The pull request list, the default
+`check-difftest` and the Gpu suite stay grid-only (an xtask test pins that no suite but Full adds `--shapes`).
+
+Measured 2026-11-05 (RTX 5090, NVIDIA 610.88, Vulkan, dev profile; other sessions held about 2 GiB of VRAM at 0 % to
+6 % utilisation), seeds 1 to 8 with the `short_circuit` GPU test: grid only, 141 s (harness cargo build 26.0 s, run
+99.2 s); `--shapes grid,pixel`, 257 s (build 61.1 s, run 159.2 s), 128 pixel programs, 0 grid-only, 0 mismatches. In the
+pixel batch the `timing` totals were, over the 128 programs: grid first dispatches 74.4 s and pixel first dispatches
+73.2 s (both include the Slang compile), grid warm dispatches 194 ms and pixel warm dispatches 329 ms (tiny kernels on a
+shared GPU: a noisy smoke, no threshold). A second run after the Slang cache was warm took 137 s (build 21.7 s, run
+105.3 s; first dispatches 48.8 s grid and 49.3 s pixel, warm 145 ms and 248 ms), with the `f32` observation of the
+report: 0 of the 36 `f32` programs differ in a bit between the shapes (0 elements, 0 ulp). The per-shape time of larger workloads is measured by `examples/shape-bench`
+(`plans/shapes/probe/bench/table.md`), not here.
+
 ### report.json
 
 Keys: `tool`, `format`, `mode` (`gpu` or `cpu-only`), `passed`, `seeds`, `programs_requested` (16 per seed),
 `programs_executed` (the result files whose runner finished; equal to `programs_requested` on a pass), `adapter`
 (`null` for cpu-only; otherwise name, type, backend and driver of the adapter wgpu chose), `per_seed` (`programs`,
 `attempts`, `discarded`), `discards`, `mismatch_count`, `mismatches`, `coverage` and `timing` (generation, interpreter,
-cargo build and run seconds, twin and GPU first and warm dispatch times).
+cargo build and run seconds, twin and GPU first and warm dispatch times), and, since mx.p1c, `shapes`: `requested`
+(`["grid"]` or `["grid","pixel"]`), `programs_by_shape` (`grid` and `pixel` counts) and `grid_only` (`total`,
+`by_reason`, the macro's clause with the quoted constructs elided, and `programs`, each with its message). With `pixel`
+the `timing` object also holds `pixel_twin_ms_total`, `pixel_gpu_first_dispatch_ms_total` and
+`pixel_gpu_warm_dispatch_ms_total`. `cargo xtask check-difftest` requires the shapes it asked for, `grid` equal to the
+programs executed, `pixel` plus `grid_only` equal to them, the reasons summing to `grid_only.total`, and at least one
+pixel program when pixel was requested.
 
 `discards` lists `total`, `by_reason` (the labels of the tables above, per run, summed over the seeds) and `by_class`,
 which maps the labels to the four classes of R1-4 plus two: `domain` (the integer labels, `float-domain` and `static`),
@@ -510,6 +587,7 @@ permanent tests that fail for the same reason (the second was re-run against the
 | a wrong literal in the emitter (`u32` literals plus 2), in a `--cpu-only` batch | 8 of the 16 programs of seed 1 reported (`twin-vs-interpreter`, `twin-error`), each named, exit 1 | `emit::tests` (exact text, re-parse), `corpus::tests`, the integer-space pin |
 | compare the GPU `f32` by bits (or the twin by value) | the `-0.0` tests fail | `classify::tests::the_gpu_f32_is_held_by_value...`, `the_twin_is_compared_bit_for_bit...` |
 | one package name for different batches | the uniqueness tests fail | `harness::tests::every_distinct_batch...`, `two_crate_dirs_with_one_package_name_are_refused` |
+| mx.p1c: a `return;` at the top of one `k_px` in a pixel run crate | `cargo check` fails with exactly one `GUST-E0727` at that module's `#[kernel(shape = pixel)]` line, and `shapes::refusals` finds that one refusal (so the harness would report that program `grid`-only with the macro's message) | `tests/roundtrip.rs::a_return_in_one_pixel_kernel_is_one_refusal_that_the_harness_parses` |
 | m6.d (a): swap the operands of `m * v` in the interpreter (`agg::mat_vec` reads the matrix row-major) | 3 of the 18 `vector_tests` fail; a `--cpu-only` batch of seeds 1 to 8 reports 5 `twin-vs-interpreter` mismatches, each with its seed (s3_a1000019, s6_a1000057, s6_a1000058, s7_a1000038, s7_a1000048), exit 1 | `vector_tests::a_matrix_times_a_vector_uses_the_columns`, `a_matrix_times_a_matrix_multiplies_each_column`, `from_rows_and_transpose_swap_rows_and_columns` |
 | m6.d (b): zero tolerance in `Fl::interval` (`w = 0`) | the batch stops before any program runs: the interpreter's own soundness check (`checked_value`) panics, "reference -85.83885 outside its interval (-85.83884811401367, -85.83884811401367)"; class: a bound (the interval is too narrow for the reference itself), not a program | `interp::checked_value` (debug build), the interval tests of `float.rs` |
 | m6.d (c): the generator stops giving a `Mat2` an input read (a constant `Mat2` reaches the SPIR-V path) | 2 tests fail: the guard of `Program::check` refuses it ("a `Mat2` built from no input read could be a compile-time constant", seed 1 attempt 1000021), and the corpus pin is stale | `vector_tests::the_vector_space_is_deterministic_and_never_writes_a_constant_mat2`, `a_mat2_without_an_input_read_is_refused...` |
@@ -660,7 +738,7 @@ rerun a failure with `--seeds <the printed list>`.
 | --- | --- | --- | --- | --- |
 | Unit suite (local), CI job `difftest` | `check-difftest --cpu-only --seeds 1-4`, after the harness crate's fmt, clippy and tests | 1 to 4 | 64 | interpreter, CPU twin |
 | Gpu suite | `check-difftest` | 1 to 8 | 128 and the `short_circuit` GPU test | interpreter, CPU twin, GPU |
-| `check-full`, last integration check | `check-difftest` | 1 to 8 | 128 and the `short_circuit` GPU test | the same, GPU on the hardware adapter |
+| `check-full`, last integration check | `check-difftest --seeds 1-8 --shapes grid,pixel` | 1 to 8 | 128 (each also as a `pixel` kernel) and the `short_circuit` GPU test | the same, GPU on the hardware adapter, and the pixel kernel against the grid kernel |
 | `gpu-software`, pull request list | `check-difftest --seeds 1-2` | 1 to 2 | 32 and the `short_circuit` GPU test | the same, GPU on lavapipe |
 | `gpu-software`, nightly list | `check-difftest --seeds 1-72` | 1 to 72 | 1152 and the `short_circuit` GPU test | the same, GPU on lavapipe |
 

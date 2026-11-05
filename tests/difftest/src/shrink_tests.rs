@@ -10,6 +10,7 @@ fn mismatch(kind: &'static str, first: Option<usize>) -> Mismatch {
         seed: 1,
         index: 0,
         attempt: 0,
+        shape: "grid",
         kind,
         elements: usize::from(first.is_some()),
         first_element: first,
@@ -167,6 +168,7 @@ fn run_fake(planned: &Planned) -> Raw {
         twin_ns: 0,
         gpu_first_ns: 0,
         gpu_warm_ns: 0,
+        pixel: None,
     }
 }
 

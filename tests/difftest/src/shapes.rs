@@ -109,12 +109,36 @@ pub struct Refusal {
     pub message: String,
 }
 
+/// `text` without ANSI escape sequences (`ESC [ parameters final-byte`, what cargo and rustc print when they colour).
+pub fn strip_ansi(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            plain.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'[') {
+            chars.next();
+            // Parameter and intermediate bytes (0x20..=0x3f), then one final byte (0x40..=0x7e).
+            while chars
+                .next_if(|n| ('\u{20}'..='\u{3f}').contains(n))
+                .is_some()
+            {}
+            chars.next_if(|n| ('\u{40}'..='\u{7e}').contains(n));
+        }
+    }
+    plain
+}
+
 /// The pin refusals of a cargo build log (human format: `error: [GUST-E0727] message`, then `--> src/lib.rs:L:C`): the
 /// classifier's `GUST-E0723` to `GUST-E0728`. `GUST-E0720` (`par_for!`), `GUST-E0721` and `GUST-E0722` (an unknown or
 /// malformed shape: an emitter typo) and `GUST-E0729` (a profile refusal) are not refusals of a program and stay build
 /// errors. Other errors, including the ones that follow from a module the macro refused, are ignored.
 pub fn refusals(log: &str) -> Vec<Refusal> {
     let mut found = Vec::new();
+    // A coloured log (`CARGO_TERM_COLOR=always`, as in CI) has escape sequences inside the `error: [GUST-...]` line.
+    let log = strip_ansi(log);
     let lines: Vec<&str> = log.lines().collect();
     for (at, line) in lines.iter().enumerate() {
         let Some(rest) = line.strip_prefix("error: [GUST-E072") else {
@@ -342,6 +366,25 @@ mod tests {
             []
         );
         assert_eq!(refusals("error: [GUST-E0727] no location here\n"), []);
+    }
+
+    #[test]
+    fn a_coloured_log_gives_the_same_refusals_as_a_plain_one() {
+        // What cargo prints under `CARGO_TERM_COLOR=always` (CI sets it): escape sequences inside the error line.
+        let coloured = "\u{1b}[1m\u{1b}[91merror\u{1b}[0m\u{1b}[1m: [GUST-E0727] shape `pixel` is not compatible\u{1b}[0m\n\
+                        \u{1b}[1m\u{1b}[96m  --> \u{1b}[0msrc/lib.rs:41:5\n\
+                        \u{1b}[1m\u{1b}[96m   |\u{1b}[0m\n";
+        let plain =
+            "error: [GUST-E0727] shape `pixel` is not compatible\n  --> src/lib.rs:41:5\n   |\n";
+        assert_eq!(strip_ansi(coloured), plain);
+        let found = refusals(coloured);
+        assert_eq!(found, refusals(plain));
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!((found[0].line, found[0].code.as_str()), (41, "GUST-E0727"));
+        // A lone or truncated escape sequence is dropped, and text without any is unchanged.
+        assert_eq!(strip_ansi("a\u{1b}[1;38;5;9mb\u{1b}[0mc\u{1b}[3"), "abc");
+        assert_eq!(strip_ansi("a\u{1b}"), "a");
+        assert_eq!(strip_ansi("plain [text] é"), "plain [text] é");
     }
 
     #[test]

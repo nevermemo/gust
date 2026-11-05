@@ -52,15 +52,29 @@ use std::{collections::BTreeMap, error, fmt, path::PathBuf};
 #[cfg(feature = "slang-runtime")]
 use std::{fs, path::Path, process::Command};
 
+/// Every way reading or checking Slang reflection can fail.
+///
+/// The enum is `#[non_exhaustive]`: a later release can add a variant without a breaking change, so a `match` in
+/// another crate needs a wildcard arm.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
+    /// The compiler run that produces the reflection failed; the inner error says how (including a plain I/O failure,
+    /// which is reported as `slang::Error::Io`).
     Compiler(slang::Error),
+    /// The reflection helper executable could not be launched. `helper` is the path that was tried and `source` the
+    /// operating system's error.
     HelperUnavailable {
         helper: PathBuf,
         source: std::io::Error,
     },
+    /// The reflection output is malformed or lacks a field GUST needs. The text says which.
     Invalid(String),
+    /// The compiler's reflection disagrees with the kernel descriptor or with the POD layout the macro assigned (D17).
+    /// The text names the parameter and the fact that differs.
     Mismatch(String),
+    /// The reflection is well formed but does not carry all the layout evidence the check needs, for example nested
+    /// sizes, alignments or strides. The text says which.
     Incomplete(String),
 }
 impl fmt::Display for Error {

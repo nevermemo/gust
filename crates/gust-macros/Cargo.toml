@@ -1,5 +1,5 @@
 [package]
-name = "gust-macros"
+name = "gust-compute-macros"
 description = "Direct Rust syntax to Slang translator for GUST"
 version.workspace = true
 edition.workspace = true
@@ -12,6 +12,7 @@ documentation = "https://docs.rs/gust-compute-macros"
 exclude = ["tests/", "examples/", "benches/", "src/slang/collision_tests.rs"]
 
 [lib]
+name = "gust_macros"
 proc-macro = true
 
 [dependencies]

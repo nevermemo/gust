@@ -40,14 +40,17 @@ fn from_registry(name: &str) -> String {
     dep(name, None, Some(CRATES_IO), None, None, None)
 }
 
-/// A path dependency on a workspace crate in its own directory.
+/// A path dependency on a workspace crate in its own directory, written the way the repository's manifests write
+/// it (D106): under the name of the directory, with `package = "<real name>"` when that differs from the package.
 fn workspace_crate(name: &str) -> String {
+    let target = rule(name);
+    let key = target.key();
     dep(
         name,
+        (key != name).then_some(key),
         None,
         None,
-        None,
-        Some(&format!("{ROOT}/crates/{name}")),
+        Some(&format!("{ROOT}/{}", target.directory())),
         None,
     )
 }
@@ -81,7 +84,7 @@ fn found_for(name: &str, dependencies: &[String]) -> Vec<String> {
 fn current_packages() -> Vec<String> {
     vec![
         package_json(
-            "gust-macros",
+            "gust-compute-macros",
             &[
                 from_registry("proc-macro2"),
                 from_registry("quote"),
@@ -89,23 +92,29 @@ fn current_packages() -> Vec<String> {
             ],
         ),
         package_json(
-            "gust",
-            &[workspace_crate("gust-macros"), workspace_crate("gust")],
+            "gust-compute",
+            &[
+                workspace_crate("gust-compute-macros"),
+                workspace_crate("gust-compute"),
+            ],
         ),
         package_json(
-            "gust-wgpu",
+            "gust-compute-wgpu",
             &[
-                workspace_crate("gust"),
-                workspace_crate("gust-wgpu"),
+                workspace_crate("gust-compute"),
+                workspace_crate("gust-compute-wgpu"),
                 from_registry("pollster"),
                 from_registry("wgpu"),
             ],
         ),
         package_json(
             "gust-algo",
-            &[workspace_crate("gust"), workspace_crate("gust-wgpu")],
+            &[
+                workspace_crate("gust-compute"),
+                workspace_crate("gust-compute-wgpu"),
+            ],
         ),
-        package_json("cargo-gust", &[workspace_crate("gust")]),
+        package_json("cargo-gust", &[workspace_crate("gust-compute")]),
         package_json("xtask", &[]),
     ]
 }
@@ -113,19 +122,22 @@ fn current_packages() -> Vec<String> {
 #[test]
 fn gust_and_gust_wgpu_may_depend_on_themselves_but_nothing_else_may() {
     // The dev-dependency that enables the package's own `slang-runtime` feature for its tests (D44).
-    assert!(found_for("gust", &[workspace_crate("gust")]).is_empty());
-    assert!(found_for("gust-wgpu", &[workspace_crate("gust-wgpu")]).is_empty());
+    assert!(found_for("gust-compute", &[workspace_crate("gust-compute")]).is_empty());
+    assert!(found_for("gust-compute-wgpu", &[workspace_crate("gust-compute-wgpu")]).is_empty());
     // It is not a licence for a package to depend on its siblings, or for another crate to depend on gust.
-    let sibling = found_for("gust", &[workspace_crate("gust-wgpu")]);
+    let sibling = found_for("gust-compute", &[workspace_crate("gust-compute-wgpu")]);
     assert_eq!(sibling.len(), 1, "{sibling:?}");
     assert!(
-        sibling[0].contains("`gust-wgpu`, which is not in its allow-list"),
+        sibling[0].contains("`gust-compute-wgpu`, which is not in its allow-list"),
         "{sibling:?}"
     );
-    let other = found_for("gust-macros", &[workspace_crate("gust-macros")]);
+    let other = found_for(
+        "gust-compute-macros",
+        &[workspace_crate("gust-compute-macros")],
+    );
     assert_eq!(other.len(), 1, "{other:?}");
     assert!(
-        other[0].contains("`gust-macros` has dependency `gust-macros`"),
+        other[0].contains("`gust-compute-macros` has dependency `gust-compute-macros`"),
         "{other:?}"
     );
     let xtask = found_for("xtask", &[workspace_crate("xtask")]);
@@ -136,7 +148,7 @@ fn gust_and_gust_wgpu_may_depend_on_themselves_but_nothing_else_may() {
 fn metadata_is_read_into_packages_and_dependencies() {
     let json = metadata_json(&[
         package_json(
-            "gust-macros",
+            "gust-compute-macros",
             &[
                 from_registry("syn"),
                 dep("quote", None, Some(CRATES_IO), None, None, Some("dev")),
@@ -149,7 +161,7 @@ fn metadata_is_read_into_packages_and_dependencies() {
                     Some("build"),
                 ),
                 dep(
-                    "gust",
+                    "gust-compute",
                     None,
                     None,
                     Some("mine"),
@@ -162,7 +174,7 @@ fn metadata_is_read_into_packages_and_dependencies() {
     ]);
     let packages = parse_metadata(&json).unwrap();
     assert_eq!(packages.len(), 2);
-    assert_eq!(packages[0].name, "gust-macros");
+    assert_eq!(packages[0].name, "gust-compute-macros");
     assert_eq!(
         packages[0].manifest_path,
         "/ws/crates/gust-macros/Cargo.toml"
@@ -192,7 +204,7 @@ fn metadata_is_read_into_packages_and_dependencies() {
                 path: None,
             },
             Dependency {
-                name: "gust".to_owned(),
+                name: "gust-compute".to_owned(),
                 rename: None,
                 source: None,
                 registry: Some("mine".to_owned()),
@@ -250,7 +262,7 @@ fn a_new_dependency_names_d02_and_decisions() {
         from_registry("syn"),
     ];
     deps.push(from_registry("serde"));
-    let problems = found_for("gust-macros", &deps);
+    let problems = found_for("gust-compute-macros", &deps);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(problems[0].contains("`serde`"), "{}", problems[0]);
     assert!(problems[0].contains("D02"), "{}", problems[0]);
@@ -282,7 +294,7 @@ fn xtask_may_not_gain_any_dependency() {
 fn a_dev_or_build_dependency_counts_like_any_other() {
     for kind in ["dev", "build"] {
         let dependency = dep("tempfile", None, Some(CRATES_IO), None, None, Some(kind));
-        let problems = found_for("gust", &[dependency]);
+        let problems = found_for("gust-compute", &[dependency]);
         assert_eq!(problems.len(), 1, "{kind}: {problems:?}");
     }
 }
@@ -294,7 +306,7 @@ fn a_dependency_listed_under_several_kinds_is_reported_once() {
         dep("serde", None, Some(CRATES_IO), None, None, Some("dev")),
         dep("serde", None, Some(CRATES_IO), None, None, Some("build")),
     ];
-    assert_eq!(found_for("gust", &dependencies).len(), 1);
+    assert_eq!(found_for("gust-compute", &dependencies).len(), 1);
 }
 
 #[test]
@@ -315,14 +327,14 @@ fn spirv_libraries_are_rejected_in_the_compiler_crates_by_name_and_by_rename() {
         ),
         dep("spirv", Some("friendly"), Some(CRATES_IO), None, None, None),
     ] {
-        for name in ["gust-macros", "gust"] {
+        for name in ["gust-compute-macros", "gust-compute"] {
             let problems = found_for(name, std::slice::from_ref(&dependency));
             assert_eq!(problems.len(), 1, "{name}: {dependency}");
             assert!(problems[0].contains("no SPIR-V emitter"), "{}", problems[0]);
         }
     }
     // The runtime crate gets the generic message; it is not a compiler crate.
-    let problems = found_for("gust-wgpu", &[from_registry("rspirv")]);
+    let problems = found_for("gust-compute-wgpu", &[from_registry("rspirv")]);
     assert_eq!(problems.len(), 1);
     assert!(problems[0].contains("allow-list"), "{}", problems[0]);
 }
@@ -331,7 +343,7 @@ fn spirv_libraries_are_rejected_in_the_compiler_crates_by_name_and_by_rename() {
 fn a_rename_is_judged_by_the_real_package_and_is_itself_a_problem() {
     // `syn = { package = "evil-syn", .. }`: the key looks allowed, the package is not.
     let renamed_away = dep("evil-syn", Some("syn"), Some(CRATES_IO), None, None, None);
-    let problems = found_for("gust-macros", &[renamed_away]);
+    let problems = found_for("gust-compute-macros", &[renamed_away]);
     assert_eq!(problems.len(), 2, "{problems:?}");
     assert!(
         problems[0].contains("dependency `evil-syn`"),
@@ -347,7 +359,7 @@ fn a_rename_is_judged_by_the_real_package_and_is_itself_a_problem() {
     // The reverse: an innocent key that is really an allowed package passes the allow-list
     // but is still a rename.
     let shim = dep("syn", Some("shim"), Some(CRATES_IO), None, None, None);
-    let problems = found_for("gust-macros", &[shim]);
+    let problems = found_for("gust-compute-macros", &[shim]);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
         problems[0].contains("`shim` is renamed with package = \"syn\""),
@@ -356,7 +368,52 @@ fn a_rename_is_judged_by_the_real_package_and_is_itself_a_problem() {
     );
     // A rename of something that is allowed nowhere is only an allow-list problem.
     let other = dep("serde", Some("alias"), Some(CRATES_IO), None, None, None);
-    assert_eq!(problems_len("gust-macros", other), 1);
+    assert_eq!(problems_len("gust-compute-macros", other), 1);
+}
+
+#[test]
+fn a_workspace_crate_may_be_renamed_to_its_directory_name_and_to_nothing_else() {
+    // D106: `gust = { package = "gust-compute", path = "../gust" }` is how the repository writes the facade.
+    assert!(found_for("gust-compute-wgpu", &[workspace_crate("gust-compute")]).is_empty());
+    assert!(found_for("cargo-gust", &[workspace_crate("gust-compute")]).is_empty());
+    // The package's own name as the key is no rename at all, and passes too.
+    let own = dep(
+        "gust-compute",
+        None,
+        None,
+        None,
+        Some("/ws/crates/gust"),
+        None,
+    );
+    assert!(found_for("cargo-gust", &[own]).is_empty());
+    // Any other key is a rename the allow-list refuses, and the text names the one that is allowed.
+    let other = dep(
+        "gust-compute",
+        Some("g"),
+        None,
+        None,
+        Some("/ws/crates/gust"),
+        None,
+    );
+    let problems = found_for("cargo-gust", &[other]);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains(
+            "`g` is renamed with package = \"gust-compute\"; a workspace crate may be renamed only to the name of its directory, `gust`"
+        ),
+        "{}",
+        problems[0]
+    );
+    // The directory name of another crate is not the name of this one.
+    let wrong = dep(
+        "gust-compute",
+        Some("gust-wgpu"),
+        None,
+        None,
+        Some("/ws/crates/gust"),
+        None,
+    );
+    assert_eq!(found_for("cargo-gust", &[wrong]).len(), 1);
 }
 
 fn problems_len(name: &str, dependency: String) -> usize {
@@ -368,17 +425,17 @@ fn dependencies_with_a_foreign_source_fail() {
     let path = |name: &str, dir: &str| dep(name, None, None, None, Some(dir), None);
     let bad = [
         (
-            "gust-macros",
+            "gust-compute-macros",
             path("syn", "/elsewhere/syn"),
             "path dependency on `/elsewhere/syn`",
         ),
         (
-            "gust-macros",
+            "gust-compute-macros",
             path("syn", "/ws/vendor/syn"),
             "path dependency on `vendor/syn`",
         ),
         (
-            "gust-macros",
+            "gust-compute-macros",
             dep(
                 "syn",
                 None,
@@ -390,12 +447,12 @@ fn dependencies_with_a_foreign_source_fail() {
             "git source",
         ),
         (
-            "gust-wgpu",
+            "gust-compute-wgpu",
             dep("wgpu", None, Some(CRATES_IO), Some("mine"), None, None),
             "names a registry",
         ),
         (
-            "gust-wgpu",
+            "gust-compute-wgpu",
             dep(
                 "wgpu",
                 None,
@@ -407,7 +464,7 @@ fn dependencies_with_a_foreign_source_fail() {
             "names a registry",
         ),
         (
-            "gust-wgpu",
+            "gust-compute-wgpu",
             dep(
                 "pollster",
                 None,
@@ -419,19 +476,19 @@ fn dependencies_with_a_foreign_source_fail() {
             "names a registry",
         ),
         (
-            "gust-wgpu",
-            path("gust", "/ws/vendor/gust"),
+            "gust-compute-wgpu",
+            path("gust-compute", "/ws/vendor/gust"),
             "must be `path = \"crates/gust\"`, found `vendor/gust`",
         ),
         (
-            "gust",
-            from_registry("gust-macros"),
+            "gust-compute",
+            from_registry("gust-compute-macros"),
             "must be `path = \"crates/gust-macros\"`, found no path",
         ),
         (
-            "gust-wgpu",
+            "gust-compute-wgpu",
             dep(
-                "gust",
+                "gust-compute",
                 None,
                 None,
                 None,
@@ -441,8 +498,15 @@ fn dependencies_with_a_foreign_source_fail() {
             "found `crates/gust-macros`",
         ),
         (
-            "gust-wgpu",
-            dep("gust", None, None, None, Some("/ws/crates/gust/sub"), None),
+            "gust-compute-wgpu",
+            dep(
+                "gust-compute",
+                None,
+                None,
+                None,
+                Some("/ws/crates/gust/sub"),
+                None,
+            ),
             "found `crates/gust/sub`",
         ),
     ];
@@ -477,12 +541,19 @@ fn a_workspace_crate_may_be_reached_by_any_spelling_of_its_directory() {
     ] {
         let escaped = |text: &str| text.replace('\\', "\\\\");
         let json = format!(
-            r#"{{"packages":[{{"name":"gust-wgpu","manifest_path":"{}","dependencies":[{}]}}]}}"#,
+            r#"{{"packages":[{{"name":"gust-compute-wgpu","manifest_path":"{}","dependencies":[{}]}}]}}"#,
             escaped(manifest),
-            dep("gust", None, None, None, Some(&escaped(dir)), None)
+            dep(
+                "gust-compute",
+                Some("gust"),
+                None,
+                None,
+                Some(&escaped(dir)),
+                None
+            )
         );
         let packages = parse_metadata(&json).unwrap();
-        let found = dependency_problems(rule("gust-wgpu"), &packages[0], root);
+        let found = dependency_problems(rule("gust-compute-wgpu"), &packages[0], root);
         assert!(found.is_empty(), "{dir}: {found:?}");
     }
     // Windows paths ignore case, others do not.
@@ -527,14 +598,14 @@ fn a_rule_crate_that_cargo_does_not_list_is_reported() {
 
 #[test]
 fn a_rule_crate_at_another_path_is_reported_and_not_judged() {
-    let moved = r#"{"name":"gust","manifest_path":"/ws/elsewhere/gust/Cargo.toml","dependencies":[{"name":"serde","source":null,"rename":null,"registry":null}]}"#;
+    let moved = r#"{"name":"gust-compute","manifest_path":"/ws/elsewhere/gust/Cargo.toml","dependencies":[{"name":"serde","source":null,"rename":null,"registry":null}]}"#;
     let mut packages = current_packages();
     packages[1] = moved.to_owned();
     let parsed = parse_metadata(&metadata_json(&packages)).unwrap();
     let problems = package_problems(ROOT, &parsed);
     assert_eq!(problems.len(), 1, "{problems:?}");
     assert!(
-        problems[0].contains("package `gust` is at `elsewhere/gust/Cargo.toml`"),
+        problems[0].contains("package `gust-compute` is at `elsewhere/gust/Cargo.toml`"),
         "{}",
         problems[0]
     );
@@ -627,12 +698,12 @@ const LOCK_HEAD: &str = "# This file is automatically @generated by Cargo.\n# It
 #[test]
 fn a_lockfile_is_read_into_name_version_and_source() {
     let text = format!(
-        "{LOCK_HEAD}[[package]]\nname = \"gust\"\nversion = \"0.1.0\"\ndependencies = [\n \"gust-macros\",\n]\n\n[[package]]\nname = \"syn\"\nversion = \"2.0.117\"\nsource = \"{CRATES_IO}\"\nchecksum = \"abc\"\ndependencies = [\n \"quote\",\n]\n\n[[patch.unused]]\nname = \"serde\"\nversion = \"1.0.0\"\nsource = \"git+https://example.invalid/serde\"\n\n[metadata]\nname = \"not-a-package\"\n"
+        "{LOCK_HEAD}[[package]]\nname = \"gust-compute\"\nversion = \"0.1.0\"\ndependencies = [\n \"gust-compute-macros\",\n]\n\n[[package]]\nname = \"syn\"\nversion = \"2.0.117\"\nsource = \"{CRATES_IO}\"\nchecksum = \"abc\"\ndependencies = [\n \"quote\",\n]\n\n[[patch.unused]]\nname = \"serde\"\nversion = \"1.0.0\"\nsource = \"git+https://example.invalid/serde\"\n\n[metadata]\nname = \"not-a-package\"\n"
     );
     assert_eq!(
         parse_lock(&text).unwrap(),
         [
-            locked("gust", "0.1.0", None),
+            locked("gust-compute", "0.1.0", None),
             locked("syn", "2.0.117", Some(CRATES_IO)),
         ]
     );
@@ -662,9 +733,9 @@ fn the_real_lockfile_passes_and_is_not_empty() {
     .unwrap();
     let packages = parse_lock(&text).unwrap();
     for name in [
-        "gust",
-        "gust-macros",
-        "gust-wgpu",
+        "gust-compute",
+        "gust-compute-macros",
+        "gust-compute-wgpu",
         "xtask",
         "syn",
         "quote",
@@ -683,7 +754,7 @@ fn registry_and_path_packages_in_the_right_places_pass() {
     let packages = [
         locked("syn", "2.0.117", Some(CRATES_IO)),
         locked("wgpu", "30.0.1", Some("sparse+https://index.crates.io/")),
-        locked("gust", "0.1.0", None),
+        locked("gust-compute", "0.1.0", None),
         locked("xtask", "0.1.0", None),
         // Packages outside the allow-list are not this check's business.
         locked("serde", "1.0.0", Some("git+https://example.invalid/serde")),
@@ -729,11 +800,18 @@ fn a_patched_or_replaced_allow_listed_package_is_reported() {
 #[test]
 fn a_workspace_crate_resolving_from_a_registry_or_git_is_reported() {
     let problems = lock_problems(&[
-        locked("gust-macros", "0.1.0", Some(CRATES_IO)),
-        locked("gust", "0.1.0", Some("git+https://example.invalid/gust")),
-        locked("gust-wgpu", "0.1.0", None),
+        locked("gust-compute-macros", "0.1.0", Some(CRATES_IO)),
+        locked(
+            "gust-compute",
+            "0.1.0",
+            Some("git+https://example.invalid/gust"),
+        ),
+        locked("gust-compute-wgpu", "0.1.0", None),
     ]);
     assert_eq!(problems.len(), 2, "{problems:#?}");
-    assert!(problems[0].contains("package `gust-macros`") && problems[0].contains("path package"));
-    assert!(problems[1].contains("package `gust`"));
+    assert!(
+        problems[0].contains("package `gust-compute-macros`")
+            && problems[0].contains("path package")
+    );
+    assert!(problems[1].contains("package `gust-compute`"));
 }

@@ -117,7 +117,7 @@
 //!
 //! A release build is strict even without the variable: when `GUST_PROFILE` is not set and Cargo builds `gust` with
 //! `PROFILE=release`, the profile is `web` for `wasm32` and `native` for every other target, and the build prints
-//! `warning: gust@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`; cargo shows a build
+//! `warning: gust-compute@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`; cargo shows a build
 //! script's warning only for path and workspace packages, or with `-vv`, so a registry or git dependency stays
 //! silent). So `cargo build --release` of any crate with `#[gpu]` kernels needs artifacts and no bridge, except where
 //! the internal `cargo-gust-bridge` feature (D108) is in the graph (the `cargo-gust` install, a workspace that has

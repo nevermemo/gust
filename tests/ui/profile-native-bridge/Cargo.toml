@@ -5,4 +5,4 @@ edition = "2024"
 publish = false
 
 [dependencies]
-gust = { path = "../../../crates/gust", features = ["slang-runtime"] }
+gust = { package = "gust-compute", path = "../../../crates/gust", features = ["slang-runtime"] }

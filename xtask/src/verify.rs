@@ -677,7 +677,7 @@ pub(crate) const ADAPTER_INFO_ARGS: [&str; 7] = [
     "--locked",
     "--quiet",
     "-p",
-    "gust-wgpu",
+    "gust-compute-wgpu",
     "--example",
     "adapter_info",
 ];
@@ -734,7 +734,7 @@ pub(crate) const RELEASE_SLANG_TESTS: [&str; 9] = [
     "--locked",
     "--release",
     "-p",
-    "gust",
+    "gust-compute",
     "--lib",
     "--",
     "slang",
@@ -752,7 +752,7 @@ pub(crate) const RELEASE_LEDGER_TEST: [&str; 9] = [
     "--locked",
     "--release",
     "-p",
-    "gust-wgpu",
+    "gust-compute-wgpu",
     "--test",
     "mismatch",
     "--",
@@ -797,9 +797,9 @@ pub(crate) fn cargo_calls(mode: VerifyMode) -> Vec<Vec<String>> {
     }
     match mode {
         VerifyMode::Fast => {
-            calls.push(owned(&["test", "--locked", "-p", "gust-macros"]));
-            calls.push(owned(&["test", "--locked", "-p", "gust", "--lib"]));
-            calls.push(owned(&["test", "--locked", "-p", "gust-wgpu"]));
+            calls.push(owned(&["test", "--locked", "-p", "gust-compute-macros"]));
+            calls.push(owned(&["test", "--locked", "-p", "gust-compute", "--lib"]));
+            calls.push(owned(&["test", "--locked", "-p", "gust-compute-wgpu"]));
         }
         VerifyMode::Gpu => {
             calls.push(owned(&GPU_SUITE_CALL));
@@ -883,7 +883,7 @@ fn owned_args(args: &[&str]) -> Vec<String> {
 
 /// The cargo call of the Gpu mode: every test of `gust-wgpu`, the unit tests of the library, each integration test
 /// file and the doc tests.
-pub(crate) const GPU_SUITE_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-wgpu"];
+pub(crate) const GPU_SUITE_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-compute-wgpu"];
 
 /// The cargo call of the device-resident algorithms (m7.r1): every test of `gust-algo`, the `gpu::` ones on the first
 /// adapter. Run after [`GPU_SUITE_CALL`] in the Gpu mode and by the Gpu suite, so the lavapipe job runs it too.
@@ -964,7 +964,7 @@ pub(crate) struct GpuSuitePin {
 /// does, so fix failures first):
 ///
 /// ```text
-/// GUST_PROFILE=dev cargo test --locked -p gust-wgpu --no-fail-fast 2>&1 \
+/// GUST_PROFILE=dev cargo test --locked -p gust-compute-wgpu --no-fail-fast 2>&1 \
 ///   | grep '^test result:' | awk '{ sum += $4; n++ } END { print sum, n }'
 /// ```
 ///

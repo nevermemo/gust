@@ -13,8 +13,8 @@
 //!   parent's environment without every variable that names Slang (any name containing `SLANG`, `VULKAN_SDK`,
 //!   `VK_SDK_PATH`) and without every `PATH` directory that holds `slangc` or `gust-slang-reflect`. The environment
 //!   is then asserted slang-free: no such variable, no such directory, and the platform's lookup (`where` under `cmd`,
-//!   `command -v` under `sh`) does not find `slangc` with the child's `PATH`. The build starts from `cargo clean -p gust
-//!   -p gust-macros -p kernels -p app --release` in the same environment, because cargo's fingerprints track only
+//!   `command -v` under `sh`) does not find `slangc` with the child's `PATH`. The build starts from `cargo clean -p gust-compute
+//!   -p gust-compute-macros -p kernels -p app --release` in the same environment, because cargo's fingerprints track only
 //!   `GUST_PROFILE`, so a warm target directory would relink nothing and prove nothing about the stripped build. `app`
 //!   must print the `verified:` line, which it prints only after it read the GPU result back and compared it with a
 //!   host reference, and the line `adapter:` that names the GPU it ran on.
@@ -53,7 +53,7 @@
 //!   `#[gpu]` module of `kernels` again (and the macro writes its records), and the same value does not. Then, with
 //!   Slang, `cargo gust build` runs twice on a copy of the fixture whose artifacts were deleted first: run 1 writes them, run 2 (the run on unchanged input) writes nothing, and the output is byte-identical and the
 //!   tool prints no `pruned` line (R2-3, S3).
-//! - **E8**: distribution (R2-4, R4.6). `cargo package` of `gust-macros`, `gust`, `gust-wgpu` and `kernels` must list
+//! - **E8**: distribution (R2-4, R4.6). `cargo package` of `gust-compute-macros`, `gust-compute`, `gust-compute-wgpu` and `kernels` must list
 //!   only allowed files; the four packages are unpacked outside the repository and a consumer with plain registry-style
 //!   dependencies and a `[patch.crates-io]` on the four trees is built under `native` in the stripped environment of E1
 //!   and, unless `--check-only`, run on the GPU.
@@ -526,9 +526,9 @@ fn e1_stripped_build_and_run(fixture: &Fixture, check_only: bool) -> Result<Stri
             "--manifest-path",
             &manifest,
             "-p",
-            "gust",
+            "gust-compute",
             "-p",
-            "gust-macros",
+            "gust-compute-macros",
             "-p",
             "kernels",
             "-p",
@@ -540,7 +540,7 @@ fn e1_stripped_build_and_run(fixture: &Fixture, check_only: bool) -> Result<Stri
         .map_err(|error| format!("check-precompiled E1: could not launch cargo: {error}"))?;
     require_success(
         "E1",
-        "cargo clean -p gust -p gust-macros -p kernels -p app",
+        "cargo clean -p gust-compute -p gust-compute-macros -p kernels -p app",
         &output,
     )?;
     let output = fixture
@@ -561,7 +561,7 @@ fn e1_stripped_build_and_run(fixture: &Fixture, check_only: bool) -> Result<Stri
         .map_err(|error| format!("check-precompiled E1: could not launch cargo: {error}"))?;
     require_success("E1", "cargo build --release -p app", &output)?;
     println!(
-        "check-precompiled E1: cargo clean of gust, gust-macros, kernels and app, then cargo build --release -p app, succeeded"
+        "check-precompiled E1: cargo clean of gust-compute, gust-compute-macros, kernels and app, then cargo build --release -p app, succeeded"
     );
 
     if check_only {
@@ -850,7 +850,7 @@ pub(crate) fn tree_problems(tree: &str) -> Vec<String> {
     for line in tree.lines().filter(|line| line.contains("slang-runtime")) {
         problems.push(format!("the feature is on: `{}`", line.trim()));
     }
-    for package in ["gust", "gust-wgpu", "kernels"] {
+    for package in ["gust-compute", "gust-compute-wgpu", "kernels"] {
         let listed = tree.lines().any(|line| {
             line.trim_start_matches(|c: char| !c.is_alphanumeric())
                 .starts_with(&format!("{package} v"))
@@ -1135,12 +1135,12 @@ const INFERRED_SENTENCE: &str =
 const INFERRED_WARNING: &str = "gust: release build without GUST_PROFILE treated as native";
 
 /// Whether cargo's stderr `text` has the build-script warning `warning` of the package `gust` as a whole line: cargo
-/// prints it as `warning: gust@<version>: <warning>`, so a line that continues after the words (`... as devX`) does not
+/// prints it as `warning: gust-compute@<version>: <warning>`, so a line that continues after the words (`... as devX`) does not
 /// count.
 pub(crate) fn has_build_script_warning(text: &str, warning: &str) -> bool {
     text.lines().any(|line| {
         line.trim_end()
-            .strip_prefix("warning: gust@")
+            .strip_prefix("warning: gust-compute@")
             .and_then(|rest| rest.split_once(": "))
             .is_some_and(|(version, printed)| {
                 !version.is_empty() && !version.contains(' ') && printed == warning
@@ -1488,7 +1488,7 @@ pub(crate) fn e6_problems(
 }
 
 /// The lines of an expectation of the bridge cases: `warning:` is the text of the build script's `cargo:warning` that
-/// cargo must print (as `warning: gust@<version>: <text>`), `cargo-warning:` a warning of cargo itself (as
+/// cargo must print (as `warning: gust-compute@<version>: <text>`), `cargo-warning:` a warning of cargo itself (as
 /// `warning: <text>`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BridgeExpectation {
@@ -1532,7 +1532,7 @@ pub(crate) fn parse_warning_expectation(text: &str) -> Result<BridgeExpectation,
 /// repository, with forward slashes.
 pub(crate) fn bridge_user_manifest(root: &str) -> String {
     format!(
-        "[package]\nname = \"bridge-user\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\ngust-wgpu = {{ path = \"{root}/crates/gust-wgpu\", features = [\"slang-runtime\"] }}\n"
+        "[package]\nname = \"bridge-user\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\ngust-wgpu = {{ package = \"gust-compute-wgpu\", path = \"{root}/crates/gust-wgpu\", features = [\"slang-runtime\"] }}\n"
     )
 }
 
@@ -2145,9 +2145,9 @@ fn e7_build_twice(fixture: &Fixture, check_only: bool) -> Result<String, String>
 /// --list` may hold is decided by `package_problems` of `release.rs`, the one home of the allow-lists (mr.r); the
 /// `kernels` package is the only one with `gust-artifacts/**`.
 pub(crate) const E8_PACKAGES: [PackageSpec<'static>; 4] = [
-    PackageSpec::library("gust-macros", false, false),
-    PackageSpec::library("gust", true, false),
-    PackageSpec::library("gust-wgpu", false, false),
+    PackageSpec::library("gust-compute-macros", false, false),
+    PackageSpec::library("gust-compute", true, false),
+    PackageSpec::library("gust-compute-wgpu", false, false),
     PackageSpec::library("kernels", false, true),
 ];
 
@@ -2212,7 +2212,7 @@ pub(crate) fn section_version(manifest: &str, section: &str) -> Option<String> {
 }
 
 /// The `Cargo.toml` of the relocated consumer (E8): plain registry-style dependencies on the packages that the
-/// workspace calls `gust`, `gust-wgpu` and `kernels` (no `default-features = false`, D45), an empty `[workspace]` table
+/// workspace calls `gust-compute`, `gust-compute-wgpu` and `kernels` (no `default-features = false`, D45), an empty `[workspace]` table
 /// so that it is a root of its own, and a `[patch.crates-io]` for all four packages onto their unpacked trees, which
 /// sit beside the consumer as `../unpacked/<name>-<version>`. `versions` has the version of each of
 /// [`E8_PACKAGES`], in its order.
@@ -2221,7 +2221,7 @@ pub(crate) fn consumer_manifest(versions: &[String; 4]) -> String {
         "# The relocated consumer of E8 in `cargo xtask check-precompiled`: registry-style dependencies, patched onto the\n# unpacked packages.\n[package]\nname = \"dist-consumer\"\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n[dependencies]\n",
     );
     for (spec, version) in E8_PACKAGES.iter().zip(versions) {
-        if spec.name != "gust-macros" {
+        if spec.name != "gust-compute-macros" {
             text.push_str(&format!("{} = \"={version}\"\n", spec.name));
         }
     }
@@ -2509,14 +2509,14 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
     );
 
     // 2. Package and unpack outside the repository. The three repository crates go in one call: cargo then resolves
-    // them against each other, which a single `-p gust` cannot (`gust-macros` is not on crates.io).
+    // them against each other, which a single `-p gust-compute` cannot (`gust-compute-macros` is not on crates.io).
     let repo_target = work.join("package-target");
     let kernels_target = work.join("package-kernels-target");
     let repo_target_arg = Fixture::target_dir_arg(&repo_target)?;
     let kernels_target_arg = Fixture::target_dir_arg(&kernels_target)?;
     run_step(
         "E8",
-        "cargo package -p gust-macros -p gust -p gust-wgpu",
+        "cargo package -p gust-compute-macros -p gust-compute -p gust-compute-wgpu",
         fixture.cargo(&[
             "package",
             "--allow-dirty",
@@ -2524,15 +2524,26 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
             "--color",
             "never",
             "-p",
-            "gust-macros",
+            "gust-compute-macros",
             "-p",
-            "gust",
+            "gust-compute",
             "-p",
-            "gust-wgpu",
+            "gust-compute-wgpu",
             "--target-dir",
             repo_target_arg,
         ]),
     )?;
+    // `cargo package` resolves the dependencies of the packaged manifest against crates.io, where `kernels` asks for
+    // `gust-compute = "0.1.0"`. What crates.io holds under a GUST name must not decide this check: before the rename
+    // the requirement was for `gust`, which cargo met with the unrelated charting crate of that name (0.1.0 and 0.1.4
+    // exist), and once the packages were renamed the placeholder `gust-compute 0.0.0` met nothing. So the two packages
+    // that `kernels` reaches are patched onto their trees in the repository (`--config`, which `cargo package`
+    // honours and which leaves the packaged manifest as it is): the resolution finds this checkout's `gust-compute`
+    // and its `gust-compute-macros`, and `--no-verify` still skips the build of the unpacked package.
+    let root = fixture.root.to_string_lossy().replace('\\', "/");
+    let patch_compute = format!("patch.crates-io.gust-compute.path='{root}/crates/gust'");
+    let patch_macros =
+        format!("patch.crates-io.gust-compute-macros.path='{root}/crates/gust-macros'");
     run_step(
         "E8",
         "cargo package -p kernels",
@@ -2542,6 +2553,10 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
             "--no-verify",
             "--color",
             "never",
+            "--config",
+            &patch_compute,
+            "--config",
+            &patch_macros,
             "--manifest-path",
             &fixture_manifest,
             "-p",
@@ -2654,7 +2669,7 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
     let mut unused = unused_patch_lines(&String::from_utf8_lossy(&output.stderr));
     problems.extend(default_feature_problems(
         &String::from_utf8_lossy(&output.stdout),
-        &["gust", "gust-wgpu"],
+        &["gust-compute", "gust-compute-wgpu"],
         &unpacked_prefix,
     )?);
     if !problems.is_empty() {
@@ -2705,7 +2720,7 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
     let built = Fixture::app_binary(&target);
     let built = built.with_file_name(format!("dist-consumer{EXE_SUFFIX}"));
     if options.check_only {
-        return Ok("passed (build only: --check-only skips the run, which needs an adapter): the four packages are on the allow-list and Slang-free, no default feature of gust or gust-wgpu turns on slang-runtime, and the consumer with registry-style dependencies built in release under native in the stripped environment, with every patch used and no `source` in the lock for the four packages".to_owned());
+        return Ok("passed (build only: --check-only skips the run, which needs an adapter): the four packages are on the allow-list and Slang-free, no default feature of gust-compute or gust-compute-wgpu turns on slang-runtime, and the consumer with registry-style dependencies built in release under native in the stripped environment, with every patch used and no `source` in the lock for the four packages".to_owned());
     }
     let run = fixture
         .command(&built)
@@ -2721,7 +2736,7 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
         )
     })?;
     Ok(format!(
-        "passed: the four packages are on the allow-list and Slang-free, no default feature of gust or gust-wgpu turns on slang-runtime, and the consumer with registry-style dependencies on the unpacked packages built in release under native in the stripped environment (every patch used, no `source` in the lock for the four) and printed `{VERIFIED_PREFIX}{} elements` on the adapter `{}`",
+        "passed: the four packages are on the allow-list and Slang-free, no default feature of gust-compute or gust-compute-wgpu turns on slang-runtime, and the consumer with registry-style dependencies on the unpacked packages built in release under native in the stripped environment (every patch used, no `source` in the lock for the four) and printed `{VERIFIED_PREFIX}{} elements` on the adapter `{}`",
         report.elements, report.adapter
     ))
 }

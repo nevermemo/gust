@@ -584,9 +584,9 @@ fn kill_tree_ends_a_running_child_and_returns() {
 // The feature guard
 
 /// The shape of `cargo tree --locked --workspace -e features -i wgpu` (box drawing; `--charset ascii` differs).
-const HOST_TREE: &str = "wgpu v30.0.1\n├── wgpu feature \"std\"\n│   └── gust-wgpu v0.1.0 (path)\n├── wgpu feature \"vulkan\"\n│   └── gust-wgpu v0.1.0 (path) (*)\n└── wgpu feature \"wgsl\"\n    └── gust-wgpu v0.1.0 (path) (*)\n";
+const HOST_TREE: &str = "wgpu v30.0.1\n├── wgpu feature \"std\"\n│   └── gust-compute-wgpu v0.1.0 (path)\n├── wgpu feature \"vulkan\"\n│   └── gust-compute-wgpu v0.1.0 (path) (*)\n└── wgpu feature \"wgsl\"\n    └── gust-compute-wgpu v0.1.0 (path) (*)\n";
 
-const WASM_TREE: &str = "wgpu v30.0.1\n├── wgpu feature \"std\"\n│   └── gust-wgpu v0.1.0 (path)\n├── wgpu feature \"webgpu\"\n│   └── gust-wgpu v0.1.0 (path) (*)\n└── wgpu feature \"wgsl\"\n    └── gust-wgpu v0.1.0 (path) (*)\n";
+const WASM_TREE: &str = "wgpu v30.0.1\n├── wgpu feature \"std\"\n│   └── gust-compute-wgpu v0.1.0 (path)\n├── wgpu feature \"webgpu\"\n│   └── gust-compute-wgpu v0.1.0 (path) (*)\n└── wgpu feature \"wgsl\"\n    └── gust-compute-wgpu v0.1.0 (path) (*)\n";
 
 #[test]
 fn the_guard_finds_the_webgpu_feature_line_in_either_drawing() {
@@ -605,7 +605,7 @@ fn the_guard_finds_the_webgpu_feature_line_in_either_drawing() {
     for tree in [
         "wgpu-types feature \"webgpu\"\n",
         "wgpu feature \"webgpu-extra\"\n",
-        "└── gust-wgpu v0.1.0 (C:/x/wgpu feature \"webgpu\")\n",
+        "└── gust-compute-wgpu v0.1.0 (C:/x/wgpu feature \"webgpu\")\n",
         "",
     ] {
         assert!(!tree_enables_webgpu(tree), "{tree:?}");

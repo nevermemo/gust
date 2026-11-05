@@ -2257,7 +2257,7 @@ mod tests {
 
     // A fact about this workspace's profiles, not a general rule: the root `Cargo.toml` sets no `overflow-checks`,
     // so `cargo test` (dev) is checked and `cargo test --release` wraps. CI runs the release half through
-    // `cargo test -p gust --release --lib cpu`.
+    // `cargo test -p gust-compute --release --lib cpu`.
     #[test]
     fn overflow_checks_agrees_with_the_workspace_profile() {
         let expected = if cfg!(debug_assertions) {

@@ -367,7 +367,7 @@ impl fmt::Display for Error {
             }
             Self::NoArtifact { kernel, profile } => write!(
                 formatter,
-                "kernel `{kernel}` has no precompiled WGSL artifact, and this build of gust-wgpu (profile `{profile}`) was built without the `slang-runtime` feature, so it cannot compile the kernel at run time; run `cargo gust build` in the crate that defines the kernel and rebuild, or enable the `slang-runtime` feature in a dev build",
+                "kernel `{kernel}` has no precompiled WGSL artifact, and this build of gust-compute-wgpu (profile `{profile}`) was built without the `slang-runtime` feature, so it cannot compile the kernel at run time; run `cargo gust build` in the crate that defines the kernel and rebuild, or enable the `slang-runtime` feature in a dev build",
             ),
             Self::ShapeUnsupported {
                 kernel,

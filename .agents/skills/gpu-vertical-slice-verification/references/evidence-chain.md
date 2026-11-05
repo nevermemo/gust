@@ -26,7 +26,7 @@ cargo xtask check-feature macro
 cargo xtask slangc generated-wgpu/vector_add__add.slang --entry gpu_vector_add_add --target wgsl --out target/probe/vector_add.wgsl
 cargo xtask slangc generated-wgpu/vector_add__add.slang --entry gpu_vector_add_add --target spirv --out target/probe/vector_add.spv -- -fvk-use-entrypoint-name
 cargo xtask spirv-val target/probe/vector_add.spv --target-env vulkan1.2
-cargo xtask test-exact -p gust-wgpu --test semantics translated_semantics_execute_on_gpu
+cargo xtask test-exact -p gust-compute-wgpu --test semantics translated_semantics_execute_on_gpu
 ```
 
 Each `slangc` output gets a `<out>.command.json` (compiler version, arguments, output SHA-256) and a `<out>.compile.log` beside it. `test-exact` runs one integration test by exact name with `--include-ignored` and fails unless libtest reports one executed, passing test; it certifies execution, so read the test for real GPU assertions.

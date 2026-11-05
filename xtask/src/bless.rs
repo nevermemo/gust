@@ -19,7 +19,7 @@ pub(crate) fn bless() -> Result<(), String> {
         "Running the golden tests with BLESS_GOLDEN=1 (a changed golden fails its test by design)."
     );
     let status = workspace_command("cargo")
-        .args(["test", "--locked", "-p", "gust-macros", "golden"])
+        .args(["test", "--locked", "-p", "gust-compute-macros", "golden"])
         .env("BLESS_GOLDEN", "1")
         .current_dir(&root)
         .stdin(Stdio::inherit())

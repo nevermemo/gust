@@ -11,5 +11,5 @@
 code: E0080
 file: crates/gust-wgpu/src/lib.rs
 line: auto
-message: evaluation panicked: gust-wgpu cannot be built under GUST_PROFILE=cpu: a CPU build contains one target
+message: evaluation panicked: gust-compute-wgpu cannot be built under GUST_PROFILE=cpu: a CPU build contains one target
 message: inside `gust::profile::require_gpu_target`

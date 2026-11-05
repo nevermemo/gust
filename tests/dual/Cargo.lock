@@ -6,19 +6,19 @@ version = 4
 name = "consumer"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
  "kernel-lib",
 ]
 
 [[package]]
-name = "gust"
+name = "gust-compute"
 version = "0.1.0"
 dependencies = [
- "gust-macros",
+ "gust-compute-macros",
 ]
 
 [[package]]
-name = "gust-macros"
+name = "gust-compute-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
@@ -30,7 +30,7 @@ dependencies = [
 name = "kernel-lib"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]

@@ -65,27 +65,51 @@ pub(crate) enum Step {
     Verify(VerifyMode, bool),
 }
 
-const MACROS_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust-macros"]);
+const MACROS_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust-compute-macros"]);
 const XTASK_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "xtask"]);
-const CORE_LIB_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust", "--lib"]);
+const CORE_LIB_TESTS: Step = Step::Cargo(&["test", "--locked", "-p", "gust-compute", "--lib"]);
 /// The `gust::cpu` runtime tests (the CPU twin's device, `ulps`, call checks). They need neither slangc nor a GPU
 /// (the `gust` crate has no build script and no GPU dependency), but share the library test binary with tests that
 /// do need slangc, so the name filter carves them out for the Unit suite and CI.
-const CORE_CPU_TESTS: Step =
-    Step::CountedCargo(&["test", "--locked", "-p", "gust", "--lib", "cpu::tests::"]);
+const CORE_CPU_TESTS: Step = Step::CountedCargo(&[
+    "test",
+    "--locked",
+    "-p",
+    "gust-compute",
+    "--lib",
+    "cpu::tests::",
+]);
 /// The `gust::artifact` tests (`verify_artifact` on the committed precompiled vector-add fixture, the identity and layout
 /// negatives, `content_key` vectors). Pure: no slangc, no process, no GPU. The integration test file is whole; the
 /// library tests are carved out by name and counted, as `cpu::tests::` is.
-const CORE_ARTIFACT_TESTS: Step =
-    Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "artifact"]);
+const CORE_ARTIFACT_TESTS: Step = Step::Cargo(&[
+    "test",
+    "--locked",
+    "-p",
+    "gust-compute",
+    "--test",
+    "artifact",
+]);
 /// The scalar coretests transcription on the CPU twin (m5.d3): every case of docs/development/CORETESTS.md against its
 /// literal, with the id guards. Pure: no slangc, no process, no GPU (the GPU half is `check-feature gpu-semantics`).
-const CORE_CORETESTS_TWIN: Step =
-    Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "coretests_twin"]);
+const CORE_CORETESTS_TWIN: Step = Step::Cargo(&[
+    "test",
+    "--locked",
+    "-p",
+    "gust-compute",
+    "--test",
+    "coretests_twin",
+]);
 /// The uniforms fixture (m6.u2) compiled with rustc and run on the CPU twin against a hand reference, with the
 /// `Std140V1` size and offsets of its structs. Pure: no slangc, no process, no GPU.
-const CORE_UNIFORMS_TWIN: Step =
-    Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "uniforms_twin"]);
+const CORE_UNIFORMS_TWIN: Step = Step::Cargo(&[
+    "test",
+    "--locked",
+    "-p",
+    "gust-compute",
+    "--test",
+    "uniforms_twin",
+]);
 /// The off state of the `slang-runtime` feature (D44). The workspace build unifies the feature on (the examples and the
 /// self dev-dependencies ask for it), so these two calls, which build `gust` and `gust-wgpu` alone and without default
 /// features, are the only observers of the bridge's cfg attributes: they fail when something the precompiled path needs
@@ -94,9 +118,9 @@ const OFF_STATE_CLIPPY: Step = Step::Cargo(&[
     "clippy",
     "--locked",
     "-p",
-    "gust",
+    "gust-compute",
     "-p",
-    "gust-wgpu",
+    "gust-compute-wgpu",
     "--no-default-features",
     "--lib",
     "--",
@@ -107,9 +131,9 @@ const OFF_STATE_CHECK: Step = Step::Cargo(&[
     "check",
     "--locked",
     "-p",
-    "gust",
+    "gust-compute",
     "-p",
-    "gust-wgpu",
+    "gust-compute-wgpu",
     "--no-default-features",
     "--lib",
 ]);
@@ -117,12 +141,18 @@ const CORE_ARTIFACT_UNIT_TESTS: Step = Step::CountedCargo(&[
     "test",
     "--locked",
     "-p",
-    "gust",
+    "gust-compute",
     "--lib",
     "artifact::tests::",
 ]);
-const CORE_DIAGNOSTICS_TESTS: Step =
-    Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "diagnostics"]);
+const CORE_DIAGNOSTICS_TESTS: Step = Step::Cargo(&[
+    "test",
+    "--locked",
+    "-p",
+    "gust-compute",
+    "--test",
+    "diagnostics",
+]);
 /// The naga layout gate (slice mx.n): every fixture's WGSL through wgpu's own naga against the descriptors' layouts.
 /// It needs slangc and the native reflection helper but no adapter, so it runs here (the CI job `slang`) as well as in
 /// `check-feature reflection` and, counted in `GPU_SUITE_PIN`, in `verify --mode gpu` (the job `gpu-software`).
@@ -130,7 +160,7 @@ const NAGA_LAYOUT_GATE: Step = Step::Cargo(&[
     "test",
     "--locked",
     "-p",
-    "gust-wgpu",
+    "gust-compute-wgpu",
     "--test",
     "naga_layout",
 ]);

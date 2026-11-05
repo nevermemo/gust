@@ -9,8 +9,8 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-gust = { path = "../../../crates/gust" }
-gust-wgpu = { path = "../../../crates/gust-wgpu", features = ["slang-runtime"] }
+gust = { package = "gust-compute", path = "../../../crates/gust" }
+gust-wgpu = { package = "gust-compute-wgpu", path = "../../../crates/gust-wgpu", features = ["slang-runtime"] }
 
 # `--cfg gust_dual` and `gust_profile` are set by cargo xtask and by gust's build script, not by this manifest.
 [lints.rust]

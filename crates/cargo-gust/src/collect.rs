@@ -259,7 +259,7 @@ impl Drop for RecordRoot {
 /// The error for a collection that found no kernel.
 pub(crate) fn zero_kernels_error(package: &str) -> String {
     format!(
-        "zero kernels collected for `{package}`: the crate may have no `#[gpu]` module, or its gust-macros predates export mode (GUST_EXPORT_DIR); nothing was written"
+        "zero kernels collected for `{package}`: the crate may have no `#[gpu]` module, or its gust-compute-macros predates export mode (GUST_EXPORT_DIR); nothing was written"
     )
 }
 

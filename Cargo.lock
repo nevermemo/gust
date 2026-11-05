@@ -36,8 +36,8 @@ dependencies = [
 name = "atomic-counter"
 version = "0.1.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
@@ -97,7 +97,7 @@ dependencies = [
 name = "cargo-gust"
 version = "0.1.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -127,9 +127,9 @@ dependencies = [
 name = "component-pool"
 version = "0.1.0"
 dependencies = [
- "gust",
  "gust-algo",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
@@ -207,23 +207,23 @@ dependencies = [
 ]
 
 [[package]]
-name = "gust"
-version = "0.1.0"
-dependencies = [
- "gust",
- "gust-macros",
-]
-
-[[package]]
 name = "gust-algo"
 version = "0.1.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
-name = "gust-macros"
+name = "gust-compute"
+version = "0.1.0"
+dependencies = [
+ "gust-compute",
+ "gust-compute-macros",
+]
+
+[[package]]
+name = "gust-compute-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
@@ -232,11 +232,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "gust-wgpu"
+name = "gust-compute-wgpu"
 version = "0.1.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
  "pollster",
  "wgpu",
 ]
@@ -341,8 +341,8 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 name = "map-chain"
 version = "0.1.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
@@ -496,8 +496,8 @@ dependencies = [
 name = "particle-step"
 version = "0.1.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
@@ -516,8 +516,8 @@ checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
 name = "polynomial"
 version = "0.1.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
@@ -650,16 +650,16 @@ dependencies = [
 name = "shape-bench"
 version = "0.1.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
 name = "signal-pipeline"
 version = "0.1.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
@@ -687,8 +687,8 @@ dependencies = [
 name = "staged-graph"
 version = "0.1.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
@@ -732,8 +732,8 @@ dependencies = [
 name = "texture-threshold"
 version = "0.1.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
@@ -760,8 +760,8 @@ dependencies = [
 name = "typed-pipeline"
 version = "0.1.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
@@ -780,8 +780,8 @@ checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 name = "vector-add"
 version = "0.1.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
@@ -853,8 +853,8 @@ dependencies = [
 name = "web-vector-add"
 version = "0.1.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
  "js-sys",
  "wasm-bindgen",
  "wasm-bindgen-futures",

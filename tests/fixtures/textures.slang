@@ -226,7 +226,8 @@ void __gust_div_assign(inout uint3 a, uint b) { a = a / b; }
 void __gust_div_assign(inout uint4 a, uint4 b) { a = a / b; }
 void __gust_div_assign(inout uint4 a, uint b) { a = a / b; }
 
-[[vk::binding(0, 0)]] [format("r32i")] RWTexture2D<int> field;
+[[vk::binding(0, 0)]] Texture2D<int> source;
+[[vk::binding(1, 0)]] [format("r32i")] RWTexture2D<int> field;
 
 // @rust kernel: textures::shift
 [shader("compute")]
@@ -238,7 +239,7 @@ void gpu_textures_shift(uint3 id : SV_DispatchThreadID)
     field.GetDimensions(__gpu_width_field, __gpu_height_field);
     if ((((id.x + uint(1)) < __gpu_width_field) && (id.y < __gpu_height_field)))
     {
-        var next = field[uint2((id.x + uint(1)), id.y)];
+        var next = source[uint2((id.x + uint(1)), id.y)];
         field.Store(uint2(id.x, id.y), (next - 1));
     }
 }

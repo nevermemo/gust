@@ -219,6 +219,20 @@ describes the intended behaviour and is not evidence.
   `STORAGE`) and the device instance at submit. Formats are the nine of `gust::texture::Format`
   (`R32/Rg32/Rgba32` x `Uint/Sint/Float`); `StorageTexture2D` (read-write) exists for the three r32 formats only,
   `WriteTexture2D` (write-only) for all nine.
+  *As built on the GPU (slices mx.t2 to mx.t4; measured on the adapter above).* A `#[gust::gpu]` kernel takes
+  `Texture2D<T>` (sampled), `StorageTexture2D<R32*>`, `WriteTexture2D<F>` and `Sampler` parameters, and the typed `dispatch`
+  and `dispatch_extent` take `gust_wgpu::GpuTexture2d<F>` and `GpuSampler` for them. `load` and `store` are exact:
+  on all nine formats the GPU and the twin agree bit for bit and with an independent host expectation, and
+  `read_texture` returns what `write_texture` stored (`crates/gust-wgpu/tests/textures.rs`). `sample` is outside the
+  exact contract (section 4): a nearest read is the formula's texel except within 1/128 of a texel edge (the test's
+tolerance; measured about 1e-6 on one adapter), and a linear
+  read is inside the error domain of section 4. A 32-bit float texture is linearly filterable only on a device that
+  enabled `float32-filterable` (a `FeaturesPolicy::Adapter` device on an adapter that offers it); without it a linear
+  sampler is `Error::TextureFilter` (D64). Binding one texture to two parameters of a call is refused before anything
+  runs (`cpu::Error::Aliased` on the twin, `Error::AliasedBinding` on the GPU). What the GPU does
+  where the specification leaves it open is the ledger rows KM-12 (a texel address outside the texture), KM-13 (the
+  weights of a linear read) and KM-14 (a nearest read next to a texel edge). `examples/texture-threshold` and the
+  `texture_ops` kernel of `tests/cpu-target` run textures end to end, on the GPU and on the production CPU target.
 - **The `pixel` shape at run time (slice mx.p1b; D61, D120, D127).** A call of a `pixel` kernel over `n` elements runs
   the body once for each element `i` in `0..n`, as the twin does, and on the GPU each run is one fragment: the host
   draws a full-screen triangle into an 8192-wide attachment, scissored to the `n` live texels, so no fragment outside
@@ -561,6 +575,30 @@ neighbouring texel *indices*: clamped to `[0, n - 1]`, or wrapped modulo `n`.
 **Nearest** reads texel `(min(floor(x), width - 1), min(floor(y), height - 1))`; it is exact on the twin. A GPU may
 pick the neighbouring texel when `x` is within an ulp of an integer; this is documented and not chased (D39).
 [`nearest_picks_the_texel_the_coordinate_falls_in`, `nearest_follows_v_down_the_rows`]
+The test (slice mx.t4) does not assert the formula's texel within 1/128 of a texel edge: there it asserts only that the
+read is the formula's texel or one of the texels around it. This **widens** the statement above, which allows a
+neighbour only "within an ulp" of an integer. The 1/128 is the test's tolerance, not a measurement. It is a choice
+that assumes a sampler quantising the sub-texel position to 8 bits (steps of 1/256, so 1/128 is two steps); that
+count was not read from any device (inferred). Vulkan guarantees only 4 sub-texel bits (a step of 1/16), which this
+tolerance would not cover; a device that needs the wider band fails the test, and the finding is then recorded here
+(D52), not hidden by a looser assertion.
+Measured on the adapter of section 1 (slice mx.t4, 533 coordinates on each of `r32float`, `rg32float` and
+`rgba32float`, so 1599 samples, per address mode and per device): where the coordinate is at least 1/128 of a texel from a
+texel edge the GPU picked the formula's texel on every sample, bit for bit, under ClampToEdge and under Repeat, with and
+without `float32-filterable`. Within 1/128 of an edge the samples were the edges themselves and the floats one step
+either side of them (about 3e-7 texel): there the GPU picked the formula's texel or a texel next to it, never another,
+and picked the neighbour for 24 of 63 samples under ClampToEdge and 24 of 99 under Repeat. All of those were at the
+5-wide edges (k/5 is not representable in `f32`, so `u * 5` is not exact there); the 4-wide probes (edges at k/4, a
+power of two with exact products, among them KM-14) all picked the formula's texel. That the rounding of `u * width`
+is the cause is an inference from that split, not a separate measurement.
+The band was then probed directly (fix round 1 of the slice): each edge and border at 2^-20, 2^-12, 2^-9, 2^-8 and 2^-7
+texel on either side, per address mode and per device. The GPU picked another texel only at 2^-20 (6 of 42 probes
+under ClampToEdge, 6 of 60 under Repeat; the farthest at 1.01e-6 texel, the distance being that of the rounded `f32`
+coordinate) and at none of the 2^-12 and farther distances (0 of 42 and 0 of 60 each). So the measured band on this
+adapter is about a millionth of a texel, four orders of magnitude inside the 1/128 tolerance, which is therefore slack and
+not a measurement of this device. The same probes ran on a device without `float32-filterable` and with it: the
+same counts. They have not been measured on any other adapter (lavapipe has not run the band probes yet).
+[`nearest_sampling_picks_the_texel_of_the_formula_under_clamp_and_repeat`]
 
 **Linear** (bilinear) computes `x' = x - 0.5`, `i0 = floor(x')`, `fx = x' - i0` (and `y` likewise), reads the four
 texels `(i0, j0)`, `(i0 + 1, j0)`, `(i0, j0 + 1)`, `(i0 + 1, j0 + 1)` after the address mode, and returns
@@ -572,9 +610,17 @@ texels `(i0, j0)`, `(i0 + 1, j0)`, `(i0, j0 + 1)`, `(i0 + 1, j0 + 1)` after the 
 **Error domain** of a GPU `sample` against that formula, per channel:
 `|gpu - twin| <= 2^-8 * (max - min of the four texels) + 2 * ulp(max |texel|)`
 (`cpu::texture::linear_error_bound`; the `2^-8` is the precision WebGPU allows for the filter weights, inferred from
-the specification and to be pinned per adapter as an observation, D52, in mx.t4).
+the specification; D52).
 [`the_linear_error_bound_is_a_256th_of_the_range_plus_two_ulps_of_the_largest_texel`,
 `ulp_is_the_gap_to_the_next_magnitude`]
+Measured on the adapter of section 1 (slice mx.t4, 533 coordinates on each of three formats, so 1599 samples, per address mode, on a
+`float32-filterable` device): the largest `|gpu - twin|` was 0.865 of the bound under ClampToEdge and 0.977 of it under Repeat, so no sample left
+the domain and the `2^-8` term is close to what this adapter uses (that its weights are quantised is inferred from one
+value, KM-13, not measured). `|gpu - reference|`
+and `|twin - reference|` against an independent `f64` evaluation are inside the same bound. The ratios are one adapter's
+observation, printed by the test with `--nocapture`, not a requirement. The bound itself is enforced on every adapter.
+[`linear_sampling_is_within_the_error_domain_under_clamp_and_repeat`,
+`the_fixture_kernels_that_sample_agree_with_the_twin_within_the_bound`]
 NaN and infinite texels, and coordinates with `|u| > 2^24` or `|v| > 2^24`, are outside the domain: the twin does
 not panic there (Clamp and Repeat both tested) and what it returns is unspecified. Only float textures have `sample`
 at all (neither filter exists for an integer texture, a compile error); an integer texture is read with `load`.
@@ -591,7 +637,7 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   bound resources (section 2.2). Rust panics. KM-11 pins the observation (load returned 0, store dropped, with a
   4-element buffer and index 4).
 - **Race-free.** Within one dispatch no two invocations write the same location, and no invocation reads a location
-  that another writes, except through the atomic functions. On the GPU a race is a dynamic error, which section 2.2
+  that another writes (an element of a buffer or a texel of a texture; a texture bound to two parameters is refused, so a kernel reads its neighbours from a separate texture), except through the atomic functions. On the GPU a race is a dynamic error, which section 2.2
   says "may or may not be detectable"; after a dynamic error the program "may not behave as described in the rest of
   this specification". Parameter alias rejection (D34) is a different guarantee and does not prevent this.
 - **Texel addresses.** `Texture2D::load`, `StorageTexture2D::load` and `::store` and `WriteTexture2D::store` take
@@ -599,10 +645,11 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   They are exact and inside the contract only while `x < width` and `y < height`. Outside, the twin panics with
   "index out of bounds" (the same message as KM-11, and a coordinate past the width panics even when the flat index
   would exist, `a_texel_address_past_the_width_is_out_of_bounds_even_if_the_flat_index_exists`); the host methods of
-  the carrier return `cpu::Error::TextureCoordinate`. On the GPU the outcome is open: WGSL `textureLoad` with an
-  out-of-range coordinate returns an unspecified value (a texel of the texture, a zero value, or for a texture with
-  an alpha channel a vector such as (0, 0, 0, 1); the exact set is to be read from the WGSL text and measured in
-  mx.t4) and `textureStore` may be dropped (inferred, not measured; a row KM-12 is proposed there, not claimed here).
+  the carrier return `cpu::Error::TextureCoordinate`. On the GPU the outcome is open (row KM-12): WGSL `textureLoad`
+  with an out-of-range coordinate returns an unspecified value (a texel of the texture, a zero value, or for a
+  texture with an alpha channel a vector such as (0, 0, 0, 1)) and `textureStore` may be dropped. Measured on the
+  adapter of section 1 (slice mx.t4), in a 4 x 2 `r32uint` storage texture at `(4, 0)` and at `(0, 2)`: the load
+  returned 0 and the store changed no texel. A texture with an alpha channel and the other formats were not measured.
 - **Why the twin cannot help.** The twin runs invocations one at a time in ascending `global_id.x`, so it
   produces one definite order. A racy kernel gives a clean twin result that matches a reference computed in the same
   order and proves nothing about the GPU, where the order is unspecified. Every reference in a fixture or example is
@@ -741,7 +788,7 @@ plain-Rust result, and the test asserts that the twin's outcome is accepted by t
 mode of the test crate: the twin runs the shadow body compiled in that crate, so it panics or wraps exactly as the
 Rust column does. The twin is compared with Rust and never with the GPU, which D39 allows to differ. Each row's twin
 outcome is therefore pinned, including for the rows where the specification leaves the GPU open (KM-05 to KM-08,
-KM-11), where the GPU value stays an unenforced observation. A kernel without storage parameters is covered by a
+KM-11 to KM-14), where the GPU value stays an unenforced observation. A kernel without storage parameters is covered by a
 separate test in the same file. Labels are defined in section 2. No ledger row is **proven**: a row records a
 difference, and the proven label needs the two targets to agree.
 
@@ -758,6 +805,9 @@ difference, and the proven label needs the two targets to agree.
 | KM-09 | Contended `atomic_exchange` and `atomic_compare_exchange` (257 invocations, one cell), and the uncontended `atomic_compare_exchange` (one invocation) | Sequential, ascending invocation id: the exchange ends at 256; the compare-exchange from 999 to `id + 1` ends at 1. | Set-valued: the exchange ends at some id in 0 to 256, the compare-exchange at some value in 1 to 257, or at 999 (unchanged) because the weak compare-exchange may fail spuriously (WGSL section 17.8.5); the test accepts all of that set. The uncontended case (one invocation, `compare-exchange(cell, 999, id + 1)`) is set-valued too: the cell ends at 1 or stays 999 (WGSL section 17.8.5, D47), and the Rust and twin columns end at 1. Observed over 32 dispatches per run, three runs: 1 to 10 distinct final values per run, and, in the contended cases, never the sequential result (the exchange ended between 1 and 251, the compare-exchange between 7 and 137). The uncontended case ended at 1, the sequential result, in every dispatch, in both overflow modes. | spec-allowed (the set), measured |
 | KM-10 | Overflow of the plain operators `+`, `-`, `*` and unary `-` on `u32` and `i32`. The methods `wrapping_add`, `wrapping_sub`, `wrapping_mul` and `wrapping_neg` are the way to ask for the wrapped result (slice m7.w): they are `DOMAIN` controls in the ledger test, not part of this row | Checks on: panics ("attempt to add with overflow" and so on). Checks off: wraps modulo 2^32. The `wrapping_*` methods wrap in every profile. | Wraps modulo 2^32 (WGSL section 6.2.3): `u32::MAX + 1 == 0`, `i32::MAX + 1 == i32::MIN`, `0u32 - 1 == u32::MAX`, `-i32::MIN == i32::MIN`. The `wrapping_*` methods lower to the same plain operators (`wrapping_neg` is `0 - a`) and give these values. | spec-allowed, measured |
 | KM-11 | Out-of-bounds index equal to the buffer length | Panics "index out of bounds" in every profile. | Unspecified (a dynamic error, WGSL section 6.5.7). Observed with index 4: a load from a 4-element buffer returned 0, and a store into a 4-element buffer was dropped (the buffer was unchanged); the store is measured alone, with a longer `source` so that the kernel's own load is in bounds, and the twin's store row panics at the store because its load is in bounds. | unspecified, measured |
+| KM-12 | A texel address outside a texture: `load` or `store` at `(width, 0)` or `(0, height)` of a 4 x 2 `r32uint` storage texture (slice mx.t4) | Panics "index out of bounds" in every profile: the twin says "index out of bounds: the texel is (4, 0) but the texture is 4x2" (a coordinate past the width panics although the flat index exists), and a `Vec<Vec<u32>>` indexed the same way panics too. | Unspecified (WGSL `textureLoad` and `textureStore` with an out-of-range coordinate). Observed at both addresses: the load returned 0 and the store changed no texel. One format, one adapter. | unspecified, measured |
+| KM-13 | Linear `sample` of a 3 x 2 `r32float` texture under clamp-to-edge, at (0.37, 0.61) and (0.93, 0.08) (slice mx.t4) | The formula of section 4 in `f32`, in its written order; the twin and plain Rust agree bit for bit (0x40753f7c, about 3.8319, at the first point; 0x40800000, 4.0, at the second). | Inside the error domain of section 4 (`linear_error_bound`), which the test enforces on every adapter; the value inside it is the hardware's. Observed: 0x40760000 (3.84375) at the first point, where the formula gives about 3.8319, and 0x40800000 (equal to the formula) at the second. Needs a device with `float32-filterable`; the test fails, it does not skip, on an adapter without it. | unspecified, measured |
+| KM-14 | Nearest `sample` of a 4 x 1 `r32float` texture of 10, 20, 30, 40 under clamp-to-edge, within one ulp of a texel edge: u = 0.5 - 1 ulp, 0.5, 0.75 - 1 ulp and 0.25 + 1 ulp (slice mx.t4) | The texel `min(floor(u * 4), 3)`: 20, 30, 30 and 20 (a coordinate just below an edge reads the texel on its left). | A GPU may pick the neighbouring texel (D39). Observed: the formula's texel for all four probes (the 4-wide edges, with exact products). The 5-wide probes of `textures.rs` (edges at k/5, one ulp of u either side) picked a neighbour in 24 of 63 cases under clamp. The 1/128 texel band of that test is its tolerance, not a measurement; the direct probes found a neighbour only at 2^-20 texel and none from 2^-12 (section 4, *Nearest*). | unspecified, measured |
 
 Reading the table: the Rust column and every GPU value that the specification fixes (labelled spec-allowed) are
 enforced, so the test fails when one changes and the row is edited in the same change. A value marked unspecified is
@@ -768,8 +818,9 @@ its `KM-nn` row here and its case in `crates/gust-wgpu/tests/mismatch.rs`; the i
 Two kinds of adapter run the ledger, told apart by `device_type`: hardware, and software (`Cpu`, Mesa lavapipe in the
 `gpu-software` job). The kind never changes what is enforced: the spec-allowed GPU values, the Rust column, the twin
 column and every `DOMAIN` control hold on both, and a deviation of one of them on lavapipe is a red test, never a
-second observation. Only the observations of the unenforced rows (KM-07, KM-08, KM-11 and the NaN casts of KM-05 and
-KM-06) are kept per kind. The GPU column above is the hardware observation (RTX 5090, NVIDIA 610.88, Vulkan). The
+second observation. Only the observations of the unenforced rows (KM-07, KM-08, KM-11 to KM-14 and the NaN casts of
+KM-05 and KM-06) are kept per kind. The exception inside them is KM-13, whose value must also lie inside the error
+domain of section 4 on every adapter, so that bound is enforced like a `DOMAIN` control. The GPU column above is the hardware observation (RTX 5090, NVIDIA 610.88, Vulkan). The
 software column is a separate pin, set only where lavapipe differs from it, and the test prints a NOTE, with the
 driver, backend and `driver_info` of the adapter, when the running kind's own pin changes. A row without a software
 pin (the hardware pin accepted m5.b0's value) is then compared only with the hardware pin, the NOTE says "no software
@@ -781,7 +832,9 @@ NaN, `f32::NAN`, propagating) from a NaN operand and `0xffc00000` (the x86 defau
 `inf - inf`, `inf / inf` and `0.0 / 0.0`, where the RTX 5090 gives `0x7fffffff`; `3.0e38 / 3.0e38` gives 1
 as Rust does, where the RTX 5090 gives 0; and KM-08 keeps denormals as Rust does (`1.0e-40 * 1.0` is `0x000116c2`,
 that is `1.0e-40`, and `1.0e-40 == 0.0` is false), where the RTX 5090 flushes them. KM-09 keeps its set rule on both
-kinds and gets no per-kind value: its observations vary between runs. Both are unspecified, measured observations of
+kinds and gets no per-kind value: its observations vary between runs. KM-12 to KM-14 were measured on the RTX 5090
+only (slice mx.t4); they have no software pin yet, so a lavapipe run compares them with the hardware pin and prints a
+NOTE where they differ, and nothing fails except the KM-13 bound. Both are unspecified, measured observations of
 one driver version each, not requirements, and the Rust and twin columns are unchanged.
 
 ## 8. What is proven

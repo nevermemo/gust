@@ -557,6 +557,57 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   must-fix (`(t).width()` passed validation and emitted invalid Slang), five should-fixes and the nits taken. Tests:
   gust-macros 428, gust lib 292, cargo-gust 213. GPU runs of `#[gpu]` texture kernels are mx.t4's. Main: 24 of 24 gates
   green on `c234b67` (2026-11-04 22:59 to 23:47Z, RTX 5090).
+- MX mx.t4 (`fbc43f0`, fix round `300bfbc`, merge `fbe52e5`; D52, D62, D64, D91, MX plan §3.5, §6): texture evidence,
+  the first GPU runs of `#[gpu]` texture kernels. `crates/gust-wgpu/tests/textures.rs` (39 tests): `load` and `store`
+  against the twin, bit-exact on all nine formats and in place on the three r32 formats; the fixture kernels against
+  host loops, `shift` included (made race-free in the fix round: it read a texel its neighbour wrote, against SEMANTICS
+  §5); a twin out-of-range `store` panics; binding one texture twice is `cpu::Error::Aliased` on the twin and
+  `Error::AliasedBinding` on the GPU (not `Borrowed`: the alias is found before any borrow); nearest sampling exact away
+  from an edge, and linear sampling and `blur`/`gather` within §3.5's bound against the twin and an f64 host reference
+  (worst 0.865 of the bound clamp, 0.977 repeat). The nearest band was probed at 2^-20, 2^-12, 2^-9, 2^-8 and 2^-7 texel
+  from an edge: on the RTX 5090 the GPU picked the neighbour only at 2^-20 (6 of 42 clamp, 6 of 60 repeat samples), so
+  the test's 1/128 band is a tolerance, not a measurement, and widens §3.5's "within 1 ulp" for nearest sampling. New
+  example `examples/texture-threshold` (storage texture in, a buffer and a write-only texture out; twin test,
+  check-examples, `EXPECTED_SPIRV`); a `tests/cpu-target` texture kernel whose output line xtask now requires. Ledger
+  rows KM-12 to KM-14 (guard 11 to 14), pinned on the RTX 5090 only; KM-13 asserts the `TextureFilter` refusal on an
+  adapter without `float32-filterable`. Lavapipe (gpu-software with the nightly list, runs 41955449332 on `fbc43f0` and
+  41965659661 on `300bfbc`): textures 39 passed, the ledger passed, and KM-13 printed D52's NOTE on llvmpipe (observed
+  `0x40753f7c`, no software pin). `export-artifacts --compare` lists the four new `threshold__mark` exports (80 to 84),
+  with no existing hash changed. Gpu pin 341/32. Opus merge after fixes: two must-fixes (VALIDATION said `shift` ran on
+  the twin when it ran nowhere; KM-14 called the 1/128 band measured) and four should-fixes taken. In the fix round's
+  check-fast, the gust-wgpu `textures` binary died once with STATUS_ACCESS_VIOLATION and passed on rerun: the first
+  sighting outside gust-algo (see the m7.av follow-ups). Main: 24 of 24 gates green on `fbe52e5` (2026-11-05 04:08 to
+  04:59Z, RTX 5090).
+- MX mx.p1a (`5dfa505`, fix round `a523511`, merge `6bb4dff`; D61 to D63, D93, D120, D127, MX plan §4.1, §4.2, §4.6):
+  the `pixel` profile in the macro. `crates/gust-macros/src/profile/pixel.rs` emits the fragment entry: each output is a
+  storage write at the element's own index (D120), and the element is `y * 8192 + x` (D127, Option S).
+  `gust::PIXEL_ROW_WIDTH` and `gust::PIXEL_MAX_ELEMENTS` sit beside `Shape` in `crates/gust/src/descriptor.rs`, and a
+  twin test checks that every fixture kernel's Slang carries the width. Until mx.p1b, gust-wgpu refuses a kernel whose
+  shape is not `grid` with `Error::ShapeUnsupported` before any pipeline is created
+  (`crates/gust-wgpu/tests/shape_refusal.rs`), so pixel kernels run on the CPU twin (`crates/gust/tests/pixel_twin.rs`)
+  and the `cpu` target only; a `tests/cpu-target` pixel kernel prints a line xtask now requires (`pixel_shade::shade`,
+  1000 elements, max ULP 0). No new diagnostic code; E0730 is retired (two UI cases removed, `shape-pixel-ok` added;
+  check-ui pin 83). The kill rule held: `slang/mod.rs` and `validate/mod.rs` have no changed line, the grid goldens are
+  unchanged, and `export-artifacts --compare` on the lane's base listed all 80 exports equal. One doc-only edit outside
+  the brief's files: the `is_pixel_output` comment in `crates/gust/src/reflect/mod.rs` now says the function is dead for
+  MX until Breeze, because the never-written attachment is a host object the shader does not name. Opus merge after
+  fixes: no must-fix; three should-fixes taken (the constants and their twin test, a typed refusal in place of a panic,
+  extra gates); two nits deferred to mx.p1b. Gpu pin 343/33. Main: 24 of 24 gates green on `a3a8362`, the merge of
+  mx.p1a and m7.av2 (2026-11-05 05:39 to 06:42Z, RTX 5090).
+- M7 follow-up m7.av, m7.av2 (probe in the work area; wip `84808e8`, merge `a3a8362`): the gust-algo
+  STATUS_ACCESS_VIOLATION. Probe m7.av: whole-binary runs with default threads crashed 3 times in 14 (alone 1 in 5,
+  beside a second GPU process 1 in 5, with a helper holding 25.5 GiB of video memory 1 in 4); 98 one-test processes, the
+  single-thread runs and the narrowing runs (the 11 heavy tests alone, the last three, the 49 GPU tests alone) had none.
+  Every crash came after `gpu_v1_dispatch_counts_follow_the_schedules` finished, with the tie-ladder or
+  deepest-schedules test still running, and no Windows event was logged. Slice m7.av2: the gust-algo GPU tests share two
+  devices, taken in turns (`crates/gust-algo/src/tests/gpu.rs`), with no assertion changed. Its pre-registered loop had
+  0 crashes in 30 whole-binary runs, default threads, no added load. The matched baseline was 1 in 5 (Fisher exact p ~
+  0.14), and 3 in 14 over all default-thread conditions (p ~ 0.03); the 95 % upper bound on the per-run rate is 9.5 %.
+  Runs also got faster (71 to 107 s, against 94 to 112 s), so timing changed as well and the cause is not established: a
+  mitigation in gust-algo only. Four `with_limits` tests still create and drop 5 devices per run, and the loop sampled
+  no video-memory peak (the shared devices now outlive the tests). mx.t4 saw the fault once in gust-wgpu's `textures`
+  binary. Opus: merge as is. Main: 24 of 24 gates green on `a3a8362`, the merge of mx.p1a and m7.av2 (2026-11-05 05:39
+  to 06:42Z, RTX 5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

@@ -59,11 +59,17 @@ mod textures {
         }
     }
 
-    // The signed storage format, with a texel address that is an expression.
+    // The signed storage format, with a texel address that is an expression. The neighbour is read from a separate
+    // sampled texture and the result is stored in another, so no invocation reads a texel that another writes (the
+    // race-free precondition of docs/SEMANTICS.md section 5): `field[x] = source[x + 1] - 1`.
     #[kernel(workgroup_size(8, 8, 1))]
-    pub fn shift(id: SV_DispatchThreadID, mut field: StorageTexture2D<R32Sint>) {
+    pub fn shift(
+        id: SV_DispatchThreadID,
+        source: Texture2D<i32>,
+        mut field: StorageTexture2D<R32Sint>,
+    ) {
         if id.x + 1u32 < field.width() && id.y < field.height() {
-            let next = field.load(id.x + 1u32, id.y);
+            let next = source.load(id.x + 1u32, id.y);
             field.store(id.x, id.y, next - 1);
         }
     }

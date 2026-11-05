@@ -721,6 +721,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "texture-threshold"
+version = "0.1.0"
+dependencies = [
+ "gust",
+ "gust-wgpu",
+]
+
+[[package]]
 name = "thiserror"
 version = "2.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -4,8 +4,12 @@
 //! The tests run in parallel, on the default test threads. They used to share a mutex because one blocking readback
 //! once failed with `Error::Map("mapping not complete after poll(Wait)")` while other threads polled the same device;
 //! D97 (m7.rb) made blocking readbacks safe under concurrent polls, and the mutex went with m7.r3.
+//!
+//! Devices are shared, not opened per test (m7.av2): the default device for the tests that count nothing, and two
+//! process-wide devices behind a lock each ([`Lane`]) for the heavy tests and for the tests that read the counters of
+//! their device. Only the tests that lower a limit (`with_limits`) still open a device of their own.
 
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use gust_wgpu::{DeviceHandle, DeviceOptions, GpuVec, HeadlessDevice, default_device};
 
@@ -25,22 +29,108 @@ use crate::{
     variant::{Operation, shipped},
 };
 
-/// The lock of the heavy tests: those with 2^24 or more elements, or a buffer at the binding limit (128 MiB), each
-/// hold a set of buffers of hundreds of MiB. Every other test runs in parallel; these run one at a time, so at most one
-/// heavy set is live at once and the VRAM a run adds to a GPU it shares with model services stays bounded (plan
-/// m7.r3 review S1). Poison-tolerant: a failed heavy test must not fail the next one with a poisoned lock.
-fn heavy() -> MutexGuard<'static, ()> {
-    static LOCK: Mutex<()> = Mutex::new(());
-    LOCK.lock().unwrap_or_else(PoisonError::into_inner)
+/// A lock and the devices only its holder uses: the two groups of tests that must be alone on a device (the heavy
+/// ones, and those that read the counters of a device) each get one, and a device is opened once for the whole run.
+/// m7.av saw the whole binary die intermittently with an access violation (3 runs in 17), never with one test per
+/// process or with one thread. The cause is not known; one candidate is a device created and dropped per test while
+/// other tests run, so m7.av2 gives these tests process-wide devices instead.
+struct Lane {
+    lock: Mutex<()>,
+    /// The portable limits of `HeadlessDevice::new()` (128 MiB bindings), for the tests that pin them.
+    portable: OnceLock<DeviceHandle>,
+    /// The adapter's own limits, for the one test that needs buffers past the portable ones.
+    adapter: OnceLock<DeviceHandle>,
 }
 
-/// A device of the test's own, for the heavy tests: its pool is not the process-wide one, so the hundreds of MiB the
-/// test took go back to the driver when the test ends instead of staying in the shared pool for the rest of the run.
-fn own_device() -> DeviceHandle {
-    Arc::new(
-        HeadlessDevice::new()
-            .expect("a Vulkan adapter is required; these tests must not silently skip"),
-    )
+impl Lane {
+    const fn new() -> Self {
+        Self {
+            lock: Mutex::new(()),
+            portable: OnceLock::new(),
+            adapter: OnceLock::new(),
+        }
+    }
+
+    /// Wait for the lane (poison-tolerant: a failed test must not fail the next one with a poisoned lock). The idle
+    /// buffers of the devices are dropped on the way in and on the way out: a test starts on an empty pool, as on a
+    /// device of its own, so a pool counter or the pool's idle cap cannot depend on the tests that ran before, and
+    /// the hundreds of MiB a test took go back to the driver when it ends instead of staying in the pool for the
+    /// rest of the run.
+    fn enter(&'static self) -> Turn {
+        let guard = self.lock.lock().unwrap_or_else(PoisonError::into_inner);
+        let turn = Turn {
+            lane: self,
+            _guard: guard,
+        };
+        turn.clear_pools();
+        turn
+    }
+}
+
+/// A test's turn on a [`Lane`]; the lane is free again when it drops.
+struct Turn {
+    lane: &'static Lane,
+    _guard: MutexGuard<'static, ()>,
+}
+
+impl Turn {
+    /// The lane's portable-limits device.
+    fn device(&self) -> DeviceHandle {
+        self.lane
+            .portable
+            .get_or_init(|| {
+                Arc::new(
+                    HeadlessDevice::new()
+                        .expect("a Vulkan adapter is required; these tests must not silently skip"),
+                )
+            })
+            .clone()
+    }
+
+    /// The lane's device with the adapter's own limits (`DeviceOptions::default()`, as `default_device` opens).
+    fn adapter_device(&self) -> DeviceHandle {
+        self.lane
+            .adapter
+            .get_or_init(|| {
+                Arc::new(
+                    HeadlessDevice::with_options(DeviceOptions::default())
+                        .expect("a Vulkan adapter is required; these tests must not silently skip"),
+                )
+            })
+            .clone()
+    }
+
+    fn clear_pools(&self) {
+        for device in [self.lane.portable.get(), self.lane.adapter.get()]
+            .into_iter()
+            .flatten()
+        {
+            device.buffer_pool().clear();
+        }
+    }
+}
+
+impl Drop for Turn {
+    fn drop(&mut self) {
+        self.clear_pools();
+    }
+}
+
+/// The turn of the heavy tests: those with 2^24 or more elements, or a buffer at the binding limit (128 MiB), each
+/// hold a set of buffers of hundreds of MiB. Every other test runs in parallel; these run one at a time, so at most one
+/// heavy set is live at once and the VRAM a run adds to a GPU it shares with model services stays bounded (plan
+/// m7.r3 review S1). They also read the counters of the heavy devices, which no other test touches.
+fn heavy() -> Turn {
+    static LANE: Lane = Lane::new();
+    LANE.enter()
+}
+
+/// The turn of the light tests that read the counters of a device (pool and pipeline cache) and so must be alone on
+/// it. One shared device instead of one per test; the tests run one at a time among themselves and in parallel with
+/// all the others, which use `default_device()`.
+fn counted() -> Turn {
+    static LANE: Lane = Lane::new();
+    LANE.enter()
 }
 
 fn device() -> DeviceHandle {
@@ -183,8 +273,8 @@ fn gpu_float_sums_are_within_the_per_level_bound() {
 /// The tie ladder on the adapter: whatever rounding the hardware does, the distance stays within the GPU bound.
 #[test]
 fn gpu_float_sum_of_the_tie_ladder_is_within_the_bound() {
-    let _heavy = heavy();
-    let gpu = Gpu(own_device());
+    let turn = heavy();
+    let gpu = Gpu(turn.device());
     let values = tie_ladder(1 << 24);
     let actual = gpu.sum(&values);
     let check = assert_f32_sum("tie ladder", &values, actual, GPU_C);
@@ -198,10 +288,10 @@ fn gpu_float_sum_of_the_tie_ladder_is_within_the_bound() {
 
 #[test]
 fn gpu_runs_the_deepest_schedule() {
-    let _heavy = heavy();
+    let turn = heavy();
     // 2^24 + 1 elements on the shipped v1: two block passes (2049 workgroups, then one). The four-dispatch v0 form of
     // this input is `gpu_v0_runs_the_deepest_schedules` and the twin test.
-    let gpu = Gpu(own_device());
+    let gpu = Gpu(turn.device());
     let n = (1usize << 24) + 1;
     assert_eq!(gpu.sum(&vec![1u32; n]) as usize, n);
     let mut values = vec![5_000i32; n];
@@ -217,8 +307,10 @@ fn gpu_runs_the_deepest_schedule() {
 
 #[test]
 fn gpu_reductions_leave_the_input_alone_and_return_their_buffers() {
-    // A device of its own: the pool counters of the process-wide default device move with every parallel test.
-    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    // The counted tests' shared device, not the default one: the pool counters of the default device move with every
+    // parallel test.
+    let turn = counted();
+    let device = turn.device();
     let values: Vec<u32> = (0..70_001).map(|index| index % 100).collect();
     let input = GpuVec::from_slice_on(&device, &values).unwrap();
     let before = device.buffer_pool_stats();
@@ -290,9 +382,9 @@ fn gpu_min_of_an_empty_vector_is_empty_and_max_too() {
 /// pipeline cache and the pool are untouched.
 #[test]
 fn gpu_an_input_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch() {
-    let _heavy = heavy();
+    let turn = heavy();
     // The portable limits: 128 MiB bindings, 2^25 four-byte elements.
-    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    let device = turn.device();
     let limit = device.limits().max_storage_buffer_binding_size;
     let len = u32::try_from(limit / 4).unwrap() + 1;
     let input = GpuVec::<u32>::zeroed_on(&device, len).unwrap();
@@ -334,17 +426,11 @@ fn gpu_an_input_past_the_binding_limit_is_a_device_limit_error_before_any_dispat
 /// dispatch.
 #[test]
 fn gpu_a_first_pass_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch() {
-    let mut limits = HeadlessDevice::new()
-        .expect("a Vulkan adapter is required")
-        .limits()
-        .clone();
+    // A device of its own: the limits belong to the device. One device, not one to read the limits and one to set them.
+    let adapter = HeadlessDevice::new().expect("a Vulkan adapter is required");
+    let mut limits = adapter.limits().clone();
     limits.max_compute_workgroups_per_dimension = 3;
-    let device = Arc::new(
-        HeadlessDevice::new()
-            .expect("a Vulkan adapter is required")
-            .with_limits(limits)
-            .unwrap(),
-    );
+    let device = Arc::new(adapter.with_limits(limits).unwrap());
     let inside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 65_536]).unwrap();
     assert_eq!(reduce::sum(&inside).unwrap(), 3 * 65_536);
     let outside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 65_536 + 1]).unwrap();
@@ -380,8 +466,8 @@ fn gpu_scans_are_exact_at_every_boundary() {
 /// through it); the v0 counts are five and seven (`gpu_v0_runs_the_deepest_schedules`).
 #[test]
 fn gpu_runs_the_deepest_scans() {
-    let _heavy = heavy();
-    deep_scan_cases(&Gpu(own_device()));
+    let turn = heavy();
+    deep_scan_cases(&Gpu(turn.device()));
 }
 
 /// The dispatch count of a v0 scan, measured: every dispatch of a batch takes one pipeline from the device's cache (a
@@ -391,7 +477,8 @@ fn gpu_runs_the_deepest_scans() {
 /// counts are in `gpu_v1_dispatch_counts_follow_the_schedules`.
 #[test]
 fn gpu_a_scan_is_one_batch_of_three_five_or_seven_dispatches() {
-    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    let turn = counted();
+    let device = turn.device();
     let touched = |device: &HeadlessDevice| {
         let stats = device.pipeline_cache_stats();
         stats.hits + stats.misses
@@ -446,8 +533,10 @@ fn gpu_a_scan_is_one_batch_of_three_five_or_seven_dispatches() {
 
 #[test]
 fn gpu_scans_leave_the_input_alone_and_return_their_buffers() {
-    // A device of its own: the pool counters of the process-wide default device move with every parallel test.
-    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    // The counted tests' shared device, not the default one: the pool counters of the default device move with every
+    // parallel test.
+    let turn = counted();
+    let device = turn.device();
     let values: Vec<u32> = (0..70_001).map(|index| index % 100).collect();
     let input = GpuVec::from_slice_on(&device, &values).unwrap();
     let before = device.buffer_pool_stats();
@@ -501,9 +590,9 @@ fn gpu_scans_past_the_domain_wrap() {
 /// pipeline cache and the pool are untouched.
 #[test]
 fn gpu_a_scan_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch() {
-    let _heavy = heavy();
+    let turn = heavy();
     // The portable limits: 128 MiB bindings, 2^25 four-byte elements.
-    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    let device = turn.device();
     let limit = device.limits().max_storage_buffer_binding_size;
     let len = u32::try_from(limit / 4).unwrap() + 1;
     let input = GpuVec::<u32>::zeroed_on(&device, len).unwrap();
@@ -553,17 +642,11 @@ fn gpu_a_scan_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch
 /// dispatch.
 #[test]
 fn gpu_a_scan_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch() {
-    let mut limits = HeadlessDevice::new()
-        .expect("a Vulkan adapter is required")
-        .limits()
-        .clone();
+    // A device of its own: the limits belong to the device. One device, not one to read the limits and one to set them.
+    let adapter = HeadlessDevice::new().expect("a Vulkan adapter is required");
+    let mut limits = adapter.limits().clone();
     limits.max_compute_workgroups_per_dimension = 3;
-    let device = Arc::new(
-        HeadlessDevice::new()
-            .expect("a Vulkan adapter is required")
-            .with_limits(limits)
-            .unwrap(),
-    );
+    let device = Arc::new(adapter.with_limits(limits).unwrap());
     // 3 workgroups of 256 invocations, one invocation per chunk of 256: 196 608 elements.
     let inside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 256 * 256]).unwrap();
     assert_eq!(
@@ -596,8 +679,8 @@ fn gpu_compaction_is_exact_at_every_boundary() {
 /// 65 537 workgroups, past the 65 535 ceiling), and a scan of five dispatches (v1; v0 takes seven).
 #[test]
 fn gpu_runs_the_deepest_compaction() {
-    let _heavy = heavy();
-    deep_compact_cases(&Gpu(own_device()));
+    let turn = heavy();
+    deep_compact_cases(&Gpu(turn.device()));
 }
 
 /// An index that is not below `values.len()` leaves its slot zero, and a count caps what is gathered.
@@ -683,7 +766,8 @@ fn gpu_a_compaction_chain_runs_on_the_device_with_the_device_count() {
 /// the scatter, a gather is one. The numbers come from the schedules the other calls are pinned to.
 #[test]
 fn gpu_compaction_dispatch_counts_are_the_mask_the_reduction_the_scan_and_the_scatter() {
-    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    let turn = counted();
+    let device = turn.device();
     let touched = |device: &HeadlessDevice| {
         let stats = device.pipeline_cache_stats();
         stats.hits + stats.misses
@@ -730,8 +814,10 @@ fn gpu_compaction_dispatch_counts_are_the_mask_the_reduction_the_scan_and_the_sc
 
 #[test]
 fn gpu_compaction_leaves_the_flags_alone_and_returns_its_buffers() {
-    // A device of its own: the pool counters of the process-wide default device move with every parallel test.
-    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    // The counted tests' shared device, not the default one: the pool counters of the default device move with every
+    // parallel test.
+    let turn = counted();
+    let device = turn.device();
     let flags: Vec<u32> = (0..70_001).map(|index| index % 3).collect();
     let values: Vec<u32> = (0..70_001).collect();
     let on_device = GpuVec::from_slice_on(&device, &flags).unwrap();
@@ -782,9 +868,9 @@ fn gpu_compaction_leaves_the_flags_alone_and_returns_its_buffers() {
 /// gather are each the buffer in turn.
 #[test]
 fn gpu_a_compaction_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch() {
-    let _heavy = heavy();
+    let turn = heavy();
     // The portable limits: 128 MiB bindings, 2^25 four-byte elements.
-    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    let device = turn.device();
     let limit = device.limits().max_storage_buffer_binding_size;
     let len = u32::try_from(limit / 4).unwrap() + 1;
     let small = GpuVec::from_slice_on(&device, &[0u32]).unwrap();
@@ -855,17 +941,11 @@ fn gpu_a_compaction_past_the_binding_limit_is_a_device_limit_error_before_any_di
 /// for the flags of `count` and `indices` and for the indices of a gather.
 #[test]
 fn gpu_a_compaction_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch() {
-    let mut limits = HeadlessDevice::new()
-        .expect("a Vulkan adapter is required")
-        .limits()
-        .clone();
+    // A device of its own: the limits belong to the device. One device, not one to read the limits and one to set them.
+    let adapter = HeadlessDevice::new().expect("a Vulkan adapter is required");
+    let mut limits = adapter.limits().clone();
     limits.max_compute_workgroups_per_dimension = 3;
-    let device = Arc::new(
-        HeadlessDevice::new()
-            .expect("a Vulkan adapter is required")
-            .with_limits(limits)
-            .unwrap(),
-    );
+    let device = Arc::new(adapter.with_limits(limits).unwrap());
     let inside = GpuVec::from_slice_on(&device, &vec![1u32; 3 * 65_536]).unwrap();
     assert_eq!(
         compact::count(&inside).unwrap().to_vec().unwrap(),
@@ -923,7 +1003,10 @@ fn gpu_a_gather_refuses_a_count_that_is_not_one_element_and_buffers_of_another_d
             "a count of {len} elements"
         );
     }
-    let other = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    // Another device than the default one: the counted tests' shared device, held for the rest of the test so that no
+    // counting test touches it meanwhile.
+    let turn = counted();
+    let other = turn.device();
     let count = GpuVec::from_slice_on(&other, &[3u32]).unwrap();
     assert!(matches!(
         compact::gather_u32(&values, &indices, &count),
@@ -1098,8 +1181,8 @@ fn gpu_v1_float_sums_are_within_the_per_level_bound() {
 /// The tie ladder on the adapter against the (tighter) bound of the v1 schedule.
 #[test]
 fn gpu_v1_float_sum_of_the_tie_ladder_is_within_the_bound() {
-    let _heavy = heavy();
-    let gpu = Pinned(own_device(), Variant::V1);
+    let turn = heavy();
+    let gpu = Pinned(turn.device(), Variant::V1);
     let values = tie_ladder(1 << 24);
     let actual = gpu.sum(&values);
     let check = assert_f32_sum_by(
@@ -1140,12 +1223,9 @@ fn gpu_v1_scans_are_exact_at_every_boundary() {
 ///   2^24 + 1 elements fit, the deep scans.
 #[test]
 fn gpu_v1_runs_the_deepest_schedules() {
-    let _heavy = heavy();
+    let turn = heavy();
     // The adapter's own limits: 2^26 + 1 four-byte elements are past the 256 MiB buffers of the portable ones.
-    let device = Arc::new(
-        HeadlessDevice::with_options(DeviceOptions::default())
-            .expect("a Vulkan adapter is required; this test must not silently skip"),
-    );
+    let device = turn.adapter_device();
     let limit = device.limits().max_storage_buffer_binding_size;
     let deepest = (1usize << 26) + 1;
     let mut n = deepest;
@@ -1208,8 +1288,8 @@ fn gpu_v1_runs_the_deepest_schedules() {
 /// (a block reduce) or a span (a scan), then one block pass per level for a reduction and `2k + 1` for a scan.
 #[test]
 fn gpu_v1_dispatch_counts_follow_the_schedules() {
-    let _heavy = heavy();
-    let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+    let turn = heavy();
+    let device = turn.device();
     let touched = |device: &HeadlessDevice| {
         let stats = device.pipeline_cache_stats();
         stats.hits + stats.misses
@@ -1284,9 +1364,12 @@ fn gpu_v1_dispatch_counts_follow_the_schedules() {
 
 #[test]
 fn gpu_variants_leave_the_input_alone_and_return_their_buffers() {
+    // The counted tests' shared device, not the default one: the pool counters of the process-wide default device move
+    // with every parallel test. Each variant starts on an empty pool, as on a device of its own.
+    let turn = counted();
+    let device = turn.device();
     for variant in [Variant::V0, Variant::V1] {
-        // A device of its own: the pool counters of the process-wide default device move with every parallel test.
-        let device = Arc::new(HeadlessDevice::new().expect("a Vulkan adapter is required"));
+        turn.clear_pools();
         let values: Vec<u32> = (0..70_001).map(|index| index % 100).collect();
         let total = values.iter().map(|v| *v as usize).sum::<usize>();
         let input = GpuVec::from_slice_on(&device, &values).unwrap();
@@ -1433,8 +1516,8 @@ fn gpu_v0_scans_are_exact_at_every_boundary() {
 /// against the v0 bound) and seven for the scan of 2^24 + 1.
 #[test]
 fn gpu_v0_runs_the_deepest_schedules() {
-    let _heavy = heavy();
-    let gpu = Pinned(own_device(), Variant::V0);
+    let turn = heavy();
+    let gpu = Pinned(turn.device(), Variant::V0);
     let n = (1usize << 24) + 1;
     assert_eq!(Schedule::new(n as u32).unwrap().dispatches(), 4);
     assert_eq!(gpu.sum(&vec![1u32; n]) as usize, n);

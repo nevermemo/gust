@@ -225,6 +225,16 @@ test module; do not mix that mechanical move with behavior changes.
   slice that runs the deepest GPU tests serially (one device, or a test lock), and a run under a second GPU process.
   Both runs were re-run green at their merges. This is the probe slice (M7 sanity, Fable/Opus): the deepest gust-algo
   GPU tests serially, and beside a second GPU process. It also times the dense64 cell (m7.a2 follow-ups).
+- m7.av follow-ups (the access violation above; STATUS m7.av, m7.av2): the shared gust-algo devices are a mitigation,
+  not a fix. A plain-wgpu reproducer did not crash in 27 runs of 90 s (spike m7.av3: 8 threads create and drop devices
+  with a trivial kernel while 8 dispatch and read back; 9 controls also clean); it does not clear device churn with
+  textures, pipelines in flight or a drop while a submission is pending. Next: a shared test-device helper per test
+  binary, `textures` first, after a baseline loop of the unchanged binary. If a gust-algo crash recurs, put the four
+  `with_limits` tests that still open devices in a lane first. A crash dump would name the faulting code; capturing one
+  needs a Windows setting (WER LocalDumps), the owner's call. dense64 (m7.a2 follow-ups, below): the dispatch is tiny
+  (0.015 ms); the whole call takes about 14 ms warm and 37 to 68 ms after about 3 s of GPU idle, whether the CPU sleeps
+  or spins. A guess, not a finding: the idle PCIe link or power state slows the copies. Next: one run of the probe with
+  no other GPU work, then fix the README cell text and add a warm-up to the README bench.
 - m7.p follow-ups: `doctor` and `check` list only a `par_for!` kernel's origin site (`Record.sites` holds them all);
   the naga layout gate skips `par_for!` kernels (take their descriptors through the hidden `descriptor;` form, or
   delete it); the over-cap error is `map::Error::Device`, not an extent variant (needs `Extent` in

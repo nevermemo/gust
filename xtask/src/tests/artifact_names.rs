@@ -55,3 +55,21 @@ fn the_expected_list_is_twenty_one_sorted_unique_spirv_names() {
     assert!(EXPECTED_SPIRV.iter().all(|name| name.ends_with(".spv")));
     assert!(EXPECTED_SPIRV.iter().all(|name| name.contains("__")));
 }
+
+/// The shape bench runs in `verify`'s example steps but exports nothing: `export-artifacts` must not spend a GPU smoke on
+/// it, and no kernel of it may be expected among the exported SPIR-V.
+#[test]
+fn export_artifacts_skips_the_examples_that_export_nothing() {
+    use crate::workspace::{EXAMPLES, NO_EXPORT_EXAMPLES};
+    assert_eq!(NO_EXPORT_EXAMPLES, ["shape-bench"]);
+    for example in NO_EXPORT_EXAMPLES {
+        assert!(EXAMPLES.contains(example), "{example}");
+        let stem = example.replace('-', "_");
+        assert!(
+            !EXPECTED_SPIRV.iter().any(|name| name.starts_with(&stem)),
+            "{example} is expected to export SPIR-V"
+        );
+    }
+    let source = include_str!("../checks.rs").replace("\r\n", "\n");
+    assert!(source.contains("EXAMPLES\n        .iter()\n        .filter(|example| !NO_EXPORT_EXAMPLES.contains(example))"));
+}

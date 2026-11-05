@@ -1,0 +1,15 @@
+[package]
+name = "shape-bench"
+description = "The same kernels as grid and as pixel kernels: bit identity per cell, and the time of each (no threshold)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+gust.workspace = true
+gust-wgpu = { workspace = true, features = ["slang-runtime"] }
+
+[lints]
+workspace = true

@@ -2,7 +2,7 @@
 //! write `report.json`; or shrink one failing program. See docs/development/DIFFTEST.md.
 //!
 //! ```text
-//! difftest-run --seeds 1-2 [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR]
+//! difftest-run --seeds 1-2 [--shapes grid,pixel] [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR]
 //! difftest-run --shrink <seed>:<index> [--cpu-only] [--report PATH] [--max-candidates N] [--max-minutes M] [--target-dir DIR] [--repo-root DIR]
 //! difftest-run --refresh-lock [--repo-root DIR]
 //! ```
@@ -17,11 +17,13 @@ use std::time::Duration;
 
 use difftest::harness::{Options, parse_seeds, refresh_lock, run};
 use difftest::reduce::Limits;
+use difftest::shapes::{Shape, parse_shapes};
 use difftest::shrink::{Shrunk, parse_target, shrink};
 
 struct Args {
     seeds: Option<String>,
     shrink: Option<String>,
+    shapes: Option<String>,
     cpu_only: bool,
     report: Option<PathBuf>,
     target_dir: Option<PathBuf>,
@@ -35,6 +37,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
     let mut parsed = Args {
         seeds: None,
         shrink: None,
+        shapes: None,
         cpu_only: false,
         report: None,
         target_dir: None,
@@ -53,6 +56,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         match arg.as_str() {
             "--seeds" => parsed.seeds = Some(value("--seeds")?),
             "--shrink" => parsed.shrink = Some(value("--shrink")?),
+            "--shapes" => parsed.shapes = Some(value("--shapes")?),
             "--cpu-only" => parsed.cpu_only = true,
             "--report" => parsed.report = Some(PathBuf::from(value("--report")?)),
             "--target-dir" => parsed.target_dir = Some(PathBuf::from(value("--target-dir")?)),
@@ -72,6 +76,12 @@ fn parse(args: &[String]) -> Result<Args, String> {
     if parsed.shrink.is_some() && parsed.seeds.is_some() {
         return Err("--shrink and --seeds are exclusive".into());
     }
+    if parsed.shrink.is_some() && parsed.shapes.is_some() {
+        return Err(
+            "--shrink runs the grid kernel only; the reducer does not carry a pixel kernel (--shapes)"
+                .into(),
+        );
+    }
     if (parsed.max_candidates.is_some() || parsed.max_minutes.is_some()) && parsed.shrink.is_none()
     {
         return Err("--max-candidates and --max-minutes belong to --shrink".into());
@@ -79,7 +89,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
     Ok(parsed)
 }
 
-const USAGE: &str = "usage: difftest-run --seeds 1-2 [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR] | --shrink <seed>:<index> [--cpu-only] [--report PATH] [--max-candidates N] [--max-minutes M] | --refresh-lock [--repo-root DIR]";
+const USAGE: &str = "usage: difftest-run --seeds 1-2 [--shapes grid,pixel] [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR] | --shrink <seed>:<index> [--cpu-only] [--report PATH] [--max-candidates N] [--max-minutes M] | --refresh-lock [--repo-root DIR]";
 
 /// The repository root: the `--repo-root` argument, else two levels above `tests/difftest` (this crate's manifest).
 fn repo_root(given: Option<PathBuf>) -> Result<PathBuf, String> {
@@ -121,9 +131,14 @@ fn main_inner() -> Result<ExitCode, String> {
     // Absolute but not canonical: the verbatim prefix that canonicalize adds on Windows does not mix with the forward
     // slashes the generated test builds its data paths with.
     let target_dir = std::path::absolute(&target_dir).map_err(|e| e.to_string())?;
+    let shapes = match &args.shapes {
+        Some(text) => parse_shapes(text)?,
+        None => vec![Shape::Grid],
+    };
     let options = Options {
         seeds,
         cpu_only: args.cpu_only,
+        shapes,
         target_dir,
         repo_root,
     };
@@ -166,8 +181,26 @@ fn main_inner() -> Result<ExitCode, String> {
             .and_then(|v| v.as_u64())
             .unwrap_or(0)
     };
+    let shape_count = |section: &str, key: &str| {
+        outcome
+            .report
+            .get("shapes")
+            .and_then(|s| s.get(section))
+            .and_then(|s| s.get(key))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    };
+    let shapes_text = if options.shapes.contains(&Shape::Pixel) {
+        format!(
+            ", shapes grid,pixel: {} pixel, {} grid-only",
+            shape_count("programs_by_shape", "pixel"),
+            shape_count("grid_only", "total")
+        )
+    } else {
+        String::new()
+    };
     eprintln!(
-        "difftest-run: {} of {} programs executed ({}), {} mismatches: {}",
+        "difftest-run: {} of {} programs executed ({}{shapes_text}), {} mismatches: {}",
         get("programs_executed"),
         get("programs_requested"),
         if options.cpu_only { "cpu-only" } else { "gpu" },

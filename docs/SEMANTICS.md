@@ -238,9 +238,15 @@ tolerance; measured about 1e-6 on one adapter), and a linear
   draws a full-screen triangle into an 8192-wide attachment, scissored to the `n` live texels, so no fragment outside
   `0..n` runs (a helper invocation cannot store). The element index is `y * 8192 + x` of the fragment. Outputs are
   written in place, so what `grid` guarantees for a store (one writer per element, no ordering between elements)
-  holds the same way. The same body gives the same bits as `grid` in the cases tested (`tests/pixel.rs`: u32, i32,
-  f32, `Vec2` and `Vec4` outputs at sizes around the row width and up to the cap, with an independent host
-  reference); that is evidence for those bodies, not a proof for every kernel. A call is refused, identically on the
+  holds the same way. The same body gives the same bits as `grid` for `u32`, `i32` and `bool` outputs; for `f32` it
+  gives results within section 4's bounds and not necessarily the same bits, because a device may fuse `a * b + c` and
+  round `x / y` within 2.5 ulp differently in the compute and the fragment stage (D128). The record: up to 4 ulp
+  between the shapes on the RTX 5090 (driver 610.88) for an unfused multiply-add chain after a division, with identical
+  emitted Slang, WGSL and SPIR-V (an earlier form of the `examples/shape-bench` K3, measured 2026-11-05 and not kept:
+  9 % to 11 % of the words differed; X-S1's form without the division, which the bench now has, wrote the same bits in
+  both shapes, as did the 36 `f32` programs of the difftest seeds 1 to 8). The cases tested (`tests/pixel.rs`: u32, i32, f32, `Vec2`
+  and `Vec4` outputs at sizes around the row width and up to the cap, with an independent host reference) agreed bit
+  for bit; that is evidence for those bodies, not a proof for every kernel. A call is refused, identically on the
   twin and the `cpu` target, when it has a y or z other than 1 (`ShapeUnsupported`, `cpu::Error::PixelExtent`), when
   `n` is over 2^26 (`DeviceLimit` named `pixel_max_elements`) or when a read-write output is bound `Independent`
   (`ShapeIndependentOutput`, `cpu::Error::PixelIndependentOutput`). Only the GPU adds the texture dimension of the

@@ -8,14 +8,17 @@
 //! - `GUST_OK <vendor> <architecture>` when both forms of the kernel (the `grid` form, a compute pass, and the
 //!   `pixel` form, a render pass whose fragments write the output buffer, D120) equal the host reference and each
 //!   other to the last bit, at [`LENGTH`] and at [`TWO_DRAWS`] elements, where the two words are what the browser says
-//!   about the adapter (`GPUAdapter.info`; wgpu's own `name` is empty there);
+//!   about the adapter (`GPUAdapter.info`; wgpu's own `name` is empty there), and when the `WgpuJob` contract of the
+//!   browser holds for each submission (D69, `check_job_contract`): `status` is `Complete` after the awaited
+//!   readback, `wait` and `wait_timeout` return `Error::WouldBlock`, and so does the generated `dispatch`;
 //! - `GUST_FAIL <reason>` on any error or panic.
 //!
 //! The whole crate is `cfg(target_arch = "wasm32")`: on the host it is empty.
 #![cfg(target_arch = "wasm32")]
 
+use gust::JobStatus;
 use gust::gpu;
-use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{Error, GpuBufferAccess, HeadlessDevice, WgpuJob};
 use js_sys::{Function, Object, Promise, Reflect};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
@@ -171,6 +174,42 @@ async fn vector_add_on_the_browser_gpu() -> Result<String, String> {
     Ok(browser_adapter_label().await)
 }
 
+/// The browser contract of `WgpuJob` (D69), checked after the job's awaited readback has resolved: `status` is
+/// `Complete` (the `on_submitted_work_done` callback has run), and `wait` and `wait_timeout` return
+/// `Error::WouldBlock` rather than `Ok`. `before` is the status read right after the submit; it is logged as a note
+/// (`Pending` is expected) and not required, so the run does not depend on timing.
+fn check_job_contract(
+    what: &str,
+    job: &WgpuJob<'_>,
+    before: Result<JobStatus, Error>,
+) -> Result<(), String> {
+    log(&format!(
+        "note: {what}: status right after the submit: {before:?}"
+    ));
+    match job.status() {
+        Ok(JobStatus::Complete) => {}
+        other => {
+            return Err(format!(
+                "{what}: the job's status after the awaited readback must be Complete, got {other:?}"
+            ));
+        }
+    }
+    if !matches!(job.wait(), Err(Error::WouldBlock(_))) {
+        return Err(format!(
+            "{what}: WgpuJob::wait must return Error::WouldBlock in the browser"
+        ));
+    }
+    if !matches!(
+        job.wait_timeout(std::time::Duration::from_millis(1)),
+        Err(Error::WouldBlock(_))
+    ) {
+        return Err(format!(
+            "{what}: WgpuJob::wait_timeout must return Error::WouldBlock in the browser"
+        ));
+    }
+    Ok(())
+}
+
 /// Both forms of the vector add over `length` elements: the `grid` form against the host reference, then the `pixel` form
 /// against the host reference and the grid result, all bit for bit.
 async fn both_forms(device: &HeadlessDevice, length: usize) -> Result<(), String> {
@@ -182,14 +221,23 @@ async fn both_forms(device: &HeadlessDevice, length: usize) -> Result<(), String
     let a = device.create_f32_buffer("web a", &a, GpuBufferAccess::ReadOnly);
     let b = device.create_f32_buffer("web b", &b, GpuBufferAccess::ReadOnly);
     let out = device.create_f32_buffer("web out", &vec![0.0; length], GpuBufferAccess::ReadWrite);
-    // The job is not waited on: in the browser `WgpuJob::wait` returns at once (see its documentation). The awaited
+    // The job is not waited on: in the browser `WgpuJob::wait` returns an error (see its documentation). The awaited
     // readback below is what resolves when the dispatch and the copy are done.
-    let _job = vector_add::add::submit(device, length as u32, &a, &b, &out)
+    let job = vector_add::add::submit(device, length as u32, &a, &b, &out)
         .map_err(|error| format!("n = {length}: dispatch failed: {error}"))?;
+    // Recorded, not required: nothing has yielded to the event loop since the submit, so the callback cannot have run.
+    let before = job.status();
     let result = device
         .read_typed_buffer_async(&out)
         .await
         .map_err(|error| format!("n = {length}: read-back failed: {error}"))?;
+    check_job_contract(&format!("n = {length}: grid"), &job, before)?;
+    let blocking = vector_add::add::dispatch(device, length as u32, &a, &b, &out);
+    if !matches!(blocking, Err(Error::WouldBlock(_))) {
+        return Err(format!(
+            "n = {length}: the generated dispatch must return Error::WouldBlock in the browser, got {blocking:?}"
+        ));
+    }
     if let Some(first) = first_difference(&result, &expected) {
         return Err(format!(
             "n = {length}: grid result differs from the host reference: {} of {} values, first at index {first}",
@@ -211,12 +259,14 @@ async fn both_forms(device: &HeadlessDevice, length: usize) -> Result<(), String
         &vec![UNWRITTEN; length],
         GpuBufferAccess::ReadWrite,
     );
-    let _pixel_job = vector_add::add_pixel::submit(device, length as u32, &a, &b, &pixel_out)
+    let pixel_job = vector_add::add_pixel::submit(device, length as u32, &a, &b, &pixel_out)
         .map_err(|error| format!("n = {length}: pixel dispatch failed: {error}"))?;
+    let pixel_before = pixel_job.status();
     let pixel_result = device
         .read_typed_buffer_async(&pixel_out)
         .await
         .map_err(|error| format!("n = {length}: pixel read-back failed: {error}"))?;
+    check_job_contract(&format!("n = {length}: pixel"), &pixel_job, pixel_before)?;
     if !pixel_result.is_empty()
         && pixel_result
             .iter()

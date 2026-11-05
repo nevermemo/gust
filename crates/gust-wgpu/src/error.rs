@@ -269,6 +269,12 @@ pub enum Error {
     /// A readback failed: the buffer could not be mapped (including a mapping that did not complete within the bounded
     /// wait), or the mapped bytes cannot be decoded as the requested element type. The text is the reason.
     Map(String),
+    /// A blocking wait was asked for on `wasm32`, where the browser cannot block: `WgpuJob::wait` and
+    /// `WgpuJob::wait_timeout` always return this there, and so do the calls built on them (the generated `dispatch`
+    /// of a kernel, `gust::Run::dispatch_call`, `gust::Device::dispatch`). The text names the method that was called.
+    /// Instead, submit the work and await a readback with `HeadlessDevice::read_typed_buffer_async` (it resolves when
+    /// the work and the copy are done), or read `WgpuJob::status` without waiting. Never returned on native targets.
+    WouldBlock(&'static str),
     /// A buffer or texture allocation failed inside an out-of-memory error scope: the request was within the
     /// device's limits (`max_buffer_size` for a buffer, `max_texture_dimension_2d` for a texture), but the adapter had
     /// no memory for it. `label` names the buffer or texture (a `pixel` call's attachment is
@@ -555,6 +561,11 @@ impl fmt::Display for Error {
             ),
             Self::Poll(error) => write!(formatter, "GPU synchronization failed: {error}"),
             Self::Map(error) => write!(formatter, "GPU readback failed: {error}"),
+            Self::WouldBlock(what) => write!(
+                formatter,
+                "`{what}` would block, which the browser cannot do: submit the work and await a readback \
+                 (`read_typed_buffer_async`) instead, or read the job's `status` without waiting",
+            ),
             Self::OutOfMemory { label, bytes } => write!(
                 formatter,
                 "the adapter is out of memory allocating `{label}` ({bytes} bytes)",

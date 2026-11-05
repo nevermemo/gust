@@ -246,6 +246,10 @@ pub trait Run<K: Kernel, const N: usize, X = ()>: TypedDevice {
     ) -> Result<Self::Job<'d>, Self::Error>;
 
     /// Start the call and wait for it to finish.
+    ///
+    /// A device whose job cannot block (`gust-wgpu` on `wasm32`) returns its wait error instead of waiting: use
+    /// `submit_call` and an awaited readback there. This method is not gated on `wasm32` because a CPU device
+    /// finishes inside `submit_call` and its `wait` is harmless in the browser.
     fn dispatch_call(&self, call: &Call<'_, Self, K, N, X>) -> Result<(), Self::Error> {
         use crate::Job as _;
         self.submit_call(call)?.wait()

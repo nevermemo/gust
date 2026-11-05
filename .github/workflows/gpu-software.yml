@@ -12,15 +12,18 @@
 #
 # One job, two lists (plan M5 R1-10). The list of a pull request, a push to main and a dispatch without `extended` is
 # everything above, plus the differential test on 2 seeds (32 generated programs on three parties: the interpreter, the
-# CPU twin and the lavapipe GPU; R1-13). The nightly list (`schedule`, 03:00 UTC, and a dispatch with `extended`, the
-# default) adds the steps marked "nightly list": `cargo xtask check-examples` and the release-profile mismatch ledger
+# CPU twin and the lavapipe GPU; R1-13) and the same 2 seeds again with `--shapes grid,pixel` (every program the
+# classifier admits also as a `pixel` kernel, slice mx.z; the nightly list runs it on 2 seeds too). The nightly list
+# (`schedule`, 03:00 UTC, and a dispatch with `extended`, the default) adds the steps marked "nightly list": `cargo xtask check-examples` and the release-profile mismatch ledger
 # (`cargo xtask check-ledger`, guarded as the Full mode is: no ignored test, every ledger test named), and runs the
 # differential test on seeds 1-72 (1152 programs: the reach of the CPU test that proves the generator writes every
 # aggregate form, DIFFTEST) in place of the 2. Slices that grow the nightly list add
 # steps behind the same condition. Moving a step to the pull request list is deleting its `if:` line, and it is allowed
 # only while the measured warm job time of a pull request stays at five minutes or less (the budget rule; STATUS names
 # each list and its measured time). The nightly steps after the differential test carry `!cancelled() &&` in that
-# line, so that a failing differential test does not skip them; the job still fails.
+# line, so that a failing differential test does not skip them; the job still fails. One pull request step is admitted
+# over the budget: the cross-shape differential test, by the MX close (close ruling 4, recorded as D129), measured at
+# 25 s on a warm runner (run 42071043309). No other step is.
 name: gpu-software
 
 on:
@@ -255,10 +258,35 @@ jobs:
           echo "difftest seeds: $seeds"
           cargo --locked xtask check-difftest --seeds "$seeds" \
             --report "$RUNNER_TEMP/gpu-software-artifact/difftest-report.json" 2>&1 | tee "$RUNNER_TEMP/difftest.log"
-      - name: Name the failing seeds
-        if: failure() && steps.difftest.outcome == 'failure'
+      - name: Cross-shape differential test (pixel against grid, 2 seeds)
+        id: difftest_shapes
+        # The same command with `--shapes grid,pixel` (slice mx.p1c; mx.z): every program runs as a `grid` kernel, and
+        # as a `pixel` kernel when the classifier admits it, on the lavapipe GPU. Integer and `bool` outputs must be
+        # equal bit for bit, and an `f32` output is judged against the interpreter's interval (D128). It is on the pull
+        # request list because the harness path of the pixel shape once broke main unseen (fix.p1c-ci) while only
+        # `check-full` ran it. Seeds 1-2 in both lists (the nightly seeds stay grid-only); the report is a file of its
+        # own. `!cancelled()` and not the implicit `success()`, as the nightly steps below: a red plain differential
+        # test must not skip this one. The step has no condition on GPU_SOFTWARE_NIGHTLY, so both lists run it. Pinned
+        # by `only_full_and_one_gpu_software_step_ask_for_pixel` in xtask/src/tests/difftest.rs. Measured at 25 s with
+        # its build on a warm runner (run 42071043309).
+        if: ${{ !cancelled() }}
         run: |
-          grep -E '^check-difftest: ' "$RUNNER_TEMP/difftest.log" | sed 's/^/::error::/' || true
+          set -o pipefail
+          cargo --locked xtask check-difftest --seeds 1-2 --shapes grid,pixel \
+            --report "$RUNNER_TEMP/gpu-software-artifact/difftest-shapes-report.json" 2>&1 | tee "$RUNNER_TEMP/difftest-shapes.log"
+      - name: Name the failing seeds
+        if: failure() && (steps.difftest.outcome == 'failure' || steps.difftest_shapes.outcome == 'failure')
+        env:
+          PLAIN_OUTCOME: ${{ steps.difftest.outcome }}
+          SHAPES_OUTCOME: ${{ steps.difftest_shapes.outcome }}
+        run: |
+          # Only the log of a step that failed: a passing one prints `check-difftest:` info lines too.
+          if [ "$PLAIN_OUTCOME" = "failure" ]; then
+            grep -h -E '^check-difftest: ' "$RUNNER_TEMP/difftest.log" | sed 's/^/::error::/' || true
+          fi
+          if [ "$SHAPES_OUTCOME" = "failure" ]; then
+            grep -h -E '^check-difftest: ' "$RUNNER_TEMP/difftest-shapes.log" | sed 's/^/::error::/' || true
+          fi
       - name: Keep the ledger lines of the debug run
         # The release run below writes the same file names, so the debug run's are moved aside first.
         if: always()
@@ -293,6 +321,7 @@ jobs:
           cp -f .ai/VALIDATION.json "$RUNNER_TEMP/gpu-software-artifact/" || true
           cp -f "$RUNNER_TEMP/gpu-suite.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
           cp -f "$RUNNER_TEMP/difftest.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
+          cp -f "$RUNNER_TEMP/difftest-shapes.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
           cp -f "$RUNNER_TEMP/check-examples.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
           cp -f "$RUNNER_TEMP/ledger-release.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
           # Only the release run can have written these now: the debug run's were moved aside.

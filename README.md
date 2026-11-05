@@ -401,6 +401,12 @@ macro emits, the hidden `descriptor;` form of `par_for!`, the internal `cargo-gu
 the toolchain support (the rules for finding Slang that `cargo-gust` shares with the run-time bridge, D109). The
 `cargo xtask` commands and the evidence tiers belong to this repository and are not published.
 
+`pixel` kernels, `Shape` and the texture and sampler types are in the published surface and under the promise above, so a
+0.x release may change them like the rest. Their evidence is narrower than the rest: a GUST `pixel` or texture kernel
+has run on one hardware adapter, the RTX 5090 (Vulkan), and on the lavapipe software adapter, and on no other hardware.
+Headless Chrome on that same NVIDIA GPU has run a `pixel` kernel and no texture kernel. Another vendor's GPU, or a
+phone, may show a difference the tests have not seen ([Shapes](#shapes-grid-and-pixel) lists what has run).
+
 ## Minimum Rust
 
 The minimum Rust version is 1.90 (`rust-version` in all four packages, D30). The `msrv` CI job runs `cargo check
@@ -503,7 +509,7 @@ every output is bound `Shared` (an `Independent` read-write output is `Error::Sh
 at most 2^26 elements (`gust::PIXEL_MAX_ELEMENTS`) on every device, which `grid` does not (`DeviceLimit` named
 `pixel_max_elements`). It also needs an adapter whose fragment stage can write storage buffers
 (`FRAGMENT_WRITABLE_STORAGE`); a native adapter without it is `ShapeUnsupported`. In the browser wgpu reports every
-such capability, so GUST cannot refuse there and an adapter without it would give a wrong result instead.
+such capability, so GUST cannot refuse there; what an adapter without it does has not been observed.
 
 Evidence is narrow. On the RTX 5090 (Vulkan), `pixel`, `grid` and an independent host replay gave identical words for
 `u32`, `i32`, `f32`, `Vec2` and `Vec4` outputs at sizes from 0 up to about 1.7e7 elements (the row width and its

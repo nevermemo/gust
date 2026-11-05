@@ -14,8 +14,9 @@
 //! with the bit differences between the shapes only observed (D128). Without `--shapes` the command is the grid-only run
 //! it always was. The
 //! Full mode of `verify` (`check-full`) reaches this file through [`check_difftest_report`], which adds
-//! `--shapes grid,pixel` when the caller named no shapes; the command line, the pull-request list and the Gpu suite do
-//! not (tests pin all three). The report must say which programs ran as pixel and which stayed grid-only, with the
+//! `--shapes grid,pixel` when the caller named no shapes; the command line and the Gpu suite do not, and the
+//! `gpu-software` workflow names the shapes in one step of its own, seeds 1-2 on both lists (slice mx.z; tests pin all
+//! three). The report must say which programs ran as pixel and which stayed grid-only, with the
 //! classifier's reason, and at least one program must have run as pixel.
 //!
 //! The default is all eight seeds of `tests/difftest/seeds.txt` on the machine's adapter. `--cpu-only` compares the

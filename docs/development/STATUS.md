@@ -645,6 +645,19 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   luck at the rate seen). The layer's .pdb records mimalloc v3.3.2; a null dereference in `_mi_subproc` is reported
   fixed in mimalloc 3.4.1 upstream, which is a likely match but was not tested here. The gust-algo crashes had no stack,
   so their cause is presumed the same, not shown. Gates keep validation on.
+- MX mx.w (`7d281c4`, fix round `d3066ba`, merge `7dc0dc1`; D61, D120, D127, MX plan §11, X-S4): the `pixel` form in the
+  browser. `examples/web-vector-add` adds `add_pixel` (`#[kernel(shape = pixel)]`) to the module of its grid kernel and
+  runs both forms at n = 1000 (one row, one draw) and n = 8197 (two draws, the second row), each pixel output first
+  filled with -1e9. The page prints `GUST_OK` only when the pixel result equals the host reference and the grid result
+  bit for bit, and a separate `GUST_FAIL` when no fragment wrote the output. In headless Chrome 156.0.8078.74 on the
+  RTX 5090 (`nvidia blackwell`) both forms matched at both sizes: X-S4 ends in outcome A, and `pixel` runs in the
+  browser. Only this hardware adapter has run it; the software adapter has not. wgpu 30's WebGPU backend reports every
+  downlevel capability, so on WebGPU gust-wgpu cannot refuse a pixel kernel for a missing fragment-stage storage
+  capability; such an adapter would fail as a wrong result. The example's manifest is now schema 2 with a `shape` on
+  every entry, and the xtask test compares the fixture-shared entries exactly in their schema-2 form. A manual mutation
+  (the pixel expectation shifted by one, not committed) made `check-web` print `GUST_FAIL`. Opus merge after fixes: one
+  must-fix (a comment said browsers refuse with `ShapeUnsupported`), three should-fixes and the nits taken. Main: 24 of
+  24 gates green on `7dc0dc1` (2026-11-05 09:35 to 10:22Z, RTX 5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

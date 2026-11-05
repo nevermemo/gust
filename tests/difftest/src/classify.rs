@@ -73,6 +73,20 @@ pub struct Raw {
     pub twin_ns: u64,
     pub gpu_first_ns: u64,
     pub gpu_warm_ns: u64,
+    /// The `k_px` outputs, present when the program ran as `pixel` too.
+    pub pixel: Option<PixelRaw>,
+}
+
+/// The pixel kernel's outputs of one program (`--shapes grid,pixel`).
+#[derive(Clone, Debug)]
+pub struct PixelRaw {
+    pub twin: Result<Vec<u32>, String>,
+    /// `None` when the GPU was not used (`--cpu-only`).
+    pub gpu: Option<Result<Vec<u32>, String>>,
+    pub wgsl_validated: bool,
+    pub twin_ns: u64,
+    pub gpu_first_ns: u64,
+    pub gpu_warm_ns: u64,
 }
 
 fn field<'a>(json: &'a Json, key: &str) -> Result<&'a Json, String> {
@@ -151,6 +165,30 @@ pub fn parse_result(file_text: &str) -> Result<Raw, String> {
             "mode {mode:?} does not match the GPU fields (a gpu-mode file must hold a GPU output or a GPU error)"
         ));
     }
+    let pixel = match json.get("pixel_status") {
+        None => None,
+        Some(status) if status.as_str() == Some("run") => {
+            let gpu = if field(&json, "pixel_gpu")?.is_null()
+                && field(&json, "pixel_gpu_error")?.is_null()
+            {
+                None
+            } else {
+                Some(party(&json, "pixel_gpu", "pixel_gpu_error", count)?)
+            };
+            if (mode == "cpu-only") != gpu.is_none() {
+                return Err(format!("mode {mode:?} does not match the pixel GPU fields"));
+            }
+            Some(PixelRaw {
+                twin: party(&json, "pixel_twin", "pixel_twin_error", count)?,
+                gpu,
+                wgsl_validated: field(&json, "pixel_wgsl_validated")? == &Json::Bool(true),
+                twin_ns: number(&json, "pixel_twin_ns")?,
+                gpu_first_ns: number(&json, "pixel_gpu_first_ns")?,
+                gpu_warm_ns: number(&json, "pixel_gpu_warm_ns")?,
+            })
+        }
+        Some(_) => return Err("field \"pixel_status\" is not \"run\"".into()),
+    };
     Ok(Raw {
         program: text(&json, "program")?,
         seed: number(&json, "seed")?,
@@ -167,6 +205,7 @@ pub fn parse_result(file_text: &str) -> Result<Raw, String> {
         twin_ns: number(&json, "twin_ns")?,
         gpu_first_ns: number(&json, "gpu_first_ns")?,
         gpu_warm_ns: number(&json, "gpu_warm_ns")?,
+        pixel,
     })
 }
 
@@ -220,9 +259,13 @@ pub struct Mismatch {
     pub seed: u64,
     pub index: usize,
     pub attempt: u64,
+    /// The shape that disagreed: `grid` or `pixel`. `pixel-vs-grid` is a `pixel` finding.
+    pub shape: &'static str,
     /// `transport` (the file's interpreter output is not the harness's: a harness bug), `twin-error`,
     /// `twin-vs-interpreter`, `gpu-error`, `gpu-vs-interpreter` (integers and booleans), `gpu-outside-interval`
-    /// (`f32`), `gpu-not-validated`.
+    /// (`f32`), `gpu-not-validated`, and for `pixel` also `pixel-vs-grid` (an integer or boolean pixel GPU output differs
+    /// from the grid GPU output in a bit; an `f32` one is judged by its interval like `grid`'s, and a bit difference
+    /// between the shapes is only an observation, see [`float_comparison`]).
     pub kind: &'static str,
     /// How many elements differ (0 for an error).
     pub elements: usize,
@@ -237,6 +280,7 @@ impl Mismatch {
             ("seed", Json::uint(self.seed)),
             ("index", Json::uint(self.index as u64)),
             ("attempt", Json::uint(self.attempt)),
+            ("shape", Json::str(self.shape)),
             ("kind", Json::str(self.kind)),
             ("elements_differing", Json::uint(self.elements as u64)),
             (
@@ -249,20 +293,10 @@ impl Mismatch {
     }
 }
 
-/// Compares the three outputs of one program. `cpu_only` says whether a GPU output is expected at all.
+/// Compares the outputs of one program: the grid kernel's three, and with `--shapes grid,pixel` the pixel kernel's two
+/// (twin and GPU) and the pixel GPU output against the grid GPU output. `cpu_only` says whether a GPU output is expected
+/// at all.
 pub fn classify(planned: &Planned, raw: &Raw, cpu_only: bool) -> Vec<Mismatch> {
-    let ty = planned.program.out_ty();
-    let make =
-        |kind: &'static str, elements: usize, first: Option<usize>, message: String| Mismatch {
-            program: raw.program.clone(),
-            seed: raw.seed,
-            index: raw.index,
-            attempt: raw.attempt,
-            kind,
-            elements,
-            first_element: first,
-            message,
-        };
     let mut found = Vec::new();
     if raw.interp != planned.expected {
         let first = raw
@@ -270,14 +304,158 @@ pub fn classify(planned: &Planned, raw: &Raw, cpu_only: bool) -> Vec<Mismatch> {
             .iter()
             .zip(&planned.expected)
             .position(|(a, b)| a != b);
-        found.push(make(
+        found.push(mismatch(
+            planned,
+            raw,
+            "grid",
             "transport",
             0,
             first,
             "the interpreter output in the file is not the one the harness computed".into(),
         ));
     }
-    match &raw.twin {
+    let grid = Party {
+        shape: "grid",
+        twin: &raw.twin,
+        gpu: raw.gpu.as_ref(),
+        wgsl_validated: raw.wgsl_validated,
+    };
+    judge(planned, raw, &grid, cpu_only, &mut found);
+    if let Some(pixel) = &raw.pixel {
+        let party = Party {
+            shape: "pixel",
+            twin: &pixel.twin,
+            gpu: pixel.gpu.as_ref(),
+            wgsl_validated: pixel.wgsl_validated,
+        };
+        judge(planned, raw, &party, cpu_only, &mut found);
+        // Integers and booleans hold the same bits in both shapes. An `f32` does not have to: a device may fuse `a * b + c`
+        // and round `x / y` within 2.5 ulp differently per stage (SEMANTICS section 4, D128), so each shape is judged
+        // against the interval above and the difference between the two is an observation (`float_comparison`).
+        if planned.program.out_ty() != Ty::F32
+            && let (Some(Ok(grid_bits)), Some(Ok(pixel_bits))) = (&raw.gpu, &pixel.gpu)
+        {
+            let bad: Vec<usize> = (0..raw.count)
+                .filter(|&k| grid_bits[k] != pixel_bits[k])
+                .collect();
+            if let Some(&first) = bad.first() {
+                let ty = planned.program.out_ty();
+                found.push(mismatch(
+                    planned,
+                    raw,
+                    "pixel",
+                    "pixel-vs-grid",
+                    bad.len(),
+                    Some(first),
+                    format!(
+                        "element {first}: grid {}, pixel {}",
+                        element_text(ty, grid_bits[first]),
+                        element_text(ty, pixel_bits[first])
+                    ),
+                ));
+            }
+        }
+    }
+    found
+}
+
+/// The distance in `f32` ulps between two bit patterns, on the line of ordered floats (`+0.0` and `-0.0` are one apart
+/// at most: they map to the same point). A NaN has no distance and counts as the largest.
+pub fn ulp_distance(a: u32, b: u32) -> u32 {
+    if f32::from_bits(a).is_nan() || f32::from_bits(b).is_nan() {
+        return u32::MAX;
+    }
+    let ordered = |bits: u32| -> i64 {
+        if bits >> 31 == 1 {
+            -i64::from(bits & 0x7fff_ffff)
+        } else {
+            i64::from(bits)
+        }
+    };
+    u32::try_from((ordered(a) - ordered(b)).unsigned_abs()).unwrap_or(u32::MAX)
+}
+
+/// What the two shapes' GPU outputs of one `f32` program differ by (an observation, never a mismatch).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FloatComparison {
+    /// Elements whose bits differ.
+    pub elements: usize,
+    /// The first of them, with the grid and the pixel bits.
+    pub first: Option<(usize, u32, u32)>,
+    /// The largest distance in ulps over the elements.
+    pub max_ulp: u32,
+}
+
+/// The comparison of the grid and pixel GPU outputs of an `f32` program: `None` when there is nothing to compare (not an
+/// `f32` output, no pixel run, no GPU, or one of the two outputs is an error).
+pub fn float_comparison(raw: &Raw) -> Option<FloatComparison> {
+    if raw.out_ty != "f32" {
+        return None;
+    }
+    let (Some(Ok(grid)), Some(pixel)) = (&raw.gpu, &raw.pixel) else {
+        return None;
+    };
+    let Some(Ok(pixel)) = &pixel.gpu else {
+        return None;
+    };
+    let differing: Vec<usize> = (0..raw.count.min(grid.len()).min(pixel.len()))
+        .filter(|&k| grid[k] != pixel[k])
+        .collect();
+    Some(FloatComparison {
+        elements: differing.len(),
+        first: differing.first().map(|&k| (k, grid[k], pixel[k])),
+        max_ulp: differing
+            .iter()
+            .map(|&k| ulp_distance(grid[k], pixel[k]))
+            .max()
+            .unwrap_or(0),
+    })
+}
+
+/// One party's outputs of one shape.
+struct Party<'a> {
+    shape: &'static str,
+    twin: &'a Result<Vec<u32>, String>,
+    gpu: Option<&'a Result<Vec<u32>, String>>,
+    wgsl_validated: bool,
+}
+
+fn mismatch(
+    planned: &Planned,
+    raw: &Raw,
+    shape: &'static str,
+    kind: &'static str,
+    elements: usize,
+    first: Option<usize>,
+    message: String,
+) -> Mismatch {
+    let _ = planned;
+    Mismatch {
+        program: raw.program.clone(),
+        seed: raw.seed,
+        index: raw.index,
+        attempt: raw.attempt,
+        shape,
+        kind,
+        elements,
+        first_element: first,
+        message,
+    }
+}
+
+/// Holds the twin and the GPU output of one shape to the interpreter.
+fn judge(
+    planned: &Planned,
+    raw: &Raw,
+    party: &Party<'_>,
+    cpu_only: bool,
+    found: &mut Vec<Mismatch>,
+) {
+    let ty = planned.program.out_ty();
+    let make = |kind: &'static str, elements: usize, first: Option<usize>, message: String| {
+        mismatch(planned, raw, party.shape, kind, elements, first, message)
+    };
+    match party.twin {
         Err(message) => found.push(make("twin-error", 0, None, message.clone())),
         Ok(twin) => {
             let bad: Vec<usize> = (0..raw.count)
@@ -298,9 +476,9 @@ pub fn classify(planned: &Planned, raw: &Raw, cpu_only: bool) -> Vec<Mismatch> {
         }
     }
     if cpu_only {
-        return found;
+        return;
     }
-    match &raw.gpu {
+    match party.gpu {
         None => found.push(make(
             "gpu-error",
             0,
@@ -309,7 +487,7 @@ pub fn classify(planned: &Planned, raw: &Raw, cpu_only: bool) -> Vec<Mismatch> {
         )),
         Some(Err(message)) => found.push(make("gpu-error", 0, None, message.clone())),
         Some(Ok(gpu)) => {
-            if !raw.wgsl_validated {
+            if !party.wgsl_validated {
                 found.push(make(
                     "gpu-not-validated",
                     0,
@@ -354,7 +532,6 @@ pub fn classify(planned: &Planned, raw: &Raw, cpu_only: bool) -> Vec<Mismatch> {
             }
         }
     }
-    found
 }
 
 #[cfg(test)]
@@ -411,6 +588,7 @@ mod tests {
             twin_ns: 0,
             gpu_first_ns: 0,
             gpu_warm_ns: 0,
+            pixel: None,
         }
     }
 
@@ -624,5 +802,180 @@ mod tests {
         let error = read_results(&dir, &plan).unwrap_err();
         assert!(error.contains("found 4"), "{error}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn with_pixel(
+        mut raw: Raw,
+        twin: Result<Vec<u32>, String>,
+        gpu: Option<Result<Vec<u32>, String>>,
+    ) -> Raw {
+        raw.pixel = Some(PixelRaw {
+            twin,
+            gpu,
+            wgsl_validated: true,
+            twin_ns: 0,
+            gpu_first_ns: 0,
+            gpu_warm_ns: 0,
+        });
+        raw
+    }
+
+    #[test]
+    fn a_pixel_run_that_agrees_with_the_interpreter_and_the_grid_run_is_no_mismatch() {
+        let p = planned(Ty::U32, &[1, 2, 3], &[]);
+        let grid = raw(&p, Ok(vec![1, 2, 3]), Some(Ok(vec![1, 2, 3])));
+        let both = with_pixel(grid, Ok(vec![1, 2, 3]), Some(Ok(vec![1, 2, 3])));
+        assert_eq!(classify(&p, &both, false), []);
+    }
+
+    #[test]
+    fn an_f32_pixel_output_inside_its_interval_may_differ_from_the_grid_bits() {
+        // D128: each shape is judged against the interval; a bit difference between them is an observation.
+        let one = 1.0f32.to_bits();
+        let p = planned(Ty::F32, &[one, one], &[(0.99, 1.01), (0.99, 1.01)]);
+        let grid = raw(&p, Ok(vec![one, one]), Some(Ok(vec![one, one])));
+        let near = with_pixel(grid, Ok(vec![one, one]), Some(Ok(vec![one, one + 1])));
+        assert_eq!(classify(&p, &near, false), []);
+        assert_eq!(
+            float_comparison(&near),
+            Some(FloatComparison {
+                elements: 1,
+                first: Some((1, one, one + 1)),
+                max_ulp: 1
+            })
+        );
+        // Outside its interval, the pixel f32 is a mismatch of its own shape, whatever the grid did.
+        let far = with_pixel(
+            raw(&p, Ok(vec![one, one]), Some(Ok(vec![one, one]))),
+            Ok(vec![one, one]),
+            Some(Ok(vec![one, 1.5f32.to_bits()])),
+        );
+        let found = classify(&p, &far, false);
+        let kinds: Vec<(&str, &str)> = found.iter().map(|m| (m.shape, m.kind)).collect();
+        assert_eq!(kinds, [("pixel", "gpu-outside-interval")]);
+    }
+
+    #[test]
+    fn the_ulp_distance_is_taken_on_the_ordered_floats() {
+        let (one, two) = (1.0f32.to_bits(), 2.0f32.to_bits());
+        assert_eq!(ulp_distance(one, one), 0);
+        assert_eq!(ulp_distance(one, one + 3), 3);
+        assert_eq!(ulp_distance(two, two - 1), 1);
+        // Across zero: the smallest positive and the smallest negative subnormal are two apart, `0.0` and `-0.0` none.
+        assert_eq!(ulp_distance(1, 0x8000_0001), 2);
+        assert_eq!(ulp_distance(0, 0x8000_0000), 0);
+        assert_eq!(ulp_distance(f32::NAN.to_bits(), one), u32::MAX);
+        // Integer and absent comparisons are not float observations.
+        let p = planned(Ty::U32, &[1], &[]);
+        let both = with_pixel(
+            raw(&p, Ok(vec![1]), Some(Ok(vec![1]))),
+            Ok(vec![1]),
+            Some(Ok(vec![1])),
+        );
+        assert_eq!(float_comparison(&both), None);
+    }
+
+    #[test]
+    fn the_pixel_gpu_output_of_an_integer_must_hold_the_grid_bits() {
+        let p = planned(Ty::U32, &[7, 8], &[]);
+        let grid = raw(&p, Ok(vec![7, 8]), Some(Ok(vec![7, 8])));
+        let off = with_pixel(grid, Ok(vec![7, 8]), Some(Ok(vec![7, 9])));
+        let found = classify(&p, &off, false);
+        let kinds: Vec<(&str, &str)> = found.iter().map(|m| (m.shape, m.kind)).collect();
+        assert_eq!(
+            kinds,
+            [("pixel", "gpu-vs-interpreter"), ("pixel", "pixel-vs-grid")]
+        );
+        let pvg = &found[1];
+        assert_eq!((pvg.elements, pvg.first_element), (1, Some(1)));
+        assert!(pvg.message.contains("grid 8"), "{}", pvg.message);
+        // The poison value left by a pass that never wrote an element: wrong against the interpreter and the grid.
+        let p = planned(Ty::U32, &[7, 8], &[]);
+        let grid = raw(&p, Ok(vec![7, 8]), Some(Ok(vec![7, 8])));
+        let unwritten = with_pixel(
+            grid,
+            Ok(vec![7, 8]),
+            Some(Ok(vec![7, crate::shapes::POISON])),
+        );
+        let found = classify(&p, &unwritten, false);
+        let kinds: Vec<(&str, &str)> = found.iter().map(|m| (m.shape, m.kind)).collect();
+        assert_eq!(
+            kinds,
+            [("pixel", "gpu-vs-interpreter"), ("pixel", "pixel-vs-grid")]
+        );
+    }
+
+    #[test]
+    fn a_disagreeing_grid_run_is_not_blamed_on_the_pixel_shape() {
+        let p = planned(Ty::U32, &[1, 2], &[]);
+        let grid = raw(&p, Ok(vec![1, 2]), Some(Ok(vec![1, 9])));
+        let pixel = with_pixel(grid, Ok(vec![1, 2]), Some(Ok(vec![1, 2])));
+        let found = classify(&p, &pixel, false);
+        let kinds: Vec<(&str, &str)> = found.iter().map(|m| (m.shape, m.kind)).collect();
+        assert_eq!(
+            kinds,
+            [("grid", "gpu-vs-interpreter"), ("pixel", "pixel-vs-grid")]
+        );
+    }
+
+    #[test]
+    fn pixel_errors_and_cpu_only_follow_the_grid_rules_under_the_pixel_shape() {
+        let p = planned(Ty::I32, &[1], &[]);
+        let grid = raw(&p, Ok(vec![1]), Some(Ok(vec![1])));
+        let broken = with_pixel(
+            grid,
+            Err("pixel twin panicked".into()),
+            Some(Err("pixel dispatch: no".into())),
+        );
+        let found = classify(&p, &broken, false);
+        let kinds: Vec<(&str, &str)> = found.iter().map(|m| (m.shape, m.kind)).collect();
+        assert_eq!(kinds, [("pixel", "twin-error"), ("pixel", "gpu-error")]);
+        let grid = raw(&p, Ok(vec![1]), None);
+        let cpu = with_pixel(grid, Ok(vec![1]), None);
+        assert_eq!(classify(&p, &cpu, true), []);
+        let mut off = with_pixel(
+            raw(&p, Ok(vec![1]), Some(Ok(vec![1]))),
+            Ok(vec![1]),
+            Some(Ok(vec![1])),
+        );
+        off.pixel.as_mut().unwrap().wgsl_validated = false;
+        let found = classify(&p, &off, false);
+        let kinds: Vec<(&str, &str)> = found.iter().map(|m| (m.shape, m.kind)).collect();
+        assert_eq!(kinds, [("pixel", "gpu-not-validated")]);
+    }
+
+    #[test]
+    fn a_result_file_with_pixel_fields_parses_into_the_pixel_outputs() {
+        let pixel = |gpu: &str, gpu_error: &str| {
+            format!(
+                ", \"pixel_status\": \"run\", \"pixel_twin\": [1,1], \"pixel_twin_error\": null, \"pixel_twin_ns\": 9, \
+                 \"pixel_gpu\": {gpu}, \"pixel_gpu_error\": {gpu_error}, \"pixel_wgsl_validated\": false, \
+                 \"pixel_gpu_first_ns\": 0, \"pixel_gpu_warm_ns\": 0"
+            )
+        };
+        let cpu = parse_result(&result_text("s7_a3", 2, &pixel("null", "null"))).unwrap();
+        let px = cpu.pixel.as_ref().unwrap();
+        assert_eq!((px.twin_ns, px.gpu.is_none()), (9, true));
+        // No pixel fields: the grid-only form.
+        assert!(
+            parse_result(&result_text("s7_a3", 2, ""))
+                .unwrap()
+                .pixel
+                .is_none()
+        );
+        // A mode that contradicts the pixel GPU fields, and a status other than "run".
+        let gpu_mode = |extra: &str| {
+            result_text("s7_a3", 2, extra)
+                .replace("cpu-only", "gpu")
+                .replace("\"gpu\": null", "\"gpu\": [1,1]")
+        };
+        let mismatched = gpu_mode(&pixel("null", "null"));
+        assert!(parse_result(&mismatched).unwrap_err().contains("mode"));
+        let status =
+            result_text("s7_a3", 2, &pixel("null", "null")).replace("\"run\"", "\"skipped\"");
+        assert!(parse_result(&status).unwrap_err().contains("pixel_status"));
+        // A pixel GPU output of the wrong length.
+        let short = gpu_mode(&pixel("[1]", "null"));
+        assert!(parse_result(&short).unwrap_err().contains("pixel_gpu"));
     }
 }

@@ -23,6 +23,7 @@ use difftest::emit::package_name;
 use difftest::harness::{Options, execute_plan};
 use difftest::interp::run_full;
 use difftest::runsrc::Planned;
+use difftest::shapes::Shape;
 
 const COUNT: u32 = 64;
 const LEN: usize = 64;
@@ -92,6 +93,7 @@ fn options(cpu_only: bool) -> Options {
     Options {
         seeds: Vec::new(),
         cpu_only,
+        shapes: vec![Shape::Grid],
         target_dir: target_dir(),
         repo_root: std::path::absolute(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
             .expect("absolute repository root"),

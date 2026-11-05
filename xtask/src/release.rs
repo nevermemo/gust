@@ -22,9 +22,9 @@
 //! - **R3**: the metadata fields, equal versions, and every internal dependency exact (`=<version>`, D107).
 //! - **R4**: no member outside `crates/` is publishable, and no publishable member depends on an unpublished one.
 //! - **R5**: `cargo doc --no-deps` of every library crate, every rustdoc warning an error ([`KNOWN_DOC_DEBT`] lists
-//!   the ones that mr.b2 still owes, each by text, and a listed warning that disappears fails the check), on stable;
-//!   and, when a nightly toolchain is installed, with the docs.rs features and `--cfg docsrs`. Without nightly the
-//!   second run is printed as skipped.
+//!   the ones admitted, each by text, none since mr.b2; a listed warning that disappears fails the check), on
+//!   stable; and, when a nightly toolchain is installed, with the docs.rs features and `--cfg docsrs`. Without
+//!   nightly the second run is printed as skipped.
 //! - **R6**: each `.crate` file is under 2 MiB.
 //! - **R7**: the README recipe, word for word. The packages are unpacked into the work directory; `hello-gust`, whose
 //!   `Cargo.toml` and `src/main.rs` are the README's "Install from crates.io" code blocks (see
@@ -77,31 +77,12 @@ const MAX_CRATE_BYTES: u64 = 2 * 1024 * 1024;
 /// The files, besides the licences, that a package must list (R2).
 const REQUIRED_FILES: [&str; 3] = ["LICENSE-MIT", "LICENSE-APACHE", "README.md"];
 
-/// rustdoc warnings that exist today and belong to slice mr.b2 (the documentation sweep, which edits `crates/**`).
-/// R5 admits exactly these and nothing else: an entry admits one warning, at a file that ends in `file` (no line
-/// number, so an edit above it does not break the entry), and a second match fails. R5 also fails when one of them no
-/// longer occurs, so that the entry is deleted with the fix and the debt cannot go stale. `stable` is whether the
+/// rustdoc warnings that R5 admits as known debt. It is empty since slice mr.b2 (the documentation sweep) fixed the
+/// three it owed, so every rustdoc warning fails R5. An entry admits one warning, at a file that ends in `file` (no
+/// line number, so an edit above it does not break the entry), and a second match fails. R5 also fails when an entry
+/// no longer occurs, so that the entry is deleted with the fix and the debt cannot go stale. `stable` is whether the
 /// plain stable run shows it (else only the run with the docs.rs features does).
-pub(crate) const KNOWN_DOC_DEBT: [DocDebt; 3] = [
-    // The redundant link at about line 108.
-    DocDebt {
-        needle: "redundant explicit link target",
-        file: "crates/gust/src/lib.rs",
-        stable: true,
-    },
-    // `kind::Uniform` is not in scope there (about line 782).
-    DocDebt {
-        needle: "unresolved link to `kind::Uniform`",
-        file: "crates/gust-wgpu/src/lib.rs",
-        stable: true,
-    },
-    // Only with the `slang-runtime` feature that docs.rs turns on (about line 248).
-    DocDebt {
-        needle: "links to private item `slang::compile_copy`",
-        file: "crates/gust/src/reflect/mod.rs",
-        stable: false,
-    },
-];
+pub(crate) const KNOWN_DOC_DEBT: [DocDebt; 0] = [];
 
 // ---------------------------------------------------------------------------------------------------------------
 // The allow-lists of R2 (E8 of `check-precompiled` calls them)
@@ -1908,7 +1889,7 @@ fn r5_docs(run: &Run, publishable: &[&Member]) -> Result<String, String> {
     };
     problems_to_error("R5", &problems)?;
     Ok(format!(
-        "cargo doc --no-deps of {} librar{} on stable ({} warning(s), all known debt of mr.b2); {nightly}",
+        "cargo doc --no-deps of {} librar{} on stable ({} warning(s), all admitted as known debt); {nightly}",
         libraries.len(),
         if libraries.len() == 1 { "y" } else { "ies" },
         known

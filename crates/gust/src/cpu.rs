@@ -1,12 +1,20 @@
-//! CPU twin backend (roadmap M3): runs a `#[gpu]` kernel's Rust shadow body on the CPU.
+//! The CPU runtime: it runs a `#[gpu]` kernel's Rust shadow body on the CPU. It is the runtime of the `cpu` target
+//! (D21, D51) and the engine of the CPU twin (D22).
 //!
-//! This module is the backend that the macro-emitted twin uses (slice m3.c): per kernel with a typed call, the macro
-//! emits an `impl Run<Kernel, N> for CpuDevice` under `cfg(any(test, gust_dual))` (`cfg(test)` of the crate that
-//! defines the kernel) that calls the shadow body once per invocation; `#[kernel(cpu = "unsupported")]` opts out. The
-//! tests of this module and of `dispatch` write the same impl by hand for their own kernels. The module holds
-//! everything such an impl needs, so the emitted code contains no downcast: [`validate`], [`read`], [`write`],
-//! [`invocations`] and [`FromGlobalId`] (all `#[doc(hidden)]` macro support). The module is a testing twin, not a production CPU target: the kernel body is
-//! the Rust shadow body as written, executed one invocation after another.
+//! For each kernel with a typed call the macro emits an `impl Run<Kernel, N> for CpuDevice` that calls the shadow body
+//! once per invocation, and two kinds of build contain it:
+//!
+//! - **The `cpu` target** (`GUST_PROFILE=cpu`, D51): the impl is emitted in every build, uses no artifact, and the
+//!   build holds no GPU runtime. This is a production build.
+//! - **The twin** (D22): in a test build (`cfg(test)` of the crate that defines the kernel) or under `--cfg gust_dual`
+//!   the impl is emitted beside the GPU path, and tests compare the GPU against it.
+//!
+//! `#[kernel(cpu = "unsupported")]` opts a kernel out of both. The tests of this module and of `dispatch` write the same
+//! impl by hand for their own kernels. The module holds everything such an impl needs, so the emitted code contains no
+//! downcast: `validate`, `read`, `write`, `invocations` and `FromGlobalId` (all `#[doc(hidden)]` macro support). In
+//! both builds the kernel body is the Rust shadow body as written, executed one invocation after another; the one
+//! exception is the generated map kernel of the `cpu` target (`#[gpu]` on a free function), which splits its output
+//! over threads (`cpu::parallel`, macro support).
 //!
 //! A [`CpuDevice`] hands out [`CpuBuffer`]s; the typed `call`/`dispatch` functions of a kernel take them like the
 //! buffers of any other backend:

@@ -37,7 +37,9 @@ pub enum Error {
     /// `profile` is the build profile of `gust` (D44). Remedy: run `cargo gust build` in the kernel's crate and
     /// rebuild, so that the artifact is embedded; or, in a `dev` build, enable the `slang-runtime` feature.
     NoArtifact {
+        /// The kernel's qualified name.
         kernel: String,
+        /// The build profile of `gust`.
         profile: &'static str,
     },
     /// A kernel's workgroup size has a zero axis; every axis of `workgroup_size` must be at least 1. (The size may
@@ -50,61 +52,95 @@ pub enum Error {
     /// on an adapter whose fragment stage cannot write storage buffers. Reported before any pipeline or wgpu object is
     /// created.
     ShapeUnsupported {
+        /// The kernel's qualified name.
         kernel: String,
+        /// The kernel's shape.
         shape: Shape,
+        /// Why the kernel's shape cannot run here.
         reason: &'static str,
     },
     /// An output of a `pixel` kernel (a read-write storage parameter) was bound with an independent length. A `pixel`
     /// output holds exactly the call's element count (`LengthRule::Shared`). Remedy: drop `Independent`.
-    ShapeIndependentOutput { kernel: String, parameter: String },
+    ShapeIndependentOutput {
+        /// The kernel's qualified name.
+        kernel: String,
+        /// The output parameter that was bound with an independent length.
+        parameter: String,
+    },
     /// A parameter has a resource kind this call cannot bind, for example a `Value` parameter, or a texture or sampler
     /// in a staged graph, which tracks hazards by buffer only.
-    UnsupportedParameter { name: String, kind: ParameterKind },
+    UnsupportedParameter {
+        /// The parameter's name.
+        name: String,
+        /// The kind that this call cannot bind.
+        kind: ParameterKind,
+    },
     /// The kernel's own parameter declares no resource layout, or one that does not fit its kind (`StorageV1` or
     /// `StorageV2` for a storage buffer, `Std140V1` for a uniform, `TextureV1` for a texture or sampler, D91).
     /// Reported when the kernel is validated, and when a texture layout is built for a parameter that has no sample
     /// type on this device or no storage format.
     InvalidResourceLayout {
+        /// The parameter's name.
         parameter: String,
+        /// The layout the parameter declares, or `None` when it declares none.
         actual: Option<Box<ResourceLayout>>,
     },
     /// A resource of one kind was bound to a parameter of the other: a storage buffer to a uniform parameter, or a
     /// uniform to a storage one. The typed `call` rules this out at compile time; a hand-built `Call` is caught here.
     BindingKind {
+        /// The parameter's name.
         parameter: String,
+        /// The kind of resource the parameter takes.
         expected: BindingKind,
+        /// The kind of the resource that was bound.
         actual: BindingKind,
     },
     /// `HeadlessDevice::create_uniform` refused the element type: it is not a padding-free `Std140V1` type. `reason`
     /// names what is wrong and the fix.
     InvalidUniformType {
+        /// The name of the rejected element type.
         type_name: &'static str,
+        /// What is wrong with the type, and the fix.
         reason: &'static str,
     },
     /// The resource bound to a parameter has another layout than the parameter declares (`expected`); `actual` is the
     /// layout of what was bound (always `Some` today).
     UnsupportedResourceLayout {
+        /// The parameter's name.
         parameter: String,
+        /// The layout the parameter declares.
         expected: Box<ResourceLayout>,
+        /// The layout of the resource that was bound.
         actual: Option<Box<ResourceLayout>>,
     },
     /// A kernel parameter sits in a bind group other than 0, the only one this backend supports. The number is the
     /// group.
     UnsupportedBindGroup(u32),
     /// The call binds another number of resources (or of samplers) than the kernel declares.
-    BindingCount { expected: usize, actual: usize },
+    BindingCount {
+        /// The number of resources (or samplers) the kernel declares.
+        expected: usize,
+        /// The number the call binds.
+        actual: usize,
+    },
     /// A parameter was bound with another access than it declares, or a kernel declares a uniform parameter that is
     /// not read-only (`expected` is then read-only and no binding is involved).
     BindingAccess {
+        /// The parameter's name.
         parameter: String,
+        /// The access the parameter declares.
         expected: Access,
+        /// The access it was bound with.
         actual: Access,
     },
     /// A buffer holds another number of elements than the parameter expects (its length rule is shared, not
     /// independent).
     BufferLength {
+        /// The parameter's name.
         parameter: String,
+        /// The element count the parameter expects.
         expected: usize,
+        /// The element count of the buffer that was bound.
         actual: usize,
     },
     /// A resource (buffer, uniform, pool, texture or sampler) is used with a device other than the one that created
@@ -120,36 +156,62 @@ pub enum Error {
     /// (wgpu does not allow the GPU to read a buffer as indirect arguments while the same dispatch
     /// writes it). Binding the arguments buffer read-only is accepted.
     AliasedBinding {
+        /// The kernel's qualified name.
         kernel: String,
+        /// The first of the two parameters, in declaration order.
         first: String,
+        /// The second of the two parameters, or the indirect-arguments label in a staged graph.
         second: String,
     },
     /// A persistent buffer is bound with an access its own access (`buffer`) does not allow, for example a buffer
     /// created read-only bound as read-write.
     PersistentBufferAccess {
+        /// The parameter's name.
         parameter: String,
+        /// The access the buffer was created with.
         buffer: GpuBufferAccess,
+        /// The access the parameter asks for.
         binding: Access,
     },
     /// A host slice written to a persistent buffer, or a graph upload to one, does not match the buffer's element
     /// count.
-    PersistentBufferLength { expected: usize, actual: usize },
+    PersistentBufferLength {
+        /// The buffer's element count.
+        expected: usize,
+        /// The element count of the host slice or graph upload.
+        actual: usize,
+    },
     /// A readback was asked of a persistent buffer that was not created with read-write access.
     PersistentBufferNotReadable,
     /// A parameter was bound with an independent length but the buffer is empty while the call's extent is not; the GPU
     /// would see a one-element placeholder.
-    IndependentLengthEmpty { parameter: String },
+    IndependentLengthEmpty {
+        /// The parameter's name.
+        parameter: String,
+    },
     /// A graph node depends on a node that is not an earlier node of the same graph.
-    GraphDependencyOrder { node: usize, dependency: usize },
+    GraphDependencyOrder {
+        /// The index of the node.
+        node: usize,
+        /// The index of the node it depends on, which is not an earlier one.
+        dependency: usize,
+    },
     /// A graph node touches a buffer that an earlier node (`producer`, the earliest such node) also touches, with at
     /// least one of the two accesses read-write, without depending on it directly or through other nodes. Two reads
     /// never conflict.
-    GraphMissingDependency { node: usize, producer: usize },
+    GraphMissingDependency {
+        /// The index of the node.
+        node: usize,
+        /// The index of the earlier node that touches the same buffer.
+        producer: usize,
+    },
     /// A graph readback was asked for a node that is not a readback node of that execution.
     GraphUnknownReadback(usize),
     /// A graph readback holds one element type and another was requested. Both are element type names.
     GraphReadbackType {
+        /// The name of the element type the readback holds.
         expected: &'static str,
+        /// The name of the element type that was requested.
         actual: &'static str,
     },
     /// An indirect-arguments buffer is not a non-empty struct of exactly three `u32` fields. `create_indirect_buffer`
@@ -157,9 +219,17 @@ pub enum Error {
     /// not made by `create_indirect_buffer` or is empty. The text is the name of the struct that was given.
     IndirectArgsLayout(&'static str),
     /// A parameter of an indirect dispatch is not bound with an independent length and a non-empty buffer.
-    IndirectBindingLength { parameter: String },
+    IndirectBindingLength {
+        /// The parameter's name.
+        parameter: String,
+    },
     /// A pool was asked to truncate to more elements (`requested`) than its logical length (`len`).
-    PoolTruncateGrows { len: usize, requested: usize },
+    PoolTruncateGrows {
+        /// The pool's logical length.
+        len: usize,
+        /// The length that was asked for.
+        requested: usize,
+    },
     /// A launch needs more than a limit of the device (or of the limits installed with
     /// `HeadlessDevice::with_limits`) allows. A single dispatch reports it before any
     /// pipeline is compiled, looked up in the cache or encoded. A multi-node graph
@@ -173,16 +243,23 @@ pub enum Error {
     /// `kernel` is the qualified name of the kernel; for a limit met outside a launch it names the operation
     /// (`create_texture_2d 5x1`, a buffer label).
     DeviceLimit {
+        /// The kernel's qualified name, or the operation that met the limit.
         kernel: String,
+        /// The name of the limit, as wgpu spells it.
         limit: &'static str,
+        /// The value the launch needs.
         requested: u64,
+        /// The value the device allows.
         maximum: u64,
     },
     /// `HeadlessDevice::with_limits` may only lower limits; `limit` was raised above the
     /// value the device was opened with.
     LimitRaised {
+        /// The name of the limit, as wgpu spells it.
         limit: &'static str,
+        /// The value that was asked for.
         requested: u64,
+        /// The value the device was opened with.
         device: u64,
     },
     /// Waiting for the device failed: the poll returned an error, the device was lost, or the wait did not finish. Also
@@ -195,14 +272,26 @@ pub enum Error {
     /// A buffer allocation failed inside an out-of-memory error scope: the request was within `max_buffer_size`, but
     /// the adapter had no memory for it. `label` names the buffer and `bytes` is the size asked for. Where a device
     /// cannot report this through its scope and is lost instead, S7.6 outcome B maps it to [`Error::Poll`].
-    OutOfMemory { label: String, bytes: u64 },
+    OutOfMemory {
+        /// The label of the buffer or texture.
+        label: String,
+        /// The size that was asked for, in bytes.
+        bytes: u64,
+    },
     /// Two resident buffers of one operation belong to different devices (compared by `HeadlessDevice::id`).
-    MixedDevices { first: u64, second: u64 },
+    MixedDevices {
+        /// The id of the device the operation runs on.
+        first: u64,
+        /// The id of the device the other buffer belongs to.
+        second: u64,
+    },
     /// A dispatch extent is unusable: a product overflowed, so no launch can be described (the extent's `x * y * z`, or
     /// the kernel's workgroup size multiplied out), or the dispatch is of a kind that supports one-dimensional extents
     /// only (a staged graph node with a y or z extent above 1). `reason` names the failing step.
     Extent {
+        /// The extent as `[x, y, z]`, or the kernel's workgroup size when that overflowed (`reason` says which).
         extent: [u64; 3],
+        /// The step that failed.
         reason: &'static str,
     },
     /// `set_default_options` was called after the default device had been opened successfully: the options can no
@@ -212,35 +301,49 @@ pub enum Error {
     /// a storage one `TextureUse::STORAGE`. `required` is what the parameter needs and `actual` what the texture
     /// offers (for `create_texture_2d`: what the caller asked for, and what the format allows on the device).
     TextureUse {
+        /// The parameter's name, or the operation that met the use.
         parameter: String,
+        /// The use the parameter needs.
         required: gust::TextureUse,
+        /// The uses the texture offers.
         actual: gust::TextureUse,
     },
     /// A texture of the wrong format is bound: a storage parameter needs its exact format, a sampled one a format of
     /// its sample class. `expected` says which.
     TextureFormat {
+        /// The parameter's name, or the operation that met the format.
         parameter: String,
+        /// What the parameter needs, in words.
         expected: String,
+        /// The format of the texture.
         actual: gust::texture::Format,
     },
     /// A sampler that filters linearly is bound on a device without the `float32-filterable` feature, which a linear
     /// filter of a 32-bit float texture needs. `feature` names what is missing. Remedy: open the device with
     /// `FeaturesPolicy::Adapter` on an adapter that offers it, or bind a `Filter::Nearest` sampler.
     TextureFilter {
+        /// The parameter's name.
         parameter: String,
+        /// The filter of the sampler.
         filter: gust::texture::Filter,
+        /// The device feature that is missing.
         feature: &'static str,
     },
     /// A texture's size is unusable: a zero side, or a host slice that does not hold `width * height` texels.
     TextureSize {
+        /// The width in texels.
         width: u32,
+        /// The height in texels.
         height: u32,
+        /// What is wrong with the size.
         reason: String,
     },
     /// `create_sampler` was given a filter or an address mode this backend has no mapping for (both enums are
     /// `#[non_exhaustive]`, so a newer `gust` can name one).
     SamplerOptions {
+        /// The filter that was given.
         filter: gust::texture::Filter,
+        /// The address mode that was given.
         address: gust::texture::Address,
     },
 }

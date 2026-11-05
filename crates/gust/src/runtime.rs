@@ -3,16 +3,22 @@ use core::ops::{Deref, Index, IndexMut};
 /// Slang-shaped scalar spellings for Rust-side parsing and type checking.
 #[allow(non_camel_case_types)]
 pub type float = f32;
+/// Slang-shaped spelling of `i32`.
 #[allow(non_camel_case_types)]
 pub type int = i32;
+/// Slang-shaped spelling of `u32`.
 #[allow(non_camel_case_types)]
 pub type uint = u32;
 
+/// A three-component unsigned vector: the Rust shadow of the `uint3` that carries an invocation id.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
 pub struct UVec3 {
+    /// The first component.
     pub x: u32,
+    /// The second component.
     pub y: u32,
+    /// The third component.
     pub z: u32,
 }
 
@@ -52,6 +58,7 @@ pub struct Workgroup<A> {
 }
 
 impl<A> Workgroup<A> {
+    /// Wraps `values` as the contents of the workgroup memory.
     pub const fn new(values: A) -> Self {
         Self { values }
     }
@@ -84,10 +91,12 @@ pub struct Invocation {
 }
 
 impl Invocation {
+    /// The metadata of the invocation whose global id is `global_id`.
     pub const fn new(global_id: UVec3) -> Self {
         Self { global_id }
     }
 
+    /// The invocation's global id, the dispatch-thread id.
     pub const fn global_id(self) -> UVec3 {
         self.global_id
     }
@@ -103,14 +112,17 @@ pub struct Storage<'a, T> {
 pub type StructuredBuffer<'a, T> = Storage<'a, T>;
 
 impl<'a, T> Storage<'a, T> {
+    /// Wraps `values` as the read-only buffer that a kernel parameter has in the shadow body.
     pub const fn new(values: &'a [T]) -> Self {
         Self { values }
     }
 
+    /// The number of elements. Panics if the slice holds more than `u32::MAX`, which a GPU buffer cannot.
     pub fn len(&self) -> u32 {
         u32::try_from(self.values.len()).expect("GPU buffers are limited to u32::MAX elements")
     }
 
+    /// Whether the buffer holds no element.
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
@@ -134,14 +146,17 @@ pub struct StorageMut<'a, T> {
 pub type RWStructuredBuffer<'a, T> = StorageMut<'a, T>;
 
 impl<'a, T> StorageMut<'a, T> {
+    /// Wraps `values` as the read-write buffer that a kernel parameter has in the shadow body.
     pub fn new(values: &'a mut [T]) -> Self {
         Self { values }
     }
 
+    /// The number of elements. Panics if the slice holds more than `u32::MAX`, which a GPU buffer cannot.
     pub fn len(&self) -> u32 {
         u32::try_from(self.values.len()).expect("GPU buffers are limited to u32::MAX elements")
     }
 
+    /// Whether the buffer holds no element.
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }

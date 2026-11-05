@@ -88,13 +88,14 @@
 //! }
 //! ```
 //!
-//! # CPU twin
+//! # The CPU runtime: the `cpu` target and the twin
 //!
-//! [`cpu`] runs a kernel's Rust shadow body on the CPU (`CpuDevice`, `CpuBuffer`); the per-kernel twin of the typed
-//! calls that the `#[gpu]` macro emits uses it. The macro emits the twin under `cfg(test)` of the crate that defines
-//! the kernel or under `--cfg gust_dual`, unless the kernel has `#[kernel(cpu =
-//! "unsupported")]`; under `GUST_PROFILE=cpu` it emits the same impl in every build (see "Build profiles"). Nothing of
-//! it is re-exported at the crate root, except the hidden macro behind `cpu::overflow_checks!`.
+//! [`cpu`] runs a kernel's Rust shadow body on the CPU (`CpuDevice`, `CpuBuffer`). It is the runtime of the `cpu`
+//! target (D21, D51) and the engine of the CPU twin (D22). The per-kernel impl of the typed calls that the `#[gpu]`
+//! macro emits for it is the twin under `cfg(test)` of the crate that defines the kernel or under `--cfg gust_dual`,
+//! unless the kernel has `#[kernel(cpu = "unsupported")]`; under `GUST_PROFILE=cpu` the macro emits the same impl in
+//! every build and that build is the `cpu` target (see "Build profiles"). Nothing of it is re-exported at the crate
+//! root, except the hidden macro behind `cpu::overflow_checks!`.
 //!
 //! # Build profiles
 //!
@@ -102,12 +103,12 @@
 //! `gust`'s build script reads it; any other value, including an empty one, fails the build and names the four.
 //! `native` and `web` are strict: every `#[gpu]` kernel must have a precompiled artifact (see [`artifact`]), or the
 //! build fails with a compile error at the kernel, and the `slang-runtime` feature is refused, so the build contains
-//! no run-time Slang compiler. `dev` has neither rule. [`profile::NAME`] is the effective profile.
+//! no run-time Slang compiler. `dev` has neither rule. `profile::NAME` is the effective profile (support surface, see below).
 //!
 //! `cpu` is the production CPU target (D21): the `#[gpu]` macro emits the kernel's `Run` impl for
-//! [`cpu::CpuDevice`](crate::cpu::CpuDevice) in every build, without the test and `gust_dual` gate, uses no
+//! [`cpu::CpuDevice`] in every build, without the test and `gust_dual` gate, uses no
 //! artifact, and the `slang-runtime` feature is refused, so the build holds no run-time Slang bridge. `gust-wgpu`
-//! evaluates [`profile::require_gpu_target`], which fails under it, so a crate graph that reaches the GPU runtime does
+//! evaluates `profile::require_gpu_target`, which fails under it, so a crate graph that reaches the GPU runtime does
 //! not build. It is never inferred: a release build without the variable stays `native` (`web` on `wasm32`). The Slang
 //! text that a kernel's descriptor keeps in a `cpu` build is metadata (the identity of the kernel, what `export` and
 //! diagnostics show), not a second target: nothing in the build can turn it into a pipeline. A panic in a kernel body
@@ -132,6 +133,41 @@
 //! it rebuilds `gust` and everything that depends on it. The repository's own `cargo xtask` commands run their cargo
 //! children under `GUST_PROFILE=dev`, whatever the parent environment holds (a different preset value is logged and
 //! overridden).
+//!
+//! # Stability
+//!
+//! `gust` is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`), and a
+//! patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (this crate, the `#[gpu]` macro
+//! crate, the wgpu backend and `cargo-gust`) share one version and depend on each other with exact (`=`) pins, because
+//! the macro emits items that only the same release of this crate has: take them at the same version, and a minor bump
+//! of one is a minor bump of all.
+//!
+//! What a minor bump may change: any item of this crate that is not marked as support surface, including a function's
+//! signature, the fields of the descriptor and layout types (a hand-written `KernelDescriptor` literal then needs the
+//! new field), the variants of an enum that is not `#[non_exhaustive]`, and the Slang that the macro emits. The error
+//! enums, [`Shape`], and [`ParameterKind`] are `#[non_exhaustive]`, so a new variant is not a breaking change and a
+//! `match` outside this crate needs a wildcard arm. The formats of the files that `cargo gust` writes
+//! ([`artifact`] manifests, records and reflection documents) carry a schema version, and a reader accepts every
+//! schema version that an earlier release wrote.
+//!
+//! # Support surface
+//!
+//! These items are public because macro-generated code, `cargo-gust` or the repository's own tests reach them, and are
+//! `#[doc(hidden)]`; they have no stability promise and a patch release may change them:
+//!
+//! - the modules `profile`, `spirv` and `toolchain` (the last one with the `slang-runtime` feature), and
+//!   `slang::probe` with its `slang::TargetProbe`;
+//! - in `cpu`: `validate`, `read`, `write`, `read_uniform`, `invocations`, `FromGlobalId`, `CpuJob::complete`,
+//!   `__no_hook`, the macro `__gust_overflow_checks` behind `overflow_checks!`, and the module `parallel`;
+//! - in `cpu::texture`: `TextureRef`, `TextureMut`, `read`, `write`, `sampler` and `SamplerOwner`;
+//! - in `map`: `MapElement`, `OwnIndex`, `element_count` and `resource`;
+//! - the `*_parameter_count` methods of `KernelDescriptor`;
+//! - every `__gust_*` name, the `descriptor;` form of `par_for!` (D103), and the `cargo-gust-bridge` feature.
+//!
+//! The `check-*` commands and the evidence tiers of `docs/development/VALIDATION.md` belong to the repository, not to
+//! this crate.
+
+#![warn(missing_docs)]
 
 // The `#[gpu]` expansion names `::gust::..`; this lets the crate's own unit tests expand it too.
 #[cfg(test)]
@@ -145,10 +181,12 @@ mod dispatch;
 mod job;
 pub mod map;
 pub mod math;
+#[doc(hidden)]
 pub mod profile;
 pub mod reflect;
 mod runtime;
 pub mod slang;
+#[doc(hidden)]
 pub mod spirv;
 pub mod texture;
 #[cfg(feature = "slang-runtime")]

@@ -45,7 +45,29 @@
 //!
 //! `clippy.toml` bans `std::thread::sleep` and `std::time::Instant::now` for the browser; native code may call them,
 //! hence the crate-level allow below.
+//!
+//! # Stability
+//!
+//! This crate is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`),
+//! and a patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (`gust`, the `#[gpu]`
+//! macro crate, this crate and `cargo-gust`) share one version and depend on each other with exact (`=`) pins: take
+//! them at the same version, and a minor bump of one is a minor bump of all.
+//!
+//! What a minor bump may change: any public item that is not support surface, including a function's signature and
+//! the public fields of the plain record types (`BufferDispatch`, `DeviceOptions`, `PoolStats` and the like).
+//! [`Error`] is `#[non_exhaustive]`, so a new variant is not a breaking change and a `match` outside this crate needs a
+//! wildcard arm; the variants themselves are not, so adding a field to a struct variant is a breaking change and comes
+//! only in a minor bump. A
+//! `GraphReport` is `#[non_exhaustive]` and only this crate builds one.
+//!
+//! # Support surface
+//!
+//! `render_wgpu_source` is public because the repository's export command and tests call it. It is `#[doc(hidden)]`;
+//! it has no stability promise and a patch release may change it. The artifact and reflection formats that this
+//! crate reads are those of `gust` and keep its promise: a reader accepts every schema version that an earlier release
+//! wrote.
 
+#![warn(missing_docs)]
 #![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
 
 use std::{
@@ -91,6 +113,7 @@ pub use device::{
     default_device_async, set_default_options,
 };
 pub use error::Error;
+#[doc(hidden)]
 pub use generated_host::render_wgpu_source;
 #[cfg(not(target_arch = "wasm32"))]
 pub use graph::{GraphOutput, GraphReport, NodeId, StagedGraph, TransferDirection, TransferRecord};
@@ -208,7 +231,10 @@ fn is_indirect_args_layout(layout: gust::TypeLayout) -> bool {
 /// Host data for one reflected `Storage<f32>` or `StorageMut<f32>` parameter.
 #[derive(Clone, Copy, Debug)]
 pub enum F32Binding<'a> {
+    /// A read-only storage buffer with these contents.
     ReadOnly(&'a [f32]),
+    /// A read-write storage buffer initialised with these contents. Its final contents come back in the dispatch
+    /// output.
     ReadWrite(&'a [f32]),
 }
 
@@ -232,7 +258,10 @@ impl<'a> F32Binding<'a> {
 /// Host data for one reflected `Storage<u32>` or `StorageMut<u32>` parameter.
 #[derive(Clone, Copy, Debug)]
 pub enum U32Binding<'a> {
+    /// A read-only storage buffer with these contents.
     ReadOnly(&'a [u32]),
+    /// A read-write storage buffer initialised with these contents. Its final contents come back in the dispatch
+    /// output.
     ReadWrite(&'a [u32]),
 }
 
@@ -256,7 +285,9 @@ impl<'a> U32Binding<'a> {
 /// Logical shader access assigned to a persistent GPU buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuBufferAccess {
+    /// Kernels only read the buffer, and the host cannot read it back.
     ReadOnly,
+    /// Kernels may write the buffer, and the host can read it back.
     ReadWrite,
 }
 
@@ -287,18 +318,22 @@ pub struct GpuBuffer<T> {
 }
 
 impl<T> GpuBuffer<T> {
+    /// The number of elements.
     pub const fn len(&self) -> usize {
         self.len
     }
 
+    /// Whether the buffer holds no element.
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
 
+    /// The access the buffer was created with.
     pub const fn access(&self) -> GpuBufferAccess {
         self.access
     }
 
+    /// The layout of one element.
     pub const fn layout(&self) -> gust::TypeLayout {
         self.layout
     }
@@ -338,6 +373,7 @@ pub struct GpuUniform<T> {
 }
 
 impl<T> GpuUniform<T> {
+    /// The layout of the uniform's value.
     pub const fn layout(&self) -> gust::TypeLayout {
         self.layout
     }
@@ -351,7 +387,9 @@ impl<T> GpuUniform<T> {
 /// One persistent buffer bound to an `f32` storage parameter.
 #[derive(Clone, Copy)]
 pub enum F32BufferBinding<'a> {
+    /// The buffer is bound read-only.
     ReadOnly(&'a GpuBuffer<f32>),
+    /// The buffer is bound read-write.
     ReadWrite(&'a GpuBuffer<f32>),
 }
 
@@ -413,10 +451,12 @@ impl PartialEq for Raw<'_> {
 }
 
 impl<'a> BufferBinding<'a> {
+    /// Bind `buffer` read-only.
     pub fn read_only<T: GpuPod>(buffer: &'a GpuBuffer<T>) -> Self {
         Self::new(buffer, Access::ReadOnly)
     }
 
+    /// Bind `buffer` read-write.
     pub fn read_write<T: GpuPod>(buffer: &'a GpuBuffer<T>) -> Self {
         Self::new(buffer, Access::ReadWrite)
     }
@@ -524,11 +564,13 @@ impl<'a> From<F32BufferBinding<'a>> for BufferBinding<'a> {
 /// [`Error::Extent`] when the graph runs), and reads `element_count`.
 #[derive(Clone, Copy)]
 pub struct BufferDispatch<'a> {
+    /// The kernel to run.
     pub kernel: &'a KernelDescriptor,
     /// The x axis of the extent; the whole extent of a one-dimensional dispatch.
     pub element_count: u32,
     /// The y and z axes of the extent.
     extent_yz: [u32; 2],
+    /// The kernel's resource arguments, in parameter order.
     pub bindings: &'a [BufferBinding<'a>],
     /// The sampler bindings of a kernel with `Sampler` parameters, in declaration order; empty for a kernel with none.
     /// Set with [`BufferDispatch::with_samplers`].
@@ -589,12 +631,16 @@ impl<'a> BufferDispatch<'a> {
 /// One persistent-buffer dispatch to encode as part of a batch.
 #[derive(Clone, Copy)]
 pub struct F32BufferDispatch<'a> {
+    /// The kernel to run.
     pub kernel: &'a KernelDescriptor,
+    /// The element count: the extent of this one-dimensional dispatch.
     pub element_count: u32,
+    /// The kernel's buffer arguments, in parameter order.
     pub bindings: &'a [F32BufferBinding<'a>],
 }
 
 impl<'a> F32BufferDispatch<'a> {
+    /// A dispatch of `kernel` over `element_count` elements with `bindings`.
     pub const fn new(
         kernel: &'a KernelDescriptor,
         element_count: u32,
@@ -611,12 +657,14 @@ impl<'a> F32BufferDispatch<'a> {
 /// Result of a completed dispatch. Writable buffers are returned in binding order.
 #[derive(Debug, PartialEq)]
 pub struct DispatchOutput {
+    /// The final contents of the writable buffers, in binding order.
     pub writable_buffers: Vec<Vec<f32>>,
 }
 
 /// Result of a completed `u32` dispatch. Writable buffers are returned in binding order.
 #[derive(Debug, PartialEq)]
 pub struct U32DispatchOutput {
+    /// The final contents of the writable buffers, in binding order.
     pub writable_buffers: Vec<Vec<u32>>,
 }
 
@@ -651,6 +699,7 @@ impl WgpuJob<'_> {
         self.poll_with_timeout(Some(Duration::ZERO))
     }
 
+    /// Whether the submission has completed, from one non-blocking poll ([`WgpuJob::status`]).
     pub fn is_complete(&self) -> Result<bool, Error> {
         self.status().map(JobStatus::is_complete)
     }
@@ -863,7 +912,7 @@ impl<T: GpuPod> Resource for GpuBuffer<T> {
     }
 }
 
-/// A uniform is a typed resource of [`HeadlessDevice`] of kind [`kind::Uniform`]. In a generated `call` it is accepted
+/// A uniform is a typed resource of [`HeadlessDevice`] of kind [`gust::kind::Uniform`]. In a generated `call` it is accepted
 /// only for a uniform parameter: it is read-only, one element long whatever the dispatch's element count (the length
 /// rule is ignored), and a `GpuUniform` where a storage buffer is expected does not compile.
 ///
@@ -1290,6 +1339,7 @@ impl HeadlessDevice {
         })
     }
 
+    /// The wgpu description of the adapter that the device was opened on.
     pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
         &self.adapter_info
     }
@@ -1343,6 +1393,7 @@ impl HeadlessDevice {
         Ok(self)
     }
 
+    /// Whether the device has wgpu's `MEMORY_DECORATION_COHERENT` feature, coherent storage memory.
     pub fn supports_coherent_storage(&self) -> bool {
         self.device
             .features()
@@ -1413,6 +1464,7 @@ impl HeadlessDevice {
         }
     }
 
+    /// [`HeadlessDevice::create_typed_buffer`] for `f32` values.
     pub fn create_f32_buffer(
         &self,
         label: &str,
@@ -1490,6 +1542,7 @@ impl HeadlessDevice {
         Ok(())
     }
 
+    /// [`HeadlessDevice::write_typed_buffer`] for an `f32` buffer.
     pub fn write_f32_buffer(&self, buffer: &GpuBuffer<f32>, values: &[f32]) -> Result<(), Error> {
         self.write_typed_buffer(buffer, values)
     }
@@ -1513,6 +1566,7 @@ impl HeadlessDevice {
         })
     }
 
+    /// [`HeadlessDevice::write_typed_buffer_timed`] for an `f32` buffer.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn write_f32_buffer_timed(
         &self,
@@ -1532,6 +1586,7 @@ impl HeadlessDevice {
             .map(|(values, _)| values)
     }
 
+    /// [`HeadlessDevice::read_typed_buffer`] for an `f32` buffer.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn read_f32_buffer(&self, buffer: &GpuBuffer<f32>) -> Result<Vec<f32>, Error> {
         self.read_typed_buffer(buffer)
@@ -1641,6 +1696,7 @@ impl HeadlessDevice {
         })
     }
 
+    /// [`HeadlessDevice::read_typed_buffer_timed`] for an `f32` buffer.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn read_f32_buffer_timed(
         &self,
@@ -1659,6 +1715,7 @@ impl HeadlessDevice {
         self.submit_f32_batch(&[F32BufferDispatch::new(kernel, element_count, bindings)])
     }
 
+    /// Dispatch `kernel` over `element_count` elements with `bindings` and wait until it has completed.
     pub fn dispatch_f32_buffers(
         &self,
         kernel: &KernelDescriptor,
@@ -1669,6 +1726,7 @@ impl HeadlessDevice {
             .wait()
     }
 
+    /// [`HeadlessDevice::dispatch_f32_buffers`], returning the host timing of the dispatch.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn dispatch_f32_buffers_timed(
         &self,
@@ -1679,6 +1737,7 @@ impl HeadlessDevice {
         self.dispatch_f32_batch_timed(&[F32BufferDispatch::new(kernel, element_count, bindings)])
     }
 
+    /// Submit `dispatches` as one command buffer and return its job without waiting.
     pub fn submit_f32_batch<'device>(
         &'device self,
         dispatches: &[F32BufferDispatch<'_>],
@@ -1686,10 +1745,12 @@ impl HeadlessDevice {
         with_f32_dispatches(dispatches, |typed| self.submit_batch(typed))
     }
 
+    /// Submit `dispatches` as one command buffer and wait until it has completed.
     pub fn dispatch_f32_batch(&self, dispatches: &[F32BufferDispatch<'_>]) -> Result<(), Error> {
         self.submit_f32_batch(dispatches)?.wait()
     }
 
+    /// [`HeadlessDevice::dispatch_f32_batch`], returning the host timing of the batch.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn dispatch_f32_batch_timed(
         &self,

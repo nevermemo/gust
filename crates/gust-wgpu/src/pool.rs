@@ -13,7 +13,9 @@ use crate::{Error, GpuBuffer, GpuBufferAccess, HeadlessDevice};
 /// Evidence for one host-driven growth step.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GrowthRecord {
+    /// The capacity in elements before the growth.
     pub old_capacity: usize,
+    /// The capacity in elements after the growth.
     pub new_capacity: usize,
     /// Live bytes copied GPU-to-GPU; never read back.
     pub copied_bytes: u64,
@@ -236,6 +238,7 @@ impl<T: GpuPod> GpuPool<T> {
         self.len
     }
 
+    /// Whether the live element count is zero.
     pub const fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -255,6 +258,7 @@ impl<T: GpuPod> GpuPool<T> {
         self.retired.len()
     }
 
+    /// The growth steps taken so far, oldest first.
     pub fn growth_history(&self) -> &[GrowthRecord] {
         &self.growths
     }

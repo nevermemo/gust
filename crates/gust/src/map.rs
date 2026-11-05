@@ -68,12 +68,18 @@ pub enum Error {
     /// A slice-shaped argument has a length different from the others. Nothing ran. `parameter` is the kernel
     /// parameter, `expected` the length of the first slice-shaped argument and `found` this one's.
     LengthMismatch {
+        /// The kernel parameter whose argument has the odd length.
         parameter: &'static str,
+        /// The length of the first slice-shaped argument.
         expected: usize,
+        /// The length of this argument.
         found: usize,
     },
     /// The element count does not fit `u32`, the type of a dispatch's element count. Nothing ran.
-    TooLong { len: usize },
+    TooLong {
+        /// The element count that does not fit.
+        len: usize,
+    },
     /// The call has no slice-shaped argument to take the element count from (every argument is a broadcast scalar).
     Empty,
     /// Resident arguments of one call belong to different devices, or to a device other than the one named.

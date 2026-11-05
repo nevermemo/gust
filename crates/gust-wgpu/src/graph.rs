@@ -30,22 +30,29 @@ use crate::{
 pub struct NodeId(usize);
 
 impl NodeId {
+    /// The node's position in insertion order.
     pub const fn index(self) -> usize {
         self.0
     }
 }
 
+/// The direction of a transfer between the host and the GPU.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferDirection {
+    /// Host data written to a GPU buffer.
     Upload,
+    /// GPU buffer contents copied back to the host.
     Readback,
 }
 
 /// One host/GPU transfer performed by an executed graph.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransferRecord {
+    /// The node that made the transfer.
     pub node: NodeId,
+    /// Whether it uploaded or read back.
     pub direction: TransferDirection,
+    /// The number of bytes moved.
     pub bytes: u64,
 }
 
@@ -53,14 +60,18 @@ pub struct TransferRecord {
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct GraphReport {
+    /// Every transfer of the execution.
     pub transfers: Vec<TransferRecord>,
+    /// The total number of bytes uploaded.
     pub upload_bytes: u64,
+    /// The total number of bytes read back.
     pub readback_bytes: u64,
     /// Dispatch nodes that produced GPU work (zero-element dispatches are skipped).
     pub dispatches: usize,
     /// Dispatches whose workgroup count was read from a GPU buffer; the host
     /// never learned that count, so they are excluded from `workgroups`.
     pub indirect_dispatches: usize,
+    /// The workgroups launched by dispatches whose count the host knew; indirect dispatches are not counted.
     pub workgroups: u64,
     /// Dependency edges the graph derived for typed nodes (`write`, `run`, `run_indirect`, `read`).
     pub derived_edges: usize,
@@ -68,6 +79,7 @@ pub struct GraphReport {
     pub declared_edges: usize,
     /// Bytes of buffers touched by dispatches but by no transfer in this execution.
     pub resident_bytes: u64,
+    /// The host wall-clock time that `execute_graph` took.
     pub host_elapsed: Duration,
 }
 
@@ -137,14 +149,17 @@ pub struct StagedGraph<'a> {
 }
 
 impl<'a> StagedGraph<'a> {
+    /// An empty graph.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// The number of nodes.
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
+    /// Whether the graph has no node.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
@@ -535,6 +550,7 @@ struct PendingReadback {
 
 /// Readbacks and the transfer report of one executed graph.
 pub struct GraphOutput {
+    /// What the execution moved and kept resident.
     pub report: GraphReport,
     readbacks: Vec<(NodeId, TypeLayout, Vec<u8>)>,
 }

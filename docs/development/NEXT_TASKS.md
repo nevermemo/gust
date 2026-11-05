@@ -154,11 +154,6 @@ test module; do not mix that mechanical move with behavior changes.
   #14198 was closed in its favour. Once it is in a Slang release the pin adopts, the bool overloads of `__gust_xor` and
   `__gust_xor_assign` can go (a pin bump with the usual re-bless; D46). Until then the overloads stay. Recorded here
   because the repository did not mention it (sanity-fable and sanity-opus, 2026-11-02).
-- SPIR-V is never executed by any M6 case: the Spirv tier of M6 is `spirv-val` of the exported modules, and
-  `gust-wgpu` runs WGSL. The matrix layout decorations of the SPIR-V goldens and Std140 uniforms in SPIR-V have never
-  been dispatched, yet MR ships SPIR-V to Vulkan users. Dispatch the three goldens (vectors and products, uniforms)
-  through SPIR-V passthrough on the RTX 5090; this is input to the MX/MR planning, not an M6 task (sanity-opus,
-  2026-11-02; ruling 4).
 - Gate the layouts of the emitted WGSL with naga's validator and `proc::Layouter`: done in mx.n (merge `4d4dafe`,
   D98), through `wgpu::naga`, so the D02 allow-list is unchanged; it replaces m6.m2's by-hand run. Left: exported
   WGSL (`compile_reflected_clean`) is gated only through the one committed precompiled file.
@@ -186,10 +181,9 @@ test module; do not mix that mechanical move with behavior changes.
   tail). m7.p did not size them: `generated_host.rs` still emits `as_entire_binding()` (m7.a0 review). Open; the next
   slice that changes the generated host code takes it, with a test that reads `arrayLength` of a pooled `GpuVec`.
 - Before MR publishes (M7 sanity, Fable/Opus): the wasm32 `Job` contract (D69; see the M4 follow-ups);
-  `#[non_exhaustive]` on the public error enums (gust-wgpu `Error` and `gust::reflect::Error`; `gust::slang::Error` is
-  done, mr.t2) and on `DeviceOptions`, with builder methods (mx.t2 review); and a way to query which gust-algo variant
-  ran, since v1 switches to v0 above about 2^28 elements without any sign, and the float bound changes with it (see the
-  m7.r4 follow-ups).
+  `#[non_exhaustive]` on `DeviceOptions`, with builder methods (mx.t2 review; the public error enums have it since
+  mr.b1); and a way to query which gust-algo variant ran, since v1 switches to v0 above about 2^28 elements without any
+  sign, and the float bound changes with it (see the m7.r4 follow-ups).
 - mr.t2 follow-ups (Opus review): xtask still starts the helper without the ETXTBSY retry (the two launches in
   `xtask/src/verify.rs`; xtask has no `gust` dependency); a third copy of `HELPER_VARIABLE` and `default_helper` is left
   in `xtask/src/release.rs`; `gust::slang` now checks the `slangc` version, so D72's `__gust_keep` follow-up can be
@@ -320,9 +314,87 @@ test module; do not mix that mechanical move with behavior changes.
   busy", `HelperUnavailable`). Seen once in CI on `0b0cfaf` (Slangc tier, green on rerun). Retry on `ETXTBSY` in the
   test, or write every scripted helper before any test spawns.
 
+## MX follow-ups (filed at the MX close)
+
+- Phone and tile-based GPU measurement: the hypothesis that a fragment pass beats compute on a tiled GPU (X-S1 notes)
+  is untested, and no document claims it (D95, plan F9). `examples/web-vector-add` is the browser vehicle (mobile
+  Chrome on a WebGPU-capable phone); `examples/shape-bench` is native only (`slang-runtime`, no wasm32 build), so it
+  would need a native Android/Vulkan build of shape-bench. Needs a device; until one is in the hardware set, no speed
+  claim about `pixel` is made anywhere.
+- User-owned render targets (Breeze, P2): `pixel` outputs are fragment storage writes (D120), so no call takes a
+  `GpuTexture2d` as an output. `TextureUse::TARGET` exists as a flag and maps to a render attachment, but nothing
+  consumes it. A user-provided target as a `pixel` output (and depth, stencil, blend, `discard`, interpolated inputs)
+  waits for Breeze's `vertex` and `raster_fragment` shapes and the reserved `Body` tier.
+- Converting texture formats: the dialect has the nine 32-bit formats (`R32/Rg32/Rgba32` x `Uint/Sint/Float`), and
+  `StorageTexture2D` read-write only for the three `r32` ones (D90, D120). Unorm, snorm, 8- and 16-bit formats, sRGB,
+  and read-write on wider formats (an adapter-specific wgpu feature) are not built; each needs a twin conversion rule,
+  a golden and a ledger row. Texture arrays, 3-D and cube textures and mip levels are not built either.
+- Pixel outputs as render targets: not a task. Storage-write `pixel` is adopted (D120, X-S3 outcome B: 0 differing
+  words against `grid` and render targets on the RTX 5090 and the Radeon 890M, and cheaper per call). Render-target
+  outputs return only with the user-owned targets above.
+- 2-D `pixel` calls: a call is one-dimensional (`y` and `z` other than 1 are `ShapeUnsupported`, also in a graph node
+  and on the twin), and the element is `y * 8192 + x`. `(x, y)` ids need an output width rule; one option is a buffer
+  that knows its width (a texture target, so it would go with the user-owned targets), another a `Shared` output of
+  `x * y` elements. The extent form of `pixel` is open.
+- The preservation mode: a `pixel` kernel must write every output on every path (E0726), so a kernel that leaves an
+  element unwritten, or reads its own output, is `grid`-only. Preserving the old value (copy the buffer in first, or
+  rely on the in-place storage write) would widen `compatible_shapes`; relaxing the rule needs a DECISIONS row. The
+  classifier's reach is the cost: of the ten examples that set a workgroup size, 4 of 21 kernels are `pixel`-eligible
+  and 17 are not (DIFFTEST, "Shapes"). The reasons a preservation mode would move are E0726 (2) and some of E0728 (8:
+  output reads and component writes); E0725's three scatters stay `grid`-only. A `return` lowering needs a second
+  hook, which the profile's kill rule forbids today (D88).
+- `GpuVec` textures: there is no texture in `GpuVec`, the buffer pool or the staged graph. A graph refuses a kernel
+  with a texture or sampler parameter (`Error::UnsupportedParameter`), and a texture is created and written by hand
+  (`create_texture_2d`, `write_texture`). A resident texture type with pooled storage, and graph nodes that carry
+  textures, are open.
+- SPIR-V execution of the goldens, for MR (D95; it replaces the M6 follow-up of the same gap, sanity-opus 2026-11-02,
+  ruling 4). `gust-wgpu` executes WGSL only (D82). A passthrough needs `Features::PASSTHROUGH_SHADERS` (wgpu 30), a
+  second `create_shader_module` path and a per-adapter record, all in `gust-wgpu/src/lib.rs`. MR is the milestone that
+  ships SPIR-V to Vulkan users, and MX adds nothing that executes it: the SPIR-V of the golden sets (`textures` and
+  `pixel` among the eleven) is validated with `spirv-val` and nothing more. The same gap leaves the matrix and uniform
+  layout decorations unexecuted (SEMANTICS section 4).
+- Classifier test gaps (mx.x review of part 1, item 14): five rejection reasons have no `check-ui` fixture. Four are
+  pinned by `validate/classify/tests.rs` only (workgroup memory, `LocalId`/`GroupId`, a write to one component of an
+  output, a `StorageMut` that is never written), and `OutputOther` (E0728 for an output rebound or passed to a helper)
+  has no test at all. A small validator slice: one unit test for `OutputOther`, and a fixture each for the four where
+  rustc adds no second error (add them to `tests/ui/shape-*`).
+- Pixel-vs-grid `f32` in the ledger: D128 makes a bit difference between the shapes an observation. SEMANTICS section 7
+  has no row for it (the record is in section 1 and DIFFTEST, "Shapes"; the K3 form that showed 4 ulp was not kept).
+  File a row with a kernel of that shape (an unfused multiply-add chain after a division) and pin the observation per
+  adapter kind, so a driver change shows up as a NOTE, as the other unenforced rows do.
+- The bench table: `examples/shape-bench` prints X-S1's per-shape table, and the full run waits for a quiet GPU (to be
+  recorded as `plans/shapes/probe/bench/table.md` with its machine conditions). The Radeon 890M row, and the 890M as a
+  second adapter for the identity test, are run when the owner runs them; neither is a gate, and neither may stand in
+  for the RTX 5090.
+- The cross-shape batch on lavapipe: plan section 6 wanted `check-difftest --shapes grid,pixel --seeds 1-2` on the
+  `gpu-software` pull-request list (else the nightly list), if its warm time fits the five-minute budget. Only
+  `check-full` asks for `--shapes` (DIFFTEST, "Shapes"), so lavapipe has never run the cross-shape batch. Measure its
+  warm time and add it to one of the two lists, or record why not.
+- The lavapipe pixel record: STATUS has no `gpu-software` record for `tests/pixel.rs` and `tests/textures.rs`. The merge
+  `ec6b79b` says "gpu-software green" in its message only, and the close-out (plan section 11, item 2 (ii)) wants the
+  record in STATUS: the run id, the adapter and Mesa version, the sizes the identity tests skipped on the software
+  adapter (above 1 000 003), and the label `Gpu (software: ...; shapes grid, pixel)`. The coordinator writes it.
+- The bit-for-bit `f32` gates and D128: the `f32`, `Vec2` and `Vec4` identity tests of `tests/pixel.rs` and `check-web`
+  compare bits, and their bodies (moves and one correctly rounded `f32` addition) leave the driver no freedom, so they
+  agree with D128 today. Keep it so: a new `f32` body with a division or a multiply-add belongs in the difftest's
+  interval judgement, not in a bit gate.
+- Pixel gaps in the evidence (SEMANTICS section 1 states each): integer vector outputs (`IVec2`, `UVec4`, ...) are
+  admitted by the classifier and have never run as `pixel` outputs; a linear `sample` in a fragment has not run (the
+  nearest sampler has, against the twin); `bool`, struct and 3-wide outputs are `grid`-only "for now" (the list is
+  mx.c's, kept after D120 removed its reason); the browser run of the `pixel` form covers one hardware adapter and not
+  the software one (`check-web --chrome-arg` for SwiftShader); and an adapter that cannot write storage buffers from a
+  fragment gives a wrong result in a browser, not `ShapeUnsupported`, because wgpu's WebGPU backend reports every
+  downlevel flag. A canary dispatch that turns that wrong result into the named refusal is an idea, not a plan.
+- Tidy: the `pixel` lowering emits a dead `_S1` line in the fragment WGSL (harmless; mx.w review nit 6). The per-call
+  attachment, the missing pixel snippet in the generated host code and the out-of-memory panic of the attachment are
+  already filed under "mx.p1b follow-ups". Two code comments contradict the code or the docs: `cpu/texture.rs:139`
+  says "A nearest read has no tolerance: compare it exactly", while SEMANTICS and the textures test allow a 1/128 band
+  next to a texel edge; and the usage text at `xtask/src/main.rs:136` lists `check-difftest` before `check-precompiled`,
+  while `check-full` runs it last (`verify.rs:141`).
+
 ## Deferred language/runtime breadth
 
-Vectors/matrices, uniforms, textures, samplers, additional binding groups, and
+Additional binding groups and
 specialized layouts each require their own reflected ABI evidence. `while`,
 inclusive ranges, general match expressions, `?`, and broader Result APIs need
 explicit semantic contracts before implementation.

@@ -674,6 +674,42 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   waits for a quiet GPU (MX close). Opus merge after fixes: three must-fixes (the `f32` comparison, the docs, an
   observed-maximum bound), seven should-fixes and the nits taken. Main: 24 of 24 gates green on `eb009af` (2026-11-05
   11:47 to 12:43Z, RTX 5090).
+- MX mx.x (part 1 `d4a5b38`, fix round `edd91bc`; part 2 `56096dc`, fix round `f5afd6e`; merge `e769077`; MX plan §11):
+  the MX docs. Part 1: README (shapes, textures and the `pixel` call), ARCHITECTURE (the stage-profile trait, the
+  `pixel` profile and runtime, textures from the type to the bind group, the classifier and the shape pin) and the
+  skills rust-gpu-ast-validation, rust-to-slang-lowering, spirv-validation and wgpu-runtime. Part 2: SEMANTICS (the
+  `pixel` contract: the element index, the refusals, D128 for `f32`; the texture contract: formats, access, `sample` and
+  its bounds) and VALIDATION (the MX check labels, the golden sets, the naga layout gate's 19 of 20 goldens,
+  check-full's order), and the MX follow-ups drafted for NEXT_TASKS (filed at the close). Opus merge after fixes on each
+  part: one must-fix each (a wrong error variant in a skill; D128 read as universal while two gates still compare `f32`
+  bits, now explained), and the should-fixes and nits taken. Docs only; the check-full of the close records below covers
+  the merge.
+- MX close records (MX plan §11; 2026-11-05). (i) `cargo xtask check-full` passed at `27a461a` (13:14 to 13:46Z,
+  RTX 5090, Vulkan, driver 610.88, Slang v2026.20, clean tree): its difftest ran seeds 1 to 8 with `--shapes grid,pixel`
+  (128 programs as `pixel`, 0 grid-only, 0 mismatches), and the run covered check-precompiled E1 to E8, check-artifacts,
+  check-release and check-web (`GUST_OK nvidia blackwell`, grid and pixel at 1000 and 8197 elements). The run before it,
+  at `e769077`, failed in the textures binary with the validation layer's access violation under concurrency
+  (NEXT_TASKS, m7.av); `verify --mode gpu`, check-cpu-target and `check-feature reflection` passed there (12:49 to
+  12:58Z). (ii) The software adapter: gpu-software run 42033705296 on `27a461a` (llvmpipe, LLVM 20.1.2, Mesa 25.2.8)
+  passed the extended suite, the `pixel` and texture tests included; the identity tests skip sizes above 1 000 003
+  there. (iii) The shape benchmark in a quiet window (14:19 to 14:31Z on `27a461a`, release, 5 runs of 20 timed
+  dispatches): `pixel` takes 0.7 to 2 times the best `grid` width for the memory-bound K1, K2 and K4, 6.5 to 11 times
+  for K3 at 1024 and above and 8.5 to 21 times for K3L; all 25 cells had the same bits in both shapes. This is X-S1's
+  result on the RTX 5090, so `pixel` is not a speed path for ALU-bound kernels on this GPU; the table is in the work
+  area (plans/shapes/probe/bench). The 890M row is owner-run only. (iv) In the same window, m7.av's dense64 timing:
+  13.1 ms warm at 4194304 elements; after an idle gap of 100 ms to 1 s about 15 ms (one 1 s row 37 ms), and after 3 s
+  68 ms whether the CPU slept or spun, with the GPU back at P8 and the PCIe link down-trained. So the slow call follows
+  the GPU's idle state, not the CPU or GUST (the first row of that table, with no gap, also read 68 ms, unexplained;
+  NEXT_TASKS, m7.av follow-ups). Next: the MX sanity check (Fable and Codex).
+- MR mr.b1 (`7ad4aec`, fix round `0c57b76`, merge `440892b`; MR plan S2): `#[non_exhaustive]` on `gust::reflect::Error`
+  and `gust_wgpu::Error` (`gust::slang::Error` had it since mr.t2), and a doc comment on every variant of the three,
+  checked against the sites that return it. The dead `gust_wgpu::Error::Slang` is removed: nothing constructed it, and a
+  run-time compile failure arrives as `Error::Reflection` (whose doc now names its three sources: the run-time compile,
+  the descriptor cross-check and precompiled-artifact verification). No workspace `match` needed a new arm; with doc
+  lines, the attribute and whitespace stripped, the three files are token-identical to their base apart from the removed
+  variant. Variant-level `#[non_exhaustive]` on struct variants is left for mr.b2 or later (gust-algo builds
+  `DeviceLimit`). Opus merge after fixes: one must-fix (the `Slang` doc described a path that does not exist), six
+  should-fixes and the nits taken. Main: 24 of 24 gates green on `440892b` (2026-11-05 14:48 to 15:43Z, RTX 5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a
@@ -1179,17 +1215,18 @@ full_check_needed_before_commit: no
 - Last complete compiler feature: M7 (map generator, `GpuVec` residency, `par_for!`, shared memory and barriers,
   multi-dimensional dispatch, wrapping arithmetic, gust-algo); the last M7 compiler slice is m7.c (`88ac459`), and
   mx.t1 (`00b72c7`, texture and sampler descriptors) merged after it
-- Last full validation: `cargo xtask check-full` passed at `dd74689` (M7 close, 2026-11-04, 15:58 to 16:33Z, NVIDIA
-  GeForce RTX 5090 / Vulkan, driver 610.88, Slang v2026.20; clean tree), through the shared cargo slot wrapper:
+- Last full validation: `cargo xtask check-full` passed at `27a461a` (MX close records, 2026-11-05, 13:14 to 13:46Z,
+  NVIDIA GeForce RTX 5090 / Vulkan, driver 610.88, Slang v2026.20; clean tree), through the shared cargo slot wrapper:
   workspace tests, the release-only tests required by name, every example test with `--include-ignored`, `check-dual` in
-  full mode, the SPIR-V artifacts through `spirv-val`, and `check-web` with the browser run. The step output, including
-  the `GUST_OK` line, lives in the local `.ai/VALIDATION.json` record of that run, which is not committed. The runs
-  before it were at `f452a37` (M6 close, 2026-11-02, 19:32 to 20:12Z, driver 610.88, Slang v2026.20), `7dd9c3d`
-  (M5 close after m5.f1, 2026-11-02, 13:49 to 14:01Z), `68c6f40` (m5.c2, 2026-11-02, one untracked log file), `27b342b`
-  (M4 close after m4.i) and `c964222` (2026-11-02, before the M4 sanity fixes), then `5971c12` (M3 close, 2026-11-01,
-  clean tree), then `96e4b9d` (2026-11-01, before the M3 sanity fixes), then `634a50e` (M2 close, 2026-10-24) and the
-  one before that (M1) at `a6cbb8f`, together with the Slangc and Reflect suites. The local `.ai/VALIDATION.json` record
-  stamps the commit and dirty state and contains no machine paths.
+  full mode, the SPIR-V artifacts through `spirv-val`, and `check-web` with the browser run, and since mx.p1c the
+  difftest with `--shapes grid,pixel`. The step output, including the `GUST_OK` line, lives in the local
+  `.ai/VALIDATION.json` record of that run, which is not committed. The runs before it were at `dd74689` (M7 close,
+  2026-11-04, 15:58 to 16:33Z), `f452a37` (M6 close, 2026-11-02, 19:32 to 20:12Z, driver 610.88, Slang v2026.20),
+  `7dd9c3d` (M5 close after m5.f1, 2026-11-02, 13:49 to 14:01Z), `68c6f40` (m5.c2, 2026-11-02, one untracked log file),
+  `27b342b` (M4 close after m4.i) and `c964222` (2026-11-02, before the M4 sanity fixes), then `5971c12` (M3 close,
+  2026-11-01, clean tree), then `96e4b9d` (2026-11-01, before the M3 sanity fixes), then `634a50e` (M2 close,
+  2026-10-24) and the one before that (M1) at `a6cbb8f`, together with the Slangc and Reflect suites. The local
+  `.ai/VALIDATION.json` record stamps the commit and dirty state and contains no machine paths.
 - DX19 is closed: full validation, two independent reviews, and fixes (`027eef7`,
   `08a4843`, `3296885`).
 - CI (`unit` job: fmt, clippy, Unit suite; `msrv` job on Rust 1.90) passes on main;

@@ -19,14 +19,16 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::ast::{Expr, Program, Stmt, operator_counts};
-use crate::classify::{CLASSES, Mismatch, PixelRaw, Raw, classify, discard_class, read_results};
+use crate::classify::{
+    CLASSES, Mismatch, PixelRaw, Raw, classify, discard_class, float_comparison, read_results,
+};
 use crate::corpus::fnv1a64;
 use crate::emit::{manifest, package_name};
 use crate::generator::{DIFFTEST_FORMAT, PROGRAMS_PER_SEED, generate_batch};
 use crate::interp::{Coverage, run_covered, run_full};
 use crate::json::Json;
 use crate::runsrc::{Planned, kernel_source_in, write_run_crate_in};
-use crate::shapes::{Shape, ShapePlan, assign, module_ranges, refusals};
+use crate::shapes::{Shape, ShapePlan, module_ranges, refusals, set_aside};
 
 /// Parses `1-4`, `3`, `1,3,5-6` into the sorted, duplicate-free list of seeds.
 pub fn parse_seeds(text: &str) -> Result<Vec<u64>, String> {
@@ -430,9 +432,49 @@ fn milliseconds(ns: u64) -> f64 {
     ns as f64 / 1e6
 }
 
-/// The `shapes` key of the report: what was requested, how many programs ran as `pixel`, and the programs that stayed
-/// `grid`-only with the macro classifier's reason (counted by reason, and listed).
-pub fn shapes_json(shapes: &ShapePlan, programs: usize) -> Json {
+/// The `float_pixel_vs_grid` observation of the `shapes` key (D128): over the `f32` programs that ran in both shapes on
+/// the GPU, how many differ in a bit between the two shapes, in how many elements, by at most how many ulps, and the
+/// first such element. Never a mismatch: each shape is judged against the interpreter's interval.
+pub fn float_observation_json(raws: &[Raw]) -> Json {
+    let mut compared = 0u64;
+    let mut differing_programs = 0u64;
+    let mut elements = 0u64;
+    let mut max_ulp = 0u32;
+    let mut first: Option<Json> = None;
+    for raw in raws {
+        let Some(found) = float_comparison(raw) else {
+            continue;
+        };
+        compared += 1;
+        if found.elements == 0 {
+            continue;
+        }
+        differing_programs += 1;
+        elements += found.elements as u64;
+        max_ulp = max_ulp.max(found.max_ulp);
+        if first.is_none()
+            && let Some((element, grid, pixel)) = found.first
+        {
+            first = Some(Json::obj(vec![
+                ("program", Json::str(&raw.program)),
+                ("element", Json::uint(element as u64)),
+                ("grid_bits", Json::uint(u64::from(grid))),
+                ("pixel_bits", Json::uint(u64::from(pixel))),
+            ]));
+        }
+    }
+    Json::obj(vec![
+        ("programs_compared", Json::uint(compared)),
+        ("programs_with_difference", Json::uint(differing_programs)),
+        ("elements_differing", Json::uint(elements)),
+        ("max_ulp", Json::uint(u64::from(max_ulp))),
+        ("first", first.unwrap_or(Json::Null)),
+    ])
+}
+
+/// The `shapes` key of the report: what was requested, how many programs ran as `pixel`, the programs that stayed
+/// `grid`-only with the macro classifier's reason (counted by reason, and listed), and the `f32` observation.
+pub fn shapes_json(shapes: &ShapePlan, programs: usize, raws: &[Raw]) -> Json {
     let mut by_reason: BTreeMap<&str, u64> = BTreeMap::new();
     for only in shapes.grid_only.values() {
         *by_reason.entry(only.reason.as_str()).or_default() += 1;
@@ -448,6 +490,7 @@ pub fn shapes_json(shapes: &ShapePlan, programs: usize) -> Json {
             "requested",
             Json::Arr(shapes.requested().into_iter().map(Json::str).collect()),
         ),
+        ("float_pixel_vs_grid", float_observation_json(raws)),
         (
             "programs_by_shape",
             Json::obj(vec![
@@ -620,7 +663,7 @@ pub fn build_report(
                 ("by_reason", reason_json),
             ]),
         ),
-        ("shapes", shapes_json(shapes, requested)),
+        ("shapes", shapes_json(shapes, requested, raws)),
         ("mismatch_count", Json::uint(mismatches.len() as u64)),
         (
             "mismatches",
@@ -699,11 +742,10 @@ pub fn execute_shapes(
             let log = std::fs::read_to_string(dir.join("build.log")).unwrap_or_default();
             let found = refusals(&log);
             let ranges = module_ranges(&kernel_source_in(plan, &shapes));
-            let refused = assign(&found, &ranges);
-            if found.is_empty() || refused.len() < found.len() {
+            let Ok(refused) = set_aside(&found, &ranges) else {
                 // Not (only) the classifier: a failure of another kind, or a refusal that belongs to no module.
                 return Err(error);
-            }
+            };
             shapes.grid_only = refused;
             write_run_crate_in(&dir, package, plan, &options.repo_root, &shapes)
                 .map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -1214,6 +1256,35 @@ mod tests {
         assert!(
             check_pixel_presence(&planned[..1], &[raw_with(&name(0), true)], &grid_only).is_err()
         );
+    }
+
+    #[test]
+    fn the_report_observes_the_f32_bits_that_differ_between_the_shapes() {
+        let f32_raw = |name: &str, grid: Vec<u32>, pixel: Vec<u32>| {
+            let mut raw = raw_with(name, true);
+            raw.out_ty = "f32".into();
+            raw.count = grid.len();
+            raw.gpu = Some(Ok(grid));
+            raw.pixel.as_mut().unwrap().gpu = Some(Ok(pixel));
+            raw
+        };
+        let one = 1.0f32.to_bits();
+        let raws = [
+            f32_raw("s1_a0", vec![one, one], vec![one, one]),
+            f32_raw("s1_a1", vec![one, one, one], vec![one + 1, one, one + 3]),
+            f32_raw("s1_a2", vec![one], vec![one + 2]),
+            raw_with("s1_a3", true),
+        ];
+        let seen = float_observation_json(&raws);
+        let number = |key: &str| seen.get(key).unwrap().as_u64().unwrap();
+        assert_eq!(number("programs_compared"), 3);
+        assert_eq!(number("programs_with_difference"), 2);
+        assert_eq!(number("elements_differing"), 3);
+        assert_eq!(number("max_ulp"), 3);
+        let first = seen.get("first").unwrap();
+        assert_eq!(first.get("program").unwrap().as_str(), Some("s1_a1"));
+        assert_eq!(first.get("element").unwrap().as_u64(), Some(0));
+        assert!(float_observation_json(&[]).get("first").unwrap().is_null());
     }
 
     #[test]

@@ -109,8 +109,10 @@ pub struct Refusal {
     pub message: String,
 }
 
-/// The `GUST-E072x` errors of a cargo build log (human format: `error: [GUST-E0727] message`, then `--> src/lib.rs:L:C`).
-/// Other errors, including the ones that follow from a module the macro refused, are ignored.
+/// The pin refusals of a cargo build log (human format: `error: [GUST-E0727] message`, then `--> src/lib.rs:L:C`): the
+/// classifier's `GUST-E0723` to `GUST-E0728`. `GUST-E0720` (`par_for!`), `GUST-E0721` and `GUST-E0722` (an unknown or
+/// malformed shape: an emitter typo) and `GUST-E0729` (a profile refusal) are not refusals of a program and stay build
+/// errors. Other errors, including the ones that follow from a module the macro refused, are ignored.
 pub fn refusals(log: &str) -> Vec<Refusal> {
     let mut found = Vec::new();
     let lines: Vec<&str> = log.lines().collect();
@@ -121,6 +123,9 @@ pub fn refusals(log: &str) -> Vec<Refusal> {
         let Some((digit, message)) = rest.split_once("] ") else {
             continue;
         };
+        if !matches!(digit, "3" | "4" | "5" | "6" | "7" | "8") {
+            continue;
+        }
         // The location is within the next few lines of the same diagnostic.
         let location = lines[at + 1..lines.len().min(at + 6)]
             .iter()
@@ -185,6 +190,29 @@ pub fn assign(
     found
 }
 
+/// The programs to set aside after a refused build: [`assign`] of the refusals, or an error when the build did not fail
+/// the way a classifier refusal does. Every refusal must belong to a module (a refusal outside every module is a failure
+/// of another kind, whatever its code) and there must be at least one; two refusals in one module are one program.
+pub fn set_aside(
+    refusals: &[Refusal],
+    ranges: &[(String, usize, usize)],
+) -> Result<BTreeMap<String, GridOnly>, String> {
+    if refusals.is_empty() {
+        return Err("the build log holds no pin refusal (GUST-E0723 to GUST-E0728)".into());
+    }
+    if let Some(stray) = refusals.iter().find(|refusal| {
+        !ranges
+            .iter()
+            .any(|(_, start, end)| (*start..=*end).contains(&refusal.line))
+    }) {
+        return Err(format!(
+            "the refusal {} at src/lib.rs:{} belongs to no module",
+            stray.code, stray.line
+        ));
+    }
+    Ok(assign(refusals, ranges))
+}
+
 /// `shape `pixel` is not compatible with kernel `k`: `<construct>` <clause> (that makes the kernel `grid`-only)` becomes
 /// `<code>: <clause>` with every quoted span elided, so that the same rule counts as one reason whatever the construct.
 pub fn reason_key(code: &str, message: &str) -> String {
@@ -237,6 +265,65 @@ mod tests {
                 .contains("unknown shape")
         );
         assert!(parse_shapes("").is_err());
+    }
+
+    fn refusal(line: usize, code: &str) -> Refusal {
+        Refusal {
+            line,
+            code: code.to_owned(),
+            message: "shape `pixel` is not compatible with kernel `k`: `x` is a thing (that makes the kernel `grid`-only)".into(),
+        }
+    }
+
+    fn ranges() -> Vec<(String, usize, usize)> {
+        vec![("s1_a1".into(), 10, 30), ("s1_a2".into(), 31, 50)]
+    }
+
+    #[test]
+    fn only_e0723_to_e0728_are_refusals_of_a_program() {
+        let log =
+            |code: &str| format!("error: [GUST-E07{code}] some message\n  --> src/lib.rs:12:5\n");
+        for code in ["23", "24", "25", "26", "27", "28"] {
+            assert_eq!(refusals(&log(code)).len(), 1, "E07{code}");
+        }
+        // `par_for!`, an unknown shape, a malformed shape and a profile refusal are build errors, not grid-only programs.
+        for code in ["20", "21", "22", "29"] {
+            assert_eq!(refusals(&log(code)), [], "E07{code}");
+        }
+    }
+
+    #[test]
+    fn a_build_is_set_aside_only_when_every_refusal_belongs_to_a_module() {
+        // No refusal: nothing to set aside, the build failed for another reason.
+        assert!(
+            set_aside(&[], &ranges())
+                .unwrap_err()
+                .contains("no pin refusal")
+        );
+        // One refusal that no module holds fails, even beside one that does.
+        let error = set_aside(
+            &[refusal(12, "GUST-E0727"), refusal(99, "GUST-E0723")],
+            &ranges(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("GUST-E0723") && error.contains("99"),
+            "{error}"
+        );
+        // Two refusals in one module are one grid-only program, with the first message; two modules are two.
+        let one = set_aside(
+            &[refusal(12, "GUST-E0727"), refusal(20, "GUST-E0723")],
+            &ranges(),
+        )
+        .unwrap();
+        assert_eq!(one.keys().collect::<Vec<_>>(), ["s1_a1"]);
+        assert!(one["s1_a1"].message.starts_with("GUST-E0727"));
+        let two = set_aside(
+            &[refusal(12, "GUST-E0727"), refusal(40, "GUST-E0725")],
+            &ranges(),
+        )
+        .unwrap();
+        assert_eq!(two.len(), 2);
     }
 
     #[test]

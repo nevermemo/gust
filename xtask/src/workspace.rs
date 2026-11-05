@@ -18,6 +18,9 @@ pub(crate) const EXAMPLES: &[&str] = &[
     "shape-bench",
 ];
 
+/// Examples that write no artifact: `export-artifacts` does not run them.
+pub(crate) const NO_EXPORT_EXAMPLES: &[&str] = &["shape-bench"];
+
 pub(crate) const SMOKE_EXAMPLES: &[&str] = &["vector-add", "typed-pipeline"];
 
 pub(crate) const WORKSPACE_EXCLUDES: &[&str] = &[

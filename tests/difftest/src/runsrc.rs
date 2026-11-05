@@ -92,6 +92,14 @@ fn zero(ty: Ty) -> &'static str {
     }
 }
 
+/// The line that stops a pixel run whose kernel is not declared `pixel`: without it a dropped pin would compare the grid
+/// dispatch with itself and pass.
+fn shape_check(module: &str, kernel: &str) -> String {
+    format!(
+        "            if super::{module}::{kernel}::DESCRIPTOR.shape != gust::Shape::Pixel {{ return Err(format!(\"{kernel} is declared {{:?}}, not pixel\", super::{module}::{kernel}::DESCRIPTOR.shape)); }}"
+    )
+}
+
 /// The pixel half of a runner (`--shapes grid,pixel`): the twin and the GPU on `k_px`, whose output starts as
 /// [`POISON`] so that an element the pass never wrote differs from the grid result. Returns the `PixelOutcome`
 /// expression's setup; the caller names the result `pixel`.
@@ -111,6 +119,7 @@ fn pixel_runner(planned: &Planned) -> String {
         out,
         "        let pixel_twin = catch_unwind(AssertUnwindSafe(|| -> Result<(Vec<u32>, u128), String> {{"
     );
+    let _ = writeln!(out, "{}", shape_check(&module, kernel));
     let _ = writeln!(out, "            let cpu = CpuDevice::new();");
     let mut twin_args = String::new();
     for name in &BUFFER_NAMES[..program.inputs.len()] {
@@ -141,6 +150,7 @@ fn pixel_runner(planned: &Planned) -> String {
         out,
         "            let descriptor = &super::{module}::{kernel}::DESCRIPTOR;"
     );
+    let _ = writeln!(out, "{}", shape_check(&module, kernel));
     let mut bindings = String::new();
     for name in &BUFFER_NAMES[..program.inputs.len()] {
         let _ = writeln!(
@@ -500,6 +510,29 @@ mod tests {
         assert_eq!(text.matches("        Case { name: ").count(), plan.len());
         assert!(!text.contains("__FORMAT__"));
         assert!(text.contains(&format!("\"format\", \"{DIFFTEST_FORMAT}\"")));
+    }
+
+    #[test]
+    fn a_pixel_runner_checks_that_its_kernel_is_declared_pixel_before_it_dispatches() {
+        let plan = plan_of(1);
+        let shapes = ShapePlan::new(&[crate::shapes::Shape::Grid, crate::shapes::Shape::Pixel]);
+        let text = run_crate_source_in(&plan, &shapes);
+        let check = "::k_px::DESCRIPTOR.shape != gust::Shape::Pixel";
+        // Twice per program (the twin's closure and the GPU's), and each before the dispatch it guards.
+        assert_eq!(text.matches(check).count(), 2 * plan.len());
+        for part in text.split("let pixel_twin = ").skip(1) {
+            let twin = part.find(check).unwrap();
+            assert!(twin < part.find("::k_px::dispatch(").unwrap());
+            let gpu = part.rfind(check).unwrap();
+            assert!(
+                gpu < part
+                    .find("device.dispatch_buffers(descriptor, data.count")
+                    .unwrap()
+            );
+        }
+        // A grid-only run has no pixel runner and no check.
+        let plain = run_crate_source(&plan);
+        assert_eq!(plain.matches("gust::Shape::Pixel").count(), 0);
     }
 
     #[test]

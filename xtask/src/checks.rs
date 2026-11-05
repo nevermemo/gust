@@ -22,7 +22,10 @@ use crate::{
     ui::{Expectation, judge, parse_expected},
     validation::{compact_validation_summary, json_string},
     verify::{VerifyMode, prepare_helper, verify},
-    workspace::{EXAMPLES, cargo_target_dir, changed_paths, workspace_root, workspace_test_args},
+    workspace::{
+        EXAMPLES, NO_EXPORT_EXAMPLES, cargo_target_dir, changed_paths, workspace_root,
+        workspace_test_args,
+    },
 };
 
 /// The cargo calls of `check-feature reflection` after the native helper is built (the
@@ -983,7 +986,11 @@ pub(crate) fn export_artifacts_with(args: &[String]) -> Result<(), String> {
     if options.hashes() {
         clear_exports(&directory)?;
     }
-    for example in EXAMPLES {
+    // The shape bench exports nothing, so a GPU smoke of it here would only slow the export down (`verify` still runs it).
+    for example in EXAMPLES
+        .iter()
+        .filter(|example| !NO_EXPORT_EXAMPLES.contains(example))
+    {
         println!("Exporting artifacts via {example}");
         run_direct(&root, "cargo", &["run", "--quiet", "-p", example])?;
     }

@@ -418,7 +418,7 @@ first one, and a message with the values (and for `f32` their bits).
 | `gpu-outside-interval` | an `f32` GPU element is not finite, or outside its interval |
 | `twin-error`, `gpu-error` | the twin or the GPU path panicked or returned an error (the message is kept) |
 | `gpu-not-validated` | a GPU output without the mark that wgpu created the module (WGSL validation with wgpu's default capabilities) |
-| `pixel-vs-grid` | (`--shapes grid,pixel` only) the GPU bits of the pixel kernel differ from the GPU bits of the grid kernel of the same program, in any element and for any type (`f32` included) |
+| `pixel-vs-grid` | (`--shapes grid,pixel` only; `u32`, `i32` and `bool` outputs) the GPU bits of the pixel kernel differ from the GPU bits of the grid kernel of the same program. An `f32` output has no such kind: each shape is judged against the interpreter's interval (`gpu-outside-interval`, with the `shape` field), and the bit difference between the shapes is only recorded under `shapes.float_pixel_vs_grid` (D128) |
 | `transport` | the interpreter output stored in the result file is not the one the harness computed: a bug of the harness itself |
 
 WGSL validation: every kernel's first dispatch makes wgpu create the shader module and the compute pipeline with the
@@ -445,15 +445,38 @@ identity includes the shapes) from the same seeds without it.
   program of fewer than 4096 elements is one row). The output buffer starts as `0xA5A5A5A5` (the grid output starts at zero),
   so an element the pass never wrote differs from the grid result instead of matching it by accident. The CPU twin
   runs `k_px::dispatch`, the GPU runs it through `dispatch_buffers` twice (first and warm), as for the grid kernel.
-- **Classification.** The pixel twin and the pixel GPU are held to the interpreter by the same rules as the grid ones,
-  and, when both GPU outputs exist, the pixel GPU bits must equal the grid GPU bits: `pixel-vs-grid`. A grid GPU error is
-  not blamed on the pixel shape. Every mismatch has a `shape` field (`grid` or `pixel`; the grid findings of older reports
-  have none and mean `grid`).
-- **What this does not show: stray fragments.** The device runs with robust buffer access (`robustBufferAccess2`), which
-  makes an out-of-bounds write harmless and invisible. A fragment that ran outside the `n` elements, or twice, would
-  therefore not change a value, and this batch claims value identity only. It also cannot see a second row: every
+- **Classification.** The pixel twin and the pixel GPU are held to the interpreter by the same rules as the grid ones.
+  For `u32`, `i32` and `bool` outputs the pixel GPU bits must also equal the grid GPU bits when both exist
+  (`pixel-vs-grid`). For `f32` they need not (D128): a device may fuse `a * b + c` and round `x / y` within 2.5 ulp
+  differently in the compute and the fragment stage (SEMANTICS section 4), so each shape is judged against the
+  interval only, and the bit difference is an observation in the report (programs compared, programs with a
+  difference, elements, the largest distance in ulps, the first element). It is never a mismatch (D39). The record
+  that makes this necessary: an earlier form of `examples/shape-bench`'s K3 (an unfused multiply-add chain fed by a
+  division; measured 2026-11-05, not kept) differed between the shapes by up to 4 ulp in 9 % to 11 % of the words on the
+  RTX 5090 (driver 610.88), with identical Slang, WGSL and SPIR-V for both stages, which makes it the driver's lowering
+  per stage. The bench's K3 is now X-S1's form (no division, exact coefficients, no `fma`: the dialect has none) and
+  writes the same bits in both shapes, as do the difftest corpus programs (below). A grid GPU error is not
+  blamed on the pixel shape. Every mismatch has a `shape` field (`grid` or `pixel`; the grid findings of older reports
+  have none and mean `grid`). A `pixel-vs-grid` finding cannot be shrunk: `--shrink` runs the grid kernel only.
+- **What this does not show: stray fragments.** Two things already drop a write outside the `n` elements: every corpus
+  kernel's own guard (`if i < out.len()`), and the device's robust buffer access (`robustBufferAccess2`), which makes an
+  out-of-bounds write harmless and invisible. A fragment that ran outside the `n` elements, or twice, would therefore
+  not change a value, and this batch claims value identity (integers) and interval membership (`f32`) only. It also cannot see a second row: every
   corpus program has `n < 8192`, so no program reaches a row after the first. The fragment-count claim (each element is
   written exactly once) is the atomic fragment-count test of slice mx.p1b (M2), not this batch.
+- **How much of the examples is `grid`-only.** Plan risk 11 asked for the grid-only reasons over the examples as well
+  as the corpus. Measured 2026-11-05 by pinning every `#[kernel(workgroup_size(..))]` of the ten examples that have one
+  (21 kernels) to `shape = pixel` in a scratch edit, compiling, and taking the macro's reasons (it reports the first
+  construct that rules a kernel out; the edit was reverted, and the refused kernel was put back before the next round so
+  that the kernels after it were classified too): 4 kernels are accepted (`vector_add::add`, `polynomial::evaluate`,
+  `signal_pipeline::transform` and the `web-vector-add` kernel) and 17 stay `grid`-only. By code: `GUST-E0723` 4
+  (`atomic_add` twice, a storage texture, an element type that is not a scalar), `GUST-E0725` 3 (a write at an index
+  other than the element's own: `mark_live`, `gather_particles`, `scatter_particles`), `GUST-E0726` 2 (a conditional
+  write to the output: `staged::transform`, `staged::summarize`), `GUST-E0728` 8 (a component write, or a read of the
+  output: `calibrate`, `scalar_order`, `field_order`, `prepare_dispatch`, `classify`, `integrate`, `step`, `finalize`).
+  `GUST-E0724` and `GUST-E0727` did not occur. The generated corpus has no `grid`-only program (128 of 128 ran as
+  pixel), because every generated kernel writes `out[id.x]` once, whole, on every path; the examples are the realistic
+  counter-weight.
 - **One module per program, both kernels.** A module that holds a `workgroup_size` kernel and a `shape = pixel` kernel
   needs the sibling-kernel fix of mx.p1b (E0707); the batch needs it and does not work around it.
 
@@ -465,7 +488,9 @@ Measured 2026-11-05 (RTX 5090, NVIDIA 610.88, Vulkan, dev profile; other session
 99.2 s); `--shapes grid,pixel`, 257 s (build 61.1 s, run 159.2 s), 128 pixel programs, 0 grid-only, 0 mismatches. In the
 pixel batch the `timing` totals were, over the 128 programs: grid first dispatches 74.4 s and pixel first dispatches
 73.2 s (both include the Slang compile), grid warm dispatches 194 ms and pixel warm dispatches 329 ms (tiny kernels on a
-shared GPU: a noisy smoke, no threshold). The per-shape time of larger workloads is measured by `examples/shape-bench`
+shared GPU: a noisy smoke, no threshold). A second run after the Slang cache was warm took 137 s (build 21.7 s, run
+105.3 s; first dispatches 48.8 s grid and 49.3 s pixel, warm 145 ms and 248 ms), with the `f32` observation of the
+report: 0 of the 36 `f32` programs differ in a bit between the shapes (0 elements, 0 ulp). The per-shape time of larger workloads is measured by `examples/shape-bench`
 (`plans/shapes/probe/bench/table.md`), not here.
 
 ### report.json

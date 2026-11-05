@@ -7,17 +7,19 @@
 //! cargo run --release -p shape-bench -- --full [--out PATH]   the table: five sides, 5 runs of 5 warm-up + 20 timed
 //! ```
 //!
-//! What is asserted, in both modes: for every cell the three grid kernels (workgroup widths 64, 128, 256) write the same
-//! bits as each other; the pixel kernel writes the same bits as they do for K1, K2 and K4; for K3 and K3L (a chain of
-//! `f32` multiply-adds fed by an `f32` division) it writes the same bits within `FLOAT_ULP_BOUND` ulps, a difference that
-//! the table prints as `<= N ulp` with N measured over the whole output (measured 2026-11-05 on the RTX 5090: both
-//! the mul-add chain and the division differ between the compute and the fragment stage by themselves, so this is the
-//! device or driver's float lowering per stage and not a GUST difference; a chain of plain multiplies is bit-identical).
-//! And the descriptors carry the shapes they were declared with. What is not asserted: any duration. The numbers of the
-//! smoke are noisy (a shared GPU, a debug build, three dispatches) and are labelled so.
+//! What is asserted, in both modes: the descriptors carry the shapes they were declared with; every variant writes
+//! every element (two passes over different poison agree) and every `f32` is finite; and for K1, the integer kernel,
+//! the three grid kernels (workgroup widths 64, 128, 256) and the pixel kernel write the same bits. What is observed and
+//! printed, not asserted: the `f32` bits of the two shapes. A device may fuse `a * b + c` and round `x / y` within
+//! 2.5 ulp differently in the compute and the fragment stage (SEMANTICS section 4, D128), and the table says by how
+//! much (`N of M words, <= U ulp`). Correctness lives in the difftest and the gust-wgpu tests, not in a benchmark, so no
+//! observed maximum is turned into a bound. What is not asserted either: any duration. The numbers of the smoke are noisy
+//! (a shared GPU, a debug build, three dispatches) and are labelled so.
 //!
 //! The kernels are X-S1's, over storage buffers instead of textures (Option S): K1 a hash and a gather (`u32`), K2 a 3x3
-//! blur (`f32`), K3 a 64-term polynomial (`f32`), K4 the blur on a `Vec4`, K3L the polynomial with 1024 terms. Element `i`
+//! blur (`f32`), K3 a 64-term polynomial (`f32`), K4 the blur on a `Vec4`, K3L the polynomial with 1024 terms. K3 and K3L
+//! are X-S1's form without `fma`: the dialect has none, so `acc * t + c` is an unfused multiply and add (`t` and the
+//! coefficients are X-S1's, exact in `f32`), which a device is free to contract. Element `i`
 //! is pixel `(i % side, i / side)` of a `side x side` image. A `grid` dispatch covers `8192 x (n / 8192)` invocations
 //! (every size here is a whole number of rows of `gust::PIXEL_ROW_WIDTH`, so there is no tail) and indexes
 //! `id.y * 8192 + id.x`; a `pixel` dispatch is one call of `n` elements.
@@ -58,12 +60,19 @@ macro_rules! variant_module {
                 h ^ (h >> 15u32)
             }
 
-            fn poly(x: f32, terms: u32) -> f32 {
-                let mut acc = 0.25f32;
+            // X-S1's K3 without `fma`: the dialect has none, so `acc * t + c` is an unfused multiply and add, which a
+            // device may contract. `t` and `c` are exact in `f32`, as in X-S1.
+            fn poly(t: f32, terms: u32) -> f32 {
+                let mut acc = 0.0f32;
                 for k in 0u32..terms {
-                    acc = acc * x + ((k % 7u32) as f32) * 0.125f32 + 0.5f32;
+                    let c = ((k * 37u32 + 11u32) % 101u32) as f32 * 0.0078125f32 - 0.375f32;
+                    acc = acc * t + c;
                 }
                 acc
+            }
+
+            fn poly_t(i: u32, w: u32) -> f32 {
+                ((hash(i % w, i / w) & 65535u32) as f32) * 0.000_015_258_789_f32
             }
 
             #[kernel($($attr)*)]
@@ -122,7 +131,7 @@ macro_rules! variant_module {
             ) {
                 let i = $index;
                 if i < out.len() {
-                    out[i] = poly(((i % p.w) as f32) * 0.9f32 / (p.w as f32), 64u32);
+                    out[i] = poly(poly_t(i, p.w), 64u32);
                 }
             }
 
@@ -134,7 +143,7 @@ macro_rules! variant_module {
             ) {
                 let i = $index;
                 if i < out.len() {
-                    out[i] = poly(((i % p.w) as f32) * 0.9f32 / (p.w as f32), 1024u32);
+                    out[i] = poly(poly_t(i, p.w), 1024u32);
                 }
             }
 
@@ -213,10 +222,6 @@ enum Kern {
     K3L,
 }
 
-/// The most `f32` ulps a pixel output may differ from a grid output by in a float-chain kernel (`Kern::float_chain`).
-/// Measured: 1 ulp in the first smoke; the bound leaves room for the 1024-term chain and is asserted, not just printed.
-const FLOAT_ULP_BOUND: u32 = 8;
-
 const KERNELS: [Kern; 5] = [Kern::K1, Kern::K2, Kern::K3, Kern::K4, Kern::K3L];
 
 impl Kern {
@@ -230,10 +235,10 @@ impl Kern {
         }
     }
 
-    /// Whether the kernel is a chain of `f32` multiply-adds and a division, whose last bits the compute and the fragment
-    /// stage of a device are free to round differently (see the module doc).
-    fn float_chain(self) -> bool {
-        matches!(self, Self::K3 | Self::K3L)
+    /// Whether the output is `f32`s (a `Vec4` is four): the compute and the fragment stage of a device may fuse
+    /// `a * b + c` and round `x / y` differently, so the bits of the two shapes are observed, not asserted (D128).
+    fn is_float(self) -> bool {
+        self != Self::K1
     }
 
     /// Bytes of one element of the output (and of the input, where there is one).
@@ -277,14 +282,10 @@ struct Buffers {
     v4_out: Option<GpuBuffer<Vec4>>,
 }
 
-fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, byte| {
-        (hash ^ u64::from(*byte)).wrapping_mul(0x0100_0000_01b3)
-    })
-}
-
-/// The bits an output starts with, so that an element no kernel wrote cannot match another variant's.
+/// The bits an output starts with, and the bits of a second pass: a word a kernel never wrote keeps the poison it
+/// started with, so the two passes differ in exactly the words that were not written.
 const POISON: u32 = 0xA5A5_A5A5;
+const POISON_B: u32 = 0x5A5A_5A5A;
 
 impl Buffers {
     fn new(device: &HeadlessDevice, kern: Kern, side: u32) -> Self {
@@ -331,14 +332,14 @@ impl Buffers {
         b
     }
 
-    /// Writes [`POISON`] over the output.
-    fn poison(&self, device: &HeadlessDevice) -> Result<(), String> {
+    /// Writes `word` over every word of the output.
+    fn poison(&self, device: &HeadlessDevice, word: u32) -> Result<(), String> {
         let done = if let Some(out) = &self.u32_out {
-            device.write_typed_buffer(out, &vec![POISON; self.n])
+            device.write_typed_buffer(out, &vec![word; self.n])
         } else if let Some(out) = &self.f32_out {
-            device.write_typed_buffer(out, &vec![f32::from_bits(POISON); self.n])
+            device.write_typed_buffer(out, &vec![f32::from_bits(word); self.n])
         } else if let Some(out) = &self.v4_out {
-            let poison = Vec4::splat(f32::from_bits(POISON));
+            let poison = Vec4::splat(f32::from_bits(word));
             device.write_typed_buffer(out, &vec![poison; self.n])
         } else {
             return Err("no output buffer".into());
@@ -346,23 +347,24 @@ impl Buffers {
         done.map_err(|error| format!("poison: {error:?}"))
     }
 
-    /// The output as read back, as bytes.
-    fn bytes(&self, device: &HeadlessDevice) -> Result<Vec<u8>, String> {
+    /// The output as read back, as 32-bit words (a `Vec4` is four of them).
+    fn words(&self, device: &HeadlessDevice) -> Result<Vec<u32>, String> {
         let read = |error: gust_wgpu::Error| format!("readback: {error:?}");
-        if let Some(out) = &self.u32_out {
-            Ok(pod_slice_as_bytes(&device.read_typed_buffer(out).map_err(read)?).to_vec())
+        let bytes = if let Some(out) = &self.u32_out {
+            pod_slice_as_bytes(&device.read_typed_buffer(out).map_err(read)?).to_vec()
         } else if let Some(out) = &self.f32_out {
-            Ok(pod_slice_as_bytes(&device.read_typed_buffer(out).map_err(read)?).to_vec())
+            pod_slice_as_bytes(&device.read_typed_buffer(out).map_err(read)?).to_vec()
         } else if let Some(out) = &self.v4_out {
-            Ok(pod_slice_as_bytes(&device.read_typed_buffer(out).map_err(read)?).to_vec())
+            pod_slice_as_bytes(&device.read_typed_buffer(out).map_err(read)?).to_vec()
         } else {
-            Err("no output buffer".into())
-        }
-    }
-
-    /// FNV-1a over the bytes of the output as read back.
-    fn fingerprint(&self, device: &HeadlessDevice) -> Result<u64, String> {
-        Ok(fnv1a(&self.bytes(device)?))
+            return Err("no output buffer".into());
+        };
+        Ok(bytes
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|word| u32::from_le_bytes(*word))
+            .collect())
     }
 
     fn u32_in(&self) -> &GpuBuffer<u32> {
@@ -499,45 +501,128 @@ const SMOKE: Plan = Plan {
     timed: 5,
 };
 
+/// How the pixel output compares with a grid output, word by word.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Comparison {
+    words: usize,
+    /// Words whose bits differ.
+    differing: usize,
+    /// The largest distance in `f32` ulps over the differing words (0 for integer outputs, which are not measured).
+    max_ulp: u32,
+}
+
+/// The distance in `f32` ulps between two bit patterns on the line of ordered floats; a NaN has none and counts as the
+/// largest.
+fn ulp_distance(a: u32, b: u32) -> u32 {
+    if f32::from_bits(a).is_nan() || f32::from_bits(b).is_nan() {
+        return u32::MAX;
+    }
+    let ordered = |bits: u32| -> i64 {
+        if bits >> 31 == 1 {
+            -i64::from(bits & 0x7fff_ffff)
+        } else {
+            i64::from(bits)
+        }
+    };
+    u32::try_from((ordered(a) - ordered(b)).unsigned_abs()).unwrap_or(u32::MAX)
+}
+
+fn compare(kern: Kern, grid: &[u32], pixel: &[u32]) -> Comparison {
+    let mut found = Comparison {
+        words: grid.len().min(pixel.len()),
+        ..Comparison::default()
+    };
+    for (g, p) in grid.iter().zip(pixel) {
+        if g != p {
+            found.differing += 1;
+            if kern.is_float() {
+                found.max_ulp = found.max_ulp.max(ulp_distance(*g, *p));
+            }
+        }
+    }
+    found
+}
+
 /// What one cell measured.
 struct Cell {
     /// Median of run medians, milliseconds, per variant; `None` when the adapter has no timestamp queries.
     times: [Option<f64>; 4],
     /// The pixel kernel's run medians' (max - min) / median, in percent.
     pixel_spread: Option<f64>,
-    /// The three grid variants wrote the same bits as each other.
-    grid_agree: bool,
-    /// Every variant wrote the same bits.
-    identical: bool,
-    /// When not identical: the largest `f32` distance in ulps between the pixel output and the first grid output that
-    /// differs from it (`None` when the outputs are not `f32`s or none is measured).
-    max_ulp: Option<u32>,
-    /// When not identical: what differs (the fingerprints of the variants, and the first differing words).
-    difference: Option<String>,
-    /// The cell meets the contract: grid variants agree, and the pixel output is identical or, for a float chain, within
-    /// `FLOAT_ULP_BOUND`.
+    /// Every variant wrote every element (two passes over different poison agree).
+    written: bool,
+    /// Every `f32` of every variant is finite (trivially true for the integer kernel).
+    finite: bool,
+    /// The pixel output against the grid outputs: the most differing words and the largest ulp distance over the three
+    /// workgroup widths.
+    pixel_vs_grid: Comparison,
+    /// Words in which the three grid widths differ among themselves (an observation, like the above).
+    grid_widths_differ: usize,
+    /// The cell meets what is asserted: written, finite, and for the integer kernel bit for bit the same in all four
+    /// variants. The `f32` bits of the two shapes are not asserted (D128).
     accepted: bool,
+}
+
+impl Cell {
+    /// The table's last column.
+    fn pixel_vs_grid_text(&self) -> String {
+        let c = self.pixel_vs_grid;
+        let mut text = if c.differing == 0 {
+            "same bits".to_owned()
+        } else {
+            format!("{} of {} words, <= {} ulp", c.differing, c.words, c.max_ulp)
+        };
+        if self.grid_widths_differ > 0 {
+            let _ = write!(
+                text,
+                "; grid widths differ in {} words",
+                self.grid_widths_differ
+            );
+        }
+        if !self.written {
+            text.push_str("; ELEMENTS NOT WRITTEN");
+        }
+        if !self.finite {
+            text.push_str("; NOT FINITE");
+        }
+        if !self.accepted {
+            text.push_str("; NOT ACCEPTED");
+        }
+        text
+    }
 }
 
 fn bench_cell(device: &HeadlessDevice, kern: Kern, side: u32, plan: Plan) -> Result<Cell, String> {
     let b = Buffers::new(device, kern, side);
-    // Identity first: each variant runs once into a poisoned output, and the four outputs must be the same bytes.
-    let mut prints = Vec::new();
+    // Each variant runs twice into an output poisoned with a different word each time. A word the kernel did not write
+    // differs between the two passes; the first pass's output is the one compared.
+    let mut outputs: Vec<Vec<u32>> = Vec::new();
+    let mut written = true;
     for run in RUNNERS {
-        b.poison(device)?;
+        b.poison(device, POISON)?;
         run(device, kern, side, &b, 0, 1)?;
-        prints.push(b.fingerprint(device)?);
+        let first = b.words(device)?;
+        b.poison(device, POISON_B)?;
+        run(device, kern, side, &b, 0, 1)?;
+        written &= first == b.words(device)?;
+        outputs.push(first);
     }
-    let identical = prints.windows(2).all(|pair| pair[0] == pair[1]);
-    let grid_agree = prints[..3].windows(2).all(|pair| pair[0] == pair[1]);
-    let (difference, max_ulp) = if identical {
-        (None, None)
-    } else {
-        let (text, ulp) = describe_difference(device, kern, side, &b, &prints)?;
-        (Some(text), ulp)
-    };
-    let accepted = grid_agree
-        && (identical || (kern.float_chain() && max_ulp.is_some_and(|ulp| ulp <= FLOAT_ULP_BOUND)));
+    let finite = !kern.is_float()
+        || outputs
+            .iter()
+            .all(|out| out.iter().all(|word| f32::from_bits(*word).is_finite()));
+    let mut pixel_vs_grid = Comparison::default();
+    let mut grid_widths_differ = 0;
+    for grid in &outputs[..3] {
+        let found = compare(kern, grid, &outputs[3]);
+        pixel_vs_grid.words = found.words;
+        pixel_vs_grid.differing = pixel_vs_grid.differing.max(found.differing);
+        pixel_vs_grid.max_ulp = pixel_vs_grid.max_ulp.max(found.max_ulp);
+        grid_widths_differ = grid_widths_differ.max(compare(kern, &outputs[0], grid).differing);
+    }
+    let accepted = written
+        && finite
+        && (kern.is_float() || (pixel_vs_grid.differing == 0 && grid_widths_differ == 0));
     let mut run_medians: [Vec<f64>; 4] = Default::default();
     for round in 0..plan.runs {
         for step in 0..VARIANTS.len() {
@@ -561,90 +646,12 @@ fn bench_cell(device: &HeadlessDevice, kern: Kern, side: u32, plan: Plan) -> Res
     Ok(Cell {
         times,
         pixel_spread,
-        grid_agree,
-        identical,
-        max_ulp,
-        difference,
+        written,
+        finite,
+        pixel_vs_grid,
+        grid_widths_differ,
         accepted,
     })
-}
-
-/// Which variants differ and where: the fingerprints, then the pixel output and the first grid output that is not equal
-/// to it, word by word (count of differing words, the first few with both values as hex), and the largest distance in
-/// `f32` ulps (for the outputs of the float kernels).
-fn describe_difference(
-    device: &HeadlessDevice,
-    kern: Kern,
-    side: u32,
-    b: &Buffers,
-    prints: &[u64],
-) -> Result<(String, Option<u32>), String> {
-    let mut text = format!(
-        "fingerprints {}",
-        VARIANTS
-            .iter()
-            .zip(prints)
-            .map(|(name, print)| format!("{name} {print:016x}"))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-    let Some(other) = (0..3).find(|v| prints[*v] != prints[3]) else {
-        return Ok((text, None));
-    };
-    let read = |variant: usize| -> Result<Vec<u8>, String> {
-        b.poison(device)?;
-        RUNNERS[variant](device, kern, side, b, 0, 1)?;
-        b.bytes(device)
-    };
-    let (grid, pixel) = (read(other)?, read(3)?);
-    let words = |bytes: &[u8]| -> Vec<u32> {
-        bytes
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|word| u32::from_le_bytes(*word))
-            .collect()
-    };
-    let (grid, pixel) = (words(&grid), words(&pixel));
-    let differing: Vec<usize> = (0..grid.len().min(pixel.len()))
-        .filter(|&k| grid[k] != pixel[k])
-        .collect();
-    let _ = write!(
-        text,
-        "; {} of {} words differ between {} and pixel",
-        differing.len(),
-        grid.len(),
-        VARIANTS[other]
-    );
-    for &k in differing.iter().take(4) {
-        let _ = write!(text, "; word {k}: {:08x} vs {:08x}", grid[k], pixel[k]);
-    }
-    // Distance in ulps: map the sign-magnitude bits to an ordered integer. Only meaningful for f32 outputs, and a NaN
-    // has no distance (reported as the largest value, so it never passes the bound).
-    let ordered = |bits: u32| -> i64 {
-        if bits >> 31 == 1 {
-            -i64::from(bits & 0x7fff_ffff)
-        } else {
-            i64::from(bits)
-        }
-    };
-    let ulp = differing
-        .iter()
-        .map(|&k| {
-            if f32::from_bits(grid[k]).is_nan() || f32::from_bits(pixel[k]).is_nan() {
-                u32::MAX
-            } else {
-                u32::try_from((ordered(grid[k]) - ordered(pixel[k])).unsigned_abs())
-                    .unwrap_or(u32::MAX)
-            }
-        })
-        .max();
-    if kern.float_chain() {
-        let _ = write!(text, "; largest distance {} ulp", ulp.unwrap_or(0));
-        Ok((text, ulp))
-    } else {
-        Ok((text, None))
-    }
 }
 
 /// Why a cell cannot run on this adapter, or `None`.
@@ -796,7 +803,7 @@ fn main() {
     let _ = writeln!(
         text,
         "statistic: {} run(s) of {} warm-up + {} timed dispatches (GPU timestamps), median of run medians, variant order rotated each run; \
-         {} sizes ({}), pixel cap {PIXEL_MAX_ELEMENTS} = 8192^2; times in ms; no threshold is asserted",
+         {} sizes ({}), pixel cap {PIXEL_MAX_ELEMENTS} = 8192^2; times in ms; no threshold is asserted; K3 and K3L are X-S1's polynomial without fma (the dialect has none: an unfused multiply and add); f32 bit differences between the shapes are observed, not asserted",
         plan.runs,
         plan.warmup,
         plan.timed,
@@ -816,15 +823,15 @@ fn main() {
     let _ = writeln!(text);
     let _ = writeln!(
         text,
-        "| kernel | side | grid 64 | grid 128 | grid 256 | best grid | pixel | pixel / best grid | pixel spread | pixel = grid |"
+        "| kernel | side | grid 64 | grid 128 | grid 256 | best grid | pixel | pixel / best grid | pixel spread | pixel vs grid (bits) |"
     );
     let _ = writeln!(text, "|---|---:|---:|---:|---:|---|---:|---:|---:|---|");
     let mut all_accepted = true;
-    let mut identical_cells = 0;
-    let mut ulp_cells = 0;
+    let mut same_cells = 0;
+    let mut observed_cells = 0;
     let mut rejected_cells = 0;
+    let mut largest_ulp = 0;
     let mut cells = 0;
-    let mut differences = Vec::new();
     for kern in KERNELS {
         for &side in sides {
             if let Some(reason) = skip_reason(&device, kern, side) {
@@ -839,12 +846,10 @@ fn main() {
                 .unwrap_or_else(|error| panic!("{} at side {side}: {error}", kern.name()));
             cells += 1;
             all_accepted &= cell.accepted;
-            identical_cells += usize::from(cell.identical);
-            ulp_cells += usize::from(!cell.identical && cell.accepted);
+            same_cells += usize::from(cell.pixel_vs_grid.differing == 0);
+            observed_cells += usize::from(cell.pixel_vs_grid.differing > 0);
             rejected_cells += usize::from(!cell.accepted);
-            if let Some(difference) = &cell.difference {
-                differences.push(format!("{} at side {side}: {difference}", kern.name()));
-            }
+            largest_ulp = largest_ulp.max(cell.pixel_vs_grid.max_ulp);
             let best = cell.times[..3]
                 .iter()
                 .enumerate()
@@ -869,25 +874,17 @@ fn main() {
                 },
                 cell.pixel_spread
                     .map_or_else(|| "n/a".to_owned(), |s| format!("{s:.1} %")),
-                match (cell.identical, cell.accepted, cell.max_ulp) {
-                    (true, _, _) => "yes".to_owned(),
-                    (false, true, Some(ulp)) => format!("<= {ulp} ulp"),
-                    (false, _, _) if !cell.grid_agree => "NO (grid widths differ)".to_owned(),
-                    _ => "NO".to_owned(),
-                }
+                cell.pixel_vs_grid_text()
             );
         }
     }
     let _ = writeln!(text);
-    for difference in &differences {
-        let _ = writeln!(text, "DIFFERENT {difference}");
-    }
     let _ = writeln!(text, "gpu after: {}", gpu_load());
     let _ = writeln!(
         text,
-        "{cells} cells run: {identical_cells} with the same bits from the grid kernels and the pixel kernel, {} within \
-         {FLOAT_ULP_BOUND} ulp (float chains K3 and K3L), {} outside the contract",
-        ulp_cells, rejected_cells
+        "{cells} cells run: {same_cells} with the same bits in the pixel and the grid outputs, {observed_cells} with f32 bit \
+         differences between the shapes (an observation, D128; the largest is {largest_ulp} ulp), {rejected_cells} outside what is \
+         asserted (an element not written, a non-finite f32, or an integer difference)"
     );
     print!("{text}");
     if let Some(path) = &args.out {
@@ -896,7 +893,7 @@ fn main() {
     }
     assert!(
         all_accepted,
-        "a pixel kernel and a grid kernel differ in a cell beyond the contract"
+        "a cell left an element unwritten, wrote a non-finite f32, or the integer kernel differs between the shapes"
     );
     assert!(cells > 0, "no cell ran");
 }
@@ -924,10 +921,11 @@ mod tests {
         h ^ (h >> 15)
     }
 
-    fn host_poly(x: f32, terms: u32) -> f32 {
-        let mut acc = 0.25f32;
+    fn host_poly(t: f32, terms: u32) -> f32 {
+        let mut acc = 0.0f32;
         for k in 0..terms {
-            acc = acc * x + ((k % 7) as f32) * 0.125 + 0.5;
+            let c = ((k * 37 + 11) % 101) as f32 * 0.0078125 - 0.375;
+            acc = acc * t + c;
         }
         acc
     }
@@ -958,7 +956,10 @@ mod tests {
             Kern::K3 | Kern::K3L => {
                 let terms = if kern == Kern::K3 { 64 } else { 1024 };
                 i_range
-                    .map(|i| host_poly((i % W) as f32 * 0.9 / W as f32, terms).to_bits())
+                    .map(|i| {
+                        let t = (host_hash(i % W, i / W) & 65535) as f32 * 0.000_015_258_789;
+                        host_poly(t, terms).to_bits()
+                    })
                     .collect()
             }
             Kern::K4 => i_range

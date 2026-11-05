@@ -186,7 +186,7 @@ crate's `short_circuit` test with `--ignored`, which the plain `cargo test` of t
 evaluate a right operand of `&&`/`||` that the left operand makes unnecessary (the WGSL that Slang emits is read for
 it). The default is the 8 seeds of `tests/difftest/seeds.txt` (128 programs). `random:N` draws N seeds from the clock,
 prints them and runs them as a list, so a failure is reproduced by naming that list. `--shapes grid,pixel` (slice mx.p1c)
-also runs every program as a `pixel` kernel and requires the pixel GPU bits to equal the grid GPU bits; a program whose
+also runs every program as a `pixel` kernel and requires the pixel GPU bits to equal the grid GPU bits for integer and boolean outputs (an `f32` pixel output is judged against its interval like the grid one, and the bit difference between the shapes is only recorded: a device may fuse and round per stage, D128); a program whose
 pixel pin the macro refuses stays `grid`-only and is counted with the macro's reason. Only `check-full` asks for it. Like
 the rest of the batch it proves values only: a fragment outside the `n` elements is invisible under robust buffer access.
 

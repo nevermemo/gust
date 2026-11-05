@@ -263,8 +263,9 @@ pub struct Mismatch {
     pub shape: &'static str,
     /// `transport` (the file's interpreter output is not the harness's: a harness bug), `twin-error`,
     /// `twin-vs-interpreter`, `gpu-error`, `gpu-vs-interpreter` (integers and booleans), `gpu-outside-interval`
-    /// (`f32`), `gpu-not-validated`, and for `pixel` also `pixel-vs-grid` (the pixel GPU output differs from the grid GPU
-    /// output in a bit, whatever the type).
+    /// (`f32`), `gpu-not-validated`, and for `pixel` also `pixel-vs-grid` (an integer or boolean pixel GPU output differs
+    /// from the grid GPU output in a bit; an `f32` one is judged by its interval like `grid`'s, and a bit difference
+    /// between the shapes is only an observation, see [`float_comparison`]).
     pub kind: &'static str,
     /// How many elements differ (0 for an error).
     pub elements: usize,
@@ -328,9 +329,12 @@ pub fn classify(planned: &Planned, raw: &Raw, cpu_only: bool) -> Vec<Mismatch> {
             wgsl_validated: pixel.wgsl_validated,
         };
         judge(planned, raw, &party, cpu_only, &mut found);
-        // The two shapes must hold the same bits, for every type: the `f32` interval above bounds a conforming
-        // implementation, this one says that `pixel` is no different from `grid` on this device.
-        if let (Some(Ok(grid_bits)), Some(Ok(pixel_bits))) = (&raw.gpu, &pixel.gpu) {
+        // Integers and booleans hold the same bits in both shapes. An `f32` does not have to: a device may fuse `a * b + c`
+        // and round `x / y` within 2.5 ulp differently per stage (SEMANTICS section 4, D128), so each shape is judged
+        // against the interval above and the difference between the two is an observation (`float_comparison`).
+        if planned.program.out_ty() != Ty::F32
+            && let (Some(Ok(grid_bits)), Some(Ok(pixel_bits))) = (&raw.gpu, &pixel.gpu)
+        {
             let bad: Vec<usize> = (0..raw.count)
                 .filter(|&k| grid_bits[k] != pixel_bits[k])
                 .collect();
@@ -353,6 +357,59 @@ pub fn classify(planned: &Planned, raw: &Raw, cpu_only: bool) -> Vec<Mismatch> {
         }
     }
     found
+}
+
+/// The distance in `f32` ulps between two bit patterns, on the line of ordered floats (`+0.0` and `-0.0` are one apart
+/// at most: they map to the same point). A NaN has no distance and counts as the largest.
+pub fn ulp_distance(a: u32, b: u32) -> u32 {
+    if f32::from_bits(a).is_nan() || f32::from_bits(b).is_nan() {
+        return u32::MAX;
+    }
+    let ordered = |bits: u32| -> i64 {
+        if bits >> 31 == 1 {
+            -i64::from(bits & 0x7fff_ffff)
+        } else {
+            i64::from(bits)
+        }
+    };
+    u32::try_from((ordered(a) - ordered(b)).unsigned_abs()).unwrap_or(u32::MAX)
+}
+
+/// What the two shapes' GPU outputs of one `f32` program differ by (an observation, never a mismatch).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FloatComparison {
+    /// Elements whose bits differ.
+    pub elements: usize,
+    /// The first of them, with the grid and the pixel bits.
+    pub first: Option<(usize, u32, u32)>,
+    /// The largest distance in ulps over the elements.
+    pub max_ulp: u32,
+}
+
+/// The comparison of the grid and pixel GPU outputs of an `f32` program: `None` when there is nothing to compare (not an
+/// `f32` output, no pixel run, no GPU, or one of the two outputs is an error).
+pub fn float_comparison(raw: &Raw) -> Option<FloatComparison> {
+    if raw.out_ty != "f32" {
+        return None;
+    }
+    let (Some(Ok(grid)), Some(pixel)) = (&raw.gpu, &raw.pixel) else {
+        return None;
+    };
+    let Some(Ok(pixel)) = &pixel.gpu else {
+        return None;
+    };
+    let differing: Vec<usize> = (0..raw.count.min(grid.len()).min(pixel.len()))
+        .filter(|&k| grid[k] != pixel[k])
+        .collect();
+    Some(FloatComparison {
+        elements: differing.len(),
+        first: differing.first().map(|&k| (k, grid[k], pixel[k])),
+        max_ulp: differing
+            .iter()
+            .map(|&k| ulp_distance(grid[k], pixel[k]))
+            .max()
+            .unwrap_or(0),
+    })
 }
 
 /// One party's outputs of one shape.
@@ -772,17 +829,66 @@ mod tests {
     }
 
     #[test]
-    fn the_pixel_gpu_output_must_hold_the_grid_bits_for_every_type() {
-        // An `f32` inside its interval still has to be the same bits as the grid run's.
+    fn an_f32_pixel_output_inside_its_interval_may_differ_from_the_grid_bits() {
+        // D128: each shape is judged against the interval; a bit difference between them is an observation.
         let one = 1.0f32.to_bits();
         let p = planned(Ty::F32, &[one, one], &[(0.99, 1.01), (0.99, 1.01)]);
         let grid = raw(&p, Ok(vec![one, one]), Some(Ok(vec![one, one])));
         let near = with_pixel(grid, Ok(vec![one, one]), Some(Ok(vec![one, one + 1])));
-        let found = classify(&p, &near, false);
-        assert_eq!(found.len(), 1, "{found:?}");
-        assert_eq!((found[0].shape, found[0].kind), ("pixel", "pixel-vs-grid"));
-        assert_eq!((found[0].elements, found[0].first_element), (1, Some(1)));
-        assert!(found[0].message.contains("grid 1"), "{}", found[0].message);
+        assert_eq!(classify(&p, &near, false), []);
+        assert_eq!(
+            float_comparison(&near),
+            Some(FloatComparison {
+                elements: 1,
+                first: Some((1, one, one + 1)),
+                max_ulp: 1
+            })
+        );
+        // Outside its interval, the pixel f32 is a mismatch of its own shape, whatever the grid did.
+        let far = with_pixel(
+            raw(&p, Ok(vec![one, one]), Some(Ok(vec![one, one]))),
+            Ok(vec![one, one]),
+            Some(Ok(vec![one, 1.5f32.to_bits()])),
+        );
+        let found = classify(&p, &far, false);
+        let kinds: Vec<(&str, &str)> = found.iter().map(|m| (m.shape, m.kind)).collect();
+        assert_eq!(kinds, [("pixel", "gpu-outside-interval")]);
+    }
+
+    #[test]
+    fn the_ulp_distance_is_taken_on_the_ordered_floats() {
+        let (one, two) = (1.0f32.to_bits(), 2.0f32.to_bits());
+        assert_eq!(ulp_distance(one, one), 0);
+        assert_eq!(ulp_distance(one, one + 3), 3);
+        assert_eq!(ulp_distance(two, two - 1), 1);
+        // Across zero: the smallest positive and the smallest negative subnormal are two apart, `0.0` and `-0.0` none.
+        assert_eq!(ulp_distance(1, 0x8000_0001), 2);
+        assert_eq!(ulp_distance(0, 0x8000_0000), 0);
+        assert_eq!(ulp_distance(f32::NAN.to_bits(), one), u32::MAX);
+        // Integer and absent comparisons are not float observations.
+        let p = planned(Ty::U32, &[1], &[]);
+        let both = with_pixel(
+            raw(&p, Ok(vec![1]), Some(Ok(vec![1]))),
+            Ok(vec![1]),
+            Some(Ok(vec![1])),
+        );
+        assert_eq!(float_comparison(&both), None);
+    }
+
+    #[test]
+    fn the_pixel_gpu_output_of_an_integer_must_hold_the_grid_bits() {
+        let p = planned(Ty::U32, &[7, 8], &[]);
+        let grid = raw(&p, Ok(vec![7, 8]), Some(Ok(vec![7, 8])));
+        let off = with_pixel(grid, Ok(vec![7, 8]), Some(Ok(vec![7, 9])));
+        let found = classify(&p, &off, false);
+        let kinds: Vec<(&str, &str)> = found.iter().map(|m| (m.shape, m.kind)).collect();
+        assert_eq!(
+            kinds,
+            [("pixel", "gpu-vs-interpreter"), ("pixel", "pixel-vs-grid")]
+        );
+        let pvg = &found[1];
+        assert_eq!((pvg.elements, pvg.first_element), (1, Some(1)));
+        assert!(pvg.message.contains("grid 8"), "{}", pvg.message);
         // The poison value left by a pass that never wrote an element: wrong against the interpreter and the grid.
         let p = planned(Ty::U32, &[7, 8], &[]);
         let grid = raw(&p, Ok(vec![7, 8]), Some(Ok(vec![7, 8])));

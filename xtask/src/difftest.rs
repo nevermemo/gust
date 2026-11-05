@@ -10,7 +10,9 @@
 //! ```
 //!
 //! `--shapes grid,pixel` (slice mx.p1c) has the harness give every generated program a second kernel, its pixel form,
-//! and compare it bit for bit with the grid run. Without `--shapes` the command is the grid-only run it always was. The
+//! and compare it with the grid run: bit for bit for integers and booleans, and for `f32` through each shape's interval,
+//! with the bit differences between the shapes only observed (D128). Without `--shapes` the command is the grid-only run
+//! it always was. The
 //! Full mode of `verify` (`check-full`) reaches this file through [`check_difftest_report`], which adds
 //! `--shapes grid,pixel` when the caller named no shapes; the command line, the pull-request list and the Gpu suite do
 //! not (tests pin all three). The report must say which programs ran as pixel and which stayed grid-only, with the
@@ -330,10 +332,20 @@ pub(crate) struct MismatchRecord {
     pub(crate) shape: String,
 }
 
+/// The `f32` observation of a pixel run (D128): never a mismatch, printed and range-checked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct FloatObservation {
+    pub(crate) programs_compared: u64,
+    pub(crate) programs_with_difference: u64,
+    pub(crate) elements_differing: u64,
+    pub(crate) max_ulp: u64,
+}
+
 /// The `shapes` section of a report: what the run was asked for, how many programs ran as pixel, and the programs that
 /// stayed `grid`-only, counted by the classifier's reason.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ShapesRecord {
+    pub(crate) float_observation: Option<FloatObservation>,
     pub(crate) requested: Vec<String>,
     pub(crate) grid_programs: u64,
     pub(crate) pixel_programs: u64,
@@ -517,7 +529,20 @@ fn parse_shapes_record(section: &Json) -> Result<ShapesRecord, String> {
             .collect::<Result<Vec<_>, _>>()?,
         _ => return Err("report.json `shapes.grid_only.by_reason` is not an object".into()),
     };
+    let float_observation = match section {
+        Json::Object(members) if members.iter().any(|(k, _)| k == "float_pixel_vs_grid") => {
+            let seen = field(section, "float_pixel_vs_grid")?;
+            Some(FloatObservation {
+                programs_compared: uint(seen, "programs_compared")?,
+                programs_with_difference: uint(seen, "programs_with_difference")?,
+                elements_differing: uint(seen, "elements_differing")?,
+                max_ulp: uint(seen, "max_ulp")?,
+            })
+        }
+        _ => None,
+    };
     Ok(ShapesRecord {
+        float_observation,
         requested,
         grid_programs: uint(by_shape, "grid")?,
         pixel_programs: uint(by_shape, "pixel")?,
@@ -575,6 +600,26 @@ fn shapes_problems(report: &Report, options: &Options) -> Vec<String> {
         if shapes.pixel_programs == 0 {
             problems
                 .push("no program ran as pixel: the run says nothing about the pixel shape".into());
+        }
+        match &shapes.float_observation {
+            None => problems
+                .push("shapes has no `float_pixel_vs_grid` observation of the f32 programs".into()),
+            Some(seen) => {
+                if seen.programs_compared > shapes.pixel_programs
+                    || seen.programs_with_difference > seen.programs_compared
+                    || (seen.programs_with_difference == 0) != (seen.elements_differing == 0)
+                    || seen.elements_differing < seen.programs_with_difference
+                {
+                    problems.push(format!(
+                        "shapes.float_pixel_vs_grid is inconsistent: {} programs compared of {} pixel programs, {} with a difference, {} elements, {} ulp at most",
+                        seen.programs_compared,
+                        shapes.pixel_programs,
+                        seen.programs_with_difference,
+                        seen.elements_differing,
+                        seen.max_ulp
+                    ));
+                }
+            }
         }
     } else if shapes.pixel_programs != 0 || shapes.grid_only_total != 0 {
         problems.push(format!(
@@ -777,6 +822,15 @@ fn report_summary(report: &Report, options: &Options) -> Vec<String> {
             shapes.pixel_programs,
             shapes.grid_only_total
         );
+        if let Some(seen) = &shapes.float_observation {
+            line.push_str(&format!(
+                "\n    f32 pixel vs grid (an observation, not a mismatch): {} of {} programs differ in a bit, {} elements, at most {} ulp",
+                seen.programs_with_difference,
+                seen.programs_compared,
+                seen.elements_differing,
+                seen.max_ulp
+            ));
+        }
         for (reason, count) in &shapes.grid_only_by_reason {
             line.push_str(&format!("\n    grid-only {count} x {reason}"));
         }

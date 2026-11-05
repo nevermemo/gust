@@ -659,6 +659,32 @@ fn only_the_full_mode_asks_for_pixel_by_default() {
     // `verify` is the one caller of `check_difftest_report`, and it passes no arguments.
     let verify = repo_file(include_str!("../verify.rs"));
     assert_eq!(verify.matches("check_difftest_report(&[])").count(), 1);
+    // And `check_difftest_report` hands the harness the arguments with the shapes added, not the bare ones: the only other
+    // caller of `difftest_summary` is the command line, which passes `args` as typed.
+    let source = repo_file(include_str!("../difftest.rs"));
+    assert_eq!(
+        source
+            .matches("difftest_summary(&with_full_shapes(args))")
+            .count(),
+        1
+    );
+    assert_eq!(source.matches("difftest_summary(args)").count(), 1);
+    let report_fn = source
+        .split("pub(crate) fn check_difftest_report")
+        .nth(1)
+        .unwrap();
+    let body = report_fn
+        .split(
+            "
+}
+",
+        )
+        .next()
+        .unwrap();
+    assert!(
+        body.contains("difftest_summary(&with_full_shapes(args))"),
+        "{body}"
+    );
     // Neither workflow runs the shapes: the pull-request list and the nightly list stay grid-only.
     for workflow in [
         include_str!("../../../.github/workflows/ci.yml"),
@@ -677,8 +703,13 @@ fn shaped(mode: &str, seeds: &[u64], pixel: u64, grid_only: &[(&str, u64)]) -> S
         .map(|(reason, count)| format!("{reason:?}:{count}"))
         .collect::<Vec<_>>()
         .join(",");
+    // The f32 observation: up to six programs compared, two of them with a bit difference (3 elements, 2 ulp at most).
+    let compared = pixel.min(6);
+    let (differing, elements, ulp) = if compared > 0 { (2, 3, 2) } else { (0, 0, 0) };
     let section = format!(
-        "\"shapes\":{{\"requested\":[\"grid\",\"pixel\"],\"programs_by_shape\":{{\"grid\":{programs},\"pixel\":{pixel}}},\
+        "\"shapes\":{{\"requested\":[\"grid\",\"pixel\"],\"float_pixel_vs_grid\":{{\"programs_compared\":{compared},\
+         \"programs_with_difference\":{differing},\"elements_differing\":{elements},\"max_ulp\":{ulp},\"first\":null}},\
+         \"programs_by_shape\":{{\"grid\":{programs},\"pixel\":{pixel}}},\
          \"grid_only\":{{\"total\":{total},\"by_reason\":{{{reasons}}},\"programs\":[]}}}},\"mismatch_count\""
     );
     good(mode, seeds).replacen("\"mismatch_count\"", &section, 1)
@@ -722,6 +753,10 @@ fn a_pixel_report_that_matches_the_request_passes_and_says_what_stayed_grid_only
         "{text}"
     );
     assert!(text.contains("grid-only 3 x GUST-E0726"), "{text}");
+    assert!(
+        text.contains("f32 pixel vs grid (an observation, not a mismatch): 2 of 6 programs differ in a bit, 3 elements, at most 2 ulp"),
+        "{text}"
+    );
     // A grid-only request on a grid-only report still passes without the section (the form of a report written before
     // `--shapes`) and with it.
     let old = good("gpu", &[1]);
@@ -772,6 +807,31 @@ fn a_pixel_request_fails_unless_the_report_proves_the_pixel_runs() {
             .iter()
             .any(|p| p.contains("programs_by_shape.grid is 15, expected 16"))
     );
+    // The f32 observation must be there and make sense; a difference in it is no problem by itself (D128).
+    let ask_report = |report: String| problems(&ask, Some(0), Ok(report));
+    let missing =
+        shaped("gpu", &[1], 16, &[]).replacen("\"float_pixel_vs_grid\"", "\"unrelated\"", 1);
+    assert!(
+        ask_report(missing)
+            .iter()
+            .any(|p| p.contains("no `float_pixel_vs_grid` observation")),
+        "an observation is required"
+    );
+    let too_many =
+        shaped("gpu", &[1], 16, &[]).replace("\"programs_compared\":6", "\"programs_compared\":17");
+    assert!(
+        ask_report(too_many)
+            .iter()
+            .any(|p| p.contains("float_pixel_vs_grid is inconsistent"))
+    );
+    let silent = shaped("gpu", &[1], 16, &[])
+        .replace("\"elements_differing\":3", "\"elements_differing\":0");
+    assert!(
+        ask_report(silent)
+            .iter()
+            .any(|p| p.contains("float_pixel_vs_grid is inconsistent"))
+    );
+    assert!(ask_report(shaped("gpu", &[1], 16, &[])).is_empty());
     // A grid-only request must not be given a report that ran pixel.
     let extra = shaped("gpu", &[1], 16, &[]).replace("[\"grid\",\"pixel\"]", "[\"grid\"]");
     let ask_grid = options(&["--seeds", "1"]);

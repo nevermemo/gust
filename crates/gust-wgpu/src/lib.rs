@@ -1800,7 +1800,9 @@ impl HeadlessDevice {
     /// Encode and submit a batch, returning before its GPU work completes.
     ///
     /// Every request is validated before any pipeline, bind group, or command
-    /// encoding work begins. Empty requests are valid and do not create GPU work.
+    /// encoding work begins. Empty requests are valid and do not create GPU work. Encoding a `pixel` call creates its
+    /// attachment, so such a call can still fail with [`Error::OutOfMemory`] named `GUST pixel attachment`; nothing
+    /// is submitted then.
     pub fn submit_batch<'device>(
         &'device self,
         dispatches: &[BufferDispatch<'_>],

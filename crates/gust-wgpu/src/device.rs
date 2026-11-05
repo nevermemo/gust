@@ -175,7 +175,8 @@ impl DeviceOptions {
         self
     }
 
-    /// These options with the limits policy replaced by `limits`.
+    /// These options with the limits policy replaced by `limits`. Not [`HeadlessDevice::with_limits`], which lowers
+    /// the limits of a device that is already open.
     #[must_use]
     pub fn with_limits(mut self, limits: LimitsPolicy) -> Self {
         self.limits = limits;
@@ -491,7 +492,7 @@ pub(crate) fn scope_result(
             bytes,
         }),
         Some(other) => Err(Error::Poll(format!(
-            "allocating buffer `{label}` ({bytes} bytes): {other}"
+            "allocating `{label}` ({bytes} bytes): {other}"
         ))),
     }
 }

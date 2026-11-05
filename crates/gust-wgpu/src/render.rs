@@ -166,9 +166,26 @@ fn attachment_bytes(plan: &PixelPlan) -> u64 {
 }
 
 /// The attachment of one call, created inside an out-of-memory scope on native.
+///
+/// The scope covers the texture only, the one allocation of the size of the call. The view made from it afterwards
+/// takes no device memory of that size and is made after the scope is popped, because inside it a view of a failed
+/// texture would raise a validation error, which an out-of-memory scope does not catch.
 fn create_attachment(device: &wgpu::Device, plan: &PixelPlan) -> Result<wgpu::Texture, Error> {
+    create_attachment_in(device, plan, wgpu::ErrorFilter::OutOfMemory)
+}
+
+/// [`create_attachment`] with the filter of its scope as a parameter, so that a test can push a validation scope and
+/// make wgpu raise an error it catches (a real out-of-memory needs an exhausted adapter). Production passes
+/// `OutOfMemory` and nothing else. On `wasm32` there is no scope and the filter is unused.
+fn create_attachment_in(
+    device: &wgpu::Device,
+    plan: &PixelPlan,
+    filter: wgpu::ErrorFilter,
+) -> Result<wgpu::Texture, Error> {
+    #[cfg(target_arch = "wasm32")]
+    let _ = filter;
     #[cfg(not(target_arch = "wasm32"))]
-    let scope = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let scope = device.push_error_scope(filter);
     let attachment = device.create_texture(&wgpu::TextureDescriptor {
         label: Some(ATTACHMENT_LABEL),
         size: wgpu::Extent3d {
@@ -392,13 +409,12 @@ mod tests {
         }
     }
 
-    /// A real out-of-memory needs an exhausted adapter, which the tests never create (as for the buffers, see the
-    /// `device` tests), so this pins the two halves: the attachment of a normal call is made through the scope and
-    /// comes out valid and sized by the plan, and what the scope would catch becomes `Error::OutOfMemory` carrying the
-    /// attachment's label and byte size.
+    /// A normal attachment is sized by the plan, and what a scope catches for the cap-sized one becomes
+    /// `Error::OutOfMemory` with the attachment's label and byte size. This does not show the scope of
+    /// `create_attachment`; `the_attachment_scope_catches_what_wgpu_raises_and_names_the_attachment` does.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
-    fn the_attachment_is_made_in_a_scope_and_an_out_of_memory_is_an_error() {
+    fn the_attachment_is_sized_by_the_plan_and_an_out_of_memory_maps_to_the_error() {
         let device = crate::HeadlessDevice::new().expect("a Vulkan adapter");
         let plan = PixelPlan::new(3 * PIXEL_ROW_WIDTH + 5);
         let attachment = create_attachment(&device.device, &plan).expect("a small attachment fits");
@@ -418,6 +434,48 @@ mod tests {
             }
             other => panic!("expected OutOfMemory, got {other:?}"),
         }
+    }
+
+    /// The scope of `create_attachment` itself, by the seam `create_attachment_in`: a validation scope and a plan one
+    /// row over `max_texture_dimension_2d` make wgpu raise a validation error while the attachment is created. The
+    /// error must come back as the `Err` that names the attachment and the size of the plan, and must not reach the
+    /// device's uncaptured-error handler (which would panic in production). A real out-of-memory needs an exhausted
+    /// adapter, so the error is a different one than production's, through the same push, create, pop and resolve.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_attachment_scope_catches_what_wgpu_raises_and_names_the_attachment() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let device = crate::HeadlessDevice::new().expect("a Vulkan adapter");
+        let escaped = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&escaped);
+        device
+            .device
+            .on_uncaptured_error(Arc::new(move |_error: wgpu::Error| {
+                flag.store(true, Ordering::SeqCst);
+            }));
+        let rows = device.device.limits().max_texture_dimension_2d + 1;
+        let plan = PixelPlan {
+            rows,
+            full_rows: rows,
+            tail: 0,
+        };
+        let result = create_attachment_in(&device.device, &plan, wgpu::ErrorFilter::Validation);
+        match result {
+            Err(Error::Poll(message)) => {
+                let bytes = attachment_bytes(&plan).to_string();
+                assert!(
+                    message.contains(ATTACHMENT_LABEL) && message.contains(&bytes),
+                    "{message}"
+                );
+            }
+            other => panic!("expected the scope's error, got {other:?}"),
+        }
+        assert!(
+            !escaped.load(Ordering::SeqCst),
+            "the error reached the uncaptured-error handler"
+        );
     }
 
     #[test]

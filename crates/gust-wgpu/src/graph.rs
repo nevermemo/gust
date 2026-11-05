@@ -580,7 +580,8 @@ impl HeadlessDevice {
     /// Nodes execute in insertion order inside one command buffer, so a node's
     /// dependencies, declared or derived, are a contract that is checked, not a
     /// scheduling hint. Intermediate buffers that no node uploads or reads back never leave
-    /// the GPU; the report counts their bytes as resident.
+    /// the GPU; the report counts their bytes as resident. Encoding a `pixel` node creates its attachment, so the
+    /// graph can fail with [`Error::OutOfMemory`] named `GUST pixel attachment`; nothing is submitted then.
     pub fn execute_graph(&self, graph: &StagedGraph<'_>) -> Result<GraphOutput, Error> {
         let started = Instant::now();
         graph.validate(self)?;

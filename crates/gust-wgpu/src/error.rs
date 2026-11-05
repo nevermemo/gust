@@ -269,10 +269,11 @@ pub enum Error {
     /// A readback failed: the buffer could not be mapped (including a mapping that did not complete within the bounded
     /// wait), or the mapped bytes cannot be decoded as the requested element type. The text is the reason.
     Map(String),
-    /// A buffer or texture allocation failed inside an out-of-memory error scope: the request was within
-    /// `max_buffer_size`, but the adapter had no memory for it. `label` names the buffer or texture (a `pixel` call's
-    /// attachment is `GUST pixel attachment`) and `bytes` is the size asked for. Where a device
-    /// cannot report this through its scope and is lost instead, S7.6 outcome B maps it to [`Error::Poll`].
+    /// A buffer or texture allocation failed inside an out-of-memory error scope: the request was within the
+    /// device's limits (`max_buffer_size` for a buffer, `max_texture_dimension_2d` for a texture), but the adapter had
+    /// no memory for it. `label` names the buffer or texture (a `pixel` call's attachment is
+    /// `GUST pixel attachment`) and `bytes` is the size asked for. Where a device cannot report this through its
+    /// scope and is lost instead, S7.6 outcome B maps it to [`Error::Poll`].
     OutOfMemory {
         /// The label of the buffer or texture.
         label: String,

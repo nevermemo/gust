@@ -209,7 +209,8 @@ pub(crate) fn expand_validated(
         // The shapes the kernel can take (D63, plan 5.1) and the check of the pin (5.3). The descriptor lists the
         // result; the shape the kernel is built as is its pin's: a kernel pinned `pixel` that the classifier accepts is
         // built with the `pixel` profile (slice mx.p1a), every other kernel with the module's.
-        let classification = classify::classify(stage, original_kernel, &attribute_facts);
+        let helpers = crate::validate::helper_names(&original_module);
+        let classification = classify::classify(stage, &helpers, original_kernel, &attribute_facts);
         let mut stage: &dyn StageProfile = stage;
         if let Some(pin) = &attribute_facts.shape {
             classify::check_pin(original_kernel, &classification, pin)?;

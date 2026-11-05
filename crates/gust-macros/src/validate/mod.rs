@@ -483,6 +483,27 @@ pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
     validate_module_in(&crate::profile::GRID, module)
 }
 
+/// The names of the helper functions of `module`: every function that is not a `#[kernel]`. These are the free
+/// functions a kernel body may call (`visit_expr_call`); the shape classifier reads the same set (D94).
+pub(crate) fn helper_names(module: &syn::ItemMod) -> HashSet<String> {
+    module
+        .content
+        .iter()
+        .flat_map(|(_, items)| items)
+        .filter_map(|item| match item {
+            syn::Item::Fn(function)
+                if !function
+                    .attrs
+                    .iter()
+                    .any(|attribute| attribute.path().is_ident("kernel")) =>
+            {
+                Some(function.sig.ident.to_string())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Validates a module whose kernels have the shape of the profile `stage`: the profile decides which parameter is
 /// the invocation, which options a kernel may carry and which constructs it may declare.
 pub(crate) fn validate_module_in(
@@ -497,20 +518,7 @@ pub(crate) fn validate_module_in(
         ));
     };
 
-    let function_names: HashSet<String> = items
-        .iter()
-        .filter_map(|item| match item {
-            syn::Item::Fn(function)
-                if !function
-                    .attrs
-                    .iter()
-                    .any(|attribute| attribute.path().is_ident("kernel")) =>
-            {
-                Some(function.sig.ident.to_string())
-            }
-            _ => None,
-        })
-        .collect();
+    let function_names = helper_names(module);
 
     let result_helpers = items
         .iter()

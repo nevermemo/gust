@@ -219,6 +219,19 @@ describes the intended behaviour and is not evidence.
   `STORAGE`) and the device instance at submit. Formats are the nine of `gust::texture::Format`
   (`R32/Rg32/Rgba32` x `Uint/Sint/Float`); `StorageTexture2D` (read-write) exists for the three r32 formats only,
   `WriteTexture2D` (write-only) for all nine.
+- **The `pixel` shape at run time (slice mx.p1b; D61, D120, D127).** A call of a `pixel` kernel over `n` elements runs
+  the body once for each element `i` in `0..n`, as the twin does, and on the GPU each run is one fragment: the host
+  draws a full-screen triangle into an 8192-wide attachment, scissored to the `n` live texels, so no fragment outside
+  `0..n` runs (a helper invocation cannot store). The element index is `y * 8192 + x` of the fragment. Outputs are
+  written in place, so what `grid` guarantees for a store (one writer per element, no ordering between elements)
+  holds the same way. The same body gives the same bits as `grid` in the cases tested (`tests/pixel.rs`: u32, i32,
+  f32, `Vec2` and `Vec4` outputs at sizes around the row width and up to the cap, with an independent host
+  reference); that is evidence for those bodies, not a proof for every kernel. A call is refused, identically on the
+  twin and the `cpu` target, when it has a y or z other than 1 (`ShapeUnsupported`, `cpu::Error::PixelExtent`), when
+  `n` is over 2^26 (`DeviceLimit` named `pixel_max_elements`) or when a read-write output is bound `Independent`
+  (`ShapeIndependentOutput`, `cpu::Error::PixelIndependentOutput`). Only the GPU adds the texture dimension of the
+  device, the fragment-stage storage capability (`FRAGMENT_WRITABLE_STORAGE`) and the storage-binding size, and a
+  `pixel` kernel has no indirect launch.
 
 WGSL section numbers and quotes on this page come from the WGSL editor's draft (gpuweb.github.io/gpuweb/wgsl), copy
 read on 2026-10-24. A superscript in the spec is written with `^` here.

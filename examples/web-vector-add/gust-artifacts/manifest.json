@@ -1,6 +1,22 @@
 {
   "kernels": [
     {
+      "clean_sha256": "198f02f415cf6fd06bf3b63189bbca343de9c609bf95a96e19f3e004f8f9160b",
+      "entry_point": "gpu_vector_add_add_pixel",
+      "formats": [
+        {
+          "file": "05f35ef1abaf4118.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "8d60d22dd261c60ee01e06e46d3b58688d16deca0768a6ea01994aacf62f4cd7",
+          "sha256": "904cb34142f6b8fd274c3e085550bdb2d0406ea5a7c325e7d20d4628e7d458ca"
+        }
+      ],
+      "key": "05f35ef1abaf4118",
+      "module": "vector_add",
+      "name": "add_pixel",
+      "shape": "pixel"
+    },
+    {
       "clean_sha256": "dc268a4fde3d423f58fe0ea93420c8aca987d7181d2df1d13f940feb96e86146",
       "entry_point": "gpu_vector_add_add",
       "formats": [
@@ -13,7 +29,8 @@
       ],
       "key": "52e85c5f03f72272",
       "module": "vector_add",
-      "name": "add"
+      "name": "add",
+      "shape": "grid"
     },
     {
       "clean_sha256": "2bf7c0a472a03119a22b812753f4f89048f20ebf79856cc9b728b7d6609bbf72",
@@ -28,9 +45,10 @@
       ],
       "key": "5f5fc9afb786701a",
       "module": "double_add",
-      "name": "map_kernel"
+      "name": "map_kernel",
+      "shape": "grid"
     }
   ],
-  "schema": 1,
+  "schema": 2,
   "slang": "2026.20"
 }

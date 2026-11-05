@@ -2,23 +2,35 @@
 //!
 //! D94 promises that anything the classifier does not recognise is `grid`-only. The rules in the parent module look
 //! for the shape-dependent constructs they know, so on their own they would give a construct they have never heard of
-//! `pixel` by default. This ledger turns that around: it lists every kind of expression, statement and pattern, and
-//! every built-in method, that the validator and the emitter accept in a kernel body today, with the classifier's
-//! decision for each. [`scan`] walks a body and names every node whose kind is not listed, and the
+//! `pixel` by default. This ledger turns that around: it lists every kind of expression, statement and pattern, every
+//! built-in method and every callee form that the validator and the emitter accept in a kernel body today, with the
+//! classifier's decision for each. [`scan`] walks a body and names every node whose kind is not listed, and the
 //! classifier makes that a reason for `grid` (`Why::Unrecognised`). A kind the validator starts to accept is therefore
 //! `grid`-only until someone adds it here, and the tests of this module (`tests::the_ledger_*`) fail at the same moment
-//! because they probe the validator and the emitter with one program per kind of syn and compare the answer with
-//! this list.
+//! because they probe the validator and the emitter with one program per kind of syn (and per callee form) and compare
+//! the answer with this list.
+//!
+//! The probes test one form per kind. A kind that is already listed (`Call`, `Reference`, `Path`, `Unary`) and that the
+//! validator later accepts in a new position is therefore not caught by them; it is still classified by the kind's own
+//! rule, which is written for the kind, not for the position.
 //!
 //! The validator cannot share the list: it is a deny-list over `syn::visit`'s defaults (a kind is accepted because no
 //! `visit_*` method rejects it), and the emitter lowers by `match` with a refusing fallback, so neither holds a list of
 //! accepted kinds. The probes in the tests are the tie.
+//!
+//! The helper names a call may name come from the validator itself ([`super::super::helper_names`], the set its
+//! `visit_expr_call` checks a callee against), so a callee is a "helper" exactly when the validator would accept it as
+//! one.
+
+use std::collections::HashSet;
 
 use proc_macro2::TokenStream;
 use quote::ToTokens;
 use syn::visit::{self, Visit};
 
 use super::Why;
+use crate::math_types;
+use crate::validate::{atomic_operation_name, is_barrier_call};
 
 /// The part of the language an [`Entry`] is about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,6 +43,8 @@ pub(super) enum Class {
     Pattern,
     /// A built-in method of the dialect, by name.
     Method,
+    /// The form of the callee of a call (`Expr::Call`): a helper, a built-in by name, or a math-type constructor.
+    Callee,
 }
 
 /// The classifier's decision for one kind.
@@ -72,6 +86,10 @@ const fn method(kind: &'static str, handling: Handling) -> Entry {
     entry(Class::Method, kind, handling)
 }
 
+const fn callee(kind: &'static str, handling: Handling) -> Entry {
+    entry(Class::Callee, kind, handling)
+}
+
 use Handling::{Excluded, Inspected, Neutral};
 
 /// Every kind a kernel body can hold that the validator and the emitter both accept.
@@ -91,7 +109,10 @@ pub(super) const LEDGER: &[Entry] = &[
     ),
     expression("Block", Neutral),
     expression("Break", Neutral),
-    expression("Call", Inspected("BodyScan: atomics and barriers")),
+    expression(
+        "Call",
+        Inspected("BodyScan: atomics and barriers; this ledger's callee entries"),
+    ),
     expression("Cast", Neutral),
     expression("Continue", Neutral),
     expression("Field", Neutral),
@@ -172,6 +193,43 @@ pub(super) const LEDGER: &[Entry] = &[
     method("sample", Neutral),
     method("width", Neutral),
     method("height", Neutral),
+    // ---- callees: the forms of `visit_expr_call` (validate/mod.rs) that accept a call ----
+    // A free function declared in the module, which is not a `#[kernel]`. A helper takes value parameters only
+    // (`Code::HelperResourceParameter`) and holds no barrier (`Code::BarrierPosition`), so it reaches no resource, no
+    // barrier and no atomic; the classifier scans only the kernel and relies on both refusals (D94, pinned by tests).
+    callee("helper", Neutral),
+    callee("Some", Neutral),
+    callee("Ok", Neutral),
+    callee("Err", Neutral),
+    callee(
+        "workgroup_barrier",
+        Inspected("BodyScan: a barrier is `Why::Barrier`"),
+    ),
+    callee(
+        "atomic_add",
+        Inspected("BodyScan: an atomic is `Why::Atomic`"),
+    ),
+    callee(
+        "atomic_min",
+        Inspected("BodyScan: an atomic is `Why::Atomic`"),
+    ),
+    callee(
+        "atomic_max",
+        Inspected("BodyScan: an atomic is `Why::Atomic`"),
+    ),
+    callee(
+        "atomic_exchange",
+        Inspected("BodyScan: an atomic is `Why::Atomic`"),
+    ),
+    callee(
+        "atomic_compare_exchange",
+        Inspected("BodyScan: an atomic is `Why::Atomic`"),
+    ),
+    // `Vec3::new(..)`, `Vec3::splat(..)`, `Mat4::from_cols(..)`, `Mat4::from_rows(..)`: values, no resource.
+    callee("math::new", Neutral),
+    callee("math::splat", Neutral),
+    callee("math::from_cols", Neutral),
+    callee("math::from_rows", Neutral),
 ];
 
 /// The ledger's entry for `kind` of `class`.
@@ -242,20 +300,53 @@ pub(super) fn method_kind(name: &str) -> &str {
     }
 }
 
+/// The ledger's name of the callee of `call`, or `None` for a form the validator's `visit_expr_call` does not accept
+/// (anything but a plain path, a qualified path, a path to a name that is neither a built-in nor in `helpers`).
+///
+/// A built-in name wins over a helper of the same name, as in the validator (`Some`, `Ok`, `Err`, the barrier, an
+/// atomic, then a helper); a math-type constructor has two segments, so it cannot be mistaken for either.
+pub(super) fn callee_kind(call: &syn::ExprCall, helpers: &HashSet<String>) -> Option<String> {
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return None;
+    };
+    if path.qself.is_some() {
+        return None;
+    }
+    if let Some((_, member)) = math_types::associated_item(&path.path)
+        && member != "IDENTITY"
+    {
+        return Some(format!("math::{member}"));
+    }
+    let name = path.path.get_ident()?.to_string();
+    if matches!(name.as_str(), "Some" | "Ok" | "Err") {
+        return Some(name);
+    }
+    if is_barrier_call(call) {
+        return Some("workgroup_barrier".to_owned());
+    }
+    if let Some(operation) = atomic_operation_name(path) {
+        return Some(operation.to_owned());
+    }
+    helpers.contains(&name).then(|| "helper".to_owned())
+}
+
 /// What the ledger makes of the body of a kernel: the nodes whose kind rules `pixel` out and the nodes whose kind is not
-/// listed at all, in source order.
-pub(super) fn scan(block: &syn::Block) -> Vec<(Why, TokenStream)> {
-    let mut scan = KindScan::default();
+/// listed at all, in source order. `helpers` are the module's helper functions (`validate::helper_names`).
+pub(super) fn scan(block: &syn::Block, helpers: &HashSet<String>) -> Vec<(Why, TokenStream)> {
+    let mut scan = KindScan {
+        helpers,
+        findings: Vec::new(),
+    };
     scan.visit_block(block);
     scan.findings
 }
 
-#[derive(Default)]
-struct KindScan {
+struct KindScan<'a> {
+    helpers: &'a HashSet<String>,
     findings: Vec<(Why, TokenStream)>,
 }
 
-impl KindScan {
+impl KindScan<'_> {
     /// Records `node` when its kind is excluded or not listed; `true` when the walk may go on inside it.
     fn check(&mut self, class: Class, kind: Option<&str>, node: impl ToTokens) -> bool {
         match kind
@@ -276,7 +367,7 @@ impl KindScan {
     }
 }
 
-impl<'ast> Visit<'ast> for KindScan {
+impl<'ast> Visit<'ast> for KindScan<'_> {
     fn visit_expr(&mut self, expression: &'ast syn::Expr) {
         if self.check(Class::Expression, expression_kind(expression), expression) {
             visit::visit_expr(self, expression);
@@ -292,6 +383,13 @@ impl<'ast> Visit<'ast> for KindScan {
     fn visit_pat(&mut self, pattern: &'ast syn::Pat) {
         if self.check(Class::Pattern, pattern_kind(pattern), pattern) {
             visit::visit_pat(self, pattern);
+        }
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        let kind = callee_kind(call, self.helpers);
+        if self.check(Class::Callee, kind.as_deref(), call) {
+            visit::visit_expr_call(self, call);
         }
     }
 

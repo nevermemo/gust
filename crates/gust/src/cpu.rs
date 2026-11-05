@@ -559,7 +559,7 @@ impl fmt::Display for Error {
             ),
             Self::WrongDevice { parameter } => write!(
                 f,
-                "parameter `{parameter}` is bound to a buffer of another CPU device instance"
+                "parameter `{parameter}` is a resource of another CPU device instance"
             ),
             Self::Aliased {
                 kernel,
@@ -571,7 +571,7 @@ impl fmt::Display for Error {
             ),
             Self::Borrowed { parameter } => write!(
                 f,
-                "the buffer bound to `{parameter}` is borrowed outside this call"
+                "the resource `{parameter}` is borrowed outside this call"
             ),
             Self::BufferLength {
                 parameter,
@@ -2186,7 +2186,7 @@ mod tests {
             ),
             (
                 Error::WrongDevice { parameter: "out" },
-                "parameter `out` is bound to a buffer of another CPU device instance",
+                "parameter `out` is a resource of another CPU device instance",
             ),
             (
                 Error::Aliased {
@@ -2198,7 +2198,7 @@ mod tests {
             ),
             (
                 Error::Borrowed { parameter: "out" },
-                "the buffer bound to `out` is borrowed outside this call",
+                "the resource `out` is borrowed outside this call",
             ),
             (
                 Error::BufferLength {

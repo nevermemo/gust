@@ -27,11 +27,18 @@
 //!
 //! - Nothing the classifier has not been told about. The rules above look for the shape-dependent constructs they
 //!   know, so by themselves they would give `pixel` to a construct that the validator starts to accept later. The
-//!   ledger in [`kinds`] lists every kind of expression, statement, pattern and built-in method that kernels hold today,
-//!   with the decision for each, and a node of any other kind makes the kernel `grid`-only (D94: anything unrecognised
-//!   is `grid`-only). The parameters are the same: [`ParameterFlavor`] is matched without a catch-all, so a new flavor
-//!   does not compile until it has a decision. The tests of the ledger probe the validator and the emitter with one
-//!   program per kind of `syn` and fail when the accepted set and the ledger differ.
+//!   ledger in [`kinds`] lists every kind of expression, statement, pattern, built-in method and callee form that
+//!   kernels hold today, with the decision for each, and a node of any other kind makes the kernel `grid`-only (D94:
+//!   anything unrecognised is `grid`-only). The parameters are the same: [`ParameterFlavor`] is matched without a
+//!   catch-all, so a new flavor does not compile until it has a decision. The tests of the ledger probe the validator
+//!   and the emitter with one program per kind of `syn` and per callee form and fail when the accepted set and the
+//!   ledger differ. They probe one form per kind, so a listed kind that the validator later accepts in a new position
+//!   is not caught by them (it is still classified by the kind's rule).
+//!
+//! The classifier scans the kernel only, never the helpers it calls. That is sound because of two refusals of the
+//! validator: a helper takes value parameters only (`Code::HelperResourceParameter`), so it reaches no output, and a
+//! barrier is allowed in a kernel only (`Code::BarrierPosition`), so a helper holds none (an atomic needs an atomic
+//! buffer, which a helper cannot name). Two ledger probes pin both refusals (D94): loosening either rule fails them.
 //!
 //! The result is the descriptor's `compatible_shapes` (nothing at run time reads it) and the check of the pin
 //! `#[kernel(shape = ..)]` (plan 5.2 and 5.3).
@@ -289,8 +296,11 @@ impl Classification {
 }
 
 /// Classifies `function`, a kernel the validator accepted, for the profile `stage` and the attribute `attributes`.
+/// `helpers` are the names of the module's helper functions (`validate::helper_names`), the callees the ledger
+/// knows as helpers.
 pub(crate) fn classify(
     stage: &dyn StageProfile,
+    helpers: &HashSet<String>,
     function: &syn::ItemFn,
     attributes: &AttributeFacts,
 ) -> Classification {
@@ -353,7 +363,7 @@ pub(crate) fn classify(
         found.exclude(Why::Atomic, atomic, "");
     }
     // The ledger's decisions: a `return`, and any node of a kind nobody has decided about (D94), in source order.
-    for (why, node) in kinds::scan(&function.block) {
+    for (why, node) in kinds::scan(&function.block, helpers) {
         found.exclude(why, node, "");
     }
     for assignment in &scan.id_assignments {

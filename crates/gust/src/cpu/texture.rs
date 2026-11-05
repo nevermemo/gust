@@ -327,7 +327,8 @@ impl CpuDevice {
     }
 
     /// [`CpuTexture2d::write`], spelled as the device call `gust-wgpu` has. [`Error::WrongDevice`] (naming `texture`)
-    /// when the texture belongs to another device instance, as `gust-wgpu` refuses a texture of another device; the
+    /// when the texture belongs to another device instance, as `gust-wgpu` refuses a texture of another device, and
+    /// [`Error::Borrowed`] (naming `texture`, as [`CpuDevice::read_texture`] does) when it is borrowed elsewhere; the
     /// other errors are those of [`CpuTexture2d::write`].
     pub fn write_texture<F: TextureFormat>(
         &self,
@@ -335,7 +336,13 @@ impl CpuDevice {
         texels: &[F::Texel],
     ) -> Result<(), Error> {
         self.require_own_texture(texture)?;
-        texture.write(texels)
+        texture.write(texels).map_err(|error| match error {
+            // `CpuTexture2d::write` names its own argument; the device call names the resource, like the read.
+            Error::Borrowed { .. } => Error::Borrowed {
+                parameter: "texture",
+            },
+            other => other,
+        })
     }
 
     /// [`CpuTexture2d::read`], spelled as the device call `gust-wgpu` has, with the same `Result` shape.
@@ -821,6 +828,29 @@ mod tests {
                 actual: 1
             }
         );
+    }
+
+    #[test]
+    fn write_texture_names_the_resource_when_the_texture_is_borrowed_like_read_texture_does() {
+        let device = CpuDevice::new();
+        let texture = device
+            .texture_2d::<R32Uint>(2, 1, TextureUse::SAMPLED)
+            .unwrap();
+        texture.write(&[7, 8]).unwrap();
+        let held = texture.cell.texels.borrow_mut();
+        let expected = Error::Borrowed {
+            parameter: "texture",
+        };
+        assert_eq!(
+            device.write_texture(&texture, &[1, 2]).unwrap_err(),
+            expected
+        );
+        assert_eq!(device.read_texture(&texture).unwrap_err(), expected);
+        drop(held);
+        // The texture is untouched by the refused write, and the same call works once the borrow ends.
+        assert_eq!(texture.read(), [7, 8]);
+        device.write_texture(&texture, &[1, 2]).unwrap();
+        assert_eq!(texture.read(), [1, 2]);
     }
 
     #[test]

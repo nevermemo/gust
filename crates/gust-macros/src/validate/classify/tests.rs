@@ -46,16 +46,16 @@ fn kernel_of(module: &syn::ItemMod) -> &syn::ItemFn {
 }
 
 /// The classification of `function`, a kernel of the `grid` profile.
-fn classify_function(function: &syn::ItemFn) -> Classification {
+fn classify_function(function: &syn::ItemFn, helpers: &HashSet<String>) -> Classification {
     let (_, _, facts) = kernel_attribute_facts(&GRID, function).unwrap().unwrap();
-    classify(&GRID, function, &facts)
+    classify(&GRID, helpers, function, &facts)
 }
 
 /// The classification of the kernel of `source`, a module the validator accepts.
 fn classification(source: &str) -> Classification {
     let module = module(source);
     validate_module(&module).unwrap_or_else(|error| panic!("{error}\n{source}"));
-    classify_function(kernel_of(&module))
+    classify_function(kernel_of(&module), &crate::validate::helper_names(&module))
 }
 
 /// A kernel `k` with the attribute `attribute`, the parameters `parameters` and the body `body`.
@@ -556,7 +556,7 @@ fn the_map_generators_kernel_is_grid_only_by_the_rules() {
             _ => None,
         })
         .unwrap();
-    let classification = classify_function(kernel);
+    let classification = classify_function(kernel, &HashSet::new());
     assert_eq!(classification.shapes, [Shape::Grid]);
     let whys: Vec<Why> = classification
         .exclusions

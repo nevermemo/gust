@@ -275,8 +275,12 @@ pub struct CargoRun {
     pub run_s: f64,
 }
 
+/// A cargo child. `CARGO_TERM_COLOR=never` because the harness parses its output (`shapes::refusals`) and writes it to
+/// logs: CI sets `CARGO_TERM_COLOR=always`, which puts escape sequences inside the diagnostics.
 fn cargo_command() -> Command {
-    Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
+    let mut command = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    command.env("CARGO_TERM_COLOR", "never");
+    command
 }
 
 fn tail(text: &str, lines: usize) -> String {

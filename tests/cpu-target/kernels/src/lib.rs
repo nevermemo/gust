@@ -115,6 +115,23 @@ pub mod texture_ops {
     }
 }
 
+// A `pixel` kernel (MX, slice mx.p1a): `shape = pixel` is a plain Rust function on the CPU (the CPU is a target, D51,
+// never a shape), so it builds and runs in the production CPU build like the `grid` kernels, with no fragment, no
+// scissor and no draw. Every element is written once at the element's own index, as the `pixel` shape requires. The
+// inputs of `app` are multiples of a quarter, so `2v + 1` is exact in `f32`.
+#[gust::gpu]
+pub mod pixel_shade {
+    #[kernel(shape = pixel)]
+    pub fn shade(
+        id: SV_DispatchThreadID,
+        input: StructuredBuffer<float>,
+        mut out: RWStructuredBuffer<float>,
+    ) {
+        let i = id.x;
+        out[i] = (input[i] * 2.0) + 1.0;
+    }
+}
+
 // The map functions (M7, D60): `#[gust::gpu]` on a function. Built under `GUST_PROFILE=cpu` only, because under any
 // other profile the generated host functions name `gust-wgpu`, which this crate does not depend on; `map_case::run` is
 // the one entry `app` calls in every build. Under another profile it is an error, never a silent pass:

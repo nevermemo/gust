@@ -51,12 +51,13 @@ pub(crate) const CPU_TARGET_DIR: &str = "tests/cpu-target";
 pub(crate) const CPU_PROFILE: &str = "cpu";
 
 /// The kernels `app` runs, as it names them in its `CPU target: matches (<kernel>, ..)` lines.
-pub(crate) const KERNELS: [&str; 5] = [
+pub(crate) const KERNELS: [&str; 6] = [
     "vector_add::add",
     "polynomial::evaluate",
     "atomic_counter::increment",
     "vector_ops::blend",
     "texture_ops::double_and_mirror",
+    "pixel_shade::shade",
 ];
 
 /// What `app` prints last, after every kernel matched.

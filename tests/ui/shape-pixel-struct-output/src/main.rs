@@ -1,4 +1,4 @@
-// A pixel pin on a kernel whose output element is a struct, which has no colour-target format (GUST-E0723).
+// A pixel pin on a kernel whose output element is a struct, which `pixel` does not take (for now) (GUST-E0723).
 // expected.txt pins the code, the line of the pin and the reason.
 
 #[gust::gpu]

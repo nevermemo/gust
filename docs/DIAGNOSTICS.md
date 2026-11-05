@@ -22,6 +22,10 @@ codes come from the `#[gpu]` macro of the package `gust-compute-macros`, which y
 The promise starts with the first crates.io release, 0.1.0 (D33). Until then a code may still be
 split or renumbered, and each change is listed here:
 
+- Slice mx.p1a: E0730 ("pinned shape not available yet", D63) is retired: the `pixel` profile exists, so a
+  `shape = pixel` pin is built as a fragment entry. The number is never reused. E0723 lost its 8-output and
+  32-byte bounds (D120). Until slice mx.p1b a `pixel` kernel runs on the CPU twin and the `cpu` target only: `gust-wgpu`
+  refuses it with `Error::ShapeUnsupported` before any pipeline is built.
 - `f20d313`: E0602 narrowed from any wrong shape of an atomic's first argument to "not a
   reference"; the other shapes moved to the new codes E0608, E0609 and E0610.
 
@@ -1236,10 +1240,10 @@ Decision: D63 (plan section 5.2, slice mx.c).
 
 ### GUST-E0723 pinned shape excluded by the kernel's resources or attribute
 
-A `shape` pin names a shape the kernel cannot take because of what it declares: workgroup memory, a workgroup barrier, an invocation id other than the global id (`LocalId`, `GroupId`), an atomic operation, a storage texture, an explicit `workgroup_size`, no output buffer, an output element that is no colour-target format (only `u32`, `i32`, `f32` and their 2- and 4-wide vectors are), or more than 8 outputs or 32 bytes of them (D62). The classifier is syntactic and conservative: what it does not recognise makes the kernel `grid`-only. The message names the construct that excludes the shape.
+A `shape` pin names a shape the kernel cannot take because of what it declares: workgroup memory, a workgroup barrier, an invocation id other than the global id (`LocalId`, `GroupId`), an atomic operation, a storage texture, an explicit `workgroup_size`, no output buffer, or an output element `pixel` does not take (only `u32`, `i32`, `f32` and their 2- and 4-wide vectors are). There is no bound on the number of outputs here: D120 made an output a fragment storage write, so the render-target bounds of D62 (8 outputs, 32 bytes) are gone, and the limit that binds is the device's number of storage buffers per shader stage, checked when the kernel runs. D120 also removed the original reason for refusing `bool`, a struct and a 3-wide vector as outputs (they had no colour-target format); the exclusion stays as mx.c fixed it, and widening it is a candidate for slice mx.p1c or later. The classifier is syntactic and conservative: what it does not recognise makes the kernel `grid`-only. The message names the construct that excludes the shape.
 Reached through `#[gpu]`.
-Rejected: `#[kernel(shape = pixel, workgroup_size(64, 1, 1))]`, `shape = pixel` on a kernel with a `Workgroup<[f32; 64]>` parameter or a nine-buffer output list.
-Fixtures (each pins its reason with a second `message:`): `tests/ui/shape-pixel-workgroup-size`, `tests/ui/shape-pixel-barrier`, `tests/ui/shape-pixel-atomic`, `tests/ui/shape-pixel-struct-output`, `tests/ui/shape-pixel-no-output`, `tests/ui/shape-pixel-too-many-outputs`, `tests/ui/shape-pixel-storage-texture` (`cargo xtask check-ui`).
+Rejected: `#[kernel(shape = pixel, workgroup_size(64, 1, 1))]`, `shape = pixel` on a kernel with a `Workgroup<[f32; 64]>` parameter or a struct output.
+Fixtures (each pins its reason with a second `message:`): `tests/ui/shape-pixel-workgroup-size`, `tests/ui/shape-pixel-barrier`, `tests/ui/shape-pixel-atomic`, `tests/ui/shape-pixel-struct-output`, `tests/ui/shape-pixel-no-output`, `tests/ui/shape-pixel-storage-texture` (`cargo xtask check-ui`).
 Write instead: drop the pin (the kernel stays `grid`), or remove the construct the message names.
 Decision: D62, D63 (plan section 5.1 and 5.3, slice mx.c).
 
@@ -1290,20 +1294,11 @@ Decision: D63 (plan section 5.1, slice mx.c).
 
 ### GUST-E0729 construct the kernel's shape does not take
 
-The execution shape of a kernel (its stage profile) refuses a construct the kernel declares: workgroup memory, a barrier or an atomic operation, as the profile decides. The message after the code is the profile's own sentence. The only profile today, `grid`, refuses nothing, so the code is raised by a profile test double; the `pixel` profile (slice mx.p1a) is the first to raise it.
-Unreachable through `#[gpu]`: the `grid` profile refuses no construct.
+The execution shape of a kernel (its stage profile) refuses a construct the kernel declares: workgroup memory, a barrier or an atomic operation, as the profile decides. The message after the code is the profile's own sentence. The `grid` profile refuses nothing. The `pixel` profile (slice mx.p1a) refuses workgroup memory, barriers and atomics, but a `shape = pixel` pin on such a kernel is already refused by the classifier (GUST-E0723) before the profile runs, so the code is raised only by a profile test double.
+Unreachable through `#[gpu]`: the `grid` profile refuses no construct, and the classifier refuses the `pixel` ones first.
 Rejected: a barrier in a kernel of a profile whose `validate_body` forbids barriers.
 Write instead: remove the construct the message names, or give the kernel a shape that takes it.
 Decision: D63 (slice mx.p0, mx.c).
-
-### GUST-E0730 pinned shape not available yet
-
-A `pixel` pin on a kernel that is compatible with `pixel` while no `pixel` profile exists: the macro will not build a kernel as a shape it cannot emit, so the descriptor never says `pixel` for a compute entry point. The pin is refused here until the `pixel` profile exists (slice mx.p1a); the classification (`compatible_shapes` in the descriptor) already lists `Shape::Pixel` for such a kernel.
-Reached through `#[gpu]`.
-Rejected: `#[kernel(shape = pixel)]` on `fn paint(id: SV_DispatchThreadID, input: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) { out[id.x] = input[id.x]; }`.
-Fixture: `tests/ui/shape-pixel-unavailable` (`cargo xtask check-ui`); the accepted forms are `tests/ui/shape-grid-ok`.
-Write instead: drop the pin; the kernel is built as `grid`.
-Decision: D63, D89 (plan section 5.3, slice mx.c).
 
 ### GUST-E0731 texture or sampler type outside the dialect
 

@@ -1,6 +1,6 @@
 use std::{error, fmt};
 
-use gust::{Access, BindingKind, ParameterKind, ResourceLayout};
+use gust::{Access, BindingKind, ParameterKind, ResourceLayout, Shape};
 
 use crate::GpuBufferAccess;
 
@@ -26,6 +26,13 @@ pub enum Error {
     /// A kernel's workgroup size has a zero axis; every axis of `workgroup_size` must be at least 1. (The size may
     /// have y and z above 1; whether the device allows it is a [`Error::DeviceLimit`].)
     UnsupportedWorkgroupSize([u32; 3]),
+    /// The kernel's execution shape has no run-time path in this crate: `gust-wgpu` runs `grid` kernels as compute
+    /// passes and nothing else. A `pixel` kernel (a fragment pass) runs on the CPU twin and the `cpu` target only
+    /// until slice mx.p1b gives the crate the fragment path. Reported before any pipeline or wgpu object is created.
+    ShapeUnsupported {
+        kernel: String,
+        shape: Shape,
+    },
     UnsupportedParameter {
         name: String,
         kind: ParameterKind,
@@ -221,6 +228,10 @@ impl fmt::Display for Error {
             Self::NoArtifact { kernel, profile } => write!(
                 formatter,
                 "kernel `{kernel}` has no precompiled WGSL artifact, and this build of gust-wgpu (profile `{profile}`) was built without the `slang-runtime` feature, so it cannot compile the kernel at run time; run `cargo gust build` in the crate that defines the kernel and rebuild, or enable the `slang-runtime` feature in a dev build",
+            ),
+            Self::ShapeUnsupported { kernel, shape } => write!(
+                formatter,
+                "kernel `{kernel}` has the shape {shape:?}, which this version of gust-wgpu cannot run: only `grid` kernels run on a device here; a `pixel` kernel runs on the CPU twin and the `cpu` target until slice mx.p1b adds the fragment path"
             ),
             Self::UnsupportedWorkgroupSize(size) => {
                 write!(

@@ -74,16 +74,7 @@ impl StageProfile for GridProfile {
     }
 
     fn prologue(&self, k: &KernelFacts<'_>) -> String {
-        let mut text = String::new();
-        for resource in k.resources {
-            writeln!(text, "    uint __gpu_len_{resource};").unwrap();
-            writeln!(text, "    uint __gpu_stride_{resource};").unwrap();
-            writeln!(
-                text,
-                "    {resource}.GetDimensions(__gpu_len_{resource}, __gpu_stride_{resource});"
-            )
-            .unwrap();
-        }
+        let mut text = super::length_reads(k.resources);
         // `LocalId` and `GroupId` come from the dispatch-thread id and the workgroup size: a dispatch-thread id is
         // `group * size + local` in every dimension, so `id % size` and `id / size` are the local and the group id.
         // The entry point keeps its one semantic parameter, so the reflection and the descriptor stay as they are.

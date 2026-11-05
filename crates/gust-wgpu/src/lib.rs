@@ -64,7 +64,7 @@ use std::{sync::mpsc, time::Instant};
 
 use gust::{
     Access, BindingKind, Call, Extent, GpuPod, JobStatus, Kernel, KernelDescriptor, LengthRule,
-    ParameterDescriptor, ParameterKind, Resource, ResourceLayout, Run, TypedDevice,
+    ParameterDescriptor, ParameterKind, Resource, ResourceLayout, Run, Shape, TypedDevice,
     pod_slice_as_bytes,
 };
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
@@ -2307,6 +2307,8 @@ impl HeadlessDevice {
         kernel: &KernelDescriptor,
         resources: &[&ParameterDescriptor],
     ) -> Result<CachedKernel, Error> {
+        // The same refusal as `validate_kernel`'s, kept here so that no path to a pipeline skips it.
+        require_grid(kernel)?;
         let compiled = match select_shader_source(kernel, cfg!(feature = "slang-runtime"))? {
             // A verification failure is the answer: there is no fallback to the run-time compiler.
             ShaderSource::Precompiled(artifact) => {
@@ -2936,9 +2938,25 @@ fn validate_dispatch_extent(
     Ok(resources)
 }
 
+/// Refuses a kernel whose shape this crate has no path for (slice mx.p1a, review S2): only `grid` runs as a compute
+/// pass. `compile_reflected` would build a fragment entry for a `pixel` kernel, and a compute pipeline over it is a wgpu
+/// validation error that panics; this turns it into [`Error::ShapeUnsupported`] before any wgpu object exists. Slice
+/// mx.p1b replaces it with the fragment path.
+fn require_grid(kernel: &KernelDescriptor) -> Result<(), Error> {
+    if kernel.shape == Shape::Grid {
+        Ok(())
+    } else {
+        Err(Error::ShapeUnsupported {
+            kernel: kernel.qualified_name().to_string(),
+            shape: kernel.shape,
+        })
+    }
+}
+
 pub(crate) fn validate_kernel(
     kernel: &KernelDescriptor,
 ) -> Result<Vec<&'static ParameterDescriptor>, Error> {
+    require_grid(kernel)?;
     if kernel.slang_source.trim().is_empty() {
         return Err(Error::MissingSlangSource(
             kernel.qualified_name().to_string(),
@@ -3768,6 +3786,36 @@ mod tests {
             parameters,
             ..DESCRIPTOR
         }
+    }
+
+    /// Review S2 of slice mx.p1a: a kernel of a shape other than `grid` is refused with a typed error before any
+    /// compile or pipeline (no device is involved), not left to a wgpu validation panic.
+    #[test]
+    fn a_pixel_kernel_is_refused_by_name_until_the_fragment_path_exists() {
+        let pixel = KernelDescriptor {
+            shape: Shape::Pixel,
+            compatible_shapes: &[Shape::Pixel],
+            ..descriptor_with(ResourceLayout::storage_v1(<f32 as GpuPod>::LAYOUT))
+        };
+        let error = validate_kernel(&pixel).unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::ShapeUnsupported {
+                    shape: Shape::Pixel,
+                    ..
+                }
+            ),
+            "{error:?}"
+        );
+        let text = error.to_string();
+        assert!(text.contains("Pixel") && text.contains("mx.p1b"), "{text}");
+        assert!(
+            validate_kernel(&descriptor_with(ResourceLayout::storage_v1(
+                <f32 as GpuPod>::LAYOUT
+            )))
+            .is_ok()
+        );
     }
 
     #[test]

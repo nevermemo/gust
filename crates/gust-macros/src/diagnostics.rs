@@ -348,8 +348,8 @@ codes! {
     ShapeOutputUse = 728 => "GUST-E0728";
     /// A construct the kernel's execution shape (its stage profile) does not take.
     ProfileRefusal = 729 => "GUST-E0729";
-    /// A `shape = pixel` pin on a kernel that is compatible with it, while no `pixel` profile exists yet.
-    ShapeNotAvailable = 730 => "GUST-E0730";
+    // E0730 (a `pixel` pin on a compatible kernel while no `pixel` profile existed) retired with the `pixel` profile
+    // (mx.p1a): its number is never reused.
 
     // E0731-E0736: texture and sampler parameters (mx.t3, D62, D64).
     /// A texture parameter type with a texel or format argument the dialect does not have: a `Texture2D` texel type
@@ -1211,7 +1211,7 @@ mod tests {
         ),
         (
             Code::ProfileRefusal,
-            "the only profile, grid, refuses no construct; a test profile raises it until mx.p1a's pixel profile",
+            "the validator runs under the module's grid profile, which refuses no construct, and a pixel pin is checked by the classifier first (E0723); a test profile raises it",
         ),
     ];
 

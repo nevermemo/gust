@@ -6,4 +6,4 @@ code: none
 file: shape-pixel-struct-output/src/main.rs
 line: 11
 message: [GUST-E0723] shape `pixel` is not compatible with kernel `paint`
-message: has the element type `Pair`, which is no colour-target format
+message: has the element type `Pair`, which `pixel` does not take

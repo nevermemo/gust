@@ -394,6 +394,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "shape-pixel-ok"
+version = "0.0.0"
+dependencies = [
+ "gust",
+]
+
+[[package]]
 name = "shape-pixel-other-index"
 version = "0.0.0"
 dependencies = [
@@ -437,20 +444,6 @@ dependencies = [
 
 [[package]]
 name = "shape-pixel-struct-output"
-version = "0.0.0"
-dependencies = [
- "gust",
-]
-
-[[package]]
-name = "shape-pixel-too-many-outputs"
-version = "0.0.0"
-dependencies = [
- "gust",
-]
-
-[[package]]
-name = "shape-pixel-unavailable"
 version = "0.0.0"
 dependencies = [
  "gust",

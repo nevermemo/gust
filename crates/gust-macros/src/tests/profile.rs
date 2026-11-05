@@ -423,3 +423,284 @@ fn the_option_parser_and_the_value_refusal_follow_the_profile() {
         "{error}"
     );
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// The `pixel` profile (slice mx.p1a, D61, D63, D120).
+// ---------------------------------------------------------------------------------------------------------------
+
+mod pixel {
+    use super::*;
+    use crate::{
+        expand::{KernelOptions, Profile, expand_with_directories},
+        profile::{DerivedId, PIXEL},
+        regression_tests::assert_golden,
+    };
+
+    const FIXTURE: &str = include_str!("../../../../tests/fixtures/pixel.rs");
+    const GOLDEN: &str = include_str!("../../../../tests/fixtures/pixel.slang");
+
+    /// The fixture module as `#[gpu]` receives it (the attribute is the macro's own).
+    fn fixture_module() -> String {
+        FIXTURE.replacen("#[gust::gpu]", "", 1)
+    }
+
+    fn facts<'a>(resources: &'a [String], derived: &'a [DerivedId]) -> KernelFacts<'a> {
+        KernelFacts {
+            entry_point: "gpu_m_k",
+            workgroup_size: [1, 1, 1],
+            invocation: "id",
+            resources,
+            derived_ids: derived,
+            next_binding: 2,
+        }
+    }
+
+    #[test]
+    fn the_pixel_profile_answers_with_the_fragment_rules() {
+        assert_eq!(PIXEL.shape(), Shape::Pixel);
+        assert_eq!(PIXEL.slang_stage(), "fragment");
+        assert_eq!(PIXEL.twin(), TwinHarness::Linear);
+        assert_eq!(PIXEL.reflection(), ReflectionKind::Fragment);
+        assert_eq!(PIXEL.contract_tier(), ContractTier::Exact);
+        // A fragment has the global id only.
+        for (name, expected) in [
+            ("Invocation", Some(Builtin::Global)),
+            ("SV_DispatchThreadID", Some(Builtin::Global)),
+            ("UVec3", Some(Builtin::Global)),
+            ("LocalId", None),
+            ("SV_GroupThreadID", None),
+            ("GroupId", None),
+            ("SV_GroupID", None),
+            ("StructuredBuffer<f32>", None),
+        ] {
+            let ty: syn::Type = parse_str(name).unwrap();
+            assert_eq!(PIXEL.invocation(&ty), expected, "{name}");
+        }
+        let rules = PIXEL.binding_rules();
+        assert!(!rules.extent_calls, "a pixel call is one-dimensional");
+        assert!(GRID.binding_rules().extent_calls);
+        for flavor in [
+            ParameterFlavor::StorageRead,
+            ParameterFlavor::StorageReadWrite,
+            ParameterFlavor::Uniform,
+            ParameterFlavor::SampledTexture,
+            ParameterFlavor::Sampler,
+        ] {
+            assert!(rules.gets_slot(flavor), "{flavor:?}");
+        }
+        assert!(!rules.gets_slot(ParameterFlavor::Invocation));
+        assert!(!rules.gets_slot(ParameterFlavor::Workgroup));
+        let options = PIXEL.options();
+        assert!(!options.workgroup_size && options.cpu);
+        assert_eq!(options.default_workgroup, [1, 1, 1]);
+        assert!(options.expected.contains("shape = pixel"));
+    }
+
+    /// `validate_body` is judged on facts, so a double with the facts set shows what the profile refuses. Through
+    /// `#[gpu]` the classifier refuses the same constructs on a `pixel` pin first (GUST-E0723).
+    #[test]
+    fn the_pixel_profile_refuses_workgroup_memory_barriers_and_atomics() {
+        let mut clean = BodyChecks::default();
+        PIXEL.validate_body(&mut clean);
+        assert!(clean.forbidden.is_empty());
+        for (mut checks, word) in [
+            (
+                BodyChecks {
+                    workgroup_memory: true,
+                    ..BodyChecks::default()
+                },
+                "workgroup memory",
+            ),
+            (
+                BodyChecks {
+                    barrier: true,
+                    ..BodyChecks::default()
+                },
+                "barrier",
+            ),
+            (
+                BodyChecks {
+                    atomics: true,
+                    ..BodyChecks::default()
+                },
+                "atomic",
+            ),
+        ] {
+            PIXEL.validate_body(&mut checks);
+            assert_eq!(checks.forbidden.len(), 1, "{word}");
+            assert!(checks.forbidden[0].contains(word), "{:?}", checks.forbidden);
+            assert!(checks.forbidden[0].starts_with("a `pixel` kernel"));
+        }
+    }
+
+    #[test]
+    fn the_pixel_profile_writes_the_fragment_entry_the_linear_index_and_no_epilogue() {
+        let resources = vec!["a".to_owned(), "out".to_owned()];
+        let facts = facts(&resources, &[]);
+        assert_eq!(
+            PIXEL.entry_signature(&facts),
+            "void gpu_m_k(float4 __gust_pos : SV_Position)"
+        );
+        assert_eq!(
+            PIXEL.prologue(&facts),
+            "    uint __gust_linear = ((uint(__gust_pos.y) * 8192u) + uint(__gust_pos.x));\n\
+             \x20   uint3 id = uint3(__gust_linear, 0u, 0u);\n\
+             \x20   uint __gpu_len_a;\n    uint __gpu_stride_a;\n    a.GetDimensions(__gpu_len_a, __gpu_stride_a);\n\
+             \x20   uint __gpu_len_out;\n    uint __gpu_stride_out;\n\
+             \x20   out.GetDimensions(__gpu_len_out, __gpu_stride_out);\n"
+        );
+        assert_eq!(PIXEL.epilogue(&facts), "");
+        // No uniform for the row width: nothing is added to the kernel's own bindings (option S, D127).
+        assert!(PIXEL.extra_bindings(&facts).is_empty());
+        // The write at the own index is the plain index assignment: no user expression is rewritten.
+        assert_eq!(
+            PIXEL.lower_output_write(&OwnIndexWrite {
+                buffer: "out",
+                value: "1.0"
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn the_pixel_prologue_is_the_fragment_index_and_then_the_lines_the_grid_prologue_reads_lengths_with()
+     {
+        // The length reads are shared text: the same lines, in the same order, after the two index lines.
+        let resources = vec!["a".to_owned(), "b".to_owned(), "out".to_owned()];
+        let facts = facts(&resources, &[]);
+        let grid = GRID.prologue(&facts);
+        let pixel = PIXEL.prologue(&facts);
+        assert!(pixel.ends_with(&grid), "{pixel}\n{grid}");
+        assert_eq!(pixel.lines().count(), grid.lines().count() + 2);
+    }
+
+    /// The emitted Slang of every kernel of the fixture, in the layout of the other goldens.
+    fn emitted_fixture() -> String {
+        let module: syn::ItemMod = parse_str(fixture_module().trim()).unwrap();
+        validate_module(&module).unwrap();
+        let mut actual = String::new();
+        for item in &module.content.as_ref().unwrap().1 {
+            let syn::Item::Fn(function) = item else {
+                continue;
+            };
+            if kernel_options(function).unwrap().is_none() {
+                continue;
+            }
+            let options = KernelOptions {
+                workgroup_size: PIXEL.options().default_workgroup,
+            };
+            actual.push_str(&format!("// ==== kernel {} ====\n", function.sig.ident));
+            actual.push_str(
+                &emit_kernel_in(&PIXEL, &module, function, options)
+                    .unwrap()
+                    .source
+                    .replace("\r\n", "\n"),
+            );
+        }
+        actual
+    }
+
+    #[test]
+    fn kernels_of_the_pixel_fixture_match_the_golden() {
+        assert_golden(
+            &emitted_fixture(),
+            "pixel.slang",
+            &GOLDEN.replace("\r\n", "\n"),
+        );
+    }
+
+    #[test]
+    fn the_pixel_golden_is_a_fragment_with_storage_outputs_and_no_render_target() {
+        let golden = GOLDEN.replace("\r\n", "\n");
+        assert_eq!(golden.matches("[shader(\"fragment\")]").count(), 3);
+        assert!(!golden.contains("[shader(\"compute\")]"));
+        assert!(!golden.contains("numthreads"));
+        assert!(
+            !golden.contains("SV_Target"),
+            "an output is not a render target (D120)"
+        );
+        assert!(!golden.contains("SV_DispatchThreadID"));
+        assert_eq!(
+            golden
+                .matches("void gpu_pixel_shade(float4 __gust_pos : SV_Position)")
+                .count(),
+            1
+        );
+        // The outputs are storage buffers with the slots `grid` gives them, in parameter order.
+        for text in [
+            "[[vk::binding(0, 0)]] StructuredBuffer<float> input;",
+            "[[vk::binding(1, 0)]] RWStructuredBuffer<float> scaled;",
+            "[[vk::binding(2, 0)]] RWStructuredBuffer<uint> flags;",
+            "[[vk::binding(0, 0)]] Texture2D<float4> image;",
+            "[[vk::binding(1, 0)]] SamplerState bilinear;",
+            "[[vk::binding(2, 0)]] RWStructuredBuffer<float4> colours;",
+        ] {
+            assert!(golden.contains(text), "{text} in {golden}");
+        }
+        // The row width is a constant of the text: no uniform, and no guard against a padding pixel.
+        assert_eq!(golden.matches("* 8192u) + uint(__gust_pos.x)").count(), 3);
+        assert!(!golden.contains("ConstantBuffer"), "{golden}");
+        assert!(!golden.contains("__gust_pixel"), "{golden}");
+        assert!(!golden.contains("return"), "{golden}");
+        // The user's body is unchanged: the own-index writes stay plain assignments.
+        assert!(golden.contains("scaled[i] = "), "{golden}");
+        assert!(golden.contains("steps[id.x] = "), "{golden}");
+    }
+
+    #[test]
+    fn the_expansion_of_the_pixel_fixture_describes_pixel_kernels_with_one_dimensional_calls() {
+        let item: proc_macro2::TokenStream = fixture_module().parse().unwrap();
+        let text: String =
+            crate::gpu_impl_with(proc_macro2::TokenStream::new(), item, Profile::Other)
+                .to_string()
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+        assert_eq!(
+            text.matches("shape:::gust::Shape::Pixel,").count(),
+            3,
+            "{text}"
+        );
+        assert!(!text.contains("shape:::gust::Shape::Grid,"), "{text}");
+        assert_eq!(
+            text.matches("workgroup_size:[1u32,1u32,1u32],").count(),
+            3,
+            "{text}"
+        );
+        for form in ["call_extent", "submit_extent", "dispatch_extent"] {
+            assert!(!text.contains(form), "{form} in {text}");
+        }
+        for form in ["pubfncall<", "pubfnsubmit<", "pubfndispatch<"] {
+            assert!(text.contains(form), "{form} in {text}");
+        }
+        // An output is a storage parameter with a binding and read-write access, as under `grid`.
+        assert!(text.contains("::gust::ParameterKind::Storage"), "{text}");
+        assert!(text.contains("::gust::Access::ReadWrite"), "{text}");
+        assert!(
+            !text.contains("target:"),
+            "the descriptor has no target field"
+        );
+    }
+
+    #[test]
+    fn a_pixel_kernels_export_record_is_schema_3_with_its_shape() {
+        let root = std::env::temp_dir().join(format!("gust-macros-pixel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let module: syn::ItemMod = parse_str(fixture_module().trim()).unwrap();
+        expand_with_directories(module, None, Some(&root), Some("demo")).unwrap();
+        let mut records = 0;
+        for entry in std::fs::read_dir(root.join("demo")).unwrap() {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            if !name.ends_with(".json") {
+                continue;
+            }
+            let text = std::fs::read_to_string(root.join("demo").join(&name)).unwrap();
+            assert!(text.contains("\"schema\": 3"), "{name}: {text}");
+            assert!(text.contains("\"shape\": \"pixel\""), "{name}: {text}");
+            assert!(text.contains("\"workgroup_size\""), "{name}: {text}");
+            records += 1;
+        }
+        assert_eq!(records, 3);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}

@@ -20,7 +20,10 @@
 //!   `o.len() > own`) for an output `o`, which under the `Shared`-only length rule is always true for a live pixel.
 //! - Nothing a fragment cannot carry or do: no workgroup memory, barrier, `LocalId`/`GroupId` or other invocation
 //!   built-in than the global id, no atomic, no storage texture, no workgroup size, at least one output, every
-//!   output a `u32`, `i32`, `f32`, or a 2- or 4-wide vector of them, at most 8 outputs and 32 bytes of them (D62).
+//!   output a `u32`, `i32`, `f32`, or a 2- or 4-wide vector of them. D120 made an output a fragment storage write, so
+//!   the render-target bounds of D62 (8 outputs, 32 bytes of them) are gone; the element types stay as mx.c had them
+//!   (`bool`, a struct and a 3-wide vector are `grid`-only for now), and the limit that binds is the device's number
+//!   of storage buffers per shader stage, checked when the kernel runs.
 //!
 //! The result is the descriptor's `compatible_shapes` (nothing at run time reads it) and the check of the pin
 //! `#[kernel(shape = ..)]` (plan 5.2 and 5.3).
@@ -38,15 +41,9 @@ use crate::diagnostics::{self, Code};
 use crate::profile::StageProfile;
 use crate::slang::{ParameterFlavor, local_binding, parameter_flavor_in, wrapper_element_type};
 
-/// The most colour targets a `pixel` kernel may write (D62).
-const MAX_TARGETS: usize = 8;
-
-/// The most bytes of colour targets a `pixel` kernel may write together (D62).
-const MAX_TARGET_BYTES: u32 = 32;
-
 /// An execution shape a kernel can take. `cpu` is a target (D51), never a shape.
 ///
-/// This is the classifier's own set; mx.p1a unifies it with the profile's `Shape` when the `pixel` profile exists.
+/// This is the classifier's own set, kept apart from the profile's `Shape` (see [`Shape::from_profile`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Shape {
     /// One compute thread per element of a dispatch grid.
@@ -60,6 +57,7 @@ impl Shape {
     pub(crate) fn from_profile(shape: crate::profile::Shape) -> Self {
         match shape {
             crate::profile::Shape::Grid => Self::Grid,
+            crate::profile::Shape::Pixel => Self::Pixel,
         }
     }
 
@@ -111,12 +109,8 @@ pub(crate) enum Why {
     Atomic,
     /// A `StorageTexture2D` or `WriteTexture2D` parameter.
     StorageTexture,
-    /// An output whose element type has no colour-target format.
+    /// An output whose element type `pixel` does not take (yet).
     TargetElement,
-    /// More targets than D62 allows.
-    TargetCount,
-    /// More target bytes than D62 allows.
-    TargetBytes,
     /// No output buffer at all.
     NoOutput,
     /// An explicit `workgroup_size`.
@@ -162,8 +156,6 @@ impl Why {
             | Self::Atomic
             | Self::StorageTexture
             | Self::TargetElement
-            | Self::TargetCount
-            | Self::TargetBytes
             | Self::NoOutput
             | Self::WorkgroupSize => Code::ShapeExcluded,
         }
@@ -190,15 +182,8 @@ impl Why {
                 "is a storage texture, which stays a `grid` resource (D64)".to_owned()
             }
             Self::TargetElement => format!(
-                "has {detail}, which is no colour-target format: a `pixel` output is a `u32`, `i32`, `f32` or a \
-                 2- or 4-wide vector of them"
-            ),
-            Self::TargetCount => format!(
-                "is output number {detail}, and a `pixel` kernel has at most {MAX_TARGETS} outputs (D62)"
-            ),
-            Self::TargetBytes => format!(
-                "takes the outputs to {detail} bytes, and a `pixel` kernel has at most {MAX_TARGET_BYTES} bytes of \
-                 outputs (D62)"
+                "has {detail}, which `pixel` does not take: a `pixel` output is a `u32`, `i32`, `f32` or a 2- or \
+                 4-wide vector of them"
             ),
             Self::NoOutput => "writes no output buffer, so a pixel would carry nothing".to_owned(),
             Self::WorkgroupSize => {
@@ -432,33 +417,19 @@ pub(crate) fn classify(
         }
     }
 
-    // At least one output, each with a colour-target format, within D62's bound.
+    // At least one output, each of an element type `pixel` takes. The count of outputs is not bounded here: it is
+    // the device's number of storage buffers per shader stage, which the runtime checks (D120).
     if written.is_empty() {
         found.exclude(Why::NoOutput, &function.sig.ident, "");
     }
-    let mut bytes = 0_u32;
-    for (index, output) in written.iter().enumerate() {
-        match wrapper_element_type(&output.argument.ty)
-            .ok()
-            .and_then(target_bytes)
-        {
-            Some(size) => bytes += size,
-            None => {
-                let element = wrapper_element_type(&output.argument.ty).map_or_else(
-                    |_| "an element of no known type".to_owned(),
-                    |ty| format!("the element type `{}`", render(&ty.to_token_stream())),
-                );
-                found.exclude(Why::TargetElement, output.argument, &element);
-            }
+    for output in &written {
+        if !wrapper_element_type(&output.argument.ty).is_ok_and(takes_element) {
+            let element = wrapper_element_type(&output.argument.ty).map_or_else(
+                |_| "an element of no known type".to_owned(),
+                |ty| format!("the element type `{}`", render(&ty.to_token_stream())),
+            );
+            found.exclude(Why::TargetElement, output.argument, &element);
         }
-        if index == MAX_TARGETS {
-            found.exclude(Why::TargetCount, output.argument, &(index + 1).to_string());
-        }
-    }
-    if bytes > MAX_TARGET_BYTES
-        && let Some(last) = written.last()
-    {
-        found.exclude(Why::TargetBytes, last.argument, &bytes.to_string());
     }
 
     let mut shapes = vec![Shape::Grid];
@@ -563,22 +534,33 @@ fn render(tokens: &TokenStream) -> String {
     text
 }
 
-/// The bytes of the colour target an output element becomes, or `None` when it has no target format (D62).
-fn target_bytes(element: &syn::Type) -> Option<u32> {
+/// Whether `pixel` takes `element` as an output: a `u32`, `i32` or `f32`, or a 2- or 4-wide vector of them. D120 took
+/// away the reason for the list (a colour-target format); it stays as mx.c fixed it, and widening it (`bool`, a struct,
+/// a 3-wide vector) is a later item.
+fn takes_element(element: &syn::Type) -> bool {
     let syn::Type::Path(path) = element else {
-        return None;
+        return false;
     };
     // The last segment names the type, so `gust::Vec4` is a `Vec4`.
-    let last = path.path.segments.last()?;
-    if !last.arguments.is_none() {
-        return None;
-    }
-    match last.ident.unraw().to_string().as_str() {
-        "u32" | "uint" | "i32" | "int" | "f32" | "float" => Some(4),
-        "Vec2" | "IVec2" | "UVec2" => Some(8),
-        "Vec4" | "IVec4" | "UVec4" => Some(16),
-        _ => None,
-    }
+    let Some(last) = path.path.segments.last() else {
+        return false;
+    };
+    last.arguments.is_none()
+        && matches!(
+            last.ident.unraw().to_string().as_str(),
+            "u32"
+                | "uint"
+                | "i32"
+                | "int"
+                | "f32"
+                | "float"
+                | "Vec2"
+                | "IVec2"
+                | "UVec2"
+                | "Vec4"
+                | "IVec4"
+                | "UVec4"
+        )
 }
 
 // ---------------------------------------------------------------------------------------------------------------

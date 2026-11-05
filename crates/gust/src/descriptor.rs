@@ -59,6 +59,17 @@ pub struct KernelDescriptor {
     pub artifacts: &'static [crate::artifact::Artifact],
 }
 
+/// The width of a row of fragments of a `pixel` call, in elements (slice mx.p1a, Option S, decisions D120 and D127): the
+/// index of a fragment is `y * PIXEL_ROW_WIDTH + x`. The macro bakes this number into the Slang of every `pixel` kernel
+/// (`gust-macros` keeps its own copy, since a proc-macro crate cannot depend on `gust`; a test of this crate compares the
+/// emitted text with this constant), and the host draws attachments of this width, so the two must be the same number.
+/// It is WebGPU's baseline `maxTextureDimension2D`, which every device has.
+pub const PIXEL_ROW_WIDTH: u32 = 8192;
+
+/// The most elements one `pixel` call covers (Option S): `PIXEL_ROW_WIDTH` columns by 8192 rows, the baseline texture
+/// size in both directions. A host refuses a larger call by name.
+pub const PIXEL_MAX_ELEMENTS: u32 = 1 << 26;
+
 /// The execution shape of a kernel: how its invocations are laid out, and with it the Slang stage of its entry point
 /// (decisions D63 and D89).
 ///

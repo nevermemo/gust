@@ -232,8 +232,9 @@ fn check_vector_ops() -> Result<(), String> {
 /// The texture kernel `texture_ops::double_and_mirror` of `kernels` (MX, slice mx.t4), in the production CPU build,
 /// against host loops: `load` and `store` on a read-write storage texture (every texel doubled in place; the inputs are
 /// halves, so the product is exact) and a `store` on a write-only texture (the row-major index of each texel, at the
-/// mirrored column). The comparison is exact. Its line is not a `matches` line, so `xtask/src/cpu_target.rs` does not
-/// pair it with a kernel; a mismatch fails the run (exit 1, no final line).
+/// mirrored column). The comparison is exact (max ULP 0), and the count of its line is the number of texels. Its
+/// `matches` line is paired with a kernel by `xtask/src/cpu_target.rs`, so deleting this call fails the check; a
+/// mismatch fails the run (exit 1, no final line).
 fn check_texture_ops() -> Result<(), String> {
     let (width, height) = (TEXTURE_WIDTH, TEXTURE_HEIGHT);
     let count = (width * height) as usize;
@@ -270,9 +271,7 @@ fn check_texture_ops() -> Result<(), String> {
     if mirrored.read() != want_mirrored {
         return Err("texture_ops: the mirrored indices differ from the host loop".to_owned());
     }
-    println!(
-        "CPU target: texture ops match (texture_ops::double_and_mirror, {width} x {height} texels, exact)"
-    );
+    println!("CPU target: matches (texture_ops::double_and_mirror, {count} elements, max ULP 0)");
     Ok(())
 }
 

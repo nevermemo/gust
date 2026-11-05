@@ -1938,9 +1938,10 @@ fn gpu_and_twin_load_and_store_in_place_agree_on_the_three_storage_formats() {
     );
 }
 
-/// The fixture kernels that compute: `invert`, `accumulate` and the three `write_*`, against loops over the input.
-/// `shift` is not run on the GPU: invocation `x` reads the texel that invocation `x - 1` writes, a race that only the
-/// twin's ascending order resolves.
+/// The fixture kernels that compute: `invert`, `accumulate`, `shift` and the three `write_*`, against loops over the
+/// input. `shift` reads its neighbour from a separate sampled texture (it used to read the storage texture it writes:
+/// invocation `x` read texel `x + 1`, which invocation `x + 1` writes, a race that only the twin's ascending order
+/// resolves, so it ran nowhere).
 #[test]
 fn the_fixture_kernels_match_host_loops_on_the_gpu_and_the_twin() {
     let device = device();
@@ -1977,6 +1978,31 @@ fn the_fixture_kernels_match_host_loops_on_the_gpu_and_the_twin() {
     );
     textures::accumulate::dispatch_extent(&cpu, extent, &ti, &tt).unwrap();
     assert_eq!(tt.read(), totals, "twin accumulate");
+
+    // shift: field[x, y] = source[x + 1, y] - 1, the last column untouched. The source and the field are two textures.
+    let source: Vec<i32> = (0..count as i32).map(|i| i * 3 - 100).collect();
+    let field_before: Vec<i32> = (0..count as i32).map(|i| 5000 + i).collect();
+    let shifted: Vec<i32> = (0..count)
+        .map(|i| {
+            if i % WIDTH + 1 < WIDTH {
+                source[i as usize + 1] - 1
+            } else {
+                field_before[i as usize]
+            }
+        })
+        .collect();
+    let (gs, gf) = (
+        gpu_texture::<R32Sint>(&device, WIDTH, HEIGHT, TextureUse::SAMPLED, &source),
+        gpu_texture::<R32Sint>(&device, WIDTH, HEIGHT, storage, &field_before),
+    );
+    textures::shift::dispatch_extent(&device, extent, &gs, &gf).unwrap();
+    assert_eq!(device.read_texture(&gf).unwrap(), shifted, "GPU shift");
+    let (ts, tf) = (
+        twin_texture::<R32Sint>(&cpu, WIDTH, HEIGHT, TextureUse::SAMPLED, &source),
+        twin_texture::<R32Sint>(&cpu, WIDTH, HEIGHT, storage, &field_before),
+    );
+    textures::shift::dispatch_extent(&cpu, extent, &ts, &tf).unwrap();
+    assert_eq!(tf.read(), shifted, "twin shift");
 
     // write_floats, write_uints, write_ints: constants and the texel's own address.
     let at = |i: u32| (i % WIDTH, i / WIDTH);
@@ -2295,6 +2321,10 @@ sampled_impl!(
 const SAMPLE_W: u32 = 5;
 const SAMPLE_H: u32 = 4;
 
+/// The distances from a texel edge, in texels, as powers of two, at which the nearest band is probed: 2^-20, 2^-12,
+/// 2^-9, 2^-8 and 2^-7.
+const BAND_EXPONENTS: [i32; 5] = [-20, -12, -9, -8, -7];
+
 /// The sample coordinates: a grid from -1.3 to 2.3 on both axes (outside the unit square on every side, so the clamp
 /// and the repeat both matter), plus every texel centre.
 fn coordinates() -> (Vec<f32>, Vec<f32>) {
@@ -2312,7 +2342,8 @@ fn coordinates() -> (Vec<f32>, Vec<f32>) {
         }
     }
     // The edges between texels, on both axes: the coordinate of each edge and the floats one step either side of it
-    // (a nearest read there is the case of KM-14).
+    // (a nearest read there is the case of KM-14). For the edge at 0 the step below is the bits of 0 minus one, which
+    // is a NaN, and `.max(0.0)` turns a NaN into 0: that probe is the coordinate 0 again, not a negative one.
     let step = |value: f32, by: i32| f32::from_bits(value.to_bits().wrapping_add_signed(by));
     for k in 0..=SAMPLE_W {
         let edge = k as f32 / SAMPLE_W as f32;
@@ -2326,6 +2357,26 @@ fn coordinates() -> (Vec<f32>, Vec<f32>) {
         for by in [-1, 0, 1] {
             us.push(0.3);
             vs.push(step(edge, by).max(0.0));
+        }
+    }
+    // The nearest band, measured (fix round 1): each edge and each border, at `BAND_EXPONENTS` texels either side. A
+    // position below 0 is clamped to 0 (the border itself, not an edge that a clamp can cross).
+    for k in 0..=SAMPLE_W {
+        for exponent in BAND_EXPONENTS {
+            for side in [-1.0f64, 1.0] {
+                let position = f64::from(k) + side * 2f64.powi(exponent);
+                us.push((position / f64::from(SAMPLE_W)).max(0.0) as f32);
+                vs.push(0.375);
+            }
+        }
+    }
+    for k in 0..=SAMPLE_H {
+        for exponent in BAND_EXPONENTS {
+            for side in [-1.0f64, 1.0] {
+                let position = f64::from(k) + side * 2f64.powi(exponent);
+                us.push(0.3);
+                vs.push((position / f64::from(SAMPLE_H)).max(0.0) as f32);
+            }
         }
     }
     (us, vs)
@@ -2422,9 +2473,17 @@ struct Observation {
     /// Nearest reads within the edge band: compared, and how many differ from the formula's texel.
     near_edge: usize,
     near_edge_other_texel: usize,
+    /// Every nearest read less than 0.05 texel from an edge: its distance from the edge (texels) and whether the GPU
+    /// picked a texel other than the formula's.
+    edge_samples: Vec<(f64, bool)>,
 }
 
-/// Half a hundredth of a texel: a nearest read this close to an edge is not asserted exactly (KM-14), outside it must be.
+/// 1/128 of a texel: a nearest read this close to an edge is not asserted exactly (KM-14), farther away it must be.
+///
+/// This widens SEMANTICS section 3.5, which allows a neighbour only "within an ulp" of an edge. A sampler works on a
+/// coordinate with a finite number of sub-texel bits; 1/128 covers 7 or more of them. That count is not read from any
+/// device (inferred: Vulkan guarantees only `subTexelPrecisionBits >= 4`, which would need 1/16). What a device does
+/// is measured instead: the nearest test prints, per device and address mode, the picks at `BAND_EXPONENTS`.
 const EDGE_BAND: f64 = 1.0 / 128.0;
 
 fn check_sampling<T: Sampled>(
@@ -2474,6 +2533,10 @@ fn check_sampling<T: Sampled>(
                             seen.near_edge_other_texel += 1;
                         }
                     }
+                    if c == 0 && reference.edge_distance < 0.05 {
+                        seen.edge_samples
+                            .push((reference.edge_distance, g.to_bits() != t.to_bits()));
+                    }
                     if reference.edge_distance < EDGE_BAND {
                         // The texels one step from the formula's, in each direction, with the address mode applied to
                         // the step (so the repeat's border wraps to the opposite texel).
@@ -2518,7 +2581,10 @@ fn check_sampling<T: Sampled>(
         }
         seen.samples += 1;
     }
-    eprintln!("MX-T4 sampling {label}: {seen:?}");
+    eprintln!(
+        "MX-T4 sampling {label}: {} samples, worst ratio {:.4}, {} in the edge band, {} of them another texel",
+        seen.samples, seen.worst_ratio, seen.near_edge, seen.near_edge_other_texel
+    );
     seen
 }
 
@@ -2533,6 +2599,7 @@ fn all_sampled(device: &HeadlessDevice, filter: Filter, address: Address) -> Obs
         near_edge_other_texel: one.near_edge_other_texel
             + two.near_edge_other_texel
             + four.near_edge_other_texel,
+        edge_samples: [one.edge_samples, two.edge_samples, four.edge_samples].concat(),
     }
 }
 
@@ -2551,6 +2618,28 @@ fn nearest_sampling_picks_the_texel_of_the_formula_under_clamp_and_repeat() {
                 seen.samples,
                 seen.near_edge,
                 seen.near_edge_other_texel
+            );
+            // The band, measured: at each probed distance, how many reads picked a texel other than the formula's.
+            let mut table = String::new();
+            for exponent in BAND_EXPONENTS {
+                let at: Vec<&(f64, bool)> = seen
+                    .edge_samples
+                    .iter()
+                    .filter(|(distance, _)| distance.log2().round() == f64::from(exponent))
+                    .collect();
+                assert!(!at.is_empty(), "no sample at 2^{exponent} texel");
+                let other = at.iter().filter(|(_, other)| *other).count();
+                table += &format!(" 2^{exponent}: {other}/{};", at.len());
+            }
+            let farthest = seen
+                .edge_samples
+                .iter()
+                .filter(|(_, other)| *other)
+                .map(|(distance, _)| *distance)
+                .fold(0.0, f64::max);
+            eprintln!(
+                "MX-T4 nearest band {address:?} float32-filterable={}: picks of another texel / samples at each distance:{table} the farthest pick of another texel is at {farthest:e} texel",
+                device.float32_filterable()
             );
         }
     }
@@ -2602,8 +2691,31 @@ fn linear_sampling_is_within_the_error_domain_under_clamp_and_repeat() {
 fn the_fixture_kernels_that_sample_agree_with_the_twin_within_the_bound() {
     let device = feature_device();
     if !device.float32_filterable() {
+        // Without the feature a linear sampler of a float32 texture is refused, as in the linear test.
+        let sampled = TextureUse::SAMPLED;
+        let image = gpu_texture::<Rgba32Float>(&device, 2, 2, sampled, &zeros::<Rgba32Float>(4));
+        let target = gpu_texture::<Rgba32Float>(
+            &device,
+            2,
+            2,
+            TextureUse::STORAGE,
+            &zeros::<Rgba32Float>(4),
+        );
+        let linear = SamplerOptions::new(Filter::Linear, Address::ClampToEdge);
+        let sampler = device.create_sampler(linear).unwrap();
+        let result = textures::blur::dispatch_extent(
+            &device,
+            Extent::new(2, 2, 1),
+            &image,
+            &sampler,
+            &target,
+        );
+        assert!(
+            matches!(result, Err(Error::TextureFilter { .. })),
+            "{result:?}"
+        );
         eprintln!(
-            "MX-T4 blur/gather: no float32-filterable on this adapter; covered by the TextureFilter assertion of the linear test"
+            "MX-T4 blur/gather: no float32-filterable on this adapter; asserted the TextureFilter refusal"
         );
         return;
     }

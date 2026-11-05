@@ -20,9 +20,8 @@
 //! Two kinds of adapter run this file (slice m5.b, D52): hardware and software (`device_type` `Cpu`, lavapipe).
 //! An enforced row and every `DOMAIN` control have one pin that holds on both. An unenforced row (KM-07, KM-08,
 //! KM-11, KM-12 to KM-14 and the NaN casts of KM-05 and KM-06) has its hardware observation in `Case::gpu` and, where
-//! lavapipe
-//! differs, its software observation in `Case::software`; the NOTE compares with the running kind's pin. Each run
-//! writes one `LEDGER` line per case to `ledger-<kind>.txt` under the target's tmp directory.
+//! lavapipe differs, its software observation in `Case::software`; the NOTE compares with the running kind's pin. Each
+//! run writes one `LEDGER` line per case to `ledger-<kind>.txt` under the target's tmp directory.
 //!
 //! Labels (docs/SEMANTICS.md): the GPU values pinned here are *measured* on one adapter
 //! and are never promoted to *proven* by this file. Each failing row names its id.
@@ -1502,7 +1501,8 @@ fn cases() -> Vec<Case> {
     // ---- KM-13 linear sample weights ----
     // A 3 x 2 `r32float` texture, clamp-to-edge: the formula in `f32` (plain Rust and the twin) against the GPU, whose
     // result is pinned as an observation and, on every adapter, held to `linear_error_bound`.
-    // Measured: the GPU is within the bound but not equal to the formula at the first probe (it rounds the weights).
+    // Measured: the GPU is within the bound but not equal to the formula at the first probe. That the weights are
+    // quantised is an inference from this one value, not a measurement.
     add(case(
         "KM-13",
         "linear sample of a 3 x 2 texture at (0.37, 0.61)",
@@ -1991,6 +1991,17 @@ fn gpu_texel_store(device: &HeadlessDevice, x: u32, y: u32) -> u32 {
 
 /// KM-13 and KM-14 on the GPU: one `sample` of the probe's texture, as bits.
 fn gpu_sample(device: &HeadlessDevice, filter: Filter, u: f32, v: f32) -> u32 {
+    gpu_sample_result(device, filter, u, v).unwrap()
+}
+
+/// As `gpu_sample`, but returns the refusal of the dispatch (a linear sampler of a float32 texture on a device
+/// without `float32-filterable` is `Error::TextureFilter`).
+fn gpu_sample_result(
+    device: &HeadlessDevice,
+    filter: Filter,
+    u: f32,
+    v: f32,
+) -> Result<u32, gust_wgpu::Error> {
     let (texels, width, height) = probe_texture(filter);
     let image = device
         .create_texture_2d::<R32Float>(width, height, TextureUse::SAMPLED)
@@ -2005,9 +2016,8 @@ fn gpu_sample(device: &HeadlessDevice, filter: Filter, u: f32, v: f32) -> u32 {
         &[f32::from_bits(0xAAAA_AAAA)],
         GpuBufferAccess::ReadWrite,
     );
-    texture_edges::sample_at::dispatch(device, 1, &image, &sampler, Independent(&at), &out)
-        .unwrap();
-    device.read_typed_buffer(&out).unwrap()[0].to_bits()
+    texture_edges::sample_at::dispatch(device, 1, &image, &sampler, Independent(&at), &out)?;
+    Ok(device.read_typed_buffer(&out).unwrap()[0].to_bits())
 }
 
 // ---- the GPU column ----
@@ -2276,14 +2286,22 @@ fn gpu_observed(device: &HeadlessDevice, cases: &[Case]) -> Vec<Vec<u32>> {
     if !linear.is_empty() {
         let filtering = HeadlessDevice::with_options(DeviceOptions::default())
             .expect("Vulkan adapter required; this test must not silently skip");
-        assert!(
-            filtering.float32_filterable(),
-            "KM-13 measures a linear sample of a float32 texture, which needs float32-filterable; this adapter does not offer it"
-        );
         for n in linear {
             let (_, u, v) = cases[n].operands;
             let (u, v) = (f32::from_bits(u), f32::from_bits(v));
-            out[n] = vec![gpu_sample(&filtering, Filter::Linear, u, v)];
+            if filtering.float32_filterable() {
+                out[n] = vec![gpu_sample(&filtering, Filter::Linear, u, v)];
+            } else {
+                // KM-13 is not measurable here: the refusal is what the specification of this crate says happens
+                // (`textures.rs` asserts it too). The row has no observation; the test prints a NOTE and enforces
+                // no bound, because there is no value to hold to it.
+                let refused = gpu_sample_result(&filtering, Filter::Linear, u, v);
+                assert!(
+                    matches!(refused, Err(gust_wgpu::Error::TextureFilter { .. })),
+                    "a linear sampler of a float32 texture without float32-filterable must be Error::TextureFilter: {refused:?}"
+                );
+                out[n] = Vec::new();
+            }
         }
     }
     for n in of_kind(Kind::ContendedExchange) {
@@ -2339,6 +2357,9 @@ fn gpu_is_enforced(id: &str, kind: Kind, first: u32) -> bool {
 }
 
 fn gpu_summary(values: &[u32]) -> String {
+    if values.is_empty() {
+        return "not measurable".to_owned();
+    }
     let distinct: BTreeSet<u32> = values.iter().copied().collect();
     if distinct.len() == 1 {
         format!("0x{:08x}", values[0])
@@ -2419,6 +2440,14 @@ fn known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome() {
             if twin_ok { "ok" } else { "DEVIATES" },
         );
         let mut noted = false;
+        if gpu.is_empty() {
+            // No observation (KM-13 on an adapter without float32-filterable): reported, never failed.
+            noted = true;
+            eprintln!(
+                "NOTE {} `{}`: not measurable on this adapter (no float32-filterable; the TextureFilter refusal was asserted); {identity}",
+                case.id, case.what
+            );
+        }
         if !gpu_ok && !enforced {
             // Owner ruling D39: an unspecified outcome is a per-kind observation, not a requirement. A change is
             // reported, never failed.
@@ -2470,7 +2499,7 @@ fn known_mismatches_pin_the_gpu_the_plain_rust_and_the_cpu_twin_outcome() {
                 show(&twin)
             ));
         }
-        if case.kind == Kind::LinearSample {
+        if case.kind == Kind::LinearSample && !gpu.is_empty() {
             // The error domain of docs/SEMANTICS.md holds on every adapter, whatever the pin says (D52: a
             // specification bound is not an observation).
             let (_, u, v) = case.operands;

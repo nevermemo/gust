@@ -834,7 +834,6 @@ GUST_PROFILE=dev cargo run --release -p polynomial
 GUST_PROFILE=dev cargo run --release -p signal-pipeline
 GUST_PROFILE=dev cargo run --release -p typed-pipeline
 GUST_PROFILE=dev cargo run --release -p map-chain
-GUST_PROFILE=dev cargo run --release -p texture-threshold
 ```
 
 CPU numbers in those examples measure separate host implementations. That makes

@@ -224,7 +224,8 @@ describes the intended behaviour and is not evidence.
   and `dispatch_extent` take `gust_wgpu::GpuTexture2d<F>` and `GpuSampler` for them. `load` and `store` are exact:
   on all nine formats the GPU and the twin agree bit for bit and with an independent host expectation, and
   `read_texture` returns what `write_texture` stored (`crates/gust-wgpu/tests/textures.rs`). `sample` is outside the
-  exact contract (section 4): a nearest read is the formula's texel except within 1/128 of a texel edge, and a linear
+  exact contract (section 4): a nearest read is the formula's texel except within 1/128 of a texel edge (the test's
+tolerance; measured about 1e-6 on one adapter), and a linear
   read is inside the error domain of section 4. A 32-bit float texture is linearly filterable only on a device that
   enabled `float32-filterable` (a `FeaturesPolicy::Adapter` device on an adapter that offers it); without it a linear
   sampler is `Error::TextureFilter` (D64). Binding one texture to two parameters of a call is refused before anything
@@ -562,12 +563,29 @@ neighbouring texel *indices*: clamped to `[0, n - 1]`, or wrapped modulo `n`.
 **Nearest** reads texel `(min(floor(x), width - 1), min(floor(y), height - 1))`; it is exact on the twin. A GPU may
 pick the neighbouring texel when `x` is within an ulp of an integer; this is documented and not chased (D39).
 [`nearest_picks_the_texel_the_coordinate_falls_in`, `nearest_follows_v_down_the_rows`]
+The test (slice mx.t4) does not assert the formula's texel within 1/128 of a texel edge: there it asserts only that the
+read is the formula's texel or one of the texels around it. This **widens** the statement above, which allows a
+neighbour only "within an ulp" of an integer. The 1/128 is the test's tolerance, not a measurement. It is a choice
+that assumes a sampler quantising the sub-texel position to 8 bits (steps of 1/256, so 1/128 is two steps); that
+count was not read from any device (inferred). Vulkan guarantees only 4 sub-texel bits (a step of 1/16), which this
+tolerance would not cover; a device that needs the wider band fails the test, and the finding is then recorded here
+(D52), not hidden by a looser assertion.
 Measured on the adapter of section 1 (slice mx.t4, 533 coordinates on each of `r32float`, `rg32float` and
-`rgba32float`, so 1599 samples, per address mode and per device): where the coordinate is at least 1/128 of a texel from a texel edge the GPU
-picked the formula's texel on every sample, bit for bit, under ClampToEdge and under Repeat, with and without
-`float32-filterable`. Closer than that to an edge the GPU picked the formula's texel or one of the texels around it,
-never another: 24 of the 63 samples in that band under ClampToEdge and 24 of the 99 under Repeat picked a neighbour.
-At one ulp from an edge (KM-14) the four probes measured all picked the formula's texel.
+`rgba32float`, so 1599 samples, per address mode and per device): where the coordinate is at least 1/128 of a texel from a
+texel edge the GPU picked the formula's texel on every sample, bit for bit, under ClampToEdge and under Repeat, with and
+without `float32-filterable`. Within 1/128 of an edge the samples were the edges themselves and the floats one step
+either side of them (about 3e-7 texel): there the GPU picked the formula's texel or a texel next to it, never another,
+and picked the neighbour for 24 of 63 samples under ClampToEdge and 24 of 99 under Repeat. All of those were at the
+5-wide edges (k/5 is not representable in `f32`, so `u * 5` is not exact there); the 4-wide probes (edges at k/4, a
+power of two with exact products, among them KM-14) all picked the formula's texel. That the rounding of `u * width`
+is the cause is an inference from that split, not a separate measurement.
+The band was then probed directly (fix round 1 of the slice): each edge and border at 2^-20, 2^-12, 2^-9, 2^-8 and 2^-7
+texel on either side, per address mode and per device. The GPU picked another texel only at 2^-20 (6 of 42 probes
+under ClampToEdge, 6 of 60 under Repeat; the farthest at 1.01e-6 texel, the distance being that of the rounded `f32`
+coordinate) and at none of the 2^-12 and farther distances (0 of 42 and 0 of 60 each). So the measured band on this
+adapter is about a millionth of a texel, four orders of magnitude inside the 1/128 tolerance, which is therefore slack and
+not a measurement of this device. The same probes ran on a device without `float32-filterable` and with it: the
+same counts. They have not been measured on any other adapter (lavapipe has not run the band probes yet).
 [`nearest_sampling_picks_the_texel_of_the_formula_under_clamp_and_repeat`]
 
 **Linear** (bilinear) computes `x' = x - 0.5`, `i0 = floor(x')`, `fx = x' - i0` (and `y` likewise), reads the four
@@ -585,7 +603,8 @@ the specification; D52).
 `ulp_is_the_gap_to_the_next_magnitude`]
 Measured on the adapter of section 1 (slice mx.t4, 533 coordinates on each of three formats, so 1599 samples, per address mode, on a
 `float32-filterable` device): the largest `|gpu - twin|` was 0.865 of the bound under ClampToEdge and 0.977 of it under Repeat, so no sample left
-the domain and the `2^-8` term is close to what this adapter uses (its weights are quantised: KM-13). `|gpu - reference|`
+the domain and the `2^-8` term is close to what this adapter uses (that its weights are quantised is inferred from one
+value, KM-13, not measured). `|gpu - reference|`
 and `|twin - reference|` against an independent `f64` evaluation are inside the same bound. The ratios are one adapter's
 observation, printed by the test with `--nocapture`, not a requirement. The bound itself is enforced on every adapter.
 [`linear_sampling_is_within_the_error_domain_under_clamp_and_repeat`,
@@ -606,7 +625,7 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   bound resources (section 2.2). Rust panics. KM-11 pins the observation (load returned 0, store dropped, with a
   4-element buffer and index 4).
 - **Race-free.** Within one dispatch no two invocations write the same location, and no invocation reads a location
-  that another writes, except through the atomic functions. On the GPU a race is a dynamic error, which section 2.2
+  that another writes (an element of a buffer or a texel of a texture; a texture bound to two parameters is refused, so a kernel reads its neighbours from a separate texture), except through the atomic functions. On the GPU a race is a dynamic error, which section 2.2
   says "may or may not be detectable"; after a dynamic error the program "may not behave as described in the rest of
   this specification". Parameter alias rejection (D34) is a different guarantee and does not prevent this.
 - **Texel addresses.** `Texture2D::load`, `StorageTexture2D::load` and `::store` and `WriteTexture2D::store` take
@@ -776,7 +795,7 @@ difference, and the proven label needs the two targets to agree.
 | KM-11 | Out-of-bounds index equal to the buffer length | Panics "index out of bounds" in every profile. | Unspecified (a dynamic error, WGSL section 6.5.7). Observed with index 4: a load from a 4-element buffer returned 0, and a store into a 4-element buffer was dropped (the buffer was unchanged); the store is measured alone, with a longer `source` so that the kernel's own load is in bounds, and the twin's store row panics at the store because its load is in bounds. | unspecified, measured |
 | KM-12 | A texel address outside a texture: `load` or `store` at `(width, 0)` or `(0, height)` of a 4 x 2 `r32uint` storage texture (slice mx.t4) | Panics "index out of bounds" in every profile: the twin says "index out of bounds: the texel is (4, 0) but the texture is 4x2" (a coordinate past the width panics although the flat index exists), and a `Vec<Vec<u32>>` indexed the same way panics too. | Unspecified (WGSL `textureLoad` and `textureStore` with an out-of-range coordinate). Observed at both addresses: the load returned 0 and the store changed no texel. One format, one adapter. | unspecified, measured |
 | KM-13 | Linear `sample` of a 3 x 2 `r32float` texture under clamp-to-edge, at (0.37, 0.61) and (0.93, 0.08) (slice mx.t4) | The formula of section 4 in `f32`, in its written order; the twin and plain Rust agree bit for bit (0x40753f7c, about 3.8319, at the first point; 0x40800000, 4.0, at the second). | Inside the error domain of section 4 (`linear_error_bound`), which the test enforces on every adapter; the value inside it is the hardware's. Observed: 0x40760000 (3.84375) at the first point, where the formula gives about 3.8319, and 0x40800000 (equal to the formula) at the second. Needs a device with `float32-filterable`; the test fails, it does not skip, on an adapter without it. | unspecified, measured |
-| KM-14 | Nearest `sample` of a 4 x 1 `r32float` texture of 10, 20, 30, 40 under clamp-to-edge, within one ulp of a texel edge: u = 0.5 - 1 ulp, 0.5, 0.75 - 1 ulp and 0.25 + 1 ulp (slice mx.t4) | The texel `min(floor(u * 4), 3)`: 20, 30, 30 and 20 (a coordinate just below an edge reads the texel on its left). | A GPU may pick the neighbouring texel (D39). Observed: the formula's texel for all four probes. Further from the edge the GPU still differed from the formula in `textures.rs` (section 4, *Nearest*: within 1/128 of an edge). | unspecified, measured |
+| KM-14 | Nearest `sample` of a 4 x 1 `r32float` texture of 10, 20, 30, 40 under clamp-to-edge, within one ulp of a texel edge: u = 0.5 - 1 ulp, 0.5, 0.75 - 1 ulp and 0.25 + 1 ulp (slice mx.t4) | The texel `min(floor(u * 4), 3)`: 20, 30, 30 and 20 (a coordinate just below an edge reads the texel on its left). | A GPU may pick the neighbouring texel (D39). Observed: the formula's texel for all four probes (the 4-wide edges, with exact products). The 5-wide probes of `textures.rs` (edges at k/5, one ulp of u either side) picked a neighbour in 24 of 63 cases under clamp. The 1/128 texel band of that test is its tolerance, not a measurement; the direct probes found a neighbour only at 2^-20 texel and none from 2^-12 (section 4, *Nearest*). | unspecified, measured |
 
 Reading the table: the Rust column and every GPU value that the specification fixes (labelled spec-allowed) are
 enforced, so the test fails when one changes and the row is edited in the same change. A value marked unspecified is

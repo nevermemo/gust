@@ -1594,7 +1594,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 85] = [
+const PINNED_FIXTURES: [&str; 86] = [
     "barrier-in-helper",
     "barrier-in-if",
     "barrier-in-nested-for",
@@ -1621,6 +1621,7 @@ const PINNED_FIXTURES: [&str; 85] = [
     "map-signature",
     "map-three-wide",
     "map-u32-for-bool",
+    "missing-docs-fn-dev-ok",
     "missing-docs-fn-ok",
     "missing-docs-mod-ok",
     "par-for-binding",

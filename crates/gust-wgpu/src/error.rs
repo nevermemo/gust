@@ -56,7 +56,7 @@ pub enum Error {
         kernel: String,
         /// The kernel's shape.
         shape: Shape,
-        /// What the call asked that the shape cannot do.
+        /// Why the kernel's shape cannot run here.
         reason: &'static str,
     },
     /// An output of a `pixel` kernel (a read-write storage parameter) was bound with an independent length. A `pixel`
@@ -273,7 +273,7 @@ pub enum Error {
     /// the adapter had no memory for it. `label` names the buffer and `bytes` is the size asked for. Where a device
     /// cannot report this through its scope and is lost instead, S7.6 outcome B maps it to [`Error::Poll`].
     OutOfMemory {
-        /// The name of the buffer.
+        /// The label of the buffer or texture.
         label: String,
         /// The size that was asked for, in bytes.
         bytes: u64,
@@ -289,7 +289,7 @@ pub enum Error {
     /// the kernel's workgroup size multiplied out), or the dispatch is of a kind that supports one-dimensional extents
     /// only (a staged graph node with a y or z extent above 1). `reason` names the failing step.
     Extent {
-        /// The extent as `[x, y, z]`.
+        /// The extent as `[x, y, z]`, or the kernel's workgroup size when that overflowed (`reason` says which).
         extent: [u64; 3],
         /// The step that failed.
         reason: &'static str,

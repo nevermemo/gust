@@ -338,7 +338,7 @@ pub(crate) fn expand_validated(
             #visibility struct #original_name;
 
             impl #original_name {
-                #[allow(missing_docs)]
+                /// The descriptor of this kernel.
                 pub const DESCRIPTOR: ::gust::KernelDescriptor =
                     <Self as ::gust::Kernel>::DESCRIPTOR;
             }
@@ -398,7 +398,7 @@ pub(crate) fn expand_validated(
 
             #manifest_check
 
-            #[allow(missing_docs)]
+            /// The descriptors of the kernels of this module.
             pub const MODULE_DESCRIPTOR: ::gust::ModuleDescriptor =
                 ::gust::ModuleDescriptor {
                     name: #module_name,

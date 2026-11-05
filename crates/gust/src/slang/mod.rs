@@ -232,7 +232,8 @@ impl From<std::io::Error> for Error {
 ///
 /// Fails with [`Error::CompilerNotFound`] or [`Error::SlangVersionMismatch`] when `slangc` is missing or is not the
 /// pinned version, with [`Error::CompilationFailed`] when the compiler rejects the source (its diagnostics name the
-/// Rust lines where the descriptor has a source origin), and with [`Error::Io`] when a file cannot be read or written.
+/// Rust lines where the descriptor has a source origin), with [`Error::Toolchain`] when the toolchain cannot be located
+/// or asked, and with [`Error::Io`] when a file cannot be read or written.
 #[cfg(feature = "slang-runtime")]
 pub fn compile(kernel: &KernelDescriptor, target: Target) -> Result<Vec<u8>, Error> {
     compile_with_origin(

@@ -83,8 +83,8 @@ pub struct TypeLayout {
     pub size: u32,
     /// The alignment in bytes.
     pub alignment: u32,
-    /// The distance in bytes between two consecutive elements of an array of this type: the size rounded up to the
-    /// alignment.
+    /// The distance in bytes between two consecutive elements of an array of this type. The constructors set it to
+    /// `size`, except `structure`, which rounds `size` up to `alignment`.
     pub stride: u32,
     /// The structural category, with the scalar, vector, matrix or field data of the type.
     pub kind: TypeLayoutKind,

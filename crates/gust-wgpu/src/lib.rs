@@ -48,7 +48,7 @@
 //!
 //! # Stability
 //!
-//! `gust-wgpu` is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`),
+//! This crate is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`),
 //! and a patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (`gust`, the `#[gpu]`
 //! macro crate, this crate and `cargo-gust`) share one version and depend on each other with exact (`=`) pins: take
 //! them at the same version, and a minor bump of one is a minor bump of all.
@@ -56,14 +56,16 @@
 //! What a minor bump may change: any public item that is not support surface, including a function's signature and
 //! the public fields of the plain record types (`BufferDispatch`, `DeviceOptions`, `PoolStats` and the like).
 //! [`Error`] is `#[non_exhaustive]`, so a new variant is not a breaking change and a `match` outside this crate needs a
-//! wildcard arm; the variants themselves are not, so a later release may add a field to a struct variant. A
+//! wildcard arm; the variants themselves are not, so adding a field to a struct variant is a breaking change and comes
+//! only in a minor bump. A
 //! `GraphReport` is `#[non_exhaustive]` and only this crate builds one.
 //!
 //! # Support surface
 //!
-//! `render_wgpu_source` is public because the repository's export command and tests call it. It is `#[doc(hidden)]`
-//! and has no stability promise. The artifact and reflection formats that this crate reads are those of `gust` and
-//! keep its promise: a reader accepts every schema version that an earlier release wrote.
+//! `render_wgpu_source` is public because the repository's export command and tests call it. It is `#[doc(hidden)]`;
+//! it has no stability promise and a patch release may change it. The artifact and reflection formats that this
+//! crate reads are those of `gust` and keep its promise: a reader accepts every schema version that an earlier release
+//! wrote.
 
 #![warn(missing_docs)]
 #![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
@@ -631,14 +633,14 @@ impl<'a> BufferDispatch<'a> {
 pub struct F32BufferDispatch<'a> {
     /// The kernel to run.
     pub kernel: &'a KernelDescriptor,
-    /// The number of invocations.
+    /// The element count: the extent of this one-dimensional dispatch.
     pub element_count: u32,
     /// The kernel's buffer arguments, in parameter order.
     pub bindings: &'a [F32BufferBinding<'a>],
 }
 
 impl<'a> F32BufferDispatch<'a> {
-    /// A dispatch of `kernel` over `element_count` invocations with `bindings`.
+    /// A dispatch of `kernel` over `element_count` elements with `bindings`.
     pub const fn new(
         kernel: &'a KernelDescriptor,
         element_count: u32,
@@ -1713,7 +1715,7 @@ impl HeadlessDevice {
         self.submit_f32_batch(&[F32BufferDispatch::new(kernel, element_count, bindings)])
     }
 
-    /// Dispatch `kernel` over `element_count` invocations with `bindings` and wait until it has completed.
+    /// Dispatch `kernel` over `element_count` elements with `bindings` and wait until it has completed.
     pub fn dispatch_f32_buffers(
         &self,
         kernel: &KernelDescriptor,

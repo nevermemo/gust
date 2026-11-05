@@ -1,7 +1,7 @@
 //! Control case for the `missing_docs` lint (slice mr.b2): a crate with `#![deny(missing_docs)]` compiles over a
 //! `#[gust::gpu]` module. Every item below that the user writes has a doc comment; every item that the macro generates
-//! (the kernel handles, `DESCRIPTOR`, `MODULE_DESCRIPTOR`, the typed calls) carries `#[allow(missing_docs)]` itself, so
-//! the lint asks the user for nothing else. The module holds a grid kernel with a uniform, a pixel kernel, a texture
+//! (the kernel handles, `DESCRIPTOR`, `MODULE_DESCRIPTOR`, the typed calls) is documented or `#[doc(hidden)]` itself,
+//! so the lint asks the user for nothing else. The module holds a grid kernel with a uniform, a pixel kernel, a texture
 //! kernel with a sampler and a workgroup kernel. This crate must compile.
 #![deny(missing_docs)]
 

@@ -386,6 +386,8 @@ impl<'a> StagedGraph<'a> {
                     }
                 }
                 NodeKind::Dispatch(dispatch) => {
+                    // A `pixel` node over an extent is the shape's own refusal, before any binding is looked at.
+                    render::check_pixel_extent(dispatch.kernel, dispatch.extent())?;
                     let resources = crate::validate_persistent_dispatch(
                         device_id,
                         dispatch.kernel,

@@ -345,7 +345,8 @@ recently returned idle buffers past an idle cap of 1 GiB by default. A pooled bu
 every binding exposes the logical bytes only. A recycled buffer is cleared in a submission of its own before it is
 handed out as zeroed, and a buffer with a mapping pending is never put back. `PoolStats` reports the hand-outs, the
 returns and the idle bytes. `DeviceHandle` is the shared handle that `default_device()` returns, opened with
-`DeviceOptions { backends, adapter, limits, features }` (`features` asks for `float32-filterable` when the adapter
+`DeviceOptions` (`#[non_exhaustive]`; `DeviceOptions::default()` and `with_backends`, `with_adapter`, `with_limits`
+and `with_features`; `features` asks for `float32-filterable` when the adapter
 offers it on native and for nothing on `wasm32`; slice mx.t2); `set_default_options` applies to the first
 `default_device()` and is `Error::DefaultDeviceOpened` after that.
 

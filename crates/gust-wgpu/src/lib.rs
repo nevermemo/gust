@@ -1024,7 +1024,7 @@ impl PreparedDispatch {
         encoder: &mut wgpu::CommandEncoder,
         label: &str,
         timestamps: Option<PassTimestamps<'_>>,
-    ) {
+    ) -> Result<(), Error> {
         match (&self.cached_kernel.pipeline, self.launch) {
             (Pipeline::Compute(pipeline), Launch::Compute { workgroups }) => {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -1038,6 +1038,7 @@ impl PreparedDispatch {
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, &self.bind_group, &[]);
                 pass.dispatch_workgroups(workgroups[0], workgroups[1], workgroups[2]);
+                Ok(())
             }
             (Pipeline::Render(pipeline), Launch::Pixel { elements }) => render::encode_pixel_pass(
                 device,
@@ -1799,7 +1800,9 @@ impl HeadlessDevice {
     /// Encode and submit a batch, returning before its GPU work completes.
     ///
     /// Every request is validated before any pipeline, bind group, or command
-    /// encoding work begins. Empty requests are valid and do not create GPU work.
+    /// encoding work begins. Empty requests are valid and do not create GPU work. Encoding a `pixel` call creates its
+    /// attachment, so such a call can still fail with [`Error::OutOfMemory`] named `GUST pixel attachment`; nothing
+    /// is submitted then.
     pub fn submit_batch<'device>(
         &'device self,
         dispatches: &[BufferDispatch<'_>],
@@ -1818,7 +1821,7 @@ impl HeadlessDevice {
                 label: Some("GUST typed batch encoder"),
             });
         for dispatch in &prepared {
-            dispatch.encode(&self.device, &mut encoder, "GUST typed batched pass", None);
+            dispatch.encode(&self.device, &mut encoder, "GUST typed batched pass", None)?;
         }
         let submission = self.queue.submit([encoder.finish()]);
         Ok(WgpuJob {
@@ -1864,7 +1867,7 @@ impl HeadlessDevice {
                     &mut encoder,
                     "GUST profiled typed batched pass",
                     None,
-                );
+                )?;
             }
             let submission = self.queue.submit([encoder.finish()]);
             self.wait_for_submission(submission)?;
@@ -1889,7 +1892,7 @@ impl HeadlessDevice {
                 &mut encoder,
                 "GUST profiled typed batched pass",
                 timestamps,
-            );
+            )?;
         }
         encoder.resolve_query_set(&profiler.query_set, 0..2, &profiler.resolve_buffer, 0);
         encoder.copy_buffer_to_buffer(

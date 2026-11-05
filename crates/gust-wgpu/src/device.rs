@@ -85,7 +85,11 @@ impl LimitsPolicy {
 /// `with_options(DeviceOptions::default())` open the same device, and [`set_default_options`] governs the feature
 /// of [`default_device`]. [`HeadlessDevice::new`] and [`new_async`](HeadlessDevice::new_async) use
 /// [`Default`](Self::Default), as they use wgpu's default limits.
+///
+/// The enum is `#[non_exhaustive]`: a later release may add a policy, so a `match` outside this crate needs a wildcard
+/// arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum FeaturesPolicy {
     /// No optional feature: wgpu's default features, what the browser always has.
     #[default]
@@ -115,7 +119,13 @@ impl FeaturesPolicy {
 /// differs from [`HeadlessDevice::new`], which keeps requesting wgpu's default limits, and from
 /// `LimitsPolicy::default()`, which is [`LimitsPolicy::Default`]: native `default_device()` allows storage bindings
 /// of the adapter's size (2 GiB measured), the browser's only 128 MiB.
+///
+/// The struct is `#[non_exhaustive]`, so a later release can add an option without breaking a caller: build one from
+/// [`DeviceOptions::default()`](Default::default) and the `with_*` methods, which set one field each
+/// (`DeviceOptions::default().with_adapter(AdapterChoice::LowPower)`). The fields stay public to read and to assign
+/// on a value you already hold.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DeviceOptions {
     /// The wgpu backends to search for an adapter.
     pub backends: wgpu::Backends,
@@ -147,6 +157,37 @@ impl Default for DeviceOptions {
             limits,
             features,
         }
+    }
+}
+
+impl DeviceOptions {
+    /// These options with the wgpu backends to search for an adapter replaced by `backends`.
+    #[must_use]
+    pub fn with_backends(mut self, backends: wgpu::Backends) -> Self {
+        self.backends = backends;
+        self
+    }
+
+    /// These options with the adapter choice replaced by `adapter`.
+    #[must_use]
+    pub fn with_adapter(mut self, adapter: AdapterChoice) -> Self {
+        self.adapter = adapter;
+        self
+    }
+
+    /// These options with the limits policy replaced by `limits`. Not [`HeadlessDevice::with_limits`], which lowers
+    /// the limits of a device that is already open.
+    #[must_use]
+    pub fn with_limits(mut self, limits: LimitsPolicy) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// These options with the optional-features policy replaced by `features`.
+    #[must_use]
+    pub fn with_features(mut self, features: FeaturesPolicy) -> Self {
+        self.features = features;
+        self
     }
 }
 
@@ -289,16 +330,7 @@ impl HeadlessDevice {
         bytes: u64,
         caught: impl Future<Output = Option<wgpu::Error>>,
     ) -> Result<(), Error> {
-        let mut caught = std::pin::pin!(caught);
-        match caught
-            .as_mut()
-            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
-        {
-            std::task::Poll::Ready(error) => scope_result(label, bytes, error),
-            std::task::Poll::Pending => Err(Error::Poll(format!(
-                "the error scope of `{label}` did not resolve"
-            ))),
-        }
+        finish_popped_scope(label, bytes, caught)
     }
 
     /// Allocate one buffer of `size` bytes: checked, and on native inside an out-of-memory scope. On `wasm32` this
@@ -425,6 +457,26 @@ impl HeadlessDevice {
     }
 }
 
+/// [`HeadlessDevice::finish_scope`] for a caller that holds only a `wgpu::Device` (the `pixel` pass encoder): one poll
+/// of a popped scope's future with a no-op waker, which is enough on wgpu-core (see `finish_scope`).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn finish_popped_scope(
+    label: &str,
+    bytes: u64,
+    caught: impl Future<Output = Option<wgpu::Error>>,
+) -> Result<(), Error> {
+    let mut caught = std::pin::pin!(caught);
+    match caught
+        .as_mut()
+        .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+    {
+        std::task::Poll::Ready(error) => scope_result(label, bytes, error),
+        std::task::Poll::Pending => Err(Error::Poll(format!(
+            "the error scope of `{label}` did not resolve"
+        ))),
+    }
+}
+
 /// The error a scope's caught value stands for: out of memory is [`Error::OutOfMemory`], anything else the scope
 /// could see is reported as it is (S7.6 outcome B: an adapter that loses the device instead of reporting memory
 /// shows up as [`Error::Poll`] from the poll, never as a panic).
@@ -440,7 +492,7 @@ pub(crate) fn scope_result(
             bytes,
         }),
         Some(other) => Err(Error::Poll(format!(
-            "allocating buffer `{label}` ({bytes} bytes): {other}"
+            "allocating `{label}` ({bytes} bytes): {other}"
         ))),
     }
 }

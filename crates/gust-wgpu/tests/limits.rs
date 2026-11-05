@@ -604,12 +604,13 @@ fn assert_buffer_limit(error: Error, label: &str, requested: u64, maximum: u64) 
 }
 
 fn open(index: usize, limits: gust_wgpu::LimitsPolicy) -> HeadlessDevice {
-    HeadlessDevice::with_options(gust_wgpu::DeviceOptions {
-        backends: wgpu::Backends::VULKAN,
-        adapter: gust_wgpu::AdapterChoice::Index(index),
-        limits,
-        features: gust_wgpu::FeaturesPolicy::Default,
-    })
+    HeadlessDevice::with_options(
+        gust_wgpu::DeviceOptions::default()
+            .with_backends(wgpu::Backends::VULKAN)
+            .with_adapter(gust_wgpu::AdapterChoice::Index(index))
+            .with_limits(limits)
+            .with_features(gust_wgpu::FeaturesPolicy::Default),
+    )
     .expect("the adapter opens")
 }
 

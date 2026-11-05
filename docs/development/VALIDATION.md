@@ -47,30 +47,31 @@ Label format: `done (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.20, <comm
 `done (Cpu: <commit>)`. It is distinct from Unit, whose twin runs under `cfg(test)` (shadow-semantics evidence), and it
 is never GPU evidence (D42): a CPU result proves nothing about an adapter.
 
-**Labels of MX (execution shapes and textures; D61, D62, D95, D128).** The tiers do not change, and `pixel` gets no tier of
-its own: for integer outputs it is inside D22's exact contract, for `f32` outputs it is under section 4 (D128), and
+**Labels of MX (execution shapes and textures; D61, D62, D95, D128).** The tiers do not change, and `pixel` gets no tier
+of its own: for integer outputs it is inside D22's exact contract, for `f32` outputs it is under section 4 (D128), and
 `sample` is a documented SEMANTICS limitation under the Gpu tier, not a tier. A Gpu line for shape work names the shapes
 it executed, so a `grid` run cannot be read as a `pixel` one:
 
 - `done (Gpu: NVIDIA GeForce RTX 5090, Vulkan, slangc 2026.20, <commit>; shapes grid, pixel)`;
 - the browser: `Gpu (WebGPU, Chrome <version>, <vendor> <architecture>; shapes grid, pixel)`;
-- software: `Gpu (software: <name>, Mesa <version>, Vulkan, slangc <version>, <commit>; shapes grid, pixel)`.
+- software: `Gpu (software: lavapipe <name as wgpu prints it>, Mesa <version>, Vulkan, slangc <version>, <commit>;
+  shapes grid, pixel)`.
 
-The `; shapes ..` part is written by the person who writes the status line. No command prints it yet: `check-web`
-prints `Gpu (WebGPU, Chrome <version>, <vendor> <architecture>)` and the record of `verify` has no field for the shapes
-(the difftest report does: its `shapes` section). Which shapes a command ran is in its own documentation: `check-web`
-runs both forms of `web-vector-add`, `check-difftest` runs `grid` unless it is given `--shapes grid,pixel`, and
-`cargo test -p gust-wgpu` runs `grid` and `pixel` (`tests/pixel.rs`). Every MX Gpu record is WGSL evidence: `gust-wgpu`
-executes the WGSL that slangc emits (D82), and the SPIR-V of the textures and `pixel` goldens is Spirv tier
-(`spirv-val`) only; executing SPIR-V is placed in MR (D95). Hardware means the RTX 5090; the Radeon 890M took part in the
-spikes behind D120 and D127 and runs no gate; the software adapter is `Gpu (software)` and never stands in for hardware.
-Nothing in the repository claims anything about a phone or a tile-based GPU: that hypothesis is untested (NEXT_TASKS).
+The `; shapes ..` part is written by the person who writes the status line. No command prints it yet: `check-web` prints
+`Gpu (WebGPU, Chrome <version>, <vendor> <architecture>)` and the record of `verify` has no field for the shapes (the
+difftest report does: its `shapes` section). Which shapes a command ran is in its own documentation: `check-web` runs
+both forms of `web-vector-add`, `check-difftest` runs `grid` unless it is given `--shapes grid,pixel`, and `cargo test
+-p gust-wgpu` runs `grid` and `pixel` (`tests/pixel.rs`). Every MX Gpu record is WGSL evidence: `gust-wgpu` executes the
+WGSL that slangc emits (D82), and the SPIR-V of the textures and `pixel` goldens is Spirv tier (`spirv-val`) only;
+executing SPIR-V is placed in MR (D95). Hardware means the RTX 5090; the Radeon 890M took part in the spikes behind D120
+and D127 and runs no gate; the software adapter is `Gpu (software)` and never stands in for hardware. Nothing in the
+repository claims anything about a phone or a tile-based GPU: that hypothesis is untested (NEXT_TASKS).
 
 *The reserved `Body` tier (D62, D95).* A shape with a per-function contract (Breeze's `vertex` and `raster_fragment`)
 would be exact only on the inputs the body receives, with rasterization, interpolation, derivatives and fixed-function
-stages outside the contract (D39). Its label, reserved here and used by no line, command or record of MX, is
-`done (Body: <adapter>, <backend>, slangc <version>, <commit>)`, and its first use is with Breeze. No xtask code knows
-the name; a line may not claim it until a decision row gives the tier its command.
+stages outside the contract (D39). Its label, reserved here and used by no line, command or record of MX, is `done
+(Body: <adapter>, <backend>, slangc <version>, <commit>)`, and its first use is with Breeze. No xtask code knows the
+name; a line may not claim it until a decision row gives the tier its command.
 
 **Vectors, uniforms and SPIR-V (slices m6.x, m6.x fix round 1).** The examples export SPIR-V, and no example uses a
 vector, a matrix or a uniform, so `check-artifacts`, the Spirv suite and `check-full` (the Artifacts and Full modes of
@@ -93,11 +94,12 @@ call, so a lowering change that re-hashes a body changes that list in the same c
 catch a stale list. This is Spirv-tier evidence (the files pass `spirv-val`), not Gpu evidence; the Gpu tests of each
 area run through its `check-feature` command.
 
-**Golden sets of MX (slices mx.t3 and mx.p1a).** `GOLDEN_SPIRV_SETS` has eleven areas, the nine above and two more: `textures` (8 files,
-`textures__<kernel>.spv`, from `tests/fixtures/textures.slang`) and `pixel` (3 files: `pixel__pack`, `pixel__row`,
-`pixel__shade`, fragment entries). A fragment is compiled with `-stage fragment`: `shader::shader_entries` reads each
-entry's stage from its `[shader("..")]` line. The example `texture-threshold` adds `threshold__mark.spv` to
-`EXPECTED_SPIRV`. As above, this is Spirv-tier evidence only, and the executed shader is the WGSL.
+**Golden sets of MX (slices mx.t3 and mx.p1a).** `GOLDEN_SPIRV_SETS` has eleven areas, the nine above and two more:
+`textures` (8 files, `textures__<kernel>.spv`, from `tests/fixtures/textures.slang`) and `pixel` (3 files:
+`pixel__pack`, `pixel__row`, `pixel__shade`, fragment entries). A fragment is compiled with `-stage fragment`:
+`shader::shader_entries` reads each entry's stage from its `[shader("..")]` line. The example `texture-threshold` adds
+`threshold__mark.spv` to `EXPECTED_SPIRV`. As above, this is Spirv-tier evidence only, and the executed shader is the
+WGSL.
 
 `cargo xtask spirv-val`, `check-artifacts`, the Spirv suite, `check-full` and the `check-feature` areas that validate
 SPIR-V print an informational `OpCopyLogical` count per module, read from `spirv-dis` (a missing `spirv-dis` is said in the line); it is never a failure. Slang emits that
@@ -116,15 +118,16 @@ flag in each (the whole argument lists of those two are pinned by their own test
 that wgpu runs (`wgpu::naga`, the lockfile's version; `Capabilities::empty()` for the front end and the validator and
 `ValidationFlags::all()`, as `create_shader_module` does, never the all-capabilities default of
 `naga::front::wgsl::Options`) and compares the `proc::Layouter` size, alignment and field offsets of every storage and
-uniform binding's element type with the descriptor's layout. The WGSL is every compute and fragment entry of the 19 goldens of
-`tests/fixtures`, compiled by the `slangc` command line with the stage of its shape (96 entries); every fixture kernel, compiled through the native
-reflection helper, which is the route `HeadlessDevice` compiles through (106 kernels, 10 of them kernels that no golden
-holds; 202 modules in all, with the 96); and the committed precompiled WGSL. The test pins those counts, and the golden and fixture `.rs` lists against
-the directory. It needs `slangc` on `PATH` and the helper (`GUST_SLANG_REFLECT`) but no adapter, and it fails with a
-message naming the missing tool; it does not check a `slangc` version (the CI job `slang` installs the pinned one). It
-runs in `cargo xtask check-feature reflection`, in the Slangc suite (the CI job `slang`) and in `cargo test -p
-gust-wgpu`, hence in `verify --mode gpu` (the CI job `gpu-software`), where its 9 tests and one result line are counted
-in `GPU_SUITE_PIN`; the file takes about 15 s on the Windows development machine. It executes nothing, so it is
+uniform binding's element type with the descriptor's layout. The WGSL is every compute and fragment entry of 19 of the
+20 goldens of `tests/fixtures` (not `par_for`, whose kernels have no nameable descriptor), compiled by the `slangc`
+command line with the stage of its shape (96 entries); every fixture kernel, compiled through the native reflection
+helper, which is the route `HeadlessDevice` compiles through (106 kernels, 10 of them kernels that no golden holds; 202
+modules in all, with the 96); and the committed precompiled WGSL. The test pins those counts, and the golden and fixture
+`.rs` lists against the directory. It needs `slangc` on `PATH` and the helper (`GUST_SLANG_REFLECT`) but no adapter, and
+it fails with a message naming the missing tool; it does not check a `slangc` version (the CI job `slang` installs the
+pinned one). It runs in `cargo xtask check-feature reflection`, in the Slangc suite (the CI job `slang`) and in `cargo
+test -p gust-wgpu`, hence in `verify --mode gpu` (the CI job `gpu-software`), where its 9 tests and one result line are
+counted in `GPU_SUITE_PIN`; the file takes about 15 s on the Windows development machine. It executes nothing, so it is
 WGSL-validity and layout evidence, not Gpu evidence.
 
 **The gust-algo Gpu suite step (slices m7.r1 to m7.r4, D121).** After the `gust-wgpu` call, `verify --mode gpu` and

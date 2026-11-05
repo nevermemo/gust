@@ -6,18 +6,27 @@ use core::fmt;
     label = "pass the zero-sized handle that `#[gpu]` generates for a `#[kernel]` function; it implements `Kernel`"
 )]
 pub trait Kernel {
+    /// The descriptor of the kernel this handle stands for.
     const DESCRIPTOR: KernelDescriptor;
 }
 
+/// A `#[gpu]` module as the macro describes it: its name and its kernels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ModuleDescriptor {
+    /// The module's name.
     pub name: &'static str,
+    /// The module's kernels.
     pub kernels: &'static [KernelDescriptor],
 }
 
+/// Everything the host knows about one kernel: where it lives, its Slang source, its workgroup size, its parameters,
+/// its shape and its precompiled artifacts. The `#[gpu]` macro builds one per `#[kernel]` function; a hand-written
+/// literal must set every field.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KernelDescriptor {
+    /// The name of the `#[gpu]` module that holds the kernel.
     pub module: &'static str,
+    /// The kernel function's name.
     pub name: &'static str,
     /// Prefixed entry point used in generated Slang and target binaries.
     pub entry_point: &'static str,
@@ -36,7 +45,9 @@ pub struct KernelDescriptor {
     /// API change (mx.c): this field is new. A hand-written `KernelDescriptor { .. }` literal must add
     /// `compatible_shapes: &[Shape::Grid]` (after `shape`), and the derived `PartialEq`/`Eq` compare it.
     pub compatible_shapes: &'static [Shape],
+    /// The workgroup size `[x, y, z]`.
     pub workgroup_size: [u32; 3],
+    /// The kernel's parameters, in declaration order.
     pub parameters: &'static [ParameterDescriptor],
     /// Slang source emitted directly from the annotated Rust syntax tree.
     /// Backends compile this source to their preferred target on demand.
@@ -151,12 +162,16 @@ impl SourceOrigin {
 /// An inclusive, 1-based Slang line range generated from one Rust line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LineSpan {
+    /// The first Slang line of the range.
     pub slang_start: u32,
+    /// The last Slang line of the range (inclusive).
     pub slang_end: u32,
+    /// The 1-based Rust line that those Slang lines were generated from.
     pub rust_line: u32,
 }
 
 impl KernelDescriptor {
+    /// The kernel's `module::name`, as a value that implements `Display`.
     pub const fn qualified_name(&self) -> QualifiedName<'_> {
         QualifiedName(self)
     }
@@ -170,11 +185,16 @@ impl fmt::Display for QualifiedName<'_> {
     }
 }
 
+/// One kernel parameter: what it is, how the kernel uses it and where the shader binds it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParameterDescriptor {
+    /// The parameter's name in the kernel.
     pub name: &'static str,
+    /// The parameter's Rust type, as the token text of the source.
     pub rust_type: &'static str,
+    /// What the parameter is, and so how the host binds it.
     pub kind: ParameterKind,
+    /// How the kernel accesses the parameter.
     pub access: Access,
     /// Host/GPU element ABI for resource parameters supported by the runtime.
     pub resource_layout: Option<crate::ResourceLayout>,
@@ -186,7 +206,9 @@ pub struct ParameterDescriptor {
 /// Backend-neutral shader resource address assigned from a kernel parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResourceBinding {
+    /// The bind group.
     pub group: u32,
+    /// The binding index inside the group.
     pub binding: u32,
 }
 
@@ -218,10 +240,15 @@ pub enum ParameterKind {
     Sampler,
 }
 
+/// How a kernel accesses a parameter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
+    /// The kernel only reads it: a read-only storage buffer, a uniform, or a sampled texture.
     ReadOnly,
+    /// The kernel may read and write it: a read-write storage buffer, or a storage texture (including a write-only
+    /// one).
     ReadWrite,
+    /// The notion does not apply: the parameter is an invocation id, a plain value or a sampler.
     NotApplicable,
 }
 

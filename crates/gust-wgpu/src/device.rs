@@ -117,9 +117,13 @@ impl FeaturesPolicy {
 /// of the adapter's size (2 GiB measured), the browser's only 128 MiB.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeviceOptions {
+    /// The wgpu backends to search for an adapter.
     pub backends: wgpu::Backends,
+    /// Which adapter to open among those the backends offer.
     pub adapter: AdapterChoice,
+    /// Which limits to request from the adapter.
     pub limits: LimitsPolicy,
+    /// Which optional features to request from the adapter.
     pub features: FeaturesPolicy,
 }
 

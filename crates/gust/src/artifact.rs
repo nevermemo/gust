@@ -30,7 +30,9 @@ use crate::{
 /// The compiler output format of an [`Artifact`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Format {
+    /// WGSL text, the shader language of the WebGPU API.
     Wgsl,
+    /// SPIR-V words stored as little-endian bytes.
     Spirv,
 }
 
@@ -53,6 +55,7 @@ impl From<Format> for Target {
 /// Compiler output for one kernel plus the helper's raw reflection JSON for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Artifact {
+    /// The compiler output format of `bytes`.
     pub format: Format,
     /// [`content_key`] of the kernel the artifact was compiled from, as 16 lower-case hex
     /// digits: the stem of the artifact's file name. It names the file; the identity check in

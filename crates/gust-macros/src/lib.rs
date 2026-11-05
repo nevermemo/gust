@@ -1,3 +1,31 @@
+//! The procedural macros of GUST: `#[gpu]` and `par_for!`.
+//!
+//! Use them through `gust` (`gust::gpu`, `gust::par_for!`), which re-exports them and owns the types they emit; this
+//! crate is not meant to be depended on directly. `#[gpu]` validates a small Rust subset and translates it directly
+//! from the `syn` syntax tree to Slang; every rejection carries a stable diagnostic code (`GUST-E....`, see
+//! `docs/DIAGNOSTICS.md`).
+//!
+//! # Generated items and `missing_docs`
+//!
+//! The macros emit public items (the handle and descriptor of each kernel, the typed calls, the module of a map
+//! function). Each carries `#[allow(missing_docs)]`, so a crate with `#![deny(missing_docs)]` compiles over a `#[gpu]`
+//! module or function.
+//!
+//! # Stability
+//!
+//! The crate is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version, a patch release only
+//! adds or fixes. The four crates of a release (`gust`, this crate, `gust-wgpu` and `cargo-gust`) share one version and
+//! depend on each other with exact (`=`) pins, because the macros emit items that only the same release of `gust` has.
+//! What a minor bump may change: the Slang that `#[gpu]` emits, the diagnostics' wording (their codes are stable, see
+//! `docs/DIAGNOSTICS.md`), and the accepted subset of Rust, which may grow.
+//!
+//! # Support surface
+//!
+//! `gust_mul_impls!` generates the operator impls of `gust::math` and is invoked only by `gust`. It is
+//! `#[doc(hidden)]` and has no stability promise, as are the `__gust_*` names that the expansions emit and the
+//! `descriptor;` form of `par_for!` (D103).
+#![warn(missing_docs)]
+
 use proc_macro::TokenStream;
 
 mod diagnostics;

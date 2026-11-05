@@ -5,8 +5,11 @@ use gust::{Artifact, Format, KernelDescriptor, Shape};
 /// Observable state of one device's compiled-kernel cache.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PipelineCacheStats {
+    /// The number of compiled kernels held in the cache.
     pub entries: usize,
+    /// The number of lookups that found a compiled kernel in the cache.
     pub hits: u64,
+    /// The number of lookups that compiled the kernel and stored it.
     pub misses: u64,
 }
 

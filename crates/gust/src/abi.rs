@@ -3,8 +3,11 @@ use core::{mem, slice};
 /// Scalar formats that have an identical Rust and GPU storage representation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScalarKind {
+    /// A 32-bit unsigned integer (`uint`, Rust `u32`).
     U32,
+    /// A 32-bit signed integer (`int`, Rust `i32`).
     I32,
+    /// A 32-bit float (`float`, Rust `f32`).
     F32,
 }
 
@@ -14,7 +17,9 @@ pub enum ScalarKind {
 /// 16 bytes) and a Rust matrix of vector columns has the same bytes (slice m6.a1, plan F5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MatrixLayout {
+    /// Each column is contiguous (the layout GUST uses).
     Column,
+    /// Each row is contiguous. Recorded so that a reflection document can name it; no GUST compile uses it.
     Row,
 }
 
@@ -43,30 +48,45 @@ pub const MATRIX_LAYOUT: MatrixLayout = MatrixLayout::Column;
 /// Structural category for one host-shareable type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TypeLayoutKind {
+    /// One 32-bit scalar.
     Scalar(ScalarKind),
     /// `count` scalars of one kind (`float2`, `uint4`, ...).
     Vector {
+        /// The kind of each component.
         scalar: ScalarKind,
+        /// The number of components, 2 to 4.
         count: u32,
     },
     /// A `rows` by `cols` matrix, column-major (`MATRIX_LAYOUT`): `cols` columns of `rows` scalars, each column
     /// starting `column_stride` bytes after the previous one.
     Matrix {
+        /// The kind of each element.
         scalar: ScalarKind,
+        /// The number of rows, 2 to 4.
         rows: u32,
+        /// The number of columns, 2 to 4.
         cols: u32,
+        /// The distance in bytes from the start of one column to the start of the next.
         column_stride: u32,
     },
+    /// A struct: its fields in declaration order, each with its byte offset.
     Struct(&'static [StructFieldLayout]),
 }
 
 /// Complete storage-buffer ABI for one element type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TypeLayout {
+    /// The type's name (a Rust type name such as `u32`, or the struct's own name). Descriptive: the byte layout is
+    /// `size`, `alignment` and `kind`.
     pub name: &'static str,
+    /// The size in bytes.
     pub size: u32,
+    /// The alignment in bytes.
     pub alignment: u32,
+    /// The distance in bytes between two consecutive elements of an array of this type: the size rounded up to the
+    /// alignment.
     pub stride: u32,
+    /// The structural category, with the scalar, vector, matrix or field data of the type.
     pub kind: TypeLayoutKind,
 }
 
@@ -184,6 +204,7 @@ impl TypeLayout {
         }
     }
 
+    /// The layout of one 32-bit scalar named `name`: size, alignment and stride are 4.
     pub const fn scalar(name: &'static str, kind: ScalarKind) -> Self {
         Self {
             name,
@@ -237,6 +258,8 @@ impl TypeLayout {
         }
     }
 
+    /// The layout of a struct named `name` with the given `size`, `alignment` and `fields` (in declaration order). The
+    /// stride is `size` rounded up to `alignment`.
     pub const fn structure(
         name: &'static str,
         size: u32,
@@ -256,8 +279,11 @@ impl TypeLayout {
 /// One field in a macro-described host/GPU structure layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StructFieldLayout {
+    /// The field's name.
     pub name: &'static str,
+    /// The field's byte offset from the start of the struct.
     pub offset: u32,
+    /// The field's layout.
     pub ty: TypeLayout,
 }
 
@@ -348,12 +374,18 @@ pub struct TextureLayout {
 /// Element ABI attached to one shader resource binding.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResourceLayout {
+    /// The ABI that `element` follows.
     pub rules: ShaderLayoutRules,
+    /// The layout of one element (for a texture, the texel type as the shader sees it).
     pub element: TypeLayout,
+    /// The distance in bytes between two consecutive elements in the buffer. For a constant buffer, which has no array,
+    /// it is the element's size.
     pub element_stride: u32,
 }
 
 impl ResourceLayout {
+    /// The layout of a storage buffer element under `StorageV1` ([`TypeLayout::is_storage_v1`]); the stride is the
+    /// element's.
     pub const fn storage_v1(element: TypeLayout) -> Self {
         Self {
             rules: ShaderLayoutRules::StorageV1,
@@ -362,6 +394,8 @@ impl ResourceLayout {
         }
     }
 
+    /// The layout of a storage buffer element under `StorageV2` ([`TypeLayout::is_storage_v2`]); the stride is the
+    /// element's.
     pub const fn storage_v2(element: TypeLayout) -> Self {
         Self {
             rules: ShaderLayoutRules::StorageV2,
@@ -409,6 +443,7 @@ impl ResourceLayout {
     note = "an `unsafe impl` written by hand must uphold the layout contract in the safety section of `GpuPod`"
 )]
 pub unsafe trait GpuPod: Copy + 'static {
+    /// The layout of `Self`. It must match Rust's size, alignment, field order and offsets.
     const LAYOUT: TypeLayout;
 }
 

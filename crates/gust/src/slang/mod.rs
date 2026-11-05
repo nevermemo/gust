@@ -108,9 +108,12 @@ pub(crate) const KERNEL_FILE: &str = "kernel.slang";
 #[cfg(feature = "slang-runtime")]
 const EXPORT_FILE: &str = "kernel.export.slang";
 
+/// A compile target of the Slang compiler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
+    /// SPIR-V, the binary shader format of Vulkan.
     Spirv,
+    /// WGSL, the shader language of the WebGPU API.
     Wgsl,
 }
 
@@ -145,7 +148,12 @@ pub enum Error {
     /// not UTF-8.
     Io(std::io::Error),
     /// `slangc` ran and rejected the source. `diagnostics` is its output for the `target` that failed.
-    CompilationFailed { target: Target, diagnostics: String },
+    CompilationFailed {
+        /// The target that failed.
+        target: Target,
+        /// The compiler's output.
+        diagnostics: String,
+    },
     /// The compiled SPIR-V is not a whole number of 32-bit words. The number is its length in bytes.
     InvalidSpirvLength(usize),
     /// The compiled SPIR-V failed the structural check (its header or instruction stream). The text says which
@@ -219,6 +227,12 @@ impl From<std::io::Error> for Error {
     }
 }
 
+/// Compile the Slang source of `kernel` to `target` with the pinned `slangc` and return the output bytes (WGSL text or
+/// SPIR-V words as little-endian bytes). Needs the `slang-runtime` feature.
+///
+/// Fails with [`Error::CompilerNotFound`] or [`Error::SlangVersionMismatch`] when `slangc` is missing or is not the
+/// pinned version, with [`Error::CompilationFailed`] when the compiler rejects the source (its diagnostics name the
+/// Rust lines where the descriptor has a source origin), and with [`Error::Io`] when a file cannot be read or written.
 #[cfg(feature = "slang-runtime")]
 pub fn compile(kernel: &KernelDescriptor, target: Target) -> Result<Vec<u8>, Error> {
     compile_with_origin(
@@ -230,6 +244,9 @@ pub fn compile(kernel: &KernelDescriptor, target: Target) -> Result<Vec<u8>, Err
     )
 }
 
+/// Compile `kernel` to SPIR-V and decode the output to 32-bit words. Fails as [`compile`] does, and with
+/// [`Error::InvalidSpirvLength`] or [`Error::InvalidSpirv`] when the output is not a whole number of words or fails the
+/// structural check.
 #[cfg(feature = "slang-runtime")]
 pub fn compile_spirv(kernel: &KernelDescriptor) -> Result<Vec<u32>, Error> {
     let bytes = compile(kernel, Target::Spirv)?;
@@ -248,6 +265,8 @@ pub(crate) fn decode_spirv(bytes: &[u8]) -> Result<Vec<u32>, Error> {
     Ok(words)
 }
 
+/// Compile `kernel` to WGSL and return the text. Fails as [`compile`] does; output that is not UTF-8 is an
+/// [`Error::Io`].
 #[cfg(feature = "slang-runtime")]
 pub fn compile_wgsl(kernel: &KernelDescriptor) -> Result<String, Error> {
     let bytes = compile(kernel, Target::Wgsl)?;
@@ -742,15 +761,19 @@ fn positive_coordinate(value: &str) -> Option<usize> {
     value.parse().ok().filter(|value| *value > 0)
 }
 
+/// A directory under the system temporary directory for one compiler run. It is removed with its contents when dropped.
 #[cfg(feature = "slang-runtime")]
 pub struct TemporaryDirectory(PathBuf);
 
 #[cfg(feature = "slang-runtime")]
 impl TemporaryDirectory {
+    /// The directory's path.
     pub fn path(&self) -> &Path {
         &self.0
     }
 
+    /// Create a new, empty directory whose name is unique to this process. Fails with the I/O error of the creation, or
+    /// with `AlreadyExists` when 128 names were taken.
     pub fn create() -> Result<Self, std::io::Error> {
         for _ in 0..128 {
             let id = NEXT_INVOCATION.fetch_add(1, Ordering::Relaxed);
@@ -783,6 +806,7 @@ impl Drop for TemporaryDirectory {
     }
 }
 
+/// Write the Slang source of `kernel` to `path`. Fails with [`Error::Io`] when the file cannot be written.
 pub fn write_source(kernel: &KernelDescriptor, path: impl AsRef<Path>) -> Result<(), Error> {
     fs::write(path, kernel.slang_source).map_err(Error::Io)
 }
@@ -791,6 +815,7 @@ pub fn write_source(kernel: &KernelDescriptor, path: impl AsRef<Path>) -> Result
 /// Machine-readable record of whether the installed Slang compiler can emit a
 /// target. Capability claims must follow this evidence, not assumption.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[doc(hidden)]
 pub struct TargetProbe {
     /// The probed target.
     pub target: Target,
@@ -813,6 +838,7 @@ const PROBE_KERNEL: &str = concat!(
 ///
 /// This is capability evidence, not a correctness test: it records whether the
 /// target is supported and, if not, why, so downstream claims can cite it.
+#[doc(hidden)]
 pub fn probe(target: Target) -> TargetProbe {
     match compile_source(PROBE_KERNEL, "gpu_probe_entry", target) {
         Ok(_) => TargetProbe {

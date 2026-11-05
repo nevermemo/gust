@@ -66,7 +66,9 @@ pub enum Error {
     /// The reflection helper executable could not be launched. `helper` is the path that was tried and `source` the
     /// operating system's error.
     HelperUnavailable {
+        /// The helper executable path that was tried.
         helper: PathBuf,
+        /// The operating system's error from launching it.
         source: std::io::Error,
     },
     /// The reflection output is malformed, lacks a field GUST needs, uses a construct GUST does not support (for
@@ -114,8 +116,12 @@ fn invalid(s: impl Into<String>) -> Error {
     Error::Invalid(s.into())
 }
 
+/// What one reflection document reports about a compiled entry point: its target, its stage, its buffer, texture and
+/// sampler bindings and its colour outputs. Read with [`Reflection::from_json`], and checked against a kernel
+/// descriptor by [`Reflection::cross_check_kernel`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Reflection {
+    /// The compile target the document describes.
     pub target: Target,
     /// The `schemaVersion` the document was read under: 1 for the CLI JSON path and for schema-1 native documents,
     /// 2 for schema-2 native documents, 3 for schema-3 native documents.
@@ -160,10 +166,15 @@ impl Stage {
 /// A 2-D texture binding of a schema-3 document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReflectedTexture {
+    /// The texture's name in the shader.
     pub name: String,
+    /// The binding index.
     pub binding: u32,
+    /// The register space, which is the bind group.
     pub space: u32,
+    /// The texture's dimensionality.
     pub dimension: TextureDimension,
+    /// How the shader uses the texture.
     pub access: TextureAccess,
     /// The result type: a 32-bit scalar or a 2- to 4-wide vector of one. The helper reports no byte layout for it
     /// (`size`, `alignment` and `stride` are `None`).
@@ -175,8 +186,11 @@ pub struct ReflectedTexture {
 /// A sampler binding of a schema-3 document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReflectedSampler {
+    /// The sampler's name in the shader.
     pub name: String,
+    /// The binding index.
     pub binding: u32,
+    /// The register space, which is the bind group.
     pub space: u32,
 }
 /// One colour output of a fragment entry point.
@@ -190,73 +204,112 @@ pub struct ReflectedTarget {
 /// What kind of shader resource a [`ReflectedResource`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReflectedResourceKind {
+    /// A structured buffer (`StructuredBuffer<T>` or `RWStructuredBuffer<T>`).
     StructuredBuffer,
     /// Schema 2 only. Always read-only, with no element count.
     ConstantBuffer,
 }
+/// One buffer binding of an entry point, as the reflection document reports it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReflectedResource {
+    /// The buffer's name in the shader.
     pub name: String,
+    /// Whether it is a structured buffer or a constant buffer.
     pub kind: ReflectedResourceKind,
+    /// Whether the shader only reads the buffer or also writes it.
     pub access: crate::Access,
+    /// The binding index.
     pub binding: u32,
+    /// The register space, which is the bind group.
     pub space: u32,
+    /// The element type of a structured buffer, or the contents of a constant buffer.
     pub element: ReflectedType,
     /// None means the compiler JSON did not report a buffer element stride.
     pub element_stride: Option<u32>,
 }
+/// A type as the reflection document reports it. A size, alignment or stride that the document did not report is
+/// `None`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReflectedType {
+    /// The type's name, when the document gives one.
     pub name: Option<String>,
+    /// The size in bytes, when reported.
     pub size: Option<u32>,
+    /// The alignment in bytes, when reported.
     pub alignment: Option<u32>,
+    /// The array stride in bytes, when reported. For a matrix, the column stride.
     pub stride: Option<u32>,
+    /// The structure of the type.
     pub kind: ReflectedTypeKind,
 }
+/// The structure of a [`ReflectedType`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ReflectedTypeKind {
+    /// A 32-bit scalar.
     Scalar(ScalarKind),
     /// Schema 2 only.
     Vector {
+        /// The kind of each component.
         scalar: ScalarKind,
+        /// The number of components.
         count: u32,
     },
     /// Schema 2 only. `ReflectedType::stride` of a matrix is its column stride.
     Matrix {
+        /// The kind of each element.
         scalar: ScalarKind,
+        /// The number of rows.
         rows: u32,
+        /// The number of columns.
         cols: u32,
+        /// The matrix layout the document states.
         layout: MatrixLayout,
     },
+    /// A struct: its fields in document order.
     Struct(Vec<ReflectedField>),
 }
+/// One field of a reflected struct.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReflectedField {
+    /// The field's name.
     pub name: String,
+    /// The field's byte offset from the start of the struct.
     pub offset: u32,
+    /// The field's size in bytes.
     pub size: u32,
+    /// The field's type.
     pub ty: ReflectedType,
 }
 /// Coverage includes every nested type, not just the outer element.
 #[must_use = "Inspect coverage: a successful cross-check may still lack full ABI evidence"]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PodCrossCheck {
+    /// The number of struct fields compared, counting those of nested structs.
     pub checked_fields: usize,
+    /// Whether every type in the element, nested ones included, reported a size and each matched the host layout.
     pub aggregate_size_verified: bool,
+    /// Whether every type in the element, nested ones included, reported a stride and each matched the host layout.
     pub element_stride_verified: bool,
+    /// Whether every type in the element, nested ones included, reported an alignment and each matched the host layout.
     pub alignment_verified: bool,
 }
 impl PodCrossCheck {
+    /// Whether the size, the stride and the alignment were all reported and all matched.
     pub fn is_full_abi_match(&self) -> bool {
         self.aggregate_size_verified && self.element_stride_verified && self.alignment_verified
     }
 }
 
+/// The result of a native compile: the compiler output and the reflection of the same linked program.
 #[derive(Debug)]
 pub struct CompiledReflection {
+    /// The compiler output for the target, as bytes.
     pub artifact: Vec<u8>,
+    /// The reflection of the program that produced `artifact`.
     pub reflection: Reflection,
+    /// The version string of the Slang compiler that produced them.
     pub compiler_version: String,
+    /// The entry point's name.
     pub entry_point: String,
     /// The compute workgroup size. `[0, 0, 0]` for a fragment entry point, which has none (mx.t0b).
     pub workgroup_size: [u32; 3],
@@ -288,6 +341,10 @@ pub fn compile_reflected(
     compile_reflected_with_helper(kernel, target, helper)
 }
 
+/// [`compile_reflected`] with the native reflection helper at `helper` instead of the one the toolchain rules find.
+/// Fails with [`Error::HelperUnavailable`] when the helper cannot be launched, with [`Error::Compiler`] when the
+/// compile fails, and with the other variants of [`Error`] when its reflection output is malformed or does not belong
+/// to the kernel.
 #[cfg(feature = "slang-runtime")]
 pub fn compile_reflected_with_helper(
     kernel: &KernelDescriptor,
@@ -385,7 +442,7 @@ pub struct CleanCompilation {
 }
 
 /// Compile and reflect the kernel's *clean* Slang text: `KernelDescriptor::slang_source` exactly, without the `#line`
-/// directives of [`slang::compile_copy`]. The helper's `sourceHash` is then the hash that
+/// directives of `slang::compile_copy`. The helper's `sourceHash` is then the hash that
 /// [`crate::artifact::verify_artifact`] recomputes at run time, so the result can be stored as a precompiled artifact
 /// (D45).
 ///

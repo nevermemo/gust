@@ -520,7 +520,8 @@ fn call_body(
             quote!(::gust::Independent(
                 ::gust::map::resource::<#element, #device_type, #argument>(&#local)
             ))
-        });
+        })
+        .collect::<Vec<_>>();
     let result = &signature.result.buffer;
     let output = match finish {
         Finish::GpuVec => quote! {
@@ -542,7 +543,30 @@ fn call_body(
             )
             .map_err(<#device_type as ::gust::map::MapHost>::map_error)?;
         },
-        _ => quote! {
+        // On wasm32 nothing may block (D69): submit and drop the job. The result is a resident `GpuVec` that the caller
+        // reads with `to_vec_async`, and queue order makes that read see the kernel's writes. The `cfg` is evaluated in
+        // the user's crate; the native expansion is the `dispatch` below, as before.
+        Finish::GpuVec => quote! {
+            #[cfg(target_arch = "wasm32")]
+            let __gust_job = #kernel::submit(
+                #device,
+                __gust_n.min(::gust::map::CEILING),
+                #(#resources,)*
+                ::gust::Independent(&__gust_out),
+            )
+            .map_err(<#device_type as ::gust::map::MapHost>::map_error)?;
+            #[cfg(target_arch = "wasm32")]
+            ::core::mem::drop(__gust_job);
+            #[cfg(not(target_arch = "wasm32"))]
+            #kernel::dispatch(
+                #device,
+                __gust_n.min(::gust::map::CEILING),
+                #(#resources,)*
+                ::gust::Independent(&__gust_out),
+            )
+            .map_err(<#device_type as ::gust::map::MapHost>::map_error)?;
+        },
+        Finish::Return => quote! {
             #kernel::dispatch(
                 #device,
                 __gust_n.min(::gust::map::CEILING),

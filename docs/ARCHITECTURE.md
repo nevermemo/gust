@@ -65,14 +65,36 @@ that kernel's resources, and one prefixed compute entry point. Helpers and user
 identifiers are not fully hygienically renamed yet.
 
 What differs between kinds of shader stage lives behind the `StageProfile` trait of
-`crates/gust-macros/src/profile/` (D63). Its 14 methods answer, from facts and never from the
-`syn` body, what a stage names its parameters (the invocation and the ids derived from it), which
-resources get a binding slot and in what order, which `#[kernel(..)]` options it accepts, which
-constructs it refuses, the text of the entry signature, prologue and epilogue, any extra binding,
-how the CPU twin runs it, how it is reflected and how exact its CPU contract is. The emitter, the
-validator, the expander and the option parser call it at those points and walk the body
-themselves. `grid` (the compute grid of `#[kernel]`) is the only profile until P1, and its answers
-are exactly the text the call sites wrote before the trait existed.
+`crates/gust-macros/src/profile/mod.rs` (D63, D88; slices mx.p0 and mx.p1a). Its 14 methods (`shape`,
+`slang_stage`, `invocation`, `binding_rules`, `options`, `validate_body`, `entry_signature`, `prologue`,
+`epilogue`, `lower_output_write`, `extra_bindings`, `twin`, `reflection`, `contract_tier`) answer what a
+stage calls its invocation parameters, which parameter flavors take a binding slot and whether the typed call has
+extent forms, which `#[kernel(..)]` options it accepts, which constructs it refuses, the text of the entry signature,
+prologue and epilogue, how the CPU twin iterates, and what the reflection must show. A profile receives facts
+(`KernelFacts`: the entry point, the workgroup size, the invocation name, the buffers in binding order, the derived
+ids, the next free slot; `BodyChecks`: what the kernel declares) and returns text, a table or a verdict. It never walks
+the `syn` body: the one hook that takes a syn value, `invocation`, takes a parameter's type. The emitter, the
+validator, the expander and the option parser call it at those points and keep their own visitors. That is the kill
+rule of D88: a body-walking hook, or a second expression hook, means the interface is redesigned. Two profiles exist.
+`GRID` (`profile/grid.rs`) answers exactly the text the call sites wrote before the trait existed, and every grid
+golden, artifact and export stayed byte for byte. `PIXEL` (`profile/pixel.rs`) is a `fragment` entry
+`void <entry>(float4 __gust_pos : SV_Position)`; its prologue computes `__gust_linear = uint(y) * 8192u + uint(x)`
+and the local `uint3 id = uint3(__gust_linear, 0u, 0u)`, so a kernel body reads `id.x` as it would in `grid`. It takes
+no `workgroup_size`, no `LocalId` or `GroupId`, refuses workgroup memory, barriers and atomics (GUST-E0729, which the
+classifier's E0723 reaches first for a pin), and has no extent forms. Three methods have no distinguishing answer yet:
+neither profile returns an `extra_bindings` entry (the row width is baked into the text, D127, so no uniform exists),
+neither rewrites an output write in `lower_output_write` (outputs are storage writes in place, D120), and
+`contract_tier` has one value, `Exact`; D62's per-function tier is reserved for the shapes Breeze brings (D95). The
+row width exists twice, `ROW_WIDTH` in `gust-macros` and `gust::PIXEL_ROW_WIDTH`, because a proc-macro crate cannot
+depend on `gust`; a `gust` test compares the emitted text with the constant.
+
+Which shapes a kernel can take is the classifier's job, a separate module (`validate/classify.rs`, mx.c, D94). It runs
+in the validator on the signature and the body by conservative syntactic rules, gives the descriptor's
+`compatible_shapes`, and checks the `#[kernel(shape = ..)]` pin against them. Anything it does not recognise is
+`grid`-only with the span of the construct named, so a wrong guess costs a pin error and never a wrong shader. It does
+not read the map generator's `own_index` stamp. The codes of the pin and the classifier are GUST-E0721 to E0728 (E0729
+is the profile's own refusal and E0730 is retired), and the texture rules of the macro are GUST-E0731 to E0736 (`slang/texture.rs`, the one table of the
+dialect's texture types, methods and lowering). A kernel never changes shape by itself: the pin or `grid`.
 
 The original kernel function is renamed to a private `__gpu_typecheck_*` item in
 the expanded Rust module. In a production build it is compiled only to make rustc
@@ -151,6 +173,9 @@ The core crate owns:
 - small target-artifact inspection helpers;
 - backend-neutral job/device traits;
 - the typed call surface and the device contract behind it (`gust::dispatch`);
+- the execution shapes (`Shape`, `PIXEL_ROW_WIDTH`, `PIXEL_MAX_ELEMENTS`) and the texture and sampler vocabulary
+  (`gust::texture`, with its twin carriers in `gust::cpu::texture`), described under "Shapes, textures and the export
+  record";
 - the CPU twin backend (`gust::cpu`, roadmap M3): `CpuDevice` and `CpuBuffer`, which
   implement `TypedDevice` and the `Resource` contract in safe Rust (`forbid(unsafe_code)`),
   the hidden functions the macro-emitted twin calls (`validate`, `read`, `write`,
@@ -260,6 +285,22 @@ indirect-arguments buffer creation also assert, at run time, that a hand-written
 (StorageV1 is its scalar sub-case), has no padding and agrees with Rust's size and alignment; the panic message
 keeps the older "StorageV1 representation" wording because tests pin it.
 
+Textures (slice mx.t2, D64, D90, D120; `crates/gust-wgpu/src/texture.rs`). `GpuTexture2d<F>` and `GpuSampler` belong to
+one `HeadlessDevice`; `create_texture_2d`, `write_texture`, `read_texture` (native) and `read_texture_async`, and
+`create_sampler`. `wgpu_format` is the one `match` from `gust::texture::Format` to `wgpu::TextureFormat`, and the size
+and sample type of a format are wgpu's own `block_copy_size` and `sample_type`, not a second table. A readback strips the
+256-byte row padding, and a texture larger than `max_buffer_size` reads back as `DeviceLimit`. The bind-group layout of
+a kernel is built per device in one of two variants from the features the device really has. With `float32-filterable`
+an `f32` sampled texture is filterable and takes a filtering sampler; without it the texture is unfilterable, and a
+linear sampler is `Error::TextureFilter` at submit while a nearest one binds either way. `FeaturesPolicy` is the knob
+(`Adapter` under `DeviceOptions::default()`, `Default` under `HeadlessDevice::new()` and on `wasm32`). A storage texture
+is bound write-only when the kernel only writes it (any of the nine formats) and read-write only for the three `r32`
+formats, because wgpu refuses read-write for a wider one (D120). `check_kernel_limits` covers the texture counts and the
+2-D size limit of the opened device, and the typed call checks use, format, sampler options and device instance
+(`TextureUse`, `TextureFormat`, `TextureSize`, `SamplerOptions`). The staged graph refuses a kernel with a texture or
+sampler parameter (`Error::UnsupportedParameter`); the generated host snippet requests `float32_filterable` when a
+kernel samples.
+
 The `pixel` runtime (slice mx.p1b, D120 and D127; `crates/gust-wgpu/src/render.rs`). A `pixel` kernel is built into a
 render pipeline, not a compute pipeline: the vertex stage is the shared `shapes/fullscreen.wgsl` (three vertices from
 the vertex index, no vertex buffer; it is committed WGSL only, with no Slang source and no golden), the fragment
@@ -268,7 +309,11 @@ empty). The bind group layout has `FRAGMENT` visibility. The
 pipeline lives in the same cache and under the same key as a compute pipeline (`Pipeline::Compute` or
 `Pipeline::Render`; the key holds the shape). A call of `n` elements is one render pass of its own, in batch order
 with the compute passes around it: a fresh attachment of 8192 by `ceil(n / 8192)` texels (`gust::PIXEL_ROW_WIDTH`),
-loaded and discarded, never written, and at most two scissored draws, the full rows and then the tail row. The
+loaded and discarded, never written, and at most two scissored draws, the full rows and then the tail row. A
+fragment's element index is `y * 8192 + x`, computed in the shader, and the scissor to the live texels is what keeps
+any fragment from running past `n` (a helper invocation of a partly covered 2x2 quad runs but cannot store); the
+outputs are the kernel's own storage buffers, written by the fragments at that index, so nothing is copied out of the
+attachment. The
 attachment is created per call and dropped at encode (64 MiB at the cap of 2^26 elements,
 `gust::PIXEL_MAX_ELEMENTS`); keeping one per device is a follow-up for the performance test. The graph, the batch,
 the timed family and the typed call all go through `PreparedDispatch::encode`. Refusals, all before any wgpu object
@@ -333,11 +378,16 @@ the kernel files live outside the package. Its twin tests run the v0 twins again
 builds; the `gpu::` tests run on the adapter. Both are in the one `cargo test -p gust-algo` call that the Gpu suite and
 `verify --mode gpu` make (`ALGO_GPU_CALL`, with 49 tests required by name); the Unit suite does not run the crate.
 
-Shapes (slice mx.k, D89). `gust::Shape` (`Grid`, `Pixel`; `#[non_exhaustive]`) is a field of `KernelDescriptor`, set
-by the macro from the stage profile, and it picks the `slangc -stage` (`compute` or `fragment`) in `gust::slang`,
-`gust::reflect` (also the reflection helper's explicit last argument) and `cargo gust` (`build`, `check --recompile`).
-It is not part of the content key: the stage is already in the clean Slang text, so one body under two shapes gives
-two keys. Schema 3 is schema 2's grammar plus an optional `shape` (`grid` or `pixel`; absent means `grid`) and an
+### Shapes, textures and the export record
+
+Shapes (slice mx.k, D89). `gust::Shape` (`Grid`, `Pixel`; `#[non_exhaustive]`; `cpu` is a target, not a shape) is a
+field of `KernelDescriptor`, set by the macro from the stage profile, and it picks the `slangc -stage` (`compute` or
+`fragment`) in `gust::slang`, `gust::reflect` (also the reflection helper's explicit last argument) and `cargo gust`
+(`build`, `check --recompile`). The descriptor's other new field, `compatible_shapes`, is the classifier's answer and
+nothing reads it at run time; a descriptor rebuilt from a record carries only the shape it was built as. A `pixel`
+kernel's descriptor has `workgroup_size` `[1, 1, 1]`. `gust::PIXEL_ROW_WIDTH` (8192) and `gust::PIXEL_MAX_ELEMENTS`
+(2^26) sit beside `Shape` in `descriptor.rs`. The shape is not part of the content key: the stage is already in the
+clean Slang text, so one body under two shapes gives two keys. Schema 3 is schema 2's grammar plus an optional `shape` (`grid` or `pixel`; absent means `grid`) and an
 optional `source` (a record with one is read like schema 1, one without like schema 2). The macro writes it only for a
 kernel whose shape is not `grid`: a `#[gpu]` grid kernel keeps schema 1 and a `par_for!` grid kernel keeps schema 2,
 byte for byte. A reader of schemas 1 and 2 refuses a schema 3 record, and a `shape` in a record that says schema 1 or
@@ -345,9 +395,32 @@ byte for byte. A reader of schemas 1 and 2 refuses a schema 3 record, and a `sha
 `shape` key anywhere; `cargo gust init` writes it) and schema 2 once one is not: then every kernel entry carries
 `shape`. A schema 1 manifest reads as all grid, and `check` compares each entry's shape with its record's.
 
+Textures (slices mx.t1 to mx.t3, D64, D90, D92). `gust::texture` names no wgpu type (D02). It holds the formats
+(`Format`, nine variants, tied to the Rust type of one texel by the sealed marker types `R32Uint` to `Rgba32Float`),
+`TextureUse`, `SamplerOptions` (`Filter`, `Address`) and the kernel-side shadow types `Texture2D<T>`,
+`StorageTexture2D<F>`, `WriteTexture2D<F>` and `Sampler`. `ParameterKind` has two more variants, `Texture` and
+`Sampler`, and both take a binding slot in the order of the parameters, like a buffer. A texture is a `Resource` of
+kind `kind::Texture` (`BindingKind::Texture`): it has a width and a height and no element count, so the length rule
+does not apply. A sampler is not a `Resource`. It is the call's own argument kind (`SamplerArg`, on a device that is
+also a `SamplerDevice`), carried beside the resource bindings in the third parameter of `Call` and `Run<K, N, X>`
+(`SamplerSet`: `()`, or one binding per sampler parameter), so a texture, a sampler or a buffer in the wrong place is a
+compile error, while the texture's use, its format and its device instance are checked at submit. The descriptor
+carries what the reflection can witness: `ResourceLayout::texture_v1(element, TextureLayout { format, dimension,
+access, class })`, where `access` is `Sampled`, `ReadWrite` or `WriteOnly`, the format is exact for a storage texture
+and `None` for a sampled one (the concrete format of a sampled texture is checked against the bound texture at
+submit), and the dimension is always 2-D. The CPU twin has the carriers `CpuTexture2d<F>` and `CpuSampler`
+(`gust::cpu::texture`, a row-major `Vec` with dimensions). `load` and `store` are inside the exact contract; `sample`
+follows the WebGPU conventions written in SEMANTICS and lies outside it, with a stated bound that is documented and
+never chased (D92, D39).
+
 Layouts in the record (slice m7.lv). A parameter's `layout` is `null` or `{rules, element_stride, element}`. `rules` is
 `storage_v1` (a padding-free element of scalars and structs of them), `storage_v2` (a storage element that holds a
-vector or a matrix) or `std140_v1` (the element of a `Uniform<T>`). The element's `kind` is `scalar`, `vector`
+vector or a matrix), `std140_v1` (the element of a `Uniform<T>`) or, since mx.t3, `texture_v1`, which adds a `texture`
+object (`access` `sampled`, `read_write` or `write_only`; `class` `f32`, `u32` or `i32`; `dimension` `2d`; `format`, a
+WebGPU format name or `null` for a sampled texture) and describes a texture parameter, whose `kind` is `texture` (a
+sampler's `kind` is `sampler` and its `layout` is `null`; the golden is
+`crates/gust-macros/tests/golden/texture.kernel.json`). A texture does not move the schema number: a grid texture
+kernel's record is schema 1. The element's `kind` is `scalar`, `vector`
 (`scalar`, `count`), `matrix` (`scalar`, `rows`, `cols`, `column_stride`) or `struct` (`fields` of `name`, `offset`
 and a nested `type`). The macro writes these numbers from the same functions that produce its const assertions
 (storage structs are padding-free; a uniform struct uses the std140 offsets, an alignment of at least 16 and a size
@@ -374,12 +447,36 @@ GroupId gid                 Derived from id, no binding   uint3 gid = id / workg
 Workgroup<[f32; 256]> s     Not in the descriptor         groupshared float s[256]; (module scope)
 ```
 
+Textures and samplers take the next slots in the same order (slice mx.t3):
+
+```text
+Rust parameter                 Descriptor                                     Slang declaration
+Texture2D<Vec4> t              Texture RO, TextureV1 Sampled, no format       Texture2D<float4> t;
+StorageTexture2D<R32Float> s   Texture RW, TextureV1 ReadWrite, r32float      [format("r32f")] RWTexture2D<float> s;
+WriteTexture2D<Rgba32Float> w  Texture RW, TextureV1 WriteOnly, rgba32float   [format("rgba32f")] WTexture2D<float4> w;
+Sampler f                      Sampler, no access, no layout                  SamplerState f;
+```
+
+Under `shape = pixel` the rest of the table changes in two places: the entry point is a `fragment` taking
+`float4 __gust_pos : SV_Position`, and the invocation parameter is a local `uint3 id = uint3(__gust_linear, 0u, 0u)`
+with `__gust_linear = uint(__gust_pos.y) * 8192u + uint(__gust_pos.x)`; it is still no descriptor binding. Outputs stay
+`RWStructuredBuffer`s at their slots, so the descriptor of a `pixel` kernel lists the same storage parameters as a
+`grid` one would, plus `shape: Shape::Pixel` and `workgroup_size: [1, 1, 1]`.
+
+A kernel's shape travels the same way as its resources. The macro takes it from the stage profile and writes it into
+`KernelDescriptor::shape` (and, for a non-`grid` kernel, into the record and the manifest). `gust::slang`, `gust::reflect`
+and `cargo gust` pass it to `slangc` and to the helper as the stage. The helper refuses an entry point of another stage,
+and `Reflection::cross_check_kernel` compares the stage it read with the descriptor's shape before anything else. At run
+time `gust-wgpu` builds a compute pipeline for `grid` and a render pipeline for `pixel` from the same cache key (which
+holds the shape), so a descriptor whose shape differs from the compiled stage fails the D17 check when its pipeline is
+first built.
+
 The current macro assigns bindings deterministically in resource-parameter order.
 The macro still *assigns* this contract; since T06 the runtime *verifies* it against
 the compiler before creating a pipeline (see "Struct ABI"). Runtime descriptors and
 bind groups are not derived from reflection. Compiler-authoritative layout validation
-now exists for the StorageV1 and StorageV2 buffers and the Std140V1 uniforms; textures, samplers, parameter blocks,
-multiple groups, and specialization still need their own evidence before entering the
+now exists for the StorageV1 and StorageV2 buffers, the Std140V1 uniforms and, since mx.t0b (D91), the 2-D textures
+and samplers; parameter blocks, multiple groups, and specialization still need their own evidence before entering the
 runtime contract. A `Uniform<T>` or `ConstantBuffer<T>` parameter takes the next binding in the same order
 (`ConstantBuffer<T>` in Slang, `BufferBindingType::Uniform` in the bind group layout), and the compiler resource
 it is checked against is a `constantBuffer` whose element has the `Std140V1` layout.
@@ -467,10 +564,15 @@ identity or schema mismatches, decodes SPIR-V structurally, and requires every l
 field to be present.
 
 `Reflection::cross_check_kernel` then compares the descriptor with that evidence:
-no duplicate names or slots on either side, one compiler resource per storage or
-uniform parameter and none left over, equal group/binding/access, and
+the stage against the descriptor's shape first, no duplicate names or slots on either side, one compiler resource per
+storage, uniform, texture or sampler parameter and none left over, equal group/binding/access, and
 `cross_check_pod`-style recursive equality of field identity, offset, size,
-alignment, and stride down to scalars. The private `HeadlessDevice::compile_kernel`
+alignment, and stride down to scalars. A texture is compared by slot, access, dimension and result type, a storage
+or write-only one also by its exact format, a sampled one also by its sample class, and a sampler by its slot; each
+mismatch names the field. A schema 1 or 2 document cannot describe a texture or a sampler, so a descriptor
+that has one fails against it with a hint to re-export. The reader still reads documents of all three schemas as it did,
+but the helper binary itself must be at schema 3: `toolchain::require` refuses an older one, because an older helper
+cannot take the stage argument. The private `HeadlessDevice::compile_kernel`
 (reached through `cached_kernel`) calls both on every pipeline-cache miss and refuses
 to build the pipeline on any error; the WGSL it feeds to wgpu is the helper's
 artifact, so the executed shader and the reflected layout come from one compilation.
@@ -603,7 +705,8 @@ The architecture is ready for several incremental extensions without changing th
 core boundary:
 
 - extend the existing native reflection gate as new resource/layout contracts are proven;
-- add vectors, matrices, textures, samplers, and constant buffers;
+- add the resource kinds the dialect still lacks (1-D, 3-D, cube, array and multisampled textures, comparison samplers,
+  converting texture formats, parameter blocks); vectors, matrices, constant buffers, 2-D textures and samplers exist;
 - map Slang errors back to Rust spans;
 - enforce the Slang pin in `gust::slang` (the content-hash artifact set of D45 already caches compiler output for
   WGSL and SPIR-V; the follow-up is in NEXT_TASKS);

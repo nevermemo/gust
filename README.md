@@ -462,6 +462,92 @@ without one. A production build contains no twin. CPU comparisons in the benchma
 examples are ordinary, independent Rust implementations outside the `#[gpu]` module, and
 they stay the expected values in tests.
 
+### Shapes: `grid` and `pixel`
+
+A kernel has a shape, which says how its elements map onto the hardware (D61, D63; `gust::Shape`). `grid`, the
+default, is the compute dispatch used so far. `pixel` runs the same kind of body in the fragment stage: the host draws a
+full-screen triangle, and each fragment computes one element and stores its outputs, which stay ordinary storage
+buffers, at its own index. It is computation, not a graphics API: GUST owns no blend, depth or raster state. A kernel
+opts in with a pin:
+
+```rust
+#[kernel(shape = pixel)]
+pub fn scale(id: SV_DispatchThreadID, input: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) {
+    let i = id.x;
+    out[i] = input[i] * 2.0f32;
+}
+```
+
+The typed `call`, `submit` and `dispatch` are the same (without the `_extent` forms), the entry point is
+`[shader("fragment")]`, and `id.x` is the element index (the fragment's `y * 8192 + x`; `id.y` and `id.z` are 0).
+Nothing infers a shape at run time: a kernel is `grid` unless it pins `pixel`. The validator's classifier
+(`crates/gust-macros/src/validate/classify.rs`) works out which shapes a kernel could take, lists them in
+`KernelDescriptor::compatible_shapes` (information only) and checks a pin against them. Its rules are syntactic and
+conservative, and whatever it does not recognise makes a kernel `grid`-only. A kernel is `grid`-only when it:
+
+- has workgroup memory, a barrier, `LocalId` or `GroupId`, an atomic, a storage or write-only texture, or an explicit
+  `workgroup_size`;
+- writes an output at an index other than its own, reads an output, does not write every output on every path (an
+  `if` without `else` counts only when its condition is `own < out.len()`), or has a `return`;
+- has a `mut` invocation parameter, no output buffer, or an output element that is not a `u32`, `i32`, `f32` or a 2- or
+  4-wide vector of them. The map generator's and `par_for!`'s kernels are `grid`-only by these rules.
+
+A pin the kernel cannot take is a build error that names the construct (GUST-E0723 to E0728 in
+[DIAGNOSTICS](docs/DIAGNOSTICS.md)); `shape = cpu` is E0722, because `cpu` is a build target (`GUST_PROFILE=cpu`), not
+a shape. The CPU twin and the `cpu` target run `pixel` kernels too.
+
+What a `pixel` call cannot do, each refused before any GPU work: it is one-dimensional (an extent call, an indirect
+launch, the one-shot `dispatch_f32` and `dispatch_u32` and the generated host snippet are `Error::ShapeUnsupported`);
+every output is bound `Shared` (an `Independent` read-write output is `Error::ShapeIndependentOutput`); and it covers
+at most 2^26 elements (`gust::PIXEL_MAX_ELEMENTS`) on every device, which `grid` does not (`DeviceLimit` named
+`pixel_max_elements`). It also needs an adapter whose fragment stage can write storage buffers
+(`FRAGMENT_WRITABLE_STORAGE`); a native adapter without it is `ShapeUnsupported`. In the browser wgpu reports every
+such capability, so GUST cannot refuse there and an adapter without it would give a wrong result instead.
+
+Evidence is narrow. On the RTX 5090 (Vulkan), `pixel`, `grid` and an independent host replay gave identical words for
+`u32`, `i32`, `f32`, `Vec2` and `Vec4` outputs at sizes around the row width and up to the cap
+(`crates/gust-wgpu/tests/pixel.rs`). In headless Chrome 156 on the same GPU, `examples/web-vector-add` ran the pixel
+form at 1000 and 8197 elements and matched the host and the `grid` form bit for bit; no other browser adapter has run
+it. That is evidence for those bodies, not a proof for every kernel; the contract is in
+[SEMANTICS](docs/SEMANTICS.md) and the evidence labels in [VALIDATION](docs/development/VALIDATION.md).
+
+### Textures and samplers
+
+A kernel can take 2-D textures (D64, D90) through four parameter types:
+
+| Parameter | Access | Methods |
+| --- | --- | --- |
+| `Texture2D<T>` | sampled; `T` is `f32`, `u32`, `i32` or a 2- or 4-wide vector of them | `load`, `sample` (float `T` only), `width`, `height` |
+| `StorageTexture2D<F>` | read-write; `F` is `R32Float`, `R32Uint` or `R32Sint` | `load`, `store`, `width`, `height` |
+| `WriteTexture2D<F>` | write-only; `F` is any of the nine formats | `store`, `width`, `height` |
+| `Sampler` | none | the first argument of `sample` |
+
+The nine formats are `R32`, `Rg32` and `Rgba32` in `Float`, `Uint` and `Sint` (`gust::texture::Format`). Texel
+addresses are `u32` and `sample` takes normalised `f32` coordinates. Three-wide texels and converting formats (8-bit,
+normalised, sRGB) are not admitted. On the host, `gust_wgpu::GpuTexture2d<F>` comes from `create_texture_2d` with a
+`TextureUse` (`SAMPLED` or `STORAGE`), and `write_texture`, `read_texture` and `read_texture_async` move texels;
+`GpuSampler` comes from `create_sampler(SamplerOptions)` (nearest or linear, clamp or repeat). The twin has
+`CpuTexture2d<F>` and `CpuSampler`. A typed call takes textures and samplers in parameter order, and a buffer where a
+texture belongs, or the reverse, is a compile error; use and format are checked at submit. This is the host side of
+`examples/texture-threshold`:
+
+```rust
+let image: GpuTexture2d<R32Float> = device.create_texture_2d(WIDTH, HEIGHT, TextureUse::STORAGE)?;
+device.write_texture(&image, texels)?;
+let mask: GpuTexture2d<R32Uint> = device.create_texture_2d(WIDTH, HEIGHT, TextureUse::STORAGE)?;
+let bright = device.create_typed_buffer("bright", &[0u32; 1], GpuBufferAccess::ReadWrite);
+threshold::mark::dispatch_extent(device, Extent::new(WIDTH, HEIGHT, 1), &image, Independent(&bright), &mask)?;
+let mask = device.read_texture(&mask)?;
+```
+
+`load` and `store` are inside the exact contract; `sample` is not, and its bound is in [SEMANTICS](docs/SEMANTICS.md).
+A linear sample of an `f32` texture needs the device feature `float32-filterable`, which a native
+`DeviceOptions::default()` requests when the adapter has it and `HeadlessDevice::new()` and the browser do not; without
+it a linear sampler is `Error::TextureFilter` at submit. Binding one texture to two parameters of a call is refused, and
+the staged graph refuses kernels with a texture or sampler parameter. A `pixel` kernel takes sampled textures and
+samplers, not storage ones. The reflection gate checks each texture binding against the compiler (schema 3 of the
+helper, see [architecture](docs/ARCHITECTURE.md)).
+
 ## Running a kernel: typed calls
 
 Typed calls are the primary dispatch path. For every kernel handle the macro generates `call`, `submit` and
@@ -470,7 +556,8 @@ builds a reusable `gust::Call`, `submit(device, element_count, buffers...)` star
 it and returns a job, and `dispatch(device, element_count, buffers...)` runs it and
 waits. The resources follow the kernel's storage and uniform parameters, one reference
 each, in parameter order: a buffer for a storage parameter, and a `GpuUniform<T>`
-from `create_uniform` for a `Uniform<T>` or `ConstantBuffer<T>` parameter. Passing
+from `create_uniform` for a `Uniform<T>` or `ConstantBuffer<T>` parameter (a texture and a sampler go the same
+way for the parameters of "Textures and samplers"). Passing
 a buffer where a uniform is expected, or the reverse, is a compile error (E0271).
 This is `add_on_gpu` from `examples/vector-add` for the kernel above:
 
@@ -781,7 +868,7 @@ pub fn block_sum(
 ## Examples
 
 The workspace contains ten runnable programs (and `web-vector-add`, a browser module run by
-`cargo xtask check-web`):
+`cargo xtask check-web`, which also runs a `pixel` form of its kernel):
 
 - `vector-add` uses the preferred Slang-shaped Rust vocabulary, runs through the
   generated typed `dispatch`, and demonstrates artifact export.
@@ -891,7 +978,15 @@ The direct syntax translator currently supports:
 - one-, two- and three-dimensional runtime dispatch (`Extent`, m7.d, D102; see "Running a kernel") with explicit
   three-dimensional Slang workgroup sizes in descriptors;
 - workgroup memory (`Workgroup<[T; N]>`), `LocalId`/`GroupId` and `workgroup_barrier()` (m7.g1, D100, D101), and
-  `par_for!` loops (m7.p, D103): see their sections above.
+  `par_for!` loops (m7.p, D103): see their sections above;
+- execution shapes (MX, D61, D63): `grid` by default and `pixel` by `#[kernel(shape = pixel)]`, with the classifier
+  that decides which a kernel can take and the pin errors GUST-E0721 to E0729; see "Shapes: `grid` and `pixel`" for
+  what makes a kernel `grid`-only and for the limits of `pixel` (one-dimensional calls, `Shared` outputs, at most 2^26
+  elements, fragment-stage storage writes);
+- 2-D textures and samplers (MX, D64, D90): `Texture2D<T>`, `StorageTexture2D<F>` (the three `r32` formats),
+  `WriteTexture2D<F>` (nine formats) and `Sampler` parameters with `load`, `store`, `sample`, `width` and `height`
+  (GUST-E0731 to E0736); see "Textures and samplers". Three-wide texels, converting formats, 1-D, 3-D, cube, array and
+  multisampled textures, comparison samplers and mip levels other than 0 are not in the dialect.
 
 The validator intentionally rejects allocation, standard-library access, macros,
 closures, async/await, references (other than an atomic's `&mut buffer[index]`
@@ -950,6 +1045,12 @@ Around the translator, the host side currently provides:
 - fallible buffer constructors (m7.a0, D84): `try_create_typed_buffer`, `create_zeroed_buffer` and `GpuVec` check
   `max_buffer_size` before any wgpu call (`Error::DeviceLimit`), and on native an allocation the adapter cannot serve is
   `Error::OutOfMemory` (a unit test only, no hardware run); `create_typed_buffer` stays infallible and unchecked;
+- textures and the `pixel` runtime (MX): `GpuTexture2d<F>` and `GpuSampler` with the errors `TextureUse`, `TextureFormat`,
+  `TextureFilter`, `TextureSize` and `SamplerOptions`, and bind-group layouts built per device with or without
+  `float32-filterable`. A `pixel` call is one render pass of its own, in batch order, over an 8192-wide `r8unorm`
+  attachment that nothing writes, with at most two scissored draws (the full rows, then the tail row); the kernel's
+  fragments write the output buffers (`crates/gust-wgpu/src/render.rs`, D120, D127). Tests: `gust-wgpu/tests/textures.rs`,
+  `pixel.rs` and `shape_refusal.rs`;
 - `gust-algo` (m7.r1 to m7.r4; a workspace crate with `publish = false`, D110): device-resident algorithms over
   `GpuVec`, every one a GUST kernel. `reduce::sum`, `min` and `max` (`u32`, `i32`, `f32`) and `reduce::sum_wrapping`
   (`u32`) read one element back, `reduce::sum_on_device` keeps it on the device; `scan::inclusive` and `exclusive`

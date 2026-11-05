@@ -677,6 +677,12 @@ texels `(i0, j0)`, `(i0 + 1, j0)`, `(i0, j0 + 1)`, `(i0 + 1, j0 + 1)` after the 
 the specification; D52).
 [`the_linear_error_bound_is_a_256th_of_the_range_plus_two_ulps_of_the_largest_texel`,
 `ulp_is_the_gap_to_the_next_magnitude`]
+The `2^-8` assumes a sampler that quantises the sub-texel position and the filter weights to 8 bits (steps of 1/256).
+That is not guaranteed: Vulkan's core required limit for `subTexelPrecisionBits` is 4 (a step of 1/16; the Vulkan
+specification, chapter "Limits", section "Limit Requirements", table "Required Limits", which lists 8 for Vulkan 1.4
+and the Roadmap 2022 profile), and WebGPU states no number. An adapter with fewer than 8 bits can leave the bound,
+and the test then fails on it. The bound is not widened for that (D92, D132: documented, not chased, D39); the
+evidence is the one adapter of section 1, and a second adapter's `subTexelPrecisionBits` has not been compared.
 Measured on the adapter of section 1 (slice mx.t4, 533 coordinates on each of three formats, so 1599 samples, per address mode, on a
 `float32-filterable` device): the largest `|gpu - twin|` was 0.865 of the bound under ClampToEdge and 0.977 of it under Repeat, so no sample left
 the domain and the `2^-8` term is close to what this adapter uses (that its weights are quantised is inferred from one

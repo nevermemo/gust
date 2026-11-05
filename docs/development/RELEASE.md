@@ -51,15 +51,15 @@ has the right scope; steps 2, 3 and 7 are where those show.
 
 ## Steps
 
-Run from a clean checkout of `<C>`, not from a worktree that lanes use, with the pinned Slang and the helper reachable
-for step 1 (`cargo gust doctor` green).
+Run from a clean checkout of `<C>`, not from a worktree that lanes use, with the pinned Slang (its `slangc` first on
+`PATH`, which `cargo xtask` reads) and the helper reachable for step 1 (`cargo xtask doctor` green).
 
 ```sh
 # 0. On GitHub: branch protection on main requires the checks unit, msrv and release (owner decision Q4). Once.
 
 # 1. Confirm the commit, the clean tree and the full gate (needs Slang, the helper, a GPU and the registry)
 git status --short --branch            # clean, on main at <C>
-cargo gust doctor
+cargo xtask doctor                     # a checkout has no installed cargo-gust; this names the missing Slang or helper
 cargo --locked xtask check-release     # the full gate: packaging, docs, dry run, the README recipe built and run
 
 # 2. Log in once: a token from https://crates.io/settings/tokens, scope publish-update, for the four crates
@@ -89,9 +89,8 @@ This is the same recipe that R7 built from the packaged files, now from crates.i
 cargo install cargo-gust --locked --version "~0.1"
 cargo gust slang install
 cargo gust slang build-helper          # prints the helper path
-cargo gust slang locate                # prints the slangc to put on PATH
-export GUST_SLANG_REFLECT=<the helper path>          # until the run-time bridge reads the managed cache itself
-export PATH="<the folder of that slangc>:$PATH"      # (the README says the same)
+cargo gust slang locate                # prints the slangc that cargo gust and the run-time compile will use
+#    No environment variable is set: the run-time bridge (D109) finds the managed slangc and helper in the cache itself.
 cargo new --bin hello-gust && cd hello-gust
 #    replace Cargo.toml and src/main.rs with the README's two blocks of "Install from crates.io", word for word
 cargo run --features gust-dev          # development path: run-time compile through the managed toolchain

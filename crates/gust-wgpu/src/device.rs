@@ -138,6 +138,11 @@ pub struct DeviceOptions {
 }
 
 impl Default for DeviceOptions {
+    /// Vulkan (WebGPU on `wasm32`), the high-performance adapter and, on native, the adapter's own limits
+    /// ([`LimitsPolicy::Adapter`]) and `float32-filterable` when offered ([`FeaturesPolicy::Adapter`]); this is what
+    /// [`default_device`] opens. [`HeadlessDevice::new`] differs: it requests wgpu's default limits and no optional
+    /// features, so its storage bindings and workgroup counts are the portable ones. In the browser both ask for the
+    /// default limits.
     fn default() -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         let (backends, limits, features) = (
@@ -621,6 +626,9 @@ pub fn set_default_options(options: DeviceOptions) -> Result<(), Error> {
 /// The process's default device, opened on the first call from the options of [`set_default_options`] (or
 /// `DeviceOptions::default()`), and the same device after that. Native only opens it here, blocking the calling
 /// thread; a failure to open (no adapter) is returned and not remembered, so a later call tries again.
+///
+/// Its limits are those of `DeviceOptions::default()`, which on native are the adapter's own, not the portable ones of
+/// [`HeadlessDevice::new`]; [`set_default_options`] changes them before the first call.
 ///
 /// On `wasm32` nothing may block: this returns the device [`default_device_async`] already opened, or
 /// `Error::NoAdapter` before that.

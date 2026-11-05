@@ -47,7 +47,7 @@
 //! callback has run and `Complete` after it, and `wait` and `wait_timeout` return [`Error::WouldBlock`]. The methods
 //! that wait through the shared traits are not compiled out, because `gust::cpu::CpuDevice` runs them fine on
 //! `wasm32`. On this device the generated `dispatch` and `dispatch_extent`, `gust::Run::dispatch_call` and
-//! `gust::Device::dispatch` submit the work, which will run, and then return that error at run time. Use `submit`,
+//! `gust::Device::dispatch` submit their work, which will run, and then return that error at run time. Use `submit`,
 //! then an awaited readback to synchronise.
 //!
 //! `clippy.toml` bans `std::thread::sleep` and `std::time::Instant::now` for the browser; native code may call them,
@@ -704,8 +704,8 @@ pub struct DispatchTiming {
 ///   submitted nothing (an empty batch) is `Complete`. The callback runs on the browser's event loop, so a status
 ///   read in the same synchronous run of code as the submission is `Pending`.
 /// - [`wait`](WgpuJob::wait) and [`wait_timeout`](WgpuJob::wait_timeout) always return [`Error::WouldBlock`], never
-///   `Ok`, so a caller cannot take a finished GPU for granted. The work itself was submitted and will run; only the
-///   wait is refused. Synchronise with an awaited readback
+///   `Ok`, so a caller cannot take a finished GPU for granted. Any work the job submitted has been submitted and will
+///   run; only the wait is refused. Synchronise with an awaited readback
 ///   ([`read_typed_buffer_async`](HeadlessDevice::read_typed_buffer_async)), which resolves when the work and the copy
 ///   are done.
 ///
@@ -774,7 +774,7 @@ impl WgpuJob<'_> {
     /// # On `wasm32` this returns an error
     ///
     /// The browser cannot block, so on `wasm32` this always returns [`Error::WouldBlock`], never `Ok`, even for a job
-    /// that has already completed or submitted nothing. The work was submitted and will run; only the wait is
+    /// that has already completed or submitted nothing. Any work the job submitted will run; only the wait is
     /// refused. The synchronisation on the web is an awaited readback
     /// ([`read_typed_buffer_async`](HeadlessDevice::read_typed_buffer_async)), which resolves only when the work and the
     /// copy are done; [`status`](WgpuJob::status) reports completion without waiting.
@@ -1315,6 +1315,11 @@ impl HeadlessDevice {
     ///
     /// This blocks the calling thread (`pollster::block_on` over [`new_async`](Self::new_async)); it is
     /// not available on `wasm32`, where the browser cannot be blocked.
+    ///
+    /// The device requests wgpu's default limits, the portable ones that a browser always gets, and no optional
+    /// features. [`DeviceOptions::default()`](DeviceOptions) differs on native: it asks for the adapter's own limits
+    /// ([`LimitsPolicy::Adapter`]) and for `float32-filterable` when the adapter offers it, and so does
+    /// [`default_device`]. Use [`with_options`](Self::with_options) to get those on a device of your own.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Result<Self, Error> {
         pollster::block_on(Self::new_async(wgpu::Backends::VULKAN))

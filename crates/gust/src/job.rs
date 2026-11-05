@@ -55,8 +55,8 @@ pub trait Device {
 
     /// Submit `dispatches` and wait until they have completed.
     ///
-    /// A device whose job cannot block (`gust-compute-wgpu` on `wasm32`) submits the dispatches, which will run, and then
-    /// returns its wait error instead of waiting: use [`Device::submit`] and an awaited readback there.
+    /// A device whose job cannot block (`gust-compute-wgpu` on `wasm32`) submits the dispatches, whose work will run, and
+    /// then returns its wait error instead of waiting: use [`Device::submit`] and an awaited readback there.
     fn dispatch<'resources>(
         &self,
         dispatches: &[Self::Dispatch<'resources>],

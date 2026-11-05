@@ -51,12 +51,13 @@ NVIDIA GPU has run a `pixel` kernel and no texture kernel. README, "Stability", 
 
 ### Known limits
 
+- The error bound of a linear texture `sample` assumes a sampler with 8-bit filter weights; Vulkan guarantees only 4
+  `subTexelPrecisionBits` in its core limits and the evidence is one adapter, so the bound can be exceeded, and its
+  test fail, on an adapter with fewer bits (SEMANTICS, section 4).
 - In the browser (`wasm32`) nothing blocks: a job's `wait`, and so a kernel's `dispatch`, returns `Error::WouldBlock`
-  after the work was submitted. Submit, then await a readback (`read_typed_buffer_async`, `GpuVec::to_vec_async`).
+  (any work it submitted will run). Submit, then await a readback (`read_typed_buffer_async`, `GpuVec::to_vec_async`).
 - SPIR-V is exported and validated with `spirv-val` when it is on `PATH`, but the runtime executes the WGSL.
   Running the exported SPIR-V is planned for a 0.1.x release.
-- The run-time compile path does not look into the managed Slang cache by itself yet: put the pinned `slangc` on
-  `PATH` and name the helper in `GUST_SLANG_REFLECT` (README, "Install from crates.io").
 - A crate that depends directly on both `gust-compute` and the unrelated crate `gust` fails with rustc error
   E0464, because both libraries are called `gust`. Renaming a dependency needs an `extern crate ... as gust;` line.
 - The packaged crates are not test-runnable: their tests read files of the repository. Run the tests from a checkout.

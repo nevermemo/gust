@@ -232,7 +232,7 @@ pub(crate) fn check_web_report(args: &[String]) -> Result<String, String> {
     );
     match outcome {
         Outcome::Result(PageResult::Ok { label }) => Ok(format!(
-            "check-web passed: the page logged `{OK_PREFIX}{label}`: the real gust-wgpu vector-add (1000 elements) ran in both forms, grid and pixel, on the browser GPU, and each equalled the host reference and the other bit for bit.\n  evidence: {}\n  {timings}",
+            "check-web passed: the page logged `{OK_PREFIX}{label}`: the real gust-wgpu vector-add (1000 and 8197 elements) ran in both forms, grid and pixel, on the browser GPU, and each equalled the host reference and the other bit for bit.\n  evidence: {}\n  {timings}",
             evidence_label(chrome_version.as_deref(), &label)
         )),
         Outcome::Result(PageResult::Fail { reason }) => Err(format!(

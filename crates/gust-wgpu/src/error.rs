@@ -9,7 +9,8 @@ use crate::GpuBufferAccess;
 pub(crate) const INDIRECT_ARGUMENTS: &str = "<indirect dispatch arguments>";
 
 /// Every way a `gust-wgpu` call can refuse or fail: opening a device, validating a kernel and its bindings, building
-/// a graph, and reading results back. Validation errors are reported before any GPU work is submitted.
+/// a graph, and reading results back. A launch or a graph is validated before it is encoded, so a validation error
+/// means none of its work was submitted.
 ///
 /// The enum is `#[non_exhaustive]`: a later release can add a variant without a breaking change, so a `match` in
 /// another crate needs a wildcard arm.
@@ -26,9 +27,10 @@ pub enum Error {
     /// The kernel descriptor carries no generated Slang source, so there is nothing to compile or to validate. The
     /// text is the kernel's qualified name.
     MissingSlangSource(String),
-    /// Compiling the kernel's Slang at run time failed (`slang-runtime`). The inner error says how.
-    Slang(gust::slang::Error),
-    /// The kernel's reflection could not be read, or does not match its descriptor (D17). The inner error says how.
+    /// A kernel's Slang could not be compiled, reflected or verified; the inner error says how. Three paths return it:
+    /// the run-time compile and reflect (`slang-runtime`; a `slangc` failure arrives as
+    /// `reflect::Error::Compiler`), the cross-check of the reflection against the descriptor (D17), and the
+    /// verification of a precompiled artifact.
     Reflection(gust::reflect::Error),
     /// The kernel has no precompiled WGSL artifact and this build cannot compile one at run time: the
     /// `slang-runtime` feature of `gust-wgpu` is off (D44), and with it the only compiler this crate could start.
@@ -59,7 +61,9 @@ pub enum Error {
     /// in a staged graph, which tracks hazards by buffer only.
     UnsupportedParameter { name: String, kind: ParameterKind },
     /// The kernel's own parameter declares no resource layout, or one that does not fit its kind (`StorageV1` or
-    /// `StorageV2` for a storage buffer, `Std140V1` for a uniform). Reported when the kernel is validated.
+    /// `StorageV2` for a storage buffer, `Std140V1` for a uniform, `TextureV1` for a texture or sampler, D91).
+    /// Reported when the kernel is validated, and when a texture layout is built for a parameter that has no sample
+    /// type on this device or no storage format.
     InvalidResourceLayout {
         parameter: String,
         actual: Option<Box<ResourceLayout>>,
@@ -78,7 +82,7 @@ pub enum Error {
         reason: &'static str,
     },
     /// The resource bound to a parameter has another layout than the parameter declares (`expected`); `actual` is the
-    /// layout of what was bound, or `None` when it has none.
+    /// layout of what was bound (always `Some` today).
     UnsupportedResourceLayout {
         parameter: String,
         expected: Box<ResourceLayout>,
@@ -89,7 +93,8 @@ pub enum Error {
     UnsupportedBindGroup(u32),
     /// The call binds another number of resources (or of samplers) than the kernel declares.
     BindingCount { expected: usize, actual: usize },
-    /// A parameter was bound with another access than it declares (a uniform must be read-only).
+    /// A parameter was bound with another access than it declares, or a kernel declares a uniform parameter that is
+    /// not read-only (`expected` is then read-only and no binding is involved).
     BindingAccess {
         parameter: String,
         expected: Access,
@@ -102,7 +107,8 @@ pub enum Error {
         expected: usize,
         actual: usize,
     },
-    /// A persistent buffer is used with a device other than the one that created it.
+    /// A resource (buffer, uniform, pool, texture or sampler) is used with a device other than the one that created
+    /// it.
     ForeignPersistentBuffer,
     /// One buffer is bound to two parameters of one dispatch and at least one of them is
     /// read-write. Reported before any wgpu object is created or anything is written. Binding the
@@ -130,13 +136,14 @@ pub enum Error {
     PersistentBufferLength { expected: usize, actual: usize },
     /// A readback was asked of a persistent buffer that was not created with read-write access.
     PersistentBufferNotReadable,
-    /// A parameter was bound with an independent length but the buffer is empty; the GPU would see a one-element
-    /// placeholder.
+    /// A parameter was bound with an independent length but the buffer is empty while the call's extent is not; the GPU
+    /// would see a one-element placeholder.
     IndependentLengthEmpty { parameter: String },
     /// A graph node depends on a node that is not an earlier node of the same graph.
     GraphDependencyOrder { node: usize, dependency: usize },
-    /// A graph node touches a buffer last written or read by another node (`producer`) without declaring a dependency
-    /// on it.
+    /// A graph node touches a buffer that an earlier node (`producer`, the earliest such node) also touches, with at
+    /// least one of the two accesses read-write, without depending on it directly or through other nodes. Two reads
+    /// never conflict.
     GraphMissingDependency { node: usize, producer: usize },
     /// A graph readback was asked for a node that is not a readback node of that execution.
     GraphUnknownReadback(usize),
@@ -145,8 +152,9 @@ pub enum Error {
         expected: &'static str,
         actual: &'static str,
     },
-    /// The arguments of an indirect dispatch do not come from `create_indirect_buffer` with a struct of exactly three
-    /// `u32` fields. The text is the name of the struct that was given.
+    /// An indirect-arguments buffer is not a non-empty struct of exactly three `u32` fields. `create_indirect_buffer`
+    /// returns it for another element type, and a graph returns it for an indirect dispatch whose arguments buffer was
+    /// not made by `create_indirect_buffer` or is empty. The text is the name of the struct that was given.
     IndirectArgsLayout(&'static str),
     /// A parameter of an indirect dispatch is not bound with an independent length and a non-empty buffer.
     IndirectBindingLength { parameter: String },
@@ -177,8 +185,9 @@ pub enum Error {
         requested: u64,
         device: u64,
     },
-    /// Waiting for the device failed: the poll returned an error, the device was lost, or the wait did not finish.
-    /// The text is the reason.
+    /// Waiting for the device failed: the poll returned an error, the device was lost, or the wait did not finish. Also
+    /// returned when an allocation's error scope caught a wgpu error other than out-of-memory, or did not resolve. The
+    /// text is the reason.
     Poll(String),
     /// A readback failed: the buffer could not be mapped (including a mapping that did not complete within the bounded
     /// wait), or the mapped bytes cannot be decoded as the requested element type. The text is the reason.
@@ -248,7 +257,6 @@ impl fmt::Display for Error {
             Self::MissingSlangSource(kernel) => {
                 write!(formatter, "kernel `{kernel}` has no generated Slang source")
             }
-            Self::Slang(error) => write!(formatter, "could not compile kernel with Slang: {error}"),
             Self::Reflection(error) => {
                 write!(formatter, "could not validate kernel reflection: {error}")
             }
@@ -500,7 +508,6 @@ impl fmt::Display for Error {
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
-            Self::Slang(error) => Some(error),
             Self::Reflection(error) => Some(error),
             _ => None,
         }

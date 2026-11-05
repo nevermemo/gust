@@ -141,7 +141,8 @@ pub enum Error {
     /// `slangc` could not be launched: it is neither in the managed install nor on `PATH`.
     CompilerNotFound,
     /// Reading or writing a Slang artifact failed (the temporary directory, the source file, the compiler's output),
-    /// or the compiler returned text that is not UTF-8.
+    /// `slangc` could not be launched for a reason other than not being found, or the compiler returned text that is
+    /// not UTF-8.
     Io(std::io::Error),
     /// `slangc` ran and rejected the source. `diagnostics` is its output for the `target` that failed.
     CompilationFailed { target: Target, diagnostics: String },

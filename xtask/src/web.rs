@@ -9,7 +9,7 @@
 //! never exits on its own in headless mode, so the check kills it (the whole process tree) as soon as it has a result,
 //! on a timeout and on every error path, and deletes its fresh profile directory.
 //!
-//! What this is evidence for: the real `gust-wgpu` vector-add ran on the browser's GPU in both forms (grid and pixel,
+//! What this is evidence for: the real `gust-compute-wgpu` vector-add ran on the browser's GPU in both forms (grid and pixel,
 //! mx.w), and each equalled the host reference and the other bit for bit.
 //! The label printed at the end is `Gpu (WebGPU, Chrome <version>, <vendor> <architecture>)`, or `Gpu (software ...)`
 //! when the adapter is a software one. Nothing here runs Slang: the shader is the committed WGSL artifact.
@@ -19,7 +19,7 @@
 //!
 //! Before any of that the check runs a feature guard (all of `--tree-only`): `cargo tree -e features -i wgpu` of the
 //! host target must not list wgpu's `webgpu` feature, and the same for `wasm32-unknown-unknown` must (R4.9: `webgpu`
-//! is enabled from `gust-wgpu`'s wasm32 target dependencies only, so a native build never gains it).
+//! is enabled from `gust-compute-wgpu`'s wasm32 target dependencies only, so a native build never gains it).
 
 use std::{
     env,
@@ -232,7 +232,7 @@ pub(crate) fn check_web_report(args: &[String]) -> Result<String, String> {
     );
     match outcome {
         Outcome::Result(PageResult::Ok { label }) => Ok(format!(
-            "check-web passed: the page logged `{OK_PREFIX}{label}`: the real gust-wgpu vector-add (1000 and 8197 elements) ran in both forms, grid and pixel, on the browser GPU, and each equalled the host reference and the other bit for bit.\n  evidence: {}\n  {timings}",
+            "check-web passed: the page logged `{OK_PREFIX}{label}`: the real gust-wgpu vector-add (1000 and 8197 elements) ran in both forms, grid and pixel, on the browser GPU, and each equalled the host reference and the other bit for bit. The job contract of the browser held for each submission (status Pending right after the submit and Complete after the awaited readback; wait, wait_timeout and the generated dispatch return Error::WouldBlock), and map_gpu read back the host's result through to_vec_async.\n  evidence: {}\n  {timings}",
             evidence_label(chrome_version.as_deref(), &label)
         )),
         Outcome::Result(PageResult::Fail { reason }) => Err(format!(

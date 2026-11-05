@@ -331,13 +331,20 @@ fn the_dispatch_tests_exist_where_the_area_looks_for_them() {
 
 #[test]
 fn the_map_area_counts_the_parallel_cpu_map_tests() {
-    let arm = arm_body("map", "dispatch");
+    // rustfmt breaks a call that grows past the line width over several lines, so compare without whitespace and
+    // without the trailing comma it adds.
+    let squash = |text: &str| {
+        text.split_whitespace()
+            .collect::<String>()
+            .replace(",)", ")")
+    };
+    let arm = squash(&arm_body("map", "dispatch"));
     for call in [
-        "&[\"test\", \"-p\", \"gust\", \"--lib\", \"cpu::parallel\"]",
-        "&[\"test\", \"-p\", \"gust\", \"--test\", \"parallel\"]",
+        "&[\"test\", \"-p\", \"gust-compute\", \"--lib\", \"cpu::parallel\"]",
+        "&[\"test\", \"-p\", \"gust-compute\", \"--test\", \"parallel\"]",
     ] {
         let line = format!("run_counted(&root, {call})?;");
-        assert!(arm.contains(&line), "the map arm lacks {line}");
+        assert!(arm.contains(&squash(&line)), "the map arm lacks {line}");
     }
     let root = workspace_root().unwrap();
     assert!(root.join("crates/gust/tests/parallel.rs").is_file());

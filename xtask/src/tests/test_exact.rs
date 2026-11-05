@@ -50,7 +50,7 @@ fn a_missing_or_repeated_summary_is_rejected() {
 #[test]
 fn cargo_noise_and_test_output_around_the_summary_are_ignored() {
     let output = format!(
-        "   Compiling gust-wgpu v0.1.0\n     Running tests\\semantics.rs\nAdapter: NVIDIA\n{}",
+        "   Compiling gust-compute-wgpu v0.1.0\n     Running tests\\semantics.rs\nAdapter: NVIDIA\n{}",
         summary("ok", "1 passed; 0 failed; 0 ignored")
     );
     assert_eq!(check_single_pass(&output), Ok(()));
@@ -72,12 +72,24 @@ fn args(values: &[&str]) -> Vec<String> {
 
 #[test]
 fn options_need_package_target_and_exactly_one_name() {
-    let options =
-        TestExactOptions::parse(&args(&["-p", "gust-wgpu", "--test", "semantics", "case"]))
-            .unwrap();
+    let options = TestExactOptions::parse(&args(&[
+        "-p",
+        "gust-compute-wgpu",
+        "--test",
+        "semantics",
+        "case",
+    ]))
+    .unwrap();
     assert_eq!(
         options.base_args(),
-        args(&["test", "--locked", "-p", "gust-wgpu", "--test", "semantics"])
+        args(&[
+            "test",
+            "--locked",
+            "-p",
+            "gust-compute-wgpu",
+            "--test",
+            "semantics"
+        ])
     );
     assert_eq!(options.name, "case");
 

@@ -1407,8 +1407,10 @@ fn typed_call_items(
     let submit_doc = format!(
         "Submit `{kernel}`: `__gust_device`, `__gust_element_count`, {order}. Returns a job to wait on."
     );
-    let dispatch_doc =
-        format!("Run `{kernel}` and wait: `__gust_device`, `__gust_element_count`, {order}.");
+    let dispatch_doc = format!(
+        "Run `{kernel}` and wait (on `wasm32`, a device whose job cannot block returns its wait error after \
+         submitting): `__gust_device`, `__gust_element_count`, {order}."
+    );
     // The multi-dimensional forms (slice m7.d): the same three functions over a `gust::Extent` in place of the element
     // count. The one-dimensional forms are `Extent { x: n, y: 1, z: 1 }`.
     let extent_note = "The extent is `gust::Extent { x, y, z }`: each axis is rounded up to whole workgroups, a shared \
@@ -1423,7 +1425,8 @@ fn typed_call_items(
          {extent_note}"
     );
     let dispatch_extent_doc = format!(
-        "Run `{kernel}` over an extent and wait: `__gust_device`, `__gust_extent`, {order}. {extent_note}"
+        "Run `{kernel}` over an extent and wait (on `wasm32`, a device whose job cannot block returns its wait \
+         error after submitting): `__gust_device`, `__gust_extent`, {order}. {extent_note}"
     );
 
     let assertion = if textured {

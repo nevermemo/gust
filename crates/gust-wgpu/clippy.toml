@@ -2,7 +2,7 @@
 #
 # `std::thread::sleep` and `std::time::Instant::now` panic when they run on wasm32-unknown-unknown, so no code that is
 # compiled for the browser may call them. CI's wasm32 job (`ci.yml`, "Clippy on wasm32 (strict web profile)") runs
-# `cargo clippy --locked --target wasm32-unknown-unknown -p gust -p gust-wgpu -p web-vector-add -- -D warnings` under
+# `cargo clippy --locked --target wasm32-unknown-unknown -p gust-compute -p gust-compute-wgpu -p web-vector-add -- -D warnings` under
 # GUST_PROFILE=web, which fails on a call in gust-wgpu that is not gated out. Native code is allowed to call them:
 # `src/lib.rs` carries `#![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]` and the
 # integration tests that time themselves carry the same line.

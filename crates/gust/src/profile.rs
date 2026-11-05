@@ -56,7 +56,7 @@ const fn check_artifact(strict: bool, present: bool) {
 
 /// The text of the compile error that [`require_gpu_target`] raises.
 const NOT_A_GPU_TARGET: &str =
-    "gust-wgpu cannot be built under GUST_PROFILE=cpu: a CPU build contains one target";
+    "gust-compute-wgpu cannot be built under GUST_PROFILE=cpu: a CPU build contains one target";
 
 /// Fails const evaluation when the profile is `cpu`: a build holds one target (D21), so the GPU runtime cannot be in
 /// a `cpu` build.
@@ -179,7 +179,7 @@ mod tests {
         assert_eq!(text, NOT_A_GPU_TARGET);
         assert_eq!(
             NOT_A_GPU_TARGET,
-            "gust-wgpu cannot be built under GUST_PROFILE=cpu: a CPU build contains one target"
+            "gust-compute-wgpu cannot be built under GUST_PROFILE=cpu: a CPU build contains one target"
         );
         check_gpu_target(false);
     }
@@ -222,7 +222,7 @@ mod tests {
 }
 
 // The build script holds the profile decision and its unit tests; including it here is what runs them under
-// `cargo test -p gust`. Its `main` is never called from the library.
+// `cargo test -p gust-compute`. Its `main` is never called from the library.
 #[cfg(test)]
 #[allow(dead_code)]
 #[path = "../build.rs"]

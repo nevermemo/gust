@@ -2165,8 +2165,7 @@ fn r8_dry_run(run: &Run, publishable: &[&Member]) -> Result<String, String> {
         String::new()
     } else {
         format!(
-            "; the registry already has {} of these names and versions (an unrelated crate; only the rename of D48 \
-             removes that)",
+            "; the registry already has {} of these names and versions (a published version cannot be published again)",
             existing.len()
         )
     };

@@ -42,42 +42,42 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 name = "barrier-in-helper"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "barrier-in-if"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "barrier-in-nested-for"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "barrier-in-while"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "barrier-kernel-no-cpu-strategy"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "barrier-ok"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -105,7 +105,7 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 name = "break-in-barrier-loop"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -161,7 +161,7 @@ dependencies = [
 name = "continue-in-barrier-loop"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -242,25 +242,25 @@ dependencies = [
 name = "gpupod-missing"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "gpupod-present"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
-name = "gust"
+name = "gust-compute"
 version = "0.1.0"
 dependencies = [
- "gust-macros",
+ "gust-compute-macros",
 ]
 
 [[package]]
-name = "gust-macros"
+name = "gust-compute-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
@@ -269,10 +269,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "gust-wgpu"
+name = "gust-compute-wgpu"
 version = "0.1.0"
 dependencies = [
- "gust",
+ "gust-compute",
  "pollster",
  "wgpu",
 ]
@@ -334,49 +334,49 @@ dependencies = [
 name = "kernel-cpu-bad-value"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "kernel-cpu-duplicate"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "kernel-cpu-lockstep"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "kernel-missing"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "labelled-break-in-barrier-kernel"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "layout-outside-element"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "layout-outside-field"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -405,14 +405,14 @@ checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 name = "literal-let-ok"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "literal-let-rejected"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -440,71 +440,71 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 name = "map-bool-for-u32"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "map-name-collision"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "map-nested"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "map-ok"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "map-signature"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "map-three-wide"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "map-u32-for-bool"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "missing-docs-fn-dev-ok"
 version = "0.0.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
 name = "missing-docs-fn-ok"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "missing-docs-mod-ok"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -635,49 +635,49 @@ dependencies = [
 name = "par-for-binding"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "par-for-body-error"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "par-for-bool-buffer"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "par-for-form"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "par-for-ok"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "par-for-reserved-name"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "par-for-three-wide"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -749,49 +749,49 @@ dependencies = [
 name = "profile-dev-no-artifact"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "profile-empty"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "profile-native-artifact"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "profile-native-bridge"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "profile-native-no-artifact"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "profile-native-no-manifest"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "profile-unknown"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -804,7 +804,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 name = "question-mark-in-barrier-kernel"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -853,14 +853,14 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "reserved-gust-prefix"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "return-in-barrier-kernel"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -915,133 +915,133 @@ dependencies = [
 name = "shape-cpu-pin"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-grid-ok"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-not-a-name"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-pixel-atomic"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-pixel-barrier"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-pixel-conditional-write"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-pixel-mutable-invocation"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-pixel-no-output"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-pixel-ok"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-pixel-other-index"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-pixel-output-compound"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-pixel-output-read"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-pixel-return"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-pixel-second-alias"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-pixel-storage-texture"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-pixel-struct-output"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-pixel-workgroup-size"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-twice"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "shape-unknown"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -1106,35 +1106,35 @@ dependencies = [
 name = "texture-as-value"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "texture-bad-format"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "texture-method"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "texture-ok"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "texture-sample-argument"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -1161,91 +1161,91 @@ dependencies = [
 name = "typed-call-buffer-for-sampler"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "typed-call-buffer-for-texture"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "typed-call-buffer-for-uniform"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "typed-call-cpu-target"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "typed-call-extent-for-count"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "typed-call-kind-mismatch"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "typed-call-mismatch"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "typed-call-no-cpu-twin"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "typed-call-no-run"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "typed-call-ok"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "typed-call-sampler-for-buffer"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "typed-call-texture-for-buffer"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "typed-call-texture-ok"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -1589,21 +1589,21 @@ dependencies = [
 name = "workgroup-over-16kib"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "wrapping-div-rejected"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
 name = "wrapping-ok"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]

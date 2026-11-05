@@ -120,7 +120,7 @@ fn the_adapter_step_runs_the_gust_wgpu_example_locked_and_quiet() {
             "--locked",
             "--quiet",
             "-p",
-            "gust-wgpu",
+            "gust-compute-wgpu",
             "--example",
             "adapter_info"
         ]

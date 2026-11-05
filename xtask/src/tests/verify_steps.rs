@@ -76,7 +76,7 @@ fn the_full_gate_is_fmt_clippy_workspace_tests_release_slang_and_ledger_tests_ex
         "--locked",
         "--release",
         "-p",
-        "gust",
+        "gust-compute",
         "--lib",
         "--",
         "slang",
@@ -87,7 +87,7 @@ fn the_full_gate_is_fmt_clippy_workspace_tests_release_slang_and_ledger_tests_ex
         "--locked",
         "--release",
         "-p",
-        "gust-wgpu",
+        "gust-compute-wgpu",
         "--test",
         "mismatch",
         "--",
@@ -129,7 +129,7 @@ fn only_the_full_gate_runs_the_release_ledger_and_exactly_once() {
             "--locked",
             "--release",
             "-p",
-            "gust-wgpu",
+            "gust-compute-wgpu",
             "--test",
             "mismatch",
             "--",
@@ -153,9 +153,9 @@ fn only_the_full_gate_runs_the_release_ledger_and_exactly_once() {
 
 #[test]
 fn the_other_modes_keep_their_cargo_calls() {
-    let macros = owned(&["test", "--locked", "-p", "gust-macros"]);
-    let core = owned(&["test", "--locked", "-p", "gust", "--lib"]);
-    let wgpu = owned(&["test", "--locked", "-p", "gust-wgpu"]);
+    let macros = owned(&["test", "--locked", "-p", "gust-compute-macros"]);
+    let core = owned(&["test", "--locked", "-p", "gust-compute", "--lib"]);
+    let wgpu = owned(&["test", "--locked", "-p", "gust-compute-wgpu"]);
     assert_eq!(
         cargo_calls(VerifyMode::Fast),
         [owned(&FMT), macros, core, wgpu.clone()]
@@ -211,7 +211,7 @@ fn the_examples_tests_and_the_filtered_release_slang_tests_must_run_a_test() {
         "test",
         "--locked",
         "-p",
-        "gust-wgpu"
+        "gust-compute-wgpu"
     ])));
     // The release ledger is counted too (m5.f1): `check_counted_call` judges it by name below.
     assert!(counts_tests(&owned(&RELEASE_LEDGER_TEST)));

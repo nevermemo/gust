@@ -8,8 +8,8 @@ publish = false
 # `GUST_PROFILE=cpu` this must not build (the refusal is `gust::profile::require_gpu_target`, which `gust-wgpu`
 # evaluates in a `const _` item).
 [dependencies]
-gust = { path = "../../../crates/gust", default-features = false }
-gust-wgpu = { path = "../../../crates/gust-wgpu", default-features = false }
+gust = { package = "gust-compute", path = "../../../crates/gust", default-features = false }
+gust-wgpu = { package = "gust-compute-wgpu", path = "../../../crates/gust-wgpu", default-features = false }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

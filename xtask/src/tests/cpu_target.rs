@@ -349,11 +349,11 @@ fn the_scan_counts_every_occurrence() {
 // ---- cargo tree (E-b) ----
 
 const TREE: &str = "app v0.0.0 (/x/tests/cpu-target/app)
-|-- gust v0.1.0 (/x/crates/gust)
-|   |-- gust-macros v0.1.0 (/x/crates/gust-macros)
+|-- gust-compute v0.1.0 (/x/crates/gust)
+|   |-- gust-compute-macros v0.1.0 (/x/crates/gust-macros)
 |   `-- syn v2.0.1
 `-- kernels v0.0.0 (/x/tests/cpu-target/kernels)
-    `-- gust v0.1.0 (/x/crates/gust) (*)
+    `-- gust-compute v0.1.0 (/x/crates/gust) (*)
 ";
 
 #[test]
@@ -363,11 +363,11 @@ fn the_tree_of_app_has_no_gpu_runtime_and_no_bridge() {
 
 #[test]
 fn a_tree_with_the_gpu_runtime_or_the_bridge_is_a_problem() {
-    let with_wgpu = format!("{TREE}|-- gust-wgpu v0.1.0 (/x/crates/gust-wgpu)\n");
+    let with_wgpu = format!("{TREE}|-- gust-compute-wgpu v0.1.0 (/x/crates/gust-wgpu)\n");
     assert_eq!(
         tree_problems(&with_wgpu),
         [
-            "the GPU runtime or the bridge is in the tree: `|-- gust-wgpu v0.1.0 (/x/crates/gust-wgpu)`"
+            "the GPU runtime or the bridge is in the tree: `|-- gust-compute-wgpu v0.1.0 (/x/crates/gust-wgpu)`"
         ]
     );
     let with_wgpu_crate = format!("{TREE}`-- wgpu v30.0.1\n");
@@ -685,7 +685,7 @@ fn error_line(target: &str, code: &str, message: &str, file_json: &str, line: u6
     )
 }
 
-const REFUSAL: &str = "evaluation panicked: gust-wgpu cannot be built under GUST_PROFILE=cpu: a CPU build contains one target";
+const REFUSAL: &str = "evaluation panicked: gust-compute-wgpu cannot be built under GUST_PROFILE=cpu: a CPU build contains one target";
 
 fn e_e_text(line: usize) -> String {
     with_located_line(&fixture_file("e-e-expected.txt"), line)

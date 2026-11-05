@@ -8,7 +8,7 @@ use crate::GpuBufferAccess;
 /// indirect dispatch in a staged graph. It stands where a parameter name would.
 pub(crate) const INDIRECT_ARGUMENTS: &str = "<indirect dispatch arguments>";
 
-/// Every way a `gust-wgpu` call can refuse or fail: opening a device, validating a kernel and its bindings, building
+/// Every way a `gust-compute-wgpu` call can refuse or fail: opening a device, validating a kernel and its bindings, building
 /// a graph, and reading results back. A launch or a graph is validated before it is encoded, so a validation error
 /// means none of its work was submitted.
 ///
@@ -33,7 +33,7 @@ pub enum Error {
     /// verification of a precompiled artifact.
     Reflection(gust::reflect::Error),
     /// The kernel has no precompiled WGSL artifact and this build cannot compile one at run time: the
-    /// `slang-runtime` feature of `gust-wgpu` is off (D44), and with it the only compiler this crate could start.
+    /// `slang-runtime` feature of `gust-compute-wgpu` is off (D44), and with it the only compiler this crate could start.
     /// `profile` is the build profile of `gust` (D44). Remedy: run `cargo gust build` in the kernel's crate and
     /// rebuild, so that the artifact is embedded; or, in a `dev` build, enable the `slang-runtime` feature.
     NoArtifact {
@@ -269,6 +269,13 @@ pub enum Error {
     /// A readback failed: the buffer could not be mapped (including a mapping that did not complete within the bounded
     /// wait), or the mapped bytes cannot be decoded as the requested element type. The text is the reason.
     Map(String),
+    /// A blocking wait was asked for on `wasm32`, where the browser cannot block: `WgpuJob::wait` and
+    /// `WgpuJob::wait_timeout` always return this there, and so do the calls built on them (the generated `dispatch`
+    /// of a kernel, `gust::Run::dispatch_call`, `gust::Device::dispatch`). The text is the `WgpuJob` method that
+    /// refused (`wait` or `wait_timeout`). The work was already submitted and will run; only the wait is refused. To
+    /// synchronise, await a readback with `HeadlessDevice::read_typed_buffer_async` (it resolves when the work and the
+    /// copy are done), or read `WgpuJob::status` without waiting. Never returned on native targets.
+    WouldBlock(&'static str),
     /// A buffer or texture allocation failed inside an out-of-memory error scope: the request was within the
     /// device's limits (`max_buffer_size` for a buffer, `max_texture_dimension_2d` for a texture), but the adapter had
     /// no memory for it. `label` names the buffer or texture (a `pixel` call's attachment is
@@ -367,7 +374,7 @@ impl fmt::Display for Error {
             }
             Self::NoArtifact { kernel, profile } => write!(
                 formatter,
-                "kernel `{kernel}` has no precompiled WGSL artifact, and this build of gust-wgpu (profile `{profile}`) was built without the `slang-runtime` feature, so it cannot compile the kernel at run time; run `cargo gust build` in the crate that defines the kernel and rebuild, or enable the `slang-runtime` feature in a dev build",
+                "kernel `{kernel}` has no precompiled WGSL artifact, and this build of gust-compute-wgpu (profile `{profile}`) was built without the `slang-runtime` feature, so it cannot compile the kernel at run time; run `cargo gust build` in the crate that defines the kernel and rebuild, or enable the `slang-runtime` feature in a dev build",
             ),
             Self::ShapeUnsupported {
                 kernel,
@@ -555,6 +562,11 @@ impl fmt::Display for Error {
             ),
             Self::Poll(error) => write!(formatter, "GPU synchronization failed: {error}"),
             Self::Map(error) => write!(formatter, "GPU readback failed: {error}"),
+            Self::WouldBlock(what) => write!(
+                formatter,
+                "`{what}` would block, which the browser cannot do; the work was submitted and will run: await a \
+                 readback (`read_typed_buffer_async`) to synchronise, or read the job's `status`",
+            ),
             Self::OutOfMemory { label, bytes } => write!(
                 formatter,
                 "the adapter is out of memory allocating `{label}` ({bytes} bytes)",

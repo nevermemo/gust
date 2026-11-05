@@ -26,17 +26,16 @@ code generation.
 ## Component responsibilities
 
 Packages and library names (D48, D106). The directories keep their names. The first release publishes four
-packages under the D48 names; until the rename slice (mr.n) lands after MX's last code merge, the workspace packages
-still carry today's names. The library names do not change, which is why the macro's `::gust::` and `::gust_wgpu::`
-paths keep resolving in a user's crate.
+packages under the D48 names, and the workspace packages carry them. The library names do not change, which is why
+the macro's `::gust::` and `::gust_wgpu::` paths keep resolving in a user's crate.
 
-| Directory | Package today | Package when published | Library name | Published |
-| --- | --- | --- | --- | --- |
-| `crates/gust` | `gust` | `gust-compute` | `gust` | yes |
-| `crates/gust-macros` | `gust-macros` | `gust-compute-macros` | `gust_macros` | yes |
-| `crates/gust-wgpu` | `gust-wgpu` | `gust-compute-wgpu` | `gust_wgpu` | yes |
-| `crates/cargo-gust` | `cargo-gust` | `cargo-gust` | none (binary only) | yes |
-| `crates/gust-algo` | `gust-algo` | not published (D110) | `gust_algo` | no |
+| Directory | Package | Library name | Published |
+| --- | --- | --- | --- |
+| `crates/gust` | `gust-compute` | `gust` | yes |
+| `crates/gust-macros` | `gust-compute-macros` | `gust_macros` | yes |
+| `crates/gust-wgpu` | `gust-compute-wgpu` | `gust_wgpu` | yes |
+| `crates/cargo-gust` | `cargo-gust` | none (binary only) | yes |
+| `crates/gust-algo` | `gust-algo` | `gust_algo` | no (D110) |
 
 The four published packages share one version, bumped together, and depend on each other with exact (`=`) versions
 (D107). `cargo-gust` has no library and so no docs.rs page; its documentation is its README. The examples, `xtask`,
@@ -375,7 +374,7 @@ not fit. The results agree: integers bit for bit, floats within the per-level bo
 each variant (`f32_sum_bound` for v0 and `f32_sum_bound_v1` for v1). The measurement behind `shipped` is in D121:
 the RTX 5090 half used a 10 % margin, and the Radeon 890M half put v1 ahead by 1.01 to 1.03 for the reductions at 1e8.
 
-The crate depends on `gust` and `gust-wgpu` and on nothing else: `xtask/src/arch.rs` carries a `CrateRule` with exactly
+The crate depends on `gust-compute` and `gust-compute-wgpu` and on nothing else: `xtask/src/arch.rs` carries a `CrateRule` with exactly
 that allow-list, and `cargo xtask check-arch` fails for a workspace crate without one. It is `publish = false` because
 the kernel files live outside the package. Its twin tests run the v0 twins against independent references in its test
 builds; the `gpu::` tests run on the adapter. Both are in the one `cargo test -p gust-algo` call that the Gpu suite and

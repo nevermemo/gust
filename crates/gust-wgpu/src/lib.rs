@@ -37,11 +37,18 @@
 //! # The `wasm32` surface
 //!
 //! In the browser (`wasm32-unknown-unknown`, wgpu's `webgpu` backend) nothing may block or read a clock, so the
-//! crate offers only what can run there: `new_async`, the buffer, upload and typed `dispatch`/`submit` functions, and
+//! crate offers only what can run there: `new_async`, the buffer, upload and typed `submit` functions, and
 //! `read_typed_buffer_async`. These are compiled out on `wasm32`: the blocking readbacks, the `_timed` functions
-//! (`std::time::Instant` panics in the browser), `dispatch_f32`/`dispatch_u32` and the timestamp readback (one-shot
-//! channels), the `graph` module and `HeadlessDevice::pool_read`. A call to one of them fails to
-//! compile. The one exception to "nothing blocks" is [`WgpuJob::wait`], which cannot be removed (see there).
+//! (`std::time::Instant` panics in the browser), `dispatch_f32`/`dispatch_u32`, the blocking `dispatch_batch`,
+//! `dispatch_buffers`, `dispatch_f32_batch` and `dispatch_f32_buffers`, the timestamp readback (one-shot channels), the
+//! `graph` module and `HeadlessDevice::pool_read`. A call to one of them fails to compile.
+//!
+//! A [`WgpuJob`] cannot block there either: its `status` reports `Pending` until wgpu's `on_submitted_work_done`
+//! callback has run and `Complete` after it, and `wait` and `wait_timeout` return [`Error::WouldBlock`]. The methods
+//! that wait through the shared traits are not compiled out, because `gust::cpu::CpuDevice` runs them fine on
+//! `wasm32`. On this device the generated `dispatch` and `dispatch_extent`, `gust::Run::dispatch_call` and
+//! `gust::Device::dispatch` submit the work, which will run, and then return that error at run time. Use `submit`,
+//! then an awaited readback to synchronise.
 //!
 //! `clippy.toml` bans `std::thread::sleep` and `std::time::Instant::now` for the browser; native code may call them,
 //! hence the crate-level allow below.
@@ -49,7 +56,7 @@
 //! # Stability
 //!
 //! This crate is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`),
-//! and a patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (`gust`, the `#[gpu]`
+//! and a patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (`gust-compute`, the `#[gpu]`
 //! macro crate, this crate and `cargo-gust`) share one version and depend on each other with exact (`=`) pins: take
 //! them at the same version, and a minor bump of one is a minor bump of all.
 //!
@@ -687,15 +694,56 @@ pub struct DispatchTiming {
 }
 
 /// Fence for one submitted wgpu command buffer.
-#[must_use = "GPU work is asynchronous; poll or wait on the returned job when completion matters"]
+///
+/// # On `wasm32`
+///
+/// The browser cannot block, so the job reports completion without polling and refuses to wait:
+///
+/// - [`status`](WgpuJob::status) (and [`is_complete`](WgpuJob::is_complete)) is `Pending` until wgpu's
+///   `Queue::on_submitted_work_done` callback for this submission has run, and `Complete` after it. A job that
+///   submitted nothing (an empty batch) is `Complete`. The callback runs on the browser's event loop, so a status
+///   read in the same synchronous run of code as the submission is `Pending`.
+/// - [`wait`](WgpuJob::wait) and [`wait_timeout`](WgpuJob::wait_timeout) always return [`Error::WouldBlock`], never
+///   `Ok`, so a caller cannot take a finished GPU for granted. The work itself was submitted and will run; only the
+///   wait is refused. Synchronise with an awaited readback
+///   ([`read_typed_buffer_async`](HeadlessDevice::read_typed_buffer_async)), which resolves when the work and the copy
+///   are done.
+///
+/// Every blocking convenience built on `wait` fails the same way on `wasm32`, after it has submitted the work: the
+/// generated `dispatch` and `dispatch_extent` of a kernel, `gust::Run::dispatch_call` and `gust::Device::dispatch`
+/// return that error at run time (use `submit` and an awaited readback there), and the `HeadlessDevice` helpers that
+/// wait are compiled out.
+#[must_use = "GPU work is asynchronous; poll, await a readback or wait on the returned job when completion matters"]
 pub struct WgpuJob<'device> {
+    // Only the native `poll_with_timeout` reads these two.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     device: &'device wgpu::Device,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     submission: Option<wgpu::SubmissionIndex>,
+    /// Set by the `on_submitted_work_done` callback of this job's submission (`true` from the start for a job that
+    /// submitted nothing). An `Arc<AtomicBool>` is `Send + Sync` and the callback must be `Send`; the field exists on
+    /// `wasm32` only, so the auto traits of `WgpuJob` on native are what they were.
+    #[cfg(target_arch = "wasm32")]
+    done: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl WgpuJob<'_> {
     /// Poll the exact submission once without blocking.
+    ///
+    /// On `wasm32` this reads the flag that `Queue::on_submitted_work_done` sets: `Pending` until the callback has
+    /// run, then `Complete`; a job with no submission is `Complete`. A lost device also reads `Complete` there (the
+    /// WebGPU specification runs the completion steps when the device is lost, and wgpu calls back when the promise
+    /// rejects), where native returns `Err(Error::Poll)`.
     pub fn status(&self) -> Result<JobStatus, Error> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            Ok(if self.done.load(Ordering::Acquire) {
+                JobStatus::Complete
+            } else {
+                JobStatus::Pending
+            })
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         self.poll_with_timeout(Some(Duration::ZERO))
     }
 
@@ -705,25 +753,41 @@ impl WgpuJob<'_> {
     }
 
     /// Wait for at most `timeout`.
+    ///
+    /// # On `wasm32`
+    ///
+    /// Always returns [`Error::WouldBlock`]: the browser cannot block, and `timeout` is ignored. Use
+    /// [`status`](WgpuJob::status) or an awaited readback
+    /// ([`read_typed_buffer_async`](HeadlessDevice::read_typed_buffer_async)).
     pub fn wait_timeout(&self, timeout: Duration) -> Result<JobStatus, Error> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = timeout;
+            Err(Error::WouldBlock("wait_timeout"))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         self.poll_with_timeout(Some(timeout))
     }
 
     /// Wait indefinitely for this submission, without waiting for later work.
     ///
-    /// # On `wasm32` this does not wait
+    /// # On `wasm32` this returns an error
     ///
-    /// The browser cannot block, and the WebGPU backend of `wgpu` 30.0.1 answers every device poll with `QueueEmpty` at
-    /// once (its source says "Device is polled automatically"; read there, not otherwise observed), so `wait`,
-    /// `wait_timeout` and `status` return `Complete` before the GPU is necessarily done.
-    /// It is not gated off because `gust::Job::wait` is a trait method that the blocking typed `dispatch` calls
-    /// (`gust/src/dispatch.rs`). The synchronisation on the web is an awaited readback
+    /// The browser cannot block, so on `wasm32` this always returns [`Error::WouldBlock`], never `Ok`, even for a job
+    /// that has already completed or submitted nothing. The work was submitted and will run; only the wait is
+    /// refused. The synchronisation on the web is an awaited readback
     /// ([`read_typed_buffer_async`](HeadlessDevice::read_typed_buffer_async)), which resolves only when the work and the
-    /// copy are done.
+    /// copy are done; [`status`](WgpuJob::status) reports completion without waiting.
     pub fn wait(&self) -> Result<(), Error> {
+        #[cfg(target_arch = "wasm32")]
+        {
+            Err(Error::WouldBlock("wait"))
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         self.poll_with_timeout(None).map(|_| ())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
     fn poll_with_timeout(&self, timeout: Option<Duration>) -> Result<JobStatus, Error> {
         let Some(submission) = &self.submission else {
             return Ok(JobStatus::Complete);
@@ -1717,6 +1781,7 @@ impl HeadlessDevice {
     }
 
     /// Dispatch `kernel` over `element_count` elements with `bindings` and wait until it has completed.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn dispatch_f32_buffers(
         &self,
         kernel: &KernelDescriptor,
@@ -1747,6 +1812,7 @@ impl HeadlessDevice {
     }
 
     /// Submit `dispatches` as one command buffer and wait until it has completed.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn dispatch_f32_batch(&self, dispatches: &[F32BufferDispatch<'_>]) -> Result<(), Error> {
         self.submit_f32_batch(dispatches)?.wait()
     }
@@ -1774,6 +1840,7 @@ impl HeadlessDevice {
     ///
     /// This convenience wrapper calls [`Self::submit_buffers`] and waits on
     /// its exact submission fence.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn dispatch_buffers(
         &self,
         kernel: &KernelDescriptor,
@@ -1812,6 +1879,8 @@ impl HeadlessDevice {
             return Ok(WgpuJob {
                 device: &self.device,
                 submission: None,
+                #[cfg(target_arch = "wasm32")]
+                done: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             });
         }
 
@@ -1824,13 +1893,25 @@ impl HeadlessDevice {
             dispatch.encode(&self.device, &mut encoder, "GUST typed batched pass", None)?;
         }
         let submission = self.queue.submit([encoder.finish()]);
+        // The browser cannot poll, so the job learns of completion from the queue (`WgpuJob::status`).
+        #[cfg(target_arch = "wasm32")]
+        let done = {
+            let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let flag = Arc::clone(&done);
+            self.queue
+                .on_submitted_work_done(move || flag.store(true, Ordering::Release));
+            done
+        };
         Ok(WgpuJob {
             device: &self.device,
             submission: Some(submission),
+            #[cfg(target_arch = "wasm32")]
+            done,
         })
     }
 
     /// Submit a batch and synchronously wait for its exact submission fence.
+    #[cfg(not(target_arch = "wasm32"))]
     pub fn dispatch_batch(&self, dispatches: &[BufferDispatch<'_>]) -> Result<(), Error> {
         self.submit_batch(dispatches)?.wait()
     }

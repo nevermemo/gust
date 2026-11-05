@@ -1118,8 +1118,8 @@ fn a_named_new_entry_with_any_other_content_is_kept_and_named() {
 fn dep_info_names_the_registry_src_entries_whatever_the_spelling() {
     let windows = concat!(
         "C:\\w\\package-target\\debug\\deps\\gust-1a2b.d: ",
-        "C:\\h\\.cargo\\registry\\src\\-dff94c\\gust-0.1.0\\src\\lib.rs ",
-        "C:\\h\\.cargo\\registry\\src\\-dff94c\\gust-macros-0.1.0\\src\\lib.rs\n",
+        "C:\\h\\.cargo\\registry\\src\\-dff94c\\gust-compute-0.1.0\\src\\lib.rs ",
+        "C:\\h\\.cargo\\registry\\src\\-dff94c\\gust-compute-macros-0.1.0\\src\\lib.rs\n",
         "C:\\h\\.cargo\\registry\\src\\index.crates.io-1949\\serde-1.0.0\\src\\lib.rs:\n"
     );
     assert_eq!(

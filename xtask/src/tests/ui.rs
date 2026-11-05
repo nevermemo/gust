@@ -1210,7 +1210,7 @@ fn a_diagnostic_on_a_sibling_target_is_selected_by_the_target_name() {
 
 /// The stderr of `cargo check -p profile-unknown` under `GUST_PROFILE=bogus`, trimmed from a real run (the machine
 /// paths are replaced by `<path>`): cargo's own report of the failed build script, then the script's stderr.
-const BUILD_SCRIPT_STDERR: &str = "error: failed to run custom build command for `gust v0.1.0 (<path>)`\n\nCaused by:\n  process didn't exit successfully: `<path>\\build-script-build` (exit code: 1)\n  --- stderr\n  gust: unknown GUST_PROFILE `bogus`; use dev, native or web\n";
+const BUILD_SCRIPT_STDERR: &str = "error: failed to run custom build command for `gust-compute v0.1.0 (<path>)`\n\nCaused by:\n  process didn't exit successfully: `<path>\\build-script-build` (exit code: 1)\n  --- stderr\n  gust: unknown GUST_PROFILE `bogus`; use dev, native or web\n";
 
 fn build_fails(texts: &[&str]) -> Expectation {
     Expectation::BuildFails(texts.iter().map(|text| (*text).to_owned()).collect())
@@ -1431,7 +1431,7 @@ fn a_build_script_failure_without_the_text_or_that_compiled_is_a_problem() {
 fn a_failure_elsewhere_than_in_the_build_script_of_gust_never_satisfies_build_error() {
     let text = ["unknown GUST_PROFILE"];
     // Another package's build script, with the same words in its stderr.
-    let other = BUILD_SCRIPT_STDERR.replace("`gust v0.1.0", "`other v0.1.0");
+    let other = BUILD_SCRIPT_STDERR.replace("`gust-compute v0.1.0", "`other v0.1.0");
     let problems = judge_script(&text, false, "", &other);
     assert_eq!(problems.len(), 2, "{problems:?}");
     assert!(
@@ -1532,7 +1532,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
     assert_eq!(
         find("profile-native-bridge").expectation,
         build_fails(&[
-            "gust: profile native refuses feature slang-runtime; a strict profile builds no run-time Slang bridge. Do not enable the feature for this build (look for features = [\"slang-runtime\"] in a dependency, or --features ...slang-runtime; `cargo tree -e features -i gust` shows who enables it), or build with GUST_PROFILE=dev."
+            "gust: profile native refuses feature slang-runtime; a strict profile builds no run-time Slang bridge. Do not enable the feature for this build (look for features = [\"slang-runtime\"] in a dependency, or --features ...slang-runtime; `cargo tree -e features -i gust-compute` shows who enables it), or build with GUST_PROFILE=dev."
         ])
     );
     let manifest = fs::read_to_string(ui.join("profile-native-bridge").join("Cargo.toml")).unwrap();

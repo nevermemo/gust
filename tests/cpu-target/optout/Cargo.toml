@@ -6,7 +6,7 @@ publish = false
 
 [dependencies]
 kernels = { path = "../kernels" }
-gust = { path = "../../../crates/gust", default-features = false }
+gust = { package = "gust-compute", path = "../../../crates/gust", default-features = false }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

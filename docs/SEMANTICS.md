@@ -224,34 +224,81 @@ describes the intended behaviour and is not evidence.
   and `dispatch_extent` take `gust_wgpu::GpuTexture2d<F>` and `GpuSampler` for them. `load` and `store` are exact:
   on all nine formats the GPU and the twin agree bit for bit and with an independent host expectation, and
   `read_texture` returns what `write_texture` stored (`crates/gust-wgpu/tests/textures.rs`). `sample` is outside the
-  exact contract (section 4): a nearest read is the formula's texel except within 1/128 of a texel edge (the test's
-tolerance; measured about 1e-6 on one adapter), and a linear
-  read is inside the error domain of section 4. A 32-bit float texture is linearly filterable only on a device that
+  exact contract (D92; section 4 has the formula): the twin implements the WebGPU formula in `f32`, so a `sample` has a
+  twin, and a GPU result is accepted inside the stated bound `|gpu - twin| <= 2^-8 * (max - min of the four texels) +
+  2 * ulp(max |texel|)` for a linear read (`cpu::texture::linear_error_bound`; the bound is inferred from the
+  specification, not read from a device, and the largest observed distance was 0.977 of it). A nearest read is the
+  formula's texel except within 1/128 of a texel edge (the test's tolerance; measured about 1e-6 on one adapter). The
+  bound is documented and never chased (D39). It is tested for `grid` kernels (`textures.rs`) and, for a nearest sampler
+  only, for a `pixel` kernel (`tests/pixel.rs`, `row`); a linear `sample` in a fragment has the same formula and bound
+  and has not been run. The difftest generator has no texture construct, so it never emits `sample`, and the
+  production CPU target's texture kernel uses `load` and `store` only. A 32-bit float texture is linearly filterable only on a device that
   enabled `float32-filterable` (a `FeaturesPolicy::Adapter` device on an adapter that offers it); without it a linear
   sampler is `Error::TextureFilter` (D64). Binding one texture to two parameters of a call is refused before anything
   runs (`cpu::Error::Aliased` on the twin, `Error::AliasedBinding` on the GPU). What the GPU does
   where the specification leaves it open is the ledger rows KM-12 (a texel address outside the texture), KM-13 (the
   weights of a linear read) and KM-14 (a nearest read next to a texel edge). `examples/texture-threshold` and the
   `texture_ops` kernel of `tests/cpu-target` run textures end to end, on the GPU and on the production CPU target.
-- **The `pixel` shape at run time (slice mx.p1b; D61, D120, D127).** A call of a `pixel` kernel over `n` elements runs
-  the body once for each element `i` in `0..n`, as the twin does, and on the GPU each run is one fragment: the host
-  draws a full-screen triangle into an 8192-wide attachment, scissored to the `n` live texels, so no fragment outside
-  `0..n` runs (a helper invocation cannot store). The element index is `y * 8192 + x` of the fragment. Outputs are
-  written in place, so what `grid` guarantees for a store (one writer per element, no ordering between elements)
-  holds the same way. The same body gives the same bits as `grid` for `u32`, `i32` and `bool` outputs; for `f32` it
-  gives results within section 4's bounds and not necessarily the same bits, because a device may fuse `a * b + c` and
-  round `x / y` within 2.5 ulp differently in the compute and the fragment stage (D128). The record: up to 4 ulp
-  between the shapes on the RTX 5090 (driver 610.88) for an unfused multiply-add chain after a division, with identical
-  emitted Slang, WGSL and SPIR-V (an earlier form of the `examples/shape-bench` K3, measured 2026-11-05 and not kept:
-  9 % to 11 % of the words differed; X-S1's form without the division, which the bench now has, wrote the same bits in
-  both shapes, as did the 36 `f32` programs of the difftest seeds 1 to 8). The cases tested (`tests/pixel.rs`: u32, i32, f32, `Vec2`
-  and `Vec4` outputs at sizes around the row width and up to the cap, with an independent host reference) agreed bit
-  for bit; that is evidence for those bodies, not a proof for every kernel. A call is refused, identically on the
-  twin and the `cpu` target, when it has a y or z other than 1 (`ShapeUnsupported`, `cpu::Error::PixelExtent`), when
-  `n` is over 2^26 (`DeviceLimit` named `pixel_max_elements`) or when a read-write output is bound `Independent`
-  (`ShapeIndependentOutput`, `cpu::Error::PixelIndependentOutput`). Only the GPU adds the texture dimension of the
-  device, the fragment-stage storage capability (`FRAGMENT_WRITABLE_STORAGE`) and the storage-binding size, and a
-  `pixel` kernel has no indirect launch.
+- **The `pixel` shape at run time (slices mx.p1b and mx.p1c; D61, D62, D120, D127, D128).** A `pixel` kernel is the body
+  of a `grid` kernel run once for each element of a one-dimensional call, as a fragment shader. The contract below is
+  what the code does and what the tests ran. Every run it cites is *measured* (section 2): the RTX 5090 of this
+  section, driver 610.88, and one headless Chrome run, never another adapter. The statements are not entries of
+  section 8.
+  - *The element index.* The host draws one full-screen triangle into an 8192-wide attachment
+    (`gust::PIXEL_ROW_WIDTH`), scissored to the `n` live texels with at most two draws: the full rows, then the tail
+    row. The element of a fragment is `y * 8192 + x`. The kernel's invocation parameter is `uint3(y * 8192 + x, 0, 0)`,
+    so `id.x` is the element and `id.y` and `id.z` are 0. The body runs once for each `i` in `0..n` and nowhere
+    else: there are no padding or guard fragments, and a helper invocation cannot store. As on `grid` there is no order
+    between elements; the twin and the `cpu` target run them in ascending index. A call covers at most 2^26 elements
+    (`gust::PIXEL_MAX_ELEMENTS`, which `grid` does not have), and `n = 0` is `Ok` and does nothing.
+  - *Which outputs, and how they are written.* An output is a `RWStructuredBuffer` whose element is `u32`, `i32`,
+    `f32` or a 2- or 4-wide vector of them. It is written in place by a storage write from the fragment stage
+    (`out[i] = v` at the element's own index), not through a render target, so no blending, sRGB or format conversion
+    can touch the value; the one attachment of the pass is never written. The classifier (`compatible_shapes`) admits a
+    kernel as `pixel` only when every output is written at the own index on every path (a conditional write only under
+    the guard `i < out.len()`), is never read, compound-assigned or written by component, and the body has no `return`,
+    atomic, barrier, workgroup memory or storage texture (the rules are in ARCHITECTURE and DIAGNOSTICS, E0723 to
+    E0728). A kernel outside those rules is `grid`-only and has no `pixel` contract at all. Every output is bound
+    `Shared`, so its length is `n`. A sampled `Texture2D` and a `Sampler` may be read in a fragment; `sample` there has
+    the contract of section 4 and is outside the exact one, as on `grid`.
+  - *Integer outputs: bit identity.* For `u32` and `i32` outputs (and a `bool` result, which travels as a `u32` word)
+    the same body gives the same bits as `grid`, as the twin and as an independent host replay (D62). Measured:
+    `tests/pixel.rs` ran `u32` and `i32` at sizes from 0 up to 16 785 409 (the squares up to 4097^2, the row width and
+    its neighbours, `8192k + 1` for k up to 1000, 1 000 003) with 0 differing words, and `u32` also at the cap of 2^26;
+    the cross-shape difftest (`check-difftest --shapes grid,pixel`, seeds 1 to 8) ran 128 generated programs as `pixel`
+    and found no integer or boolean bit that differs from `grid` (DIFFTEST, "Shapes"). Integer vector outputs
+    (`IVec2`, `UVec4` and so on) are admitted by the classifier and have not been run as `pixel` outputs.
+  - *`f32` outputs: the bits may differ from `grid` (D128).* `pixel` keeps section 4's bounds, not `grid`'s bits: a
+    device may fuse `a * b + c` and round `x / y` within 2.5 ulp differently in the compute and the fragment stage. So
+    each shape is judged against the interpreter's interval, and a bit difference between the two shapes is an
+    observation, never a mismatch (D39: documented, not chased). The record: up to 4 ulp between the shapes on the
+    RTX 5090 (driver 610.88) for an unfused multiply-add chain after a division, with identical emitted Slang, WGSL
+    and SPIR-V (an earlier form of the `examples/shape-bench` K3, measured 2026-11-05 and not kept: 9 % to 11 % of the
+    words differed). Where the bits did agree: X-S1's form without the division, which the bench now has, wrote the
+    same bits in both shapes, as did the 36 `f32` programs of the difftest seeds 1 to 8 and the `f32`, `Vec2` and
+    `Vec4` cases of `tests/pixel.rs` (sizes as above, compared with an independent host replay), and
+    `examples/web-vector-add` (an `f32` add) matched the host and `grid` in Chrome. That agreement is evidence for those
+    bodies and says nothing for a body with a division or a contractible multiply-add.
+  - *Outside the contract.* (1) A fragment that runs outside `0..n`, or twice. The scissor and the single triangle are
+    meant to prevent both, but a value test cannot see either (robustBufferAccess2 drops an out-of-bounds store, and
+    the corpus kernels carry their own guard), so the claim rests on the fragment-count test of `render.rs`, which
+    counts the launched fragments with an atomic in a hand-written module and found `n` at 1, 2, 8191 to 8194,
+    `8192k + 1` and `8192k + 2` for k = 1, 2, 7 and 1000, and 2^26. (2) `f32` bits against `grid`, above. (3) An element at or above `n` of an output: the call does not touch it, and no mode preserves an element that
+    a body does not write (the classifier excludes such a kernel). (4) The browser: wgpu's WebGPU backend reports every downlevel capability, so a browser adapter that cannot write
+    storage buffers from a fragment would give a wrong result and not an error (`GUST_FAIL`, "no fragment wrote the
+    output").
+  - *Refusals.* A call is refused, identically on the twin and the `cpu` target, when it has a y or z other than 1
+    (`ShapeUnsupported`, `cpu::Error::PixelExtent`), when `n` is over 2^26 (`DeviceLimit` named `pixel_max_elements`)
+    or when a read-write output is bound `Independent` (`ShapeIndependentOutput`,
+    `cpu::Error::PixelIndependentOutput`). Only the GPU adds the texture dimension of the device, the fragment-stage
+    storage capability (`FRAGMENT_WRITABLE_STORAGE`) and the storage-binding size, and a `pixel` kernel has no indirect
+    launch.
+  - *Evidence.* RTX 5090: `crates/gust-wgpu/tests/pixel.rs` (the identity tests for `u32`, `i32`, `f32`, `Vec2` and
+    `Vec4`, the cap, the nearest-sampler kernel against the twin) and `shape_refusal.rs`; the difftest above. Headless
+    Chrome 156 on the same GPU: `examples/web-vector-add` ran the `pixel` form at 1000 and 8197 elements and matched the
+    host and `grid` bit for bit (X-S4, outcome A). On a software adapter the identity tests skip the sizes above
+    1 000 003 and the run is Gpu (software), never hardware. The `cpu` target runs a `pixel` kernel as a plain loop
+    (`tests/cpu-target`, `pixel_shade::shade`).
 
 WGSL section numbers and quotes on this page come from the WGSL editor's draft (gpuweb.github.io/gpuweb/wgsl), copy
 read on 2026-10-24. A superscript in the spec is written with `^` here.

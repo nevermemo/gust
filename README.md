@@ -509,7 +509,10 @@ Evidence is narrow. On the RTX 5090 (Vulkan), `pixel`, `grid` and an independent
 `u32`, `i32`, `f32`, `Vec2` and `Vec4` outputs at sizes from 0 up to about 1.7e7 elements (the row width and its neighbours, `8192k + 1` for k up to 1000, and the
 squares up to 4097^2; `crates/gust-wgpu/tests/pixel.rs`); only `u32` also ran at the cap of 2^26. In headless Chrome 156 on the same GPU, `examples/web-vector-add` ran the pixel
 form at 1000 and 8197 elements and matched the host and the `grid` form bit for bit; no other browser adapter has run
-it. That is evidence for those bodies, not a proof for every kernel; the contract is in
+it. That is evidence for those bodies, not a proof for every kernel. The contract differs by type: integer outputs are
+bit-identical between the shapes, while an `f32` output keeps only the float bounds of SEMANTICS section 4, because a
+device may fuse or round differently in the compute and the fragment stage, so the shapes may differ in bits (D128; the
+tested bodies did not). The full contract is in
 [SEMANTICS](docs/SEMANTICS.md) and the evidence labels in [VALIDATION](docs/development/VALIDATION.md).
 
 ### Textures and samplers

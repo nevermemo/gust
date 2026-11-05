@@ -10,16 +10,20 @@
 use std::{hint::black_box, process::ExitCode, time::Instant};
 
 use gust::{
-    Independent,
+    Extent, Independent,
     cpu::{CpuDevice, ulps},
     math::Vec4,
+    texture::{R32Float, R32Uint, TextureUse},
 };
-use kernels::{atomic_counter, polynomial, vector_add, vector_ops};
+use kernels::{atomic_counter, polynomial, texture_ops, vector_add, vector_ops};
 
 /// More than one workgroup (64 and 128 wide) and not a multiple of either, so the kernels' bounds checks matter.
 const ELEMENTS: usize = 1000;
 /// The atomic counter's invocations: more than one value of any workgroup size, and a prime.
 const INVOCATIONS: u32 = 257;
+/// The texture of `texture_ops`: not a multiple of the workgroup (8 by 8) in either direction.
+const TEXTURE_WIDTH: u32 = 13;
+const TEXTURE_HEIGHT: u32 = 7;
 /// The size of the S5.2 measurement.
 const BENCH_ELEMENTS: usize = 1 << 21;
 /// Runs per measurement; the median is reported.
@@ -41,6 +45,7 @@ fn run(bench: bool) -> Result<(), String> {
     check_polynomial()?;
     check_atomic_counter()?;
     check_vector_ops()?;
+    check_texture_ops()?;
     // The map functions of the kernels crate (an error under any profile but `GUST_PROFILE=cpu`). Its line is not a
     // `matches` line, which `check-cpu-target` pairs with its list of kernels; it requires this one exactly once.
     kernels::map_case::run()?;
@@ -221,6 +226,52 @@ fn check_vector_ops() -> Result<(), String> {
         }
     }
     println!("CPU target: matches (vector_ops::blend, {ELEMENTS} elements, max ULP 0)");
+    Ok(())
+}
+
+/// The texture kernel `texture_ops::double_and_mirror` of `kernels` (MX, slice mx.t4), in the production CPU build,
+/// against host loops: `load` and `store` on a read-write storage texture (every texel doubled in place; the inputs are
+/// halves, so the product is exact) and a `store` on a write-only texture (the row-major index of each texel, at the
+/// mirrored column). The comparison is exact (max ULP 0), and the count of its line is the number of texels. Its
+/// `matches` line is paired with a kernel by `xtask/src/cpu_target.rs`, so deleting this call fails the check; a
+/// mismatch fails the run (exit 1, no final line).
+fn check_texture_ops() -> Result<(), String> {
+    let (width, height) = (TEXTURE_WIDTH, TEXTURE_HEIGHT);
+    let count = (width * height) as usize;
+    let texels: Vec<f32> = (0..count)
+        .map(|index| (index % 9) as f32 * 0.5 - 1.0)
+        .collect();
+    let want_image: Vec<f32> = texels.iter().map(|texel| texel * 2.0).collect();
+    let mut want_mirrored = vec![0u32; count];
+    for y in 0..height {
+        for x in 0..width {
+            want_mirrored[(y * width + (width - 1 - x)) as usize] = y * width + x;
+        }
+    }
+    let device = CpuDevice::new();
+    let image = device
+        .texture_2d::<R32Float>(width, height, TextureUse::STORAGE)
+        .map_err(|error| format!("texture_ops image: {error:?}"))?;
+    image
+        .write(&texels)
+        .map_err(|error| format!("texture_ops image: {error:?}"))?;
+    let mirrored = device
+        .texture_2d::<R32Uint>(width, height, TextureUse::STORAGE)
+        .map_err(|error| format!("texture_ops mirrored: {error:?}"))?;
+    texture_ops::double_and_mirror::dispatch_extent(
+        &device,
+        Extent::new(width, height, 1),
+        &image,
+        &mirrored,
+    )
+    .map_err(|error| format!("texture_ops::double_and_mirror: {error:?}"))?;
+    if image.read() != want_image {
+        return Err("texture_ops: the doubled texels differ from the host loop".to_owned());
+    }
+    if mirrored.read() != want_mirrored {
+        return Err("texture_ops: the mirrored indices differ from the host loop".to_owned());
+    }
+    println!("CPU target: matches (texture_ops::double_and_mirror, {count} elements, max ULP 0)");
     Ok(())
 }
 

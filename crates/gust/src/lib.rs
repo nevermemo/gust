@@ -161,8 +161,8 @@ pub use abi::{
 };
 pub use artifact::{Artifact, Format};
 pub use descriptor::{
-    Access, Kernel, KernelDescriptor, LineSpan, ModuleDescriptor, ParameterDescriptor,
-    ParameterKind, ResourceBinding, Shape, SourceOrigin,
+    Access, Kernel, KernelDescriptor, LineSpan, ModuleDescriptor, PIXEL_MAX_ELEMENTS,
+    PIXEL_ROW_WIDTH, ParameterDescriptor, ParameterKind, ResourceBinding, Shape, SourceOrigin,
 };
 pub use dispatch::{
     Arg, BindingKind, Call, Extent, Independent, LengthRule, Resource, Run, SampledCall,

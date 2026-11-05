@@ -47,7 +47,7 @@ impl StageProfile for PixelProfile {
 
     fn binding_rules(&self) -> BindingRules {
         BindingRules::new(
-            "Slang fragment entry points currently accept resources and SV_DispatchThreadID only",
+            "a `pixel` kernel takes resource parameters and one `SV_DispatchThreadID`, and no other kind of parameter",
             "a Slang kernel requires an `SV_DispatchThreadID` (or legacy `Invocation`) parameter",
             "a `pixel` kernel requires exactly one dispatch-thread parameter (`LocalId` and `GroupId` do not exist in \
              a fragment shader)",

@@ -53,7 +53,7 @@ fn the_stage_in_the_slang_text_is_the_stage_of_the_shape() {
         assert_eq!(kernel.workgroup_size, [1, 1, 1], "{}", kernel.name);
         assert!(kernel.compatible_shapes.contains(&Shape::Pixel));
     }
-    // A grid kernel of the same crate says compute; the two words are not the same string.
+    // The other shape names the other stage: the two words are not the same string.
     assert_eq!(Shape::Grid.slang_stage(), "compute");
 }
 
@@ -144,4 +144,24 @@ fn row_samples_the_texture_at_the_pixels_own_column_and_reads_its_width() {
             [19.0, 22.0, 19.0, 17.0],
         ]
     );
+}
+
+/// The row width is one number on both sides (review S1): the macro bakes it into the Slang text and `gust` exports it
+/// for the host that scissors the draw. The macro cannot depend on `gust`, so the emitted text is compared with the
+/// constant here, for every kernel of the fixture.
+#[test]
+fn the_row_width_in_the_slang_text_is_the_constant_the_host_uses() {
+    assert_eq!(gust::PIXEL_ROW_WIDTH, 8192);
+    assert_eq!(gust::PIXEL_MAX_ELEMENTS, 1 << 26);
+    // The cap is a whole number of rows, and the rows fit WebGPU's baseline texture height.
+    assert_eq!(gust::PIXEL_MAX_ELEMENTS % gust::PIXEL_ROW_WIDTH, 0);
+    assert_eq!(gust::PIXEL_MAX_ELEMENTS / gust::PIXEL_ROW_WIDTH, 8192);
+    let needle = format!("* {}u)", gust::PIXEL_ROW_WIDTH);
+    for kernel in pixel::MODULE_DESCRIPTOR.kernels {
+        assert!(
+            kernel.slang_source.contains(&needle),
+            "{}: the Slang text does not hold `{needle}`",
+            kernel.name
+        );
+    }
 }

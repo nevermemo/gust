@@ -24,7 +24,8 @@ split or renumbered, and each change is listed here:
 
 - Slice mx.p1a: E0730 ("pinned shape not available yet", D63) is retired: the `pixel` profile exists, so a
   `shape = pixel` pin is built as a fragment entry. The number is never reused. E0723 lost its 8-output and
-  32-byte bounds (D120).
+  32-byte bounds (D120). Until slice mx.p1b a `pixel` kernel runs on the CPU twin and the `cpu` target only: `gust-wgpu`
+  refuses it with `Error::ShapeUnsupported` before any pipeline is built.
 - `f20d313`: E0602 narrowed from any wrong shape of an atomic's first argument to "not a
   reference"; the other shapes moved to the new codes E0608, E0609 and E0610.
 

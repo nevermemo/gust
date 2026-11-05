@@ -1361,6 +1361,84 @@ mod schema_three {
         }
     }
 
+    // ---- the real fixture kernel (review N5) ----
+
+    /// The `pixel` fixture of the macro, so the tamper cases also run on what `#[gpu]` emits and not only on the
+    /// hand-written Slang above.
+    mod pixel_fixture {
+        include!("../../../tests/fixtures/pixel.rs");
+        pub const SHADE: gust::KernelDescriptor = pixel::MODULE_DESCRIPTOR.kernels[0];
+    }
+
+    #[test]
+    fn the_macros_pixel_kernel_passes_the_cross_check_and_fails_when_tampered() {
+        let shade = pixel_fixture::SHADE;
+        assert_eq!(shade.name, "shade");
+        assert_eq!(shade.shape, Shape::Pixel);
+        let index_of = |name: &str| {
+            shade
+                .parameters
+                .iter()
+                .position(|parameter| parameter.name == name)
+                .unwrap_or_else(|| panic!("no parameter {name}"))
+        };
+        let without_flags = KernelDescriptor {
+            parameters: Box::leak(
+                shade
+                    .parameters
+                    .iter()
+                    .filter(|parameter| parameter.name != "flags")
+                    .copied()
+                    .collect::<Vec<_>>()
+                    .into_boxed_slice(),
+            ),
+            ..shade
+        };
+        let cases: Vec<(&str, KernelDescriptor, &str)> = vec![
+            (
+                "the fragment document against a grid descriptor",
+                KernelDescriptor {
+                    shape: Shape::Grid,
+                    ..shade
+                },
+                "stage: host compute, compiler fragment",
+            ),
+            (
+                "an output's access flipped",
+                with(&shade, index_of("scaled"), |p| p.access = Access::ReadOnly),
+                "scaled.access differs",
+            ),
+            (
+                "an output's slot moved",
+                with(&shade, index_of("flags"), |p| p.binding = bound(7)),
+                "flags.binding: host 7, compiler 2",
+            ),
+            (
+                "an output missing from the descriptor",
+                without_flags,
+                "unexpected compiler resource bindings",
+            ),
+        ];
+        for target in [Target::Wgsl, Target::Spirv] {
+            let compiled = compile_reflected(&shade, target)
+                .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+            let reflection = &compiled.reflection;
+            assert_eq!(reflection.stage, Stage::Fragment, "{target:?}");
+            assert!(
+                reflection.targets.is_empty(),
+                "{target:?}: no render target"
+            );
+            let reports = reflection
+                .cross_check_kernel(&shade)
+                .unwrap_or_else(|error| panic!("{target:?}: control: {error}"));
+            assert_eq!(reports.len(), 3, "{target:?}");
+            for (what, tampered, expected) in &cases {
+                let error = reflection.cross_check_kernel(tampered).unwrap_err();
+                assert_eq!(&message(error), expected, "{what}, {target:?}");
+            }
+        }
+    }
+
     // ---- the committed documents, through the precompiled path ----
 
     const SOURCE: &str = "// schema 3 fixture source\n";

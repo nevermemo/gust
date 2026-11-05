@@ -8,12 +8,29 @@ use crate::GpuBufferAccess;
 /// indirect dispatch in a staged graph. It stands where a parameter name would.
 pub(crate) const INDIRECT_ARGUMENTS: &str = "<indirect dispatch arguments>";
 
+/// Every way a `gust-wgpu` call can refuse or fail: opening a device, validating a kernel and its bindings, building
+/// a graph, and reading results back. A launch or a graph is validated before it is encoded, so a validation error
+/// means none of its work was submitted.
+///
+/// The enum is `#[non_exhaustive]`: a later release can add a variant without a breaking change, so a `match` in
+/// another crate needs a wildcard arm.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum Error {
+    /// No adapter could be used. The text is the reason: wgpu's error, no adapter that matches the requested
+    /// `AdapterChoice` among those the backends offer, or the default device not being open yet. Opening a device
+    /// retries this variant, and only this one.
     NoAdapter(String),
+    /// An adapter was found but wgpu would not open a device on it with the requested features and limits. The text
+    /// is wgpu's error.
     RequestDevice(String),
+    /// The kernel descriptor carries no generated Slang source, so there is nothing to compile or to validate. The
+    /// text is the kernel's qualified name.
     MissingSlangSource(String),
-    Slang(gust::slang::Error),
+    /// A kernel's Slang could not be compiled, reflected or verified; the inner error says how. Three paths return it:
+    /// the run-time compile and reflect (`slang-runtime`; a `slangc` failure arrives as
+    /// `reflect::Error::Compiler`), the cross-check of the reflection against the descriptor (D17), and the
+    /// verification of a precompiled artifact.
     Reflection(gust::reflect::Error),
     /// The kernel has no precompiled WGSL artifact and this build cannot compile one at run time: the
     /// `slang-runtime` feature of `gust-wgpu` is off (D44), and with it the only compiler this crate could start.
@@ -39,14 +56,14 @@ pub enum Error {
     },
     /// An output of a `pixel` kernel (a read-write storage parameter) was bound with an independent length. A `pixel`
     /// output holds exactly the call's element count (`LengthRule::Shared`). Remedy: drop `Independent`.
-    ShapeIndependentOutput {
-        kernel: String,
-        parameter: String,
-    },
-    UnsupportedParameter {
-        name: String,
-        kind: ParameterKind,
-    },
+    ShapeIndependentOutput { kernel: String, parameter: String },
+    /// A parameter has a resource kind this call cannot bind, for example a `Value` parameter, or a texture or sampler
+    /// in a staged graph, which tracks hazards by buffer only.
+    UnsupportedParameter { name: String, kind: ParameterKind },
+    /// The kernel's own parameter declares no resource layout, or one that does not fit its kind (`StorageV1` or
+    /// `StorageV2` for a storage buffer, `Std140V1` for a uniform, `TextureV1` for a texture or sampler, D91).
+    /// Reported when the kernel is validated, and when a texture layout is built for a parameter that has no sample
+    /// type on this device or no storage format.
     InvalidResourceLayout {
         parameter: String,
         actual: Option<Box<ResourceLayout>>,
@@ -64,26 +81,34 @@ pub enum Error {
         type_name: &'static str,
         reason: &'static str,
     },
+    /// The resource bound to a parameter has another layout than the parameter declares (`expected`); `actual` is the
+    /// layout of what was bound (always `Some` today).
     UnsupportedResourceLayout {
         parameter: String,
         expected: Box<ResourceLayout>,
         actual: Option<Box<ResourceLayout>>,
     },
+    /// A kernel parameter sits in a bind group other than 0, the only one this backend supports. The number is the
+    /// group.
     UnsupportedBindGroup(u32),
-    BindingCount {
-        expected: usize,
-        actual: usize,
-    },
+    /// The call binds another number of resources (or of samplers) than the kernel declares.
+    BindingCount { expected: usize, actual: usize },
+    /// A parameter was bound with another access than it declares, or a kernel declares a uniform parameter that is
+    /// not read-only (`expected` is then read-only and no binding is involved).
     BindingAccess {
         parameter: String,
         expected: Access,
         actual: Access,
     },
+    /// A buffer holds another number of elements than the parameter expects (its length rule is shared, not
+    /// independent).
     BufferLength {
         parameter: String,
         expected: usize,
         actual: usize,
     },
+    /// A resource (buffer, uniform, pool, texture or sampler) is used with a device other than the one that created
+    /// it.
     ForeignPersistentBuffer,
     /// One buffer is bound to two parameters of one dispatch and at least one of them is
     /// read-write. Reported before any wgpu object is created or anything is written. Binding the
@@ -99,40 +124,42 @@ pub enum Error {
         first: String,
         second: String,
     },
+    /// A persistent buffer is bound with an access its own access (`buffer`) does not allow, for example a buffer
+    /// created read-only bound as read-write.
     PersistentBufferAccess {
         parameter: String,
         buffer: GpuBufferAccess,
         binding: Access,
     },
-    PersistentBufferLength {
-        expected: usize,
-        actual: usize,
-    },
+    /// A host slice written to a persistent buffer, or a graph upload to one, does not match the buffer's element
+    /// count.
+    PersistentBufferLength { expected: usize, actual: usize },
+    /// A readback was asked of a persistent buffer that was not created with read-write access.
     PersistentBufferNotReadable,
-    IndependentLengthEmpty {
-        parameter: String,
-    },
-    GraphDependencyOrder {
-        node: usize,
-        dependency: usize,
-    },
-    GraphMissingDependency {
-        node: usize,
-        producer: usize,
-    },
+    /// A parameter was bound with an independent length but the buffer is empty while the call's extent is not; the GPU
+    /// would see a one-element placeholder.
+    IndependentLengthEmpty { parameter: String },
+    /// A graph node depends on a node that is not an earlier node of the same graph.
+    GraphDependencyOrder { node: usize, dependency: usize },
+    /// A graph node touches a buffer that an earlier node (`producer`, the earliest such node) also touches, with at
+    /// least one of the two accesses read-write, without depending on it directly or through other nodes. Two reads
+    /// never conflict.
+    GraphMissingDependency { node: usize, producer: usize },
+    /// A graph readback was asked for a node that is not a readback node of that execution.
     GraphUnknownReadback(usize),
+    /// A graph readback holds one element type and another was requested. Both are element type names.
     GraphReadbackType {
         expected: &'static str,
         actual: &'static str,
     },
+    /// An indirect-arguments buffer is not a non-empty struct of exactly three `u32` fields. `create_indirect_buffer`
+    /// returns it for another element type, and a graph returns it for an indirect dispatch whose arguments buffer was
+    /// not made by `create_indirect_buffer` or is empty. The text is the name of the struct that was given.
     IndirectArgsLayout(&'static str),
-    IndirectBindingLength {
-        parameter: String,
-    },
-    PoolTruncateGrows {
-        len: usize,
-        requested: usize,
-    },
+    /// A parameter of an indirect dispatch is not bound with an independent length and a non-empty buffer.
+    IndirectBindingLength { parameter: String },
+    /// A pool was asked to truncate to more elements (`requested`) than its logical length (`len`).
+    PoolTruncateGrows { len: usize, requested: usize },
     /// A launch needs more than a limit of the device (or of the limits installed with
     /// `HeadlessDevice::with_limits`) allows. A single dispatch reports it before any
     /// pipeline is compiled, looked up in the cache or encoded. A multi-node graph
@@ -158,20 +185,19 @@ pub enum Error {
         requested: u64,
         device: u64,
     },
+    /// Waiting for the device failed: the poll returned an error, the device was lost, or the wait did not finish. Also
+    /// returned when an allocation's error scope caught a wgpu error other than out-of-memory, or did not resolve. The
+    /// text is the reason.
     Poll(String),
+    /// A readback failed: the buffer could not be mapped (including a mapping that did not complete within the bounded
+    /// wait), or the mapped bytes cannot be decoded as the requested element type. The text is the reason.
     Map(String),
     /// A buffer allocation failed inside an out-of-memory error scope: the request was within `max_buffer_size`, but
     /// the adapter had no memory for it. `label` names the buffer and `bytes` is the size asked for. Where a device
     /// cannot report this through its scope and is lost instead, S7.6 outcome B maps it to [`Error::Poll`].
-    OutOfMemory {
-        label: String,
-        bytes: u64,
-    },
+    OutOfMemory { label: String, bytes: u64 },
     /// Two resident buffers of one operation belong to different devices (compared by `HeadlessDevice::id`).
-    MixedDevices {
-        first: u64,
-        second: u64,
-    },
+    MixedDevices { first: u64, second: u64 },
     /// A dispatch extent is unusable: a product overflowed, so no launch can be described (the extent's `x * y * z`, or
     /// the kernel's workgroup size multiplied out), or the dispatch is of a kind that supports one-dimensional extents
     /// only (a staged graph node with a y or z extent above 1). `reason` names the failing step.
@@ -231,7 +257,6 @@ impl fmt::Display for Error {
             Self::MissingSlangSource(kernel) => {
                 write!(formatter, "kernel `{kernel}` has no generated Slang source")
             }
-            Self::Slang(error) => write!(formatter, "could not compile kernel with Slang: {error}"),
             Self::Reflection(error) => {
                 write!(formatter, "could not validate kernel reflection: {error}")
             }
@@ -483,7 +508,6 @@ impl fmt::Display for Error {
 impl error::Error for Error {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match self {
-            Self::Slang(error) => Some(error),
             Self::Reflection(error) => Some(error),
             _ => None,
         }

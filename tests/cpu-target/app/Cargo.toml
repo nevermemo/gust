@@ -8,7 +8,7 @@ publish = false
 # neither `gust-wgpu` nor the `slang-runtime` feature (E-b).
 [dependencies]
 kernels = { path = "../kernels" }
-gust = { path = "../../../crates/gust", default-features = false }
+gust = { package = "gust-compute", path = "../../../crates/gust", default-features = false }
 
 [[bin]]
 name = "app"

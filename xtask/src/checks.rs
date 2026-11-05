@@ -31,12 +31,19 @@ use crate::{
 /// The cargo calls of `check-feature reflection` after the native helper is built (the
 /// Reflect suite). Kept as data so a test can require `--locked` on each.
 pub(crate) const REFLECTION_TESTS: &[&[&str]] = &[
-    &["test", "--locked", "-p", "gust", "--test", "reflection"],
     &[
         "test",
         "--locked",
         "-p",
-        "gust-wgpu",
+        "gust-compute",
+        "--test",
+        "reflection",
+    ],
+    &[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute-wgpu",
         "--test",
         "reflection",
     ],
@@ -56,7 +63,7 @@ pub(crate) const REFLECTION_TESTS: &[&[&str]] = &[
         "test",
         "--locked",
         "-p",
-        "gust-wgpu",
+        "gust-compute-wgpu",
         "--test",
         "naga_layout",
     ],
@@ -386,20 +393,28 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
     let root = workspace_root()?;
     let area = area.ok_or("check-feature needs an area")?;
     match area {
-        "macro" => run_direct(&root, "cargo", &["test", "-p", "gust-macros"]),
+        "macro" => run_direct(&root, "cargo", &["test", "-p", "gust-compute-macros"]),
         "core" => {
-            run_direct(&root, "cargo", &["test", "-p", "gust", "--lib"])?;
+            run_direct(&root, "cargo", &["test", "-p", "gust-compute", "--lib"])?;
             run_direct(
                 &root,
                 "cargo",
-                &["test", "-p", "gust", "--test", "diagnostics"],
+                &["test", "-p", "gust-compute", "--test", "diagnostics"],
             )
         }
         "wgpu" => verify(VerifyMode::Gpu, false),
-        "gpu-smoke" => run_direct(&root, "cargo", &["test", "-p", "gust-wgpu", "--lib"]),
+        "gpu-smoke" => run_direct(
+            &root,
+            "cargo",
+            &["test", "-p", "gust-compute-wgpu", "--lib"],
+        ),
         "gpu-semantics" => {
             for test in GPU_SEMANTICS_TESTS {
-                run_direct(&root, "cargo", &["test", "-p", "gust-wgpu", "--test", test])?;
+                run_direct(
+                    &root,
+                    "cargo",
+                    &["test", "-p", "gust-compute-wgpu", "--test", test],
+                )?;
             }
             Ok(())
         }
@@ -409,7 +424,7 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
             &[
                 "test",
                 "-p",
-                "gust-wgpu",
+                "gust-compute-wgpu",
                 "--test",
                 "reflection",
                 "--test",
@@ -428,35 +443,48 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
             Ok(())
         }
         "loops" => {
-            run_counted(&root, &["test", "-p", "gust-macros", "loops"])?;
+            run_counted(&root, &["test", "-p", "gust-compute-macros", "loops"])?;
             run_direct(
                 &root,
                 "cargo",
-                &["test", "-p", "gust-wgpu", "--test", "loops"],
+                &["test", "-p", "gust-compute-wgpu", "--test", "loops"],
             )
         }
         "result" => {
-            run_counted(&root, &["test", "-p", "gust-macros", "--", "result"])?;
+            run_counted(
+                &root,
+                &["test", "-p", "gust-compute-macros", "--", "result"],
+            )?;
             run_direct(
                 &root,
                 "cargo",
-                &["test", "-p", "gust-wgpu", "--test", "result"],
+                &["test", "-p", "gust-compute-wgpu", "--test", "result"],
             )
         }
         "map" => {
-            run_direct(&root, "cargo", &["test", "-p", "gust", "--lib", "map::"])?;
-            run_counted(&root, &["test", "-p", "gust-macros", "--lib", "map_tests"])?;
+            run_direct(
+                &root,
+                "cargo",
+                &["test", "-p", "gust-compute", "--lib", "map::"],
+            )?;
+            run_counted(
+                &root,
+                &["test", "-p", "gust-compute-macros", "--lib", "map_tests"],
+            )?;
             // The parallel CPU map (m7.c, D119): the runner's unit tests and the integration tests of the thread
             // count, the lowest failing index and the bit equality with one thread. Counted: no adapter is needed.
-            run_counted(&root, &["test", "-p", "gust", "--lib", "cpu::parallel"])?;
-            run_counted(&root, &["test", "-p", "gust", "--test", "parallel"])?;
+            run_counted(
+                &root,
+                &["test", "-p", "gust-compute", "--lib", "cpu::parallel"],
+            )?;
+            run_counted(&root, &["test", "-p", "gust-compute", "--test", "parallel"])?;
             run_direct(
                 &root,
                 "cargo",
                 &[
                     "test",
                     "-p",
-                    "gust-wgpu",
+                    "gust-compute-wgpu",
                     "--test",
                     "map",
                     "--test",
@@ -471,40 +499,46 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
         "dispatch" => {
             // The macros: each module is its own call, so a module that lost its tests fails by itself.
             for module in DISPATCH_MACRO_MODULES {
-                run_counted(&root, &["test", "-p", "gust-macros", "--lib", module])?;
+                run_counted(
+                    &root,
+                    &["test", "-p", "gust-compute-macros", "--lib", module],
+                )?;
             }
             // Extent and the dispatch types of gust (the recording device, the extent of a call, the CPU
             // invocations of a multi-dimensional extent).
             for filter in DISPATCH_CORE_FILTERS {
-                run_counted(&root, &["test", "-p", "gust", "--lib", filter])?;
+                run_counted(&root, &["test", "-p", "gust-compute", "--lib", filter])?;
             }
             // The GPU tests, one binary per call: a binary that ran no test fails by itself.
             for test in DISPATCH_GPU_TESTS {
-                run_counted(&root, &["test", "-p", "gust-wgpu", "--test", test])?;
+                run_counted(&root, &["test", "-p", "gust-compute-wgpu", "--test", test])?;
             }
             Ok(())
         }
         "workgroup" => {
-            run_counted(&root, &["test", "-p", "gust-macros", "--lib", "workgroup"])?;
-            run_counted(&root, &["test", "-p", "gust", "--lib", "workgroup"])?;
+            run_counted(
+                &root,
+                &["test", "-p", "gust-compute-macros", "--lib", "workgroup"],
+            )?;
+            run_counted(&root, &["test", "-p", "gust-compute", "--lib", "workgroup"])?;
             run_direct(
                 &root,
                 "cargo",
-                &["test", "-p", "gust-wgpu", "--test", "workgroup"],
+                &["test", "-p", "gust-compute-wgpu", "--test", "workgroup"],
             )
         }
         "algo" => run_counted(&root, &["test", "-p", "gust-algo"]).map(drop),
         "vectors" => {
-            let mut macros = vec!["test", "-p", "gust-macros", "--"];
+            let mut macros = vec!["test", "-p", "gust-compute-macros", "--"];
             macros.extend(VECTOR_MACRO_FILTERS);
             run_counted(&root, &macros)?;
-            run_counted(&root, &["test", "-p", "gust", "--lib", "math::"])?;
+            run_counted(&root, &["test", "-p", "gust-compute", "--lib", "math::"])?;
             run_counted(
                 &root,
                 &[
                     "test",
                     "-p",
-                    "gust",
+                    "gust-compute",
                     "--test",
                     "diagnostics",
                     "--",
@@ -513,19 +547,26 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                 ],
             )?;
             export_golden_spirv(&root, "vectors", &VECTOR_GOLDEN_STEMS, &VECTOR_GOLDEN_SPIRV)?;
-            run_counted(&root, &["test", "-p", "gust-wgpu", "--test", "vectors"]).map(drop)
+            run_counted(
+                &root,
+                &["test", "-p", "gust-compute-wgpu", "--test", "vectors"],
+            )
+            .map(drop)
         }
         "uniforms" => {
-            let mut macros = vec!["test", "-p", "gust-macros", "--"];
+            let mut macros = vec!["test", "-p", "gust-compute-macros", "--"];
             macros.extend(UNIFORM_MACRO_FILTERS);
             run_counted(&root, &macros)?;
-            run_counted(&root, &["test", "-p", "gust", "--test", "uniforms_twin"])?;
+            run_counted(
+                &root,
+                &["test", "-p", "gust-compute", "--test", "uniforms_twin"],
+            )?;
             run_counted(
                 &root,
                 &[
                     "test",
                     "-p",
-                    "gust",
+                    "gust-compute",
                     "--test",
                     "diagnostics",
                     "--",
@@ -538,14 +579,17 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                 &UNIFORM_GOLDEN_STEMS,
                 &UNIFORM_GOLDEN_SPIRV,
             )?;
-            run_counted(&root, &["test", "-p", "gust-wgpu", "--test", "uniforms"])?;
+            run_counted(
+                &root,
+                &["test", "-p", "gust-compute-wgpu", "--test", "uniforms"],
+            )?;
             // The uniform cases of the typed-call and graph tests (m6.u1): their names say `uniform`.
             run_counted(
                 &root,
                 &[
                     "test",
                     "-p",
-                    "gust-wgpu",
+                    "gust-compute-wgpu",
                     "--test",
                     "typed",
                     "--test",
@@ -1040,20 +1084,20 @@ pub(crate) fn measure_tests(args: &[String]) -> Result<(), String> {
                 "cargo".into(),
                 "test".into(),
                 "-p".into(),
-                "gust-macros".into(),
+                "gust-compute-macros".into(),
             ],
             vec![
                 "cargo".into(),
                 "test".into(),
                 "-p".into(),
-                "gust".into(),
+                "gust-compute".into(),
                 "--lib".into(),
             ],
             vec![
                 "cargo".into(),
                 "test".into(),
                 "-p".into(),
-                "gust-wgpu".into(),
+                "gust-compute-wgpu".into(),
             ],
             workspace,
         ]

@@ -23,8 +23,8 @@ bindings that shadow resource or dispatch parameters.
 
 ## Evidence
 
-- Macro: `cargo test -p gust-macros -- result_match`
-- Result vertical slice: `cargo test -p gust-wgpu --test result`
+- Macro: `cargo test -p gust-compute-macros -- result_match`
+- Result vertical slice: `cargo test -p gust-compute-wgpu --test result`
 - Routine semantic group: `cargo xtask check-feature result`
 - Release: `cargo xtask check-full`
 

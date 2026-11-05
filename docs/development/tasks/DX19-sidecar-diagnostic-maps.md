@@ -128,8 +128,8 @@ and use it to enrich Slang errors with a stable generated construct label.
 ## Checks
 
 ```sh
-cargo test -p gust --lib slang
-cargo test -p gust --test diagnostics
+cargo test -p gust-compute --lib slang
+cargo test -p gust-compute --test diagnostics
 cargo xtask check-feature core
 cargo xtask check-full
 ```

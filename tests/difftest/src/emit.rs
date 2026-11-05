@@ -352,8 +352,8 @@ publish = false\n\
 path = \"src/lib.rs\"\n\
 \n\
 [dependencies]\n\
-gust = {{ path = \"{root}/crates/gust\" }}\n\
-gust-wgpu = {{ path = \"{root}/crates/gust-wgpu\", features = [\"slang-runtime\"] }}\n\
+gust = {{ package = \"gust-compute\", path = \"{root}/crates/gust\" }}\n\
+gust-wgpu = {{ package = \"gust-compute-wgpu\", path = \"{root}/crates/gust-wgpu\", features = [\"slang-runtime\"] }}\n\
 \n\
 # `--cfg gust_dual` and `gust_profile` are set by cargo xtask and by gust's build script, not by this manifest.\n\
 [lints.rust]\n\
@@ -832,9 +832,9 @@ pub mod s9_a4 {
     fn the_manifest_names_the_package_and_its_dependencies() {
         let text = manifest("/r", "difftest-case-x");
         assert!(text.contains("name = \"difftest-case-x\"\n"));
-        assert!(text.contains("gust = { path = \"/r/crates/gust\" }"));
+        assert!(text.contains("gust = { package = \"gust-compute\", path = \"/r/crates/gust\" }"));
         assert!(text.contains(
-            "gust-wgpu = { path = \"/r/crates/gust-wgpu\", features = [\"slang-runtime\"] }"
+            "gust-wgpu = { package = \"gust-compute-wgpu\", path = \"/r/crates/gust-wgpu\", features = [\"slang-runtime\"] }"
         ));
         assert!(text.ends_with("[workspace]\n"));
     }

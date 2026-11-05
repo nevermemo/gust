@@ -21,7 +21,7 @@ dependencies = [
 name = "app"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
  "kernels",
 ]
 
@@ -29,8 +29,8 @@ dependencies = [
 name = "app-with-wgpu"
 version = "0.0.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
 ]
 
 [[package]]
@@ -199,14 +199,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "gust"
+name = "gust-compute"
 version = "0.1.0"
 dependencies = [
- "gust-macros",
+ "gust-compute-macros",
 ]
 
 [[package]]
-name = "gust-macros"
+name = "gust-compute-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
@@ -215,10 +215,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "gust-wgpu"
+name = "gust-compute-wgpu"
 version = "0.1.0"
 dependencies = [
- "gust",
+ "gust-compute",
  "pollster",
  "wgpu",
 ]
@@ -280,7 +280,7 @@ dependencies = [
 name = "kernels"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]
@@ -445,7 +445,7 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 name = "optout"
 version = "0.0.0"
 dependencies = [
- "gust",
+ "gust-compute",
  "kernels",
 ]
 

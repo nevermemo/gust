@@ -270,4 +270,4 @@ jobs:
       - name: Clippy on wasm32 (strict web profile)
         env:
           GUST_PROFILE: web
-        run: cargo clippy --locked --target wasm32-unknown-unknown -p gust -p gust-wgpu -p web-vector-add -- -D warnings
+        run: cargo clippy --locked --target wasm32-unknown-unknown -p gust-compute -p gust-compute-wgpu -p web-vector-add -- -D warnings

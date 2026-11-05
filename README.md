@@ -90,15 +90,15 @@ major changes and release validation, but the ordinary workspace loop prioritize
 compiler/runtime feedback over full example proofs.
 
 Compiling a kernel at run time (launching `slangc` and the native reflection helper) is the
-`slang-runtime` feature of `gust` and `gust-wgpu`, off by default (D44). The ten examples
+`slang-runtime` feature of `gust-compute` and `gust-compute-wgpu`, off by default (D44). The ten examples
 enable it in their manifests, and `gust` and `gust-wgpu` enable it for their own tests through a
-dev-dependency on themselves, so `cargo run -p vector-add`, `cargo test -p gust-wgpu` and
+dev-dependency on themselves, so `cargo run -p vector-add`, `cargo test -p gust-compute-wgpu` and
 `cargo test --workspace` need no flag. A crate of your own that runs kernels this way during
-development has a feature of its own, `gust-dev = ["gust-wgpu/slang-runtime"]` ("Install from crates.io"), or passes
-`--features gust-wgpu/slang-runtime`, so that its normal dependencies, and a release build, hold no
+development has a feature of its own, `gust-dev = ["gust-compute-wgpu/slang-runtime"]` ("Install from crates.io"), or
+passes `--features gust-compute-wgpu/slang-runtime`, so that its normal dependencies, and a release build, hold no
 process-spawning compiler. A `[dev-dependencies]` entry with the feature serves `cargo test` and examples, but never
 `cargo run` of a binary. Check that state with
-`cargo check -p gust -p gust-wgpu --no-default-features --lib` (the Unit suite runs it).
+`cargo check -p gust-compute -p gust-compute-wgpu --no-default-features --lib` (the Unit suite runs it).
 
 Build profiles (D44, D51): the environment variable `GUST_PROFILE` is `dev`, `native`, `web` or `cpu`, and
 `gust`'s build script reads it (any other value, including an empty one, fails the build). `native` and `web` are strict:
@@ -107,7 +107,7 @@ every `#[gpu]` kernel must have a precompiled artifact, or the build fails with 
 the shipped WGSL or SPIR-V when the pipeline is created). `dev` has neither rule. A release
 build is strict even without the variable: with `GUST_PROFILE` unset, `cargo build --release` of a crate with
 `#[gpu]` kernels is treated as `web` for `wasm32` and `native` for every other target, and prints
-`warning: gust@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`;
+`warning: gust-compute@<version>: gust: release build without GUST_PROFILE treated as native` (or `web`;
 cargo shows a build script's warning only for path and workspace packages, or with `-vv`). The one exception is the
 internal `cargo-gust-bridge` feature (D108, D117): where `cargo-gust` is in the graph (`cargo install cargo-gust`, a
 workspace that has it as a member, or a mistaken `cargo-gust` entry under `[dependencies]`), a release build without
@@ -155,7 +155,7 @@ Purpose-built check commands keep the inner loop honest:
 
 | Command | Purpose | Runs |
 | --- | --- | --- |
-| `cargo xtask check-feature macro` | Macro/validator/emitter work | `cargo test -p gust-macros` |
+| `cargo xtask check-feature macro` | Macro/validator/emitter work | `cargo test -p gust-compute-macros` |
 | `cargo xtask check-feature reflection` | Reflection/layout work | helper version check, core reflection tests, wgpu reflection tests |
 | `cargo xtask check-feature loops` | Bounded-loop work | loop golden/rejection test plus GPU loop test |
 | `cargo xtask check-feature gpu-smoke` | Cheapest wgpu runtime sanity | wgpu crate unit tests only |
@@ -215,11 +215,9 @@ devices.
 
 ## Install from crates.io
 
-Not on crates.io yet: 0.1.0 is being prepared. The prose in this section uses the release names. The two code blocks
-further down still use the workspace's current package names (`gust`, `gust-wgpu`), because `cargo xtask
-check-release` builds them word for word; the rename slice changes them to `gust-compute` and `gust-compute-wgpu`. Do
-not copy them into a crate before then, and do not run the `cargo install` and `cargo add` commands of this section
-until 0.1.0 is published.
+Not on crates.io yet: 0.1.0 is being prepared. Do not run the `cargo install` and `cargo add` commands of this
+section until 0.1.0 is published. The two code blocks below are the recipe that `cargo xtask check-release` builds word
+for word from the packaged crates.
 
 GUST will be published as four packages that always share one version (0.1.0 is the first release):
 
@@ -277,12 +275,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gust = "0.1"
-gust-wgpu = "0.1"
+gust-compute = "0.1"
+gust-compute-wgpu = "0.1"
 
 [features]
 # Run-time compile through the Slang toolchain, for development only (`cargo run --features gust-dev`).
-gust-dev = ["gust-wgpu/slang-runtime"]
+gust-dev = ["gust-compute-wgpu/slang-runtime"]
 ```
 
 `gust-dev` is a feature of your own crate that turns on the backend's run-time compiler, and it has to be your own

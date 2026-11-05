@@ -32,7 +32,7 @@
 //!   the right count and still the wrong order, access, element or device.
 //! - One buffer bound twice in one call is accepted when both bindings are [`Access::ReadOnly`]; when either side is
 //!   [`Access::ReadWrite`] the backend rejects the call at run time with an error that names both parameters, before
-//!   it writes anything (S0 decision A; `gust-wgpu` implements this in m2.c).
+//!   it writes anything (S0 decision A; `gust-compute-wgpu` implements this in m2.c).
 //! - `LengthRule::Shared` bindings must hold exactly the call's [`Extent::checked_total`] elements (`x * y * z`; the
 //!   element count of a one-dimensional call); `LengthRule::Independent` ones only need to be non-empty when the
 //!   extent is non-empty (the rules of the existing runtime checks). A uniform holds one value and has no element
@@ -143,7 +143,7 @@ pub mod kind {
     }
 }
 
-/// Extension of [`Device`] for typed calls (implemented by `gust-wgpu` in m2.c).
+/// Extension of [`Device`] for typed calls (implemented by `gust-compute-wgpu` in m2.c).
 ///
 /// [`Device`] is not modified: the binding type lives here so a backend that has no typed surface yet keeps compiling.
 pub trait TypedDevice: Device {
@@ -247,7 +247,7 @@ pub trait Run<K: Kernel, const N: usize, X = ()>: TypedDevice {
 
     /// Start the call and wait for it to finish.
     ///
-    /// A device whose job cannot block (`gust-wgpu` on `wasm32`) submits the call, which will run, and then returns
+    /// A device whose job cannot block (`gust-compute-wgpu` on `wasm32`) submits the call, which will run, and then returns
     /// its wait error instead of waiting: use `submit_call` and an awaited readback there. This method is not gated
     /// on `wasm32` because a CPU device finishes inside `submit_call` and its `wait` is harmless in the browser.
     fn dispatch_call(&self, call: &Call<'_, Self, K, N, X>) -> Result<(), Self::Error> {

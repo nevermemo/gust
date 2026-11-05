@@ -11,43 +11,66 @@ use crate::{
     workspace::{project_files, read_text},
 };
 
-/// One checked crate: its manifest, name, and the only dependencies it may declare (all
-/// kinds: normal, dev, build, and target-specific). D02 keeps this set fixed. `gust` and
-/// `gust-wgpu` list themselves: each has a dev-dependency on itself that turns its own
-/// `slang-runtime` feature on for its tests (D44), the one way cargo lets a package's tests
-/// differ from its default features. A package can depend on itself only that way, so the entry
-/// adds no edge to the architecture.
+/// One checked crate: its manifest, package name, and the only dependencies it may declare (all
+/// kinds: normal, dev, build, and target-specific), each by its real package name. D02 keeps this
+/// set fixed. `gust-compute` and `gust-compute-wgpu` list themselves: each has a dev-dependency on
+/// itself that turns its own `slang-runtime` feature on for its tests (D44), the one way cargo
+/// lets a package's tests differ from its default features. A package can depend on itself only
+/// that way, so the entry adds no edge to the architecture.
+///
+/// The package names are D48's and the directories keep the old ones (D106): `gust-compute` lives
+/// in `crates/gust`, and the manifests that depend on it write `gust = { package = "gust-compute",
+/// path = "crates/gust" }`, so the one rename cargo metadata reports for a workspace crate is its
+/// directory name.
 struct CrateRule {
     manifest: &'static str,
     name: &'static str,
     allowed: &'static [&'static str],
 }
 
+impl CrateRule {
+    /// The crate's directory, relative to the repository root (`crates/gust`).
+    fn directory(&self) -> &'static str {
+        self.manifest
+            .strip_suffix("/Cargo.toml")
+            .unwrap_or(self.manifest)
+    }
+
+    /// The key the repository's manifests give a dependency on this crate: the name of its
+    /// directory (`gust`, `gust-wgpu`), which differs from the package name for the D48 renames.
+    fn key(&self) -> &'static str {
+        self.directory()
+            .rsplit('/')
+            .next()
+            .unwrap_or(self.directory())
+    }
+}
+
 const CRATE_RULES: &[CrateRule] = &[
     CrateRule {
         manifest: "crates/gust-macros/Cargo.toml",
-        name: "gust-macros",
+        name: "gust-compute-macros",
         allowed: &["proc-macro2", "quote", "syn"],
     },
     CrateRule {
         manifest: "crates/gust/Cargo.toml",
-        name: "gust",
-        allowed: &["gust-macros", "gust"],
+        name: "gust-compute",
+        allowed: &["gust-compute-macros", "gust-compute"],
     },
     CrateRule {
         manifest: "crates/gust-wgpu/Cargo.toml",
-        name: "gust-wgpu",
-        allowed: &["gust", "gust-wgpu", "pollster", "wgpu"],
+        name: "gust-compute-wgpu",
+        allowed: &["gust-compute", "gust-compute-wgpu", "pollster", "wgpu"],
     },
     CrateRule {
         manifest: "crates/gust-algo/Cargo.toml",
         name: "gust-algo",
-        allowed: &["gust", "gust-wgpu"],
+        allowed: &["gust-compute", "gust-compute-wgpu"],
     },
     CrateRule {
         manifest: "crates/cargo-gust/Cargo.toml",
         name: "cargo-gust",
-        allowed: &["gust"],
+        allowed: &["gust-compute"],
     },
     CrateRule {
         manifest: "xtask/Cargo.toml",
@@ -57,7 +80,7 @@ const CRATE_RULES: &[CrateRule] = &[
 ];
 
 /// The crates that translate Rust to Slang; they must not depend on a SPIR-V library.
-const COMPILER_CRATES: &[&str] = &["gust-macros", "gust"];
+const COMPILER_CRATES: &[&str] = &["gust-compute-macros", "gust-compute"];
 
 /// The default registry as `cargo metadata` names it: the git index form, which is what cargo
 /// prints for crates.io today, and the sparse form, in case that spelling is ever printed.
@@ -270,9 +293,11 @@ fn is_allowed_somewhere(name: &str) -> bool {
 }
 
 /// Dependencies outside the crate's allow-list, SPIR-V libraries in the compiler crates, and
-/// allow-listed dependencies that are not the real thing: no `package` rename, no git or
-/// alternative registry, a workspace crate from its own `crates/<name>` directory, everything
-/// else from crates.io. Each dependency is judged by its real package name, not its key.
+/// allow-listed dependencies that are not the real thing: no git or alternative registry, a
+/// workspace crate from its own `crates/<directory>` directory, everything else from crates.io,
+/// and no `package` rename except that a workspace crate's dependency key may be the name of its
+/// directory (`gust = { package = "gust-compute", .. }`, D106). Each dependency is judged by its
+/// real package name (`gust-compute`), not its key (`gust`).
 fn dependency_problems(rule_crate: &CrateRule, package: &Package, root: &str) -> Vec<String> {
     let mut problems = Vec::new();
     for dependency in &package.dependencies {
@@ -315,6 +340,7 @@ fn dependency_problems(rule_crate: &CrateRule, package: &Package, root: &str) ->
 /// What an allow-listed dependency must be, beyond its name (see `dependency_problems`).
 fn source_problems(rule_crate: &CrateRule, dependency: &Dependency, root: &str) -> Vec<String> {
     let name = dependency.name.as_str();
+    let target = CRATE_RULES.iter().find(|rule| rule.name == name);
     let at = format!(
         "{}: `{}` dependency `{}`",
         rule_crate.manifest,
@@ -322,10 +348,16 @@ fn source_problems(rule_crate: &CrateRule, dependency: &Dependency, root: &str) 
         dependency.key()
     );
     let mut problems = Vec::new();
-    if dependency.rename.is_some() {
-        problems.push(format!(
+    match (dependency.rename.as_deref(), target) {
+        (None, _) => {}
+        (Some(key), Some(target)) if key == target.key() => {}
+        (Some(_), Some(target)) => problems.push(format!(
+            "{at} is renamed with package = \"{name}\"; a workspace crate may be renamed only to the name of its directory, `{}` ({CHANGE_RULE})",
+            target.key()
+        )),
+        (Some(_), None) => problems.push(format!(
             "{at} is renamed with package = \"{name}\"; an allow-listed dependency must keep its own name ({CHANGE_RULE})"
-        ));
+        )),
     }
     let source = dependency.source.as_deref().unwrap_or_default();
     if source.starts_with("git+") {
@@ -344,9 +376,9 @@ fn source_problems(rule_crate: &CrateRule, dependency: &Dependency, root: &str) 
         .path
         .as_deref()
         .map(|path| relative_to(root, path).unwrap_or_else(|| slashed(path)));
-    if CRATE_RULES.iter().any(|rule| rule.name == name) {
-        let expected = format!("crates/{name}");
-        if path.as_deref() != Some(expected.as_str()) {
+    if let Some(target) = target {
+        let expected = target.directory();
+        if path.as_deref() != Some(expected) {
             problems.push(format!(
                 "{at} must be `path = \"{expected}\"`, found {} ({CHANGE_RULE})",
                 path.map_or("no path".to_owned(), |path| format!("`{path}`"))

@@ -12,10 +12,11 @@ use super::{
     count_occurrences, default_feature_problems, dependency_disables_defaults, e6_args, e6_cases,
     e6_problems, e7_steps, expansion_problem, files_written, gust_build_problems,
     has_build_script_warning, has_cargo_warning, identity_error, is_inside, is_slang_variable,
-    judge_run, lock_problems, marker_counts, markers_missing, markers_present, mutate_wgsl,
-    parse_warning_expectation, retarget_paths, section_version, slang_free_package_problems,
-    slang_free_problems, snapshot_differences, strip_path, tree_problems, unused_patch_lines,
-    with_bridge_user_dependency, with_bridge_user_member, with_tool_dependency,
+    judge_run, kernels_patch_configs, lock_problems, marker_counts, markers_missing,
+    markers_present, mutate_wgsl, parse_warning_expectation, retarget_paths, section_version,
+    slang_free_package_problems, slang_free_problems, snapshot_differences, strip_path,
+    tree_problems, unused_patch_lines, with_bridge_user_dependency, with_bridge_user_member,
+    with_tool_dependency,
 };
 use crate::{
     process::PROFILE_VARIABLE,
@@ -245,7 +246,7 @@ fn the_bridge_markers_are_the_strings_of_the_gated_code_and_not_slangc() {
     }
 }
 
-const TREE: &str = "app v0.0.0 (/w/tests/precompiled/app)\n├── gust v0.1.0 (/w/crates/gust)\n│   └── gust-macros v0.1.0 (/w/crates/gust-macros)\n├── gust-wgpu v0.1.0 (/w/crates/gust-wgpu)\n│   ├── gust v0.1.0 (/w/crates/gust) (*)\n│   └── wgpu v30.0.1\n└── kernels v0.1.0 (/w/tests/precompiled/kernels)\n    └── gust v0.1.0 (/w/crates/gust) (*)\n";
+const TREE: &str = "app v0.0.0 (/w/tests/precompiled/app)\n├── gust-compute v0.1.0 (/w/crates/gust)\n│   └── gust-compute-macros v0.1.0 (/w/crates/gust-macros)\n├── gust-compute-wgpu v0.1.0 (/w/crates/gust-wgpu)\n│   ├── gust-compute v0.1.0 (/w/crates/gust) (*)\n│   └── wgpu v30.0.1\n└── kernels v0.1.0 (/w/tests/precompiled/kernels)\n    └── gust-compute v0.1.0 (/w/crates/gust) (*)\n";
 
 #[test]
 fn the_tree_must_show_the_crates_and_not_the_feature() {
@@ -260,7 +261,7 @@ fn the_tree_must_show_the_crates_and_not_the_feature() {
     assert!(problems[0].contains("the feature is on") && problems[0].contains("slang-runtime"));
 
     assert_eq!(tree_problems("").len(), 3, "an empty tree reads nothing");
-    let no_wgpu = TREE.replace("gust-wgpu v0.1.0", "wgpu-gust v0.1.0");
+    let no_wgpu = TREE.replace("gust-compute-wgpu v0.1.0", "wgpu-gust v0.1.0");
     assert_eq!(tree_problems(&no_wgpu).len(), 1);
 }
 
@@ -430,7 +431,7 @@ fn strings(items: &[&str]) -> Vec<String> {
 /// The refusal as cargo prints it when the build script of `gust` fails with `message`.
 fn refusal_stderr(message: &str) -> String {
     format!(
-        "error: failed to run custom build command for `gust v0.1.0 (C:\\repo\\crates\\gust)`\n\nCaused by:\n  process didn't exit successfully\n  --- stderr\n  {message}\n"
+        "error: failed to run custom build command for `gust-compute v0.1.0 (C:\\repo\\crates\\gust)`\n\nCaused by:\n  process didn't exit successfully\n  --- stderr\n  {message}\n"
     )
 }
 
@@ -657,7 +658,7 @@ fn rustc_keys_in_an_e6_expectation_are_refused() {
 #[test]
 fn the_positive_controls_must_compile_and_d_must_show_the_inference() {
     let d = case("E6d");
-    let warning = format!("warning: gust@0.1.0: {INFERRED_WARNING}\n");
+    let warning = format!("warning: gust-compute@0.1.0: {INFERRED_WARNING}\n");
     assert_eq!(e6_problems(&d, None, true, "", &warning), Ok(Vec::new()));
     let problems = e6_problems(&d, None, true, "", "").unwrap();
     assert_eq!(problems.len(), 1, "{problems:?}");
@@ -714,29 +715,29 @@ fn the_bridge_expectation_is_the_warning_of_the_build_script() {
 #[test]
 fn a_warning_counts_only_as_a_whole_line_after_cargos_prefix() {
     let text = "gust: cargo-gust-bridge treats a release build without GUST_PROFILE as dev";
-    let line = format!("warning: gust@0.1.0: {text}\n");
+    let line = format!("warning: gust-compute@0.1.0: {text}\n");
     assert!(has_build_script_warning(&line, text));
     assert!(has_build_script_warning(&format!("x\n{line}y\n"), text));
     assert!(has_build_script_warning(&line.replace('\n', "\r\n"), text));
     // A longer line, a shorter one, another package and another prefix do not count.
     assert!(!has_build_script_warning(
-        &format!("warning: gust@0.1.0: {text}X\n"),
+        &format!("warning: gust-compute@0.1.0: {text}X\n"),
         text
     ));
     assert!(!has_build_script_warning(
-        &format!("warning: gust@0.1.0: Y{text}\n"),
+        &format!("warning: gust-compute@0.1.0: Y{text}\n"),
         text
     ));
     assert!(!has_build_script_warning(
-        &format!("warning: gust-wgpu@0.1.0: {text}\n"),
+        &format!("warning: gust-compute-wgpu@0.1.0: {text}\n"),
         text
     ));
     assert!(!has_build_script_warning(
-        &format!("note: gust@0.1.0: {text}\n"),
+        &format!("note: gust-compute@0.1.0: {text}\n"),
         text
     ));
     assert!(!has_build_script_warning(
-        &format!("  warning: gust@0.1.0: {text}\n"),
+        &format!("  warning: gust-compute@0.1.0: {text}\n"),
         text
     ));
     assert!(!has_build_script_warning(text, text));
@@ -744,7 +745,7 @@ fn a_warning_counts_only_as_a_whole_line_after_cargos_prefix() {
     assert!(has_cargo_warning(&format!("warning: {cargo}\n"), cargo));
     assert!(!has_cargo_warning(&format!("warning: {cargo} X\n"), cargo));
     assert!(!has_cargo_warning(
-        &format!("warning: gust@0.1.0: {cargo}\n"),
+        &format!("warning: gust-compute@0.1.0: {cargo}\n"),
         cargo
     ));
     // Named after the package that declares the dependency, as cargo prints it (the path may hold parentheses).
@@ -760,7 +761,7 @@ fn a_warning_counts_only_as_a_whole_line_after_cargos_prefix() {
 #[test]
 fn the_dev_by_bridge_cases_must_compile_print_the_warning_and_not_the_native_one() {
     let expected = fixture_file(E6_BRIDGE_EXPECTED);
-    let warning = format!("warning: gust@0.1.0: {}\n", bridge_warning_text());
+    let warning = format!("warning: gust-compute@0.1.0: {}\n", bridge_warning_text());
     let ignored = format!("warning: {}\n", cargo_warning_text());
     for id in ["E6g", "E6i", "E6j"] {
         let bridged = case(id);
@@ -785,11 +786,14 @@ fn the_dev_by_bridge_cases_must_compile_print_the_warning_and_not_the_native_one
         assert_eq!(problems.len(), 1, "{id}: {problems:?}");
         assert!(problems[0].contains("did not print"), "{id}: {problems:?}");
         // A warning that only starts like the expected one is no match (the line must be the same).
-        let longer = format!("warning: gust@0.1.0: {}X\n{silent}", bridge_warning_text());
+        let longer = format!(
+            "warning: gust-compute@0.1.0: {}X\n{silent}",
+            bridge_warning_text()
+        );
         let problems = e6_problems(&bridged, Some(&expected), true, "", &longer).unwrap();
         assert_eq!(problems.len(), 1, "{id}: {problems:?}");
         // The warning of the plain inference means the profile was native and not made dev.
-        let native = format!("warning: gust@0.1.0: {INFERRED_WARNING}\n{complete}");
+        let native = format!("warning: gust-compute@0.1.0: {INFERRED_WARNING}\n{complete}");
         let problems = e6_problems(&bridged, Some(&expected), true, "", &native).unwrap();
         assert_eq!(problems.len(), 1, "{id}: {problems:?}");
         assert!(
@@ -822,7 +826,7 @@ fn the_explicit_native_refusal_with_the_bridge_feature_is_the_one_of_e6a() {
         Ok(Vec::new())
     );
     // Accepted as dev (what E6g does) is the failure of E6h.
-    let warning = format!("warning: gust@0.1.0: {}\n", bridge_warning_text());
+    let warning = format!("warning: gust-compute@0.1.0: {}\n", bridge_warning_text());
     let problems = e6_problems(&h, Some(&native_file), true, "", &warning).unwrap();
     assert!(
         problems.iter().any(|problem| problem.contains("compiled")),
@@ -964,7 +968,7 @@ fn the_package_allow_list_names_a_stray_file() {
         "README.md",
         "LICENSE-MIT",
     ]);
-    assert!(package_problems(&spec("gust-macros"), &good, &[]).is_empty());
+    assert!(package_problems(&spec("gust-compute-macros"), &good, &[]).is_empty());
     for stray in [
         "tests/ui.rs",
         "examples/a.rs",
@@ -977,21 +981,24 @@ fn the_package_allow_list_names_a_stray_file() {
     ] {
         let mut files = good.clone();
         files.push(stray.to_owned());
-        let problems = package_problems(&spec("gust-macros"), &files, &[]);
+        let problems = package_problems(&spec("gust-compute-macros"), &files, &[]);
         assert_eq!(problems.len(), 1, "{stray}: {problems:?}");
         assert!(problems[0].contains(stray), "{problems:?}");
     }
     // `gust` alone may list a build script.
     let mut with_script = good.clone();
     with_script.push("build.rs".to_owned());
-    assert!(package_problems(&spec("gust"), &with_script, &[]).is_empty());
-    assert!(!package_allows(&spec("gust-wgpu"), "gust-artifacts/a.wgsl"));
+    assert!(package_problems(&spec("gust-compute"), &with_script, &[]).is_empty());
+    assert!(!package_allows(
+        &spec("gust-compute-wgpu"),
+        "gust-artifacts/a.wgsl"
+    ));
     assert!(package_allows(&spec("kernels"), "gust-artifacts/a.wgsl"));
 }
 
 #[test]
 fn a_package_needs_its_manifest_and_library_and_the_kernels_package_every_artifact() {
-    let problems = package_problems(&spec("gust"), &strings(&["Cargo.toml"]), &[]);
+    let problems = package_problems(&spec("gust-compute"), &strings(&["Cargo.toml"]), &[]);
     assert_eq!(problems.len(), 1);
     assert!(problems[0].contains("src/lib.rs"));
     let committed = strings(&["manifest.json", "k.wgsl", "k.wgsl.reflection.json"]);
@@ -1049,13 +1056,20 @@ fn the_versions_come_from_the_manifests_and_the_consumer_patches_all_four_packag
     );
     let versions = ["0.1.0", "0.1.0", "0.1.0", "0.0.0"].map(str::to_owned);
     let manifest = consumer_manifest(&versions);
-    for name in ["gust-macros", "gust", "gust-wgpu", "kernels"] {
+    for name in [
+        "gust-compute-macros",
+        "gust-compute",
+        "gust-compute-wgpu",
+        "kernels",
+    ] {
         assert!(
             manifest.contains(&format!("{name} = {{ path = \"../unpacked/")),
             "{name}"
         );
     }
-    assert!(manifest.contains("gust = \"=0.1.0\"\ngust-wgpu = \"=0.1.0\"\nkernels = \"=0.0.0\"\n"));
+    assert!(manifest.contains(
+        "gust-compute = \"=0.1.0\"\ngust-compute-wgpu = \"=0.1.0\"\nkernels = \"=0.0.0\"\n"
+    ));
     assert!(
         !manifest.contains("default-features"),
         "plain registry-style dependencies (D45)"
@@ -1105,24 +1119,29 @@ fn a_lock_entry_with_a_source_or_a_missing_package_is_a_problem() {
         text
     };
     let registry = "registry+https://github.com/rust-lang/crates.io-index";
-    let good: String = ["gust", "gust-macros", "gust-wgpu", "kernels"]
-        .iter()
-        .map(|name| entry(name, None))
-        .chain([entry("wgpu", Some(registry))])
-        .collect();
+    let good: String = [
+        "gust-compute",
+        "gust-compute-macros",
+        "gust-compute-wgpu",
+        "kernels",
+    ]
+    .iter()
+    .map(|name| entry(name, None))
+    .chain([entry("wgpu", Some(registry))])
+    .collect();
     assert!(
         lock_problems(&good).is_empty(),
         "{:?}",
         lock_problems(&good)
     );
     let sourced = good.replacen(
-        "name = \"gust\"\nversion = \"0.1.0\"\n",
-        &format!("name = \"gust\"\nversion = \"0.1.0\"\nsource = \"{registry}\"\n"),
+        "name = \"gust-compute\"\nversion = \"0.1.0\"\n",
+        &format!("name = \"gust-compute\"\nversion = \"0.1.0\"\nsource = \"{registry}\"\n"),
         1,
     );
     let problems = lock_problems(&sourced);
     assert_eq!(problems.len(), 1, "{problems:?}");
-    assert!(problems[0].contains("`gust`") && problems[0].contains("registry"));
+    assert!(problems[0].contains("`gust-compute`") && problems[0].contains("registry"));
     let missing = good.replacen("name = \"kernels\"", "name = \"other\"", 1);
     assert!(
         lock_problems(&missing)
@@ -1134,21 +1153,21 @@ fn a_lock_entry_with_a_source_or_a_missing_package_is_a_problem() {
 
 #[test]
 fn an_unused_patch_is_found_in_cargos_warning() {
-    let output = "warning: Patch `gust-macros v0.1.0 (C:\\x)` was not used in the crate graph.\nhelp: Check that the patched package version and available features are compatible\n";
+    let output = "warning: Patch `gust-compute-macros v0.1.0 (C:\\x)` was not used in the crate graph.\nhelp: Check that the patched package version and available features are compatible\n";
     assert_eq!(unused_patch_lines(output).len(), 1);
-    assert!(unused_patch_lines("Compiling gust v0.1.0\n").is_empty());
+    assert!(unused_patch_lines("Compiling gust-compute v0.1.0\n").is_empty());
 }
 
 fn metadata(gust_features: &str, wgpu_features: &str, manifest: &str) -> String {
     format!(
-        "{{\"packages\":[{{\"name\":\"gust\",\"manifest_path\":\"{manifest}/gust-0.1.0/Cargo.toml\",\"features\":{gust_features}}},{{\"name\":\"gust-wgpu\",\"manifest_path\":\"{manifest}/gust-wgpu-0.1.0/Cargo.toml\",\"features\":{wgpu_features}}}]}}"
+        "{{\"packages\":[{{\"name\":\"gust-compute\",\"manifest_path\":\"{manifest}/gust-compute-0.1.0/Cargo.toml\",\"features\":{gust_features}}},{{\"name\":\"gust-compute-wgpu\",\"manifest_path\":\"{manifest}/gust-compute-wgpu-0.1.0/Cargo.toml\",\"features\":{wgpu_features}}}]}}"
     )
 }
 
 #[test]
 fn a_default_feature_that_reaches_slang_runtime_is_found_directly_or_through_another_feature() {
     let ok = "{\"slang-runtime\":[],\"other\":[]}";
-    let names = ["gust", "gust-wgpu"];
+    let names = ["gust-compute", "gust-compute-wgpu"];
     assert_eq!(
         default_feature_problems(&metadata(ok, ok, "C:/u"), &names, "C:/u"),
         Ok(Vec::new())
@@ -1156,7 +1175,7 @@ fn a_default_feature_that_reaches_slang_runtime_is_found_directly_or_through_ano
     let direct = "{\"default\":[\"slang-runtime\"],\"slang-runtime\":[]}";
     let problems = default_feature_problems(&metadata(ok, direct, "C:/u"), &names, "C:/u").unwrap();
     assert_eq!(problems.len(), 1, "{problems:?}");
-    assert!(problems[0].contains("gust-wgpu"));
+    assert!(problems[0].contains("gust-compute-wgpu"));
     let through = "{\"default\":[\"bridge\"],\"bridge\":[\"gust/slang-runtime\"]}";
     let problems =
         default_feature_problems(&metadata(through, ok, "C:/u"), &names, "C:/u").unwrap();
@@ -1206,4 +1225,26 @@ fn the_files_written_by_cargo_gust_are_read_from_its_summary_line() {
         Some(0)
     );
     assert_eq!(files_written("gust: compiling 1 kernel(s)\n"), None);
+}
+
+#[test]
+fn the_packaging_of_kernels_patches_the_two_packages_it_reaches_onto_the_checkout() {
+    // The values are given to `cargo package --config`: the patch keys are the package names (not the directories),
+    // the paths are the checkout's own `crates/<directory>` with forward slashes, quoted as TOML literal strings.
+    let configs = kernels_patch_configs(Path::new(r"C:\work\gust")).unwrap();
+    assert_eq!(
+        configs,
+        [
+            "patch.crates-io.gust-compute.path='C:/work/gust/crates/gust'",
+            "patch.crates-io.gust-compute-macros.path='C:/work/gust/crates/gust-macros'",
+        ]
+    );
+    // `gust-compute-wgpu` is not reached by `kernels`: a patch for it would only be reported as unused.
+    assert!(configs.iter().all(|config| !config.contains("wgpu")));
+    // A literal string has no escape for a quote or a line break, so such a root is refused and not written wrongly.
+    for root in ["/it's/gust", "/a\nb/gust", "/a\rb/gust"] {
+        let error = kernels_patch_configs(Path::new(root)).unwrap_err();
+        assert!(error.contains("check-precompiled E8"), "{error}");
+        assert!(error.contains("quote or a line break"), "{error}");
+    }
 }

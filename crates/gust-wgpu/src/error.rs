@@ -8,7 +8,7 @@ use crate::GpuBufferAccess;
 /// indirect dispatch in a staged graph. It stands where a parameter name would.
 pub(crate) const INDIRECT_ARGUMENTS: &str = "<indirect dispatch arguments>";
 
-/// Every way a `gust-wgpu` call can refuse or fail: opening a device, validating a kernel and its bindings, building
+/// Every way a `gust-compute-wgpu` call can refuse or fail: opening a device, validating a kernel and its bindings, building
 /// a graph, and reading results back. A launch or a graph is validated before it is encoded, so a validation error
 /// means none of its work was submitted.
 ///
@@ -33,7 +33,7 @@ pub enum Error {
     /// verification of a precompiled artifact.
     Reflection(gust::reflect::Error),
     /// The kernel has no precompiled WGSL artifact and this build cannot compile one at run time: the
-    /// `slang-runtime` feature of `gust-wgpu` is off (D44), and with it the only compiler this crate could start.
+    /// `slang-runtime` feature of `gust-compute-wgpu` is off (D44), and with it the only compiler this crate could start.
     /// `profile` is the build profile of `gust` (D44). Remedy: run `cargo gust build` in the kernel's crate and
     /// rebuild, so that the artifact is embedded; or, in a `dev` build, enable the `slang-runtime` feature.
     NoArtifact {
@@ -374,7 +374,7 @@ impl fmt::Display for Error {
             }
             Self::NoArtifact { kernel, profile } => write!(
                 formatter,
-                "kernel `{kernel}` has no precompiled WGSL artifact, and this build of gust-wgpu (profile `{profile}`) was built without the `slang-runtime` feature, so it cannot compile the kernel at run time; run `cargo gust build` in the crate that defines the kernel and rebuild, or enable the `slang-runtime` feature in a dev build",
+                "kernel `{kernel}` has no precompiled WGSL artifact, and this build of gust-compute-wgpu (profile `{profile}`) was built without the `slang-runtime` feature, so it cannot compile the kernel at run time; run `cargo gust build` in the crate that defines the kernel and rebuild, or enable the `slang-runtime` feature in a dev build",
             ),
             Self::ShapeUnsupported {
                 kernel,

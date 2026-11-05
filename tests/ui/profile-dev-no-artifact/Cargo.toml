@@ -10,4 +10,4 @@ name = "profile-dev-no-artifact"
 path = "../profile-native-no-artifact/src/main.rs"
 
 [dependencies]
-gust = { path = "../../../crates/gust" }
+gust = { package = "gust-compute", path = "../../../crates/gust" }

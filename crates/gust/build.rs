@@ -11,7 +11,7 @@
 //! always wins over it.
 //!
 //! The decision is a pure function of [`Inputs`] that returns the exact lines this script prints, so the unit tests
-//! (`cargo test -p gust`, which includes this file from `src/profile.rs`) pin them.
+//! (`cargo test -p gust-compute`, which includes this file from `src/profile.rs`) pin them.
 
 use std::{env, process::ExitCode};
 
@@ -79,7 +79,7 @@ fn directives(inputs: &Inputs<'_>) -> Result<Vec<String>, String> {
     let (profile, inferred) = effective(inputs)?;
     if inputs.slang_runtime && profile == "cpu" {
         // `cpu` is never inferred, so there is no origin to name.
-        return Err("gust: profile cpu refuses feature slang-runtime; a CPU build contains no compiler, bridge or GPU runtime. Do not enable the feature for this build (look for features = [\"slang-runtime\"] in a dependency, or --features ...slang-runtime; `cargo tree -e features -i gust` shows who enables it), or build with GUST_PROFILE=dev.".to_owned());
+        return Err("gust: profile cpu refuses feature slang-runtime; a CPU build contains no compiler, bridge or GPU runtime. Do not enable the feature for this build (look for features = [\"slang-runtime\"] in a dependency, or --features ...slang-runtime; `cargo tree -e features -i gust-compute` shows who enables it), or build with GUST_PROFILE=dev.".to_owned());
     }
     if inputs.slang_runtime && profile != "dev" {
         let origin = if inferred {
@@ -90,7 +90,7 @@ fn directives(inputs: &Inputs<'_>) -> Result<Vec<String>, String> {
         return Err(format!(
             "gust: profile {profile} refuses feature slang-runtime; a strict profile builds no run-time Slang \
              bridge. Do not enable the feature for this build (look for features = [\"slang-runtime\"] in a \
-             dependency, or --features ...slang-runtime; `cargo tree -e features -i gust` shows who enables it), \
+             dependency, or --features ...slang-runtime; `cargo tree -e features -i gust-compute` shows who enables it), \
              or build with GUST_PROFILE=dev.{origin}"
         ));
     }
@@ -316,7 +316,7 @@ mod tests {
                 "{message}"
             );
             assert!(
-                message.contains("cargo tree -e features -i gust"),
+                message.contains("cargo tree -e features -i gust-compute"),
                 "{message}"
             );
             assert!(!message.contains("inferred"), "{message}");
@@ -332,7 +332,7 @@ mod tests {
         };
         assert_eq!(
             directives(&inputs),
-            Err("gust: profile native refuses feature slang-runtime; a strict profile builds no run-time Slang bridge. Do not enable the feature for this build (look for features = [\"slang-runtime\"] in a dependency, or --features ...slang-runtime; `cargo tree -e features -i gust` shows who enables it), or build with GUST_PROFILE=dev.".to_owned())
+            Err("gust: profile native refuses feature slang-runtime; a strict profile builds no run-time Slang bridge. Do not enable the feature for this build (look for features = [\"slang-runtime\"] in a dependency, or --features ...slang-runtime; `cargo tree -e features -i gust-compute` shows who enables it), or build with GUST_PROFILE=dev.".to_owned())
         );
     }
 
@@ -405,7 +405,7 @@ mod tests {
             };
             assert_eq!(
                 directives(&inputs),
-                Err("gust: profile cpu refuses feature slang-runtime; a CPU build contains no compiler, bridge or GPU runtime. Do not enable the feature for this build (look for features = [\"slang-runtime\"] in a dependency, or --features ...slang-runtime; `cargo tree -e features -i gust` shows who enables it), or build with GUST_PROFILE=dev.".to_owned())
+                Err("gust: profile cpu refuses feature slang-runtime; a CPU build contains no compiler, bridge or GPU runtime. Do not enable the feature for this build (look for features = [\"slang-runtime\"] in a dependency, or --features ...slang-runtime; `cargo tree -e features -i gust-compute` shows who enables it), or build with GUST_PROFILE=dev.".to_owned())
             );
         }
     }

@@ -27,7 +27,7 @@ pub(crate) const ENV_FILE: &str = "env.txt";
 
 /// What cargo prints when a build script of `gust` fails, up to the package version. A refusal of another
 /// package's script would not satisfy a `build-error:`.
-const GUST_SCRIPT_FAILED: &str = "failed to run custom build command for `gust ";
+const GUST_SCRIPT_FAILED: &str = "failed to run custom build command for `gust-compute ";
 
 /// What `cargo check` of one fixture crate must do.
 #[derive(Debug, Clone, PartialEq, Eq)]

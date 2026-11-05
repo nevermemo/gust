@@ -5,4 +5,4 @@ edition = "2024"
 publish = false
 
 [dependencies]
-gust = { path = "../../../crates/gust" }
+gust = { package = "gust-compute", path = "../../../crates/gust" }

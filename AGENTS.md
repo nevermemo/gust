@@ -120,7 +120,9 @@ Do not wait for Codex during normal local swarm work.
   the same visible semantics. No GPU inter-workgroup spin waits.
 - Prefer a diagnostic over silently translating unsupported Rust semantics.
 - Do not rename crates, initialize Git, remove working examples, add dependencies,
-  or expand architecture merely to align branding. Explain necessary changes.
+  or expand architecture merely to align branding. Explain necessary changes. The published package names are D48's
+  (`gust-compute`, `gust-compute-macros`, `gust-compute-wgpu`); the directories and the library names (`gust`,
+  `gust_macros`, `gust_wgpu`) stay.
 - Parallel lanes may each use one branch and one Git worktree (owner decision
   2026-10-23). Update a branch by merging `main` into it; never rebase commits that
   were already pushed.

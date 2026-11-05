@@ -86,7 +86,7 @@ pub(crate) const SCAN_CONTROL: &str = "cpu target: matches";
 const TREE_LINES_SHOWN: usize = 3;
 
 /// Packages that `cargo tree -e features -p app` must list, so that an empty or unreadable tree cannot pass.
-const TREE_PACKAGES: [&str; 3] = ["gust", "kernels", "app"];
+const TREE_PACKAGES: [&str; 3] = ["gust-compute", "kernels", "app"];
 
 /// The line of `crates/gust-wgpu/src/lib.rs` that E-e expects the error at (the file is `line: auto` in
 /// `e-e-expected.txt`).
@@ -679,7 +679,7 @@ pub(crate) fn refusal_line(source: &str) -> Result<usize, String> {
     match lines.as_slice() {
         [line] => Ok(*line),
         [] => Err(format!(
-            "{REFUSAL_FILE} has no line `{REFUSAL_ITEM}`, so `gust-wgpu` does not refuse GUST_PROFILE=cpu"
+            "{REFUSAL_FILE} has no line `{REFUSAL_ITEM}`, so `gust-compute-wgpu` does not refuse GUST_PROFILE=cpu"
         )),
         many => Err(format!(
             "{REFUSAL_FILE} has {} lines `{REFUSAL_ITEM}`, expected one",
@@ -978,7 +978,7 @@ impl Check {
             &output,
         )?;
         Ok(format!(
-            "`app-with-wgpu` under cpu fails with the one E0080 of e-e-expected.txt, raised at {REFUSAL_FILE}:{line} by `gust-wgpu`'s `require_gpu_target`"
+            "`app-with-wgpu` under cpu fails with the one E0080 of e-e-expected.txt, raised at {REFUSAL_FILE}:{line} by `gust-compute-wgpu`'s `require_gpu_target`"
         ))
     }
 

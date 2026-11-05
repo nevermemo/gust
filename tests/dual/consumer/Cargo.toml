@@ -5,7 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-gust = { path = "../../../crates/gust" }
+gust = { package = "gust-compute", path = "../../../crates/gust" }
 kernel-lib = { path = "../kernel-lib" }
 
 # `prod` stands for a production binary: it is never built as a test target, so `cargo test -p consumer --lib`

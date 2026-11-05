@@ -23,7 +23,7 @@ const PIN: GpuSuitePin = GpuSuitePin {
     result_lines: 20,
 };
 
-/// Twenty result lines that sum to 146, the last one a doc-test run with no test, as `cargo test -p gust-wgpu` prints
+/// Twenty result lines that sum to 146, the last one a doc-test run with no test, as `cargo test -p gust-compute-wgpu` prints
 /// them: the library, each integration test file, then the doc tests.
 const PASSED: [u32; 20] = [
     10, 7, 5, 9, 6, 8, 11, 4, 3, 12, 9, 7, 6, 8, 10, 5, 6, 8, 12, 0,
@@ -45,7 +45,8 @@ fn line(status: &str, passed: u32, failed: u32, ignored: u32) -> String {
 
 /// The captured standard output of the call: for each binary a `Running` line, the tests, a blank line and the result.
 fn stdout_of(passed: &[u32]) -> String {
-    let mut out = String::from("   Compiling gust-wgpu v0.1.0\n    Finished `dev` profile\n");
+    let mut out =
+        String::from("   Compiling gust-compute-wgpu v0.1.0\n    Finished `dev` profile\n");
     for (index, count) in passed.iter().enumerate() {
         out.push_str(&format!(
             "     Running tests/binary_{index}.rs\n\nrunning {count} tests\n"
@@ -70,7 +71,7 @@ fn the_pinned_output_passes() {
     assert_eq!(check_gpu_suite_counts(&call(), &good(), PIN), Ok(()));
 }
 
-/// The `passed` counts of the 20 result lines that `cargo test --locked -p gust-wgpu` printed on Mesa lavapipe (WSL,
+/// The `passed` counts of the 20 result lines that `cargo test --locked -p gust-compute-wgpu` printed on Mesa lavapipe (WSL,
 /// slice m5.a2 dry run at 672c5ca), in order.
 const LAVAPIPE_RUN: [u32; 20] = [
     38, 4, 9, 1, 4, 15, 17, 2, 6, 2, 2, 8, 6, 4, 2, 2, 19, 2, 2, 1,
@@ -226,7 +227,7 @@ fn the_error_names_the_call_and_where_the_pin_lives() {
     more[0] += 1;
     let error = check_gpu_suite_counts(&call(), &stdout_of(&more), PIN).unwrap_err();
     assert!(
-        error.starts_with("cargo test --locked -p gust-wgpu: "),
+        error.starts_with("cargo test --locked -p gust-compute-wgpu: "),
         "{error}"
     );
     assert!(
@@ -256,7 +257,7 @@ fn only_the_gpu_mode_makes_the_pinned_call() {
     }
     assert!(!pins_gpu_counts(
         VerifyMode::Gpu,
-        &owned(&["test", "--locked", "-p", "gust"])
+        &owned(&["test", "--locked", "-p", "gust-compute"])
     ));
 }
 

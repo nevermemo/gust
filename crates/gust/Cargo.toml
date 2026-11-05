@@ -1,5 +1,5 @@
 [package]
-name = "gust"
+name = "gust-compute"
 description = "Rust-shaped Slang frontend types, descriptors, and compiler bridge"
 version.workspace = true
 edition.workspace = true
@@ -10,6 +10,11 @@ keywords.workspace = true
 categories.workspace = true
 documentation = "https://docs.rs/gust-compute"
 exclude = ["tests/", "examples/", "benches/"]
+
+# The package is `gust-compute` (D48, D106); the library keeps the name `gust`, so `use gust::..` and the `::gust::`
+# paths of the macro's output stay as they are.
+[lib]
+name = "gust"
 
 # docs.rs builds with the run-time bridge on so that `gust::slang::compile*` and `gust::reflect::reflect*` have pages.
 [package.metadata.docs.rs]
@@ -32,10 +37,10 @@ cargo-gust-bridge = []
 [dependencies]
 gust-macros.workspace = true
 
-# Cargo unifies the features of a package with those of its dev-dependency on itself, so every `cargo test -p gust`
+# Cargo unifies the features of a package with those of its dev-dependency on itself, so every `cargo test -p gust-compute`
 # builds the unit and integration tests with the bridge; without this line they do not compile.
 [dev-dependencies]
-gust = { path = ".", features = ["slang-runtime"] }
+gust = { package = "gust-compute", path = ".", features = ["slang-runtime"] }
 
 [lints]
 workspace = true

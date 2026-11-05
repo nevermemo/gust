@@ -245,7 +245,7 @@ impl Record {
             Some(schema) if accepted.contains(&schema) => schema,
             _ => {
                 return Err(format!(
-                    "record: unsupported schema (this tool reads schemas {}); regenerate it with a matching gust-macros",
+                    "record: unsupported schema (this tool reads schemas {}); regenerate it with a matching gust-compute-macros",
                     schema_list(accepted)
                 ));
             }

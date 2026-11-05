@@ -21,8 +21,8 @@ dependencies = [
 name = "app"
 version = "0.0.0"
 dependencies = [
- "gust",
- "gust-wgpu",
+ "gust-compute",
+ "gust-compute-wgpu",
  "kernels",
 ]
 
@@ -192,14 +192,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "gust"
+name = "gust-compute"
 version = "0.1.0"
 dependencies = [
- "gust-macros",
+ "gust-compute-macros",
 ]
 
 [[package]]
-name = "gust-macros"
+name = "gust-compute-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
@@ -208,10 +208,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "gust-wgpu"
+name = "gust-compute-wgpu"
 version = "0.1.0"
 dependencies = [
- "gust",
+ "gust-compute",
  "pollster",
  "wgpu",
 ]
@@ -273,7 +273,7 @@ dependencies = [
 name = "kernels"
 version = "0.1.0"
 dependencies = [
- "gust",
+ "gust-compute",
 ]
 
 [[package]]

@@ -113,7 +113,7 @@ fn declares(line: &str, name: &str) -> bool {
 #[test]
 fn no_dependency_entry_turns_the_feature_on_for_every_consumer() {
     // A `features = ["slang-runtime"]` on the `gust` entry of gust-wgpu or of the workspace root would put the bridge
-    // into every build; `-p gust -p gust-wgpu --no-default-features` would not notice, because both unify.
+    // into every build; `-p gust-compute -p gust-compute-wgpu --no-default-features` would not notice, because both unify.
     for (manifest, table_name, names) in [
         ("crates/gust-wgpu/Cargo.toml", "dependencies", &["gust"][..]),
         (
@@ -152,11 +152,13 @@ fn no_dependency_entry_turns_the_feature_on_for_every_consumer() {
 fn the_tests_of_both_crates_and_every_example_turn_the_feature_on() {
     assert_eq!(
         table("crates/gust/Cargo.toml", "dev-dependencies"),
-        [r#"gust = { path = ".", features = ["slang-runtime"] }"#]
+        [r#"gust = { package = "gust-compute", path = ".", features = ["slang-runtime"] }"#]
     );
     assert_eq!(
         table("crates/gust-wgpu/Cargo.toml", "dev-dependencies"),
-        [r#"gust-wgpu = { path = ".", features = ["slang-runtime"] }"#]
+        [
+            r#"gust-wgpu = { package = "gust-compute-wgpu", path = ".", features = ["slang-runtime"] }"#
+        ]
     );
     for example in crate::workspace::EXAMPLES {
         let dependencies = table(&format!("examples/{example}/Cargo.toml"), "dependencies");

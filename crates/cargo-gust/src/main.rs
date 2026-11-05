@@ -107,7 +107,7 @@
 //!
 //! The tool needs `gust`'s run-time Slang bridge (the `slang-runtime` feature), which a strict profile refuses, and a
 //! plain `cargo install` builds in release, which infers the `native` profile. The tool therefore enables the internal
-//! `cargo-gust-bridge` feature of `gust` (D108): with it, a release build without `GUST_PROFILE` is built as `dev`
+//! `cargo-gust-bridge` feature of `gust-compute` (D108): with it, a release build without `GUST_PROFILE` is built as `dev`
 //! (the build prints a `cargo:warning` saying so), and no variable is needed:
 //!
 //! ```sh

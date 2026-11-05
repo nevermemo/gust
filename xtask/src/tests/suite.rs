@@ -13,32 +13,60 @@ use crate::{
 use std::{cell::RefCell, path::Path};
 
 const UNIT: [Step; 18] = [
-    Step::Cargo(&["test", "--locked", "-p", "gust-macros"]),
+    Step::Cargo(&["test", "--locked", "-p", "gust-compute-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
     Step::DocsCheck,
     Step::CheckArch,
     Step::CheckUi,
     Step::CheckCpu,
-    Step::CountedCargo(&["test", "--locked", "-p", "gust", "--lib", "cpu::tests::"]),
     Step::CountedCargo(&[
         "test",
         "--locked",
         "-p",
-        "gust",
+        "gust-compute",
+        "--lib",
+        "cpu::tests::",
+    ]),
+    Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
         "--lib",
         "artifact::tests::",
     ]),
-    Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "artifact"]),
-    Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "coretests_twin"]),
-    Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "uniforms_twin"]),
+    Step::Cargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--test",
+        "artifact",
+    ]),
+    Step::Cargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--test",
+        "coretests_twin",
+    ]),
+    Step::Cargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--test",
+        "uniforms_twin",
+    ]),
     Step::Cargo(&[
         "clippy",
         "--locked",
         "-p",
-        "gust",
+        "gust-compute",
         "-p",
-        "gust-wgpu",
+        "gust-compute-wgpu",
         "--no-default-features",
         "--lib",
         "--",
@@ -49,9 +77,9 @@ const UNIT: [Step; 18] = [
         "check",
         "--locked",
         "-p",
-        "gust",
+        "gust-compute",
         "-p",
-        "gust-wgpu",
+        "gust-compute-wgpu",
         "--no-default-features",
         "--lib",
     ]),
@@ -112,12 +140,18 @@ fn unit_runs_tests_lint_docs_and_architecture_without_external_tools() {
 fn slangc_is_unit_plus_the_core_library_tests_and_requires_slangc() {
     let mut expected = vec![Step::RequireTool("slangc")];
     expected.extend(UNIT);
-    expected.push(Step::Cargo(&["test", "--locked", "-p", "gust", "--lib"]));
     expected.push(Step::Cargo(&[
         "test",
         "--locked",
         "-p",
-        "gust",
+        "gust-compute",
+        "--lib",
+    ]));
+    expected.push(Step::Cargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
         "--test",
         "diagnostics",
     ]));
@@ -125,7 +159,7 @@ fn slangc_is_unit_plus_the_core_library_tests_and_requires_slangc() {
         "test",
         "--locked",
         "-p",
-        "gust-wgpu",
+        "gust-compute-wgpu",
         "--test",
         "naga_layout",
     ]));
@@ -413,7 +447,10 @@ fn the_other_tiers_alias_existing_commands() {
         ]
     );
     // The step makes the call of `verify --mode gpu` and, like it, judges the output against GPU_SUITE_PIN (m5.f1).
-    assert_eq!(Step::GpuSuite.label(), "cargo test --locked -p gust-wgpu");
+    assert_eq!(
+        Step::GpuSuite.label(),
+        "cargo test --locked -p gust-compute-wgpu"
+    );
     assert_eq!(
         cargo_calls(Step::GpuSuite),
         vec![
@@ -611,7 +648,7 @@ fn the_full_gate_runs_the_release_slang_tests() {
             "--locked",
             "--release",
             "-p",
-            "gust",
+            "gust-compute",
             "--lib",
             "--",
             "slang",
@@ -686,13 +723,20 @@ fn check_cpu_and_check_ui_are_explained() {
 #[test]
 fn the_unit_suite_runs_the_gust_cpu_tests_with_the_count_guard() {
     // `gust::cpu` tests need neither slangc nor a GPU; without this step no CI job ran them.
-    let step = Step::CountedCargo(&["test", "--locked", "-p", "gust", "--lib", "cpu::tests::"]);
+    let step = Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--lib",
+        "cpu::tests::",
+    ]);
     let steps = Suite::Unit.steps();
     assert_eq!(steps.iter().filter(|s| **s == step).count(), 1);
     assert!(steps.iter().all(|s| !matches!(s, Step::RequireTool(_))));
     assert_eq!(
         step.label(),
-        "cargo test --locked -p gust --lib cpu::tests::"
+        "cargo test --locked -p gust-compute --lib cpu::tests::"
     );
     assert!(Suite::Unit.covers().contains("gust::cpu"));
 }
@@ -700,9 +744,9 @@ fn the_unit_suite_runs_the_gust_cpu_tests_with_the_count_guard() {
 #[test]
 fn the_unit_suite_builds_gust_and_gust_wgpu_without_default_features() {
     // The only observers of the `slang-runtime` off state: the workspace build unifies the feature on.
-    let clippy =
-        "cargo clippy --locked -p gust -p gust-wgpu --no-default-features --lib -- -D warnings";
-    let check = "cargo check --locked -p gust -p gust-wgpu --no-default-features --lib";
+    let clippy = "cargo clippy --locked -p gust-compute -p gust-compute-wgpu --no-default-features --lib -- -D warnings";
+    let check =
+        "cargo check --locked -p gust-compute -p gust-compute-wgpu --no-default-features --lib";
     for suite in [Suite::Unit, Suite::Slangc] {
         let labels: Vec<String> = suite.steps().iter().map(|step| step.label()).collect();
         assert_eq!(labels.iter().filter(|label| *label == clippy).count(), 1);
@@ -718,21 +762,28 @@ fn the_unit_suite_runs_the_gust_artifact_tests_with_the_count_guard() {
         "test",
         "--locked",
         "-p",
-        "gust",
+        "gust-compute",
         "--lib",
         "artifact::tests::",
     ]);
-    let integration = Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "artifact"]);
+    let integration = Step::Cargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--test",
+        "artifact",
+    ]);
     let steps = Suite::Unit.steps();
     assert_eq!(steps.iter().filter(|s| **s == unit).count(), 1);
     assert_eq!(steps.iter().filter(|s| **s == integration).count(), 1);
     assert_eq!(
         unit.label(),
-        "cargo test --locked -p gust --lib artifact::tests::"
+        "cargo test --locked -p gust-compute --lib artifact::tests::"
     );
     assert_eq!(
         integration.label(),
-        "cargo test --locked -p gust --test artifact"
+        "cargo test --locked -p gust-compute --test artifact"
     );
     assert!(Suite::Unit.covers().contains("gust::artifact"));
 }
@@ -740,7 +791,14 @@ fn the_unit_suite_runs_the_gust_artifact_tests_with_the_count_guard() {
 #[test]
 fn the_unit_suite_runs_the_coretests_twin_test() {
     // Pure (no slangc, no adapter): the transcribed Rust core test cases on the CPU twin against their literals.
-    let step = Step::Cargo(&["test", "--locked", "-p", "gust", "--test", "coretests_twin"]);
+    let step = Step::Cargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--test",
+        "coretests_twin",
+    ]);
     for suite in [Suite::Unit, Suite::Slangc] {
         assert_eq!(
             suite.steps().iter().filter(|s| **s == step).count(),
@@ -750,7 +808,7 @@ fn the_unit_suite_runs_the_coretests_twin_test() {
     }
     assert_eq!(
         step.label(),
-        "cargo test --locked -p gust --test coretests_twin"
+        "cargo test --locked -p gust-compute --test coretests_twin"
     );
     assert!(Suite::Unit.covers().contains("coretests_twin"));
     assert!(
@@ -770,7 +828,7 @@ fn check_feature_reflection_runs_the_naga_layout_gate() {
         "test",
         "--locked",
         "-p",
-        "gust-wgpu",
+        "gust-compute-wgpu",
         "--test",
         "naga_layout",
     ];

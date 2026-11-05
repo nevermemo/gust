@@ -9,7 +9,7 @@
 //! never exits on its own in headless mode, so the check kills it (the whole process tree) as soon as it has a result,
 //! on a timeout and on every error path, and deletes its fresh profile directory.
 //!
-//! What this is evidence for: the real `gust-wgpu` vector-add ran on the browser's GPU in both forms (grid and pixel,
+//! What this is evidence for: the real `gust-compute-wgpu` vector-add ran on the browser's GPU in both forms (grid and pixel,
 //! mx.w), and each equalled the host reference and the other bit for bit.
 //! The label printed at the end is `Gpu (WebGPU, Chrome <version>, <vendor> <architecture>)`, or `Gpu (software ...)`
 //! when the adapter is a software one. Nothing here runs Slang: the shader is the committed WGSL artifact.
@@ -19,7 +19,7 @@
 //!
 //! Before any of that the check runs a feature guard (all of `--tree-only`): `cargo tree -e features -i wgpu` of the
 //! host target must not list wgpu's `webgpu` feature, and the same for `wasm32-unknown-unknown` must (R4.9: `webgpu`
-//! is enabled from `gust-wgpu`'s wasm32 target dependencies only, so a native build never gains it).
+//! is enabled from `gust-compute-wgpu`'s wasm32 target dependencies only, so a native build never gains it).
 
 use std::{
     env,

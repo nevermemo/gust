@@ -1,5 +1,5 @@
 [package]
-name = "gust-wgpu"
+name = "gust-compute-wgpu"
 description = "Cached headless wgpu backend for Rust-to-Slang kernels"
 version.workspace = true
 edition.workspace = true
@@ -10,6 +10,10 @@ keywords.workspace = true
 categories.workspace = true
 documentation = "https://docs.rs/gust-compute-wgpu"
 exclude = ["tests/", "examples/", "benches/", "clippy.toml"]
+
+# The package is `gust-compute-wgpu` (D48, D106); the library keeps the name `gust_wgpu`.
+[lib]
+name = "gust_wgpu"
 
 # docs.rs builds with the run-time compile feature on, for the native target and for the browser backend.
 [package.metadata.docs.rs]
@@ -37,10 +41,10 @@ pollster.workspace = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wgpu = { workspace = true, features = ["webgpu"] }
 
-# Cargo unifies the features of a package with those of its dev-dependency on itself, so every `cargo test -p gust-wgpu`
+# Cargo unifies the features of a package with those of its dev-dependency on itself, so every `cargo test -p gust-compute-wgpu`
 # builds the tests with the bridge; without this line they do not compile.
 [dev-dependencies]
-gust-wgpu = { path = ".", features = ["slang-runtime"] }
+gust-wgpu = { package = "gust-compute-wgpu", path = ".", features = ["slang-runtime"] }
 
 [lints]
 workspace = true

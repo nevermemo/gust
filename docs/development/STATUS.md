@@ -557,6 +557,27 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   must-fix (`(t).width()` passed validation and emitted invalid Slang), five should-fixes and the nits taken. Tests:
   gust-macros 428, gust lib 292, cargo-gust 213. GPU runs of `#[gpu]` texture kernels are mx.t4's. Main: 24 of 24 gates
   green on `c234b67` (2026-11-04 22:59 to 23:47Z, RTX 5090).
+- MX mx.t4 (`fbc43f0`, fix round `300bfbc`, merge `fbe52e5`; D52, D62, D64, D91, MX plan §3.5, §6): texture evidence,
+  the first GPU runs of `#[gpu]` texture kernels. `crates/gust-wgpu/tests/textures.rs` (39 tests): `load` and `store`
+  against the twin, bit-exact on all nine formats and in place on the three r32 formats; the fixture kernels against
+  host loops, `shift` included (made race-free in the fix round: it read a texel its neighbour wrote, against SEMANTICS
+  §5); a twin out-of-range `store` panics; binding one texture twice is `cpu::Error::Aliased` on the twin and
+  `Error::AliasedBinding` on the GPU (not `Borrowed`: the alias is found before any borrow); nearest sampling exact away
+  from an edge, and linear sampling and `blur`/`gather` within §3.5's bound against the twin and an f64 host reference
+  (worst 0.865 of the bound clamp, 0.977 repeat). The nearest band was probed at 2^-20, 2^-12, 2^-9, 2^-8 and 2^-7 texel
+  from an edge: on the RTX 5090 the GPU picked the neighbour only at 2^-20 (6 of 42 clamp, 6 of 60 repeat samples), so
+  the test's 1/128 band is a tolerance, not a measurement, and widens §3.5's "within 1 ulp" for nearest sampling. New
+  example `examples/texture-threshold` (storage texture in, a buffer and a write-only texture out; twin test,
+  check-examples, `EXPECTED_SPIRV`); a `tests/cpu-target` texture kernel whose output line xtask now requires. Ledger
+  rows KM-12 to KM-14 (guard 11 to 14), pinned on the RTX 5090 only; KM-13 asserts the `TextureFilter` refusal on an
+  adapter without `float32-filterable`. Lavapipe (gpu-software with the nightly list, runs 41955449332 on `fbc43f0` and
+  41965659661 on `300bfbc`): textures 39 passed, the ledger passed, and KM-13 printed D52's NOTE on llvmpipe (observed
+  `0x40753f7c`, no software pin). `export-artifacts --compare` lists the four new `threshold__mark` exports (80 to 84),
+  with no existing hash changed. Gpu pin 341/32. Opus merge after fixes: two must-fixes (VALIDATION said `shift` ran on
+  the twin when it ran nowhere; KM-14 called the 1/128 band measured) and four should-fixes taken. In the fix round's
+  check-fast, the gust-wgpu `textures` binary died once with STATUS_ACCESS_VIOLATION and passed on rerun: the first
+  sighting outside gust-algo (see the m7.av follow-ups). Main: 24 of 24 gates green on `fbe52e5` (2026-11-05 04:08 to
+  04:59Z, RTX 5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

@@ -13,8 +13,9 @@
 //! - Each mistake of the dispatch (use, format, filter, sampler count, limits) is its own error before any pipeline is
 //!   compiled.
 //!
-//! What waits for mx.t3 and mx.t4: kernels written in Rust with `Texture2D` parameters, and the generated typed
-//! `call` functions for them. One typed call is built by hand here (`Call::new_with_samplers`).
+//! Slice mx.t4 adds the evidence for kernels written in Rust, in the second half of this file (from the line that
+//! starts with `==== slice mx.t4`): the twin against the GPU on all nine formats, sampling against the twin's formula and
+//! an independent host reference, and the refusals. One typed call is built by hand in the first half (`Call::new_with_samplers`).
 
 #![cfg_attr(not(target_arch = "wasm32"), allow(clippy::disallowed_methods))]
 
@@ -1539,6 +1540,1292 @@ fn the_generated_host_takes_the_feature_only_when_the_layout_depends_on_it() {
                 "pub fn new(device: &wgpu::Device, descriptor: &gust::KernelDescriptor) -> Self"
             ),
             "{name}: {source}"
+        );
+    }
+}
+
+// ==== slice mx.t4: `#[gpu]` texture kernels on the GPU, against the CPU twin and an independent host reference ====
+//
+// Everything above this line drives hand-written descriptors. From here on the kernels are written in Rust: the module
+// `textures` is the fixture of `tests/fixtures/textures.rs` (its Slang is the golden `textures.slang`), and the module
+// `evidence` below holds the kernels that the fixture does not have (a copy kernel per format class, in-place swaps of
+// the three storage formats, kernels that sample at coordinates read from a buffer, and two that address a texel
+// from a buffer). Each kernel runs twice, on the GPU through the generated typed call and on the CPU twin through the
+// same call, and the expectation is computed on the host from the inputs alone: never from a shadow body and never
+// from the twin (a twin assertion is added to the GPU assertion, never in place of it, D22). `load` and `store` are
+// compared bit for bit; `sample` is compared under the error domain of SEMANTICS (`linear_error_bound`).
+
+include!("../../../tests/fixtures/textures.rs");
+
+#[gust::gpu]
+mod evidence {
+    // One copy kernel per format class: every texel of three sampled textures is `load`ed and `store`d into three
+    // write-only textures of the same formats. With the three classes this is `load` and `store` on all nine formats.
+    #[kernel(workgroup_size(8, 8, 1))]
+    pub fn copy_floats(
+        id: SV_DispatchThreadID,
+        one_in: Texture2D<f32>,
+        two_in: Texture2D<Vec2>,
+        four_in: Texture2D<Vec4>,
+        mut one: WriteTexture2D<R32Float>,
+        mut two: WriteTexture2D<Rg32Float>,
+        mut four: WriteTexture2D<Rgba32Float>,
+    ) {
+        if id.x < one.width() && id.y < one.height() {
+            let a = one_in.load(id.x, id.y);
+            let b = two_in.load(id.x, id.y);
+            let c = four_in.load(id.x, id.y);
+            one.store(id.x, id.y, a);
+            two.store(id.x, id.y, b);
+            four.store(id.x, id.y, c);
+        }
+    }
+
+    #[kernel(workgroup_size(8, 8, 1))]
+    pub fn copy_uints(
+        id: SV_DispatchThreadID,
+        one_in: Texture2D<u32>,
+        two_in: Texture2D<UVec2>,
+        four_in: Texture2D<UVec4>,
+        mut one: WriteTexture2D<R32Uint>,
+        mut two: WriteTexture2D<Rg32Uint>,
+        mut four: WriteTexture2D<Rgba32Uint>,
+    ) {
+        if id.x < one.width() && id.y < one.height() {
+            let a = one_in.load(id.x, id.y);
+            let b = two_in.load(id.x, id.y);
+            let c = four_in.load(id.x, id.y);
+            one.store(id.x, id.y, a);
+            two.store(id.x, id.y, b);
+            four.store(id.x, id.y, c);
+        }
+    }
+
+    #[kernel(workgroup_size(8, 8, 1))]
+    pub fn copy_ints(
+        id: SV_DispatchThreadID,
+        one_in: Texture2D<i32>,
+        two_in: Texture2D<IVec2>,
+        four_in: Texture2D<IVec4>,
+        mut one: WriteTexture2D<R32Sint>,
+        mut two: WriteTexture2D<Rg32Sint>,
+        mut four: WriteTexture2D<Rgba32Sint>,
+    ) {
+        if id.x < one.width() && id.y < one.height() {
+            let a = one_in.load(id.x, id.y);
+            let b = two_in.load(id.x, id.y);
+            let c = four_in.load(id.x, id.y);
+            one.store(id.x, id.y, a);
+            two.store(id.x, id.y, b);
+            four.store(id.x, id.y, c);
+        }
+    }
+
+    // The read-write storage path (the three r32 formats): each texel of two storage textures is loaded, and each is
+    // stored with the other's value. Every invocation touches only its own texel, so there is no race.
+    #[kernel(workgroup_size(8, 8, 1))]
+    pub fn swap_uint(
+        id: SV_DispatchThreadID,
+        mut left: StorageTexture2D<R32Uint>,
+        mut right: StorageTexture2D<R32Uint>,
+    ) {
+        if id.x < left.width() && id.y < left.height() {
+            let a = left.load(id.x, id.y);
+            let b = right.load(id.x, id.y);
+            left.store(id.x, id.y, b);
+            right.store(id.x, id.y, a);
+        }
+    }
+
+    #[kernel(workgroup_size(8, 8, 1))]
+    pub fn swap_sint(
+        id: SV_DispatchThreadID,
+        mut left: StorageTexture2D<R32Sint>,
+        mut right: StorageTexture2D<R32Sint>,
+    ) {
+        if id.x < left.width() && id.y < left.height() {
+            let a = left.load(id.x, id.y);
+            let b = right.load(id.x, id.y);
+            left.store(id.x, id.y, b);
+            right.store(id.x, id.y, a);
+        }
+    }
+
+    #[kernel(workgroup_size(8, 8, 1))]
+    pub fn swap_float(
+        id: SV_DispatchThreadID,
+        mut left: StorageTexture2D<R32Float>,
+        mut right: StorageTexture2D<R32Float>,
+    ) {
+        if id.x < left.width() && id.y < left.height() {
+            let a = left.load(id.x, id.y);
+            let b = right.load(id.x, id.y);
+            left.store(id.x, id.y, b);
+            right.store(id.x, id.y, a);
+        }
+    }
+
+    // `sample` at the coordinates of two buffers, one result per coordinate, for the three float texel types. The
+    // filter and the address mode belong to the sampler the call is given.
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn sample_scalar(
+        id: SV_DispatchThreadID,
+        image: Texture2D<f32>,
+        filter: Sampler,
+        us: StructuredBuffer<f32>,
+        vs: StructuredBuffer<f32>,
+        mut out: RWStructuredBuffer<f32>,
+    ) {
+        let i = id.x;
+        if i < out.len() {
+            out[i] = image.sample(filter, us[i], vs[i]);
+        }
+    }
+
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn sample_pair(
+        id: SV_DispatchThreadID,
+        image: Texture2D<Vec2>,
+        filter: Sampler,
+        us: StructuredBuffer<f32>,
+        vs: StructuredBuffer<f32>,
+        mut out: RWStructuredBuffer<Vec2>,
+    ) {
+        let i = id.x;
+        if i < out.len() {
+            out[i] = image.sample(filter, us[i], vs[i]);
+        }
+    }
+
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn sample_quad(
+        id: SV_DispatchThreadID,
+        image: Texture2D<Vec4>,
+        filter: Sampler,
+        us: StructuredBuffer<f32>,
+        vs: StructuredBuffer<f32>,
+        mut out: RWStructuredBuffer<Vec4>,
+    ) {
+        let i = id.x;
+        if i < out.len() {
+            out[i] = image.sample(filter, us[i], vs[i]);
+        }
+    }
+
+    // One texel, addressed from a buffer (`at` is `[x, y]`): the twin's out-of-range panics are tested through these.
+    #[kernel(workgroup_size(1, 1, 1))]
+    pub fn poke(
+        id: SV_DispatchThreadID,
+        at: StructuredBuffer<u32>,
+        mut image: StorageTexture2D<R32Uint>,
+    ) {
+        image.store(at[0u32], at[1u32], 7u32 + id.x);
+    }
+
+    #[kernel(workgroup_size(1, 1, 1))]
+    pub fn peek(
+        id: SV_DispatchThreadID,
+        at: StructuredBuffer<u32>,
+        image: StorageTexture2D<R32Uint>,
+        mut seen: RWStructuredBuffer<u32>,
+    ) {
+        seen[id.x] = image.load(at[0u32], at[1u32]);
+    }
+}
+
+use std::panic::{AssertUnwindSafe, catch_unwind};
+
+use gust::{
+    Extent, Independent,
+    cpu::{
+        CpuDevice,
+        texture::{CpuSampler, CpuTexture2d, linear_error_bound, ulp},
+    },
+};
+
+fn gpu_texture<F: TextureFormat>(
+    device: &HeadlessDevice,
+    width: u32,
+    height: u32,
+    uses: TextureUse,
+    texels: &[F::Texel],
+) -> GpuTexture2d<F> {
+    let texture = device.create_texture_2d(width, height, uses).unwrap();
+    device.write_texture(&texture, texels).unwrap();
+    texture
+}
+
+fn twin_texture<F: TextureFormat>(
+    cpu: &CpuDevice,
+    width: u32,
+    height: u32,
+    uses: TextureUse,
+    texels: &[F::Texel],
+) -> CpuTexture2d<F> {
+    let texture = cpu.texture_2d(width, height, uses).unwrap();
+    texture.write(texels).unwrap();
+    texture
+}
+
+/// Texels of the format `F` that no kernel has touched.
+fn zeros<F: TextureFormat>(count: u32) -> Vec<F::Texel> {
+    vec![F::Texel::default(); count as usize]
+}
+
+/// Bytes of a texel slice: bit-exact comparison, so a NaN payload or a negative zero that changes is a difference.
+fn raw<T: GpuPod>(texels: &[T]) -> Vec<u8> {
+    pod_slice_as_bytes(texels).to_vec()
+}
+
+// ---- load and store on all nine formats ----
+
+/// One copy kernel of a class on the GPU and on the twin. The input texels are `texels::<F>()` (the awkward bit
+/// patterns of `word` first), so the expectation is the input itself, which no kernel computed.
+macro_rules! check_copy_class {
+    ($device:expr, $cpu:expr, $kernel:path, $one:ty, $two:ty, $four:ty) => {{
+        let extent = Extent::new(WIDTH, HEIGHT, 1);
+        let (i1, i2, i4) = (texels::<$one>(), texels::<$two>(), texels::<$four>());
+        let count = WIDTH * HEIGHT;
+        // The GPU.
+        let sampled = TextureUse::SAMPLED;
+        let storage = TextureUse::STORAGE;
+        let (g1, g2, g4) = (
+            gpu_texture::<$one>($device, WIDTH, HEIGHT, sampled, &i1),
+            gpu_texture::<$two>($device, WIDTH, HEIGHT, sampled, &i2),
+            gpu_texture::<$four>($device, WIDTH, HEIGHT, sampled, &i4),
+        );
+        let (o1, o2, o4) = (
+            gpu_texture::<$one>($device, WIDTH, HEIGHT, storage, &zeros::<$one>(count)),
+            gpu_texture::<$two>($device, WIDTH, HEIGHT, storage, &zeros::<$two>(count)),
+            gpu_texture::<$four>($device, WIDTH, HEIGHT, storage, &zeros::<$four>(count)),
+        );
+        $kernel($device, extent, &g1, &g2, &g4, &o1, &o2, &o4)
+            .expect(concat!("the GPU refused ", stringify!($kernel)));
+        let gpu = (
+            $device.read_texture(&o1).unwrap(),
+            $device.read_texture(&o2).unwrap(),
+            $device.read_texture(&o4).unwrap(),
+        );
+        // The twin.
+        let (t1, t2, t4) = (
+            twin_texture::<$one>($cpu, WIDTH, HEIGHT, sampled, &i1),
+            twin_texture::<$two>($cpu, WIDTH, HEIGHT, sampled, &i2),
+            twin_texture::<$four>($cpu, WIDTH, HEIGHT, sampled, &i4),
+        );
+        let (p1, p2, p4) = (
+            $cpu.texture_2d::<$one>(WIDTH, HEIGHT, storage).unwrap(),
+            $cpu.texture_2d::<$two>(WIDTH, HEIGHT, storage).unwrap(),
+            $cpu.texture_2d::<$four>(WIDTH, HEIGHT, storage).unwrap(),
+        );
+        $kernel($cpu, extent, &t1, &t2, &t4, &p1, &p2, &p4)
+            .expect(concat!("the twin refused ", stringify!($kernel)));
+        let twin = (p1.read(), p2.read(), p4.read());
+        for (format, input, gpu, twin) in [
+            (
+                <$one as TextureFormat>::FORMAT,
+                raw(&i1),
+                raw(&gpu.0),
+                raw(&twin.0),
+            ),
+            (
+                <$two as TextureFormat>::FORMAT,
+                raw(&i2),
+                raw(&gpu.1),
+                raw(&twin.1),
+            ),
+            (
+                <$four as TextureFormat>::FORMAT,
+                raw(&i4),
+                raw(&gpu.2),
+                raw(&twin.2),
+            ),
+        ] {
+            assert_eq!(
+                gpu, input,
+                "{format}: the GPU copy differs from the input, bit for bit"
+            );
+            assert_eq!(
+                twin, input,
+                "{format}: the twin copy differs from the input, bit for bit"
+            );
+            assert_eq!(
+                gpu, twin,
+                "{format}: the GPU and the twin differ, bit for bit"
+            );
+        }
+    }};
+}
+
+/// `load` from a sampled texture and `store` into a write-only one, on the nine formats, GPU against twin against the
+/// input, bit for bit (including the negative zero, the infinities, the denormals and the NaN payloads of `word`).
+#[test]
+fn gpu_and_twin_load_and_store_agree_bit_for_bit_on_all_nine_formats() {
+    let device = device();
+    let cpu = CpuDevice::new();
+    check_copy_class!(
+        &device,
+        &cpu,
+        evidence::copy_floats::dispatch_extent,
+        R32Float,
+        Rg32Float,
+        Rgba32Float
+    );
+    check_copy_class!(
+        &device,
+        &cpu,
+        evidence::copy_uints::dispatch_extent,
+        R32Uint,
+        Rg32Uint,
+        Rgba32Uint
+    );
+    check_copy_class!(
+        &device,
+        &cpu,
+        evidence::copy_ints::dispatch_extent,
+        R32Sint,
+        Rg32Sint,
+        Rgba32Sint
+    );
+}
+
+/// The read-write storage path on the three r32 formats: both textures are loaded and stored in one kernel.
+macro_rules! check_swap {
+    ($device:expr, $cpu:expr, $kernel:path, $format:ty) => {{
+        let extent = Extent::new(WIDTH, HEIGHT, 1);
+        let left = texels::<$format>();
+        let right: Vec<<$format as TextureFormat>::Texel> = (0..WIDTH * HEIGHT)
+            .map(|index| FromWords::from_words(index + 7919))
+            .collect();
+        let storage = TextureUse::STORAGE;
+        let (gl, gr) = (
+            gpu_texture::<$format>($device, WIDTH, HEIGHT, storage, &left),
+            gpu_texture::<$format>($device, WIDTH, HEIGHT, storage, &right),
+        );
+        $kernel($device, extent, &gl, &gr).expect("the GPU refused the swap");
+        let (tl, tr) = (
+            twin_texture::<$format>($cpu, WIDTH, HEIGHT, storage, &left),
+            twin_texture::<$format>($cpu, WIDTH, HEIGHT, storage, &right),
+        );
+        $kernel($cpu, extent, &tl, &tr).expect("the twin refused the swap");
+        let format = <$format as TextureFormat>::FORMAT;
+        // After the swap the left texture holds the right's input and the other way round.
+        assert_eq!(
+            raw(&$device.read_texture(&gl).unwrap()),
+            raw(&right),
+            "{format}: GPU left"
+        );
+        assert_eq!(
+            raw(&$device.read_texture(&gr).unwrap()),
+            raw(&left),
+            "{format}: GPU right"
+        );
+        assert_eq!(raw(&tl.read()), raw(&right), "{format}: twin left");
+        assert_eq!(raw(&tr.read()), raw(&left), "{format}: twin right");
+    }};
+}
+
+#[test]
+fn gpu_and_twin_load_and_store_in_place_agree_on_the_three_storage_formats() {
+    let device = device();
+    let cpu = CpuDevice::new();
+    check_swap!(&device, &cpu, evidence::swap_uint::dispatch_extent, R32Uint);
+    check_swap!(&device, &cpu, evidence::swap_sint::dispatch_extent, R32Sint);
+    check_swap!(
+        &device,
+        &cpu,
+        evidence::swap_float::dispatch_extent,
+        R32Float
+    );
+}
+
+/// The fixture kernels that compute: `invert`, `accumulate`, `shift` and the three `write_*`, against loops over the
+/// input. `shift` reads its neighbour from a separate sampled texture (it used to read the storage texture it writes:
+/// invocation `x` read texel `x + 1`, which invocation `x + 1` writes, a race that only the twin's ascending order
+/// resolves, so it ran nowhere).
+#[test]
+fn the_fixture_kernels_match_host_loops_on_the_gpu_and_the_twin() {
+    let device = device();
+    let cpu = CpuDevice::new();
+    let extent = Extent::new(WIDTH, HEIGHT, 1);
+    let count = WIDTH * HEIGHT;
+    let storage = TextureUse::STORAGE;
+
+    // invert: 1 - v, exact for sixteenths.
+    let image: Vec<f32> = (0..count)
+        .map(|i| ((i * 7) % 33) as f32 / 16.0 - 1.0)
+        .collect();
+    let inverted: Vec<f32> = image.iter().map(|v| 1.0 - v).collect();
+    let g = gpu_texture::<R32Float>(&device, WIDTH, HEIGHT, storage, &image);
+    textures::invert::dispatch_extent(&device, extent, &g).unwrap();
+    assert_eq!(device.read_texture(&g).unwrap(), inverted, "GPU invert");
+    let t = twin_texture::<R32Float>(&cpu, WIDTH, HEIGHT, storage, &image);
+    textures::invert::dispatch_extent(&cpu, extent, &t).unwrap();
+    assert_eq!(t.read(), inverted, "twin invert");
+
+    // accumulate: totals += ids.
+    let ids: Vec<u32> = (0..count).map(|i| i * 3 + 1).collect();
+    let before: Vec<u32> = (0..count).map(|i| 1000 + i * 5).collect();
+    let totals: Vec<u32> = ids.iter().zip(&before).map(|(a, b)| a + b).collect();
+    let (gi, gt) = (
+        gpu_texture::<R32Uint>(&device, WIDTH, HEIGHT, TextureUse::SAMPLED, &ids),
+        gpu_texture::<R32Uint>(&device, WIDTH, HEIGHT, storage, &before),
+    );
+    textures::accumulate::dispatch_extent(&device, extent, &gi, &gt).unwrap();
+    assert_eq!(device.read_texture(&gt).unwrap(), totals, "GPU accumulate");
+    let (ti, tt) = (
+        twin_texture::<R32Uint>(&cpu, WIDTH, HEIGHT, TextureUse::SAMPLED, &ids),
+        twin_texture::<R32Uint>(&cpu, WIDTH, HEIGHT, storage, &before),
+    );
+    textures::accumulate::dispatch_extent(&cpu, extent, &ti, &tt).unwrap();
+    assert_eq!(tt.read(), totals, "twin accumulate");
+
+    // shift: field[x, y] = source[x + 1, y] - 1, the last column untouched. The source and the field are two textures.
+    let source: Vec<i32> = (0..count as i32).map(|i| i * 3 - 100).collect();
+    let field_before: Vec<i32> = (0..count as i32).map(|i| 5000 + i).collect();
+    let shifted: Vec<i32> = (0..count)
+        .map(|i| {
+            if i % WIDTH + 1 < WIDTH {
+                source[i as usize + 1] - 1
+            } else {
+                field_before[i as usize]
+            }
+        })
+        .collect();
+    let (gs, gf) = (
+        gpu_texture::<R32Sint>(&device, WIDTH, HEIGHT, TextureUse::SAMPLED, &source),
+        gpu_texture::<R32Sint>(&device, WIDTH, HEIGHT, storage, &field_before),
+    );
+    textures::shift::dispatch_extent(&device, extent, &gs, &gf).unwrap();
+    assert_eq!(device.read_texture(&gf).unwrap(), shifted, "GPU shift");
+    let (ts, tf) = (
+        twin_texture::<R32Sint>(&cpu, WIDTH, HEIGHT, TextureUse::SAMPLED, &source),
+        twin_texture::<R32Sint>(&cpu, WIDTH, HEIGHT, storage, &field_before),
+    );
+    textures::shift::dispatch_extent(&cpu, extent, &ts, &tf).unwrap();
+    assert_eq!(tf.read(), shifted, "twin shift");
+
+    // write_floats, write_uints, write_ints: constants and the texel's own address.
+    let at = |i: u32| (i % WIDTH, i / WIDTH);
+    let (f1, f2, f4): (Vec<f32>, Vec<Vec2>, Vec<Vec4>) = (
+        vec![1.0; count as usize],
+        vec![Vec2::new(1.0, 2.0); count as usize],
+        vec![Vec4::new(1.0, 2.0, 3.0, 4.0); count as usize],
+    );
+    let (u1, u2, u4): (Vec<u32>, Vec<UVec2>, Vec<UVec4>) = (
+        (0..count).map(|i| at(i).0).collect(),
+        (0..count).map(|i| UVec2::new(at(i).0, at(i).1)).collect(),
+        (0..count)
+            .map(|i| UVec4::new(at(i).0, at(i).1, 3, 4))
+            .collect(),
+    );
+    let (s1, s2, s4): (Vec<i32>, Vec<IVec2>, Vec<IVec4>) = (
+        vec![-1; count as usize],
+        vec![IVec2::new(-1, 2); count as usize],
+        vec![IVec4::new(-1, 2, -3, 4); count as usize],
+    );
+    macro_rules! check_write {
+        ($kernel:path, $one:ty, $two:ty, $four:ty, $expect:expr) => {{
+            let (e1, e2, e4) = $expect;
+            let out = (
+                gpu_texture::<$one>(&device, WIDTH, HEIGHT, storage, &zeros::<$one>(count)),
+                gpu_texture::<$two>(&device, WIDTH, HEIGHT, storage, &zeros::<$two>(count)),
+                gpu_texture::<$four>(&device, WIDTH, HEIGHT, storage, &zeros::<$four>(count)),
+            );
+            $kernel(&device, extent, &out.0, &out.1, &out.2).unwrap();
+            assert_eq!(
+                raw(&device.read_texture(&out.0).unwrap()),
+                raw(&e1),
+                "GPU {}",
+                stringify!($kernel)
+            );
+            assert_eq!(
+                raw(&device.read_texture(&out.1).unwrap()),
+                raw(&e2),
+                "GPU {}",
+                stringify!($kernel)
+            );
+            assert_eq!(
+                raw(&device.read_texture(&out.2).unwrap()),
+                raw(&e4),
+                "GPU {}",
+                stringify!($kernel)
+            );
+            let twin = (
+                twin_texture::<$one>(&cpu, WIDTH, HEIGHT, storage, &zeros::<$one>(count)),
+                twin_texture::<$two>(&cpu, WIDTH, HEIGHT, storage, &zeros::<$two>(count)),
+                twin_texture::<$four>(&cpu, WIDTH, HEIGHT, storage, &zeros::<$four>(count)),
+            );
+            $kernel(&cpu, extent, &twin.0, &twin.1, &twin.2).unwrap();
+            assert_eq!(
+                raw(&twin.0.read()),
+                raw(&e1),
+                "twin {}",
+                stringify!($kernel)
+            );
+            assert_eq!(
+                raw(&twin.1.read()),
+                raw(&e2),
+                "twin {}",
+                stringify!($kernel)
+            );
+            assert_eq!(
+                raw(&twin.2.read()),
+                raw(&e4),
+                "twin {}",
+                stringify!($kernel)
+            );
+        }};
+    }
+    check_write!(
+        textures::write_floats::dispatch_extent,
+        R32Float,
+        Rg32Float,
+        Rgba32Float,
+        (f1, f2, f4)
+    );
+    check_write!(
+        textures::write_uints::dispatch_extent,
+        R32Uint,
+        Rg32Uint,
+        Rgba32Uint,
+        (u1, u2, u4)
+    );
+    check_write!(
+        textures::write_ints::dispatch_extent,
+        R32Sint,
+        Rg32Sint,
+        Rgba32Sint,
+        (s1, s2, s4)
+    );
+}
+
+// ---- the twin refuses an address outside the texture; the same texture cannot be bound twice ----
+
+fn panic_text(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(text) = payload.downcast_ref::<&str>() {
+        (*text).to_owned()
+    } else if let Some(text) = payload.downcast_ref::<String>() {
+        text.clone()
+    } else {
+        "<non-string panic payload>".to_owned()
+    }
+}
+
+/// An address outside the texture is a panic "index out of bounds" on the twin, for `store` and for `load`, also when
+/// the flat index `y * width + x` would exist (`x == width` is texel `(0, y + 1)` of a flat array). The texture is
+/// untouched by a refused store. The addresses inside the texture work, so the panic is the address and nothing else.
+#[test]
+fn a_twin_store_or_load_outside_the_texture_panics() {
+    const W: u32 = 4;
+    const H: u32 = 2;
+    let cpu = CpuDevice::new();
+    let initial: Vec<u32> = (10..10 + W * H).collect();
+    let texture = twin_texture::<R32Uint>(&cpu, W, H, TextureUse::STORAGE, &initial);
+    let seen = cpu.buffer(&[0xAAAA_AAAAu32]);
+
+    // Inside: the corner texel.
+    let corner = cpu.buffer(&[W - 1, H - 1]);
+    evidence::poke::dispatch(&cpu, 1, Independent(&corner), &texture).unwrap();
+    let mut expected = initial.clone();
+    expected[(W * H - 1) as usize] = 7;
+    assert_eq!(texture.read(), expected);
+    evidence::peek::dispatch(&cpu, 1, Independent(&corner), &texture, Independent(&seen)).unwrap();
+    assert_eq!(seen.read(), [7]);
+
+    for (x, y) in [(W, 0), (0, H), (W, H), (W, 1), (u32::MAX, 0), (0, u32::MAX)] {
+        let at = cpu.buffer(&[x, y]);
+        let stored = catch_unwind(AssertUnwindSafe(|| {
+            evidence::poke::dispatch(&cpu, 1, Independent(&at), &texture)
+        }));
+        match stored {
+            Err(payload) => assert!(
+                panic_text(payload).starts_with("index out of bounds"),
+                "store at ({x}, {y}): the panic message"
+            ),
+            Ok(result) => panic!("store at ({x}, {y}) did not panic: {result:?}"),
+        }
+        assert_eq!(
+            texture.read(),
+            expected,
+            "a refused store at ({x}, {y}) wrote"
+        );
+        let loaded = catch_unwind(AssertUnwindSafe(|| {
+            evidence::peek::dispatch(&cpu, 1, Independent(&at), &texture, Independent(&seen))
+        }));
+        match loaded {
+            Err(payload) => assert!(
+                panic_text(payload).starts_with("index out of bounds"),
+                "load at ({x}, {y}): the panic message"
+            ),
+            Ok(result) => panic!("load at ({x}, {y}) did not panic: {result:?}"),
+        }
+        assert_eq!(seen.read(), [7], "a refused load at ({x}, {y}) wrote");
+    }
+}
+
+/// One texture bound to a sampled parameter and a storage parameter of one call. Both backends refuse it before any
+/// texel moves, and the texture keeps its contents. The twin names the two parameters in `Error::Aliased` (its
+/// `validate` finds the alias by identity before any borrow is taken, so `Error::Borrowed` is not reachable through a
+/// call that binds the texture twice); the GPU reports `Error::AliasedBinding` for the same call.
+#[test]
+fn binding_the_same_texture_twice_is_refused_before_anything_runs() {
+    let device = device();
+    let cpu = CpuDevice::new();
+    let extent = Extent::new(4, 2, 1);
+    let both = TextureUse::SAMPLED.union(TextureUse::STORAGE);
+    let initial: Vec<u32> = (1..=8).collect();
+
+    let twin = twin_texture::<R32Uint>(&cpu, 4, 2, both, &initial);
+    match textures::accumulate::dispatch_extent(&cpu, extent, &twin, &twin) {
+        Err(gust::cpu::Error::Aliased { first, second, .. }) => {
+            assert_eq!((first, second), ("ids", "totals"));
+        }
+        other => panic!("the twin: expected Aliased, got {other:?}"),
+    }
+    assert_eq!(
+        twin.read(),
+        initial,
+        "the twin wrote through a refused call"
+    );
+
+    let gpu = gpu_texture::<R32Uint>(&device, 4, 2, both, &initial);
+    match textures::accumulate::dispatch_extent(&device, extent, &gpu, &gpu) {
+        Err(Error::AliasedBinding { .. }) => {}
+        other => panic!("the GPU: expected AliasedBinding, got {other:?}"),
+    }
+    assert_eq!(
+        device.read_texture(&gpu).unwrap(),
+        initial,
+        "the GPU wrote through a refused call"
+    );
+}
+
+// ---- sampling ----
+
+/// A float texel type: one of the three the sampling kernels take.
+trait Sampled: GpuPod + Copy + Default {
+    type F: TextureFormat<Texel = Self>;
+    const CHANNELS: usize;
+    fn channel(&self, index: usize) -> f32;
+    /// The texel `index` of the test texture: channels spread over about -8 to 8 with full mantissas.
+    fn make(index: u32) -> Self;
+    fn gpu(
+        device: &HeadlessDevice,
+        texture: &GpuTexture2d<Self::F>,
+        sampler: &GpuSampler,
+        us: &[f32],
+        vs: &[f32],
+    ) -> Result<Vec<Self>, Error>;
+    fn twin(
+        cpu: &CpuDevice,
+        texture: &CpuTexture2d<Self::F>,
+        sampler: &CpuSampler,
+        us: &[f32],
+        vs: &[f32],
+    ) -> Vec<Self>;
+}
+
+/// A channel value: a hash of (texel, channel) mapped to [-8, 8) with a full 24-bit mantissa.
+fn spread(index: u32, channel: u32) -> f32 {
+    let mixed = index
+        .wrapping_mul(2_654_435_761)
+        .wrapping_add(channel.wrapping_mul(0x9e37_79b9))
+        .rotate_left(13)
+        .wrapping_mul(0x85eb_ca6b);
+    (mixed >> 8) as f32 / 16_777_216.0 * 16.0 - 8.0
+}
+
+macro_rules! sampled_impl {
+    ($texel:ty, $format:ty, $kernel:ident, $channels:expr, |$t:ident, $i:ident| $channel:expr, |$k:ident| $make:expr) => {
+        impl Sampled for $texel {
+            type F = $format;
+            const CHANNELS: usize = $channels;
+            fn channel(&self, $i: usize) -> f32 {
+                let $t = self;
+                $channel
+            }
+            fn make($k: u32) -> Self {
+                $make
+            }
+            fn gpu(
+                device: &HeadlessDevice,
+                texture: &GpuTexture2d<Self::F>,
+                sampler: &GpuSampler,
+                us: &[f32],
+                vs: &[f32],
+            ) -> Result<Vec<Self>, Error> {
+                let count = us.len() as u32;
+                let us = device.create_typed_buffer("us", us, GpuBufferAccess::ReadOnly);
+                let vs = device.create_typed_buffer("vs", vs, GpuBufferAccess::ReadOnly);
+                let out = device.create_typed_buffer(
+                    "out",
+                    &vec![Self::default(); count as usize],
+                    GpuBufferAccess::ReadWrite,
+                );
+                evidence::$kernel::dispatch(device, count, texture, sampler, &us, &vs, &out)?;
+                device.read_typed_buffer(&out)
+            }
+            fn twin(
+                cpu: &CpuDevice,
+                texture: &CpuTexture2d<Self::F>,
+                sampler: &CpuSampler,
+                us: &[f32],
+                vs: &[f32],
+            ) -> Vec<Self> {
+                let (us_b, vs_b) = (cpu.buffer(us), cpu.buffer(vs));
+                let out = cpu.buffer(&vec![Self::default(); us.len()]);
+                evidence::$kernel::dispatch(
+                    cpu,
+                    us.len() as u32,
+                    texture,
+                    sampler,
+                    &us_b,
+                    &vs_b,
+                    &out,
+                )
+                .expect("the twin refused the sampling kernel");
+                out.read()
+            }
+        }
+    };
+}
+
+sampled_impl!(
+    f32,
+    R32Float,
+    sample_scalar,
+    1,
+    |t, i| {
+        let _ = i;
+        *t
+    },
+    |k| spread(k, 0)
+);
+sampled_impl!(
+    Vec2,
+    Rg32Float,
+    sample_pair,
+    2,
+    |t, i| if i == 0 { t.x } else { t.y },
+    |k| Vec2::new(spread(k, 0), spread(k, 1))
+);
+sampled_impl!(
+    Vec4,
+    Rgba32Float,
+    sample_quad,
+    4,
+    |t, i| [t.x, t.y, t.z, t.w][i],
+    |k| Vec4::new(spread(k, 0), spread(k, 1), spread(k, 2), spread(k, 3))
+);
+
+const SAMPLE_W: u32 = 5;
+const SAMPLE_H: u32 = 4;
+
+/// The distances from a texel edge, in texels, as powers of two, at which the nearest band is probed: 2^-20, 2^-12,
+/// 2^-9, 2^-8 and 2^-7.
+const BAND_EXPONENTS: [i32; 5] = [-20, -12, -9, -8, -7];
+
+/// The sample coordinates: a grid from -1.3 to 2.3 on both axes (outside the unit square on every side, so the clamp
+/// and the repeat both matter), plus every texel centre.
+fn coordinates() -> (Vec<f32>, Vec<f32>) {
+    let (mut us, mut vs) = (Vec::new(), Vec::new());
+    for j in 0..20 {
+        for i in 0..24 {
+            us.push((-1.3 + 3.6 * f64::from(i) / 23.0) as f32);
+            vs.push((-1.3 + 3.6 * f64::from(j) / 19.0) as f32);
+        }
+    }
+    for y in 0..SAMPLE_H {
+        for x in 0..SAMPLE_W {
+            us.push((f64::from(x) + 0.5) as f32 / SAMPLE_W as f32);
+            vs.push((f64::from(y) + 0.5) as f32 / SAMPLE_H as f32);
+        }
+    }
+    // The edges between texels, on both axes: the coordinate of each edge and the floats one step either side of it
+    // (a nearest read there is the case of KM-14). For the edge at 0 the step below is the bits of 0 minus one, which
+    // is a NaN, and `.max(0.0)` turns a NaN into 0: that probe is the coordinate 0 again, not a negative one.
+    let step = |value: f32, by: i32| f32::from_bits(value.to_bits().wrapping_add_signed(by));
+    for k in 0..=SAMPLE_W {
+        let edge = k as f32 / SAMPLE_W as f32;
+        for by in [-1, 0, 1] {
+            us.push(step(edge, by).max(0.0));
+            vs.push(0.375);
+        }
+    }
+    for k in 0..=SAMPLE_H {
+        let edge = k as f32 / SAMPLE_H as f32;
+        for by in [-1, 0, 1] {
+            us.push(0.3);
+            vs.push(step(edge, by).max(0.0));
+        }
+    }
+    // The nearest band, measured (fix round 1): each edge and each border, at `BAND_EXPONENTS` texels either side. A
+    // position below 0 is clamped to 0 (the border itself, not an edge that a clamp can cross).
+    for k in 0..=SAMPLE_W {
+        for exponent in BAND_EXPONENTS {
+            for side in [-1.0f64, 1.0] {
+                let position = f64::from(k) + side * 2f64.powi(exponent);
+                us.push((position / f64::from(SAMPLE_W)).max(0.0) as f32);
+                vs.push(0.375);
+            }
+        }
+    }
+    for k in 0..=SAMPLE_H {
+        for exponent in BAND_EXPONENTS {
+            for side in [-1.0f64, 1.0] {
+                let position = f64::from(k) + side * 2f64.powi(exponent);
+                us.push(0.3);
+                vs.push((position / f64::from(SAMPLE_H)).max(0.0) as f32);
+            }
+        }
+    }
+    (us, vs)
+}
+
+/// The independent host reference of one sample: the WGSL conventions evaluated in `f64`, from the texels alone (it
+/// shares no code with the twin). Returns the value of each channel, the four texels each channel reads (for the
+/// error bound), the texel a nearest read picks, and the distance of the unnormalised position to the nearest texel
+/// edge (an integer), in texels, on the nearer axis.
+struct Reference {
+    value: Vec<f64>,
+    corners: Vec<[f32; 4]>,
+    nearest: (usize, usize),
+    edge_distance: f64,
+}
+
+fn address(coordinate: f64, mode: Address) -> f64 {
+    match mode {
+        Address::ClampToEdge => coordinate.clamp(0.0, 1.0),
+        Address::Repeat => coordinate - coordinate.floor(),
+        other => panic!("unknown address mode {other:?}"),
+    }
+}
+
+fn texel_index_of(index: i64, size: u32, mode: Address) -> usize {
+    match mode {
+        Address::ClampToEdge => index.clamp(0, i64::from(size) - 1) as usize,
+        Address::Repeat => index.rem_euclid(i64::from(size)) as usize,
+        other => panic!("unknown address mode {other:?}"),
+    }
+}
+
+/// The distance of the position `x` (in texels, after the address mode) to the nearest edge between two texels that a
+/// nearest read can cross. Clamped to the first or the last edge nothing is crossed (the read is the edge texel), so
+/// that distance is infinite; under repeat the border wraps to the opposite texel and is an edge like any other.
+fn edge(x: f64, size: u32, mode: Address) -> f64 {
+    let nearest = x.round();
+    if mode == Address::ClampToEdge && (nearest <= 0.0 || nearest >= f64::from(size)) {
+        return f64::INFINITY;
+    }
+    (x - nearest).abs()
+}
+
+fn reference<T: Sampled>(texels: &[T], mode: Address, filter: Filter, u: f32, v: f32) -> Reference {
+    let (w, h) = (SAMPLE_W, SAMPLE_H);
+    let x = address(f64::from(u), mode) * f64::from(w);
+    let y = address(f64::from(v), mode) * f64::from(h);
+    let at = |i: usize, j: usize, c: usize| texels[j * w as usize + i].channel(c);
+    let nearest = (
+        (x.floor() as i64).clamp(0, i64::from(w) - 1) as usize,
+        (y.floor() as i64).clamp(0, i64::from(h) - 1) as usize,
+    );
+    let edge_distance = edge(x, w, mode).min(edge(y, h, mode));
+    let mut value = Vec::new();
+    let mut corners = Vec::new();
+    for c in 0..T::CHANNELS {
+        match filter {
+            Filter::Nearest => {
+                value.push(f64::from(at(nearest.0, nearest.1, c)));
+                corners.push([at(nearest.0, nearest.1, c); 4]);
+            }
+            Filter::Linear => {
+                let (px, py) = (x - 0.5, y - 0.5);
+                let (i0, j0) = (px.floor() as i64, py.floor() as i64);
+                let (fx, fy) = (px - px.floor(), py - py.floor());
+                let (i0, i1) = (texel_index_of(i0, w, mode), texel_index_of(i0 + 1, w, mode));
+                let (j0, j1) = (texel_index_of(j0, h, mode), texel_index_of(j0 + 1, h, mode));
+                let t = [at(i0, j0, c), at(i1, j0, c), at(i0, j1, c), at(i1, j1, c)];
+                let lerp =
+                    |a: f32, b: f32, f: f64| f64::from(a) + (f64::from(b) - f64::from(a)) * f;
+                let top = lerp(t[0], t[1], fx);
+                let bottom = lerp(t[2], t[3], fx);
+                value.push(top + (bottom - top) * fy);
+                corners.push(t);
+            }
+            other => panic!("unknown filter {other:?}"),
+        }
+    }
+    Reference {
+        value,
+        corners,
+        nearest,
+        edge_distance,
+    }
+}
+
+/// What one sampling run observed, for the report and for the ledger rows KM-13 and KM-14.
+#[derive(Debug, Default)]
+struct Observation {
+    /// Samples compared.
+    samples: usize,
+    /// The largest `|gpu - twin|` over the bound of that channel (`linear`), 0 for an exact comparison.
+    worst_ratio: f64,
+    /// Nearest reads within the edge band: compared, and how many differ from the formula's texel.
+    near_edge: usize,
+    near_edge_other_texel: usize,
+    /// Every nearest read less than 0.05 texel from an edge: its distance from the edge (texels) and whether the GPU
+    /// picked a texel other than the formula's.
+    edge_samples: Vec<(f64, bool)>,
+}
+
+/// 1/128 of a texel: a nearest read this close to an edge is not asserted exactly (KM-14), farther away it must be.
+///
+/// This widens SEMANTICS section 3.5, which allows a neighbour only "within an ulp" of an edge. A sampler works on a
+/// coordinate with a finite number of sub-texel bits; 1/128 covers 7 or more of them. That count is not read from any
+/// device (inferred: Vulkan guarantees only `subTexelPrecisionBits >= 4`, which would need 1/16). What a device does
+/// is measured instead: the nearest test prints, per device and address mode, the picks at `BAND_EXPONENTS`.
+const EDGE_BAND: f64 = 1.0 / 128.0;
+
+fn check_sampling<T: Sampled>(
+    device: &HeadlessDevice,
+    filter: Filter,
+    address: Address,
+) -> Observation {
+    let options = SamplerOptions::new(filter, address);
+    let (us, vs) = coordinates();
+    let texels: Vec<T> = (0..SAMPLE_W * SAMPLE_H).map(T::make).collect();
+    let texture = gpu_texture::<T::F>(device, SAMPLE_W, SAMPLE_H, TextureUse::SAMPLED, &texels);
+    let sampler = device.create_sampler(options).unwrap();
+    let gpu = T::gpu(device, &texture, &sampler, &us, &vs).unwrap_or_else(|error| {
+        panic!(
+            "{filter:?} {address:?} on {}: the GPU refused the call: {error}",
+            <T::F as TextureFormat>::FORMAT
+        )
+    });
+    let cpu = CpuDevice::new();
+    let twin_tex = twin_texture::<T::F>(&cpu, SAMPLE_W, SAMPLE_H, TextureUse::SAMPLED, &texels);
+    let twin = T::twin(&cpu, &twin_tex, &cpu.sampler(options), &us, &vs);
+    let label = format!("{} {filter:?} {address:?}", <T::F as TextureFormat>::FORMAT);
+    let mut seen = Observation::default();
+    for n in 0..us.len() {
+        let reference = reference(&texels, address, filter, us[n], vs[n]);
+        for c in 0..T::CHANNELS {
+            let (g, t, r) = (gpu[n].channel(c), twin[n].channel(c), reference.value[c]);
+            let position = format!(
+                "{label} at (u, v) = ({}, {}), channel {c}: gpu {g}, twin {t}, reference {r}",
+                us[n], vs[n]
+            );
+            match filter {
+                Filter::Nearest => {
+                    if reference.edge_distance >= EDGE_BAND {
+                        // Away from an edge every texel pick is decided: exact on the twin, the reference and the GPU.
+                        assert_eq!(
+                            t.to_bits(),
+                            (r as f32).to_bits(),
+                            "twin against the reference: {position}"
+                        );
+                        assert_eq!(g.to_bits(), t.to_bits(), "GPU against the twin: {position}");
+                    } else if c == 0 {
+                        // Within the band the GPU may pick the neighbouring texel; it picks one of the four texels
+                        // around the edge, never another.
+                        seen.near_edge += 1;
+                        if g.to_bits() != t.to_bits() {
+                            seen.near_edge_other_texel += 1;
+                        }
+                    }
+                    if c == 0 && reference.edge_distance < 0.05 {
+                        seen.edge_samples
+                            .push((reference.edge_distance, g.to_bits() != t.to_bits()));
+                    }
+                    if reference.edge_distance < EDGE_BAND {
+                        // The texels one step from the formula's, in each direction, with the address mode applied to
+                        // the step (so the repeat's border wraps to the opposite texel).
+                        let (nx, ny) = (reference.nearest.0 as i64, reference.nearest.1 as i64);
+                        let mut around = Vec::new();
+                        for dy in -1..=1 {
+                            for dx in -1..=1 {
+                                let i = texel_index_of(nx + dx, SAMPLE_W, address);
+                                let j = texel_index_of(ny + dy, SAMPLE_H, address);
+                                around.push(texels[j * SAMPLE_W as usize + i].channel(c).to_bits());
+                            }
+                        }
+                        assert!(
+                            around.contains(&g.to_bits()),
+                            "an edge read is a neighbouring texel: {position}"
+                        );
+                    }
+                }
+                Filter::Linear => {
+                    let bound = f64::from(linear_error_bound(reference.corners[c]));
+                    let from_twin = (f64::from(g) - f64::from(t)).abs();
+                    let from_reference = (f64::from(g) - r).abs();
+                    let twin_from_reference = (f64::from(t) - r).abs();
+                    assert!(
+                        from_twin <= bound,
+                        "GPU against the twin, {from_twin} > {bound}: {position}"
+                    );
+                    assert!(
+                        from_reference <= bound,
+                        "GPU against the reference, {from_reference} > {bound}: {position}"
+                    );
+                    assert!(
+                        twin_from_reference <= bound,
+                        "twin against the reference, {twin_from_reference} > {bound}: {position}"
+                    );
+                    if bound > 0.0 {
+                        seen.worst_ratio = seen.worst_ratio.max(from_twin / bound);
+                    }
+                }
+                other => panic!("unknown filter {other:?}"),
+            }
+        }
+        seen.samples += 1;
+    }
+    eprintln!(
+        "MX-T4 sampling {label}: {} samples, worst ratio {:.4}, {} in the edge band, {} of them another texel",
+        seen.samples, seen.worst_ratio, seen.near_edge, seen.near_edge_other_texel
+    );
+    seen
+}
+
+fn all_sampled(device: &HeadlessDevice, filter: Filter, address: Address) -> Observation {
+    let one = check_sampling::<f32>(device, filter, address);
+    let two = check_sampling::<Vec2>(device, filter, address);
+    let four = check_sampling::<Vec4>(device, filter, address);
+    Observation {
+        samples: one.samples + two.samples + four.samples,
+        worst_ratio: one.worst_ratio.max(two.worst_ratio).max(four.worst_ratio),
+        near_edge: one.near_edge + two.near_edge + four.near_edge,
+        near_edge_other_texel: one.near_edge_other_texel
+            + two.near_edge_other_texel
+            + four.near_edge_other_texel,
+        edge_samples: [one.edge_samples, two.edge_samples, four.edge_samples].concat(),
+    }
+}
+
+/// Nearest `sample`, clamp and repeat, on the default device (the non-filterable layout) and on the device that
+/// enabled `float32-filterable`: away from a texel edge the GPU picks the texel the formula picks, exactly, and the
+/// independent reference agrees with the twin.
+#[test]
+fn nearest_sampling_picks_the_texel_of_the_formula_under_clamp_and_repeat() {
+    for device in [device(), feature_device()] {
+        for address in [Address::ClampToEdge, Address::Repeat] {
+            let seen = all_sampled(&device, Filter::Nearest, address);
+            assert!(seen.samples > 0);
+            eprintln!(
+                "MX-T4 nearest {address:?} float32-filterable={}: {} samples, {} in the edge band, {} of them a texel other than the formula's",
+                device.float32_filterable(),
+                seen.samples,
+                seen.near_edge,
+                seen.near_edge_other_texel
+            );
+            // The band, measured: at each probed distance, how many reads picked a texel other than the formula's.
+            let mut table = String::new();
+            for exponent in BAND_EXPONENTS {
+                let at: Vec<&(f64, bool)> = seen
+                    .edge_samples
+                    .iter()
+                    .filter(|(distance, _)| distance.log2().round() == f64::from(exponent))
+                    .collect();
+                assert!(!at.is_empty(), "no sample at 2^{exponent} texel");
+                let other = at.iter().filter(|(_, other)| *other).count();
+                table += &format!(" 2^{exponent}: {other}/{};", at.len());
+            }
+            let farthest = seen
+                .edge_samples
+                .iter()
+                .filter(|(_, other)| *other)
+                .map(|(distance, _)| *distance)
+                .fold(0.0, f64::max);
+            eprintln!(
+                "MX-T4 nearest band {address:?} float32-filterable={}: picks of another texel / samples at each distance:{table} the farthest pick of another texel is at {farthest:e} texel",
+                device.float32_filterable()
+            );
+        }
+    }
+}
+
+/// Linear `sample`, clamp and repeat, on three float texel types: `|gpu - twin|`, `|gpu - reference|` and
+/// `|twin - reference|` are each within `2^-8 * (max - min of the four texels) + 2 ulp(max |texel|)` per channel.
+/// A device without `float32-filterable` refuses a linear sampler on these formats (`Error::TextureFilter`), and the
+/// test then asserts that refusal instead: nothing is skipped silently.
+#[test]
+fn linear_sampling_is_within_the_error_domain_under_clamp_and_repeat() {
+    let device = feature_device();
+    if !device.float32_filterable() {
+        let texels: Vec<f32> = (0..SAMPLE_W * SAMPLE_H)
+            .map(<f32 as Sampled>::make)
+            .collect();
+        let texture =
+            gpu_texture::<R32Float>(&device, SAMPLE_W, SAMPLE_H, TextureUse::SAMPLED, &texels);
+        let sampler = device
+            .create_sampler(SamplerOptions::new(Filter::Linear, Address::ClampToEdge))
+            .unwrap();
+        let (us, vs) = coordinates();
+        let result = <f32 as Sampled>::gpu(&device, &texture, &sampler, &us, &vs);
+        assert!(
+            matches!(result, Err(Error::TextureFilter { .. })),
+            "{result:?}"
+        );
+        eprintln!(
+            "MX-T4 linear: {:?} does not offer float32-filterable; asserted the TextureFilter refusal",
+            device.adapter_info().name
+        );
+        return;
+    }
+    for address in [Address::ClampToEdge, Address::Repeat] {
+        let seen = all_sampled(&device, Filter::Linear, address);
+        assert!(seen.samples > 0);
+        eprintln!(
+            "MX-T4 linear {address:?}: {} samples, the largest |gpu - twin| is {:.4} of its bound",
+            seen.samples, seen.worst_ratio
+        );
+    }
+}
+
+/// The two fixture kernels that sample (`blur`, four bilinear reads per texel, and `gather`, one nearest and one linear
+/// read beside integer loads) on the GPU against the twin. A linear read is within `linear_error_bound` of the twin's
+/// over the whole texture's range, so `blur` is within the mean of four such bounds plus the rounding of its sum, and
+/// `gather` is within one bound plus one ulp on its two sampled channels and exact on its two loaded ones.
+#[test]
+fn the_fixture_kernels_that_sample_agree_with_the_twin_within_the_bound() {
+    let device = feature_device();
+    if !device.float32_filterable() {
+        // Without the feature a linear sampler of a float32 texture is refused, as in the linear test.
+        let sampled = TextureUse::SAMPLED;
+        let image = gpu_texture::<Rgba32Float>(&device, 2, 2, sampled, &zeros::<Rgba32Float>(4));
+        let target = gpu_texture::<Rgba32Float>(
+            &device,
+            2,
+            2,
+            TextureUse::STORAGE,
+            &zeros::<Rgba32Float>(4),
+        );
+        let linear = SamplerOptions::new(Filter::Linear, Address::ClampToEdge);
+        let sampler = device.create_sampler(linear).unwrap();
+        let result = textures::blur::dispatch_extent(
+            &device,
+            Extent::new(2, 2, 1),
+            &image,
+            &sampler,
+            &target,
+        );
+        assert!(
+            matches!(result, Err(Error::TextureFilter { .. })),
+            "{result:?}"
+        );
+        eprintln!(
+            "MX-T4 blur/gather: no float32-filterable on this adapter; asserted the TextureFilter refusal"
+        );
+        return;
+    }
+    let cpu = CpuDevice::new();
+    let (w, h) = (6u32, 5u32);
+    let count = w * h;
+    let extent = Extent::new(w, h, 1);
+    let storage = TextureUse::STORAGE;
+    let sampled = TextureUse::SAMPLED;
+    let range_bound = |channel: &dyn Fn(u32) -> f32| {
+        let values: Vec<f32> = (0..count).map(channel).collect();
+        let (low, high) = values
+            .iter()
+            .fold((f32::MAX, f32::MIN), |(l, hi), &v| (l.min(v), hi.max(v)));
+        f64::from(linear_error_bound([low, high, low, high]))
+    };
+
+    // blur: Vec4 -> Vec4 through four bilinear reads, clamped.
+    let image: Vec<Vec4> = (0..count).map(<Vec4 as Sampled>::make).collect();
+    let options = SamplerOptions::new(Filter::Linear, Address::ClampToEdge);
+    let (gi, go) = (
+        gpu_texture::<Rgba32Float>(&device, w, h, sampled, &image),
+        gpu_texture::<Rgba32Float>(&device, w, h, storage, &zeros::<Rgba32Float>(count)),
+    );
+    let sampler = device.create_sampler(options).unwrap();
+    textures::blur::dispatch_extent(&device, extent, &gi, &sampler, &go).unwrap();
+    let (ti, to) = (
+        twin_texture::<Rgba32Float>(&cpu, w, h, sampled, &image),
+        twin_texture::<Rgba32Float>(&cpu, w, h, storage, &zeros::<Rgba32Float>(count)),
+    );
+    textures::blur::dispatch_extent(&cpu, extent, &ti, &cpu.sampler(options), &to).unwrap();
+    let (gpu, twin) = (device.read_texture(&go).unwrap(), to.read());
+    for c in 0..4 {
+        let bound = range_bound(&|i| image[i as usize].channel(c));
+        let mut worst = 0.0f64;
+        for n in 0..count as usize {
+            let (g, t) = (f64::from(gpu[n].channel(c)), f64::from(twin[n].channel(c)));
+            // The mean of four reads, each within `bound`, then the rounding of three additions and a product.
+            let limit = bound + 4.0 * f64::from(ulp(twin[n].channel(c).abs().max(1.0)));
+            assert!(
+                (g - t).abs() <= limit,
+                "blur texel {n} channel {c}: gpu {g}, twin {t}, limit {limit}"
+            );
+            worst = worst.max((g - t).abs() / limit);
+        }
+        eprintln!("MX-T4 blur channel {c}: the largest |gpu - twin| is {worst:.4} of its limit");
+    }
+
+    // gather: nearest `scalar`, linear `pair`, integer loads of `counts` and `offsets`.
+    let scalar: Vec<f32> = (0..count).map(<f32 as Sampled>::make).collect();
+    let pair: Vec<Vec2> = (0..count).map(<Vec2 as Sampled>::make).collect();
+    let counts: Vec<UVec4> = (0..count).map(|i| UVec4::new(i, 2, 3, 100 + i)).collect();
+    let offsets: Vec<IVec2> = (0..count)
+        .map(|i| IVec2::new(i as i32 * 3, 7 - i as i32))
+        .collect();
+    let nearest = SamplerOptions::new(Filter::Nearest, Address::ClampToEdge);
+    let (g_scalar, g_pair, g_counts, g_offsets, g_out) = (
+        gpu_texture::<R32Float>(&device, w, h, sampled, &scalar),
+        gpu_texture::<Rg32Float>(&device, w, h, sampled, &pair),
+        gpu_texture::<Rgba32Uint>(&device, w, h, sampled, &counts),
+        gpu_texture::<Rg32Sint>(&device, w, h, sampled, &offsets),
+        gpu_texture::<Rgba32Float>(&device, w, h, storage, &zeros::<Rgba32Float>(count)),
+    );
+    let (s_nearest, s_linear) = (
+        device.create_sampler(nearest).unwrap(),
+        device.create_sampler(options).unwrap(),
+    );
+    textures::gather::dispatch_extent(
+        &device, extent, &g_scalar, &g_pair, &g_counts, &g_offsets, &s_nearest, &s_linear, &g_out,
+    )
+    .unwrap();
+    let (t_scalar, t_pair, t_counts, t_offsets, t_out) = (
+        twin_texture::<R32Float>(&cpu, w, h, sampled, &scalar),
+        twin_texture::<Rg32Float>(&cpu, w, h, sampled, &pair),
+        twin_texture::<Rgba32Uint>(&cpu, w, h, sampled, &counts),
+        twin_texture::<Rg32Sint>(&cpu, w, h, sampled, &offsets),
+        twin_texture::<Rgba32Float>(&cpu, w, h, storage, &zeros::<Rgba32Float>(count)),
+    );
+    textures::gather::dispatch_extent(
+        &cpu,
+        extent,
+        &t_scalar,
+        &t_pair,
+        &t_counts,
+        &t_offsets,
+        &cpu.sampler(nearest),
+        &cpu.sampler(options),
+        &t_out,
+    )
+    .unwrap();
+    let (gpu, twin) = (device.read_texture(&g_out).unwrap(), t_out.read());
+    let bound_x = range_bound(&|i| pair[i as usize].x);
+    let bound_y = range_bound(&|i| pair[i as usize].y);
+    for n in 0..count as usize {
+        let (g, t) = (gpu[n], twin[n]);
+        // Channel 0 is `nearest scalar + linear pair.x`: the nearest read is the same texel at a texel centre, so its
+        // error is the linear read's plus one rounding of the sum.
+        let limit_x = bound_x + f64::from(ulp(t.x.abs().max(1.0)));
+        assert!(
+            (f64::from(g.x) - f64::from(t.x)).abs() <= limit_x,
+            "gather texel {n} x: {g:?} against {t:?}"
+        );
+        assert!(
+            (f64::from(g.y) - f64::from(t.y)).abs() <= bound_y,
+            "gather texel {n} y: {g:?} against {t:?}"
+        );
+        assert_eq!(
+            (g.z.to_bits(), g.w.to_bits()),
+            (t.z.to_bits(), t.w.to_bits()),
+            "gather texel {n} loads"
         );
     }
 }

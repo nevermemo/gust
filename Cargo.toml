@@ -12,6 +12,7 @@ members = [
     "examples/particle-step",
     "examples/signal-pipeline",
     "examples/staged-graph",
+    "examples/texture-threshold",
     "examples/typed-pipeline",
     "examples/vector-add",
     "examples/web-vector-add",

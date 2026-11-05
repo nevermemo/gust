@@ -14,6 +14,7 @@ pub(crate) const EXAMPLES: &[&str] = &[
     "staged-graph",
     "component-pool",
     "map-chain",
+    "texture-threshold",
 ];
 
 pub(crate) const SMOKE_EXAMPLES: &[&str] = &["vector-add", "typed-pipeline"];
@@ -28,6 +29,7 @@ pub(crate) const WORKSPACE_EXCLUDES: &[&str] = &[
     "staged-graph",
     "component-pool",
     "map-chain",
+    "texture-threshold",
 ];
 
 /// SPIR-V files the examples export to `generated-wgpu/`, one `<module>__<kernel>.spv` per
@@ -53,6 +55,7 @@ pub(crate) const EXPECTED_SPIRV: &[&str] = &[
     "signal_pipeline__transform.spv",
     "staged__summarize.spv",
     "staged__transform.spv",
+    "threshold__mark.spv",
     "vector_add__add.spv",
 ];
 

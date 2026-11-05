@@ -89,6 +89,32 @@ pub mod vector_ops {
     }
 }
 
+// A texture kernel (MX, slice mx.t4): `load` and `store` on a read-write storage texture and a `store` on a write-only
+// one, in the production CPU build like the buffer kernels. Each invocation reads and writes only its own texel of
+// `image` and writes one texel of `mirrored` (the texel of the same row at the opposite end), so the kernel is
+// race-free and every texel has one writer. The inputs of `app` are halves, so the doubling is exact in `f32`.
+use gust::texture::{R32Float, R32Uint};
+
+#[gust::gpu]
+pub mod texture_ops {
+    /// Doubles every texel of `image` in place and records, in `mirrored` at the mirrored column, the row-major index
+    /// of the texel it came from. The dispatch is a whole number of workgroups and may be larger than the texture, so
+    /// the kernel guards against the texture's own size.
+    #[kernel(workgroup_size(8, 8, 1))]
+    pub fn double_and_mirror(
+        id: SV_DispatchThreadID,
+        mut image: StorageTexture2D<R32Float>,
+        mut mirrored: WriteTexture2D<R32Uint>,
+    ) {
+        let width = image.width();
+        if id.x < width && id.y < image.height() {
+            let value = image.load(id.x, id.y);
+            image.store(id.x, id.y, value * 2.0f32);
+            mirrored.store(width - 1u32 - id.x, id.y, id.y * width + id.x);
+        }
+    }
+}
+
 // The map functions (M7, D60): `#[gust::gpu]` on a function. Built under `GUST_PROFILE=cpu` only, because under any
 // other profile the generated host functions name `gust-wgpu`, which this crate does not depend on; `map_case::run` is
 // the one entry `app` calls in every build. Under another profile it is an error, never a silent pass:
@@ -137,7 +163,32 @@ mod tests {
         super::par_for_case::run().unwrap();
     }
 
-    use super::vector_ops;
+    use gust::{Extent, texture::TextureUse};
+
+    use super::{R32Float, R32Uint, texture_ops, vector_ops};
+
+    /// A 3 x 2 texture, worked by hand: every texel doubles, and the index of the texel at `(x, y)` lands at
+    /// `(2 - x, y)` of the other texture. The dispatch is one 8 x 8 workgroup, larger than the texture.
+    #[test]
+    fn double_and_mirror_matches_the_hand_computed_values() {
+        let device = CpuDevice::new();
+        let image = device
+            .texture_2d::<R32Float>(3, 2, TextureUse::STORAGE)
+            .unwrap();
+        image.write(&[0.5, 1.0, 1.5, 2.0, 2.5, 3.0]).unwrap();
+        let mirrored = device
+            .texture_2d::<R32Uint>(3, 2, TextureUse::STORAGE)
+            .unwrap();
+        texture_ops::double_and_mirror::dispatch_extent(
+            &device,
+            Extent::new(8, 8, 1),
+            &image,
+            &mirrored,
+        )
+        .unwrap();
+        assert_eq!(image.read(), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(mirrored.read(), [2, 1, 0, 5, 4, 3]);
+    }
 
     /// Three elements, worked by hand: a = (1, 2, 3, 4), b = (5, 6, 7, 8) gives
     /// `(a + b.wzyx) * 2 + 0.5` = ((1 + 8) * 2 + 0.5, (2 + 7) * 2 + 0.5, (3 + 6) * 2 + 0.5, (4 + 5) * 2 + 0.5) and

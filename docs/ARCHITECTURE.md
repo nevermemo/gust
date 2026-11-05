@@ -262,8 +262,9 @@ keeps the older "StorageV1 representation" wording because tests pin it.
 
 The `pixel` runtime (slice mx.p1b, D120 and D127; `crates/gust-wgpu/src/render.rs`). A `pixel` kernel is built into a
 render pipeline, not a compute pipeline: the vertex stage is the shared `shapes/fullscreen.wgsl` (three vertices from
-the vertex index, no vertex buffer), the fragment stage is the kernel's own entry, and the one colour target is an
-`r8unorm` that nothing writes (no blend, write mask empty). The bind group layout has `FRAGMENT` visibility. The
+the vertex index, no vertex buffer; it is committed WGSL only, with no Slang source and no golden), the fragment
+stage is the kernel's own entry, and the one colour target is an `r8unorm` that nothing writes (no blend, write mask
+empty). The bind group layout has `FRAGMENT` visibility. The
 pipeline lives in the same cache and under the same key as a compute pipeline (`Pipeline::Compute` or
 `Pipeline::Render`; the key holds the shape). A call of `n` elements is one render pass of its own, in batch order
 with the compute passes around it: a fresh attachment of 8192 by `ceil(n / 8192)` texels (`gust::PIXEL_ROW_WIDTH`),

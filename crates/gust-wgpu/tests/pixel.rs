@@ -7,8 +7,10 @@
 //! - Identity: for u32, i32, f32, Vec2 and Vec4, a `pixel` kernel and a `grid` kernel with the same body write the
 //!   same bits, at X-S1's 17 squares and at the sizes around the row width (8192), the tail row and the cap. Both are
 //!   also compared with a host reference that replays the body, so "equal to each other" cannot hide "both wrong".
-//! - Helper invocations: n = 8192k + 1 and 8192k + 2, where wgpu clamps an out-of-range storage index, so a store of
-//!   a fragment outside the scissor would corrupt the last element.
+//! - Tail rows: n = 8192k + 1 and 8192k + 2, where the last row is covered by one or two texels and its quad has helper
+//!   invocations. They run but cannot store, so the output must be exact. (A stray store cannot be seen here, because
+//!   robustBufferAccess2 drops an out-of-bounds store; the fragments that really run are counted with an atomic by
+//!   `a_pixel_pass_launches_exactly_n_fragments` in `src/render.rs`.)
 //! - The cap: n = 2^26 runs where the adapter can hold a 256 MiB binding and names the limit where it cannot.
 //! - The fixture kernels `shade`, `pack` and `row` against the CPU twin, a pixel kernel through the f32 compatibility
 //!   path, a batch mixing both shapes, the timed family, the staged graph, and two threads on one device.
@@ -37,9 +39,9 @@ use gust_wgpu::{
 
 /// The identity kernels: for each element type a `grid` and a `pixel` kernel over one shared helper, so the only
 /// difference between the two is the shape. `seed_*` fill an input on the GPU (a host-made input at 16M elements
-/// would dominate the test), `iota` writes a function of the index alone. The grid kernels take the default
-/// workgroup of 64: a module that mixes an explicit `workgroup_size(..)` with a `pixel` kernel is E0707, because the
-/// emitter scans every kernel of the module with the pixel profile (reported to the coordinator).
+/// would dominate the test), `iota` writes a function of the index alone. Most grid kernels take the default workgroup
+/// of 64; `grid_iota` sets 128 beside the `pixel` kernels of the module (a mix the emitter refused with E0707 before
+/// slice mx.p1b's macro fix).
 #[gust::gpu]
 mod ident {
     fn mix(i: u32) -> u32 {
@@ -243,7 +245,7 @@ mod ident {
     }
 
     /// No input: the output is a function of the index alone (the 2^26 case, and the helper-invocation case).
-    #[kernel]
+    #[kernel(workgroup_size(128, 1, 1))]
     pub fn grid_iota(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<u32>) {
         let i = id.y * 2_097_152 + id.x;
         if i < out.len() {
@@ -327,7 +329,7 @@ fn wide_device() -> HeadlessDevice {
         .expect("Vulkan adapter required; this test must not silently skip")
 }
 
-/// The launch of a `grid` kernel over `n` elements: one row of at most 2^21 threads (32 768 workgroups of 64, under
+/// The launch of a `grid` kernel over `n` elements: one row of at most 2^21 threads (at most 32 768 workgroups, under
 /// the 65 535 limit of one dimension) and as many rows as needed. The kernels index `id.y * 2^21 + id.x`.
 fn grid_extent(n: u32) -> Extent {
     const ROW: u32 = 2_097_152;
@@ -394,6 +396,13 @@ fn typed<T: GpuPod>(device: &HeadlessDevice, label: &str, values: &[T]) -> GpuBu
     device.create_typed_buffer(label, values, GpuBufferAccess::ReadWrite)
 }
 
+/// A read-write buffer of `count` zeroed elements, allocated on the device without a host vector.
+fn zeroed<T: GpuPod>(device: &HeadlessDevice, label: &str, count: usize) -> GpuBuffer<T> {
+    device
+        .create_zeroed_buffer::<T>(label, count, GpuBufferAccess::ReadWrite)
+        .unwrap()
+}
+
 /// One element type of the identity test: n elements are seeded on the GPU, run through the `grid` and the `pixel`
 /// kernel (each into an output with a different starting value, so a cell a kernel never wrote cannot match), and
 /// both are compared bit for bit with each other and with the host reference.
@@ -412,8 +421,8 @@ macro_rules! identity_test {
                     continue;
                 }
                 let count = n as usize;
-                let input = typed::<$ty>(&device, "input", &vec![$zero; count]);
-                let grid_out = typed::<$ty>(&device, "grid out", &vec![$zero; count]);
+                let input = zeroed::<$ty>(&device, "input", count);
+                let grid_out = zeroed::<$ty>(&device, "grid out", count);
                 let pixel_out = typed::<$ty>(&device, "pixel out", &vec![$other; count]);
                 ident::$seed::dispatch_extent(&device, grid_extent(n), Independent(&input))
                     .unwrap();
@@ -503,11 +512,12 @@ identity_test!(
 
 // ---- helper invocations ----
 
-/// n = 8192k + 1 and 8192k + 2: the tail row holds one or two live texels, and the scissor must keep every other
-/// fragment of it from running. wgpu clamps an out-of-range storage index, so a fragment that did run for index
-/// `n..8192(k+1)` would store its own `mix(i)` into the last element and the comparison would see it.
+/// n = 8192k + 1 and 8192k + 2: the tail row holds one or two live texels, and the rest of its quad is helper
+/// invocations. Helpers run but cannot store, so every element must hold exactly `mix(i)` and none may keep its
+/// sentinel. This does not detect a stray fragment: robustBufferAccess2 drops an out-of-bounds store, so a fragment
+/// for an index past `n` would leave no trace here. The count test in `src/render.rs` detects those with an atomic.
 #[test]
-fn a_tail_row_of_one_or_two_texels_runs_no_helper_invocation() {
+fn a_tail_row_of_one_or_two_texels_leaves_the_output_exact() {
     let device = wide_device();
     let mut checked = 0;
     for k in [1u32, 2, 7, 1000] {
@@ -559,12 +569,12 @@ fn the_cap_runs_where_the_adapter_can_bind_it_and_names_the_limit_where_it_canno
         Err(other) => panic!("unexpected allocation error: {other:?}"),
     };
     let binding_limit = device.limits().max_storage_buffer_binding_size;
-    let result = ident::pixel_iota::dispatch(&device, n, &out);
     if binding_limit < bytes {
         eprintln!(
             "BRANCH cap: the storage binding limit {binding_limit} is below {bytes}; asserting the named limit"
         );
-        match result {
+        // Refused before anything is encoded, so it costs nothing on any adapter.
+        match ident::pixel_iota::dispatch(&device, n, &out) {
             Err(Error::DeviceLimit {
                 limit,
                 requested,
@@ -579,16 +589,15 @@ fn the_cap_runs_where_the_adapter_can_bind_it_and_names_the_limit_where_it_canno
         return;
     }
     if is_cpu_adapter(&device) {
-        // The refusals above are the same on every adapter; a software rasteriser is not asked for 67 M fragments.
-        eprintln!(
-            "BRANCH cap: the adapter is of type Cpu; the dispatch ran with {result:?} and is not read back"
-        );
-        result.unwrap();
+        // A software rasteriser is not asked for 67 M fragments: nothing is dispatched.
+        eprintln!("BRANCH cap: the adapter is of type Cpu; n = {n} is not dispatched");
         return;
     }
     eprintln!("BRANCH cap: ran n = {n} on the adapter ({bytes} bytes)");
-    result.unwrap();
-    let reference = typed::<u32>(&device, "cap grid", &vec![0u32; n as usize]);
+    ident::pixel_iota::dispatch(&device, n, &out).unwrap();
+    let reference = device
+        .create_zeroed_buffer::<u32>("cap grid", n as usize, GpuBufferAccess::ReadWrite)
+        .unwrap();
     ident::grid_iota::dispatch_extent(&device, grid_extent(n), Independent(&reference)).unwrap();
     let got = device.read_typed_buffer(&out).unwrap();
     let grid = device.read_typed_buffer(&reference).unwrap();
@@ -848,6 +857,32 @@ fn a_batch_mixes_pixel_calls_of_different_sizes_with_a_grid_call() {
     assert!(after.2 > before.2);
 }
 
+/// A `pixel` call whose output is the next `grid` call's input, in one `dispatch_batch` (one encoder, two passes of
+/// different kinds): the second must see all of the first's stores. n is not a multiple of 64 or of the row width.
+#[test]
+fn a_pixel_call_feeds_a_grid_call_in_one_batch() {
+    let device = device();
+    let n = 100_003u32;
+    let values: Vec<u32> = (0..n).map(host_seed_u32).collect();
+    let input = typed(&device, "input", &values);
+    let middle = zeroed::<u32>(&device, "middle", n as usize);
+    let last = zeroed::<u32>(&device, "last", n as usize);
+    let first = ident::pixel_u32::call(n, &input, &middle);
+    let second = ident::grid_u32::call(n, &middle, &last);
+    device
+        .dispatch_batch(&[(&first).into(), (&second).into()])
+        .unwrap();
+    let want: Vec<u32> = values
+        .iter()
+        .zip(0..n)
+        .map(|(&x, i)| host_h_u32(host_h_u32(x, i), i))
+        .collect();
+    assert_eq!(
+        differing_words(&device.read_typed_buffer(&last).unwrap(), &want),
+        0
+    );
+}
+
 /// n = 0 is `Ok` and does no work, no compile and no cache lookup, as for a `grid` call.
 #[test]
 fn an_empty_pixel_call_is_ok_and_touches_no_cache() {
@@ -970,8 +1005,11 @@ fn a_graph_orders_a_pixel_node_between_two_grid_nodes() {
 
 // ---- threads ----
 
-/// Two threads share one device and submit batches of three `pixel` calls of distinct n for 100 rounds each; every
-/// output is compared with the host reference every round, and the cache holds the three kernels once each.
+/// A smoke test of the queue and of the concurrent first compile (Option S has no shared uniform, so there is no hazard
+/// left to test): two threads share one device and submit batches of three `pixel` calls of distinct n for 100 rounds
+/// each; every
+/// output is compared with the host reference every round, and the cache holds the three kernels once each (a miss is
+/// counted when an entry is inserted, so two threads compiling the same kernel at once still make one miss).
 #[test]
 fn two_threads_submit_pixel_batches_on_one_device() {
     let device = device();
@@ -1023,7 +1061,8 @@ fn two_threads_submit_pixel_batches_on_one_device() {
             });
         }
     });
-    assert_eq!(device.pipeline_cache_stats().entries, 3);
+    let stats = device.pipeline_cache_stats();
+    assert_eq!((stats.entries, stats.misses), (3, 3));
 }
 
 /// The kernels of this file are the shape they say they are.

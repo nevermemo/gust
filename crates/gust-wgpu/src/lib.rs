@@ -56,7 +56,7 @@
 //! # Stability
 //!
 //! This crate is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`),
-//! and a patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (`gust`, the `#[gpu]`
+//! and a patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (`gust-compute`, the `#[gpu]`
 //! macro crate, this crate and `cargo-gust`) share one version and depend on each other with exact (`=`) pins: take
 //! them at the same version, and a minor bump of one is a minor bump of all.
 //!

@@ -15,8 +15,8 @@ Mixed or nested payloads, Result in structs/resources, tuples, slices, `unwrap`,
 
 ## Evidence
 
-- Macro: `cargo test -p gust-macros -- result`
-- GPU/targets: `cargo test -p gust-wgpu --test result`
+- Macro: `cargo test -p gust-compute-macros -- result`
+- GPU/targets: `cargo test -p gust-compute-wgpu --test result`
 - Routine semantic group: `cargo xtask check-feature result`
 - Release: `cargo xtask check-full`
 

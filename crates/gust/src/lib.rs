@@ -107,7 +107,7 @@
 //!
 //! `cpu` is the production CPU target (D21): the `#[gpu]` macro emits the kernel's `Run` impl for
 //! [`cpu::CpuDevice`] in every build, without the test and `gust_dual` gate, uses no
-//! artifact, and the `slang-runtime` feature is refused, so the build holds no run-time Slang bridge. `gust-wgpu`
+//! artifact, and the `slang-runtime` feature is refused, so the build holds no run-time Slang bridge. `gust-compute-wgpu`
 //! evaluates `profile::require_gpu_target`, which fails under it, so a crate graph that reaches the GPU runtime does
 //! not build. It is never inferred: a release build without the variable stays `native` (`web` on `wasm32`). The Slang
 //! text that a kernel's descriptor keeps in a `cpu` build is metadata (the identity of the kernel, what `export` and
@@ -136,7 +136,7 @@
 //!
 //! # Stability
 //!
-//! `gust` is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`), and a
+//! `gust-compute` is pre-1.0 and follows SemVer for `0.x`: a breaking change bumps the minor version (`0.1` to `0.2`), and a
 //! patch release (`0.1.0` to `0.1.1`) only adds or fixes. The four crates of a release (this crate, the `#[gpu]` macro
 //! crate, the wgpu backend and `cargo-gust`) share one version and depend on each other with exact (`=`) pins, because
 //! the macro emits items that only the same release of this crate has: take them at the same version, and a minor bump

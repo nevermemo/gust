@@ -90,7 +90,7 @@ major changes and release validation, but the ordinary workspace loop prioritize
 compiler/runtime feedback over full example proofs.
 
 Compiling a kernel at run time (launching `slangc` and the native reflection helper) is the
-`slang-runtime` feature of `gust` and `gust-wgpu`, off by default (D44). The ten examples
+`slang-runtime` feature of `gust-compute` and `gust-compute-wgpu`, off by default (D44). The ten examples
 enable it in their manifests, and `gust` and `gust-wgpu` enable it for their own tests through a
 dev-dependency on themselves, so `cargo run -p vector-add`, `cargo test -p gust-compute-wgpu` and
 `cargo test --workspace` need no flag. A crate of your own that runs kernels this way during

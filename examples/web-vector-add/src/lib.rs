@@ -272,7 +272,7 @@ async fn both_forms(device: &HeadlessDevice, length: usize) -> Result<(), String
     // elements (one draw for a partial row, two for whole rows and a tail), whose fragments write the storage buffer
     // (D120, D127). The output starts as [`UNWRITTEN`].
     //
-    // The browser reports no downlevel limits to wgpu (wgpu 30's web backend answers "every flag set"), so gust-wgpu
+    // The browser reports no downlevel limits to wgpu (wgpu 30's web backend answers "every flag set"), so gust-compute-wgpu
     // cannot refuse a pixel kernel here with `ShapeUnsupported`. An adapter that cannot write storage from a fragment
     // fails when the pipeline is created, as a WebGPU validation error in the browser's console, and the output keeps
     // its fill: the page then logs the "no fragment wrote" reason below, not a refusal.

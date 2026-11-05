@@ -12,10 +12,11 @@ use super::{
     count_occurrences, default_feature_problems, dependency_disables_defaults, e6_args, e6_cases,
     e6_problems, e7_steps, expansion_problem, files_written, gust_build_problems,
     has_build_script_warning, has_cargo_warning, identity_error, is_inside, is_slang_variable,
-    judge_run, lock_problems, marker_counts, markers_missing, markers_present, mutate_wgsl,
-    parse_warning_expectation, retarget_paths, section_version, slang_free_package_problems,
-    slang_free_problems, snapshot_differences, strip_path, tree_problems, unused_patch_lines,
-    with_bridge_user_dependency, with_bridge_user_member, with_tool_dependency,
+    judge_run, kernels_patch_configs, lock_problems, marker_counts, markers_missing,
+    markers_present, mutate_wgsl, parse_warning_expectation, retarget_paths, section_version,
+    slang_free_package_problems, slang_free_problems, snapshot_differences, strip_path,
+    tree_problems, unused_patch_lines, with_bridge_user_dependency, with_bridge_user_member,
+    with_tool_dependency,
 };
 use crate::{
     process::PROFILE_VARIABLE,
@@ -1224,4 +1225,26 @@ fn the_files_written_by_cargo_gust_are_read_from_its_summary_line() {
         Some(0)
     );
     assert_eq!(files_written("gust: compiling 1 kernel(s)\n"), None);
+}
+
+#[test]
+fn the_packaging_of_kernels_patches_the_two_packages_it_reaches_onto_the_checkout() {
+    // The values are given to `cargo package --config`: the patch keys are the package names (not the directories),
+    // the paths are the checkout's own `crates/<directory>` with forward slashes, quoted as TOML literal strings.
+    let configs = kernels_patch_configs(Path::new(r"C:\work\gust")).unwrap();
+    assert_eq!(
+        configs,
+        [
+            "patch.crates-io.gust-compute.path='C:/work/gust/crates/gust'",
+            "patch.crates-io.gust-compute-macros.path='C:/work/gust/crates/gust-macros'",
+        ]
+    );
+    // `gust-compute-wgpu` is not reached by `kernels`: a patch for it would only be reported as unused.
+    assert!(configs.iter().all(|config| !config.contains("wgpu")));
+    // A literal string has no escape for a quote or a line break, so such a root is refused and not written wrongly.
+    for root in ["/it's/gust", "/a\nb/gust", "/a\rb/gust"] {
+        let error = kernels_patch_configs(Path::new(root)).unwrap_err();
+        assert!(error.contains("check-precompiled E8"), "{error}");
+        assert!(error.contains("quote or a line break"), "{error}");
+    }
 }

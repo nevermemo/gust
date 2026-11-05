@@ -56,7 +56,10 @@
 //! - **E8**: distribution (R2-4, R4.6). `cargo package` of `gust-compute-macros`, `gust-compute`, `gust-compute-wgpu` and `kernels` must list
 //!   only allowed files; the four packages are unpacked outside the repository and a consumer with plain registry-style
 //!   dependencies and a `[patch.crates-io]` on the four trees is built under `native` in the stripped environment of E1
-//!   and, unless `--check-only`, run on the GPU.
+//!   and, unless `--check-only`, run on the GPU. The packaging of `kernels` runs with a `[patch.crates-io]` of its own,
+//!   given with `--config`, for `gust-compute` and `gust-compute-macros` onto this checkout, so that its lock resolves
+//!   these trees and not whatever crates.io holds under a GUST name (mr.n: before the rename it was the unrelated
+//!   charting crate `gust`).
 //!
 //! `--check-only` skips the parts that need an adapter (the runs of E1, E3 and E8) and Slang (the second half of E7);
 //! it is what the CI job `precompiled` runs. Nothing but `cargo gust build` of E7 runs `slangc` or the native helper.
@@ -100,7 +103,7 @@ pub(crate) const ADAPTER_PREFIX: &str = "adapter: ";
 
 /// The byte strings that the run-time Slang bridge brings into a binary (E2). `gust-slang-reflect` (the name of the
 /// native helper, `HELPER_NAME` of `gust::toolchain`) and `kernel.artifact` (`compile_reflected_with_helper`) are
-/// string literals of code gated by the `slang-runtime` feature of `gust`. `kernel.slang` is not gated:
+/// string literals of code gated by the `slang-runtime` feature of `gust-compute`. `kernel.slang` is not gated:
 /// `KERNEL_FILE` in `gust/src/slang/mod.rs` is used by the ungated `compile_copy` and `directive_file_is_usable` too,
 /// so it is absent from the measured binary only because the release linker drops dead code. It stays a marker for
 /// that measured reason and is the weakest of the three. They were picked by measurement: the same `app` built with the bridge (the
@@ -1134,7 +1137,7 @@ const INFERRED_SENTENCE: &str =
 /// What the build script prints for cargo when a release build had no `GUST_PROFILE` and was treated as `native`.
 const INFERRED_WARNING: &str = "gust: release build without GUST_PROFILE treated as native";
 
-/// Whether cargo's stderr `text` has the build-script warning `warning` of the package `gust` as a whole line: cargo
+/// Whether cargo's stderr `text` has the build-script warning `warning` of the package `gust-compute` as a whole line: cargo
 /// prints it as `warning: gust-compute@<version>: <warning>`, so a line that continues after the words (`... as devX`) does not
 /// count.
 pub(crate) fn has_build_script_warning(text: &str, warning: &str) -> bool {
@@ -1528,7 +1531,7 @@ pub(crate) fn parse_warning_expectation(text: &str) -> Result<BridgeExpectation,
     Ok(wanted)
 }
 
-/// The manifest of the crate that E6c adds: it depends on `gust-wgpu` with the bridge feature. `root` is the
+/// The manifest of the crate that E6c adds: it depends on `gust-compute-wgpu` with the bridge feature. `root` is the
 /// repository, with forward slashes.
 pub(crate) fn bridge_user_manifest(root: &str) -> String {
     format!(
@@ -2429,6 +2432,24 @@ fn run_step(step: &str, what: &str, mut command: Command) -> Result<Output, Stri
     Ok(output)
 }
 
+/// The two `--config` values with which `cargo package -p kernels` resolves `gust-compute` and `gust-compute-macros`
+/// onto this checkout (E8 step 2): `patch.crates-io.<package>.path='<root>/crates/<directory>'`, with forward
+/// slashes. The path is a TOML literal string, which has no escapes, so a root that holds a quote or a line break
+/// is refused with a clear error and not written wrongly.
+pub(crate) fn kernels_patch_configs(root: &Path) -> Result<[String; 2], String> {
+    let root = root.to_string_lossy().replace('\\', "/");
+    if root.contains(['\'', '\n', '\r']) {
+        return Err(format!(
+            "check-precompiled E8: the repository path holds a quote or a line break, which the `--config` patch of \
+             `cargo package -p kernels` cannot carry: {root:?}"
+        ));
+    }
+    Ok([
+        format!("patch.crates-io.gust-compute.path='{root}/crates/gust'"),
+        format!("patch.crates-io.gust-compute-macros.path='{root}/crates/gust-macros'"),
+    ])
+}
+
 /// E8: the packages and the relocated consumer. Returns the summary. The work directory is deleted at the end, and
 /// a failure to delete it fails the check.
 fn e8_distribution(fixture: &Fixture, options: &Options) -> Result<String, String> {
@@ -2540,10 +2561,7 @@ fn e8_steps(fixture: &Fixture, options: &Options, work: &Path) -> Result<String,
     // that `kernels` reaches are patched onto their trees in the repository (`--config`, which `cargo package`
     // honours and which leaves the packaged manifest as it is): the resolution finds this checkout's `gust-compute`
     // and its `gust-compute-macros`, and `--no-verify` still skips the build of the unpacked package.
-    let root = fixture.root.to_string_lossy().replace('\\', "/");
-    let patch_compute = format!("patch.crates-io.gust-compute.path='{root}/crates/gust'");
-    let patch_macros =
-        format!("patch.crates-io.gust-compute-macros.path='{root}/crates/gust-macros'");
+    let [patch_compute, patch_macros] = kernels_patch_configs(&fixture.root)?;
     run_step(
         "E8",
         "cargo package -p kernels",

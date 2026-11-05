@@ -18,8 +18,8 @@ signed min/max, expression-position atomics, and mixed atomic/plain access.
 
 ## Evidence
 
-- Macro: `cargo test -p gust-macros -- atomic`
-- GPU: `cargo test -p gust-wgpu --test atomics`
+- Macro: `cargo test -p gust-compute-macros -- atomic`
+- GPU: `cargo test -p gust-compute-wgpu --test atomics`
 - Example: `cargo run -p atomic-counter`
 - Release: `cargo xtask check-full`
 

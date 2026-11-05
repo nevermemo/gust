@@ -293,9 +293,11 @@ fn is_allowed_somewhere(name: &str) -> bool {
 }
 
 /// Dependencies outside the crate's allow-list, SPIR-V libraries in the compiler crates, and
-/// allow-listed dependencies that are not the real thing: no `package` rename, no git or
-/// alternative registry, a workspace crate from its own `crates/<name>` directory, everything
-/// else from crates.io. Each dependency is judged by its real package name, not its key.
+/// allow-listed dependencies that are not the real thing: no git or alternative registry, a
+/// workspace crate from its own `crates/<directory>` directory, everything else from crates.io,
+/// and no `package` rename except that a workspace crate's dependency key may be the name of its
+/// directory (`gust = { package = "gust-compute", .. }`, D106). Each dependency is judged by its
+/// real package name (`gust-compute`), not its key (`gust`).
 fn dependency_problems(rule_crate: &CrateRule, package: &Package, root: &str) -> Vec<String> {
     let mut problems = Vec::new();
     for dependency in &package.dependencies {

@@ -637,7 +637,8 @@ fn shapes_name_grid_and_each_shape_once() {
     }
 }
 
-/// The command, the pull-request list and the Gpu suite stay grid-only; only the Full mode of `verify` asks for pixel.
+/// The command, the Gpu suite and ci.yml stay grid-only; only the Full mode of `verify` and one step of the
+/// `gpu-software` workflow (seeds 1-2, on both of its lists) ask for pixel.
 #[test]
 fn only_the_full_mode_asks_for_pixel_by_default() {
     // The command line: no `--shapes`, the call the harness gets is the one it always got.
@@ -685,13 +686,37 @@ fn only_the_full_mode_asks_for_pixel_by_default() {
         body.contains("difftest_summary(&with_full_shapes(args))"),
         "{body}"
     );
-    // Neither workflow runs the shapes: the pull-request list and the nightly list stay grid-only.
-    for workflow in [
-        include_str!("../../../.github/workflows/ci.yml"),
-        include_str!("../../../.github/workflows/gpu-software.yml"),
-    ] {
-        assert!(!workflow.contains("--shapes"), "a workflow runs --shapes");
-    }
+    // ci.yml never runs the shapes. gpu-software runs them in exactly one step (slice mx.z): seeds 1-2 with
+    // `--shapes grid,pixel`, a step with no `if:`, so both of its lists have it. Its plain difftest step stays
+    // grid-only, and a comment may name the flag (only command lines count).
+    assert!(
+        !repo_file(include_str!("../../../.github/workflows/ci.yml")).contains("--shapes"),
+        "ci.yml runs --shapes"
+    );
+    let software = repo_file(include_str!("../../../.github/workflows/gpu-software.yml"));
+    let shaped: Vec<&str> = software
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#') && line.contains("--shapes"))
+        .collect();
+    assert_eq!(
+        shaped,
+        ["          cargo --locked xtask check-difftest --seeds 1-2 --shapes grid,pixel \\"],
+        "gpu-software runs --shapes in one step: seeds 1-2, grid,pixel"
+    );
+    let header = "      - name: Cross-shape differential test (pixel against grid, 2 seeds)";
+    let step: Vec<&str> = software
+        .lines()
+        .skip_while(|line| *line != header)
+        .enumerate()
+        .take_while(|(at, line)| *at == 0 || !line.starts_with("      - "))
+        .map(|(_, line)| line)
+        .collect();
+    assert!(!step.is_empty(), "no step {header}");
+    assert!(step.iter().any(|line| line.contains("--shapes grid,pixel")));
+    assert!(
+        !step.iter().any(|line| line.starts_with("        if:")),
+        "{step:?}"
+    );
 }
 
 /// A report as `good` builds it, with the `shapes` section the harness writes.

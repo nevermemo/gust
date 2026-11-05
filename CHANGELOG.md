@@ -34,6 +34,14 @@ kernels. Nothing in this entry changes an earlier release: there is none.
   `build-helper` for the pinned Slang release (2026.20, downloaded and checked by SHA-256, never shipped in the
   crates).
 
+### Execution shapes and textures
+
+`pixel` kernels (`#[kernel(shape = pixel)]`: one fragment per element, outputs written as storage buffers), the `Shape`
+type and the 2-D texture and sampler types are part of this release and of the 0.x promise, so a minor release may
+change them. Their evidence is narrower than the rest: a `pixel` or texture kernel has run on one hardware adapter,
+the RTX 5090 (Vulkan), and on the lavapipe software adapter, and on no other hardware. Headless Chrome on that NVIDIA
+GPU has run a `pixel` kernel and no texture kernel. README, "Stability", says the same.
+
 ### Platforms and requirements
 
 - Vulkan on Windows and Linux, WebGPU in the browser. macOS and Metal are not supported, and DX12 is not claimed.

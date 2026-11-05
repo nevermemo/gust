@@ -229,8 +229,9 @@ test module; do not mix that mechanical move with behavior changes.
 - mx.p1c follow-ups: a mismatch-ledger row (DIFFTEST §7) for `pixel` against `grid` in `f32`, if a corpus program ever
   shows a bit difference (D128 records it as an observation). The grid-only rebuild path of `--shapes`
   (`execute_shapes`) is tested only in parts, because the corpus has no program the classifier refuses. The shape-bench
-  smoke once showed K3L at 1024 elements at 0.42 ms as `pixel` against 0.023 ms as `grid`, unexplained; the quiet-GPU
-  table decides whether it is noise.
+  smoke once showed K3L at 1024 elements at 0.42 ms as `pixel` against 0.023 ms as `grid` (about 18 times); the
+  quiet-window run of the MX close settled it as real, not noise: `pixel` takes 8.5 to 21 times the best `grid` width
+  for K3L, and 6.5 to 11 times for K3 at 1024 and above (the render pass's time, STATUS MX close record iii). Closed.
 - m7.av follow-ups (the access violation above; STATUS m7.av to m7.av4c): the crash is in the Vulkan validation layer of
   Vulkan SDK 1.4.357.0 (its bundled mimalloc 3.3.2), needs concurrent tests, and disappears with the layer disabled; it
   is a fault of the test environment, not of GUST, wgpu or the driver. Gates keep validation on, because the layer
@@ -362,18 +363,16 @@ test module; do not mix that mechanical move with behavior changes.
   has no row for it (the record is in section 1 and DIFFTEST, "Shapes"; the K3 form that showed 4 ulp was not kept).
   File a row with a kernel of that shape (an unfused multiply-add chain after a division) and pin the observation per
   adapter kind, so a driver change shows up as a NOTE, as the other unenforced rows do.
-- The bench table: `examples/shape-bench` prints X-S1's per-shape table, and the full run waits for a quiet GPU (to be
-  recorded as `plans/shapes/probe/bench/table.md` with its machine conditions). The Radeon 890M row, and the 890M as a
-  second adapter for the identity test, are run when the owner runs them; neither is a gate, and neither may stand in
-  for the RTX 5090.
-- The cross-shape batch on lavapipe: plan section 6 wanted `check-difftest --shapes grid,pixel --seeds 1-2` on the
-  `gpu-software` pull-request list (else the nightly list), if its warm time fits the five-minute budget. Only
-  `check-full` asks for `--shapes` (DIFFTEST, "Shapes"), so lavapipe has never run the cross-shape batch. Measure its
-  warm time and add it to one of the two lists, or record why not.
-- The lavapipe pixel record: STATUS has no `gpu-software` record for `tests/pixel.rs` and `tests/textures.rs`. The merge
-  `ec6b79b` says "gpu-software green" in its message only, and the close-out (plan section 11, item 2 (ii)) wants the
-  record in STATUS: the run id, the adapter and Mesa version, the sizes the identity tests skipped on the software
-  adapter (above 1 000 003), and the label `Gpu (software: ...; shapes grid, pixel)`. The coordinator writes it.
+- Owner-run on the Radeon 890M (not a gate, and none may stand in for the RTX 5090): `cargo test -p gust-wgpu --test
+  pixel --test textures --test shape_refusal` (cheap), which would be the first GUST `pixel` or texture kernel on that
+  adapter; and `examples/shape-bench`'s 890M row, with the 890M as a second adapter for the identity test. The RTX 5090
+  table of the bench is done (a quiet window, STATUS MX close record iii; the table file is in the work area, not in
+  the repository).
+- The cross-shape batch on lavapipe is a step of the `gpu-software` workflow since slice mx.z (VALIDATION, "The
+  differential batch"): `check-difftest --seeds 1-2 --shapes grid,pixel`, on the pull-request list and the nightly
+  list. Its warm time on a hosted runner is not measured. The five-minute budget rule (the workflow's header) applies:
+  record the time from the first runs in STATUS, and if the pull-request job exceeds the budget, give the step the
+  nightly condition.
 - The bit-for-bit `f32` gates and D128: the `f32`, `Vec2` and `Vec4` identity tests of `tests/pixel.rs` and `check-web`
   compare bits, and their bodies (moves and one correctly rounded `f32` addition) leave the driver no freedom, so they
   agree with D128 today. Keep it so: a new `f32` body with a division or a multiply-add belongs in the difftest's
@@ -382,9 +381,25 @@ test module; do not mix that mechanical move with behavior changes.
   admitted by the classifier and have never run as `pixel` outputs; a linear `sample` in a fragment has not run (the
   nearest sampler has, against the twin); `bool`, struct and 3-wide outputs are `grid`-only "for now" (the list is
   mx.c's, kept after D120 removed its reason); the browser run of the `pixel` form covers one hardware adapter and not
-  the software one (`check-web --chrome-arg` for SwiftShader); and an adapter that cannot write storage buffers from a
-  fragment gives a wrong result in a browser, not `ShapeUnsupported`, because wgpu's WebGPU backend reports every
-  downlevel flag. A canary dispatch that turns that wrong result into the named refusal is an idea, not a plan.
+  the software one (`check-web --chrome-arg` for SwiftShader); and the browser has no typed refusal for an adapter
+  without fragment storage writes (the next item).
+- No typed refusal in a browser for missing fragment storage writes. WebGPU has the limit
+  `maxStorageBuffersInFragmentStage`, but `wgpu::Limits` has no field for it (wgpu-types 30.0.1; web-sys has it), and
+  wgpu's WebGPU backend reports every downlevel flag, so `fragment_storage` is true in a browser and
+  `require_fragment_storage` (`crates/gust-wgpu/src/render.rs`) never refuses there; a native adapter without
+  `FRAGMENT_WRITABLE_STORAGE` gets `ShapeUnsupported`. Today a browser adapter without those writes is expected to fail
+  when the pipeline is created, as a WebGPU validation error in the console, and `examples/web-vector-add` then ends in
+  `GUST_FAIL ... no fragment wrote the output` (its sentinel finds the output unwritten), not a typed `Error`. That chain
+  is expected, not observed: no adapter without the capability has run it, and the README's Pixel section says only
+  that. A fix is either reading the limit through `web_sys` on wasm32 before the
+  first `pixel` call, or a canary dispatch; each is its own slice, and the README sentence follows whichever is
+  measured.
+- Linear `sample` against the device's filter precision. D92 and `linear_error_bound` assume the filter weights are
+  quantised to 8 bits (the `2^-8` term); Vulkan guarantees only 4 `subTexelPrecisionBits` (from the specification, not
+  read from any device here). The RTX 5090 already reaches 0.977 of the bound under repeat (VALIDATION, `textures`
+  row), so the margin is thin. Not measured on any other device. Before a second vendor (the 890M, an Intel or a phone
+  GPU) runs the linear `sample` tests, compare the bound with that device's `subTexelPrecisionBits`, or measure its
+  weights the way the WebGPU CTS's `textureSample*` tests do (the CTS harness itself is not adopted).
 - Tidy: the `pixel` lowering emits a dead `_S1` line in the fragment WGSL (harmless; mx.w review nit 6). The per-call
   attachment, the missing pixel snippet in the generated host code and the out-of-memory panic of the attachment are
   already filed under "mx.p1b follow-ups". Two code comments contradict the code or the docs: `cpu/texture.rs:139`

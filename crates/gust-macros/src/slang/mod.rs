@@ -606,8 +606,13 @@ pub(crate) fn emit_kernel_in(
         let syn::Item::Fn(function) = item else {
             continue;
         };
+        // A sibling kernel is recognised by its attribute alone: its options are checked under its own profile (the
+        // validator runs every kernel of the module), not under this one, which may refuse them (`workgroup_size`).
         if function.sig.ident == kernel.sig.ident
-            || crate::expand::kernel_attribute_in(stage, function)?.is_some()
+            || function
+                .attrs
+                .iter()
+                .any(|attribute| attribute.path().is_ident("kernel"))
         {
             continue;
         }

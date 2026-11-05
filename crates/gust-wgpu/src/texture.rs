@@ -44,7 +44,7 @@ use gust::{
 
 use crate::{
     BufferBinding, Completion, Error, GpuBufferAccess, HeadlessDevice, MappingReady,
-    PendingMapping, pod_vec_from_bytes,
+    PendingMapping, Raw, pod_vec_from_bytes,
 };
 
 /// The name of the device feature a linear filter of a 32-bit float texture needs, as an error spells it.
@@ -127,10 +127,6 @@ fn wgpu_usages(uses: TextureUse) -> wgpu::TextureUsages {
 pub struct GpuTexture2d<F: TextureFormat> {
     raw: wgpu::Texture,
     view: wgpu::TextureView,
-    /// The texture's identity for the buffer-shaped parts of the backend (the aliasing rule of a call and the staged
-    /// graph's hazard check compare `wgpu::Buffer`s): a 4-byte buffer that lives and dies with the texture and is never
-    /// read or written.
-    identity: wgpu::Buffer,
     width: u32,
     height: u32,
     uses: TextureUse,
@@ -251,7 +247,7 @@ impl<'a> BufferBinding<'a> {
     /// A binding of `texture`: `ReadOnly` for a sampled parameter, `ReadWrite` for a storage one.
     fn new_texture<F: TextureFormat>(texture: &'a GpuTexture2d<F>, access: Access) -> Self {
         Self {
-            raw: &texture.identity,
+            raw: Raw::Texture(&texture.raw),
             len: 1,
             layout: <F::Texel as GpuPod>::LAYOUT,
             buffer_access: if access == Access::ReadOnly {
@@ -520,12 +516,9 @@ impl HeadlessDevice {
         #[cfg(not(target_arch = "wasm32"))]
         self.finish_scope(label, bytes, scope.pop())?;
         let view = raw.create_view(&wgpu::TextureViewDescriptor::default());
-        // mx.p1b: replace this identity buffer with a texture identity once graph.rs (mx.p1b's) can compare textures.
-        let identity = self.allocate("GUST texture identity", 4, wgpu::BufferUsages::COPY_SRC)?;
         Ok(GpuTexture2d {
             raw,
             view,
-            identity,
             width,
             height,
             uses,

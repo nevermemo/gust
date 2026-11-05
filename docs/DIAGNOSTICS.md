@@ -24,8 +24,13 @@ split or renumbered, and each change is listed here:
 
 - Slice mx.p1a: E0730 ("pinned shape not available yet", D63) is retired: the `pixel` profile exists, so a
   `shape = pixel` pin is built as a fragment entry. The number is never reused. E0723 lost its 8-output and
-  32-byte bounds (D120). Until slice mx.p1b a `pixel` kernel runs on the CPU twin and the `cpu` target only: `gust-wgpu`
-  refuses it with `Error::ShapeUnsupported` before any pipeline is built.
+  32-byte bounds (D120).
+- Slice mx.p1b: a `pixel` kernel runs on `gust-wgpu` as a render pass. `Error::ShapeUnsupported` gained a `reason`
+  field and refuses the pixel cases that have no path (an extent call, an indirect launch, the one-shot v1 functions,
+  the generated host snippet, an adapter without fragment-stage storage writes); the new `Error::ShapeIndependentOutput`
+  refuses a read-write output bound `Independent`. The twin has `cpu::Error::PixelExtent` and
+  `cpu::Error::PixelIndependentOutput`, and a call over 2^26 elements is a `DeviceLimit` named `pixel_max_elements`.
+  These are run-time errors, not macro codes.
 - `f20d313`: E0602 narrowed from any wrong shape of an atomic's first argument to "not a
   reference"; the other shapes moved to the new codes E0608, E0609 and E0610.
 

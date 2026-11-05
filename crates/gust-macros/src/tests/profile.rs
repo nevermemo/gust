@@ -682,6 +682,122 @@ mod pixel {
         );
     }
 
+    /// A module that holds a `grid` kernel with an explicit workgroup size beside a `pixel` kernel (slice mx.p1b).
+    const MIXED: &str = "mod mixed {
+    fn twice(x: f32) -> f32 {
+        x * 2.0f32
+    }
+
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn grid_kernel(
+        id: SV_DispatchThreadID,
+        input: StructuredBuffer<f32>,
+        mut out: RWStructuredBuffer<f32>,
+    ) {
+        let i = id.x;
+        if i < out.len() {
+            out[i] = twice(input[i]);
+        }
+    }
+
+    #[kernel(shape = pixel)]
+    pub fn pixel_kernel(
+        id: SV_DispatchThreadID,
+        input: StructuredBuffer<f32>,
+        mut out: RWStructuredBuffer<f32>,
+    ) {
+        let i = id.x;
+        out[i] = twice(input[i]);
+    }
+}";
+
+    fn function<'a>(module: &'a syn::ItemMod, name: &str) -> &'a syn::ItemFn {
+        module
+            .content
+            .as_ref()
+            .unwrap()
+            .1
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Fn(function) if function.sig.ident == name => Some(function),
+                _ => None,
+            })
+            .unwrap()
+    }
+
+    /// Before the fix the pixel emitter parsed every sibling's options under the pixel profile, only to ask whether it
+    /// was a kernel, and a sibling `workgroup_size(..)` (which the pixel profile refuses) failed the pixel kernel with
+    /// E0707. A sibling is recognised by its attribute now; its options are the business of its own profile.
+    #[test]
+    fn a_module_may_hold_an_explicit_workgroup_grid_kernel_beside_a_pixel_kernel() {
+        let module: syn::ItemMod = parse_str(MIXED).unwrap();
+        validate_module(&module).unwrap();
+        let pixel = emit_kernel_in(
+            &PIXEL,
+            &module,
+            function(&module, "pixel_kernel"),
+            KernelOptions {
+                workgroup_size: PIXEL.options().default_workgroup,
+            },
+        )
+        .unwrap()
+        .source;
+        assert!(pixel.contains("[shader(\"fragment\")]"), "{pixel}");
+        assert!(pixel.contains("float twice(float x)"), "{pixel}");
+        assert!(pixel.contains("void gpu_mixed_pixel_kernel("), "{pixel}");
+        assert!(!pixel.contains("grid_kernel"), "{pixel}");
+        assert!(!pixel.contains("numthreads"), "{pixel}");
+        let grid = emit_kernel_in(
+            &GRID,
+            &module,
+            function(&module, "grid_kernel"),
+            KernelOptions {
+                workgroup_size: [64, 1, 1],
+            },
+        )
+        .unwrap()
+        .source;
+        assert!(grid.contains("[numthreads(64, 1, 1)]"), "{grid}");
+        assert!(grid.contains("[shader(\"compute\")]"), "{grid}");
+        assert!(grid.contains("float twice(float x)"), "{grid}");
+        assert!(grid.contains("void gpu_mixed_grid_kernel("), "{grid}");
+        assert!(!grid.contains("pixel_kernel"), "{grid}");
+        assert!(!grid.contains("fragment"), "{grid}");
+    }
+
+    /// The same module through the whole macro: both kernels are described, one of each shape, with their own sizes.
+    #[test]
+    fn the_expansion_of_a_mixed_module_describes_both_kernels() {
+        let item: proc_macro2::TokenStream = MIXED.parse().unwrap();
+        let text: String =
+            crate::gpu_impl_with(proc_macro2::TokenStream::new(), item, Profile::Other)
+                .to_string()
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
+        assert!(!text.contains("compile_error"), "{text}");
+        assert_eq!(
+            text.matches("shape:::gust::Shape::Pixel,").count(),
+            1,
+            "{text}"
+        );
+        assert_eq!(
+            text.matches("shape:::gust::Shape::Grid,").count(),
+            1,
+            "{text}"
+        );
+        assert_eq!(
+            text.matches("workgroup_size:[64u32,1u32,1u32],").count(),
+            1,
+            "{text}"
+        );
+        assert_eq!(
+            text.matches("workgroup_size:[1u32,1u32,1u32],").count(),
+            1,
+            "{text}"
+        );
+    }
+
     #[test]
     fn a_pixel_kernels_export_record_is_schema_3_with_its_shape() {
         let root = std::env::temp_dir().join(format!("gust-macros-pixel-{}", std::process::id()));

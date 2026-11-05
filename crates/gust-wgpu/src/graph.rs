@@ -22,7 +22,7 @@ use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::{
     BufferBinding, BufferDispatch, Error, GpuBuffer, GpuBufferAccess, GpuUniform, HeadlessDevice,
-    completion::blocking::recv_mapping, error::INDIRECT_ARGUMENTS, pod_vec_from_bytes, same_buffer,
+    Raw, completion::blocking::recv_mapping, error::INDIRECT_ARGUMENTS, pod_vec_from_bytes, render,
 };
 
 /// Handle to one node of a [`StagedGraph`], in insertion order.
@@ -302,7 +302,7 @@ impl<'a> StagedGraph<'a> {
                 Self::accesses(node)
                     .into_iter()
                     .any(|(other, other_access)| {
-                        same_buffer(other, buffer) && other_access == Access::ReadWrite
+                        other == buffer && other_access == Access::ReadWrite
                     })
             });
             if let Some(writer) = latest_writer {
@@ -313,7 +313,7 @@ impl<'a> StagedGraph<'a> {
                 for (index, node) in self.nodes.iter().enumerate().skip(first_reader) {
                     if Self::accesses(node)
                         .into_iter()
-                        .any(|(other, _)| same_buffer(other, buffer))
+                        .any(|(other, _)| other == buffer)
                     {
                         dependencies.push(NodeId(index));
                     }
@@ -325,12 +325,12 @@ impl<'a> StagedGraph<'a> {
         dependencies
     }
 
-    /// Buffers a node touches, with the access the hazard check must assume.
-    fn accesses(node: &Node<'a>) -> Vec<(&'a wgpu::Buffer, Access)> {
+    /// Resources a node touches, with the access the hazard check must assume.
+    fn accesses(node: &Node<'a>) -> Vec<(Raw<'a>, Access)> {
         Self::kind_accesses(&node.kind)
     }
 
-    fn kind_accesses(kind: &NodeKind<'a>) -> Vec<(&'a wgpu::Buffer, Access)> {
+    fn kind_accesses(kind: &NodeKind<'a>) -> Vec<(Raw<'a>, Access)> {
         match kind {
             NodeKind::Upload { target, .. } => vec![(target.raw, Access::ReadWrite)],
             NodeKind::Dispatch(dispatch) => dispatch
@@ -386,6 +386,8 @@ impl<'a> StagedGraph<'a> {
                     }
                 }
                 NodeKind::Dispatch(dispatch) => {
+                    // A `pixel` node over an extent is the shape's own refusal, before any binding is looked at.
+                    render::check_pixel_extent(dispatch.kernel, dispatch.extent())?;
                     let resources = crate::validate_persistent_dispatch(
                         device_id,
                         dispatch.kernel,
@@ -400,6 +402,8 @@ impl<'a> StagedGraph<'a> {
                     )?;
                 }
                 NodeKind::DispatchIndirect { dispatch, args } => {
+                    // A `pixel` kernel has no indirect form: this wins over every binding error below.
+                    render::refuse_indirect(dispatch.kernel)?;
                     if args.device_id != device_id {
                         return Err(Error::ForeignPersistentBuffer);
                     }
@@ -427,8 +431,7 @@ impl<'a> StagedGraph<'a> {
                     // usage scope that also writes it (an uncaptured-error panic, measured in m2.e).
                     // Read-only storage use of the same buffer is compatible and stays accepted.
                     for (parameter, binding) in resources.iter().zip(dispatch.bindings) {
-                        if binding.access == Access::ReadWrite && same_buffer(binding.raw, args.raw)
-                        {
+                        if binding.access == Access::ReadWrite && binding.raw == args.raw {
                             return Err(Error::AliasedBinding {
                                 kernel: dispatch.kernel.qualified_name().to_string(),
                                 first: parameter.name.to_owned(),
@@ -461,7 +464,7 @@ impl<'a> StagedGraph<'a> {
                         Self::accesses(previous)
                             .into_iter()
                             .any(|(other, other_access)| {
-                                same_buffer(other, buffer)
+                                other == buffer
                                     && (access == Access::ReadWrite
                                         || other_access == Access::ReadWrite)
                             });
@@ -494,7 +497,7 @@ impl<'a> StagedGraph<'a> {
     }
 
     fn resident_bytes(&self) -> u64 {
-        let transferred: Vec<&wgpu::Buffer> = self
+        let transferred: Vec<Raw<'_>> = self
             .nodes
             .iter()
             .filter_map(|node| match &node.kind {
@@ -503,7 +506,7 @@ impl<'a> StagedGraph<'a> {
                 NodeKind::Dispatch(_) | NodeKind::DispatchIndirect { .. } => None,
             })
             .collect();
-        let mut seen: Vec<&wgpu::Buffer> = Vec::new();
+        let mut seen: Vec<Raw<'_>> = Vec::new();
         let mut bytes = 0;
         for node in &self.nodes {
             let bindings = match &node.kind {
@@ -590,7 +593,7 @@ impl HeadlessDevice {
                         encoder.copy_buffer_to_buffer(
                             &staging,
                             0,
-                            target.raw,
+                            target.buffer(),
                             0,
                             bytes.len() as u64,
                         );
@@ -604,15 +607,9 @@ impl HeadlessDevice {
                 }
                 NodeKind::Dispatch(dispatch) => {
                     for prepared in self.prepare_batch(std::slice::from_ref(dispatch))? {
-                        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                            label: Some("GUST staged graph compute pass"),
-                            timestamp_writes: None,
-                        });
-                        pass.set_pipeline(&prepared.cached_kernel.pipeline);
-                        pass.set_bind_group(0, &prepared.bind_group, &[]);
-                        pass.dispatch_workgroups(prepared.workgroup_count, 1, 1);
+                        prepared.encode(&self.device, &mut encoder, "GUST staged graph pass", None);
                         dispatches += 1;
-                        workgroups += u64::from(prepared.workgroup_count);
+                        workgroups += u64::from(prepared.workgroup_count());
                     }
                 }
                 NodeKind::DispatchIndirect { dispatch, args } => {
@@ -625,9 +622,9 @@ impl HeadlessDevice {
                             label: Some("GUST staged graph indirect compute pass"),
                             timestamp_writes: None,
                         });
-                        pass.set_pipeline(&prepared.cached_kernel.pipeline);
+                        pass.set_pipeline(prepared.cached_kernel.pipeline.compute());
                         pass.set_bind_group(0, &prepared.bind_group, &[]);
-                        pass.dispatch_workgroups_indirect(args.raw, 0);
+                        pass.dispatch_workgroups_indirect(args.buffer(), 0);
                         dispatches += 1;
                         indirect_dispatches += 1;
                     }
@@ -641,7 +638,7 @@ impl HeadlessDevice {
                             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                             mapped_at_creation: false,
                         });
-                        encoder.copy_buffer_to_buffer(source.raw, 0, &staging, 0, byte_size);
+                        encoder.copy_buffer_to_buffer(source.buffer(), 0, &staging, 0, byte_size);
                         staging
                     });
                     pending.push(PendingReadback {

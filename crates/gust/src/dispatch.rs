@@ -41,6 +41,10 @@
 //!   whose three axes, each rounded up to whole workgroups, multiply to more than 2^32 invocations
 //!   ([`Extent::MAX_INVOCATIONS`]) is refused by every backend, and a launch of exactly 2^32 is accepted by every
 //!   backend: the GPU backend adds its device limits (workgroup size and workgroups per dimension) on top.
+//! - A call of a `pixel` kernel (Option S, slice mx.p1b) is one-dimensional (`y` and `z` are 1), covers at most
+//!   [`crate::PIXEL_MAX_ELEMENTS`] elements, and binds every read-write storage parameter `Shared`; every backend
+//!   refuses the rest the same way (`cpu::Error::PixelExtent`, `DeviceLimit` named `pixel_max_elements`,
+//!   `cpu::Error::PixelIndependentOutput`).
 //!
 //! # What the tests in this file are
 //!

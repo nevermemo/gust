@@ -82,16 +82,36 @@ impl KernelCacheKey {
     }
 }
 
+/// The pipeline of a cached kernel: a compute pipeline for a `grid` kernel, a full-screen render pipeline for a
+/// `pixel` one (slice mx.p1b). The cache key holds the shape, so one key has one kind.
+pub(crate) enum Pipeline {
+    Compute(wgpu::ComputePipeline),
+    Render(wgpu::RenderPipeline),
+}
+
+impl Pipeline {
+    /// The compute pipeline of a `grid` kernel. The v1 one-shot functions call it after refusing every other shape.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn compute(&self) -> &wgpu::ComputePipeline {
+        match self {
+            Self::Compute(pipeline) => pipeline,
+            Self::Render(_) => unreachable!("the v1 dispatch functions refuse a non-grid kernel"),
+        }
+    }
+}
+
 pub(crate) struct CachedKernel {
     pub(crate) _shader: wgpu::ShaderModule,
     pub(crate) bind_group_layout: wgpu::BindGroupLayout,
     pub(crate) _pipeline_layout: wgpu::PipelineLayout,
-    pub(crate) pipeline: wgpu::ComputePipeline,
+    pub(crate) pipeline: Pipeline,
 }
 
 #[derive(Default)]
 pub(crate) struct PipelineCache {
     pub(crate) kernels: HashMap<KernelCacheKey, Arc<CachedKernel>>,
+    /// The vertex module of every `pixel` pipeline of the device (`shapes/fullscreen.wgsl`), created on first use.
+    pub(crate) fullscreen: Option<wgpu::ShaderModule>,
     pub(crate) hits: u64,
     pub(crate) misses: u64,
 }

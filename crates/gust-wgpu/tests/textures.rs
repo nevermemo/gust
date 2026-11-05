@@ -1298,6 +1298,35 @@ fn one_texture_bound_to_two_parameters_with_a_write_is_aliased() {
     );
 }
 
+/// Slice mx.p1b: a texture is compared by its own identity (it no longer carries a stand-in buffer), so two textures
+/// bound to two parameters are two resources and the call runs, and each texture holds what its own parameter wrote.
+#[test]
+fn two_textures_bound_to_two_parameters_are_not_aliased() {
+    let device = device();
+    let first: GpuTexture2d<Rgba32Float> =
+        device.create_texture_2d(8, 4, TextureUse::STORAGE).unwrap();
+    let second: GpuTexture2d<Rgba32Float> =
+        device.create_texture_2d(8, 4, TextureUse::STORAGE).unwrap();
+    let bindings = [
+        first.bind(Access::ReadWrite, LengthRule::Independent),
+        second.bind(Access::ReadWrite, LengthRule::Independent),
+    ];
+    device
+        .dispatch_buffers(&TwoWide::DESCRIPTOR, 32, &bindings)
+        .expect("two textures are two resources");
+    let components = |texels: Vec<Vec4>| -> Vec<[f32; 4]> {
+        texels.iter().map(|v| [v.x, v.y, v.z, v.w]).collect()
+    };
+    assert_eq!(
+        components(device.read_texture(&first).unwrap()),
+        vec![[1.0, 0.0, 0.0, 1.0]; 32]
+    );
+    assert_eq!(
+        components(device.read_texture(&second).unwrap()),
+        vec![[0.0, 1.0, 0.0, 1.0]; 32]
+    );
+}
+
 // ---- the typed call and the staged graph ----
 
 #[test]

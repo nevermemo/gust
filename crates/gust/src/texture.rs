@@ -374,7 +374,12 @@ pub enum Address {
 }
 
 /// The state of a sampler: its [`Filter`] and its [`Address`] mode (the same mode on both axes).
+///
+/// The struct is `#[non_exhaustive]`, so a later release can add a field (a border colour, an anisotropy) without
+/// breaking a caller. Build one with [`new`](Self::new), or from [`SamplerOptions::default()`](Default::default) and
+/// [`with_filter`](Self::with_filter) and [`with_address`](Self::with_address); the fields stay public to read.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct SamplerOptions {
     /// How the sampler reads between texels.
     pub filter: Filter,
@@ -386,6 +391,20 @@ impl SamplerOptions {
     /// Options with the given filter and address mode.
     pub const fn new(filter: Filter, address: Address) -> Self {
         Self { filter, address }
+    }
+
+    /// These options with the filter replaced by `filter`.
+    #[must_use]
+    pub const fn with_filter(mut self, filter: Filter) -> Self {
+        self.filter = filter;
+        self
+    }
+
+    /// These options with the address mode replaced by `address`.
+    #[must_use]
+    pub const fn with_address(mut self, address: Address) -> Self {
+        self.address = address;
+        self
     }
 }
 
@@ -726,6 +745,12 @@ mod tests {
                 filter: Filter::Linear,
                 address: Address::Repeat
             }
+        );
+        assert_eq!(
+            SamplerOptions::default()
+                .with_filter(Filter::Linear)
+                .with_address(Address::Repeat),
+            SamplerOptions::new(Filter::Linear, Address::Repeat)
         );
         let sampler = Sampler::new(SamplerOptions::new(Filter::Linear, Address::Repeat));
         assert_eq!(sampler.options().filter, Filter::Linear);

@@ -13,12 +13,11 @@ fn vulkan() -> wgpu::Backends {
 }
 
 fn options(adapter: AdapterChoice, limits: LimitsPolicy) -> DeviceOptions {
-    DeviceOptions {
-        backends: vulkan(),
-        adapter,
-        limits,
-        features: FeaturesPolicy::Default,
-    }
+    DeviceOptions::default()
+        .with_backends(vulkan())
+        .with_adapter(adapter)
+        .with_limits(limits)
+        .with_features(FeaturesPolicy::Default)
 }
 
 #[test]

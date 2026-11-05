@@ -50,12 +50,11 @@ fn device() -> HeadlessDevice {
 
 /// Options as `device()` opens (Vulkan, the portable limits) with the given optional features.
 fn options(features: FeaturesPolicy) -> DeviceOptions {
-    DeviceOptions {
-        backends: wgpu::Backends::VULKAN,
-        adapter: AdapterChoice::HighPerformance,
-        limits: LimitsPolicy::Default,
-        features,
-    }
+    DeviceOptions::default()
+        .with_backends(wgpu::Backends::VULKAN)
+        .with_adapter(AdapterChoice::HighPerformance)
+        .with_limits(LimitsPolicy::Default)
+        .with_features(features)
 }
 
 /// A device opened with `FeaturesPolicy::Adapter`: it has `float32-filterable` when the adapter offers it.
@@ -338,10 +337,9 @@ fn the_default_device_has_no_optional_feature() {
     let device = device();
     assert!(!device.float32_filterable());
     // `FeaturesPolicy::Default` turns it off even through the native `DeviceOptions::default()` (Adapter limits too).
-    let policy_default = HeadlessDevice::with_options(DeviceOptions {
-        features: FeaturesPolicy::Default,
-        ..DeviceOptions::default()
-    })
+    let policy_default = HeadlessDevice::with_options(
+        DeviceOptions::default().with_features(FeaturesPolicy::Default),
+    )
     .unwrap();
     assert!(!policy_default.float32_filterable());
 }

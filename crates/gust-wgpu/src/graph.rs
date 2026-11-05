@@ -623,7 +623,12 @@ impl HeadlessDevice {
                 }
                 NodeKind::Dispatch(dispatch) => {
                     for prepared in self.prepare_batch(std::slice::from_ref(dispatch))? {
-                        prepared.encode(&self.device, &mut encoder, "GUST staged graph pass", None);
+                        prepared.encode(
+                            &self.device,
+                            &mut encoder,
+                            "GUST staged graph pass",
+                            None,
+                        )?;
                         dispatches += 1;
                         workgroups += u64::from(prepared.workgroup_count());
                     }

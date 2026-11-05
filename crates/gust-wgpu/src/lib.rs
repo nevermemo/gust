@@ -2136,6 +2136,8 @@ impl HeadlessDevice {
             .iter()
             .find(|dispatch| dispatch.extent().y != 1 || dispatch.extent().z != 1)
         {
+            // A `pixel` kernel has no extent launch at all: the refusal is its own, not the graph's.
+            render::check_pixel_extent(dispatch.kernel, dispatch.extent())?;
             return Err(Error::Extent {
                 extent: dispatch.extent().to_array().map(u64::from),
                 reason: "a staged graph runs one-dimensional dispatches only (use dispatch_batch)",

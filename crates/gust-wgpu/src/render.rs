@@ -5,8 +5,10 @@
 //! attachment whose write mask is empty (D120): the attachment only gives the rasteriser a frame to cover, and the
 //! fragment index is `y * PIXEL_ROW_WIDTH + x` of that frame (Option S). A call of `n` elements uses
 //! `ceil(n / 8192)` rows and at most two scissored draws, the full rows and then the tail row, so no fragment outside
-//! `0..n` is ever launched and a helper invocation cannot store (the scissor probe measured 0 differing words on the
-//! RTX 5090 and the Radeon 890M with `LoadOp::Load` and `StoreOp::Discard`).
+//! `0..n` is ever launched as a real invocation (the scissor probe measured 0 differing words on the RTX 5090 and the
+//! Radeon 890M with `LoadOp::Load` and `StoreOp::Discard`). Helper invocations of a partly covered 2x2 quad do run,
+//! but they cannot store, so they change nothing; the count test at the end of this file counts the fragments that
+//! really ran with an atomic (a stray store cannot be seen: robustBufferAccess2 drops an out-of-bounds store).
 //!
 //! This module holds the pipeline, the pass, the plan of a call and the refusals that belong to the shape. The
 //! dispatch, the batch and the graph reach it through `PreparedDispatch::encode` and the `check_*` functions.
@@ -137,7 +139,8 @@ pub(crate) fn encode_pixel_pass(
             view: &view,
             depth_slice: None,
             resolve_target: None,
-            // The form the scissor probe measured: the attachment is read as nothing and stored as nothing.
+            // The form the scissor probe measured. wgpu zero-fills a never-used attachment before its first pass, so
+            // `Load` reads zeros (a clear of up to 64 MiB per call); `Discard` stores nothing; no draw writes it.
             ops: wgpu::Operations {
                 load: wgpu::LoadOp::Load,
                 store: wgpu::StoreOp::Discard,
@@ -397,5 +400,129 @@ mod tests {
             }
             other => panic!("expected ShapeUnsupported, got {other:?}"),
         }
+    }
+
+    /// A fragment stage that counts its own invocations. An atomic add by a helper invocation does nothing (WGSL), so
+    /// the count is the number of fragments that ran and were not helpers: a stray fragment outside the scissor would
+    /// raise it. (A stray store cannot be seen the way a stray add can: robustBufferAccess2 drops an out-of-bounds
+    /// store, so a stray `out[i]` with `i >= n` leaves no trace.)
+    const COUNTER_WGSL: &str = "
+        @group(0) @binding(0) var<storage, read_write> count: atomic<u32>;
+        @fragment fn count_fragment() { _ = atomicAdd(&count, 1u); }
+    ";
+
+    /// The sizes of the count test: the ends of a tail row, one and two rows, and `8192k + 1` and `8192k + 2` (a tail
+    /// row of one or two texels), up to the cap.
+    fn counted_sizes() -> Vec<u32> {
+        let mut sizes = vec![1, 2, 8191, 8192, 8193];
+        for rows in [1u32, 2, 7, 1000] {
+            sizes.extend([PIXEL_ROW_WIDTH * rows + 1, PIXEL_ROW_WIDTH * rows + 2]);
+        }
+        sizes.push(PIXEL_MAX_ELEMENTS);
+        sizes
+    }
+
+    /// The count of fragment invocations equals `n` for every size, through `build_pipeline` and `encode_pixel_pass`
+    /// (the pass of every `pixel` call). On a software adapter the sizes over a million are skipped, with a printed
+    /// branch; any other adapter runs all of them, 2^26 included.
+    #[test]
+    fn a_pixel_pass_launches_exactly_n_fragments() {
+        let device = crate::HeadlessDevice::with_options(crate::DeviceOptions::default())
+            .expect("Vulkan adapter required; this test must not silently skip");
+        if !device.fragment_storage {
+            eprintln!(
+                "BRANCH fragment count: the adapter cannot write storage from a fragment stage; nothing to count"
+            );
+            return;
+        }
+        let software = device.adapter_info.device_type == wgpu::DeviceType::Cpu;
+        let counter = device.create_typed_buffer(
+            "fragment count",
+            &[0u32],
+            crate::GpuBufferAccess::ReadWrite,
+        );
+        let layout = device
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("fragment count layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let pipeline_layout =
+            device
+                .device
+                .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some("fragment count pipeline layout"),
+                    bind_group_layouts: &[Some(&layout)],
+                    immediate_size: 0,
+                });
+        let fragment = device
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some("fragment count shader"),
+                source: wgpu::ShaderSource::Wgsl(COUNTER_WGSL.into()),
+            });
+        let vertex = fullscreen_module(&device.device);
+        let pipeline = build_pipeline(
+            &device.device,
+            "fragment count",
+            &pipeline_layout,
+            &vertex,
+            &fragment,
+            "count_fragment",
+        );
+        let bind_group = device.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("fragment count bind group"),
+            layout: &layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: counter.raw.as_entire_binding(),
+            }],
+        });
+        let mut ran = 0;
+        for n in counted_sizes() {
+            if software && n > 1_000_003 {
+                eprintln!("BRANCH fragment count: n = {n} skipped, the adapter is of type Cpu");
+                continue;
+            }
+            device
+                .queue
+                .write_buffer(&counter.raw, 0, &0u32.to_le_bytes());
+            let mut encoder =
+                device
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("fragment count encoder"),
+                    });
+            encode_pixel_pass(
+                &device.device,
+                &mut encoder,
+                &pipeline,
+                &bind_group,
+                n,
+                "fragment count pass",
+                None,
+            );
+            device.queue.submit([encoder.finish()]);
+            let count = device.read_typed_buffer(&counter).unwrap();
+            assert_eq!(
+                count,
+                [n],
+                "the pass launched {} fragments for n = {n}",
+                count[0]
+            );
+            eprintln!("COUNT n = {n}: {} fragments", count[0]);
+            ran += 1;
+        }
+        assert!(ran >= 9, "the small sizes must run on every adapter");
+        eprintln!("BRANCH fragment count: {ran} sizes run, count == n for each");
     }
 }

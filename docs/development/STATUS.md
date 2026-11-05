@@ -578,6 +578,36 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   check-fast, the gust-wgpu `textures` binary died once with STATUS_ACCESS_VIOLATION and passed on rerun: the first
   sighting outside gust-algo (see the m7.av follow-ups). Main: 24 of 24 gates green on `fbe52e5` (2026-11-05 04:08 to
   04:59Z, RTX 5090).
+- MX mx.p1a (`5dfa505`, fix round `a523511`, merge `6bb4dff`; D61 to D63, D93, D120, D127, MX plan §4.1, §4.2, §4.6):
+  the `pixel` profile in the macro. `crates/gust-macros/src/profile/pixel.rs` emits the fragment entry: each output is a
+  storage write at the element's own index (D120), and the element is `y * 8192 + x` (D127, Option S).
+  `gust::PIXEL_ROW_WIDTH` and `gust::PIXEL_MAX_ELEMENTS` sit beside `Shape` in `crates/gust/src/descriptor.rs`, and a
+  twin test checks that every fixture kernel's Slang carries the width. Until mx.p1b, gust-wgpu refuses a kernel whose
+  shape is not `grid` with `Error::ShapeUnsupported` before any pipeline is created
+  (`crates/gust-wgpu/tests/shape_refusal.rs`), so pixel kernels run on the CPU twin (`crates/gust/tests/pixel_twin.rs`)
+  and the `cpu` target only; a `tests/cpu-target` pixel kernel prints a line xtask now requires (`pixel_shade::shade`,
+  1000 elements, max ULP 0). No new diagnostic code; E0730 is retired (two UI cases removed, `shape-pixel-ok` added;
+  check-ui pin 83). The kill rule held: `slang/mod.rs` and `validate/mod.rs` have no changed line, the grid goldens are
+  unchanged, and `export-artifacts --compare` on the lane's base listed all 80 exports equal. One doc-only edit outside
+  the brief's files: the `is_pixel_output` comment in `crates/gust/src/reflect/mod.rs` now says the function is dead for
+  MX until Breeze, because the never-written attachment is a host object the shader does not name. Opus merge after
+  fixes: no must-fix; three should-fixes taken (the constants and their twin test, a typed refusal in place of a panic,
+  extra gates); two nits deferred to mx.p1b. Gpu pin 343/33. Main: 24 of 24 gates green on `a3a8362`, the merge of
+  mx.p1a and m7.av2 (2026-11-05 05:39 to 06:42Z, RTX 5090).
+- M7 follow-up m7.av, m7.av2 (probe in the work area; wip `84808e8`, merge `a3a8362`): the gust-algo
+  STATUS_ACCESS_VIOLATION. Probe m7.av: whole-binary runs with default threads crashed 3 times in 14 (alone 1 in 5,
+  beside a second GPU process 1 in 5, with a helper holding 25.5 GiB of video memory 1 in 4); 98 one-test processes, the
+  single-thread runs and the narrowing runs (the 11 heavy tests alone, the last three, the 49 GPU tests alone) had none.
+  Every crash came after `gpu_v1_dispatch_counts_follow_the_schedules` finished, with the tie-ladder or
+  deepest-schedules test still running, and no Windows event was logged. Slice m7.av2: the gust-algo GPU tests share two
+  devices, taken in turns (`crates/gust-algo/src/tests/gpu.rs`), with no assertion changed. Its pre-registered loop had
+  0 crashes in 30 whole-binary runs, default threads, no added load. The matched baseline was 1 in 5 (Fisher exact p ~
+  0.14), and 3 in 14 over all default-thread conditions (p ~ 0.03); the 95 % upper bound on the per-run rate is 9.5 %.
+  Runs also got faster (71 to 107 s, against 94 to 112 s), so timing changed as well and the cause is not established: a
+  mitigation in gust-algo only. Four `with_limits` tests still create and drop 5 devices per run, and the loop sampled
+  no video-memory peak (the shared devices now outlive the tests). mx.t4 saw the fault once in gust-wgpu's `textures`
+  binary. Opus: merge as is. Main: 24 of 24 gates green on `a3a8362`, the merge of mx.p1a and m7.av2 (2026-11-05 05:39
+  to 06:42Z, RTX 5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

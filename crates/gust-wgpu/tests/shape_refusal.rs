@@ -11,8 +11,8 @@ include!("../../../tests/fixtures/pixel.rs");
 
 use gust::{Extent, Independent, PIXEL_MAX_ELEMENTS, Shape, cpu::CpuDevice};
 use gust_wgpu::{
-    BufferBinding, BufferDispatch, Error, F32Binding, GpuBuffer, GpuBufferAccess, HeadlessDevice,
-    StagedGraph, U32Binding, render_wgpu_source,
+    BufferBinding, BufferDispatch, DeviceOptions, Error, F32Binding, GpuBuffer, GpuBufferAccess,
+    HeadlessDevice, StagedGraph, U32Binding, render_wgpu_source,
 };
 
 /// A buffer of the layout an indirect launch reads (three `u32`s).
@@ -84,10 +84,15 @@ fn assert_unsupported(error: &Error, needle: &str) {
     }
 }
 
-/// n > 2^26 is `DeviceLimit { limit: "pixel_max_elements" }`, decided before the binding sizes.
+/// The cap is decided before the binding sizes: with the adapter's own limits (a 256 MiB buffer opens) and with a
+/// storage binding lowered below the buffers, the call over 2^26 is `DeviceLimit { limit: "pixel_max_elements" }`.
+/// Only a software adapter may be unable to hold the buffers; any other adapter must, and a failure to allocate
+/// there is a failure of the test.
 #[test]
 fn a_call_beyond_the_cap_is_the_named_device_limit() {
-    let device = device();
+    let device = HeadlessDevice::with_options(DeviceOptions::default())
+        .expect("Vulkan adapter required; this test must not silently skip");
+    let software = device.adapter_info().device_type == wgpu::DeviceType::Cpu;
     let n = PIXEL_MAX_ELEMENTS as usize + 1;
     let buffers = (
         device.create_zeroed_buffer::<f32>("input", n, GpuBufferAccess::ReadOnly),
@@ -95,28 +100,44 @@ fn a_call_beyond_the_cap_is_the_named_device_limit() {
         device.create_zeroed_buffer::<u32>("flags", n, GpuBufferAccess::ReadWrite),
     );
     let (Ok(input), Ok(scaled), Ok(flags)) = buffers else {
+        assert!(
+            software,
+            "the adapter ({:?}) must allocate three buffers of 2^26 + 1 elements",
+            device.adapter_info().name
+        );
         eprintln!(
-            "BRANCH cap refusal: the adapter cannot allocate three buffers of 2^26 + 1 elements; the twin's unit test covers the rule"
+            "BRANCH cap refusal: the Cpu adapter cannot allocate three buffers of 2^26 + 1 elements; the twin's unit test covers the rule"
         );
         return;
     };
-    let error = pixel::shade::dispatch(&device, n as u32, &input, &scaled, &flags)
-        .expect_err("a call over the cap must be refused");
-    match error {
-        Error::DeviceLimit {
-            kernel,
-            limit,
-            requested,
-            maximum,
-        } => {
-            assert!(kernel.contains("shade"), "{kernel}");
-            assert_eq!(limit, "pixel_max_elements");
-            assert_eq!(requested, u64::from(PIXEL_MAX_ELEMENTS) + 1);
-            assert_eq!(maximum, u64::from(PIXEL_MAX_ELEMENTS));
+    eprintln!(
+        "BRANCH cap refusal: ran on the adapter with its own limits and with a lowered storage binding"
+    );
+    let assert_cap = |device: &HeadlessDevice| {
+        let error = pixel::shade::dispatch(device, n as u32, &input, &scaled, &flags)
+            .expect_err("a call over the cap must be refused");
+        match error {
+            Error::DeviceLimit {
+                kernel,
+                limit,
+                requested,
+                maximum,
+            } => {
+                assert!(kernel.contains("shade"), "{kernel}");
+                assert_eq!(limit, "pixel_max_elements");
+                assert_eq!(requested, u64::from(PIXEL_MAX_ELEMENTS) + 1);
+                assert_eq!(maximum, u64::from(PIXEL_MAX_ELEMENTS));
+            }
+            other => panic!("expected the cap DeviceLimit, got {other:?}"),
         }
-        other => panic!("expected the cap DeviceLimit, got {other:?}"),
-    }
-    assert_cold(&device);
+        assert_cold(device);
+    };
+    assert_cap(&device);
+    // A storage binding below the bytes of the buffers would refuse the call too, but the cap is decided first.
+    let mut limits = device.limits().clone();
+    limits.max_storage_buffer_binding_size = 1 << 20;
+    let device = device.with_limits(limits).expect("lowering is allowed");
+    assert_cap(&device);
 }
 
 /// A lowered `max_texture_dimension_2d` refuses the 8192-wide attachment, and an unlowered one does not.
@@ -218,6 +239,18 @@ fn a_pixel_call_over_an_extent_is_refused() {
             .expect_err("a pixel call is one-dimensional");
         assert_unsupported(&error, "one-dimensional");
     }
+    assert_cold(&device);
+    // A graph node over an extent is the same refusal (not the graph's `Error::Extent`), before any pipeline.
+    let mut graph = StagedGraph::new();
+    graph.dispatch(
+        BufferDispatch::new_extent(shade(), Extent::new(4, 2, 1), &bindings),
+        &[],
+    );
+    let error = device
+        .execute_graph(&graph)
+        .err()
+        .expect("a pixel node is one-dimensional");
+    assert_unsupported(&error, "one-dimensional");
     assert_cold(&device);
     // The same buffers as one dimension of 8 are a call.
     device

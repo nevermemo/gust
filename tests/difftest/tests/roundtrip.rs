@@ -36,6 +36,8 @@ fn cargo_check_with(dir: &Path, extra: &[&str]) -> (bool, String) {
         // One build directory for all generated crates and runs, separate from the one this test runs in.
         .env("CARGO_TARGET_DIR", work_dir().join("target"))
         .env("GUST_PROFILE", "dev")
+        // The tests parse this output (`refusals`); CI sets CARGO_TERM_COLOR=always, which colours the diagnostics.
+        .env("CARGO_TERM_COLOR", "never")
         .output()
         .expect("cargo should start");
     let text = format!(

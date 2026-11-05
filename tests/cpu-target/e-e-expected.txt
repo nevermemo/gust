@@ -6,9 +6,10 @@
 # judges the diagnostics of the cargo target `gust_wgpu`, and takes the repository root off cargo's absolute paths, so
 # `file` is relative to the repository root. `line: auto` is replaced by the line of that const item in
 # `crates/gust-wgpu/src/lib.rs`, found by the checker, so the item may move without editing this file; a moved or
-# missing item fails the step. The text is `NOT_A_GPU_TARGET` of crates/gust/src/profile.rs.
+# missing item fails the step. The text is `NOT_A_GPU_TARGET` of crates/gust/src/profile.rs; rustc names the function by
+# its full path because `gust::profile` is `#[doc(hidden)]` (mr.b2).
 code: E0080
 file: crates/gust-wgpu/src/lib.rs
 line: auto
 message: evaluation panicked: gust-wgpu cannot be built under GUST_PROFILE=cpu: a CPU build contains one target
-message: inside `require_gpu_target`
+message: inside `gust::profile::require_gpu_target`

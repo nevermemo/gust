@@ -47,20 +47,49 @@ impl ShaderTarget {
     }
 }
 
+/// The pipeline stage of an entry point: GUST emits compute entries (`grid`) and fragment entries (`pixel`, D120).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShaderStage {
+    Compute,
+    Fragment,
+}
+
+impl ShaderStage {
+    fn from_name(value: &str) -> Result<Self, String> {
+        match value {
+            "compute" => Ok(Self::Compute),
+            "fragment" => Ok(Self::Fragment),
+            _ => Err(format!(
+                "unknown slangc stage `{value}`; use compute or fragment"
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Compute => "compute",
+            Self::Fragment => "fragment",
+        }
+    }
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct SlangcOptions {
     source: PathBuf,
     entry: String,
+    stage: ShaderStage,
     target: ShaderTarget,
     out: PathBuf,
     extra: Vec<String>,
 }
 
 impl SlangcOptions {
-    /// `<file.slang> --entry <name> --target wgsl|spirv --out <path> [-- <slangc args>]`
+    /// `<file.slang> --entry <name> [--stage compute|fragment] --target wgsl|spirv --out <path> [-- <slangc args>]`;
+    /// the stage is `compute` unless given.
     pub(crate) fn parse(args: &[String]) -> Result<Self, String> {
         let mut source = None;
         let mut entry = None;
+        let mut stage = ShaderStage::Compute;
         let mut target = None;
         let mut out = None;
         let mut extra = Vec::new();
@@ -68,6 +97,9 @@ impl SlangcOptions {
         while index < args.len() {
             match args[index].as_str() {
                 "--entry" => entry = Some(option_value(args, &mut index, "--entry")?),
+                "--stage" => {
+                    stage = ShaderStage::from_name(&option_value(args, &mut index, "--stage")?)?
+                }
                 "--target" => {
                     target = Some(ShaderTarget::from_name(&option_value(
                         args, &mut index, "--target",
@@ -92,13 +124,14 @@ impl SlangcOptions {
         Ok(Self {
             source: source.ok_or("slangc needs a source file")?,
             entry: entry.ok_or("slangc needs --entry <name>")?,
+            stage,
             target: target.ok_or("slangc needs --target wgsl|spirv")?,
             out: out.ok_or("slangc needs --out <path>")?,
             extra,
         })
     }
 
-    /// The exact arguments handed to `slangc`: the entry point and compute stage are explicit, and so is the matrix
+    /// The exact arguments handed to `slangc`: the entry point and its stage are explicit, and so is the matrix
     /// layout ([`MATRIX_LAYOUT_FLAG`]), for both targets. Extra arguments come last.
     fn compiler_args(&self) -> Vec<String> {
         let mut args = vec![
@@ -106,7 +139,7 @@ impl SlangcOptions {
             "-entry".to_owned(),
             self.entry.clone(),
             "-stage".to_owned(),
-            "compute".to_owned(),
+            self.stage.as_str().to_owned(),
             "-target".to_owned(),
             self.target.as_str().to_owned(),
             "-o".to_owned(),
@@ -378,22 +411,37 @@ pub(crate) fn copy_logical_note(file: &Path) -> String {
     }
 }
 
-/// The compute entry points of a Slang text: the name after each `[shader("compute")]` attribute line, taken from the
-/// next line that starts with `void`.
-pub(crate) fn compute_entries(slang: &str) -> Vec<String> {
+/// The entry points of a Slang text with their stage: the name after each `[shader("compute")]` or
+/// `[shader("fragment")]` attribute line, taken from the next line that starts with `void`, in text order.
+pub(crate) fn shader_entries(slang: &str) -> Vec<(String, ShaderStage)> {
     let mut entries = Vec::new();
-    let mut pending = false;
+    let mut pending = None;
     for line in slang.lines().map(str::trim) {
         if line == "[shader(\"compute\")]" {
-            pending = true;
-        } else if pending && let Some(rest) = line.strip_prefix("void ") {
+            pending = Some(ShaderStage::Compute);
+        } else if line == "[shader(\"fragment\")]" {
+            pending = Some(ShaderStage::Fragment);
+        } else if let Some(stage) = pending
+            && let Some(rest) = line.strip_prefix("void ")
+        {
             if let Some((name, _)) = rest.split_once('(') {
-                entries.push(name.trim().to_owned());
+                entries.push((name.trim().to_owned(), stage));
             }
-            pending = false;
+            pending = None;
         }
     }
     entries
+}
+
+/// The compute entry points of a Slang text: the name after each `[shader("compute")]` attribute line, taken from the
+/// next line that starts with `void`.
+#[cfg(test)]
+pub(crate) fn compute_entries(slang: &str) -> Vec<String> {
+    shader_entries(slang)
+        .into_iter()
+        .filter(|(_, stage)| *stage == ShaderStage::Compute)
+        .map(|(name, _)| name)
+        .collect()
 }
 
 /// `<stem>__<kernel>.spv` for the entry `gpu_<stem>_<kernel>` of the golden `<stem>.slang`, the spelling of the files
@@ -484,18 +532,18 @@ pub(crate) fn compare_golden_names(expected: &[&str], found: &[String]) -> Resul
 
 /// What `compile_golden_spirv` compiles for the golden `<stem>.slang` with text `text`: for each compute entry its
 /// section index ([`golden_sections`]), its entry name and the file name of its SPIR-V ([`golden_file_name`]), in text
-/// order. A golden without a compute entry is an error, and so are two entries that make the same file name (the
+/// order (compute and fragment entries alike). A golden without an entry is an error, and so are two entries that make the same file name (the
 /// second would overwrite the first, and [`compare_golden_names`] compares sets, so it would not notice): the map golden
 /// drops a leading `<stem>_` from a function name, so the functions `map_foo` and `foo` collide.
 pub(crate) fn golden_jobs(stem: &str, text: &str) -> Result<Vec<(usize, String, String)>, String> {
-    if compute_entries(text).is_empty() {
+    if shader_entries(text).is_empty() {
         return Err(format!(
-            "tests/fixtures/{stem}.slang has no compute entry point"
+            "tests/fixtures/{stem}.slang has no compute entry point (nor a fragment one)"
         ));
     }
     let mut jobs: Vec<(usize, String, String)> = Vec::new();
     for (index, section) in golden_sections(text).iter().enumerate() {
-        for entry in compute_entries(section) {
+        for (entry, _) in shader_entries(section) {
             let file = golden_file_name(stem, &entry)?;
             if jobs.iter().any(|(_, _, other)| *other == file) {
                 return Err(format!(
@@ -508,7 +556,7 @@ pub(crate) fn golden_jobs(stem: &str, text: &str) -> Result<Vec<(usize, String, 
     Ok(jobs)
 }
 
-/// Compiles every compute entry of `tests/fixtures/<stem>.slang`, for each stem, to SPIR-V in a fresh directory under
+/// Compiles every compute and fragment entry of `tests/fixtures/<stem>.slang`, for each stem, to SPIR-V in a fresh directory under
 /// the cargo target directory (with the column-major matrix layout and Slang's entry-point names, as GUST compiles a
 /// kernel) and requires the file names to equal `expected`. Returns the files, sorted by name. The golden lists are
 /// kept apart from `EXPECTED_SPIRV`, which names what the examples write to `generated-wgpu`.
@@ -543,9 +591,14 @@ pub(crate) fn compile_golden_spirv(
                     .map_err(|error| format!("could not write {}: {error}", path.display()))?;
                 path
             };
+            let stage = shader_entries(&sections[index])
+                .into_iter()
+                .find_map(|(name, stage)| (name == entry).then_some(stage))
+                .ok_or_else(|| format!("the entry `{entry}` has no stage"))?;
             slangc(&SlangcOptions {
                 source: section_source,
                 entry,
+                stage,
                 target: ShaderTarget::Spirv,
                 out: directory.join(&file),
                 extra: vec!["-fvk-use-entrypoint-name".to_owned()],
@@ -591,6 +644,7 @@ pub(crate) fn doctor_smoke(root: &Path) -> Result<(), String> {
         slangc(&SlangcOptions {
             source: source.clone(),
             entry: SMOKE_ENTRY.to_owned(),
+            stage: ShaderStage::Compute,
             target,
             out: directory.join(file),
             extra: Vec::new(),

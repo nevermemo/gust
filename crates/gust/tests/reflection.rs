@@ -1197,6 +1197,170 @@ mod schema_three {
         }
     }
 
+    // ---- a `pixel` kernel under D120 (slice mx.p1a): outputs are bound storage buffers, no render target ----
+
+    /// The Slang of a `pixel` kernel as the macro writes it, reduced: one read-only input, two outputs that stay
+    /// storage buffers with slots in parameter order, a fragment that returns nothing.
+    const PIXEL: &str = "[[vk::binding(0, 0)]] StructuredBuffer<float> input;\n[[vk::binding(1, 0)]] RWStructuredBuffer<float> scaled;\n[[vk::binding(2, 0)]] RWStructuredBuffer<uint> flags;\n[shader(\"fragment\")]\nvoid main(float4 __gust_pos : SV_Position)\n{\n    uint i = uint(__gust_pos.x);\n    scaled[i] = input[i] * 2.0;\n    flags[i] = i;\n}\n";
+
+    /// The same program as a compute entry (the stage is the only thing that differs).
+    const PIXEL_AS_COMPUTE: &str = "[[vk::binding(0, 0)]] StructuredBuffer<float> input;\n[[vk::binding(1, 0)]] RWStructuredBuffer<float> scaled;\n[[vk::binding(2, 0)]] RWStructuredBuffer<uint> flags;\n[shader(\"compute\")]\n[numthreads(1, 1, 1)]\nvoid main(uint3 id : SV_DispatchThreadID)\n{\n    uint i = id.x;\n    scaled[i] = input[i] * 2.0;\n    flags[i] = i;\n}\n";
+
+    /// The same program with a colour target, which a `pixel` kernel does not have under D120.
+    const PIXEL_WITH_A_TARGET: &str = "[[vk::binding(0, 0)]] StructuredBuffer<float> input;\n[[vk::binding(1, 0)]] RWStructuredBuffer<float> scaled;\n[[vk::binding(2, 0)]] RWStructuredBuffer<uint> flags;\n[shader(\"fragment\")]\nfloat4 main(float4 __gust_pos : SV_Position) : SV_Target0\n{\n    uint i = uint(__gust_pos.x);\n    scaled[i] = input[i] * 2.0;\n    flags[i] = i;\n    return float4(0.0, 0.0, 0.0, 0.0);\n}\n";
+
+    fn input(name: &'static str, element: TypeLayout, index: u32) -> ParameterDescriptor {
+        ParameterDescriptor {
+            name,
+            rust_type: "StructuredBuffer<T>",
+            access: Access::ReadOnly,
+            ..buffer(name, element, index)
+        }
+    }
+
+    fn pixel_kernel(source: &'static str) -> KernelDescriptor {
+        // The descriptor of a `pixel` kernel carries a workgroup size of one (the field exists for every kernel); the
+        // fragment document has none, and a compute program of the same size agrees with it.
+        KernelDescriptor {
+            workgroup_size: [1, 1, 1],
+            ..kernel(
+                Shape::Pixel,
+                "main",
+                source,
+                vec![
+                    input("input", F32, 0),
+                    buffer("scaled", F32, 1),
+                    buffer("flags", U32, 2),
+                ],
+            )
+        }
+    }
+
+    #[test]
+    fn native_reflects_a_pixel_kernel_with_storage_outputs_and_no_target() {
+        let descriptor = pixel_kernel(PIXEL);
+        for target in [Target::Wgsl, Target::Spirv] {
+            let compiled = compile_reflected(&descriptor, target)
+                .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+            let reflection = &compiled.reflection;
+            assert_eq!(reflection.stage, Stage::Fragment, "{target:?}");
+            assert_eq!(compiled.workgroup_size, [0, 0, 0], "{target:?}");
+            assert!(
+                reflection.targets.is_empty(),
+                "{target:?}: no render target"
+            );
+            assert_eq!(reflection.resources.len(), 3, "{target:?}");
+            let reports = reflection
+                .cross_check_kernel(&descriptor)
+                .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+            assert_eq!(reports.len(), 3, "{target:?}");
+            assert!(
+                reports.iter().all(|report| report.is_full_abi_match()),
+                "{target:?}"
+            );
+        }
+    }
+
+    /// The tamper cases of the `pixel` stage and outputs (plan section 3.3 under D120), on the real helper's output:
+    /// the descriptor, or the program, is changed one thing at a time. Each is `Mismatch` and names the field.
+    #[test]
+    fn a_pixel_kernel_against_a_tampered_descriptor_or_program_is_a_mismatch_naming_the_field() {
+        let pixel = pixel_kernel(PIXEL);
+        let compute_program = KernelDescriptor {
+            shape: Shape::Grid,
+            ..pixel_kernel(PIXEL_AS_COMPUTE)
+        };
+        let target_program = pixel_kernel(PIXEL_WITH_A_TARGET);
+        // Which document each case reads: the pixel program, the compute one, or the one with a colour target.
+        enum Document {
+            Pixel,
+            Compute,
+            Target,
+        }
+        let cases: Vec<(&str, Document, KernelDescriptor, &str)> = vec![
+            (
+                "a compute document against the pixel descriptor",
+                Document::Compute,
+                pixel,
+                "stage: host fragment, compiler compute",
+            ),
+            (
+                "a fragment document against a grid descriptor",
+                Document::Pixel,
+                KernelDescriptor {
+                    shape: Shape::Grid,
+                    ..pixel
+                },
+                "stage: host compute, compiler fragment",
+            ),
+            (
+                "a fragment document with one SV_Target against the pixel descriptor",
+                Document::Target,
+                pixel,
+                "targets: host 0 outputs, compiler 1",
+            ),
+            (
+                "an output's access flipped to read-only",
+                Document::Pixel,
+                with(&pixel, 1, |p| p.access = Access::ReadOnly),
+                "scaled.access differs",
+            ),
+            (
+                "an input's access flipped to read-write",
+                Document::Pixel,
+                with(&pixel, 0, |p| p.access = Access::ReadWrite),
+                "input.access differs",
+            ),
+            (
+                "an output's slot moved",
+                Document::Pixel,
+                with(&pixel, 1, |p| p.binding = bound(5)),
+                "scaled.binding: host 5, compiler 1",
+            ),
+            (
+                "an output missing from the descriptor",
+                Document::Pixel,
+                KernelDescriptor {
+                    parameters: &pixel.parameters[..2],
+                    ..pixel
+                },
+                "unexpected compiler resource bindings",
+            ),
+            (
+                "an output's element type swapped",
+                Document::Pixel,
+                with(&pixel, 2, |p| {
+                    p.resource_layout = Some(ResourceLayout::storage_v1(I32));
+                }),
+                "flags: type or field count differs",
+            ),
+        ];
+        for target in [Target::Wgsl, Target::Spirv] {
+            let pixel_document = compile_reflected(&pixel, target).unwrap().reflection;
+            let compute_document = compile_reflected(&compute_program, target)
+                .unwrap()
+                .reflection;
+            let target_document = compile_reflected(&target_program, target)
+                .unwrap()
+                .reflection;
+            assert_eq!(compute_document.stage, Stage::Compute, "{target:?}");
+            assert_eq!(target_document.targets.len(), 1, "{target:?}");
+            // The control: the pixel document passes against the pixel descriptor.
+            pixel_document
+                .cross_check_kernel(&pixel)
+                .unwrap_or_else(|error| panic!("{target:?}: control: {error}"));
+            for (what, document, tampered, expected) in &cases {
+                let reflection = match document {
+                    Document::Pixel => &pixel_document,
+                    Document::Compute => &compute_document,
+                    Document::Target => &target_document,
+                };
+                let error = reflection.cross_check_kernel(tampered).unwrap_err();
+                assert_eq!(&message(error), expected, "{what}, {target:?}");
+            }
+        }
+    }
+
     // ---- the committed documents, through the precompiled path ----
 
     const SOURCE: &str = "// schema 3 fixture source\n";

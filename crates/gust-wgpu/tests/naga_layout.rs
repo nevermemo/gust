@@ -9,18 +9,19 @@
 //!
 //! The WGSL set (the test names its size and fails on drift):
 //!
-//! - the 18 Slang goldens of `tests/fixtures/*.slang`, which are all of the goldens (the test
+//! - the 19 Slang goldens of `tests/fixtures/*.slang`, which are all of the goldens (the test
 //!   `the_goldens_are_the_fixtures_directory` pins the file list against the directory, and the fixture `.rs` list
 //!   with it). Each golden is split at its `// ==== kernel <name> ====` markers where it has them, and each
-//!   `[shader("compute")]` entry of each section is compiled to WGSL with the `slangc` command line through
-//!   `gust::slang::compile_source`: 93 entries. The descriptor of an entry comes from the fixture's Rust source,
+//!   `[shader("compute")]` or `[shader("fragment")]` entry of each section is compiled to WGSL with the `slangc` command
+//!   line (the stage of its shape) through
+//!   `gust::slang::compile_source_as`: 96 entries. The descriptor of an entry comes from the fixture's Rust source,
 //!   included below the way the other test files include it;
-//! - every fixture kernel, 103 in all (the 93 above and the 10 that no golden holds: `atomics.slang` keeps only the
+//! - every fixture kernel, 106 in all (the 96 above and the 10 that no golden holds: `atomics.slang` keeps only the
 //!   first of the ten kernels of `atomics.rs`, and `numeric.slang` only the first of the two of `numeric.rs`),
 //!   compiled from its descriptor's own Slang through the native reflection helper, `gust::reflect::compile_reflected`.
 //!   That is the route `HeadlessDevice` takes at run time, so these are the bytes a device is handed when it compiles
 //!   at run time. `export` takes `compile_reflected_clean` (the same helper on input without `#line` directives), so
-//!   exported WGSL is gated only through the committed precompiled file below. The helper needs no adapter. 196 WGSL
+//!   exported WGSL is gated only through the committed precompiled file below. The helper needs no adapter. 202 WGSL
 //!   modules in all;
 //! - the committed precompiled WGSL (`tests/fixtures/precompiled/52e85c5f03f72272.wgsl`), which is the only WGSL file
 //!   the repository commits; its five other copies are required to be byte-identical to it.
@@ -44,7 +45,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use gust::{
     Access, KernelDescriptor, ParameterDescriptor, ParameterKind, ScalarKind, ShaderLayoutRules,
-    TextureAccess, TypeLayout, TypeLayoutKind, reflect,
+    Shape, TextureAccess, TypeLayout, TypeLayoutKind, reflect,
     slang::{self, Target},
     texture::SampleClass,
 };
@@ -101,6 +102,7 @@ fixture_functions!(
 fixture!(f_mismatch, mismatch, "../../../tests/fixtures/mismatch.rs");
 fixture!(f_numeric, numeric, "../../../tests/fixtures/numeric.rs");
 fixture!(f_option, optional, "../../../tests/fixtures/option.rs");
+fixture!(f_pixel, pixel, "../../../tests/fixtures/pixel.rs");
 fixture!(f_products, products, "../../../tests/fixtures/products.rs");
 fixture!(f_reduce, reduce, "../../../tests/fixtures/reduce.rs");
 fixture!(f_result, results, "../../../tests/fixtures/result.rs");
@@ -128,7 +130,7 @@ struct Golden {
     kernels: &'static [KernelDescriptor],
 }
 
-fn goldens() -> [Golden; 18] {
+fn goldens() -> [Golden; 19] {
     [
         Golden {
             file: "atomics.slang",
@@ -183,6 +185,12 @@ fn goldens() -> [Golden; 18] {
             text: include_str!("../../../tests/fixtures/option.slang"),
             entries: 1,
             kernels: f_option::KERNELS,
+        },
+        Golden {
+            file: "pixel.slang",
+            text: include_str!("../../../tests/fixtures/pixel.slang"),
+            entries: 3,
+            kernels: f_pixel::KERNELS,
         },
         Golden {
             file: "products.slang",
@@ -262,19 +270,23 @@ fn parse_and_validate(source: &str, capabilities: Capabilities) -> Result<Module
     Ok(module)
 }
 
-/// The compute entry points of a Slang text: the name after each `[shader("compute")]` line, from the next line that
-/// starts with `void`.
-fn compute_entries(slang: &str) -> Vec<String> {
+/// The entry points of a Slang text with the shape of their stage: the name after each `[shader("compute")]` (`grid`)
+/// or `[shader("fragment")]` (`pixel`) line, from the next line that starts with `void`.
+fn shader_entries(slang: &str) -> Vec<(String, Shape)> {
     let mut entries = Vec::new();
-    let mut pending = false;
+    let mut pending = None;
     for line in slang.lines().map(str::trim) {
         if line == "[shader(\"compute\")]" {
-            pending = true;
-        } else if pending && let Some(rest) = line.strip_prefix("void ") {
+            pending = Some(Shape::Grid);
+        } else if line == "[shader(\"fragment\")]" {
+            pending = Some(Shape::Pixel);
+        } else if let Some(shape) = pending
+            && let Some(rest) = line.strip_prefix("void ")
+        {
             if let Some((name, _)) = rest.split_once('(') {
-                entries.push(name.trim().to_owned());
+                entries.push((name.trim().to_owned(), shape));
             }
-            pending = false;
+            pending = None;
         }
     }
     entries
@@ -746,8 +758,8 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
     problems
 }
 
-/// The compute entries the eighteen goldens hold in all (pinned per golden in [`goldens`]).
-const GOLDEN_ENTRIES: usize = 93;
+/// The compute and fragment entries the nineteen goldens hold in all (pinned per golden in [`goldens`]).
+const GOLDEN_ENTRIES: usize = 96;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`
 /// (`atomics.slang` has one entry for the ten kernels of the module) and of `numeric.rs` (one of two).
@@ -788,8 +800,8 @@ fn require_tools() {
 
 /// Where a case's WGSL comes from.
 enum Source {
-    /// `slangc` on the text of one golden section.
-    Slangc(String),
+    /// `slangc` on the text of one golden section, for the entry point of the shape.
+    Slangc(String, Shape),
     /// The native reflection helper on a descriptor's own Slang.
     Helper(&'static KernelDescriptor),
 }
@@ -803,7 +815,8 @@ struct Job {
 impl Job {
     fn compile(&self) -> Result<String, String> {
         match &self.source {
-            Source::Slangc(section) => slang::compile_source(section, &self.entry, Target::Wgsl)
+            Source::Slangc(section, shape) => {
+                slang::compile_source_as(section, &self.entry, *shape, Target::Wgsl)
                 .map_err(|error| {
                     format!(
                         "{}: slangc could not compile `{}` (is `slangc` on PATH?): {error}",
@@ -812,15 +825,18 @@ impl Job {
                 })
                 .and_then(|bytes| {
                     String::from_utf8(bytes).map_err(|error| format!("{}: {error}", self.entry))
-                }),
+                })
+            }
             Source::Helper(kernel) => reflect::compile_reflected(kernel, Target::Wgsl)
                 .and_then(|compiled| {
-                    // D17 (plan 3.3): the helper's own reflection of a kernel with a texture or a sampler agrees with the
+                    // D17 (plan 3.3): the helper's own reflection of a kernel with a texture, a sampler or a fragment entry agrees with the
                     // descriptor the macro wrote (class and dimension of a sampled texture, exact format of a storage
                     // one, the sampler's slot).
-                    if kernel.parameters.iter().any(|parameter| {
-                        matches!(parameter.kind, ParameterKind::Texture | ParameterKind::Sampler)
-                    }) {
+                    if kernel.shape == Shape::Pixel
+                        || kernel.parameters.iter().any(|parameter| {
+                            matches!(parameter.kind, ParameterKind::Texture | ParameterKind::Sampler)
+                        })
+                    {
                         compiled.reflection.cross_check_kernel(kernel)?;
                     }
                     Ok(compiled)
@@ -874,7 +890,7 @@ fn compile_all(jobs: Vec<Job>) -> Vec<Case> {
         .zip(done)
         .map(|(job, (_, result))| Case {
             origin: match job.source {
-                Source::Slangc(_) => job.origin,
+                Source::Slangc(..) => job.origin,
                 Source::Helper(_) => "helper",
             },
             entry: job.entry,
@@ -892,12 +908,12 @@ fn all_cases() -> Vec<Case> {
     for golden in goldens() {
         let mut entries = 0;
         for section in sections(golden.text) {
-            for entry in compute_entries(&section) {
+            for (entry, shape) in shader_entries(&section) {
                 in_a_golden.insert(entry.clone());
                 jobs.push(Job {
                     origin: golden.file,
                     entry,
-                    source: Source::Slangc(section.clone()),
+                    source: Source::Slangc(section.clone(), shape),
                 });
                 entries += 1;
             }
@@ -991,7 +1007,7 @@ fn the_goldens_are_the_fixtures_directory() {
     for golden in goldens() {
         let entries: Vec<String> = sections(golden.text)
             .iter()
-            .flat_map(|s| compute_entries(s))
+            .flat_map(|s| shader_entries(s).into_iter().map(|(name, _)| name))
             .collect();
         let kernels: Vec<&str> = golden
             .kernels

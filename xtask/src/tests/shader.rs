@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 
 use super::{
-    ExportOptions, MATRIX_LAYOUT_FLAG, ShaderTarget, SlangcOptions, SpirvValOptions,
+    ExportOptions, MATRIX_LAYOUT_FLAG, ShaderStage, ShaderTarget, SlangcOptions, SpirvValOptions,
     check_spirv_header, clear_exports, compare_golden_names, compare_manifests, compute_entries,
     count_copy_logical, golden_file_name, golden_jobs, golden_sections, hash_manifest,
-    parse_manifest, sidecar,
+    parse_manifest, shader_entries, sidecar,
 };
 
 fn args(values: &[&str]) -> Vec<String> {
@@ -555,5 +555,81 @@ fn a_malformed_or_empty_manifest_is_refused() {
         compare_manifests("", &format!("{hash}  a.spv\n"))
             .unwrap_err()
             .starts_with("baseline:")
+    );
+}
+
+// ---- the fragment entries of the `pixel` golden (mx.p1a) ----
+
+#[test]
+fn shader_entries_carry_the_stage_of_their_attribute() {
+    let slang = "\
+[shader(\"fragment\")]
+void gpu_pixel_shade(float4 __gust_pos : SV_Position)
+{
+}
+void helper(uint x) {}
+[shader(\"compute\")]
+[numthreads(64, 1, 1)]
+void gpu_vectors_run(uint3 id : SV_DispatchThreadID)
+{
+}
+";
+    assert_eq!(
+        shader_entries(slang),
+        [
+            ("gpu_pixel_shade".to_owned(), ShaderStage::Fragment),
+            ("gpu_vectors_run".to_owned(), ShaderStage::Compute)
+        ]
+    );
+    // A compute entry is still the only thing `compute_entries` finds.
+    assert_eq!(compute_entries(slang), ["gpu_vectors_run"]);
+    assert!(shader_entries("[shader(\"fragment\")]\nstruct NotAKernel {};").is_empty());
+}
+
+#[test]
+fn the_stage_of_an_entry_is_explicit_in_the_slangc_arguments() {
+    let compute = SlangcOptions::parse(&args(&[
+        "k.slang", "--entry", "main", "--target", "spirv", "--out", "k.spv",
+    ]))
+    .unwrap();
+    assert_eq!(
+        compute.stage,
+        ShaderStage::Compute,
+        "compute is the default"
+    );
+    let fragment = SlangcOptions::parse(&args(&[
+        "k.slang", "--entry", "main", "--stage", "fragment", "--target", "wgsl", "--out", "k.wgsl",
+    ]))
+    .unwrap();
+    assert_eq!(fragment.stage, ShaderStage::Fragment);
+    let arguments = fragment.compiler_args();
+    let stage = arguments.iter().position(|a| a == "-stage").unwrap();
+    assert_eq!(arguments[stage + 1], "fragment");
+    assert!(
+        SlangcOptions::parse(&args(&[
+            "k.slang", "--entry", "main", "--stage", "geometry", "--target", "wgsl", "--out",
+            "k.wgsl",
+        ]))
+        .is_err()
+    );
+}
+
+#[test]
+fn the_pixel_golden_is_three_sections_with_one_fragment_entry_each() {
+    let text = include_str!("../../../tests/fixtures/pixel.slang");
+    let sections = golden_sections(text);
+    assert_eq!(sections.len(), 3);
+    assert_eq!(sections.concat(), text);
+    for section in &sections {
+        let entries = shader_entries(section);
+        assert_eq!(entries.len(), 1, "{section}");
+        assert_eq!(entries[0].1, ShaderStage::Fragment);
+    }
+    assert!(compute_entries(text).is_empty());
+    let jobs = golden_jobs("pixel", text).unwrap();
+    let files: Vec<&str> = jobs.iter().map(|(_, _, file)| file.as_str()).collect();
+    assert_eq!(
+        files,
+        ["pixel__shade.spv", "pixel__pack.spv", "pixel__row.spv"]
     );
 }

@@ -4,13 +4,13 @@ use super::{
     COMPACT_GOLDEN_SPIRV, COMPACT_GOLDEN_STEMS, DISPATCH_CORE_FILTERS, DISPATCH_GPU_TESTS,
     DISPATCH_MACRO_MODULES, GOLDEN_SPIRV_SETS, GRID_GOLDEN_SPIRV, GRID_GOLDEN_STEMS,
     MAP_GOLDEN_SPIRV, MAP_GOLDEN_STEMS, PAR_FOR_GOLDEN_SPIRV, PAR_FOR_GOLDEN_STEMS,
-    REDUCE_GOLDEN_SPIRV, REDUCE_GOLDEN_STEMS, SCAN_GOLDEN_SPIRV, SCAN_GOLDEN_STEMS,
-    UNIFORM_GOLDEN_SPIRV, UNIFORM_GOLDEN_STEMS, UNIFORM_MACRO_FILTERS, VECTOR_GOLDEN_SPIRV,
-    VECTOR_GOLDEN_STEMS, VECTOR_MACRO_FILTERS, WORKGROUP_GOLDEN_SPIRV, WORKGROUP_GOLDEN_STEMS,
-    explanation,
+    PIXEL_GOLDEN_SPIRV, PIXEL_GOLDEN_STEMS, REDUCE_GOLDEN_SPIRV, REDUCE_GOLDEN_STEMS,
+    SCAN_GOLDEN_SPIRV, SCAN_GOLDEN_STEMS, UNIFORM_GOLDEN_SPIRV, UNIFORM_GOLDEN_STEMS,
+    UNIFORM_MACRO_FILTERS, VECTOR_GOLDEN_SPIRV, VECTOR_GOLDEN_STEMS, VECTOR_MACRO_FILTERS,
+    WORKGROUP_GOLDEN_SPIRV, WORKGROUP_GOLDEN_STEMS, explanation,
 };
 use crate::{
-    shader::{compute_entries, golden_file_name},
+    shader::{golden_file_name, shader_entries},
     workspace::{FEATURE_AREAS, workspace_root},
 };
 
@@ -153,6 +153,7 @@ fn golden_text(stem: &str) -> &'static str {
         "scan" => include_str!("../../../tests/fixtures/scan.slang"),
         "compact" => include_str!("../../../tests/fixtures/compact.slang"),
         "textures" => include_str!("../../../tests/fixtures/textures.slang"),
+        "pixel" => include_str!("../../../tests/fixtures/pixel.slang"),
         other => panic!("the test does not know the golden {other}"),
     }
 }
@@ -161,9 +162,12 @@ fn golden_text(stem: &str) -> &'static str {
 fn names_of(stems: &[&str]) -> Vec<String> {
     let mut names = Vec::new();
     for stem in stems {
-        let entries = compute_entries(golden_text(stem));
-        assert!(!entries.is_empty(), "{stem} has no compute entry");
-        for entry in entries {
+        let entries = shader_entries(golden_text(stem));
+        assert!(
+            !entries.is_empty(),
+            "{stem} has no compute or fragment entry"
+        );
+        for (entry, _) in entries {
             names.push(golden_file_name(stem, &entry).unwrap());
         }
     }
@@ -182,6 +186,7 @@ fn the_pinned_golden_spirv_names_are_the_ones_the_goldens_produce() {
     assert_eq!(names_of(&REDUCE_GOLDEN_STEMS), REDUCE_GOLDEN_SPIRV);
     assert_eq!(names_of(&SCAN_GOLDEN_STEMS), SCAN_GOLDEN_SPIRV);
     assert_eq!(names_of(&COMPACT_GOLDEN_STEMS), COMPACT_GOLDEN_SPIRV);
+    assert_eq!(names_of(&PIXEL_GOLDEN_STEMS), PIXEL_GOLDEN_SPIRV);
     // The sets `verify` (check-artifacts, the Spirv suite, check-full) exports are these, and no others (m7.x1 added
     // the goldens of M7 to the vectors and uniforms of M6).
     let areas: Vec<&str> = GOLDEN_SPIRV_SETS.iter().map(|(area, _, _)| *area).collect();
@@ -197,7 +202,8 @@ fn the_pinned_golden_spirv_names_are_the_ones_the_goldens_produce() {
             "reduce",
             "scan",
             "compact",
-            "textures"
+            "textures",
+            "pixel"
         ]
     );
     for (_, stems, expected) in GOLDEN_SPIRV_SETS {
@@ -235,9 +241,9 @@ fn every_golden_of_m7_is_in_a_set_and_the_file_names_are_unique() {
     names.sort_unstable();
     names.dedup();
     assert_eq!(names.len(), count, "two sets expect the same file name");
-    // 2 (vectors, products) + 1 + 5 + 3 + 2 + 10 + 30 + 11 + 5 + 8 (textures): one file per compute entry of the
+    // 2 (vectors, products) + 1 + 5 + 3 + 2 + 10 + 30 + 11 + 5 + 8 (textures) + 3 (pixel): one file per compute or fragment entry of the
     // goldens.
-    assert_eq!(count, 77);
+    assert_eq!(count, 80);
 }
 
 // ---- `check-feature dispatch` and the parallel-map additions to `map` (m7.x1) ----

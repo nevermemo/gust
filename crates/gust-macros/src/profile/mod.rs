@@ -1,26 +1,34 @@
 //! The stage profile (decision D63, slice mx.p0): every rule that depends on the execution shape of a kernel, read
 //! through one interface instead of being spelled at its call site.
 //!
-//! Today there is one shape, `grid` (a compute dispatch over a one-, two- or three-dimensional thread grid), and
-//! [`GRID`] is its profile: the text and the rules that the emitter, the validator and the twin harness used to hold
-//! inline, moved here without changing a byte of output. A later shape (a render pass whose invocations are pixels)
-//! adds a profile and changes no call site.
+//! There are two shapes. `grid` (a compute dispatch over a one-, two- or three-dimensional thread grid) is the
+//! default, and [`GRID`] is its profile: the text and the rules that the emitter, the validator and the twin harness
+//! used to hold inline, moved here without changing a byte of output. `pixel` (a draw whose invocations are the
+//! fragments of a full-screen pass, slice mx.p1a) is [`PIXEL`]; a kernel pinned `#[kernel(shape = pixel)]` is built
+//! with it and no call site changes.
 //!
 //! The trait receives facts and answers with text, a table or a verdict. It never walks the syn body of a kernel:
 //! the validator and the emitter keep their visitors, and a hook that needs the body is a sign that the shape does
 //! not fit the interface (the kill rule of plan section 2.4, which this module is checked against).
 
+use std::fmt::Write as _;
+
 use crate::slang::ParameterFlavor;
 
 mod grid;
+mod pixel;
 
 pub(crate) use grid::GRID;
+pub(crate) use pixel::PIXEL;
 
-/// The execution shapes. `grid` is the only one; the type exists so that a profile can name itself.
+/// The execution shapes; the type exists so that a profile can name itself.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Shape {
     /// One compute thread per element of a dispatch grid (`[shader("compute")]`, `SV_DispatchThreadID`).
     Grid,
+    /// One fragment per element of a full-screen pass (`[shader("fragment")]`, `SV_Position`); every output stays a
+    /// storage buffer, written at the fragment's own index (D120).
+    Pixel,
 }
 
 /// What an invocation parameter of a kernel stands for.
@@ -45,6 +53,9 @@ pub(crate) struct BindingRules {
     pub(crate) missing_dispatch_validate: &'static str,
     /// The parameter flavors that take a binding slot in descriptor set 0, numbered in declaration order.
     slotted: &'static [ParameterFlavor],
+    /// The typed call has the `call_extent`, `submit_extent` and `dispatch_extent` forms over a `gust::Extent`. A shape
+    /// whose invocations are not a grid has the one-dimensional forms only.
+    pub(crate) extent_calls: bool,
 }
 
 impl BindingRules {
@@ -59,7 +70,14 @@ impl BindingRules {
             missing_dispatch_emit,
             missing_dispatch_validate,
             slotted,
+            extent_calls: true,
         }
+    }
+
+    /// The same rules for a shape whose calls are one-dimensional: no extent forms.
+    pub(crate) const fn one_dimensional(mut self) -> Self {
+        self.extent_calls = false;
+        self
     }
 
     /// Whether a parameter of this flavor is declared as a resource with a binding slot.
@@ -84,10 +102,6 @@ pub(crate) struct OptionRules {
 /// What a kernel declares that a shape may refuse, and the findings a profile hands back. The validator fills in the
 /// facts from the signature and its own visitors; the profile only judges them.
 #[derive(Clone, Debug, Default)]
-#[allow(
-    dead_code,
-    reason = "the facts are read by the profiles of later shapes; `grid` refuses nothing"
-)]
 pub(crate) struct BodyChecks {
     /// The kernel declares `Workgroup<[T; N]>` memory.
     pub(crate) workgroup_memory: bool,
@@ -125,8 +139,9 @@ pub(crate) struct DerivedId {
     pub(crate) group: bool,
 }
 
-/// A resource the shape declares beside the kernel's own, taking the next binding slot. The emitter numbers it; its
-/// entry in the descriptor and the export record is mx.p1a's (no profile returns one before then).
+/// A resource the shape declares beside the kernel's own, taking the next binding slot. The emitter numbers it. No
+/// profile returns one: `pixel` bakes its row width into the shader instead of reading it from a uniform (mx.p1a,
+/// option S), because a runtime-owned binding has no place in the descriptor and the typed call.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ExtraBinding {
     pub(crate) name: String,
@@ -159,6 +174,25 @@ pub(crate) enum TwinHarness {
 pub(crate) enum ReflectionKind {
     /// A compute entry point with the kernel's workgroup size.
     Compute,
+    /// A fragment entry point: the document has a stage and resources and no workgroup size. The descriptor and the
+    /// record carry `[1, 1, 1]` (a workgroup size of 0 is refused by the twin and the runtime).
+    Fragment,
+}
+
+/// The `GetDimensions` reads of the buffers' lengths and strides that open a kernel's body: `__gpu_len_<name>` and
+/// `__gpu_stride_<name>`, four spaces in, each line ending in a line feed. Every shape starts its body with them.
+pub(crate) fn length_reads(resources: &[String]) -> String {
+    let mut text = String::new();
+    for resource in resources {
+        writeln!(text, "    uint __gpu_len_{resource};").unwrap();
+        writeln!(text, "    uint __gpu_stride_{resource};").unwrap();
+        writeln!(
+            text,
+            "    {resource}.GetDimensions(__gpu_len_{resource}, __gpu_stride_{resource});"
+        )
+        .unwrap();
+    }
+    text
 }
 
 /// How much of the kernel's contract the shape guarantees to the host (D62).

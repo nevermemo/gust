@@ -1250,8 +1250,10 @@ impl Reflection {
 /// This is the **render-target model** (D93: an output is a colour target, not a resource), which D120 keeps only for
 /// targets the host provides itself (Breeze). MX pixel outputs under D120 are fragment *storage writes*: their
 /// parameters carry a `binding`, this function is false for them, and they are cross-checked as buffers, so the
-/// document's `targets` must then be empty unless the never-written `r8unorm` attachment is declared, which mx.p1a
-/// decides. The rule is the descriptor-side one until the descriptor names a target explicitly (plan section 4.1's
+/// document's `targets` must then be empty: the fragment of a `pixel` kernel returns nothing, and the never-written
+/// `r8unorm` attachment of the pass is a host object the shader does not name (mx.p1a). Under D120 no kernel the macro
+/// writes reaches the branch below, so this function is dead for MX until Breeze; the host (mx.p1b) lists it. The rule
+/// is the descriptor-side one until the descriptor names a target explicitly (plan section 4.1's
 /// `target: Some(k)`): then this function reads that field instead and nothing else changes. It does not look at
 /// `access`: a read-only input that lost its binding counts as an output, and fails as a `targets` count mismatch.
 fn is_pixel_output(parameter: &crate::ParameterDescriptor) -> bool {

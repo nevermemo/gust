@@ -6,7 +6,7 @@ use syn::ext::IdentExt as _;
 
 use crate::{
     diagnostics::{self, Code},
-    profile::{GRID, ReflectionKind, Shape, StageProfile, TwinHarness},
+    profile::{GRID, PIXEL, ReflectionKind, Shape, StageProfile, TwinHarness},
     slang::{ParameterFlavor, parameter_flavor_in},
     validate::classify::{self, AttributeFacts, ShapePin},
 };
@@ -205,41 +205,38 @@ pub(crate) fn expand_validated(
         let entry_point = format!("gpu_{}_{}", module_name, original_name_text);
         let typecheck_name = format_ident!("__gpu_typecheck_{}", original_name);
         let visibility = function.vis.clone();
-        let parameter_descriptors = parameter_descriptors(stage, &function.sig.inputs)?;
         let original_kernel = find_function(&original_module, &original_name_text);
-        // The shapes the kernel can take (D63, plan 5.1) and the check of the pin (5.3). Nothing reads the result at
-        // run time: the descriptor lists it, and the shape the kernel is built as is still the profile's.
+        // The shapes the kernel can take (D63, plan 5.1) and the check of the pin (5.3). The descriptor lists the
+        // result; the shape the kernel is built as is its pin's: a kernel pinned `pixel` that the classifier accepts is
+        // built with the `pixel` profile (slice mx.p1a), every other kernel with the module's.
         let classification = classify::classify(stage, original_kernel, &attribute_facts);
+        let mut stage: &dyn StageProfile = stage;
         if let Some(pin) = &attribute_facts.shape {
             classify::check_pin(original_kernel, &classification, pin)?;
-            let built = classify::Shape::from_profile(stage.shape());
-            if pin.shape != built {
-                return Err(diagnostics::error(
-                    Code::ShapeNotAvailable,
-                    &pin.tokens,
-                    format!(
-                        "shape `{}` is compatible with kernel `{original_name_text}`, but this build has no `{}` \
-                         profile yet: the kernel is built as `{}`",
-                        pin.shape.name(),
-                        pin.shape.name(),
-                        built.name(),
-                    ),
-                ));
+            if pin.shape != classify::Shape::from_profile(stage.shape()) {
+                stage = profile_of(pin.shape);
             }
         }
+        let parameter_descriptors = parameter_descriptors(stage, &function.sig.inputs)?;
         let compatible_shapes: Vec<TokenStream> = classification
             .shapes
             .iter()
             .map(|shape| shape.tokens())
             .collect();
-        let emitted =
-            crate::slang::emit_kernel_in(stage, &original_module, original_kernel, options)?;
-        // The workgroup size the descriptor and the record carry: what the reflection of the shape expects (D17).
+        // The workgroup size the descriptor and the record carry: what the reflection of the shape expects (D17). A
+        // fragment has none; `[1, 1, 1]` stands for it, since the twin and the runtime refuse a size of 0.
         let workgroup_size = match stage.reflection() {
             ReflectionKind::Compute => options.workgroup_size,
+            ReflectionKind::Fragment => stage.options().default_workgroup,
         };
+        let emitted = crate::slang::emit_kernel_in(
+            stage,
+            &original_module,
+            original_kernel,
+            KernelOptions { workgroup_size },
+        )?;
         // The shape the profile gives the kernel: the descriptor's `shape`, and the export record's when it is not
-        // `grid` (mx.k). Every kernel expanded today is `grid`.
+        // `grid` (mx.k).
         let shape = stage.shape();
         let shape_path = shape_tokens(shape);
         let reported = reported_file(original_kernel, environment);
@@ -409,10 +406,19 @@ pub(crate) fn expand_validated(
     })
 }
 
+/// The profile that builds a kernel pinned to `shape`.
+fn profile_of(shape: classify::Shape) -> &'static dyn StageProfile {
+    match shape {
+        classify::Shape::Grid => &GRID,
+        classify::Shape::Pixel => &PIXEL,
+    }
+}
+
 /// The path of `gust::Shape` for the descriptor of a kernel of `shape`.
 fn shape_tokens(shape: Shape) -> TokenStream {
     match shape {
         Shape::Grid => quote!(::gust::Shape::Grid),
+        Shape::Pixel => quote!(::gust::Shape::Pixel),
     }
 }
 
@@ -421,6 +427,7 @@ fn shape_tokens(shape: Shape) -> TokenStream {
 fn record_shape(shape: Shape) -> Option<&'static str> {
     match shape {
         Shape::Grid => None,
+        Shape::Pixel => Some("pixel"),
     }
 }
 
@@ -1452,6 +1459,42 @@ fn typed_call_items(
         ));
     }
     if arguments.is_empty() {
+        // The forms over a `gust::Extent`: a shape whose invocations are not a grid has the one-dimensional forms only.
+        let extent_items = if stage.binding_rules().extent_calls {
+            quote! {
+                #[doc = #call_extent_doc]
+                pub fn call_extent<'r, __GustD: ::gust::TypedDevice>(
+                    __gust_extent: ::gust::Extent,
+                ) -> ::gust::Call<'r, __GustD, Self, 0> {
+                    ::gust::Call::new_extent(__gust_extent, [])
+                }
+
+                #[doc = #submit_extent_doc]
+                #[allow(clippy::type_complexity)]
+                pub fn submit_extent<'d, __GustD: ::gust::Run<Self, 0>>(
+                    __gust_device: &'d __GustD,
+                    __gust_extent: ::gust::Extent,
+                ) -> ::core::result::Result<
+                    <__GustD as ::gust::Device>::Job<'d>,
+                    <__GustD as ::gust::Device>::Error,
+                > {
+                    <__GustD as ::gust::Run<Self, 0>>::submit_call(__gust_device, &Self::call_extent(__gust_extent))
+                }
+
+                #[doc = #dispatch_extent_doc]
+                pub fn dispatch_extent<__GustD: ::gust::Run<Self, 0>>(
+                    __gust_device: &__GustD,
+                    __gust_extent: ::gust::Extent,
+                ) -> ::core::result::Result<(), <__GustD as ::gust::Device>::Error> {
+                    <__GustD as ::gust::Run<Self, 0>>::dispatch_call(
+                        __gust_device,
+                        &Self::call_extent(__gust_extent),
+                    )
+                }
+            }
+        } else {
+            TokenStream::new()
+        };
         return Ok((
             handle_doc,
             quote! {
@@ -1485,35 +1528,7 @@ fn typed_call_items(
                         <__GustD as ::gust::Run<Self, 0>>::dispatch_call(__gust_device, &Self::call(__gust_element_count))
                     }
 
-                    #[doc = #call_extent_doc]
-                    pub fn call_extent<'r, __GustD: ::gust::TypedDevice>(
-                        __gust_extent: ::gust::Extent,
-                    ) -> ::gust::Call<'r, __GustD, Self, 0> {
-                        ::gust::Call::new_extent(__gust_extent, [])
-                    }
-
-                    #[doc = #submit_extent_doc]
-                    #[allow(clippy::type_complexity)]
-                    pub fn submit_extent<'d, __GustD: ::gust::Run<Self, 0>>(
-                        __gust_device: &'d __GustD,
-                        __gust_extent: ::gust::Extent,
-                    ) -> ::core::result::Result<
-                        <__GustD as ::gust::Device>::Job<'d>,
-                        <__GustD as ::gust::Device>::Error,
-                    > {
-                        <__GustD as ::gust::Run<Self, 0>>::submit_call(__gust_device, &Self::call_extent(__gust_extent))
-                    }
-
-                    #[doc = #dispatch_extent_doc]
-                    pub fn dispatch_extent<__GustD: ::gust::Run<Self, 0>>(
-                        __gust_device: &__GustD,
-                        __gust_extent: ::gust::Extent,
-                    ) -> ::core::result::Result<(), <__GustD as ::gust::Device>::Error> {
-                        <__GustD as ::gust::Run<Self, 0>>::dispatch_call(
-                            __gust_device,
-                            &Self::call_extent(__gust_extent),
-                        )
-                    }
+                    #extent_items
                 }
             },
         ));
@@ -1622,6 +1637,61 @@ fn typed_call_items(
         >)
     };
     let generics: Vec<&syn::Ident> = resources.iter().chain(&sampler_types).collect();
+    // The forms over a `gust::Extent`: a shape whose invocations are not a grid has the one-dimensional forms only.
+    let extent_items = if stage.binding_rules().extent_calls {
+        quote! {
+            #[doc = #call_extent_doc]
+            #[allow(clippy::too_many_arguments)]
+            pub fn call_extent<'r, #(#generics),*>(
+                __gust_extent: ::gust::Extent,
+                #(#parameters),*
+            ) -> #call_type
+            where
+                #(#bounds,)*
+            {
+                #new_extent_call
+            }
+
+            #[doc = #submit_extent_doc]
+            #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+            pub fn submit_extent<'d, 'r, #(#generics),*>(
+                __gust_device: &'d #device,
+                __gust_extent: ::gust::Extent,
+                #(#parameters),*
+            ) -> ::core::result::Result<
+                <#device as ::gust::Device>::Job<'d>,
+                <#device as ::gust::Device>::Error,
+            >
+            where
+                #(#bounds,)*
+                #run_bound,
+            {
+                <#device as #run_trait>::submit_call(
+                    __gust_device,
+                    &Self::call_extent(__gust_extent, #(#forwarded),*),
+                )
+            }
+
+            #[doc = #dispatch_extent_doc]
+            #[allow(clippy::too_many_arguments)]
+            pub fn dispatch_extent<'r, #(#generics),*>(
+                __gust_device: &#device,
+                __gust_extent: ::gust::Extent,
+                #(#parameters),*
+            ) -> ::core::result::Result<(), <#device as ::gust::Device>::Error>
+            where
+                #(#bounds,)*
+                #run_bound,
+            {
+                <#device as #run_trait>::dispatch_call(
+                    __gust_device,
+                    &Self::call_extent(__gust_extent, #(#forwarded),*),
+                )
+            }
+        }
+    } else {
+        TokenStream::new()
+    };
 
     Ok((
         handle_doc,
@@ -1678,54 +1748,7 @@ fn typed_call_items(
                     )
                 }
 
-                #[doc = #call_extent_doc]
-                #[allow(clippy::too_many_arguments)]
-                pub fn call_extent<'r, #(#generics),*>(
-                    __gust_extent: ::gust::Extent,
-                    #(#parameters),*
-                ) -> #call_type
-                where
-                    #(#bounds,)*
-                {
-                    #new_extent_call
-                }
-
-                #[doc = #submit_extent_doc]
-                #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-                pub fn submit_extent<'d, 'r, #(#generics),*>(
-                    __gust_device: &'d #device,
-                    __gust_extent: ::gust::Extent,
-                    #(#parameters),*
-                ) -> ::core::result::Result<
-                    <#device as ::gust::Device>::Job<'d>,
-                    <#device as ::gust::Device>::Error,
-                >
-                where
-                    #(#bounds,)*
-                    #run_bound,
-                {
-                    <#device as #run_trait>::submit_call(
-                        __gust_device,
-                        &Self::call_extent(__gust_extent, #(#forwarded),*),
-                    )
-                }
-
-                #[doc = #dispatch_extent_doc]
-                #[allow(clippy::too_many_arguments)]
-                pub fn dispatch_extent<'r, #(#generics),*>(
-                    __gust_device: &#device,
-                    __gust_extent: ::gust::Extent,
-                    #(#parameters),*
-                ) -> ::core::result::Result<(), <#device as ::gust::Device>::Error>
-                where
-                    #(#bounds,)*
-                    #run_bound,
-                {
-                    <#device as #run_trait>::dispatch_call(
-                        __gust_device,
-                        &Self::call_extent(__gust_extent, #(#forwarded),*),
-                    )
-                }
+                #extent_items
             }
         },
     ))

@@ -467,7 +467,7 @@ fn the_outputs_have_colour_target_formats_within_the_bound() {
             &format!("out[id.x] = {value};"),
         ));
     }
-    // A struct has no colour-target format.
+    // A struct is not an element `pixel` takes (D120 left the list as mx.c fixed it; widening it is a later item).
     let structure = "mod m { pub struct P { pub x: f32, pub y: f32 } #[kernel] \
         pub fn k(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<P>) { \
         out[id.x] = P { x: 1.0f32, y: 2.0f32 }; } }";
@@ -477,7 +477,10 @@ fn the_outputs_have_colour_target_formats_within_the_bound() {
 }
 
 #[test]
-fn at_most_eight_outputs_and_thirty_two_bytes_of_them() {
+fn the_number_and_the_bytes_of_the_outputs_are_not_bounded_by_the_classifier() {
+    // D62 bounded a `pixel` kernel to 8 colour targets and 32 bytes of them. D120 made an output a fragment storage
+    // write, so the bound that remains is the device's number of storage buffers per shader stage, and it is checked
+    // when the kernel runs (`gust-wgpu`), not here.
     let outputs = |count: usize, element: &str, value: &str| {
         let parameters: Vec<String> = (0..count)
             .map(|k| format!("mut o{k}: RWStructuredBuffer<{element}>"))
@@ -493,12 +496,9 @@ fn at_most_eight_outputs_and_thirty_two_bytes_of_them() {
     };
     assert_both(&outputs(8, "f32", "1.0f32"));
     assert_both(&outputs(2, "Vec4", "Vec4::splat(1.0f32)"));
-    let count = assert_excluded(&outputs(9, "f32", "1.0f32"), Why::TargetCount);
-    assert_eq!(count.why.code(), Code::ShapeExcluded);
-    assert!(count.detail.contains('9'), "{count:?}");
-    let bytes = assert_excluded(&outputs(3, "Vec4", "Vec4::splat(1.0f32)"), Why::TargetBytes);
-    assert_eq!(bytes.why.code(), Code::ShapeExcluded);
-    assert!(bytes.detail.contains("48"), "{bytes:?}");
+    assert_both(&outputs(9, "f32", "1.0f32"));
+    assert_both(&outputs(3, "Vec4", "Vec4::splat(1.0f32)"));
+    assert_both(&outputs(16, "Vec4", "Vec4::splat(1.0f32)"));
 }
 
 #[test]
@@ -653,16 +653,60 @@ fn a_grid_pin_is_always_accepted_and_changes_nothing() {
 }
 
 #[test]
-fn a_pixel_pin_on_a_compatible_kernel_waits_for_the_pixel_profile() {
+fn a_pixel_pin_on_a_compatible_kernel_is_built_with_the_pixel_profile() {
     let source = kernel(
         "#[kernel(shape = pixel)]",
         PARAMETERS,
         "out[id.x] = a[id.x];",
     );
-    let error = expanded(&source).unwrap_err();
-    assert_code(&error, Code::ShapeNotAvailable);
-    let text = error.to_string();
-    assert!(text.contains("no `pixel` profile yet"), "{text}");
+    let text = expanded(&source).unwrap();
+    // The descriptor says `pixel`, the classification still lists both shapes, and the entry point is a fragment's.
+    assert!(text.contains("shape:::gust::Shape::Pixel,"), "{text}");
+    assert!(
+        text.contains("compatible_shapes:&[::gust::Shape::Grid,::gust::Shape::Pixel],"),
+        "{text}"
+    );
+    assert!(text.contains(r#"[shader(\"fragment\")]"#), "{text}");
+    assert!(!text.contains("numthreads"), "{text}");
+    // A fragment has no workgroup size: the descriptor carries 1 x 1 x 1, never the grid default of 64.
+    assert!(text.contains("workgroup_size:[1u32,1u32,1u32],"), "{text}");
+    // Its calls are one-dimensional.
+    assert!(text.contains("pubfncall<"), "{text}");
+    assert!(!text.contains("call_extent"), "{text}");
+    assert!(!text.contains("submit_extent"), "{text}");
+    assert!(!text.contains("dispatch_extent"), "{text}");
+    // The same kernel pinned `grid` keeps the three extent forms.
+    let grid = expanded(&kernel(
+        "#[kernel(shape = grid)]",
+        PARAMETERS,
+        "out[id.x] = a[id.x];",
+    ))
+    .unwrap();
+    assert!(grid.contains("shape:::gust::Shape::Grid,"), "{grid}");
+    assert!(grid.contains("pubfncall_extent<"), "{grid}");
+}
+
+#[test]
+fn a_pixel_pin_is_per_kernel_and_a_module_may_mix_shapes() {
+    let source = "mod m { \
+        #[kernel(shape = pixel)] \
+        pub fn shade(id: SV_DispatchThreadID, a: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) { \
+        out[id.x] = a[id.x]; } \
+        #[kernel] \
+        pub fn scan(id: SV_DispatchThreadID, a: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) { \
+        if id.x < out.len() { out[id.x] = a[id.x]; } } }";
+    let text = expanded(source).unwrap();
+    assert_eq!(
+        text.matches("shape:::gust::Shape::Pixel,").count(),
+        1,
+        "{text}"
+    );
+    assert_eq!(
+        text.matches("shape:::gust::Shape::Grid,").count(),
+        1,
+        "{text}"
+    );
+    assert_eq!(text.matches("call_extent<").count(), 1, "{text}");
 }
 
 #[test]
@@ -902,15 +946,15 @@ fn a_construct_is_written_as_source_text() {
 
 #[test]
 fn a_qualified_element_type_is_judged_by_its_last_segment() {
-    for (ty, bytes) in [
-        ("f32", Some(4)),
-        ("gust::Vec4", Some(16)),
-        ("::gust::math::Vec2", Some(8)),
-        ("Vec3", None),
-        ("Option<f32>", None),
+    for (ty, takes) in [
+        ("f32", true),
+        ("gust::Vec4", true),
+        ("::gust::math::Vec2", true),
+        ("Vec3", false),
+        ("Option<f32>", false),
     ] {
         let parsed: syn::Type = parse_str(ty).unwrap();
-        assert_eq!(target_bytes(&parsed), bytes, "{ty}");
+        assert_eq!(takes_element(&parsed), takes, "{ty}");
     }
 }
 

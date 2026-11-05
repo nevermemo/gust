@@ -455,7 +455,15 @@ macro_rules! identity_test {
                 "BRANCH {}: {ran} sizes run, {skipped_sizes} skipped, 0 differing words",
                 stringify!($test)
             );
-            assert!(ran >= 20, "the identity test must run the small sizes");
+            // Every size up to the Cpu-adapter cap must run on every adapter (18 sizes; lavapipe skips the rest).
+            let small = sizes()
+                .into_iter()
+                .filter(|&n| n <= CPU_ADAPTER_MAX_ELEMENTS)
+                .count();
+            assert!(
+                ran >= small,
+                "the identity test must run the small sizes ({ran} of {small} ran)"
+            );
         }
     };
 }

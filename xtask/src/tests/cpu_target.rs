@@ -46,6 +46,7 @@ CPU target: matches (polynomial::evaluate, 1000 elements, max ULP 0)
 CPU target: matches (atomic_counter::increment, 257 invocations, max ULP 0)
 CPU target: matches (vector_ops::blend, 1000 elements, max ULP 0)
 CPU target: matches (texture_ops::double_and_mirror, 91 elements, max ULP 0)
+CPU target: matches (pixel_shade::shade, 1000 elements, max ULP 0)
 CPU target: map calls match (scale_add, pick, 1000 elements)
 CPU target: par_for calls match (1D 1000 elements, 2D 37 x 21 cells)
 CPU target: all kernels match
@@ -110,7 +111,7 @@ fn the_output_of_a_good_run_has_no_problem() {
     );
     assert_eq!(
         match_summary(GOOD),
-        "vector_add::add 1000 elements, max ULP 0; polynomial::evaluate 1000 elements, max ULP 0; atomic_counter::increment 257 invocations, max ULP 0; vector_ops::blend 1000 elements, max ULP 0; texture_ops::double_and_mirror 91 elements, max ULP 0; map calls match (scale_add, pick, 1000 elements); par_for calls match (1D 1000 elements, 2D 37 x 21 cells)"
+        "vector_add::add 1000 elements, max ULP 0; polynomial::evaluate 1000 elements, max ULP 0; atomic_counter::increment 257 invocations, max ULP 0; vector_ops::blend 1000 elements, max ULP 0; texture_ops::double_and_mirror 91 elements, max ULP 0; pixel_shade::shade 1000 elements, max ULP 0; map calls match (scale_add, pick, 1000 elements); par_for calls match (1D 1000 elements, 2D 37 x 21 cells)"
     );
 }
 
@@ -142,6 +143,7 @@ fn a_run_that_stopped_early_names_every_missing_kernel_and_the_final_line() {
             "no `matches` line for the kernel `atomic_counter::increment`".to_owned(),
             "no `matches` line for the kernel `vector_ops::blend`".to_owned(),
             "no `matches` line for the kernel `texture_ops::double_and_mirror`".to_owned(),
+            "no `matches` line for the kernel `pixel_shade::shade`".to_owned(),
             format!("the map case did not run: the line `{MAP_LINE_PREFIX}..` is missing"),
             format!("the par_for case did not run: the line `{PAR_FOR_LINE_PREFIX}..` is missing"),
             format!("the final line `{FINAL_LINE}` is missing"),

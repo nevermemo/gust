@@ -15,7 +15,7 @@ use gust::{
     math::Vec4,
     texture::{R32Float, R32Uint, TextureUse},
 };
-use kernels::{atomic_counter, polynomial, texture_ops, vector_add, vector_ops};
+use kernels::{atomic_counter, pixel_shade, polynomial, texture_ops, vector_add, vector_ops};
 
 /// More than one workgroup (64 and 128 wide) and not a multiple of either, so the kernels' bounds checks matter.
 const ELEMENTS: usize = 1000;
@@ -46,6 +46,7 @@ fn run(bench: bool) -> Result<(), String> {
     check_atomic_counter()?;
     check_vector_ops()?;
     check_texture_ops()?;
+    check_pixel_shade()?;
     // The map functions of the kernels crate (an error under any profile but `GUST_PROFILE=cpu`). Its line is not a
     // `matches` line, which `check-cpu-target` pairs with its list of kernels; it requires this one exactly once.
     kernels::map_case::run()?;
@@ -272,6 +273,32 @@ fn check_texture_ops() -> Result<(), String> {
         return Err("texture_ops: the mirrored indices differ from the host loop".to_owned());
     }
     println!("CPU target: matches (texture_ops::double_and_mirror, {count} elements, max ULP 0)");
+    Ok(())
+}
+
+/// The `pixel` kernel `pixel_shade::shade` of `kernels` (MX, slice mx.p1a), in the production CPU build, against a host
+/// loop: `out = 2v + 1` at every element's own index. The inputs are multiples of a quarter, so the comparison is exact
+/// (max ULP 0). A `pixel` kernel is a plain Rust function on the CPU, so it runs through `dispatch` with a count, like a
+/// `grid` kernel. Its `matches` line is paired with a kernel by `xtask/src/cpu_target.rs`, so deleting this call fails
+/// the check; a mismatch fails the run (exit 1, no final line).
+fn check_pixel_shade() -> Result<(), String> {
+    let input: Vec<f32> = (0..ELEMENTS).map(|index| (index % 17) as f32 * 0.25).collect();
+    let device = CpuDevice::new();
+    let input_buffer = device.buffer(&input);
+    let out = device.buffer(&vec![f32::NAN; ELEMENTS]);
+    pixel_shade::shade::dispatch(&device, ELEMENTS as u32, &input_buffer, &out)
+        .map_err(|error| format!("pixel_shade::shade: {error:?}"))?;
+    let out = out.read();
+    for (index, value) in input.iter().enumerate() {
+        let want = value * 2.0 + 1.0;
+        if out[index] != want {
+            return Err(format!(
+                "pixel_shade::shade: element {index} is {}, the host loop gives {want}",
+                out[index]
+            ));
+        }
+    }
+    println!("CPU target: matches (pixel_shade::shade, {ELEMENTS} elements, max ULP 0)");
     Ok(())
 }
 

@@ -78,10 +78,11 @@ mod generated_host;
 pub mod graph;
 mod map_host;
 pub mod pool;
+mod render;
 mod texture;
 mod vec;
 pub use cache::PipelineCacheStats;
-use cache::{CachedKernel, KernelCacheKey, PipelineCache};
+use cache::{CachedKernel, KernelCacheKey, Pipeline, PipelineCache};
 use completion::Completion;
 #[cfg(not(target_arch = "wasm32"))]
 use completion::blocking::{block_on_mapping, recv_mapping};
@@ -373,7 +374,8 @@ impl<'a> F32BufferBinding<'a> {
 /// Construct through `read_only` or `read_write`; the original element ABI is retained.
 #[derive(Clone, Copy)]
 pub struct BufferBinding<'a> {
-    raw: &'a wgpu::Buffer,
+    /// What the binding stands for in the aliasing rule and the staged graph's hazard check: its buffer, or its texture.
+    raw: Raw<'a>,
     len: usize,
     layout: gust::TypeLayout,
     buffer_access: GpuBufferAccess,
@@ -387,9 +389,27 @@ pub struct BufferBinding<'a> {
     /// The bytes the bind group exposes, from offset 0: the logical length (at least one element, as for an empty
     /// buffer), which is the whole allocation unless the buffer is pooled and its class is larger.
     bytes: u64,
-    /// A texture binding's own facts (`raw` is then the texture's 4-byte identity buffer, which only the aliasing rule
-    /// and the staged graph's hazard check read); `None` for a buffer.
+    /// A texture binding's own facts (`raw` is then the texture itself); `None` for a buffer.
     texture: Option<TextureBinding<'a>>,
+}
+
+/// The identity of what a [`BufferBinding`] binds, for the aliasing rule of a call and the staged graph's hazard
+/// check (slice mx.p1b: this replaces the 4-byte identity buffer a texture carried since mx.t2). Two identities are
+/// equal when they are the same wgpu allocation; a buffer is never a texture.
+#[derive(Clone, Copy)]
+pub(crate) enum Raw<'a> {
+    Buffer(&'a wgpu::Buffer),
+    Texture(&'a wgpu::Texture),
+}
+
+impl PartialEq for Raw<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Buffer(first), Self::Buffer(second)) => same_buffer(first, second),
+            (Self::Texture(first), Self::Texture(second)) => first == second,
+            _ => false,
+        }
+    }
 }
 
 impl<'a> BufferBinding<'a> {
@@ -416,7 +436,7 @@ impl<'a> BufferBinding<'a> {
 
     fn new<T: GpuPod>(buffer: &'a GpuBuffer<T>, access: Access) -> Self {
         Self {
-            raw: &buffer.raw,
+            raw: Raw::Buffer(&buffer.raw),
             len: buffer.len,
             layout: buffer.layout,
             buffer_access: buffer.access,
@@ -434,7 +454,7 @@ impl<'a> BufferBinding<'a> {
     /// `access` is `ReadOnly` for a kernel's parameter and `ReadWrite` for the copy node of a staged graph.
     pub(crate) fn new_uniform<T: GpuPod>(uniform: &'a GpuUniform<T>, access: Access) -> Self {
         Self {
-            raw: &uniform.raw,
+            raw: Raw::Buffer(&uniform.raw),
             len: 1,
             layout: uniform.layout,
             buffer_access: GpuBufferAccess::ReadOnly,
@@ -460,10 +480,19 @@ impl<'a> BufferBinding<'a> {
             return wgpu::BindingResource::TextureView(texture.view);
         }
         wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-            buffer: self.raw,
+            buffer: self.buffer(),
             offset: 0,
             size: std::num::NonZeroU64::new(self.bytes),
         })
+    }
+
+    /// The wgpu buffer behind a buffer or uniform binding (a texture binding has none: it never reaches a copy, a
+    /// readback or an indirect dispatch, which take buffers only).
+    fn buffer(&self) -> &'a wgpu::Buffer {
+        match self.raw {
+            Raw::Buffer(buffer) => buffer,
+            Raw::Texture(_) => unreachable!("a texture binding is never used as a buffer"),
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -903,14 +932,76 @@ impl<T: GpuPod> Resource for GpuUniform<T> {
     }
 }
 
+/// What one prepared dispatch launches: compute workgroups for a `grid` kernel, a full-screen pass over `elements`
+/// fragments for a `pixel` kernel (slice mx.p1b).
+#[derive(Clone, Copy)]
+enum Launch {
+    /// The workgroups along x, y and z; `[count, 1, 1]` for a one-dimensional dispatch.
+    Compute { workgroups: [u32; 3] },
+    /// The element count `n` of a `pixel` call: `render::PixelPlan::new(n)` says how it is drawn.
+    Pixel { elements: u32 },
+}
+
 struct PreparedDispatch {
     cached_kernel: Arc<CachedKernel>,
     bind_group: wgpu::BindGroup,
-    /// The workgroups along x, which is all the staged graph encodes (it runs one-dimensional dispatches only).
+    launch: Launch,
+}
+
+/// The query slots a timed pass writes: the first pass of a batch writes `begin`, the last writes `end`.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+struct PassTimestamps<'a> {
+    query_set: &'a wgpu::QuerySet,
+    begin: Option<u32>,
+    end: Option<u32>,
+}
+
+impl PreparedDispatch {
+    /// The workgroups along x, which is all the staged graph reports (it runs one-dimensional dispatches only); 0 for a
+    /// `pixel` launch, which has none.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
-    workgroup_count: u32,
-    /// The workgroups along x, y and z; `[workgroup_count, 1, 1]` for a one-dimensional dispatch.
-    workgroups: [u32; 3],
+    fn workgroup_count(&self) -> u32 {
+        match self.launch {
+            Launch::Compute { workgroups } => workgroups[0],
+            Launch::Pixel { .. } => 0,
+        }
+    }
+
+    /// Encode this dispatch into `encoder` as one pass of its own: a compute pass for `grid`, a render pass for `pixel`
+    /// (a pass per call, because one call's output may be the next call's input and a pass is one usage scope).
+    fn encode(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        label: &str,
+        timestamps: Option<PassTimestamps<'_>>,
+    ) {
+        match (&self.cached_kernel.pipeline, self.launch) {
+            (Pipeline::Compute(pipeline), Launch::Compute { workgroups }) => {
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some(label),
+                    timestamp_writes: timestamps.map(|stamps| wgpu::ComputePassTimestampWrites {
+                        query_set: stamps.query_set,
+                        beginning_of_pass_write_index: stamps.begin,
+                        end_of_pass_write_index: stamps.end,
+                    }),
+                });
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &self.bind_group, &[]);
+                pass.dispatch_workgroups(workgroups[0], workgroups[1], workgroups[2]);
+            }
+            (Pipeline::Render(pipeline), Launch::Pixel { elements }) => render::encode_pixel_pass(
+                device,
+                encoder,
+                pipeline,
+                &self.bind_group,
+                elements,
+                label,
+                timestamps,
+            ),
+            _ => unreachable!("a kernel's shape fixes both its pipeline and its launch"),
+        }
+    }
 }
 
 const TIMESTAMP_RESULT_BYTES: u64 = 2 * size_of::<u64>() as u64;
@@ -1091,6 +1182,9 @@ pub struct HeadlessDevice {
     /// Limits every launch check reads: the opened device's, or lower ones installed
     /// by `with_limits`.
     limits: wgpu::Limits,
+    /// Whether the adapter lets a fragment shader write a storage buffer (`DownlevelFlags::FRAGMENT_WRITABLE_STORAGE`),
+    /// which every `pixel` kernel does (D120). A `pixel` call on an adapter without it is `Error::ShapeUnsupported`.
+    fragment_storage: bool,
     /// Recycles the allocations of [`GpuVec`] and other pooled buffers.
     pool: BufferPool,
 }
@@ -1178,6 +1272,10 @@ impl HeadlessDevice {
         let timestamp_profiler =
             timestamp_queries.then(|| Mutex::new(TimestampProfiler::new(&device)));
         let limits = device.limits();
+        let fragment_storage = adapter
+            .get_downlevel_capabilities()
+            .flags
+            .contains(wgpu::DownlevelFlags::FRAGMENT_WRITABLE_STORAGE);
 
         Ok(Self {
             id: NEXT_DEVICE_ID.fetch_add(1, Ordering::Relaxed),
@@ -1187,6 +1285,7 @@ impl HeadlessDevice {
             pipeline_cache: Mutex::new(PipelineCache::default()),
             timestamp_profiler,
             limits,
+            fragment_storage,
             pool: BufferPool::new(),
         })
     }
@@ -1658,17 +1757,7 @@ impl HeadlessDevice {
                 label: Some("GUST typed batch encoder"),
             });
         for dispatch in &prepared {
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("GUST typed batched compute pass"),
-                timestamp_writes: None,
-            });
-            pass.set_pipeline(&dispatch.cached_kernel.pipeline);
-            pass.set_bind_group(0, &dispatch.bind_group, &[]);
-            pass.dispatch_workgroups(
-                dispatch.workgroups[0],
-                dispatch.workgroups[1],
-                dispatch.workgroups[2],
-            );
+            dispatch.encode(&self.device, &mut encoder, "GUST typed batched pass", None);
         }
         let submission = self.queue.submit([encoder.finish()]);
         Ok(WgpuJob {
@@ -1709,16 +1798,11 @@ impl HeadlessDevice {
 
         let Some(timestamp_profiler) = &self.timestamp_profiler else {
             for dispatch in &prepared {
-                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                    label: Some("GUST profiled typed batched compute pass"),
-                    timestamp_writes: None,
-                });
-                pass.set_pipeline(&dispatch.cached_kernel.pipeline);
-                pass.set_bind_group(0, &dispatch.bind_group, &[]);
-                pass.dispatch_workgroups(
-                    dispatch.workgroups[0],
-                    dispatch.workgroups[1],
-                    dispatch.workgroups[2],
+                dispatch.encode(
+                    &self.device,
+                    &mut encoder,
+                    "GUST profiled typed batched pass",
+                    None,
                 );
             }
             let submission = self.queue.submit([encoder.finish()]);
@@ -1734,23 +1818,16 @@ impl HeadlessDevice {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let last_dispatch = prepared.len() - 1;
         for (index, dispatch) in prepared.iter().enumerate() {
-            let timestamp_writes = (index == 0 || index == last_dispatch).then_some(
-                wgpu::ComputePassTimestampWrites {
-                    query_set: &profiler.query_set,
-                    beginning_of_pass_write_index: (index == 0).then_some(0),
-                    end_of_pass_write_index: (index == last_dispatch).then_some(1),
-                },
-            );
-            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-                label: Some("GUST profiled typed batched compute pass"),
-                timestamp_writes,
+            let timestamps = (index == 0 || index == last_dispatch).then_some(PassTimestamps {
+                query_set: &profiler.query_set,
+                begin: (index == 0).then_some(0),
+                end: (index == last_dispatch).then_some(1),
             });
-            pass.set_pipeline(&dispatch.cached_kernel.pipeline);
-            pass.set_bind_group(0, &dispatch.bind_group, &[]);
-            pass.dispatch_workgroups(
-                dispatch.workgroups[0],
-                dispatch.workgroups[1],
-                dispatch.workgroups[2],
+            dispatch.encode(
+                &self.device,
+                &mut encoder,
+                "GUST profiled typed batched pass",
+                timestamps,
             );
         }
         encoder.resolve_query_set(&profiler.query_set, 0..2, &profiler.resolve_buffer, 0);
@@ -1866,7 +1943,7 @@ impl HeadlessDevice {
                 label: Some(&format!("{label} compute pass")),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&cached_kernel.pipeline);
+            pass.set_pipeline(cached_kernel.pipeline.compute());
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroup_count, 1, 1);
         }
@@ -2004,7 +2081,7 @@ impl HeadlessDevice {
                 label: Some(&format!("{label} compute pass")),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&cached_kernel.pipeline);
+            pass.set_pipeline(cached_kernel.pipeline.compute());
             pass.set_bind_group(0, &bind_group, &[]);
             pass.dispatch_workgroups(workgroup_count, 1, 1);
         }
@@ -2161,11 +2238,17 @@ impl HeadlessDevice {
                 layout: &cached_kernel.bind_group_layout,
                 entries: &bind_group_entries,
             });
+            let launch = if dispatch.kernel.shape == Shape::Pixel {
+                Launch::Pixel {
+                    elements: dispatch.extent().x,
+                }
+            } else {
+                Launch::Compute { workgroups }
+            };
             prepared.push(PreparedDispatch {
                 cached_kernel,
                 bind_group,
-                workgroup_count: workgroups[0],
-                workgroups,
+                launch,
             });
         }
         Ok(prepared)
@@ -2216,6 +2299,7 @@ impl HeadlessDevice {
         resources: &[&ParameterDescriptor],
         binding_bytes: impl IntoIterator<Item = (u64, BindingKind)>,
     ) -> Result<(), Error> {
+        render::refuse_indirect(kernel)?;
         self.check_launch_limits(kernel, None, resources, binding_bytes)
             .map(|_| ())
     }
@@ -2243,9 +2327,16 @@ impl HeadlessDevice {
             TextureCounts::of(resources),
         )?;
         check_binding_indices(&self.limits, kernel, resources)?;
-        let workgroups = match extent {
-            Some(extent) => workgroup_counts(&self.limits, kernel, extent)?,
-            None => [0; 3],
+        let workgroups = match (kernel.shape, extent) {
+            // A `pixel` launch has no workgroups: the cap and the attachment are its limits (the adapter's ability to
+            // write storage from a fragment first, since without it there is no pipeline to build).
+            (Shape::Pixel, Some(extent)) => {
+                render::require_fragment_storage(kernel, self.fragment_storage)?;
+                render::check_pixel_launch(&self.limits, kernel, extent.x)?;
+                [0; 3]
+            }
+            (_, Some(extent)) => workgroup_counts(&self.limits, kernel, extent)?,
+            (_, None) => [0; 3],
         };
         for (bytes, kind) in binding_bytes {
             check_binding_size(&self.limits, kernel, bytes, kind)?;
@@ -2307,8 +2398,16 @@ impl HeadlessDevice {
         kernel: &KernelDescriptor,
         resources: &[&ParameterDescriptor],
     ) -> Result<CachedKernel, Error> {
-        // The same refusal as `validate_kernel`'s, kept here so that no path to a pipeline skips it.
-        require_grid(kernel)?;
+        let pixel = match kernel.shape {
+            Shape::Grid => false,
+            Shape::Pixel => {
+                // Without fragment-stage storage writes there is no pipeline to build (D120).
+                render::require_fragment_storage(kernel, self.fragment_storage)?;
+                true
+            }
+            // `Shape` is `#[non_exhaustive]`: a shape this backend does not know has no pipeline either.
+            _ => return Err(render::unknown_shape(kernel)),
+        };
         let compiled = match select_shader_source(kernel, cfg!(feature = "slang-runtime"))? {
             // A verification failure is the answer: there is no fallback to the run-time compiler.
             ShaderSource::Precompiled(artifact) => {
@@ -2346,7 +2445,11 @@ impl HeadlessDevice {
                         .binding
                         .expect("validated resource binding")
                         .binding,
-                    visibility: wgpu::ShaderStages::COMPUTE,
+                    visibility: if pixel {
+                        wgpu::ShaderStages::FRAGMENT
+                    } else {
+                        wgpu::ShaderStages::COMPUTE
+                    },
                     ty,
                     count: None,
                 })
@@ -2371,22 +2474,43 @@ impl HeadlessDevice {
                 label: Some(&format!("{label} Slang-generated WGSL")),
                 source: wgpu::ShaderSource::Wgsl(wgsl.into()),
             });
-        let pipeline = self
-            .device
-            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-                label: Some(&format!("{label} pipeline")),
-                layout: Some(&pipeline_layout),
-                module: &shader,
-                entry_point: Some(kernel.entry_point),
-                compilation_options: Default::default(),
-                cache: None,
-            });
+        let pipeline = if pixel {
+            let vertex = self.fullscreen_module();
+            Pipeline::Render(render::build_pipeline(
+                &self.device,
+                &label,
+                &pipeline_layout,
+                &vertex,
+                &shader,
+                kernel.entry_point,
+            ))
+        } else {
+            Pipeline::Compute(self.device.create_compute_pipeline(
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some(&format!("{label} pipeline")),
+                    layout: Some(&pipeline_layout),
+                    module: &shader,
+                    entry_point: Some(kernel.entry_point),
+                    compilation_options: Default::default(),
+                    cache: None,
+                },
+            ))
+        };
         Ok(CachedKernel {
             _shader: shader,
             bind_group_layout,
             _pipeline_layout: pipeline_layout,
             pipeline,
         })
+    }
+
+    /// The vertex module every `pixel` pipeline of this device shares, created on first use.
+    fn fullscreen_module(&self) -> wgpu::ShaderModule {
+        let mut cache = self.lock_pipeline_cache();
+        cache
+            .fullscreen
+            .get_or_insert_with(|| render::fullscreen_module(&self.device))
+            .clone()
     }
 
     fn lock_pipeline_cache(&self) -> MutexGuard<'_, PipelineCache> {
@@ -2497,35 +2621,43 @@ fn check_kernel_limits(
     uniform_buffers: usize,
     textures: TextureCounts,
 ) -> Result<(), Error> {
+    // A `pixel` kernel has no workgroup: the three workgroup limits are a compute stage's.
+    let compute = kernel.shape != Shape::Pixel;
     let size = kernel.workgroup_size.map(u64::from);
-    for (limit, requested, maximum) in [
-        (
-            "max_compute_workgroup_size_x",
-            size[0],
-            u64::from(limits.max_compute_workgroup_size_x),
-        ),
-        (
-            "max_compute_workgroup_size_y",
-            size[1],
-            u64::from(limits.max_compute_workgroup_size_y),
-        ),
-        (
-            "max_compute_workgroup_size_z",
-            size[2],
-            u64::from(limits.max_compute_workgroup_size_z),
-        ),
-    ] {
-        if requested > maximum {
-            return Err(device_limit(kernel, limit, requested, maximum));
+    if compute {
+        for (limit, requested, maximum) in [
+            (
+                "max_compute_workgroup_size_x",
+                size[0],
+                u64::from(limits.max_compute_workgroup_size_x),
+            ),
+            (
+                "max_compute_workgroup_size_y",
+                size[1],
+                u64::from(limits.max_compute_workgroup_size_y),
+            ),
+            (
+                "max_compute_workgroup_size_z",
+                size[2],
+                u64::from(limits.max_compute_workgroup_size_z),
+            ),
+        ] {
+            if requested > maximum {
+                return Err(device_limit(kernel, limit, requested, maximum));
+            }
         }
     }
-    let invocations = size[0]
-        .checked_mul(size[1])
-        .and_then(|plane| plane.checked_mul(size[2]))
-        .ok_or(Error::Extent {
-            extent: size,
-            reason: "the workgroup size multiplies to more invocations than a u64 holds",
-        })?;
+    let invocations = if compute {
+        size[0]
+            .checked_mul(size[1])
+            .and_then(|plane| plane.checked_mul(size[2]))
+            .ok_or(Error::Extent {
+                extent: size,
+                reason: "the workgroup size multiplies to more invocations than a u64 holds",
+            })?
+    } else {
+        0
+    };
     for (limit, requested, maximum) in [
         (
             "max_compute_invocations_per_workgroup",
@@ -2719,6 +2851,7 @@ fn validate_dispatch(
     element_count: u32,
     bindings: &[F32Binding<'_>],
 ) -> Result<Vec<&'static ParameterDescriptor>, Error> {
+    render::require_grid(kernel, render::ONE_SHOT_REASON)?;
     let resources = validate_kernel(kernel)?;
     if resources.len() != bindings.len() {
         return Err(Error::BindingCount {
@@ -2755,6 +2888,7 @@ fn validate_u32_dispatch(
     element_count: u32,
     bindings: &[U32Binding<'_>],
 ) -> Result<Vec<&'static ParameterDescriptor>, Error> {
+    render::require_grid(kernel, render::ONE_SHOT_REASON)?;
     let resources = validate_kernel(kernel)?;
     if resources.len() != bindings.len() {
         return Err(Error::BindingCount {
@@ -2835,6 +2969,8 @@ fn validate_dispatch_extent(
     samplers: &[GpuSamplerBinding<'_>],
 ) -> Result<Vec<&'static ParameterDescriptor>, Error> {
     let resources = validate_kernel(kernel)?;
+    // A `pixel` call is one-dimensional (the fragment index is `y * 8192 + x` of the attachment, not a call's y).
+    render::check_pixel_extent(kernel, extent)?;
     let total = extent.checked_total().ok_or(Error::Extent {
         extent: extent.to_array().map(u64::from),
         reason: "x * y * z overflows a u64",
@@ -2901,6 +3037,18 @@ fn validate_dispatch_extent(
                 binding: binding.access,
             });
         }
+        // An output a `pixel` kernel writes in place must have exactly `n` elements (D127): there is no clamp-free way
+        // to bound a store to a shorter one, so the twin refuses it too (`cpu::Error::PixelIndependentOutput`).
+        if kernel.shape == Shape::Pixel
+            && parameter.kind == ParameterKind::Storage
+            && parameter.access == Access::ReadWrite
+            && binding.independent_length
+        {
+            return Err(Error::ShapeIndependentOutput {
+                kernel: kernel.qualified_name().to_string(),
+                parameter: parameter.name.to_owned(),
+            });
+        }
         if binding.independent_length {
             if buffer.len == 0 && total != 0 {
                 return Err(Error::IndependentLengthEmpty {
@@ -2918,13 +3066,13 @@ fn validate_dispatch_extent(
     for (parameter, sampler) in sampler_parameters.iter().copied().zip(samplers) {
         texture::validate_sampler_binding(device_id, float32_filterable, parameter, sampler)?;
     }
-    // One buffer may be bound twice only when both bindings are read-only. The access of each binding
+    // One resource may be bound twice only when both bindings are read-only. The access of each binding
     // equals its parameter's access here, and the check names both parameters in declaration order. A texture
-    // stands for itself by its identity buffer, so one texture bound twice is a buffer bound twice: a storage
-    // texture twice is refused, a sampled one twice is accepted (wgpu allows two read-only uses of one texture).
+    // is compared by its own identity (`Raw`): a storage texture bound twice is refused, a sampled one twice is
+    // accepted (wgpu allows two read-only uses of one texture), and a texture never equals a buffer.
     for (index, (first_parameter, first)) in resource_parameters.iter().zip(bindings).enumerate() {
         for (second_parameter, second) in resource_parameters.iter().zip(bindings).skip(index + 1) {
-            if same_buffer(first.raw, second.raw)
+            if first.raw == second.raw
                 && (first.access == Access::ReadWrite || second.access == Access::ReadWrite)
             {
                 return Err(Error::AliasedBinding {
@@ -2938,25 +3086,13 @@ fn validate_dispatch_extent(
     Ok(resources)
 }
 
-/// Refuses a kernel whose shape this crate has no path for (slice mx.p1a, review S2): only `grid` runs as a compute
-/// pass. `compile_reflected` would build a fragment entry for a `pixel` kernel, and a compute pipeline over it is a wgpu
-/// validation error that panics; this turns it into [`Error::ShapeUnsupported`] before any wgpu object exists. Slice
-/// mx.p1b replaces it with the fragment path.
-fn require_grid(kernel: &KernelDescriptor) -> Result<(), Error> {
-    if kernel.shape == Shape::Grid {
-        Ok(())
-    } else {
-        Err(Error::ShapeUnsupported {
-            kernel: kernel.qualified_name().to_string(),
-            shape: kernel.shape,
-        })
-    }
-}
-
 pub(crate) fn validate_kernel(
     kernel: &KernelDescriptor,
 ) -> Result<Vec<&'static ParameterDescriptor>, Error> {
-    require_grid(kernel)?;
+    // `grid` runs as a compute pass and `pixel` as a render pass (slice mx.p1b); a shape added later has no path yet.
+    if !matches!(kernel.shape, Shape::Grid | Shape::Pixel) {
+        return Err(render::unknown_shape(kernel));
+    }
     if kernel.slang_source.trim().is_empty() {
         return Err(Error::MissingSlangSource(
             kernel.qualified_name().to_string(),
@@ -3788,34 +3924,85 @@ mod tests {
         }
     }
 
-    /// Review S2 of slice mx.p1a: a kernel of a shape other than `grid` is refused with a typed error before any
-    /// compile or pipeline (no device is involved), not left to a wgpu validation panic.
+    /// Slice mx.p1b: a `pixel` kernel is valid (it runs as a render pass); the callers that only know compute passes
+    /// refuse it with a typed error before any compile or pipeline (no device is involved), not a wgpu panic.
     #[test]
-    fn a_pixel_kernel_is_refused_by_name_until_the_fragment_path_exists() {
+    fn a_pixel_kernel_is_valid_and_the_compute_only_callers_refuse_it_by_name() {
         let pixel = KernelDescriptor {
             shape: Shape::Pixel,
             compatible_shapes: &[Shape::Pixel],
             ..descriptor_with(ResourceLayout::storage_v1(<f32 as GpuPod>::LAYOUT))
         };
-        let error = validate_kernel(&pixel).unwrap_err();
-        assert!(
-            matches!(
-                error,
-                Error::ShapeUnsupported {
-                    shape: Shape::Pixel,
-                    ..
-                }
-            ),
-            "{error:?}"
-        );
-        let text = error.to_string();
-        assert!(text.contains("Pixel") && text.contains("mx.p1b"), "{text}");
+        assert!(validate_kernel(&pixel).is_ok());
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let error = validate_dispatch(&pixel, 0, &[]).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    Error::ShapeUnsupported {
+                        shape: Shape::Pixel,
+                        ..
+                    }
+                ),
+                "{error:?}"
+            );
+            let text = error.to_string();
+            assert!(
+                text.contains("Pixel") && text.contains("one-shot"),
+                "{text}"
+            );
+            assert!(matches!(
+                validate_u32_dispatch(&pixel, 0, &[]).unwrap_err(),
+                Error::ShapeUnsupported { .. }
+            ));
+        }
         assert!(
             validate_kernel(&descriptor_with(ResourceLayout::storage_v1(
                 <f32 as GpuPod>::LAYOUT
             )))
             .is_ok()
         );
+    }
+
+    #[test]
+    fn a_pixel_call_over_more_than_one_dimension_is_refused_before_any_binding_is_looked_at() {
+        let pixel = KernelDescriptor {
+            shape: Shape::Pixel,
+            compatible_shapes: &[Shape::Pixel],
+            ..descriptor_with(ResourceLayout::storage_v1(<f32 as GpuPod>::LAYOUT))
+        };
+        for extent in [Extent::new(4, 2, 1), Extent::new(4, 1, 2)] {
+            let error = validate_dispatch_extent(0, false, &pixel, extent, &[], &[]).unwrap_err();
+            assert!(
+                matches!(
+                    error,
+                    Error::ShapeUnsupported {
+                        shape: Shape::Pixel,
+                        ..
+                    }
+                ),
+                "{extent:?}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn raw_compares_the_resource_and_a_buffer_never_equals_a_texture() {
+        let device = HeadlessDevice::new().expect("a GPU adapter");
+        let first = device.create_f32_buffer("raw first", &[0.0], GpuBufferAccess::ReadWrite);
+        let second = device.create_f32_buffer("raw second", &[0.0], GpuBufferAccess::ReadWrite);
+        let texture = device
+            .create_texture_2d::<gust::texture::R32Float>(2, 2, gust::texture::TextureUse::SAMPLED)
+            .expect("a texture");
+        let other = device
+            .create_texture_2d::<gust::texture::R32Float>(2, 2, gust::texture::TextureUse::SAMPLED)
+            .expect("a texture");
+        assert!(Raw::Buffer(&first.raw) == Raw::Buffer(&first.raw));
+        assert!(Raw::Buffer(&first.raw) != Raw::Buffer(&second.raw));
+        assert!(Raw::Texture(texture.as_wgpu_texture()) == Raw::Texture(texture.as_wgpu_texture()));
+        assert!(Raw::Texture(texture.as_wgpu_texture()) != Raw::Texture(other.as_wgpu_texture()));
+        assert!(Raw::Buffer(&first.raw) != Raw::Texture(texture.as_wgpu_texture()));
     }
 
     #[test]

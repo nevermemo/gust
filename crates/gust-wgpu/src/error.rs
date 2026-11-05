@@ -26,12 +26,22 @@ pub enum Error {
     /// A kernel's workgroup size has a zero axis; every axis of `workgroup_size` must be at least 1. (The size may
     /// have y and z above 1; whether the device allows it is a [`Error::DeviceLimit`].)
     UnsupportedWorkgroupSize([u32; 3]),
-    /// The kernel's execution shape has no run-time path in this crate: `gust-wgpu` runs `grid` kernels as compute
-    /// passes and nothing else. A `pixel` kernel (a fragment pass) runs on the CPU twin and the `cpu` target only
-    /// until slice mx.p1b gives the crate the fragment path. Reported before any pipeline or wgpu object is created.
+    /// The kernel's execution shape cannot be used the way this call asks (plan §4.3 spells it `UnsupportedShape`).
+    /// `grid` runs as compute passes and `pixel` as full-screen fragment passes (slice mx.p1b); a `pixel` kernel is
+    /// refused, by `reason`, for an extent call (a pixel call is one-dimensional), an indirect dispatch (the element
+    /// count must be known on the host), the v1 `dispatch_f32`/`dispatch_u32` family, the generated host snippet, and
+    /// on an adapter whose fragment stage cannot write storage buffers. Reported before any pipeline or wgpu object is
+    /// created.
     ShapeUnsupported {
         kernel: String,
         shape: Shape,
+        reason: &'static str,
+    },
+    /// An output of a `pixel` kernel (a read-write storage parameter) was bound with an independent length. A `pixel`
+    /// output holds exactly the call's element count (`LengthRule::Shared`). Remedy: drop `Independent`.
+    ShapeIndependentOutput {
+        kernel: String,
+        parameter: String,
     },
     UnsupportedParameter {
         name: String,
@@ -229,9 +239,17 @@ impl fmt::Display for Error {
                 formatter,
                 "kernel `{kernel}` has no precompiled WGSL artifact, and this build of gust-wgpu (profile `{profile}`) was built without the `slang-runtime` feature, so it cannot compile the kernel at run time; run `cargo gust build` in the crate that defines the kernel and rebuild, or enable the `slang-runtime` feature in a dev build",
             ),
-            Self::ShapeUnsupported { kernel, shape } => write!(
+            Self::ShapeUnsupported {
+                kernel,
+                shape,
+                reason,
+            } => write!(
                 formatter,
-                "kernel `{kernel}` has the shape {shape:?}, which this version of gust-wgpu cannot run: only `grid` kernels run on a device here; a `pixel` kernel runs on the CPU twin and the `cpu` target until slice mx.p1b adds the fragment path"
+                "kernel `{kernel}` has the shape {shape:?}, which cannot be used here: {reason}"
+            ),
+            Self::ShapeIndependentOutput { kernel, parameter } => write!(
+                formatter,
+                "output `{parameter}` of the pixel kernel `{kernel}` was bound with an independent length; a pixel output holds exactly the call's element count (drop `Independent`)"
             ),
             Self::UnsupportedWorkgroupSize(size) => {
                 write!(

@@ -499,6 +499,24 @@ pub enum Error {
         /// The texture's height.
         height: u32,
     },
+    /// A `pixel` kernel was called over an extent with `y` or `z` other than 1 (slice mx.p1b, mx.p1a review N3). A
+    /// `pixel` call is one-dimensional, so the same program fails on every backend: this is the counterpart of
+    /// `gust_wgpu::Error::ShapeUnsupported` for an extent call.
+    PixelExtent {
+        /// The kernel, as `module::name`.
+        kernel: String,
+        /// The extent asked for.
+        extent: [u32; 3],
+    },
+    /// A `pixel` kernel's output (a read-write storage parameter) was bound with an independent length. A `pixel`
+    /// output is `Shared`, so its length is the call's element count; the counterpart of
+    /// `gust_wgpu::Error::ShapeIndependentOutput`.
+    PixelIndependentOutput {
+        /// The kernel, as `module::name`.
+        kernel: String,
+        /// The output parameter.
+        parameter: &'static str,
+    },
 }
 
 impl fmt::Display for Error {
@@ -605,6 +623,14 @@ impl fmt::Display for Error {
                 f,
                 "the texel ({x}, {y}) is outside the {width}x{height} texture"
             ),
+            Self::PixelExtent { kernel, extent } => write!(
+                f,
+                "kernel `{kernel}` has the shape Pixel, which runs one-dimensional calls only; the extent {extent:?} has a y or z other than 1 (use `call`, not `call_extent`)"
+            ),
+            Self::PixelIndependentOutput { kernel, parameter } => write!(
+                f,
+                "output `{parameter}` of the pixel kernel `{kernel}` was bound with an independent length; a pixel output has exactly the call's element count (drop `Independent`)"
+            ),
         }
     }
 }
@@ -706,6 +732,14 @@ where
         return Err(Error::UnsupportedWorkgroupSize { size });
     }
     let extent = call.extent();
+    // A `pixel` call is one-dimensional (Option S, slice mx.p1b): the refusal of `gust_wgpu`'s `validate_dispatch_extent`.
+    let pixel = kernel.shape == crate::Shape::Pixel;
+    if pixel && (extent.y != 1 || extent.z != 1) {
+        return Err(Error::PixelExtent {
+            kernel: kernel.qualified_name().to_string(),
+            extent: extent.to_array(),
+        });
+    }
     let parameters: Vec<_> = kernel
         .parameters
         .iter()
@@ -755,6 +789,17 @@ where
                 parameter: name,
                 expected: parameter.access,
                 actual: binding.access,
+            });
+        }
+        // A `pixel` output is `Shared`: its length is the call's element count (the refusal of `gust_wgpu`).
+        if pixel
+            && parameter.kind == ParameterKind::Storage
+            && parameter.access == Access::ReadWrite
+            && binding.length == LengthRule::Independent
+        {
+            return Err(Error::PixelIndependentOutput {
+                kernel: kernel.qualified_name().to_string(),
+                parameter: name,
             });
         }
         // A texture must have been created for the use the kernel makes of it: a read-only parameter is a sampled
@@ -828,6 +873,16 @@ where
     // here ([`Extent::MAX_INVOCATIONS`], at most and rounded up to whole workgroups); the twin's only limit is
     // that cap.
     if !extent.is_empty() {
+        // A `pixel` call covers at most `PIXEL_MAX_ELEMENTS` elements on every backend (Option S): the limit of
+        // `gust_wgpu`'s `check_launch_limits`, named the same. Its workgroup size is `[1, 1, 1]` and means nothing.
+        if pixel && extent.x > crate::PIXEL_MAX_ELEMENTS {
+            return Err(Error::DeviceLimit {
+                kernel: kernel.qualified_name().to_string(),
+                limit: "pixel_max_elements",
+                requested: u64::from(extent.x),
+                maximum: u64::from(crate::PIXEL_MAX_ELEMENTS),
+            });
+        }
         let requested = launch_invocations(size, extent);
         if requested > u128::from(MAX_INVOCATIONS) {
             return Err(Error::DeviceLimit {
@@ -2317,6 +2372,132 @@ mod tests {
         assert_eq!(
             too_large().to_string(),
             "kernel `cpu_tests::wide192` needs 4294967424 for `global_invocation_id`, the limit is 4294967296; split the work into several dispatches"
+        );
+    }
+
+    /// `fill(out: RW)` of the `pixel` shape (slice mx.p1b): the twin's refusals are the ones `gust_wgpu` makes.
+    struct PixelFill;
+    impl Kernel for PixelFill {
+        const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+            shape: crate::Shape::Pixel,
+            compatible_shapes: &[crate::Shape::Pixel],
+            workgroup_size: [1, 1, 1],
+            ..descriptor(
+                "pixel_fill",
+                [1, 1, 1],
+                &[storage("out", Access::ReadWrite, 0, F32)],
+            )
+        };
+    }
+
+    #[test]
+    fn a_pixel_call_is_one_dimensional_one_shared_output_and_at_most_the_cap() {
+        let cpu = CpuDevice::new();
+        let out = cpu.buffer(&[0.0f32; 4]);
+        let call = |extent: Extent| {
+            Call::<CpuDevice, PixelFill, 1>::new_extent(
+                extent,
+                [Arg::<F32Buffer>::from(&out).bind(Access::ReadWrite)],
+            )
+        };
+        assert_eq!(validate(&cpu, &call(Extent::linear(4))), Ok(()));
+        // A y or z other than 1 is refused before any binding is looked at, however small the buffer.
+        for extent in [[4, 2, 1], [4, 1, 2], [0, 2, 1]] {
+            let error = validate(&cpu, &call(Extent::new(extent[0], extent[1], extent[2])));
+            assert_eq!(
+                error,
+                Err(Error::PixelExtent {
+                    kernel: "cpu_tests::pixel_fill".to_string(),
+                    extent,
+                })
+            );
+        }
+        assert_eq!(
+            Error::PixelExtent {
+                kernel: "cpu_tests::pixel_fill".to_string(),
+                extent: [4, 2, 1],
+            }
+            .to_string(),
+            "kernel `cpu_tests::pixel_fill` has the shape Pixel, which runs one-dimensional calls only; the extent [4, 2, 1] has a y or z other than 1 (use `call`, not `call_extent`)"
+        );
+        // An independent read-write output is refused (the same refusal as `gust_wgpu`'s `ShapeIndependentOutput`).
+        let independent = Call::<CpuDevice, PixelFill, 1>::new(
+            4,
+            [Arg::<F32Buffer>::from(Independent(&out)).bind(Access::ReadWrite)],
+        );
+        assert_eq!(
+            validate(&cpu, &independent),
+            Err(Error::PixelIndependentOutput {
+                kernel: "cpu_tests::pixel_fill".to_string(),
+                parameter: "out",
+            })
+        );
+        // The same kernel as a grid kernel takes both, which is what makes the refusal the shape's.
+        struct GridFill;
+        impl Kernel for GridFill {
+            const DESCRIPTOR: KernelDescriptor = descriptor(
+                "grid_fill",
+                [1, 1, 1],
+                &[storage("out", Access::ReadWrite, 0, F32)],
+            );
+        }
+        assert_eq!(
+            validate(
+                &cpu,
+                &Call::<CpuDevice, GridFill, 1>::new(
+                    4,
+                    [Arg::<F32Buffer>::from(Independent(&out)).bind(Access::ReadWrite)]
+                )
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate(
+                &cpu,
+                &Call::<CpuDevice, GridFill, 1>::new_extent(
+                    Extent::new(2, 2, 1),
+                    [Arg::<F32Buffer>::from(&out).bind(Access::ReadWrite)]
+                )
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn a_pixel_call_beyond_the_cap_is_the_named_device_limit_and_an_empty_one_is_not_checked() {
+        let cpu = CpuDevice::new();
+        let cap = crate::PIXEL_MAX_ELEMENTS;
+        let over = |count: u32| validate(&cpu, &pixel_empty(count));
+        fn pixel_empty(count: u32) -> Call<'static, CpuDevice, PixelNoBindings, 0> {
+            Call::new(count, [])
+        }
+        struct PixelNoBindings;
+        impl Kernel for PixelNoBindings {
+            const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
+                shape: crate::Shape::Pixel,
+                compatible_shapes: &[crate::Shape::Pixel],
+                ..descriptor("pixel_none", [1, 1, 1], &[])
+            };
+        }
+        assert_eq!(over(cap), Ok(()));
+        assert_eq!(over(0), Ok(()));
+        assert_eq!(
+            over(cap + 1),
+            Err(Error::DeviceLimit {
+                kernel: "cpu_tests::pixel_none".to_string(),
+                limit: "pixel_max_elements",
+                requested: u64::from(cap) + 1,
+                maximum: u64::from(cap),
+            })
+        );
+        assert_eq!(
+            over(u32::MAX),
+            Err(Error::DeviceLimit {
+                kernel: "cpu_tests::pixel_none".to_string(),
+                limit: "pixel_max_elements",
+                requested: u64::from(u32::MAX),
+                maximum: u64::from(cap),
+            })
         );
     }
 

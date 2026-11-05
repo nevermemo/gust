@@ -15,7 +15,14 @@ use crate::{Error, validate_kernel};
 /// workgroups along x only, so it cannot be given a `y` or `z` extent. A kernel with a two- or three-dimensional
 /// workgroup takes `extent: [u32; 3]` and divides each axis by the workgroup size. Neither shape checks the device
 /// limits or the invocation cap: the generated host bypasses the checks `HeadlessDevice` makes (D36).
+///
+/// The snippet is a compute host. A `pixel` kernel is [`Error::ShapeUnsupported`]: it runs as a render pass
+/// (slice mx.p1b), and no pixel snippet exists in MX.
 pub fn render_wgpu_source(kernel: &KernelDescriptor) -> Result<String, Error> {
+    crate::render::require_grid(
+        kernel,
+        "the generated host snippet is a compute host; no pixel snippet exists",
+    )?;
     let resources = validate_kernel(kernel)?;
     let pipeline_type = format!(
         "{}{}Pipeline",

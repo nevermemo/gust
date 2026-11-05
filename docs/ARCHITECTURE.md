@@ -61,7 +61,7 @@ assigned here and verified against Slang at run time (D17).
 
 The current translator emits one self-contained Slang compilation unit per
 kernel. It includes the module's struct declarations, non-kernel helper functions,
-that kernel's resources, and one prefixed compute entry point. Helpers and user
+that kernel's resources, and one prefixed entry point (compute for `grid`, fragment for `pixel`). Helpers and user
 identifiers are not fully hygienically renamed yet.
 
 What differs between kinds of shader stage lives behind the `StageProfile` trait of
@@ -81,15 +81,17 @@ golden, artifact and export stayed byte for byte. `PIXEL` (`profile/pixel.rs`) i
 `void <entry>(float4 __gust_pos : SV_Position)`; its prologue computes `__gust_linear = uint(y) * 8192u + uint(x)`
 and the local `uint3 id = uint3(__gust_linear, 0u, 0u)`, so a kernel body reads `id.x` as it would in `grid`. It takes
 no `workgroup_size`, no `LocalId` or `GroupId`, refuses workgroup memory, barriers and atomics (GUST-E0729, which the
-classifier's E0723 reaches first for a pin), and has no extent forms. Three methods have no distinguishing answer yet:
+classifier's E0723 reaches first for a pin), and has no extent forms. Four methods have no distinguishing answer yet:
 neither profile returns an `extra_bindings` entry (the row width is baked into the text, D127, so no uniform exists),
-neither rewrites an output write in `lower_output_write` (outputs are storage writes in place, D120), and
+neither rewrites an output write in `lower_output_write` (outputs are storage writes in place, D120; the emitter never
+calls it, only the tests do), `twin` has one answer, `TwinHarness::Linear`, and
 `contract_tier` has one value, `Exact`; D62's per-function tier is reserved for the shapes Breeze brings (D95). The
 row width exists twice, `ROW_WIDTH` in `gust-macros` and `gust::PIXEL_ROW_WIDTH`, because a proc-macro crate cannot
 depend on `gust`; a `gust` test compares the emitted text with the constant.
 
-Which shapes a kernel can take is the classifier's job, a separate module (`validate/classify.rs`, mx.c, D94). It runs
-in the validator on the signature and the body by conservative syntactic rules, gives the descriptor's
+Which shapes a kernel can take is the classifier's job, a separate module (`validate/classify.rs`, mx.c, D94). It lives
+under `validate/` but runs in the expansion (`expand/mod.rs`), for every kernel and before the profile is chosen, on the
+signature and the body by conservative syntactic rules, gives the descriptor's
 `compatible_shapes`, and checks the `#[kernel(shape = ..)]` pin against them. Anything it does not recognise is
 `grid`-only with the span of the construct named, so a wrong guess costs a pin error and never a wrong shader. It does
 not read the map generator's `own_index` stamp. The codes of the pin and the classifier are GUST-E0721 to E0728 (E0729
@@ -293,13 +295,13 @@ and sample type of a format are wgpu's own `block_copy_size` and `sample_type`, 
 a kernel is built per device in one of two variants from the features the device really has. With `float32-filterable`
 an `f32` sampled texture is filterable and takes a filtering sampler; without it the texture is unfilterable, and a
 linear sampler is `Error::TextureFilter` at submit while a nearest one binds either way. `FeaturesPolicy` is the knob
-(`Adapter` under `DeviceOptions::default()`, `Default` under `HeadlessDevice::new()` and on `wasm32`). A storage texture
-is bound write-only when the kernel only writes it (any of the nine formats) and read-write only for the three `r32`
-formats, because wgpu refuses read-write for a wider one (D120). `check_kernel_limits` covers the texture counts and the
-2-D size limit of the opened device, and the typed call checks use, format, sampler options and device instance
-(`TextureUse`, `TextureFormat`, `TextureSize`, `SamplerOptions`). The staged graph refuses a kernel with a texture or
-sampler parameter (`Error::UnsupportedParameter`); the generated host snippet requests `float32_filterable` when a
-kernel samples.
+(`Adapter` under `DeviceOptions::default()`, `Default` under `HeadlessDevice::new()` and on `wasm32`). The binding
+access comes from the parameter type: a `WriteTexture2D` is bound write-only (any of the nine formats) and a
+`StorageTexture2D` read-write (only the three `r32` formats), because wgpu refuses read-write for a wider one (D120). `check_kernel_limits` covers the texture counts and the
+2-D size limit of the opened device, and the typed call checks use, format and device instance (`TextureUse`, `TextureFormat`), while creation checks size
+and sampler options (`TextureSize`, `SamplerOptions`, from `create_texture_2d`, `write_texture` and `create_sampler`).
+The staged graph refuses a kernel with a texture or sampler parameter (`Error::UnsupportedParameter`); the generated
+host snippet takes a `float32_filterable: bool` when a kernel samples.
 
 The `pixel` runtime (slice mx.p1b, D120 and D127; `crates/gust-wgpu/src/render.rs`). A `pixel` kernel is built into a
 render pipeline, not a compute pipeline: the vertex stage is the shared `shapes/fullscreen.wgsl` (three vertices from
@@ -402,7 +404,7 @@ Textures (slices mx.t1 to mx.t3, D64, D90, D92). `gust::texture` names no wgpu t
 `Sampler`, and both take a binding slot in the order of the parameters, like a buffer. A texture is a `Resource` of
 kind `kind::Texture` (`BindingKind::Texture`): it has a width and a height and no element count, so the length rule
 does not apply. A sampler is not a `Resource`. It is the call's own argument kind (`SamplerArg`, on a device that is
-also a `SamplerDevice`), carried beside the resource bindings in the third parameter of `Call` and `Run<K, N, X>`
+also a `SamplerDevice`), carried beside the resource bindings in the last type parameter `X` of `Call<'r, D, K, N, X>` and `Run<K, N, X>`
 (`SamplerSet`: `()`, or one binding per sampler parameter), so a texture, a sampler or a buffer in the wrong place is a
 compile error, while the texture's use, its format and its device instance are checked at submit. The descriptor
 carries what the reflection can witness: `ResourceLayout::texture_v1(element, TextureLayout { format, dimension,
@@ -456,6 +458,9 @@ StorageTexture2D<R32Float> s   Texture RW, TextureV1 ReadWrite, r32float      [f
 WriteTexture2D<Rgba32Float> w  Texture RW, TextureV1 WriteOnly, rgba32float   [format("rgba32f")] WTexture2D<float4> w;
 Sampler f                      Sampler, no access, no layout                  SamplerState f;
 ```
+
+The `format` attribute is the Slang name of `F` (`r32f` and `rgba32f` are examples; `r32ui`, `rg32i` and the rest come from
+the one table in `slang/texture.rs`).
 
 Under `shape = pixel` the rest of the table changes in two places: the entry point is a `fragment` taking
 `float4 __gust_pos : SV_Position`, and the invocation parameter is a local `uint3 id = uint3(__gust_linear, 0u, 0u)`
@@ -571,8 +576,9 @@ alignment, and stride down to scalars. A texture is compared by slot, access, di
 or write-only one also by its exact format, a sampled one also by its sample class, and a sampler by its slot; each
 mismatch names the field. A schema 1 or 2 document cannot describe a texture or a sampler, so a descriptor
 that has one fails against it with a hint to re-export. The reader still reads documents of all three schemas as it did,
-but the helper binary itself must be at schema 3: `toolchain::require` refuses an older one, because an older helper
-cannot take the stage argument. The private `HeadlessDevice::compile_kernel`
+but the helper binary itself must be at schema 3: cargo-gust's `toolchain::require` and xtask's pin
+(`HELPER_SCHEMA = "3"`) refuse an older one, because an older helper cannot take the stage argument, and `gust::reflect`
+adds a note naming an outdated helper when the stage argument fails. The private `HeadlessDevice::compile_kernel`
 (reached through `cached_kernel`) calls both on every pipeline-cache miss and refuses
 to build the pipeline on any error; the WGSL it feeds to wgpu is the helper's
 artifact, so the executed shader and the reflected layout come from one compilation.

@@ -40,7 +40,7 @@ which compiles the kernel and reflects the *same linked program* through Slang's
 layout API. The runtime refuses to create the pipeline unless the descriptor's
 names, bindings, access modes, workgroup size, and every nested field offset, size,
 alignment, and stride equal what the compiler reports; on success it caches the
-shader module, bind-group layout, pipeline layout, and compute pipeline.
+shader module, bind-group layout, pipeline layout, and compute or render pipeline.
 
 ## Try it
 
@@ -472,7 +472,7 @@ opts in with a pin:
 
 ```rust
 #[kernel(shape = pixel)]
-pub fn scale(id: SV_DispatchThreadID, input: StructuredBuffer<f32>, mut out: RWStructuredBuffer<f32>) {
+pub fn scale(id: SV_DispatchThreadID, input: StructuredBuffer<float>, mut out: RWStructuredBuffer<float>) {
     let i = id.x;
     out[i] = input[i] * 2.0f32;
 }
@@ -480,8 +480,9 @@ pub fn scale(id: SV_DispatchThreadID, input: StructuredBuffer<f32>, mut out: RWS
 
 The typed `call`, `submit` and `dispatch` are the same (without the `_extent` forms), the entry point is
 `[shader("fragment")]`, and `id.x` is the element index (the fragment's `y * 8192 + x`; `id.y` and `id.z` are 0).
-Nothing infers a shape at run time: a kernel is `grid` unless it pins `pixel`. The validator's classifier
-(`crates/gust-macros/src/validate/classify.rs`) works out which shapes a kernel could take, lists them in
+Nothing infers a shape at run time: a kernel is `grid` unless it pins `pixel`. The classifier
+(`crates/gust-macros/src/validate/classify.rs`, run in the expansion for every kernel before the profile is chosen)
+works out which shapes a kernel could take, lists them in
 `KernelDescriptor::compatible_shapes` (information only) and checks a pin against them. Its rules are syntactic and
 conservative, and whatever it does not recognise makes a kernel `grid`-only. A kernel is `grid`-only when it:
 
@@ -505,8 +506,8 @@ at most 2^26 elements (`gust::PIXEL_MAX_ELEMENTS`) on every device, which `grid`
 such capability, so GUST cannot refuse there and an adapter without it would give a wrong result instead.
 
 Evidence is narrow. On the RTX 5090 (Vulkan), `pixel`, `grid` and an independent host replay gave identical words for
-`u32`, `i32`, `f32`, `Vec2` and `Vec4` outputs at sizes around the row width and up to the cap
-(`crates/gust-wgpu/tests/pixel.rs`). In headless Chrome 156 on the same GPU, `examples/web-vector-add` ran the pixel
+`u32`, `i32`, `f32`, `Vec2` and `Vec4` outputs at sizes from 0 up to about 1.7e7 elements (the row width and its neighbours, `8192k + 1` for k up to 1000, and the
+squares up to 4097^2; `crates/gust-wgpu/tests/pixel.rs`); only `u32` also ran at the cap of 2^26. In headless Chrome 156 on the same GPU, `examples/web-vector-add` ran the pixel
 form at 1000 and 8197 elements and matched the host and the `grid` form bit for bit; no other browser adapter has run
 it. That is evidence for those bodies, not a proof for every kernel; the contract is in
 [SEMANTICS](docs/SEMANTICS.md) and the evidence labels in [VALIDATION](docs/development/VALIDATION.md).
@@ -701,7 +702,7 @@ dispatches reuse:
 - the wgpu shader module;
 - the bind-group layout;
 - the pipeline layout;
-- the compute pipeline.
+- the compute or render pipeline.
 
 Persistent typed buffers, heterogeneous struct/scalar bindings, batched command
 encoding, asynchronous jobs, and GPU timestamp queries remain available from
@@ -980,7 +981,7 @@ The direct syntax translator currently supports:
 - workgroup memory (`Workgroup<[T; N]>`), `LocalId`/`GroupId` and `workgroup_barrier()` (m7.g1, D100, D101), and
   `par_for!` loops (m7.p, D103): see their sections above;
 - execution shapes (MX, D61, D63): `grid` by default and `pixel` by `#[kernel(shape = pixel)]`, with the classifier
-  that decides which a kernel can take and the pin errors GUST-E0721 to E0729; see "Shapes: `grid` and `pixel`" for
+  that decides which a kernel can take and the pin errors GUST-E0721 to E0728 (E0729 is the profile's own refusal); see "Shapes: `grid` and `pixel`" for
   what makes a kernel `grid`-only and for the limits of `pixel` (one-dimensional calls, `Shared` outputs, at most 2^26
   elements, fragment-stage storage writes);
 - 2-D textures and samplers (MX, D64, D90): `Texture2D<T>`, `StorageTexture2D<F>` (the three `r32` formats),
@@ -1149,7 +1150,7 @@ Golden Slang and a real-GPU semantics fixture live in `tests/fixtures/`; update
 expected output only after reviewing the change and testing both target compilers.
 The [roadmap](docs/ROADMAP.md) prioritizes correctness, actionable diagnostics ([stable codes](docs/DIAGNOSTICS.md)),
 ABI/capability evidence, and then a small explicit staged-execution proof.
-Slang reflection now gates every pipeline for the StorageV1, StorageV2 and Std140V1 layouts (D17); broader
+Slang reflection now gates every pipeline for the StorageV1, StorageV2 and Std140V1 layouts (D17) and for 2-D textures and samplers (D91); broader
 resource layouts need the same compiler evidence before they enter the runtime.
 New ECS work starts with a small GPU-resident component pool, not a full engine rewrite.
 

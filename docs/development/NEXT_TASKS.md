@@ -103,9 +103,6 @@ test module; do not mix that mechanical move with behavior changes.
 
 - `gust::slang` checks `slangc -version` against the pin (D72). Then remove the `__gust_keep` wrapper behind the
   naga comparison and a GPU read-back (m4.z measured that 2026.20 no longer needs it; 13.1 fails 13 of 30 shapes).
-- `gust::Job` on wasm32 as D69 states: `status` from `on_submitted_work_done`, `wait` returns an error,
-  `Device::dispatch` and `dispatch_call` gated. Until then `WgpuJob::wait` is a documented no-op. It must land
-  before MR publishes (see "Before MR publishes", M7 follow-ups).
 - The wasm32 `disallowed-methods` ban (`std::thread::sleep`, `Instant::now`) for `gust` and `web-vector-add`, as
   `gust-wgpu` has it (m4.z).
 - Browser automation in CI (S4, D69): measure a software WebGPU adapter on a Linux runner first.
@@ -164,9 +161,9 @@ test module; do not mix that mechanical move with behavior changes.
 - "Default limits" has two meanings since m7.a0: `HeadlessDevice::new()` keeps wgpu's portable defaults
   (`LimitsPolicy::Default`), while `DeviceOptions::default()` and so `default_device()` take the adapter's own limits on
   native (`LimitsPolicy::Adapter`; `LimitsPolicy` and `DeviceOptions` in `crates/gust-wgpu/src/device.rs`). A kernel
-  validated through one entry point can exceed the other's limits, for example in a browser. Decide whether the two
-  should agree or be named differently before MR, and keep it in M8's portable-floor work (sanity-fable and sanity-opus,
-  2026-11-02).
+  validated through one entry point can exceed the other's limits, for example in a browser. For 0.1.0 the docs of both
+  name the difference and nothing else changes (D132); whether they should agree stays in M8's portable-floor work
+  (sanity-fable and sanity-opus, 2026-11-02).
 - The crate-path question before m7.p: the macro writes `::gust::` in about 90 places
   (`crates/gust-macros/src`, tests excluded), MR renames the crates (D48) and m7.p adds more generated paths.
   Decide between `[lib] name = "gust"` on the renamed crate and a macro that resolves the imported crate path (the ROADMAP's MR row
@@ -180,14 +177,20 @@ test module; do not mix that mechanical move with behavior changes.
   `as_buffer().as_wgpu_buffer()` shows its whole size class to the kernel (`arrayLength`, the previous owner's
   tail). m7.p did not size them: `generated_host.rs` still emits `as_entire_binding()` (m7.a0 review). Open; the next
   slice that changes the generated host code takes it, with a test that reads `arrayLength` of a pooled `GpuVec`.
-- Before MR publishes (M7 sanity, Fable/Opus): the wasm32 `Job` contract (D69; see the M4 follow-ups); and a way to
-  query which gust-algo variant ran, since v1 switches to v0 above about 2^28 elements without any sign, and the float
-  bound changes with it (see the m7.r4 follow-ups). Done in mr.b3: `#[non_exhaustive]` on `DeviceOptions`,
-  `SamplerOptions` and `FeaturesPolicy`, with builder methods.
+- Before MR publishes (D132): mr.b5 (CPU texture transfers refuse a texture of another device and `read_texture` returns
+  a `Result`; the classifier's ledger of what the validator accepts); README states the linear-filtering assumption of
+  D92 (8-bit filter weights; Vulkan guarantees 4 `subTexelPrecisionBits`) and both default-limits entry points name
+  their difference (mr.p's doc pass). Done: `#[non_exhaustive]` with builders (mr.b3) and the wasm32 `Job` contract
+  (mr.b4, D131). Moved out of 0.1.0 (D132): the query of which gust-algo variant ran, with gust-algo's publication.
 - mr.b2 follow-ups (Opus review): two examples call items mr.b2 hid (`render_wgpu_source`,
   `gust::spirv::words_as_le_bytes`), which works but teaches support surface; and struct variants of the public error
   enums can still be built and destructured outside the crate (gust-algo builds `DeviceLimit`), so a new field is
-  breaking: variant-level `#[non_exhaustive]` is for MR to decide before publishing.
+  breaking: variant-level `#[non_exhaustive]` is not taken for 0.1.0 (D132; a new field is a minor bump), so revisit it
+  before 1.0.
+- mr.b4 follow-ups (Opus re-check): `Error::WouldBlock`'s Display says "the work was submitted and will run", which a
+  job that submitted nothing does not fit ("any work"); its doc lists `dispatch` but not `dispatch_extent`; the
+  generated `map_gpu` doc could say that on `wasm32` it returns before the work finishes.
+- After 0.1.0 (D132): a public-API baseline, `cargo-semver-checks` against the published 0.1.0 in CI for 0.1.x.
 - mr.t2 follow-ups (Opus review): xtask still starts the helper without the ETXTBSY retry (the two launches in
   `xtask/src/verify.rs`; xtask has no `gust` dependency); a third copy of `HELPER_VARIABLE` and `default_helper` is left
   in `xtask/src/release.rs`; `gust::slang` now checks the `slangc` version, so D72's `__gust_keep` follow-up can be
@@ -352,12 +355,13 @@ test module; do not mix that mechanical move with behavior changes.
   with a texture or sampler parameter (`Error::UnsupportedParameter`), and a texture is created and written by hand
   (`create_texture_2d`, `write_texture`). A resident texture type with pooled storage, and graph nodes that carry
   textures, are open.
-- SPIR-V execution of the goldens, for MR (D95; it replaces the M6 follow-up of the same gap, sanity-opus 2026-11-02,
-  ruling 4). `gust-wgpu` executes WGSL only (D82). A passthrough needs `Features::PASSTHROUGH_SHADERS` (wgpu 30), a
-  second `create_shader_module` path and a per-adapter record, all in `gust-wgpu/src/lib.rs`. MR is the milestone that
-  ships SPIR-V to Vulkan users, and MX adds nothing that executes it: the SPIR-V of the golden sets (`textures` and
-  `pixel` among the eleven) is validated with `spirv-val` and nothing more. The same gap leaves the matrix and uniform
-  layout decorations unexecuted (SEMANTICS section 4).
+- SPIR-V execution of the goldens, after 0.1.0 (slice mr.v: D95 placed it in MR, the MR plan's Q5 deferred it to 0.1.x,
+  D132; it replaces the M6 follow-up of the same gap, sanity-opus 2026-11-02, ruling 4). `gust-wgpu` executes WGSL only
+  (D82). A passthrough needs `Features::PASSTHROUGH_SHADERS` (wgpu 30), a second `create_shader_module` path and a
+  per-adapter record, all in `gust-wgpu/src/lib.rs`. 0.1.0 ships the exported SPIR-V to Vulkan users, and MX adds
+  nothing that executes it: the SPIR-V of the golden sets (`textures` and `pixel` among the eleven) is validated with
+  `spirv-val` and nothing more. The same gap leaves the matrix and uniform layout decorations unexecuted (SEMANTICS
+  section 4).
 - Classifier test gaps (mx.x review of part 1, item 14): five rejection reasons have no `check-ui` fixture. Four are
   pinned by `validate/classify/tests.rs` only (workgroup memory, `LocalId`/`GroupId`, a write to one component of an
   output, a `StorageMut` that is never written), and `OutputOther` (E0728 for an output rebound or passed to a helper)
@@ -367,11 +371,11 @@ test module; do not mix that mechanical move with behavior changes.
   has no row for it (the record is in section 1 and DIFFTEST, "Shapes"; the K3 form that showed 4 ulp was not kept).
   File a row with a kernel of that shape (an unfused multiply-add chain after a division) and pin the observation per
   adapter kind, so a driver change shows up as a NOTE, as the other unenforced rows do.
-- Owner-run on the Radeon 890M (not a gate, and none may stand in for the RTX 5090): `cargo test -p gust-wgpu --test
-  pixel --test textures --test shape_refusal` (cheap), which would be the first GUST `pixel` or texture kernel on that
-  adapter; and `examples/shape-bench`'s 890M row, with the 890M as a second adapter for the identity test. The RTX 5090
-  table of the bench is done (a quiet window, STATUS MX close record iii; the table file is in the work area, not in
-  the repository).
+- Owner-run on the Radeon 890M (not a gate, and none may stand in for the RTX 5090):
+  `cargo test -p gust-compute-wgpu --test pixel --test textures --test shape_refusal` (cheap), which would be the first
+  GUST `pixel` or texture kernel on that adapter; and `examples/shape-bench`'s 890M row, with the 890M as a second
+  adapter for the identity test. The RTX 5090 table of the bench is done (a quiet window, STATUS MX close record iii;
+  the table file is in the work area, not in the repository).
 - The cross-shape batch on lavapipe is a step of the `gpu-software` workflow since slice mx.z (VALIDATION, "The
   differential batch"): `check-difftest --seeds 1-2 --shapes grid,pixel`, on the pull-request list and the nightly
   list. It took 25 s including its build on a warm runner (lavapipe run 42071043309, 32 programs as `pixel`, 0

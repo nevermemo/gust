@@ -1,16 +1,16 @@
 # Differential program generator (`tests/difftest`)
 
-Status: slices m5.c1a (the integer core), m5.c1a2 (floats v1, the exact-interval subset of R1-4), m5.c1b (the
-batch runner `difftest-run`), m5.c1c (the shrinker) and m6.d (vectors and matrices, DIFFTEST_FORMAT 6). The crate
-generates integer, boolean and `f32` kernels from a seed, and (since format 6) kernels that compute with the
-`gust::math` vectors and matrices as locals and intermediates (buffers and results stay scalar), evaluates them with an
-independent interpreter that tracks the defined domain (and, for floats,
-an interval of every value a conforming WGSL implementation may hold), writes them as a `#[gust::gpu]` crate, and
-`difftest-run` builds a batch of them, runs every program on the interpreter, the CPU twin and the GPU, and reports
-what disagreed. The crate itself is std only and has no GPU code: the GPU code lives in the generated run crate,
-which depends on `gust` and `gust-wgpu`. `difftest-run --shrink` reduces one failing program (local use only; see
-Shrinking). A unit test is evidence about the generator, the interpreter, the emitter and the classifier only; a GPU
-claim needs a `report.json` of a `gpu` run, whose `mode`, `adapter` and `programs_executed` say what ran.
+Status: slices m5.c1a (the integer core), m5.c1a2 (floats v1, the exact-interval subset of R1-4), m5.c1b (the batch
+runner `difftest-run`), m5.c1c (the shrinker) and m6.d (vectors and matrices, DIFFTEST_FORMAT 6). The crate generates
+integer, boolean and `f32` kernels from a seed, and (since format 6) kernels that compute with the `gust::math` vectors
+and matrices as locals and intermediates (buffers and results stay scalar), evaluates them with an independent
+interpreter that tracks the defined domain (and, for floats, an interval of every value a conforming WGSL implementation
+may hold), writes them as a `#[gust::gpu]` crate, and `difftest-run` builds a batch of them, runs every program on the
+interpreter, the CPU twin and the GPU, and reports what disagreed. The crate itself is std only and has no GPU code: the
+GPU code lives in the generated run crate, which depends on `gust-compute` and `gust-compute-wgpu` (library names `gust`
+and `gust_wgpu`). `difftest-run --shrink` reduces one failing program (local use only; see Shrinking). A unit test is
+evidence about the generator, the interpreter, the emitter and the classifier only; a GPU claim needs a `report.json` of
+a `gpu` run, whose `mode`, `adapter` and `programs_executed` say what ran.
 
 `tests/difftest` is a workspace of its own (own `Cargo.lock`, std only, `publish = false`), like `tests/ui` and
 `tests/dual`; the root workspace does not contain it. Run it from that directory with the repository's usual cargo

@@ -51,6 +51,8 @@ NVIDIA GPU has run a `pixel` kernel and no texture kernel. README, "Stability", 
 
 ### Known limits
 
+- In the browser (`wasm32`) nothing blocks: a job's `wait`, and so a kernel's `dispatch`, returns `Error::WouldBlock`
+  after the work was submitted. Submit, then await a readback (`read_typed_buffer_async`, `GpuVec::to_vec_async`).
 - SPIR-V is exported and validated with `spirv-val` when it is on `PATH`, but the runtime executes the WGSL.
   Running the exported SPIR-V is planned for a 0.1.x release.
 - The run-time compile path does not look into the managed Slang cache by itself yet: put the pinned `slangc` on

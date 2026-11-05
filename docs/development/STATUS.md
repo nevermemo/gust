@@ -37,8 +37,9 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
 
 M7 (GPU concepts in Rust) closed on 2026-11-04 (D126). MX (execution shapes and textures) closed on 2026-11-05 (D129)
 after a sanity check by Fable and Opus in the Codex slot (both "proceed with fixes"), the fixes in slices mx.z and
-mr.b3, and `check-full` at `27a461a`. MR (the first public release) is active: the rename mr.n, then the owner's publish
-preparation.
+mr.b3, and `check-full` at `27a461a`; a Codex confirming pass followed (proceed with fixes, nothing reopens MX; D132).
+MR (the first public release) is active: the rename mr.n and the wasm32 `Job` contract mr.b4 are merged, mr.b5 (two
+pre-publish fixes from the Codex pass) is in review, then the owner's publish preparation (mr.p) and the close (mr.z).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so
@@ -754,6 +755,35 @@ preparation.
   must-fix, three should-fixes (the test, the `Poll` text, the `OutOfMemory` doc for textures) and the nits taken but
   one (the view and the bind group, above). Main: 25 of 25 gates green on `4467dc4` (2026-11-05 18:13 to 19:15Z,
   RTX 5090).
+- MR mr.b4 (`31eed30`, fix round `35fab2e`, merge `71a184a`; D131): the wasm32 `Job` contract. `WgpuJob::status` on
+  `wasm32` reads a flag that `Queue::on_submitted_work_done` sets, registered in `submit_batch` right after
+  `queue.submit`; `wait` and `wait_timeout` return the new `Error::WouldBlock` there (the work was submitted and runs;
+  the payload names the refusing method). The trait methods and the macro's `dispatch` stay on every target (D69's
+  "already gated" was wrong; the builder stopped at it and the coordinator ruled the run-time error); the four blocking
+  `HeadlessDevice` helpers are `cfg(not(target_arch = "wasm32"))`. The review found that the generated `map_gpu` and
+  `map_gpu_on` waited through `dispatch` and so always failed in the browser: on `wasm32` they now submit and drop the
+  job (native expansion unchanged, no golden moved). The web example checks, strictly, `Pending` right after submit,
+  `Complete` after the awaited readback, `WouldBlock` from `wait`, `wait_timeout` and the generated `dispatch`, and
+  `map_gpu` read back with `to_vec_async`: `check-web` passed, `Gpu (WebGPU, Chrome 156.0.8078.74, nvidia blackwell)`.
+  Native behaviour and the Gpu pin (379/34) are unchanged; lavapipe runs 42101881893 and 42110495808 green. Opus merge
+  after fixes: one must-fix (`map_gpu` on `wasm32`), five should-fixes and the nits taken; a re-check of the fix round
+  approved it with three nits, filed. Main: 25 of 25 gates green on `acdd53f` (2026-11-05 22:08 to 23:18Z, RTX 5090;
+  `gpu-verify` passed when rerun alone, 23:20 to 23:26Z, after the known validation-layer access violation in the
+  `textures` binary).
+- MR mr.n (`b237924`, fix round `614e167`, merge `acdd53f`; D130): the rename to the D48 package names, `gust-compute`,
+  `gust-compute-macros` and `gust-compute-wgpu`, with the library names kept. `package =` on 99 dependency lines (87
+  `tests/ui` manifests and the cpu-target, dual, precompiled, difftest-template and hello-gust fixtures), every `-p` in
+  xtask, its tests and CI, `CRATE_RULES`, the user-facing strings (`cargo tree -e features -i gust-compute`, the
+  `gust-compute-macros` and `gust-compute-wgpu` hints), six hand-edited expected lines (the package name in a build
+  error), and six lockfiles with names only. check-precompiled E8 failed on the rename: the packaged `kernels` lock
+  resolved against crates.io, which had matched the unrelated `gust` crate before and found only the `gust-compute`
+  0.0.0 placeholder after; it now patches the two packages onto this checkout through `--config` (no committed path; a
+  root it cannot quote is refused; a unit test pins the arguments), with `tests/precompiled/Cargo.lock` unchanged and no
+  unused-patch warning. The lane's own run of the main gate list passed 25 of 25 on `b237924`; the fix round ran on the
+  merge with mr.b4. Opus merge after fixes: no must-fix, three should-fixes (the VALIDATION E8 and check-arch rows,
+  package names in rustdoc and prose, the task files' `-p` lines) and the nits taken. Main: 25 of 25 gates green on
+  `acdd53f` (2026-11-05 22:08 to 23:18Z, RTX 5090; `gpu-verify` passed when rerun alone, 23:20 to 23:26Z, after the
+  known validation-layer access violation in the `textures` binary).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a
@@ -1230,14 +1260,12 @@ Tier: Gpu (RTX 5090) except where noted.
   is therefore redundant under 2026.20 (slice m4.z, 2026-11-02: 30 comparison-in-list shapes all validate in naga
   without it) but needed under 13.1 (13 of the 30 fail), and `gust::slang` runs whatever `slangc` is on `PATH`, so it
   stays until the library enforces the pin.
-- Open (filed in NEXT_TASKS at the M4 close; D71 records the manifest field names): `gust::Job` needs the
-  wasm-aware contract of D69 (`WgpuJob::wait` is a documented no-op on wasm32 and `status` reports
-  `Complete` early); the wasm32 clippy ban on `std::thread::sleep` and `Instant::now` covers `gust-wgpu` only (m4.z),
-  not `gust` or `web-vector-add`; a plain
-  `cargo install cargo-gust` needs `GUST_PROFILE=dev`; CI's `precompiled` job runs `--check-only` plus a NoAdapter run
-  of the release consumer, and E1, E3, E8 and E7b stay local; a GPU-side no-op compare-exchange is not detected by a
-  GPU test and there is no signed ledger case (m4.0); S2 did not measure the wasm32-to-web inference (m4.g2 builds
-  under an explicit `GUST_PROFILE=web`).
+- Open (filed in NEXT_TASKS at the M4 close; D71 records the manifest field names): `gust::Job`'s wasm-aware contract of
+  D69 (done in mr.b4, D131); the wasm32 clippy ban on `std::thread::sleep` and `Instant::now` covers `gust-wgpu` only
+  (m4.z), not `gust` or `web-vector-add`; a plain `cargo install cargo-gust` needs `GUST_PROFILE=dev`; CI's
+  `precompiled` job runs `--check-only` plus a NoAdapter run of the release consumer, and E1, E3, E8 and E7b stay local;
+  a GPU-side no-op compare-exchange is not detected by a GPU test and there is no signed ledger case (m4.0); S2 did not
+  measure the wasm32-to-web inference (m4.g2 builds under an explicit `GUST_PROFILE=web`).
 - Closed by m4.z: helper freshness judged by a source-hash stamp and the Slang tag, and a byte check of all five copies
   of the committed artifact set (the m4.r known gaps), a `cargo gust doctor` warning for a `PATH` `slangc` of another
   version, and the wasm32 clippy guard of `gust-wgpu`.

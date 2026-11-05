@@ -5,8 +5,10 @@
 //! under `GUST_PROFILE=web`, runs `wasm-bindgen --target web`, serves `index.html` with the result from a loopback
 //! server, opens it in headless Chrome and reads the one line that [`run`] logs to the console:
 //!
-//! - `GUST_OK <vendor> <architecture>` when the GPU result equals the host reference to the last bit, where the two
-//!   words are what the browser says about the adapter (`GPUAdapter.info`; wgpu's own `name` is empty there);
+//! - `GUST_OK <vendor> <architecture>` when both forms of the kernel (the `grid` form, a compute pass, and the
+//!   `pixel` form, a render pass whose fragments write the output buffer, D120) equal the host reference and each
+//!   other to the last bit, where the two words are what the browser says about the adapter (`GPUAdapter.info`;
+//!   wgpu's own `name` is empty there);
 //! - `GUST_FAIL <reason>` on any error or panic.
 //!
 //! The whole crate is `cfg(target_arch = "wasm32")`: on the host it is empty.
@@ -43,9 +45,22 @@ mod vector_add {
             out[i] = a[i] + b[i];
         }
     }
+
+    /// The same sum as a `pixel` kernel (mx.w): one fragment per element, scissored to the live elements by the host,
+    /// so there is no bounds check. The output is a storage buffer written from the fragment stage.
+    #[kernel(shape = pixel)]
+    pub fn add_pixel(
+        id: SV_DispatchThreadID,
+        a: StructuredBuffer<float>,
+        b: StructuredBuffer<float>,
+        mut out: RWStructuredBuffer<float>,
+    ) {
+        let i = id.x;
+        out[i] = a[i] + b[i];
+    }
 }
 
-/// Runs the kernel on the browser's GPU and returns the line it logged: `GUST_OK <vendor> <architecture>` or
+/// Runs both forms of the kernel on the browser's GPU and returns the line it logged: `GUST_OK <vendor> <architecture>` or
 /// `GUST_FAIL <reason>`. It never rejects; a panic is logged as `GUST_FAIL panic: ...` first.
 #[wasm_bindgen]
 pub async fn run() -> String {
@@ -103,6 +118,15 @@ async fn browser_adapter_label() -> String {
         .unwrap_or_else(|_| "unknown unknown".to_owned())
 }
 
+/// The index of the first element whose bits differ, or of the first missing one when the lengths differ; `None` when
+/// the two are equal bit for bit.
+fn first_difference(left: &[f32], right: &[f32]) -> Option<usize> {
+    left.iter()
+        .zip(right)
+        .position(|(left, right)| left.to_bits() != right.to_bits())
+        .or_else(|| (left.len() != right.len()).then_some(left.len().min(right.len())))
+}
+
 async fn vector_add_on_the_browser_gpu() -> Result<String, String> {
     // Small integers and halves: every sum is exact in f32, so the comparison below is exact.
     let a: Vec<f32> = (0..LENGTH).map(|i| i as f32).collect();
@@ -127,16 +151,41 @@ async fn vector_add_on_the_browser_gpu() -> Result<String, String> {
         .await
         .map_err(|error| format!("read-back failed: {error}"))?;
 
-    if result != expected {
-        let first = result
-            .iter()
-            .zip(&expected)
-            .position(|(got, want)| got != want)
-            .unwrap_or(result.len().min(expected.len()));
+    if let Some(first) = first_difference(&result, &expected) {
         return Err(format!(
-            "GPU result differs from the host reference: {} of {} values, first at index {first}",
+            "grid result differs from the host reference: {} of {} values, first at index {first}",
             result.len(),
             expected.len()
+        ));
+    }
+
+    // The `pixel` form of the same kernel: a render pass over a full-screen triangle, scissored to the LENGTH live
+    // elements, whose fragments write the storage buffer (D120, D127). Its output starts as a value no sum equals,
+    // so an element no fragment wrote cannot pass. A browser that cannot write storage from a fragment answers with
+    // `ShapeUnsupported` here, and the reason is what the page logs.
+    let pixel_out = device.create_f32_buffer(
+        "web pixel out",
+        &vec![-1.0e9; LENGTH],
+        GpuBufferAccess::ReadWrite,
+    );
+    let _pixel_job = vector_add::add_pixel::submit(&device, LENGTH as u32, &a, &b, &pixel_out)
+        .map_err(|error| format!("pixel dispatch failed: {error}"))?;
+    let pixel_result = device
+        .read_typed_buffer_async(&pixel_out)
+        .await
+        .map_err(|error| format!("pixel read-back failed: {error}"))?;
+    if let Some(first) = first_difference(&pixel_result, &expected) {
+        return Err(format!(
+            "pixel result differs from the host reference: {} of {} values, first at index {first}",
+            pixel_result.len(),
+            expected.len()
+        ));
+    }
+    if let Some(first) = first_difference(&pixel_result, &result) {
+        return Err(format!(
+            "pixel result differs from the grid result: {} of {} values, first at index {first}",
+            pixel_result.len(),
+            result.len()
         ));
     }
 

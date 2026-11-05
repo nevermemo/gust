@@ -719,7 +719,9 @@ fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
     assert!(!expected.is_empty(), "no artifacts in {}", source.display());
     // The example may hold more kernels than the fixture (its own `#[gpu] fn`, whose pair `cargo gust build` writes
     // beside the fixture's): every file of the fixture is there, byte for byte, and the manifest lists at least the
-    // fixture's kernel entries, each verbatim (manifest.json itself differs by the extra entries).
+    // fixture's kernel entries, each verbatim apart from the "shape" member (manifest.json itself differs by the extra
+    // entries, and by the schema: once the example holds a pixel kernel (mx.w) its manifest is schema 2, where every
+    // entry names its shape, and the fixture stays schema 1).
     let copied = names(&copy);
     for name in &expected {
         assert!(
@@ -734,6 +736,22 @@ fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
             );
         }
     }
+    // An entry without its "shape" member (the last key of an entry): a schema 2 entry of a grid kernel then equals the
+    // schema 1 entry of the fixture.
+    let without_shape = |entry: &str| -> String {
+        let mut lines: Vec<String> = entry.lines().map(str::to_owned).collect();
+        if let Some(at) = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with("\"shape\":"))
+        {
+            lines.remove(at);
+            if at > 0 {
+                let trimmed = lines[at - 1].trim_end_matches(',').to_owned();
+                lines[at - 1] = trimmed;
+            }
+        }
+        lines.join("\n")
+    };
     let entries = |directory: &Path| -> Vec<String> {
         let text = fs::read_to_string(directory.join("manifest.json"))
             .unwrap()
@@ -747,7 +765,7 @@ fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
             .0
             .to_owned();
         body.split("\n    },\n")
-            .map(|entry| entry.trim_end_matches("\n    }").to_owned())
+            .map(|entry| without_shape(entry.trim_end_matches("\n    }")))
             .collect()
     };
     let held = entries(&copy);
@@ -757,14 +775,15 @@ fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
             "the manifest of the example lacks this kernel entry of the fixture: {entry}"
         );
     }
-    // What follows the kernel list (`schema` and the `slang` pin) is the same, so a Slang drift is not hidden.
+    // What follows the kernel list (the `slang` pin, and the `schema` up to the example's 2) is the same, so a Slang
+    // drift is not hidden.
     let after_kernels = |directory: &Path| -> String {
         let text = fs::read_to_string(directory.join("manifest.json")).unwrap();
         text.replace("\r\n", "\n")
             .split_once("\n  ],")
             .unwrap()
             .1
-            .to_owned()
+            .replace("\"schema\": 2,", "\"schema\": 1,")
     };
     assert_eq!(
         after_kernels(&copy),

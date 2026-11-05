@@ -13,7 +13,7 @@
 //!   module of a `par_for!` kernel stands inside the block of its call, so no descriptor can be named from here (its
 //!   ten kernels run in `tests/par_for.rs`). The test
 //!   `the_goldens_are_the_fixtures_directory` pins the file list against the directory, and the fixture `.rs` list
-//!   with it). Each golden is split at its `// ==== kernel <name> ====` markers where it has them, and each
+//!   with it. Each golden is split at its `// ==== kernel <name> ====` markers where it has them, and each
 //!   `[shader("compute")]` or `[shader("fragment")]` entry of each section is compiled to WGSL with the `slangc` command
 //!   line (the stage of its shape) through
 //!   `gust::slang::compile_source_as`: 96 entries. The descriptor of an entry comes from the fixture's Rust source,

@@ -370,8 +370,9 @@ test module; do not mix that mechanical move with behavior changes.
   the repository).
 - The cross-shape batch on lavapipe is a step of the `gpu-software` workflow since slice mx.z (VALIDATION, "The
   differential batch"): `check-difftest --seeds 1-2 --shapes grid,pixel`, on the pull-request list and the nightly
-  list. Its warm time on a hosted runner is not measured. The five-minute budget rule (the workflow's header) applies:
-  record the time from the first runs in STATUS, and if the pull-request job exceeds the budget, give the step the
+  list. It took 25 s including its build on a warm runner (lavapipe run 42071043309, 32 programs as `pixel`, 0
+  mismatches). The workflow header's five-minute rule for pull-request steps admits it as the one exception, by the MX
+  close (close ruling 4, recorded as D129); if the pull-request job's time becomes a problem, give the step the
   nightly condition.
 - The bit-for-bit `f32` gates and D128: the `f32`, `Vec2` and `Vec4` identity tests of `tests/pixel.rs` and `check-web`
   compare bits, and their bodies (moves and one correctly rounded `f32` addition) leave the driver no freedom, so they
@@ -383,17 +384,21 @@ test module; do not mix that mechanical move with behavior changes.
   mx.c's, kept after D120 removed its reason); the browser run of the `pixel` form covers one hardware adapter and not
   the software one (`check-web --chrome-arg` for SwiftShader); and the browser has no typed refusal for an adapter
   without fragment storage writes (the next item).
-- No typed refusal in a browser for missing fragment storage writes. WebGPU has the limit
-  `maxStorageBuffersInFragmentStage`, but `wgpu::Limits` has no field for it (wgpu-types 30.0.1; web-sys has it), and
-  wgpu's WebGPU backend reports every downlevel flag, so `fragment_storage` is true in a browser and
-  `require_fragment_storage` (`crates/gust-wgpu/src/render.rs`) never refuses there; a native adapter without
-  `FRAGMENT_WRITABLE_STORAGE` gets `ShapeUnsupported`. Today a browser adapter without those writes is expected to fail
-  when the pipeline is created, as a WebGPU validation error in the console, and `examples/web-vector-add` then ends in
-  `GUST_FAIL ... no fragment wrote the output` (its sentinel finds the output unwritten), not a typed `Error`. That chain
-  is expected, not observed: no adapter without the capability has run it, and the README's Pixel section says only
-  that. A fix is either reading the limit through `web_sys` on wasm32 before the
-  first `pixel` call, or a canary dispatch; each is its own slice, and the README sentence follows whichever is
-  measured.
+- No typed refusal in a browser for missing fragment storage writes, and probably no case for one. WebGPU has the limit
+  `maxStorageBuffersInFragmentStage` (W3C Working Draft, section 3.6.2 "Limits"). In core WebGPU it equals
+  `maxStorageBuffersPerShaderStage` (default 8), so a core adapter has fragment-stage storage buffers. In compatibility
+  mode Dawn defaulted it to 0 when it added the limit (Dawn commit `ac380332`), and a later Dawn change ("Compat:
+  unlower limits") may have raised it; the current value per browser is not checked. So only a compatibility-mode device
+  could lack them. `wgpu::Limits` has no field for the limit (wgpu-types 30.0.1; wgpu's own `webgpu_sys` declares it and
+  nothing reads it), and wgpu 30's WebGPU backend sets no `featureLevel` and reports every downlevel flag, so
+  `fragment_storage` is true in a browser and `require_fragment_storage` (`crates/gust-wgpu/src/render.rs`) never
+  refuses there; a native adapter without `FRAGMENT_WRITABLE_STORAGE` gets `ShapeUnsupported`. If a browser adapter ever
+  lacked the writes, it is expected to fail when the pipeline is created, as a WebGPU validation error in the console,
+  and `examples/web-vector-add` would end in `GUST_FAIL ... no fragment wrote the output` (its sentinel finds the output
+  unwritten), not a typed `Error`. That chain is expected, not observed, and the README's Pixel section says only that.
+  If a typed refusal is wanted after all: read the limit through `web_sys` on wasm32 before the first `pixel` call, or a
+  canary dispatch; each is its own slice. Reporting the missing `Limits` field to wgpu is a public act and an owner
+  decision; nothing is filed.
 - Linear `sample` against the device's filter precision. D92 and `linear_error_bound` assume the filter weights are
   quantised to 8 bits (the `2^-8` term); Vulkan guarantees only 4 `subTexelPrecisionBits` (from the specification, not
   read from any device here). The RTX 5090 already reaches 0.977 of the bound under repeat (VALIDATION, `textures`

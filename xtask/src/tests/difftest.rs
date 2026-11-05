@@ -640,7 +640,7 @@ fn shapes_name_grid_and_each_shape_once() {
 /// The command, the Gpu suite and ci.yml stay grid-only; only the Full mode of `verify` and one step of the
 /// `gpu-software` workflow (seeds 1-2, on both of its lists) ask for pixel.
 #[test]
-fn only_the_full_mode_asks_for_pixel_by_default() {
+fn only_full_and_one_gpu_software_step_ask_for_pixel() {
     // The command line: no `--shapes`, the call the harness gets is the one it always got.
     assert!(!options(&[]).pixel);
     let plain = batch_args(&options(&[]), Path::new("T"), Path::new("R.json"));
@@ -687,8 +687,8 @@ fn only_the_full_mode_asks_for_pixel_by_default() {
         "{body}"
     );
     // ci.yml never runs the shapes. gpu-software runs them in exactly one step (slice mx.z): seeds 1-2 with
-    // `--shapes grid,pixel`, a step with no `if:`, so both of its lists have it. Its plain difftest step stays
-    // grid-only, and a comment may name the flag (only command lines count).
+    // `--shapes grid,pixel`, a step whose `if:` (if any) does not name the nightly flag, so both of its lists have it.
+    // Its plain difftest step stays grid-only, and a comment may name the flag (only command lines count).
     assert!(
         !repo_file(include_str!("../../../.github/workflows/ci.yml")).contains("--shapes"),
         "ci.yml runs --shapes"
@@ -703,20 +703,49 @@ fn only_the_full_mode_asks_for_pixel_by_default() {
         ["          cargo --locked xtask check-difftest --seeds 1-2 --shapes grid,pixel \\"],
         "gpu-software runs --shapes in one step: seeds 1-2, grid,pixel"
     );
-    let header = "      - name: Cross-shape differential test (pixel against grid, 2 seeds)";
-    let step: Vec<&str> = software
+    let cross = workflow_step(
+        &software,
+        "Cross-shape differential test (pixel against grid, 2 seeds)",
+    );
+    assert!(
+        cross
+            .iter()
+            .any(|line| line.contains("--shapes grid,pixel"))
+    );
+    // The step may say `if: ${{ !cancelled() }}` (a red plain difftest must not skip it), but not name the nightly flag.
+    for line in cross.iter().filter(|line| line.starts_with("        if:")) {
+        assert!(!line.contains("GPU_SOFTWARE_NIGHTLY"), "{line}");
+    }
+    // The two difftest steps write different report files.
+    let plain = workflow_step(
+        &software,
+        "Differential test (2 seeds; all 8 in the nightly list)",
+    );
+    let report_of = |step: &[&str]| -> String {
+        step.iter()
+            .filter(|line| !line.trim_start().starts_with('#'))
+            .filter_map(|line| line.split("--report ").nth(1))
+            .filter_map(|rest| rest.split_whitespace().next())
+            .next()
+            .unwrap_or_else(|| panic!("no --report in {step:?}"))
+            .to_owned()
+    };
+    assert_ne!(report_of(&plain), report_of(&cross));
+}
+
+/// The lines of the step `name` of a workflow: from its `- name:` line to the next step. (The same as `step_text` in
+/// tests/suite.rs, which takes a job's text and returns a string; the two files are separate modules.)
+fn workflow_step<'a>(workflow: &'a str, name: &str) -> Vec<&'a str> {
+    let header = format!("      - name: {name}");
+    let step: Vec<&str> = workflow
         .lines()
         .skip_while(|line| *line != header)
         .enumerate()
         .take_while(|(at, line)| *at == 0 || !line.starts_with("      - "))
         .map(|(_, line)| line)
         .collect();
-    assert!(!step.is_empty(), "no step {header}");
-    assert!(step.iter().any(|line| line.contains("--shapes grid,pixel")));
-    assert!(
-        !step.iter().any(|line| line.starts_with("        if:")),
-        "{step:?}"
-    );
+    assert!(!step.is_empty(), "no step {name}");
+    step
 }
 
 /// A report as `good` builds it, with the `shapes` section the harness writes.

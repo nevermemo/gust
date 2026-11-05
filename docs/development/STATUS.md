@@ -608,6 +608,56 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
   no video-memory peak (the shared devices now outlive the tests). mx.t4 saw the fault once in gust-wgpu's `textures`
   binary. Opus: merge as is. Main: 24 of 24 gates green on `a3a8362`, the merge of mx.p1a and m7.av2 (2026-11-05 05:39
   to 06:42Z, RTX 5090).
+- MX mx.p1b (`2eacd00`, fix round `617af97`, merge `61c31f6`; D61, D93, D120, D127, MX plan §4.3 to §4.5): the `pixel`
+  runtime in gust-wgpu. `crates/gust-wgpu/src/render.rs` encodes one render pass per call, in batch order: a fresh
+  `R8Unorm` attachment 8192 wide and ceil(n / 8192) rows, `Load` and `Discard`, an empty write mask, and at most two
+  scissored draws of the committed full-screen vertex module (`src/shapes/fullscreen.wgsl`; the plan's `.slang` copy was
+  dropped). Outputs are fragment storage writes at the element's own index. The pipeline cache holds compute or render
+  pipelines (`cache.rs`), and the graph's resource identity is now a `Raw` handle, so mx.t2's 4-byte identity buffer per
+  texture is gone. Refusals, each before any pipeline is built: `ShapeUnsupported { kernel, shape, reason }` for a y or
+  z other than 1 (also in a graph node), an indirect launch, the `dispatch_f32`/`dispatch_u32` family, the generated
+  host and an adapter without fragment-stage storage writes; `ShapeIndependentOutput` for an `Independent` output;
+  `DeviceLimit` for n over 2^26 (`pixel_max_elements`, decided before the binding sizes) and for
+  `max_texture_dimension_2d`. The twin and the `cpu` target refuse the same calls (`cpu::Error::PixelExtent`,
+  `PixelIndependentOutput`, the cap). Evidence on the RTX 5090 (`crates/gust-wgpu/tests/pixel.rs`, `shape_refusal.rs`,
+  render.rs tests): pixel equals grid equals an independent host replay for u32, i32, f32, `Vec2` and `Vec4` outputs at
+  28 sizes each (the squares up to 4097^2, 8192k + 1 and 1 000 003), with 0 differing words; the cap of 2^26 ran, and
+  2^26 + 1 is refused end to end on adapter limits. Because robustBufferAccess2 drops out-of-bounds stores on these
+  adapters, a stray fragment cannot show up as a wrong word, so a hand-written fragment counts launches with an atomic:
+  the count equalled n at 1, 2, 8191 to 8194, 16385, 16386, 57345, 57346, 8192001, 8192002 and 2^26. A pixel call feeds
+  a grid call inside one batch and inside a graph; two threads submit pixel batches on one device (a smoke test of the
+  queue and the first compile: Option S shares no uniform). The fix round also fixed an mx.p1a macro bug: a module with
+  an explicit-`workgroup_size` grid kernel beside a `pixel` kernel failed with E0707, because the emitter parsed sibling
+  kernels' options under the pixel profile (`crates/gust-macros/src/slang/mod.rs`; two regression tests; goldens
+  unchanged, no `Shape` branch added). Opus merge after fixes: two must-fixes (the cap test had only reached its skip
+  branch; the stray-store test could not fail), the should-fixes and nits taken. Gpu pin 377/34. Main: 24 of 24 gates
+  green on `61c31f6` (2026-11-05 08:17 to 09:27Z, RTX 5090).
+- M7 follow-up m7.av3, m7.av4a to m7.av4c (probes in the work area, no repository change): the access violation is in
+  the Vulkan validation layer. Debug builds of wgpu ask for `VK_LAYER_KHRONOS_validation`, and on this machine the
+  loader inserts it from Vulkan SDK 1.4.357.0 in every run. A plain-wgpu release-build reproducer (m7.av3: devices
+  created and dropped on 8 threads while 8 others dispatch, 27 runs of 90 s) never crashed; a release build loads no
+  validation layer. The unchanged gust-wgpu `textures` test binary did: 3 of 25 whole-binary runs (m7.av4a). With a
+  vectored exception handler added in a throwaway copy (m7.av4b), both crashes in 40 runs faulted at the same offset of
+  `VkLayer_khronos_validation.dll`, a null read in the layer's bundled mimalloc (`_mi_subproc` from `mi_thread_init`, on
+  the first allocation of a new `vvl::Queue::ThreadFunc` thread), symbolised with the SDK's own .pdb; no frame of GUST,
+  wgpu, naga or the driver was on the stack. With one test thread, 0 of 25 runs crashed. With the layer disabled for the
+  test process (`VK_LOADER_LAYERS_DISABLE=VK_LAYER_KHRONOS_validation`), 0 of 40 runs crashed (m7.av4c; about 4 % by
+  luck at the rate seen). The layer's .pdb records mimalloc v3.3.2; a null dereference in `_mi_subproc` is reported
+  fixed in mimalloc 3.4.1 upstream, which is a likely match but was not tested here. The gust-algo crashes had no stack,
+  so their cause is presumed the same, not shown. Gates keep validation on.
+- MX mx.w (`7d281c4`, fix round `d3066ba`, merge `7dc0dc1`; D61, D120, D127, MX plan §11, X-S4): the `pixel` form in the
+  browser. `examples/web-vector-add` adds `add_pixel` (`#[kernel(shape = pixel)]`) to the module of its grid kernel and
+  runs both forms at n = 1000 (one row, one draw) and n = 8197 (two draws, the second row), each pixel output first
+  filled with -1e9. The page prints `GUST_OK` only when the pixel result equals the host reference and the grid result
+  bit for bit, and a separate `GUST_FAIL` when no fragment wrote the output. In headless Chrome 156.0.8078.74 on the
+  RTX 5090 (`nvidia blackwell`) both forms matched at both sizes: X-S4 ends in outcome A, and `pixel` runs in the
+  browser. Only this hardware adapter has run it; the software adapter has not. wgpu 30's WebGPU backend reports every
+  downlevel capability, so on WebGPU gust-wgpu cannot refuse a pixel kernel for a missing fragment-stage storage
+  capability; such an adapter would fail as a wrong result. The example's manifest is now schema 2 with a `shape` on
+  every entry, and the xtask test compares the fixture-shared entries exactly in their schema-2 form. A manual mutation
+  (the pixel expectation shifted by one, not committed) made `check-web` print `GUST_FAIL`. Opus merge after fixes: one
+  must-fix (a comment said browsers refuse with `ShapeUnsupported`), three should-fixes and the nits taken. Main: 24 of
+  24 gates green on `7dc0dc1` (2026-11-05 09:35 to 10:22Z, RTX 5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

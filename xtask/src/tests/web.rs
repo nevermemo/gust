@@ -719,7 +719,9 @@ fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
     assert!(!expected.is_empty(), "no artifacts in {}", source.display());
     // The example may hold more kernels than the fixture (its own `#[gpu] fn`, whose pair `cargo gust build` writes
     // beside the fixture's): every file of the fixture is there, byte for byte, and the manifest lists at least the
-    // fixture's kernel entries, each verbatim (manifest.json itself differs by the extra entries).
+    // fixture's kernel entries, each verbatim in its schema 2 form (manifest.json itself differs by the extra entries,
+    // and by the schema: once the example holds a pixel kernel (mx.w) its manifest is schema 2, where every entry
+    // names its shape, and the fixture stays schema 1).
     let copied = names(&copy);
     for name in &expected {
         assert!(
@@ -751,13 +753,39 @@ fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
             .collect()
     };
     let held = entries(&copy);
+    // The fixture is schema 1 (no shape keys), the example schema 2 (every entry ends in its "shape"). The fixture's
+    // entry in its schema 2 form is the same text plus a grid shape, and it must be there exactly.
     for entry in entries(&source) {
+        let schema_2 = format!("{entry},\n      \"shape\": \"grid\"");
         assert!(
-            held.contains(&entry),
-            "the manifest of the example lacks this kernel entry of the fixture: {entry}"
+            held.contains(&schema_2),
+            "the manifest of the example lacks this kernel entry of the fixture, with \"shape\": \"grid\": {schema_2}"
         );
     }
-    // What follows the kernel list (`schema` and the `slang` pin) is the same, so a Slang drift is not hidden.
+    // The example's own kernels: the pixel form (mx.w) is there with the shape "pixel", and no entry names another.
+    let pixel: Vec<&String> = held
+        .iter()
+        .filter(|entry| entry.ends_with(",\n      \"shape\": \"pixel\""))
+        .collect();
+    assert_eq!(
+        pixel.len(),
+        1,
+        "the example holds one pixel kernel (add_pixel): {held:?}"
+    );
+    assert!(
+        pixel[0].contains("\"entry_point\": \"gpu_vector_add_add_pixel\""),
+        "the pixel entry is the entry point of vector_add::add_pixel: {}",
+        pixel[0]
+    );
+    for entry in &held {
+        assert!(
+            entry.ends_with(",\n      \"shape\": \"grid\"")
+                || entry.ends_with(",\n      \"shape\": \"pixel\""),
+            "every entry of a schema 2 manifest ends in its shape: {entry}"
+        );
+    }
+    // What follows the kernel list is the fixture's (a Slang drift is not hidden), except that the schema is 2 because
+    // an entry has "shape": "pixel", and exactly then.
     let after_kernels = |directory: &Path| -> String {
         let text = fs::read_to_string(directory.join("manifest.json")).unwrap();
         text.replace("\r\n", "\n")
@@ -766,10 +794,15 @@ fn the_web_example_artifacts_are_a_byte_copy_of_the_precompiled_fixtures() {
             .1
             .to_owned()
     };
+    let schema_1 = after_kernels(&source);
+    assert!(
+        schema_1.contains("\"schema\": 1,"),
+        "the fixture is schema 1: {schema_1}"
+    );
     assert_eq!(
         after_kernels(&copy),
-        after_kernels(&source),
-        "the schema and slang fields of the example's manifest differ from the fixture's"
+        schema_1.replace("\"schema\": 1,", "\"schema\": 2,"),
+        "the schema (2, because an entry is a pixel kernel) and slang fields of the example's manifest differ from the fixture's"
     );
 }
 

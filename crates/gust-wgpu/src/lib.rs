@@ -45,9 +45,10 @@
 //!
 //! A [`WgpuJob`] cannot block there either: its `status` reports `Pending` until wgpu's `on_submitted_work_done`
 //! callback has run and `Complete` after it, and `wait` and `wait_timeout` return [`Error::WouldBlock`]. The methods
-//! that wait through the shared traits are not compiled out, because `gust::cpu::CpuDevice` runs them fine on `wasm32`; on
-//! this device the generated `dispatch` and `dispatch_extent`, `gust::Run::dispatch_call` and `gust::Device::dispatch`
-//! return that error at run time. Use `submit`, then an awaited readback.
+//! that wait through the shared traits are not compiled out, because `gust::cpu::CpuDevice` runs them fine on
+//! `wasm32`. On this device the generated `dispatch` and `dispatch_extent`, `gust::Run::dispatch_call` and
+//! `gust::Device::dispatch` submit the work, which will run, and then return that error at run time. Use `submit`,
+//! then an awaited readback to synchronise.
 //!
 //! `clippy.toml` bans `std::thread::sleep` and `std::time::Instant::now` for the browser; native code may call them,
 //! hence the crate-level allow below.
@@ -703,18 +704,21 @@ pub struct DispatchTiming {
 ///   submitted nothing (an empty batch) is `Complete`. The callback runs on the browser's event loop, so a status
 ///   read in the same synchronous run of code as the submission is `Pending`.
 /// - [`wait`](WgpuJob::wait) and [`wait_timeout`](WgpuJob::wait_timeout) always return [`Error::WouldBlock`], never
-///   `Ok`, so a caller cannot take a finished GPU for granted. Synchronise with an awaited readback
+///   `Ok`, so a caller cannot take a finished GPU for granted. The work itself was submitted and will run; only the
+///   wait is refused. Synchronise with an awaited readback
 ///   ([`read_typed_buffer_async`](HeadlessDevice::read_typed_buffer_async)), which resolves when the work and the copy
 ///   are done.
 ///
-/// Every blocking convenience built on `wait` fails the same way on `wasm32`: the generated `dispatch` and
-/// `dispatch_extent` of a kernel, `gust::Run::dispatch_call` and `gust::Device::dispatch` return that error at run
-/// time (use `submit` and an awaited readback there), and the `HeadlessDevice` helpers that wait are compiled out.
-#[must_use = "GPU work is asynchronous; poll or wait on the returned job when completion matters"]
+/// Every blocking convenience built on `wait` fails the same way on `wasm32`, after it has submitted the work: the
+/// generated `dispatch` and `dispatch_extent` of a kernel, `gust::Run::dispatch_call` and `gust::Device::dispatch`
+/// return that error at run time (use `submit` and an awaited readback there), and the `HeadlessDevice` helpers that
+/// wait are compiled out.
+#[must_use = "GPU work is asynchronous; poll, await a readback or wait on the returned job when completion matters"]
 pub struct WgpuJob<'device> {
-    // Only the native `poll_with_timeout` reads it.
+    // Only the native `poll_with_timeout` reads these two.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     device: &'device wgpu::Device,
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     submission: Option<wgpu::SubmissionIndex>,
     /// Set by the `on_submitted_work_done` callback of this job's submission (`true` from the start for a job that
     /// submitted nothing). An `Arc<AtomicBool>` is `Send + Sync` and the callback must be `Send`; the field exists on
@@ -727,12 +731,13 @@ impl WgpuJob<'_> {
     /// Poll the exact submission once without blocking.
     ///
     /// On `wasm32` this reads the flag that `Queue::on_submitted_work_done` sets: `Pending` until the callback has
-    /// run, then `Complete`; a job with no submission is `Complete`.
+    /// run, then `Complete`; a job with no submission is `Complete`. A lost device also reads `Complete` there (the
+    /// WebGPU specification runs the completion steps when the device is lost, and wgpu calls back when the promise
+    /// rejects), where native returns `Err(Error::Poll)`.
     pub fn status(&self) -> Result<JobStatus, Error> {
         #[cfg(target_arch = "wasm32")]
         {
-            let finished = self.submission.is_none() || self.done.load(Ordering::Acquire);
-            Ok(if finished {
+            Ok(if self.done.load(Ordering::Acquire) {
                 JobStatus::Complete
             } else {
                 JobStatus::Pending
@@ -769,7 +774,8 @@ impl WgpuJob<'_> {
     /// # On `wasm32` this returns an error
     ///
     /// The browser cannot block, so on `wasm32` this always returns [`Error::WouldBlock`], never `Ok`, even for a job
-    /// that has already completed or submitted nothing. The synchronisation on the web is an awaited readback
+    /// that has already completed or submitted nothing. The work was submitted and will run; only the wait is
+    /// refused. The synchronisation on the web is an awaited readback
     /// ([`read_typed_buffer_async`](HeadlessDevice::read_typed_buffer_async)), which resolves only when the work and the
     /// copy are done; [`status`](WgpuJob::status) reports completion without waiting.
     pub fn wait(&self) -> Result<(), Error> {

@@ -9,8 +9,10 @@
 //!   `pixel` form, a render pass whose fragments write the output buffer, D120) equal the host reference and each
 //!   other to the last bit, at [`LENGTH`] and at [`TWO_DRAWS`] elements, where the two words are what the browser says
 //!   about the adapter (`GPUAdapter.info`; wgpu's own `name` is empty there), and when the `WgpuJob` contract of the
-//!   browser holds for each submission (D69, `check_job_contract`): `status` is `Complete` after the awaited
-//!   readback, `wait` and `wait_timeout` return `Error::WouldBlock`, and so does the generated `dispatch`;
+//!   browser holds for each submission (D69, `check_job_contract`): `status` is `Pending` right after the submit (in
+//!   the same synchronous run, so deterministic) and `Complete` after the awaited readback, `wait` and `wait_timeout`
+//!   return `Error::WouldBlock`, and so does the generated `dispatch`; and when the resident `map_gpu` of a function
+//!   (which submits and does not wait there) reads back, through `to_vec_async`, what the host computes;
 //! - `GUST_FAIL <reason>` on any error or panic.
 //!
 //! The whole crate is `cfg(target_arch = "wasm32")`: on the host it is empty.
@@ -171,21 +173,41 @@ async fn vector_add_on_the_browser_gpu() -> Result<String, String> {
             doubled.len()
         ));
     }
+
+    // The resident form: `map_gpu` runs on the default device that `map_async` has just opened, submits without waiting
+    // on wasm32 (D69) and leaves the result on the device; `to_vec_async` reads it back.
+    let resident = double_add::map_gpu(&host_a, &host_b)
+        .map_err(|error| format!("map_gpu failed: {error}"))?;
+    let resident_host = resident
+        .to_vec_async()
+        .await
+        .map_err(|error| format!("map_gpu read-back failed: {error}"))?;
+    if let Some(first) = first_difference(&resident_host, &doubled) {
+        return Err(format!(
+            "map_gpu result differs from the host reference: {} of {} values, first at index {first}",
+            resident_host.len(),
+            doubled.len()
+        ));
+    }
     Ok(browser_adapter_label().await)
 }
 
 /// The browser contract of `WgpuJob` (D69), checked after the job's awaited readback has resolved: `status` is
 /// `Complete` (the `on_submitted_work_done` callback has run), and `wait` and `wait_timeout` return
-/// `Error::WouldBlock` rather than `Ok`. `before` is the status read right after the submit; it is logged as a note
-/// (`Pending` is expected) and not required, so the run does not depend on timing.
+/// `Error::WouldBlock` rather than `Ok`. `before` is the status read right after the submit and is required to be
+/// `Pending`: nothing has awaited or returned to the event loop between the submit and that read, so the
+/// `on_submitted_work_done` callback cannot have run. That is not a timing guess; if Chrome ever shows `Complete`
+/// there, the contract is broken.
 fn check_job_contract(
     what: &str,
     job: &WgpuJob<'_>,
     before: Result<JobStatus, Error>,
 ) -> Result<(), String> {
-    log(&format!(
-        "note: {what}: status right after the submit: {before:?}"
-    ));
+    if !matches!(before, Ok(JobStatus::Pending)) {
+        return Err(format!(
+            "{what}: the job's status right after the submit must be Pending, got {before:?}"
+        ));
+    }
     match job.status() {
         Ok(JobStatus::Complete) => {}
         other => {
@@ -225,7 +247,7 @@ async fn both_forms(device: &HeadlessDevice, length: usize) -> Result<(), String
     // readback below is what resolves when the dispatch and the copy are done.
     let job = vector_add::add::submit(device, length as u32, &a, &b, &out)
         .map_err(|error| format!("n = {length}: dispatch failed: {error}"))?;
-    // Recorded, not required: nothing has yielded to the event loop since the submit, so the callback cannot have run.
+    // Nothing has yielded to the event loop since the submit, so the callback cannot have run: `Pending` (required).
     let before = job.status();
     let result = device
         .read_typed_buffer_async(&out)

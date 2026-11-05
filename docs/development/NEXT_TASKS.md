@@ -225,16 +225,24 @@ test module; do not mix that mechanical move with behavior changes.
   slice that runs the deepest GPU tests serially (one device, or a test lock), and a run under a second GPU process.
   Both runs were re-run green at their merges. This is the probe slice (M7 sanity, Fable/Opus): the deepest gust-algo
   GPU tests serially, and beside a second GPU process. It also times the dense64 cell (m7.a2 follow-ups).
-- m7.av follow-ups (the access violation above; STATUS m7.av, m7.av2): the shared gust-algo devices are a mitigation,
-  not a fix. A plain-wgpu reproducer did not crash in 27 runs of 90 s (spike m7.av3: 8 threads create and drop devices
-  with a trivial kernel while 8 dispatch and read back; 9 controls also clean); it does not clear device churn with
-  textures, pipelines in flight or a drop while a submission is pending. Next: a shared test-device helper per test
-  binary, `textures` first, after a baseline loop of the unchanged binary. If a gust-algo crash recurs, put the four
-  `with_limits` tests that still open devices in a lane first. A crash dump would name the faulting code; capturing one
-  needs a Windows setting (WER LocalDumps), the owner's call. dense64 (m7.a2 follow-ups, below): the dispatch is tiny
-  (0.015 ms); the whole call takes about 14 ms warm and 37 to 68 ms after about 3 s of GPU idle, whether the CPU sleeps
-  or spins. A guess, not a finding: the idle PCIe link or power state slows the copies. Next: one run of the probe with
-  no other GPU work, then fix the README cell text and add a warm-up to the README bench.
+- mx.p1b follow-ups: each pixel call creates its own attachment (64 MiB at n = 2^26), which wgpu zero-fills before the
+  pass, so a batch of k cap-sized calls holds k times that until the submission ends; the cheap form is one attachment
+  per batch, sized to its largest call (no pass writes it), and a cached one later (dropped, never `destroy`ed). The
+  attachment is created outside an error scope, so running out of memory there is a wgpu panic, not an `Error`. The
+  generated host refuses pixel kernels (`ShapeUnsupported`); MX ships no pixel snippet. Twice in this slice's runs, a
+  Gpu-suite test failed once with `NoAdapter` (`limits`, `device_options`) and passed alone and on rerun: adapter
+  enumeration can fail transiently while other GPU work runs.
+- m7.av follow-ups (the access violation above; STATUS m7.av to m7.av4c): the crash is in the Vulkan validation layer of
+  Vulkan SDK 1.4.357.0 (its bundled mimalloc 3.3.2), needs concurrent tests, and disappears with the layer disabled; it
+  is a fault of the test environment, not of GUST, wgpu or the driver. Gates keep validation on, because the layer
+  catches API misuse; a Gpu-step crash with rc 0xc0000005 is rerun alone, as before. Owner decisions: a Vulkan SDK whose
+  validation layer bundles mimalloc 3.4.1 or later (an install), and an issue to KhronosGroup/Vulkan-ValidationLayers
+  (public). Not needed now: the shared test-device helper per binary (m7.av2's change stays; fewer devices presumably
+  start fewer of the layer's queue threads), and crash-dump capture. If a crash ever shows a stack outside the layer,
+  reopen this. dense64 (m7.a2 follow-ups, below): the dispatch is tiny (0.015 ms); the whole call takes about 14 ms warm
+  and 37 to 68 ms after about 3 s of GPU idle, whether the CPU sleeps or spins. A guess, not a finding: the idle PCIe
+  link or power state slows the copies. Next: one run of the probe with no other GPU work, then fix the README cell text
+  and add a warm-up to the README bench.
 - m7.p follow-ups: `doctor` and `check` list only a `par_for!` kernel's origin site (`Record.sites` holds them all);
   the naga layout gate skips `par_for!` kernels (take their descriptors through the hidden `descriptor;` form, or
   delete it); the over-cap error is `map::Error::Device`, not an extent variant (needs `Extent` in

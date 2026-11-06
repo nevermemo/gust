@@ -41,7 +41,8 @@ mr.b3, and `check-full` at `27a461a`; a Codex confirming pass followed (proceed 
 MR (the first public release) is active: the rename mr.n, the wasm32 `Job` contract mr.b4 and the two pre-publish fixes
 from the Codex pass mr.b5 are merged, and so are mr.p's doc pass and mr.f, the fixes of the MR sanity check (Fable and
 Codex, both "publish after fixes"; D135). Next: `check-full` and the full `check-release` on this record's commit, the
-owner's publish (RELEASE.md), then mr.z, which records both.
+owner's publish (RELEASE.md), then mr.z, which records both. M8 (capability variants) has an adopted plan (D136 to D147,
+0.2.0); its spikes and first slices run beside the publish, and its code merges after the 0.1.0 tag.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -225,11 +225,12 @@ describes the intended behaviour and is not evidence.
   exact: on all nine formats the GPU and the twin agree bit for bit and with an independent host expectation, and
   `read_texture` returns what `write_texture` stored (`crates/gust-wgpu/tests/textures.rs`). `sample` is outside the
   exact contract (D92; section 4 has the formula): the twin implements the WebGPU formula in `f32`, so a `sample` has a
-  twin, and a GPU result is accepted inside the stated bound `|gpu - twin| <= 2^-8 * (max - min of the four texels) + 2
-  * ulp(max |texel|)` for a linear read (`cpu::texture::linear_error_bound`; the bound is an assumed 8-bit
-  weight precision (section 4), not read from a device; on the RTX 5090 the largest observed distance was 0.977 of it, over 1599
-  samples). A nearest read is the formula's texel except within 1/128 of a texel edge (the test's tolerance; measured
-  about 1e-6 on one adapter). The bound is documented and never chased (D39). It is tested for `grid` kernels
+  twin, and a GPU result is accepted inside the stated bound
+  `|gpu - twin| <= 2^-8 * (max - min of the four texels) + 2 * ulp(max |texel|)` for a linear read
+  (`cpu::texture::linear_error_bound`; the bound is an assumed 8-bit weight precision (section 4), not read from a
+  device; on the RTX 5090 the largest observed distance was 0.977 of it, over 1599 samples). A nearest read is the
+  formula's texel except within 1/128 of a texel edge (the test's tolerance; measured about 1e-6 on one adapter). The
+  bound is documented and never chased (D39). It is tested for `grid` kernels
   (`textures.rs`) and, for a nearest sampler only, for a `pixel` kernel (`tests/pixel.rs`, `row`); a linear `sample` in
   a fragment has the same formula and bound and has not been run. The difftest generator has no texture construct, so it
   never emits `sample`, and the production CPU target's texture kernel uses `load` and `store` only. A 32-bit float
@@ -643,7 +644,8 @@ The test (slice mx.t4) does not assert the formula's texel within 1/128 of a tex
 read is the formula's texel or one of the texels around it. This **widens** the statement above, which allows a
 neighbour only "within an ulp" of an integer. The 1/128 is the test's tolerance, not a measurement. It is a choice
 that assumes a sampler quantising the sub-texel position to 8 bits (steps of 1/256, so 1/128 is two steps); that
-count was not read from any device (inferred). Vulkan guarantees only 4 sub-texel bits (a step of 1/16), which this
+count was not read from any device (inferred). Vulkan guarantees only 4 sub-texel bits in core (a step of 1/16; 8 of
+Vulkan 1.4 and Roadmap 2022), which this
 tolerance would not cover; a device that needs the wider band fails the test, and the finding is then recorded here
 (D52), not hidden by a looser assertion.
 Measured on the adapter of section 1 (slice mx.t4, 533 coordinates on each of `r32float`, `rg32float` and

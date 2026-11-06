@@ -137,7 +137,8 @@ pub fn ulp(x: f32) -> f32 {
 ///
 /// The first term is an assumed 8-bit precision of the weights, rounded to the nearest 1/256 step; no specification
 /// gives it (the WebGPU and WGSL specifications state no number of bits, and Vulkan requires `subTexelPrecisionBits` of
-/// 4 in core and 8 of Vulkan 1.4), so a sampler that quantises worse can leave the bound (SEMANTICS, section 4; D52).
+/// at least 4 in core and at least 8 of Vulkan 1.4 and Roadmap 2022), so a sampler that quantises worse can leave the
+/// bound (SEMANTICS, section 4; D52).
 /// The second is the rounding of the interpolation itself. A nearest read has no tolerance: compare it exactly.
 pub fn linear_error_bound(corners: [f32; 4]) -> f32 {
     let mut lowest = corners[0];

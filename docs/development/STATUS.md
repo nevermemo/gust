@@ -39,7 +39,8 @@ M7 (GPU concepts in Rust) closed on 2026-11-04 (D126). MX (execution shapes and 
 after a sanity check by Fable and Opus in the Codex slot (both "proceed with fixes"), the fixes in slices mx.z and
 mr.b3, and `check-full` at `27a461a`; a Codex confirming pass followed (proceed with fixes, nothing reopens MX; D132).
 MR (the first public release) is active: the rename mr.n, the wasm32 `Job` contract mr.b4 and the two pre-publish fixes
-from the Codex pass mr.b5 are merged; next the owner's publish preparation (mr.p) and the close (mr.z).
+from the Codex pass mr.b5 are merged, and so is mr.p's doc pass; next the close (mr.z: the records, the sanity check,
+`check-full` and the full `check-release` on the closing commit), then the owner's publish (RELEASE.md).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so
@@ -797,6 +798,21 @@ from the Codex pass mr.b5 are merged; next the owner's publish preparation (mr.p
   should-fixes and the nits taken; a re-check of the fix round approved it with four nits, filed. Main: 25 of 25 gates
   green on `ce614ca` (2026-11-05 23:37Z to 2026-11-06 00:40Z, RTX 5090; `check-fast` passed when rerun alone, 00:41 to
   00:48Z, after the known validation-layer access violation in the `textures` binary).
+- MR mr.p, the doc pass (`48c6526`, fix round `4737b0e`, re-check nits `f94c054`, merge `4c5bff9`; D134): the
+  pre-publish documentation of D132 and the release checklist against the tree. The linear-filtering bound's assumption
+  (D134) is stated once, in the same words, in README, SEMANTICS section 4, CHANGELOG's known limits and
+  `gust::cpu::texture`. `HeadlessDevice::new`, `DeviceOptions::default` and `default_device` each name the other and the
+  three limits that differ. The mr.b4 follow-ups: `WouldBlock`'s Display and docs say any submitted work will run and
+  list `dispatch_extent`; the generated `map_gpu` and `map_gpu_on` docs say that on `wasm32` they return before the work
+  finishes. RELEASE.md: step 1 uses `cargo xtask doctor` (a checkout has no installed cargo-gust) and states what it and
+  the full check-release need (the pin's `slangc` first on `PATH`; the helper through `GUST_SLANG_REFLECT` or built into
+  `target/slang-reflect`, which needs `SLANG_SDK` or `VULKAN_SDK` and a C++ compiler); step 5 sets no environment
+  variable (the bridge of D109 finds the managed toolchain) and is the first run of that path, since R7 sets
+  `GUST_SLANG_REFLECT`; README's setup text and `slang locate` follow. No behaviour change but the Display text, which
+  no test pins; lavapipe runs 42133430222 and 42137303659 green. Opus merge after fixes: one must-fix (SEMANTICS still
+  credited the 8-bit precision to WebGPU), four should-fixes and the nits taken; the re-check read both specifications
+  and approved it with three nits, which the coordinator applied. Main: 25 of 25 gates green on `4c5bff9` (2026-11-06
+  00:51 to 01:52Z, RTX 5090).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

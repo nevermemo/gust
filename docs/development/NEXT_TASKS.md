@@ -177,11 +177,10 @@ test module; do not mix that mechanical move with behavior changes.
   `as_buffer().as_wgpu_buffer()` shows its whole size class to the kernel (`arrayLength`, the previous owner's
   tail). m7.p did not size them: `generated_host.rs` still emits `as_entire_binding()` (m7.a0 review). Open; the next
   slice that changes the generated host code takes it, with a test that reads `arrayLength` of a pooled `GpuVec`.
-- Before MR publishes (D132): README states the linear-filtering assumption of D92 (8-bit filter weights; Vulkan
-  guarantees 4 `subTexelPrecisionBits`) and both default-limits entry points name their difference (mr.p's doc pass).
-  Done: `#[non_exhaustive]` with builders (mr.b3) and the wasm32 `Job` contract (mr.b4, D131), the CPU texture ownership
-  and the classifier's ledger (mr.b5, D133). Moved out of 0.1.0 (D132): the query of which gust-algo variant ran, with
-  gust-algo's publication.
+- Before MR publishes (D132): nothing left but the close (mr.z). Done: `#[non_exhaustive]` with builders (mr.b3) and the
+  wasm32 `Job` contract (mr.b4, D131), the CPU texture ownership and the classifier's ledger (mr.b5, D133), the
+  filtering assumption and the default-limits docs (mr.p, D134). Moved out of 0.1.0 (D132): the query of which gust-algo
+  variant ran, with gust-algo's publication.
 - mr.b2 follow-ups (Opus review): two examples call items mr.b2 hid (`render_wgpu_source`,
   `gust::spirv::words_as_le_bytes`), which works but teaches support surface; and struct variants of the public error
   enums can still be built and destructured outside the crate (gust-algo builds `DeviceLimit`), so a new field is
@@ -191,9 +190,6 @@ test module; do not mix that mechanical move with behavior changes.
   refused with `MatchPattern`); a classifier unit test of the map kernel passes an empty helper set and so sees a
   spurious `Unrecognised` (pass `helper_names` of the module); `Error::Borrowed`'s doc in `gust::cpu` still says "the
   buffer"; `expand` computes `helper_names` once per kernel instead of once per module.
-- mr.b4 follow-ups (Opus re-check): `Error::WouldBlock`'s Display says "the work was submitted and will run", which a
-  job that submitted nothing does not fit ("any work"); its doc lists `dispatch` but not `dispatch_extent`; the
-  generated `map_gpu` doc could say that on `wasm32` it returns before the work finishes.
 - After 0.1.0 (D132): a public-API baseline, `cargo-semver-checks` against the published 0.1.0 in CI for 0.1.x.
 - mr.t2 follow-ups (Opus review): xtask still starts the helper without the ETXTBSY retry (the two launches in
   `xtask/src/verify.rs`; xtask has no `gust` dependency); a third copy of `HELPER_VARIABLE` and `default_helper` is left

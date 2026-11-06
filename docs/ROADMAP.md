@@ -56,9 +56,9 @@ filled in `db837b9`, and the sanity-check fixes in slice m7.z2 (D126). `map_asyn
 
 **Now: MR, the first public release** (plan adopted, D106 to D115). Done so far: mr.a, mr.t1, mr.c, mr.r, mr.r2, mr.d,
 mr.t2, mr.b1, mr.b2, mr.b3 (pre-publish API fixes from the MX sanity check), mr.b4 (the wasm32 `Job` contract, D131),
-mr.n (the rename to the D48 names, D130) and mr.b5 (two pre-publish fixes from the Codex confirming pass, D133). Next:
-mr.p (the owner's publish preparation), then mr.z (the close). The pre-publish items are in NEXT_TASKS ("Before MR
-publishes").
+mr.n (the rename to the D48 names, D130), mr.b5 (two pre-publish fixes from the Codex confirming pass, D133) and mr.p's
+doc pass (D134). Next: mr.z (the close: records, the sanity check, `check-full` and the full `check-release` on the
+closing commit), then the owner's publish (RELEASE.md). The pre-publish items are in NEXT_TASKS ("Before MR publishes").
 
 **Done: MX, execution shapes and textures** (closed 2026-11-05, D129; plan adopted 2026-11-03, D88 to D95). Every slice
 merged (the last, mx.x, at `e769077`); `check-full` at `27a461a`; the sanity check by Fable and Opus in the Codex slot

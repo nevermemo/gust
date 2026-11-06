@@ -367,7 +367,7 @@ fn a_wrong_value_names_its_line_and_column() {
             "[package.metadata.gust]\nprofiles = [\"native\", \"web+subgroups\"]\n",
             6,
             23,
-            "`web+subgroups` is not a build profile; write <target>[+<capability>] with the target dev, native, web or cpu and the capability subgroups (web and cpu take none)",
+            "`web+subgroups` is not a build profile; write <target>[+<capability>] with the target native, web or cpu and the capability subgroups (web and cpu take none)",
         ),
         (
             "[package.metadata.gust]\nlimits = \"device\"\n",

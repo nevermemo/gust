@@ -293,7 +293,7 @@ fn profiles(
                 text,
                 Some(offset),
                 format!(
-                    "`{name}` is not a build profile; write <target>[+<capability>] with the target dev, native, web or cpu and the capability subgroups (web and cpu take none)"
+                    "`{name}` is not a build profile; write <target>[+<capability>] with the target native, web or cpu and the capability subgroups (web and cpu take none)"
                 ),
             ));
         };

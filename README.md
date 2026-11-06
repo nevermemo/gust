@@ -388,8 +388,9 @@ The promise covers:
 - the public API of `gust-compute` and `gust-compute-wgpu`: `#[gpu]` and `par_for!`, the typed call surface, the
   buffer, device and map types, the CPU runtime and the artifact types. Every public enum is `#[non_exhaustive]`
   except `MatrixLayout` and `Access` (`gust-compute`) and `TransferDirection`, `GpuBufferAccess` and the binding enums
-  (`gust-compute-wgpu`), which are closed sets: a `#[non_exhaustive]` enum may gain variants, so match it with a
-  wildcard arm. A minor bump may grow `Access` (a write-only access, say);
+  (`gust-compute-wgpu`), which are closed sets, and the uninhabited marker types, which have no variants: a
+  `#[non_exhaustive]` enum may gain variants, so match it with a wildcard arm. A minor bump may grow `Access` (a
+  write-only access, say);
 - the commands of `cargo-gust` and the lines they print, which scripts and CI read;
 - the file formats: `gust-artifacts/manifest.json`, the record files and the reflection records; a newer release reads
   every older schema (D82, D89, D91);

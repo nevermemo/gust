@@ -91,7 +91,7 @@ pub enum Format {
 
 impl Format {
     /// Every format of the dialect, in the order of the enum.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: &'static [Self] = &[
         Self::R32Uint,
         Self::R32Sint,
         Self::R32Float,
@@ -120,7 +120,10 @@ impl Format {
 
     /// The format named `name` (the inverse of [`Format::name`]), or `None` for any other text.
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|format| format.name() == name)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|format| format.name() == name)
     }
 
     /// Slang's spelling of the format, the argument of `[format("..")]`: `r32ui`, `rg32f`, ...

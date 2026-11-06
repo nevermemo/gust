@@ -1421,7 +1421,8 @@ fn read_texture(
         "unknown" => None,
         text => Some(
             TexelFormat::ALL
-                .into_iter()
+                .iter()
+                .copied()
                 .find(|format| format.slang_name() == text)
                 .ok_or_else(|| invalid(format!("unsupported texture format `{text}`")))?,
         ),

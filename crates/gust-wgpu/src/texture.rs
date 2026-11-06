@@ -897,7 +897,7 @@ mod tests {
     /// The size and the sample type the dialect says for a format are wgpu's own (the unit test of plan R1).
     #[test]
     fn the_dialect_agrees_with_wgpu_on_every_format() {
-        for format in Format::ALL {
+        for &format in Format::ALL {
             let mapped = wgpu_format(format).expect("every format of the dialect is mapped");
             assert_eq!(
                 mapped.block_copy_size(None),
@@ -976,7 +976,7 @@ mod tests {
 
     #[test]
     fn every_format_allows_sampling_and_storage_on_a_device_without_extra_features() {
-        for format in Format::ALL {
+        for &format in Format::ALL {
             let mapped = wgpu_format(format).expect("mapped");
             let allowed = allowed_uses(mapped, wgpu::Features::empty());
             assert!(

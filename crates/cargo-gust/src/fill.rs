@@ -68,7 +68,8 @@ pub(crate) fn reflected_texture_layout(
         Some("unknown") => None,
         Some(text) => Some(
             Format::ALL
-                .into_iter()
+                .iter()
+                .copied()
                 .find(|format| format.slang_name() == text)
                 .ok_or_else(|| format!("{at}: unsupported texture format `{text}`"))?,
         ),

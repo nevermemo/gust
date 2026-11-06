@@ -145,7 +145,7 @@
 //! What a minor bump may change: any item of this crate that is not marked as support surface, including a function's
 //! signature, the fields of the descriptor and layout types (a hand-written `KernelDescriptor` literal then needs the
 //! new field), the variants of an enum that is not `#[non_exhaustive]`, and the Slang that the macro emits. Every
-//! public enum of this crate is `#[non_exhaustive]` except `MatrixLayout` and `descriptor::Access`, which are closed
+//! public enum of this crate is `#[non_exhaustive]` except `MatrixLayout` and `Access`, which are closed
 //! sets (and the uninhabited marker types, which have no variants), so a new variant is not a breaking change and a
 //! `match` outside this crate needs a wildcard arm; a minor bump may grow `Access` (a write-only access, say). The
 //! formats of the files that `cargo gust` writes ([`artifact`] manifests, records and reflection documents) carry a

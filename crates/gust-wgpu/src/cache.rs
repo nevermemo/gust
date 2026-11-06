@@ -46,7 +46,8 @@ pub(crate) fn preferred_artifact(kernel: &KernelDescriptor) -> Option<&'static A
 /// descriptor's static slices, not their contents: two descriptors that share every slice share a pipeline, and
 /// descriptors that differ in any field below never share one. The artifact and its reflection JSON are in the key
 /// because a cache hit skips `verify_artifact`: an artifact that was never verified must not be able to borrow the
-/// pipeline of one that was.
+/// pipeline of one that was. The one field that is by content is `requires`: the set of capabilities (D142), small, and
+/// compared and hashed in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct KernelCacheKey {
     entry_point: &'static str,

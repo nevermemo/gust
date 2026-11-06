@@ -1300,7 +1300,8 @@ pub struct HeadlessDevice {
     /// The capabilities the device was opened with (`DeviceOptions::capabilities`); a kernel's `requires` must be a
     /// subset (`check_kernel_capabilities`).
     capabilities: &'static [Capability],
-    /// The adapter's subgroup size range, when it offers subgroup operations (`HeadlessDevice::subgroup_sizes`).
+    /// The subgroup size range wgpu reports for the adapter, when it offers subgroup operations
+    /// (`HeadlessDevice::subgroup_sizes`).
     subgroup_sizes: Option<(u32, u32)>,
     /// Recycles the allocations of [`GpuVec`] and other pooled buffers.
     pool: BufferPool,
@@ -1440,10 +1441,10 @@ impl HeadlessDevice {
         self.capabilities
     }
 
-    /// The smallest and the largest subgroup size the adapter reports (`AdapterInfo`), or `None` when the adapter does
-    /// not offer subgroup operations.
+    /// The smallest and the largest subgroup size as wgpu reports them for the adapter (`AdapterInfo`), or `None` when the
+    /// adapter does not offer subgroup operations. On Metal wgpu reports a fixed 4..64, whatever the GPU does.
     ///
-    /// This is the adapter's range, not a promise of one size: the lane count a shader sees can differ between the
+    /// This is a range, not a promise of one size: the lane count a shader sees can differ between the
     /// dispatches of one device (spike S3: an AMD Radeon 890M on DX12 gave 32 lanes in one kernel and 64 in the
     /// others), so a kernel reads its lane count at run time and never assumes one value from this method. It is
     /// `Some` whether or not the device was opened with [`Capability::Subgroups`].
@@ -2051,6 +2052,7 @@ impl HeadlessDevice {
     ) -> Result<DispatchOutput, Error> {
         let resources = validate_dispatch(kernel, element_count, bindings)?;
         if element_count == 0 {
+            self.check_requires(kernel)?;
             return Ok(DispatchOutput {
                 writable_buffers: bindings
                     .iter()
@@ -2189,6 +2191,7 @@ impl HeadlessDevice {
     ) -> Result<U32DispatchOutput, Error> {
         let resources = validate_u32_dispatch(kernel, element_count, bindings)?;
         if element_count == 0 {
+            self.check_requires(kernel)?;
             return Ok(U32DispatchOutput {
                 writable_buffers: bindings
                     .iter()
@@ -2451,7 +2454,7 @@ impl HeadlessDevice {
     /// Check one non-empty launch against the stored limits and return its workgroup
     /// count. Runs after `validate_*` and before the pipeline-cache lookup, so no
     /// compilation, cache hit or wgpu object can precede a limit error. A launch of
-    /// zero elements does no GPU work and is not checked.
+    /// zero elements does no GPU work and is checked only against the kernel's `requires`.
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     fn check_launch(
         &self,
@@ -2470,7 +2473,7 @@ impl HeadlessDevice {
     }
 
     /// `check_launch` over an [`Extent`]: the workgroups along x, y and z. A launch with a zero axis does no GPU
-    /// work, is not checked and has `[0, 0, 0]` workgroups.
+    /// work, is checked only against the kernel's `requires` and has `[0, 0, 0]` workgroups.
     fn check_launch_extent(
         &self,
         kernel: &KernelDescriptor,
@@ -2479,9 +2482,17 @@ impl HeadlessDevice {
         binding_bytes: impl IntoIterator<Item = (u64, BindingKind)>,
     ) -> Result<[u32; 3], Error> {
         if extent.is_empty() {
+            // No work, but the kernel's `requires` is a fact of the descriptor: an empty launch is refused as a full one.
+            self.check_requires(kernel)?;
             return Ok([0; 3]);
         }
         self.check_launch_limits(kernel, Some(extent), resources, binding_bytes)
+    }
+
+    /// The kernel's `requires` against the capabilities this device was opened with (`check_kernel_requires`), for the
+    /// launches that return early when they have no work.
+    fn check_requires(&self, kernel: &KernelDescriptor) -> Result<(), Error> {
+        check_kernel_requires(self.capabilities, &self.adapter_info.name, kernel)
     }
 
     /// `check_launch` for an indirect dispatch: every check except the workgroup count, which the
@@ -2900,23 +2911,19 @@ fn check_kernel_limits(
 /// What a kernel's `requires` asks of a device (M8, D142), checked beside [`check_kernel_limits`]: every capability in
 /// `kernel.requires` is one the device was opened with (`capabilities`), else [`Error::MissingCapability`] naming the
 /// kernel and `adapter`; and a kernel that requires subgroups has a workgroup of a whole number of the largest subgroups
-/// the adapter reports (`subgroup_sizes`), else [`Error::SubgroupSize`]. Only the largest size is checked, and the
+/// wgpu reports for the adapter (`subgroup_sizes`), else [`Error::SubgroupSize`]. Only the largest size is checked, and the
 /// macro already requires 64 invocations at a time (E0751): the lane count of one dispatch is the shader's to read.
+///
+/// "Full subgroups" rests on driver behaviour and S3's measurements, not on a guarantee of wgpu: wgpu 30.0.1 allows a
+/// varying subgroup size and never sets `REQUIRE_FULL_SUBGROUPS` (D140). The product of the workgroup's axes is checked,
+/// on the ground that invocations are packed into subgroups in linear order.
 fn check_kernel_capabilities(
     capabilities: &[Capability],
     subgroup_sizes: Option<(u32, u32)>,
     adapter: &str,
     kernel: &KernelDescriptor,
 ) -> Result<(), Error> {
-    for &required in kernel.requires {
-        if !capabilities.contains(&required) {
-            return Err(Error::MissingCapability {
-                capability: required,
-                adapter: adapter.to_owned(),
-                kernel: Some(kernel.qualified_name().to_string()),
-            });
-        }
-    }
+    check_kernel_requires(capabilities, adapter, kernel)?;
     if kernel.requires.contains(&Capability::Subgroups)
         && let Some((_, maximum)) = subgroup_sizes
         && maximum != 0
@@ -2929,6 +2936,26 @@ fn check_kernel_capabilities(
                 kernel: kernel.qualified_name().to_string(),
                 invocations,
                 subgroup_max: maximum,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The first half of [`check_kernel_capabilities`]: every capability in `kernel.requires` is one the device was opened
+/// with. It is a fact of the descriptor against the device, not of the work, so it also judges an empty launch (as
+/// [`Error::KernelTarget`] does); the subgroup-size half needs a launch.
+fn check_kernel_requires(
+    capabilities: &[Capability],
+    adapter: &str,
+    kernel: &KernelDescriptor,
+) -> Result<(), Error> {
+    for &required in kernel.requires {
+        if !capabilities.contains(&required) {
+            return Err(Error::MissingCapability {
+                capability: required,
+                adapter: adapter.to_owned(),
+                kernel: Some(kernel.qualified_name().to_string()),
             });
         }
     }
@@ -3328,10 +3355,13 @@ pub(crate) fn validate_kernel(
     kernel: &KernelDescriptor,
 ) -> Result<Vec<&'static ParameterDescriptor>, Error> {
     // A kernel built for the CPU has no GPU form (D137). The typed entry points refuse it at compile time; a kernel given
-    // by its descriptor is refused here, first, on every path, whatever its extent.
+    // by its descriptor is refused here, first of this function's checks, on every path, whatever its extent. (The
+    // one-shot paths and the generated host snippet refuse a shape that is not `grid` before they call this, so a
+    // CPU-target `pixel` kernel given to one of them is `ShapeUnsupported`.)
     if kernel.target != Target::Gpu {
         return Err(Error::KernelTarget {
             kernel: kernel.qualified_name().to_string(),
+            target: kernel.target,
         });
     }
     // `grid` runs as a compute pass and `pixel` as a render pass (slice mx.p1b); a shape added later has no path yet.
@@ -4563,7 +4593,7 @@ mod tests {
         }
         assert_eq!(
             error.to_string(),
-            "kernel `test::kernel` runs 96 invocations per workgroup, which is not a multiple of 64, the largest subgroup size this adapter reports; a subgroup kernel needs full subgroups"
+            "kernel `test::kernel` runs 96 invocations per workgroup, which is not a multiple of 64, the largest subgroup size wgpu reports for this adapter; a subgroup kernel needs full subgroups"
         );
         // The invocation count is the product of the axes, not the x size.
         let tile = DESCRIPTOR
@@ -4589,12 +4619,15 @@ mod tests {
         let cpu = DESCRIPTOR.with_target(Target::Cpu);
         let error = validate_kernel(&cpu).expect_err("a CPU-target kernel on a GPU device");
         match &error {
-            Error::KernelTarget { kernel } => assert_eq!(kernel, "test::kernel"),
+            Error::KernelTarget { kernel, target } => {
+                assert_eq!(kernel, "test::kernel");
+                assert_eq!(*target, Target::Cpu);
+            }
             other => panic!("expected KernelTarget, got {other:?}"),
         }
         assert_eq!(
             error.to_string(),
-            "kernel `test::kernel` is built for the CPU target and cannot run on a GPU device; run it on a `CpuDevice`, or route its tag to `gpu`"
+            "kernel `test::kernel` is built for the `cpu` target and cannot run on a GPU device; run it on a `CpuDevice`, or route its tag to `gpu`"
         );
         // First: a CPU kernel with an empty source is still the target's error, not the source's.
         let empty = cpu.with_slang_source("");

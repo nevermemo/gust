@@ -1,6 +1,9 @@
 use std::{error, fmt};
 
-use gust::{Access, BindingKind, ParameterKind, ResourceLayout, Shape, capability::Capability};
+use gust::{
+    Access, BindingKind, ParameterKind, ResourceLayout, Shape, capability::Capability,
+    target::Target,
+};
 
 use crate::GpuBufferAccess;
 
@@ -368,21 +371,24 @@ pub enum Error {
         /// The kernel that requires the capability, or `None` when the refusal is the device's own.
         kernel: Option<String>,
     },
-    /// A kernel built for the CPU target (`KernelDescriptor::target` is not `Target::Gpu`) reached a GPU device. The
-    /// typed entry points refuse this at compile time (the `GpuKernel` bound); this is the run-time refusal for a
-    /// kernel passed by its descriptor, and nothing is submitted.
+    /// A kernel built for another target (`KernelDescriptor::target` is not `Target::Gpu`, today `Target::Cpu`) reached a
+    /// GPU device. The typed entry points refuse this at compile time (the `GpuKernel` bound); this is the run-time
+    /// refusal for a kernel passed by its descriptor, and nothing is submitted.
     KernelTarget {
         /// The kernel's qualified name.
         kernel: String,
+        /// The target the descriptor is built for.
+        target: Target,
     },
     /// A kernel that requires subgroups has a workgroup whose invocation count is not a multiple of the largest subgroup
-    /// size the adapter reports, so some subgroup would run partly empty. Only full subgroups are supported (D140).
+    /// size wgpu reports for the adapter, so some subgroup would run partly empty. Only full subgroups are supported
+    /// (D140).
     SubgroupSize {
         /// The kernel's qualified name.
         kernel: String,
         /// The invocations in one workgroup (the product of the workgroup size).
         invocations: u64,
-        /// The largest subgroup size the adapter reports (`AdapterInfo::subgroup_max_size`).
+        /// The largest subgroup size wgpu reports for the adapter (`AdapterInfo::subgroup_max_size`).
         subgroup_max: u32,
     },
 }
@@ -666,9 +672,10 @@ impl fmt::Display for Error {
                 "kernel `{kernel}` requires the `{}` capability, which this device (adapter `{adapter}`) was not opened with; open it with `DeviceOptions::with_capabilities`",
                 capability.name(),
             ),
-            Self::KernelTarget { kernel } => write!(
+            Self::KernelTarget { kernel, target } => write!(
                 formatter,
-                "kernel `{kernel}` is built for the CPU target and cannot run on a GPU device; run it on a `CpuDevice`, or route its tag to `gpu`",
+                "kernel `{kernel}` is built for the `{}` target and cannot run on a GPU device; run it on a `CpuDevice`, or route its tag to `gpu`",
+                target.name(),
             ),
             Self::SubgroupSize {
                 kernel,
@@ -676,7 +683,7 @@ impl fmt::Display for Error {
                 subgroup_max,
             } => write!(
                 formatter,
-                "kernel `{kernel}` runs {invocations} invocations per workgroup, which is not a multiple of {subgroup_max}, the largest subgroup size this adapter reports; a subgroup kernel needs full subgroups",
+                "kernel `{kernel}` runs {invocations} invocations per workgroup, which is not a multiple of {subgroup_max}, the largest subgroup size wgpu reports for this adapter; a subgroup kernel needs full subgroups",
             ),
         }
     }

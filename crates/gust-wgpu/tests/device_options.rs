@@ -187,25 +187,26 @@ fn the_default_options_ask_for_the_adapters_limits_on_native() {
 }
 
 /// Capabilities (M8, m8.w1): the options hold none until asked, `with_capabilities` sets exactly the set it is given and
-/// nothing else, and a device reports the adapter's subgroup range whether or not it was opened with the capability.
+/// nothing else, and a device reports wgpu's subgroup range for the adapter whether or not it was opened with the
+/// capability.
 /// A request the adapter cannot meet is unit-tested over fake feature sets (`required_capability_features`).
 #[test]
 fn capabilities_are_an_option_of_their_own() {
+    // The one line that says what the default is (m8.w2 changes it); the rest does not depend on it.
     assert!(DeviceOptions::default().capabilities.is_empty());
-    let asked = DeviceOptions::default().with_capabilities(&[Capability::Subgroups]);
+    let none = DeviceOptions::default().with_capabilities(&[]);
+    let asked = none.clone().with_capabilities(&[Capability::Subgroups]);
     assert_eq!(asked.capabilities, &[Capability::Subgroups]);
-    assert_eq!(
-        asked.clone().with_capabilities(&[]),
-        DeviceOptions::default()
-    );
+    assert_eq!(asked.clone().with_capabilities(&[]), none);
 
-    let plain =
-        HeadlessDevice::with_options(options(AdapterChoice::Index(0), LimitsPolicy::Default))
-            .expect("the first adapter opens");
+    let plain = HeadlessDevice::with_options(
+        options(AdapterChoice::Index(0), LimitsPolicy::Default).with_capabilities(&[]),
+    )
+    .expect("the first adapter opens");
     assert!(plain.capabilities().is_empty());
     let info = plain.adapter_info();
     if let Some((smallest, largest)) = plain.subgroup_sizes() {
-        // The range is the adapter's own, read from its description.
+        // The range is the one wgpu reports for the adapter, read from its description.
         assert_eq!(
             (smallest, largest),
             (info.subgroup_min_size, info.subgroup_max_size)

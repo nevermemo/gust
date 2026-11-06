@@ -2,8 +2,10 @@
 //! runs only on a device opened with the capability, and a descriptor built for the CPU target is refused. The kernels
 //! here are hand-written descriptors with plain Slang (`out[i] = out[i] + 1`, no subgroup operation): the macro does
 //! not emit subgroup code before slice m8.s, and what is under test is the device's decision, which depends on the
-//! descriptor's `requires` and `target` only. The adapter is the first Vulkan one wgpu offers (the RTX 5090 on the
-//! project's PC); a test whose adapter lacks subgroups fails, it never skips.
+//! descriptor's `requires` and `target` only. The adapter is the one `DeviceOptions::default()` picks (the
+//! high-performance Vulkan adapter, the RTX 5090 on the project's PC); a test whose adapter lacks subgroups fails, it
+//! never skips. A test that means "no capabilities" says so with `with_capabilities(&[])`, so it does not change when
+//! the default options come to request some (m8.w2).
 //!
 //! The open-refusal path (an adapter that lacks the capability) cannot be reached on an adapter that has it, so it is
 //! unit-tested over fake feature sets in `src/device.rs` (`required_capability_features`).
@@ -12,7 +14,10 @@ use gust::{
     Access, Arg, Call, GpuPod, Kernel, KernelDescriptor, ParameterDescriptor, ParameterKind,
     Resource, ResourceBinding, ResourceLayout, Run, capability::Capability, target::Target,
 };
-use gust_wgpu::{BufferBinding, DeviceOptions, Error, GpuBuffer, GpuBufferAccess, HeadlessDevice};
+use gust_wgpu::{
+    BufferBinding, DeviceOptions, Error, F32Binding, GpuBuffer, GpuBufferAccess, HeadlessDevice,
+    U32Binding,
+};
 
 const PARAMETERS: &[ParameterDescriptor] = &[ParameterDescriptor {
     name: "p",
@@ -46,6 +51,29 @@ const BASE: KernelDescriptor = KernelDescriptor::new(
     SLANG,
 );
 
+const PARAMETERS_U32: &[ParameterDescriptor] = &[ParameterDescriptor {
+    name: "p",
+    rust_type: "uint",
+    kind: ParameterKind::Storage,
+    access: Access::ReadWrite,
+    resource_layout: Some(ResourceLayout::storage_v1(<u32 as GpuPod>::LAYOUT)),
+    binding: Some(ResourceBinding {
+        group: 0,
+        binding: 0,
+    }),
+}];
+
+/// The same kernel over `u32`, for the second one-shot entry point (`dispatch_u32`). Only launched empty, so its source
+/// (the `float` one) is never compiled.
+const BASE_U32: KernelDescriptor = KernelDescriptor::new(
+    "subgroup_tests",
+    "add_one_u32",
+    "subgroup_tests_add_one",
+    [64, 1, 1],
+    PARAMETERS_U32,
+    SLANG,
+);
+
 /// The kernel as a type: it requires subgroups, so only a device opened with them runs it.
 struct NeedsSubgroups;
 impl Kernel for NeedsSubgroups {
@@ -73,7 +101,7 @@ where
 const COUNT: usize = 70;
 
 fn without_capabilities() -> HeadlessDevice {
-    HeadlessDevice::with_options(DeviceOptions::default())
+    HeadlessDevice::with_options(DeviceOptions::default().with_capabilities(&[]))
         .expect("Vulkan adapter required; this test must not silently skip")
 }
 
@@ -166,6 +194,61 @@ fn a_device_opened_without_the_capability_refuses_a_kernel_that_requires_it() {
     assert_eq!(device.read_typed_buffer(&target).unwrap(), plus_one());
 }
 
+/// An empty launch is judged by the kernel's `requires` like a full one (the same kind of fact as the target): a program
+/// tested with empty input must not pass where real input would fail. Every path that returns early for no work is
+/// covered: the erased and the typed batch path, and the two one-shot functions.
+#[test]
+fn an_empty_launch_of_a_kernel_with_an_unmet_requires_is_refused() {
+    let device = without_capabilities();
+    let empty = device.create_typed_buffer::<f32>("p", &[], GpuBufferAccess::ReadWrite);
+    let requires = BASE.with_requires(&[Capability::Subgroups]);
+    let requires_u32 = BASE_U32.with_requires(&[Capability::Subgroups]);
+
+    let error = device
+        .dispatch_buffers(&requires, 0, &[BufferBinding::read_write(&empty)])
+        .unwrap_err();
+    assert_missing_subgroups(&error, &device, "subgroup_tests::add_one");
+
+    let error = device
+        .dispatch_call(&call::<_, NeedsSubgroups>(0, &empty))
+        .unwrap_err();
+    assert_missing_subgroups(&error, &device, "subgroup_tests::add_one");
+
+    let error = device
+        .dispatch_f32(&requires, 0, &[F32Binding::ReadWrite(&[])])
+        .unwrap_err();
+    assert_missing_subgroups(&error, &device, "subgroup_tests::add_one");
+
+    let error = device
+        .dispatch_u32(&requires_u32, 0, &[U32Binding::ReadWrite(&[])])
+        .unwrap_err();
+    assert_missing_subgroups(&error, &device, "subgroup_tests::add_one_u32");
+    nothing_compiled(&device);
+
+    // The controls: a kernel without `requires` launches empty, and so does the same kernel on a device with the capability.
+    device
+        .dispatch_buffers(&BASE, 0, &[BufferBinding::read_write(&empty)])
+        .unwrap();
+    device
+        .dispatch_f32(&BASE, 0, &[F32Binding::ReadWrite(&[])])
+        .unwrap();
+    let device = with_subgroups();
+    let empty = device.create_typed_buffer::<f32>("p", &[], GpuBufferAccess::ReadWrite);
+    device
+        .dispatch_buffers(&requires, 0, &[BufferBinding::read_write(&empty)])
+        .unwrap();
+    device
+        .dispatch_call(&call::<_, NeedsSubgroups>(0, &empty))
+        .unwrap();
+    device
+        .dispatch_f32(&requires, 0, &[F32Binding::ReadWrite(&[])])
+        .unwrap();
+    device
+        .dispatch_u32(&requires_u32, 0, &[U32Binding::ReadWrite(&[])])
+        .unwrap();
+    nothing_compiled(&device);
+}
+
 #[test]
 fn a_device_opened_with_the_capability_runs_a_kernel_that_requires_it() {
     let device = with_subgroups();
@@ -179,7 +262,7 @@ fn a_device_opened_with_the_capability_runs_a_kernel_that_requires_it() {
         sizes.0,
         sizes.1
     );
-    // The adapter's range, not one size: only its order and its being sane are asserted.
+    // wgpu's range for the adapter, not one size: only its order and its being sane are asserted.
     assert!(
         0 < sizes.0 && sizes.0 <= sizes.1 && sizes.1 <= 128,
         "{sizes:?}"
@@ -214,7 +297,7 @@ fn a_device_opened_with_the_capability_runs_a_kernel_that_requires_it() {
 
 #[test]
 fn the_subgroup_range_is_reported_without_the_capability_being_enabled() {
-    // The range comes from the adapter, so a device opened without the capability reports the same one.
+    // The range comes from wgpu's description of the adapter, so a device opened without the capability reports the same one.
     let without = without_capabilities();
     let with = with_subgroups();
     assert_eq!(without.subgroup_sizes(), with.subgroup_sizes());
@@ -245,7 +328,9 @@ fn a_subgroup_kernel_needs_whole_subgroups() {
         other => panic!("expected SubgroupSize, got {other:?}"),
     }
     assert!(
-        error.to_string().contains("needs full subgroups"),
+        error
+            .to_string()
+            .contains("the largest subgroup size wgpu reports for this adapter; a subgroup kernel needs full subgroups"),
         "{error}"
     );
     assert_eq!(device.read_typed_buffer(&target).unwrap(), unchanged());
@@ -262,13 +347,16 @@ fn a_kernel_built_for_the_cpu_target_is_refused_on_a_gpu_device() {
         .dispatch_buffers(&cpu, COUNT as u32, &[BufferBinding::read_write(&target)])
         .unwrap_err();
     match &error {
-        Error::KernelTarget { kernel } => assert_eq!(kernel, "subgroup_tests::add_one"),
+        Error::KernelTarget { kernel, target } => {
+            assert_eq!(kernel, "subgroup_tests::add_one");
+            assert_eq!(*target, Target::Cpu);
+        }
         other => panic!("expected KernelTarget, got {other:?}"),
     }
     assert!(
         error
             .to_string()
-            .starts_with("kernel `subgroup_tests::add_one` is built for the CPU target"),
+            .starts_with("kernel `subgroup_tests::add_one` is built for the `cpu` target"),
         "{error}"
     );
 

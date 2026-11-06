@@ -7,6 +7,7 @@ code: E0277
 file: headless-cpu-kernel/src/main.rs
 line: 46
 message: `HeadlessDevice` cannot run the kernel `Probe`: it is routed to the CPU in this build
+message: call it on a `CpuDevice`, or route its tag to `gpu`
 message: a hand-written `Kernel` impl that runs on a GPU adds `impl gust::target::GpuKernel for Probe {}`
 message: required for `HeadlessDevice` to implement `Run<Probe, 1>`
 label: this kernel has no GPU form in this build

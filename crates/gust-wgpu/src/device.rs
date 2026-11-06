@@ -258,8 +258,8 @@ pub(crate) fn required_capability_features(
     Ok(required)
 }
 
-/// The adapter's own subgroup size range, or `None` when the adapter does not offer subgroup operations. The range is
-/// what the adapter can use, not what one dispatch gets: the lane count a shader sees can differ between dispatches of
+/// The subgroup size range as wgpu reports it for the adapter (a fixed 4..64 on Metal), or `None` when the adapter does
+/// not offer subgroup operations. The range is what the adapter can use, not what one dispatch gets: the lane count a shader sees can differ between dispatches of
 /// one device (spike S3: an AMD 890M on DX12 reported 32 in one kernel and 64 in the others).
 pub(crate) fn adapter_subgroup_sizes(
     features: wgpu::Features,
@@ -828,13 +828,15 @@ mod tests {
 
     #[test]
     fn device_options_hold_no_capability_until_asked() {
+        // The one line that says what the default is (m8.w2 changes it); the rest does not depend on it.
         assert!(DeviceOptions::default().capabilities.is_empty());
-        let options = DeviceOptions::default().with_capabilities(&[Capability::Subgroups]);
+        let none = DeviceOptions::default().with_capabilities(&[]);
+        let options = none.clone().with_capabilities(&[Capability::Subgroups]);
         assert_eq!(options.capabilities, &[Capability::Subgroups]);
-        assert_ne!(options, DeviceOptions::default());
+        assert_ne!(options, none);
         // The setter replaces the set and touches no other field.
         let back = options.clone().with_capabilities(&[]);
-        assert_eq!(back, DeviceOptions::default());
+        assert_eq!(back, none);
     }
 
     #[test]

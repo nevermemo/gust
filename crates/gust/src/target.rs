@@ -39,8 +39,8 @@ impl Target {
 
 /// Marks a kernel that this build runs on a GPU.
 ///
-/// The `#[gpu]` macro implements it for every kernel it builds for [`Target::Gpu`]; the GPU runtime will bound its
-/// typed entry points on it (m8.w1), so a kernel routed to the CPU cannot be handed to a GPU device. A hand-written
+/// The `#[gpu]` macro implements it for every kernel it builds for [`Target::Gpu`]; the GPU runtime bounds its
+/// typed entry points on it, so a kernel routed to the CPU cannot be handed to a GPU device. A hand-written
 /// [`Kernel`] implementation that runs on a GPU device adds one line,
 /// `impl gust::target::GpuKernel for MyKernel {}`.
 #[doc(hidden)]

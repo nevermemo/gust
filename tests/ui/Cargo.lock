@@ -311,6 +311,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "headless-cpu-kernel"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+ "gust-compute-wgpu",
+]
+
+[[package]]
 name = "indexmap"
 version = "2.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

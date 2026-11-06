@@ -4,6 +4,7 @@
 //! The tests assert relations (the adapter policy grants what the adapter offers, the default policy grants wgpu's
 //! defaults), not the numbers of one GPU.
 
+use gust::capability::Capability;
 use gust_wgpu::{
     AdapterChoice, DeviceOptions, Error, FeaturesPolicy, HeadlessDevice, LimitsPolicy,
 };
@@ -183,6 +184,39 @@ fn the_default_options_ask_for_the_adapters_limits_on_native() {
     let plain = HeadlessDevice::new().expect("a Vulkan adapter");
     assert_eq!(plain.limits(), &wgpu::Limits::default());
     assert!(!plain.float32_filterable());
+}
+
+/// Capabilities (M8, m8.w1): the options hold none until asked, `with_capabilities` sets exactly the set it is given and
+/// nothing else, and a device reports the adapter's subgroup range whether or not it was opened with the capability.
+/// A request the adapter cannot meet is unit-tested over fake feature sets (`required_capability_features`).
+#[test]
+fn capabilities_are_an_option_of_their_own() {
+    assert!(DeviceOptions::default().capabilities.is_empty());
+    let asked = DeviceOptions::default().with_capabilities(&[Capability::Subgroups]);
+    assert_eq!(asked.capabilities, &[Capability::Subgroups]);
+    assert_eq!(
+        asked.clone().with_capabilities(&[]),
+        DeviceOptions::default()
+    );
+
+    let plain =
+        HeadlessDevice::with_options(options(AdapterChoice::Index(0), LimitsPolicy::Default))
+            .expect("the first adapter opens");
+    assert!(plain.capabilities().is_empty());
+    let info = plain.adapter_info();
+    if let Some((smallest, largest)) = plain.subgroup_sizes() {
+        // The range is the adapter's own, read from its description.
+        assert_eq!(
+            (smallest, largest),
+            (info.subgroup_min_size, info.subgroup_max_size)
+        );
+        assert!(smallest <= largest);
+    }
+    println!(
+        "{:?}: subgroup sizes {:?}",
+        info.name,
+        plain.subgroup_sizes()
+    );
 }
 
 /// The one test of this file that touches the process-wide default device: options set before the first use apply to

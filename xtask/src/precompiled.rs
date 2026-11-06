@@ -485,7 +485,7 @@ pub(crate) fn check_precompiled_report(args: &[String]) -> Result<String, String
     let distribution = e8_distribution(&fixture, &options)?;
 
     Ok(format!(
-        "check-precompiled passed: E1 {report}. E2 {binary}. E3 {identity}. E4 (E6f) {located}. E5 {strict_dual}. E6a to E6o {refusals}. E7 {reexpanded}. E7 {reproducible}. E8 {distribution}. The fixture is tests/precompiled; every child ran under {PROFILE_VARIABLE}={STRICT_PROFILE} except the E2 control and E6e ({PROFILE_VARIABLE}={CONTROL_PROFILE}), the profile-free builds of E6c, E6d, E6g, E6i and E6j, and cargo gust of E7."
+        "check-precompiled passed: E1 {report}. E2 {binary}. E3 {identity}. E4 (E6f) {located}. E5 {strict_dual}. E6a to E6o {refusals}. E7 {reexpanded}. E7 {reproducible}. E8 {distribution}. The fixture is tests/precompiled; every child ran under {PROFILE_VARIABLE}={STRICT_PROFILE} except the E2 control and E6e ({PROFILE_VARIABLE}={CONTROL_PROFILE}), E6k to E6o (each under its own value, `native+subgroups` to `native+f16`), the profile-free builds of E6c, E6d, E6g, E6i and E6j, and cargo gust of E7."
     ))
 }
 
@@ -1716,13 +1716,13 @@ fn e6_refusals(fixture: &Fixture) -> Result<String, String> {
         ));
     }
     Ok(format!(
-        "passed: {}; each refusal was judged on the exact message of `gust`'s build script ({PRECOMPILED_DIR}/{E6_NATIVE_EXPECTED}, {PRECOMPILED_DIR}/{E6_INFERRED_EXPECTED}), E6d and E6e are the positive controls, E6g, E6i and E6j compiled as dev with the warning of {PRECOMPILED_DIR}/{E6_BRIDGE_EXPECTED}; the capability profiles (D136): {profiles}",
+        "passed: {}; each refusal was judged on the exact message of `gust`'s build script ({PRECOMPILED_DIR}/{E6_NATIVE_EXPECTED}, {PRECOMPILED_DIR}/{E6_INFERRED_EXPECTED}), E6d and E6e are the positive controls, E6g, E6i and E6j compiled as dev with the warning of {PRECOMPILED_DIR}/{E6_BRIDGE_EXPECTED}; the capability profiles (D138): {profiles}",
         lines.join(", ")
     ))
 }
 
 // ---------------------------------------------------------------------------------------------------------------
-// E6k to E6o (m8.a, D136): the profile grammar `<target>[+<capability>]*` as `app` is built under it
+// E6k to E6o (m8.a, D138): the profile grammar `<target>[+<capability>]*` as `app` is built under it
 
 /// The expectation of the profile cases that `gust`'s build script refuses, relative to [`PRECOMPILED_DIR`]: lines
 /// `<case id> build-error: <text>`, one per refused case.

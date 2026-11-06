@@ -1,4 +1,4 @@
-# E6m, E6n and E6o of `cargo xtask check-precompiled` (m8.a, D136): the text that `cargo check -p app` must print when the
+# E6m, E6n and E6o of `cargo xtask check-precompiled` (m8.a, D138): the text that `cargo check -p app` must print when the
 # build script of `gust` refuses a `GUST_PROFILE` value that carries a capability. One refusal per line, written
 # `<case id> build-error: <text>` (the format of tests/ui/profile-unknown/expected.txt after the id). E6k
 # (`native+subgroups`) and E6l (`dev+subgroups`) must compile and have no line here.

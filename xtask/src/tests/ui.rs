@@ -1527,7 +1527,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "gust: GUST_PROFILE is set but empty; use dev, native, web or cpu (or unset it)",
         ])
     );
-    // Capabilities after the target (m8.a, D136): `dev+subgroups` compiles, and the build script refuses the others
+    // Capabilities after the target (m8.a, D138): `dev+subgroups` compiles, and the build script refuses the others
     // with its exact text.
     assert_eq!(find("profile-dev-subgroups").env, variable("dev+subgroups"));
     assert_eq!(

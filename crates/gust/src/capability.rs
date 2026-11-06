@@ -54,7 +54,8 @@ mod tests {
 
     #[test]
     fn the_enabled_set_is_what_the_build_script_declared() {
-        // The repository's own tests build under `GUST_PROFILE=dev` or `dev+subgroups` (the xtask profile argument).
+        // The repository's own tests build under `GUST_PROFILE=dev`, so the `[Subgroups]` arm is compiled by E6k, E6l and
+        // `profile-dev-subgroups` but not executed here; m8.w2 adds the profile argument of `cargo xtask test` that runs it.
         let subgroups = cfg!(gust_capability = "subgroups");
         assert_eq!(enabled().contains(&Capability::Subgroups), subgroups);
         assert_eq!(enabled().len(), usize::from(subgroups));

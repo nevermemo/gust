@@ -87,6 +87,14 @@ impl Capability {
         }
     }
 
+    /// The name of the capability in a profile and in a manifest (`subgroups`): the inverse of [`Self::from_name`].
+    #[allow(dead_code)] // read by the record writer (m8.b1); the mirror test of the grammar reads it now
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Subgroups => "subgroups",
+        }
+    }
+
     const fn bit(self) -> u8 {
         match self {
             Self::Subgroups => 1,
@@ -221,6 +229,22 @@ pub(crate) fn expand_with_directories(
         reported_file: None,
     };
     expand_in(module, &environment, Profile::Other)
+}
+
+/// [`expand_with_directories`] for a `#[gpu]` function (an element-wise map): the same environment, so that the tests
+/// of the manifest can drive the map path, which reads the crate's manifest too (GUST-E0753 at the function's name).
+#[cfg(test)]
+pub(crate) fn expand_map_with_directories(
+    function: syn::ItemFn,
+    manifest_dir: Option<&Path>,
+) -> syn::Result<TokenStream> {
+    let environment = Environment {
+        manifest_dir: manifest_dir.map(Path::to_path_buf),
+        export_dir: None,
+        package: Some("demo".to_owned()),
+        reported_file: None,
+    };
+    map::expand_map_in(function, &environment, Profile::Other)
 }
 
 /// [`expand_with`] with the environment given, so that tests choose the crate directory and the export directory

@@ -1,6 +1,7 @@
-//! The crate's declarations in its manifest: `[package.metadata.gust]` (M8, D137, plan section 2.1).
+//! The crate's declarations in its manifest: `[package.metadata.gust]` (M8, D138, plan section 2.1).
 //!
-//! `#[gpu]` reads `CARGO_MANIFEST_DIR/Cargo.toml` once per module expansion. Three keys are declared:
+//! `#[gpu]` (a module or a map function) and `par_for!` read `CARGO_MANIFEST_DIR/Cargo.toml` once per expansion.
+//! Three keys are declared:
 //!
 //! ```toml
 //! [package.metadata.gust]
@@ -19,14 +20,18 @@
 //! GUST-E0753, reported with `Cargo.toml:LINE:COLUMN` taken from the spans. The rest of the manifest is `toml`'s
 //! business: it must be valid TOML (cargo has read it already), and nothing else of it is looked at.
 //!
-//! What an E0753 can point at: the error is raised at the `#[gpu]` module (a proc macro has no span in `Cargo.toml`),
-//! so rustc shows the module's identifier, and the file, line and column of the offending key or value are in the
-//! message. Every `#[gpu]` module of the crate reports it once. The path in the message is always the bare file name.
-//! A crate with no `#[gpu]` module never has its manifest read.
+//! What an E0753 can point at: the error is raised at the module's name, at the function's name or at the call (a proc
+//! macro has no span in `Cargo.toml`), so rustc shows that identifier, and the file, line and column of the offending
+//! key or value are in the message. Every `#[gpu]` module, every `#[gpu] fn` (an element-wise map) and every `par_for!`
+//! call of the crate reports it once, because each goes through `expand_validated`. The path in the message is always
+//! the bare file name. A crate with none of the three never has its manifest read.
 //!
 //! An absent key and a present one differ: [`Declarations::profiles`] is `None` when the crate wrote no list (the
 //! default list, `["native", "web", "cpu"]`, is applied by the checks that need it), and an explicit list, even one
-//! equal to the default, is stricter (plan section 2.1, Q4).
+//! equal to the default, is stricter (plan section 2.1, Q4). An explicit list is never empty (an empty list declares
+//! no build, so there would be nothing for the exhaustiveness check to hold), never repeats an entry, and names no
+//! `dev` profile: a dev build is checked as `native` with the same capabilities (D138), so the list says
+//! `native...`. Each of these is GUST-E0753 at the offending entry (at the key for the empty list).
 
 use std::{fs, path::Path};
 
@@ -35,7 +40,7 @@ use toml::{
     de::{DeString, DeTable, DeValue},
 };
 
-use crate::expand::Profile;
+use crate::expand::{Profile, ProfileTarget};
 
 /// The manifest's file name as every message names it: never a path.
 pub(crate) const FILE: &str = "Cargo.toml";
@@ -139,7 +144,9 @@ pub(crate) fn read(text: &str) -> Result<Declarations, ManifestError> {
     let mut declarations = Declarations::default();
     for (key, value) in table.iter() {
         match name_of(key) {
-            "profiles" => declarations.profiles = Some(profiles(text, value)?),
+            "profiles" => {
+                declarations.profiles = Some(profiles(text, key.span().start, value)?);
+            }
             "limits" => declarations.limits = Some(limits(text, value)?),
             "routes" => declarations.routes = routes(text, value)?,
             other => {
@@ -263,24 +270,51 @@ fn strings<'a>(
         .collect()
 }
 
-/// `profiles`: an array of strings, each a profile `GUST_PROFILE` accepts.
-fn profiles(text: &str, value: &Spanned<DeValue<'_>>) -> Result<Vec<String>, ManifestError> {
-    strings(text, value, "profiles")?
-        .into_iter()
-        .map(|(name, offset)| {
-            if Profile::parse(name).is_some() {
-                Ok(name.to_owned())
-            } else {
-                Err(place(
-                    text,
-                    Some(offset),
-                    format!(
-                        "`{name}` is not a build profile; write <target>[+<capability>] with the target dev, native, web or cpu and the capability subgroups (web and cpu take none)"
-                    ),
-                ))
-            }
-        })
-        .collect()
+/// `profiles`: a non-empty array of distinct strings, each a profile `GUST_PROFILE` accepts, none of them a `dev`
+/// profile (D138: a dev build is checked as `native` with the same capabilities, so the list names `native...`).
+/// `key` is the offset of the key, where an empty list is reported; the other refusals are at the entry.
+fn profiles(
+    text: &str,
+    key: usize,
+    value: &Spanned<DeValue<'_>>,
+) -> Result<Vec<String>, ManifestError> {
+    let entries = strings(text, value, "profiles")?;
+    if entries.is_empty() {
+        return Err(place(
+            text,
+            Some(key),
+            "an empty list declares no build; omit the key for the default".to_owned(),
+        ));
+    }
+    let mut declared: Vec<String> = Vec::new();
+    for (name, offset) in entries {
+        let Some(parsed) = Profile::parse(name) else {
+            return Err(place(
+                text,
+                Some(offset),
+                format!(
+                    "`{name}` is not a build profile; write <target>[+<capability>] with the target dev, native, web or cpu and the capability subgroups (web and cpu take none)"
+                ),
+            ));
+        };
+        if parsed.target == Some(ProfileTarget::Dev) {
+            return Err(place(
+                text,
+                Some(offset),
+                "a dev build is checked as `native` with the same capabilities; list `native...`"
+                    .to_owned(),
+            ));
+        }
+        if declared.iter().any(|earlier| earlier == name) {
+            return Err(place(
+                text,
+                Some(offset),
+                format!("`{name}` is listed twice in profiles"),
+            ));
+        }
+        declared.push(name.to_owned());
+    }
+    Ok(declared)
 }
 
 /// `limits`: the string `"portable"`.

@@ -87,9 +87,10 @@ fn allowed() -> String {
 ///
 /// The grammar is `<target>(+<capability>)*`, exact and lower-case, with no trimming. It is mirrored by
 /// `Profile::parse` in `gust-macros` (the macro cannot depend on this crate) and the `GRAMMAR` table of both test
-/// modules is the same text. The refusals, in the order the pieces are read: an empty piece, an unknown capability, a
-/// reserved one (`f16`, `atomics64`), a duplicate; then, for the target, `cpu` takes no capability and `web` cannot
-/// have `subgroups` on the pinned wgpu (a browser cannot request the feature).
+/// modules is the same text. The refusals, in the order the pieces are read: an empty piece; `cpu` takes no capability,
+/// whatever its name; a reserved capability (`f16`, `atomics64`); an unknown one; a duplicate. Then `web` cannot have
+/// `subgroups` on the pinned wgpu (a browser cannot request the feature). The hint that ends a reserved or unknown
+/// refusal follows the target: `web` takes no capability on this pin, the others take [`CAPABILITIES`].
 fn capabilities(inputs: &Inputs<'_>, profile: &str) -> Result<Vec<&'static str>, String> {
     let Some(value) = inputs.profile else {
         return Ok(Vec::new());
@@ -102,16 +103,21 @@ fn capabilities(inputs: &Inputs<'_>, profile: &str) -> Result<Vec<&'static str>,
                 CAPABILITIES.join(" or ")
             ));
         }
+        if profile == "cpu" {
+            return Err(format!(
+                "gust: GUST_PROFILE `{value}`: the cpu profile takes no capability; a CPU build runs on the host and holds no GPU runtime"
+            ));
+        }
         if RESERVED_CAPABILITIES.contains(&name) {
             return Err(format!(
-                "gust: capability `{name}` in GUST_PROFILE `{value}` is not supported in this release; use {}",
-                CAPABILITIES.join(" or ")
+                "gust: capability `{name}` in GUST_PROFILE `{value}` is not supported in this release; {}",
+                accepted(profile)
             ));
         }
         let Some(known) = CAPABILITIES.iter().find(|known| **known == name) else {
             return Err(format!(
-                "gust: unknown capability `{name}` in GUST_PROFILE `{value}`; use {}",
-                CAPABILITIES.join(" or ")
+                "gust: unknown capability `{name}` in GUST_PROFILE `{value}`; {}",
+                accepted(profile)
             ));
         };
         if found.contains(known) {
@@ -121,14 +127,6 @@ fn capabilities(inputs: &Inputs<'_>, profile: &str) -> Result<Vec<&'static str>,
         }
         found.push(known);
     }
-    if found.is_empty() {
-        return Ok(found);
-    }
-    if profile == "cpu" {
-        return Err(format!(
-            "gust: GUST_PROFILE `{value}`: the cpu profile takes no capability; a CPU build runs on the host and holds no GPU runtime"
-        ));
-    }
     if profile == "web" && found.contains(&"subgroups") {
         return Err(format!(
             "gust: GUST_PROFILE `{value}`: the capability subgroups is not available under the web profile in this release (the pinned wgpu cannot request it in a browser); use native or dev"
@@ -136,6 +134,16 @@ fn capabilities(inputs: &Inputs<'_>, profile: &str) -> Result<Vec<&'static str>,
     }
     found.sort_by_key(|name| CAPABILITIES.iter().position(|known| known == name));
     Ok(found)
+}
+
+/// What ends the refusal of a reserved or unknown capability under `profile`: what the target takes.
+fn accepted(profile: &str) -> String {
+    if profile == "web" {
+        "the web profile takes no capability on the pinned wgpu (a browser cannot request one)"
+            .to_owned()
+    } else {
+        format!("use {}", CAPABILITIES.join(" or "))
+    }
 }
 
 /// The cargo directive that declares the values of `cfg(gust_capability)`.
@@ -255,6 +263,37 @@ mod tests {
             "{lines:?}"
         );
         assert_eq!(effective(&NONE), Ok(("dev", false)));
+    }
+
+    /// The whole output of a build with no `GUST_PROFILE`, line for line (m8.a, S6): the next line anyone adds is a
+    /// deliberate change of this test. The `cfg(gust_capability)` declaration is the one line m8.a added.
+    #[test]
+    fn the_whole_output_of_a_build_without_a_variable_is_pinned() {
+        let head = [
+            "cargo:rerun-if-changed=build.rs",
+            "cargo:rerun-if-env-changed=GUST_PROFILE",
+            "cargo:rustc-check-cfg=cfg(gust_profile, values(\"dev\", \"native\", \"web\", \"cpu\"))",
+            "cargo:rustc-check-cfg=cfg(gust_capability, values(\"subgroups\"))",
+        ];
+        let debug: Vec<&str> = head
+            .iter()
+            .copied()
+            .chain(["cargo:rustc-cfg=gust_profile=\"dev\""])
+            .collect();
+        assert_eq!(directives(&NONE).unwrap(), debug);
+        let release = Inputs {
+            release: true,
+            ..NONE
+        };
+        let strict: Vec<&str> = head
+            .iter()
+            .copied()
+            .chain([
+                "cargo:warning=gust: release build without GUST_PROFILE treated as native",
+                "cargo:rustc-cfg=gust_profile=\"native\"",
+            ])
+            .collect();
+        assert_eq!(directives(&release).unwrap(), strict);
     }
 
     #[test]
@@ -726,8 +765,17 @@ mod tests {
                 "gust: unknown capability `gpu` in GUST_PROFILE `native+gpu`; use subgroups",
             ),
             (
+                "dev+gpu",
+                "gust: unknown capability `gpu` in GUST_PROFILE `dev+gpu`; use subgroups",
+            ),
+            // The cpu profile takes no capability, whatever its name; web takes none on this pin.
+            (
                 "cpu+simd",
-                "gust: unknown capability `simd` in GUST_PROFILE `cpu+simd`; use subgroups",
+                "gust: GUST_PROFILE `cpu+simd`: the cpu profile takes no capability; a CPU build runs on the host and holds no GPU runtime",
+            ),
+            (
+                "web+gpu",
+                "gust: unknown capability `gpu` in GUST_PROFILE `web+gpu`; the web profile takes no capability on the pinned wgpu (a browser cannot request one)",
             ),
             (
                 "native+Subgroups",
@@ -751,13 +799,20 @@ mod tests {
                     profile: Some(&value),
                     ..NONE
                 };
-                assert_eq!(
-                    directives(&inputs),
-                    Err(format!(
+                // The hint follows the target: dev and native take subgroups, web takes nothing on this pin and cpu
+                // takes no capability at all.
+                let wanted = match target {
+                    "cpu" => format!(
+                        "gust: GUST_PROFILE `{value}`: the cpu profile takes no capability; a CPU build runs on the host and holds no GPU runtime"
+                    ),
+                    "web" => format!(
+                        "gust: capability `{name}` in GUST_PROFILE `{value}` is not supported in this release; the web profile takes no capability on the pinned wgpu (a browser cannot request one)"
+                    ),
+                    _ => format!(
                         "gust: capability `{name}` in GUST_PROFILE `{value}` is not supported in this release; use subgroups"
-                    )),
-                    "{value}"
-                );
+                    ),
+                };
+                assert_eq!(directives(&inputs), Err(wanted), "{value}");
             }
         }
     }

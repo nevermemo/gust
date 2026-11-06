@@ -370,8 +370,8 @@ codes! {
     /// `sample`), or a texture or sampler type anywhere but a kernel parameter.
     TextureUse = 736 => "GUST-E0736";
 
-    // E0753: the crate's declarations in its manifest (M8, D137). E0737 to E0752 belong to the other M8 slices.
-    /// A malformed `[package.metadata.gust]` table in the `Cargo.toml` of the crate that holds the `#[gpu]` module.
+    // E0753: the crate's declarations in its manifest (M8, D138). E0737 to E0752 belong to the other M8 slices.
+    /// A malformed `[package.metadata.gust]` table in the `Cargo.toml` of the crate that holds the `#[gpu]` module, the `#[gpu]` function or the `par_for!` call.
     GustMetadata = 753 => "GUST-E0753";
 
     // E08xx: rejections only the emitter makes, after validation passed.

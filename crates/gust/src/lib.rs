@@ -105,6 +105,12 @@
 //! build fails with a compile error at the kernel, and the `slang-runtime` feature is refused, so the build contains
 //! no run-time Slang compiler. `dev` has neither rule. `profile::NAME` is the effective profile (support surface, see below).
 //!
+//! The value may name capabilities after the target, `<target>(+<capability>)*` (M8): `GUST_PROFILE=native+subgroups`.
+//! `subgroups` is the one capability of this release; [`capability::enabled`] is the set a build was compiled for.
+//! `f16` and `atomics64` are reserved and refused as not supported, `cpu` takes no capability, and `web+subgroups` is
+//! refused (the pinned wgpu cannot request subgroups in a browser). `dev+subgroups` is allowed: `dev` is the one
+//! profile that accepts the `slang-runtime` feature, so it is the profile of the tests of subgroup kernels.
+//!
 //! `cpu` is the production CPU target (D21): the `#[gpu]` macro emits the kernel's `Run` impl for
 //! [`cpu::CpuDevice`] in every build, without the test and `gust_dual` gate, uses no
 //! artifact, and the `slang-runtime` feature is refused, so the build holds no run-time Slang bridge. `gust-compute-wgpu`

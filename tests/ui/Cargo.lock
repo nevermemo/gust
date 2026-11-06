@@ -754,7 +754,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "profile-dev-subgroups"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "profile-empty"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "profile-f16"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "profile-manifest-malformed"
 version = "0.0.0"
 dependencies = [
  "gust-compute",
@@ -789,7 +810,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "profile-subgroups-cpu"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "profile-subgroups-web"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "profile-unknown"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "profile-unknown-capability"
 version = "0.0.0"
 dependencies = [
  "gust-compute",

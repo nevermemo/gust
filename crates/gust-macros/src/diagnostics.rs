@@ -370,6 +370,10 @@ codes! {
     /// `sample`), or a texture or sampler type anywhere but a kernel parameter.
     TextureUse = 736 => "GUST-E0736";
 
+    // E0753: the crate's declarations in its manifest (M8, D137). E0737 to E0752 belong to the other M8 slices.
+    /// A malformed `[package.metadata.gust]` table in the `Cargo.toml` of the crate that holds the `#[gpu]` module.
+    GustMetadata = 753 => "GUST-E0753";
+
     // E08xx: rejections only the emitter makes, after validation passed.
     /// A kernel parameter that is neither a resource nor the dispatch thread.
     EntryPointParameter = 801 => "GUST-E0801";
@@ -1238,6 +1242,7 @@ mod tests {
             || file.ends_with("src/tests/workgroup.rs")
             || file.ends_with("src/tests/grid.rs")
             || file.ends_with("src/tests/par_for.rs")
+            || file.ends_with("src/tests/manifest.rs")
             || file.ends_with("src/validate/mod.rs")
             || file.ends_with("src/validate/classify/tests.rs")
     }

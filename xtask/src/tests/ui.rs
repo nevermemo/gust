@@ -1527,6 +1527,54 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "gust: GUST_PROFILE is set but empty; use dev, native, web or cpu (or unset it)",
         ])
     );
+    // Capabilities after the target (m8.a, D136): `dev+subgroups` compiles, and the build script refuses the others
+    // with its exact text.
+    assert_eq!(find("profile-dev-subgroups").env, variable("dev+subgroups"));
+    assert_eq!(
+        find("profile-dev-subgroups").expectation,
+        Expectation::Compiles
+    );
+    assert_eq!(find("profile-subgroups-web").env, variable("web+subgroups"));
+    assert_eq!(
+        find("profile-subgroups-web").expectation,
+        build_fails(&[
+            "gust: GUST_PROFILE `web+subgroups`: the capability subgroups is not available under the web profile in this release (the pinned wgpu cannot request it in a browser); use native or dev"
+        ])
+    );
+    assert_eq!(find("profile-subgroups-cpu").env, variable("cpu+subgroups"));
+    assert_eq!(
+        find("profile-subgroups-cpu").expectation,
+        build_fails(&[
+            "gust: GUST_PROFILE `cpu+subgroups`: the cpu profile takes no capability; a CPU build runs on the host and holds no GPU runtime"
+        ])
+    );
+    assert_eq!(find("profile-f16").env, variable("native+f16"));
+    assert_eq!(
+        find("profile-f16").expectation,
+        build_fails(&[
+            "gust: capability `f16` in GUST_PROFILE `native+f16` is not supported in this release; use subgroups"
+        ])
+    );
+    assert_eq!(
+        find("profile-unknown-capability").env,
+        variable("native+gpu")
+    );
+    assert_eq!(
+        find("profile-unknown-capability").expectation,
+        build_fails(&[
+            "gust: unknown capability `gpu` in GUST_PROFILE `native+gpu`; use subgroups"
+        ])
+    );
+    // A malformed `[package.metadata.gust]` is GUST-E0753 at the `#[gpu]` module; the fixture sets no variable.
+    let malformed = find("profile-manifest-malformed");
+    assert!(malformed.env.is_empty(), "{:?}", malformed.env);
+    assert!(
+        matches!(&malformed.expectation, Expectation::Fails(wanted)
+            if wanted.code == "none"
+                && wanted.messages.iter().any(|text| text.starts_with("[GUST-E0753] Cargo.toml:8:10: "))),
+        "{:?}",
+        malformed.expectation
+    );
     // A strict profile with the feature on: the manifest turns it on, the build script refuses.
     assert_eq!(find("profile-native-bridge").env, variable("native"));
     assert_eq!(
@@ -1580,12 +1628,17 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "par-for-reserved-name",
             "par-for-three-wide",
             "profile-dev-no-artifact",
+            "profile-dev-subgroups",
             "profile-empty",
+            "profile-f16",
             "profile-native-artifact",
             "profile-native-bridge",
             "profile-native-no-artifact",
             "profile-native-no-manifest",
+            "profile-subgroups-cpu",
+            "profile-subgroups-web",
             "profile-unknown",
+            "profile-unknown-capability",
             "typed-call-cpu-target"
         ]
     );
@@ -1594,7 +1647,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 86] = [
+const PINNED_FIXTURES: [&str; 92] = [
     "barrier-in-helper",
     "barrier-in-if",
     "barrier-in-nested-for",
@@ -1632,12 +1685,18 @@ const PINNED_FIXTURES: [&str; 86] = [
     "par-for-reserved-name",
     "par-for-three-wide",
     "profile-dev-no-artifact",
+    "profile-dev-subgroups",
     "profile-empty",
+    "profile-f16",
+    "profile-manifest-malformed",
     "profile-native-artifact",
     "profile-native-bridge",
     "profile-native-no-artifact",
     "profile-native-no-manifest",
+    "profile-subgroups-cpu",
+    "profile-subgroups-web",
     "profile-unknown",
+    "profile-unknown-capability",
     "question-mark-in-barrier-kernel",
     "reserved-gust-prefix",
     "return-in-barrier-kernel",

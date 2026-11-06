@@ -1359,6 +1359,17 @@ Fixture: `tests/ui/texture-as-value` (`cargo xtask check-ui`).
 Write instead: call the method on the parameter by name; a helper function takes the texel values (`image.load(x, y)`) or the coordinates, not the texture.
 Decision: D62, D64 (slice mx.t3).
 
+### GUST-E0753 malformed `[package.metadata.gust]` table
+
+The `Cargo.toml` of the crate that holds a `#[gpu]` module has a `[package.metadata.gust]` table the macro cannot read (M8, D137): an unknown key, a value of the wrong kind, a `profiles` entry that is not a build profile (`<target>[+<capability>]`; `web+subgroups` and a capability on `cpu` are not), `limits` other than `"portable"`, a route that is not a table or names a target other than `gpu` and `cpu`, a dotted tag written as a header table instead of a quoted key, or a manifest that is not valid TOML. The accepted forms are inline tables, dotted keys and headers (`[package.metadata.gust.routes.physics]`, the form `cargo package` writes), with basic or literal strings; the `gust` tables are the only part of the manifest that is read, and only `[package.metadata.gust]` (not `[workspace.metadata]`).
+Reached through `#[gpu]`.
+Message: `Cargo.toml:LINE:COLUMN: <what is wrong>`, with the 1-based line and the column in characters of the offending key or value. The path is always the bare file name.
+What the error can point at: a proc macro has no span inside `Cargo.toml`, so rustc underlines the identifier of the `#[gpu]` module, not the TOML line; the line and column are in the message only. It cannot name one kernel, because the table belongs to the crate: every `#[gpu]` module of the crate reports the same error once. A crate with no `#[gpu]` module never has its manifest read, so the error never appears for it. The first problem found stops the read; which one that is, when a table has several, is not specified.
+Rejected: `profile = ["native"]` (the key is `profiles`), `profiles = ["web+subgroups"]`, `limits = "device"`, `physics = "gpu"` under `routes`, `targets = ["gpu", "tpu"]`.
+Fixture: `tests/ui/profile-manifest-malformed` (`cargo xtask check-ui`); the exact line, column and message of each case are pinned by `crates/gust-macros/src/tests/manifest.rs`, with the corpus of source forms and the manifest `cargo package` wrote.
+Write instead: the keys are `profiles` (an array of profile strings), `limits = "portable"` and `routes` (a table of tags, each `{ targets = ["gpu", "cpu"], default = "gpu" }`); a dotted tag is a quoted key, `"physics.broadphase" = {}`.
+Decision: D137.
+
 ## E08xx: emitter-only rejections
 
 These are checked by the Slang emitter after the validator has accepted the module. The

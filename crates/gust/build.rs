@@ -5,6 +5,12 @@
 //! `cfg(gust_profile = "..")` (see `gust::profile`), and every profile but `dev` refuses the `slang-runtime` feature,
 //! so a production build can never contain the run-time Slang bridge, not even through feature unification.
 //!
+//! The value may end in capabilities, `<target>(+<capability>)*` (M8, D138): `native+subgroups`. The one capability of
+//! this release is `subgroups`; each becomes `cfg(gust_capability = "..")` (see `gust::capability::enabled`).
+//! `f16` and `atomics64` parse and are refused as not supported, `cpu` takes no capability, and `web+subgroups` is
+//! refused on the pinned wgpu. `dev+subgroups` is allowed: it is the profile of the tests of subgroup kernels, and
+//! `dev` is the one profile that accepts the `slang-runtime` feature.
+//!
 //! The one exception is the internal feature `cargo-gust-bridge` (D108), which only `cargo-gust` enables so that a
 //! plain `cargo install cargo-gust` works: with it on, a release build without `GUST_PROFILE` is `dev` (and the script
 //! says so with a `cargo:warning`) instead of `native`; a `wasm32` build stays `web`. An explicit `GUST_PROFILE`
@@ -15,8 +21,15 @@
 
 use std::{env, process::ExitCode};
 
-/// The values `GUST_PROFILE` may take.
+/// The targets `GUST_PROFILE` may start with.
 const PROFILES: [&str; 4] = ["dev", "native", "web", "cpu"];
+
+/// The capabilities a `GUST_PROFILE` may name after a `+` (M8, D138): `native+subgroups`. They are the names of
+/// `gust::capability::Capability`; each one becomes `cfg(gust_capability = "..")`.
+const CAPABILITIES: [&str; 1] = ["subgroups"];
+
+/// Capabilities that are reserved for a later release: they parse, and are refused as not supported.
+const RESERVED_CAPABILITIES: [&str; 2] = ["f16", "atomics64"];
 
 /// The line printed whenever `cargo-gust-bridge` changes the profile (a release build without `GUST_PROFILE`).
 const BRIDGE_WARNING: &str =
@@ -45,11 +58,15 @@ fn effective(inputs: &Inputs<'_>) -> Result<(&'static str, bool), String> {
             "gust: GUST_PROFILE is set but empty; use {} (or unset it)",
             allowed()
         )),
-        Some(value) => PROFILES
-            .iter()
-            .find(|known| **known == value)
-            .map(|known| (*known, false))
-            .ok_or_else(|| format!("gust: unknown GUST_PROFILE `{value}`; use {}", allowed())),
+        Some(value) => {
+            // The target is the text before the first `+`; the capabilities after it are judged by `capabilities`.
+            let target = value.split('+').next().unwrap_or_default();
+            PROFILES
+                .iter()
+                .find(|known| **known == target)
+                .map(|known| (*known, false))
+                .ok_or_else(|| format!("gust: unknown GUST_PROFILE `{value}`; use {}", allowed()))
+        }
         None if inputs.release && inputs.bridge && !inputs.wasm => Ok(("dev", true)),
         None if inputs.release && inputs.wasm => Ok(("web", true)),
         None if inputs.release => Ok(("native", true)),
@@ -65,6 +82,74 @@ fn allowed() -> String {
     )
 }
 
+/// The capabilities `GUST_PROFILE` names after the target (`native+subgroups`), in the order of [`CAPABILITIES`], or the
+/// reason the value is refused. `profile` is the target [`effective`] found.
+///
+/// The grammar is `<target>(+<capability>)*`, exact and lower-case, with no trimming. It is mirrored by
+/// `Profile::parse` in `gust-macros` (the macro cannot depend on this crate) and the `GRAMMAR` table of both test
+/// modules is the same text. The refusals, in the order the pieces are read: an empty piece, an unknown capability, a
+/// reserved one (`f16`, `atomics64`), a duplicate; then, for the target, `cpu` takes no capability and `web` cannot
+/// have `subgroups` on the pinned wgpu (a browser cannot request the feature).
+fn capabilities(inputs: &Inputs<'_>, profile: &str) -> Result<Vec<&'static str>, String> {
+    let Some(value) = inputs.profile else {
+        return Ok(Vec::new());
+    };
+    let mut found: Vec<&'static str> = Vec::new();
+    for name in value.split('+').skip(1) {
+        if name.is_empty() {
+            return Err(format!(
+                "gust: GUST_PROFILE `{value}` has an empty capability name after `+`; write <target>[+<capability>], with the capability {}",
+                CAPABILITIES.join(" or ")
+            ));
+        }
+        if RESERVED_CAPABILITIES.contains(&name) {
+            return Err(format!(
+                "gust: capability `{name}` in GUST_PROFILE `{value}` is not supported in this release; use {}",
+                CAPABILITIES.join(" or ")
+            ));
+        }
+        let Some(known) = CAPABILITIES.iter().find(|known| **known == name) else {
+            return Err(format!(
+                "gust: unknown capability `{name}` in GUST_PROFILE `{value}`; use {}",
+                CAPABILITIES.join(" or ")
+            ));
+        };
+        if found.contains(known) {
+            return Err(format!(
+                "gust: GUST_PROFILE `{value}` names the capability `{name}` twice"
+            ));
+        }
+        found.push(known);
+    }
+    if found.is_empty() {
+        return Ok(found);
+    }
+    if profile == "cpu" {
+        return Err(format!(
+            "gust: GUST_PROFILE `{value}`: the cpu profile takes no capability; a CPU build runs on the host and holds no GPU runtime"
+        ));
+    }
+    if profile == "web" && found.contains(&"subgroups") {
+        return Err(format!(
+            "gust: GUST_PROFILE `{value}`: the capability subgroups is not available under the web profile in this release (the pinned wgpu cannot request it in a browser); use native or dev"
+        ));
+    }
+    found.sort_by_key(|name| CAPABILITIES.iter().position(|known| known == name));
+    Ok(found)
+}
+
+/// The cargo directive that declares the values of `cfg(gust_capability)`.
+fn check_cfg_capability() -> String {
+    let values: Vec<String> = CAPABILITIES
+        .iter()
+        .map(|name| format!("\"{name}\""))
+        .collect();
+    format!(
+        "cargo:rustc-check-cfg=cfg(gust_capability, values({}))",
+        values.join(", ")
+    )
+}
+
 /// The cargo directive that declares the values of `cfg(gust_profile)`.
 fn check_cfg() -> String {
     let values: Vec<String> = PROFILES.iter().map(|name| format!("\"{name}\"")).collect();
@@ -77,6 +162,7 @@ fn check_cfg() -> String {
 /// The lines (without the trailing newline) this script prints for cargo, or the reason the build must fail.
 fn directives(inputs: &Inputs<'_>) -> Result<Vec<String>, String> {
     let (profile, inferred) = effective(inputs)?;
+    let capabilities = capabilities(inputs, profile)?;
     if inputs.slang_runtime && profile == "cpu" {
         // `cpu` is never inferred, so there is no origin to name.
         return Err("gust: profile cpu refuses feature slang-runtime; a CPU build contains no compiler, bridge or GPU runtime. Do not enable the feature for this build (look for features = [\"slang-runtime\"] in a dependency, or --features ...slang-runtime; `cargo tree -e features -i gust-compute` shows who enables it), or build with GUST_PROFILE=dev.".to_owned());
@@ -87,17 +173,20 @@ fn directives(inputs: &Inputs<'_>) -> Result<Vec<String>, String> {
         } else {
             ""
         };
+        // The way out keeps the capabilities: `native+subgroups` is built as `dev+subgroups` instead.
+        let suffix: String = capabilities.iter().map(|name| format!("+{name}")).collect();
         return Err(format!(
             "gust: profile {profile} refuses feature slang-runtime; a strict profile builds no run-time Slang \
              bridge. Do not enable the feature for this build (look for features = [\"slang-runtime\"] in a \
              dependency, or --features ...slang-runtime; `cargo tree -e features -i gust-compute` shows who enables it), \
-             or build with GUST_PROFILE=dev.{origin}"
+             or build with GUST_PROFILE=dev{suffix}.{origin}"
         ));
     }
     let mut lines = vec![
         "cargo:rerun-if-changed=build.rs".to_owned(),
         "cargo:rerun-if-env-changed=GUST_PROFILE".to_owned(),
         check_cfg(),
+        check_cfg_capability(),
     ];
     if inferred && profile == "dev" {
         // The bridge feature is the only way to infer `dev`.
@@ -108,6 +197,9 @@ fn directives(inputs: &Inputs<'_>) -> Result<Vec<String>, String> {
         ));
     }
     lines.push(format!("cargo:rustc-cfg=gust_profile=\"{profile}\""));
+    for name in capabilities {
+        lines.push(format!("cargo:rustc-cfg=gust_capability=\"{name}\""));
+    }
     Ok(lines)
 }
 
@@ -234,16 +326,16 @@ mod tests {
                 "gust: unknown GUST_PROFILE ` native`; use dev, native, web or cpu",
             ),
             (
-                "native+gpu",
-                "gust: unknown GUST_PROFILE `native+gpu`; use dev, native, web or cpu",
-            ),
-            (
                 "CPU",
                 "gust: unknown GUST_PROFILE `CPU`; use dev, native, web or cpu",
             ),
             (
-                "cpu+simd",
-                "gust: unknown GUST_PROFILE `cpu+simd`; use dev, native, web or cpu",
+                "+subgroups",
+                "gust: unknown GUST_PROFILE `+subgroups`; use dev, native, web or cpu",
+            ),
+            (
+                "gpu+subgroups",
+                "gust: unknown GUST_PROFILE `gpu+subgroups`; use dev, native, web or cpu",
             ),
             (
                 "",
@@ -559,6 +651,244 @@ mod tests {
             directives(&cpu)
                 .unwrap_err()
                 .starts_with("gust: profile cpu refuses feature slang-runtime; ")
+        );
+    }
+
+    /// A parsed value: its target and capabilities.
+    type Parsed<'a> = (&'a str, &'a [&'a str]);
+
+    /// The grammar of `GUST_PROFILE`: every row is (value, the target and the capabilities it parses to, or `None`
+    /// when the build script refuses it). `Profile::parse` of `gust-macros` has the same table (its test module
+    /// `tests/manifest.rs`), pasted (rows verbatim), so the two copies of the grammar cannot drift apart unnoticed.
+    const GRAMMAR: &[(&str, Option<Parsed<'static>>)] = &[
+        ("dev", Some(("dev", &[]))),
+        ("native", Some(("native", &[]))),
+        ("web", Some(("web", &[]))),
+        ("cpu", Some(("cpu", &[]))),
+        ("dev+subgroups", Some(("dev", &["subgroups"]))),
+        ("native+subgroups", Some(("native", &["subgroups"]))),
+        ("", None),
+        ("bogus", None),
+        ("Native", None),
+        (" native", None),
+        ("native ", None),
+        ("+subgroups", None),
+        ("native+", None),
+        ("native++subgroups", None),
+        ("native+subgroups+", None),
+        ("native+ subgroups", None),
+        ("native+Subgroups", None),
+        ("native+subgroup", None),
+        ("native+subgroups+subgroups", None),
+        ("web+subgroups", None),
+        ("cpu+subgroups", None),
+        ("cpu+simd", None),
+        ("native+gpu", None),
+        ("native+f16", None),
+        ("dev+f16", None),
+        ("native+atomics64", None),
+        ("dev+subgroups+f16", None),
+    ];
+
+    #[test]
+    fn the_grammar_table_is_what_the_build_script_accepts() {
+        for (value, parsed) in GRAMMAR {
+            let inputs = Inputs {
+                profile: Some(value),
+                ..NONE
+            };
+            let result = directives(&inputs);
+            match parsed {
+                Some((target, names)) => {
+                    let lines = result.unwrap_or_else(|error| panic!("{value:?}: {error}"));
+                    assert!(lines.contains(&cfg_line(target)), "{value:?}: {lines:?}");
+                    let cfgs: Vec<&String> = lines
+                        .iter()
+                        .filter(|line| line.starts_with("cargo:rustc-cfg=gust_capability="))
+                        .collect();
+                    let wanted: Vec<String> = names
+                        .iter()
+                        .map(|name| format!("cargo:rustc-cfg=gust_capability=\"{name}\""))
+                        .collect();
+                    assert_eq!(cfgs, wanted.iter().collect::<Vec<_>>(), "{value:?}");
+                }
+                None => assert!(result.is_err(), "{value:?} must be refused: {result:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_capability_that_does_not_exist_is_refused_by_name() {
+        // These two inputs were `unknown GUST_PROFILE` before capabilities existed; they are still refused.
+        for (value, message) in [
+            (
+                "native+gpu",
+                "gust: unknown capability `gpu` in GUST_PROFILE `native+gpu`; use subgroups",
+            ),
+            (
+                "cpu+simd",
+                "gust: unknown capability `simd` in GUST_PROFILE `cpu+simd`; use subgroups",
+            ),
+            (
+                "native+Subgroups",
+                "gust: unknown capability `Subgroups` in GUST_PROFILE `native+Subgroups`; use subgroups",
+            ),
+        ] {
+            let inputs = Inputs {
+                profile: Some(value),
+                ..NONE
+            };
+            assert_eq!(directives(&inputs), Err(message.to_owned()), "{value:?}");
+        }
+    }
+
+    #[test]
+    fn the_reserved_capabilities_parse_and_are_refused_as_not_supported() {
+        for name in ["f16", "atomics64"] {
+            for target in ["dev", "native", "web", "cpu"] {
+                let value = format!("{target}+{name}");
+                let inputs = Inputs {
+                    profile: Some(&value),
+                    ..NONE
+                };
+                assert_eq!(
+                    directives(&inputs),
+                    Err(format!(
+                        "gust: capability `{name}` in GUST_PROFILE `{value}` is not supported in this release; use subgroups"
+                    )),
+                    "{value}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_empty_or_repeated_capability_is_refused() {
+        for value in ["native+", "native++subgroups", "native+subgroups+"] {
+            let inputs = Inputs {
+                profile: Some(value),
+                ..NONE
+            };
+            assert_eq!(
+                directives(&inputs),
+                Err(format!(
+                    "gust: GUST_PROFILE `{value}` has an empty capability name after `+`; write <target>[+<capability>], with the capability subgroups"
+                )),
+                "{value}"
+            );
+        }
+        let twice = Inputs {
+            profile: Some("native+subgroups+subgroups"),
+            ..NONE
+        };
+        assert_eq!(
+            directives(&twice),
+            Err("gust: GUST_PROFILE `native+subgroups+subgroups` names the capability `subgroups` twice".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_cpu_profile_takes_no_capability_and_web_cannot_have_subgroups() {
+        let cpu = Inputs {
+            profile: Some("cpu+subgroups"),
+            ..NONE
+        };
+        assert_eq!(
+            directives(&cpu),
+            Err("gust: GUST_PROFILE `cpu+subgroups`: the cpu profile takes no capability; a CPU build runs on the host and holds no GPU runtime".to_owned())
+        );
+        let web = Inputs {
+            profile: Some("web+subgroups"),
+            ..NONE
+        };
+        assert_eq!(
+            directives(&web),
+            Err("gust: GUST_PROFILE `web+subgroups`: the capability subgroups is not available under the web profile in this release (the pinned wgpu cannot request it in a browser); use native or dev".to_owned())
+        );
+    }
+
+    #[test]
+    fn dev_and_native_with_subgroups_set_one_capability_cfg_and_declare_it() {
+        for value in ["dev+subgroups", "native+subgroups"] {
+            let inputs = Inputs {
+                profile: Some(value),
+                ..NONE
+            };
+            let lines = directives(&inputs).unwrap();
+            let target = value.split('+').next().unwrap();
+            assert!(lines.contains(&cfg_line(target)), "{lines:?}");
+            assert_eq!(
+                lines
+                    .iter()
+                    .filter(|line| line.starts_with("cargo:rustc-cfg="))
+                    .collect::<Vec<_>>(),
+                [
+                    &cfg_line(target),
+                    &"cargo:rustc-cfg=gust_capability=\"subgroups\"".to_owned()
+                ],
+                "{lines:?}"
+            );
+            assert!(
+                lines.contains(
+                    &"cargo:rustc-check-cfg=cfg(gust_capability, values(\"subgroups\"))".to_owned()
+                ),
+                "{lines:?}"
+            );
+            assert!(
+                !lines.iter().any(|line| line.contains("warning")),
+                "{lines:?}"
+            );
+        }
+        // Without a capability there is no capability cfg, but the cfg is still declared.
+        let lines = directives(&NONE).unwrap();
+        assert!(
+            !lines
+                .iter()
+                .any(|line| line.starts_with("cargo:rustc-cfg=gust_capability=")),
+            "{lines:?}"
+        );
+        assert!(
+            lines.contains(
+                &"cargo:rustc-check-cfg=cfg(gust_capability, values(\"subgroups\"))".to_owned()
+            ),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn the_slang_runtime_feature_follows_the_target_not_the_capability() {
+        // `dev+subgroups` is the profile of the tests of subgroup kernels: it keeps the bridge.
+        let dev = Inputs {
+            profile: Some("dev+subgroups"),
+            slang_runtime: true,
+            ..NONE
+        };
+        assert!(directives(&dev).is_ok());
+        // A strict target refuses it, and the way out keeps the capability.
+        let native = Inputs {
+            profile: Some("native+subgroups"),
+            slang_runtime: true,
+            ..NONE
+        };
+        let message = directives(&native).unwrap_err();
+        assert!(
+            message.starts_with("gust: profile native refuses feature slang-runtime; "),
+            "{message}"
+        );
+        assert!(
+            message.ends_with("or build with GUST_PROFILE=dev+subgroups."),
+            "{message}"
+        );
+        // An invalid capability is reported before the feature refusal, as an unknown profile is.
+        let bad = Inputs {
+            profile: Some("native+f16"),
+            slang_runtime: true,
+            ..NONE
+        };
+        assert!(
+            directives(&bad)
+                .unwrap_err()
+                .starts_with("gust: capability `f16`")
         );
     }
 

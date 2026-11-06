@@ -1,0 +1,2 @@
+# Texts of cargo's stderr (`build-error:`), not rustc keys: a build script's refusal is no rustc diagnostic.
+build-error: gust: capability `f16` in GUST_PROFILE `native+f16` is not supported in this release; use subgroups

@@ -3,4 +3,4 @@
 code: none
 file: variant-ambiguous/src/main.rs
 line: 17
-message: [GUST-E0743] kernel `sum` has two bodies that a device with {subgroups} cannot tell apart: `first` requires {subgroups} and `second` requires {subgroups}; give them different sets, one a superset of the other
+message: [GUST-E0743] kernel `sum` has two bodies that a device with {subgroups} cannot tell apart: `first` requires {subgroups} and `second` requires {subgroups}; give them sets of different sizes, or one a superset of the other

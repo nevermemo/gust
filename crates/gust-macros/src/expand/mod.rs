@@ -419,10 +419,12 @@ fn expand_validated_with(
     // Every declared GPU profile has a body of every kernel (E0744), and the profile of this build has one (E0750).
     let declared = variant::Declared::new(declarations.profiles.as_deref());
     declared.check(plan)?;
-    let selected = plan.select(profile)?;
+    let export_mode = environment.export_dir.is_some();
+    // Export mode (`cargo gust build`) builds under a fixed profile and writes every body, so a kernel no body of which
+    // that profile can use is not an error there: the build is never shipped (M8, D139).
+    let selected = plan.select(profile, export_mode)?;
     let manifest_present = profile != Profile::Cpu && artifact::manifest_present(manifest_dir);
     let record_directory = environment.record_directory();
-    let export_mode = environment.export_dir.is_some();
     // The kernel whose line carries the module's one `require_manifest` check: the first with a complete pair.
     let mut manifest_span: Option<proc_macro2::Span> = None;
     let structs: HashMap<String, &syn::ItemStruct> = original_module
@@ -492,7 +494,7 @@ fn expand_validated_with(
             .get(&kernel_name)
             .is_none_or(|chosen| *chosen == original_name_text);
         if owner.is_none() {
-            declared.check_cpu_form(&original_name, cpu)?;
+            declared.check_cpu_form(&original_name, cpu, plan.kernel(&original_name_text))?;
         }
         let entry_point = format!("gpu_{}_{}", module_name, original_name_text);
         let typecheck_name = format_ident!("__gpu_typecheck_{}", original_name);
@@ -641,16 +643,30 @@ fn expand_validated_with(
             typed_call_items(stage, &original_name, &function.sig.inputs)?;
         let element_assertions =
             element_layout_assertions(stage, &original_name, &function.sig.inputs)?;
-        // The twin and the `cpu` form are the portable body's, whichever body the build selects (M8, D139).
-        let cpu_twin = cpu_twin_items(
-            stage,
-            &original_name,
-            &typecheck_name,
-            &function.sig.inputs,
-            workgroup_size,
-            cpu,
-            profile,
-        )?;
+        // The twin and the `cpu` form are the portable body's, whichever body the build selects (M8, D139): the body
+        // whose set is empty, which is the kernel's own or its empty-set variant (GUST-E0743 makes it unique). A kernel
+        // none of whose bodies is portable has no CPU form and no twin.
+        let portable = match plan.kernel(&original_name_text) {
+            None => Some(original_name_text.clone()),
+            Some(bodies) => bodies
+                .portable()
+                .map(|index| bodies.function(index).to_owned()),
+        };
+        let cpu_twin = match portable {
+            Some(portable) => {
+                let portable = syn::Ident::new(&portable, original_name.span());
+                cpu_twin_items(
+                    stage,
+                    &original_name,
+                    &format_ident!("__gpu_typecheck_{}", portable),
+                    &function.sig.inputs,
+                    workgroup_size,
+                    cpu,
+                    profile,
+                )?
+            }
+            None => TokenStream::new(),
+        };
         retire_kernel(function, typecheck_name.clone());
         pending.push(PendingKernel {
             name: original_name,
@@ -811,12 +827,14 @@ fn expand_validated_with(
 /// replace on a device that has the capabilities.
 ///
 /// The `#[kernel]` function is the kernel and its portable body (or, with `#[kernel(requires(..))]`, a body that needs
-/// capabilities itself). [`lower`] turns every variant into a `#[kernel]` function that carries its kernel's attribute,
-/// before validation, so that the validator and the Slang emitter see plain kernels and every body is validated and
-/// lowered in every build; [`VariantPlan`] remembers which body belongs to which kernel. The expansion builds every
-/// body (and writes the record of each in export mode), selects one per kernel for the profile
-/// ([`VariantPlan::select`]) and gives the kernel's descriptor that body's Slang and artifact; the handle, the typed
-/// calls and the CPU twin are the kernel's own.
+/// capabilities itself). [`lower`] turns every variant into a `#[kernel]` function, before validation, so that the
+/// validator and the Slang emitter see plain kernels and every body is validated and lowered in every build. The
+/// lowered attribute has the kernel's `workgroup_size` and `shape`, `cpu = "unsupported"` (a variant has no twin) and
+/// the variant's own `requires(..)`: never the kernel's `cpu` or `requires`. [`VariantPlan`] remembers which body
+/// belongs to which kernel. The expansion builds every body (and writes the record of each in export mode), selects
+/// one per kernel for the profile ([`VariantPlan::select`]) and gives the kernel's descriptor that body's Slang and
+/// artifact; the handle and the typed calls are the kernel's own, and the CPU twin is the portable body's (the body
+/// whose set is empty, [`KernelBodies::portable`]).
 pub(crate) mod variant {
     use std::collections::HashMap;
 
@@ -892,6 +910,12 @@ pub(crate) mod variant {
                 Some(variant) => &variant.name,
                 None => &self.kernel,
             }
+        }
+
+        /// The portable body: the one whose set is empty, the kernel's own or its empty-set variant (at most one,
+        /// GUST-E0743). The CPU twin and the `cpu` form are this body's. `None` when every body requires a capability.
+        pub(crate) fn portable(&self) -> Option<usize> {
+            self.sets().iter().position(|set| set.is_empty())
         }
 
         /// The body to build on a device with `available`: the one with the most required capabilities among those
@@ -974,16 +998,23 @@ pub(crate) mod variant {
         }
 
         /// The function the profile builds for each kernel of the plan (kernel name to function name). Under the CPU
-        /// target no GPU body is built and the kernel's own is named. A kernel with no body the profile can use is
-        /// GUST-E0750.
-        pub(crate) fn select(&self, profile: Profile) -> syn::Result<HashMap<String, String>> {
+        /// target no GPU body is built and the portable body is named (the kernel's own when it has none). A kernel
+        /// with no body the profile can use is GUST-E0750, except in export mode (`export_mode`): `cargo gust build`
+        /// builds under a fixed profile and writes every body, so there the kernel's own body stands for the descriptor
+        /// of a build that is never shipped.
+        pub(crate) fn select(
+            &self,
+            profile: Profile,
+            export_mode: bool,
+        ) -> syn::Result<HashMap<String, String>> {
             let mut selected = HashMap::new();
             for kernel in &self.kernels {
                 let index = if profile.is_cpu() {
-                    0
+                    kernel.portable().unwrap_or(0)
                 } else {
                     match kernel.choose(profile.capabilities) {
                         Choice::Body(index) => index,
+                        Choice::NoneFits if export_mode => 0,
                         Choice::NoneFits => {
                             return Err(diagnostics::error_at(
                                 Code::NoBodySelectable,
@@ -1046,7 +1077,7 @@ pub(crate) mod variant {
             span,
             format!(
                 "kernel `{}` has two bodies that a device with {} cannot tell apart: `{}` requires {} and `{}` requires \
-                 {}; give them different sets, one a superset of the other",
+                 {}; give them sets of different sizes, or one a superset of the other",
                 kernel.kernel,
                 set_text(available),
                 kernel.function(first),
@@ -1096,15 +1127,21 @@ pub(crate) mod variant {
                 if profile.is_cpu() {
                     continue;
                 }
+                // An absent `profiles` key declares the default list; say so, to a crate that declared nothing.
+                let origin = if self.explicit {
+                    ""
+                } else {
+                    " (the default list; the manifest has no `profiles` key)"
+                };
                 for kernel in &plan.kernels {
                     if kernel.choose(profile.capabilities) == Choice::NoneFits {
                         return Err(diagnostics::error_at(
                             Code::ProfileNotCovered,
                             kernel.span,
                             format!(
-                                "kernel `{}` has no body for the declared profile `{entry}`: {}; declare a profile \
-                                 with the capabilities in `[package.metadata.gust] profiles`, or add a variant that \
-                                 requires less",
+                                "kernel `{}` has no body for the declared profile `{entry}`{origin}: {}; declare a \
+                                 profile with the capabilities in `[package.metadata.gust] profiles`, or add a \
+                                 variant that requires less",
                                 kernel.kernel,
                                 kernel.describe()
                             ),
@@ -1115,9 +1152,31 @@ pub(crate) mod variant {
             Ok(())
         }
 
-        /// The kernel `name` has a CPU form when the explicit list names `cpu` (GUST-E0744 otherwise).
-        pub(crate) fn check_cpu_form(&self, name: &syn::Ident, cpu: CpuTwin) -> syn::Result<()> {
-            if cpu == CpuTwin::Unsupported && self.names_cpu_explicitly() {
+        /// The kernel `name` has a CPU form when the explicit list names `cpu` (GUST-E0744 otherwise). `bodies` are the
+        /// kernel's bodies when it has a plan. The CPU form is the portable body's (D140), so a kernel every body of
+        /// which requires a capability has none, whatever its `cpu` option says.
+        pub(crate) fn check_cpu_form(
+            &self,
+            name: &syn::Ident,
+            cpu: CpuTwin,
+            bodies: Option<&KernelBodies>,
+        ) -> syn::Result<()> {
+            if !self.names_cpu_explicitly() {
+                return Ok(());
+            }
+            if let Some(bodies) = bodies.filter(|bodies| bodies.portable().is_none()) {
+                return Err(diagnostics::error(
+                    Code::ProfileNotCovered,
+                    name,
+                    format!(
+                        "kernel `{name}` has no CPU form, but `[package.metadata.gust] profiles` declares `cpu`: \
+                         {}, and the CPU form is the body that requires nothing; add a variant with `requires()`, or \
+                         drop `cpu` from `profiles`",
+                        bodies.describe()
+                    ),
+                ));
+            }
+            if cpu == CpuTwin::Unsupported {
                 return Err(diagnostics::error(
                     Code::ProfileNotCovered,
                     name,
@@ -1223,26 +1282,58 @@ pub(crate) mod variant {
         Ok((of, requires.unwrap_or(CapabilitySet::EMPTY)))
     }
 
-    /// The `requires(..)` of a `#[kernel(..)]` attribute: what the kernel's own body needs. Every other option is the
-    /// business of `kernel_attribute_facts`, which reports its errors; only an unknown capability is reported here.
-    fn kernel_requires(attribute: &syn::Attribute) -> syn::Result<CapabilitySet> {
+    /// What `lower` reads of a `#[kernel(..)]` attribute.
+    struct KernelParts {
+        /// The `requires(..)`: what the kernel's own body needs.
+        requires: CapabilitySet,
+        /// The options a variant of the kernel shares (`workgroup_size(..)` and `shape = ..`), as written.
+        layout: Vec<proc_macro2::TokenStream>,
+    }
+
+    /// The `requires(..)` and the layout options of a `#[kernel(..)]` attribute. Every other option is the business of
+    /// `kernel_attribute_facts`, which reports its errors; only an unknown capability and a second `requires(..)`
+    /// (GUST-E0740, as on `#[variant]`) are reported here.
+    fn kernel_parts(attribute: &syn::Attribute) -> syn::Result<KernelParts> {
+        let mut parts = KernelParts {
+            requires: CapabilitySet::EMPTY,
+            layout: Vec::new(),
+        };
         if matches!(attribute.meta, syn::Meta::Path(_)) {
-            return Ok(CapabilitySet::EMPTY);
+            return Ok(parts);
         }
-        let mut set = CapabilitySet::EMPTY;
-        let mut unknown: Option<syn::Error> = None;
+        let mut seen_requires = false;
+        let mut first_error: Option<syn::Error> = None;
         // A failure of the walk itself (an option that does not parse) is left for `kernel_attribute_facts`.
         let _ = diagnostics::parse_nested_meta(attribute, Code::MalformedKernelAttribute, |meta| {
             if meta.path.is_ident("requires") {
-                match requires_from(meta.input) {
-                    Ok(found) => set = set.union(found),
+                let found = requires_from(meta.input);
+                if seen_requires && first_error.is_none() {
+                    first_error = Some(diagnostics::meta_error(
+                        &meta,
+                        Code::VariantAttribute,
+                        "duplicate `requires` option",
+                    ));
+                }
+                seen_requires = true;
+                match found {
+                    Ok(found) => parts.requires = parts.requires.union(found),
                     Err(error)
-                        if unknown.is_none() && is_coded(&error, Code::UnknownCapability) =>
+                        if first_error.is_none() && is_coded(&error, Code::UnknownCapability) =>
                     {
-                        unknown = Some(error);
+                        first_error = Some(error);
                     }
                     Err(error) => return Err(error),
                 }
+            } else if meta.path.is_ident("workgroup_size") {
+                let path = meta.path.clone();
+                let content;
+                syn::parenthesized!(content in meta.input);
+                let inner: proc_macro2::TokenStream = content.parse()?;
+                parts.layout.push(quote::quote!(#path(#inner)));
+            } else if meta.path.is_ident("shape") {
+                let path = meta.path.clone();
+                let value: syn::Ident = meta.value()?.parse()?;
+                parts.layout.push(quote::quote!(#path = #value));
             } else if meta.input.peek(syn::token::Paren) {
                 let content;
                 syn::parenthesized!(content in meta.input);
@@ -1252,30 +1343,94 @@ pub(crate) mod variant {
             }
             Ok(())
         });
-        match unknown {
+        match first_error {
             Some(error) => Err(error),
-            None => Ok(set),
+            None => Ok(parts),
         }
+    }
+
+    /// The attribute a variant is lowered to: the kernel's `workgroup_size` and `shape`, `cpu = "unsupported"` (a
+    /// variant never has a twin, D139) and the variant's own `requires(..)`. The kernel's `cpu` and `requires` are
+    /// not the variant's: the validator judges a body by its own attribute, and m8.s reads the capabilities a body
+    /// may use from it.
+    fn lowered_attribute(
+        layout: &[proc_macro2::TokenStream],
+        requires: CapabilitySet,
+        span: Span,
+    ) -> syn::Attribute {
+        let mut options: Vec<proc_macro2::TokenStream> = layout.to_vec();
+        options.push(quote::quote_spanned!(span=> cpu = "unsupported"));
+        if !requires.is_empty() {
+            let names = requires
+                .names()
+                .into_iter()
+                .map(|name| syn::Ident::new(name, span));
+            options.push(quote::quote_spanned!(span=> requires(#(#names),*)));
+        }
+        syn::parse_quote_spanned!(span=> #[kernel(#(#options),*)])
     }
 
     fn is_coded(error: &syn::Error, code: Code) -> bool {
         error.to_string().starts_with(&format!("[{}]", code.text()))
     }
 
-    /// The attributes of an item that is not a function, for the check that `#[variant]` stands on a function only.
-    fn other_attributes(item: &syn::Item) -> &[syn::Attribute] {
+    /// Every attribute list of an item that is not a function, and of the items inside an `impl`, a `trait` or an
+    /// `extern` block (their functions included), for the check that `#[variant]` stands on a function of the module
+    /// only, and for the recovery that drops a stray one.
+    fn foreign_attribute_lists(item: &mut syn::Item) -> Vec<&mut Vec<syn::Attribute>> {
         match item {
-            syn::Item::Struct(item) => &item.attrs,
-            syn::Item::Enum(item) => &item.attrs,
-            syn::Item::Union(item) => &item.attrs,
-            syn::Item::Const(item) => &item.attrs,
-            syn::Item::Static(item) => &item.attrs,
-            syn::Item::Type(item) => &item.attrs,
-            syn::Item::Mod(item) => &item.attrs,
-            syn::Item::Impl(item) => &item.attrs,
-            syn::Item::Trait(item) => &item.attrs,
-            syn::Item::Use(item) => &item.attrs,
-            _ => &[],
+            syn::Item::Const(item) => vec![&mut item.attrs],
+            syn::Item::Enum(item) => vec![&mut item.attrs],
+            syn::Item::ExternCrate(item) => vec![&mut item.attrs],
+            syn::Item::ForeignMod(item) => {
+                let mut lists = vec![&mut item.attrs];
+                for inner in &mut item.items {
+                    match inner {
+                        syn::ForeignItem::Fn(inner) => lists.push(&mut inner.attrs),
+                        syn::ForeignItem::Static(inner) => lists.push(&mut inner.attrs),
+                        syn::ForeignItem::Type(inner) => lists.push(&mut inner.attrs),
+                        syn::ForeignItem::Macro(inner) => lists.push(&mut inner.attrs),
+                        _ => {}
+                    }
+                }
+                lists
+            }
+            syn::Item::Impl(item) => {
+                let mut lists = vec![&mut item.attrs];
+                for inner in &mut item.items {
+                    match inner {
+                        syn::ImplItem::Const(inner) => lists.push(&mut inner.attrs),
+                        syn::ImplItem::Fn(inner) => lists.push(&mut inner.attrs),
+                        syn::ImplItem::Type(inner) => lists.push(&mut inner.attrs),
+                        syn::ImplItem::Macro(inner) => lists.push(&mut inner.attrs),
+                        _ => {}
+                    }
+                }
+                lists
+            }
+            syn::Item::Macro(item) => vec![&mut item.attrs],
+            syn::Item::Mod(item) => vec![&mut item.attrs],
+            syn::Item::Static(item) => vec![&mut item.attrs],
+            syn::Item::Struct(item) => vec![&mut item.attrs],
+            syn::Item::Trait(item) => {
+                let mut lists = vec![&mut item.attrs];
+                for inner in &mut item.items {
+                    match inner {
+                        syn::TraitItem::Const(inner) => lists.push(&mut inner.attrs),
+                        syn::TraitItem::Fn(inner) => lists.push(&mut inner.attrs),
+                        syn::TraitItem::Type(inner) => lists.push(&mut inner.attrs),
+                        syn::TraitItem::Macro(inner) => lists.push(&mut inner.attrs),
+                        _ => {}
+                    }
+                }
+                lists
+            }
+            syn::Item::TraitAlias(item) => vec![&mut item.attrs],
+            syn::Item::Type(item) => vec![&mut item.attrs],
+            syn::Item::Union(item) => vec![&mut item.attrs],
+            syn::Item::Use(item) => vec![&mut item.attrs],
+            // A function is the business of `lower`; `Verbatim` has no attributes we can read.
+            _ => Vec::new(),
         }
     }
 
@@ -1317,6 +1472,8 @@ pub(crate) mod variant {
     struct KernelFound {
         index: usize,
         own: CapabilitySet,
+        /// The options a variant of the kernel shares.
+        layout: Vec<proc_macro2::TokenStream>,
     }
 
     /// Lowers the variants of `module` to kernels and returns the plan: the check of the attributes (GUST-E0740 to
@@ -1326,13 +1483,15 @@ pub(crate) mod variant {
         let Some((_, items)) = module.content.as_mut() else {
             return Ok((module, VariantPlan::default()));
         };
-        for item in items.iter() {
-            if let Some(attribute) = other_attributes(item).iter().find(|a| is_variant(a)) {
-                return Err(diagnostics::error(
-                    Code::VariantAttribute,
-                    attribute,
-                    "#[variant] goes on a function of a `#[gpu]` module, beside the `#[kernel]` it replaces",
-                ));
+        for item in items.iter_mut() {
+            for list in foreign_attribute_lists(item) {
+                if let Some(attribute) = list.iter().find(|a| is_variant(a)) {
+                    return Err(diagnostics::error(
+                        Code::VariantAttribute,
+                        attribute,
+                        "#[variant] goes on a function of a `#[gpu]` module, beside the `#[kernel]` it replaces",
+                    ));
+                }
             }
         }
         let mut variants: Vec<VariantFound> = Vec::new();
@@ -1350,10 +1509,14 @@ pub(crate) mod variant {
             let kernel_attribute = function.attrs.iter().find(|a| is_kernel(a));
             match (found.as_slice(), kernel_attribute) {
                 ([], None) => {}
-                ([], Some(attribute)) => kernels.push(KernelFound {
-                    index,
-                    own: kernel_requires(attribute)?,
-                }),
+                ([], Some(attribute)) => {
+                    let parts = kernel_parts(attribute)?;
+                    kernels.push(KernelFound {
+                        index,
+                        own: parts.requires,
+                        layout: parts.layout,
+                    });
+                }
                 ([(position, attribute)], None) => {
                     let (of, requires) = parse_variant(attribute)?;
                     variants.push(VariantFound {
@@ -1453,16 +1616,19 @@ pub(crate) mod variant {
             }
         }
 
-        // The rewrite: a variant is a function with the attribute of its kernel.
+        // The rewrite: a variant is a function with the kernel's `workgroup_size` and `shape`, `cpu = "unsupported"`
+        // and its own `requires(..)` (never the kernel's `cpu` or `requires`).
         let rewrites: Vec<(usize, usize, syn::Attribute)> = variants
             .iter()
             .filter_map(|variant| {
                 let kernel = kernel_named(items, &kernels, &variant.of)?;
-                let attribute = function_at(items, kernel.index)
-                    .attrs
-                    .iter()
-                    .find(|a| is_kernel(a))?;
-                Some((variant.index, variant.position, attribute.clone()))
+                let written = &function_at(items, variant.index).attrs[variant.position];
+                let span = written.pound_token.spans[0];
+                Some((
+                    variant.index,
+                    variant.position,
+                    lowered_attribute(&kernel.layout, variant.requires, span),
+                ))
             })
             .collect();
         for (index, position, attribute) in rewrites {
@@ -1497,25 +1663,16 @@ pub(crate) mod variant {
             return module;
         };
         for item in items {
-            match item {
-                syn::Item::Fn(function) => {
-                    for attribute in &mut function.attrs {
-                        if is_variant(attribute) {
-                            *attribute = syn::parse_quote!(#[kernel]);
-                        }
+            if let syn::Item::Fn(function) = item {
+                for attribute in &mut function.attrs {
+                    if is_variant(attribute) {
+                        *attribute = syn::parse_quote!(#[kernel]);
                     }
                 }
-                syn::Item::Struct(item) => item.attrs.retain(|a| !is_variant(a)),
-                syn::Item::Enum(item) => item.attrs.retain(|a| !is_variant(a)),
-                syn::Item::Union(item) => item.attrs.retain(|a| !is_variant(a)),
-                syn::Item::Const(item) => item.attrs.retain(|a| !is_variant(a)),
-                syn::Item::Static(item) => item.attrs.retain(|a| !is_variant(a)),
-                syn::Item::Type(item) => item.attrs.retain(|a| !is_variant(a)),
-                syn::Item::Mod(item) => item.attrs.retain(|a| !is_variant(a)),
-                syn::Item::Impl(item) => item.attrs.retain(|a| !is_variant(a)),
-                syn::Item::Trait(item) => item.attrs.retain(|a| !is_variant(a)),
-                syn::Item::Use(item) => item.attrs.retain(|a| !is_variant(a)),
-                _ => {}
+                continue;
+            }
+            for list in foreign_attribute_lists(item) {
+                list.retain(|a| !is_variant(a));
             }
         }
         module

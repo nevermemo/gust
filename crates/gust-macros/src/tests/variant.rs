@@ -689,7 +689,7 @@ fn two_bodies_with_one_set_are_e0743() {
     assert_code(&error, Code::VariantAmbiguous);
     assert_eq!(
         error.to_string(),
-        "[GUST-E0743] kernel `sum` has two bodies that a device with {subgroups} cannot tell apart: `first` requires {subgroups} and `second` requires {subgroups}; give them different sets, one a superset of the other"
+        "[GUST-E0743] kernel `sum` has two bodies that a device with {subgroups} cannot tell apart: `first` requires {subgroups} and `second` requires {subgroups}; give them sets of different sizes, or one a superset of the other"
     );
     // A variant with the empty set beside a kernel with the empty set.
     let source = module_text(WORKGROUP, &function_text("#[variant(of = sum)]", "again"));
@@ -729,6 +729,16 @@ fn a_declared_gpu_profile_without_a_body_is_e0744() {
     // The default list has `native` and `web`, which have no capability.
     let error = rejected(expand_declaring(&source, None, Profile::Other));
     assert_code(&error, Code::ProfileNotCovered);
+    assert_eq!(
+        error.to_string(),
+        "[GUST-E0744] kernel `sum` has no body for the declared profile `native` (the default list; the manifest has no `profiles` key): `sum` requires {subgroups}; declare a profile with the capabilities in `[package.metadata.gust] profiles`, or add a variant that requires less"
+    );
+    // An explicit list says nothing of the kind.
+    let error = rejected(expand_declaring(
+        &source,
+        Some(r#"["native"]"#),
+        Profile::Other,
+    ));
     assert_eq!(
         error.to_string(),
         "[GUST-E0744] kernel `sum` has no body for the declared profile `native`: `sum` requires {subgroups}; declare a profile with the capabilities in `[package.metadata.gust] profiles`, or add a variant that requires less"
@@ -854,7 +864,16 @@ fn the_cpu_entry_of_an_explicit_list_needs_a_cpu_form() {
 
 /// What export mode wrote for `source` under `profile`: the `(entry point, record)` of every `*.kernel.json`, sorted.
 fn exported(source: &str, profile: Profile) -> Vec<(String, String)> {
-    let scratch = Crate::declaring("export", None);
+    exported_declaring(source, None, profile)
+}
+
+/// [`exported`] for a crate whose manifest declares `profiles` (TOML text of the array), or none when `None`.
+fn exported_declaring(
+    source: &str,
+    profiles: Option<&str>,
+    profile: Profile,
+) -> Vec<(String, String)> {
+    let scratch = Crate::declaring("export", profiles);
     let export = scratch.path().join("exports");
     expand_in(
         parse_str(source).unwrap(),
@@ -1045,4 +1064,278 @@ fn only_the_selected_bodys_artifact_is_embedded() {
             "{value}: {text}"
         );
     }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Fix round 1 (review of m8.b1): export mode, the lowered attribute, the portable body, the nits
+
+#[test]
+fn export_mode_writes_every_body_of_a_kernel_the_build_profile_cannot_use() {
+    // `cargo gust build` collects under a fixed `GUST_PROFILE=dev`; a crate that declares only `native+subgroups` and
+    // has a kernel with no portable body is valid, and its record is written (M1).
+    let source = module_text(NEEDS_SUBGROUPS, "");
+    let declared = Some(r#"["native+subgroups"]"#);
+    let records = exported_declaring(&source, declared, profile("dev"));
+    assert_eq!(records.len(), 1);
+    let record = &records[0].1;
+    assert_eq!(records[0].0, "gpu_reduce_sum");
+    assert!(record.contains("\"schema\": 4,\n"), "{record}");
+    assert!(record.contains("\"variant\": \"\",\n"), "{record}");
+    assert!(
+        record.contains("\"requires\": [\n    \"subgroups\"\n  ],\n"),
+        "{record}"
+    );
+    // Every build tool profile gets the same records, and the same crate outside export mode is still E0750.
+    assert_eq!(
+        exported_declaring(&source, declared, Profile::Other),
+        records
+    );
+    assert_code(
+        &rejected(expand_declaring(&source, declared, profile("dev"))),
+        Code::NoBodySelectable,
+    );
+}
+
+/// The `#[kernel(..)]` attribute of the function `name` of the lowered module, as text without whitespace.
+fn lowered_kernel_attribute(source: &str, name: &str) -> String {
+    let (module, _) = variant::lower(parse_str(source).unwrap()).unwrap();
+    for item in &module.content.as_ref().unwrap().1 {
+        let syn::Item::Fn(function) = item else {
+            continue;
+        };
+        if function.sig.ident == name {
+            let attributes: TokenStream = function
+                .attrs
+                .iter()
+                .filter(|attribute| attribute.path().is_ident("kernel"))
+                .map(quote::ToTokens::to_token_stream)
+                .collect();
+            return squashed(&attributes);
+        }
+    }
+    panic!("no function `{name}`");
+}
+
+#[test]
+fn a_lowered_variant_has_the_layout_of_its_kernel_and_its_own_requirement_and_no_twin() {
+    assert_eq!(
+        lowered_kernel_attribute(&pair(), "sum_subgroups"),
+        "#[kernel(workgroup_size(64,1,1),cpu=\"unsupported\",requires(subgroups))]"
+    );
+    // The kernel keeps its own attribute word for word.
+    assert_eq!(
+        lowered_kernel_attribute(&pair(), "sum"),
+        "#[kernel(workgroup_size(64,1,1))]"
+    );
+    // A kernel's `shape`, `workgroup_size` (in the order written) pass on; its `cpu` does not repeat.
+    let pinned = module_text(
+        "#[kernel(shape = grid, cpu = \"unsupported\", workgroup_size(32, 1, 1))]",
+        &function_text("#[variant(of = sum, requires(subgroups))]", "sum_subgroups"),
+    );
+    assert_eq!(
+        lowered_kernel_attribute(&pinned, "sum_subgroups"),
+        "#[kernel(shape=grid,workgroup_size(32,1,1),cpu=\"unsupported\",requires(subgroups))]"
+    );
+    assert!(expand(&pinned, Profile::Other).is_ok());
+    // A kernel with a bare `#[kernel]` has the default layout, which the variant leaves unwritten.
+    let bare = module_text(
+        "#[kernel]",
+        &function_text("#[variant(of = sum, requires(subgroups))]", "sum_subgroups"),
+    );
+    assert_eq!(
+        lowered_kernel_attribute(&bare, "sum_subgroups"),
+        "#[kernel(cpu=\"unsupported\",requires(subgroups))]"
+    );
+}
+
+#[test]
+fn a_portable_variant_of_a_kernel_that_requires_lowers_with_no_requirement() {
+    let source = module_text(
+        NEEDS_SUBGROUPS,
+        &function_text("#[variant(of = sum, requires())]", "sum_portable"),
+    );
+    // Not the kernel's `requires(subgroups)`: the body is portable, and a subgroup operation in it would be refused
+    // (m8.s reads the attribute).
+    assert_eq!(
+        lowered_kernel_attribute(&source, "sum_portable"),
+        "#[kernel(workgroup_size(64,1,1),cpu=\"unsupported\")]"
+    );
+    assert_eq!(
+        lowered_kernel_attribute(&source, "sum"),
+        "#[kernel(workgroup_size(64,1,1),requires(subgroups))]"
+    );
+}
+
+#[test]
+fn a_variant_may_use_a_barrier_of_a_kernel_that_has_a_cpu_twin() {
+    let barrier = "#[variant(of = sum, requires(subgroups))]
+    pub fn sum_subgroups(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mut out: RWStructuredBuffer<u32>) {
+        workgroup_barrier();
+        if id.x < out.len() { out[id.x] = data[id.x]; }
+    }";
+    // `sum` is twin-able (no `cpu = \"unsupported\"`), yet its variant has no twin and so no E0717.
+    assert!(expand(&module_text(WORKGROUP, barrier), Profile::Other).is_ok());
+    assert!(
+        expand(
+            &module_text(WORKGROUP, barrier),
+            profile("native+subgroups")
+        )
+        .is_ok()
+    );
+    // The same body as a kernel of its own is E0717: the test would fail on the old lowering.
+    let as_kernel = barrier.replace("#[variant(of = sum, requires(subgroups))]", WORKGROUP);
+    assert_code(
+        &rejected(expand(&module_text(WORKGROUP, &as_kernel), Profile::Other)),
+        Code::BarrierKernelCpu,
+    );
+}
+
+#[test]
+fn the_twin_and_the_cpu_descriptor_come_from_the_empty_set_body_not_the_kernels_own() {
+    let source = module_text(
+        NEEDS_SUBGROUPS,
+        &function_text("#[variant(of = sum, requires())]", "sum_portable"),
+    );
+    for value in ["native", "native+subgroups"] {
+        let text = squashed(&expand(&source, profile(value)).unwrap());
+        // The twin calls the portable variant; the kernel's own body (which needs subgroups) is only defined.
+        assert!(
+            text.matches("__gpu_typecheck_sum_portable(").count() >= 2,
+            "{value}: {text}"
+        );
+        assert_eq!(
+            text.matches("__gpu_typecheck_sum(").count(),
+            1,
+            "{value}: {text}"
+        );
+        assert!(
+            text.contains("for::gust::cpu::CpuDevice"),
+            "{value}: {text}"
+        );
+    }
+    // The `cpu` target builds the portable body: its descriptor, and an ungated twin that calls it.
+    let cpu = squashed(&expand(&source, Profile::Cpu).unwrap());
+    assert!(
+        cpu.contains("entry_point:\"gpu_reduce_sum_portable\""),
+        "{cpu}"
+    );
+    assert!(!cpu.contains("entry_point:\"gpu_reduce_sum\""), "{cpu}");
+    assert!(
+        cpu.matches("__gpu_typecheck_sum_portable(").count() >= 2,
+        "{cpu}"
+    );
+    assert_eq!(cpu.matches("__gpu_typecheck_sum(").count(), 1, "{cpu}");
+}
+
+#[test]
+fn a_kernel_with_no_empty_set_body_has_no_twin_and_no_cpu_form() {
+    let source = module_text(NEEDS_SUBGROUPS, "");
+    let declared = Some(r#"["native+subgroups"]"#);
+    let text = squashed(&expand_declaring(&source, declared, profile("native+subgroups")).unwrap());
+    assert!(!text.contains("for::gust::cpu::CpuDevice"), "{text}");
+    assert_eq!(text.matches("__gpu_typecheck_sum(").count(), 1, "{text}");
+    // Under the CPU target the build is still valid (it builds no GPU body), with no twin.
+    let cpu = squashed(&expand_declaring(&source, declared, Profile::Cpu).unwrap());
+    assert!(!cpu.contains("for::gust::cpu::CpuDevice"), "{cpu}");
+    // A list that names `cpu` needs a CPU form, whatever the kernel's `cpu` option says (E0744).
+    let error = rejected(expand_declaring(
+        &source,
+        Some(r#"["native+subgroups", "cpu"]"#),
+        profile("native+subgroups"),
+    ));
+    assert_code(&error, Code::ProfileNotCovered);
+    assert_eq!(
+        error.to_string(),
+        "[GUST-E0744] kernel `sum` has no CPU form, but `[package.metadata.gust] profiles` declares `cpu`: `sum` requires {subgroups}, and the CPU form is the body that requires nothing; add a variant with `requires()`, or drop `cpu` from `profiles`"
+    );
+    // The empty-set variant is the CPU form.
+    let portable = module_text(
+        NEEDS_SUBGROUPS,
+        &function_text("#[variant(of = sum, requires())]", "sum_portable"),
+    );
+    assert!(
+        expand_declaring(
+            &portable,
+            Some(r#"["native+subgroups", "cpu"]"#),
+            profile("native+subgroups")
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn a_second_requires_on_a_kernel_is_e0740_like_on_a_variant() {
+    let source = module_text(
+        "#[kernel(workgroup_size(64, 1, 1), requires(subgroups), requires(subgroups))]",
+        "",
+    );
+    let error = rejected(expand(&source, Profile::Other));
+    assert_code(&error, Code::VariantAttribute);
+    assert_eq!(
+        error.to_string(),
+        "[GUST-E0740] duplicate `requires` option"
+    );
+}
+
+#[test]
+fn a_variant_attribute_anywhere_but_on_a_function_of_the_module_is_e0740_and_one_error() {
+    let strays = [
+        "#[variant(of = sum)]\n    macro_rules! m { () => {}; }",
+        "pub struct S;\n    impl S {\n        #[variant(of = sum)]\n        pub fn f(&self) {}\n    }",
+        "pub trait T {\n        #[variant(of = sum)]\n        fn f(&self);\n    }",
+        "#[variant(of = sum)]\n    extern crate core;",
+        "#[variant(of = sum)]\n    pub trait Alias = Clone;",
+        "extern \"C\" {\n        #[variant(of = sum)]\n        fn f();\n    }",
+    ];
+    for stray in strays {
+        let source = module_text(WORKGROUP, stray);
+        assert_code(
+            &rejected(expand(&source, Profile::Other)),
+            Code::VariantAttribute,
+        );
+        // And the module goes back with no `#[variant]` left for rustc to ask about.
+        let item: TokenStream = source.parse().unwrap();
+        let text = crate::gpu_impl(TokenStream::new(), item).to_string();
+        assert_rendered_code(&text, Code::VariantAttribute);
+        assert_eq!(text.matches("compile_error").count(), 1, "{stray}: {text}");
+        let flat: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+        assert!(!flat.contains("[variant("), "{stray}: {text}");
+    }
+}
+
+#[test]
+fn the_texts_of_the_attribute_errors_are_pinned() {
+    // A function that is both.
+    let both = module_text(
+        WORKGROUP,
+        &function_text(
+            "#[kernel]\n    #[variant(of = sum, requires(subgroups))]",
+            "both",
+        ),
+    );
+    assert_eq!(
+        rejected(expand(&both, Profile::Other)).to_string(),
+        "[GUST-E0740] `both` is both a #[kernel] and a #[variant]: a function is the kernel or one of its variants"
+    );
+    // A second `#[variant]` attribute.
+    let twice = module_text(
+        WORKGROUP,
+        &function_text(
+            "#[variant(of = sum, requires(subgroups))]\n    #[variant(of = sum)]",
+            "twice",
+        ),
+    );
+    assert_eq!(
+        rejected(expand(&twice, Profile::Other)).to_string(),
+        "[GUST-E0740] a function has one #[variant] attribute"
+    );
+    // No kernel named.
+    let bare = module_text(
+        WORKGROUP,
+        &function_text("#[variant(requires(subgroups))]", "v"),
+    );
+    assert_eq!(
+        rejected(expand(&bare, Profile::Other)).to_string(),
+        "[GUST-E0740] #[variant] needs the kernel it replaces: `#[variant(of = kernel, requires(subgroups))]`"
+    );
 }

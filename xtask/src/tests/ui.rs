@@ -1575,9 +1575,16 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
         "{:?}",
         malformed.expectation
     );
-    // Variants (m8.b1, D139): the pair compiles, and each way it goes wrong is the one error of its fixture. None sets
-    // a variable: the workspace's `dev` has no capability, which is what `variant-no-body` needs.
+    // Variants (m8.b1, D139): the pair compiles, and each way it goes wrong is the one error of its fixture. None but
+    // `variant-ok-subgroups` sets a variable: the workspace's `dev` has no capability, which is what `variant-no-body`
+    // needs. `variant-ok-subgroups` builds under `dev+subgroups`, so that rustc compiles the selected variant.
     assert_eq!(find("variant-ok").expectation, Expectation::Compiles);
+    assert!(find("variant-ok").env.is_empty());
+    assert_eq!(find("variant-ok-subgroups").env, variable("dev+subgroups"));
+    assert_eq!(
+        find("variant-ok-subgroups").expectation,
+        Expectation::Compiles
+    );
     for (name, code) in [
         ("variant-malformed", "GUST-E0740"),
         ("variant-unknown-capability", "GUST-E0741"),
@@ -1661,7 +1668,8 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "profile-subgroups-web",
             "profile-unknown",
             "profile-unknown-capability",
-            "typed-call-cpu-target"
+            "typed-call-cpu-target",
+            "variant-ok-subgroups"
         ]
     );
 }
@@ -1669,7 +1677,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 101] = [
+const PINNED_FIXTURES: [&str; 102] = [
     "barrier-in-helper",
     "barrier-in-if",
     "barrier-in-nested-for",
@@ -1767,6 +1775,7 @@ const PINNED_FIXTURES: [&str; 101] = [
     "variant-no-kernel",
     "variant-not-covered",
     "variant-ok",
+    "variant-ok-subgroups",
     "variant-unknown-capability",
     "workgroup-over-16kib",
     "wrapping-div-rejected",

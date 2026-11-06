@@ -525,18 +525,23 @@ hidden from the docs, but its path and that line are covered by the stability pr
 `gust-compute-macros` cannot depend on `gust-compute`, so it keeps a byte-for-byte copy (as with `content_key`,
 `gust-macros/src/expand/artifact.rs`), and both crates assert one golden table of `(package, tag, variable)` triples.
 Variants (M8, m8.b1, D139). A function marked `#[variant(of = kernel, requires(cap, ..))]` is another body of the
-kernel `kernel`, with the signature of the kernel token for token and no options of its own (the workgroup size, the
-shape and the CPU form are the kernel's; `#[kernel(.., requires(..))]` gives the kernel's own body a set). The macro
-lowers a variant to a kernel before the validator runs, so every body is validated and emitted in every build and has
-its own entry point (`gpu_<module>_<function>`), content key and export record; the kernel keeps its one handle, typed
-calls and CPU twin (the kernel's own body, whichever body the build selects). A build selects the body with the largest
+kernel `kernel`, with the signature of the kernel token for token and no options of its own (the workgroup size and
+the shape are the kernel's; `#[kernel(.., requires(..))]` gives the kernel's own body a set). The macro lowers a variant
+to a kernel before the validator runs, with the attribute `#[kernel(<the kernel's workgroup_size and shape>, cpu =
+"unsupported", requires(<the variant's own>))]`, so every body is validated and emitted in every build, judged by its
+own attribute (a variant has no twin, so it may use a barrier; a later check of the subgroup operations a body may use
+reads its `requires`), and has its own entry point (`gpu_<module>_<function>`), content key and export record; the
+kernel keeps its one handle and typed calls, and its CPU twin and `cpu` form are the portable body's (the body whose
+set is empty, the kernel's own or its `requires()` variant, whichever body the build selects; a kernel with no such
+body has no CPU form). A build selects the body with the largest
 `requires` set that the capabilities of `GUST_PROFILE` contain (`gust::capability::Capability`; the alias `vulkan` is
 `subgroups` and `webgpu` is the empty set), and the descriptor carries that body's entry point, Slang, artifacts,
 `variant` (the function's name, `""` for the kernel's own body) and `requires`; `target` stays `Gpu` until m8.r1. Two
 bodies that some device has both sets of are a tie (GUST-E0743), checked over every subset of the capabilities in every
 build. Exhaustiveness reads `[package.metadata.gust] profiles` (the default list `["native", "web", "cpu"]` when the key
 is absent; an explicit list is stricter and an explicit `cpu` entry needs a CPU form): every declared GPU profile needs
-a body for every kernel (GUST-E0744), and the build's own profile needs one (GUST-E0750). The export record of a body
+a body for every kernel (GUST-E0744), and the build's own profile needs one (GUST-E0750; not in export mode, which writes every body under the fixed
+profile `dev`). The export record of a body
 is schema 4 when its `requires` is non-empty or it is a variant: schema 1 or 3's keys plus `requires` (capability names
 in declaration order) and `variant` (`""` for the kernel's own body); the portable body of a kernel keeps its schema
 1, 2 or 3, byte for byte, and so does every module without a variant. `name` is the kernel's name for every body.

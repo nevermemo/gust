@@ -38,8 +38,8 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
 M7 (GPU concepts in Rust) closed on 2026-11-04 (D126). MX (execution shapes and textures) closed on 2026-11-05 (D129)
 after a sanity check by Fable and Opus in the Codex slot (both "proceed with fixes"), the fixes in slices mx.z and
 mr.b3, and `check-full` at `27a461a`; a Codex confirming pass followed (proceed with fixes, nothing reopens MX; D132).
-MR (the first public release) is active: the rename mr.n and the wasm32 `Job` contract mr.b4 are merged, mr.b5 (two
-pre-publish fixes from the Codex pass) is in review, then the owner's publish preparation (mr.p) and the close (mr.z).
+MR (the first public release) is active: the rename mr.n, the wasm32 `Job` contract mr.b4 and the two pre-publish fixes
+from the Codex pass mr.b5 are merged; next the owner's publish preparation (mr.p) and the close (mr.z).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so
@@ -670,15 +670,15 @@ pre-publish fixes from the Codex pass) is in review, then the owner's publish pr
   in the xtask tests holds that; the default `check-difftest` and `k` are unchanged. Integer and `bool` outputs of the
   two shapes must be equal bit for bit; an `f32` output of each shape is judged against the interpreter's interval, and
   a bit difference is reported as an observation (D128). On the RTX 5090, seeds 1-8: 128 pixel programs, 0 grid-only, 0
-  mismatches, and 0 of the 36 `f32` programs differed in a bit. Of the examples' 21 kernels, the classifier accepts 4
-  and files 17 as grid-only (E0723 4, E0725 3, E0726 2, E0728 8). `examples/shape-bench` times X-S1's kernels K1 to K4
-  and K3L (K3 without `fma`, which the dialect lacks) as grid at widths 64, 128 and 256 against pixel; its smoke mode in
-  check-examples asserts that every element was written and is finite, and bit equality for the integer kernel, with no
-  time threshold. The smoke found the same bits in all 10 cells; an earlier K3 form (an unfused multiply-add chain after
-  a division, not kept) differed by up to 4 ulp with identical emitted code, which led to D128. The full bench table
-  waits for a quiet GPU (MX close). Opus merge after fixes: three must-fixes (the `f32` comparison, the docs, an
-  observed-maximum bound), seven should-fixes and the nits taken. Main: 24 of 24 gates green on `eb009af` (2026-11-05
-  11:47 to 12:43Z, RTX 5090).
+  mismatches, and 0 of the 36 `f32` programs differed in a bit. Of the examples' 22 kernels (21 here before mr.b5
+  counted again), the classifier accepts 5 and files 17 as grid-only (E0723 4, E0725 3, E0726 2, E0728 8).
+  `examples/shape-bench` times X-S1's kernels K1 to K4 and K3L (K3 without `fma`, which the dialect lacks) as grid at
+  widths 64, 128 and 256 against pixel; its smoke mode in check-examples asserts that every element was written and is
+  finite, and bit equality for the integer kernel, with no time threshold. The smoke found the same bits in all 10
+  cells; an earlier K3 form (an unfused multiply-add chain after a division, not kept) differed by up to 4 ulp with
+  identical emitted code, which led to D128. The full bench table waits for a quiet GPU (MX close). Opus merge after
+  fixes: three must-fixes (the `f32` comparison, the docs, an observed-maximum bound), seven should-fixes and the nits
+  taken. Main: 24 of 24 gates green on `eb009af` (2026-11-05 11:47 to 12:43Z, RTX 5090).
 - MX mx.x (part 1 `d4a5b38`, fix round `edd91bc`; part 2 `56096dc`, fix round `f5afd6e`; merge `e769077`; MX plan §11):
   the MX docs. Part 1: README (shapes, textures and the `pixel` call), ARCHITECTURE (the stage-profile trait, the
   `pixel` profile and runtime, textures from the type to the bind group, the classifier and the shape pin) and the
@@ -784,6 +784,19 @@ pre-publish fixes from the Codex pass) is in review, then the owner's publish pr
   package names in rustdoc and prose, the task files' `-p` lines) and the nits taken. Main: 25 of 25 gates green on
   `acdd53f` (2026-11-05 22:08 to 23:18Z, RTX 5090; `gpu-verify` passed when rerun alone, 23:20 to 23:26Z, after the
   known validation-layer access violation in the `textures` binary).
+- MR mr.b5 (`6f7e876`, fix round `e391378`, merge `ce614ca`; D133): the two pre-publish fixes of the Codex confirming
+  pass (D132). CPU textures: `CpuDevice::write_texture` and `read_texture` refuse a texture of another device with
+  `WrongDevice { parameter: "texture" }`, as gust-compute-wgpu's do, `read_texture` returns `Result<Vec<_>, Error>`, and
+  a borrowed texture is `Borrowed { parameter: "texture" }` from both; the CPU error texts say "resource". No caller
+  outside the unit tests; binding a foreign texture to a call was already refused. The classifier: the ledger of D133,
+  with probes for every `syn` expression, statement and pattern variant, every callee form and the two helper rules it
+  relies on, each refused probe asserting its code. Classification is unchanged: the difftest, seeds 1-8 with both
+  shapes, still 128 pixel, 0 grid-only, 0 mismatches; the examples' 22 kernels give 5 pixel-compatible and 17 grid-only
+  with the same codes and none `Unrecognised` (a temporary probe test, deleted; the MX record's 21 and 4 missed one
+  pixel-compatible kernel). Opus merge after fixes: one must-fix (free-function callees were outside the ledger), four
+  should-fixes and the nits taken; a re-check of the fix round approved it with four nits, filed. Main: 25 of 25 gates
+  green on `ce614ca` (2026-11-05 23:37Z to 2026-11-06 00:40Z, RTX 5090; `check-fast` passed when rerun alone, 00:41 to
+  00:48Z, after the known validation-layer access violation in the `textures` binary).
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

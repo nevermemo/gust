@@ -826,10 +826,14 @@ fn host_items(signature: &Signature, profile: Profile) -> TokenStream {
              results there as a `gust_wgpu::GpuVec` (no read-back: pass it to the next call). Every resident \
              argument must live on the default device too (`gust::map::Error::MixedDevices` otherwise); for \
              another device use [`map_gpu_on`]. In the browser (wasm32) `default_device` is `NoAdapter` until \
-             `gust_wgpu::default_device_async` has run, so open the device first or call [`map_async`]."
+             `gust_wgpu::default_device_async` has run, so open the device first or call [`map_async`]. On wasm32 \
+             nothing blocks: this returns as soon as the work is submitted, before it finishes, and the `GpuVec` is \
+             read with `GpuVec::to_vec_async`."
         );
         let doc_gpu_on = "[`map_gpu`] on `__gust_handle`, any device (the default one included), which must be the \
-             device of every resident argument (`gust::map::Error::MixedDevices` otherwise).";
+             device of every resident argument (`gust::map::Error::MixedDevices` otherwise). On wasm32 nothing \
+             blocks: this returns as soon as the work is submitted, before it finishes, and the `GpuVec` is read \
+             with `GpuVec::to_vec_async`.";
         let doc_map_async = format!(
             "[`{name}`] over the arguments on the default GPU device without blocking: the device opens on the \
              first call (in the browser too, through `gust_wgpu::default_device_async`), and the results are awaited."

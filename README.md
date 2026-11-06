@@ -54,13 +54,13 @@ a strict profile needs neither Slang nor the helper, D45):
   own)
 - `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.20 (`cargo gust slang install` installs it, and
   `cargo gust doctor` names a `slangc` of another version). `cargo gust` finds its managed install itself (in
-  `GUST_SLANG_HOME` when set), but `cargo xtask` and the run-time bridge launch plain `slangc`, so put the install's
-  `bin` directory first on `PATH`
+  `GUST_SLANG_HOME` when set), and so does the run-time bridge, but `cargo xtask` launches plain `slangc`, so put the
+  install's `bin` directory first on `PATH`
 - The native reflection helper, built once with
   `cargo xtask build-slang-reflect`. It needs the Slang
   SDK headers and import library (from `VULKAN_SDK` or `SLANG_SDK`) and a C++
-  toolchain (MSVC on Windows). The runtime finds it in `target/slang-reflect/` or
-  through `GUST_SLANG_REFLECT`; without it every pipeline creation fails with an
+  toolchain (MSVC on Windows). The runtime finds it through `GUST_SLANG_REFLECT`, in the managed cache that
+  `cargo gust slang build-helper` writes, or in `target/slang-reflect/`; without it every pipeline creation fails with an
   explicit error rather than skipping the layout check
 - A Vulkan compute adapter for the headless execution tests
 - Optional: `spirv-val` from SPIRV-Tools for external SPIR-V validation
@@ -252,15 +252,17 @@ C++ compiler: MSVC on Windows, g++ or clang++ elsewhere. Only the development pa
 `cargo gust build` need the last three commands; a release build of your crate, and the people who run it, need none
 of this.
 
-The run-time compiler does not look into that cache by itself yet: it launches `slangc` from `PATH` and takes the
-helper from `GUST_SLANG_REFLECT`. Give it both (`cargo gust` itself needs neither):
+The run-time compiler and `cargo gust` look in that cache themselves: `slangc` from the install, then the first one on
+`PATH`, and the helper that `build-helper` wrote, so no environment variable is needed. `GUST_SLANG_HOME` moves the
+cache, and `GUST_SLANG_REFLECT` names another helper. Tools that do not know the cache, such as `cargo xtask` in a
+checkout of this repository, take the first `slangc` on `PATH`; `cargo gust slang locate` prints the `slangc`, and its
+folder goes there:
 
 ```sh
-export GUST_SLANG_REFLECT=<the path that build-helper printed>
 export PATH="<the folder of the slangc that `cargo gust slang locate` prints>:$PATH"
 ```
 
-In PowerShell write `$env:GUST_SLANG_REFLECT = "<path>"` and `$env:PATH = "<folder>;$env:PATH"`.
+In PowerShell write `$env:PATH = "<folder>;$env:PATH"`.
 
 ### A first program
 
@@ -550,6 +552,12 @@ let mask = device.read_texture(&mask)?;
 ```
 
 `load` and `store` are inside the exact contract; `sample` is not, and its bound is in [SEMANTICS](docs/SEMANTICS.md).
+The linear bound assumes a sampler that quantises the sub-texel position and the filter weights to 8 bits, rounded to
+the nearest step. No specification gives that: WebGPU states no number, and Vulkan requires `subTexelPrecisionBits` of
+at least 4 in core and of at least 8 of a Vulkan 1.4 or Roadmap 2022 implementation, so the exposure is a device that
+reports fewer than 8 (the value is what the device reports). The evidence is one adapter (the RTX 5090), and an adapter
+that quantises worse can exceed the bound; the test enforces the bound and fails there. That is a known limit of 0.1.0.
+
 A linear sample of an `f32` texture needs the device feature `float32-filterable`, which a native
 `DeviceOptions::default()` requests when the adapter has it and `HeadlessDevice::new()` and the browser do not; without
 it a linear sampler is `Error::TextureFilter` at submit. Binding one texture to two parameters of a call is refused, and

@@ -51,15 +51,18 @@ has the right scope; steps 2, 3 and 7 are where those show.
 
 ## Steps
 
-Run from a clean checkout of `<C>`, not from a worktree that lanes use, with the pinned Slang and the helper reachable
-for step 1 (`cargo gust doctor` green).
+Run from a clean checkout of `<C>`, not from a worktree that lanes use. Step 1 needs the pinned Slang and the reflection
+helper, and `cargo xtask` does not read the managed cache for either: the `slangc` of the pin must be first on `PATH`,
+and the helper is the file `GUST_SLANG_REFLECT` names or the one `cargo xtask doctor` builds into `target/slang-reflect`
+(through `cargo gust slang build-helper`), which needs `SLANG_SDK` (the managed `<cache>/2026.20` works) or
+`VULKAN_SDK`, and a C++ compiler. The full `check-release` then uses that variable, or that built file.
 
 ```sh
 # 0. On GitHub: branch protection on main requires the checks unit, msrv and release (owner decision Q4). Once.
 
 # 1. Confirm the commit, the clean tree and the full gate (needs Slang, the helper, a GPU and the registry)
 git status --short --branch            # clean, on main at <C>
-cargo gust doctor
+cargo xtask doctor                     # checks the slangc and helper pins, builds a missing helper (no cargo-gust here)
 cargo --locked xtask check-release     # the full gate: packaging, docs, dry run, the README recipe built and run
 
 # 2. Log in once: a token from https://crates.io/settings/tokens, scope publish-update, for the four crates
@@ -89,9 +92,10 @@ This is the same recipe that R7 built from the packaged files, now from crates.i
 cargo install cargo-gust --locked --version "~0.1"
 cargo gust slang install
 cargo gust slang build-helper          # prints the helper path
-cargo gust slang locate                # prints the slangc to put on PATH
-export GUST_SLANG_REFLECT=<the helper path>          # until the run-time bridge reads the managed cache itself
-export PATH="<the folder of that slangc>:$PATH"      # (the README says the same)
+cargo gust slang locate                # prints the slangc that cargo gust and the run-time compile will use
+#    No environment variable is set: the run-time bridge (D109) finds the managed slangc and helper in the cache itself.
+#    R7 exports GUST_SLANG_REFLECT and needs slangc on PATH, so this is the first run of that variable-free path: a
+#    failure here is a report to the coordinator, not a surprise.
 cargo new --bin hello-gust && cd hello-gust
 #    replace Cargo.toml and src/main.rs with the README's two blocks of "Install from crates.io", word for word
 cargo run --features gust-dev          # development path: run-time compile through the managed toolchain

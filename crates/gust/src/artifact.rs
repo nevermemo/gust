@@ -38,6 +38,10 @@ pub enum Format {
 }
 
 impl Format {
+    /// Every format this release has, in the order of the enum. The enum is `#[non_exhaustive]`, so a test outside this
+    /// crate can walk this list to learn that a later release added a format its `match` does not know.
+    pub const ALL: &'static [Self] = &[Self::Wgsl, Self::Spirv];
+
     /// The compile target this format is the output of.
     pub const fn target(self) -> Target {
         match self {
@@ -123,6 +127,20 @@ pub(crate) fn fnv1a64(parts: &[&[u8]]) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn format_all_lists_every_variant_once() {
+        // Inside the defining crate `#[non_exhaustive]` does not apply, so this `match` has no wildcard arm and stops
+        // compiling when a variant is added: add it to `Format::ALL` then.
+        let index = |format: Format| match format {
+            Format::Wgsl => 0,
+            Format::Spirv => 1,
+        };
+        assert_eq!(Format::ALL.len(), 2);
+        for (position, format) in Format::ALL.iter().enumerate() {
+            assert_eq!(index(*format), position);
+        }
+    }
 
     #[test]
     fn fnv1a64_matches_the_published_vectors() {

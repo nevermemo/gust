@@ -452,6 +452,43 @@ fn parse_format(value: &Json, key: &str, context: &str) -> Result<FormatEntry, S
 mod tests {
     use super::*;
 
+    /// `Format` is `#[non_exhaustive]`, so a gust release that adds a format compiles here; this walks
+    /// `Format::ALL` so that the `unreachable!` arms above fail a test, not a user's export.
+    #[test]
+    fn every_format_gust_has_is_named_ranked_and_filed() {
+        let mut names = Vec::new();
+        let mut ranks = Vec::new();
+        let mut files = Vec::new();
+        for &format in Format::ALL {
+            names.push(format_name(format));
+            ranks.push(format_rank(format));
+            let file = artifact_file("0123456789abcdef", format);
+            assert!(file.starts_with("0123456789abcdef."), "{file}");
+            files.push(file);
+        }
+        names.sort_unstable();
+        names.dedup();
+        ranks.sort_unstable();
+        ranks.dedup();
+        files.sort_unstable();
+        files.dedup();
+        assert_eq!(
+            names.len(),
+            Format::ALL.len(),
+            "format_name is not injective"
+        );
+        assert_eq!(
+            ranks.len(),
+            Format::ALL.len(),
+            "format_rank is not injective"
+        );
+        assert_eq!(
+            files.len(),
+            Format::ALL.len(),
+            "artifact_file is not injective"
+        );
+    }
+
     pub(crate) fn sample_kernel(key: &str, name: &str, with_spirv: bool) -> KernelEntry {
         let mut formats = vec![FormatEntry {
             format: Format::Wgsl,

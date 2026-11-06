@@ -121,8 +121,8 @@ fn wgpu_usages(uses: TextureUse) -> wgpu::TextureUsages {
 /// A 2-D texture of format `F`, owned by one [`HeadlessDevice`].
 ///
 /// Create it with [`HeadlessDevice::create_texture_2d`], fill it with [`HeadlessDevice::write_texture`] and read it
-/// back with `HeadlessDevice::read_texture`. It is a [`Resource`] of kind `kind::Texture`: a typed call takes it
-/// where a kernel declares a texture parameter, and the use it was created with ([`TextureUse`]) must fit that
+/// back with [`HeadlessDevice::read_texture_async`]. It is a [`Resource`] of kind `kind::Texture`: a typed call
+/// takes it where a kernel declares a texture parameter, and the use it was created with ([`TextureUse`]) must fit that
 /// parameter (a sampled one needs `SAMPLED`, a storage one `STORAGE`), checked at submit ([`Error::TextureUse`]).
 pub struct GpuTexture2d<F: TextureFormat> {
     raw: wgpu::Texture,
@@ -452,7 +452,7 @@ impl HeadlessDevice {
     /// Create a 2-D texture of format `F`, `width` by `height` texels, for the given uses.
     ///
     /// The texture can always be written ([`write_texture`](Self::write_texture)) and read back
-    /// (`read_texture`); `uses` adds what a kernel may do with it: `SAMPLED` for a
+    /// ([`read_texture_async`](Self::read_texture_async)); `uses` adds what a kernel may do with it: `SAMPLED` for a
     /// `Texture2D` parameter, `STORAGE` for a `StorageTexture2D` or `WriteTexture2D` one, `TARGET` for a render
     /// attachment. Its contents start as zeros.
     ///
@@ -604,11 +604,22 @@ impl HeadlessDevice {
         crate::block_on_mapping(readback.finish(&self.device))
     }
 
-    /// `read_texture` without blocking the caller. On native the future completes only while
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        doc = "[`read_texture`](Self::read_texture)"
+    )]
+    #[cfg_attr(target_arch = "wasm32", doc = "`read_texture`")]
+    /// without blocking the caller. On native the future completes only while
     /// something polls the device; each poll of it polls the device once (see
     /// [`read_typed_buffer_async`](Self::read_typed_buffer_async), which behaves the same way).
     ///
-    /// The errors are those of `read_texture`, the `max_buffer_size` one included.
+    /// The errors are those of
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        doc = "[`read_texture`](Self::read_texture),"
+    )]
+    #[cfg_attr(target_arch = "wasm32", doc = "`read_texture`,")]
+    /// the `max_buffer_size` one included.
     pub async fn read_texture_async<F: TextureFormat>(
         &self,
         texture: &GpuTexture2d<F>,

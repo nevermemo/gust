@@ -12,6 +12,12 @@ pub enum ScalarKind {
     F32,
 }
 
+impl ScalarKind {
+    /// Every kind this release has, in the order of the enum. The enum is `#[non_exhaustive]`, so a test outside this
+    /// crate can walk this list to learn that a later release added a kind its `match` does not know.
+    pub const ALL: &'static [Self] = &[Self::U32, Self::I32, Self::F32];
+}
+
 /// How a matrix is stored: the pin that the macro, the reflection reader and the reflection helper all cite.
 ///
 /// Column-major means that each column is contiguous, so the column stride is the size of one column (padded to 8 or
@@ -498,6 +504,21 @@ const fn checked_align_up(value: u32, alignment: u32) -> Option<u32> {
 mod tests {
     use super::*;
     use crate::math::{IVec2, IVec4, Mat2, Mat3, Mat4, UVec2, UVec4, Vec2, Vec3, Vec4};
+
+    #[test]
+    fn scalar_kind_all_lists_every_variant_once() {
+        // Inside the defining crate `#[non_exhaustive]` does not apply, so this `match` has no wildcard arm and stops
+        // compiling when a variant is added: add it to `ScalarKind::ALL` then.
+        let index = |kind: ScalarKind| match kind {
+            ScalarKind::U32 => 0,
+            ScalarKind::I32 => 1,
+            ScalarKind::F32 => 2,
+        };
+        assert_eq!(ScalarKind::ALL.len(), 3);
+        for (position, kind) in ScalarKind::ALL.iter().enumerate() {
+            assert_eq!(index(*kind), position);
+        }
+    }
 
     #[test]
     fn scalar_layouts_are_explicit() {

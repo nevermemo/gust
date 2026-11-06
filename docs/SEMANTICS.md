@@ -298,9 +298,9 @@ describes the intended behaviour and is not evidence.
     `8192k + 2` for k = 1, 2, 7 and 1000, and 2^26. (2) `f32` bits against `grid`, above. (3) An output element the body
     does not write: none exists, because the classifier requires a definite write, and there is no preservation mode
     (NEXT_TASKS). (4) The browser: wgpu's WebGPU backend reports every downlevel capability, so a browser adapter that
-    could not write storage buffers from a fragment would get no typed error. It is expected to fail at pipeline creation
-    and to end `examples/web-vector-add` in `GUST_FAIL` ("no fragment wrote the output"); that chain is expected, not
-    observed (NEXT_TASKS).
+    could not write storage buffers from a fragment would get no typed error. It is expected to fail at pipeline
+    creation and to end `examples/web-vector-add` in `GUST_FAIL` ("no fragment wrote the output"); that chain is
+    expected, not observed (NEXT_TASKS).
   - *Refusals.* A call is refused, identically on the twin and the `cpu` target, when it has a y or z other than 1
     (`ShapeUnsupported`, `cpu::Error::PixelExtent`), when `n` is over 2^26 (`DeviceLimit` named `pixel_max_elements`) or
     when a read-write output is bound `Independent` (`ShapeIndependentOutput`, `cpu::Error::PixelIndependentOutput`).

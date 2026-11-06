@@ -91,9 +91,9 @@ compiler/runtime feedback over full example proofs.
 
 Compiling a kernel at run time (launching `slangc` and the native reflection helper) is the
 `slang-runtime` feature of `gust-compute` and `gust-compute-wgpu`, off by default (D44). Eleven of the twelve examples
-(all but `web-vector-add`) enable it in their manifests, and `gust` and `gust-wgpu` enable it for their own tests through a
-dev-dependency on themselves, so `cargo run -p vector-add`, `cargo test -p gust-compute-wgpu` and
-`cargo test --workspace` need no flag. A crate of your own that runs kernels this way during
+(all but `web-vector-add`) enable it in their manifests, and `gust-compute` and `gust-compute-wgpu` enable it for
+their own tests through a dev-dependency on themselves, so `cargo run -p vector-add`, `cargo test -p gust-compute-wgpu`
+and `cargo test --workspace` need no flag. A crate of your own that runs kernels this way during
 development has a feature of its own, `gust-dev = ["gust-compute-wgpu/slang-runtime"]` ("Install from crates.io"), or
 passes `--features gust-compute-wgpu/slang-runtime`, so that its normal dependencies, and a release build, hold no
 process-spawning compiler. A `[dev-dependencies]` entry with the feature serves `cargo test` and examples, but never
@@ -386,10 +386,10 @@ described in [CHANGELOG](CHANGELOG.md).
 The promise covers:
 
 - the public API of `gust-compute` and `gust-compute-wgpu`: `#[gpu]` and `par_for!`, the typed call surface, the
-  buffer, device and map types, the CPU runtime, the artifact types and the error enums and the other enums that the
-  roadmap will grow (`AdapterChoice`, `LimitsPolicy`, `JobStatus`, `ScalarKind`, `TypeLayoutKind`, `TextureAccess`,
-  `ShaderLayoutRules`, `Format`, `Target`, `Stage` and the reflected kinds), all `#[non_exhaustive]`: they may gain
-  variants, so match them with a wildcard arm;
+  buffer, device and map types, the CPU runtime and the artifact types. Every public enum is `#[non_exhaustive]`
+  except `MatrixLayout` and `Access` (`gust-compute`) and `TransferDirection`, `GpuBufferAccess` and the binding enums
+  (`gust-compute-wgpu`), which are closed sets: a `#[non_exhaustive]` enum may gain variants, so match it with a
+  wildcard arm. A minor bump may grow `Access` (a write-only access, say);
 - the commands of `cargo-gust` and the lines they print, which scripts and CI read;
 - the file formats: `gust-artifacts/manifest.json`, the record files and the reflection records; a newer release reads
   every older schema (D82, D89, D91);

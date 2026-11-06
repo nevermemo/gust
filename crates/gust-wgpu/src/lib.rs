@@ -62,10 +62,12 @@
 //!
 //! What a minor bump may change: any public item that is not support surface, including a function's signature and
 //! the public fields of the plain record types (`BufferDispatch`, `DeviceOptions`, `PoolStats` and the like).
-//! [`Error`], `AdapterChoice` and `LimitsPolicy` are `#[non_exhaustive]`, so a new variant is not a breaking change and
-//! a `match` outside this crate needs a wildcard arm; the variants themselves are not, so adding a field to a struct
-//! variant is a breaking change and comes only in a minor bump. A
-//! `GraphReport` is `#[non_exhaustive]` and only this crate builds one.
+//! Every public enum is `#[non_exhaustive]` ([`Error`], `AdapterChoice`, `LimitsPolicy` and `FeaturesPolicy` among
+//! them) except `TransferDirection`, `GpuBufferAccess` and the binding enums (`F32Binding`, `U32Binding` and
+//! `F32BufferBinding`), which are closed sets: a new variant of the others is not a breaking change and a `match`
+//! outside this crate needs a wildcard arm; the variants themselves are not, so adding a field to a struct variant is a
+//! breaking change and comes only in a minor bump. A `GraphReport` is `#[non_exhaustive]` and only this crate builds
+//! one.
 //!
 //! # Support surface
 //!
@@ -1329,7 +1331,7 @@ impl HeadlessDevice {
     }
 
     /// Select a high-performance adapter among `backends` and open a logical device, with the retry of
-    /// `new`.
+    /// [`new_async_with`](Self::new_async_with).
     ///
     /// On native the retry pauses by sleeping the calling thread, which blocks an executor thread that awaits
     /// this; call it from a thread that may block, or use `new`. In the browser there is no pause between
@@ -1345,7 +1347,10 @@ impl HeadlessDevice {
         .await
     }
 
-    /// Open the device `options` describe, with the adapter retry of `new`. Unlike `new`, which is
+    /// Open the device `options` describe, with the adapter retry of
+    #[cfg_attr(not(target_arch = "wasm32"), doc = "[`new`](Self::new).")]
+    #[cfg_attr(target_arch = "wasm32", doc = "`new`.")]
+    /// Unlike `new`, which is
     /// fixed to Vulkan, the high-performance adapter, wgpu's default limits and no optional feature, the options
     /// choose the backends, the adapter, whether the adapter's own buffer limits are requested and whether
     /// `float32-filterable` is enabled where the adapter offers it, so that a linear sampler can be bound
@@ -1675,7 +1680,12 @@ impl HeadlessDevice {
     ///
     /// wgpu runs the `map_async` callback inside a device poll, and on native nothing polls the device in the
     /// background. This future never wakes itself, so awaiting it on an executor that re-polls only after a wake
-    /// hangs, unless another thread keeps polling the device. The blocking `read_typed_buffer`
+    /// hangs, unless another thread keeps polling the device. The blocking
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        doc = "[`read_typed_buffer`](Self::read_typed_buffer)"
+    )]
+    #[cfg_attr(target_arch = "wasm32", doc = "`read_typed_buffer`")]
     /// does it correctly: it starts the copy, waits with `poll(Wait)`, then waits on the finished future itself, because
     /// another thread's device poll can run this mapping's callback after this thread's `poll(Wait)` returned
     /// (bounded, then `Error::Map`; `completion::blocking`). On `wasm32` the browser runs the callback from its event

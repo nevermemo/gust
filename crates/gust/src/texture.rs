@@ -64,8 +64,8 @@ impl SampleClass {
 /// A texel format of the dialect: the nine 32-bit formats whose store is unconverted (decisions D62 and D64). The 8- and
 /// 16-bit formats convert on store and are outside D22's exact contract, so they are not in the list.
 ///
-/// The names follow WebGPU's format names, so `gust-compute-wgpu` maps a variant to a `wgpu::TextureFormat` with one `match`
-/// arm each. The enum is `#[non_exhaustive]`: a later format is not a breaking change.
+/// The names follow WebGPU's format names, so `gust-compute-wgpu` maps a variant to a `wgpu::TextureFormat` with one
+/// `match` arm each. The enum is `#[non_exhaustive]`: a later format is not a breaking change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Format {

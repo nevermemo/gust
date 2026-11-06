@@ -77,10 +77,10 @@ pub(crate) struct Facts {
 }
 
 /// The warning for a managed install that a different `slangc` on `PATH` shadows, or `None`. `cargo gust` runs the
-/// managed `slangc`, but `cargo xtask` and other tools take the first one on `PATH`, so the session would mix two
-/// Slang versions. A `slangc` that `locate` took from `PATH` needs no warning (it is the one reported above), and a
-/// failed `locate` already names the `PATH` version and the install command in its own message. The fix is the managed
-/// `bin` directory first on `PATH`.
+/// managed `slangc`, but tools that do not know it (such as `cargo xtask` in a GUST checkout) take the first one on
+/// `PATH`, so the session would mix two Slang versions. A `slangc` that `locate` took from `PATH` needs no warning (it
+/// is the one reported above), and a failed `locate` already names the `PATH` version and the install command in its
+/// own message. The fix is the managed `bin` directory first on `PATH`.
 fn path_slangc_warning(facts: &Facts) -> Option<String> {
     let located = facts.slangc.as_ref().ok()?;
     if located.source == Source::Path {
@@ -97,8 +97,8 @@ fn path_slangc_warning(facts: &Facts) -> Option<String> {
         ),
     };
     Some(format!(
-        "warning: the first slangc on PATH ({}) {cause}; cargo gust uses the managed install, but other tools \
-         (cargo xtask) take PATH and would mix versions: put {} first on PATH",
+        "warning: the first slangc on PATH ({}) {cause}; cargo gust uses the managed install, but tools that do \
+         not know it (such as `cargo xtask` in a GUST checkout) take PATH and would mix versions: put {} first on PATH",
         path.display(),
         managed.display()
     ))
@@ -424,8 +424,8 @@ mod tests {
         assert_eq!(
             warning,
             "warning: the first slangc on PATH (/vulkan/Bin/slangc) is Slang `2026.13.1`, not the pin 2026.20; cargo \
-             gust uses the managed install, but other tools (cargo xtask) take PATH and would mix versions: put \
-             /slang/2026.20/bin first on PATH"
+             gust uses the managed install, but tools that do not know it (such as `cargo xtask` in a GUST checkout) \
+             take PATH and would mix versions: put /slang/2026.20/bin first on PATH"
         );
         // A PATH slangc that cannot report its version is named too.
         shadowed.path_slangc = Some((

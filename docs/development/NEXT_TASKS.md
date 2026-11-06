@@ -177,10 +177,11 @@ test module; do not mix that mechanical move with behavior changes.
   `as_buffer().as_wgpu_buffer()` shows its whole size class to the kernel (`arrayLength`, the previous owner's
   tail). m7.p did not size them: `generated_host.rs` still emits `as_entire_binding()` (m7.a0 review). Open; the next
   slice that changes the generated host code takes it, with a test that reads `arrayLength` of a pooled `GpuVec`.
-- Before MR publishes (D132): nothing left but the close (mr.z). Done: `#[non_exhaustive]` with builders (mr.b3) and the
-  wasm32 `Job` contract (mr.b4, D131), the CPU texture ownership and the classifier's ledger (mr.b5, D133), the
-  filtering assumption and the default-limits docs (mr.p, D134). Moved out of 0.1.0 (D132): the query of which gust-algo
-  variant ran, with gust-algo's publication.
+- Before MR publishes (D132): nothing left but the closing gates and the owner's publish (RELEASE.md). Done:
+  `#[non_exhaustive]` with builders (mr.b3) and the wasm32 `Job` contract (mr.b4, D131), the CPU texture ownership and
+  the classifier's ledger (mr.b5, D133), the filtering assumption and the default-limits docs (mr.p, D134), the fixes of
+  the MR sanity check (mr.f, D135). Moved out of 0.1.0 (D132): the query of which gust-algo variant ran, with
+  gust-algo's publication.
 - mr.b2 follow-ups (Opus review): two examples call items mr.b2 hid (`render_wgpu_source`,
   `gust::spirv::words_as_le_bytes`), which works but teaches support surface; and struct variants of the public error
   enums can still be built and destructured outside the crate (gust-algo builds `DeviceLimit`), so a new field is
@@ -419,6 +420,31 @@ test module; do not mix that mechanical move with behavior changes.
   says "A nearest read has no tolerance: compare it exactly", while SEMANTICS and the textures test allow a 1/128 band
   next to a texel edge; and the usage text at `xtask/src/main.rs:136` lists `check-difftest` before `check-precompiled`,
   while `check-full` runs it last (`verify.rs:141`).
+
+## MR follow-ups (filed at the MR close, D135)
+
+- `gust-compute-algo`: D110 left `gust-algo` unpublished in 0.1.0 and D124 records the library as built. Publishing
+  it needs a package name in D48's scheme (`gust-compute-algo`, library name kept), the query of which variant ran
+  (moved out of 0.1.0 by D132), its own stability section, and check-release with five packages.
+- A prebuilt reflection helper per platform: `cargo gust slang build-helper` compiles the helper with a C++ compiler
+  against the managed Slang. A prebuilt binary per platform, fetched and checked like the Slang pin, would drop the
+  compiler from the first-user path (MR plan, mr.z).
+- `#[gpu(crate = ..)]` and a `$crate` forwarder in `par_for!`: generated code names `::gust::` and `::gust_wgpu::`
+  (D106), so a consumer that renames a dependency adds `extern crate <name> as gust;`. A `crate = ..` argument, and
+  `par_for!` forwarding `$crate`, would remove that step.
+- Release tooling for 0.1.x (the Fable and Codex sanity checks): `cargo-semver-checks` (above, D132) and
+  `cargo-release` or `release-plz` for the four-way version bump RELEASE.md does by hand; `cargo-msrv` adds nothing
+  the MSRV gate lacks. check-release stays the gate: no tool builds the README recipe from the unpacked crates.
+- check-release R5 against docs.rs: R5 builds the host target only, and skips the nightly run with a note when no
+  nightly toolchain is installed. docs.rs also builds gust-compute-wgpu for `wasm32-unknown-unknown`, where probe mr.e
+  found the 19 unresolved links mr.f fixed. Run the metadata's targets in R5's nightly run, and make a missing nightly
+  a failure of the full run. The manifests' `--cfg docsrs` rustdoc arguments are inert (no source reads `docsrs`):
+  drop them or add `doc(cfg)`. Nightly cargo warns that `crates/gust-macros/Cargo.toml` has no `[lints]`; the opt-out
+  from the workspace lints is deliberate, and an empty `[lints]` table would say so, but the gust-macros test
+  `only_this_file_allows_the_barred_syn_items` bars any lints table there, so that test changes with it.
+- The README recipe prints no adapter name, so a run of RELEASE.md step 5 does not say which adapter ran it (probe
+  mr.e). Printing the adapter's name in the fixture `xtask/src/release/hello-gust/` and README's block (R7 keeps them
+  equal) would.
 
 ## Deferred language/runtime breadth
 

@@ -3,8 +3,9 @@
 ## Current state
 
 - Branch: `main`
-- Active: roadmap M7 (GPU concepts in Rust); M6 (language breadth I) is closed (D86). See the
-  "Now and next" section of [ROADMAP.md](../ROADMAP.md) and [STATUS.md](STATUS.md).
+- Active: roadmap MR (the first public release; the owner publishes, RELEASE.md); M7 (D126) and MX (D129) are closed,
+  and M6 (language breadth I) is closed (D86). See the "Now and next" section of [ROADMAP.md](../ROADMAP.md) and
+  [STATUS.md](STATUS.md).
 - M0 is closed (D28), and M0.15 (the CI `unit` job is a required check on `main`) followed on
   2026-11-01. M1 (diagnostics) is closed (D33), M2 (typed host API) is closed (D37), and
   M3 (dual test builds) is closed (D43; `check-full` passed at `5971c12`). M4 (build-time targets and

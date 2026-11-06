@@ -39,8 +39,9 @@ M7 (GPU concepts in Rust) closed on 2026-11-04 (D126). MX (execution shapes and 
 after a sanity check by Fable and Opus in the Codex slot (both "proceed with fixes"), the fixes in slices mx.z and
 mr.b3, and `check-full` at `27a461a`; a Codex confirming pass followed (proceed with fixes, nothing reopens MX; D132).
 MR (the first public release) is active: the rename mr.n, the wasm32 `Job` contract mr.b4 and the two pre-publish fixes
-from the Codex pass mr.b5 are merged, and so is mr.p's doc pass; next the close (mr.z: the records, the sanity check,
-`check-full` and the full `check-release` on the closing commit), then the owner's publish (RELEASE.md).
+from the Codex pass mr.b5 are merged, and so are mr.p's doc pass and mr.f, the fixes of the MR sanity check (Fable and
+Codex, both "publish after fixes"; D135). Next: `check-full` and the full `check-release` on this record's commit, the
+owner's publish (RELEASE.md), then mr.z, which records both.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so
@@ -414,14 +415,15 @@ from the Codex pass mr.b5 are merged, and so is mr.p's doc pass; next the close 
   runs: R1 one `cargo package --locked` of all four with verification; R2 each package's file list against one
   allow-list (E8 now uses the same list and the same work directory, which reports a failed deletion); R3 metadata, one
   version, exact internal pins; R4 every other member unpublished; R5 `cargo doc` with every warning an error on stable
-  and `+nightly --cfg docsrs` (`KNOWN_DOC_DEBT` empty since mr.b2); R6 each `.crate` under 2 MiB; R7 the README's
-  "Install from crates.io" recipe word for word (its blocks equal the fixture `xtask/src/release/hello-gust/`, users
-  depend on `"0.1"` per D107) built against the unpacked crates, `cargo install` of the unpacked `cargo-gust` without
-  `GUST_PROFILE`, `cargo gust build`, the release build and both runs on the GPU; R8 `cargo publish --dry-run --locked`
-  (it warns that an unrelated `gust` 0.1.0 exists, as expected before the rename). `--check-only` skips what needs Slang
-  or a GPU and prints each skip. CI runs it in a new `release` job; `check-full` runs it in full. Opus merge after
-  fixes; no must-fix, five should-fixes and five nits taken. Main: 23 gate steps green on `9cc2f60` (2026-11-04 02:08 to
-  02:39Z, RTX 5090), check-examples and the full check-release green.
+  and `+nightly --cfg docsrs` for the host target, skipped with a note when no nightly toolchain is installed
+  (`KNOWN_DOC_DEBT` empty since mr.b2; docs.rs also builds the `wasm32` target, NEXT_TASKS, "MR follow-ups"); R6 each
+  `.crate` under 2 MiB; R7 the README's "Install from crates.io" recipe word for word (its blocks equal the fixture
+  `xtask/src/release/hello-gust/`, users depend on `"0.1"` per D107) built against the unpacked crates, `cargo install`
+  of the unpacked `cargo-gust` without `GUST_PROFILE`, `cargo gust build`, the release build and both runs on the GPU;
+  R8 `cargo publish --dry-run --locked` (it warns that an unrelated `gust` 0.1.0 exists, as expected before the rename).
+  `--check-only` skips what needs Slang or a GPU and prints each skip. CI runs it in a new `release` job; `check-full`
+  runs it in full. Opus merge after fixes; no must-fix, five should-fixes and five nits taken. Main: 23 gate steps green
+  on `9cc2f60` (2026-11-04 02:08 to 02:39Z, RTX 5090), check-examples and the full check-release green.
 - MR mr.d (`7a925dc`, fix round `b9357d2`, merge `7598a3c`): docs that work from crates.io, prose only.
   The root README gains the "Install from crates.io" path around check-release's code blocks (the dev run with a
   user feature, the release build, renamed dependencies and the two-direct-`gust` clash), with a note that the
@@ -813,6 +815,33 @@ from the Codex pass mr.b5 are merged, and so is mr.p's doc pass; next the close 
   credited the 8-bit precision to WebGPU), four should-fixes and the nits taken; the re-check read both specifications
   and approved it with three nits, which the coordinator applied. Main: 25 of 25 gates green on `4c5bff9` (2026-11-06
   00:51 to 01:52Z, RTX 5090).
+- MR mr.f, the fixes of the MR sanity check (`934676a`, fix rounds `cffa720` and `8af0647`, merge `1d8610b`; D135).
+  CHANGELOG's heading is `## 0.1.0` and README reads as published. Every public enum but the closed sets is
+  `#[non_exhaustive]` (twelve enums gained it: `AdapterChoice`, `LimitsPolicy`,
+  `reflect::{Stage, ReflectedResourceKind, ReflectedTypeKind}`, `slang::Target`,
+  `abi::{ScalarKind, TypeLayoutKind, TextureAccess, ShaderLayoutRules}`, `artifact::Format`, `JobStatus`); the macro's
+  generated code only constructs them, and its one pattern is a `matches!`. Fallback arms in cargo-gust (an error where
+  data flows in, `unreachable!` behind the `=0.1.0` pins) and gust-compute-wgpu (`padding_free` false, an unknown result
+  shape refused, an in-memory cache key variant); `Format::ALL` and `ScalarKind::ALL` with tests in gust-compute and
+  cargo-gust restore the completeness check the attribute removed. `cargo gust doctor`'s PATH warning names
+  `cargo xtask` only as a tool of a GUST checkout. The 19 rustdoc links to native-only items resolve on both targets (an
+  `_async` sibling, or a `cfg_attr` doc pair). Drift: README's environment-variable and examples lines, VALIDATION's
+  SPIR-V line, SEMANTICS' browser refusal (expected, not observed) and `-p gust-compute`, the reflection recovery text
+  (`cargo gust slang build-helper`), and old package names in rustdoc, log text and the generated-host header. Gates: 16
+  local gates green on both rounds (including the wasm32 and native docs.rs-shaped builds at 0 gust-compute-wgpu
+  warnings and MSRV); lavapipe runs 42157740335, 42164364077 and 42168641836 green. Opus merge, no must-fix; the
+  should-fix (the doctor line) and seven nits taken, the eighth (an empty `[lints]` in gust-macros) filed, since a guard
+  test bars it; the re-check: merge, its should-fix (`texture::Format::ALL` becomes a slice, so a new format changes no
+  public type) and two wording nits taken in round 2. Main: 25 gate steps green on `1d8610b` (2026-11-06 05:44 to
+  06:46Z, RTX 5090, no rerun).
+- MR probe mr.e (no repository edits; D135): the first-user path and the docs.rs build rehearsed from the packaged
+  crates at `4a4e8e1`. The README's crates.io blocks with fresh resolution (wgpu 30.0.1), no Slang variable and no
+  `slangc` on `PATH`: `cargo gust slang install`, `build-helper`, `cargo run --features gust-dev`, `cargo gust build`,
+  the release build and run and `cargo gust doctor`, all rc 0 on the RTX 5090 (the recipe prints no adapter name;
+  filed). The managed cache went to `~/.cargo/gust` and was removed afterwards. docs.rs-shaped nightly builds
+  (`DOCS_RS=1`, the metadata features, `--cfg docsrs`, offline): the three libraries on linux-gnu with 0 warnings;
+  gust-compute-wgpu on `wasm32-unknown-unknown` with 19 unresolved-link warnings (fixed in mr.f); D68 does not fire; no
+  source reads `docsrs`.
 - M7 README map table, published run (replaces m7.a2's provisional smoke table). Two runs of the out-of-repository probe
   `plans/m7/probe/a2`, built against `ea258f9` in a detached worktree, in a quiet window (2026-11-04 13:48 to 13:50Z,
   55 s each, RTX 5090, Vulkan; 3 warm-up and 11 timed rounds, 5 at 4.2e6). Map over host slices is 0.61 to 0.93 of a

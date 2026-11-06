@@ -113,6 +113,7 @@ pub(crate) fn format_name(format: Format) -> &'static str {
     match format {
         Format::Wgsl => "wgsl",
         Format::Spirv => "spirv",
+        other => unreachable!("a format cargo-gust does not know: {other:?}"),
     }
 }
 
@@ -121,6 +122,7 @@ pub(crate) fn format_rank(format: Format) -> u8 {
     match format {
         Format::Wgsl => 0,
         Format::Spirv => 1,
+        other => unreachable!("a format cargo-gust does not know: {other:?}"),
     }
 }
 
@@ -129,6 +131,7 @@ pub(crate) fn artifact_file(key: &str, format: Format) -> String {
     match format {
         Format::Wgsl => format!("{key}.wgsl"),
         Format::Spirv => format!("{key}.spv"),
+        other => unreachable!("a format cargo-gust does not know: {other:?}"),
     }
 }
 
@@ -434,6 +437,7 @@ fn parse_format(value: &Json, key: &str, context: &str) -> Result<FormatEntry, S
         (Format::Wgsl, Some(_)) => {
             return Err(format!("{context}: only spirv entries have `validated`"));
         }
+        (other, _) => return Err(format!("{context}: unsupported format {other:?}")),
     };
     Ok(FormatEntry {
         format,

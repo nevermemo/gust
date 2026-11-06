@@ -84,6 +84,7 @@ fn native_compilation_is_complete_for_both_targets() {
                         .collect();
                     gust::spirv::validate_structure(&words).unwrap();
                 }
+                other => panic!("this test does not know the target {other:?}"),
             }
         }
     }

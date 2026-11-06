@@ -14,11 +14,13 @@ pub struct PipelineCacheStats {
 }
 
 /// The format of the artifact in a [`KernelCacheKey`]. `gust::Format` is not `Hash`, and `gust` is not this crate's
-/// to change, so the key carries its own copy of the two cases.
+/// to change, so the key carries its own copy of the two cases (`Format` is `#[non_exhaustive]`, so a format that this
+/// release does not know is `Other`; the key only ever holds a WGSL one, see `preferred_artifact`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ArtifactFormat {
     Wgsl,
     Spirv,
+    Other,
 }
 
 impl From<Format> for ArtifactFormat {
@@ -26,6 +28,7 @@ impl From<Format> for ArtifactFormat {
         match format {
             Format::Wgsl => Self::Wgsl,
             Format::Spirv => Self::Spirv,
+            _ => Self::Other,
         }
     }
 }

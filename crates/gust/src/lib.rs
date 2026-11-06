@@ -145,9 +145,11 @@
 //! What a minor bump may change: any item of this crate that is not marked as support surface, including a function's
 //! signature, the fields of the descriptor and layout types (a hand-written `KernelDescriptor` literal then needs the
 //! new field), the variants of an enum that is not `#[non_exhaustive]`, and the Slang that the macro emits. The error
-//! enums, [`Shape`], and [`ParameterKind`] are `#[non_exhaustive]`, so a new variant is not a breaking change and a
-//! `match` outside this crate needs a wildcard arm. The formats of the files that `cargo gust` writes
-//! ([`artifact`] manifests, records and reflection documents) carry a schema version, and a reader accepts every
+//! enums, [`Shape`], [`ParameterKind`], and the enums that the roadmap will grow (`ScalarKind`, `TypeLayoutKind`,
+//! `TextureAccess`, `ShaderLayoutRules`, `JobStatus`, `reflect::Stage`, `reflect::ReflectedResourceKind`,
+//! `reflect::ReflectedTypeKind`, `slang::Target` and `artifact::Format`) are `#[non_exhaustive]`, so a new variant is
+//! not a breaking change and a `match` outside this crate needs a wildcard arm. The formats of the files that
+//! `cargo gust` writes ([`artifact`] manifests, records and reflection documents) carry a schema version, and a reader accepts every
 //! schema version that an earlier release wrote.
 //!
 //! # Support surface

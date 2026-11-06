@@ -4,7 +4,7 @@
 //!
 //! - **The formats.** [`Format`] is the closed list of texel formats of the dialect and [`TextureFormat`] the sealed
 //!   trait of its marker types ([`R32Uint`] to [`Rgba32Float`]), which tie a format to the Rust type of one texel.
-//!   `gust-wgpu` maps [`Format`] to `wgpu::TextureFormat` in one place.
+//!   `gust-compute-wgpu` maps [`Format`] to `wgpu::TextureFormat` in one place.
 //! - **The host-side vocabulary.** [`TextureUse`] (what a texture may be used for), [`SamplerOptions`], [`Filter`] and
 //!   [`Address`].
 //! - **The kernel-side types.** [`Texture2D`], [`StorageTexture2D`], [`WriteTexture2D`] and [`Sampler`] are what a
@@ -64,7 +64,7 @@ impl SampleClass {
 /// A texel format of the dialect: the nine 32-bit formats whose store is unconverted (decisions D62 and D64). The 8- and
 /// 16-bit formats convert on store and are outside D22's exact contract, so they are not in the list.
 ///
-/// The names follow WebGPU's format names, so `gust-wgpu` maps a variant to a `wgpu::TextureFormat` with one `match`
+/// The names follow WebGPU's format names, so `gust-compute-wgpu` maps a variant to a `wgpu::TextureFormat` with one `match`
 /// arm each. The enum is `#[non_exhaustive]`: a later format is not a breaking change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]

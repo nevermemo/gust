@@ -24,21 +24,22 @@ pub type DeviceHandle = Arc<HeadlessDevice>;
 #[cfg(target_arch = "wasm32")]
 pub type DeviceHandle = std::rc::Rc<HeadlessDevice>;
 
-/// Which adapter [`HeadlessDevice::with_options`] opens.
+/// Which adapter `HeadlessDevice::with_options` opens.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum AdapterChoice {
     /// wgpu's high-performance preference (a discrete GPU when there is one). The default.
     #[default]
     HighPerformance,
     /// wgpu's low-power preference (an integrated GPU when there is one).
     LowPower,
-    /// The `n`th adapter of [`HeadlessDevice::enumerate`] for the same backends.
+    /// The `n`th adapter of `HeadlessDevice::enumerate` for the same backends.
     Index(usize),
     /// The first adapter whose name contains this text, ignoring letter case.
     NameContains(String),
 }
 
-/// Which limits [`HeadlessDevice::with_options`] asks the adapter for.
+/// Which limits `HeadlessDevice::with_options` asks the adapter for.
 ///
 /// `LimitsPolicy::default()` is [`Default`](Self::Default), wgpu's portable limits. It is not what
 /// `DeviceOptions::default().limits` holds: on native that is [`Adapter`](Self::Adapter), so the process's
@@ -46,8 +47,9 @@ pub enum AdapterChoice {
 /// where the browser allows 128 MiB. A program that must behave the same on both sets
 /// [`Default`](Self::Default) through [`set_default_options`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum LimitsPolicy {
-    /// wgpu's default limits (what [`HeadlessDevice::new`] requests): 256 MiB buffers, 128 MiB storage bindings,
+    /// wgpu's default limits (what `HeadlessDevice::new` requests): 256 MiB buffers, 128 MiB storage bindings,
     /// 65 535 workgroups per dimension. Portable; the browser always uses it.
     #[default]
     Default,
@@ -72,7 +74,7 @@ impl LimitsPolicy {
     }
 }
 
-/// Which optional device features [`HeadlessDevice::with_options`] asks the adapter for (slice mx.t2).
+/// Which optional device features `HeadlessDevice::with_options` asks the adapter for (slice mx.t2).
 ///
 /// The only feature GUST asks for is `float32-filterable`, which a linear filter of a 32-bit float texture needs
 /// (decision D64). A device that did not enable it still runs every texture kernel, with `Nearest` samplers and
@@ -83,7 +85,7 @@ impl LimitsPolicy {
 /// `DeviceOptions::default().features`
 /// is [`Adapter`](Self::Adapter) on native and [`Default`](Self::Default) in the browser, so [`default_device`] and
 /// `with_options(DeviceOptions::default())` open the same device, and [`set_default_options`] governs the feature
-/// of [`default_device`]. [`HeadlessDevice::new`] and [`new_async`](HeadlessDevice::new_async) use
+/// of [`default_device`]. `HeadlessDevice::new` and [`new_async`](HeadlessDevice::new_async) use
 /// [`Default`](Self::Default), as they use wgpu's default limits.
 ///
 /// The enum is `#[non_exhaustive]`: a later release may add a policy, so a `match` outside this crate needs a wildcard
@@ -116,7 +118,7 @@ impl FeaturesPolicy {
 /// `DeviceOptions::default()` is what [`default_device`] opens: Vulkan (the browser's WebGPU on `wasm32`), the
 /// high-performance adapter, and on native the adapter's own limits ([`LimitsPolicy::Adapter`], S7.6 outcome A) and
 /// optional features ([`FeaturesPolicy::Adapter`], slice mx.t2). It
-/// differs from [`HeadlessDevice::new`], which keeps requesting wgpu's default limits, and from
+/// differs from `HeadlessDevice::new`, which keeps requesting wgpu's default limits, and from
 /// `LimitsPolicy::default()`, which is [`LimitsPolicy::Default`]: native `default_device()` allows storage bindings
 /// of the adapter's size (2 GiB measured), the browser's only 128 MiB.
 ///
@@ -140,7 +142,7 @@ pub struct DeviceOptions {
 impl Default for DeviceOptions {
     /// Vulkan (WebGPU on `wasm32`), the high-performance adapter and, on native, the adapter's own `max_buffer_size`,
     /// storage binding size and workgroups per dimension ([`LimitsPolicy::Adapter`]) and `float32-filterable` when
-    /// offered ([`FeaturesPolicy::Adapter`]); this is what [`default_device`] opens. [`HeadlessDevice::new`]
+    /// offered ([`FeaturesPolicy::Adapter`]); this is what [`default_device`] opens. `HeadlessDevice::new`
     /// differs: it requests wgpu's default limits and no optional features, so its buffer sizes and workgroup counts
     /// are the portable ones. `HeadlessDevice::new` does not exist on `wasm32`; there these options ask for the
     /// default limits and no optional features.
@@ -212,7 +214,7 @@ impl HeadlessDevice {
         pollster::block_on(Self::enumerate_async(backends))
     }
 
-    /// [`enumerate`](Self::enumerate) without blocking. A browser lists at most the adapter it hands out.
+    /// `enumerate` without blocking. A browser lists at most the adapter it hands out.
     pub async fn enumerate_async(backends: wgpu::Backends) -> Vec<wgpu::AdapterInfo> {
         let instance = new_instance(backends);
         instance
@@ -629,7 +631,7 @@ pub fn set_default_options(options: DeviceOptions) -> Result<(), Error> {
 /// thread; a failure to open (no adapter) is returned and not remembered, so a later call tries again.
 ///
 /// Its limits are those of `DeviceOptions::default()`, which on native are the adapter's own, not the portable ones of
-/// [`HeadlessDevice::new`]; [`set_default_options`] changes them before the first call.
+/// `HeadlessDevice::new`; [`set_default_options`] changes them before the first call.
 ///
 /// On `wasm32` nothing may block: this returns the device [`default_device_async`] already opened, or
 /// `Error::NoAdapter` before that.

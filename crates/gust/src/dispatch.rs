@@ -1432,7 +1432,7 @@ mod tests {
         }
     }
 
-    /// Mirrors `BufferBinding<'a>` of `gust-wgpu`: `Copy` and borrowing the buffer.
+    /// Mirrors `BufferBinding<'a>` of `gust-compute-wgpu`: `Copy` and borrowing the buffer.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct RecBinding<'r> {
         id: usize,

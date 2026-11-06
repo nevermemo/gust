@@ -49,7 +49,7 @@ a strict profile needs neither Slang nor the helper, D45):
 
 - The stable Rust toolchain: 1.90 or newer (the `msrv` CI job type-checks the workspace on 1.90.0);
   this checkout's checks ran on stable 1.98.0 (see "Minimum Rust")
-- Outside this checkout, once 0.1.0 is published, `cargo install cargo-gust --locked --version "~0.1"` installs the
+- Outside this checkout, `cargo install cargo-gust --locked --version "~0.1"` installs the
   `cargo gust` tool; it works without `GUST_PROFILE` ("Install from crates.io" has the whole setup for a crate of your
   own)
 - `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.20 (`cargo gust slang install` installs it, and
@@ -90,8 +90,8 @@ major changes and release validation, but the ordinary workspace loop prioritize
 compiler/runtime feedback over full example proofs.
 
 Compiling a kernel at run time (launching `slangc` and the native reflection helper) is the
-`slang-runtime` feature of `gust-compute` and `gust-compute-wgpu`, off by default (D44). The ten examples
-enable it in their manifests, and `gust` and `gust-wgpu` enable it for their own tests through a
+`slang-runtime` feature of `gust-compute` and `gust-compute-wgpu`, off by default (D44). Eleven of the twelve examples
+(all but `web-vector-add`) enable it in their manifests, and `gust` and `gust-wgpu` enable it for their own tests through a
 dev-dependency on themselves, so `cargo run -p vector-add`, `cargo test -p gust-compute-wgpu` and
 `cargo test --workspace` need no flag. A crate of your own that runs kernels this way during
 development has a feature of its own, `gust-dev = ["gust-compute-wgpu/slang-runtime"]` ("Install from crates.io"), or
@@ -215,11 +215,10 @@ devices.
 
 ## Install from crates.io
 
-Not on crates.io yet: 0.1.0 is being prepared. Do not run the `cargo install` and `cargo add` commands of this
-section until 0.1.0 is published. The two code blocks below are the recipe that `cargo xtask check-release` builds word
-for word from the packaged crates.
+The two code blocks below are the recipe that `cargo xtask check-release` builds word for word from the packaged
+crates.
 
-GUST will be published as four packages that always share one version (0.1.0 is the first release):
+GUST is published as four packages that always share one version (0.1.0 is the first release):
 
 | Package | Library name | What it is |
 | --- | --- | --- |
@@ -332,8 +331,8 @@ fn main() {
 cargo run --features gust-dev
 ```
 
-The first call of the kernel compiles it through Slang, so this needs the tools and the two environment variables
-above and a Vulkan compute adapter (see "Platforms"). It prints `hello-gust: [11.0, 22.0, 33.0, 44.0]`.
+The first call of the kernel compiles it through Slang, so this needs the tools set up above (no
+environment variable) and a Vulkan compute adapter (see "Platforms"). It prints `hello-gust: [11.0, 22.0, 33.0, 44.0]`.
 
 ### Build it for release
 
@@ -387,8 +386,10 @@ described in [CHANGELOG](CHANGELOG.md).
 The promise covers:
 
 - the public API of `gust-compute` and `gust-compute-wgpu`: `#[gpu]` and `par_for!`, the typed call surface, the
-  buffer, device and map types, the CPU runtime, the artifact types and the error enums (which may gain variants, so
-  match them with a wildcard arm);
+  buffer, device and map types, the CPU runtime, the artifact types and the error enums and the other enums that the
+  roadmap will grow (`AdapterChoice`, `LimitsPolicy`, `JobStatus`, `ScalarKind`, `TypeLayoutKind`, `TextureAccess`,
+  `ShaderLayoutRules`, `Format`, `Target`, `Stage` and the reflected kinds), all `#[non_exhaustive]`: they may gain
+  variants, so match them with a wildcard arm;
 - the commands of `cargo-gust` and the lines they print, which scripts and CI read;
 - the file formats: `gust-artifacts/manifest.json`, the record files and the reflection records; a newer release reads
   every older schema (D82, D89, D91);

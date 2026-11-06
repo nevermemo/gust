@@ -63,7 +63,7 @@ difftest report does: its `shapes` section). Which shapes a command ran is in it
 both forms of `web-vector-add`, `check-difftest` runs `grid` unless it is given `--shapes grid,pixel`, and `cargo test
 -p gust-compute-wgpu` runs `grid` and `pixel` (`tests/pixel.rs`). Every MX Gpu record is WGSL evidence: `gust-wgpu` executes the
 WGSL that slangc emits (D82), and the SPIR-V of the textures and `pixel` goldens is Spirv tier (`spirv-val`) only;
-executing SPIR-V is placed in MR (D95). Hardware means the RTX 5090; the Radeon 890M took part in the spikes behind D120
+executing SPIR-V is a 0.1.x slice after 0.1.0 (D95 placed it in MR, D132 deferred it; NEXT_TASKS, slice mr.v). Hardware means the RTX 5090; the Radeon 890M took part in the spikes behind D120
 and D127 and runs no gate; the software adapter is `Gpu (software)` and never stands in for hardware. Nothing in the
 repository claims anything about a phone or a tile-based GPU: that hypothesis is untested (NEXT_TASKS).
 

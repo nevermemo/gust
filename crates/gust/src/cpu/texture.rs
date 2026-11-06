@@ -328,9 +328,9 @@ impl CpuDevice {
         })
     }
 
-    /// [`CpuTexture2d::write`], spelled as the device call `gust-wgpu` has. [`Error::WrongDevice`] (naming `texture`)
-    /// when the texture belongs to another device instance, as `gust-wgpu` refuses a texture of another device, and
-    /// [`Error::Borrowed`] (naming `texture`, as [`CpuDevice::read_texture`] does) when it is borrowed elsewhere; the
+    /// [`CpuTexture2d::write`], spelled as the device call `gust-compute-wgpu` has. [`Error::WrongDevice`] (naming
+    /// `texture`) when the texture belongs to another device instance, as `gust-compute-wgpu` refuses a texture of
+    /// another device, and [`Error::Borrowed`] (naming `texture`, as [`CpuDevice::read_texture`] does) when it is borrowed elsewhere; the
     /// other errors are those of [`CpuTexture2d::write`].
     pub fn write_texture<F: TextureFormat>(
         &self,
@@ -347,7 +347,7 @@ impl CpuDevice {
         })
     }
 
-    /// [`CpuTexture2d::read`], spelled as the device call `gust-wgpu` has, with the same `Result` shape.
+    /// [`CpuTexture2d::read`], spelled as the device call `gust-compute-wgpu` has, with the same `Result` shape.
     /// [`Error::WrongDevice`] (naming `texture`) when the texture belongs to another device instance, and
     /// [`Error::Borrowed`] (naming `texture`) when it is mutably borrowed, which only a running kernel call does;
     /// [`CpuTexture2d::read`] panics there instead.

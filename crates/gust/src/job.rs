@@ -2,6 +2,7 @@ use std::time::Duration;
 
 /// Backend-neutral state of an asynchronous GPU submission.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum JobStatus {
     /// The work has not finished.
     Pending,

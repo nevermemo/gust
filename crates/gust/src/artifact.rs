@@ -29,6 +29,7 @@ use crate::{
 
 /// The compiler output format of an [`Artifact`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Format {
     /// WGSL text, the shader language of the WebGPU API.
     Wgsl,

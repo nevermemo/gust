@@ -2,6 +2,7 @@ use core::{mem, slice};
 
 /// Scalar formats that have an identical Rust and GPU storage representation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ScalarKind {
     /// A 32-bit unsigned integer (`uint`, Rust `u32`).
     U32,
@@ -47,6 +48,7 @@ pub const MATRIX_LAYOUT: MatrixLayout = MatrixLayout::Column;
 
 /// Structural category for one host-shareable type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TypeLayoutKind {
     /// One 32-bit scalar.
     Scalar(ScalarKind),
@@ -290,9 +292,11 @@ pub struct StructFieldLayout {
 /// Layout rules recorded for a shader resource (not Slang compiler reflection).
 ///
 /// API change (mx.t0b): the enum has a new variant, [`TextureV1`](Self::TextureV1), for the 2-D texture parameters of
-/// decision D91. It is not `#[non_exhaustive]`, so a `match` outside this crate must add an arm (`gust-wgpu`'s
-/// `generated_host.rs` did). `TextureV1` has no byte layout of its own: the element is the texel type.
+/// decision D91. The enum is `#[non_exhaustive]`, so a `match` outside this crate needs a wildcard arm
+/// (`gust-compute-wgpu`'s `generated_host.rs` has one). `TextureV1` has no byte layout of its own: the element is the
+/// texel type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ShaderLayoutRules {
     /// The v1 storage ABI: 32-bit scalars and recursively padding-free structs.
     StorageV1,
@@ -328,6 +332,7 @@ impl TextureDimension {
 
 /// How a kernel uses a texture binding, which is also how the reflection spells it (`access`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum TextureAccess {
     /// A sampled `Texture2D<T>`: reflection access `read`.
     Sampled,

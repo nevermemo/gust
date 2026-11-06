@@ -85,6 +85,7 @@ pub(crate) fn reflected_texture_layout(
             ScalarKind::F32 => SampleClass::Float,
             ScalarKind::U32 => SampleClass::Uint,
             ScalarKind::I32 => SampleClass::Sint,
+            _ => return Err(format!("{at}.result: unsupported scalar kind")),
         },
     };
     Ok(ResourceRecord {
@@ -110,6 +111,7 @@ fn texel_layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
         ScalarKind::F32 => "",
         ScalarKind::I32 => "I",
         ScalarKind::U32 => "U",
+        _ => return Err(format!("{context}: unsupported scalar kind")),
     };
     let (name, kind, size, alignment) = match kind {
         "scalar" => {
@@ -117,6 +119,7 @@ fn texel_layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
                 ScalarKind::F32 => "f32",
                 ScalarKind::I32 => "i32",
                 ScalarKind::U32 => "u32",
+                _ => return Err(format!("{context}: unsupported scalar kind")),
             };
             (name.to_owned(), LayoutKindRecord::Scalar(scalar), 4, 4)
         }
@@ -254,6 +257,7 @@ fn layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
                 ScalarKind::F32 => "f32",
                 ScalarKind::I32 => "i32",
                 ScalarKind::U32 => "u32",
+                _ => return Err(format!("{context}: unsupported scalar kind")),
             };
             (name.to_owned(), LayoutKindRecord::Scalar(scalar))
         }
@@ -265,6 +269,7 @@ fn layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
                 ScalarKind::F32 => "",
                 ScalarKind::I32 => "I",
                 ScalarKind::U32 => "U",
+                _ => return Err(format!("{context}: unsupported scalar kind")),
             };
             (
                 format!("{prefix}Vec{count}"),

@@ -52,6 +52,11 @@ const SITE_SCHEMA: u64 = 2;
 /// `grid` kernel keeps schema 1 or 2 and has no `shape` key, byte for byte.
 const SHAPE_SCHEMA: u64 = 3;
 
+/// The version of the `kernel.json` layout of a body that needs a capability or is a variant (M8, D139): schema 3's
+/// grammar (`shape` present when the shape is not `grid`) plus `requires` and `variant`. A reader of schema 1 to 3
+/// refuses it instead of reading a subgroup body as portable. A body with neither keeps the schema of its kind.
+const VARIANT_SCHEMA: u64 = 4;
+
 /// What the expansion reads from the process environment.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Environment {
@@ -628,6 +633,18 @@ pub(super) struct KernelRecord<'a> {
     /// The name of the kernel's shape when it is not `grid` (`None` for every kernel today). A record with a shape is
     /// schema 3 and carries the `shape` key; one without keeps the schema of its kind.
     pub shape: Option<&'a str>,
+    /// What a variant or a capability-bound body adds (M8, D139); `None` for every body with an empty `requires`
+    /// that is not a variant, whose record keeps the schema of its kind, byte for byte.
+    pub variant: Option<VariantRecord<'a>>,
+}
+
+/// The two keys of a schema 4 record (M8, D139).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct VariantRecord<'a> {
+    /// The capabilities the body needs, by name, in the order of `gust::capability::Capability::ALL`.
+    pub requires: &'a [&'a str],
+    /// The name of the variant function; `""` for the kernel's own body.
+    pub variant: &'a str,
 }
 
 impl KernelRecord<'_> {
@@ -643,7 +660,9 @@ impl KernelRecord<'_> {
     /// `scalar`, `rows`, `cols` and `column_stride`; or `struct` with `fields`: `name`, `offset`, `type` with the
     /// nested `<layout>`). A record whose layouts are all scalars and structs of them with `storage_v1` rules is the
     /// same bytes it was before vectors and uniforms had layouts. A record whose `shape` is set (mx.k) is schema 3 and
-    /// has one more key, `shape` (the shape's name); the record of a `grid` kernel has none.
+    /// has one more key, `shape` (the shape's name); the record of a `grid` kernel has none. A record whose `variant`
+    /// is set (M8, D139) is schema 4 and has two more keys: `requires` (the capability names) and `variant` (the
+    /// variant function's name, `""` for the kernel's own body).
     pub(super) fn json(&self) -> String {
         self.write_json(SCHEMA, true)
     }
@@ -656,7 +675,9 @@ impl KernelRecord<'_> {
     }
 
     fn write_json(&self, schema: u64, with_source: bool) -> String {
-        let schema = if self.shape.is_some() {
+        let schema = if self.variant.is_some() {
+            VARIANT_SCHEMA
+        } else if self.shape.is_some() {
             SHAPE_SCHEMA
         } else {
             schema
@@ -719,6 +740,19 @@ impl KernelRecord<'_> {
         ];
         if let Some(shape) = self.shape {
             members.push(("shape", Json::string(shape)));
+        }
+        if let Some(variant) = self.variant {
+            members.push((
+                "requires",
+                Json::Array(
+                    variant
+                        .requires
+                        .iter()
+                        .map(|name| Json::string(name))
+                        .collect(),
+                ),
+            ));
+            members.push(("variant", Json::string(variant.variant)));
         }
         if with_source {
             members.push((
@@ -1764,6 +1798,7 @@ pub(super) mod tests {
                 rust_line: 12,
             }],
             shape: None,
+            variant: None,
         }
         .json()
     }
@@ -1839,6 +1874,7 @@ pub(super) mod tests {
                 rust_line: 12,
             }],
             shape: None,
+            variant: None,
         }
         .json()
     }
@@ -1907,6 +1943,7 @@ pub(super) mod tests {
                 },
             ],
             shape: None,
+            variant: None,
         };
         write(&record)
     }
@@ -1976,6 +2013,61 @@ pub(super) mod tests {
             )
         );
         assert!(!site.contains("\"source\""));
+    }
+
+    /// The sample record with the variant facts `requires` and `variant` and the shape `shape` given.
+    fn sample_with_variant(
+        requires: &[&str],
+        variant: &str,
+        shape: Option<&str>,
+        write: impl Fn(&KernelRecord<'_>) -> String,
+    ) -> String {
+        sample_written_by(|record| {
+            write(&KernelRecord {
+                shape,
+                variant: Some(VariantRecord { requires, variant }),
+                ..*record
+            })
+        })
+    }
+
+    /// Schema 4 (M8, D139) is written only for a body that needs a capability or is a variant: schema 1's grammar plus
+    /// `requires` (the names) and `variant` (the function's name, `""` for the kernel's own body), in key order. A
+    /// body with neither is the schema 1 record, byte for byte (the golden above).
+    #[test]
+    fn a_record_with_a_variant_is_schema_4_and_the_others_are_unchanged() {
+        let schema_1 = sample_json();
+        assert!(!schema_1.contains("requires") && !schema_1.contains("\"variant\""));
+        let variant = sample_with_variant(&["subgroups"], "sum_subgroups", None, |record| {
+            record.json()
+        });
+        assert_eq!(
+            variant,
+            schema_1
+                .replace(
+                    "  ],\n  \"schema\": 1,\n",
+                    "  ],\n  \"requires\": [\n    \"subgroups\"\n  ],\n  \"schema\": 4,\n"
+                )
+                .replace(
+                    "  },\n  \"workgroup_size\"",
+                    "  },\n  \"variant\": \"sum_subgroups\",\n  \"workgroup_size\""
+                )
+        );
+        // The kernel's own body with a `requires(..)` has the empty variant name.
+        let own = sample_with_variant(&["subgroups"], "", None, |record| record.json());
+        assert!(own.contains("\"variant\": \"\",\n"), "{own}");
+        // A portable body that is the variant of a kernel with its own `requires` has the empty set.
+        let portable = sample_with_variant(&[], "portable", None, |record| record.json());
+        assert!(portable.contains("\"requires\": [],\n"), "{portable}");
+        assert!(portable.contains("\"schema\": 4,\n"));
+        // The shape stays when the body has one; the schema is 4 and not 3.
+        let pixel = sample_with_variant(&["subgroups"], "v", Some("pixel"), |record| record.json());
+        assert!(pixel.contains("\"shape\": \"pixel\",\n") && pixel.contains("\"schema\": 4,\n"));
+        // A `par_for!` record has no variants; the writer still raises the schema when asked, and drops the source.
+        let site = sample_with_variant(&["subgroups"], "v", None, |record| {
+            record.json_without_source()
+        });
+        assert!(site.contains("\"schema\": 4,\n") && !site.contains("\"source\""));
     }
 
     #[test]

@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see shape-twice/expected.txt).
+# A macro error is a `compile_error!` and has no rustc code, so `code: none`.
+code: none
+file: variant-malformed/src/main.rs
+line: 11
+message: [GUST-E0740] #[variant] takes `of = <kernel>` and an optional `requires(..)`; the workgroup size, the shape and the CPU form are the kernel's

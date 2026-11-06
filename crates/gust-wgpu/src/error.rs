@@ -273,8 +273,9 @@ pub enum Error {
     /// `WgpuJob::wait_timeout` always return this there, and so do the calls built on them (the generated `dispatch`
     /// and `dispatch_extent` of a kernel, `gust::Run::dispatch_call`, `gust::Device::dispatch`). The text is the
     /// `WgpuJob` method that refused (`wait` or `wait_timeout`). Any work the job submitted has been submitted and will
-    /// run; only the wait is refused. To synchronise, await a readback with `HeadlessDevice::read_typed_buffer_async` (it resolves when the work and the
-    /// copy are done), or read `WgpuJob::status` without waiting. Never returned on native targets.
+    /// run; only the wait is refused. To synchronise, await a readback with `HeadlessDevice::read_typed_buffer_async`
+    /// (it resolves when the work and the copy are done), or read `WgpuJob::status` without waiting. Never returned on
+    /// native targets.
     WouldBlock(&'static str),
     /// A buffer or texture allocation failed inside an out-of-memory error scope: the request was within the
     /// device's limits (`max_buffer_size` for a buffer, `max_texture_dimension_2d` for a texture), but the adapter had

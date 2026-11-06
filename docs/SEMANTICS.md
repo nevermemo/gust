@@ -226,8 +226,8 @@ describes the intended behaviour and is not evidence.
   `read_texture` returns what `write_texture` stored (`crates/gust-wgpu/tests/textures.rs`). `sample` is outside the
   exact contract (D92; section 4 has the formula): the twin implements the WebGPU formula in `f32`, so a `sample` has a
   twin, and a GPU result is accepted inside the stated bound `|gpu - twin| <= 2^-8 * (max - min of the four texels) + 2
-  * ulp(max |texel|)` for a linear read (`cpu::texture::linear_error_bound`; the bound is inferred from the
-  specification, not read from a device; on the RTX 5090 the largest observed distance was 0.977 of it, over 1599
+  * ulp(max |texel|)` for a linear read (`cpu::texture::linear_error_bound`; the bound is an assumed 8-bit
+  weight precision (section 4), not read from a device; on the RTX 5090 the largest observed distance was 0.977 of it, over 1599
   samples). A nearest read is the formula's texel except within 1/128 of a texel edge (the test's tolerance; measured
   about 1e-6 on one adapter). The bound is documented and never chased (D39). It is tested for `grid` kernels
   (`textures.rs`) and, for a nearest sampler only, for a `pixel` kernel (`tests/pixel.rs`, `row`); a linear `sample` in
@@ -673,16 +673,22 @@ texels `(i0, j0)`, `(i0 + 1, j0)`, `(i0, j0 + 1)`, `(i0 + 1, j0 + 1)` after the 
 
 **Error domain** of a GPU `sample` against that formula, per channel:
 `|gpu - twin| <= 2^-8 * (max - min of the four texels) + 2 * ulp(max |texel|)`
-(`cpu::texture::linear_error_bound`; the `2^-8` is the precision WebGPU allows for the filter weights, inferred from
-the specification; D52).
+(`cpu::texture::linear_error_bound`; the `2^-8` is an assumed 8-bit precision of the filter weights, see below; D52).
 [`the_linear_error_bound_is_a_256th_of_the_range_plus_two_ulps_of_the_largest_texel`,
 `ulp_is_the_gap_to_the_next_magnitude`]
-The `2^-8` assumes a sampler that quantises the sub-texel position and the filter weights to 8 bits (steps of 1/256).
-That is not guaranteed: Vulkan's core required limit for `subTexelPrecisionBits` is 4 (a step of 1/16; the Vulkan
-specification, chapter "Limits", section "Limit Requirements", table "Required Limits", which lists 8 for Vulkan 1.4
-and the Roadmap 2022 profile), and WebGPU states no number. An adapter with fewer than 8 bits can leave the bound,
-and the test then fails on it. The bound is not widened for that (D92, D132: documented, not chased, D39); the
-evidence is the one adapter of section 1, and a second adapter's `subTexelPrecisionBits` has not been compared.
+The `2^-8` assumes a sampler that quantises the sub-texel position and the filter weights to 8 bits (steps of 1/256),
+rounded to the nearest step. That is an assumption, not a guarantee, and no specification gives it. The WebGPU
+specification (section "GPUSamplerDescriptor" and the sections near it) and the WGSL specification (section "Texture
+Built-in Functions") state no number of bits for the weights. Vulkan requires `subTexelPrecisionBits` of at least 4 in
+core (a step of 1/16) and of at least 8 of an implementation of Vulkan 1.4 or of the Roadmap 2022 profile (the Vulkan
+specification, chapter "Limits", section "Limit Requirements", table "Required Limits"). The exposure is therefore a
+device that reports fewer than 8, such as one that reports an earlier Vulkan version; the value is what the device
+reports, and this repository has not recorded the RTX 5090's. Why the rounding matters (derived, not measured): a weight
+error moves the result by at most that error times the range of the texels, per axis; rounding to the nearest 1/256 step
+gives at most `2^-9` per axis, so `2^-8` of the range over both axes, whereas truncated steps (an error up to `2^-8` per
+axis) could reach `2^-7`. A sampler that quantises worse than this leaves the bound, and the test then fails on it. The
+bound is not widened for that (D92, D132: documented, not chased, D39); the evidence is the one adapter of section 1,
+and a second adapter's `subTexelPrecisionBits` has not been compared.
 Measured on the adapter of section 1 (slice mx.t4, 533 coordinates on each of three formats, so 1599 samples, per address mode, on a
 `float32-filterable` device): the largest `|gpu - twin|` was 0.865 of the bound under ClampToEdge and 0.977 of it under Repeat, so no sample left
 the domain and the `2^-8` term is close to what this adapter uses (that its weights are quantised is inferred from one

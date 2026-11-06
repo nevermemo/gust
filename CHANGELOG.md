@@ -51,9 +51,10 @@ NVIDIA GPU has run a `pixel` kernel and no texture kernel. README, "Stability", 
 
 ### Known limits
 
-- The error bound of a linear texture `sample` assumes a sampler with 8-bit filter weights; Vulkan guarantees only 4
-  `subTexelPrecisionBits` in its core limits and the evidence is one adapter, so the bound can be exceeded, and its
-  test fail, on an adapter with fewer bits (SEMANTICS, section 4).
+- The error bound of a linear texture `sample` assumes a sampler with 8-bit filter weights, rounded to the nearest
+  step; no specification gives that (WebGPU states no number; Vulkan requires `subTexelPrecisionBits` of 4 in core and
+  of 8 for Vulkan 1.4 or Roadmap 2022) and the evidence is one adapter, so the bound can be exceeded, and its test fail,
+  on a device that reports fewer than 8 bits (SEMANTICS, section 4).
 - In the browser (`wasm32`) nothing blocks: a job's `wait`, and so a kernel's `dispatch`, returns `Error::WouldBlock`
   (any work it submitted will run). Submit, then await a readback (`read_typed_buffer_async`, `GpuVec::to_vec_async`).
 - SPIR-V is exported and validated with `spirv-val` when it is on `PATH`, but the runtime executes the WGSL.

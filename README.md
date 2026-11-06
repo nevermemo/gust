@@ -255,8 +255,8 @@ of this.
 The run-time compiler and `cargo gust` look in that cache themselves: `slangc` from the install, then the first one on
 `PATH`, and the helper that `build-helper` wrote, so no environment variable is needed. `GUST_SLANG_HOME` moves the
 cache, and `GUST_SLANG_REFLECT` names another helper. Tools that do not know the cache, such as `cargo xtask` in a
-checkout of this repository, take the first `slangc` on `PATH`; `cargo gust slang locate` prints the folder to put
-there:
+checkout of this repository, take the first `slangc` on `PATH`; `cargo gust slang locate` prints the `slangc`, and its
+folder goes there:
 
 ```sh
 export PATH="<the folder of the slangc that `cargo gust slang locate` prints>:$PATH"
@@ -552,10 +552,11 @@ let mask = device.read_texture(&mask)?;
 ```
 
 `load` and `store` are inside the exact contract; `sample` is not, and its bound is in [SEMANTICS](docs/SEMANTICS.md).
-The linear bound assumes a sampler that quantises the sub-texel position and the filter weights to 8 bits. Vulkan
-guarantees only 4 `subTexelPrecisionBits` as a core requirement and WebGPU states no number, and the evidence is one
-adapter (the RTX 5090), so an adapter with fewer bits can exceed the bound; the test enforces the bound and fails
-there. That is a known limit of 0.1.0.
+The linear bound assumes a sampler that quantises the sub-texel position and the filter weights to 8 bits, rounded to
+the nearest step. No specification gives that: WebGPU states no number, and Vulkan requires `subTexelPrecisionBits` of
+at least 4 in core and of at least 8 of a Vulkan 1.4 or Roadmap 2022 implementation, so the exposure is a device that
+reports fewer than 8 (the value is what the device reports). The evidence is one adapter (the RTX 5090), and an adapter
+that quantises worse can exceed the bound; the test enforces the bound and fails there. That is a known limit of 0.1.0.
 
 A linear sample of an `f32` texture needs the device feature `float32-filterable`, which a native
 `DeviceOptions::default()` requests when the adapter has it and `HeadlessDevice::new()` and the browser do not; without

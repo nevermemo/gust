@@ -26,10 +26,10 @@
 //!   `lerp(lerp(t00, t10, fx), lerp(t01, t11, fx), fy)` in `f32`, in that written order, with
 //!   `lerp(a, b, t) = a + (b - a) * t` per channel.
 //! - **The error domain** of a GPU `sample` against this formula, per channel: `|gpu - twin| <= 2^-8 * (max - min of
-//!   the four texels) + 2 * ulp(max |texel|)` ([`linear_error_bound`]; the fixed-point weights WebGPU allows have at
-//!   least 8 bits, inferred from the specification's filtering text). A nearest read is compared exactly. NaN and
-//!   infinite texels, and coordinates with `|u| > 2^24`, are outside the domain: the twin does not panic there, and
-//!   what it returns is not specified.
+//!   the four texels) + 2 * ulp(max |texel|)` ([`linear_error_bound`]; an assumed 8-bit precision of the weights,
+//!   rounded to the nearest step, which no specification gives: SEMANTICS, section 4). A nearest read is compared
+//!   exactly. NaN and infinite texels, and coordinates with `|u| > 2^24`, are outside the domain: the twin does not
+//!   panic there, and what it returns is not specified.
 //!
 //! `sample` is outside D22's exact contract (a GPU may differ in the weights' precision and in the clamping of the
 //! coordinate); the difference is documented in `docs/SEMANTICS.md` and never chased.
@@ -135,9 +135,10 @@ pub fn ulp(x: f32) -> f32 {
 /// ([`SamplerOptions`] with [`Filter::Linear`]), given the channel of the four texels the read touches:
 /// `2^-8 * (max - min) + 2 * ulp(max |texel|)`.
 ///
-/// The first term is the precision of the weights (WebGPU's filtering allows fixed-point weights of at least 8 bits;
-/// inferred from the specification, to be pinned per adapter as an observation, D52). The second is the rounding of
-/// the interpolation itself. A nearest read has no tolerance: compare it exactly.
+/// The first term is an assumed 8-bit precision of the weights, rounded to the nearest 1/256 step; no specification
+/// gives it (the WebGPU and WGSL specifications state no number of bits, and Vulkan requires `subTexelPrecisionBits` of
+/// 4 in core and 8 of Vulkan 1.4), so a sampler that quantises worse can leave the bound (SEMANTICS, section 4; D52).
+/// The second is the rounding of the interpolation itself. A nearest read has no tolerance: compare it exactly.
 pub fn linear_error_bound(corners: [f32; 4]) -> f32 {
     let mut lowest = corners[0];
     let mut highest = corners[0];

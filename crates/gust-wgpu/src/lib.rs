@@ -1317,8 +1317,9 @@ impl HeadlessDevice {
     /// not available on `wasm32`, where the browser cannot be blocked.
     ///
     /// The device requests wgpu's default limits, the portable ones that a browser always gets, and no optional
-    /// features. [`DeviceOptions::default()`](DeviceOptions) differs on native: it asks for the adapter's own limits
-    /// ([`LimitsPolicy::Adapter`]) and for `float32-filterable` when the adapter offers it, and so does
+    /// features. [`DeviceOptions::default()`](DeviceOptions) differs on native: it raises
+    /// `max_buffer_size`, the storage binding size and the workgroups per dimension to the adapter's own
+    /// ([`LimitsPolicy::Adapter`]) and asks for `float32-filterable` when the adapter offers it, and so does
     /// [`default_device`]. Use [`with_options`](Self::with_options) to get those on a device of your own.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Result<Self, Error> {

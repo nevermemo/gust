@@ -1709,10 +1709,7 @@ fn lying_descriptor(
         .find(|p| p.name == parameter)
         .expect("parameter");
     target.resource_layout = Some(gust::ResourceLayout::storage_v2(layout));
-    gust::KernelDescriptor {
-        parameters: Box::leak(parameters.into_boxed_slice()),
-        ..*kernel
-    }
+    kernel.with_parameters(Box::leak(parameters.into_boxed_slice()))
 }
 
 fn reflection_message(error: Error) -> String {

@@ -29,8 +29,8 @@ use std::{
 
 use gust::{
     Access, Call, GpuPod, Kernel, KernelDescriptor, LengthRule, ParameterDescriptor, ParameterKind,
-    Resource, ResourceBinding, ResourceLayout, Run, SamplerArg, SourceOrigin, TextureAccess,
-    TextureDimension, TextureLayout, TextureUse, TypeLayout,
+    Resource, ResourceBinding, ResourceLayout, Run, SamplerArg, TextureAccess, TextureDimension,
+    TextureLayout, TextureUse, TypeLayout,
     math::{IVec2, IVec4, UVec2, UVec4, Vec2, Vec4},
     pod_slice_as_bytes,
     texture::{
@@ -472,18 +472,14 @@ const fn descriptor(
     parameters: &'static [ParameterDescriptor],
     slang_source: &'static str,
 ) -> KernelDescriptor {
-    KernelDescriptor {
-        module: "texture_tests",
+    KernelDescriptor::new(
+        "texture_tests",
         name,
         entry_point,
-        shape: gust::Shape::Grid,
-        compatible_shapes: &[gust::Shape::Grid],
-        workgroup_size: [64, 1, 1],
+        [64, 1, 1],
         parameters,
         slang_source,
-        source: SourceOrigin::UNKNOWN,
-        artifacts: &[],
-    }
+    )
 }
 
 /// `sample(tex, samp, out)`: `out[i] = tex.SampleLevel(samp, ((i + 0.5) / n, 0.5), 0)`, one output per eighth of the
@@ -517,6 +513,7 @@ void tex_sample(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for Sample {}
 
 /// `load_u(tex, out)`: `out[i] = tex.Load((i % 5, i / 5, 0))` over a 5 x 3 `Texture2D<uint>`.
 struct LoadUint;
@@ -540,6 +537,7 @@ void tex_load_u(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for LoadUint {}
 
 /// `rw(img)`: `img[p] = img[p] * 2 + 1` over a 6 x 2 `r32f` read-write storage texture.
 struct ReadWrite;
@@ -568,6 +566,7 @@ void tex_rw(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for ReadWrite {}
 
 /// `fill(wide, pair)`: two write-only storage textures over an 8 x 4 grid, `rgba32f` and `rg32ui`. Neither format
 /// allows read-write access, so both bind `WriteOnly` (D120).
@@ -602,6 +601,7 @@ void tex_fill(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for Fill {}
 
 /// `two_wide(a, b)`: two write-only `rgba32f` storage textures, so one texture can be bound to both.
 struct TwoWide;
@@ -629,6 +629,7 @@ void tex_two_wide(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for TwoWide {}
 
 /// `load_v(tex, out)`: `out[i] = tex.Load((i % 3, i / 3, 0))` over a 3 x 2 `Texture2D<float4>`.
 struct LoadVec4;
@@ -659,6 +660,7 @@ void tex_load_v(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for LoadVec4 {}
 
 /// `sum_load(a, b, out)`: `out[i] = a.Load((i, 0, 0)) + b.Load((i, 0, 0))` over 4 x 1 `Texture2D<float>`s. The same
 /// texture may be bound to both: two reads do not alias.
@@ -685,6 +687,7 @@ void tex_sum_load(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for SumLoad {}
 
 /// `copy_in(tex, img)`: `img[(i, 0)] = tex.Load((i, 0, 0))`, a sampled and a read-write storage texture of one format.
 struct SampledAndStorage;
@@ -707,6 +710,7 @@ void tex_copy_in(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for SampledAndStorage {}
 
 // ---- sampled textures and the two layout variants ----
 

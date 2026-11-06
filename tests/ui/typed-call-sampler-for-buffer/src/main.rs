@@ -10,7 +10,7 @@ use std::{marker::PhantomData, time::Duration};
 use gust::{
     Access, Arg, Call, Device, GpuPod, Job, JobStatus, Kernel, KernelDescriptor, LengthRule,
     ParameterDescriptor, ParameterKind, Resource, ResourceBinding, Run, SampledCall, SamplerArg,
-    SamplerDevice, Shape, SourceOrigin, TypedDevice,
+    SamplerDevice, TypedDevice,
 };
 
 struct Mock;
@@ -88,14 +88,12 @@ impl<K: Kernel, const N: usize> Run<K, N> for Mock {
 struct Blur;
 
 impl Kernel for Blur {
-    const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-        module: "ui",
-        name: "blur",
-        entry_point: "ui_blur",
-        shape: Shape::Grid,
-        compatible_shapes: &[Shape::Grid],
-        workgroup_size: [64, 1, 1],
-        parameters: &[
+    const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new(
+        "ui",
+        "blur",
+        "ui_blur",
+        [64, 1, 1],
+        &[
             ParameterDescriptor {
                 name: "tex",
                 rust_type: "Texture2D<float>",
@@ -130,11 +128,10 @@ impl Kernel for Blur {
                 }),
             },
         ],
-        slang_source: "",
-        source: SourceOrigin::UNKNOWN,
-        artifacts: &[],
-    };
+        "",
+    );
 }
+impl gust::target::GpuKernel for Blur {}
 
 // The call the macro will generate for it: the texture is a `Texture`-kind resource, the sampler a `SamplerArg` of
 // the same device, the output a `Storage`-kind resource.

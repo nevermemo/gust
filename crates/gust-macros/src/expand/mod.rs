@@ -345,7 +345,9 @@ pub(crate) fn expand_validated(
             }
 
             impl ::gust::Kernel for #original_name {
-                const DESCRIPTOR: ::gust::KernelDescriptor = ::gust::KernelDescriptor {
+                // `KernelDescriptor` is `#[non_exhaustive]`, so the expansion cannot write a literal; the hidden
+                // macro takes the same named fields and builds the descriptor (see its documentation).
+                const DESCRIPTOR: ::gust::KernelDescriptor = ::gust::__gust_descriptor! {
                     module: #module_name,
                     name: stringify!(#original_name),
                     entry_point: #entry_point,
@@ -356,8 +358,16 @@ pub(crate) fn expand_validated(
                     slang_source: #slang_source,
                     source: #source_origin,
                     artifacts: #artifacts,
+                    // The portable body, no required capability and the GPU target: variants (m8.b1) and
+                    // routing (m8.r1) set these per kernel.
+                    variant: "",
+                    requires: &[],
+                    target: ::gust::target::Target::Gpu,
                 };
             }
+
+            // Every kernel the macro builds is a GPU kernel until routing exists (m8.r1 makes this conditional).
+            impl ::gust::target::GpuKernel for #original_name {}
 
             #typed_calls
 

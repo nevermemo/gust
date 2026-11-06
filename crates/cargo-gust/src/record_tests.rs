@@ -126,32 +126,29 @@ const EXPECTED_PARAMETERS: &[ParameterDescriptor] = &[
 
 #[test]
 fn the_rebuilt_descriptor_equals_the_hand_built_one() {
-    let expected = KernelDescriptor {
-        module: "demo",
-        name: "run",
-        entry_point: "gpu_demo_run",
-        shape: gust::Shape::Grid,
-        compatible_shapes: &[gust::Shape::Grid],
-        workgroup_size: [64, 1, 1],
-        parameters: EXPECTED_PARAMETERS,
-        slang_source: SAMPLE_SLANG,
-        source: SourceOrigin {
-            file: "src/lib.rs",
-            lines: &[
-                LineSpan {
-                    slang_start: 3,
-                    slang_end: 9,
-                    rust_line: 12,
-                },
-                LineSpan {
-                    slang_start: 5,
-                    slang_end: 5,
-                    rust_line: 14,
-                },
-            ],
-        },
-        artifacts: &[],
-    };
+    let expected = KernelDescriptor::new(
+        "demo",
+        "run",
+        "gpu_demo_run",
+        [64, 1, 1],
+        EXPECTED_PARAMETERS,
+        SAMPLE_SLANG,
+    )
+    .with_source(SourceOrigin {
+        file: "src/lib.rs",
+        lines: &[
+            LineSpan {
+                slang_start: 3,
+                slang_end: 9,
+                rust_line: 12,
+            },
+            LineSpan {
+                slang_start: 5,
+                slang_end: 5,
+                rust_line: 14,
+            },
+        ],
+    });
     assert_eq!(sample().descriptor(), expected);
 }
 

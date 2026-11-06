@@ -143,10 +143,11 @@
 //! of one is a minor bump of all.
 //!
 //! What a minor bump may change: any item of this crate that is not marked as support surface, including a function's
-//! signature, the fields of the descriptor and layout types (a hand-written `KernelDescriptor` literal then needs the
-//! new field), the variants of an enum that is not `#[non_exhaustive]`, and the Slang that the macro emits. Every
-//! public enum of this crate is `#[non_exhaustive]` except `MatrixLayout` and `Access`, which are closed
-//! sets (and the uninhabited marker types, which have no variants), so a new variant is not a breaking change and a
+//! signature, the fields of the layout types (a hand-written literal then needs the new field; `KernelDescriptor` is
+//! `#[non_exhaustive]` since 0.2.0, so a new field does not break its users, who build one with
+//! `KernelDescriptor::new` and its `with_*` setters), the variants of an enum that is not `#[non_exhaustive]`, and the
+//! Slang that the macro emits. Every public enum of this crate is `#[non_exhaustive]` except `MatrixLayout` and
+//! `Access`, which are closed sets (and the uninhabited marker types, which have no variants), so a new variant is not a breaking change and a
 //! `match` outside this crate needs a wildcard arm; a minor bump may grow `Access` (a write-only access, say). The
 //! formats of the files that `cargo gust` writes ([`artifact`] manifests, records and reflection documents) carry a
 //! schema version, and a reader accepts every schema version that an earlier release wrote.
@@ -162,7 +163,8 @@
 //!   `__no_hook`, the macro `__gust_overflow_checks` behind `overflow_checks!`, and the module `parallel`;
 //! - in `cpu::texture`: `TextureRef`, `TextureMut`, `read`, `write`, `sampler` and `SamplerOwner`;
 //! - in `map`: `MapElement`, `OwnIndex`, `element_count` and `resource`;
-//! - the `*_parameter_count` methods of `KernelDescriptor`;
+//! - the `*_parameter_count` methods of `KernelDescriptor`, and the marker trait `target::GpuKernel` (a hand-written
+//!   `Kernel` implementation that runs on a GPU device adds `impl gust::target::GpuKernel for MyKernel {}`);
 //! - every `__gust_*` name, the `descriptor;` form of `par_for!` (D103), and the `cargo-gust-bridge` feature.
 //!
 //! The `check-*` commands and the evidence tiers of `docs/development/VALIDATION.md` belong to the repository, not to
@@ -176,6 +178,7 @@ extern crate self as gust;
 
 mod abi;
 pub mod artifact;
+pub mod capability;
 pub mod cpu;
 mod descriptor;
 mod dispatch;
@@ -185,10 +188,12 @@ pub mod math;
 #[doc(hidden)]
 pub mod profile;
 pub mod reflect;
+pub mod routes;
 mod runtime;
 pub mod slang;
 #[doc(hidden)]
 pub mod spirv;
+pub mod target;
 pub mod texture;
 #[cfg(feature = "slang-runtime")]
 pub mod toolchain;

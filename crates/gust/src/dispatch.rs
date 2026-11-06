@@ -415,11 +415,7 @@ impl From<(u32, u32, u32)> for Extent {
 /// # }
 /// # struct Probe;
 /// # impl Kernel for Probe {
-/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
-/// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
-/// #     };
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)], "");
 /// # }
 /// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
 /// # where
@@ -465,11 +461,7 @@ impl From<(u32, u32, u32)> for Extent {
 /// # }
 /// # struct Probe;
 /// # impl Kernel for Probe {
-/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
-/// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
-/// #     };
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)], "");
 /// # }
 /// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
 /// # where
@@ -515,11 +507,7 @@ impl From<(u32, u32, u32)> for Extent {
 /// # }
 /// # struct Probe;
 /// # impl Kernel for Probe {
-/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
-/// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
-/// #     };
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)], "");
 /// # }
 /// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
 /// # where
@@ -570,11 +558,7 @@ impl From<(u32, u32, u32)> for Extent {
 /// # }
 /// # struct Probe;
 /// # impl Kernel for Probe {
-/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
-/// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
-/// #     };
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)], "");
 /// # }
 /// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, Dev, Probe, 2>
 /// # where
@@ -620,11 +604,7 @@ impl From<(u32, u32, u32)> for Extent {
 /// # }
 /// # struct Probe;
 /// # impl Kernel for Probe {
-/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
-/// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
-/// #     };
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)], "");
 /// # }
 /// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, Dev, Probe, 2>
 /// # where
@@ -838,11 +818,7 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// # }
     /// # struct Probe;
     /// # impl Kernel for Probe {
-    /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-    /// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
-    /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-    /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
-    /// #     };
+    /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)], "");
     /// # }
     /// # fn build<const N: usize>() -> Call<'static, Dev, Probe, N> {
     /// #     Call::new(1, [(); N])
@@ -876,11 +852,7 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// # }
     /// # struct Probe;
     /// # impl Kernel for Probe {
-    /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-    /// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
-    /// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-    /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
-    /// #     };
+    /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)], "");
     /// # }
     /// # fn build<const N: usize>() -> Call<'static, Dev, Probe, N> {
     /// #     Call::new(1, [(); N])
@@ -915,11 +887,7 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// # }
     /// # struct Probe;
     /// # impl Kernel for Probe {
-    /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-    /// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
-    /// #         parameters: &[p("a", ParameterKind::Storage), p("u", ParameterKind::Uniform)],
-    /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
-    /// #     };
+    /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", ParameterKind::Storage), p("u", ParameterKind::Uniform)], "");
     /// # }
     /// # fn build<const N: usize>() -> Call<'static, Dev, Probe, N> {
     /// #     Call::new(1, [(); N])
@@ -952,11 +920,7 @@ impl<'r, D: TypedDevice + ?Sized, K: Kernel, const N: usize> Call<'r, D, K, N> {
     /// # }
     /// # struct Probe;
     /// # impl Kernel for Probe {
-    /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-    /// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
-    /// #         parameters: &[p("a", ParameterKind::Storage), p("u", ParameterKind::Uniform)],
-    /// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
-    /// #     };
+    /// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", ParameterKind::Storage), p("u", ParameterKind::Uniform)], "");
     /// # }
     /// # fn build<const N: usize>() -> Call<'static, Dev, Probe, N> {
     /// #     Call::new(1, [(); N])
@@ -1076,8 +1040,8 @@ mod tests {
 
     use super::*;
     use crate::{
-        Invocation, Job, JobStatus, ParameterDescriptor, ResourceBinding, ResourceLayout,
-        SourceOrigin, Storage, StorageMut, TypeLayout,
+        Invocation, Job, JobStatus, ParameterDescriptor, ResourceBinding, ResourceLayout, Storage,
+        StorageMut, TypeLayout,
         cpu::{self, CpuDevice, CpuJob, Error as CpuError, FromGlobalId},
     };
 
@@ -1109,18 +1073,7 @@ mod tests {
         name: &'static str,
         parameters: &'static [ParameterDescriptor],
     ) -> KernelDescriptor {
-        KernelDescriptor {
-            module: "typed_tests",
-            name,
-            entry_point: name,
-            shape: crate::Shape::Grid,
-            compatible_shapes: &[crate::Shape::Grid],
-            workgroup_size: [64, 1, 1],
-            parameters,
-            slang_source: "",
-            source: SourceOrigin::UNKNOWN,
-            artifacts: &[],
-        }
+        KernelDescriptor::new("typed_tests", name, name, [64, 1, 1], parameters, "")
     }
 
     /// `scale(id, a: RO, settings: RO, out: RW)`; the invocation parameter is not a binding.

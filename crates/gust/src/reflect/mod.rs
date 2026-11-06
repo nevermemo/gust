@@ -1528,21 +1528,13 @@ mod tests {
         slang_end: 2,
         rust_line: 9,
     }];
-    const KERNEL: KernelDescriptor = KernelDescriptor {
-        module: "m",
-        name: "k",
-        entry_point: "entry",
-        shape: crate::Shape::Grid,
-        compatible_shapes: &[crate::Shape::Grid],
-        workgroup_size: [1, 1, 1],
-        parameters: &[],
-        slang_source: SOURCE,
-        source: SourceOrigin {
-            file: "src/k.rs",
-            lines: LINES,
-        },
-        artifacts: &[],
-    };
+    const KERNEL: KernelDescriptor =
+        KernelDescriptor::new("m", "k", "entry", [1, 1, 1], &[], SOURCE).with_source(
+            SourceOrigin {
+                file: "src/k.rs",
+                lines: LINES,
+            },
+        );
     const ARTIFACT: &[u8] = b"artifact bytes";
 
     /// The CLI reflection path names the matrix layout (the native helper pins the same one).
@@ -1593,7 +1585,7 @@ mod tests {
             (crate::Shape::Grid, "compute"),
             (crate::Shape::Pixel, "fragment"),
         ] {
-            let kernel = KernelDescriptor { shape, ..KERNEL };
+            let kernel = KERNEL.with_shape(shape);
             let command = helper_command(
                 Path::new("helper"),
                 &kernel,
@@ -2014,10 +2006,7 @@ mod tests {
     }
 
     fn kernel_with(parameters: Vec<ParameterDescriptor>) -> KernelDescriptor {
-        KernelDescriptor {
-            parameters: Box::leak(parameters.into_boxed_slice()),
-            ..KERNEL
-        }
+        KERNEL.with_parameters(Box::leak(parameters.into_boxed_slice()))
     }
 
     fn read(json: &str, kernel: &KernelDescriptor) -> Result<CompiledReflection, Error> {
@@ -2853,10 +2842,7 @@ mod tests {
     }
 
     fn pixel_kernel(parameters: Vec<ParameterDescriptor>) -> KernelDescriptor {
-        KernelDescriptor {
-            shape: crate::Shape::Pixel,
-            ..kernel_with(parameters)
-        }
+        kernel_with(parameters).with_shape(crate::Shape::Pixel)
     }
 
     /// A compute kernel with every texture form and a sampler and a buffer: `tex` sampled `float4` at 0, `rw` an

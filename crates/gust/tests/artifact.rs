@@ -200,10 +200,7 @@ fn a_replaced_source_hash_is_a_source_hash_mismatch() {
 
 #[test]
 fn a_renamed_entry_point_is_an_entry_point_mismatch() {
-    let kernel = KernelDescriptor {
-        entry_point: "gpu_vector_add_other",
-        ..DESCRIPTOR
-    };
+    let kernel = DESCRIPTOR.with_entry_point("gpu_vector_add_other");
     let message = identity_error(&kernel, &ARTIFACT);
     assert!(
         message.contains(
@@ -231,10 +228,7 @@ fn a_wrong_target_is_a_target_mismatch() {
 
 #[test]
 fn every_differing_identity_value_is_named() {
-    let kernel = KernelDescriptor {
-        entry_point: "gpu_vector_add_other",
-        ..DESCRIPTOR
-    };
+    let kernel = DESCRIPTOR.with_entry_point("gpu_vector_add_other");
     let message = identity_error(
         &kernel,
         &Artifact {
@@ -252,10 +246,7 @@ fn every_differing_identity_value_is_named() {
 fn with_parameter(index: usize, change: impl Fn(&mut ParameterDescriptor)) -> KernelDescriptor {
     let mut parameters = DESCRIPTOR.parameters.to_vec();
     change(&mut parameters[index]);
-    KernelDescriptor {
-        parameters: Box::leak(parameters.into_boxed_slice()),
-        ..DESCRIPTOR
-    }
+    DESCRIPTOR.with_parameters(Box::leak(parameters.into_boxed_slice()))
 }
 
 #[test]
@@ -319,10 +310,7 @@ fn a_changed_descriptor_element_size_is_a_mismatch() {
 
 #[test]
 fn a_changed_workgroup_size_is_a_mismatch() {
-    let kernel = KernelDescriptor {
-        workgroup_size: [32, 1, 1],
-        ..DESCRIPTOR
-    };
+    let kernel = DESCRIPTOR.with_workgroup_size([32, 1, 1]);
     assert_eq!(
         mismatch(&kernel, &ARTIFACT),
         "compute workgroup dimensions differ"
@@ -331,10 +319,7 @@ fn a_changed_workgroup_size_is_a_mismatch() {
 
 #[test]
 fn a_descriptor_with_artifacts_keeps_them() {
-    let with = KernelDescriptor {
-        artifacts: &[ARTIFACT],
-        ..DESCRIPTOR
-    };
+    let with = DESCRIPTOR.with_artifacts(&[ARTIFACT]);
     assert_ne!(with, DESCRIPTOR);
     assert!(
         DESCRIPTOR.artifacts.is_empty(),

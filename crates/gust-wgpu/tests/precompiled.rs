@@ -45,10 +45,7 @@ const ARTIFACT: Artifact = Artifact {
 };
 
 /// The macro's descriptor of the kernel plus the artifact.
-const PRE: KernelDescriptor = KernelDescriptor {
-    artifacts: &[ARTIFACT],
-    ..vector_add::add::DESCRIPTOR
-};
+const PRE: KernelDescriptor = vector_add::add::DESCRIPTOR.with_artifacts(&[ARTIFACT]);
 
 const COUNT: usize = 1000;
 
@@ -58,10 +55,7 @@ fn device() -> HeadlessDevice {
 
 /// A descriptor equal to [`PRE`] in every field but the artifact.
 fn with_artifact(artifact: Artifact) -> KernelDescriptor {
-    KernelDescriptor {
-        artifacts: Box::leak(Box::new([artifact])),
-        ..PRE
-    }
+    PRE.with_artifacts(Box::leak(Box::new([artifact])))
 }
 
 fn leaked_bytes(bytes: Vec<u8>) -> &'static [u8] {
@@ -177,10 +171,7 @@ fn a_mutated_artifact_is_the_identity_error_and_never_a_fallback_compile() {
     let message = identity_message(run(&device, &truncated).expect_err("a truncated artifact"));
     assert!(message.contains("artifact hash"), "{message}");
 
-    let drifted = KernelDescriptor {
-        slang_source: leaked_str(format!("{}\n// drift\n", PRE.slang_source)),
-        ..PRE
-    };
+    let drifted = PRE.with_slang_source(leaked_str(format!("{}\n// drift\n", PRE.slang_source)));
     let message = identity_message(run(&device, &drifted).expect_err("descriptor drift"));
     assert!(message.contains("source hash"), "{message}");
 

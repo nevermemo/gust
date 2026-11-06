@@ -20,3 +20,7 @@ proc-macro = true
 proc-macro2.workspace = true
 quote.workspace = true
 syn.workspace = true
+# The reader of the crate's `[package.metadata.gust]` tables (M8, D137; read by m8.a, unused until then). `cargo
+# publish` rewrites a manifest, so a dependent's tables arrive as headers and literal strings that a hand-written
+# subset would refuse; `de::DeTable` keeps the spans for GUST-E0753. No serde: only `std` and `parse`.
+toml = { version = "1", default-features = false, features = ["std", "parse"] }

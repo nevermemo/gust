@@ -1210,10 +1210,8 @@ fn a_changed_descriptor_offset_names_the_kernel_and_the_field() {
     mass.offset = 20;
     layout.element.kind = TypeLayoutKind::Struct(Box::leak(fields.into_boxed_slice()));
     bodies.resource_layout = Some(layout);
-    let mutated = KernelDescriptor {
-        parameters: Box::leak(parameters.into_boxed_slice()),
-        ..control::run::DESCRIPTOR
-    };
+    let mutated =
+        control::run::DESCRIPTOR.with_parameters(Box::leak(parameters.into_boxed_slice()));
     let findings = control_findings(CONTROL_WGSL, &mutated);
     assert_eq!(
         findings,

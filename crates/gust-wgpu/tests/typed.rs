@@ -13,7 +13,6 @@ include!("../../../tests/fixtures/semantics.rs");
 use gust::{
     Access, Arg, Call, Extent, GpuPod, Independent, Kernel, KernelDescriptor, LengthRule,
     ParameterDescriptor, ParameterKind, Resource, ResourceBinding, ResourceLayout, Run,
-    SourceOrigin,
 };
 use gust_wgpu::{
     BufferBinding, BufferDispatch, Error, F32Binding, GpuBuffer, GpuBufferAccess, HeadlessDevice,
@@ -39,18 +38,14 @@ const fn descriptor(
     parameters: &'static [ParameterDescriptor],
     slang_source: &'static str,
 ) -> KernelDescriptor {
-    KernelDescriptor {
-        module: "typed_tests",
+    KernelDescriptor::new(
+        "typed_tests",
         name,
         entry_point,
-        shape: gust::Shape::Grid,
-        compatible_shapes: &[gust::Shape::Grid],
-        workgroup_size: [64, 1, 1],
+        [64, 1, 1],
         parameters,
         slang_source,
-        source: SourceOrigin::UNKNOWN,
-        artifacts: &[],
-    }
+    )
 }
 
 /// `sum2(a: RO, b: RO, total: RW)`: `total[i] = a[i] + b[i]`.
@@ -77,6 +72,7 @@ void typed_sum2(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for Sum2 {}
 
 /// `add_one(src: RO, dst: RW)`: `dst[i] = src[i] + 1`.
 struct AddOne;
@@ -100,6 +96,7 @@ void typed_add_one(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for AddOne {}
 
 /// `accumulate(acc: RW, src: RO)`: `acc[i] += src[i]` (the read-write parameter comes first).
 struct Accumulate;
@@ -123,6 +120,7 @@ void typed_accumulate(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for Accumulate {}
 
 /// `fill(x: RW, y: RW)`: `x[i] = 1`, `y[i] = 2`.
 struct Fill;
@@ -146,6 +144,7 @@ void typed_fill(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for Fill {}
 
 /// `scale(a: RO, settings: RO, scaled: RW)`: `scaled[i] = a[i] * settings[0]`; `settings` is one element.
 struct Scale;
@@ -172,6 +171,7 @@ void typed_scale(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for Scale {}
 
 /// One read-write parameter at a sparse binding index: `p[0] = 17`.
 macro_rules! sparse_kernel {
@@ -193,6 +193,7 @@ macro_rules! sparse_kernel {
                 ),
             );
         }
+        impl gust::target::GpuKernel for $kernel {}
     };
 }
 
@@ -220,6 +221,7 @@ impl Kernel for Sparse1000U32 {
         "[[vk::binding(1000, 0)]] RWStructuredBuffer<uint> p;\n[shader(\"compute\")] [numthreads(64, 1, 1)]\nvoid typed_sparse1000_u32(uint3 id : SV_DispatchThreadID) { if (id.x == 0) { p[0] = 17u; } }\n",
     );
 }
+impl gust::target::GpuKernel for Sparse1000U32 {}
 
 /// A generated-form `call` function for a kernel whose parameters are all `f32` storage.
 macro_rules! f32_call {
@@ -1005,6 +1007,7 @@ void typed_shade(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for Shade {}
 
 /// A padding-free `Std140V1` struct: a `Vec4` then four `f32`, size 32, alignment 16.
 #[derive(Clone, Copy)]
@@ -1107,6 +1110,7 @@ void typed_unpack(uint3 id : SV_DispatchThreadID)
 "#,
     );
 }
+impl gust::target::GpuKernel for Unpack {}
 
 /// The `Shade` kernel with its uniform labelled `StorageV2`: valid for the element but not for a constant buffer.
 struct ShadeStorageRule;
@@ -1125,6 +1129,7 @@ impl Kernel for ShadeStorageRule {
         Shade::DESCRIPTOR.slang_source,
     );
 }
+impl gust::target::GpuKernel for ShadeStorageRule {}
 
 fn shade_call<'r, R0, R1, R2>(
     __gust_element_count: u32,

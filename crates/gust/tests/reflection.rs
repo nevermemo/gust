@@ -520,10 +520,7 @@ fn the_layout_cross_check_passes_on_renamed_names_and_fails_on_the_rust_spelling
         // Mutation 2: a descriptor parameter with the Rust spelling finds no compiler binding.
         let mut parameters = kernel.parameters.to_vec();
         parameters[1].name = "operator";
-        let respelled = gust::KernelDescriptor {
-            parameters: Box::leak(parameters.into_boxed_slice()),
-            ..kernel
-        };
+        let respelled = kernel.with_parameters(Box::leak(parameters.into_boxed_slice()));
         let error = compiled
             .reflection
             .cross_check_kernel(&respelled)
@@ -738,7 +735,7 @@ mod schema_three {
     use gust::{
         Access, Artifact, Format as ArtifactFormat, GpuPod, KernelDescriptor, ParameterDescriptor,
         ParameterKind, ReflectedTypeKind, ResourceBinding, ResourceLayout, ScalarKind, Shape,
-        SourceOrigin, TextureAccess, TextureDimension, TextureLayout, TypeLayout,
+        TextureAccess, TextureDimension, TextureLayout, TypeLayout,
         artifact::{Verified, verify_artifact},
         math::{UVec2, UVec4, Vec4},
         reflect::{Error, Stage, compile_reflected},
@@ -835,18 +832,15 @@ mod schema_three {
         slang_source: &'static str,
         parameters: Vec<ParameterDescriptor>,
     ) -> KernelDescriptor {
-        KernelDescriptor {
-            module: "m",
-            name: "k",
+        KernelDescriptor::new(
+            "m",
+            "k",
             entry_point,
-            shape,
-            compatible_shapes: &[Shape::Grid],
-            workgroup_size: [8, 8, 1],
-            parameters: Box::leak(parameters.into_boxed_slice()),
+            [8, 8, 1],
+            Box::leak(parameters.into_boxed_slice()),
             slang_source,
-            source: SourceOrigin::UNKNOWN,
-            artifacts: &[],
-        }
+        )
+        .with_shape(shape)
     }
 
     /// `kernel` with the parameter at `index` changed by `edit`.
@@ -857,10 +851,7 @@ mod schema_three {
     ) -> KernelDescriptor {
         let mut parameters = kernel.parameters.to_vec();
         edit(&mut parameters[index]);
-        KernelDescriptor {
-            parameters: Box::leak(parameters.into_boxed_slice()),
-            ..*kernel
-        }
+        kernel.with_parameters(Box::leak(parameters.into_boxed_slice()))
     }
 
     /// `kernel` with the parameter at `index` given the texture layout `layout` over `element`.
@@ -1036,35 +1027,26 @@ mod schema_three {
     fn native_output_against_a_tampered_descriptor_is_a_mismatch_naming_the_field() {
         let compute = compute_kernel();
         let fragment = fragment_kernel();
-        let swapped_outputs = KernelDescriptor {
-            parameters: Box::leak(
-                vec![
-                    fragment.parameters[0],
-                    fragment.parameters[1],
-                    fragment.parameters[3],
-                    fragment.parameters[2],
-                ]
-                .into_boxed_slice(),
-            ),
-            ..fragment
-        };
+        let swapped_outputs = fragment.with_parameters(Box::leak(
+            vec![
+                fragment.parameters[0],
+                fragment.parameters[1],
+                fragment.parameters[3],
+                fragment.parameters[2],
+            ]
+            .into_boxed_slice(),
+        ));
         let cases: Vec<(&str, KernelDescriptor, KernelDescriptor, &str)> = vec![
             (
                 "a compute reflection against a pixel descriptor",
                 compute,
-                KernelDescriptor {
-                    shape: Shape::Pixel,
-                    ..compute
-                },
+                compute.with_shape(Shape::Pixel),
                 "stage: host fragment, compiler compute",
             ),
             (
                 "a fragment reflection against a grid descriptor",
                 fragment,
-                KernelDescriptor {
-                    shape: Shape::Grid,
-                    ..fragment
-                },
+                fragment.with_shape(Shape::Grid),
                 "stage: host compute, compiler fragment",
             ),
             (
@@ -1084,10 +1066,7 @@ mod schema_three {
             (
                 "a target dropped",
                 fragment,
-                KernelDescriptor {
-                    parameters: &fragment.parameters[..3],
-                    ..fragment
-                },
+                fragment.with_parameters(&fragment.parameters[..3]),
                 "targets: host 1 outputs, compiler 2",
             ),
             (
@@ -1222,19 +1201,17 @@ mod schema_three {
     fn pixel_kernel(source: &'static str) -> KernelDescriptor {
         // The descriptor of a `pixel` kernel carries a workgroup size of one (the field exists for every kernel); the
         // fragment document has none, and a compute program of the same size agrees with it.
-        KernelDescriptor {
-            workgroup_size: [1, 1, 1],
-            ..kernel(
-                Shape::Pixel,
-                "main",
-                source,
-                vec![
-                    input("input", F32, 0),
-                    buffer("scaled", F32, 1),
-                    buffer("flags", U32, 2),
-                ],
-            )
-        }
+        kernel(
+            Shape::Pixel,
+            "main",
+            source,
+            vec![
+                input("input", F32, 0),
+                buffer("scaled", F32, 1),
+                buffer("flags", U32, 2),
+            ],
+        )
+        .with_workgroup_size([1, 1, 1])
     }
 
     #[test]
@@ -1267,10 +1244,7 @@ mod schema_three {
     #[test]
     fn a_pixel_kernel_against_a_tampered_descriptor_or_program_is_a_mismatch_naming_the_field() {
         let pixel = pixel_kernel(PIXEL);
-        let compute_program = KernelDescriptor {
-            shape: Shape::Grid,
-            ..pixel_kernel(PIXEL_AS_COMPUTE)
-        };
+        let compute_program = pixel_kernel(PIXEL_AS_COMPUTE).with_shape(Shape::Grid);
         let target_program = pixel_kernel(PIXEL_WITH_A_TARGET);
         // Which document each case reads: the pixel program, the compute one, or the one with a colour target.
         enum Document {
@@ -1288,10 +1262,7 @@ mod schema_three {
             (
                 "a fragment document against a grid descriptor",
                 Document::Pixel,
-                KernelDescriptor {
-                    shape: Shape::Grid,
-                    ..pixel
-                },
+                pixel.with_shape(Shape::Grid),
                 "stage: host compute, compiler fragment",
             ),
             (
@@ -1321,10 +1292,7 @@ mod schema_three {
             (
                 "an output missing from the descriptor",
                 Document::Pixel,
-                KernelDescriptor {
-                    parameters: &pixel.parameters[..2],
-                    ..pixel
-                },
+                pixel.with_parameters(&pixel.parameters[..2]),
                 "unexpected compiler resource bindings",
             ),
             (
@@ -1383,25 +1351,19 @@ mod schema_three {
                 .position(|parameter| parameter.name == name)
                 .unwrap_or_else(|| panic!("no parameter {name}"))
         };
-        let without_flags = KernelDescriptor {
-            parameters: Box::leak(
-                shade
-                    .parameters
-                    .iter()
-                    .filter(|parameter| parameter.name != "flags")
-                    .copied()
-                    .collect::<Vec<_>>()
-                    .into_boxed_slice(),
-            ),
-            ..shade
-        };
+        let without_flags = shade.with_parameters(Box::leak(
+            shade
+                .parameters
+                .iter()
+                .filter(|parameter| parameter.name != "flags")
+                .copied()
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ));
         let cases: Vec<(&str, KernelDescriptor, &str)> = vec![
             (
                 "the fragment document against a grid descriptor",
-                KernelDescriptor {
-                    shape: Shape::Grid,
-                    ..shade
-                },
+                shade.with_shape(Shape::Grid),
                 "stage: host compute, compiler fragment",
             ),
             (
@@ -1478,10 +1440,7 @@ mod schema_three {
         bytes: &'static [u8],
     ) -> Result<Verified, Error> {
         let reflection: &'static str = Box::leak(fixture(name).into_boxed_str());
-        let descriptor = KernelDescriptor {
-            slang_source: SOURCE,
-            ..*descriptor
-        };
+        let descriptor = descriptor.with_slang_source(SOURCE);
         verify_artifact(
             &descriptor,
             &Artifact {
@@ -1524,10 +1483,7 @@ mod schema_three {
             message(verify("sampled_float4.wgsl.json", &uint).unwrap_err()),
             "tex.class: host u32, compiler f32"
         );
-        let pixel = KernelDescriptor {
-            shape: Shape::Pixel,
-            ..float
-        };
+        let pixel = float.with_shape(Shape::Pixel);
         assert_eq!(
             message(verify("sampled_float4.wgsl.json", &pixel).unwrap_err()),
             "stage: host fragment, compiler compute"
@@ -1678,10 +1634,7 @@ mod schema_three {
         for (what, tampered, expected) in [
             (
                 "the stage",
-                KernelDescriptor {
-                    shape: Shape::Grid,
-                    ..fragment
-                },
+                fragment.with_shape(Shape::Grid),
                 "stage: host compute, compiler fragment",
             ),
             (
@@ -1698,10 +1651,7 @@ mod schema_three {
             ),
             (
                 "a target dropped",
-                KernelDescriptor {
-                    parameters: &fragment.parameters[..2],
-                    ..fragment
-                },
+                fragment.with_parameters(&fragment.parameters[..2]),
                 "targets: host 0 outputs, compiler 1",
             ),
         ] {

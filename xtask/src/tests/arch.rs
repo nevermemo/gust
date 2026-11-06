@@ -277,7 +277,7 @@ fn a_new_dependency_names_d02_and_decisions() {
         problems[0]
     );
     assert!(
-        problems[0].contains("allow-list (proc-macro2, quote, syn)"),
+        problems[0].contains("allow-list (proc-macro2, quote, syn, toml)"),
         "{}",
         problems[0]
     );

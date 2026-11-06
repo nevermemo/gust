@@ -915,12 +915,9 @@ impl<'call, 'resources: 'call, 'sampler: 'call, K: Kernel, const N: usize, const
 /// # }
 /// # struct Probe;
 /// # impl Kernel for Probe {
-/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
-/// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
-/// #     };
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)], "");
 /// # }
+/// # impl gust::target::GpuKernel for Probe {}
 /// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
 /// # where
 /// #     R0: Resource<Element = f32> + 'r,
@@ -943,12 +940,9 @@ impl<'call, 'resources: 'call, 'sampler: 'call, K: Kernel, const N: usize, const
 /// # }
 /// # struct Probe;
 /// # impl Kernel for Probe {
-/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
-/// #         parameters: &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)],
-/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
-/// #     };
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly), p("b", Access::ReadWrite)], "");
 /// # }
+/// # impl gust::target::GpuKernel for Probe {}
 /// # fn call<'r, R0, R1>(n: u32, a: impl Into<Arg<'r, R0>>, b: impl Into<Arg<'r, R1>>) -> Call<'r, R0::Device, Probe, 2>
 /// # where
 /// #     R0: Resource<Element = f32> + 'r,
@@ -992,12 +986,9 @@ impl<T: GpuPod> Resource for GpuBuffer<T> {
 /// # }
 /// # struct Probe;
 /// # impl Kernel for Probe {
-/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
-/// #         parameters: &[p("a", Access::ReadOnly)],
-/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
-/// #     };
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly)], "");
 /// # }
+/// # impl gust::target::GpuKernel for Probe {}
 /// # fn call<'r, R0>(n: u32, a: impl Into<Arg<'r, R0>>) -> Call<'r, R0::Device, Probe, 1>
 /// # where
 /// #     R0: Resource<Element = f32, Kind = kind::Storage> + 'r,
@@ -1019,12 +1010,9 @@ impl<T: GpuPod> Resource for GpuBuffer<T> {
 /// # }
 /// # struct Probe;
 /// # impl Kernel for Probe {
-/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-/// #         module: "m", name: "probe", entry_point: "m_probe", shape: gust::Shape::Grid, compatible_shapes: &[gust::Shape::Grid], workgroup_size: [1, 1, 1],
-/// #         parameters: &[p("a", Access::ReadOnly)],
-/// #         slang_source: "", source: SourceOrigin::UNKNOWN, artifacts: &[],
-/// #     };
+/// #     const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new("m", "probe", "m_probe", [1, 1, 1], &[p("a", Access::ReadOnly)], "");
 /// # }
+/// # impl gust::target::GpuKernel for Probe {}
 /// # fn call<'r, R0>(n: u32, a: impl Into<Arg<'r, R0>>) -> Call<'r, R0::Device, Probe, 1>
 /// # where
 /// #     R0: Resource<Element = f32, Kind = kind::Storage> + 'r,
@@ -3397,10 +3385,7 @@ mod tests {
 
     #[test]
     fn a_kernel_with_a_wgsl_artifact_uses_it_with_or_without_the_run_time_compiler() {
-        let kernel = KernelDescriptor {
-            artifacts: &[WGSL_ARTIFACT],
-            ..DESCRIPTOR
-        };
+        let kernel = DESCRIPTOR.with_artifacts(&[WGSL_ARTIFACT]);
         for run_time_compiler in [false, true] {
             let Ok(ShaderSource::Precompiled(artifact)) =
                 select_shader_source(&kernel, run_time_compiler)
@@ -3424,13 +3409,10 @@ mod tests {
     fn a_kernel_without_an_artifact_in_a_build_without_the_compiler_is_no_artifact() {
         // The `slang-runtime` feature is always on in tests (the self dev-dependency), so this is the one place the
         // off-state policy runs: through the argument that stands for the feature.
-        let spirv_only = KernelDescriptor {
-            artifacts: &[gust::Artifact {
-                format: gust::Format::Spirv,
-                ..WGSL_ARTIFACT
-            }],
-            ..DESCRIPTOR
-        };
+        let spirv_only = DESCRIPTOR.with_artifacts(&[gust::Artifact {
+            format: gust::Format::Spirv,
+            ..WGSL_ARTIFACT
+        }]);
         for kernel in [&DESCRIPTOR, &spirv_only] {
             let error = select_shader_source(kernel, false)
                 .expect_err("no WGSL artifact and no compiler is an error, not a fallback");
@@ -3462,23 +3444,19 @@ mod tests {
         }),
     }];
 
-    const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-        module: "test",
-        name: "kernel",
-        entry_point: "gpu_test_kernel",
-        shape: gust::Shape::Grid,
-        compatible_shapes: &[gust::Shape::Grid],
-        workgroup_size: [64, 1, 1],
-        parameters: PARAMETERS,
-        slang_source: r#"
+    const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new(
+        "test",
+        "kernel",
+        "gpu_test_kernel",
+        [64, 1, 1],
+        PARAMETERS,
+        r#"
             [[vk::binding(0, 0)]] RWStructuredBuffer<float> out;
             [shader("compute")]
             [numthreads(64, 1, 1)]
             void gpu_test_kernel(uint3 id : SV_DispatchThreadID) { if (id.x < 1) out[id.x] = 0.0; }
         "#,
-        source: gust::SourceOrigin::UNKNOWN,
-        artifacts: &[],
-    };
+    );
 
     fn no_adapter() -> Error {
         Error::NoAdapter("loader failed".to_string())
@@ -3666,10 +3644,7 @@ mod tests {
 
     #[test]
     fn pipeline_cache_identity_includes_entrypoint() {
-        let other = KernelDescriptor {
-            entry_point: "gpu_other_entry",
-            ..DESCRIPTOR
-        };
+        let other = DESCRIPTOR.with_entry_point("gpu_other_entry");
         assert_ne!(
             KernelCacheKey::new(&DESCRIPTOR),
             KernelCacheKey::new(&other)
@@ -3689,13 +3664,10 @@ mod tests {
             slang_end: 3,
             rust_line: 9,
         }];
-        let located = KernelDescriptor {
-            source: gust::SourceOrigin {
-                file: "crates/demo/src/lib.rs",
-                lines: LINES,
-            },
-            ..DESCRIPTOR
-        };
+        let located = DESCRIPTOR.with_source(gust::SourceOrigin {
+            file: "crates/demo/src/lib.rs",
+            lines: LINES,
+        });
         assert_ne!(located.source, DESCRIPTOR.source);
         assert_eq!(
             KernelCacheKey::new(&DESCRIPTOR),
@@ -3721,11 +3693,7 @@ mod tests {
             ("first", 11.0),
             ("second", 22.0),
         ] {
-            let descriptor = KernelDescriptor {
-                entry_point: entry,
-                slang_source: SOURCE,
-                ..DESCRIPTOR
-            };
+            let descriptor = DESCRIPTOR.with_entry_point(entry).with_slang_source(SOURCE);
             device
                 .dispatch_buffers(&descriptor, 1, &[BufferBinding::read_write(&buffer)])
                 .unwrap();
@@ -3771,10 +3739,7 @@ mod tests {
             resource_layout: Some(ResourceLayout::storage_v1(<u32 as GpuPod>::LAYOUT)),
             ..PARAMETERS[0]
         }]));
-        let descriptor = KernelDescriptor {
-            parameters,
-            ..DESCRIPTOR
-        };
+        let descriptor = DESCRIPTOR.with_parameters(parameters);
         assert!(matches!(
             validate_dispatch(&descriptor, 0, &[F32Binding::ReadWrite(&[])]),
             Err(Error::UnsupportedResourceLayout { parameter, .. }) if parameter == "out"
@@ -3814,10 +3779,7 @@ mod tests {
                 "pass.dispatch_workgroups(extent[0].div_ceil(8), extent[1].div_ceil(1), extent[2].div_ceil(2));",
             ),
         ] {
-            let descriptor = KernelDescriptor {
-                workgroup_size: size,
-                ..DESCRIPTOR
-            };
+            let descriptor = DESCRIPTOR.with_workgroup_size(size);
             let source = render_wgpu_source(&descriptor).expect("source should render");
             assert!(
                 source.contains("        extent: [u32; 3],"),
@@ -3827,10 +3789,7 @@ mod tests {
             assert!(!source.contains("element_count"), "{size:?}: {source}");
         }
         // A zero axis is refused, as for every dispatch.
-        let flat = KernelDescriptor {
-            workgroup_size: [16, 0, 1],
-            ..DESCRIPTOR
-        };
+        let flat = DESCRIPTOR.with_workgroup_size([16, 0, 1]);
         assert!(matches!(
             render_wgpu_source(&flat),
             Err(Error::UnsupportedWorkgroupSize([16, 0, 1]))
@@ -4083,21 +4042,16 @@ mod tests {
             resource_layout: Some(resource_layout),
             ..PARAMETERS[0]
         }]));
-        KernelDescriptor {
-            parameters,
-            ..DESCRIPTOR
-        }
+        DESCRIPTOR.with_parameters(parameters)
     }
 
     /// Slice mx.p1b: a `pixel` kernel is valid (it runs as a render pass); the callers that only know compute passes
     /// refuse it with a typed error before any compile or pipeline (no device is involved), not a wgpu panic.
     #[test]
     fn a_pixel_kernel_is_valid_and_the_compute_only_callers_refuse_it_by_name() {
-        let pixel = KernelDescriptor {
-            shape: Shape::Pixel,
-            compatible_shapes: &[Shape::Pixel],
-            ..descriptor_with(ResourceLayout::storage_v1(<f32 as GpuPod>::LAYOUT))
-        };
+        let pixel = descriptor_with(ResourceLayout::storage_v1(<f32 as GpuPod>::LAYOUT))
+            .with_shape(Shape::Pixel)
+            .with_compatible_shapes(&[Shape::Pixel]);
         assert!(validate_kernel(&pixel).is_ok());
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -4132,11 +4086,9 @@ mod tests {
 
     #[test]
     fn a_pixel_call_over_more_than_one_dimension_is_refused_before_any_binding_is_looked_at() {
-        let pixel = KernelDescriptor {
-            shape: Shape::Pixel,
-            compatible_shapes: &[Shape::Pixel],
-            ..descriptor_with(ResourceLayout::storage_v1(<f32 as GpuPod>::LAYOUT))
-        };
+        let pixel = descriptor_with(ResourceLayout::storage_v1(<f32 as GpuPod>::LAYOUT))
+            .with_shape(Shape::Pixel)
+            .with_compatible_shapes(&[Shape::Pixel]);
         for extent in [Extent::new(4, 2, 1), Extent::new(4, 1, 2)] {
             let error = validate_dispatch_extent(0, false, &pixel, extent, &[], &[]).unwrap_err();
             assert!(
@@ -4231,10 +4183,7 @@ mod tests {
                 binding: 0,
             }),
         }]));
-        KernelDescriptor {
-            parameters,
-            ..DESCRIPTOR
-        }
+        DESCRIPTOR.with_parameters(parameters)
     }
 
     #[test]
@@ -4279,10 +4228,7 @@ mod tests {
             kind: ParameterKind::Value,
             ..PARAMETERS[0]
         }]));
-        let descriptor = KernelDescriptor {
-            parameters,
-            ..DESCRIPTOR
-        };
+        let descriptor = DESCRIPTOR.with_parameters(parameters);
         assert!(matches!(
             validate_kernel(&descriptor),
             Err(Error::UnsupportedParameter { name, kind: ParameterKind::Value }) if name == "out"
@@ -4526,10 +4472,7 @@ mod tests {
     }
 
     /// A 16 x 16 kernel for the multi-dimensional unit tests below.
-    const TILE: KernelDescriptor = KernelDescriptor {
-        workgroup_size: [16, 16, 1],
-        ..DESCRIPTOR
-    };
+    const TILE: KernelDescriptor = DESCRIPTOR.with_workgroup_size([16, 16, 1]);
 
     #[test]
     fn workgroup_counts_round_every_axis_and_name_the_axis_that_is_over_the_limit() {
@@ -4642,10 +4585,7 @@ mod tests {
     #[test]
     fn kernel_limits_check_the_y_and_z_sizes_and_the_checked_product() {
         let limits = wgpu::Limits::default();
-        let kernel = |size| KernelDescriptor {
-            workgroup_size: size,
-            ..DESCRIPTOR
-        };
+        let kernel = |size| DESCRIPTOR.with_workgroup_size(size);
         let check = |limits: &wgpu::Limits, size| {
             check_kernel_limits(limits, &kernel(size), 1, 0, TextureCounts::NONE)
         };

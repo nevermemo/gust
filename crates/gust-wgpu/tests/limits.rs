@@ -89,18 +89,14 @@ fn kernel_sized(element: Element, size: [u32; 3], count: usize) -> KernelDescrip
         size[2],
         element.literal()
     ));
-    KernelDescriptor {
-        module: "limits_test",
-        name: "k",
-        entry_point: "probe_k",
-        shape: gust::Shape::Grid,
-        compatible_shapes: &[gust::Shape::Grid],
-        workgroup_size: size,
-        parameters: Box::leak(parameters.into_boxed_slice()),
-        slang_source: Box::leak(source.into_boxed_str()),
-        source: gust::SourceOrigin::UNKNOWN,
-        artifacts: &[],
-    }
+    KernelDescriptor::new(
+        "limits_test",
+        "k",
+        "probe_k",
+        size,
+        Box::leak(parameters.into_boxed_slice()),
+        Box::leak(source.into_boxed_str()),
+    )
 }
 
 fn device() -> HeadlessDevice {

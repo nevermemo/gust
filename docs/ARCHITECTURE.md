@@ -506,6 +506,23 @@ metadata. The same holds for `artifacts` (M4, D45): a hand-written literal adds 
 derived equality compares it. The macro fills it with the embedded artifact pair of each kernel whose
 `gust-artifacts/` files exist (m4.c), and with `&[]` for a kernel that has none.
 
+The descriptor in 0.2.0 (M8, m8.d, D137, D145). `KernelDescriptor` is `#[non_exhaustive]`, so a later field is not a
+breaking change again, and it gains `variant` (the portable body is `""`), `requires` (a `&[gust::capability::Capability]`,
+empty for the portable body) and `target` (a `gust::target::Target`, `Gpu` or `Cpu`). A hand-written literal no longer
+compiles outside `gust`: `KernelDescriptor::new(module, name, entry_point, workgroup_size, parameters, slang_source)`
+sets `Shape::Grid`, `compatible_shapes = &[Shape::Grid]`, `SourceOrigin::UNKNOWN`, no artifacts, the portable variant, no
+capability and `Target::Gpu`, and a `const fn with_*` setter changes each field (`BASE.with_shape(..)` replaces the
+struct-update form). The macro writes the hidden `gust::__gust_descriptor! { module: .., name: .., .. }`, which takes every field by name
+and calls the hidden `KernelDescriptor::__gust_descriptor(..)`, so a field added later is a compile error in the
+macro's output until the macro sets it (the macro binds each slice to a constant first, because the `'static` borrow
+of a function argument is promoted only when the array is a constant expression, which a parameter's layout block is not). The macro also implements the hidden
+marker `gust::target::GpuKernel` for every kernel it builds; the GPU runtime will bound its typed entry points on it (m8.w1)
+so that a kernel routed to the CPU (m8.r1) is an `E0277` at the call site, and a hand-written `Kernel` implementation that
+runs on a GPU device adds `impl gust::target::GpuKernel for MyKernel {}`. `gust::routes::variable_name` is the one mapping
+from a crate and a route tag to the variable `GUST_ROUTE__<crate>__<tag>`. Until m8.b1 and m8.r1 the macro sets `""`,
+`&[]` and `Target::Gpu` on every descriptor, and no record or manifest byte changes. `gust-compute-macros` declares
+the `toml` crate (1.x, `std` and `parse` only) for the reader of `[package.metadata.gust]` that m8.a adds; nothing uses it yet.
+
 ## Struct ABI
 
 The runtime still needs a concrete agreement for uploading Rust values. Annotated

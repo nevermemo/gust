@@ -63,8 +63,8 @@ pub struct KernelDescriptor {
     pub source: SourceOrigin,
     /// Precompiled artifacts of this kernel. Each is checked against the descriptor by
     /// [`verify_artifact`](crate::artifact::verify_artifact); the backend that uses them
-    /// calls it before use (`gust-wgpu`, slice m4.e1). The macro embeds the pair `gust-artifacts/<key>.wgsl` and
-    /// `<key>.wgsl.reflection.json` of the kernel crate when both exist, and emits an empty slice otherwise.
+    /// calls it before use (`gust-compute-wgpu`, slice m4.e1). The macro embeds the pair `gust-artifacts/<key>.wgsl`
+    /// and `<key>.wgsl.reflection.json` of the kernel crate when both exist, and emits an empty slice otherwise.
     /// Like `source`, a hand-written `KernelDescriptor { .. }` literal must add
     /// `artifacts: &[]`, and the derived `PartialEq`/`Eq` compare it.
     pub artifacts: &'static [crate::artifact::Artifact],
@@ -72,9 +72,9 @@ pub struct KernelDescriptor {
 
 /// The width of a row of fragments of a `pixel` call, in elements (slice mx.p1a, Option S, decisions D120 and D127): the
 /// index of a fragment is `y * PIXEL_ROW_WIDTH + x`. The macro bakes this number into the Slang of every `pixel` kernel
-/// (`gust-macros` keeps its own copy, since a proc-macro crate cannot depend on `gust`; a test of this crate compares the
-/// emitted text with this constant), and the host draws attachments of this width, so the two must be the same number.
-/// It is WebGPU's baseline `maxTextureDimension2D`, which every device has.
+/// (`gust-compute-macros` keeps its own copy, since a proc-macro crate cannot depend on `gust-compute`; a test of this
+/// crate compares the emitted text with this constant), and the host draws attachments of this width, so the two must
+/// be the same number. It is WebGPU's baseline `maxTextureDimension2D`, which every device has.
 pub const PIXEL_ROW_WIDTH: u32 = 8192;
 
 /// The most elements one `pixel` call covers (Option S): `PIXEL_ROW_WIDTH` columns by 8192 rows, the baseline texture
@@ -216,10 +216,11 @@ pub struct ResourceBinding {
 ///
 /// API change (mx.t1): the enum is `#[non_exhaustive]` and has two new variants, [`Texture`](Self::Texture) and
 /// [`Sampler`](Self::Sampler). A `match` outside this crate must add a wildcard arm. Constructing a variant is
-/// unchanged. Inside the workspace every such `match` already had one (`gust-wgpu`'s `validate_kernel` and `gust`'s
-/// own `reflect`), so none of them changed, and both refuse the two new kinds. The `#[gpu]` macro produces both kinds
-/// since mx.t3 (a `Texture2D<T>`, `StorageTexture2D<F>`, `WriteTexture2D<F>` or `Sampler` kernel parameter), and
-/// `cargo-gust`'s record reader and the macro's artifact writer know the names `texture` and `sampler`.
+/// unchanged. Inside the workspace every such `match` already had one (`gust-compute-wgpu`'s `validate_kernel` and
+/// `gust-compute`'s own `reflect`), so none of them changed, and both refuse the two new kinds. The `#[gpu]` macro
+/// produces both kinds since mx.t3 (a `Texture2D<T>`, `StorageTexture2D<F>`, `WriteTexture2D<F>` or `Sampler` kernel
+/// parameter), and `cargo-gust`'s record reader and the macro's artifact writer know the names `texture` and
+/// `sampler`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ParameterKind {

@@ -113,6 +113,7 @@ pub(crate) fn format_name(format: Format) -> &'static str {
     match format {
         Format::Wgsl => "wgsl",
         Format::Spirv => "spirv",
+        other => unreachable!("a format cargo-gust does not know: {other:?}"),
     }
 }
 
@@ -121,6 +122,7 @@ pub(crate) fn format_rank(format: Format) -> u8 {
     match format {
         Format::Wgsl => 0,
         Format::Spirv => 1,
+        other => unreachable!("a format cargo-gust does not know: {other:?}"),
     }
 }
 
@@ -129,6 +131,7 @@ pub(crate) fn artifact_file(key: &str, format: Format) -> String {
     match format {
         Format::Wgsl => format!("{key}.wgsl"),
         Format::Spirv => format!("{key}.spv"),
+        other => unreachable!("a format cargo-gust does not know: {other:?}"),
     }
 }
 
@@ -434,6 +437,7 @@ fn parse_format(value: &Json, key: &str, context: &str) -> Result<FormatEntry, S
         (Format::Wgsl, Some(_)) => {
             return Err(format!("{context}: only spirv entries have `validated`"));
         }
+        (other, _) => return Err(format!("{context}: unsupported format {other:?}")),
     };
     Ok(FormatEntry {
         format,
@@ -447,6 +451,43 @@ fn parse_format(value: &Json, key: &str, context: &str) -> Result<FormatEntry, S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Format` is `#[non_exhaustive]`, so a gust release that adds a format compiles here; this walks
+    /// `Format::ALL` so that the `unreachable!` arms above fail a test, not a user's export.
+    #[test]
+    fn every_format_gust_has_is_named_ranked_and_filed() {
+        let mut names = Vec::new();
+        let mut ranks = Vec::new();
+        let mut files = Vec::new();
+        for &format in Format::ALL {
+            names.push(format_name(format));
+            ranks.push(format_rank(format));
+            let file = artifact_file("0123456789abcdef", format);
+            assert!(file.starts_with("0123456789abcdef."), "{file}");
+            files.push(file);
+        }
+        names.sort_unstable();
+        names.dedup();
+        ranks.sort_unstable();
+        ranks.dedup();
+        files.sort_unstable();
+        files.dedup();
+        assert_eq!(
+            names.len(),
+            Format::ALL.len(),
+            "format_name is not injective"
+        );
+        assert_eq!(
+            ranks.len(),
+            Format::ALL.len(),
+            "format_rank is not injective"
+        );
+        assert_eq!(
+            files.len(),
+            Format::ALL.len(),
+            "artifact_file is not injective"
+        );
+    }
 
     pub(crate) fn sample_kernel(key: &str, name: &str, with_spirv: bool) -> KernelEntry {
         let mut formats = vec![FormatEntry {

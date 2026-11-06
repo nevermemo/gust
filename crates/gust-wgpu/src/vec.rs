@@ -17,7 +17,9 @@ use crate::{
 ///
 /// Create it with [`from_slice`](Self::from_slice) or [`zeroed`](Self::zeroed) (the
 /// [default device](crate::default_device)) or their `_on` forms (a device you hold), read it back with
-/// [`to_vec`](Self::to_vec) or [`to_vec_async`](Self::to_vec_async), and pass `&gpu_vec` where a typed call takes a
+#[cfg_attr(not(target_arch = "wasm32"), doc = "[`to_vec`](Self::to_vec)")]
+#[cfg_attr(target_arch = "wasm32", doc = "`to_vec`")]
+/// or [`to_vec_async`](Self::to_vec_async), and pass `&gpu_vec` where a typed call takes a
 /// buffer: it is a [`Resource`] of [`HeadlessDevice`]. Its length is `u32`, the type of a dispatch's element count.
 ///
 /// All `GpuVec` arguments of one call must share one device (compared by [`HeadlessDevice::id`]);
@@ -25,8 +27,8 @@ use crate::{
 /// `Send + Sync` on native; on `wasm32` its device handle is an `Rc`, so it is neither.
 ///
 /// The allocation behind a `GpuVec` is a pooled size class, usually larger than `len()` elements. Everything that
-/// takes a `GpuVec` (typed calls, [`to_vec`](Self::to_vec)) sees the logical length only. The raw escape hatch
-/// ([`as_buffer`](Self::as_buffer) and `GpuBuffer::as_wgpu_buffer`) does not: it is the whole class, with the
+/// takes a `GpuVec` (typed calls, [`to_vec_async`](Self::to_vec_async)) sees the logical length only. The raw escape
+/// hatch ([`as_buffer`](Self::as_buffer) and `GpuBuffer::as_wgpu_buffer`) does not: it is the whole class, with the
 /// previous owner's bytes past the logical length, and commands you record in an encoder of your own and submit after
 /// the `GpuVec` dropped may run after the pool has cleared or reused the buffer. Submit them before the drop.
 pub struct GpuVec<T: GpuPod> {

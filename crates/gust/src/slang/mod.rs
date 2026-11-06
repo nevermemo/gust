@@ -110,6 +110,7 @@ const EXPORT_FILE: &str = "kernel.export.slang";
 
 /// A compile target of the Slang compiler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Target {
     /// SPIR-V, the binary shader format of Vulkan.
     Spirv,

@@ -4,7 +4,7 @@
 //!
 //! - **The formats.** [`Format`] is the closed list of texel formats of the dialect and [`TextureFormat`] the sealed
 //!   trait of its marker types ([`R32Uint`] to [`Rgba32Float`]), which tie a format to the Rust type of one texel.
-//!   `gust-wgpu` maps [`Format`] to `wgpu::TextureFormat` in one place.
+//!   `gust-compute-wgpu` maps [`Format`] to `wgpu::TextureFormat` in one place.
 //! - **The host-side vocabulary.** [`TextureUse`] (what a texture may be used for), [`SamplerOptions`], [`Filter`] and
 //!   [`Address`].
 //! - **The kernel-side types.** [`Texture2D`], [`StorageTexture2D`], [`WriteTexture2D`] and [`Sampler`] are what a
@@ -64,8 +64,8 @@ impl SampleClass {
 /// A texel format of the dialect: the nine 32-bit formats whose store is unconverted (decisions D62 and D64). The 8- and
 /// 16-bit formats convert on store and are outside D22's exact contract, so they are not in the list.
 ///
-/// The names follow WebGPU's format names, so `gust-wgpu` maps a variant to a `wgpu::TextureFormat` with one `match`
-/// arm each. The enum is `#[non_exhaustive]`: a later format is not a breaking change.
+/// The names follow WebGPU's format names, so `gust-compute-wgpu` maps a variant to a `wgpu::TextureFormat` with one
+/// `match` arm each. The enum is `#[non_exhaustive]`: a later format is not a breaking change.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Format {
@@ -91,7 +91,7 @@ pub enum Format {
 
 impl Format {
     /// Every format of the dialect, in the order of the enum.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: &'static [Self] = &[
         Self::R32Uint,
         Self::R32Sint,
         Self::R32Float,
@@ -120,7 +120,10 @@ impl Format {
 
     /// The format named `name` (the inverse of [`Format::name`]), or `None` for any other text.
     pub fn from_name(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|format| format.name() == name)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|format| format.name() == name)
     }
 
     /// Slang's spelling of the format, the argument of `[format("..")]`: `r32ui`, `rg32f`, ...

@@ -2,6 +2,7 @@ use core::{mem, slice};
 
 /// Scalar formats that have an identical Rust and GPU storage representation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ScalarKind {
     /// A 32-bit unsigned integer (`uint`, Rust `u32`).
     U32,
@@ -9,6 +10,12 @@ pub enum ScalarKind {
     I32,
     /// A 32-bit float (`float`, Rust `f32`).
     F32,
+}
+
+impl ScalarKind {
+    /// Every kind this release has, in the order of the enum. The enum is `#[non_exhaustive]`, so a test outside this
+    /// crate can walk this list to learn that a later release added a kind its `match` does not know.
+    pub const ALL: &'static [Self] = &[Self::U32, Self::I32, Self::F32];
 }
 
 /// How a matrix is stored: the pin that the macro, the reflection reader and the reflection helper all cite.
@@ -47,6 +54,7 @@ pub const MATRIX_LAYOUT: MatrixLayout = MatrixLayout::Column;
 
 /// Structural category for one host-shareable type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TypeLayoutKind {
     /// One 32-bit scalar.
     Scalar(ScalarKind),
@@ -290,9 +298,11 @@ pub struct StructFieldLayout {
 /// Layout rules recorded for a shader resource (not Slang compiler reflection).
 ///
 /// API change (mx.t0b): the enum has a new variant, [`TextureV1`](Self::TextureV1), for the 2-D texture parameters of
-/// decision D91. It is not `#[non_exhaustive]`, so a `match` outside this crate must add an arm (`gust-wgpu`'s
-/// `generated_host.rs` did). `TextureV1` has no byte layout of its own: the element is the texel type.
+/// decision D91. The enum is `#[non_exhaustive]`, so a `match` outside this crate needs a wildcard arm
+/// (`gust-compute-wgpu`'s `generated_host.rs` has one). `TextureV1` has no byte layout of its own: the element is the
+/// texel type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ShaderLayoutRules {
     /// The v1 storage ABI: 32-bit scalars and recursively padding-free structs.
     StorageV1,
@@ -328,6 +338,7 @@ impl TextureDimension {
 
 /// How a kernel uses a texture binding, which is also how the reflection spells it (`access`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum TextureAccess {
     /// A sampled `Texture2D<T>`: reflection access `read`.
     Sampled,
@@ -493,6 +504,21 @@ const fn checked_align_up(value: u32, alignment: u32) -> Option<u32> {
 mod tests {
     use super::*;
     use crate::math::{IVec2, IVec4, Mat2, Mat3, Mat4, UVec2, UVec4, Vec2, Vec3, Vec4};
+
+    #[test]
+    fn scalar_kind_all_lists_every_variant_once() {
+        // Inside the defining crate `#[non_exhaustive]` does not apply, so this `match` has no wildcard arm and stops
+        // compiling when a variant is added: add it to `ScalarKind::ALL` then.
+        let index = |kind: ScalarKind| match kind {
+            ScalarKind::U32 => 0,
+            ScalarKind::I32 => 1,
+            ScalarKind::F32 => 2,
+        };
+        assert_eq!(ScalarKind::ALL.len(), 3);
+        for (position, kind) in ScalarKind::ALL.iter().enumerate() {
+            assert_eq!(index(*kind), position);
+        }
+    }
 
     #[test]
     fn scalar_layouts_are_explicit() {

@@ -68,7 +68,8 @@ pub(crate) fn reflected_texture_layout(
         Some("unknown") => None,
         Some(text) => Some(
             Format::ALL
-                .into_iter()
+                .iter()
+                .copied()
                 .find(|format| format.slang_name() == text)
                 .ok_or_else(|| format!("{at}: unsupported texture format `{text}`"))?,
         ),
@@ -85,6 +86,7 @@ pub(crate) fn reflected_texture_layout(
             ScalarKind::F32 => SampleClass::Float,
             ScalarKind::U32 => SampleClass::Uint,
             ScalarKind::I32 => SampleClass::Sint,
+            _ => return Err(format!("{at}.result: unsupported scalar kind")),
         },
     };
     Ok(ResourceRecord {
@@ -110,6 +112,7 @@ fn texel_layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
         ScalarKind::F32 => "",
         ScalarKind::I32 => "I",
         ScalarKind::U32 => "U",
+        _ => return Err(format!("{context}: unsupported scalar kind")),
     };
     let (name, kind, size, alignment) = match kind {
         "scalar" => {
@@ -117,6 +120,7 @@ fn texel_layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
                 ScalarKind::F32 => "f32",
                 ScalarKind::I32 => "i32",
                 ScalarKind::U32 => "u32",
+                _ => return Err(format!("{context}: unsupported scalar kind")),
             };
             (name.to_owned(), LayoutKindRecord::Scalar(scalar), 4, 4)
         }
@@ -254,6 +258,7 @@ fn layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
                 ScalarKind::F32 => "f32",
                 ScalarKind::I32 => "i32",
                 ScalarKind::U32 => "u32",
+                _ => return Err(format!("{context}: unsupported scalar kind")),
             };
             (name.to_owned(), LayoutKindRecord::Scalar(scalar))
         }
@@ -265,6 +270,7 @@ fn layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
                 ScalarKind::F32 => "",
                 ScalarKind::I32 => "I",
                 ScalarKind::U32 => "U",
+                _ => return Err(format!("{context}: unsupported scalar kind")),
             };
             (
                 format!("{prefix}Vec{count}"),
@@ -364,6 +370,48 @@ mod tests {
         include_str!("testdata/uniform/bfb6e436140611c0.wgsl.reflection.json");
     const OUTER_REFLECTION: &str =
         include_str!("testdata/uniform/f6dd8e3fe6e29694.wgsl.reflection.json");
+
+    /// `ScalarKind` is `#[non_exhaustive]`, so a gust release that adds a kind compiles here; this walks
+    /// `ScalarKind::ALL` so that the `unsupported scalar kind` arms fail a test, not a user's export. Each kind must
+    /// have exactly one reflection name and must read as a scalar, a vector and a texture result.
+    #[test]
+    fn every_scalar_kind_gust_has_a_reflection_name_and_reads_as_a_layout() {
+        let names = ["float32", "int32", "uint32"];
+        for &kind in ScalarKind::ALL {
+            let named: Vec<&str> = names
+                .into_iter()
+                .filter(|name| {
+                    let value = json::parse(&format!(r#"{{"scalarType":"{name}"}}"#)).unwrap();
+                    scalar_type(&value, "test") == Ok(kind)
+                })
+                .collect();
+            assert_eq!(named.len(), 1, "{kind:?} has no reflection name: {named:?}");
+            let name = named[0];
+            let scalar = format!(
+                r#"{{"kind":"scalar","scalarType":"{name}","size":4,"alignment":4,"stride":4}}"#
+            );
+            let vector = format!(
+                r#"{{"kind":"vector","scalarType":"{name}","elementCount":2,"size":8,"alignment":8,"stride":8}}"#
+            );
+            for (what, text) in [("scalar", scalar), ("vector", vector)] {
+                let value = json::parse(&text).unwrap();
+                let record = layout(&value, "test")
+                    .unwrap_or_else(|error| panic!("{kind:?} as a {what}: {error}"));
+                assert!(
+                    matches!(
+                        record.kind,
+                        LayoutKindRecord::Scalar(seen) | LayoutKindRecord::Vector { scalar: seen, .. }
+                            if seen == kind
+                    ),
+                    "{kind:?} as a {what}: {:?}",
+                    record.kind
+                );
+                let texel = texel_layout(&value, "test")
+                    .unwrap_or_else(|error| panic!("{kind:?} as a texel {what}: {error}"));
+                assert_eq!(texel.name, record.name, "{kind:?} as a {what}");
+            }
+        }
+    }
 
     #[test]
     fn a_scalar_element_is_read_with_the_canonical_name() {

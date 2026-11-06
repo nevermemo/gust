@@ -298,8 +298,9 @@ describes the intended behaviour and is not evidence.
     `8192k + 2` for k = 1, 2, 7 and 1000, and 2^26. (2) `f32` bits against `grid`, above. (3) An output element the body
     does not write: none exists, because the classifier requires a definite write, and there is no preservation mode
     (NEXT_TASKS). (4) The browser: wgpu's WebGPU backend reports every downlevel capability, so a browser adapter that
-    cannot write storage buffers from a fragment would give a wrong result and not an error (`GUST_FAIL`, "no fragment
-    wrote the output").
+    could not write storage buffers from a fragment would get no typed error. It is expected to fail at pipeline
+    creation and to end `examples/web-vector-add` in `GUST_FAIL` ("no fragment wrote the output"); that chain is
+    expected, not observed (NEXT_TASKS).
   - *Refusals.* A call is refused, identically on the twin and the `cpu` target, when it has a y or z other than 1
     (`ShapeUnsupported`, `cpu::Error::PixelExtent`), when `n` is over 2^26 (`DeviceLimit` named `pixel_max_elements`) or
     when a read-write output is bound `Independent` (`ShapeIndependentOutput`, `cpu::Error::PixelIndependentOutput`).
@@ -1062,7 +1063,7 @@ coretests entry above has the same shape.
   these are tests that need no adapter, for the runner's promises. No step of the Unit suite runs
   `crates/gust/tests/parallel.rs`: `cargo xtask check-feature map` and the workspace test do (`cargo xtask
   check-workspace`, `verify --mode smoke` and `verify --mode full`, so `check-full`). The unit tests inside
-  `cpu/parallel.rs` run in `check-feature map`, `verify --mode fast` and the Slangc suite (`cargo test -p gust
+  `cpu/parallel.rs` run in `check-feature map`, `verify --mode fast` and the Slangc suite (`cargo test -p gust-compute
   --lib`), and the Cpu half runs in the Cpu suite.
   `every_thread_count_gives_the_bits_of_one_thread` runs a chain of dependent `f32` operations over twelve lengths
   from 0 to 1 000 003, around `ELEMENTS_PER_THREAD`, and compares the bits of 1, 2, 3, 4, 7 and the machine's threads

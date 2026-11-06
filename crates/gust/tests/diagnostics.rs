@@ -1472,6 +1472,7 @@ fn raw_slangc(source: &str, entry: &str, target: Target) -> String {
     let target_name = match target {
         Target::Wgsl => "wgsl",
         Target::Spirv => "spirv",
+        other => panic!("this test has no slangc name for {other:?}"),
     };
     let result = std::process::Command::new("slangc")
         .arg(&input)

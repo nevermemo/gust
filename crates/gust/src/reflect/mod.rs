@@ -89,7 +89,7 @@ impl fmt::Display for Error {
             Self::Compiler(e) => e.fmt(f),
             Self::HelperUnavailable { helper, source } => write!(
                 f,
-                "could not launch Slang reflection compiler {}: {source}; run `cargo xtask build-slang-reflect` or set GUST_SLANG_REFLECT to the helper executable",
+                "could not launch Slang reflection compiler {}: {source}; run `cargo gust slang build-helper` or set GUST_SLANG_REFLECT to the helper executable",
                 helper.display()
             ),
             Self::Invalid(s) => write!(f, "invalid Slang reflection: {s}"),
@@ -140,6 +140,7 @@ pub struct Reflection {
 }
 /// The pipeline stage of a reflected entry point (decision D89: it is the stage of the kernel's [`Shape`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Stage {
     /// `[shader("compute")]`: the stage of [`Shape::Grid`].
     Compute,
@@ -203,6 +204,7 @@ pub struct ReflectedTarget {
 }
 /// What kind of shader resource a [`ReflectedResource`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ReflectedResourceKind {
     /// A structured buffer (`StructuredBuffer<T>` or `RWStructuredBuffer<T>`).
     StructuredBuffer,
@@ -244,6 +246,7 @@ pub struct ReflectedType {
 }
 /// The structure of a [`ReflectedType`].
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ReflectedTypeKind {
     /// A 32-bit scalar.
     Scalar(ScalarKind),
@@ -1418,7 +1421,8 @@ fn read_texture(
         "unknown" => None,
         text => Some(
             TexelFormat::ALL
-                .into_iter()
+                .iter()
+                .copied()
                 .find(|format| format.slang_name() == text)
                 .ok_or_else(|| invalid(format!("unsupported texture format `{text}`")))?,
         ),

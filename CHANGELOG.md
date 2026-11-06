@@ -5,7 +5,7 @@ All notable changes to the published packages `gust-compute`, `gust-compute-macr
 breaks existing code bumps the minor version, and the promise is described in the
 [README](README.md#stability).
 
-## 0.1.0 (first release, not yet published)
+## 0.1.0
 
 The first public release of GUST, an experimental compiler from a restricted subset of Rust to Slang for compute
 kernels. Nothing in this entry changes an earlier release: there is none.

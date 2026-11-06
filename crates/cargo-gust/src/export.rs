@@ -293,6 +293,7 @@ impl Compiler for HelperCompiler {
         let validated = match format {
             Format::Wgsl => None,
             Format::Spirv => Some(self.validate_spirv(&clean.compiled.artifact)?),
+            other => return Err(format!("unsupported artifact format {other:?}")),
         };
         Ok(Compiled {
             bytes: clean.compiled.artifact,

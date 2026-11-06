@@ -1,19 +1,30 @@
 //! Names of build-time routes (D65 to D67, D137).
 //!
 //! A route tag names a group of kernels (`physics`, `physics.broadphase`) whose target a build chooses. The choice
-//! reaches the `#[gpu]` macro through an environment variable per tag, `GUST_ROUTE__<crate>__<tag>`. This module owns
-//! the one mapping from a crate and a tag to that variable name, so that the macro and the driver (`cargo gust`)
-//! cannot disagree.
+//! reaches the `#[gpu]` macro through an environment variable per tag, `GUST_ROUTE__<package>__<tag>`. This module is
+//! the spelling of that variable for the driver (`cargo gust`). The macro cannot call it, because `gust-compute`
+//! depends on `gust-compute-macros` and not the other way round: `gust-compute-macros` keeps a byte-for-byte copy
+//! (the same arrangement as `content_key` in `gust-macros/src/expand/artifact.rs`), and both crates assert one golden
+//! table of `(package, tag, variable)` triples, so the two spellings cannot drift apart unnoticed. The table is the
+//! constant `GOLDEN` of this file's tests; a copy pastes it verbatim.
 
 /// The prefix of every route variable.
 pub const VARIABLE_PREFIX: &str = "GUST_ROUTE__";
 
-/// The variable that chooses the target of `tag` in the crate `crate_name`: `GUST_ROUTE__<crate>__<tag>`, with `-`
-/// in the crate name spelled `_` and every `.` of the tag spelled `__`.
+/// The variable that chooses the target of `tag` in the Cargo package `package`: `GUST_ROUTE__<package>__<tag>`,
+/// with `-` in the package name spelled `_` and every `.` of the tag spelled `__`.
 ///
-/// The mapping is injective only on valid tags (see [`is_valid_tag`]): the tags `a_.b` and `a._b` would both map to
-/// `a___b`, and `a__b` collides with `a.b`, which is why a valid tag has no `__` and no segment that begins or ends
-/// with `_`. The function does not check its arguments; the macro and the driver check the tag first.
+/// `package` is the Cargo package name as `cargo metadata` reports it, with its hyphens (`gust-compute`), and not the
+/// library name (`gust`).
+///
+/// The mapping is injective on the tag half only for valid tags (see [`is_valid_tag`]): the tags `a_.b` and `a._b`
+/// would both map to `a___b`, and `a__b` collides with `a.b`, which is why a valid tag has no `__` and no segment
+/// that begins or ends with `_`. It is not injective across packages: Cargo allows package names with `__` or `--`,
+/// names that differ only in `-` against `_`, and (on Windows, where environment names ignore case) names that differ
+/// only in case. So `variable_name("a__b", "c")`, `variable_name("a--b", "c")` and `variable_name("a", "b.c")` are one
+/// variable, and so are `a-b` and `a_b`. Two declared (package, tag) pairs that produce one variable name are an error
+/// of the driver that sets the variables, not something this function detects. The function does not check its
+/// arguments; the macro and the driver check the tag first.
 ///
 /// ```
 /// assert_eq!(
@@ -21,11 +32,10 @@ pub const VARIABLE_PREFIX: &str = "GUST_ROUTE__";
 ///     "GUST_ROUTE__kernel_lib__physics__broadphase",
 /// );
 /// ```
-pub fn variable_name(crate_name: &str, tag: &str) -> String {
-    let mut name =
-        String::with_capacity(VARIABLE_PREFIX.len() + crate_name.len() + 2 + tag.len() + 2);
+pub fn variable_name(package: &str, tag: &str) -> String {
+    let mut name = String::with_capacity(VARIABLE_PREFIX.len() + package.len() + 2 + tag.len() + 2);
     name.push_str(VARIABLE_PREFIX);
-    name.extend(crate_name.chars().map(|c| if c == '-' { '_' } else { c }));
+    name.extend(package.chars().map(|c| if c == '-' { '_' } else { c }));
     name.push_str("__");
     for c in tag.chars() {
         if c == '.' {
@@ -56,21 +66,29 @@ pub fn is_valid_tag(tag: &str) -> bool {
 mod tests {
     use super::*;
 
+    /// `(package, tag, variable)`: the golden spelling. `gust-compute-macros` keeps a copy of `variable_name` and
+    /// asserts this table verbatim (m8.r1); change both together.
+    const GOLDEN: &[(&str, &str, &str)] = &[
+        ("kernel-lib", "add", "GUST_ROUTE__kernel_lib__add"),
+        ("kernels", "physics", "GUST_ROUTE__kernels__physics"),
+        (
+            "a-b-c",
+            "physics.broadphase.pairs",
+            "GUST_ROUTE__a_b_c__physics__broadphase__pairs",
+        ),
+        ("x", "t_1", "GUST_ROUTE__x__t_1"),
+        (
+            "gust-compute",
+            "physics.broadphase",
+            "GUST_ROUTE__gust_compute__physics__broadphase",
+        ),
+    ];
+
     #[test]
-    fn the_variable_spells_the_crate_and_the_tag() {
-        assert_eq!(
-            variable_name("kernel-lib", "add"),
-            "GUST_ROUTE__kernel_lib__add"
-        );
-        assert_eq!(
-            variable_name("kernels", "physics"),
-            "GUST_ROUTE__kernels__physics"
-        );
-        assert_eq!(
-            variable_name("a-b-c", "physics.broadphase.pairs"),
-            "GUST_ROUTE__a_b_c__physics__broadphase__pairs"
-        );
-        assert_eq!(variable_name("x", "t_1"), "GUST_ROUTE__x__t_1");
+    fn the_variable_spells_the_package_and_the_tag() {
+        for (package, tag, variable) in GOLDEN {
+            assert_eq!(variable_name(package, tag), *variable, "{package} {tag}");
+        }
     }
 
     #[test]
@@ -89,6 +107,17 @@ mod tests {
         assert_eq!(variable_name("c", "a__b"), variable_name("c", "a.b"));
         assert!(!is_valid_tag("a__b"));
         assert!(is_valid_tag("a.b"));
+    }
+
+    #[test]
+    fn packages_that_spell_one_variable_are_a_known_collision() {
+        // The package half is not injective (see `variable_name`): the driver must refuse two declared
+        // (package, tag) pairs that land on one variable, because this function cannot.
+        let one = variable_name("a__b", "c");
+        assert_eq!(one, "GUST_ROUTE__a__b__c");
+        assert_eq!(variable_name("a", "b.c"), one);
+        assert_eq!(variable_name("a--b", "c"), one);
+        assert_eq!(variable_name("a-b", "t"), variable_name("a_b", "t"));
     }
 
     #[test]

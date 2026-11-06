@@ -147,10 +147,11 @@
 //! `#[non_exhaustive]` since 0.2.0, so a new field does not break its users, who build one with
 //! `KernelDescriptor::new` and its `with_*` setters), the variants of an enum that is not `#[non_exhaustive]`, and the
 //! Slang that the macro emits. Every public enum of this crate is `#[non_exhaustive]` except `MatrixLayout` and
-//! `Access`, which are closed sets (and the uninhabited marker types, which have no variants), so a new variant is not a breaking change and a
-//! `match` outside this crate needs a wildcard arm; a minor bump may grow `Access` (a write-only access, say). The
-//! formats of the files that `cargo gust` writes ([`artifact`] manifests, records and reflection documents) carry a
-//! schema version, and a reader accepts every schema version that an earlier release wrote.
+//! `Access`, which are closed sets (and the uninhabited marker types, which have no variants), so a new variant is not
+//! a breaking change and a `match` outside this crate needs a wildcard arm; a minor bump may grow `Access` (a
+//! write-only access, say). The formats of the files that `cargo gust` writes ([`artifact`] manifests, records and
+//! reflection documents) carry a schema version, and a reader accepts every schema version that an earlier release
+//! wrote.
 //!
 //! # Support surface
 //!
@@ -163,9 +164,12 @@
 //!   `__no_hook`, the macro `__gust_overflow_checks` behind `overflow_checks!`, and the module `parallel`;
 //! - in `cpu::texture`: `TextureRef`, `TextureMut`, `read`, `write`, `sampler` and `SamplerOwner`;
 //! - in `map`: `MapElement`, `OwnIndex`, `element_count` and `resource`;
-//! - the `*_parameter_count` methods of `KernelDescriptor`, and the marker trait `target::GpuKernel` (a hand-written
-//!   `Kernel` implementation that runs on a GPU device adds `impl gust::target::GpuKernel for MyKernel {}`);
+//! - the `*_parameter_count` methods of `KernelDescriptor`;
 //! - every `__gust_*` name, the `descriptor;` form of `par_for!` (D103), and the `cargo-gust-bridge` feature.
+//!
+//! `gust::target::GpuKernel` is hidden from the docs but is not support surface: its path and the empty `impl` line
+//! of a hand-written `Kernel` that runs on a GPU device (`impl gust::target::GpuKernel for MyKernel {}`) are covered
+//! by the promise above; only the macro implements it otherwise.
 //!
 //! The `check-*` commands and the evidence tiers of `docs/development/VALIDATION.md` belong to the repository, not to
 //! this crate.

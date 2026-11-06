@@ -79,7 +79,7 @@ pub struct KernelDescriptor {
     /// them cannot run the kernel. The derived `PartialEq`/`Eq` compare it.
     pub requires: &'static [Capability],
     /// The target this kernel is built for in this build (M8, D65, D137): [`Target::Gpu`] for every kernel until
-    /// routing exists. A GPU device refuses a kernel whose target is [`Target::Cpu`].
+    /// routing exists. A GPU device will refuse a kernel whose target is [`Target::Cpu`] (m8.w1).
     pub target: Target,
 }
 
@@ -108,6 +108,8 @@ macro_rules! __gust_descriptor {
         requires: $requires:expr,
         target: $target:expr $(,)?
     ) => {{
+        // These `__GUST_*` items are not hygienic (a user item of the same name is shadowed here); the reservation of
+        // the `__gust_*` names (crate docs, "Support surface") covers them.
         const __GUST_COMPATIBLE_SHAPES: &[$crate::Shape] = $compatible_shapes;
         const __GUST_PARAMETERS: &[$crate::ParameterDescriptor] = $parameters;
         const __GUST_SOURCE: $crate::SourceOrigin = $source;
@@ -241,8 +243,10 @@ impl KernelDescriptor {
     ///
     /// const DESCRIPTOR: KernelDescriptor =
     ///     KernelDescriptor::new("demo", "run", "gpu_demo_run", [64, 1, 1], &[], "// slang")
-    ///         .with_shape(Shape::Pixel);
+    ///         .with_shape(Shape::Pixel)
+    ///         .with_compatible_shapes(&[Shape::Grid, Shape::Pixel]);
     /// assert_eq!(DESCRIPTOR.shape, Shape::Pixel);
+    /// assert_eq!(DESCRIPTOR.compatible_shapes, &[Shape::Grid, Shape::Pixel]);
     /// assert_eq!(DESCRIPTOR.workgroup_size, [64, 1, 1]);
     /// assert!(DESCRIPTOR.requires.is_empty());
     /// ```
@@ -491,59 +495,108 @@ mod tests {
         assert_eq!(BASE.target, Target::Gpu);
     }
 
+    const PARAMETERS: &[ParameterDescriptor] = &[ParameterDescriptor {
+        name: "id",
+        rust_type: "uint3",
+        kind: ParameterKind::Invocation,
+        access: Access::NotApplicable,
+        resource_layout: None,
+        binding: None,
+    }];
+    const ORIGIN: SourceOrigin = SourceOrigin {
+        file: "src/lib.rs",
+        lines: &[LineSpan {
+            slang_start: 1,
+            slang_end: 2,
+            rust_line: 3,
+        }],
+    };
+    const ARTIFACTS: &[crate::artifact::Artifact] = &[crate::artifact::Artifact {
+        format: crate::artifact::Format::Wgsl,
+        key: "key",
+        bytes: b"wgsl",
+        reflection: "{}",
+    }];
+
     #[test]
     fn each_setter_changes_its_field_only() {
-        let pixel = BASE.with_shape(Shape::Pixel);
-        assert_eq!(
-            pixel,
-            KernelDescriptor {
-                shape: Shape::Pixel,
-                ..BASE
-            }
-        );
-        let both = BASE.with_compatible_shapes(&[Shape::Grid, Shape::Pixel]);
-        assert_eq!(both.compatible_shapes, &[Shape::Grid, Shape::Pixel]);
-        let variant = BASE
-            .with_variant("subgroups")
-            .with_requires(&[Capability::Subgroups]);
-        assert_eq!(variant.variant, "subgroups");
-        assert_eq!(variant.requires, &[Capability::Subgroups]);
-        assert_ne!(variant, BASE);
-        let cpu = BASE.with_target(Target::Cpu);
-        assert_eq!(cpu.target, Target::Cpu);
-        let located = BASE.with_source(SourceOrigin {
-            file: "src/lib.rs",
-            lines: &[],
-        });
-        assert_eq!(located.source.file, "src/lib.rs");
-        assert!(BASE.with_artifacts(&[]).artifacts.is_empty());
+        // One row per setter: the value differs from BASE's, and the result equals BASE with that one field replaced,
+        // so a setter that wrote a neighbouring field (the string fields are easy to cross) fails its own row.
+        macro_rules! row {
+            ($setter:ident, $field:ident, $value:expr) => {{
+                let value = $value;
+                let expected = KernelDescriptor {
+                    $field: value,
+                    ..BASE
+                };
+                assert_ne!(
+                    expected,
+                    BASE,
+                    "{}: the row's value must differ from BASE",
+                    stringify!($field)
+                );
+                assert_eq!(BASE.$setter(value), expected, "{}", stringify!($setter));
+            }};
+        }
+        row!(with_module, module, "other_module");
+        row!(with_name, name, "other_name");
+        row!(with_entry_point, entry_point, "other_entry");
+        row!(with_workgroup_size, workgroup_size, [8, 4, 2]);
+        row!(with_parameters, parameters, PARAMETERS);
+        row!(with_slang_source, slang_source, "// other");
+        row!(with_shape, shape, Shape::Pixel);
+        row!(with_compatible_shapes, compatible_shapes, &[Shape::Pixel]);
+        row!(with_source, source, ORIGIN);
+        row!(with_artifacts, artifacts, ARTIFACTS);
+        row!(with_variant, variant, "subgroups");
+        row!(with_requires, requires, &[Capability::Subgroups]);
+        row!(with_target, target, Target::Cpu);
     }
 
     #[test]
     fn the_macro_constructor_and_the_builder_agree() {
+        // Thirteen distinct values, so a name mapped to the wrong position (the five strings above all) differs.
+        let chained = KernelDescriptor::new("m", "n", "e", [2, 3, 4], PARAMETERS, "s")
+            .with_shape(Shape::Pixel)
+            .with_compatible_shapes(&[Shape::Pixel, Shape::Grid])
+            .with_source(ORIGIN)
+            .with_artifacts(ARTIFACTS)
+            .with_variant("v")
+            .with_requires(&[Capability::Subgroups])
+            .with_target(Target::Cpu);
         let built = KernelDescriptor::__gust_descriptor(
-            "demo",
-            "run",
-            "gpu_demo_run",
+            "m",
+            "n",
+            "e",
             Shape::Pixel,
-            &[Shape::Grid, Shape::Pixel],
-            [8, 8, 1],
-            &[],
-            "// slang",
-            SourceOrigin::UNKNOWN,
-            &[],
-            "wide",
+            &[Shape::Pixel, Shape::Grid],
+            [2, 3, 4],
+            PARAMETERS,
+            "s",
+            ORIGIN,
+            ARTIFACTS,
+            "v",
             &[Capability::Subgroups],
             Target::Cpu,
         );
-        let chained =
-            KernelDescriptor::new("demo", "run", "gpu_demo_run", [8, 8, 1], &[], "// slang")
-                .with_shape(Shape::Pixel)
-                .with_compatible_shapes(&[Shape::Grid, Shape::Pixel])
-                .with_variant("wide")
-                .with_requires(&[Capability::Subgroups])
-                .with_target(Target::Cpu);
         assert_eq!(built, chained);
+        let from_macro = crate::__gust_descriptor! {
+            module: "m",
+            name: "n",
+            entry_point: "e",
+            shape: Shape::Pixel,
+            compatible_shapes: &[Shape::Pixel, Shape::Grid],
+            workgroup_size: [2, 3, 4],
+            parameters: PARAMETERS,
+            slang_source: "s",
+            source: ORIGIN,
+            artifacts: ARTIFACTS,
+            variant: "v",
+            requires: &[Capability::Subgroups],
+            target: Target::Cpu,
+        };
+        assert_eq!(from_macro, chained);
+        assert_ne!(chained, BASE);
     }
 
     #[test]

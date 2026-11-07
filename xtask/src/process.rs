@@ -330,7 +330,22 @@ pub(crate) fn run_cargo_test_captured(
     root: &Path,
     args: &[String],
 ) -> Result<(TestTotals, String), String> {
-    let mut child = workspace_command("cargo")
+    run_cargo_test_captured_under(root, args, None)
+}
+
+/// [`run_cargo_test_captured`] with the `GUST_PROFILE` of the child replaced by `profile` when it is `Some` (m8.w2:
+/// `cargo xtask test --suite Gpu --profile dev+subgroups --test <target>`). `None` keeps the [`WORKSPACE_PROFILE`] that
+/// every workspace cargo child gets; the profile is set after [`workspace_command`], so it wins.
+pub(crate) fn run_cargo_test_captured_under(
+    root: &Path,
+    args: &[String],
+    profile: Option<&str>,
+) -> Result<(TestTotals, String), String> {
+    let mut command = workspace_command("cargo");
+    if let Some(profile) = profile {
+        command.env(PROFILE_VARIABLE, profile);
+    }
+    let mut child = command
         .args(args)
         .current_dir(root)
         .stdin(Stdio::inherit())

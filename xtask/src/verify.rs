@@ -14,7 +14,7 @@ use crate::{
     lint::lint,
     precompiled::check_precompiled_report,
     process::{
-        CheckRecord, HELPER_VARIABLE, report_check, repository_helper, require_command,
+        CheckRecord, HELPER_VARIABLE, TestTotals, report_check, repository_helper, require_command,
         require_tests_ran, run_cargo_test_captured, run_checked, run_checked_owned,
         sum_test_results, without_colors,
     },
@@ -970,8 +970,8 @@ pub(crate) struct GpuSuitePin {
 ///
 /// prints `<passed> <lines>`; the output must also show no line other than `0 failed; 0 ignored`.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 393,
-    result_lines: 35,
+    passed: 400,
+    result_lines: 36,
 };
 
 /// Whether a cargo call of a mode is the one whose output [`GPU_SUITE_PIN`] describes: [`GPU_SUITE_CALL`] in the Gpu
@@ -1008,6 +1008,16 @@ pub(crate) fn check_gpu_suite_counts(
     stdout: &str,
     pin: GpuSuitePin,
 ) -> Result<(), String> {
+    check_pinned_counts(call, stdout, pin, "GPU_SUITE_PIN")
+}
+
+/// [`check_gpu_suite_counts`] for any pin: `pin_name` is how the messages call the constant that holds `pin`.
+fn check_pinned_counts(
+    call: &[String],
+    stdout: &str,
+    pin: GpuSuitePin,
+    pin_name: &str,
+) -> Result<(), String> {
     let plain = without_colors(stdout);
     let printed = plain
         .lines()
@@ -1032,13 +1042,13 @@ pub(crate) fn check_gpu_suite_counts(
     }
     if totals.passed != pin.passed {
         problems.push(format!(
-            "{} tests passed, the pinned count is {} (GPU_SUITE_PIN.passed)",
+            "{} tests passed, the pinned count is {} ({pin_name}.passed)",
             totals.passed, pin.passed
         ));
     }
     if printed != pin.result_lines {
         problems.push(format!(
-            "{printed} test result lines, the pinned number is {} (GPU_SUITE_PIN.result_lines)",
+            "{printed} test result lines, the pinned number is {} ({pin_name}.result_lines)",
             pin.result_lines
         ));
     }
@@ -1050,10 +1060,87 @@ pub(crate) fn check_gpu_suite_counts(
         return Ok(());
     }
     Err(format!(
-        "cargo {}: {}. If a Gpu test or test file was added or removed on purpose, change GPU_SUITE_PIN in xtask/src/verify.rs in the same commit",
+        "cargo {}: {}. If a Gpu test or test file was added or removed on purpose, change {pin_name} in xtask/src/verify.rs in the same commit",
         call.join(" "),
         problems.join("; ")
     ))
+}
+
+/// The gust-wgpu test targets that `cargo xtask test --suite Gpu --profile <p> --test <target>` runs, with the number of
+/// tests each must pass (m8.w2). The whole suite is pinned by [`GPU_SUITE_PIN`] under `dev` only; a profile run is one
+/// target, so its count is pinned here. Adding or removing a test of a listed target changes its entry in the same commit,
+/// and a target that is not listed cannot be run under a profile.
+pub(crate) const GPU_TARGET_PINS: [(&str, u64); 2] = [("capabilities", 6), ("subgroup", 6)];
+
+/// The cargo call of one gust-wgpu test target ([`GPU_TARGET_PINS`]).
+pub(crate) fn gpu_target_call(target: &str) -> Vec<String> {
+    owned_args(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute-wgpu",
+        "--test",
+        target,
+    ])
+}
+
+/// The pin of `target`, or the error that lists the targets that have one.
+pub(crate) fn gpu_target_pin(target: &str) -> Result<GpuSuitePin, String> {
+    GPU_TARGET_PINS
+        .iter()
+        .find(|(name, _)| *name == target)
+        .map(|&(_, passed)| GpuSuitePin {
+            passed,
+            result_lines: 1,
+        })
+        .ok_or_else(|| {
+            let known: Vec<&str> = GPU_TARGET_PINS.iter().map(|(name, _)| *name).collect();
+            format!(
+                "no pinned count for the gust-wgpu test target `{target}`; the targets with one (GPU_TARGET_PINS in xtask/src/verify.rs) are {}",
+                known.join(", ")
+            )
+        })
+}
+
+/// Whether `profile` may be given to `--profile`: `dev`, or `dev+` and capabilities. The gust-wgpu tests compile kernels
+/// at run time, which every other target refuses at build time (crates/gust/build.rs). Only the shape is checked here;
+/// the grammar and its real errors stay the build script's.
+pub(crate) fn check_gpu_target_profile(profile: &str) -> Result<(), String> {
+    let shaped = profile
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '_' | '-'));
+    let dev = profile == "dev"
+        || profile
+            .strip_prefix("dev+")
+            .is_some_and(|capabilities| !capabilities.is_empty());
+    if shaped && dev {
+        Ok(())
+    } else {
+        Err(format!(
+            "--profile `{profile}`: the gust-wgpu tests need the run-time compiler, which only the `dev` target allows; give `dev` or `dev+<capability>` (for example `dev+subgroups`)"
+        ))
+    }
+}
+
+/// The runner of [`run_gpu_target`]: a `cargo test` call under a `GUST_PROFILE`, with its totals and captured output
+/// ([`crate::process::run_cargo_test_captured_under`]).
+pub(crate) type ProfileTestRunner<'a> =
+    dyn Fn(&Path, &[String], Option<&str>) -> Result<(TestTotals, String), String> + 'a;
+
+/// One gust-wgpu test target under a `GUST_PROFILE`: `cargo test --locked -p gust-compute-wgpu --test <target>` through
+/// `runner`, judged against the target's pin ([`GPU_TARGET_PINS`]): one `test result:` line, `ok`, `0 failed; 0 ignored`,
+/// the pinned number passed.
+pub(crate) fn run_gpu_target(
+    root: &Path,
+    profile: &str,
+    target: &str,
+    runner: &ProfileTestRunner<'_>,
+) -> Result<(), String> {
+    check_gpu_target_profile(profile)?;
+    let pin = gpu_target_pin(target)?;
+    let call = gpu_target_call(target);
+    let (_, stdout) = runner(root, &call, Some(profile))?;
+    check_pinned_counts(&call, &stdout, pin, "GPU_TARGET_PINS")
 }
 
 /// The guard for [`ALGO_GPU_CALL`] on its captured `stdout`: tests ran and none failed or was ignored, every test of

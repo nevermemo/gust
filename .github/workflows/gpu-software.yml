@@ -240,6 +240,19 @@ jobs:
           grep -Fq '"device_type": "Cpu"' "$record"
           grep -Eq '^ *"name": "[^"]*llvmpipe' "$record"
           grep -Fq "\"driver_info\": \"$MESA_DRIVER_INFO\"" "$record"
+      - name: Subgroups on lavapipe (dev+subgroups)
+        # The `+subgroups` build (m8.w2, D142): the Gpu suite above runs under `dev`, which requests no capability. Spike
+        # S3 measured this lavapipe (Mesa 25.2.8) with SUBGROUP, subgroup sizes 8..8, and all 43 cells passing, so these
+        # are real runs and not a "not run" row. `cargo xtask test --suite Gpu --profile dev+subgroups --test <target>`
+        # builds gust-compute-wgpu with GUST_PROFILE=dev+subgroups and runs that one test target, counted against
+        # GPU_TARGET_PINS in xtask/src/verify.rs: `subgroup` (a kernel that requires subgroups is refused without the
+        # capability and runs with it, the SubgroupSize rule on 8..8) and `capabilities` (the default device requests the
+        # build's set, so a default device runs the kernel). No condition: both lists run it, a pull request included.
+        # Pinned by `gpu_software_runs_the_subgroup_targets_under_the_profile` in xtask/src/tests/suite.rs.
+        run: |
+          set -o pipefail
+          cargo --locked xtask test --suite Gpu --profile dev+subgroups --test subgroup 2>&1 | tee "$RUNNER_TEMP/gpu-subgroups.log"
+          cargo --locked xtask test --suite Gpu --profile dev+subgroups --test capabilities 2>&1 | tee -a "$RUNNER_TEMP/gpu-subgroups.log"
       - name: Differential test (2 seeds; all 8 in the nightly list)
         id: difftest
         # `cargo xtask check-difftest` (m5.c2) runs `difftest-run` on lavapipe, reads its report.json, and fails unless
@@ -320,6 +333,7 @@ jobs:
         run: |
           cp -f .ai/VALIDATION.json "$RUNNER_TEMP/gpu-software-artifact/" || true
           cp -f "$RUNNER_TEMP/gpu-suite.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
+          cp -f "$RUNNER_TEMP/gpu-subgroups.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
           cp -f "$RUNNER_TEMP/difftest.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
           cp -f "$RUNNER_TEMP/difftest-shapes.log" "$RUNNER_TEMP/gpu-software-artifact/" || true
           cp -f "$RUNNER_TEMP/check-examples.log" "$RUNNER_TEMP/gpu-software-artifact/" || true

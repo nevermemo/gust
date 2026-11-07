@@ -1,12 +1,15 @@
-use super::{DIFFTEST_UNIT_STEPS, Step, Suite, plan_suite, test_command};
+use super::{
+    DIFFTEST_UNIT_STEPS, Step, Suite, TestRequest, parse_test_args, plan_suite, test_command,
+};
 use crate::{
     checks::{CPU_TESTS, GPU_SEMANTICS_TESTS, REFLECTION_TESTS},
     cpu_target::{Dirs, all_calls},
     difftest::{DifftestStep, Mode, Options, batch_args, short_circuit_args, steps},
     process::{TestTotals, sum_test_results},
     verify::{
-        ALGO_GPU_CALL, ALGO_GPU_TESTS, GPU_SUITE_CALL, GPU_SUITE_PIN, RELEASE_SLANG_TESTS,
-        VerifyMode, cargo_calls as mode_cargo_calls, example_run_args, judges_algo_gpu,
+        ALGO_GPU_CALL, ALGO_GPU_TESTS, GPU_SUITE_CALL, GPU_SUITE_PIN, GPU_TARGET_PINS,
+        RELEASE_SLANG_TESTS, VerifyMode, cargo_calls as mode_cargo_calls, check_gpu_suite_counts,
+        example_run_args, judges_algo_gpu, run_gpu_target,
     },
     workspace::EXAMPLES,
 };
@@ -1003,5 +1006,264 @@ fn the_algo_gpu_step_requires_every_adapter_test_by_name_and_no_other() {
         Step::AlgoGpuSuite
             .run_in(root, &recording_runner(&calls, String::new()))
             .is_err()
+    );
+}
+
+fn strings(args: &[&str]) -> Vec<String> {
+    owned_call(args)
+}
+
+/// The profile form of `cargo xtask test` (m8.w2): `--suite Gpu --profile <p> --test <t>`, in that order and only for
+/// the Gpu suite; the other forms are as they were.
+#[test]
+fn the_profile_argument_is_parsed_checked_and_only_for_the_gpu_suite() {
+    assert_eq!(
+        parse_test_args(&strings(&[
+            "--suite",
+            "gpu",
+            "--profile",
+            "dev+subgroups",
+            "--test",
+            "subgroup"
+        ])),
+        Ok(TestRequest::Target {
+            profile: "dev+subgroups".to_owned(),
+            target: "subgroup".to_owned()
+        })
+    );
+    assert_eq!(
+        parse_test_args(&strings(&["--suite", "Unit", "--skip-difftest"])),
+        Ok(TestRequest::Suite {
+            suite: Suite::Unit,
+            skip_difftest: true
+        })
+    );
+    assert_eq!(
+        parse_test_args(&strings(&["--suite", "Gpu"])),
+        Ok(TestRequest::Suite {
+            suite: Suite::Gpu,
+            skip_difftest: false
+        })
+    );
+    // Another suite: refused, naming the suite.
+    let error = parse_test_args(&strings(&[
+        "--suite",
+        "Unit",
+        "--profile",
+        "dev",
+        "--test",
+        "subgroup",
+    ]))
+    .unwrap_err();
+    assert!(error.contains("--suite Gpu only, not Unit"), "{error}");
+    // A profile the gust-wgpu tests cannot build under (no run-time compiler), or a malformed one.
+    for profile in [
+        "native",
+        "native+subgroups",
+        "web",
+        "cpu",
+        "dev+",
+        "devx",
+        "dev+a b",
+        "",
+    ] {
+        let error = parse_test_args(&strings(&[
+            "--suite",
+            "Gpu",
+            "--profile",
+            profile,
+            "--test",
+            "subgroup",
+        ]))
+        .unwrap_err();
+        assert!(error.contains("--profile"), "{profile}: {error}");
+    }
+    // A target without a pin, naming the targets that have one.
+    let error = parse_test_args(&strings(&[
+        "--suite",
+        "Gpu",
+        "--profile",
+        "dev",
+        "--test",
+        "typed",
+    ]))
+    .unwrap_err();
+    assert!(
+        error.contains("GPU_TARGET_PINS") && error.contains("capabilities, subgroup"),
+        "{error}"
+    );
+    // The wrong order, a missing half and extra words are the usage error, which keeps the old flag in it.
+    for args in [
+        strings(&["--suite", "Gpu", "--test", "subgroup", "--profile", "dev"]),
+        strings(&["--suite", "Gpu", "--profile", "dev"]),
+        strings(&["--suite", "Gpu", "--test", "subgroup"]),
+        strings(&["--profile", "dev", "--test", "subgroup"]),
+        strings(&[
+            "--suite",
+            "Gpu",
+            "--profile",
+            "dev",
+            "--test",
+            "subgroup",
+            "--skip-difftest",
+        ]),
+    ] {
+        let error = parse_test_args(&args).unwrap_err();
+        assert!(
+            error.contains("[--skip-difftest]") && error.contains("--profile"),
+            "{args:?}: {error}"
+        );
+    }
+}
+
+/// The calls and profiles a [`profile_runner`] was given.
+type Seen = RefCell<Vec<(Vec<String>, Option<String>)>>;
+
+/// A runner that records the call and the profile it gets, answering with `output`.
+fn profile_runner(
+    seen: &Seen,
+    output: String,
+) -> impl Fn(&Path, &[String], Option<&str>) -> Result<(TestTotals, String), String> + '_ {
+    move |_, args, profile| {
+        seen.borrow_mut()
+            .push((args.to_vec(), profile.map(str::to_owned)));
+        Ok((sum_test_results(&output), output.clone()))
+    }
+}
+
+/// One target under a profile: the call is the target's alone, the runner is given the profile (that is what replaces
+/// the `dev` of the workspace steps), and the output must be one `ok` result line with the pinned number of tests.
+#[test]
+fn a_profile_run_makes_one_targeted_call_and_is_judged_against_its_pin() {
+    let root = Path::new("ROOT");
+    let seen = RefCell::new(Vec::new());
+    for (target, passed) in GPU_TARGET_PINS {
+        let output = gpu_suite_output(passed, 1);
+        assert_eq!(
+            run_gpu_target(
+                root,
+                "dev+subgroups",
+                target,
+                &profile_runner(&seen, output)
+            ),
+            Ok(()),
+            "{target}"
+        );
+    }
+    assert_eq!(
+        *seen.borrow(),
+        GPU_TARGET_PINS
+            .iter()
+            .map(|(target, _)| (
+                strings(&[
+                    "test",
+                    "--locked",
+                    "-p",
+                    "gust-compute-wgpu",
+                    "--test",
+                    target
+                ]),
+                Some("dev+subgroups".to_owned())
+            ))
+            .collect::<Vec<_>>()
+    );
+    // One test more, one fewer, a second result line (a doc-test run, say) and a failure all fail, naming the pin.
+    let (target, passed) = GPU_TARGET_PINS[1];
+    for output in [
+        gpu_suite_output(passed + 1, 1),
+        gpu_suite_output(passed - 1, 1),
+        gpu_suite_output(passed, 2),
+        gpu_suite_output(passed, 1).replace("0 failed", "1 failed"),
+    ] {
+        let error =
+            run_gpu_target(root, "dev", target, &profile_runner(&seen, output)).unwrap_err();
+        assert!(error.contains("GPU_TARGET_PINS"), "{error}");
+        assert!(!error.contains("GPU_SUITE_PIN"), "{error}");
+    }
+    // A profile or a target that is refused never reaches cargo.
+    let before = seen.borrow().len();
+    assert!(
+        run_gpu_target(
+            root,
+            "native",
+            target,
+            &profile_runner(&seen, String::new())
+        )
+        .is_err()
+    );
+    assert!(run_gpu_target(root, "dev", "typed", &profile_runner(&seen, String::new())).is_err());
+    assert_eq!(seen.borrow().len(), before);
+    // The runner's own failure passes through.
+    let failing = |_: &Path, _: &[String], _: Option<&str>| Err("cargo failed".to_owned());
+    assert_eq!(
+        run_gpu_target(root, "dev", target, &failing),
+        Err("cargo failed".to_owned())
+    );
+}
+
+/// The whole-suite output stays judged as before: its messages still name `GPU_SUITE_PIN`.
+#[test]
+fn the_suite_pin_messages_are_unchanged() {
+    let call = owned_call(&GPU_SUITE_CALL);
+    let error = check_gpu_suite_counts(
+        &call,
+        &gpu_suite_output(GPU_SUITE_PIN.passed + 1, GPU_SUITE_PIN.result_lines),
+        GPU_SUITE_PIN,
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("(GPU_SUITE_PIN.passed)")
+            && error.contains("change GPU_SUITE_PIN in xtask/src/verify.rs"),
+        "{error}"
+    );
+}
+
+/// Each pinned target is a test file of gust-wgpu, and its pin is the number of `#[test]` functions in it, so a test
+/// added to or removed from the file fails here before it fails a run on a GPU.
+#[test]
+fn the_target_pins_match_the_tests_of_their_files() {
+    for (target, passed) in GPU_TARGET_PINS {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../crates/gust-wgpu/tests")
+            .join(format!("{target}.rs"));
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("{target}: {}: {error}", path.display()));
+        let tests = text.lines().filter(|line| line.trim() == "#[test]").count() as u64;
+        assert_eq!(tests, passed, "{target}: change GPU_TARGET_PINS");
+    }
+}
+
+/// The lavapipe job runs the `+subgroups` build (m8.w2): after the Gpu suite (which keeps the `dev` pins), both pinned
+/// targets under `dev+subgroups` through the xtask, in both lists, with the log kept as evidence.
+#[test]
+fn gpu_software_runs_the_subgroup_targets_under_the_profile() {
+    let workflow = workflow_text("gpu-software.yml");
+    let job = job_text(&workflow, "gpu-software");
+    let name = "Subgroups on lavapipe (dev+subgroups)";
+    let step = step_text(&job, name);
+    // Both lists: no condition on the nightly flag.
+    assert!(!step.contains("        if:"), "{step}");
+    for target in ["subgroup", "capabilities"] {
+        assert!(
+            step.contains(&format!(
+                "cargo --locked xtask test --suite Gpu --profile dev+subgroups --test {target} 2>&1 | tee"
+            )),
+            "{target}: {step}"
+        );
+        assert!(
+            GPU_TARGET_PINS.iter().any(|(pinned, _)| *pinned == target),
+            "{target} has no pin"
+        );
+    }
+    assert!(step.contains("set -o pipefail\n"), "{step}");
+    let position = |wanted: &str| {
+        job.find(&format!("      - name: {wanted}\n"))
+            .unwrap_or_else(|| panic!("no step {wanted}"))
+    };
+    assert!(position("Gpu suite on lavapipe") < position(name));
+    assert!(position(name) < position("Differential test (2 seeds; all 8 in the nightly list)"));
+    assert!(
+        step_text(&job, "Collect the evidence").contains("gpu-subgroups.log"),
+        "the log is kept"
     );
 }

@@ -83,6 +83,175 @@ impl<T, const N: usize> IndexMut<u32> for Workgroup<[T; N]> {
 /// enforces by position (GUST-E0414 to E0416). It does nothing here: a kernel that calls it has no CPU twin.
 pub fn workgroup_barrier() {}
 
+mod sealed {
+    pub trait Sealed {}
+    impl Sealed for u32 {}
+    impl Sealed for i32 {}
+    impl Sealed for f32 {}
+}
+
+/// The scalar types a subgroup operation takes: `u32`, `i32` and `f32` (M8, D140). Sealed.
+pub trait SubgroupScalar: Copy + sealed::Sealed {
+    /// The identity of the sum: what the first lane of an exclusive sum gets.
+    const ADD_IDENTITY: Self;
+    /// The identity of the product: what the first lane of an exclusive product gets.
+    const MUL_IDENTITY: Self;
+}
+
+impl SubgroupScalar for u32 {
+    const ADD_IDENTITY: Self = 0;
+    const MUL_IDENTITY: Self = 1;
+}
+
+impl SubgroupScalar for i32 {
+    const ADD_IDENTITY: Self = 0;
+    const MUL_IDENTITY: Self = 1;
+}
+
+impl SubgroupScalar for f32 {
+    const ADD_IDENTITY: Self = 0.0;
+    const MUL_IDENTITY: Self = 1.0;
+}
+
+/// The integer types the bitwise subgroup operations take: `u32` and `i32` (M8, D140). Sealed.
+pub trait SubgroupInteger: SubgroupScalar {}
+
+impl SubgroupInteger for u32 {}
+impl SubgroupInteger for i32 {}
+
+// Rust shadows of the subgroup operations (M8, D140). A subgroup is the group of invocations the GPU runs in lockstep;
+// the operations combine a value across the active invocations of the calling invocation's subgroup. Each shadow has
+// the meaning of a subgroup of one invocation, so that a body type-checks as ordinary Rust and the CPU form of a
+// kernel never runs one: a body that uses them is accepted only under `requires(subgroups)` (GUST-E0745), has no
+// twin, and the portable body is the kernel's CPU form. The lane count is a run-time value, `subgroup_size()`.
+
+/// The sum of `value` over the invocations of the subgroup (Slang `WaveActiveSum`, WGSL `subgroupAdd`). Integers wrap;
+/// an `f32` sum has no defined order. The shadow is the sum over one invocation.
+pub fn subgroup_add<T: SubgroupScalar>(value: T) -> T {
+    value
+}
+
+/// The product of `value` over the invocations of the subgroup (`WaveActiveProduct`, `subgroupMul`).
+pub fn subgroup_mul<T: SubgroupScalar>(value: T) -> T {
+    value
+}
+
+/// The smallest `value` of the subgroup (`WaveActiveMin`, `subgroupMin`).
+pub fn subgroup_min<T: SubgroupScalar>(value: T) -> T {
+    value
+}
+
+/// The largest `value` of the subgroup (`WaveActiveMax`, `subgroupMax`).
+pub fn subgroup_max<T: SubgroupScalar>(value: T) -> T {
+    value
+}
+
+/// The bitwise AND of `value` over the subgroup (`WaveActiveBitAnd`, `subgroupAnd`).
+pub fn subgroup_and<T: SubgroupInteger>(value: T) -> T {
+    value
+}
+
+/// The bitwise OR of `value` over the subgroup (`WaveActiveBitOr`, `subgroupOr`).
+pub fn subgroup_or<T: SubgroupInteger>(value: T) -> T {
+    value
+}
+
+/// The bitwise XOR of `value` over the subgroup (`WaveActiveBitXor`, `subgroupXor`).
+pub fn subgroup_xor<T: SubgroupInteger>(value: T) -> T {
+    value
+}
+
+/// Whether `value` is true in every invocation of the subgroup (`WaveActiveAllTrue`, `subgroupAll`).
+pub fn subgroup_all(value: bool) -> bool {
+    value
+}
+
+/// Whether `value` is true in any invocation of the subgroup (`WaveActiveAnyTrue`, `subgroupAny`).
+pub fn subgroup_any(value: bool) -> bool {
+    value
+}
+
+/// A bit mask of the invocations of the subgroup whose `value` is true (`WaveActiveBallot`, `subgroupBallot`): bit
+/// `k` of the 128 bits, word `k / 32` bit `k % 32`, is invocation `k`'s. A subgroup is at most 128 invocations wide.
+pub fn subgroup_ballot(value: bool) -> crate::math::UVec4 {
+    crate::math::UVec4::new(u32::from(value), 0, 0, 0)
+}
+
+/// The `value` of the first active invocation of the subgroup (`WaveReadLaneFirst`, `subgroupBroadcastFirst`). Ran on
+/// the RTX 5090 for `i32` and `f32`, which spike S3 did not cover (`u32` only); not run on the Radeon 890M
+/// (`docs/SEMANTICS.md`, "Forms beyond S3's cells").
+pub fn subgroup_broadcast_first<T: SubgroupScalar>(value: T) -> T {
+    value
+}
+
+/// The `value` of invocation `lane` of the subgroup, for a `lane` that is the same in every invocation. A literal
+/// `lane` is `WaveBroadcastLaneAt` (`subgroupBroadcast`); any other expression is `WaveReadLaneAt`, which is
+/// `subgroupShuffle` (WGSL's broadcast takes a constant). The shadow is the subgroup of one invocation. S3 covered
+/// `u32`. Beyond it, on the RTX 5090 only, `f32` with a literal lane and `i32` with a computed lane ran; `i32` with a
+/// literal lane and `f32` with a computed lane did not run on any adapter, and none ran on the Radeon 890M
+/// (`docs/SEMANTICS.md`, "Forms beyond S3's cells").
+pub fn subgroup_broadcast<T: SubgroupScalar>(value: T, lane: u32) -> T {
+    let _ = lane;
+    value
+}
+
+/// The `value` of invocation `lane` of the subgroup, where `lane` may differ per invocation (`WaveShuffle`,
+/// `subgroupShuffle`). A computed `lane` lowers to `WaveShuffle`, where S3's cell was `WaveReadLaneAt`; that form,
+/// and `i32` and `f32` values, ran on the RTX 5090 only, not on the Radeon 890M (`docs/SEMANTICS.md`, "Forms beyond
+/// S3's cells").
+pub fn subgroup_shuffle<T: SubgroupScalar>(value: T, lane: u32) -> T {
+    let _ = lane;
+    value
+}
+
+/// The sum of `value` over the invocations of the subgroup below this one (`WavePrefixSum`,
+/// `subgroupExclusiveAdd`); the first invocation gets 0.
+pub fn subgroup_exclusive_add<T: SubgroupScalar>(value: T) -> T {
+    let _ = value;
+    T::ADD_IDENTITY
+}
+
+/// The product of `value` over the invocations of the subgroup below this one (`WavePrefixProduct`,
+/// `subgroupExclusiveMul`); the first invocation gets 1.
+pub fn subgroup_exclusive_mul<T: SubgroupScalar>(value: T) -> T {
+    let _ = value;
+    T::MUL_IDENTITY
+}
+
+/// The sum of `value` over this invocation and the ones below it: the exclusive sum plus `value`, a derived
+/// operation.
+pub fn subgroup_inclusive_add<T: SubgroupScalar>(value: T) -> T {
+    value
+}
+
+/// The product of `value` over this invocation and the ones below it: the exclusive product times `value`, a derived
+/// operation.
+pub fn subgroup_inclusive_mul<T: SubgroupScalar>(value: T) -> T {
+    value
+}
+
+/// The number of invocations of the subgroup whose `value` is true: the popcount of the ballot, a derived operation.
+pub fn subgroup_count(value: bool) -> u32 {
+    u32::from(value)
+}
+
+/// Whether this is the first active invocation of the subgroup, a derived operation (`subgroup_broadcast_first` of
+/// the lane equals the lane; the native `subgroupElect` is not in naga 30.0.1).
+pub fn subgroup_elect() -> bool {
+    true
+}
+
+/// The number of invocations of the subgroup (`WaveGetLaneCount`): 32, 64 or another power of two the adapter
+/// reports, fixed for a dispatch and not for a device (SEMANTICS section 5). The shadow subgroup has one.
+pub fn subgroup_size() -> u32 {
+    1
+}
+
+/// This invocation's index in its subgroup, `0..subgroup_size()` (`WaveGetLaneIndex`). The shadow subgroup has lane 0.
+pub fn subgroup_lane() -> u32 {
+    0
+}
+
 /// GPU invocation metadata. The CPU twin (`gust::cpu`) constructs one per invocation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(C)]

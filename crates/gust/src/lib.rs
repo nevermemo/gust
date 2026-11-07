@@ -236,9 +236,13 @@ pub use reflect::{
 };
 pub use runtime::{
     ConstantBuffer, GroupId, Invocation, LocalId, RWStructuredBuffer, SV_DispatchThreadID,
-    SV_GroupID, SV_GroupThreadID, Storage, StorageMut, StructuredBuffer, UVec3, Uniform, Workgroup,
-    atomic_add, atomic_compare_exchange, atomic_exchange, atomic_max, atomic_min, float, int, uint,
-    workgroup_barrier,
+    SV_GroupID, SV_GroupThreadID, Storage, StorageMut, StructuredBuffer, SubgroupInteger,
+    SubgroupScalar, UVec3, Uniform, Workgroup, atomic_add, atomic_compare_exchange,
+    atomic_exchange, atomic_max, atomic_min, float, int, subgroup_add, subgroup_all, subgroup_and,
+    subgroup_any, subgroup_ballot, subgroup_broadcast, subgroup_broadcast_first, subgroup_count,
+    subgroup_elect, subgroup_exclusive_add, subgroup_exclusive_mul, subgroup_inclusive_add,
+    subgroup_inclusive_mul, subgroup_lane, subgroup_max, subgroup_min, subgroup_mul, subgroup_or,
+    subgroup_shuffle, subgroup_size, subgroup_xor, uint, workgroup_barrier,
 };
 pub use texture::{
     Sampler, SamplerOptions, StorageTexture2D, Texture2D, TextureUse, WriteTexture2D,
@@ -255,6 +259,10 @@ pub mod prelude {
         ConstantBuffer, GroupId, Invocation, LocalId, RWStructuredBuffer, SV_DispatchThreadID,
         SV_GroupID, SV_GroupThreadID, Storage, StorageMut, StructuredBuffer, UVec3, Uniform,
         Workgroup, atomic_add, atomic_compare_exchange, atomic_exchange, atomic_max, atomic_min,
-        float, int, uint, workgroup_barrier,
+        float, int, subgroup_add, subgroup_all, subgroup_and, subgroup_any, subgroup_ballot,
+        subgroup_broadcast, subgroup_broadcast_first, subgroup_count, subgroup_elect,
+        subgroup_exclusive_add, subgroup_exclusive_mul, subgroup_inclusive_add,
+        subgroup_inclusive_mul, subgroup_lane, subgroup_max, subgroup_min, subgroup_mul,
+        subgroup_or, subgroup_shuffle, subgroup_size, subgroup_xor, uint, workgroup_barrier,
     };
 }

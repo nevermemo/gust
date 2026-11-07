@@ -13,7 +13,7 @@ mod barrier;
 pub(crate) mod classify;
 pub(crate) mod limits;
 
-pub(crate) use barrier::{is_barrier_call, workgroup_array};
+pub(crate) use barrier::{is_barrier_call, subgroup_operation, workgroup_array};
 
 const BANNED_NAMES: &[&str] = &[
     "std",
@@ -766,6 +766,19 @@ fn validate_function(
         syn::FnArg::Receiver(_) => None,
     };
     let is_kernel = crate::expand::kernel_attribute_in(stage, function)?.is_some();
+    // The names of the subgroup operations are the dialect's: a call of one is that operation (the emitter and the
+    // classifier read the name), so a function of the module cannot take the name (m8.s, D140).
+    if barrier::subgroup_arity(&function.sig.ident.to_string()).is_some() {
+        return Err(diagnostics::error(
+            Code::SubgroupNotAllowed,
+            &function.sig.ident,
+            format!(
+                "`{}` is the name of a subgroup operation; a function of a GPU module cannot take it, because a call \
+                 of the name is that operation: choose another name",
+                function.sig.ident
+            ),
+        ));
+    }
     if !is_kernel
         && let Some(argument) = function
             .sig
@@ -986,8 +999,39 @@ fn check_workgroup_rules(
         matches!(argument, syn::FnArg::Typed(argument)
             if parameter_flavor_in(stage, &argument.ty) == ParameterFlavor::Workgroup)
     });
-    let barrier_kernel = is_kernel && (has_memory || barrier::has_barrier(function));
-    barrier::check(function, is_kernel, barrier_kernel)?;
+    // A kernel that calls a subgroup operation is a barrier kernel for the early exits and the jumps (E0415, E0416): an
+    // invocation that skipped the call would leave the others of its subgroup with a wrong value.
+    let uses_subgroups = is_kernel && barrier::has_subgroup_call(function);
+    let barrier_kernel =
+        is_kernel && (has_memory || barrier::has_barrier(function) || uses_subgroups);
+    barrier::check(
+        function,
+        is_kernel,
+        barrier_kernel,
+        barrier::requires_subgroups(function),
+    )?;
+    // Full subgroups only (E0751): the invocation count is a multiple of 64, which every subgroup size of the
+    // certified adapters (4, 8, 32, 64) divides. `Error::SubgroupSize` is the run-time check of the same rule.
+    if uses_subgroups
+        && let Some((options, _)) = crate::expand::kernel_attribute_in(stage, function)?
+    {
+        let [x, y, z] = options.workgroup_size;
+        let invocations = u64::from(x) * u64::from(y) * u64::from(z);
+        if !invocations.is_multiple_of(64) {
+            return Err(diagnostics::error(
+                Code::SubgroupInvocations,
+                &function.sig,
+                format!(
+                    "kernel `{}` calls subgroup operations, so its workgroup runs whole subgroups only: the invocation \
+                     count must be a multiple of 64, and `workgroup_size({x}, {y}, {z})` has {invocations}",
+                    function.sig.ident
+                ),
+            ));
+        }
+    }
+    if !(has_memory || barrier::has_barrier(function)) {
+        return Ok(());
+    }
     if !barrier_kernel {
         return Ok(());
     }
@@ -1744,6 +1788,22 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                     "`workgroup_barrier()` is a statement of its own (`workgroup_barrier();`), not a value or part of \
                      an expression",
                 );
+                return;
+            }
+            if let Some(operation) = barrier::subgroup_operation(call) {
+                // The position and the capability are judged by `barrier::check`, once the generic visitor passed.
+                let arity = barrier::subgroup_arity(operation).unwrap_or(0);
+                if call.args.len() != arity {
+                    self.reject(
+                        Code::BuiltinArguments,
+                        call,
+                        &format!("`{operation}` takes exactly {arity} argument(s) here",),
+                    );
+                    return;
+                }
+                for argument in &call.args {
+                    self.visit_expr(argument);
+                }
                 return;
             }
             if let Some(op) = atomic_operation_name(path) {

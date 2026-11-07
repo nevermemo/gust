@@ -50,7 +50,7 @@ use quote::{ToTokens, quote};
 use syn::ext::IdentExt as _;
 use syn::visit::{self, Visit};
 
-use super::barrier::is_barrier_call;
+use super::barrier::{is_barrier_call, subgroup_operation};
 use super::{atomic_buffer_names, atomic_operation_name};
 use crate::diagnostics::{self, Code};
 use crate::profile::StageProfile;
@@ -120,6 +120,8 @@ pub(crate) enum Why {
     WorkgroupMemory,
     /// A `workgroup_barrier()` call.
     Barrier,
+    /// A subgroup operation (`subgroup_add` and the rest, M8): a fragment shader has no subgroup of its own to combine.
+    Subgroup,
     /// A `LocalId` or `GroupId` parameter: an invocation built-in other than the global id.
     InvocationBuiltin,
     /// An atomic operation.
@@ -171,6 +173,7 @@ impl Why {
             | Self::OutputUnwritten => Code::ShapeOutputUse,
             Self::WorkgroupMemory
             | Self::Barrier
+            | Self::Subgroup
             | Self::InvocationBuiltin
             | Self::Atomic
             | Self::StorageTexture
@@ -189,6 +192,9 @@ impl Why {
             }
             Self::Barrier => {
                 "is a workgroup barrier, which a fragment shader does not have".to_owned()
+            }
+            Self::Subgroup => {
+                "is a subgroup operation, which the `pixel` shape does not take".to_owned()
             }
             Self::InvocationBuiltin => {
                 "is an invocation id other than the global id, and a pixel has only the \
@@ -358,6 +364,9 @@ pub(crate) fn classify(
     scan.visit_block(&function.block);
     for barrier in &scan.barriers {
         found.exclude(Why::Barrier, barrier, "");
+    }
+    for subgroup in &scan.subgroups {
+        found.exclude(Why::Subgroup, subgroup, "");
     }
     for atomic in &scan.atomics {
         found.exclude(Why::Atomic, atomic, "");
@@ -701,6 +710,8 @@ struct Alias {
 struct BodyScan {
     id: String,
     barriers: Vec<TokenStream>,
+    /// The subgroup operations (M8): `Why::Subgroup`, found by name, not through the ledger of callees.
+    subgroups: Vec<TokenStream>,
     atomics: Vec<TokenStream>,
     aliases: Vec<Alias>,
     /// Every binding of a name in the body, in source order, with the pattern.
@@ -712,6 +723,8 @@ impl<'ast> Visit<'ast> for BodyScan {
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
         if is_barrier_call(call) {
             self.barriers.push(call.to_token_stream());
+        } else if subgroup_operation(call).is_some() {
+            self.subgroups.push(call.to_token_stream());
         } else if let syn::Expr::Path(path) = call.func.as_ref()
             && atomic_operation_name(path).is_some()
         {

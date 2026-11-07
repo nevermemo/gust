@@ -341,10 +341,18 @@ pub fn compile_reflected(
     let helper = crate::toolchain::helper_path()
         .map_err(|reason| Error::Compiler(slang::Error::Toolchain(reason)))?
         .unwrap_or_else(crate::toolchain::bare_helper_name);
-    compile_reflected_with_helper(kernel, target, helper)
+    let mut compiled = compile_reflected_with_helper(kernel, target, helper)?;
+    // The run-time compile is the one that hands the artifact to the device: the subgroup fix-up (M8, D140) makes
+    // Slang's WGSL what the pinned naga takes. The artifact hash was checked against the helper's text above, and a
+    // run-time compile stores nothing.
+    compiled.artifact = slang::fix_up_wgsl(compiled.artifact, target);
+    Ok(compiled)
 }
 
 /// [`compile_reflected`] with the native reflection helper at `helper` instead of the one the toolchain rules find.
+/// The artifact is the helper's WGSL as it is: the subgroup fix-up of `gust::slang::wgsl` (M8, D140) has **not**
+/// been applied to it, so a kernel that calls a subgroup operation is WGSL that the pinned `naga` refuses. Use
+/// [`compile_reflected`], which applies the fix-up, to hand the artifact to a device.
 /// Fails with [`Error::HelperUnavailable`] when the helper cannot be launched, with [`Error::Compiler`] when the
 /// compile fails, and with the other variants of [`Error`] when its reflection output is malformed or does not belong
 /// to the kernel.

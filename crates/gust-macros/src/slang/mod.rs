@@ -428,6 +428,12 @@ pub(crate) fn emit_kernel_in(
         .unwrap();
     }
 
+    // The subgroup operations that need a helper (M8, D140): overloads by operand type for the bitwise reductions, the
+    // inclusive scans and the count. Only the kernel is scanned: a helper function holds none (GUST-E0745).
+    let mut subgroups = SubgroupUsage::default();
+    subgroups.visit_item_fn(kernel);
+    output.push_str(&subgroup_helper_text(&subgroups.0));
+
     // Rust `Option<T>` lowers to Slang's `Optional<T>`. Generic helpers let the
     // payload type be inferred at each use instead of requiring annotations.
     let mut option = OptionUsage(false);
@@ -1225,6 +1231,10 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         syn::Expr::Call(call) if crate::validate::is_barrier_call(call) => {
             "GroupMemoryBarrierWithGroupSync()".to_owned()
         }
+        // The validator admits a subgroup operation in the body of a `requires(subgroups)` kernel only (GUST-E0745).
+        syn::Expr::Call(call) if crate::validate::subgroup_operation(call).is_some() => {
+            emit_subgroup_call(call)?
+        }
         syn::Expr::Call(call) => format!(
             "{}({})",
             emit_expression(&call.func)?,
@@ -1549,6 +1559,141 @@ impl<'ast> Visit<'ast> for NotUsage {
         self.0 |= matches!(expression.op, syn::UnOp::Not(_));
         syn::visit::visit_expr_unary(self, expression);
     }
+}
+
+/// The Slang of a subgroup operation (M8, D140). The macro sees no types, so an operation that Slang's own intrinsics
+/// overload by operand type is the intrinsic (`WaveActiveSum(x)` is `uint`, `int` or `float` by `x`), and an operation
+/// that needs a different form per type, or an operand twice, is a call of a helper that
+/// [`subgroup_helper_text`] defines in overloads (the `__gust_xor` pattern): the bitwise reductions (an `i32` goes
+/// through `asuint` and `asint`, which the DX12 compiler needs, S3), the inclusive scans and the count.
+///
+/// `subgroup_broadcast(x, lane)` is `WaveBroadcastLaneAt` for an integer literal `lane`, which slangc requires to be
+/// a compile-time constant (E40012), and `WaveReadLaneAt`, WGSL's `subgroupShuffle`, for any other expression (S1).
+/// `subgroup_elect()` is the first active lane comparing its own index, since naga 30.0.1 has no `subgroupElect`.
+fn emit_subgroup_call(call: &syn::ExprCall) -> syn::Result<String> {
+    let name =
+        crate::validate::subgroup_operation(call).expect("the caller matched a subgroup operation");
+    let arguments = emit_list(call.args.iter())?;
+    let list = arguments.join(", ");
+    let lane_is_literal = call.args.get(1).is_some_and(is_integer_literal);
+    Ok(match name {
+        "subgroup_add" => format!("WaveActiveSum({list})"),
+        "subgroup_mul" => format!("WaveActiveProduct({list})"),
+        "subgroup_min" => format!("WaveActiveMin({list})"),
+        "subgroup_max" => format!("WaveActiveMax({list})"),
+        "subgroup_and" => format!("{SUBGROUP_AND}({list})"),
+        "subgroup_or" => format!("{SUBGROUP_OR}({list})"),
+        "subgroup_xor" => format!("{SUBGROUP_XOR}({list})"),
+        "subgroup_all" => format!("WaveActiveAllTrue({list})"),
+        "subgroup_any" => format!("WaveActiveAnyTrue({list})"),
+        "subgroup_ballot" => format!("WaveActiveBallot({list})"),
+        "subgroup_broadcast_first" => format!("WaveReadLaneFirst({list})"),
+        "subgroup_broadcast" if lane_is_literal => format!("WaveBroadcastLaneAt({list})"),
+        "subgroup_broadcast" => format!("WaveReadLaneAt({list})"),
+        "subgroup_shuffle" => format!("WaveShuffle({list})"),
+        "subgroup_exclusive_add" => format!("WavePrefixSum({list})"),
+        "subgroup_exclusive_mul" => format!("WavePrefixProduct({list})"),
+        "subgroup_inclusive_add" => format!("{SUBGROUP_INCLUSIVE_ADD}({list})"),
+        "subgroup_inclusive_mul" => format!("{SUBGROUP_INCLUSIVE_MUL}({list})"),
+        "subgroup_count" => format!("{SUBGROUP_COUNT}({list})"),
+        "subgroup_elect" => {
+            "(WaveGetLaneIndex() == WaveReadLaneFirst(WaveGetLaneIndex()))".to_owned()
+        }
+        "subgroup_size" => "WaveGetLaneCount()".to_owned(),
+        "subgroup_lane" => "WaveGetLaneIndex()".to_owned(),
+        other => unreachable!("`{other}` is a subgroup operation but has no emitter arm"),
+    })
+}
+
+const SUBGROUP_AND: &str = "__gust_subgroup_and";
+const SUBGROUP_OR: &str = "__gust_subgroup_or";
+const SUBGROUP_XOR: &str = "__gust_subgroup_xor";
+const SUBGROUP_INCLUSIVE_ADD: &str = "__gust_subgroup_inclusive_add";
+const SUBGROUP_INCLUSIVE_MUL: &str = "__gust_subgroup_inclusive_mul";
+const SUBGROUP_COUNT: &str = "__gust_subgroup_count";
+
+/// Whether `expression` is an integer literal, through parentheses.
+fn is_integer_literal(expression: &syn::Expr) -> bool {
+    match expression {
+        syn::Expr::Lit(literal) => matches!(literal.lit, syn::Lit::Int(_)),
+        syn::Expr::Paren(paren) => is_integer_literal(&paren.expr),
+        syn::Expr::Group(group) => is_integer_literal(&group.expr),
+        _ => false,
+    }
+}
+
+/// The subgroup operations a function calls, for the helpers [`subgroup_helper_text`] defines.
+#[derive(Default)]
+struct SubgroupUsage(std::collections::BTreeSet<&'static str>);
+
+impl<'ast> Visit<'ast> for SubgroupUsage {
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if let Some(name) = crate::validate::subgroup_operation(call) {
+            self.0.insert(name);
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+}
+
+/// The overloaded Slang helpers the subgroup operations of a kernel call, in a fixed order, and only those it calls.
+fn subgroup_helper_text(used: &std::collections::BTreeSet<&'static str>) -> String {
+    let mut text = String::new();
+    for (operation, helper, intrinsic) in [
+        ("subgroup_and", SUBGROUP_AND, "WaveActiveBitAnd"),
+        ("subgroup_or", SUBGROUP_OR, "WaveActiveBitOr"),
+        ("subgroup_xor", SUBGROUP_XOR, "WaveActiveBitXor"),
+    ] {
+        if used.contains(operation) {
+            // The signed overload reduces the bits of the unsigned value: DX12's compiler has no signed bit
+            // reduction (S3), and the result is the same bits.
+            writeln!(
+                text,
+                "uint {helper}(uint value) {{ return {intrinsic}(value); }}"
+            )
+            .unwrap();
+            writeln!(
+                text,
+                "int {helper}(int value) {{ return asint({intrinsic}(asuint(value))); }}"
+            )
+            .unwrap();
+        }
+    }
+    for (operation, helper, scan, combine) in [
+        (
+            "subgroup_inclusive_add",
+            SUBGROUP_INCLUSIVE_ADD,
+            "WavePrefixSum",
+            '+',
+        ),
+        (
+            "subgroup_inclusive_mul",
+            SUBGROUP_INCLUSIVE_MUL,
+            "WavePrefixProduct",
+            '*',
+        ),
+    ] {
+        if used.contains(operation) {
+            // The exclusive scan combined with the operand, which the helper names once.
+            for ty in ["uint", "int", "float"] {
+                writeln!(
+                    text,
+                    "{ty} {helper}({ty} value) {{ return {scan}(value) {combine} value; }}"
+                )
+                .unwrap();
+            }
+        }
+    }
+    if used.contains("subgroup_count") {
+        writeln!(
+            text,
+            "uint {SUBGROUP_COUNT}(bool value) {{ uint4 ballot = WaveActiveBallot(value); return countbits(ballot.x) + countbits(ballot.y) + countbits(ballot.z) + countbits(ballot.w); }}"
+        )
+        .unwrap();
+    }
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    text
 }
 
 /// Whether an expression is a literal operand, possibly negated or parenthesised (`2`, `-1`, `(2.0)`).

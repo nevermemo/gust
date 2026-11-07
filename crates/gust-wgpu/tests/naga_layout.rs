@@ -993,10 +993,16 @@ fn the_goldens_are_the_fixtures_directory() {
     // kernels run on a device in `tests/par_for.rs`, which checks every binding's layout at bind time.
     // `variant.rs` and `variant.slang` (slice m8.b1) are a macro-only fixture: the golden of `gust-compute-macros`
     // pins the Slang of both bodies of one kernel, and a descriptor holds the one body a profile selects.
+    // `subgroup.rs` and `subgroup.slang` (slice m8.s) are the same kind: the pairs of bodies are pinned by that golden
+    // and the run-time results by `tests/subgroup.rs`, which includes the fixture for the bodies the profile selects.
     let in_scope = |set: &BTreeSet<String>| -> BTreeSet<String> {
         set.iter()
             .filter(|name| name.ends_with(".slang") || name.ends_with(".rs"))
-            .filter(|name| !name.starts_with("par_for.") && !name.starts_with("variant."))
+            .filter(|name| {
+                !name.starts_with("par_for.")
+                    && !name.starts_with("variant.")
+                    && !name.starts_with("subgroup.")
+            })
             .cloned()
             .collect()
     };

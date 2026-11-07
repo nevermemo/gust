@@ -370,7 +370,12 @@ fn the_committed_manifests_keep_the_bridge_out_and_the_kernels_packageable() {
     let kernels = fixture_file("kernels/Cargo.toml");
     assert!(dependency_disables_defaults(&kernels, "gust"));
     // R2-4: `gust` by version plus path, and no `publish = false` (`cargo package` refuses such a package).
-    assert!(kernels.contains("version = \"0.2.0-dev\", path = \"../../../crates/gust\""));
+    // The version is the workspace's, read from the root manifest (xtask has its own package version, so
+    // `env!("CARGO_PKG_VERSION")` would name the wrong package), so a version bump does not edit this test.
+    let version = section_version(&root_manifest(), "workspace.package").unwrap();
+    assert!(kernels.contains(&format!(
+        "version = \"{version}\", path = \"../../../crates/gust\""
+    )));
     assert!(
         !kernels
             .lines()
@@ -1042,9 +1047,16 @@ fn root_manifest() -> String {
 #[test]
 fn the_versions_come_from_the_manifests_and_the_consumer_patches_all_four_packages() {
     let root = root_manifest();
-    assert_eq!(
-        section_version(&root, "workspace.package").as_deref(),
-        Some("0.2.0-dev")
+    // The workspace version is read, not pinned here: three numeric parts before any pre-release suffix.
+    let workspace = section_version(&root, "workspace.package").unwrap();
+    let core = workspace.split(['-', '+']).next().unwrap();
+    let parts: Vec<&str> = core.split('.').collect();
+    assert!(
+        parts.len() == 3
+            && parts
+                .iter()
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())),
+        "workspace.package version `{workspace}`"
     );
     assert_eq!(
         section_version(&fixture_file("kernels/Cargo.toml"), "package").as_deref(),

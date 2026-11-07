@@ -580,6 +580,28 @@ fn the_fixture_depends_on_publishable_members_with_a_caret_requirement_the_relea
 }
 
 #[test]
+fn a_pre_release_requirement_passes_on_a_pre_release_version_and_fails_once_released() {
+    let manifest = "[dependencies]\nalpha = \"1.2.0-dev\"\n";
+    // The development line: the version is a pre-release and the requirement names it.
+    let mut development = members();
+    for member in &mut development {
+        member.version = "1.2.0-dev".to_owned();
+    }
+    assert!(fixture_dependency_problems(manifest, &development).is_empty());
+    // The release (1.2.0): the same requirement is the edit that was missed.
+    let released = members();
+    let problems = fixture_dependency_problems(manifest, &released);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(
+        problems[0].contains("pre-release requirement"),
+        "{problems:?}"
+    );
+    // The released form passes.
+    let plain = "[dependencies]\nalpha = \"1.2\"\n";
+    assert!(fixture_dependency_problems(plain, &released).is_empty());
+}
+
+#[test]
 fn the_consumer_manifest_patches_every_package_onto_its_tree() {
     let trees = vec![
         ("alpha".to_owned(), "C:/w/unpacked/alpha-1.2.0".to_owned()),

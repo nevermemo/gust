@@ -28,16 +28,18 @@ The workspace version is `0.2.0-dev`. Work for 0.2.0 lands on `main`; the 0.1.0 
   the adapter's subgroup size range.
 - An opt-in portable floor: `limits = "portable"` in `[package.metadata.gust]` checks every kernel against
   `gust::limits::PORTABLE`, WebGPU's default limits (`GUST-E0746`).
-- CI runs on pushes to `release/*` as well as `main`, and a `semver` job reports what a branch breaks against
-  `release/0.1`.
+- New public modules of `gust-compute`: `gust::target` (`Target`) and `gust::routes` (`variable_name`,
+  `VARIABLE_PREFIX`, the spelling of the build-time route variables).
 
 ### Changed, and may break code written for 0.1.0
 
 - `KernelDescriptor` is `#[non_exhaustive]` and has new fields (`variant`, `requires`, `target`). Build one with
   `KernelDescriptor::new` and the `with_*` setters instead of a struct literal. `cargo semver-checks` lists this one.
-- The generic entry points of `gust-compute-wgpu` and the runs of `StagedGraph` require the `GpuKernel` marker, which
-  `#[gpu]` kernels get from the macro. A kernel that only exists for the CPU target no longer compiles there, with a
-  message that says so. The semver tool does not list this change.
+- The generic entry points of `gust-compute-wgpu` and the runs of `StagedGraph` require the `GpuKernel` marker.
+  `#[gpu]` kernels get the marker from the macro, so they need no change. A hand-written `Kernel` impl that runs on
+  `HeadlessDevice` adds `impl gust::target::GpuKernel for MyKernel {}`; without it the call is E0277 with a message
+  that says so. The semver tool does not list this change (the marker is `#[doc(hidden)]`).
+- `gust-compute-macros` depends on `toml` 1 (no default features; `std` and `parse`) to read `[package.metadata.gust]`.
 
 ## 0.1.0 (not yet published)
 

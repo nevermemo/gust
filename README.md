@@ -5,6 +5,9 @@ a GPU-centric ECS game engine. **Today it is a working experimental Rust → Sla
 compute subsystem**. There is no ECS,
 renderer, rustc semantic integration, or execution-graph compiler yet.
 
+> **Version.** `main` is the development line, `0.2.0-dev`, and is not yet published. The 0.1 line is the branch
+> `release/0.1`.
+
 Rust supplies the higher-level language and checking environment; Slang owns GPU
 code generation; GUST will connect intentional CPU and GPU execution. We preserve
 the working subsystem while proving that larger model incrementally.
@@ -49,7 +52,7 @@ a strict profile needs neither Slang nor the helper, D45):
 
 - The stable Rust toolchain: 1.90 or newer (the `msrv` CI job type-checks the workspace on 1.90.0);
   this checkout's checks ran on stable 1.98.0 (see "Minimum Rust")
-- Outside this checkout, `cargo install cargo-gust --locked --version "~0.1"` installs the
+- Outside this checkout, `cargo install cargo-gust --locked --version 0.2.0-dev` installs the
   `cargo gust` tool; it works without `GUST_PROFILE` ("Install from crates.io" has the whole setup for a crate of your
   own)
 - `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.20 (`cargo gust slang install` installs it, and
@@ -239,7 +242,7 @@ Slang, nor the helper, nor `cargo-gust`.
 ### Set up the tools
 
 ```sh
-cargo install cargo-gust --locked --version "~0.1"
+cargo install cargo-gust --locked --version 0.2.0-dev
 cargo gust slang install        # downloads Slang 2026.20, checks its SHA-256, unpacks it into the cargo home
 cargo gust slang build-helper   # compiles the native reflection helper against that Slang and prints its path
 cargo gust doctor               # names whatever is still missing

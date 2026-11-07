@@ -130,14 +130,49 @@ crates.io keeps every uploaded version forever: nothing published can be retract
   resume from the command that failed.
   Cargo refuses a version that is already up, so running the whole block again would stop at the first crate that is
   already published.
-- A failure that needs a change (a packaging error, a broken crate): fix it on `main` and release 0.1.1. The four
-  packages share one version and pin each other exactly (D107), so 0.1.1 is published for the remaining crates and
-  for the ones already up, and the procedure restarts at step 1.
+- A failure that needs a change (a packaging error, a broken crate): fix it on `release/0.1`, release 0.1.1 from
+  there, then forward-port the fix to `main`. The four packages share one version and pin each other exactly (D107),
+  so 0.1.1 is published for the remaining crates and for the ones already up, and the procedure restarts at step 1.
 - Yank a version only when that crate is broken for users, and for the 0.0.0 placeholders. Never yank to fix a name or
   a metadata mistake; a patch release fixes those.
+
+## Release lines
+
+`main` is the development line (`0.2.0-dev`). 0.1.0 is not published yet (the owner's deferral, 2026-11-07) and there
+is no `v0.1.0` tag; the 0.1 line is the branch `release/0.1`, and steps 1 to 8 for 0.1.0 run on its tip, not on `main`.
+A 0.1.x fix is made on `release/0.1`, released from there and forward-ported to `main`.
 
 ## After 0.1.0
 
 A later release repeats steps 1 to 8 with the new version: bump `[workspace.package]` and the three exact pins in
 `[workspace.dependencies]` together, add the `CHANGELOG.md` entry, run the full gate on the commit, and publish in the
 same order. A breaking change bumps the minor version of all four (D111).
+
+### Releasing 0.2.0 from `main`
+
+Besides the bump, change every `0.2.0-dev` requirement to the released form (a caret requirement does not match a
+pre-release, so the development line names the pre-release and the release must not):
+
+- the `toml` block of the README's "A first program" and `xtask/src/release/hello-gust/Cargo.toml` (the same text,
+  which a unit test compares) go from `"0.2.0-dev"` to `"0.2"`, and the sentence under that block is reworded;
+- the README's two install lines (`cargo install cargo-gust --locked --version 0.2.0-dev`) become `--version "~0.2"`,
+  and so do the `--version "~0.1"` lines of `crates/gust/README.md`, `crates/cargo-gust/README.md`, the install hint of
+  `crates/cargo-gust/src/doctor.rs` (and its test) and the doc comment of `crates/cargo-gust/src/main.rs`; the note at
+  the top of the README that names `0.2.0-dev` is removed;
+- `tests/precompiled/kernels/Cargo.toml`: the `version = "0.2.0-dev"` of its `gust` path dependency becomes `"0.2.0"`;
+- `CHANGELOG.md`: "Unreleased (0.2.0)" becomes "0.2.0" and loses its sentence about the workspace version; once 0.1.0
+  is published, the "(not yet published)" heading note and the deferral sentences of its entry are removed.
+
+R7 cannot see most of this, with one exception: when the workspace version has no pre-release part, it fails if the
+`hello-gust` fixture still names a pre-release requirement. That is the guard against a missed edit; search the
+repository for `0.2.0-dev` and for `~0.1` as well.
+
+### The semver baseline
+
+The `semver` job of `.github/workflows/ci.yml` reports what a branch breaks against the line below it, for
+`gust-compute` and `gust-compute-wgpu`. The baseline is the git ref `release/0.1` until a version of that line is
+published (`--baseline-rev`); after that it is the latest published version of the line below `main` (the registry
+version or its `v0.1.*` tag). When `main` is released as 0.2.0 and a later `main` is 0.3.0-dev, the baseline moves to
+the 0.2 line in the same way. Move it in the commit that publishes, and keep the job's comment true. The job runs on
+pull requests and on pushes to `main` only; on a release branch a patch release must not break anything, so a job added
+there would use `--release-type patch` against the latest `vX.Y.*` tag and its findings would fail it.

@@ -1146,12 +1146,12 @@ coretests entry above has the same shape.
   flags. The CPU twin and the `cpu` target run the portable bodies of `partial_sums` and `count_if`
   (`tests/cpu-target/kernels/src/variant.rs`, three launches each). The Slang of the twelve bodies is pinned by
   `tests/fixtures/subgroup.slang`, their SPIR-V validates with `spirv-val`, and the fix-up is tested on the WGSL slangc
-  writes for them. **Ran on**: the RTX 5090 only, in this slice's own run (the probe of S3 ran its 43 cells on the
-  5090 and the 890M through Vulkan, on lavapipe in CI (run 42216215411, 43 of 43 plain cells, 8 lanes read in the
-  shader) and on four DX12 entries). The forms beyond S3's cells (`i32` and `f32` `broadcast_first`, `broadcast` and
-  `shuffle`, and `shuffle` with a computed lane) are **not run on the Radeon 890M**; the CI `dev+subgroups` step runs
-  this file on lavapipe, and its result is recorded in the table of the subgroup section when it is green. **Not
-  run**: subgroup sizes other than 32 in these tests, and workgroup sizes other than 64.
+  writes for them. **Ran on**: the RTX 5090 (subgroup size 32), in this slice's own run, and lavapipe (the CI
+  `dev+subgroups` step, run 42378261589: `tests/subgroup.rs` at subgroup size 8, 15 of 15 passed). The probe of S3 ran
+  its 43 cells on the 5090 and the 890M through Vulkan, on lavapipe in CI (run 42216215411, 43 of 43 plain cells, 8
+  lanes read in the shader) and on four DX12 entries. The forms beyond S3's cells (`i32` and `f32` `broadcast_first`,
+  `broadcast` and `shuffle`, and `shuffle` with a computed lane) are **not run on the Radeon 890M**. **Not run**:
+  subgroup sizes other than 8 and 32 in these tests, and workgroup sizes other than 64.
 - **gust-algo, integers** (m7.r1 to m7.r4; `crates/gust-algo/src/tests/gpu.rs`, `twin.rs` and `common.rs`; Gpu, with
   the twin tests in the same cargo call). Reduce `sum`, `min` and `max` of `u32` and `i32`, `sum_wrapping`, the `u32`
   scans, and compaction (`count`, `indices`, the gathers) are exact against an independent reference (an `i128` sum,

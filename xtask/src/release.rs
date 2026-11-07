@@ -829,7 +829,9 @@ fn section_entries<'a>(manifest: &'a str, section: &str) -> Vec<(&'a str, &'a st
 
 /// The problems of the fixture's `[dependencies]`: there is at least one, and each is a publishable member of the
 /// workspace with the plain or caret requirement that D107 gives users (`"0.1"`) and that the version being released
-/// satisfies. Whether the fixture names every crate a user needs is for R7's build to show.
+/// satisfies. A pre-release requirement (`"0.2.0-dev"`, which the development line needs because a caret requirement
+/// does not match a pre-release) is refused when that version is not a pre-release: it is the edit that a release
+/// must make. Whether the fixture names every crate a user needs is for R7's build to show.
 pub(crate) fn fixture_dependency_problems(manifest: &str, members: &[Member]) -> Vec<String> {
     let mut problems = Vec::new();
     let dependencies = section_entries(manifest, "dependencies");
@@ -846,12 +848,26 @@ pub(crate) fn fixture_dependency_problems(manifest: &str, members: &[Member]) ->
                  change the README block and the fixture together)"
             )),
             Some(member) => {
-                let satisfied = dependency_requirement(line)
-                    .is_some_and(|requirement| caret_satisfied(&requirement, &member.version));
+                let requirement = dependency_requirement(line);
+                let satisfied = requirement
+                    .as_deref()
+                    .is_some_and(|requirement| caret_satisfied(requirement, &member.version));
                 if !satisfied {
                     problems.push(format!(
                         "R7: the fixture's `{key}` line must give a caret requirement such as \"0.1\" that the \
                          version being released ({}) satisfies",
+                        member.version
+                    ));
+                } else if has_prerelease(requirement.as_deref().unwrap_or_default())
+                    && !has_prerelease(&member.version)
+                {
+                    // `caret_satisfied` ignores a pre-release suffix, and cargo's `^0.2.0-dev` matches 0.2.0, so
+                    // only this check catches the requirement that was not edited at the release.
+                    problems.push(format!(
+                        "R7: the fixture's `{key}` line names the pre-release requirement `{}`, but the version \
+                         being released ({}) is not a pre-release; change the README block and the fixture to the \
+                         released form (docs/development/RELEASE.md)",
+                        requirement.as_deref().unwrap_or_default(),
                         member.version
                     ));
                 }
@@ -859,6 +875,14 @@ pub(crate) fn fixture_dependency_problems(manifest: &str, members: &[Member]) ->
         }
     }
     problems
+}
+
+/// Whether a version or requirement has a pre-release part (`0.2.0-dev`; build metadata after `+` is not one).
+fn has_prerelease(version: &str) -> bool {
+    version
+        .split('+')
+        .next()
+        .is_some_and(|core| core.contains('-'))
 }
 
 /// The version requirement of a dependency line `key = "req"` or `key = { version = "req", .. }`.

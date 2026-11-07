@@ -70,6 +70,10 @@ mod profile_tests;
 #[path = "tests/manifest.rs"]
 mod manifest_tests;
 
+#[cfg(test)]
+#[path = "tests/variant.rs"]
+mod variant_tests;
+
 /// Marks an inline Rust module as GUST GPU code, or a free scalar function as an element-wise map (D60).
 ///
 /// On a module, the macro validates a deliberately small Rust subset, translates each
@@ -173,10 +177,22 @@ pub(crate) fn gpu_impl_with(
         },
         // A free function: the element-wise map calls of D60 (m7.a1). On error the function follows the error as
         // written.
-        Ok(syn::Item::Fn(function)) => match expand::expand_map(function, profile) {
-            Ok(tokens) => tokens,
-            Err(error) => recover::beside_error(error, &item, None),
-        },
+        // A `#[variant]` on it is GUST-E0740: the function is one body. It goes back without the attribute, which
+        // would be an unknown attribute, and so a second error, to rustc.
+        Ok(syn::Item::Fn(function)) => {
+            if let Some(error) = expand::variant::misplaced_on_function(&function) {
+                let function = expand::variant::without_variant(function);
+                return recover::beside_error(
+                    error,
+                    &quote::ToTokens::to_token_stream(&function),
+                    None,
+                );
+            }
+            match expand::expand_map(function, profile) {
+                Ok(tokens) => tokens,
+                Err(error) => recover::beside_error(error, &item, None),
+            }
+        }
         Ok(other) => {
             let error = diagnostics::error(
                 Code::ItemNotModule,
@@ -192,7 +208,8 @@ pub(crate) fn gpu_impl_with(
 
 /// A rejected module goes back beside the error as written, except that a `#[gpu]` function inside it (GUST-E0716)
 /// loses the attribute: left on, it would expand by itself in the user's crate and add errors that only follow from
-/// the first.
+/// the first. A `#[variant]` function goes back as a `#[kernel]` and `#[variant]` anywhere else is dropped (M8, D139):
+/// the recovery of `recover.rs` knows the one attribute, and an unknown attribute would be a second error.
 fn without_nested_gpu(mut module: syn::ItemMod) -> syn::ItemMod {
     if let Some((_, items)) = &mut module.content {
         for item in items {
@@ -203,5 +220,5 @@ fn without_nested_gpu(mut module: syn::ItemMod) -> syn::ItemMod {
             }
         }
     }
-    module
+    expand::variant::recoverable(module)
 }

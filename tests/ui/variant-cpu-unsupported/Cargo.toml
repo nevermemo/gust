@@ -1,0 +1,11 @@
+[package]
+name = "variant-cpu-unsupported"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata.gust]
+profiles = ["native", "cpu"]
+
+[dependencies]
+gust = { package = "gust-compute", path = "../../../crates/gust" }

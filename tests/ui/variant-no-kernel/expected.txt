@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see shape-twice/expected.txt).
+# A macro error is a `compile_error!` and has no rustc code, so `code: none`.
+code: none
+file: variant-no-kernel/src/main.rs
+line: 10
+message: [GUST-E0742] #[variant(of = prod)] on `sum_subgroups` names no #[kernel] function of this module

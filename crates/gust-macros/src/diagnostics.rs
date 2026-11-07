@@ -370,6 +370,24 @@ codes! {
     /// `sample`), or a texture or sampler type anywhere but a kernel parameter.
     TextureUse = 736 => "GUST-E0736";
 
+    // E0740 to E0750: variants (M8, D139).
+    /// A malformed or misplaced `#[variant]`: not `of = <kernel>` with an optional `requires(..)`, on something that is
+    /// not a function of a `#[gpu]` module, on a `#[kernel]`, setting an option of the kernel, or with a signature
+    /// that is not its kernel's.
+    VariantAttribute = 740 => "GUST-E0740";
+    /// An unknown capability or alias in a `requires(..)`.
+    UnknownCapability = 741 => "GUST-E0741";
+    /// A `#[variant(of = name)]` where `name` is no `#[kernel]` function of the module.
+    VariantTarget = 742 => "GUST-E0742";
+    /// Two bodies of one kernel that require the same set of capabilities, or a set of capabilities that selects
+    /// two bodies.
+    VariantAmbiguous = 743 => "GUST-E0743";
+    /// A profile the crate declares for which a kernel has no body, or the CPU target declared for a kernel with no CPU
+    /// form.
+    ProfileNotCovered = 744 => "GUST-E0744";
+    /// No body of a kernel can be used by the profile being built.
+    NoBodySelectable = 750 => "GUST-E0750";
+
     // E0753: the crate's declarations in its manifest (M8, D138). E0737 to E0752 belong to the other M8 slices.
     /// A malformed `[package.metadata.gust]` table in the `Cargo.toml` of the crate that holds the `#[gpu]` module, the `#[gpu]` function or the `par_for!` call.
     GustMetadata = 753 => "GUST-E0753";
@@ -1243,6 +1261,7 @@ mod tests {
             || file.ends_with("src/tests/grid.rs")
             || file.ends_with("src/tests/par_for.rs")
             || file.ends_with("src/tests/manifest.rs")
+            || file.ends_with("src/tests/variant.rs")
             || file.ends_with("src/validate/mod.rs")
             || file.ends_with("src/validate/classify/tests.rs")
     }

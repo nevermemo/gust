@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see shape-twice/expected.txt).
+# A macro error is a `compile_error!` and has no rustc code, so `code: none`.
+code: none
+file: variant-cpu-unsupported/src/main.rs
+line: 7
+message: [GUST-E0744] kernel `sum` has no CPU form (`cpu = "unsupported"`) but `[package.metadata.gust] profiles` declares `cpu`: remove `cpu = "unsupported"` (a kernel with workgroup memory or a barrier has no CPU form, GUST-E0717), or drop `cpu` from `profiles`

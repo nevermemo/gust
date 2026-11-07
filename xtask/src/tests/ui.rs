@@ -1575,6 +1575,35 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
         "{:?}",
         malformed.expectation
     );
+    // Variants (m8.b1, D139): the pair compiles, and each way it goes wrong is the one error of its fixture. None but
+    // `variant-ok-subgroups` sets a variable: the workspace's `dev` has no capability, which is what `variant-no-body`
+    // needs. `variant-ok-subgroups` builds under `dev+subgroups`, so that rustc compiles the selected variant.
+    assert_eq!(find("variant-ok").expectation, Expectation::Compiles);
+    assert!(find("variant-ok").env.is_empty());
+    assert_eq!(find("variant-ok-subgroups").env, variable("dev+subgroups"));
+    assert_eq!(
+        find("variant-ok-subgroups").expectation,
+        Expectation::Compiles
+    );
+    for (name, code) in [
+        ("variant-malformed", "GUST-E0740"),
+        ("variant-unknown-capability", "GUST-E0741"),
+        ("variant-no-kernel", "GUST-E0742"),
+        ("variant-ambiguous", "GUST-E0743"),
+        ("variant-not-covered", "GUST-E0744"),
+        ("variant-cpu-unsupported", "GUST-E0744"),
+        ("variant-no-body", "GUST-E0750"),
+    ] {
+        let case = find(name);
+        assert!(case.env.is_empty(), "{name}: {:?}", case.env);
+        assert!(
+            matches!(&case.expectation, Expectation::Fails(wanted)
+                if wanted.code == "none"
+                    && wanted.messages.iter().any(|text| text.starts_with(&format!("[{code}] ")))),
+            "{name}: {:?}",
+            case.expectation
+        );
+    }
     // A strict profile with the feature on: the manifest turns it on, the build script refuses.
     assert_eq!(find("profile-native-bridge").env, variable("native"));
     assert_eq!(
@@ -1639,7 +1668,8 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "profile-subgroups-web",
             "profile-unknown",
             "profile-unknown-capability",
-            "typed-call-cpu-target"
+            "typed-call-cpu-target",
+            "variant-ok-subgroups"
         ]
     );
 }
@@ -1647,7 +1677,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 93] = [
+const PINNED_FIXTURES: [&str; 102] = [
     "barrier-in-helper",
     "barrier-in-if",
     "barrier-in-nested-for",
@@ -1738,6 +1768,15 @@ const PINNED_FIXTURES: [&str; 93] = [
     "typed-call-sampler-for-buffer",
     "typed-call-texture-for-buffer",
     "typed-call-texture-ok",
+    "variant-ambiguous",
+    "variant-cpu-unsupported",
+    "variant-malformed",
+    "variant-no-body",
+    "variant-no-kernel",
+    "variant-not-covered",
+    "variant-ok",
+    "variant-ok-subgroups",
+    "variant-unknown-capability",
     "workgroup-over-16kib",
     "wrapping-div-rejected",
     "wrapping-ok",

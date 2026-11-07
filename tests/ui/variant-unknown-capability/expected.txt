@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see shape-twice/expected.txt).
+# A macro error is a `compile_error!` and has no rustc code, so `code: none`.
+code: none
+file: variant-unknown-capability/src/main.rs
+line: 10
+message: [GUST-E0741] unknown capability `subgroup` in `requires(..)`; the capabilities are `subgroups`, the aliases `vulkan` (`subgroups`) and `webgpu` (none)

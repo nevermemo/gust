@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see shape-twice/expected.txt).
+# A macro error is a `compile_error!` and has no rustc code, so `code: none`.
+code: none
+file: variant-not-covered/src/main.rs
+line: 7
+message: [GUST-E0744] kernel `sum` has no body for the declared profile `native` (the default list; the manifest has no `profiles` key): `sum` requires {subgroups}; declare a profile with the capabilities in `[package.metadata.gust] profiles`, or add a variant that requires less

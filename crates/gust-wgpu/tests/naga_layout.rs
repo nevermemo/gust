@@ -991,10 +991,12 @@ fn the_goldens_are_the_fixtures_directory() {
     // `par_for.rs` and `par_for.slang` (slice m7.p) are the one fixture this gate does not walk: the module of a
     // `par_for!` kernel stands inside the block of its call, so no descriptor can be named from here. Its ten
     // kernels run on a device in `tests/par_for.rs`, which checks every binding's layout at bind time.
+    // `variant.rs` and `variant.slang` (slice m8.b1) are a macro-only fixture: the golden of `gust-compute-macros`
+    // pins the Slang of both bodies of one kernel, and a descriptor holds the one body a profile selects.
     let in_scope = |set: &BTreeSet<String>| -> BTreeSet<String> {
         set.iter()
             .filter(|name| name.ends_with(".slang") || name.ends_with(".rs"))
-            .filter(|name| !name.starts_with("par_for."))
+            .filter(|name| !name.starts_with("par_for.") && !name.starts_with("variant."))
             .cloned()
             .collect()
     };

@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see shape-twice/expected.txt).
+# A macro error is a `compile_error!` and has no rustc code, so `code: none`.
+code: none
+file: variant-no-body/src/main.rs
+line: 7
+message: [GUST-E0750] kernel `sum` has no body that the build profile `dev` can use: `sum` requires {subgroups}; build with a profile that provides them, or add a variant that requires less

@@ -1193,6 +1193,7 @@ Decision: D60.
 ### GUST-E0717 barrier kernel without `cpu = "unsupported"`
 
 A kernel that declares `Workgroup<[T; N]>` memory or calls `workgroup_barrier()` cannot run on the CPU twin: the twin runs the invocations one after the other, and a barrier needs all of them in flight together. GUST defines no CPU strategy for such a kernel (D118), so the kernel says so, with `cpu = "unsupported"`. It then has no `Run` impl for `CpuDevice` in any profile, so under `GUST_PROFILE=cpu` it behaves like every other unsupported kernel. `cpu = "lockstep"` is not a strategy either and is GUST-E0709. The message names the construct and the fix.
+With variants (M8, D139) the rule is about the body the twin is built from, the portable body (the one whose set is empty). A body that requires a capability, the kernel's own included, has no twin and may use a barrier. A `requires()` variant is the portable body, so a barrier in it is this error, and the fix is `cpu = "unsupported"` on the kernel (`#[kernel(.., requires(..), cpu = "unsupported")]`), not on the variant: on a variant that option is GUST-E0740. The message names the variant, and it cannot tell the two cases apart.
 Reached through `#[gpu]`.
 Rejected: `#[kernel(workgroup_size(256, 1, 1))]` on a kernel with a `Workgroup` parameter or a `workgroup_barrier();` call.
 Fixture: `tests/ui/barrier-kernel-no-cpu-strategy` (`cargo xtask check-ui`, `code: none` plus the message).
@@ -1358,6 +1359,60 @@ Rejected: `let alias = image;`, `let size = image.width() + image;`, `filter.wid
 Fixture: `tests/ui/texture-as-value` (`cargo xtask check-ui`).
 Write instead: call the method on the parameter by name; a helper function takes the texel values (`image.load(x, y)`) or the coordinates, not the texture.
 Decision: D62, D64 (slice mx.t3).
+
+### GUST-E0740 malformed `#[variant]`
+
+A `#[variant]` attribute the macro cannot read, or one in a place it does not belong (M8, D139): no `of = <kernel>`, an option other than `of` and `requires(..)`, an option given twice (a second `requires(..)` on a `#[kernel]` too), a value that is not a name, a `#[variant]` that also carries `#[kernel]`, two `#[variant]` attributes on one function, a variant whose signature is not its kernel's token for token (the generics, the parameter names, patterns and types, and the return type), or `#[variant]` on anything but a function of the module (a struct, a constant, a `#[gpu]` function, a macro, a function inside an `impl`, a `trait` or an `extern` block). A variant has no options of its own: the workgroup size and the shape are its kernel's, and it is lowered with its own `requires(..)`, so the kernel's `requires` is not its own. A variant with a non-empty set never has a CPU twin (it is lowered with `cpu = "unsupported"`); a `requires()` variant is the portable body, the body the kernel's twin is built from, and it is lowered with the kernel's `cpu` option, so it is judged as the twin's body (GUST-E0717).
+Reached through `#[gpu]` on a module, and on a function (the attribute is refused there and the function goes back without it).
+Rejected: `#[variant]`, `#[variant(requires(subgroups))]`, `#[variant(of = sum, tier = 3)]`, `#[variant(of = "sum")]`, `#[variant(of = sum, workgroup_size(8, 1, 1))]`, a variant that renames a parameter or changes a buffer's element type, `#[variant(of = sum)]` on a `struct`.
+Fixture: `tests/ui/variant-malformed` (`cargo xtask check-ui`); the other forms are pinned by `crates/gust-macros/src/tests/variant.rs`. `tests/ui/variant-ok` compiles a pair, which also makes rustc prove the two signatures equal; `tests/ui/variant-ok-subgroups` builds under `GUST_PROFILE=dev+subgroups`, so rustc also compiles the selected variant and a kernel's own body that requires a capability.
+Write instead: `#[variant(of = kernel_name, requires(subgroups))]` on a function with the kernel's signature and no other attribute; give the workgroup size, the shape and the CPU form to the `#[kernel]`.
+Decision: D139.
+
+### GUST-E0741 unknown capability in `requires(..)`
+
+A name in `requires(..)`, on a `#[variant]` or a `#[kernel]`, that is not a capability or an alias. The capabilities of this release are `subgroups`; the aliases are `vulkan` (the set `subgroups`) and `webgpu` (the empty set). `f16` and `atomics64` are reserved names that this release does not support, so they are unknown here too, as in `GUST_PROFILE`.
+Reached through `#[gpu]`.
+Rejected: `requires(subgroup)`, `requires(Subgroups)`, `requires(f16)`, `requires(subgroups, simd)`.
+Fixture: `tests/ui/variant-unknown-capability` (`cargo xtask check-ui`).
+Write instead: `requires(subgroups)`, or `requires(vulkan)`; an empty `requires()` (or `webgpu`) is the portable body.
+Decision: D139.
+
+### GUST-E0742 variant of nothing
+
+`#[variant(of = name)]` where `name` is no `#[kernel]` function of the same module: a function that does not exist, a helper that has no `#[kernel]`, or another variant (a variant belongs to a kernel, and the kernel is the one that names the handle and the descriptor).
+Reached through `#[gpu]`.
+Rejected: `#[variant(of = prod)]` with no `prod` kernel; `#[variant(of = helper)]`; `#[variant(of = first)]` where `first` is itself a variant.
+Fixture: `tests/ui/variant-no-kernel` (`cargo xtask check-ui`).
+Write instead: name the kernel; the kernel and its variants are in one `#[gpu]` module.
+Decision: D139.
+
+### GUST-E0743 two bodies a device cannot tell apart
+
+Two bodies of one kernel (the kernel's own and its variants) for which some device has both sets: neither requires more than the other, and the device has both. The selection takes the body with the largest set the profile contains, so equal sets (`vulkan` and `subgroups` are the same set) and sets neither of which contains the other are a tie. The tie is checked over every subset of the capabilities, so it is an error in every build, the CPU build included, and not only in a build whose profile has the sets.
+Reached through `#[gpu]`.
+Rejected: two variants with `requires(subgroups)` (or one with `requires(vulkan)`); a variant with `requires()` beside a kernel whose own set is empty (it would be the same body twice).
+Fixture: `tests/ui/variant-ambiguous` (`cargo xtask check-ui`).
+Write instead: give the bodies sets of different sizes, or one a superset of the other; a body with a smaller set is the fallback of the one with the larger set.
+Decision: D139.
+
+### GUST-E0744 declared profile not covered
+
+A profile the crate declares in `[package.metadata.gust] profiles` that a kernel has no body for (M8, D139, D23). The list is the exhaustiveness rule: for every declared GPU profile (`native`, `web`, each with its capabilities; a `dev` build is checked as `native`), every kernel needs a body whose `requires` the profile contains. Without a list the default is `["native", "web", "cpu"]`. The `cpu` entry is met by the kernel's CPU form, which is the portable body's (the body whose set is empty: the kernel's own, or its `requires()` variant): a kernel with `cpu = "unsupported"` has none, and so has a kernel every body of which requires a capability, and that is an error only when the crate wrote the list (an explicit list, even one equal to the default, is stricter than the absent key), because under the default list the kernel's own `cpu = "unsupported"` is the arm that meets the entry (and a kernel with no portable body is already refused at `native`). The message says when the profile is the default list (the manifest has no `profiles` key). The check runs in every build, the CPU build included.
+Reached through `#[gpu]`.
+Rejected: a kernel with `requires(subgroups)` and no variant under the default list (`native` has no capability); the same under `profiles = ["native+subgroups", "web"]`; `cpu = "unsupported"` under `profiles = ["native", "cpu"]`; a kernel with `requires(subgroups)` and no `requires()` variant under `profiles = ["native+subgroups", "cpu"]`.
+Fixtures: `tests/ui/variant-not-covered` and `tests/ui/variant-cpu-unsupported` (`cargo xtask check-ui`).
+Write instead: add a variant that requires less (`requires()` covers every profile), declare profiles with the capability, or drop `cpu` from `profiles` (or the `cpu = "unsupported"` from the kernel).
+Decision: D139, D138.
+
+### GUST-E0750 no body for the build profile
+
+The build's own profile (`GUST_PROFILE`, or no capability when it is unset or unknown) has no body to use for a kernel: the kernel's own `requires(..)`, and every variant's, contain a capability the profile lacks. The CPU target never reports it, because it builds the portable body (the kernel's own when no body is portable). Neither does `cargo gust build`: it collects under a fixed `GUST_PROFILE=dev` and writes the record of every body, so a kernel with no body for `dev` is exported through its own body (that build is never shipped). A crate that declares the profile it builds for gets E0744 first; this one is the build that is outside the declared list. Plain `cargo check`, rust-analyzer and docs.rs set no `GUST_PROFILE`, so they see no capability: a crate whose kernel has no body without a capability gets this error there until the profile is set for them.
+Reached through `#[gpu]`.
+Rejected: a kernel with `requires(subgroups)` and no variant, in a crate that declares `profiles = ["native+subgroups"]` only, built under `GUST_PROFILE=dev` or `native`.
+Fixture: `tests/ui/variant-no-body` (`cargo xtask check-ui`).
+Write instead: build with a profile that provides the capabilities (`GUST_PROFILE=native+subgroups`, `dev+subgroups`), set `GUST_PROFILE` in the `[env]` table of the crate's `.cargo/config.toml` so that every tool that builds the crate sees it (`[env]` `GUST_PROFILE = "dev+subgroups"`), or add a variant that requires less.
+Decision: D139.
 
 ### GUST-E0753 malformed `[package.metadata.gust]` table
 

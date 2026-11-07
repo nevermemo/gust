@@ -215,9 +215,13 @@ fn assert_the_portable_floor_is_what_devices_open_with(opened: &wgpu::Limits) {
             "PORTABLE.{name} against the opened device"
         );
     }
+    let table: Vec<(&str, u32)> = fields
+        .iter()
+        .map(|(name, portable, _, _)| (*name, *portable))
+        .collect();
     assert_eq!(
         floor.entries(),
-        fields.map(|(name, portable, _, _)| (name, portable)),
+        table.as_slice(),
         "PORTABLE.entries() is the table above, in order"
     );
 }
@@ -744,6 +748,9 @@ fn a_64_gib_request_is_a_device_limit_before_any_wgpu_call() {
         gust_wgpu::LimitsPolicy::Adapter,
     ] {
         let device = open(0, policy);
+        // Every device GUST opens, under either policy, holds the ten floor fields at WebGPU's defaults (the three
+        // raised limits are not in the table), so a `limits = "portable"` crate is within what both open with.
+        assert_the_portable_floor_is_what_devices_open_with(device.limits());
         let maximum = device.limits().max_buffer_size;
         let error = device
             .create_zeroed_buffer::<u32>("sixty-four gib", 1 << 34, GpuBufferAccess::ReadWrite)

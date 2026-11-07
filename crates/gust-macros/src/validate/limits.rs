@@ -489,7 +489,28 @@ mod tests {
             size: None,
             ..Spec::new()
         };
-        portable(&shape.module("")).unwrap();
+        let module = shape.module("");
+        portable(&module).unwrap();
+        // The default itself, not just "within the floor": 64 x 1 x 1, 64 invocations.
+        let (_, items) = module.content.as_ref().unwrap();
+        let function = items
+            .iter()
+            .find_map(|item| match item {
+                syn::Item::Fn(function) => Some(function),
+                _ => None,
+            })
+            .unwrap();
+        let (options, _, _) = kernel_attribute_facts(&GRID, function).unwrap().unwrap();
+        let measured = measure(&GRID, function, options.workgroup_size, false);
+        assert_eq!(
+            [
+                measured[WORKGROUP_X],
+                measured[WORKGROUP_Y],
+                measured[WORKGROUP_Z],
+                measured[INVOCATIONS],
+            ],
+            [Some(64), Some(1), Some(1), Some(64)]
+        );
     }
 
     #[test]
@@ -646,5 +667,76 @@ mod tests {
             error.contains("its workgroup memory is 16388 bytes, over `max_compute_workgroup_storage_size` = 16384 bytes"),
             "{error}"
         );
+    }
+
+    /// The same kernel with a `#[variant(of = reduce, requires())]` sibling of its signature (D139).
+    fn memory_kernel_with_a_variant() -> syn::ItemMod {
+        syn::parse_quote! {
+            mod block {
+                #[kernel(workgroup_size(256, 1, 1), cpu = "unsupported", requires(subgroups))]
+                pub fn reduce(
+                    id: SV_DispatchThreadID,
+                    lid: LocalId,
+                    gid: GroupId,
+                    input: StructuredBuffer<f32>,
+                    mut partial: RWStructuredBuffer<f32>,
+                    mut scratch: Workgroup<[f32; 4097]>,
+                ) {
+                    scratch[lid.x] = 1.0f32;
+                    workgroup_barrier();
+                    partial[gid.x] = scratch[0u32] + input[id.x];
+                }
+
+                #[variant(of = reduce, requires())]
+                pub fn reduce_portable(
+                    id: SV_DispatchThreadID,
+                    lid: LocalId,
+                    gid: GroupId,
+                    input: StructuredBuffer<f32>,
+                    mut partial: RWStructuredBuffer<f32>,
+                    mut scratch: Workgroup<[f32; 4097]>,
+                ) {
+                    scratch[lid.x] = 2.0f32;
+                    workgroup_barrier();
+                    partial[gid.x] = scratch[0u32] + input[id.x];
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_variant_body_is_a_kernel_body_to_the_floor() {
+        // After the lowering the variant is a `#[kernel]` function like the kernel, and the check refuses each of them.
+        let (lowered, _) = crate::expand::variant::lower(memory_kernel_with_a_variant()).unwrap();
+        let (_, items) = lowered.content.as_ref().unwrap();
+        let bodies: Vec<&syn::ItemFn> = items
+            .iter()
+            .filter_map(|item| match item {
+                syn::Item::Fn(function) => Some(function),
+                _ => None,
+            })
+            .filter(|function| matches!(kernel_attribute_facts(&GRID, function), Ok(Some(_))))
+            .collect();
+        assert_eq!(bodies.len(), 2, "the kernel and its variant");
+        for body in bodies {
+            let error = check_kernel(body).unwrap_err();
+            assert_code(&error, Code::PortableFloor);
+            assert!(
+                error
+                    .to_string()
+                    .contains("workgroup memory is 16388 bytes"),
+                "{error}"
+            );
+        }
+        // And through the whole expansion of a portable crate.
+        let portable_crate = Crate::new("memory-variant", Some(PORTABLE_MANIFEST));
+        let error = crate::expand::expand_with_directories(
+            memory_kernel_with_a_variant(),
+            Some(&portable_crate.0),
+            None,
+            Some("demo"),
+        )
+        .unwrap_err();
+        assert_code(&error, Code::PortableFloor);
     }
 }

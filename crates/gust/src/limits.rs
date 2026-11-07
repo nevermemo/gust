@@ -6,6 +6,12 @@
 //! them (GUST-E0746) when the crate is compiled. Without that setting nothing is checked at compile time and the
 //! launch checks of `gust-compute-wgpu` (D36) stay the only ones.
 //!
+//! Only the `#[kernel]` functions of a `#[gpu]` module are checked (their `#[variant]` bodies included). The `#[gpu]`
+//! function (an element-wise map) and `par_for!` go through other entry points and are not checked, and the limits that
+//! depend on how a kernel is launched are left to the checks of `gust-compute-wgpu` (`DeviceLimit` at launch). A
+//! portable crate is therefore not guaranteed to launch on every WebGPU device; GUST-E0746 in `docs/DIAGNOSTICS.md` says
+//! what is counted.
+//!
 //! No GUST device opens with more than these values for the limits in the table: `LimitsPolicy::Adapter` raises only
 //! `max_buffer_size`, `max_storage_buffer_binding_size` and `max_compute_workgroups_per_dimension`, which the table does
 //! not hold. So the floor does not settle the two meanings of "default" that decision D84 recorded; those are about the
@@ -45,53 +51,58 @@ pub struct PortableLimits {
     pub max_compute_workgroup_storage_size: u32,
 }
 
+/// Every limit of the table as `(wgpu's name, value)`, in a fixed order. A private constant, so that the public
+/// signature of [`PortableLimits::entries`] does not carry the number of limits.
+const ENTRIES: &[(&str, u32)] = &[
+    (
+        "max_compute_workgroup_size_x",
+        PORTABLE.max_compute_workgroup_size_x,
+    ),
+    (
+        "max_compute_workgroup_size_y",
+        PORTABLE.max_compute_workgroup_size_y,
+    ),
+    (
+        "max_compute_workgroup_size_z",
+        PORTABLE.max_compute_workgroup_size_z,
+    ),
+    (
+        "max_compute_invocations_per_workgroup",
+        PORTABLE.max_compute_invocations_per_workgroup,
+    ),
+    (
+        "max_storage_buffers_per_shader_stage",
+        PORTABLE.max_storage_buffers_per_shader_stage,
+    ),
+    (
+        "max_uniform_buffers_per_shader_stage",
+        PORTABLE.max_uniform_buffers_per_shader_stage,
+    ),
+    (
+        "max_sampled_textures_per_shader_stage",
+        PORTABLE.max_sampled_textures_per_shader_stage,
+    ),
+    (
+        "max_storage_textures_per_shader_stage",
+        PORTABLE.max_storage_textures_per_shader_stage,
+    ),
+    (
+        "max_samplers_per_shader_stage",
+        PORTABLE.max_samplers_per_shader_stage,
+    ),
+    (
+        "max_compute_workgroup_storage_size",
+        PORTABLE.max_compute_workgroup_storage_size,
+    ),
+];
+
 impl PortableLimits {
     /// Every limit of the table as `(wgpu's name, value)`, in a fixed order: the three workgroup axes, the invocations,
     /// the storage buffers, the uniform buffers, the sampled textures, the storage textures, the samplers and the
-    /// workgroup memory.
-    pub const fn entries(&self) -> [(&'static str, u32); 10] {
-        [
-            (
-                "max_compute_workgroup_size_x",
-                self.max_compute_workgroup_size_x,
-            ),
-            (
-                "max_compute_workgroup_size_y",
-                self.max_compute_workgroup_size_y,
-            ),
-            (
-                "max_compute_workgroup_size_z",
-                self.max_compute_workgroup_size_z,
-            ),
-            (
-                "max_compute_invocations_per_workgroup",
-                self.max_compute_invocations_per_workgroup,
-            ),
-            (
-                "max_storage_buffers_per_shader_stage",
-                self.max_storage_buffers_per_shader_stage,
-            ),
-            (
-                "max_uniform_buffers_per_shader_stage",
-                self.max_uniform_buffers_per_shader_stage,
-            ),
-            (
-                "max_sampled_textures_per_shader_stage",
-                self.max_sampled_textures_per_shader_stage,
-            ),
-            (
-                "max_storage_textures_per_shader_stage",
-                self.max_storage_textures_per_shader_stage,
-            ),
-            (
-                "max_samplers_per_shader_stage",
-                self.max_samplers_per_shader_stage,
-            ),
-            (
-                "max_compute_workgroup_storage_size",
-                self.max_compute_workgroup_storage_size,
-            ),
-        ]
+    /// workgroup memory. A slice, so a later release that adds a limit does not change this signature. The struct can
+    /// only be built in this crate, where [`PORTABLE`] is its one value, so the list is that value's.
+    pub const fn entries(&self) -> &'static [(&'static str, u32)] {
+        ENTRIES
     }
 }
 
@@ -132,7 +143,7 @@ mod tests {
 
     #[test]
     fn the_floor_is_the_webgpu_default_table() {
-        assert_eq!(PORTABLE.entries(), GOLDEN);
+        assert_eq!(PORTABLE.entries(), &GOLDEN[..]);
     }
 
     #[test]

@@ -220,8 +220,8 @@ fn assert_the_portable_floor_is_what_devices_open_with(opened: &wgpu::Limits) {
         .map(|(name, portable, _, _)| (*name, *portable))
         .collect();
     assert_eq!(
-        floor.entries(),
-        table.as_slice(),
+        floor.entries().collect::<Vec<_>>(),
+        table,
         "PORTABLE.entries() is the table above, in order"
     );
 }

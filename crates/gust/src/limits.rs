@@ -25,7 +25,8 @@
 //! three to one list of values.
 
 /// The limits of the portable floor, by `wgpu`'s names. Read them from [`PORTABLE`]; a later release may add a limit,
-/// so the struct is `#[non_exhaustive]` and cannot be built outside this crate.
+/// so the struct is `#[non_exhaustive]`: it cannot be built with a struct literal outside this crate, though a copy of
+/// [`PORTABLE`] can have its fields assigned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct PortableLimits {
@@ -51,58 +52,55 @@ pub struct PortableLimits {
     pub max_compute_workgroup_storage_size: u32,
 }
 
-/// Every limit of the table as `(wgpu's name, value)`, in a fixed order. A private constant, so that the public
-/// signature of [`PortableLimits::entries`] does not carry the number of limits.
-const ENTRIES: &[(&str, u32)] = &[
-    (
-        "max_compute_workgroup_size_x",
-        PORTABLE.max_compute_workgroup_size_x,
-    ),
-    (
-        "max_compute_workgroup_size_y",
-        PORTABLE.max_compute_workgroup_size_y,
-    ),
-    (
-        "max_compute_workgroup_size_z",
-        PORTABLE.max_compute_workgroup_size_z,
-    ),
-    (
-        "max_compute_invocations_per_workgroup",
-        PORTABLE.max_compute_invocations_per_workgroup,
-    ),
-    (
-        "max_storage_buffers_per_shader_stage",
-        PORTABLE.max_storage_buffers_per_shader_stage,
-    ),
-    (
-        "max_uniform_buffers_per_shader_stage",
-        PORTABLE.max_uniform_buffers_per_shader_stage,
-    ),
-    (
-        "max_sampled_textures_per_shader_stage",
-        PORTABLE.max_sampled_textures_per_shader_stage,
-    ),
-    (
-        "max_storage_textures_per_shader_stage",
-        PORTABLE.max_storage_textures_per_shader_stage,
-    ),
-    (
-        "max_samplers_per_shader_stage",
-        PORTABLE.max_samplers_per_shader_stage,
-    ),
-    (
-        "max_compute_workgroup_storage_size",
-        PORTABLE.max_compute_workgroup_storage_size,
-    ),
-];
-
 impl PortableLimits {
-    /// Every limit of the table as `(wgpu's name, value)`, in a fixed order: the three workgroup axes, the invocations,
+    /// Every limit of this value as `(wgpu's name, value)`, in a fixed order: the three workgroup axes, the invocations,
     /// the storage buffers, the uniform buffers, the sampled textures, the storage textures, the samplers and the
-    /// workgroup memory. A slice, so a later release that adds a limit does not change this signature. The struct can
-    /// only be built in this crate, where [`PORTABLE`] is its one value, so the list is that value's.
-    pub const fn entries(&self) -> &'static [(&'static str, u32)] {
-        ENTRIES
+    /// workgroup memory. The values are `self`'s fields, so a copy of [`PORTABLE`] with a field changed reports the
+    /// changed value. An iterator, so a later release that adds a limit does not change this signature.
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = (&'static str, u32)> {
+        [
+            (
+                "max_compute_workgroup_size_x",
+                self.max_compute_workgroup_size_x,
+            ),
+            (
+                "max_compute_workgroup_size_y",
+                self.max_compute_workgroup_size_y,
+            ),
+            (
+                "max_compute_workgroup_size_z",
+                self.max_compute_workgroup_size_z,
+            ),
+            (
+                "max_compute_invocations_per_workgroup",
+                self.max_compute_invocations_per_workgroup,
+            ),
+            (
+                "max_storage_buffers_per_shader_stage",
+                self.max_storage_buffers_per_shader_stage,
+            ),
+            (
+                "max_uniform_buffers_per_shader_stage",
+                self.max_uniform_buffers_per_shader_stage,
+            ),
+            (
+                "max_sampled_textures_per_shader_stage",
+                self.max_sampled_textures_per_shader_stage,
+            ),
+            (
+                "max_storage_textures_per_shader_stage",
+                self.max_storage_textures_per_shader_stage,
+            ),
+            (
+                "max_samplers_per_shader_stage",
+                self.max_samplers_per_shader_stage,
+            ),
+            (
+                "max_compute_workgroup_storage_size",
+                self.max_compute_workgroup_storage_size,
+            ),
+        ]
+        .into_iter()
     }
 }
 
@@ -143,7 +141,27 @@ mod tests {
 
     #[test]
     fn the_floor_is_the_webgpu_default_table() {
-        assert_eq!(PORTABLE.entries(), &GOLDEN[..]);
+        assert_eq!(PORTABLE.entries().collect::<Vec<_>>(), GOLDEN.to_vec());
+    }
+
+    #[test]
+    fn entries_report_the_value_they_are_called_on() {
+        let mut changed = PORTABLE;
+        changed.max_samplers_per_shader_stage = 1;
+        let entries: Vec<_> = changed.entries().collect();
+        assert_eq!(entries.len(), GOLDEN.len());
+        assert_eq!(changed.entries().len(), GOLDEN.len());
+        for ((name, value), (golden_name, golden_value)) in entries.iter().zip(GOLDEN) {
+            assert_eq!(*name, golden_name);
+            let expected = if golden_name == "max_samplers_per_shader_stage" {
+                1
+            } else {
+                golden_value
+            };
+            assert_eq!(*value, expected, "{name}");
+        }
+        // The floor itself is untouched.
+        assert_eq!(PORTABLE.max_samplers_per_shader_stage, 16);
     }
 
     #[test]

@@ -130,11 +130,17 @@ crates.io keeps every uploaded version forever: nothing published can be retract
   resume from the command that failed.
   Cargo refuses a version that is already up, so running the whole block again would stop at the first crate that is
   already published.
-- A failure that needs a change (a packaging error, a broken crate): fix it on `main` and release 0.1.1. The four
-  packages share one version and pin each other exactly (D107), so 0.1.1 is published for the remaining crates and
-  for the ones already up, and the procedure restarts at step 1.
+- A failure that needs a change (a packaging error, a broken crate): fix it on `release/0.1`, release 0.1.1 from
+  there, then forward-port the fix to `main`. The four packages share one version and pin each other exactly (D107),
+  so 0.1.1 is published for the remaining crates and for the ones already up, and the procedure restarts at step 1.
 - Yank a version only when that crate is broken for users, and for the 0.0.0 placeholders. Never yank to fix a name or
   a metadata mistake; a patch release fixes those.
+
+## Release lines
+
+This branch, `release/0.1`, is the 0.1 line; `main` is the 0.2 development line. 0.1.0 is not published yet (the
+owner's deferral, 2026-11-07) and there is no `v0.1.0` tag, so steps 1 to 8 for 0.1.0 run on this branch's tip. A
+0.1.x fix is made here, released from here and forward-ported to `main`.
 
 ## After 0.1.0
 

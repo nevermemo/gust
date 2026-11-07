@@ -5,10 +5,47 @@ All notable changes to the published packages `gust-compute`, `gust-compute-macr
 breaks existing code bumps the minor version, and the promise is described in the
 [README](README.md#stability).
 
-## 0.1.0
+## Unreleased (0.2.0)
+
+The workspace version is `0.2.0-dev`. Work for 0.2.0 lands on `main`; the 0.1.0 line continues on the branch
+`release/0.1`. This list is what the milestone has merged so far.
+
+### Added
+
+- Capabilities in the build profile. `GUST_PROFILE` takes `<target>(+<capability>)*`, and `subgroups` is the first
+  capability (`dev+subgroups`); `gust::capability::enabled()` and `cfg(gust_capability = "..")` read it. A malformed
+  `[package.metadata.gust]` table is `GUST-E0753`.
+- Variants. `#[variant(of = kernel, requires(..))]` gives a kernel a second body for devices that have a capability, and
+  the macro checks that the declared profiles are all covered (`GUST-E0740` to `GUST-E0744`, `GUST-E0750`). `cargo
+  gust` reads and writes artifact record schema 4 and manifest schema 3 for them; kernels without variants keep the
+  bytes they had.
+- Subgroup operations (21, as shadow functions such as `subgroup_add`, `subgroup_ballot`, `subgroup_shuffle`), accepted
+  only in a body that requires `subgroups` and only where every invocation reaches them (`GUST-E0745`, `GUST-E0747`,
+  `GUST-E0751`). The WGSL that Slang writes for them is repaired for the pinned `naga` by a text fix-up, in the
+  run-time compiler, the reflected bridge and `cargo gust build`.
+- `gust-compute-wgpu` opens its devices with the capabilities of the build, refuses a kernel whose `requires` the device
+  does not meet before launch (`Error::MissingCapability`, `Error::KernelTarget`, `Error::SubgroupSize`), and reports
+  the adapter's subgroup size range.
+- An opt-in portable floor: `limits = "portable"` in `[package.metadata.gust]` checks every kernel against
+  `gust::limits::PORTABLE`, WebGPU's default limits (`GUST-E0746`).
+- New public modules of `gust-compute`: `gust::target` (`Target`) and `gust::routes` (`variable_name`,
+  `VARIABLE_PREFIX`, the spelling of the build-time route variables).
+
+### Changed, and may break code written for 0.1.0
+
+- `KernelDescriptor` is `#[non_exhaustive]` and has new fields (`variant`, `requires`, `target`). Build one with
+  `KernelDescriptor::new` and the `with_*` setters instead of a struct literal. `cargo semver-checks` lists this one.
+- The generic entry points of `gust-compute-wgpu` and the runs of `StagedGraph` require the `GpuKernel` marker.
+  `#[gpu]` kernels get the marker from the macro, so they need no change. A hand-written `Kernel` impl that runs on
+  `HeadlessDevice` adds `impl gust::target::GpuKernel for MyKernel {}`; without it the call is E0277 with a message
+  that says so. The semver tool does not list this change (the marker is `#[doc(hidden)]`).
+- `gust-compute-macros` depends on `toml` 1 (no default features; `std` and `parse`) to read `[package.metadata.gust]`.
+
+## 0.1.0 (not yet published)
 
 The first public release of GUST, an experimental compiler from a restricted subset of Rust to Slang for compute
-kernels. Nothing in this entry changes an earlier release: there is none.
+kernels. Nothing in this entry changes an earlier release: there is none. The release is deferred; the packages are not
+on crates.io and there is no `v0.1.0` tag yet. The branch `release/0.1` holds the state that will be published.
 
 ### What you can do
 

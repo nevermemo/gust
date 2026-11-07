@@ -1,12 +1,12 @@
 //! The WGSL fix-up for subgroup operations (M8, D140; spike M8-S1).
 //!
 //! `slangc` 2026.20 writes WGSL that the pinned `naga` 30.0.1 does not accept as it stands when the kernel uses a
-//! subgroup operation. [`fixup_subgroups`] repairs the two differences and nothing else. They are independent, and each
+//! subgroup operation. `fixup_subgroups` repairs the two differences and nothing else. They are independent, and each
 //! has its own retire condition, so each is its own function:
 //!
-//! 1. [`remove_enable_subgroups`] drops the line `enable subgroups;`. naga takes the feature from the device and
+//! 1. `remove_enable_subgroups` drops the line `enable subgroups;`. naga takes the feature from the device and
 //!    refuses the directive. Retire it when the pinned naga accepts `enable subgroups;` (gfx-rs/wgpu issue 5555).
-//! 2. [`rewrite_lane_arguments`] rewrites the lane argument `i32(<expr>)` of `subgroupShuffle` and `subgroupBroadcast`
+//! 2. `rewrite_lane_arguments` rewrites the lane argument `i32(<expr>)` of `subgroupShuffle` and `subgroupBroadcast`
 //!    to `u32(<expr>)` (`i32(3)` to `3u`): Slang spells the lane as `i32`, naga wants `u32`. Retire it when Slang emits
 //!    `u32` or naga accepts `i32` (wgpu issue 10818).
 //!
@@ -16,7 +16,7 @@
 //! decision is to stop and report it (M8 plan, spike S1's kill rule), not to grow this module.
 //!
 //! The bridge (`slang::compile` for the WGSL target, and `reflect::compile_reflected`) runs it on the compiler's text.
-//! An export runs it on the stored artifact too, through [`fixup_artifact`], which keeps the artifact hash of the
+//! An export runs it on the stored artifact too, through `fixup_artifact`, which keeps the artifact hash of the
 //! reflection document equal to the hash of the bytes it stores.
 //!
 //! This module is `#[doc(hidden)]`: it is not part of the stable API and goes away at a pin bump (D141).

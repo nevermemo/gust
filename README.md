@@ -5,6 +5,9 @@ a GPU-centric ECS game engine. **Today it is a working experimental Rust → Sla
 compute subsystem**. There is no ECS,
 renderer, rustc semantic integration, or execution-graph compiler yet.
 
+> **Version.** `main` is the development line, `0.2.0-dev`, and is not yet published. The 0.1 line is the branch
+> `release/0.1`.
+
 Rust supplies the higher-level language and checking environment; Slang owns GPU
 code generation; GUST will connect intentional CPU and GPU execution. We preserve
 the working subsystem while proving that larger model incrementally.
@@ -49,7 +52,7 @@ a strict profile needs neither Slang nor the helper, D45):
 
 - The stable Rust toolchain: 1.90 or newer (the `msrv` CI job type-checks the workspace on 1.90.0);
   this checkout's checks ran on stable 1.98.0 (see "Minimum Rust")
-- Outside this checkout, `cargo install cargo-gust --locked --version "~0.1"` installs the
+- Outside this checkout, `cargo install cargo-gust --locked --version 0.2.0-dev` installs the
   `cargo gust` tool; it works without `GUST_PROFILE` ("Install from crates.io" has the whole setup for a crate of your
   own)
 - `slangc` on `PATH`: the Slang release that `cargo gust` pins, 2026.20 (`cargo gust slang install` installs it, and
@@ -239,7 +242,7 @@ Slang, nor the helper, nor `cargo-gust`.
 ### Set up the tools
 
 ```sh
-cargo install cargo-gust --locked --version "~0.1"
+cargo install cargo-gust --locked --version 0.2.0-dev
 cargo gust slang install        # downloads Slang 2026.20, checks its SHA-256, unpacks it into the cargo home
 cargo gust slang build-helper   # compiles the native reflection helper against that Slang and prints its path
 cargo gust doctor               # names whatever is still missing
@@ -276,8 +279,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gust-compute = "0.1"
-gust-compute-wgpu = "0.1"
+gust-compute = "0.2.0-dev"
+gust-compute-wgpu = "0.2.0-dev"
 
 [features]
 # Run-time compile through the Slang toolchain, for development only (`cargo run --features gust-dev`).
@@ -287,8 +290,9 @@ gust-dev = ["gust-compute-wgpu/slang-runtime"]
 `gust-dev` is a feature of your own crate that turns on the backend's run-time compiler, and it has to be your own
 feature. A `slang-runtime` feature on the dependency line makes `cargo build --release` fail, because a release build
 refuses the run-time compiler (D68). One on a `[dev-dependencies]` entry never reaches `cargo run`, which then stops
-with "built without the `slang-runtime` feature". The dependencies say `0.1` and nothing more: the library crates pin
-each other to one exact version, so a range cannot mix two releases.
+with "built without the `slang-runtime` feature". The dependencies say `0.2.0-dev` (`0.2` once 0.2.0 is released; a
+caret requirement does not match a pre-release) and nothing more: the library crates pin each other to one exact
+version, so a range cannot mix two releases.
 
 And this `src/main.rs`:
 

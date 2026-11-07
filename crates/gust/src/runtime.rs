@@ -178,8 +178,8 @@ pub fn subgroup_ballot(value: bool) -> crate::math::UVec4 {
 }
 
 /// The `value` of the first active invocation of the subgroup (`WaveReadLaneFirst`, `subgroupBroadcastFirst`). Ran on
-/// the RTX 5090 for `i32` and `f32`, which spike S3 did not cover (`u32` only); not run on the Radeon 890M
-/// (`docs/SEMANTICS.md`, "Forms beyond S3's cells").
+/// the RTX 5090 and on lavapipe for `i32` and `f32`, which spike S3 did not cover (`u32` only); not run on the Radeon
+/// 890M (`docs/SEMANTICS.md`, "Forms beyond S3's cells").
 pub fn subgroup_broadcast_first<T: SubgroupScalar>(value: T) -> T {
     value
 }
@@ -187,8 +187,8 @@ pub fn subgroup_broadcast_first<T: SubgroupScalar>(value: T) -> T {
 /// The `value` of invocation `lane` of the subgroup, for a `lane` that is the same in every invocation. A literal
 /// `lane` is `WaveBroadcastLaneAt` (`subgroupBroadcast`); any other expression is `WaveReadLaneAt`, which is
 /// `subgroupShuffle` (WGSL's broadcast takes a constant). The shadow is the subgroup of one invocation. S3 covered
-/// `u32`. Beyond it, on the RTX 5090 only, `f32` with a literal lane and `i32` with a computed lane ran; `i32` with a
-/// literal lane and `f32` with a computed lane did not run on any adapter, and none ran on the Radeon 890M
+/// `u32`. Beyond it, `f32` with a literal lane and `i32` with a computed lane ran on the RTX 5090 and on lavapipe; `i32`
+/// with a literal lane and `f32` with a computed lane did not run on any adapter, and none ran on the Radeon 890M
 /// (`docs/SEMANTICS.md`, "Forms beyond S3's cells").
 pub fn subgroup_broadcast<T: SubgroupScalar>(value: T, lane: u32) -> T {
     let _ = lane;
@@ -197,8 +197,8 @@ pub fn subgroup_broadcast<T: SubgroupScalar>(value: T, lane: u32) -> T {
 
 /// The `value` of invocation `lane` of the subgroup, where `lane` may differ per invocation (`WaveShuffle`,
 /// `subgroupShuffle`). A computed `lane` lowers to `WaveShuffle`, where S3's cell was `WaveReadLaneAt`; that form,
-/// and `i32` and `f32` values, ran on the RTX 5090 only, not on the Radeon 890M (`docs/SEMANTICS.md`, "Forms beyond
-/// S3's cells").
+/// and `i32` and `f32` values, ran on the RTX 5090 and on lavapipe, not on the Radeon 890M (`docs/SEMANTICS.md`,
+/// "Forms beyond S3's cells").
 pub fn subgroup_shuffle<T: SubgroupScalar>(value: T, lane: u32) -> T {
     let _ = lane;
     value

@@ -878,15 +878,16 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
 
     | Form | RTX 5090 (Vulkan) | Radeon 890M (Vulkan) | lavapipe (CI `dev+subgroups` step) |
     | --- | --- | --- | --- |
-    | `subgroup_broadcast_first` on `i32` and `f32` | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
-    | `subgroup_broadcast` on `f32` with a literal lane (`WaveBroadcastLaneAt`) | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
+    | `subgroup_broadcast_first` on `i32` and `f32` | ran | not run on the Radeon 890M | passed (run 42378261589) |
+    | `subgroup_broadcast` on `f32` with a literal lane (`WaveBroadcastLaneAt`) | ran | not run on the Radeon 890M | passed (run 42378261589) |
     | `subgroup_broadcast` on `i32` with a literal lane (`WaveBroadcastLaneAt`) | not run on any adapter | not run | not run |
-    | `subgroup_broadcast` on `i32` with a computed lane (`WaveReadLaneAt`, the form of S3's cell) | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
+    | `subgroup_broadcast` on `i32` with a computed lane (`WaveReadLaneAt`, the form of S3's cell) | ran | not run on the Radeon 890M | passed (run 42378261589) |
     | `subgroup_broadcast` on `f32` with a computed lane (`WaveReadLaneAt`) | not run on any adapter | not run | not run |
-    | `subgroup_shuffle` on `i32` and `f32`, and on `u32` (computed lane, `WaveShuffle`; every shuffle in the fixtures has a computed lane; S3's cell was `WaveReadLaneAt`) | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
+    | `subgroup_shuffle` on `i32` and `f32`, and on `u32` (computed lane, `WaveShuffle`; every shuffle in the fixtures has a computed lane; S3's cell was `WaveReadLaneAt`) | ran | not run on the Radeon 890M | passed (run 42378261589) |
 
-    The tests open the first Vulkan adapter, so the Radeon 890M was not selected in this slice. The lavapipe cell is
-    filled in from the CI run of the `dev+subgroups` step, which runs the same file.
+    The tests open the first Vulkan adapter, so the Radeon 890M was not selected in this slice. The lavapipe cells are
+    from the CI run of the `dev+subgroups` step, which runs the same file: run 42378261589 passed all 15 tests of
+    `tests/subgroup.rs` on `8e59357`.
   - **The WGSL fix-up.** wgpu 30 rejects what slangc writes for a subgroup kernel in two places (the `enable subgroups;`
     line, wgpu issue 5555, and an `i32` lane argument of `subgroupShuffle` and `subgroupBroadcast`, issue 10818), so
     `gust::slang::wgsl::fixup_subgroups` edits the text: it removes the `enable` line and rewrites the lane argument
@@ -1145,12 +1146,12 @@ coretests entry above has the same shape.
   flags. The CPU twin and the `cpu` target run the portable bodies of `partial_sums` and `count_if`
   (`tests/cpu-target/kernels/src/variant.rs`, three launches each). The Slang of the twelve bodies is pinned by
   `tests/fixtures/subgroup.slang`, their SPIR-V validates with `spirv-val`, and the fix-up is tested on the WGSL slangc
-  writes for them. **Ran on**: the RTX 5090 only, in this slice's own run (the probe of S3 ran its 43 cells on the
-  5090 and the 890M through Vulkan, on lavapipe in CI (run 42216215411, 43 of 43 plain cells, 8 lanes read in the
-  shader) and on four DX12 entries). The forms beyond S3's cells (`i32` and `f32` `broadcast_first`, `broadcast` and
-  `shuffle`, and `shuffle` with a computed lane) are **not run on the Radeon 890M**; the CI `dev+subgroups` step runs
-  this file on lavapipe, and its result is recorded in the table of the subgroup section when it is green. **Not
-  run**: subgroup sizes other than 32 in these tests, and workgroup sizes other than 64.
+  writes for them. **Ran on**: the RTX 5090 (subgroup size 32), in this slice's own run, and lavapipe (the CI
+  `dev+subgroups` step, run 42378261589: `tests/subgroup.rs` at subgroup size 8, 15 of 15 passed). The probe of S3 ran
+  its 43 cells on the 5090 and the 890M through Vulkan, on lavapipe in CI (run 42216215411, 43 of 43 plain cells, 8
+  lanes read in the shader) and on four DX12 entries. The forms beyond S3's cells (`i32` and `f32` `broadcast_first`,
+  `broadcast` and `shuffle`, and `shuffle` with a computed lane) are **not run on the Radeon 890M**. **Not run**:
+  subgroup sizes other than 8 and 32 in these tests, and workgroup sizes other than 64.
 - **gust-algo, integers** (m7.r1 to m7.r4; `crates/gust-algo/src/tests/gpu.rs`, `twin.rs` and `common.rs`; Gpu, with
   the twin tests in the same cargo call). Reduce `sum`, `min` and `max` of `u32` and `i32`, `sum_wrapping`, the `u32`
   scans, and compaction (`count`, `indices`, the gathers) are exact against an independent reference (an `i128` sum,

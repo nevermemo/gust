@@ -243,9 +243,9 @@ test module; do not mix that mechanical move with behavior changes.
 - m7.av follow-ups (the access violation above; STATUS m7.av to m7.av4c): the crash is in the Vulkan validation layer of
   Vulkan SDK 1.4.357.0 (its bundled mimalloc 3.3.2), needs concurrent tests, and disappears with the layer disabled; it
   is a fault of the test environment, not of GUST, wgpu or the driver. Gates keep validation on, because the layer
-  catches API misuse; a Gpu-step crash with rc 0xc0000005 is rerun alone, as before. Owner decisions: a Vulkan SDK whose
-  validation layer bundles mimalloc 3.4.1 or later (an install), and an issue to KhronosGroup/Vulkan-ValidationLayers
-  (public). Not needed now: the shared test-device helper per binary (m7.av2's change stays; fewer devices presumably
+  catches API misuse; a Gpu-step crash with rc 0xc0000005 is rerun alone, as before. Mitigated on the development PC by D149 (a newer
+  layer through `VK_ADD_LAYER_PATH`, 30 of 30 clean); retired by an owner install of a Vulkan SDK whose layer bundles
+  mimalloc 3.4.1 or later. An upstream issue is not needed: mimalloc 3.4.1 fixed it. Not needed now: the shared test-device helper per binary (m7.av2's change stays; fewer devices presumably
   start fewer of the layer's queue threads), and crash-dump capture. If a crash ever shows a stack outside the layer,
   reopen this. dense64 (m7.a2 follow-ups, below): the dispatch is tiny (0.015 ms); the whole call takes about 14 ms warm
   and 37 to 68 ms after about 3 s of GPU idle, whether the CPU sleeps or spins. A guess, not a finding: the idle PCIe
@@ -445,6 +445,22 @@ test module; do not mix that mechanical move with behavior changes.
 - The README recipe prints no adapter name, so a run of RELEASE.md step 5 does not say which adapter ran it (probe
   mr.e). Printing the adapter's name in the fixture `xtask/src/release/hello-gust/` and README's block (R7 keeps them
   equal) would.
+
+## M8 follow-ups (filed during M8)
+
+- wgpu trunk has `max_storage_buffers_in_fragment_stage` and `max_storage_textures_in_fragment_stage`; wgpu 30.0.1
+  does not. Adopt them in `gust::limits::PORTABLE` (m8.f) at the next wgpu bump.
+- gfx-rs/wgpu#10876 (filed 2026-11-07): an opt-in `REQUIRE_FULL_SUBGROUPS` for compute pipelines on Vulkan. Until
+  it lands, D140's full-subgroup assumption rests on the behaviour of the six adapters tested.
+- Slang 2026.21 is out: a premise spike (a separate Slang home, digests checked, every golden set re-emitted and
+  the diffs classified, D141's fix-up checked on the new WGSL) before a pin bump; `release/0.1` stays on 2026.20.
+- Subgroup evidence (the m8.s review): an end-to-end `cargo gust build` of a body that calls a subgroup operation;
+  a Radeon 890M run of tests/subgroup.rs (the tests open the first Vulkan adapter); a check that shows which body a
+  CPU dispatch ran (the one-lane shadows give the portable output); a literal lane of 128 or more refused in the
+  macro. `i32` broadcast with a literal lane and `f32` broadcast with a computed lane are not run on any adapter.
+- For the 0.2.0 release (the m8.v re-check): RELEASE.md's "Releasing 0.2.0 from main" also covers README :360,
+  :377 and :565; `cargo gust doctor` takes its `~0.1` from the package version; the `semver` job runs on pull
+  requests into main only (`github.base_ref`); CHANGELOG's `toml` line moves out of "may break".
 
 ## Deferred language/runtime breadth
 

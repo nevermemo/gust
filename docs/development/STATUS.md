@@ -1,6 +1,6 @@
 # Current status
 
-## Active: roadmap MR (2026-11-05)
+## Active: roadmap M8 (2026-11-07)
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done; M0.15
@@ -38,11 +38,15 @@ D77 to D85, and slice m6.z2 (literal-local typing) follows m7.w.
 M7 (GPU concepts in Rust) closed on 2026-11-04 (D126). MX (execution shapes and textures) closed on 2026-11-05 (D129)
 after a sanity check by Fable and Opus in the Codex slot (both "proceed with fixes"), the fixes in slices mx.z and
 mr.b3, and `check-full` at `27a461a`; a Codex confirming pass followed (proceed with fixes, nothing reopens MX; D132).
-MR (the first public release) is active: the rename mr.n, the wasm32 `Job` contract mr.b4 and the two pre-publish fixes
-from the Codex pass mr.b5 are merged, and so are mr.p's doc pass and mr.f, the fixes of the MR sanity check (Fable and
-Codex, both "publish after fixes"; D135). Next: `check-full` and the full `check-release` on this record's commit, the
-owner's publish (RELEASE.md), then mr.z, which records both. M8 (capability variants) has an adopted plan (D136 to D147,
-0.2.0); its spikes and first slices run beside the publish, and its code merges after the 0.1.0 tag.
+MR (the first public release): every slice is merged, the last mr.f, the fixes of the MR sanity check (Fable and
+Codex, both "publish after fixes"; D135). The owner deferred the publish (2026-11-07, D148); `release/0.1` keeps
+0.1.0 publishable. M8 (capability variants, 0.2.0; D136 to D147) is active: m8.d, m8.a, m8.w1, m8.b1, m8.w2, m8.f,
+m8.b2, m8.s and m8.v are merged (merge `e11a3f0`; the 27 main gates on the merged tree on the RTX 5090, 16:29Z to
+17:44Z; lavapipe green on every lane; main's CI green, ci 42397829562 and gpu-software 42397829548). The
+`semver` job's first run reports B1 only (`KernelDescriptor` `#[non_exhaustive]`; nothing for gust-compute-wgpu).
+Subgroup operations (m8.s): tests/subgroup.rs passed on the RTX 5090 at subgroup size 32 and on lavapipe at size 8
+(run 42378261589); not run on the Radeon 890M. Local gates load a newer Vulkan validation layer (D149). Next: the
+Slang 2026.21 premise spike, then m8.r1.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

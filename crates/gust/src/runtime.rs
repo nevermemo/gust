@@ -446,7 +446,9 @@ pub fn atomic_exchange<T: AtomicScalar>(target: &mut T, operand: T) -> T {
 
 /// Stores `value` when `*target == compare` and returns whether it did; see [`atomic_add`].
 ///
-/// The GPU form is WGSL's `atomicCompareExchangeWeak`, which may fail spuriously (17.8.5); the twin never does.
+/// The GPU form is WGSL's `atomicCompareExchangeWeak`, which may fail spuriously (17.8.5); the twin never does. The
+/// contract stays weak (D47), but on the pinned Slang 2026.21 the WGSL is a strong compare-exchange (a retry loop
+/// around `atomicCompareExchangeWeak`), so the spurious failure is not observed there.
 pub fn atomic_compare_exchange<T: AtomicScalar>(target: &mut T, compare: T, value: T) -> bool {
     T::compare_exchange(target, compare, value)
 }

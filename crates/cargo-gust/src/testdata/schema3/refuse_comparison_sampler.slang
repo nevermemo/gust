@@ -1,5 +1,6 @@
-[[vk::binding(0, 0)]] Texture2D<float> tex;
+// The order matters: the sampler is checked before the texture, and the texture must be a DepthTexture2D, because Slang 2026.21 itself refuses SampleCmpLevelZero on a Texture2D<float> (#13907) before GUST's check runs.
 [[vk::binding(1, 0)]] SamplerComparisonState samp;
+[[vk::binding(0, 0)]] DepthTexture2D tex;
 [[vk::binding(2, 0)]] RWStructuredBuffer<float> out;
 
 [shader("compute")]

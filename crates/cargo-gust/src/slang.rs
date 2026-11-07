@@ -29,7 +29,7 @@
 //! Anything else is an error that names `cargo gust slang install` and the manual download URL. A `slangc` on `PATH`
 //! of another version is accepted only with `--allow-slang-mismatch`, and then it is printed every time. A directory
 //! in step 1 or 2 whose `slangc` reports another version is never substituted: it is a hard error. The pin is the
-//! exact version or a listed validated build ([`VALIDATED_BUILDS`], empty for 2026.20); `build` and `locate` print a
+//! exact version or a listed validated build ([`VALIDATED_BUILDS`], empty for 2026.21); `build` and `locate` print a
 //! note when the located version is not exactly the pin.
 //!
 //! # Known limitations
@@ -90,25 +90,25 @@ pub(crate) const ASSETS: &[Asset] = &[
         version: SLANG_VERSION,
         os: "windows",
         arch: "x86_64",
-        file: "slang-2026.20-windows-x86_64.zip",
-        sha256: "e6dd32bbddf1720ebb4e679d55e9635ce792865a5bd84f3d2cd9af28647c0174",
-        size: 63_658_255,
+        file: "slang-2026.21-windows-x86_64.zip",
+        sha256: "4b6f509e73397175ed36a341beb7ad15f4fff5feaf5f6d95fecf896c0d86b8de",
+        size: 63_779_512,
     },
     Asset {
         version: SLANG_VERSION,
         os: "linux",
         arch: "x86_64",
-        file: "slang-2026.20-linux-x86_64.tar.gz",
-        sha256: "e863e568c204810d6e8bc31852f056aef6763c55ea9925db2db7affa060347c9",
-        size: 83_407_874,
+        file: "slang-2026.21-linux-x86_64.tar.gz",
+        sha256: "691f9341e5bec099eec97ee30a83bcbef541cee7fe3b4de68a821d42f9506c2f",
+        size: 83_483_073,
     },
     Asset {
         version: SLANG_VERSION,
         os: "macos",
         arch: "aarch64",
-        file: "slang-2026.20-macos-aarch64.tar.gz",
-        sha256: "07fa8833fdbb343c3674c84fdd885910f495f3daaaa0c732b32980151e8b58c4",
-        size: 62_779_895,
+        file: "slang-2026.21-macos-aarch64.tar.gz",
+        sha256: "c3d3c959ba3e0c8fdb6c2a5cf6a471ed097ed19c41820af9fb21625779794fb2",
+        size: 62_862_834,
     },
 ];
 
@@ -308,7 +308,7 @@ pub(crate) fn locate_with(
     })
 }
 
-/// The directories of a release that hold licence texts: 2026.20 ships `LICENSES/` (the SPDX texts of its own and its
+/// The directories of a release that hold licence texts: 2026.21 ships `LICENSES/` (the SPDX texts of its own and its
 /// components' licences) and `third-party-notices/` (one notice file per bundled component) beside `LICENSE`.
 const NOTICE_DIRECTORIES: &[&str] = &["licenses", "third-party-notices"];
 

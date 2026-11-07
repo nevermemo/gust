@@ -54,7 +54,7 @@ has the right scope; steps 2, 3 and 7 are where those show.
 Run from a clean checkout of `<C>`, not from a worktree that lanes use. Step 1 needs the pinned Slang and the reflection
 helper, and `cargo xtask` does not read the managed cache for either: the `slangc` of the pin must be first on `PATH`,
 and the helper is the file `GUST_SLANG_REFLECT` names or the one `cargo xtask doctor` builds into `target/slang-reflect`
-(through `cargo gust slang build-helper`), which needs `SLANG_SDK` (the managed `<cache>/2026.20` works) or
+(through `cargo gust slang build-helper`), which needs `SLANG_SDK` (the managed `<cache>/2026.21` works) or
 `VULKAN_SDK`, and a C++ compiler. The full `check-release` then uses that variable, or that built file.
 
 ```sh

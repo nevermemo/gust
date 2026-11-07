@@ -461,6 +461,10 @@ test module; do not mix that mechanical move with behavior changes.
 - For the 0.2.0 release (the m8.v re-check): RELEASE.md's "Releasing 0.2.0 from main" also covers README :360,
   :377 and :565; `cargo gust doctor` takes its `~0.1` from the package version; the `semver` job runs on pull
   requests into main only (`github.base_ref`); CHANGELOG's `toml` line moves out of "may break".
+- The `cargo-gust` test binary runs in no `cargo xtask test` suite and in no CI job (only `check-full`'s workspace
+  run reaches it), which is why its 2026.20 pin literals went unnoticed until the m8.p bump (20 of 258 tests failed
+  on the bumped tree). Fix: a Unit step for the tests that need neither Slang nor the helper, and a Slangc step for
+  the ones that do (`testdata::variant::the_helper_builds_the_stored_artifacts` needs the helper). Not done in m8.p.
 
 ## Deferred language/runtime breadth
 

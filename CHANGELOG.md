@@ -40,6 +40,7 @@ The workspace version is `0.2.0-dev`. Work for 0.2.0 lands on `main`; the 0.1.0 
   `HeadlessDevice` adds `impl gust::target::GpuKernel for MyKernel {}`; without it the call is E0277 with a message
   that says so. The semver tool does not list this change (the marker is `#[doc(hidden)]`).
 - `gust-compute-macros` depends on `toml` 1 (no default features; `std` and `parse`) to read `[package.metadata.gust]`.
+- The pinned Slang is 2026.21 (`cargo gust slang install` fetches it); the 0.1.0 line stays on 2026.20.
 
 ## 0.1.0 (not yet published)
 

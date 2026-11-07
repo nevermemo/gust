@@ -180,7 +180,7 @@ jobs:
         # A pin bump without a re-bless fails here: `check --recompile` rebuilds the kernels of tests/precompiled with
         # the pinned slangc and compares them with the committed set. The Unit suite also byte-compares all five
         # committed copies of that set with it (xtask/src/tests/web.rs: the web example's, the two UI fixtures' and
-        # the fixtures of gust and gust-wgpu). Measured locally, warm, on the 2026.20 install: 36 s.
+        # the fixtures of gust and gust-wgpu). Measured locally, warm, once: 36 s (on the 2026.20 install; the pin is 2026.21).
         run: >-
           cargo run --locked --quiet -p cargo-gust --
           check -p kernels --manifest-path tests/precompiled/Cargo.toml --recompile

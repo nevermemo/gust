@@ -103,18 +103,18 @@ fn verify(record: &Record) -> Result<String, String> {
 fn a_record_with_every_layout_verifies_and_lists_nothing_unchecked() {
     let record = vector_add_record(&[]);
     assert!(record.unchecked_parameters().is_empty());
-    assert_eq!(verify(&record).unwrap(), "2026.20");
+    assert_eq!(verify(&record).unwrap(), crate::slang::SLANG_VERSION);
 }
 
 #[test]
 fn null_layouts_are_filled_from_the_reflection_and_the_artifact_still_verifies() {
     let record = vector_add_record(&["a", "b", "out"]);
     assert_eq!(record.unchecked_parameters(), ["a", "b", "out"]);
-    assert_eq!(verify(&record).unwrap(), "2026.20");
+    assert_eq!(verify(&record).unwrap(), crate::slang::SLANG_VERSION);
     // Only the named parameter is unchecked; the others keep their layouts.
     let one = vector_add_record(&["b"]);
     assert_eq!(one.unchecked_parameters(), ["b"]);
-    assert_eq!(verify(&one).unwrap(), "2026.20");
+    assert_eq!(verify(&one).unwrap(), crate::slang::SLANG_VERSION);
 }
 
 #[test]

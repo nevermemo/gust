@@ -89,8 +89,8 @@
 //!   put the release archive in `<cache>/archives/` and run the command again; its digest is checked the same way.
 //! - `cargo gust slang locate [--allow-slang-mismatch]` prints the `slangc` a build would use: the cache
 //!   (`GUST_SLANG_HOME` when set, else the default), then a `slangc` on `PATH`. A `PATH` slangc counts when its
-//!   `-version` is the pin exactly or a build listed in `VALIDATED_BUILDS` (the release prints `2026.20`; the list is
-//!   empty, since 2026.20 was validated with the release itself). Anything else is an error naming the install
+//!   `-version` is the pin exactly or a build listed in `VALIDATED_BUILDS` (the release prints `2026.21`; the list is
+//!   empty, since 2026.21 was validated with the release itself). Anything else is an error naming the install
 //!   command and the download URL; a `PATH` slangc of another version is used only with the flag, and is printed.
 //! - `cargo gust slang build-helper [--force] [--sdk-root <dir> --out-dir <dir>]` builds `gust-slang-reflect` from
 //!   `assets/slang-layout.cpp` (a copy of `scripts/probes/slang-layout.cpp`, kept equal by a test) with the first of

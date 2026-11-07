@@ -80,7 +80,7 @@ fn the_fixture_verifies_through_the_public_entry() {
     assert_eq!(verified.compiled.entry_point, "gpu_vector_add_add");
     assert_eq!(verified.compiled.workgroup_size, [64, 1, 1]);
     assert_eq!(verified.compiled.artifact, WGSL);
-    assert_eq!(verified.compiled.compiler_version, "2026.20");
+    assert_eq!(verified.compiled.compiler_version, "2026.21");
     let names: Vec<_> = verified
         .compiled
         .reflection

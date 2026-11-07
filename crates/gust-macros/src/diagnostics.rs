@@ -386,7 +386,8 @@ codes! {
     /// form.
     ProfileNotCovered = 744 => "GUST-E0744";
     /// A subgroup operation outside the body of a kernel with `requires(subgroups)`: in a portable body, in a helper,
-    /// or in a `par_for!` or pixel form (m8.s, D140).
+    /// or in a `par_for!` or map form (m8.s, D140). A pixel kernel is refused as a shape that excludes it, not with
+    /// this code.
     SubgroupNotAllowed = 745 => "GUST-E0745";
     /// A kernel over one of the limits of the portable floor, in a crate that sets `limits = "portable"` (m8.f, D143).
     /// For such a crate this code also stands where E0718 would.

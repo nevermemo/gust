@@ -1,5 +1,6 @@
 // A subgroup operation in a `while` loop is GUST-E0402: the loop is refused in every kernel, and the iteration count
-// would differ per invocation.
+// would differ per invocation. This pins the `while` rule (E0402), not a subgroup rule; the run-time-bound `for`, which
+// is a subgroup rule (E0747), is the fixture subgroup-in-run-time-for.
 
 #[gust::gpu]
 mod scan {

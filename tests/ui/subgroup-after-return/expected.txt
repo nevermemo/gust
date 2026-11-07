@@ -3,4 +3,4 @@
 code: none
 file: subgroup-after-return/src/main.rs
 line: 14
-message: [GUST-E0415] a kernel with workgroup memory or a barrier has no `return`
+message: [GUST-E0415] a kernel that calls a subgroup operation has no `return`

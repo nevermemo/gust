@@ -177,21 +177,27 @@ pub fn subgroup_ballot(value: bool) -> crate::math::UVec4 {
     crate::math::UVec4::new(u32::from(value), 0, 0, 0)
 }
 
-/// The `value` of the first active invocation of the subgroup (`WaveReadLaneFirst`, `subgroupBroadcastFirst`).
+/// The `value` of the first active invocation of the subgroup (`WaveReadLaneFirst`, `subgroupBroadcastFirst`). Ran on
+/// the RTX 5090 for `i32` and `f32`, which spike S3 did not cover (`u32` only); not run on the Radeon 890M
+/// (`docs/SEMANTICS.md`, "Forms beyond S3's cells").
 pub fn subgroup_broadcast_first<T: SubgroupScalar>(value: T) -> T {
     value
 }
 
 /// The `value` of invocation `lane` of the subgroup, for a `lane` that is the same in every invocation. A literal
 /// `lane` is `WaveBroadcastLaneAt` (`subgroupBroadcast`); any other expression is `WaveReadLaneAt`, which is
-/// `subgroupShuffle` (WGSL's broadcast takes a constant). The shadow is the subgroup of one invocation.
+/// `subgroupShuffle` (WGSL's broadcast takes a constant). The shadow is the subgroup of one invocation. `i32` and
+/// `f32` ran on the RTX 5090 only, not on the Radeon 890M (S3 covered `u32`; `docs/SEMANTICS.md`, "Forms beyond S3's
+/// cells").
 pub fn subgroup_broadcast<T: SubgroupScalar>(value: T, lane: u32) -> T {
     let _ = lane;
     value
 }
 
 /// The `value` of invocation `lane` of the subgroup, where `lane` may differ per invocation (`WaveShuffle`,
-/// `subgroupShuffle`).
+/// `subgroupShuffle`). A computed `lane` lowers to `WaveShuffle`, where S3's cell was `WaveReadLaneAt`; that form,
+/// and `i32` and `f32` values, ran on the RTX 5090 only, not on the Radeon 890M (`docs/SEMANTICS.md`, "Forms beyond
+/// S3's cells").
 pub fn subgroup_shuffle<T: SubgroupScalar>(value: T, lane: u32) -> T {
     let _ = lane;
     value

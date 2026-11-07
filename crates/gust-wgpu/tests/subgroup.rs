@@ -20,6 +20,7 @@
 
 include!("../../../tests/fixtures/subgroup.rs");
 
+use gust::cpu::CpuDevice;
 use gust::{
     Access, Arg, Call, GpuPod, Kernel, KernelDescriptor, ParameterDescriptor, ParameterKind,
     Resource, ResourceBinding, ResourceLayout, Run, capability::Capability, target::Target,
@@ -537,6 +538,17 @@ fn partial_sums_keeps_its_contract_in_both_builds() {
             // The portable body copies the data (every element is at least 1).
             assert_eq!(out, input, "count {count}");
         }
+        // The CPU form is the portable body in both builds (M8 plan section 2.2): under `dev+subgroups` the GPU got the
+        // subgroup variant, and the twin still copies the data.
+        let cpu = CpuDevice::new();
+        let cpu_input = cpu.buffer(&input);
+        let cpu_out = cpu.buffer(&vec![u32::MAX; count]);
+        subgroup::partial_sums::dispatch(&cpu, count as u32, &cpu_input, &cpu_out).unwrap();
+        assert_eq!(
+            cpu_out.read(),
+            input,
+            "count {count}: the CPU form is the portable body"
+        );
     }
 }
 
@@ -572,6 +584,18 @@ fn count_if_keeps_its_contract_in_both_builds() {
             let flags: Vec<u32> = input.iter().map(|v| u32::from(*v > 10)).collect();
             assert_eq!(out, flags, "count {count}");
         }
+        // The CPU form is the portable body in both builds (M8 plan section 2.2): under `dev+subgroups` the GPU got the
+        // subgroup variant, and the twin still writes one flag per element.
+        let cpu = CpuDevice::new();
+        let cpu_input = cpu.buffer(&input);
+        let cpu_out = cpu.buffer(&vec![u32::MAX; count]);
+        subgroup::count_if::dispatch(&cpu, count as u32, &cpu_input, &cpu_out).unwrap();
+        let cpu_flags: Vec<u32> = input.iter().map(|v| u32::from(*v > 10)).collect();
+        assert_eq!(
+            cpu_out.read(),
+            cpu_flags,
+            "count {count}: the CPU form is the portable body"
+        );
     }
 }
 

@@ -2,5 +2,5 @@
 # A macro error is a `compile_error!` and has no rustc code, so `code: none`.
 code: none
 file: subgroup-in-while/src/main.rs
-line: 14
+line: 15
 message: [GUST-E0402]

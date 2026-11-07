@@ -384,7 +384,8 @@ struct Pass {
     approved_subgroups: HashSet<usize>,
     /// Whether this is the body of a kernel with `requires(subgroups)`.
     subgroups_allowed: bool,
-    /// Appended to the messages about an early exit and a jump when the kernel holds a subgroup operation.
+    /// Non-empty when the kernel holds a subgroup operation: the messages about an early exit lead with the subgroup
+    /// case, and this is appended to the messages about a jump.
     subgroup_note: &'static str,
     is_kernel: bool,
     forbid_return: bool,
@@ -484,11 +485,16 @@ impl<'ast> Visit<'ast> for Pass {
             self.reject(
                 Code::ReturnInBarrierKernel,
                 expression,
-                &format!(
+                &if self.subgroup_note.is_empty() {
                     "a kernel with workgroup memory or a barrier has no `return`: an invocation that returns early \
-                     never reaches the barriers the others wait at; guard the rest of the work with `if`{}",
-                    self.subgroup_note
-                ),
+                     never reaches the barriers the others wait at; guard the rest of the work with `if`"
+                        .to_owned()
+                } else {
+                    "a kernel that calls a subgroup operation has no `return` (nor has one with workgroup memory or \
+                     a barrier): an invocation that returns early never reaches the operation the others of the \
+                     subgroup combine at; guard the rest of the work with `if`"
+                        .to_owned()
+                },
             );
         }
         visit::visit_expr_return(self, expression);
@@ -519,11 +525,16 @@ impl<'ast> Visit<'ast> for Pass {
             self.reject(
                 Code::ReturnInBarrierKernel,
                 expression,
-                &format!(
+                &if self.subgroup_note.is_empty() {
                     "a kernel with workgroup memory or a barrier has no early exit: `?` can leave the kernel before \
-                     the barriers the other invocations wait at; guard the rest of the work with `if`{}",
-                    self.subgroup_note
-                ),
+                     the barriers the other invocations wait at; guard the rest of the work with `if`"
+                        .to_owned()
+                } else {
+                    "a kernel that calls a subgroup operation has no early exit (nor has one with workgroup memory \
+                     or a barrier): `?` can leave the kernel before the operation the other invocations of the \
+                     subgroup combine at; guard the rest of the work with `if`"
+                        .to_owned()
+                },
             );
         }
         visit::visit_expr_try(self, expression);

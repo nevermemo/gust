@@ -18,6 +18,13 @@
 //! The bridge (`slang::compile` for the WGSL target, and `reflect::compile_reflected`) runs it on the compiler's text.
 //! An export runs it on the stored artifact too, through [`fixup_artifact`], which keeps the artifact hash of the
 //! reflection document equal to the hash of the bytes it stores.
+//!
+//! This module is `#[doc(hidden)]`: it is not part of the stable API and goes away at a pin bump (D141).
+//!
+//! Part 1 is a fix-up for naga, not for WGSL. On wasm32 `ShaderSource::Wgsl` bypasses naga and the browser compiles
+//! the text itself, so once a wgpu release maps the subgroups feature for the web, part 1 must not run on a web
+//! artifact: a browser may need the `enable subgroups;` directive (M8 plan, the m8.u0 note; inferred, not run).
+//! Today a web profile with `subgroups` is a typed refusal, so no web artifact reaches this module.
 
 /// Both parts of the fix-up: part 1, then part 2. The identity on WGSL without the patterns.
 pub fn fixup_subgroups(wgsl: &str) -> String {
@@ -148,6 +155,11 @@ fn matching_parenthesis(bytes: &[u8], open: usize) -> Option<usize> {
 }
 
 /// The byte offsets of the commas of `arguments` that sit at parenthesis, bracket and brace depth zero.
+///
+/// Angle brackets are not tracked: the comma of a template list (`array<T, N>(..)`) in an argument would count as a
+/// top-level comma, and the call would then have the wrong number of arguments and be left unrewritten. That cannot
+/// happen with the values a subgroup operation takes (a `u32`, `i32`, `f32` or `bool` scalar), and tracking `<` would
+/// need a parse to tell it from a comparison.
 fn top_level_commas(arguments: &str) -> Vec<usize> {
     let mut depth = 0_i32;
     let mut commas = Vec::new();

@@ -31,6 +31,9 @@ use source_map::{SourceMap, SourceMapSegment};
 
 #[cfg(feature = "slang-runtime")]
 mod source_map;
+/// The subgroup WGSL fix-up. Not part of the stable API: it exists for `cargo gust build` and the bridges, and it goes
+/// away at a pin bump (D141, M8 plan section 2.3).
+#[doc(hidden)]
 pub mod wgsl;
 
 #[cfg(feature = "slang-runtime")]

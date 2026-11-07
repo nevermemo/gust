@@ -350,6 +350,9 @@ pub fn compile_reflected(
 }
 
 /// [`compile_reflected`] with the native reflection helper at `helper` instead of the one the toolchain rules find.
+/// The artifact is the helper's WGSL as it is: the subgroup fix-up of `gust::slang::wgsl` (M8, D140) has **not**
+/// been applied to it, so a kernel that calls a subgroup operation is WGSL that the pinned `naga` refuses. Use
+/// [`compile_reflected`], which applies the fix-up, to hand the artifact to a device.
 /// Fails with [`Error::HelperUnavailable`] when the helper cannot be launched, with [`Error::Compiler`] when the
 /// compile fails, and with the other variants of [`Error`] when its reflection output is malformed or does not belong
 /// to the kernel.

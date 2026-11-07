@@ -506,10 +506,7 @@ fn an_operation_in_an_unapproved_position_is_refused() {
             "in the value of an if",
             "let r = if p { subgroup_add(x) } else { 0u32 };",
         ),
-        (
-            "in a helper call",
-            "let r = x + 1u32; out[subgroup_add(x)] = r;",
-        ),
+        ("in an index", "let r = x + 1u32; out[subgroup_add(x)] = r;"),
     ] {
         let error = rejected(&pair(&body(statement)));
         assert!(
@@ -542,7 +539,7 @@ fn a_kernel_with_an_operation_has_no_return() {
         assert!(
             error
                 .to_string()
-                .contains("which every invocation of the subgroup has to reach"),
+                .contains("a kernel that calls a subgroup operation has no `return`"),
             "{error}"
         );
     }

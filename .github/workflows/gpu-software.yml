@@ -23,7 +23,9 @@
 # each list and its measured time). The nightly steps after the differential test carry `!cancelled() &&` in that
 # line, so that a failing differential test does not skip them; the job still fails. One pull request step is admitted
 # over the budget: the cross-shape differential test, by the MX close (close ruling 4, recorded as D129), measured at
-# 25 s on a warm runner (run 42071043309). No other step is.
+# 25 s on a warm runner (run 42071043309). No other step is. The `+subgroups` step (m8.w2) is on the pull request list
+# inside the budget: about 4 s on a warm runner (run 42328392310, 02:20:00Z to 02:20:04Z; the new profile recompiled only
+# gust-compute and gust-compute-wgpu, 1.98 s, and the shared CARGO_TARGET_DIR stays).
 name: gpu-software
 
 on:
@@ -240,19 +242,6 @@ jobs:
           grep -Fq '"device_type": "Cpu"' "$record"
           grep -Eq '^ *"name": "[^"]*llvmpipe' "$record"
           grep -Fq "\"driver_info\": \"$MESA_DRIVER_INFO\"" "$record"
-      - name: Subgroups on lavapipe (dev+subgroups)
-        # The `+subgroups` build (m8.w2, D142): the Gpu suite above runs under `dev`, which requests no capability. Spike
-        # S3 measured this lavapipe (Mesa 25.2.8) with SUBGROUP, subgroup sizes 8..8, and all 43 cells passing, so these
-        # are real runs and not a "not run" row. `cargo xtask test --suite Gpu --profile dev+subgroups --test <target>`
-        # builds gust-compute-wgpu with GUST_PROFILE=dev+subgroups and runs that one test target, counted against
-        # GPU_TARGET_PINS in xtask/src/verify.rs: `subgroup` (a kernel that requires subgroups is refused without the
-        # capability and runs with it, the SubgroupSize rule on 8..8) and `capabilities` (the default device requests the
-        # build's set, so a default device runs the kernel). No condition: both lists run it, a pull request included.
-        # Pinned by `gpu_software_runs_the_subgroup_targets_under_the_profile` in xtask/src/tests/suite.rs.
-        run: |
-          set -o pipefail
-          cargo --locked xtask test --suite Gpu --profile dev+subgroups --test subgroup 2>&1 | tee "$RUNNER_TEMP/gpu-subgroups.log"
-          cargo --locked xtask test --suite Gpu --profile dev+subgroups --test capabilities 2>&1 | tee -a "$RUNNER_TEMP/gpu-subgroups.log"
       - name: Differential test (2 seeds; all 8 in the nightly list)
         id: difftest
         # `cargo xtask check-difftest` (m5.c2) runs `difftest-run` on lavapipe, reads its report.json, and fails unless
@@ -287,6 +276,25 @@ jobs:
           set -o pipefail
           cargo --locked xtask check-difftest --seeds 1-2 --shapes grid,pixel \
             --report "$RUNNER_TEMP/gpu-software-artifact/difftest-shapes-report.json" 2>&1 | tee "$RUNNER_TEMP/difftest-shapes.log"
+      - name: Subgroups on lavapipe (dev+subgroups)
+        # The `+subgroups` build (m8.w2, D142); the Gpu suite above runs under `dev`, which requests no capability. Spike
+        # S3 measured this lavapipe (Mesa 25.2.8) with SUBGROUP, subgroup sizes 8..8, and all 43 cells passing, so this
+        # is a step and not a "not run" row. `cargo xtask test --suite Gpu --profile dev+subgroups --test <target>`
+        # builds gust-compute-wgpu with GUST_PROFILE=dev+subgroups, runs that one test target with `--show-output`,
+        # requires the `[Subgroups]` line of tests/capabilities.rs (the profile reached the build), and counts the result
+        # against GPU_TARGET_PINS in xtask/src/verify.rs. What runs is the device decision (`tests/subgroup.rs`: a
+        # `requires(subgroups)` descriptor is refused without the capability and runs with it, and the SubgroupSize rule
+        # on lavapipe's 8..8 range; `tests/capabilities.rs`: the default device holds the build's set). No subgroup
+        # operation runs until m8.s puts its fixture test into tests/subgroup.rs; both files use plain Slang with
+        # hand-written `requires` descriptors. The Gpu suite step above already runs both files on this lavapipe under
+        # `dev`. After the cross-shape test and `!cancelled()` as it has, so that a red differential test neither skips
+        # this step nor is skipped by it. No condition on GPU_SOFTWARE_NIGHTLY: both lists run it, a pull request
+        # included. Pinned by `gpu_software_runs_the_subgroup_targets_under_the_profile` in xtask/src/tests/suite.rs.
+        if: ${{ !cancelled() }}
+        run: |
+          set -o pipefail
+          cargo --locked xtask test --suite Gpu --profile dev+subgroups --test subgroup 2>&1 | tee "$RUNNER_TEMP/gpu-subgroups.log"
+          cargo --locked xtask test --suite Gpu --profile dev+subgroups --test capabilities 2>&1 | tee -a "$RUNNER_TEMP/gpu-subgroups.log"
       - name: Name the failing seeds
         if: failure() && (steps.difftest.outcome == 'failure' || steps.difftest_shapes.outcome == 'failure')
         env:

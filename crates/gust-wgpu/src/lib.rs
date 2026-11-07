@@ -1391,7 +1391,7 @@ impl HeadlessDevice {
         capabilities: &'static [Capability],
     ) -> Result<Self, Error> {
         let adapter_info = adapter.get_info();
-        // A capability the adapter lacks ends the open here (D23's startup failure), before wgpu is asked for anything.
+        // A capability the adapter lacks ends the open here (D23's startup failure), before the device is requested.
         // In a browser nothing is requestable: a non-empty set is refused there with the same error (ruling 5).
         let capability_features = device::required_capability_features(
             capabilities,

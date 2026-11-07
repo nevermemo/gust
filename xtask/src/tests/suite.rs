@@ -1138,7 +1138,7 @@ fn a_profile_run_makes_one_targeted_call_and_is_judged_against_its_pin() {
     let root = Path::new("ROOT");
     let seen = RefCell::new(Vec::new());
     for (target, passed) in GPU_TARGET_PINS {
-        let output = gpu_suite_output(passed, 1);
+        let output = with_build_capabilities(gpu_suite_output(passed, 1), "dev+subgroups");
         assert_eq!(
             run_gpu_target(
                 root,
@@ -1161,7 +1161,9 @@ fn a_profile_run_makes_one_targeted_call_and_is_judged_against_its_pin() {
                     "-p",
                     "gust-compute-wgpu",
                     "--test",
-                    target
+                    target,
+                    "--",
+                    "--show-output"
                 ]),
                 Some("dev+subgroups".to_owned())
             ))
@@ -1201,6 +1203,106 @@ fn a_profile_run_makes_one_targeted_call_and_is_judged_against_its_pin() {
     );
 }
 
+/// `output` followed by what `tests/capabilities.rs` prints for a build of `profile`, with the harness's `---- stdout`
+/// framing around it (what `--show-output` adds).
+fn with_build_capabilities(output: String, profile: &str) -> String {
+    let set = profile
+        .strip_prefix("dev+")
+        .map(|names| {
+            names
+                .split('+')
+                .map(|name| name[..1].to_ascii_uppercase() + &name[1..])
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default();
+    format!(
+        "{output}\n---- the_builds_capabilities_follow_the_profile_variable stdout ----\nGUST_PROFILE=\"{profile}\"; capabilities of this build: [{set}]\n"
+    )
+}
+
+/// The profile must have reached the build, not only the runner (m8.w2 fix round 1, S1): the `capabilities` target prints
+/// the build's own set under `--show-output`, and the run fails, naming the profile, when the set is not the profile's or
+/// the line is absent. The same output with the right line passes, so the check is the line and not the counts.
+#[test]
+fn a_profile_run_requires_the_capabilities_line_of_the_build() {
+    let root = Path::new("ROOT");
+    let seen = RefCell::new(Vec::new());
+    let passed = GPU_TARGET_PINS
+        .iter()
+        .find(|(target, _)| *target == "capabilities")
+        .unwrap()
+        .1;
+    let counts = gpu_suite_output(passed, 1);
+    for profile in ["dev", "dev+subgroups"] {
+        let output = with_build_capabilities(counts.clone(), profile);
+        assert_eq!(
+            run_gpu_target(
+                root,
+                profile,
+                "capabilities",
+                &profile_runner(&seen, output)
+            ),
+            Ok(()),
+            "{profile}"
+        );
+    }
+    // A build that did not get the profile (it ran under `dev`), a line that is missing, and one with another set.
+    for (profile, output) in [
+        (
+            "dev+subgroups",
+            with_build_capabilities(counts.clone(), "dev"),
+        ),
+        ("dev+subgroups", counts.clone()),
+        (
+            "dev",
+            with_build_capabilities(counts.clone(), "dev+subgroups"),
+        ),
+        (
+            "dev+subgroups",
+            counts.clone() + "capabilities of this build: [Subgroups, Other]\n",
+        ),
+    ] {
+        let error = run_gpu_target(
+            root,
+            profile,
+            "capabilities",
+            &profile_runner(&seen, output.clone()),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("the build did not receive GUST_PROFILE=")
+                && error.contains(&format!("GUST_PROFILE={profile}"))
+                && error.contains("capabilities of this build: ["),
+            "{profile}: {error}"
+        );
+    }
+    // The message names the line it wanted.
+    let error = run_gpu_target(
+        root,
+        "dev+subgroups",
+        "capabilities",
+        &profile_runner(&seen, counts),
+    )
+    .unwrap_err();
+    assert!(
+        error.contains("`capabilities of this build: [Subgroups]`"),
+        "{error}"
+    );
+    // The other target prints no such line and needs none.
+    let (other, other_passed) = GPU_TARGET_PINS[1];
+    assert_ne!(other, "capabilities");
+    assert_eq!(
+        run_gpu_target(
+            root,
+            "dev+subgroups",
+            other,
+            &profile_runner(&seen, gpu_suite_output(other_passed, 1))
+        ),
+        Ok(())
+    );
+}
+
 /// The whole-suite output stays judged as before: its messages still name `GPU_SUITE_PIN`.
 #[test]
 fn the_suite_pin_messages_are_unchanged() {
@@ -1219,7 +1321,9 @@ fn the_suite_pin_messages_are_unchanged() {
 }
 
 /// Each pinned target is a test file of gust-wgpu, and its pin is the number of `#[test]` functions in it, so a test
-/// added to or removed from the file fails here before it fails a run on a GPU.
+/// added to or removed from the file fails here before it fails a run on a GPU. The count is of lines that are exactly
+/// `#[test]`: a one-line `#[test] fn ...` or an `#[ignore]`d test is not seen by this static check (the run-time check,
+/// which counts the `test result:` line and rejects an ignored test, still catches both).
 #[test]
 fn the_target_pins_match_the_tests_of_their_files() {
     for (target, passed) in GPU_TARGET_PINS {
@@ -1241,8 +1345,14 @@ fn gpu_software_runs_the_subgroup_targets_under_the_profile() {
     let job = job_text(&workflow, "gpu-software");
     let name = "Subgroups on lavapipe (dev+subgroups)";
     let step = step_text(&job, name);
-    // Both lists: no condition on the nightly flag.
-    assert!(!step.contains("        if:"), "{step}");
+    // Both lists: the condition is `!cancelled()` alone, not the nightly flag (S2: a red differential test must not skip
+    // the step, and this step must not skip the differential tests, which come before it).
+    let conditions: Vec<&str> = step
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("if:"))
+        .collect();
+    assert_eq!(conditions, ["if: ${{ !cancelled() }}"], "{step}");
     for target in ["subgroup", "capabilities"] {
         assert!(
             step.contains(&format!(
@@ -1260,8 +1370,15 @@ fn gpu_software_runs_the_subgroup_targets_under_the_profile() {
         job.find(&format!("      - name: {wanted}\n"))
             .unwrap_or_else(|| panic!("no step {wanted}"))
     };
-    assert!(position("Gpu suite on lavapipe") < position(name));
-    assert!(position(name) < position("Differential test (2 seeds; all 8 in the nightly list)"));
+    // After both differential tests (a red step here must not skip their annotations), before the steps that report.
+    assert!(
+        position("Gpu suite on lavapipe")
+            < position("Differential test (2 seeds; all 8 in the nightly list)")
+    );
+    assert!(
+        position("Cross-shape differential test (pixel against grid, 2 seeds)") < position(name)
+    );
+    assert!(position(name) < position("Name the failing seeds"));
     assert!(
         step_text(&job, "Collect the evidence").contains("gpu-subgroups.log"),
         "the log is kept"

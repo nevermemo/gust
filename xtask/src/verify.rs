@@ -1072,7 +1072,8 @@ fn check_pinned_counts(
 /// and a target that is not listed cannot be run under a profile.
 pub(crate) const GPU_TARGET_PINS: [(&str, u64); 2] = [("capabilities", 6), ("subgroup", 6)];
 
-/// The cargo call of one gust-wgpu test target ([`GPU_TARGET_PINS`]).
+/// The cargo call of one gust-wgpu test target ([`GPU_TARGET_PINS`]). `--show-output` makes the harness print the
+/// output of the passing tests too, which is where [`BUILD_CAPABILITIES_TARGET`] reports the capabilities of the build.
 pub(crate) fn gpu_target_call(target: &str) -> Vec<String> {
     owned_args(&[
         "test",
@@ -1081,7 +1082,33 @@ pub(crate) fn gpu_target_call(target: &str) -> Vec<String> {
         "gust-compute-wgpu",
         "--test",
         target,
+        "--",
+        "--show-output",
     ])
+}
+
+/// The test target whose `the_builds_capabilities_follow_the_profile_variable` prints `capabilities of this build:
+/// <set>` (crates/gust-wgpu/tests/capabilities.rs). Every test of every target passes under any profile, so a pin on
+/// the counts cannot tell a build that received `--profile` from one that did not; this line, read from the build's own
+/// `gust::capability::enabled()`, can.
+pub(crate) const BUILD_CAPABILITIES_TARGET: &str = "capabilities";
+
+/// The line that [`BUILD_CAPABILITIES_TARGET`] must print for `profile` (`Debug` of the slice `enabled()` returns):
+/// `capabilities of this build: []` under `dev`, `capabilities of this build: [Subgroups]` under `dev+subgroups`. A
+/// capability name is the profile's word with its first letter in upper case.
+pub(crate) fn build_capabilities_line(profile: &str) -> String {
+    let names: Vec<String> = profile
+        .split('+')
+        .skip(1)
+        .map(|word| {
+            let mut chars = word.chars();
+            chars
+                .next()
+                .map(|first| first.to_ascii_uppercase().to_string() + chars.as_str())
+                .unwrap_or_default()
+        })
+        .collect();
+    format!("capabilities of this build: [{}]", names.join(", "))
 }
 
 /// The pin of `target`, or the error that lists the targets that have one.
@@ -1140,7 +1167,18 @@ pub(crate) fn run_gpu_target(
     let pin = gpu_target_pin(target)?;
     let call = gpu_target_call(target);
     let (_, stdout) = runner(root, &call, Some(profile))?;
-    check_pinned_counts(&call, &stdout, pin, "GPU_TARGET_PINS")
+    check_pinned_counts(&call, &stdout, pin, "GPU_TARGET_PINS")?;
+    if target == BUILD_CAPABILITIES_TARGET {
+        let wanted = build_capabilities_line(profile);
+        let plain = without_colors(&stdout);
+        if !plain.lines().any(|line| line.trim().ends_with(&wanted)) {
+            return Err(format!(
+                "cargo {}: the output has no line ending `{wanted}`; the build did not receive GUST_PROFILE={profile} (or `--show-output`, or the print of the_builds_capabilities_follow_the_profile_variable in crates/gust-wgpu/tests/capabilities.rs, is gone)",
+                call.join(" ")
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The guard for [`ALGO_GPU_CALL`] on its captured `stdout`: tests ran and none failed or was ignored, every test of

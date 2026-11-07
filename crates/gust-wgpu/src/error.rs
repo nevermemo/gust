@@ -360,8 +360,10 @@ pub enum Error {
         address: gust::texture::Address,
     },
     /// A device capability is missing (M8, D23, D142). With `kernel: None` it is a refusal at open: the device options
-    /// request `capability` (`DeviceOptions::with_capabilities`) and the adapter, or the browser, does not offer it, so
-    /// no device exists. With `kernel: Some(..)` it is a refusal at launch: the kernel's `requires` names `capability`
+    /// request `capability` (`DeviceOptions::with_capabilities`) and the adapter does not offer it, so no device exists.
+    /// In a browser (wasm32) any non-empty request is refused, whatever the adapter offers: the wgpu this crate pins
+    /// cannot request the capability there, and the text of the error still says the adapter does not offer it. With
+    /// `kernel: Some(..)` it is a refusal at launch: the kernel's `requires` names `capability`
     /// and this device was not opened with it. `adapter` is the adapter's name.
     MissingCapability {
         /// The capability that is missing.

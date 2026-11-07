@@ -16,24 +16,20 @@ const PARAMETERS: &[ParameterDescriptor] = &[ParameterDescriptor {
     }),
 }];
 
-const KERNEL: KernelDescriptor = KernelDescriptor {
-    module: "reflection_test",
-    name: "write",
-    entry_point: "write_value",
-    shape: gust::Shape::Grid,
-    compatible_shapes: &[gust::Shape::Grid],
-    workgroup_size: [64, 1, 1],
-    parameters: PARAMETERS,
-    slang_source: r#"
+const KERNEL: KernelDescriptor = KernelDescriptor::new(
+    "reflection_test",
+    "write",
+    "write_value",
+    [64, 1, 1],
+    PARAMETERS,
+    r#"
         [[vk::binding(0, 0)]] RWStructuredBuffer<float> output;
         [shader("compute")] [numthreads(64, 1, 1)]
         void write_value(uint3 id : SV_DispatchThreadID) {
             if (id.x == 0) output[0] = 17.0;
         }
     "#,
-    source: gust::SourceOrigin::UNKNOWN,
-    artifacts: &[],
-};
+);
 
 fn assert_mismatch(error: Error, expected: &str) {
     let Error::Reflection(ReflectionError::Mismatch(message)) = error else {
@@ -46,10 +42,7 @@ fn assert_mismatch(error: Error, expected: &str) {
 fn rejects_workgroup_mismatch_before_dispatch() {
     let device = HeadlessDevice::new().expect("Vulkan adapter required");
     let output = device.create_f32_buffer("reflection gate", &[3.0], GpuBufferAccess::ReadWrite);
-    let descriptor = KernelDescriptor {
-        workgroup_size: [32, 1, 1],
-        ..KERNEL
-    };
+    let descriptor = KERNEL.with_workgroup_size([32, 1, 1]);
     let error = device
         .dispatch_buffers(&descriptor, 1, &[BufferBinding::read_write(&output)])
         .expect_err("descriptor/shader workgroup mismatch must fail before dispatch");
@@ -102,19 +95,13 @@ fn rejects_resource_mismatches_before_dispatch() {
             "output: type or field count differs",
         ),
     ] {
-        let descriptor = KernelDescriptor {
-            parameters: Box::leak(Box::new([parameter])),
-            ..KERNEL
-        };
+        let descriptor = KERNEL.with_parameters(Box::leak(Box::new([parameter])));
         let error = device
             .dispatch_buffers(&descriptor, 1, &[binding])
             .expect_err("resource mismatch must fail before dispatch");
         assert_mismatch(error, expected);
     }
-    let descriptor = KernelDescriptor {
-        parameters: &[],
-        ..KERNEL
-    };
+    let descriptor = KERNEL.with_parameters(&[]);
     assert_mismatch(
         device.dispatch_buffers(&descriptor, 1, &[]).unwrap_err(),
         "unexpected compiler resource bindings",
@@ -131,23 +118,17 @@ fn cached_pipeline_does_not_authorize_a_changed_contract() {
     let output = device.create_f32_buffer("cached reflection", &[3.0], GpuBufferAccess::ReadWrite);
     let bindings = [BufferBinding::read_write(&output)];
     device.dispatch_buffers(&KERNEL, 1, &bindings).unwrap();
-    let descriptor = KernelDescriptor {
-        workgroup_size: [32, 1, 1],
-        ..KERNEL
-    };
+    let descriptor = KERNEL.with_workgroup_size([32, 1, 1]);
     assert_mismatch(
         device
             .dispatch_buffers(&descriptor, 1, &bindings)
             .unwrap_err(),
         "compute workgroup dimensions differ",
     );
-    let descriptor = KernelDescriptor {
-        parameters: Box::leak(Box::new([ParameterDescriptor {
-            name: "renamed",
-            ..PARAMETERS[0]
-        }])),
-        ..KERNEL
-    };
+    let descriptor = KERNEL.with_parameters(Box::leak(Box::new([ParameterDescriptor {
+        name: "renamed",
+        ..PARAMETERS[0]
+    }])));
     assert_mismatch(
         device
             .dispatch_buffers(&descriptor, 1, &bindings)
@@ -191,10 +172,7 @@ fn the_native_helper_reports_a_slang_failure_at_the_rust_line() {
         bare, renamed.slang_source,
         "the macro renamed the local `new`"
     );
-    let kernel = KernelDescriptor {
-        slang_source: Box::leak(bare.into_boxed_str()),
-        ..renamed
-    };
+    let kernel = renamed.with_slang_source(Box::leak(bare.into_boxed_str()));
     for target in [Target::Wgsl, Target::Spirv] {
         let error = gust::reflect::compile_reflected(&kernel, target).unwrap_err();
         let gust::reflect::Error::Compiler(gust::slang::Error::CompilationFailed {
@@ -243,38 +221,35 @@ fn the_native_helper_reports_a_slang_failure_at_the_rust_line() {
 /// A hand-written descriptor (no macro, no validator) whose Slang has an
 /// undeclared identifier on line 4, with a two-record line table whose faulty
 /// record points at the marked line below (M1 risk 5, native helper leg).
-const HANDWRITTEN_FAILING: KernelDescriptor = KernelDescriptor {
-    module: "reflection_test",
-    name: "handwritten_failure",
-    entry_point: "handwritten_write",
-    shape: gust::Shape::Grid,
-    compatible_shapes: &[gust::Shape::Grid],
-    workgroup_size: [64, 1, 1],
-    parameters: PARAMETERS,
-    slang_source: concat!(
+const HANDWRITTEN_FAILING: KernelDescriptor = KernelDescriptor::new(
+    "reflection_test",
+    "handwritten_failure",
+    "handwritten_write",
+    [64, 1, 1],
+    PARAMETERS,
+    concat!(
         "[[vk::binding(0, 0)]] RWStructuredBuffer<float> output;\n",
         "[shader(\"compute\")] [numthreads(64, 1, 1)]\n",
         "void handwritten_write(uint3 id : SV_DispatchThreadID) {\n",
         "    output[id.x] = missing_value;\n",
         "}\n",
     ),
-    source: gust::SourceOrigin {
-        file: "crates/gust-wgpu/tests/reflection.rs",
-        lines: &[
-            gust::LineSpan {
-                slang_start: 3,
-                slang_end: 5,
-                rust_line: line!(),
-            },
-            gust::LineSpan {
-                slang_start: 4,
-                slang_end: 4,
-                rust_line: line!(), // FAILS: native handwritten
-            },
-        ],
-    },
-    artifacts: &[],
-};
+)
+.with_source(gust::SourceOrigin {
+    file: "crates/gust-wgpu/tests/reflection.rs",
+    lines: &[
+        gust::LineSpan {
+            slang_start: 3,
+            slang_end: 5,
+            rust_line: line!(),
+        },
+        gust::LineSpan {
+            slang_start: 4,
+            slang_end: 4,
+            rust_line: line!(), // FAILS: native handwritten
+        },
+    ],
+});
 
 #[test]
 fn the_native_helper_reports_a_handwritten_failure_at_the_rust_line() {

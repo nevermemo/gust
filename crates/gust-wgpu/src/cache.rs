@@ -124,8 +124,6 @@ pub(crate) struct PipelineCache {
 
 #[cfg(test)]
 mod tests {
-    use gust::SourceOrigin;
-
     use super::*;
 
     const BYTES: &[u8] = b"@compute fn main() {}";
@@ -140,24 +138,18 @@ mod tests {
 
     const ARTIFACTS: &[Artifact] = &[BASE];
 
-    const KERNEL: KernelDescriptor = KernelDescriptor {
-        module: "cache_test",
-        name: "kernel",
-        entry_point: "cache_test_kernel",
-        shape: Shape::Grid,
-        compatible_shapes: &[Shape::Grid],
-        workgroup_size: [64, 1, 1],
-        parameters: &[],
-        slang_source: "void cache_test_kernel() {}",
-        source: SourceOrigin::UNKNOWN,
-        artifacts: ARTIFACTS,
-    };
+    const KERNEL: KernelDescriptor = KernelDescriptor::new(
+        "cache_test",
+        "kernel",
+        "cache_test_kernel",
+        [64, 1, 1],
+        &[],
+        "void cache_test_kernel() {}",
+    )
+    .with_artifacts(ARTIFACTS);
 
     fn with(artifact: Artifact) -> KernelDescriptor {
-        KernelDescriptor {
-            artifacts: Box::leak(Box::new([artifact])),
-            ..KERNEL
-        }
+        KERNEL.with_artifacts(Box::leak(Box::new([artifact])))
     }
 
     fn key(kernel: &KernelDescriptor) -> KernelCacheKey {
@@ -230,21 +222,16 @@ mod tests {
 
     #[test]
     fn descriptors_that_differ_only_in_the_shape_have_different_keys() {
-        let pixel = KernelDescriptor {
-            shape: Shape::Pixel,
-            compatible_shapes: &[Shape::Pixel],
-            ..KERNEL
-        };
+        let pixel = KERNEL
+            .with_shape(Shape::Pixel)
+            .with_compatible_shapes(&[Shape::Pixel]);
         assert_ne!(key(&KERNEL), key(&pixel));
         assert_eq!(key(&pixel), key(&pixel));
     }
 
     #[test]
     fn a_descriptor_with_an_artifact_differs_from_one_without() {
-        let bare = KernelDescriptor {
-            artifacts: &[],
-            ..KERNEL
-        };
+        let bare = KERNEL.with_artifacts(&[]);
         assert_ne!(key(&bare), key(&KERNEL));
     }
 
@@ -255,10 +242,7 @@ mod tests {
             format: Format::Spirv,
             ..BASE
         };
-        let bare = KernelDescriptor {
-            artifacts: &[],
-            ..KERNEL
-        };
+        let bare = KERNEL.with_artifacts(&[]);
         assert_eq!(key(&with(spirv)), key(&bare));
         assert!(preferred_artifact(&with(spirv)).is_none());
         assert_eq!(preferred_artifact(&KERNEL), Some(&BASE));

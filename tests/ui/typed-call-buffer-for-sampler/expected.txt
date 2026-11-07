@@ -4,7 +4,7 @@
 # child note. A buffer (and a texture) is not a `SamplerArg`.
 code: E0277
 file: typed-call-buffer-for-sampler/src/main.rs
-line: 166
+line: 163
 message: `Buffer<f32>` is not a GUST sampler of a typed device
 message: required by a bound in `blur_call`
 label: typed calls take the sampler type of a GUST backend

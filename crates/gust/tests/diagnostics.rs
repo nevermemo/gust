@@ -573,41 +573,35 @@ const HANDWRITTEN_PARAMETERS: &[ParameterDescriptor] = &[
 
 /// Two records, outer construct first: the whole kernel maps to a line that is
 /// not the marker, the faulty statement to the marked line (the innermost wins).
-const HANDWRITTEN: KernelDescriptor = KernelDescriptor {
-    module: "handwritten",
-    name: "write",
-    entry_point: "handwritten_write",
-    shape: gust::Shape::Grid,
-    compatible_shapes: &[gust::Shape::Grid],
-    workgroup_size: [64, 1, 1],
-    parameters: HANDWRITTEN_PARAMETERS,
-    slang_source: HANDWRITTEN_SLANG,
-    source: SourceOrigin {
-        file: HANDWRITTEN_FILE,
-        lines: &[
-            LineSpan {
-                slang_start: 3,
-                slang_end: 5,
-                rust_line: line!(),
-            },
-            LineSpan {
-                slang_start: HANDWRITTEN_FAULTY_SLANG_LINE,
-                slang_end: HANDWRITTEN_FAULTY_SLANG_LINE,
-                rust_line: line!(), // FAILS: handwritten
-            },
-        ],
-    },
-    artifacts: &[],
-};
+const HANDWRITTEN: KernelDescriptor = KernelDescriptor::new(
+    "handwritten",
+    "write",
+    "handwritten_write",
+    [64, 1, 1],
+    HANDWRITTEN_PARAMETERS,
+    HANDWRITTEN_SLANG,
+)
+.with_source(SourceOrigin {
+    file: HANDWRITTEN_FILE,
+    lines: &[
+        LineSpan {
+            slang_start: 3,
+            slang_end: 5,
+            rust_line: line!(),
+        },
+        LineSpan {
+            slang_start: HANDWRITTEN_FAULTY_SLANG_LINE,
+            slang_end: HANDWRITTEN_FAULTY_SLANG_LINE,
+            rust_line: line!(), // FAILS: handwritten
+        },
+    ],
+});
 
 /// The same kernel with a file but an empty line table: nothing maps back.
-const HANDWRITTEN_UNMAPPED: KernelDescriptor = KernelDescriptor {
-    source: SourceOrigin {
-        file: HANDWRITTEN_FILE,
-        lines: &[],
-    },
-    ..HANDWRITTEN
-};
+const HANDWRITTEN_UNMAPPED: KernelDescriptor = HANDWRITTEN.with_source(SourceOrigin {
+    file: HANDWRITTEN_FILE,
+    lines: &[],
+});
 
 /// A hand-written syntax error (a missing right-hand side) on line 4 of its Slang, with the same two-record table
 /// shape as `HANDWRITTEN`. It stands in for the old `new` local as the syntax-error fixture: no macro behind it.
@@ -621,10 +615,10 @@ const HANDWRITTEN_SYNTAX_SLANG: &str = concat!(
     "}\n",
 );
 
-const HANDWRITTEN_SYNTAX: KernelDescriptor = KernelDescriptor {
-    entry_point: "handwritten_syntax",
-    slang_source: HANDWRITTEN_SYNTAX_SLANG,
-    source: SourceOrigin {
+const HANDWRITTEN_SYNTAX: KernelDescriptor = HANDWRITTEN
+    .with_entry_point("handwritten_syntax")
+    .with_slang_source(HANDWRITTEN_SYNTAX_SLANG)
+    .with_source(SourceOrigin {
         file: HANDWRITTEN_FILE,
         lines: &[
             LineSpan {
@@ -638,9 +632,7 @@ const HANDWRITTEN_SYNTAX: KernelDescriptor = KernelDescriptor {
                 rust_line: line!(), // FAILS: handwritten syntax
             },
         ],
-    },
-    ..HANDWRITTEN
-};
+    });
 
 /// The macro renames `new` and the other colliding names (`__gust_r_<name>`), so the kernels below that were written
 /// to fail on a local named `new` now compile. The failure tests need a Slang-only error on the same lines, so they
@@ -654,10 +646,7 @@ fn unrenamed(kernel: &KernelDescriptor) -> KernelDescriptor {
         kernel.slang_source
     );
     let text = kernel.slang_source.replace(collisions::PREFIX, "");
-    KernelDescriptor {
-        slang_source: Box::leak(text.into_boxed_str()),
-        ..*kernel
-    }
+    kernel.with_slang_source(Box::leak(text.into_boxed_str()))
 }
 
 /// The 1-based line of this file whose code ends with the `// FAILS: <what>` marker.
@@ -1511,10 +1500,7 @@ fn slangc_messages_name_the_rust_spelling_not_the_prefix() {
         .slang_source
         .replacen("var __gust_r_new = ", "var __gust_r_nex = ", 1);
     assert_ne!(text, kernel.slang_source);
-    let broken = KernelDescriptor {
-        slang_source: Box::leak(text.clone().into_boxed_str()),
-        ..kernel
-    };
+    let broken = kernel.with_slang_source(Box::leak(text.clone().into_boxed_str()));
     let expected = marked_line("keyword local");
     for target in [Target::Wgsl, Target::Spirv] {
         // Without the annotation the compiler says `__gust_r_new`, so the assertions below are not vacuous.

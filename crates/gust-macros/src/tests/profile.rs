@@ -676,10 +676,13 @@ mod pixel {
         // An output is a storage parameter with a binding and read-write access, as under `grid`.
         assert!(text.contains("::gust::ParameterKind::Storage"), "{text}");
         assert!(text.contains("::gust::Access::ReadWrite"), "{text}");
-        assert!(
-            !text.contains("target:"),
-            "the descriptor has no target field"
+        // Every kernel is built for the GPU target until routing exists (m8.r1), whatever its shape.
+        assert_eq!(
+            text.matches("target:::gust::target::Target::Gpu,").count(),
+            3,
+            "{text}"
         );
+        assert!(!text.contains("Target::Cpu"), "{text}");
     }
 
     /// A module that holds a `grid` kernel with an explicit workgroup size beside a `pixel` kernel (slice mx.p1b).

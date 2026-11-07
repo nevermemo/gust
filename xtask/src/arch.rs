@@ -50,7 +50,9 @@ const CRATE_RULES: &[CrateRule] = &[
     CrateRule {
         manifest: "crates/gust-macros/Cargo.toml",
         name: "gust-compute-macros",
-        allowed: &["proc-macro2", "quote", "syn"],
+        // `toml` reads the crate's `[package.metadata.gust]` tables (M8, D136, D137): the `std` and `parse` features
+        // only, five crates, each MIT or MIT/Apache-2.0 (toml, toml_parser, toml_datetime, serde_spanned, winnow).
+        allowed: &["proc-macro2", "quote", "syn", "toml"],
     },
     CrateRule {
         manifest: "crates/gust/Cargo.toml",

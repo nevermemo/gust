@@ -1260,7 +1260,7 @@ mod tests {
     use super::*;
     use crate::{
         Arg, Independent, ParameterDescriptor, ParameterKind, ResourceBinding, ResourceLayout, Run,
-        SV_DispatchThreadID, SourceOrigin, Storage, StorageMut, Uniform, math::Vec4,
+        SV_DispatchThreadID, Storage, StorageMut, Uniform, math::Vec4,
     };
 
     // ---- two hand-written kernels in the form the macro emits (this module is the macro's specification) ----
@@ -1297,18 +1297,7 @@ mod tests {
         workgroup_size: [u32; 3],
         parameters: &'static [ParameterDescriptor],
     ) -> KernelDescriptor {
-        KernelDescriptor {
-            module: "cpu_tests",
-            name,
-            entry_point: name,
-            shape: crate::Shape::Grid,
-            compatible_shapes: &[crate::Shape::Grid],
-            workgroup_size,
-            parameters,
-            slang_source: "",
-            source: SourceOrigin::UNKNOWN,
-            artifacts: &[],
-        }
+        KernelDescriptor::new("cpu_tests", name, name, workgroup_size, parameters, "")
     }
 
     const F32: TypeLayout = <f32 as GpuPod>::LAYOUT;

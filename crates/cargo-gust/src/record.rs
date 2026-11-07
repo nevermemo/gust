@@ -446,27 +446,28 @@ impl Record {
                 rust_line: *rust_line,
             })
             .collect();
-        KernelDescriptor {
-            module: leak(&self.module),
-            name: leak(&self.name),
-            entry_point: leak(&self.entry_point),
-            shape: self.shape,
-            // A record names the shape it was built as; the shapes the kernel could take are the macro's to judge
-            // and are not recorded (mx.c).
-            compatible_shapes: Box::leak(vec![self.shape].into_boxed_slice()),
-            workgroup_size: self.workgroup_size,
-            parameters: Box::leak(parameters.into_boxed_slice()),
-            slang_source: leak(&self.slang),
-            source: if file.is_empty() && lines.is_empty() {
-                SourceOrigin::UNKNOWN
-            } else {
-                SourceOrigin {
-                    file: leak(file),
-                    lines: Box::leak(lines.into_boxed_slice()),
-                }
-            },
-            artifacts: &[],
-        }
+        // The portable body for the GPU: a record of schema 1 to 3 names no variant, capability or target (record
+        // schema 4 adds the first two, m8.b2), which the constructor's defaults say.
+        KernelDescriptor::new(
+            leak(&self.module),
+            leak(&self.name),
+            leak(&self.entry_point),
+            self.workgroup_size,
+            Box::leak(parameters.into_boxed_slice()),
+            leak(&self.slang),
+        )
+        .with_shape(self.shape)
+        // A record names the shape it was built as; the shapes the kernel could take are the macro's to judge and
+        // are not recorded (mx.c).
+        .with_compatible_shapes(Box::leak(vec![self.shape].into_boxed_slice()))
+        .with_source(if file.is_empty() && lines.is_empty() {
+            SourceOrigin::UNKNOWN
+        } else {
+            SourceOrigin {
+                file: leak(file),
+                lines: Box::leak(lines.into_boxed_slice()),
+            }
+        })
     }
 }
 

@@ -981,7 +981,7 @@ fn an_indirect_node_ignores_the_workgroup_count_limit_but_not_the_others() {
 
 use gust::{
     Access, Arg, Call, GpuPod, Kernel, KernelDescriptor, ParameterDescriptor, ParameterKind,
-    Resource, ResourceBinding, ResourceLayout, SourceOrigin,
+    Resource, ResourceBinding, ResourceLayout,
 };
 
 const fn graph_storage(name: &'static str, access: Access, binding: u32) -> ParameterDescriptor {
@@ -998,14 +998,12 @@ const fn graph_storage(name: &'static str, access: Access, binding: u32) -> Para
 /// `shade(src: RO, factor: Uniform<f32>, dst: RW)`: `dst[i] = src[i] * factor`.
 struct Shade;
 impl Kernel for Shade {
-    const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-        module: "graph_tests",
-        name: "shade",
-        entry_point: "graph_shade",
-        shape: gust::Shape::Grid,
-        compatible_shapes: &[gust::Shape::Grid],
-        workgroup_size: [64, 1, 1],
-        parameters: &[
+    const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new(
+        "graph_tests",
+        "shade",
+        "graph_shade",
+        [64, 1, 1],
+        &[
             graph_storage("src", Access::ReadOnly, 0),
             ParameterDescriptor {
                 name: "factor",
@@ -1020,7 +1018,7 @@ impl Kernel for Shade {
             },
             graph_storage("dst", Access::ReadWrite, 2),
         ],
-        slang_source: r#"
+        r#"
 [[vk::binding(0, 0)]] StructuredBuffer<float> src;
 [[vk::binding(1, 0)]] ConstantBuffer<float> factor;
 [[vk::binding(2, 0)]] RWStructuredBuffer<float> dst;
@@ -1031,10 +1029,9 @@ void graph_shade(uint3 id : SV_DispatchThreadID)
     if (id.x < n) { dst[id.x] = src[id.x] * factor; }
 }
 "#,
-        source: SourceOrigin::UNKNOWN,
-        artifacts: &[],
-    };
+    );
 }
+impl gust::target::GpuKernel for Shade {}
 
 fn shade_call<'r, R0, R1, R2>(
     __gust_element_count: u32,

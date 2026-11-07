@@ -17,7 +17,7 @@ use std::{
 
 use gust::{
     Access, GpuPod, KernelDescriptor, ParameterDescriptor, ParameterKind, ResourceBinding,
-    ResourceLayout, SourceOrigin,
+    ResourceLayout,
 };
 use gust_wgpu::{BufferBinding, DeviceHandle, Error, GpuVec, HeadlessDevice};
 
@@ -54,18 +54,16 @@ const fn storage(name: &'static str, access: Access, binding: u32) -> ParameterD
 }
 
 /// `probe_len(src: RO, out: RW)`: invocation 0 writes the length the kernel sees for `src` and `src`'s last element.
-const PROBE_LEN: KernelDescriptor = KernelDescriptor {
-    module: "gpu_vec_tests",
-    name: "probe_len",
-    entry_point: "gpu_vec_probe_len",
-    shape: gust::Shape::Grid,
-    compatible_shapes: &[gust::Shape::Grid],
-    workgroup_size: [1, 1, 1],
-    parameters: &[
+const PROBE_LEN: KernelDescriptor = KernelDescriptor::new(
+    "gpu_vec_tests",
+    "probe_len",
+    "gpu_vec_probe_len",
+    [1, 1, 1],
+    &[
         storage("src", Access::ReadOnly, 0),
         storage("out", Access::ReadWrite, 1),
     ],
-    slang_source: r#"
+    r#"
 [[vk::binding(0, 0)]] StructuredBuffer<uint> src;
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint> out;
 [shader("compute")] [numthreads(1, 1, 1)]
@@ -78,23 +76,19 @@ void gpu_vec_probe_len(uint3 id : SV_DispatchThreadID)
     out[2] = m;
 }
 "#,
-    source: SourceOrigin::UNKNOWN,
-    artifacts: &[],
-};
+);
 
 /// `add_one(src: RO, dst: RW)`: `dst[i] = src[i] + 1` for `i < dst.len()`.
-const ADD_ONE: KernelDescriptor = KernelDescriptor {
-    module: "gpu_vec_tests",
-    name: "add_one",
-    entry_point: "gpu_vec_add_one",
-    shape: gust::Shape::Grid,
-    compatible_shapes: &[gust::Shape::Grid],
-    workgroup_size: [64, 1, 1],
-    parameters: &[
+const ADD_ONE: KernelDescriptor = KernelDescriptor::new(
+    "gpu_vec_tests",
+    "add_one",
+    "gpu_vec_add_one",
+    [64, 1, 1],
+    &[
         storage("src", Access::ReadOnly, 0),
         storage("dst", Access::ReadWrite, 1),
     ],
-    slang_source: r#"
+    r#"
 [[vk::binding(0, 0)]] StructuredBuffer<uint> src;
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint> dst;
 [shader("compute")] [numthreads(64, 1, 1)]
@@ -104,9 +98,7 @@ void gpu_vec_add_one(uint3 id : SV_DispatchThreadID)
     if (id.x < n) { dst[id.x] = src[id.x] + 1u; }
 }
 "#,
-    source: SourceOrigin::UNKNOWN,
-    artifacts: &[],
-};
+);
 
 fn ramp(len: u32) -> Vec<u32> {
     (0..len)

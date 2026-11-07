@@ -301,30 +301,26 @@ pub(crate) fn require_fragment_storage(
 
 #[cfg(test)]
 mod tests {
-    use gust::{KernelDescriptor, SourceOrigin};
+    use gust::KernelDescriptor;
 
     use super::*;
 
-    const PIXEL: KernelDescriptor = KernelDescriptor {
-        module: "render_test",
-        name: "pixel",
-        entry_point: "render_test_pixel",
-        shape: Shape::Pixel,
-        compatible_shapes: &[Shape::Pixel],
-        workgroup_size: [1, 1, 1],
-        parameters: &[],
-        slang_source: "void render_test_pixel() {}",
-        source: SourceOrigin::UNKNOWN,
-        artifacts: &[],
-    };
+    const PIXEL: KernelDescriptor = KernelDescriptor::new(
+        "render_test",
+        "pixel",
+        "render_test_pixel",
+        [1, 1, 1],
+        &[],
+        "void render_test_pixel() {}",
+    )
+    .with_shape(Shape::Pixel)
+    .with_compatible_shapes(&[Shape::Pixel]);
 
-    const GRID: KernelDescriptor = KernelDescriptor {
-        shape: Shape::Grid,
-        compatible_shapes: &[Shape::Grid],
-        workgroup_size: [64, 1, 1],
-        name: "grid",
-        ..PIXEL
-    };
+    const GRID: KernelDescriptor = PIXEL
+        .with_shape(Shape::Grid)
+        .with_compatible_shapes(&[Shape::Grid])
+        .with_workgroup_size([64, 1, 1])
+        .with_name("grid");
 
     fn scissors(elements: u32) -> Vec<[u32; 4]> {
         PixelPlan::new(elements).scissors().collect()

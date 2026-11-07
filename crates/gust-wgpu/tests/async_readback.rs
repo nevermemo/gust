@@ -31,7 +31,7 @@ use std::{
 
 use gust::{
     Access, GpuPod, KernelDescriptor, ParameterDescriptor, ParameterKind, ResourceBinding,
-    ResourceLayout, SourceOrigin,
+    ResourceLayout,
 };
 use gust_wgpu::{BufferBinding, Error, GpuBuffer, GpuBufferAccess, HeadlessDevice};
 
@@ -56,15 +56,13 @@ const PARAMETERS: &[ParameterDescriptor] = &[ParameterDescriptor {
 const _: () = assert!(STEPS == 8_388_608);
 
 /// `state[i]` after `STEPS` applications of `step` (below) to its seed.
-const SLOW: KernelDescriptor = KernelDescriptor {
-    module: "async_readback_tests",
-    name: "slow_steps",
-    entry_point: "async_readback_slow",
-    shape: gust::Shape::Grid,
-    compatible_shapes: &[gust::Shape::Grid],
-    workgroup_size: [64, 1, 1],
-    parameters: PARAMETERS,
-    slang_source: r#"
+const SLOW: KernelDescriptor = KernelDescriptor::new(
+    "async_readback_tests",
+    "slow_steps",
+    "async_readback_slow",
+    [64, 1, 1],
+    PARAMETERS,
+    r#"
 [[vk::binding(0, 0)]] RWStructuredBuffer<uint> state;
 [shader("compute")] [numthreads(64, 1, 1)]
 void async_readback_slow(uint3 id : SV_DispatchThreadID)
@@ -78,9 +76,7 @@ void async_readback_slow(uint3 id : SV_DispatchThreadID)
     }
 }
 "#,
-    source: SourceOrigin::UNKNOWN,
-    artifacts: &[],
-};
+);
 
 fn device() -> HeadlessDevice {
     HeadlessDevice::new().expect("Vulkan adapter required; this test must not silently skip")

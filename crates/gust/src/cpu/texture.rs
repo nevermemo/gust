@@ -580,7 +580,7 @@ mod tests {
     use crate::texture::{R32Float, R32Sint, R32Uint, Rg32Float, Rg32Uint, SampleClass, Texture2D};
     use crate::{
         Arg, Call, Device, Kernel, KernelDescriptor, ParameterDescriptor, ParameterKind,
-        ResourceBinding, ResourceLayout, Run, SampledCall, SourceOrigin, StorageMut, TextureAccess,
+        ResourceBinding, ResourceLayout, Run, SampledCall, StorageMut, TextureAccess,
         TextureDimension, TextureLayout, UVec3,
     };
 
@@ -1013,14 +1013,12 @@ mod tests {
     }
 
     impl Kernel for Blur {
-        const DESCRIPTOR: KernelDescriptor = KernelDescriptor {
-            module: "texture_tests",
-            name: "blur",
-            entry_point: "texture_tests_blur",
-            shape: crate::Shape::Grid,
-            compatible_shapes: &[crate::Shape::Grid],
-            workgroup_size: [64, 1, 1],
-            parameters: &[
+        const DESCRIPTOR: KernelDescriptor = KernelDescriptor::new(
+            "texture_tests",
+            "blur",
+            "texture_tests_blur",
+            [64, 1, 1],
+            &[
                 ParameterDescriptor {
                     name: "id",
                     rust_type: "SV_DispatchThreadID",
@@ -1063,10 +1061,8 @@ mod tests {
                     }),
                 },
             ],
-            slang_source: "",
-            source: SourceOrigin::UNKNOWN,
-            artifacts: &[],
-        };
+            "",
+        );
     }
 
     fn blur_body(id: UVec3, tex: Texture2D<'_, f32>, samp: Sampler, mut out: StorageMut<'_, f32>) {

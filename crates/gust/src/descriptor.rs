@@ -1,5 +1,8 @@
 use core::fmt;
 
+use crate::capability::Capability;
+use crate::target::Target;
+
 /// Marker implemented by the zero-sized host handle generated for each kernel.
 #[diagnostic::on_unimplemented(
     message = "`{Self}` is not a GUST kernel handle",
@@ -20,9 +23,16 @@ pub struct ModuleDescriptor {
 }
 
 /// Everything the host knows about one kernel: where it lives, its Slang source, its workgroup size, its parameters,
-/// its shape and its precompiled artifacts. The `#[gpu]` macro builds one per `#[kernel]` function; a hand-written
-/// literal must set every field.
+/// its shape, its capabilities, its target and its precompiled artifacts. The `#[gpu]` macro builds one per `#[kernel]`
+/// function.
+///
+/// API change (0.2.0, M8): the struct is `#[non_exhaustive]`, so a later field is not a breaking change again, and a
+/// literal is no longer possible outside this crate. Build one with [`KernelDescriptor::new`] and the `with_*`
+/// setters, each a `const fn`, so a descriptor can still be a `const`. The fields [`variant`](Self::variant),
+/// [`requires`](Self::requires) and [`target`](Self::target) are new. Struct-update syntax
+/// (`KernelDescriptor { shape, ..BASE }`) becomes `BASE.with_shape(shape)`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct KernelDescriptor {
     /// The name of the `#[gpu]` module that holds the kernel.
     pub module: &'static str,
@@ -33,17 +43,15 @@ pub struct KernelDescriptor {
     /// How the kernel's invocations are laid out, and so which Slang stage its entry point has (D63, D89). Every
     /// kernel the macro emits today is [`Shape::Grid`].
     ///
-    /// API change (mx.k): this field is new. A hand-written `KernelDescriptor { .. }` literal must add
-    /// `shape: Shape::Grid`, and the derived `PartialEq`/`Eq` compare it. It is not part of the content key: the
-    /// stage is already in the Slang text (D45), so one body under two shapes has two keys.
+    /// The derived `PartialEq`/`Eq` compare it. It is not part of the content key: the stage is already in the Slang
+    /// text (D45), so one body under two shapes has two keys. [`KernelDescriptor::new`] sets [`Shape::Grid`];
+    /// [`with_shape`](KernelDescriptor::with_shape) changes it.
     pub shape: Shape,
     /// Every shape the kernel can take, judged by the macro's conservative syntactic rules (decision D63, slice
     /// mx.c). `Shape::Grid` is always in it; `Shape::Pixel` is when nothing in the kernel rules a pixel out. It is
     /// information only: nothing reads it at run time, and it is not part of the content key. A descriptor rebuilt
-    /// from an export record (`cargo-gust`) carries only the shape it was built as.
-    ///
-    /// API change (mx.c): this field is new. A hand-written `KernelDescriptor { .. }` literal must add
-    /// `compatible_shapes: &[Shape::Grid]` (after `shape`), and the derived `PartialEq`/`Eq` compare it.
+    /// from an export record (`cargo-gust`) carries only the shape it was built as. The derived `PartialEq`/`Eq`
+    /// compare it. [`KernelDescriptor::new`] sets `&[Shape::Grid]`.
     pub compatible_shapes: &'static [Shape],
     /// The workgroup size `[x, y, z]`.
     pub workgroup_size: [u32; 3],
@@ -54,20 +62,75 @@ pub struct KernelDescriptor {
     pub slang_source: &'static str,
     /// Where the kernel's Rust source lives and which Slang lines came from
     /// which Rust line. Diagnostic metadata only: it never affects the emitted
-    /// Slang, the pipeline cache identity or the runtime ABI.
-    ///
-    /// API change (M1.1): this field is new. A hand-written
-    /// `KernelDescriptor { .. }` literal must add `source: SourceOrigin::UNKNOWN`,
-    /// and the derived `PartialEq`/`Eq` now compare it too, so two descriptors that
-    /// differ only in source metadata are no longer equal.
+    /// Slang, the pipeline cache identity or the runtime ABI. The derived `PartialEq`/`Eq` compare it too, so two
+    /// descriptors that differ only in source metadata are not equal. [`KernelDescriptor::new`] sets
+    /// [`SourceOrigin::UNKNOWN`].
     pub source: SourceOrigin,
     /// Precompiled artifacts of this kernel. Each is checked against the descriptor by
     /// [`verify_artifact`](crate::artifact::verify_artifact); the backend that uses them
     /// calls it before use (`gust-compute-wgpu`, slice m4.e1). The macro embeds the pair `gust-artifacts/<key>.wgsl`
     /// and `<key>.wgsl.reflection.json` of the kernel crate when both exist, and emits an empty slice otherwise.
-    /// Like `source`, a hand-written `KernelDescriptor { .. }` literal must add
-    /// `artifacts: &[]`, and the derived `PartialEq`/`Eq` compare it.
+    /// The derived `PartialEq`/`Eq` compare it. [`KernelDescriptor::new`] sets an empty slice.
     pub artifacts: &'static [crate::artifact::Artifact],
+    /// The name of the variant whose body this descriptor describes, or `""` for the kernel's portable body (M8,
+    /// D23). It is not part of the content key: different bodies have different Slang text and so different keys.
+    pub variant: &'static str,
+    /// The capabilities the selected body needs (M8, D23): empty for the portable body. A device that lacks one of
+    /// them cannot run the kernel. The derived `PartialEq`/`Eq` compare it.
+    pub requires: &'static [Capability],
+    /// The target this kernel is built for in this build (M8, D65, D137): [`Target::Gpu`] for every kernel until
+    /// routing exists. A GPU device will refuse a kernel whose target is [`Target::Cpu`] (m8.w1).
+    pub target: Target,
+}
+
+/// The `#[gpu]` macro's way to build a [`KernelDescriptor`] with named fields (support surface, hidden): it calls
+/// [`KernelDescriptor::__gust_descriptor`], so a field added to the struct is a compile error in the expansion until
+/// the macro sets it, and the names keep adjacent string arguments from being swapped.
+///
+/// Every slice and the origin is first bound to a constant of its own. The descriptor is built by a function call, and
+/// the `'static` borrow of an argument is promoted only when the whole array is a constant expression, which the layout
+/// blocks inside a parameter are not; a constant's own initializer extends its temporaries instead.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __gust_descriptor {
+    (
+        module: $module:expr,
+        name: $name:expr,
+        entry_point: $entry_point:expr,
+        shape: $shape:expr,
+        compatible_shapes: $compatible_shapes:expr,
+        workgroup_size: $workgroup_size:expr,
+        parameters: $parameters:expr,
+        slang_source: $slang_source:expr,
+        source: $source:expr,
+        artifacts: $artifacts:expr,
+        variant: $variant:expr,
+        requires: $requires:expr,
+        target: $target:expr $(,)?
+    ) => {{
+        // These `__GUST_*` items are not hygienic (a user item of the same name is shadowed here); the reservation of
+        // the `__gust_*` names (crate docs, "Support surface") covers them.
+        const __GUST_COMPATIBLE_SHAPES: &[$crate::Shape] = $compatible_shapes;
+        const __GUST_PARAMETERS: &[$crate::ParameterDescriptor] = $parameters;
+        const __GUST_SOURCE: $crate::SourceOrigin = $source;
+        const __GUST_ARTIFACTS: &[$crate::Artifact] = $artifacts;
+        const __GUST_REQUIRES: &[$crate::capability::Capability] = $requires;
+        $crate::KernelDescriptor::__gust_descriptor(
+            $module,
+            $name,
+            $entry_point,
+            $shape,
+            __GUST_COMPATIBLE_SHAPES,
+            $workgroup_size,
+            __GUST_PARAMETERS,
+            $slang_source,
+            __GUST_SOURCE,
+            __GUST_ARTIFACTS,
+            $variant,
+            __GUST_REQUIRES,
+            $target,
+        )
+    }};
 }
 
 /// The width of a row of fragments of a `pixel` call, in elements (slice mx.p1a, Option S, decisions D120 and D127): the
@@ -171,6 +234,161 @@ pub struct LineSpan {
 }
 
 impl KernelDescriptor {
+    /// A descriptor with the fields every kernel has and the defaults of the rest: [`Shape::Grid`] (and
+    /// `compatible_shapes` of `&[Shape::Grid]`), [`SourceOrigin::UNKNOWN`], no artifacts, the portable variant (`""`),
+    /// no required capability and [`Target::Gpu`]. The `with_*` setters change the rest.
+    ///
+    /// ```
+    /// use gust::{KernelDescriptor, Shape};
+    ///
+    /// const DESCRIPTOR: KernelDescriptor =
+    ///     KernelDescriptor::new("demo", "run", "gpu_demo_run", [64, 1, 1], &[], "// slang")
+    ///         .with_shape(Shape::Pixel)
+    ///         .with_compatible_shapes(&[Shape::Grid, Shape::Pixel]);
+    /// assert_eq!(DESCRIPTOR.shape, Shape::Pixel);
+    /// assert_eq!(DESCRIPTOR.compatible_shapes, &[Shape::Grid, Shape::Pixel]);
+    /// assert_eq!(DESCRIPTOR.workgroup_size, [64, 1, 1]);
+    /// assert!(DESCRIPTOR.requires.is_empty());
+    /// ```
+    pub const fn new(
+        module: &'static str,
+        name: &'static str,
+        entry_point: &'static str,
+        workgroup_size: [u32; 3],
+        parameters: &'static [ParameterDescriptor],
+        slang_source: &'static str,
+    ) -> Self {
+        Self {
+            module,
+            name,
+            entry_point,
+            shape: Shape::Grid,
+            compatible_shapes: &[Shape::Grid],
+            workgroup_size,
+            parameters,
+            slang_source,
+            source: SourceOrigin::UNKNOWN,
+            artifacts: &[],
+            variant: "",
+            requires: &[],
+            target: Target::Gpu,
+        }
+    }
+
+    /// The descriptor with `module` as its [`module`](Self::module).
+    pub const fn with_module(mut self, module: &'static str) -> Self {
+        self.module = module;
+        self
+    }
+
+    /// The descriptor with `name` as its [`name`](Self::name).
+    pub const fn with_name(mut self, name: &'static str) -> Self {
+        self.name = name;
+        self
+    }
+
+    /// The descriptor with `entry_point` as its [`entry_point`](Self::entry_point).
+    pub const fn with_entry_point(mut self, entry_point: &'static str) -> Self {
+        self.entry_point = entry_point;
+        self
+    }
+
+    /// The descriptor with `workgroup_size` as its [`workgroup_size`](Self::workgroup_size).
+    pub const fn with_workgroup_size(mut self, workgroup_size: [u32; 3]) -> Self {
+        self.workgroup_size = workgroup_size;
+        self
+    }
+
+    /// The descriptor with `parameters` as its [`parameters`](Self::parameters).
+    pub const fn with_parameters(mut self, parameters: &'static [ParameterDescriptor]) -> Self {
+        self.parameters = parameters;
+        self
+    }
+
+    /// The descriptor with `slang_source` as its [`slang_source`](Self::slang_source).
+    pub const fn with_slang_source(mut self, slang_source: &'static str) -> Self {
+        self.slang_source = slang_source;
+        self
+    }
+
+    /// The descriptor with `shape` as its [`shape`](Self::shape).
+    pub const fn with_shape(mut self, shape: Shape) -> Self {
+        self.shape = shape;
+        self
+    }
+
+    /// The descriptor with `compatible_shapes` as its [`compatible_shapes`](Self::compatible_shapes).
+    pub const fn with_compatible_shapes(mut self, compatible_shapes: &'static [Shape]) -> Self {
+        self.compatible_shapes = compatible_shapes;
+        self
+    }
+
+    /// The descriptor with `source` as its [`source`](Self::source).
+    pub const fn with_source(mut self, source: SourceOrigin) -> Self {
+        self.source = source;
+        self
+    }
+
+    /// The descriptor with `artifacts` as its [`artifacts`](Self::artifacts).
+    pub const fn with_artifacts(mut self, artifacts: &'static [crate::artifact::Artifact]) -> Self {
+        self.artifacts = artifacts;
+        self
+    }
+
+    /// The descriptor with `variant` as its [`variant`](Self::variant).
+    pub const fn with_variant(mut self, variant: &'static str) -> Self {
+        self.variant = variant;
+        self
+    }
+
+    /// The descriptor with `requires` as its [`requires`](Self::requires).
+    pub const fn with_requires(mut self, requires: &'static [Capability]) -> Self {
+        self.requires = requires;
+        self
+    }
+
+    /// The descriptor with `target` as its [`target`](Self::target).
+    pub const fn with_target(mut self, target: Target) -> Self {
+        self.target = target;
+        self
+    }
+
+    /// The constructor the `#[gpu]` macro calls: every field at once, so that a field added later is a compile error
+    /// in the macro's output until the macro sets it. Support surface: not covered by the stability promise.
+    #[doc(hidden)]
+    #[allow(clippy::too_many_arguments)]
+    pub const fn __gust_descriptor(
+        module: &'static str,
+        name: &'static str,
+        entry_point: &'static str,
+        shape: Shape,
+        compatible_shapes: &'static [Shape],
+        workgroup_size: [u32; 3],
+        parameters: &'static [ParameterDescriptor],
+        slang_source: &'static str,
+        source: SourceOrigin,
+        artifacts: &'static [crate::artifact::Artifact],
+        variant: &'static str,
+        requires: &'static [Capability],
+        target: Target,
+    ) -> Self {
+        Self {
+            module,
+            name,
+            entry_point,
+            shape,
+            compatible_shapes,
+            workgroup_size,
+            parameters,
+            slang_source,
+            source,
+            artifacts,
+            variant,
+            requires,
+            target,
+        }
+    }
+
     /// The kernel's `module::name`, as a value that implements `Display`.
     pub const fn qualified_name(&self) -> QualifiedName<'_> {
         QualifiedName(self)
@@ -256,6 +474,130 @@ pub enum Access {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const BASE: KernelDescriptor =
+        KernelDescriptor::new("demo", "run", "gpu_demo_run", [64, 1, 1], &[], "// slang");
+
+    #[test]
+    fn the_constructor_sets_the_documented_defaults() {
+        assert_eq!(BASE.module, "demo");
+        assert_eq!(BASE.name, "run");
+        assert_eq!(BASE.entry_point, "gpu_demo_run");
+        assert_eq!(BASE.workgroup_size, [64, 1, 1]);
+        assert!(BASE.parameters.is_empty());
+        assert_eq!(BASE.slang_source, "// slang");
+        assert_eq!(BASE.shape, Shape::Grid);
+        assert_eq!(BASE.compatible_shapes, &[Shape::Grid]);
+        assert_eq!(BASE.source, SourceOrigin::UNKNOWN);
+        assert!(BASE.artifacts.is_empty());
+        assert_eq!(BASE.variant, "");
+        assert!(BASE.requires.is_empty());
+        assert_eq!(BASE.target, Target::Gpu);
+    }
+
+    const PARAMETERS: &[ParameterDescriptor] = &[ParameterDescriptor {
+        name: "id",
+        rust_type: "uint3",
+        kind: ParameterKind::Invocation,
+        access: Access::NotApplicable,
+        resource_layout: None,
+        binding: None,
+    }];
+    const ORIGIN: SourceOrigin = SourceOrigin {
+        file: "src/lib.rs",
+        lines: &[LineSpan {
+            slang_start: 1,
+            slang_end: 2,
+            rust_line: 3,
+        }],
+    };
+    const ARTIFACTS: &[crate::artifact::Artifact] = &[crate::artifact::Artifact {
+        format: crate::artifact::Format::Wgsl,
+        key: "key",
+        bytes: b"wgsl",
+        reflection: "{}",
+    }];
+
+    #[test]
+    fn each_setter_changes_its_field_only() {
+        // One row per setter: the value differs from BASE's, and the result equals BASE with that one field replaced,
+        // so a setter that wrote a neighbouring field (the string fields are easy to cross) fails its own row.
+        macro_rules! row {
+            ($setter:ident, $field:ident, $value:expr) => {{
+                let value = $value;
+                let expected = KernelDescriptor {
+                    $field: value,
+                    ..BASE
+                };
+                assert_ne!(
+                    expected,
+                    BASE,
+                    "{}: the row's value must differ from BASE",
+                    stringify!($field)
+                );
+                assert_eq!(BASE.$setter(value), expected, "{}", stringify!($setter));
+            }};
+        }
+        row!(with_module, module, "other_module");
+        row!(with_name, name, "other_name");
+        row!(with_entry_point, entry_point, "other_entry");
+        row!(with_workgroup_size, workgroup_size, [8, 4, 2]);
+        row!(with_parameters, parameters, PARAMETERS);
+        row!(with_slang_source, slang_source, "// other");
+        row!(with_shape, shape, Shape::Pixel);
+        row!(with_compatible_shapes, compatible_shapes, &[Shape::Pixel]);
+        row!(with_source, source, ORIGIN);
+        row!(with_artifacts, artifacts, ARTIFACTS);
+        row!(with_variant, variant, "subgroups");
+        row!(with_requires, requires, &[Capability::Subgroups]);
+        row!(with_target, target, Target::Cpu);
+    }
+
+    #[test]
+    fn the_macro_constructor_and_the_builder_agree() {
+        // Thirteen distinct values, so a name mapped to the wrong position (the five strings above all) differs.
+        let chained = KernelDescriptor::new("m", "n", "e", [2, 3, 4], PARAMETERS, "s")
+            .with_shape(Shape::Pixel)
+            .with_compatible_shapes(&[Shape::Pixel, Shape::Grid])
+            .with_source(ORIGIN)
+            .with_artifacts(ARTIFACTS)
+            .with_variant("v")
+            .with_requires(&[Capability::Subgroups])
+            .with_target(Target::Cpu);
+        let built = KernelDescriptor::__gust_descriptor(
+            "m",
+            "n",
+            "e",
+            Shape::Pixel,
+            &[Shape::Pixel, Shape::Grid],
+            [2, 3, 4],
+            PARAMETERS,
+            "s",
+            ORIGIN,
+            ARTIFACTS,
+            "v",
+            &[Capability::Subgroups],
+            Target::Cpu,
+        );
+        assert_eq!(built, chained);
+        let from_macro = crate::__gust_descriptor! {
+            module: "m",
+            name: "n",
+            entry_point: "e",
+            shape: Shape::Pixel,
+            compatible_shapes: &[Shape::Pixel, Shape::Grid],
+            workgroup_size: [2, 3, 4],
+            parameters: PARAMETERS,
+            slang_source: "s",
+            source: ORIGIN,
+            artifacts: ARTIFACTS,
+            variant: "v",
+            requires: &[Capability::Subgroups],
+            target: Target::Cpu,
+        };
+        assert_eq!(from_macro, chained);
+        assert_ne!(chained, BASE);
+    }
 
     #[test]
     fn a_shape_has_a_name_that_reads_back_and_a_slang_stage() {

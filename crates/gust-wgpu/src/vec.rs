@@ -164,7 +164,7 @@ mod tests {
 
     use gust::{
         Access, GpuPod, KernelDescriptor, ParameterDescriptor, ParameterKind, ResourceBinding,
-        ResourceLayout, SourceOrigin,
+        ResourceLayout,
     };
 
     use super::GpuVec;
@@ -182,18 +182,16 @@ mod tests {
     }
 
     /// `add_one(src: RO, dst: RW)`: `dst[i] = src[i] + 1` for `i < dst.len()` as the kernel sees `dst`.
-    const ADD_ONE: KernelDescriptor = KernelDescriptor {
-        module: "vec_tail_tests",
-        name: "add_one",
-        entry_point: "vec_tail_add_one",
-        shape: gust::Shape::Grid,
-        compatible_shapes: &[gust::Shape::Grid],
-        workgroup_size: [64, 1, 1],
-        parameters: &[
+    const ADD_ONE: KernelDescriptor = KernelDescriptor::new(
+        "vec_tail_tests",
+        "add_one",
+        "vec_tail_add_one",
+        [64, 1, 1],
+        &[
             storage("src", Access::ReadOnly, 0),
             storage("dst", Access::ReadWrite, 1),
         ],
-        slang_source: r#"
+        r#"
 [[vk::binding(0, 0)]] StructuredBuffer<uint> src;
 [[vk::binding(1, 0)]] RWStructuredBuffer<uint> dst;
 [shader("compute")] [numthreads(64, 1, 1)]
@@ -203,9 +201,7 @@ void vec_tail_add_one(uint3 id : SV_DispatchThreadID)
     if (id.x < n) { dst[id.x] = src[id.x] + 1u; }
 }
 "#,
-        source: SourceOrigin::UNKNOWN,
-        artifacts: &[],
-    };
+    );
 
     /// Every byte of `buffer`, read back through a staging buffer of the test's own.
     fn raw_words(device: &HeadlessDevice, buffer: &wgpu::Buffer) -> Vec<u32> {

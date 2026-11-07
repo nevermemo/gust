@@ -538,8 +538,9 @@ fn partial_sums_keeps_its_contract_in_both_builds() {
             // The portable body copies the data (every element is at least 1).
             assert_eq!(out, input, "count {count}");
         }
-        // The CPU form is the portable body in both builds (M8 plan section 2.2): under `dev+subgroups` the GPU got the
-        // subgroup variant, and the twin still copies the data.
+        // CPU dispatch under `dev+subgroups` succeeds and returns the contract's output (the portable body copies the
+        // data). This does not show which body ran: with the one-lane shadows (`subgroup_add` is its argument,
+        // `subgroup_elect` is true, `subgroup_count` is 0 or 1) the subgroup body gives the same output on every input.
         let cpu = CpuDevice::new();
         let cpu_input = cpu.buffer(&input);
         let cpu_out = cpu.buffer(&vec![u32::MAX; count]);
@@ -584,8 +585,9 @@ fn count_if_keeps_its_contract_in_both_builds() {
             let flags: Vec<u32> = input.iter().map(|v| u32::from(*v > 10)).collect();
             assert_eq!(out, flags, "count {count}");
         }
-        // The CPU form is the portable body in both builds (M8 plan section 2.2): under `dev+subgroups` the GPU got the
-        // subgroup variant, and the twin still writes one flag per element.
+        // CPU dispatch under `dev+subgroups` succeeds and returns the contract's output (one flag per element). This
+        // does not show which body ran: with the one-lane shadows (`subgroup_add` is its argument, `subgroup_elect` is
+        // true, `subgroup_count` is 0 or 1) the subgroup body gives the same output on every input.
         let cpu = CpuDevice::new();
         let cpu_input = cpu.buffer(&input);
         let cpu_out = cpu.buffer(&vec![u32::MAX; count]);

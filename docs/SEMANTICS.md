@@ -820,11 +820,12 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   the dialect because their intrinsics do not build on every target: `subgroup_elect()` (the lane is the first lane;
   naga has no `subgroupElect`), `subgroup_count(bool)` (the popcount of the ballot) and `subgroup_inclusive_add` and
   `subgroup_inclusive_mul` (the exclusive scan combined with the invocation's own value). No cell of the S3 matrix is
-  left out; the forms beyond its cells are listed, with where they ran, under "Forms beyond S3's cells" below. The twin cannot run them (see "What the twin does not model" above), so the rule is the second one: a body
-  that calls an operation must require `subgroups` (a `#[variant(of = k, requires(subgroups))]` body, or a kernel that
-  says `requires(subgroups)`), every body with a non-empty `requires` is lowered with `cpu = "unsupported"` (D139), and
-  the CPU form of a kernel that has a subgroup variant is its portable body, the one with an empty `requires`. A call
-  in a portable body or in a helper is GUST-E0745, and a function may not take the name of an operation.
+  left out; the forms beyond its cells are listed, with where they ran, under "Forms beyond S3's cells" below. The twin
+  cannot run them (see "What the twin does not model" above), so the rule is the second one: a body that calls an
+  operation must require `subgroups` (a `#[variant(of = k, requires(subgroups))]` body, or a kernel that says
+  `requires(subgroups)`), every body with a non-empty `requires` is lowered with `cpu = "unsupported"` (D139), and the
+  CPU form of a kernel that has a subgroup variant is its portable body, the one with an empty `requires`. A call in a
+  portable body or in a helper is GUST-E0745, and a function may not take the name of an operation.
   - **Where a call may stand (GUST-E0747).** Every invocation of the subgroup has to reach the call, as for a barrier:
     it is the whole value of a `let`, an assignment or a compound assignment (or an operand of arithmetic, a comparison,
     a cast or a unary operator there, or the argument of another operation) at the top level of the body or of a
@@ -850,8 +851,10 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
     probe. The `f32` operations are bounded and not exact; the next item states the bounds.
   - **The `f32` contract (D39).** An `f32` `subgroup_add`, `subgroup_mul` or scan combines the lanes in an order the
     hardware chooses and the dialect does not specify, so the result is held to a bound that holds for any order, with
-    `u = 2^-24` and `n` the number of terms (`n = subgroup_size()` for a reduction, `k` for the exclusive scan at
-    lane `k`, `k + 1` for the inclusive scan; `n` is a run-time value, so the bound is stated over `subgroup_size()`):
+    `u = 2^-23` (two units of roundoff of `2^-24` per operation, the GPU's error for `+` and `*` of section 4) and `n`
+    the number of terms (`n = subgroup_size()` for a reduction, `k` for the exclusive scan at lane `k`, `k + 1` for the
+    inclusive scan; `n` is a run-time value, so the bound is stated over `subgroup_size()`). The probe measured the
+    results within the bounds written with `u = 2^-24`, which are half as wide:
     - **sum** (`subgroup_add`, `subgroup_exclusive_add`, `subgroup_inclusive_add`): the result is within
       `gamma_(n-1) * sum(|x_i|)` of the exact sum of the `n` terms, `gamma_m = m*u / (1 - m*u)`. This is the
       order-free bound of a sum of `n` terms (the family of section 4 and of the float sums of `gust-algo` below), the
@@ -875,10 +878,12 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
 
     | Form | RTX 5090 (Vulkan) | Radeon 890M (Vulkan) | lavapipe (CI `dev+subgroups` step) |
     | --- | --- | --- | --- |
-    | `subgroup_broadcast_first`, `subgroup_broadcast` (literal lane, `WaveBroadcastLaneAt`) on `i32` and `f32` | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
-    | `subgroup_shuffle` on `i32` and `f32` | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
-    | `subgroup_shuffle` with a computed lane, any type (`WaveShuffle`; S3's cell was `WaveReadLaneAt`) | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
-    | `subgroup_broadcast` with a computed lane (`WaveReadLaneAt`, the form of S3's cell) on `i32` | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
+    | `subgroup_broadcast_first` on `i32` and `f32` | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
+    | `subgroup_broadcast` on `f32` with a literal lane (`WaveBroadcastLaneAt`) | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
+    | `subgroup_broadcast` on `i32` with a literal lane (`WaveBroadcastLaneAt`) | not run on any adapter | not run | not run |
+    | `subgroup_broadcast` on `i32` with a computed lane (`WaveReadLaneAt`, the form of S3's cell) | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
+    | `subgroup_broadcast` on `f32` with a computed lane (`WaveReadLaneAt`) | not run on any adapter | not run | not run |
+    | `subgroup_shuffle` on `i32` and `f32`, and on `u32` (computed lane, `WaveShuffle`; every shuffle in the fixtures has a computed lane; S3's cell was `WaveReadLaneAt`) | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
 
     The tests open the first Vulkan adapter, so the Radeon 890M was not selected in this slice. The lavapipe cell is
     filled in from the CI run of the `dev+subgroups` step, which runs the same file.

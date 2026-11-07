@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see workgroup-over-16kib/expected.txt).
+# GUST-E0746 is a macro error, so `code: none`; it is spanned over the kernel signature.
+code: none
+file: limits-invocations/src/main.rs
+line: 7
+message: [GUST-E0746] kernel `k` is over the portable floor: its workgroup invocation count (x * y * z) is 272, over `max_compute_invocations_per_workgroup` = 256

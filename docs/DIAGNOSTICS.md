@@ -1207,6 +1207,7 @@ Reached through `#[gpu]`.
 Rejected: `Workgroup<[f32; 4097]>`, `Workgroup<[Vec4; 1025]>`, `Workgroup<[f32; 4096]>` with a second `Workgroup<[u32; 1]>`.
 Fixture: `tests/ui/workgroup-over-16kib` (`cargo xtask check-ui`, `code: none` plus the message).
 Write instead: shorter arrays, a smaller element type, or fewer arrays; 16384 bytes exactly is accepted.
+A crate that sets `limits = "portable"` gets GUST-E0746 for the same kernel, with the same count and the same limit (M8, D143): the floor check runs first, so E0718 is reported only by a crate without the setting.
 Decision: D42 (M7 plan 4.1, slice m7.g1).
 
 ### GUST-E0719 `par_for!` call that is not one of its forms
@@ -1404,6 +1405,19 @@ Rejected: a kernel with `requires(subgroups)` and no variant under the default l
 Fixtures: `tests/ui/variant-not-covered` and `tests/ui/variant-cpu-unsupported` (`cargo xtask check-ui`).
 Write instead: add a variant that requires less (`requires()` covers every profile), declare profiles with the capability, or drop `cpu` from `profiles` (or the `cpu = "unsupported"` from the kernel).
 Decision: D139, D138.
+
+### GUST-E0746 kernel over the portable floor
+
+A kernel of a crate that sets `limits = "portable"` in `[package.metadata.gust]` is over one of the limits of `gust::limits::PORTABLE`, which are WebGPU's defaults (M8, D143, D36). The check is opt-in: a crate without the setting is never checked against the table here, and gets the launch checks of `gust-compute-wgpu` (D36) only. The macro counts what the source of each kernel decides, in this order, and reports the first that is over: the `workgroup_size` per axis (`max_compute_workgroup_size_x`, `_y` at 256 and `_z` at 64; a kernel with no option has the grid default of 64 x 1 x 1) and their product (`max_compute_invocations_per_workgroup`, 256); the storage buffers (`max_storage_buffers_per_shader_stage`, 8, read-only and read-write parameters together), uniform buffers (`max_uniform_buffers_per_shader_stage`, 12), sampled textures (`max_sampled_textures_per_shader_stage`, 16), storage textures (`max_storage_textures_per_shader_stage`, 4, read-write and write-only together) and samplers (`max_samplers_per_shader_stage`, 16); and the workgroup memory (`max_compute_workgroup_storage_size`, 16384 bytes, counted as E0718 counts it). A `shape = pixel` kernel has no workgroup, so only the resource counts apply to it.
+Message: `kernel `NAME` is over the portable floor: its <what> is <value>, over `<limit>` = <max>`, with the limit named as `wgpu` names it and both numbers (the two workgroup memory numbers carry "bytes"), then a sentence on the setting. It is spanned over the kernel's signature. Every kernel of the module is checked, a `#[variant]` body included.
+E0718 is folded into this code for such a crate: the check runs before the validator, and the floor's workgroup memory limit is E0718's 16 KiB, so a portable crate gets E0746 where an ordinary crate gets E0718, with the same count. For a crate without the setting E0718 is unchanged.
+What it cannot count: a `Workgroup` array whose length is not an integer literal, or whose element is a type the macro cannot size (a user struct), counts as 0 bytes (as in E0718); a kernel attribute that does not parse is reported by its own code (E0703 to E0709) and not here; the limits that depend on a launch (binding and buffer sizes, workgroups per dimension, texture dimensions, bindings per group) are the runtime's (D36, D84). Only `#[kernel]` functions of a `#[gpu]` module are checked: the `#[gpu]` function (an element-wise map) and `par_for!` go through other entry points and are not. A malformed `[package.metadata.gust]` table is E0753, reported as before.
+The floor does not settle D84's two meanings of "default": `LimitsPolicy::Adapter` raises only `max_buffer_size`, `max_storage_buffer_binding_size` and `max_compute_workgroups_per_dimension`, none of which is in the table, so every GUST device opens with exactly these values for the limits the table holds.
+Reached through `#[gpu]` on a module.
+Rejected (each with `limits = "portable"`): `workgroup_size(257, 1, 1)`, `workgroup_size(1, 257, 1)`, `workgroup_size(1, 1, 65)`, `workgroup_size(17, 16, 1)` (272 invocations), 9 storage buffers, 13 uniform buffers, 17 sampled textures, 5 storage textures, 17 samplers, `Workgroup<[f32; 4097]>` (16388 bytes).
+Fixtures: `tests/ui/limits-workgroup-size-x`, `limits-workgroup-size-y`, `limits-workgroup-size-z`, `limits-invocations`, `limits-storage-buffers`, `limits-uniform-buffers`, `limits-sampled-textures`, `limits-storage-textures`, `limits-samplers` and `limits-workgroup-memory` fail; `limits-at-floor` (every limit reached exactly) and `limits-not-portable` (an over-the-floor kernel in a crate without the setting) compile (`cargo xtask check-ui`). The unit tests are in `crates/gust-macros/src/validate/limits.rs`.
+Write instead: a smaller workgroup, fewer bindings, shorter `Workgroup` arrays, or remove `limits = "portable"` if the crate targets only devices with higher limits.
+Decision: D143.
 
 ### GUST-E0750 no body for the build profile
 

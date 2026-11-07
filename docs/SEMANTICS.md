@@ -790,6 +790,18 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   workgroups), and a 2^28 x 1 extent at a 16 x 16 workgroup is exactly the cap but needs 2^24 workgroups along x. This
   is a documented difference (D39), not something to match; split the work into several dispatches for the GPU. The
   macro-emitted twin uses the CPU backend (m3.c) and visits the invocations in ascending z, then y, then x.
+- **The portable floor (opt-in, m8.f, D143).** A crate that sets `limits = "portable"` in `[package.metadata.gust]` has every
+  `#[kernel]` body checked when it compiles against `gust::limits::PORTABLE`, the WebGPU defaults: a workgroup of at most
+  256 x 256 x 64 and 256 invocations, 8 storage buffers, 12 uniform buffers, 16 sampled textures, 4 storage textures,
+  16 samplers and 16384 bytes of workgroup memory per kernel. A kernel over one limit is GUST-E0746 (which stands where
+  E0718 would for such a crate). Without the setting nothing is checked at compile time and the launch checks above stay
+  the only ones. The check counts what a kernel's source decides; the limits that depend on a launch (binding and buffer
+  sizes, workgroups per dimension) are not in the table, and neither the `#[gpu]` function nor `par_for!` is checked. No
+  GUST device opens with more than these values for the limits in the table (`gust-compute-wgpu` asserts it), so a kernel
+  over the floor already fails at launch with `DeviceLimit`; the floor moves that failure to the build. **The floor does
+  not settle D84's two meanings of "default"**: those are about `max_buffer_size`, `max_storage_buffer_binding_size` and
+  `max_compute_workgroups_per_dimension`, which `LimitsPolicy::Adapter` raises on a native adapter and the table does not
+  hold. Default enforcement of the floor is a later decision.
 - **Staged graphs and the generated host (m7.d).** A staged graph (`StagedGraph`) supports one-dimensional dispatches
   only. A node with a y or z extent above 1 is refused with `Error::Extent` when the graph runs, but the graph checks
   the length of a shared buffer first and from the x axis only, so with a shared-length buffer the error may be

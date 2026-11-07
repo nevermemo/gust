@@ -1604,6 +1604,63 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             case.expectation
         );
     }
+    // The portable floor (m8.f, D143): a crate with `limits = "portable"` is refused over each limit of the table with
+    // GUST-E0746 naming the limit, one at the floor compiles, and a crate without the key is not checked. None sets a
+    // variable. E0746 stands where E0718 would for the workgroup memory (the fixture of E0718 is `workgroup-over-16kib`).
+    assert_eq!(find("limits-at-floor").expectation, Expectation::Compiles);
+    assert_eq!(
+        find("limits-not-portable").expectation,
+        Expectation::Compiles
+    );
+    for (name, limit) in [
+        (
+            "limits-invocations",
+            "max_compute_invocations_per_workgroup",
+        ),
+        ("limits-samplers", "max_samplers_per_shader_stage"),
+        (
+            "limits-sampled-textures",
+            "max_sampled_textures_per_shader_stage",
+        ),
+        (
+            "limits-storage-buffers",
+            "max_storage_buffers_per_shader_stage",
+        ),
+        (
+            "limits-storage-textures",
+            "max_storage_textures_per_shader_stage",
+        ),
+        (
+            "limits-uniform-buffers",
+            "max_uniform_buffers_per_shader_stage",
+        ),
+        (
+            "limits-workgroup-memory",
+            "max_compute_workgroup_storage_size",
+        ),
+        ("limits-workgroup-size-x", "max_compute_workgroup_size_x"),
+        ("limits-workgroup-size-y", "max_compute_workgroup_size_y"),
+        ("limits-workgroup-size-z", "max_compute_workgroup_size_z"),
+    ] {
+        let case = find(name);
+        assert!(case.env.is_empty(), "{name}: {:?}", case.env);
+        assert!(
+            matches!(&case.expectation, Expectation::Fails(wanted)
+                if wanted.code == "none"
+                    && wanted.messages.iter().any(|text| text.starts_with("[GUST-E0746] kernel `")
+                        && text.contains("is over the portable floor: its ")
+                        && text.contains(&format!(", over `{limit}` = ")))),
+            "{name}: {:?}",
+            case.expectation
+        );
+        let manifest = fs::read_to_string(ui.join(name).join("Cargo.toml")).unwrap();
+        assert!(
+            manifest.contains("limits = \"portable\""),
+            "{name}: {manifest}"
+        );
+    }
+    let manifest = fs::read_to_string(ui.join("limits-not-portable").join("Cargo.toml")).unwrap();
+    assert!(!manifest.contains("metadata"), "{manifest}");
     // A strict profile with the feature on: the manifest turns it on, the build script refuses.
     assert_eq!(find("profile-native-bridge").env, variable("native"));
     assert_eq!(
@@ -1677,7 +1734,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 102] = [
+const PINNED_FIXTURES: [&str; 114] = [
     "barrier-in-helper",
     "barrier-in-if",
     "barrier-in-nested-for",
@@ -1696,6 +1753,18 @@ const PINNED_FIXTURES: [&str; 102] = [
     "labelled-break-in-barrier-kernel",
     "layout-outside-element",
     "layout-outside-field",
+    "limits-at-floor",
+    "limits-invocations",
+    "limits-not-portable",
+    "limits-sampled-textures",
+    "limits-samplers",
+    "limits-storage-buffers",
+    "limits-storage-textures",
+    "limits-uniform-buffers",
+    "limits-workgroup-memory",
+    "limits-workgroup-size-x",
+    "limits-workgroup-size-y",
+    "limits-workgroup-size-z",
     "literal-let-ok",
     "literal-let-rejected",
     "map-bool-for-u32",

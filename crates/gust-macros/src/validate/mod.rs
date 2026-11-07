@@ -11,6 +11,7 @@ use crate::slang::texture;
 
 mod barrier;
 pub(crate) mod classify;
+pub(crate) mod limits;
 
 pub(crate) use barrier::{is_barrier_call, workgroup_array};
 

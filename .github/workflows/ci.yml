@@ -6,7 +6,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/*"]
   pull_request:
 
 permissions:
@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  # Superseded pull request runs are cancelled; runs on main are never cancelled.
+  # Superseded pull request runs are cancelled; runs on main and release/* are never cancelled.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

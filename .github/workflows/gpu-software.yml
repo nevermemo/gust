@@ -10,11 +10,11 @@
 # install retries each download five times and the whole install once more after 60 s (the snapshot service has
 # answered 503/504); the pinned snapshot and the identity assertions are unchanged.
 #
-# One job, two lists (plan M5 R1-10). The list of a pull request, a push to main and a dispatch without `extended` is
-# everything above, plus the differential test on 2 seeds (32 generated programs on three parties: the interpreter, the
-# CPU twin and the lavapipe GPU; R1-13) and the same 2 seeds again with `--shapes grid,pixel` (every program the
-# classifier admits also as a `pixel` kernel, slice mx.z; the nightly list runs it on 2 seeds too). The nightly list
-# (`schedule`, 03:00 UTC, and a dispatch with `extended`, the default) adds the steps marked "nightly list": `cargo xtask check-examples` and the release-profile mismatch ledger
+# One job, two lists (plan M5 R1-10). The list of a pull request, a push to main or release/* and a dispatch without
+# `extended` is everything above, plus the differential test on 2 seeds (32 generated programs on three parties: the
+# interpreter, the CPU twin and the lavapipe GPU; R1-13) and the same 2 seeds again with `--shapes grid,pixel` (every
+# program the classifier admits also as a `pixel` kernel, slice mx.z; the nightly list runs it on 2 seeds too). The
+# nightly list (`schedule`, 03:00 UTC, and a dispatch with `extended`, the default) adds the steps marked "nightly list": `cargo xtask check-examples` and the release-profile mismatch ledger
 # (`cargo xtask check-ledger`, guarded as the Full mode is: no ignored test, every ledger test named), and runs the
 # differential test on seeds 1-72 (1152 programs: the reach of the CPU test that proves the generator writes every
 # aggregate form, DIFFTEST) in place of the 2. Slices that grow the nightly list add
@@ -30,7 +30,7 @@ name: gpu-software
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/*"]
   pull_request:
   schedule:
     - cron: "0 3 * * *"
@@ -45,9 +45,9 @@ permissions:
   contents: read
 
 concurrency:
-  # The nightly run has a group of its own, so that a push to main cannot replace it while it waits.
+  # The nightly run has a group of its own, so that a push to main or release/* cannot replace it while it waits.
   group: gpu-software-${{ github.event_name == 'schedule' && 'nightly-' || '' }}${{ github.ref }}
-  # Superseded pull request runs are cancelled; runs on main are never cancelled.
+  # Superseded pull request runs are cancelled; runs on main and release/* are never cancelled.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:

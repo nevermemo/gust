@@ -1,4 +1,5 @@
-//! `gust-artifacts/manifest.json`, schema 1, or schema 2 once a kernel is not a `grid` kernel (D45, D89).
+//! `gust-artifacts/manifest.json`, schema 1, schema 2 once a kernel is not a `grid` kernel (D45, D89), or schema 3 once a
+//! kernel has variants or needs a capability (M8, D139).
 //!
 //! The manifest is the tool-owned index of a kernel crate's committed artifacts. It is required once a crate uses
 //! artifacts: `cargo gust init` creates an empty one, the `#[gpu]` macro includes it so that cargo re-expands the
@@ -57,14 +58,32 @@
 //!   schema 1 and has no `shape` key anywhere, byte for byte what it was before shapes existed; `cargo gust init`
 //!   writes schema 1. Schema 1 reads as all-`grid`; a `shape` in a schema 1 manifest is an unknown key. A schema 2
 //!   entry without `shape` reads as `grid`, but `render` writes it, so such a file is not canonical.
+//! - Schema 3 (M8, D139) is schema 2's grammar plus `variants` on the entry of a kernel with a variant or a required
+//!   capability: `"variants": [{"key": "<16 hex digits>", "requires": ["<capability>"], "variant": "<function>"}]`,
+//!   sorted by `key`, one item for each body of the kernel and nothing else. Every body has its own entry in `kernels`
+//!   (its key, files and hashes, and the kernel's `module` and `name`, with its own `entry_point`), because each is
+//!   compiled and committed on its own; the entry that carries `variants` is the one of the kernel's own body, whose
+//!   item has `"variant": ""` and the capabilities the own body needs (none, for a kernel with a portable body). The
+//!   item of a variant has the variant function's name. `shape` is written on every entry when some kernel is not
+//!   `grid`, and then only; schema 3 is written exactly when some entry has `variants`, so a crate without variants
+//!   keeps the bytes it had. A reader of schemas 1 and 2 refuses schema 3, and `variants` in a manifest that says schema
+//!   1 or 2 is an unknown key. `requires` names are the capabilities of `gust::capability::Capability`, in its order,
+//!   none twice; one this tool does not know is refused. The reader holds the links to the same standard as the files:
+//!   an item names an entry of the manifest with the kernel's `module` and `name`, the own body is listed once and is
+//!   the entry that carries the list, a variant's name appears once, and every entry with the kernel's `module` and
+//!   `name` is listed. Two entries with one `module` and `name` and no `variants` list among them are refused as well,
+//!   at any schema.
 //! - The SHA-256 values protect the committed files from accidents the FNV-1a hashes inside the reflection JSON
 //!   (D17 schema 1) are too weak to be trusted with; neither defends against an adversary (R4.4).
 
 use std::collections::HashSet;
 
-use gust::{Format, Shape};
+use gust::{Format, Shape, capability::Capability};
 
-use crate::json::{self, Json};
+use crate::{
+    json::{self, Json},
+    record::capabilities_named,
+};
 
 /// The file name of the manifest inside `gust-artifacts/`.
 pub(crate) const MANIFEST_FILE: &str = "manifest.json";
@@ -75,6 +94,10 @@ pub(crate) const SCHEMA: u32 = 1;
 /// The manifest schema of a crate with a kernel whose shape is not `grid` (mx.k, D89): schema 1 plus `shape` per
 /// kernel.
 pub(crate) const SHAPE_SCHEMA: u32 = 2;
+
+/// The manifest schema of a crate with a kernel that has variants or needs a capability (M8, D139): schema 2's grammar
+/// plus `variants` on the entry of such a kernel.
+pub(crate) const VARIANT_SCHEMA: u32 = 3;
 
 /// The manifest of a kernel crate's `gust-artifacts/` directory.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -96,6 +119,20 @@ pub(crate) struct KernelEntry {
     /// Storage parameters whose layout came from the reflection (see the module docs), in parameter order.
     pub(crate) export_unchecked: Vec<String>,
     pub(crate) formats: Vec<FormatEntry>,
+    /// The bodies of the kernel, own body included, sorted by key; empty for every entry but that of the own body of a
+    /// kernel with a variant or a required capability (schema 3).
+    pub(crate) variants: Vec<VariantEntry>,
+}
+
+/// One body of a kernel in the `variants` list of the entry of its own body (schema 3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VariantEntry {
+    /// The key of the body, which is an entry of the manifest too.
+    pub(crate) key: String,
+    /// The capabilities the body needs, in the order of `Capability::ALL`.
+    pub(crate) requires: Vec<Capability>,
+    /// The variant function's name; `""` for the kernel's own body.
+    pub(crate) variant: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -159,23 +196,34 @@ impl Manifest {
         Self::default()
     }
 
-    /// The schema [`Manifest::render`] writes: 2 when a kernel's shape is not `grid`, else 1.
+    /// The schema [`Manifest::render`] writes: 3 when a kernel has `variants`, else 2 when a kernel's shape is not
+    /// `grid`, else 1.
     pub(crate) fn schema(&self) -> u32 {
         if self
             .kernels
             .iter()
-            .any(|kernel| kernel.shape != Shape::Grid)
+            .any(|kernel| !kernel.variants.is_empty())
         {
+            VARIANT_SCHEMA
+        } else if self.has_shaped_kernel() {
             SHAPE_SCHEMA
         } else {
             SCHEMA
         }
     }
 
+    /// Whether a kernel's shape is not `grid`: then every entry carries its `shape`, whatever the schema.
+    fn has_shaped_kernel(&self) -> bool {
+        self.kernels
+            .iter()
+            .any(|kernel| kernel.shape != Shape::Grid)
+    }
+
     /// The manifest as text. Kernels are sorted by key and formats by [`format_rank`], whatever order they were added
     /// in, so equal contents always give equal bytes.
     pub(crate) fn render(&self) -> String {
         let schema = self.schema();
+        let with_shape = self.has_shaped_kernel();
         let mut kernels: Vec<&KernelEntry> = self.kernels.iter().collect();
         kernels.sort_by(|a, b| a.key.cmp(&b.key));
         let kernels = kernels
@@ -194,8 +242,11 @@ impl Manifest {
                         Json::Array(formats.into_iter().map(format_json).collect()),
                     ),
                 ];
-                if schema == SHAPE_SCHEMA {
+                if with_shape {
                     members.push(("shape", Json::text(kernel.shape.name())));
+                }
+                if !kernel.variants.is_empty() {
+                    members.push(("variants", variants_json(&kernel.variants)));
                 }
                 if !kernel.export_unchecked.is_empty() {
                     members.push((
@@ -230,10 +281,10 @@ impl Manifest {
         let root = json::parse(text)?;
         only_keys(&root, &["schema", "slang", "kernels"], "manifest")?;
         let schema = match root.field("schema", "manifest")?.as_u32() {
-            Some(schema @ (SCHEMA | SHAPE_SCHEMA)) => schema,
+            Some(schema @ (SCHEMA | SHAPE_SCHEMA | VARIANT_SCHEMA)) => schema,
             _ => {
                 return Err(format!(
-                    "manifest: unsupported schema (this tool reads schemas {SCHEMA} and {SHAPE_SCHEMA})"
+                    "manifest: unsupported schema (this tool reads schemas {SCHEMA}, {SHAPE_SCHEMA} and {VARIANT_SCHEMA})"
                 ));
             }
         };
@@ -265,6 +316,7 @@ impl Manifest {
             }
             kernels.push(entry);
         }
+        check_variant_links(&kernels)?;
         Ok(Self { slang, kernels })
     }
 
@@ -323,13 +375,8 @@ fn hex_field(value: &Json, key: &str, length: usize, context: &str) -> Result<St
 }
 
 fn parse_kernel(value: &Json, schema: u32, context: &str) -> Result<KernelEntry, String> {
-    // `shape` is a schema 2 key: under schema 1 it is as unknown as any other, so a reader of schema 1 and this one
-    // agree on what a schema 1 file is.
-    let shape_key: &[&str] = if schema == SHAPE_SCHEMA {
-        &["shape"]
-    } else {
-        &[]
-    };
+    // `shape` is a schema 2 key and `variants` a schema 3 one: under an older number each is as unknown as any other, so
+    // a reader of schema 1 and this one agree on what a schema 1 file is.
     let mut allowed = vec![
         "key",
         "module",
@@ -339,7 +386,12 @@ fn parse_kernel(value: &Json, schema: u32, context: &str) -> Result<KernelEntry,
         "export_unchecked",
         "formats",
     ];
-    allowed.extend(shape_key);
+    if schema >= SHAPE_SCHEMA {
+        allowed.push("shape");
+    }
+    if schema >= VARIANT_SCHEMA {
+        allowed.push("variants");
+    }
     only_keys(value, &allowed, context)?;
     let shape = match value.get("shape") {
         None => Shape::Grid,
@@ -397,6 +449,10 @@ fn parse_kernel(value: &Json, schema: u32, context: &str) -> Result<KernelEntry,
             ));
         }
     }
+    let variants = match value.get("variants") {
+        None => Vec::new(),
+        Some(list) => parse_variants(list, &format!("{context}.variants"))?,
+    };
     Ok(KernelEntry {
         module: text(value, "module", context)?,
         name: text(value, "name", context)?,
@@ -406,7 +462,171 @@ fn parse_kernel(value: &Json, schema: u32, context: &str) -> Result<KernelEntry,
         key,
         export_unchecked,
         formats,
+        variants,
     })
+}
+
+/// `variants` as JSON: one object per body, sorted by key.
+fn variants_json(variants: &[VariantEntry]) -> Json {
+    let mut sorted: Vec<&VariantEntry> = variants.iter().collect();
+    sorted.sort_by(|a, b| a.key.cmp(&b.key));
+    Json::Array(
+        sorted
+            .into_iter()
+            .map(|body| {
+                Json::object(vec![
+                    ("key", Json::text(&body.key)),
+                    (
+                        "requires",
+                        Json::Array(
+                            body.requires
+                                .iter()
+                                .map(|capability| Json::text(capability.name()))
+                                .collect(),
+                        ),
+                    ),
+                    ("variant", Json::text(&body.variant)),
+                ])
+            })
+            .collect(),
+    )
+}
+
+/// The `variants` list of one entry: non-empty (an entry without variants omits the key), each item a key, a capability
+/// set and a variant name, and no key twice. Whether the items fit the other entries is [`check_variant_links`].
+fn parse_variants(value: &Json, context: &str) -> Result<Vec<VariantEntry>, String> {
+    let items = value
+        .as_array()
+        .filter(|items| !items.is_empty())
+        .ok_or_else(|| {
+            format!("{context} must be a non-empty array (omit it when the kernel has no variants)")
+        })?;
+    let mut variants: Vec<VariantEntry> = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let at = format!("{context}[{index}]");
+        only_keys(item, &["key", "requires", "variant"], &at)?;
+        let requires = item
+            .field("requires", &at)?
+            .as_array()
+            .ok_or_else(|| format!("{at}: `requires` must be an array"))?;
+        let body = VariantEntry {
+            key: hex_field(item, "key", 16, &at)?,
+            requires: capabilities_named(requires, &format!("{at}.requires"))?,
+            variant: text(item, "variant", &at)?,
+        };
+        if variants.iter().any(|other| other.key == body.key) {
+            return Err(format!("{at}: key `{}` appears twice", body.key));
+        }
+        variants.push(body);
+    }
+    Ok(variants)
+}
+
+/// The links of the `variants` lists to the entries (schema 3). A list belongs to the entry of the kernel's own body:
+/// it holds one item for that entry's key with `variant` `""` (and for no other key), one for each other body of the
+/// kernel, each a different function, and every item is an entry of the manifest with the kernel's `module` and `name`
+/// that has no list of its own. Every entry with that `module` and `name` is in the list, and no two entries carry one
+/// for the same kernel.
+fn check_variant_links(kernels: &[KernelEntry]) -> Result<(), String> {
+    for (index, owner) in kernels.iter().enumerate() {
+        if owner.variants.is_empty() {
+            continue;
+        }
+        let context = format!("kernels[{index}] (`{}`)", owner.qualified_name());
+        let own: Vec<&VariantEntry> = owner
+            .variants
+            .iter()
+            .filter(|body| body.variant.is_empty())
+            .collect();
+        match own.as_slice() {
+            [only] if only.key == owner.key => {}
+            [only] => {
+                return Err(format!(
+                    "{context}: `variants` lists the own body (`variant` \"\") under key {}, but this entry is key {}",
+                    only.key, owner.key
+                ));
+            }
+            [] => {
+                return Err(format!(
+                    "{context}: `variants` does not list the kernel's own body (key {}, `variant` \"\")",
+                    owner.key
+                ));
+            }
+            _ => {
+                return Err(format!(
+                    "{context}: `variants` lists the kernel's own body (`variant` \"\") more than once"
+                ));
+            }
+        }
+        for (position, body) in owner.variants.iter().enumerate() {
+            if !body.variant.is_empty()
+                && owner.variants[..position]
+                    .iter()
+                    .any(|other| other.variant == body.variant)
+            {
+                return Err(format!(
+                    "{context}: `variants` names the variant `{}` twice",
+                    body.variant
+                ));
+            }
+            let at = format!("{context}.variants[{position}]");
+            let Some(entry) = kernels.iter().find(|entry| entry.key == body.key) else {
+                return Err(format!(
+                    "{at}: key {} is not an entry of this manifest",
+                    body.key
+                ));
+            };
+            if entry.module != owner.module || entry.name != owner.name {
+                return Err(format!(
+                    "{at}: key {} is the entry of `{}`, not of `{}`",
+                    body.key,
+                    entry.qualified_name(),
+                    owner.qualified_name()
+                ));
+            }
+            if entry.key != owner.key && !entry.variants.is_empty() {
+                return Err(format!(
+                    "{at}: key {} has a `variants` list of its own; only the entry of the kernel's own body has one",
+                    body.key
+                ));
+            }
+        }
+        for (other_index, other) in kernels.iter().enumerate() {
+            if other.module != owner.module || other.name != owner.name {
+                continue;
+            }
+            if other_index != index && !other.variants.is_empty() {
+                return Err(format!(
+                    "{context}: kernels[{other_index}] has the same module and name and a `variants` list as well"
+                ));
+            }
+            if !owner.variants.iter().any(|body| body.key == other.key) {
+                return Err(format!(
+                    "{context}: the entry with key {} has the kernel's module and name but is not in `variants`",
+                    other.key
+                ));
+            }
+        }
+    }
+    // Two or more entries of one kernel and no list anywhere: the loop above never looked at them.
+    for (index, entry) in kernels.iter().enumerate() {
+        let mates = || {
+            kernels
+                .iter()
+                .enumerate()
+                .filter(|(_, mate)| mate.module == entry.module && mate.name == entry.name)
+        };
+        if mates().any(|(_, mate)| !mate.variants.is_empty()) {
+            continue;
+        }
+        if let Some((first, _)) = mates().find(|(other_index, _)| *other_index != index) {
+            return Err(format!(
+                "kernels[{index}] (`{}`): kernels[{first}] has the same module and name, and no entry of the kernel has a `variants` list",
+                entry.qualified_name()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn parse_format(value: &Json, key: &str, context: &str) -> Result<FormatEntry, String> {
@@ -515,6 +735,7 @@ mod tests {
             clean_sha256: "e".repeat(64),
             export_unchecked: Vec::new(),
             formats,
+            variants: Vec::new(),
         }
     }
 
@@ -640,7 +861,7 @@ mod tests {
         .render();
         assert!(Manifest::parse(&good).is_ok());
         for (what, bad) in [
-            ("schema 3", good.replace("\"schema\": 1", "\"schema\": 3")),
+            ("schema 4", good.replace("\"schema\": 1", "\"schema\": 4")),
             (
                 "a shape under schema 1",
                 good.replace(
@@ -794,6 +1015,341 @@ mod tests {
         assert_eq!(
             reflection_file("0123456789abcdef.spv"),
             "0123456789abcdef.spv.reflection.json"
+        );
+    }
+
+    // ---- schema 3: variants (M8, D139) ----
+
+    const OWN_KEY: &str = "0123456789abcdef";
+    const VARIANT_KEY: &str = "00000000000000aa";
+    const OTHER_KEY: &str = "00000000000000ff";
+
+    fn body(key: &str, requires: &[Capability], variant: &str) -> VariantEntry {
+        VariantEntry {
+            key: key.to_owned(),
+            requires: requires.to_vec(),
+            variant: variant.to_owned(),
+        }
+    }
+
+    /// A kernel `demo::run` with a portable own body and a subgroups variant (two entries, the own one carrying the
+    /// list), beside the unrelated kernel `demo::other`.
+    fn variant_manifest() -> Manifest {
+        let mut own = sample_kernel(OWN_KEY, "run", false);
+        own.variants = vec![
+            body(OWN_KEY, &[], ""),
+            body(VARIANT_KEY, &[Capability::Subgroups], "run_subgroups"),
+        ];
+        let mut variant = sample_kernel(VARIANT_KEY, "run", false);
+        variant.entry_point = "gpu_demo_run_subgroups".to_owned();
+        Manifest {
+            slang: Some("2026.13.1-test".to_owned()),
+            kernels: vec![own, variant, sample_kernel(OTHER_KEY, "other", false)],
+        }
+    }
+
+    /// The manifest as the reader gives it back from `render`: kernels and list items in key order.
+    fn canonical(manifest: &Manifest) -> Manifest {
+        let mut sorted = manifest.clone();
+        sorted.kernels.sort_by(|a, b| a.key.cmp(&b.key));
+        for kernel in &mut sorted.kernels {
+            kernel.variants.sort_by(|a, b| a.key.cmp(&b.key));
+            kernel
+                .formats
+                .sort_by_key(|format| format_rank(format.format));
+        }
+        sorted
+    }
+
+    /// Render `manifest` and read it back: the refusal of the reader.
+    fn refusal(manifest: &Manifest) -> String {
+        Manifest::parse(&manifest.render()).unwrap_err()
+    }
+
+    #[test]
+    fn variants_make_a_schema_3_manifest_and_only_the_own_body_carries_the_list() {
+        let manifest = variant_manifest();
+        assert_eq!(manifest.schema(), VARIANT_SCHEMA);
+        let text = manifest.render();
+        assert!(text.contains("\"schema\": 3,"), "{text}");
+        assert_eq!(text.matches("\"variants\"").count(), 1, "{text}");
+        // Every grid kernel: no `shape` key, as in schema 1.
+        assert!(!text.contains("shape"), "{text}");
+        // The list is the last key of the own body's entry, sorted by key, and an empty `requires` stays `[]`.
+        let owner = concat!(
+            "      \"key\": \"0123456789abcdef\",\n",
+            "      \"module\": \"demo\",\n",
+            "      \"name\": \"run\",\n",
+            "      \"variants\": [\n",
+            "        {\n",
+            "          \"key\": \"00000000000000aa\",\n",
+            "          \"requires\": [\n",
+            "            \"subgroups\"\n",
+            "          ],\n",
+            "          \"variant\": \"run_subgroups\"\n",
+            "        },\n",
+            "        {\n",
+            "          \"key\": \"0123456789abcdef\",\n",
+            "          \"requires\": [],\n",
+            "          \"variant\": \"\"\n",
+            "        }\n",
+            "      ]\n",
+            "    }\n"
+        );
+        assert!(text.contains(owner), "{text}");
+        // The variant has an entry of its own (files, hashes, its own entry point) with the kernel's module and name.
+        assert!(
+            text.contains("\"entry_point\": \"gpu_demo_run_subgroups\""),
+            "{text}"
+        );
+        assert_eq!(Manifest::parse(&text).unwrap(), canonical(&manifest));
+        // The kernels are sorted by key whatever order they come in, the list items too.
+        let mut shuffled = manifest.clone();
+        shuffled.kernels.reverse();
+        shuffled.kernels[0].variants.reverse();
+        assert_eq!(shuffled.render(), text);
+    }
+
+    #[test]
+    fn a_manifest_without_variants_keeps_its_schema_and_its_bytes() {
+        let grid = Manifest {
+            slang: Some("2026.13.1-test".to_owned()),
+            kernels: vec![sample_kernel(OWN_KEY, "run", true)],
+        };
+        assert_eq!(grid.schema(), SCHEMA);
+        assert!(!grid.render().contains("variants"));
+        let pixel = manifest_with_a_pixel_kernel();
+        assert_eq!(pixel.schema(), SHAPE_SCHEMA);
+        assert!(!pixel.render().contains("variants"));
+        // Taking the variants away from the schema 3 manifest gives the schema 1 manifest of the same kernels.
+        let mut plain = variant_manifest();
+        for kernel in &mut plain.kernels {
+            kernel.variants.clear();
+        }
+        assert_eq!(plain.schema(), SCHEMA);
+        let text = variant_manifest().render();
+        assert!(
+            !plain.render().contains("variants") && plain.render().contains("\"schema\": 1,"),
+            "{text}"
+        );
+        assert_eq!(Manifest::empty().render().matches("schema").count(), 1);
+    }
+
+    #[test]
+    fn a_schema_3_manifest_with_a_pixel_kernel_writes_every_shape_and_reads_back() {
+        let mut manifest = variant_manifest();
+        manifest.kernels[1].shape = Shape::Pixel;
+        let text = manifest.render();
+        assert!(text.contains("\"schema\": 3,"), "{text}");
+        assert_eq!(text.matches("\"shape\"").count(), 3, "{text}");
+        assert_eq!(text.matches("\"shape\": \"pixel\"").count(), 1, "{text}");
+        assert_eq!(Manifest::parse(&text).unwrap(), canonical(&manifest));
+    }
+
+    #[test]
+    fn a_kernel_that_needs_a_capability_lists_only_itself() {
+        // A kernel with one body that requires a capability and no variant: a list of one item.
+        let mut own = sample_kernel(OWN_KEY, "run", false);
+        own.variants = vec![body(OWN_KEY, &[Capability::Subgroups], "")];
+        let manifest = Manifest {
+            slang: Some("s".to_owned()),
+            kernels: vec![own],
+        };
+        let text = manifest.render();
+        assert!(text.contains("\"schema\": 3,"), "{text}");
+        assert!(
+            text.contains(concat!(
+                "          \"key\": \"0123456789abcdef\",\n",
+                "          \"requires\": [\n",
+                "            \"subgroups\"\n",
+                "          ],\n",
+                "          \"variant\": \"\"\n"
+            )),
+            "{text}"
+        );
+        assert_eq!(Manifest::parse(&text).unwrap(), manifest);
+    }
+
+    #[test]
+    fn a_schema_3_manifest_without_a_list_reads_but_is_not_canonical() {
+        let good = Manifest {
+            slang: Some("s".to_owned()),
+            kernels: vec![sample_kernel(OWN_KEY, "run", true)],
+        }
+        .render();
+        let lenient = good.replace("\"schema\": 1", "\"schema\": 3");
+        let parsed = Manifest::parse(&lenient).unwrap();
+        assert_eq!(parsed.schema(), SCHEMA);
+        assert_ne!(parsed.render(), lenient);
+    }
+
+    #[test]
+    fn variants_under_schema_1_or_2_are_an_unknown_key_and_the_schema_list_names_three() {
+        let text = variant_manifest().render();
+        for older in ["\"schema\": 1", "\"schema\": 2"] {
+            let error = Manifest::parse(&text.replace("\"schema\": 3", older)).unwrap_err();
+            assert!(
+                error.contains("kernels[2]: unknown key `variants`"),
+                "{error}"
+            );
+        }
+        let error = Manifest::parse(&text.replace("\"schema\": 3", "\"schema\": 4")).unwrap_err();
+        assert_eq!(
+            error,
+            "manifest: unsupported schema (this tool reads schemas 1, 2 and 3)"
+        );
+    }
+
+    #[test]
+    fn a_malformed_variants_list_is_refused_with_its_path() {
+        let good = variant_manifest().render();
+        for (what, bad, wanted) in [
+            (
+                "an empty list",
+                good.replace(
+                    &good[good.find("\"variants\": [").unwrap()..good.rfind("      ]\n").unwrap()],
+                    "\"variants\": [",
+                ),
+                "kernels[2].variants must be a non-empty array (omit it when the kernel has no variants)",
+            ),
+            (
+                "an unknown capability",
+                good.replace("\"subgroups\"", "\"wave\""),
+                "kernels[2].variants[0].requires: unknown capability `wave` (this tool knows `subgroups`)",
+            ),
+            (
+                "a capability twice",
+                good.replace(
+                    "\"subgroups\"\n",
+                    "\"subgroups\",\n            \"subgroups\"\n",
+                ),
+                "kernels[2].variants[0].requires: `subgroups` appears twice",
+            ),
+            (
+                "a capability that is not text",
+                good.replace("\"subgroups\"\n", "3\n"),
+                "kernels[2].variants[0].requires: expected capability names (strings)",
+            ),
+            (
+                "a missing requires",
+                good.replace("          \"requires\": [],\n", ""),
+                "kernels[2].variants[1]: missing `requires`",
+            ),
+            (
+                "an unknown key in an item",
+                good.replace(
+                    "          \"variant\": \"run_subgroups\"",
+                    "          \"extra\": 1,\n          \"variant\": \"run_subgroups\"",
+                ),
+                "kernels[2].variants[0]: unknown key `extra`",
+            ),
+            (
+                "a short key",
+                good.replace(
+                    "\"key\": \"00000000000000aa\",\n          \"requires\"",
+                    "\"key\": \"aa\",\n          \"requires\"",
+                ),
+                "kernels[2].variants[0]: `key` must be 16 lower-case hex digits",
+            ),
+            (
+                "a variant that is not text",
+                good.replace("\"variant\": \"run_subgroups\"", "\"variant\": 7"),
+                "kernels[2].variants[0]: `variant` must be a string",
+            ),
+        ] {
+            let error = Manifest::parse(&bad).unwrap_err();
+            assert!(error.contains(wanted), "{what}: {error}");
+        }
+    }
+
+    #[test]
+    fn the_links_between_the_list_and_the_entries_are_checked() {
+        // The own body missing from the list.
+        let mut manifest = variant_manifest();
+        manifest.kernels[0].variants.remove(0);
+        assert_eq!(
+            refusal(&manifest),
+            "kernels[2] (`demo::run`): `variants` does not list the kernel's own body (key 0123456789abcdef, `variant` \"\")"
+        );
+        // The own item under another key.
+        let mut manifest = variant_manifest();
+        manifest.kernels[0].variants[0].key = OTHER_KEY.to_owned();
+        assert_eq!(
+            refusal(&manifest),
+            "kernels[2] (`demo::run`): `variants` lists the own body (`variant` \"\") under key 00000000000000ff, but this entry is key 0123456789abcdef"
+        );
+        // Two own items.
+        let mut manifest = variant_manifest();
+        manifest.kernels[0].variants.push(body(OTHER_KEY, &[], ""));
+        assert_eq!(
+            refusal(&manifest),
+            "kernels[2] (`demo::run`): `variants` lists the kernel's own body (`variant` \"\") more than once"
+        );
+        // A variant named twice (a third entry of the kernel with the same function name).
+        let mut manifest = variant_manifest();
+        let mut third = sample_kernel("00000000000000bb", "run", false);
+        third.entry_point = "gpu_demo_run_subgroups".to_owned();
+        manifest.kernels.push(third);
+        manifest.kernels[0].variants.push(body(
+            "00000000000000bb",
+            &[Capability::Subgroups],
+            "run_subgroups",
+        ));
+        assert!(
+            refusal(&manifest).ends_with("`variants` names the variant `run_subgroups` twice"),
+            "{}",
+            refusal(&manifest)
+        );
+        // A key that is no entry.
+        let mut manifest = variant_manifest();
+        manifest.kernels[0].variants[1].key = "00000000000000cc".to_owned();
+        assert_eq!(
+            refusal(&manifest),
+            "kernels[2] (`demo::run`).variants[0]: key 00000000000000cc is not an entry of this manifest"
+        );
+        // A key that is the entry of another kernel.
+        let mut manifest = variant_manifest();
+        manifest.kernels[0].variants[1].key = OTHER_KEY.to_owned();
+        assert_eq!(
+            refusal(&manifest),
+            "kernels[2] (`demo::run`).variants[0]: key 00000000000000ff is the entry of `demo::other`, not of `demo::run`"
+        );
+        // A listed body with a list of its own.
+        let mut manifest = variant_manifest();
+        // (a third body whose key sorts after the own body's, so that the own body's entry is checked first)
+        let late = "fedcba9876543210";
+        let mut third = sample_kernel(late, "run", false);
+        third.entry_point = "gpu_demo_run_late".to_owned();
+        third.variants = vec![body(late, &[], "late")];
+        manifest.kernels.push(third);
+        manifest.kernels[0].variants.push(body(late, &[], "late"));
+        assert_eq!(
+            refusal(&manifest),
+            "kernels[2] (`demo::run`).variants[2]: key fedcba9876543210 has a `variants` list of its own; only the entry of the kernel's own body has one"
+        );
+        // An entry of the kernel that the list leaves out.
+        let mut manifest = variant_manifest();
+        manifest.kernels[0].variants.remove(1);
+        assert_eq!(
+            refusal(&manifest),
+            "kernels[2] (`demo::run`): the entry with key 00000000000000aa has the kernel's module and name but is not in `variants`"
+        );
+        // Two entries of one kernel that both carry a list.
+        let mut manifest = variant_manifest();
+        manifest.kernels[0].variants.remove(1);
+        manifest.kernels[1].variants = vec![body(VARIANT_KEY, &[], "")];
+        assert_eq!(
+            refusal(&manifest),
+            "kernels[0] (`demo::run`): kernels[2] has the same module and name and a `variants` list as well"
+        );
+        // Two entries of one kernel and no list anywhere (S1): the kernels sort by key, so the variant is kernels[0].
+        let mut manifest = variant_manifest();
+        for kernel in &mut manifest.kernels {
+            kernel.variants.clear();
+        }
+        assert_eq!(
+            refusal(&manifest),
+            "kernels[0] (`demo::run`): kernels[2] has the same module and name, and no entry of the kernel has a `variants` list"
         );
     }
 }

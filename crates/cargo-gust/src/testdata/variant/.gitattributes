@@ -1,0 +1,3 @@
+# Compiler artifacts are byte-exact inputs to hash checks (the reflection JSON stores their FNV-1a hashes): git
+# must never rewrite their line endings.
+* -text

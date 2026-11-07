@@ -17,8 +17,8 @@ use gust::{
 
 use crate::{
     manifest::{
-        FormatEntry, KernelEntry, MANIFEST_FILE, Manifest, artifact_file, format_name, format_rank,
-        reflection_file,
+        FormatEntry, KernelEntry, MANIFEST_FILE, Manifest, VariantEntry, artifact_file,
+        format_name, format_rank, reflection_file,
     },
     record::Record,
     sha256::sha256_hex,
@@ -101,22 +101,154 @@ pub(crate) fn dedupe(mut records: Vec<Record>) -> Result<Vec<Record>, String> {
         if last.slang != record.slang {
             return Err(format!(
                 "kernels `{}` and `{}` have the same artifact key {} but different Slang text: the 64-bit FNV-1a keys collided (R4.4); change the text of one kernel",
-                last.qualified_name(),
-                record.qualified_name(),
+                last.body_name(),
+                record.body_name(),
                 record.key
             ));
         }
         if last.module != record.module || last.name != record.name {
             return Err(format!(
                 "kernels `{}` and `{}` have the same entry point `{}` and Slang text, so they would share the artifact key {}; rename one of them",
-                last.qualified_name(),
-                record.qualified_name(),
+                last.body_name(),
+                record.body_name(),
                 record.entry_point,
                 record.key
             ));
         }
     }
     Ok(kept)
+}
+
+/// The `variants` lists of the manifest, as `(key of the own body, bodies sorted by key)`.
+///
+/// Every body of a kernel is a record of its own (its entry point, key and files), and the bodies of one kernel share
+/// its `module` and `name` (M8, D139): the records are grouped by that pair. A kernel is listed when one of its bodies
+/// has facts of its own, a `variant` or a `requires` (`Record::has_variant_facts`); a group of plain bodies is not,
+/// so a crate without variants keeps the manifest it had. A listed kernel needs exactly one own body (`variant` ""),
+/// and each variant function appears once. The records may come in any order; they are those of one `cargo check`,
+/// whatever the profile (the macro's export mode writes every body, so no second build is needed).
+pub(crate) fn variant_lists(
+    records: &[Record],
+) -> Result<Vec<(String, Vec<VariantEntry>)>, String> {
+    let mut groups: Vec<((&str, &str), Vec<&Record>)> = Vec::new();
+    for record in records {
+        let at = (record.module.as_str(), record.name.as_str());
+        match groups.iter_mut().find(|(group, _)| *group == at) {
+            Some((_, members)) => members.push(record),
+            None => groups.push((at, vec![record])),
+        }
+    }
+    let mut lists = Vec::new();
+    for ((module, name), members) in groups {
+        if !members.iter().any(|record| record.has_variant_facts()) {
+            continue;
+        }
+        let kernel = format!("{module}::{name}");
+        let own: Vec<&&Record> = members
+            .iter()
+            .filter(|record| record.variant.is_empty())
+            .collect();
+        let owner = match own.as_slice() {
+            [only] => only.key.clone(),
+            [] => {
+                return Err(format!(
+                    "kernel `{kernel}` has variants but no body of its own (a `#[kernel]` function named `{name}`) in the collected records; rebuild with the macros of this gust version"
+                ));
+            }
+            [first, second, ..] => {
+                return Err(format!(
+                    "kernel `{kernel}` has two bodies of its own with different text (keys {} and {}); one `#[kernel]` function `{name}` per module",
+                    first.key, second.key
+                ));
+            }
+        };
+        let mut bodies: Vec<VariantEntry> = Vec::new();
+        for record in members {
+            if !record.variant.is_empty()
+                && bodies.iter().any(|body| body.variant == record.variant)
+            {
+                return Err(format!(
+                    "kernel `{kernel}` has the variant `{}` twice (keys {} and {}); rename one of them",
+                    record.variant,
+                    bodies
+                        .iter()
+                        .find(|body| body.variant == record.variant)
+                        .map_or("", |body| body.key.as_str()),
+                    record.key
+                ));
+            }
+            bodies.push(VariantEntry {
+                key: record.key.clone(),
+                requires: record.requires.clone(),
+                variant: record.variant.clone(),
+            });
+        }
+        bodies.sort_by(|a, b| a.key.cmp(&b.key));
+        lists.push((owner, bodies));
+    }
+    lists.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(lists)
+}
+
+/// What `check` says about the `variants` lists: the stored manifest against the lists the collected records give
+/// ([`variant_lists`]). Empty when they agree, or when the records themselves are inconsistent and the manifest cannot
+/// be judged (the error is the problem then).
+pub(crate) fn variant_problems(records: &[Record], manifest: &Manifest) -> Vec<String> {
+    let expected = match variant_lists(records) {
+        Ok(lists) => lists,
+        Err(error) => return vec![error],
+    };
+    let mut problems = Vec::new();
+    for (owner, bodies) in &expected {
+        let Some(entry) = manifest.entry(owner) else {
+            continue; // the missing entry is reported with the kernels
+        };
+        if entry.variants.is_empty() {
+            problems.push(format!(
+                "kernel `{}` (key {owner}) has {} bodies (its own and its variants) now but the manifest lists none; run `cargo gust build`",
+                entry.qualified_name(),
+                bodies.len()
+            ));
+            continue;
+        }
+        let mut stored = entry.variants.clone();
+        stored.sort_by(|a, b| a.key.cmp(&b.key));
+        if stored != *bodies {
+            problems.push(format!(
+                "kernel `{}` (key {owner}): the `variants` list of the manifest ({}) is not the one the sources give ({}); run `cargo gust build`",
+                entry.qualified_name(),
+                describe_bodies(&stored),
+                describe_bodies(bodies)
+            ));
+        }
+    }
+    for entry in &manifest.kernels {
+        if !entry.variants.is_empty() && !expected.iter().any(|(owner, _)| *owner == entry.key) {
+            problems.push(format!(
+                "manifest entry {} (`{}`) lists variants but the sources have none for it; `cargo gust build` rewrites it",
+                entry.key,
+                entry.qualified_name()
+            ));
+        }
+    }
+    problems
+}
+
+/// `key variant requires`, for the bodies of one kernel, as a short comparison text.
+fn describe_bodies(bodies: &[VariantEntry]) -> String {
+    bodies
+        .iter()
+        .map(|body| {
+            let name = if body.variant.is_empty() {
+                "own body"
+            } else {
+                body.variant.as_str()
+            };
+            let needs: Vec<&str> = body.requires.iter().map(|c| c.name()).collect();
+            format!("{name} {} needs [{}]", body.key, needs.join(", "))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
 }
 
 /// Compile every record in every format and build the files and the manifest.
@@ -137,18 +269,14 @@ pub(crate) fn plan(
             let compiled = compiler
                 .compile(record, &kernel, *format)
                 .map_err(|error| {
-                    format!(
-                        "{} ({}): {error}",
-                        record.qualified_name(),
-                        format_name(*format)
-                    )
+                    format!("{} ({}): {error}", record.body_name(), format_name(*format))
                 })?;
             match &tag {
                 None => tag = Some(compiled.compiler.clone()),
                 Some(first) if *first != compiled.compiler => {
                     return Err(format!(
                         "{} ({}): the helper reports Slang build `{}` but an earlier artifact says `{first}`; one export uses one compiler",
-                        record.qualified_name(),
+                        record.body_name(),
                         format_name(*format),
                         compiled.compiler
                     ));
@@ -158,7 +286,7 @@ pub(crate) fn plan(
             warnings.extend(compiled.warnings.iter().map(|warning| {
                 format!(
                     "{} ({}): {warning}",
-                    record.qualified_name(),
+                    record.body_name(),
                     format_name(*format)
                 )
             }));
@@ -188,7 +316,13 @@ pub(crate) fn plan(
             clean_sha256: record.clean_sha256(),
             export_unchecked: record.unchecked_parameters(),
             formats: entries,
+            variants: Vec::new(),
         });
+    }
+    for (owner, bodies) in variant_lists(&records)? {
+        if let Some(entry) = kernels.iter_mut().find(|entry| entry.key == owner) {
+            entry.variants = bodies;
+        }
     }
     files.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(Planned {
@@ -535,6 +669,238 @@ pub(crate) mod tests {
         assert!(
             error.contains("`tag-b`") && error.contains("`tag-a`"),
             "{error}"
+        );
+    }
+
+    // ---- variants (M8, D139) ----
+
+    use gust::capability::Capability;
+
+    /// A body of the kernel `demo::<kernel>`: its own (`function == kernel`) or a variant named `function`.
+    fn body(kernel: &str, function: &str, requires: &[Capability]) -> Record {
+        let mut record = other(function);
+        record.name = kernel.to_owned();
+        if function != kernel {
+            record.variant = function.to_owned();
+        }
+        record.requires = requires.to_vec();
+        record
+    }
+
+    fn kernel_with_a_variant() -> Vec<Record> {
+        vec![
+            body("sum", "sum_subgroups", &[Capability::Subgroups]),
+            body("sum", "sum", &[]),
+            other("plain"),
+        ]
+    }
+
+    #[test]
+    fn the_bodies_of_a_kernel_are_grouped_by_module_and_name_and_the_own_body_carries_the_list() {
+        let planned = plan(
+            kernel_with_a_variant(),
+            &[Format::Wgsl],
+            &FakeCompiler::new(),
+        )
+        .unwrap();
+        // One entry for every body, three files pairs for three bodies.
+        assert_eq!(planned.manifest.kernels.len(), 3);
+        assert_eq!(planned.files.len(), 6);
+        assert_eq!(planned.manifest.schema(), crate::manifest::VARIANT_SCHEMA);
+        let own = body("sum", "sum", &[]).key;
+        let variant = body("sum", "sum_subgroups", &[Capability::Subgroups]).key;
+        let with_list: Vec<&str> = planned
+            .manifest
+            .kernels
+            .iter()
+            .filter(|entry| !entry.variants.is_empty())
+            .map(|entry| entry.key.as_str())
+            .collect();
+        assert_eq!(with_list, [own.as_str()]);
+        let list = &planned.manifest.entry(&own).unwrap().variants;
+        let mut keys = [own.clone(), variant.clone()];
+        keys.sort();
+        assert_eq!(
+            list.iter().map(|body| body.key.clone()).collect::<Vec<_>>(),
+            keys
+        );
+        let item = |key: &str| list.iter().find(|body| body.key == key).unwrap();
+        assert_eq!(item(&own).variant, "");
+        assert!(item(&own).requires.is_empty());
+        assert_eq!(item(&variant).variant, "sum_subgroups");
+        assert_eq!(item(&variant).requires, [Capability::Subgroups]);
+        // Both bodies are entries of the kernel `demo::sum`; the variant's entry point is its function's.
+        let entry = planned.manifest.entry(&variant).unwrap();
+        assert_eq!(entry.qualified_name(), "demo::sum");
+        assert_eq!(entry.entry_point, "gpu_demo_sum_subgroups");
+        assert!(entry.variants.is_empty());
+        // The manifest the plan builds is one the reader accepts, and the freshness check finds nothing.
+        let text = planned.manifest.render();
+        let parsed = crate::manifest::Manifest::parse(&text).unwrap();
+        assert_eq!(parsed, planned.manifest);
+        assert_eq!(
+            variant_problems(&kernel_with_a_variant(), &parsed),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn the_order_of_the_records_does_not_change_the_manifest() {
+        let forward = plan(
+            kernel_with_a_variant(),
+            &[Format::Wgsl],
+            &FakeCompiler::new(),
+        )
+        .unwrap();
+        let mut reversed_records = kernel_with_a_variant();
+        reversed_records.reverse();
+        let reversed = plan(reversed_records, &[Format::Wgsl], &FakeCompiler::new()).unwrap();
+        assert_eq!(forward.manifest.render(), reversed.manifest.render());
+        assert_eq!(forward.files, reversed.files);
+    }
+
+    #[test]
+    fn kernels_without_variant_facts_make_a_manifest_without_a_list() {
+        // Two kernels, no variant and no requirement: schema 1, no `variants` key, as before M8.
+        let planned = plan(
+            vec![sample(), other("b")],
+            &[Format::Wgsl],
+            &FakeCompiler::new(),
+        )
+        .unwrap();
+        assert_eq!(planned.manifest.schema(), crate::manifest::SCHEMA);
+        assert!(!planned.manifest.render().contains("variants"));
+        // A kernel whose own body is plain stays unlisted even with other kernels listed.
+        let planned = plan(
+            kernel_with_a_variant(),
+            &[Format::Wgsl],
+            &FakeCompiler::new(),
+        )
+        .unwrap();
+        let plain = planned.manifest.entry(&other("plain").key).unwrap();
+        assert!(plain.variants.is_empty());
+    }
+
+    #[test]
+    fn an_own_body_that_needs_a_capability_is_listed_alone() {
+        let records = vec![body("sum", "sum", &[Capability::Subgroups])];
+        let planned = plan(records, &[Format::Wgsl], &FakeCompiler::new()).unwrap();
+        let entry = &planned.manifest.kernels[0];
+        assert_eq!(entry.variants.len(), 1);
+        assert_eq!(entry.variants[0].key, entry.key);
+        assert_eq!(entry.variants[0].variant, "");
+        assert_eq!(entry.variants[0].requires, [Capability::Subgroups]);
+        assert_eq!(planned.manifest.schema(), crate::manifest::VARIANT_SCHEMA);
+    }
+
+    #[test]
+    fn a_kernel_with_variants_but_no_body_of_its_own_is_refused() {
+        let error = plan(
+            vec![body("sum", "sum_subgroups", &[Capability::Subgroups])],
+            &[Format::Wgsl],
+            &FakeCompiler::new(),
+        )
+        .unwrap_err();
+        assert!(
+            error.starts_with("kernel `demo::sum` has variants but no body of its own"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn two_own_bodies_or_a_variant_twice_are_refused() {
+        // Two own bodies with different text (the other one is renamed so that its key differs).
+        let mut second_own = body("sum", "sum", &[]);
+        second_own.slang.push_str("// another\n");
+        second_own.key = crate::record::key_of(&second_own.entry_point, &second_own.slang);
+        let error = plan(
+            vec![
+                body("sum", "sum", &[]),
+                second_own,
+                body("sum", "sum_subgroups", &[Capability::Subgroups]),
+            ],
+            &[Format::Wgsl],
+            &FakeCompiler::new(),
+        )
+        .unwrap_err();
+        assert!(error.contains("has two bodies of its own"), "{error}");
+        // One variant name on two bodies with different text.
+        let mut again = body("sum", "sum_subgroups", &[Capability::Subgroups]);
+        again.slang.push_str("// another\n");
+        again.key = crate::record::key_of(&again.entry_point, &again.slang);
+        let error = plan(
+            vec![
+                body("sum", "sum", &[]),
+                body("sum", "sum_subgroups", &[Capability::Subgroups]),
+                again,
+            ],
+            &[Format::Wgsl],
+            &FakeCompiler::new(),
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("has the variant `sum_subgroups` twice"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_compile_failure_names_the_body_by_its_function() {
+        let fake = FakeCompiler {
+            tag: "fake-slang-1",
+            fail_on: Some(("gpu_demo_sum_subgroups", Format::Wgsl)),
+        };
+        let error = plan(kernel_with_a_variant(), &[Format::Wgsl], &fake).unwrap_err();
+        assert_eq!(
+            error,
+            "demo::sum_subgroups (wgsl): injected compile failure"
+        );
+    }
+
+    #[test]
+    fn the_freshness_check_finds_a_stale_or_missing_list() {
+        let records = kernel_with_a_variant();
+        let planned = plan(records.clone(), &[Format::Wgsl], &FakeCompiler::new()).unwrap();
+        let own = body("sum", "sum", &[]).key;
+        // No list in the manifest where the sources now have variants.
+        let mut stripped = planned.manifest.clone();
+        for entry in &mut stripped.kernels {
+            entry.variants.clear();
+        }
+        let problems = variant_problems(&records, &stripped);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].starts_with(&format!(
+                "kernel `demo::sum` (key {own}) has 2 bodies (its own and its variants) now but the manifest lists none"
+            )),
+            "{problems:?}"
+        );
+        // A capability changed in the source.
+        let mut changed = records.clone();
+        changed[0].requires.clear();
+        let problems = variant_problems(&changed, &planned.manifest);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("is not the one the sources give"),
+            "{problems:?}"
+        );
+        // A list for a kernel that has no variant any more.
+        let problems = variant_problems(&[sample(), other("plain")], &planned.manifest);
+        assert!(
+            problems
+                .iter()
+                .any(|problem| problem.contains("lists variants but the sources have none")),
+            "{problems:?}"
+        );
+        // Inconsistent records are reported as they are.
+        let problems = variant_problems(
+            &[body("sum", "sum_subgroups", &[Capability::Subgroups])],
+            &stripped,
+        );
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].contains("has variants but no body of its own"),
+            "{problems:?}"
         );
     }
 }

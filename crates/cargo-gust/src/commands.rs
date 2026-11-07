@@ -90,6 +90,16 @@ fn collect_plan(ctx: &Context) -> CollectPlan {
     }
 }
 
+/// The records of every body of the package, from one `cargo check` through `run` (M8, D139). `build` and `check` both
+/// collect through here and nowhere else: the macro's export mode writes a record for every body whatever the profile,
+/// so there is no profile loop and a command never runs cargo a second time to collect.
+fn collect_records(
+    ctx: &Context,
+    run: &dyn Fn(&mut Command) -> Result<bool, String>,
+) -> Result<Vec<Record>, String> {
+    collect(&collect_plan(ctx), run)
+}
+
 /// The helper executable, or the error that says how to get one. It does not look at Slang itself: `check` without
 /// `--recompile` only needs the helper's build tag.
 fn require_helper() -> Result<PathBuf, String> {
@@ -188,7 +198,7 @@ pub(crate) fn build(options: &BuildOptions) -> Result<i32, String> {
     };
     let manifest_missing_before = !ctx.artifacts.join(MANIFEST_FILE).is_file();
     println!("gust: collecting the kernels of `{}`", ctx.package.name);
-    let records = collect(&collect_plan(&ctx), &run_status)?;
+    let records = collect_records(&ctx, &run_status)?;
     println!("gust: compiling {} kernel(s)", records.len());
     let compiler = HelperCompiler { helper, spirv_val };
     // Everything is compiled and verified before the clean runs, and the clean comes before the manifest is created,
@@ -215,7 +225,7 @@ pub(crate) fn build(options: &BuildOptions) -> Result<i32, String> {
 
 pub(crate) fn check(options: &CheckOptions) -> Result<i32, String> {
     let ctx = resolve(&options.target)?;
-    let records = export::dedupe(collect(&collect_plan(&ctx), &run_status)?)?;
+    let records = export::dedupe(collect_records(&ctx, &run_status)?)?;
     let state = read_dir_state(&ctx.artifacts)?;
     let helper = if options.recompile {
         // Recompiling uses the compiler, so it needs the pinned Slang and a helper of the same build (R4.8).
@@ -259,17 +269,36 @@ pub(crate) fn check(options: &CheckOptions) -> Result<i32, String> {
     } else {
         None
     };
-    let report = check::run(&check::Inputs {
+    let mut report = check::run(&check::Inputs {
         records: &records,
         state: &state,
         installed_slang,
         verify: &verify_stored,
         recompiled: recompiled.as_ref(),
     });
+    add_variant_problems(&mut report, &records, &state);
     for line in render_report(&report, records.len()) {
         println!("{line}");
     }
     Ok(i32::from(!report.problems.is_empty()))
+}
+
+/// Add what the manifest's `variants` lists get wrong against the collected records (M8, D139) to the report. A
+/// manifest that cannot be read is already a problem of `check::run`, so it adds nothing here.
+pub(crate) fn add_variant_problems(
+    report: &mut Report,
+    records: &[Record],
+    state: &store::DirState,
+) {
+    let manifest = state
+        .file(MANIFEST_FILE)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|text| Manifest::parse(text).ok());
+    if let Some(manifest) = manifest {
+        report
+            .problems
+            .extend(export::variant_problems(records, &manifest));
+    }
 }
 
 /// The formats the stored manifest lists, WGSL when it lists none (or cannot be read).
@@ -596,6 +625,130 @@ mod tests {
             second.lines(),
             ["gust: 2 kernel(s) (wgsl), Slang fake-slang-1: 0 file(s) written, 5 unchanged"]
         );
+    }
+
+    #[test]
+    fn a_crate_with_variants_builds_in_one_pass_and_a_second_unchanged_build_writes_nothing() {
+        use crate::testdata::variant::{MANIFEST, ReplayCompiler, records};
+        let scratch = Scratch::new("variants-twice");
+        let dir = scratch.0.join(ARTIFACTS_DIR);
+        // One call: the records of all four bodies, compiled together (that collection is one cargo run is pinned by
+        // `build_and_check_collect_through_one_cargo_run`).
+        let first = build_into(&dir, records(), &ReplayCompiler).unwrap();
+        assert_eq!(first.kernels, 4);
+        assert_eq!(
+            first.commit.written.len(),
+            9,
+            "8 artifact files and the manifest"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join(MANIFEST_FILE)).unwrap(),
+            MANIFEST
+        );
+        let before = snapshot(&dir);
+        let mut again = records();
+        again.reverse();
+        let second = build_into(&dir, again, &ReplayCompiler).unwrap();
+        assert!(
+            second.commit.written.is_empty(),
+            "{:?}",
+            second.commit.written
+        );
+        assert!(second.commit.pruned.is_empty() && second.stale.is_empty());
+        assert_eq!(second.commit.unchanged, 9);
+        assert_eq!(snapshot(&dir), before);
+    }
+
+    /// A context for a package `probe` under a scratch directory (nothing is run against it).
+    fn context_in(scratch: &Scratch) -> Context {
+        Context {
+            cargo: OsString::from("cargo"),
+            package: Package {
+                name: "probe".to_owned(),
+                manifest_path: scratch.0.join("Cargo.toml"),
+            },
+            manifest_path: None,
+            target_directory: scratch.0.join("target"),
+            artifacts: scratch.0.join(ARTIFACTS_DIR),
+        }
+    }
+
+    #[test]
+    fn build_and_check_collect_through_one_cargo_run() {
+        use crate::testdata::variant::BODIES;
+        use std::cell::Cell;
+        let scratch = Scratch::new("one-run");
+        let ctx = context_in(&scratch);
+        // `build` collects with `collect_records(&ctx, run)` and so does `check` (which then dedupes): each is one call
+        // here, and the counting runner stands for cargo, writing the record of every body as the macro's export mode
+        // does under the one `GUST_PROFILE=dev` run. A second run of cargo in either command (a profile loop) fails this.
+        for command_name in ["build", "check"] {
+            let runs = Cell::new(0);
+            let run = |command: &mut Command| -> Result<bool, String> {
+                runs.set(runs.get() + 1);
+                let root = command
+                    .get_envs()
+                    .find(|(key, _)| key.to_string_lossy() == "GUST_EXPORT_DIR")
+                    .and_then(|(_, value)| value)
+                    .map(PathBuf::from)
+                    .expect("the collect command sets GUST_EXPORT_DIR");
+                let dir = root.join("probe");
+                fs::create_dir_all(&dir).unwrap();
+                for body in BODIES {
+                    fs::write(
+                        dir.join(format!("{}.kernel.json", body.key)),
+                        body.record_json,
+                    )
+                    .unwrap();
+                    fs::write(dir.join(format!("{}.slang", body.key)), body.slang).unwrap();
+                }
+                Ok(true)
+            };
+            let collected = collect_records(&ctx, &run).unwrap();
+            let collected = if command_name == "check" {
+                export::dedupe(collected).unwrap()
+            } else {
+                collected
+            };
+            assert_eq!(runs.get(), 1, "`{command_name}` ran cargo more than once");
+            assert_eq!(collected.len(), 4, "{command_name}");
+        }
+    }
+
+    #[test]
+    fn check_finds_a_stale_variants_list_and_nothing_in_a_fresh_one() {
+        use crate::testdata::variant::{ReplayCompiler, records};
+        let scratch = Scratch::new("variants-check");
+        let dir = scratch.0.join(ARTIFACTS_DIR);
+        build_into(&dir, records(), &ReplayCompiler).unwrap();
+        let mut report = Report::default();
+        add_variant_problems(&mut report, &records(), &read_dir_state(&dir).unwrap());
+        assert_eq!(report, Report::default());
+        // The manifest of an older build, from before the variants (only the kernels' own bodies, no list anywhere), is
+        // stale for the same sources. (Entries of one kernel with no list at all are not a manifest; the reader refuses.)
+        let text = fs::read_to_string(dir.join(MANIFEST_FILE)).unwrap();
+        let mut manifest = Manifest::parse(&text).unwrap();
+        manifest.kernels.retain(|entry| !entry.variants.is_empty());
+        for entry in &mut manifest.kernels {
+            entry.variants.clear();
+        }
+        fs::write(dir.join(MANIFEST_FILE), manifest.render()).unwrap();
+        let mut report = Report::default();
+        add_variant_problems(&mut report, &records(), &read_dir_state(&dir).unwrap());
+        assert_eq!(report.problems.len(), 2, "{:?}", report.problems);
+        assert!(
+            report
+                .problems
+                .iter()
+                .all(|problem| problem.contains("the manifest lists none")),
+            "{:?}",
+            report.problems
+        );
+        // An unreadable manifest is `check::run`'s problem, not this one's.
+        fs::write(dir.join(MANIFEST_FILE), "not json").unwrap();
+        let mut report = Report::default();
+        add_variant_problems(&mut report, &records(), &read_dir_state(&dir).unwrap());
+        assert!(report.problems.is_empty());
     }
 
     #[test]

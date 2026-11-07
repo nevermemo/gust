@@ -30,6 +30,7 @@ use proc_macro::TokenStream;
 
 mod diagnostics;
 mod expand;
+mod manifest;
 mod math_types;
 mod mul_impls;
 mod par_for;
@@ -64,6 +65,10 @@ mod par_for_tests;
 #[cfg(test)]
 #[path = "tests/profile.rs"]
 mod profile_tests;
+
+#[cfg(test)]
+#[path = "tests/manifest.rs"]
+mod manifest_tests;
 
 /// Marks an inline Rust module as GUST GPU code, or a free scalar function as an element-wise map (D60).
 ///

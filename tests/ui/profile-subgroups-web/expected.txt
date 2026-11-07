@@ -1,0 +1,2 @@
+# Texts of cargo's stderr (`build-error:`), not rustc keys: a build script's refusal is no rustc diagnostic.
+build-error: gust: GUST_PROFILE `web+subgroups`: the capability subgroups is not available under the web profile in this release (the pinned wgpu cannot request it in a browser); use native or dev

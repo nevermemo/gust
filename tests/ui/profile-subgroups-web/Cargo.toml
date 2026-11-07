@@ -1,0 +1,13 @@
+[package]
+name = "profile-subgroups-web"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The kernel of `profile-native-no-artifact`, unchanged: the same file, built under another profile.
+[[bin]]
+name = "profile-subgroups-web"
+path = "../profile-native-no-artifact/src/main.rs"
+
+[dependencies]
+gust = { package = "gust-compute", path = "../../../crates/gust" }

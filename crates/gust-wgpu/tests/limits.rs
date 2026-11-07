@@ -139,6 +139,93 @@ fn assert_limit(error: Error, limit: &str, requested: u64, maximum: u64) {
     }
 }
 
+/// `gust::limits::PORTABLE` (the floor a crate with `limits = "portable"` is checked against, M8 D143) is, field by field,
+/// wgpu's `Limits::default()` and what the opened device reports. It is built from a list of every field, so a limit
+/// added to the table without a line here is caught by the comparison of the names with `entries()`.
+#[track_caller]
+fn assert_the_portable_floor_is_what_devices_open_with(opened: &wgpu::Limits) {
+    let defaults = wgpu::Limits::default();
+    let floor = gust::limits::PORTABLE;
+    let fields = [
+        (
+            "max_compute_workgroup_size_x",
+            floor.max_compute_workgroup_size_x,
+            defaults.max_compute_workgroup_size_x,
+            opened.max_compute_workgroup_size_x,
+        ),
+        (
+            "max_compute_workgroup_size_y",
+            floor.max_compute_workgroup_size_y,
+            defaults.max_compute_workgroup_size_y,
+            opened.max_compute_workgroup_size_y,
+        ),
+        (
+            "max_compute_workgroup_size_z",
+            floor.max_compute_workgroup_size_z,
+            defaults.max_compute_workgroup_size_z,
+            opened.max_compute_workgroup_size_z,
+        ),
+        (
+            "max_compute_invocations_per_workgroup",
+            floor.max_compute_invocations_per_workgroup,
+            defaults.max_compute_invocations_per_workgroup,
+            opened.max_compute_invocations_per_workgroup,
+        ),
+        (
+            "max_storage_buffers_per_shader_stage",
+            floor.max_storage_buffers_per_shader_stage,
+            defaults.max_storage_buffers_per_shader_stage,
+            opened.max_storage_buffers_per_shader_stage,
+        ),
+        (
+            "max_uniform_buffers_per_shader_stage",
+            floor.max_uniform_buffers_per_shader_stage,
+            defaults.max_uniform_buffers_per_shader_stage,
+            opened.max_uniform_buffers_per_shader_stage,
+        ),
+        (
+            "max_sampled_textures_per_shader_stage",
+            floor.max_sampled_textures_per_shader_stage,
+            defaults.max_sampled_textures_per_shader_stage,
+            opened.max_sampled_textures_per_shader_stage,
+        ),
+        (
+            "max_storage_textures_per_shader_stage",
+            floor.max_storage_textures_per_shader_stage,
+            defaults.max_storage_textures_per_shader_stage,
+            opened.max_storage_textures_per_shader_stage,
+        ),
+        (
+            "max_samplers_per_shader_stage",
+            floor.max_samplers_per_shader_stage,
+            defaults.max_samplers_per_shader_stage,
+            opened.max_samplers_per_shader_stage,
+        ),
+        (
+            "max_compute_workgroup_storage_size",
+            floor.max_compute_workgroup_storage_size,
+            defaults.max_compute_workgroup_storage_size,
+            opened.max_compute_workgroup_storage_size,
+        ),
+    ];
+    for (name, portable, default, device) in fields {
+        assert_eq!(portable, default, "PORTABLE.{name} against wgpu's default");
+        assert_eq!(
+            portable, device,
+            "PORTABLE.{name} against the opened device"
+        );
+    }
+    let table: Vec<(&str, u32)> = fields
+        .iter()
+        .map(|(name, portable, _, _)| (*name, *portable))
+        .collect();
+    assert_eq!(
+        floor.entries().collect::<Vec<_>>(),
+        table,
+        "PORTABLE.entries() is the table above, in order"
+    );
+}
+
 #[test]
 fn limits_are_the_opened_devices_and_the_replacement_lowers_them() {
     let device = device();
@@ -147,6 +234,8 @@ fn limits_are_the_opened_devices_and_the_replacement_lowers_them() {
     // reading the device: it fails if wgpu changes its defaults or if GUST starts
     // requesting the adapter's limits, so the other tests' assumptions get re-checked.
     assert_eq!(opened, wgpu::Limits::default());
+    // The same tripwire holds the compile-time floor of a `limits = "portable"` crate (m8.f).
+    assert_the_portable_floor_is_what_devices_open_with(&opened);
     assert_eq!(
         opened.max_compute_workgroups_per_dimension,
         gust_wgpu::DEFAULT_MAX_COMPUTE_WORKGROUPS_PER_DIMENSION,
@@ -659,6 +748,9 @@ fn a_64_gib_request_is_a_device_limit_before_any_wgpu_call() {
         gust_wgpu::LimitsPolicy::Adapter,
     ] {
         let device = open(0, policy);
+        // Every device GUST opens, under either policy, holds the ten floor fields at WebGPU's defaults (the three
+        // raised limits are not in the table), so a `limits = "portable"` crate is within what both open with.
+        assert_the_portable_floor_is_what_devices_open_with(device.limits());
         let maximum = device.limits().max_buffer_size;
         let error = device
             .create_zeroed_buffer::<u32>("sixty-four gib", 1 << 34, GpuBufferAccess::ReadWrite)

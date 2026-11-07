@@ -318,6 +318,7 @@ pub(crate) fn expand_in(
 ) -> syn::Result<TokenStream> {
     // The variants become kernels first (M8, D139), so that every body is validated and lowered like any kernel.
     let (module, plan) = variant::lower(module)?;
+    crate::validate::limits::check_declared(&module, environment.manifest_dir.as_deref())?; // before E0718 (m8.f)
     crate::validate::validate_module_in(&GRID, &module)?;
     expand_validated_with(
         module,

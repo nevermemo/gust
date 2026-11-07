@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see workgroup-over-16kib/expected.txt).
+# GUST-E0746 is a macro error, so `code: none`; it is spanned over the kernel signature.
+code: none
+file: limits-workgroup-size-y/src/main.rs
+line: 7
+message: [GUST-E0746] kernel `k` is over the portable floor: its workgroup size along y is 257, over `max_compute_workgroup_size_y` = 256

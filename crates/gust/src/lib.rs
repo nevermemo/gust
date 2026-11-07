@@ -111,6 +111,11 @@
 //! refused (the pinned wgpu cannot request subgroups in a browser). `dev+subgroups` is allowed: `dev` is the one
 //! profile that accepts the `slang-runtime` feature, so it is the profile of the tests of subgroup kernels.
 //!
+//! A crate that must run on every WebGPU device sets `limits = "portable"` in its `[package.metadata.gust]` table (M8):
+//! the macro then refuses a `#[kernel]` of a `#[gpu]` module that is over [`limits::PORTABLE`] (GUST-E0746). The
+//! `#[gpu]` element-wise map and `par_for!` are not checked, nor are the limits that depend on the launch (the runtime
+//! checks those). The setting is off by default.
+//!
 //! `cpu` is the production CPU target (D21): the `#[gpu]` macro emits the kernel's `Run` impl for
 //! [`cpu::CpuDevice`] in every build, without the test and `gust_dual` gate, uses no
 //! artifact, and the `slang-runtime` feature is refused, so the build holds no run-time Slang bridge. `gust-compute-wgpu`
@@ -193,6 +198,7 @@ pub mod cpu;
 mod descriptor;
 mod dispatch;
 mod job;
+pub mod limits;
 pub mod map;
 pub mod math;
 #[doc(hidden)]

@@ -385,6 +385,9 @@ codes! {
     /// A profile the crate declares for which a kernel has no body, or the CPU target declared for a kernel with no CPU
     /// form.
     ProfileNotCovered = 744 => "GUST-E0744";
+    /// A kernel over one of the limits of the portable floor, in a crate that sets `limits = "portable"` (m8.f, D143).
+    /// For such a crate this code also stands where E0718 would.
+    PortableFloor = 746 => "GUST-E0746";
     /// No body of a kernel can be used by the profile being built.
     NoBodySelectable = 750 => "GUST-E0750";
 
@@ -1263,6 +1266,7 @@ mod tests {
             || file.ends_with("src/tests/manifest.rs")
             || file.ends_with("src/tests/variant.rs")
             || file.ends_with("src/validate/mod.rs")
+            || file.ends_with("src/validate/limits.rs")
             || file.ends_with("src/validate/classify/tests.rs")
     }
 

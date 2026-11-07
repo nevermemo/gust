@@ -36,6 +36,16 @@
 //! is read like schema 1, one that has none like schema 2, with its call sites in sidecars. The number moves so that a
 //! reader of schemas 1 and 2 refuses a non-grid record instead of reading it as `grid`; this reader also refuses a
 //! `shape` in a record that says schema 1 or 2.
+//!
+//! Schema 4 (M8, D139) is schema 3's grammar plus two required keys, `requires` (an array of capability names, in the
+//! order of `gust::capability::Capability::ALL`, none twice, none unknown to this tool) and `variant` (the name of the
+//! variant function, `""` for the kernel's own body). The macro writes it only for a body that needs a capability or is a
+//! variant, so every other body keeps schema 1, 2 or 3 byte for byte and reads as `requires: []`, `variant: ""`. `name`
+//! is the kernel's for every body of a kernel; `entry_point`, and with it the key, is the body's own. A schema 4 record
+//! that names neither a capability nor a variant is refused (the writer never makes one), and so is `requires` or
+//! `variant` in a record that says schema 1, 2 or 3: the number is what keeps an older reader from reading a subgroup
+//! body as the portable one. A kernel's bodies are the records with one (`module`, `name`); the export groups them
+//! ([`crate::export`]) and the manifest lists them ([`crate::manifest`], schema 3).
 
 use std::{fs, path::Path};
 
@@ -44,6 +54,7 @@ use gust::{
     ResourceLayout, ScalarKind, ShaderLayoutRules, Shape, SourceOrigin, StructFieldLayout,
     TextureAccess, TextureDimension, TextureLayout, TypeLayout, TypeLayoutKind,
     artifact::content_key,
+    capability::Capability,
     texture::{Format, SampleClass},
 };
 
@@ -58,9 +69,16 @@ pub(crate) const RECORD_SCHEMA: u32 = 1;
 pub(crate) const SITE_RECORD_SCHEMA: u32 = 2;
 /// The schema of a record whose kernel has a shape other than `grid` (mx.k): schema 2's grammar plus `shape`.
 pub(crate) const SHAPE_RECORD_SCHEMA: u32 = 3;
+/// The schema of a record whose body needs a capability or is a variant (M8, D139): schema 3's grammar plus `requires`
+/// and `variant`.
+pub(crate) const VARIANT_RECORD_SCHEMA: u32 = 4;
 /// Every record schema this tool reads (`RECORD_SCHEMA` of D89 is this set).
-pub(crate) const RECORD_SCHEMAS: [u32; 3] =
-    [RECORD_SCHEMA, SITE_RECORD_SCHEMA, SHAPE_RECORD_SCHEMA];
+pub(crate) const RECORD_SCHEMAS: [u32; 4] = [
+    RECORD_SCHEMA,
+    SITE_RECORD_SCHEMA,
+    SHAPE_RECORD_SCHEMA,
+    VARIANT_RECORD_SCHEMA,
+];
 
 /// The suffix of the file that holds a record's JSON.
 pub(crate) const JSON_SUFFIX: &str = ".kernel.json";
@@ -79,6 +97,12 @@ pub(crate) struct Record {
     pub(crate) entry_point: String,
     /// The kernel's shape: `grid` when the record has no `shape` (schemas 1 and 2, and a schema 3 record without one).
     pub(crate) shape: Shape,
+    /// The capabilities this body needs, in the order of `Capability::ALL`, none twice. Empty for a record of schema 1
+    /// to 3 and for a portable body.
+    pub(crate) requires: Vec<Capability>,
+    /// The name of the variant function this record is, or `""` for the kernel's own body (every record of schema 1 to
+    /// 3). `name` is the kernel's for all of its bodies.
+    pub(crate) variant: String,
     pub(crate) workgroup_size: [u32; 3],
     pub(crate) parameters: Vec<ParameterRecord>,
     /// The recorded Rust source file (relative, `/` separators); empty when unknown. For a schema 2 record: the
@@ -252,9 +276,10 @@ impl Record {
         };
         // `shape` belongs to schema 3: the number is what keeps an older reader from misreading a non-grid kernel, so
         // a record that carries one under another number is malformed, not "grid".
+        // Schema 4 is schema 3's grammar plus `requires` and `variant`, so it may carry a `shape` too.
         let shape = match root.get("shape") {
             None => Shape::Grid,
-            Some(_) if schema != SHAPE_RECORD_SCHEMA => {
+            Some(_) if schema != SHAPE_RECORD_SCHEMA && schema != VARIANT_RECORD_SCHEMA => {
                 return Err(format!(
                     "record: a schema {schema} record has no `shape` (it is a schema {SHAPE_RECORD_SCHEMA} key; the number is what keeps an older reader from reading a non-grid kernel as `grid`)"
                 ));
@@ -266,6 +291,7 @@ impl Record {
                 })?
             }
         };
+        let (requires, variant) = parse_variant_facts(&root, schema)?;
         let key = string(&root, "key", "record")?;
         let entry_point = string(&root, "entry_point", "record")?;
         let expected = key_of(&entry_point, slang);
@@ -290,10 +316,11 @@ impl Record {
             .enumerate()
             .map(|(index, parameter)| parse_parameter(parameter, &format!("parameters[{index}]")))
             .collect::<Result<Vec<_>, _>>()?;
-        // Schema 2 never names a source; schema 3 names one or not, and then it is read like schema 1 or like schema 2.
+        // Schema 2 never names a source; schema 3 and 4 name one or not, and then they are read like schema 1 or like
+        // schema 2.
         let sited = match schema {
             SITE_RECORD_SCHEMA => true,
-            SHAPE_RECORD_SCHEMA => root.get("source").is_none(),
+            SHAPE_RECORD_SCHEMA | VARIANT_RECORD_SCHEMA => root.get("source").is_none(),
             _ => false,
         };
         let (file, lines) = if sited {
@@ -319,6 +346,8 @@ impl Record {
             name: string(&root, "name", "record")?,
             entry_point,
             shape,
+            requires,
+            variant,
             workgroup_size,
             parameters,
             file,
@@ -368,6 +397,23 @@ impl Record {
     /// `module::name`, as diagnostics and the manifest name the kernel.
     pub(crate) fn qualified_name(&self) -> String {
         format!("{}::{}", self.module, self.name)
+    }
+
+    /// `module::function` of the Rust function this body is: the variant's name for a variant, else the kernel's. Build
+    /// errors name a body by it, so that two bodies of one kernel are told apart.
+    pub(crate) fn body_name(&self) -> String {
+        let function = if self.variant.is_empty() {
+            &self.name
+        } else {
+            &self.variant
+        };
+        format!("{}::{function}", self.module)
+    }
+
+    /// Whether this record is one a macro writes as schema 4: the body needs a capability or is a variant. Such a
+    /// body's kernel is listed with its variants in the manifest.
+    pub(crate) fn has_variant_facts(&self) -> bool {
+        !self.requires.is_empty() || !self.variant.is_empty()
     }
 
     /// SHA-256 of the clean Slang text (D45), as 64 hex digits.
@@ -446,8 +492,9 @@ impl Record {
                 rust_line: *rust_line,
             })
             .collect();
-        // The portable body for the GPU: a record of schema 1 to 3 names no variant, capability or target (record
-        // schema 4 adds the first two, m8.b2), which the constructor's defaults say.
+        // A record of schema 1 to 3 names no variant and no capability (the constructor's defaults say so), and no
+        // target: the tool describes the body for the GPU. A record of schema 4 names both, and `name` stays the
+        // kernel's, so every body of a kernel has one descriptor name and its own entry point and key.
         KernelDescriptor::new(
             leak(&self.module),
             leak(&self.name),
@@ -456,6 +503,8 @@ impl Record {
             Box::leak(parameters.into_boxed_slice()),
             leak(&self.slang),
         )
+        .with_variant(leak(&self.variant))
+        .with_requires(Box::leak(self.requires.clone().into_boxed_slice()))
         .with_shape(self.shape)
         // A record names the shape it was built as; the shapes the kernel could take are the macro's to judge and
         // are not recorded (mx.c).
@@ -481,6 +530,71 @@ fn schema_list(schemas: &[u32]) -> String {
             format!("{} and {last}", rest.join(", "))
         }
     }
+}
+
+/// `subgroups`: the capability names this tool knows, as the refusals of `requires` name them.
+fn capability_names() -> String {
+    let names: Vec<String> = Capability::ALL
+        .iter()
+        .map(|capability| format!("`{}`", capability.name()))
+        .collect();
+    names.join(", ")
+}
+
+/// A capability by its name in a record or a manifest, or the refusal that says what this tool knows. `context` names
+/// the value (`record: `requires``).
+fn capability_named(name: &str, context: &str) -> Result<Capability, String> {
+    Capability::from_name(name).ok_or_else(|| {
+        format!(
+            "{context}: unknown capability `{name}` (this tool knows {})",
+            capability_names()
+        )
+    })
+}
+
+/// The capabilities in `names`, once each and in the order of `Capability::ALL`; a name this tool does not know, or one
+/// that appears twice, is an error naming `context`.
+pub(crate) fn capabilities_named(names: &[Json], context: &str) -> Result<Vec<Capability>, String> {
+    let mut found = Vec::new();
+    for name in names {
+        let name = name
+            .as_str()
+            .ok_or_else(|| format!("{context}: expected capability names (strings)"))?;
+        let capability = capability_named(name, context)?;
+        if found.contains(&capability) {
+            return Err(format!("{context}: `{name}` appears twice"));
+        }
+        found.push(capability);
+    }
+    found.sort_by_key(|capability| Capability::ALL.iter().position(|known| known == capability));
+    Ok(found)
+}
+
+/// The `requires` and `variant` of a record (schema 4), or the empty set and `""` for the schemas before it.
+///
+/// The keys belong to schema 4: the number is what keeps a reader of schemas 1 to 3 from reading a subgroup body as the
+/// portable one, so a record that carries one under another number is malformed, not portable. A schema 4 record has
+/// both and names a capability or a variant: the macro writes none that does not.
+fn parse_variant_facts(root: &Json, schema: u32) -> Result<(Vec<Capability>, String), String> {
+    if schema != VARIANT_RECORD_SCHEMA {
+        for key in ["requires", "variant"] {
+            if root.get(key).is_some() {
+                return Err(format!(
+                    "record: a schema {schema} record has no `{key}` (it is a schema {VARIANT_RECORD_SCHEMA} key; the number is what keeps an older reader from reading a subgroup body as the portable one)"
+                ));
+            }
+        }
+        return Ok((Vec::new(), String::new()));
+    }
+    let requires = capabilities_named(array(root, "requires", "record")?, "record: `requires`")?;
+    let variant = string(root, "variant", "record")?;
+    if requires.is_empty() && variant.is_empty() {
+        return Err(
+            "record: a schema 4 record names a capability in `requires` or a function in `variant` (a body with neither is a schema 1, 2 or 3 record)"
+                .to_owned(),
+        );
+    }
+    Ok((requires, variant))
 }
 
 fn leak(text: &str) -> &'static str {

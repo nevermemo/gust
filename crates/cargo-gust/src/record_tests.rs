@@ -229,7 +229,7 @@ fn error_of(json: &str) -> String {
 fn malformed_records_are_refused_with_the_path_of_the_problem() {
     for (json, expected) in [
         (
-            broken("\"schema\": 1", "\"schema\": 4"),
+            broken("\"schema\": 1", "\"schema\": 5"),
             "unsupported schema",
         ),
         (broken("  \"schema\": 1,\n", ""), "record: missing `schema`"),
@@ -490,10 +490,10 @@ fn a_schema_2_record_that_names_a_source_is_refused() {
 }
 
 #[test]
-fn an_unknown_schema_is_refused_naming_the_three_this_tool_reads() {
-    let error = error_of(&broken("  \"schema\": 1,", "  \"schema\": 4,"));
+fn an_unknown_schema_is_refused_naming_the_four_this_tool_reads() {
+    let error = error_of(&broken("  \"schema\": 1,", "  \"schema\": 5,"));
     assert!(
-        error.contains("unsupported schema") && error.contains("schemas 1, 2 and 3"),
+        error.contains("unsupported schema") && error.contains("schemas 1, 2, 3 and 4"),
         "{error}"
     );
 }
@@ -988,5 +988,221 @@ fn a_layout_that_does_not_fit_the_parameter_kind_is_refused() {
             "parameters[1].layout: `texture_v1` rules do not belong to a non-texture parameter"
         ),
         "{error}"
+    );
+}
+
+// ---- schema 4: the record of a variant, or of a body that needs a capability (m8.b1, m8.b2, D139) ----
+
+/// The sample record as a schema 4 record: `requires` and `variant` (JSON texts) in place of the schema 1 number.
+fn variant_record_json(requires: &str, variant: &str) -> String {
+    broken(
+        "  \"schema\": 1,\n",
+        &format!("  \"requires\": {requires},\n  \"schema\": 4,\n  \"variant\": {variant},\n"),
+    )
+}
+
+#[test]
+fn a_schema_4_record_carries_requires_and_variant_into_the_descriptor() {
+    let json = variant_record_json("[\"subgroups\"]", "\"run_subgroups\"");
+    let (record, schema, sited) = Record::parse_any(&json, SAMPLE_SLANG).unwrap();
+    assert_eq!((schema, sited), (4, false));
+    assert_eq!(record.requires, [Capability::Subgroups]);
+    assert_eq!(record.variant, "run_subgroups");
+    assert!(record.has_variant_facts());
+    // The kernel's name is the kernel's, the body's is its function's.
+    assert_eq!(record.name, "run");
+    assert_eq!(record.qualified_name(), "demo::run");
+    assert_eq!(record.body_name(), "demo::run_subgroups");
+    // It has its own `source`, like schema 1, and everything else is the sample's.
+    assert_eq!(record.file, "src/lib.rs");
+    assert_eq!(record.lines, [[3, 9, 12], [5, 5, 14]]);
+    assert_eq!(record.parameters, sample().parameters);
+    assert_eq!(record.shape, Shape::Grid);
+    let descriptor = record.descriptor();
+    assert_eq!(descriptor.variant, "run_subgroups");
+    assert_eq!(descriptor.requires, [Capability::Subgroups]);
+    assert_eq!(descriptor.name, "run");
+    // The records of the schemas before it have neither.
+    let plain = sample();
+    assert!(plain.requires.is_empty() && plain.variant.is_empty() && !plain.has_variant_facts());
+    assert_eq!(plain.body_name(), "demo::run");
+    assert_eq!(plain.descriptor().variant, "");
+    assert!(plain.descriptor().requires.is_empty());
+}
+
+#[test]
+fn a_schema_4_record_may_be_an_own_body_that_needs_a_capability_or_a_portable_variant() {
+    // The kernel's own body that requires subgroups: `variant` is empty.
+    let own = Record::parse(
+        &variant_record_json("[\"subgroups\"]", "\"\""),
+        SAMPLE_SLANG,
+    )
+    .unwrap();
+    assert_eq!(
+        (own.requires.as_slice(), own.variant.as_str()),
+        (&[Capability::Subgroups][..], "")
+    );
+    assert_eq!(own.body_name(), "demo::run");
+    assert!(own.has_variant_facts());
+    // A portable variant of a kernel that needs a capability: the empty set and a function.
+    let portable =
+        Record::parse(&variant_record_json("[]", "\"run_portable\""), SAMPLE_SLANG).unwrap();
+    assert!(portable.requires.is_empty());
+    assert_eq!(portable.variant, "run_portable");
+    assert_eq!(portable.body_name(), "demo::run_portable");
+    assert!(portable.has_variant_facts());
+}
+
+#[test]
+fn a_schema_4_record_may_carry_a_shape_and_may_lack_a_source() {
+    let json = variant_record_json("[\"subgroups\"]", "\"run_subgroups\"").replace(
+        "  \"schema\": 4,\n",
+        "  \"schema\": 4,\n  \"shape\": \"pixel\",\n",
+    );
+    let record = Record::parse(&json, SAMPLE_SLANG).unwrap();
+    assert_eq!(record.shape, Shape::Pixel);
+    assert_eq!(record.requires, [Capability::Subgroups]);
+    // Without a `source` it is read like schema 2 and 3: the origin comes from its sidecars.
+    let start = json.find("  \"source\": {").unwrap();
+    let end = json.find("  \"workgroup_size\"").unwrap();
+    let without = format!("{}{}", &json[..start], &json[end..]);
+    assert!(!without.contains("\"source\""));
+    let (site, schema, sited) = Record::parse_any(&without, SAMPLE_SLANG).unwrap();
+    assert_eq!((schema, sited), (4, true));
+    assert_eq!((site.file.as_str(), site.lines.len()), ("", 0));
+}
+
+#[test]
+fn a_schema_4_record_with_a_missing_or_malformed_fact_is_refused() {
+    for (json, expected) in [
+        (
+            variant_record_json("[]", "\"\""),
+            "a schema 4 record names a capability in `requires` or a function in `variant`",
+        ),
+        (
+            variant_record_json("[\"wave\"]", "\"\""),
+            "record: `requires`: unknown capability `wave` (this tool knows `subgroups`)",
+        ),
+        (
+            variant_record_json("[\"subgroups\", \"subgroups\"]", "\"\""),
+            "record: `requires`: `subgroups` appears twice",
+        ),
+        (
+            variant_record_json("[3]", "\"\""),
+            "record: `requires`: expected capability names (strings)",
+        ),
+        (
+            variant_record_json("\"subgroups\"", "\"\""),
+            "`requires` must be an array",
+        ),
+        (
+            variant_record_json("[\"subgroups\"]", "7"),
+            "record: `variant` must be a string",
+        ),
+        (
+            broken(
+                "  \"schema\": 1,\n",
+                "  \"schema\": 4,\n  \"variant\": \"v\",\n",
+            ),
+            "record: missing `requires`",
+        ),
+        (
+            broken(
+                "  \"schema\": 1,\n",
+                "  \"requires\": [\"subgroups\"],\n  \"schema\": 4,\n",
+            ),
+            "record: missing `variant`",
+        ),
+    ] {
+        let error = error_of(&json);
+        assert!(error.contains(expected), "{expected:?} not in {error:?}");
+    }
+}
+
+#[test]
+fn requires_and_variant_under_schema_1_2_or_3_are_refused() {
+    let under_1 = broken(
+        "  \"schema\": 1,\n",
+        "  \"requires\": [],\n  \"schema\": 1,\n",
+    );
+    let under_1_variant = broken(
+        "  \"schema\": 1,\n",
+        "  \"schema\": 1,\n  \"variant\": \"v\",\n",
+    );
+    let under_2 = site_record_json().replace(
+        "  \"schema\": 2,\n",
+        "  \"requires\": [\"subgroups\"],\n  \"schema\": 2,\n",
+    );
+    let under_3 = pixel_record_json().replace(
+        "  \"schema\": 3,\n",
+        "  \"schema\": 3,\n  \"variant\": \"v\",\n",
+    );
+    for (json, schema, key) in [
+        (under_1, 1, "requires"),
+        (under_1_variant, 1, "variant"),
+        (under_2, 2, "requires"),
+        (under_3, 3, "variant"),
+    ] {
+        let error = Record::parse(&json, SAMPLE_SLANG).unwrap_err();
+        assert!(
+            error.contains(&format!("a schema {schema} record has no `{key}`"))
+                && error.contains("schema 4 key"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn a_reader_of_schemas_1_to_3_refuses_a_schema_4_record() {
+    // The number moves so that a reader from before M8 cannot read a subgroup body as the kernel's portable one.
+    let before = [RECORD_SCHEMA, SITE_RECORD_SCHEMA, SHAPE_RECORD_SCHEMA];
+    let json = variant_record_json("[\"subgroups\"]", "\"run_subgroups\"");
+    let error = Record::parse_schemas(&json, SAMPLE_SLANG, &before).unwrap_err();
+    assert!(
+        error.contains("unsupported schema") && error.contains("schemas 1, 2 and 3"),
+        "{error}"
+    );
+    assert!(Record::parse_any(&json, SAMPLE_SLANG).is_ok());
+    // The old readers still read what they always read.
+    for json in [
+        SAMPLE_RECORD_JSON.to_owned(),
+        site_record_json(),
+        pixel_record_json(),
+    ] {
+        assert!(Record::parse_schemas(&json, SAMPLE_SLANG, &before).is_ok());
+    }
+}
+
+#[test]
+fn a_directory_of_the_bodies_of_a_kernel_reads_every_one() {
+    let scratch = Scratch::new("variant records");
+    let directory = scratch.0.join("records");
+    fs::create_dir_all(&directory).unwrap();
+    // The sample is the kernel's own body (schema 1); a second body of the kernel `demo::run` is the schema 4 record
+    // of the variant `run_subgroups` under its own entry point and key.
+    let entry = "gpu_demo_run_subgroups";
+    let slang = SAMPLE_SLANG.replace("gpu_demo_run", entry);
+    let key = key_of(entry, &slang);
+    let json = variant_record_json("[\"subgroups\"]", "\"run_subgroups\"")
+        .replace("gpu_demo_run", entry)
+        .replace(SAMPLE_KEY, &key);
+    fs::write(
+        directory.join(format!("{SAMPLE_KEY}.kernel.json")),
+        SAMPLE_RECORD_JSON,
+    )
+    .unwrap();
+    fs::write(directory.join(format!("{SAMPLE_KEY}.slang")), SAMPLE_SLANG).unwrap();
+    fs::write(directory.join(format!("{key}.kernel.json")), &json).unwrap();
+    fs::write(directory.join(format!("{key}.slang")), &slang).unwrap();
+    let mut records = read_records(&directory).unwrap();
+    records.sort_by(|a, b| a.variant.cmp(&b.variant));
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].body_name(), "demo::run");
+    assert_eq!(records[1].body_name(), "demo::run_subgroups");
+    assert_eq!(records[1].requires, [Capability::Subgroups]);
+    assert!(
+        records
+            .iter()
+            .all(|record| record.qualified_name() == "demo::run")
     );
 }

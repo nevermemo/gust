@@ -1,0 +1,94 @@
+{
+  "kernels": [
+    {
+      "clean_sha256": "b7f535bff060775840d0ba963a8619f4c88af423aed62a9ca34b641139bac47b",
+      "entry_point": "gpu_variant_probe_double_subgroups",
+      "formats": [
+        {
+          "file": "08adc71357b5966e.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "dfe78860ce41d050952e6d55f6c25b5a4e2d1a383c51b6d478f2d9d112d7b205",
+          "sha256": "6e4551fd10c6c1c6d764eb7e32124350f18e05b62212f8391b155ec6b3dead42"
+        }
+      ],
+      "key": "08adc71357b5966e",
+      "module": "variant_probe",
+      "name": "double"
+    },
+    {
+      "clean_sha256": "ee99fb3e832879ba3772ae7ba6e023e0f39d2312e3bdf8979f3409e5bd098fac",
+      "entry_point": "gpu_gated_probe_total",
+      "formats": [
+        {
+          "file": "0de18f77cf4dfd53.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "26ae4e992084839986777822181b658972222c8f65760a8930401a939a7ea601",
+          "sha256": "82a15120b6f613e6b3ff9fcf93eaff9573454b5c2c7986d563ba14aaf6a1d70a"
+        }
+      ],
+      "key": "0de18f77cf4dfd53",
+      "module": "gated_probe",
+      "name": "total",
+      "variants": [
+        {
+          "key": "0de18f77cf4dfd53",
+          "requires": [
+            "subgroups"
+          ],
+          "variant": ""
+        },
+        {
+          "key": "4714627abe9c3d3b",
+          "requires": [],
+          "variant": "total_portable"
+        }
+      ]
+    },
+    {
+      "clean_sha256": "fd760d3f1c03b9132ac284da32beed0383cf140d4079943e4514801bde902ff3",
+      "entry_point": "gpu_gated_probe_total_portable",
+      "formats": [
+        {
+          "file": "4714627abe9c3d3b.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "39e81ec8040c61eef04f5565129c3b0c3933ae9836afa07cb4e5b2f3c0b7dcc5",
+          "sha256": "da508f2517b8fa4a01ffeb7f0a61efbe08cabce1ec7bce50f6ecaf8b18c16f4e"
+        }
+      ],
+      "key": "4714627abe9c3d3b",
+      "module": "gated_probe",
+      "name": "total"
+    },
+    {
+      "clean_sha256": "433f168f2eee3718f95813a7336f1ce5bed5a5e0f9b039676dde296c01df93f2",
+      "entry_point": "gpu_variant_probe_double",
+      "formats": [
+        {
+          "file": "83b6f7fcc126e530.wgsl",
+          "format": "wgsl",
+          "reflection_sha256": "a296cbd38c15d6abde88989422196901704e6af4016df42ed565ef93b535b5b5",
+          "sha256": "a09e71ddc07e7ae9d37c39cfd3d95b4d8c0bdd277258ed337995cea1a908f838"
+        }
+      ],
+      "key": "83b6f7fcc126e530",
+      "module": "variant_probe",
+      "name": "double",
+      "variants": [
+        {
+          "key": "08adc71357b5966e",
+          "requires": [
+            "subgroups"
+          ],
+          "variant": "double_subgroups"
+        },
+        {
+          "key": "83b6f7fcc126e530",
+          "requires": [],
+          "variant": ""
+        }
+      ]
+    }
+  ],
+  "schema": 3,
+  "slang": "2026.20"
+}

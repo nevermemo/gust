@@ -500,6 +500,66 @@ mod tests {
     }
 
     #[test]
+    fn every_body_of_a_crate_with_variants_is_collected_by_one_cargo_check_with_no_profile_loop() {
+        // The macro's export mode writes the record of every body whatever the profile (m8.b1), so one `cargo check`
+        // under `GUST_PROFILE=dev` collects the kernel's own body and each variant, and the build needs no second run.
+        use crate::testdata::variant::{BODIES, records};
+        use std::cell::{Cell, RefCell};
+
+        let scratch = Scratch::new("collect variants");
+        let plan = sample_plan(&scratch);
+        let runs = Cell::new(0);
+        let seen = RefCell::new(Vec::new());
+        let run = |command: &mut Command| -> Result<bool, String> {
+            runs.set(runs.get() + 1);
+            seen.borrow_mut().push((
+                args(command),
+                env_of(command, "GUST_PROFILE"),
+                env_of(command, "GUST_EXPORT_DIR"),
+            ));
+            for body in BODIES {
+                write_record(
+                    &plan.package_records(),
+                    body.key,
+                    body.record_json,
+                    body.slang,
+                );
+            }
+            Ok(true)
+        };
+        let collected = collect(&plan, &run).unwrap();
+        assert_eq!(runs.get(), 1, "the build ran cargo more than once");
+        let seen = seen.into_inner();
+        assert_eq!(seen[0].0[0], "check");
+        assert_eq!(
+            seen[0].1,
+            Some(Some("dev".to_owned())),
+            "the one run is under the dev profile"
+        );
+        assert_eq!(
+            seen[0].2,
+            Some(Some(plan.record_root().to_string_lossy().into_owned()))
+        );
+        // All four bodies of the two kernels arrived: the portable bodies and the variants, with their facts.
+        assert_eq!(collected.len(), 4);
+        for stored in records() {
+            let found = collected
+                .iter()
+                .find(|record| record.key == stored.key)
+                .unwrap();
+            assert_eq!(found.variant, stored.variant);
+            assert_eq!(found.requires, stored.requires);
+        }
+        assert_eq!(
+            collected
+                .iter()
+                .filter(|record| record.has_variant_facts())
+                .count(),
+            3
+        );
+    }
+
+    #[test]
     fn collect_reads_only_the_target_package_and_removes_the_record_root_afterwards() {
         let scratch = Scratch::new("collect");
         let plan = sample_plan(&scratch);

@@ -259,17 +259,36 @@ pub(crate) fn check(options: &CheckOptions) -> Result<i32, String> {
     } else {
         None
     };
-    let report = check::run(&check::Inputs {
+    let mut report = check::run(&check::Inputs {
         records: &records,
         state: &state,
         installed_slang,
         verify: &verify_stored,
         recompiled: recompiled.as_ref(),
     });
+    add_variant_problems(&mut report, &records, &state);
     for line in render_report(&report, records.len()) {
         println!("{line}");
     }
     Ok(i32::from(!report.problems.is_empty()))
+}
+
+/// Add what the manifest's `variants` lists get wrong against the collected records (M8, D139) to the report. A
+/// manifest that cannot be read is already a problem of `check::run`, so it adds nothing here.
+pub(crate) fn add_variant_problems(
+    report: &mut Report,
+    records: &[Record],
+    state: &store::DirState,
+) {
+    let manifest = state
+        .file(MANIFEST_FILE)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|text| Manifest::parse(text).ok());
+    if let Some(manifest) = manifest {
+        report
+            .problems
+            .extend(export::variant_problems(records, &manifest));
+    }
 }
 
 /// The formats the stored manifest lists, WGSL when it lists none (or cannot be read).
@@ -596,6 +615,71 @@ mod tests {
             second.lines(),
             ["gust: 2 kernel(s) (wgsl), Slang fake-slang-1: 0 file(s) written, 5 unchanged"]
         );
+    }
+
+    #[test]
+    fn a_crate_with_variants_builds_in_one_pass_and_a_second_unchanged_build_writes_nothing() {
+        use crate::testdata::variant::{MANIFEST, ReplayCompiler, records};
+        let scratch = Scratch::new("variants-twice");
+        let dir = scratch.0.join(ARTIFACTS_DIR);
+        // One call: the records of all four bodies, compiled together, without any profile in sight.
+        let first = build_into(&dir, records(), &ReplayCompiler).unwrap();
+        assert_eq!(first.kernels, 4);
+        assert_eq!(
+            first.commit.written.len(),
+            9,
+            "8 artifact files and the manifest"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join(MANIFEST_FILE)).unwrap(),
+            MANIFEST
+        );
+        let before = snapshot(&dir);
+        let mut again = records();
+        again.reverse();
+        let second = build_into(&dir, again, &ReplayCompiler).unwrap();
+        assert!(
+            second.commit.written.is_empty(),
+            "{:?}",
+            second.commit.written
+        );
+        assert!(second.commit.pruned.is_empty() && second.stale.is_empty());
+        assert_eq!(second.commit.unchanged, 9);
+        assert_eq!(snapshot(&dir), before);
+    }
+
+    #[test]
+    fn check_finds_a_stale_variants_list_and_nothing_in_a_fresh_one() {
+        use crate::testdata::variant::{ReplayCompiler, records};
+        let scratch = Scratch::new("variants-check");
+        let dir = scratch.0.join(ARTIFACTS_DIR);
+        build_into(&dir, records(), &ReplayCompiler).unwrap();
+        let mut report = Report::default();
+        add_variant_problems(&mut report, &records(), &read_dir_state(&dir).unwrap());
+        assert_eq!(report, Report::default());
+        // The manifest of an older build, from before the variants (no list anywhere), is stale for the same sources.
+        let text = fs::read_to_string(dir.join(MANIFEST_FILE)).unwrap();
+        let mut manifest = Manifest::parse(&text).unwrap();
+        for entry in &mut manifest.kernels {
+            entry.variants.clear();
+        }
+        fs::write(dir.join(MANIFEST_FILE), manifest.render()).unwrap();
+        let mut report = Report::default();
+        add_variant_problems(&mut report, &records(), &read_dir_state(&dir).unwrap());
+        assert_eq!(report.problems.len(), 2, "{:?}", report.problems);
+        assert!(
+            report
+                .problems
+                .iter()
+                .all(|problem| problem.contains("the manifest lists none")),
+            "{:?}",
+            report.problems
+        );
+        // An unreadable manifest is `check::run`'s problem, not this one's.
+        fs::write(dir.join(MANIFEST_FILE), "not json").unwrap();
+        let mut report = Report::default();
+        add_variant_problems(&mut report, &records(), &read_dir_state(&dir).unwrap());
+        assert!(report.problems.is_empty());
     }
 
     #[test]

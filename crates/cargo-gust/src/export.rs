@@ -152,12 +152,12 @@ pub(crate) fn variant_lists(
             [only] => only.key.clone(),
             [] => {
                 return Err(format!(
-                    "kernel `{kernel}` has variants but no body of its own (a `#[gpu]` function named `{name}`) in the collected records; rebuild with the macros of this gust version"
+                    "kernel `{kernel}` has variants but no body of its own (a `#[kernel]` function named `{name}`) in the collected records; rebuild with the macros of this gust version"
                 ));
             }
             [first, second, ..] => {
                 return Err(format!(
-                    "kernel `{kernel}` has two bodies of its own with different text (keys {} and {}); one `#[gpu]` function `{name}` per module",
+                    "kernel `{kernel}` has two bodies of its own with different text (keys {} and {}); one `#[kernel]` function `{name}` per module",
                     first.key, second.key
                 ));
             }
@@ -205,7 +205,7 @@ pub(crate) fn variant_problems(records: &[Record], manifest: &Manifest) -> Vec<S
         };
         if entry.variants.is_empty() {
             problems.push(format!(
-                "kernel `{}` (key {owner}) has {} variant body(ies) now but the manifest lists none; run `cargo gust build`",
+                "kernel `{}` (key {owner}) has {} bodies (its own and its variants) now but the manifest lists none; run `cargo gust build`",
                 entry.qualified_name(),
                 bodies.len()
             ));
@@ -871,7 +871,7 @@ pub(crate) mod tests {
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(
             problems[0].starts_with(&format!(
-                "kernel `demo::sum` (key {own}) has 2 variant body(ies) now but the manifest lists none"
+                "kernel `demo::sum` (key {own}) has 2 bodies (its own and its variants) now but the manifest lists none"
             )),
             "{problems:?}"
         );

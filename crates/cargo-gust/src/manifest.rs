@@ -71,7 +71,8 @@
 //!   none twice; one this tool does not know is refused. The reader holds the links to the same standard as the files:
 //!   an item names an entry of the manifest with the kernel's `module` and `name`, the own body is listed once and is
 //!   the entry that carries the list, a variant's name appears once, and every entry with the kernel's `module` and
-//!   `name` is listed.
+//!   `name` is listed. Two entries with one `module` and `name` and no `variants` list among them are refused as well,
+//!   at any schema.
 //! - The SHA-256 values protect the committed files from accidents the FNV-1a hashes inside the reflection JSON
 //!   (D17 schema 1) are too weak to be trusted with; neither defends against an adversary (R4.4).
 
@@ -605,6 +606,24 @@ fn check_variant_links(kernels: &[KernelEntry]) -> Result<(), String> {
                     other.key
                 ));
             }
+        }
+    }
+    // Two or more entries of one kernel and no list anywhere: the loop above never looked at them.
+    for (index, entry) in kernels.iter().enumerate() {
+        let mates = || {
+            kernels
+                .iter()
+                .enumerate()
+                .filter(|(_, mate)| mate.module == entry.module && mate.name == entry.name)
+        };
+        if mates().any(|(_, mate)| !mate.variants.is_empty()) {
+            continue;
+        }
+        if let Some((first, _)) = mates().find(|(other_index, _)| *other_index != index) {
+            return Err(format!(
+                "kernels[{index}] (`{}`): kernels[{first}] has the same module and name, and no entry of the kernel has a `variants` list",
+                entry.qualified_name()
+            ));
         }
     }
     Ok(())
@@ -1322,6 +1341,15 @@ mod tests {
         assert_eq!(
             refusal(&manifest),
             "kernels[0] (`demo::run`): kernels[2] has the same module and name and a `variants` list as well"
+        );
+        // Two entries of one kernel and no list anywhere (S1): the kernels sort by key, so the variant is kernels[0].
+        let mut manifest = variant_manifest();
+        for kernel in &mut manifest.kernels {
+            kernel.variants.clear();
+        }
+        assert_eq!(
+            refusal(&manifest),
+            "kernels[0] (`demo::run`): kernels[2] has the same module and name, and no entry of the kernel has a `variants` list"
         );
     }
 }

@@ -198,10 +198,14 @@ pub(crate) const VECTOR_ADD_REFLECTION: &str =
 /// They come from a real `cargo gust build` of a scratch crate whose `src/lib.rs` held the two modules below, with the
 /// pinned Slang: the macro's records and clean Slang text of all four bodies (`<key>.kernel.json`, `<key>.slang`), the
 /// WGSL and reflection JSON the helper wrote for each, and the `manifest.json` (schema 3) the build wrote. The tests
-/// check them against the macro as it is today (the descriptor of the two bodies a default build selects), against the
-/// reader, and against a plan built from the records alone.
+/// check them against the macro as it is today (the descriptor of the two bodies the build's profile selects, found by
+/// key, under any profile), against the reader, and against a plan built from the records alone.
 pub(crate) mod variant {
-    use gust::{Format, KernelDescriptor, artifact::content_key, capability::Capability};
+    use gust::{
+        Format, KernelDescriptor,
+        artifact::content_key,
+        capability::{self, Capability},
+    };
 
     use crate::{
         export::{
@@ -212,9 +216,10 @@ pub(crate) mod variant {
         record::Record,
     };
 
-    // The same text as the scratch crate's `src/lib.rs`. A default build selects `double` (the kernel's own, portable
-    // body) of the first and `total_portable` (the variant that needs nothing) of the second, so these two modules
-    // give two of the four descriptors; the records of the other two are checked against their own text.
+    // The same text as the scratch crate's `src/lib.rs`. A build without subgroups selects `double` (the kernel's
+    // own, portable body) of the first and `total_portable` (the variant that needs nothing) of the second; one with
+    // them selects `double_subgroups` and `total`. Either way these two modules give two of the four descriptors; the
+    // test finds each stored body by key and the other two are checked against their own records.
     #[gust::gpu]
     mod variant_probe {
         #[kernel(workgroup_size(64, 1, 1))]
@@ -291,13 +296,11 @@ pub(crate) mod variant {
         pub(crate) slang: &'static str,
         pub(crate) wgsl: &'static [u8],
         pub(crate) reflection: &'static str,
-        /// The descriptor a default build of the macro makes for it, when it is the body that build selects.
-        pub(crate) selected: Option<&'static KernelDescriptor>,
     }
 
     macro_rules! stored {
         ($key:literal, $entry_point:literal, $kernel:literal, $schema:literal, $variant:literal,
-         $requires:expr, $selected:expr) => {
+         $requires:expr) => {
             Body {
                 key: $key,
                 entry_point: $entry_point,
@@ -313,7 +316,6 @@ pub(crate) mod variant {
                     $key,
                     ".wgsl.reflection.json"
                 )),
-                selected: $selected,
             }
         };
     }
@@ -325,8 +327,7 @@ pub(crate) mod variant {
             "double",
             1,
             "",
-            &[],
-            Some(&variant_probe::double::DESCRIPTOR)
+            &[]
         ),
         stored!(
             "08adc71357b5966e",
@@ -334,8 +335,7 @@ pub(crate) mod variant {
             "double",
             4,
             "double_subgroups",
-            &[Capability::Subgroups],
-            None
+            &[Capability::Subgroups]
         ),
         stored!(
             "0de18f77cf4dfd53",
@@ -343,8 +343,7 @@ pub(crate) mod variant {
             "total",
             4,
             "",
-            &[Capability::Subgroups],
-            None
+            &[Capability::Subgroups]
         ),
         stored!(
             "4714627abe9c3d3b",
@@ -352,8 +351,7 @@ pub(crate) mod variant {
             "total",
             4,
             "total_portable",
-            &[],
-            Some(&gated_probe::total::DESCRIPTOR)
+            &[]
         ),
     ];
 
@@ -427,12 +425,36 @@ pub(crate) mod variant {
 
     #[test]
     fn the_macro_makes_today_what_the_stored_selected_bodies_are() {
-        let mut checked = 0;
-        for body in BODIES {
-            let Some(kernel) = body.selected else {
-                continue;
-            };
-            checked += 1;
+        // Driven by key, so that it holds under any `GUST_PROFILE`: each module's descriptor is matched to its stored
+        // body by content key, and the body must be the one `capability::enabled()` selects (a build without
+        // subgroups: `double` and `total_portable`; with them: `double_subgroups` and `total`).
+        let selected_keys = if capability::enabled().contains(&Capability::Subgroups) {
+            [DOUBLE_SUBGROUPS_KEY, TOTAL_KEY]
+        } else {
+            [DOUBLE_KEY, TOTAL_PORTABLE_KEY]
+        };
+        let descriptors = [
+            &variant_probe::double::DESCRIPTOR,
+            &gated_probe::total::DESCRIPTOR,
+        ];
+        for (kernel, selected_key) in descriptors.into_iter().zip(selected_keys) {
+            let key = format!(
+                "{:016x}",
+                content_key(kernel.entry_point, kernel.slang_source)
+            );
+            let body = BODIES
+                .iter()
+                .find(|body| body.key == key)
+                .unwrap_or_else(|| panic!("{}: no stored body has key {key}", kernel.entry_point));
+            assert_eq!(body.key, selected_key, "{}", kernel.entry_point);
+            // (shown with `--nocapture`: which bodies this profile checked)
+            println!(
+                "checked under capabilities {:?}: {} ({})",
+                capability::enabled(),
+                body.entry_point,
+                body.key
+            );
+            assert_eq!(body.kernel, kernel.name, "{}", kernel.entry_point);
             assert_eq!(kernel.entry_point, body.entry_point);
             assert_eq!(
                 kernel.slang_source, body.slang,
@@ -454,7 +476,6 @@ pub(crate) mod variant {
             assert_eq!(from_record.workgroup_size, kernel.workgroup_size);
             assert_eq!(from_record.parameters.len(), kernel.parameters.len());
         }
-        assert_eq!(checked, 2);
     }
 
     #[test]

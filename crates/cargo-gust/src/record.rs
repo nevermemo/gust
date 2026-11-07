@@ -38,7 +38,8 @@
 //! `shape` in a record that says schema 1 or 2.
 //!
 //! Schema 4 (M8, D139) is schema 3's grammar plus two required keys, `requires` (an array of capability names, in the
-//! order of `gust::capability::Capability::ALL`, none twice, none unknown to this tool) and `variant` (the name of the
+//! order of `gust::capability::Capability::ALL`, none twice, none unknown to this tool; a record that spells them in
+//! another order is refused, never sorted) and `variant` (the name of the
 //! variant function, `""` for the kernel's own body). The macro writes it only for a body that needs a capability or is a
 //! variant, so every other body keeps schema 1, 2 or 3 byte for byte and reads as `requires: []`, `variant: ""`. `name`
 //! is the kernel's for every body of a kernel; `entry_point`, and with it the key, is the body's own. A schema 4 record
@@ -570,6 +571,17 @@ pub(crate) fn capabilities_named(names: &[Json], context: &str) -> Result<Vec<Ca
     Ok(found)
 }
 
+/// The first adjacent pair of `given` that is not in the order of `known` (as it stands: `(first, second)`, where
+/// `second` comes earlier in `known`), or `None` when `given` follows that order. A name `known` lacks is not compared
+/// (the caller has refused it).
+fn first_out_of_order<'a>(given: &[&'a str], known: &[&str]) -> Option<(&'a str, &'a str)> {
+    let position = |name: &str| known.iter().position(|other| *other == name);
+    given.windows(2).find_map(|pair| {
+        let (first, second) = (position(pair[0])?, position(pair[1])?);
+        (second < first).then_some((pair[0], pair[1]))
+    })
+}
+
 /// The `requires` and `variant` of a record (schema 4), or the empty set and `""` for the schemas before it.
 ///
 /// The keys belong to schema 4: the number is what keeps a reader of schemas 1 to 3 from reading a subgroup body as the
@@ -586,11 +598,22 @@ fn parse_variant_facts(root: &Json, schema: u32) -> Result<(Vec<Capability>, Str
         }
         return Ok((Vec::new(), String::new()));
     }
-    let requires = capabilities_named(array(root, "requires", "record")?, "record: `requires`")?;
+    let listed = array(root, "requires", "record")?;
+    let requires = capabilities_named(listed, "record: `requires`")?;
+    // The macro writes the names in the order of `Capability::ALL`; `capabilities_named` sorts, so a record that spells
+    // them in another order is refused here rather than read as if it had been canonical.
+    let given: Vec<&str> = listed.iter().filter_map(Json::as_str).collect();
+    let known: Vec<&str> = Capability::ALL.iter().map(|known| known.name()).collect();
+    if let Some((first, second)) = first_out_of_order(&given, &known) {
+        return Err(format!(
+            "record: `requires` lists `{first}` before `{second}` (the order is {})",
+            capability_names()
+        ));
+    }
     let variant = string(root, "variant", "record")?;
     if requires.is_empty() && variant.is_empty() {
         return Err(
-            "record: a schema 4 record names a capability in `requires` or a function in `variant` (a body with neither is a schema 1, 2 or 3 record)"
+            "record: schema 4 needs a capability in `requires` or a function in `variant` (a body with neither is written as schema 1, 2 or 3)"
                 .to_owned(),
         );
     }

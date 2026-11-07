@@ -1073,11 +1073,44 @@ fn a_schema_4_record_may_carry_a_shape_and_may_lack_a_source() {
 }
 
 #[test]
+fn requires_out_of_canonical_order_is_refused_not_sorted() {
+    // `Capability::ALL` has one member today, so a record cannot be out of order yet; the check is the order test
+    // `parse_variant_facts` runs on the names as written, shown here on a longer list of names.
+    let known = ["a", "b", "c"];
+    assert_eq!(first_out_of_order(&["a", "b", "c"], &known), None);
+    assert_eq!(first_out_of_order(&["a", "c"], &known), None);
+    assert_eq!(first_out_of_order(&[], &known), None);
+    assert_eq!(first_out_of_order(&["c"], &known), None);
+    assert_eq!(first_out_of_order(&["b", "a"], &known), Some(("b", "a")));
+    assert_eq!(
+        first_out_of_order(&["a", "c", "b"], &known),
+        Some(("c", "b"))
+    );
+    // A name that is not known is the caller's refusal, not an order problem.
+    assert_eq!(first_out_of_order(&["z", "a"], &known), None);
+    // A record whose names are in order is read; a repeat is still refused.
+    let record = Record::parse(
+        &variant_record_json("[\"subgroups\"]", "\"\""),
+        SAMPLE_SLANG,
+    )
+    .unwrap();
+    assert_eq!(record.requires, [Capability::Subgroups]);
+    assert_eq!(
+        Record::parse(
+            &variant_record_json("[\"subgroups\", \"subgroups\"]", "\"\""),
+            SAMPLE_SLANG
+        )
+        .unwrap_err(),
+        "record: `requires`: `subgroups` appears twice"
+    );
+}
+
+#[test]
 fn a_schema_4_record_with_a_missing_or_malformed_fact_is_refused() {
     for (json, expected) in [
         (
             variant_record_json("[]", "\"\""),
-            "a schema 4 record names a capability in `requires` or a function in `variant`",
+            "record: schema 4 needs a capability in `requires` or a function in `variant` (a body with neither is written as schema 1, 2 or 3)",
         ),
         (
             variant_record_json("[\"wave\"]", "\"\""),

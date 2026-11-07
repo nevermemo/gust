@@ -385,11 +385,20 @@ codes! {
     /// A profile the crate declares for which a kernel has no body, or the CPU target declared for a kernel with no CPU
     /// form.
     ProfileNotCovered = 744 => "GUST-E0744";
+    /// A subgroup operation outside the body of a kernel with `requires(subgroups)`: in a portable body, in a helper,
+    /// or in a `par_for!` or pixel form (m8.s, D140).
+    SubgroupNotAllowed = 745 => "GUST-E0745";
     /// A kernel over one of the limits of the portable floor, in a crate that sets `limits = "portable"` (m8.f, D143).
     /// For such a crate this code also stands where E0718 would.
     PortableFloor = 746 => "GUST-E0746";
+    /// A subgroup operation at a position that is not the whole right-hand side of a `let` or an assignment (or an
+    /// operand of pure arithmetic or a comparison there) at the top level of the kernel body or of a literal-range
+    /// `for` (m8.s, D140).
+    SubgroupPosition = 747 => "GUST-E0747";
     /// No body of a kernel can be used by the profile being built.
     NoBodySelectable = 750 => "GUST-E0750";
+    /// A body that uses subgroup operations whose invocation count is not a multiple of 64 (m8.s, D140).
+    SubgroupInvocations = 751 => "GUST-E0751";
 
     // E0753: the crate's declarations in its manifest (M8, D138). E0737 to E0752 belong to the other M8 slices.
     /// A malformed `[package.metadata.gust]` table in the `Cargo.toml` of the crate that holds the `#[gpu]` module, the `#[gpu]` function or the `par_for!` call.
@@ -1265,6 +1274,7 @@ mod tests {
             || file.ends_with("src/tests/par_for.rs")
             || file.ends_with("src/tests/manifest.rs")
             || file.ends_with("src/tests/variant.rs")
+            || file.ends_with("src/tests/subgroup.rs")
             || file.ends_with("src/validate/mod.rs")
             || file.ends_with("src/validate/limits.rs")
             || file.ends_with("src/validate/classify/tests.rs")

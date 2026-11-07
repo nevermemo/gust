@@ -74,6 +74,10 @@ mod manifest_tests;
 #[path = "tests/variant.rs"]
 mod variant_tests;
 
+#[cfg(test)]
+#[path = "tests/subgroup.rs"]
+mod subgroup_tests;
+
 /// Marks an inline Rust module as GUST GPU code, or a free scalar function as an element-wise map (D60).
 ///
 /// On a module, the macro validates a deliberately small Rust subset, translates each

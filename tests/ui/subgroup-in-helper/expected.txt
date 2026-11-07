@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see variant-no-body/expected.txt).
+# A macro error is a `compile_error!` and has no rustc code, so `code: none`.
+code: none
+file: subgroup-in-helper/src/main.rs
+line: 7
+message: [GUST-E0745] `subgroup_add` is a subgroup operation

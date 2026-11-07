@@ -5,10 +5,10 @@ use super::{
     DISPATCH_MACRO_MODULES, GOLDEN_SPIRV_SETS, GRID_GOLDEN_SPIRV, GRID_GOLDEN_STEMS,
     MAP_GOLDEN_SPIRV, MAP_GOLDEN_STEMS, PAR_FOR_GOLDEN_SPIRV, PAR_FOR_GOLDEN_STEMS,
     PIXEL_GOLDEN_SPIRV, PIXEL_GOLDEN_STEMS, REDUCE_GOLDEN_SPIRV, REDUCE_GOLDEN_STEMS,
-    SCAN_GOLDEN_SPIRV, SCAN_GOLDEN_STEMS, UNIFORM_GOLDEN_SPIRV, UNIFORM_GOLDEN_STEMS,
-    UNIFORM_MACRO_FILTERS, VARIANT_GOLDEN_SPIRV, VARIANT_GOLDEN_STEMS, VECTOR_GOLDEN_SPIRV,
-    VECTOR_GOLDEN_STEMS, VECTOR_MACRO_FILTERS, WORKGROUP_GOLDEN_SPIRV, WORKGROUP_GOLDEN_STEMS,
-    explanation,
+    SCAN_GOLDEN_SPIRV, SCAN_GOLDEN_STEMS, SUBGROUP_GOLDEN_SPIRV, SUBGROUP_GOLDEN_STEMS,
+    UNIFORM_GOLDEN_SPIRV, UNIFORM_GOLDEN_STEMS, UNIFORM_MACRO_FILTERS, VARIANT_GOLDEN_SPIRV,
+    VARIANT_GOLDEN_STEMS, VECTOR_GOLDEN_SPIRV, VECTOR_GOLDEN_STEMS, VECTOR_MACRO_FILTERS,
+    WORKGROUP_GOLDEN_SPIRV, WORKGROUP_GOLDEN_STEMS, explanation,
 };
 use crate::{
     shader::{golden_file_name, shader_entries},
@@ -156,6 +156,7 @@ fn golden_text(stem: &str) -> &'static str {
         "textures" => include_str!("../../../tests/fixtures/textures.slang"),
         "pixel" => include_str!("../../../tests/fixtures/pixel.slang"),
         "variant" => include_str!("../../../tests/fixtures/variant.slang"),
+        "subgroup" => include_str!("../../../tests/fixtures/subgroup.slang"),
         other => panic!("the test does not know the golden {other}"),
     }
 }
@@ -190,6 +191,7 @@ fn the_pinned_golden_spirv_names_are_the_ones_the_goldens_produce() {
     assert_eq!(names_of(&COMPACT_GOLDEN_STEMS), COMPACT_GOLDEN_SPIRV);
     assert_eq!(names_of(&PIXEL_GOLDEN_STEMS), PIXEL_GOLDEN_SPIRV);
     assert_eq!(names_of(&VARIANT_GOLDEN_STEMS), VARIANT_GOLDEN_SPIRV);
+    assert_eq!(names_of(&SUBGROUP_GOLDEN_STEMS), SUBGROUP_GOLDEN_SPIRV);
     // The sets `verify` (check-artifacts, the Spirv suite, check-full) exports are these, and no others (m7.x1 added
     // the goldens of M7 to the vectors and uniforms of M6).
     let areas: Vec<&str> = GOLDEN_SPIRV_SETS.iter().map(|(area, _, _)| *area).collect();
@@ -207,7 +209,8 @@ fn the_pinned_golden_spirv_names_are_the_ones_the_goldens_produce() {
             "compact",
             "textures",
             "pixel",
-            "variant"
+            "variant",
+            "subgroup"
         ]
     );
     for (_, stems, expected) in GOLDEN_SPIRV_SETS {
@@ -245,9 +248,9 @@ fn every_golden_of_m7_is_in_a_set_and_the_file_names_are_unique() {
     names.sort_unstable();
     names.dedup();
     assert_eq!(names.len(), count, "two sets expect the same file name");
-    // 2 (vectors, products) + 1 + 5 + 3 + 2 + 10 + 30 + 11 + 5 + 8 (textures) + 3 (pixel) + 2 (variant): one file per compute or fragment entry of the
+    // 2 (vectors, products) + 1 + 5 + 3 + 2 + 10 + 30 + 11 + 5 + 8 (textures) + 3 (pixel) + 2 (variant) + 12 (subgroup): one file per compute or fragment entry of the
     // goldens.
-    assert_eq!(count, 82);
+    assert_eq!(count, 94);
 }
 
 // ---- `check-feature dispatch` and the parallel-map additions to `map` (m7.x1) ----

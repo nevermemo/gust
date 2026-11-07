@@ -970,7 +970,7 @@ pub(crate) struct GpuSuitePin {
 ///
 /// prints `<passed> <lines>`; the output must also show no line other than `0 failed; 0 ignored`.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 400,
+    passed: 409,
     result_lines: 36,
 };
 
@@ -1070,7 +1070,7 @@ fn check_pinned_counts(
 /// tests each must pass (m8.w2). The whole suite is pinned by [`GPU_SUITE_PIN`] under `dev` only; a profile run is one
 /// target, so its count is pinned here. Adding or removing a test of a listed target changes its entry in the same commit,
 /// and a target that is not listed cannot be run under a profile.
-pub(crate) const GPU_TARGET_PINS: [(&str, u64); 2] = [("capabilities", 6), ("subgroup", 6)];
+pub(crate) const GPU_TARGET_PINS: [(&str, u64); 2] = [("capabilities", 6), ("subgroup", 15)];
 
 /// The cargo call of one gust-wgpu test target ([`GPU_TARGET_PINS`]). `--show-output` makes the harness print the
 /// output of the passing tests too, which is where [`BUILD_CAPABILITIES_TARGET`] reports the capabilities of the build.

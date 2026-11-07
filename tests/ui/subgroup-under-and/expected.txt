@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see variant-no-body/expected.txt).
+# A macro error is a `compile_error!` and has no rustc code, so `code: none`.
+code: none
+file: subgroup-under-and/src/main.rs
+line: 14
+message: [GUST-E0747] `subgroup_all` is allowed only as the whole value of a `let` or an assignment

@@ -31,6 +31,7 @@ use source_map::{SourceMap, SourceMapSegment};
 
 #[cfg(feature = "slang-runtime")]
 mod source_map;
+pub mod wgsl;
 
 #[cfg(feature = "slang-runtime")]
 static NEXT_INVOCATION: AtomicU64 = AtomicU64::new(1);
@@ -419,7 +420,20 @@ fn compile_at_in(
         });
     }
     let artifact = fs::read(&output_path)?;
-    Ok(artifact)
+    Ok(fix_up_wgsl(artifact, target))
+}
+
+/// The WGSL of `slangc` as the pinned `naga` takes it (M8, D140): the subgroup fix-up of [`wgsl`], which is the
+/// identity on text without the patterns. SPIR-V, and WGSL that is not UTF-8, are returned as they were.
+#[cfg(feature = "slang-runtime")]
+pub(crate) fn fix_up_wgsl(artifact: Vec<u8>, target: Target) -> Vec<u8> {
+    if target != Target::Wgsl {
+        return artifact;
+    }
+    match String::from_utf8(artifact) {
+        Ok(text) => wgsl::fixup_subgroups(&text).into_bytes(),
+        Err(error) => error.into_bytes(),
+    }
 }
 
 /// Characters a `#line` file name may contain: the set `gust-macros` restricts

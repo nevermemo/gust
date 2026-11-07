@@ -1604,6 +1604,30 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             case.expectation
         );
     }
+    // Subgroup operations (m8.s, D140): the control compiles under `dev+subgroups` (the only fixture of them that sets
+    // a variable, so that rustc compiles the selected variant), and each way a call goes wrong is the one error of its
+    // fixture. The errors stand in every build, so none of them sets a variable.
+    assert_eq!(find("subgroup-ok").env, variable("dev+subgroups"));
+    assert_eq!(find("subgroup-ok").expectation, Expectation::Compiles);
+    for (name, code) in [
+        ("subgroup-portable-body", "GUST-E0745"),
+        ("subgroup-in-helper", "GUST-E0745"),
+        ("subgroup-in-if", "GUST-E0747"),
+        ("subgroup-under-and", "GUST-E0747"),
+        ("subgroup-after-return", "GUST-E0415"),
+        ("subgroup-in-while", "GUST-E0402"),
+        ("subgroup-workgroup-size", "GUST-E0751"),
+    ] {
+        let case = find(name);
+        assert!(case.env.is_empty(), "{name}: {:?}", case.env);
+        assert!(
+            matches!(&case.expectation, Expectation::Fails(wanted)
+                if wanted.code == "none"
+                    && wanted.messages.iter().any(|text| text.starts_with(&format!("[{code}]")))),
+            "{name}: {:?}",
+            case.expectation
+        );
+    }
     // The portable floor (m8.f, D143): a crate with `limits = "portable"` is refused over each limit of the table with
     // GUST-E0746 naming the limit, one at the floor compiles, and a crate without the key is not checked. None sets a
     // variable. E0746 stands where E0718 would for the workgroup memory (the fixture of E0718 is `workgroup-over-16kib`).
@@ -1725,6 +1749,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "profile-subgroups-web",
             "profile-unknown",
             "profile-unknown-capability",
+            "subgroup-ok",
             "typed-call-cpu-target",
             "variant-ok-subgroups"
         ]
@@ -1734,7 +1759,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 114] = [
+const PINNED_FIXTURES: [&str; 122] = [
     "barrier-in-helper",
     "barrier-in-if",
     "barrier-in-nested-for",
@@ -1819,6 +1844,14 @@ const PINNED_FIXTURES: [&str; 114] = [
     "shape-pixel-workgroup-size",
     "shape-twice",
     "shape-unknown",
+    "subgroup-after-return",
+    "subgroup-in-helper",
+    "subgroup-in-if",
+    "subgroup-in-while",
+    "subgroup-ok",
+    "subgroup-portable-body",
+    "subgroup-under-and",
+    "subgroup-workgroup-size",
     "texture-as-value",
     "texture-bad-format",
     "texture-method",

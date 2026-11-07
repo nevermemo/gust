@@ -387,6 +387,12 @@ impl<'ast> Visit<'ast> for KindScan<'_> {
     }
 
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        // A subgroup operation (M8) is found by its name in `BodyScan` and is `Why::Subgroup`; it is not a callee entry
+        // of the ledger, which lists the other forms of call one by one. Its arguments are walked like any call's.
+        if crate::validate::subgroup_operation(call).is_some() {
+            visit::visit_expr_call(self, call);
+            return;
+        }
         let kind = callee_kind(call, self.helpers);
         if self.check(Class::Callee, kind.as_deref(), call) {
             visit::visit_expr_call(self, call);

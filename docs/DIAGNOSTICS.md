@@ -760,7 +760,7 @@ Decision: D42 (M7 plan 4.2 rule 1, slice m7.g1).
 
 ### GUST-E0415 `return` in a kernel with workgroup memory or a barrier
 
-An invocation that returns early never reaches the barriers the others wait at, so a kernel that uses workgroup memory or a barrier has no `return`: its body ends by falling off the end. A `return` in a helper that such a kernel calls is fine; the helper contains no barrier. The `?` operator is an early exit too, so the barrier pass also rejects it in such a kernel with this code; today GUST-E0311 rejects `?` in every function first, so the pass is the default that holds if a later slice admits `?` (tested by calling the pass directly).
+An invocation that returns early never reaches the barriers the others wait at, so a kernel that uses workgroup memory or a barrier has no `return`: its body ends by falling off the end. A `return` in a helper that such a kernel calls is fine; the helper contains no barrier. The `?` operator is an early exit too, so the barrier pass also rejects it in such a kernel with this code; today GUST-E0311 rejects `?` in every function first, so the pass is the default that holds if a later slice admits `?` (tested by calling the pass directly). A kernel that calls a subgroup operation (M8, D140) is held to the same rule, because the operation is a rendezvous of the subgroup too; its message then ends with a sentence on the subgroup.
 Reached through `#[gpu]`.
 Rejected: `workgroup_barrier(); return;`, `if lid.x == 0u32 { return; }` in a kernel that has a `Workgroup` parameter.
 Fixture: `tests/ui/return-in-barrier-kernel` (`cargo xtask check-ui`, `code: none` plus the message).
@@ -769,7 +769,7 @@ Decision: D42 (M7 plan 4.2 rule 2, slice m7.g1).
 
 ### GUST-E0416 `break` or `continue` in a loop that holds a barrier
 
-A `break` or `continue` lets some invocations leave a loop, or skip the rest of an iteration, while the others wait at a barrier inside it. The rule covers every unlabelled `break` and `continue`, conditional or not, whose innermost loop contains a `workgroup_barrier()`. A loop without a barrier may use its own `break` and `continue`. A labelled `break` or `continue` is rejected in a kernel with workgroup memory or a barrier by the barrier pass with this code, whichever loop holds the barrier; today a loop label is GUST-E0403 in every kernel and that error comes first, so the pass is the default that holds if a later slice admits labels (tested by calling the pass directly). The `?` operator is GUST-E0415 in such a kernel and GUST-E0311 in every function; no second report is made.
+A `break` or `continue` lets some invocations leave a loop, or skip the rest of an iteration, while the others wait at a barrier inside it. The rule covers every unlabelled `break` and `continue`, conditional or not, whose innermost loop contains a `workgroup_barrier()`. A loop without a barrier may use its own `break` and `continue`. A labelled `break` or `continue` is rejected in a kernel with workgroup memory or a barrier by the barrier pass with this code, whichever loop holds the barrier; today a loop label is GUST-E0403 in every kernel and that error comes first, so the pass is the default that holds if a later slice admits labels (tested by calling the pass directly). The `?` operator is GUST-E0415 in such a kernel and GUST-E0311 in every function; no second report is made. The same holds for a loop that holds a subgroup operation (M8, D140).
 Reached through `#[gpu]`.
 Rejected: `for r in 0u32..4u32 { if r == 2u32 { break; } workgroup_barrier(); }`, `for r in 0u32..4u32 { if r == 2u32 { continue; } workgroup_barrier(); }`.
 Fixture: `tests/ui/break-in-barrier-loop`, `tests/ui/continue-in-barrier-loop`, `tests/ui/labelled-break-in-barrier-kernel` (GUST-E0403) and `tests/ui/question-mark-in-barrier-kernel` (GUST-E0311) (`cargo xtask check-ui`, `code: none` plus the message).
@@ -1406,6 +1406,24 @@ Fixtures: `tests/ui/variant-not-covered` and `tests/ui/variant-cpu-unsupported` 
 Write instead: add a variant that requires less (`requires()` covers every profile), declare profiles with the capability, or drop `cpu` from `profiles` (or the `cpu = "unsupported"` from the kernel).
 Decision: D139, D138.
 
+### GUST-E0745 subgroup operation outside a body that requires subgroups
+
+A subgroup operation (`subgroup_add`, `subgroup_ballot`, `subgroup_size` and the rest of the 21 in `docs/SEMANTICS.md`) is called where it has no meaning (M8, D140): in a portable body (a `#[kernel]` without `requires(subgroups)`, which also runs on the CPU target and on a device with no subgroup operations), or in a helper function. A helper is called under conditions the helper cannot see, so whether every invocation of the subgroup reaches the operation is not decidable inside it; the operation belongs in the kernel body. A function of the module may not take the name of an operation either, because a call of that name is the operation. The message names the operation and says which of the three it is.
+Reached through `#[gpu]`.
+Rejected: `subgroup_add(x)` in the body of a `#[kernel]` with no `requires`; `subgroup_add(v)` in a `fn` helper; `fn subgroup_add(v: u32) -> u32` in a GPU module.
+Fixtures: `tests/ui/subgroup-portable-body` and `tests/ui/subgroup-in-helper` (`cargo xtask check-ui`); the unit tests are in `crates/gust-macros/src/tests/subgroup.rs`.
+Write instead: put the operation in a `#[variant(of = k, requires(subgroups))]` body beside the portable one, and call it from the kernel body itself.
+Decision: D140, D139.
+
+### GUST-E0747 subgroup operation in a position where not every invocation reaches it
+
+A subgroup operation combines the invocations of a subgroup, so it is a rendezvous like `workgroup_barrier()` (M8, D140): the macro is the only uniformity authority (the GPU compiler does not check it), and it approves a call only as the whole value of a `let`, an assignment or a compound assignment, or as an operand of arithmetic, a comparison, a cast or a unary operator there (and as the argument of another operation), at the top level of the kernel body or of a top-level `for a..b` loop with two literal bounds. Refused: under an `if` (a condition or either arm), under `&&` or `||` (short-circuit), in an index, as a method receiver, as a statement of its own, in a loop whose bounds are not literals, in a loop inside a loop, and as the value of an `if`. A call under a condition that differs per invocation would combine only the active invocations, and what that gives is a documented row, not a guarantee (D39, `docs/SEMANTICS.md`).
+Reached through `#[gpu]`.
+Rejected: `if p { let r = subgroup_add(x); }`, `let r = p && subgroup_all(p);`, `data[subgroup_add(x)]`, `for s in 0u32..x { .. subgroup_add(s) .. }`.
+Fixtures: `tests/ui/subgroup-in-if` and `tests/ui/subgroup-under-and` (`cargo xtask check-ui`).
+Write instead: compute the operation unconditionally at the top level of the body, and use its result under the condition.
+Decision: D140.
+
 ### GUST-E0746 kernel over the portable floor
 
 A kernel of a crate that sets `limits = "portable"` in `[package.metadata.gust]` is over one of the limits of `gust::limits::PORTABLE`, which are WebGPU's defaults (M8, D143, D36). The check is opt-in: a crate without the setting is never checked against the table here, and gets the launch checks of `gust-compute-wgpu` (D36) only. The macro counts what the source of each kernel decides, in this order, and reports the first that is over: the `workgroup_size` per axis (`max_compute_workgroup_size_x`, `_y` at 256 and `_z` at 64; a kernel with no option has the grid default of 64 x 1 x 1) and their product (`max_compute_invocations_per_workgroup`, 256); the storage buffers (`max_storage_buffers_per_shader_stage`, 8, read-only and read-write parameters together), uniform buffers (`max_uniform_buffers_per_shader_stage`, 12), sampled textures (`max_sampled_textures_per_shader_stage`, 16), storage textures (`max_storage_textures_per_shader_stage`, 4, read-write and write-only together) and samplers (`max_samplers_per_shader_stage`, 16); and the workgroup memory (`max_compute_workgroup_storage_size`, 16384 bytes, counted as E0718 counts it). A `shape = pixel` kernel has no workgroup, so only the resource counts apply to it.
@@ -1427,6 +1445,15 @@ Rejected: a kernel with `requires(subgroups)` and no variant, in a crate that de
 Fixture: `tests/ui/variant-no-body` (`cargo xtask check-ui`).
 Write instead: build with a profile that provides the capabilities (`GUST_PROFILE=native+subgroups`, `dev+subgroups`), set `GUST_PROFILE` in the `[env]` table of the crate's `.cargo/config.toml` so that every tool that builds the crate sees it (`[env]` `GUST_PROFILE = "dev+subgroups"`), or add a variant that requires less.
 Decision: D139.
+
+### GUST-E0751 subgroup operations in a workgroup of partial subgroups
+
+A kernel that calls a subgroup operation has a `workgroup_size` whose product (x times y times z) is not a multiple of 64 (M8, D140). The lane count of a subgroup is a property of the pipeline (32 on the RTX 5090, 64 on the Radeon 890M, 8 on lavapipe, 4 on WARP in the certified runs), so no workgroup size is correct for every device, but a multiple of 64 is a whole number of subgroups on each of them: an invocation count that is not leaves a part-filled subgroup whose operations combine fewer invocations than the kernel counts on. The rule applies to a body that calls an operation; a `requires(subgroups)` body that calls none, and a portable body, may have any size. The message names the kernel and its size, and is spanned over the signature.
+Reached through `#[gpu]`.
+Rejected: `workgroup_size(32, 1, 1)`, `(63, 1, 1)`, `(100, 1, 1)` and `(8, 4, 1)` with a subgroup operation in the body; `(64, 1, 1)`, `(128, 1, 1)`, `(8, 8, 1)` and `(16, 2, 2)` are accepted.
+Fixture: `tests/ui/subgroup-workgroup-size` (`cargo xtask check-ui`).
+Write instead: a `workgroup_size` whose product is a multiple of 64.
+Decision: D140.
 
 ### GUST-E0753 malformed `[package.metadata.gust]` table
 

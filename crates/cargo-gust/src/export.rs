@@ -415,23 +415,26 @@ impl Compiler for HelperCompiler {
             .map_err(|error| error.to_string())?;
         // The cross-check fails with `Incomplete` when the evidence does not cover the full ABI, so a pass is a full pass.
         cross_check_completed(record, &clean.compiled.reflection, &clean.reflection_json)?;
-        let compiler = verify_stored(
-            record,
-            format,
-            &clean.compiled.artifact,
-            &clean.reflection_json,
-        )
-        .map_err(|error| {
-            format!("the fresh artifact does not verify as a program would verify it: {error}")
-        })?;
+        // The WGSL a subgroup kernel stores is the text the pinned naga takes (M8, D140): the same fix-up the run-time
+        // bridge applies, with the document's artifact hash following the bytes. The identity for any other artifact.
+        let (artifact, reflection_json) = match format {
+            Format::Wgsl => {
+                gust::slang::wgsl::fixup_artifact(clean.compiled.artifact, clean.reflection_json)?
+            }
+            _ => (clean.compiled.artifact, clean.reflection_json),
+        };
+        let compiler =
+            verify_stored(record, format, &artifact, &reflection_json).map_err(|error| {
+                format!("the fresh artifact does not verify as a program would verify it: {error}")
+            })?;
         let validated = match format {
             Format::Wgsl => None,
-            Format::Spirv => Some(self.validate_spirv(&clean.compiled.artifact)?),
+            Format::Spirv => Some(self.validate_spirv(&artifact)?),
             other => return Err(format!("unsupported artifact format {other:?}")),
         };
         Ok(Compiled {
-            bytes: clean.compiled.artifact,
-            reflection_json: clean.reflection_json,
+            bytes: artifact,
+            reflection_json,
             compiler,
             validated,
             warnings: Vec::new(),

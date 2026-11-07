@@ -162,6 +162,10 @@ pub mod par_for_case {
     }
 }
 
+// Capability variants (M8, slice m8.s): a portable body and a `requires(subgroups)` variant. The CPU form is the portable
+// body in every profile, so the module builds and its tests run under all of them.
+pub mod variant;
+
 #[cfg(test)]
 mod tests {
     use gust::{cpu::CpuDevice, math::Vec4};

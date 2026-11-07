@@ -743,7 +743,8 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   workgroup memory (m7.g1) took the second way: a kernel with a `Workgroup<[T; N]>` parameter or a
   `workgroup_barrier()` must say `cpu = "unsupported"` (GUST-E0717), and `cpu = "lockstep"` is rejected (GUST-E0709):
   a threaded lockstep twin measured far too slow (S7.4, D118), so no CPU strategy for barrier kernels is defined.
-  Under `GUST_PROFILE=cpu` such a kernel has no `Run` implementation.
+  Under `GUST_PROFILE=cpu` such a kernel has no `Run` implementation. Subgroup operations (m8.s) took the second way
+  as well, through capability variants: see "Subgroup operations" below.
 - **Workgroup memory starts unspecified.** A `Workgroup<[T; N]>` parameter is a `groupshared` array of one workgroup.
   Slang gives it no initial value and the GPU leaves its contents unspecified, so a kernel must write every element
   it reads before it reads it. A read of an element that no invocation of the same workgroup has written yet is outside
@@ -809,6 +810,66 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   with a y or z extent are a follow-up. The host code that `render_wgpu_source` generates takes `element_count: u32`
   for a kernel with a one-dimensional workgroup (no y or z extent can be given to it) and `extent: [u32; 3]` for a
   kernel with a two- or three-dimensional workgroup; it checks no launch limit.
+- **Subgroup operations (m8.s, D140).** A subgroup is the set of invocations of a workgroup that the hardware runs
+  together, and a subgroup operation combines the values of the invocations of the calling invocation's subgroup.
+  The dialect has 21: the reductions `subgroup_add`, `subgroup_mul`, `subgroup_min` and `subgroup_max` (`u32`, `i32`,
+  `f32`), `subgroup_and`, `subgroup_or` and `subgroup_xor` (`u32`, `i32`), `subgroup_all` and `subgroup_any` (`bool`),
+  `subgroup_ballot` (a `UVec4`: bit `i` of the 128-bit mask is lane `i`, and the lanes at or past the subgroup size are
+  0), `subgroup_broadcast_first(v)`, `subgroup_broadcast(v, lane)` and `subgroup_shuffle(v, lane)`, the exclusive scans
+  `subgroup_exclusive_add` and `subgroup_exclusive_mul`, `subgroup_size()` and `subgroup_lane()`; and four derived in
+  the dialect because their intrinsics do not build on every target: `subgroup_elect()` (the lane is the first lane;
+  naga has no `subgroupElect`), `subgroup_count(bool)` (the popcount of the ballot) and `subgroup_inclusive_add` and
+  `subgroup_inclusive_mul` (the exclusive scan combined with the invocation's own value). No cell of the S3 matrix is
+  left out. The twin cannot run them (see "What the twin does not model" above), so the rule is the second one: a body
+  that calls an operation must require `subgroups` (a `#[variant(of = k, requires(subgroups))]` body, or a kernel that
+  says `requires(subgroups)`), every body with a non-empty `requires` is lowered with `cpu = "unsupported"` (D139), and
+  the CPU form of a kernel that has a subgroup variant is its portable body, the one with an empty `requires`. A call
+  in a portable body or in a helper is GUST-E0745, and a function may not take the name of an operation.
+  - **Where a call may stand (GUST-E0747).** Every invocation of the subgroup has to reach the call, as for a barrier:
+    it is the whole value of a `let`, an assignment or a compound assignment (or an operand of arithmetic, a comparison,
+    a cast or a unary operator there, or the argument of another operation) at the top level of the body or of a
+    top-level `for a..b` loop with two literal bounds. Not under an `if`, `&&`, `||`, in an index, as a method receiver
+    or in a loop with a run-time bound. A kernel that calls one has no `return` and no `break` or `continue` in a loop
+    that holds one (GUST-E0415, E0416), and its invocation count is a multiple of 64 (GUST-E0751), so a workgroup is
+    whole subgroups on every device measured (the check at launch is `Error::SubgroupSize`). A bounds guard is a
+    statement `if` around the loads and the stores, never around the operation: an invocation past the end of the data
+    holds a value of the author's choice and still takes part.
+  - **The subgroup size is a property of the pipeline, not of the adapter.** `subgroup_size()` read in the shader gave
+    32 on the RTX 5090 and 64 on the Radeon 890M through Vulkan, 4 on WARP and 8 on lavapipe's reported range, and on
+    one device under DX12 (the 890M) two kernels of one process got different values (64 and 32). A kernel must not
+    assume a size: read `subgroup_size()` and `subgroup_lane()`. Subgroups are consecutive runs of `size` invocations of
+    a one-dimensional workgroup (`lane == index % size`) on every adapter measured; the tests check this before they use
+    it. `subgroup_broadcast(v, lane)` and `subgroup_shuffle(v, lane)` with a lane at or past the size are outside the
+    defined domain and were not measured.
+  - **Lowering notes that a user can observe.** `subgroup_broadcast(v, lane)` with an integer literal lane is
+    `WaveBroadcastLaneAt`; with any other lane it is `WaveReadLaneAt`, the same value (slangc refuses a run-time lane
+    for the broadcast, E40012). `subgroup_and/or/xor` of an `i32` reduce the bits of the `u32` and convert back
+    (`asint(WaveActiveBitAnd(asuint(v)))`): the plain `i32` reduction does not build on DX12 with naga 30.0.1. The
+    exclusive scans give the identity at lane 0 (0 for the sum, 1 for the product), as measured on the adapters of the
+    probe. An `f32` sum, product or scan depends on the order the hardware combines the lanes in; the probe judged them
+    against an order-free bound (sums and scans) and a relative bound (products), and `min`/`max` exactly, and the
+    tests of this repository use powers of two, whose sums and products are exact in any order.
+  - **The WGSL fix-up.** wgpu 30 rejects what slangc writes for a subgroup kernel in two places (the `enable subgroups;`
+    line, wgpu issue 5555, and an `i32` lane argument of `subgroupShuffle` and `subgroupBroadcast`, issue 10818), so
+    `gust::slang::wgsl::fixup_subgroups` edits the text: it removes the `enable` line and rewrites the lane argument
+    `i32(expr)` to `u32(expr)` (a literal to `3u`). It is a text edit with no parse, the identity on any other text, it
+    keeps CRLF, and it runs where GUST hands WGSL to wgpu (the run-time compiler and the reflected bridge) and in
+    `cargo gust build`, which also updates the `artifactHash` of the reflection document, so the stored artifact
+    verifies. A WGSL file that is not UTF-8 is left alone.
+  - **Non-uniform use.** The macro is the only authority on uniformity: the GPU compiler does not check it and the
+    dialect cannot write a non-uniform call (GUST-E0747). Hand-written kernels outside the dialect that called an
+    operation under a condition, measured in the probe on five adapters (two vendors, a software adapter, two backends),
+    all gave the sum over the lanes that reached the call, with no error from naga or a driver. That is an observation
+    and not a promise (D39); it is not a row of the ledger of section 7, which `mismatch.rs` pins case by case.
+  - **Contract of a kernel with two bodies.** GUST does not compare the portable body with the subgroup body. The two
+    may write different elements as long as the caller's contract holds: the `partial_sums` and `count_if` kernels of
+    `tests/fixtures/subgroup.rs` have the sum of the output as their contract, which the portable body (a copy, or a
+    flag per element) and the subgroup body (one total per subgroup, written by its elected lane) both keep.
+  - **Not run.** The probe ran the 43 cells on the RTX 5090 and the Radeon 890M through Vulkan (43 of 43 on both). DX12
+    is not compiled into `gust-wgpu`; the probe ran it on four entries (the RTX 5090, the 890M twice and WARP: 40 of 43 for the plain forms,
+    the three `i32` bitwise cells failing in naga's HLSL step, and passing in the `u32` form the dialect lowers to).
+    Lavapipe was not run by the probe (it is not visible to the Windows Vulkan loader on the project's PC), and this
+    slice did not run it; Metal, the browser and workgroup sizes other than 64 were not measured.
 
 ## 6. Atomics
 
@@ -1029,6 +1090,22 @@ coretests entry above has the same shape.
   barrier itself is checked in the SPIR-V and the WGSL
   (`the_barrier_is_an_op_control_barrier_in_the_spirv_and_a_workgroup_barrier_in_the_wgsl`), which is compilation
   evidence and not execution evidence.
+- **Subgroup operations** (m8.s, D140; `crates/gust-wgpu/tests/subgroup.rs`, `tests/fixtures/subgroup.rs`; Gpu under `dev` and
+  under `dev+subgroups`). Label: **measured**, not proven, because a subgroup body has no twin. Under `dev+subgroups`
+  (`cargo xtask test --suite Gpu --profile dev+subgroups --test subgroup`) the `_subgroups` bodies run on the RTX 5090
+  (subgroup size 32, Vulkan): `lanes_u32`, `lanes_i32`, `lanes_f32` and `votes` write every result word of every
+  invocation beside the subgroup size and lane they ran with, and the tests compare the words with a host model rebuilt
+  from those two (sum, product, minimum, maximum, the three bitwise reductions, both exclusive and both inclusive scans,
+  the first lane, a literal-lane broadcast, a broadcast of a computed lane, a shuffle by a neighbour and by a computed
+  lane, `all`, `any`, the four ballot words, `count`, `elect`, size and lane) at 256 and at 300 elements (the last
+  workgroup ragged, its padded invocations holding 0 and taking part). `partial_sums` and `count_if` keep the sum of
+  their output in both builds. Under `dev` the same file judges the portable bodies, which write zeros, copies or
+  flags. The CPU twin and the `cpu` target run the portable bodies of `partial_sums` and `count_if`
+  (`tests/cpu-target/kernels/src/variant.rs`, three launches each). The Slang of the twelve bodies is pinned by
+  `tests/fixtures/subgroup.slang`, their SPIR-V validates with `spirv-val`, and the fix-up is tested on the WGSL slangc
+  writes for them. **Not run**: any adapter other than the RTX 5090 in these tests (the probe of S3 ran the 43 cells on
+  the 5090 and the 890M through Vulkan and on four DX12 entries; lavapipe was not run), subgroup sizes other than 32,
+  and workgroup sizes other than 64.
 - **gust-algo, integers** (m7.r1 to m7.r4; `crates/gust-algo/src/tests/gpu.rs`, `twin.rs` and `common.rs`; Gpu, with
   the twin tests in the same cargo call). Reduce `sum`, `min` and `max` of `u32` and `i32`, `sum_wrapping`, the `u32`
   scans, and compaction (`count`, `indices`, the gathers) are exact against an independent reference (an `i128` sum,

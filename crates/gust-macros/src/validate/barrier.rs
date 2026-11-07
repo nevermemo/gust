@@ -13,6 +13,11 @@
 //!
 //! The generic visitor runs first. These rules run only when it found nothing, so a construct that is rejected for its
 //! own sake (`while`, a loop label, `?`) is reported once, by its own code.
+//!
+//! The subgroup operations (M8, m8.s, D140) take the same discipline: a subgroup operation combines the values of the
+//! invocations of a subgroup, so every one of them has to reach it, and the kernel that holds one is a barrier kernel
+//! for E0415 and E0416. A call is accepted only in the body of a kernel whose attribute says `requires(subgroups)`
+//! (E0745: not in a portable body, not in a helper) and only where `approve_value` finds it (E0747).
 
 use std::collections::HashSet;
 
@@ -39,6 +44,93 @@ fn barrier_statement(statement: &syn::Stmt) -> Option<&syn::ExprCall> {
         syn::Stmt::Expr(syn::Expr::Call(call), Some(_)) if is_barrier_call(call) => Some(call),
         _ => None,
     }
+}
+
+/// The subgroup operations the dialect has and the number of arguments each takes: the cells S1 and S3 executed
+/// (M8, D140), the last four derived in the dialect (`elect`, `count`, `inclusive_add`, `inclusive_mul`).
+pub(crate) const SUBGROUP_OPERATIONS: &[(&str, usize)] = &[
+    ("subgroup_add", 1),
+    ("subgroup_mul", 1),
+    ("subgroup_min", 1),
+    ("subgroup_max", 1),
+    ("subgroup_and", 1),
+    ("subgroup_or", 1),
+    ("subgroup_xor", 1),
+    ("subgroup_all", 1),
+    ("subgroup_any", 1),
+    ("subgroup_ballot", 1),
+    ("subgroup_broadcast_first", 1),
+    ("subgroup_broadcast", 2),
+    ("subgroup_shuffle", 2),
+    ("subgroup_exclusive_add", 1),
+    ("subgroup_exclusive_mul", 1),
+    ("subgroup_size", 0),
+    ("subgroup_lane", 0),
+    ("subgroup_elect", 0),
+    ("subgroup_count", 1),
+    ("subgroup_inclusive_add", 1),
+    ("subgroup_inclusive_mul", 1),
+];
+
+/// The number of arguments of the subgroup operation called `name`, or `None` when `name` is none.
+pub(crate) fn subgroup_arity(name: &str) -> Option<usize> {
+    SUBGROUP_OPERATIONS
+        .iter()
+        .find(|(operation, _)| *operation == name)
+        .map(|(_, arity)| *arity)
+}
+
+/// The name of the subgroup operation `call` calls: a bare path to one of [`SUBGROUP_OPERATIONS`], whatever its
+/// arguments. A module function cannot take the name (GUST-E0745), so the name decides.
+pub(crate) fn subgroup_operation(call: &syn::ExprCall) -> Option<&'static str> {
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return None;
+    };
+    if path.qself.is_some() {
+        return None;
+    }
+    let ident = path.path.get_ident()?.to_string();
+    SUBGROUP_OPERATIONS
+        .iter()
+        .find(|(operation, _)| *operation == ident)
+        .map(|(operation, _)| *operation)
+}
+
+/// Whether `function` calls a subgroup operation anywhere.
+pub(crate) fn has_subgroup_call(function: &syn::ItemFn) -> bool {
+    let mut finder = Finder::default();
+    finder.visit_item_fn(function);
+    finder.subgroup
+}
+
+/// Whether the attribute of the kernel `function` says `requires(subgroups)` (or the alias `vulkan`, which is the
+/// same set). `variant::lower` has spelt every body's attribute with its own set by the time the validator runs; a
+/// portable body has none, and so has a function that is no kernel.
+pub(crate) fn requires_subgroups(function: &syn::ItemFn) -> bool {
+    function
+        .attrs
+        .iter()
+        .filter(|attribute| attribute.path().is_ident("kernel"))
+        .any(|attribute| {
+            let Ok(metas) = crate::diagnostics::parse_args_with(
+                attribute,
+                crate::diagnostics::Code::SubgroupNotAllowed,
+                syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+            ) else {
+                return false;
+            };
+            metas.iter().any(|meta| {
+                let syn::Meta::List(requires) = meta else {
+                    return false;
+                };
+                // The names are plain identifiers: look at the tokens, no parse is needed.
+                requires.path.is_ident("requires")
+                    && requires.tokens.clone().into_iter().any(|token| {
+                        matches!(&token, proc_macro2::TokenTree::Ident(name)
+                            if name == "subgroups" || name == "vulkan")
+                    })
+            })
+        })
 }
 
 /// The element type and the length of a `Workgroup<[T; N]>` parameter type, or why the type is not that.
@@ -121,19 +213,96 @@ pub(crate) fn workgroup_bytes(function: &syn::ItemFn) -> u64 {
 
 /// Whether `function` calls `workgroup_barrier()` anywhere.
 pub(crate) fn has_barrier(function: &syn::ItemFn) -> bool {
-    let mut finder = Finder(false);
+    let mut finder = Finder::default();
     finder.visit_item_fn(function);
-    finder.0
+    finder.barrier
 }
 
-struct Finder(bool);
+/// What a walk found: a `workgroup_barrier()` call, a subgroup operation.
+#[derive(Default)]
+struct Finder {
+    barrier: bool,
+    subgroup: bool,
+}
+
+impl Finder {
+    /// Whether the walk found a construct that every invocation has to reach.
+    fn found(&self) -> bool {
+        self.barrier || self.subgroup
+    }
+}
 
 impl<'ast> Visit<'ast> for Finder {
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
         if is_barrier_call(call) {
-            self.0 = true;
+            self.barrier = true;
+        }
+        if subgroup_operation(call).is_some() {
+            self.subgroup = true;
         }
         visit::visit_expr_call(self, call);
+    }
+}
+
+/// Approves the subgroup operations that `expression` evaluates unconditionally, as the value of a statement of a
+/// position the walk allows: through parentheses, groups, casts, unary and binary operators other than `&&` and `||`
+/// (which skip their right operand), and the arguments of a subgroup operation. An index, a method call, a field,
+/// a call of a helper, an `if` or a `match` end the walk: a subgroup operation under them stays unapproved.
+fn approve_value(expression: &syn::Expr, approved: &mut HashSet<usize>) {
+    match expression {
+        syn::Expr::Paren(paren) => approve_value(&paren.expr, approved),
+        syn::Expr::Group(group) => approve_value(&group.expr, approved),
+        syn::Expr::Cast(cast) => approve_value(&cast.expr, approved),
+        syn::Expr::Unary(unary) => approve_value(&unary.expr, approved),
+        syn::Expr::Binary(binary)
+            if !matches!(binary.op, syn::BinOp::And(_) | syn::BinOp::Or(_))
+                && !is_compound_assignment(&binary.op) =>
+        {
+            approve_value(&binary.left, approved);
+            approve_value(&binary.right, approved);
+        }
+        syn::Expr::Call(call) if subgroup_operation(call).is_some() => {
+            approved.insert(std::ptr::from_ref(call) as usize);
+            for argument in &call.args {
+                approve_value(argument, approved);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_compound_assignment(op: &syn::BinOp) -> bool {
+    matches!(
+        op,
+        syn::BinOp::AddAssign(_)
+            | syn::BinOp::SubAssign(_)
+            | syn::BinOp::MulAssign(_)
+            | syn::BinOp::DivAssign(_)
+            | syn::BinOp::RemAssign(_)
+            | syn::BinOp::BitXorAssign(_)
+            | syn::BinOp::BitAndAssign(_)
+            | syn::BinOp::BitOrAssign(_)
+            | syn::BinOp::ShlAssign(_)
+            | syn::BinOp::ShrAssign(_)
+    )
+}
+
+/// Approves the subgroup operations of one statement of an allowed position: the value of a `let`, and the right-hand
+/// side of an assignment or a compound assignment.
+fn approve_statement(statement: &syn::Stmt, approved: &mut HashSet<usize>) {
+    match statement {
+        syn::Stmt::Local(local) => {
+            if let Some(initial) = &local.init
+                && initial.diverge.is_none()
+            {
+                approve_value(&initial.expr, approved);
+            }
+        }
+        syn::Stmt::Expr(syn::Expr::Assign(assign), _) => approve_value(&assign.right, approved),
+        syn::Stmt::Expr(syn::Expr::Binary(binary), _) if is_compound_assignment(&binary.op) => {
+            approve_value(&binary.right, approved);
+        }
+        _ => {}
     }
 }
 
@@ -164,12 +333,17 @@ fn literal_range_loop(statement: &syn::Stmt) -> Option<&syn::ExprForLoop> {
 ///
 /// `is_barrier_kernel` is true for a kernel with a `Workgroup` parameter or a barrier call; a helper is never one,
 /// and every barrier in it is E0414.
+///
+/// `subgroups_allowed` is true for a kernel whose attribute says `requires(subgroups)` ([`requires_subgroups`]); a
+/// subgroup operation anywhere else is E0745, and one at a position [`approve_statement`] does not reach is E0747.
 pub(crate) fn check(
     function: &syn::ItemFn,
     is_kernel: bool,
     is_barrier_kernel: bool,
+    subgroups_allowed: bool,
 ) -> syn::Result<()> {
     let mut approved = HashSet::new();
+    let mut approved_subgroups = HashSet::new();
     if is_kernel {
         for statement in &function.block.stmts {
             if let Some(call) = barrier_statement(statement) {
@@ -179,12 +353,22 @@ pub(crate) fn check(
                     if let Some(call) = barrier_statement(inner) {
                         approved.insert(std::ptr::from_ref(call) as usize);
                     }
+                    approve_statement(inner, &mut approved_subgroups);
                 }
+            } else {
+                approve_statement(statement, &mut approved_subgroups);
             }
         }
     }
     let mut pass = Pass {
         approved,
+        approved_subgroups,
+        subgroups_allowed: is_kernel && subgroups_allowed,
+        subgroup_note: if is_kernel && has_subgroup_call(function) {
+            " (this kernel calls a subgroup operation, which every invocation of the subgroup has to reach)"
+        } else {
+            ""
+        },
         is_kernel,
         forbid_return: is_barrier_kernel,
         loops: Vec::new(),
@@ -196,6 +380,12 @@ pub(crate) fn check(
 
 struct Pass {
     approved: HashSet<usize>,
+    /// The subgroup operations at a position the kernel may use them at.
+    approved_subgroups: HashSet<usize>,
+    /// Whether this is the body of a kernel with `requires(subgroups)`.
+    subgroups_allowed: bool,
+    /// Appended to the messages about an early exit and a jump when the kernel holds a subgroup operation.
+    subgroup_note: &'static str,
     is_kernel: bool,
     forbid_return: bool,
     /// For each enclosing `for` loop, whether it holds a barrier.
@@ -223,7 +413,8 @@ impl Pass {
                 &format!(
                     "a labelled `{name}` in a kernel with workgroup memory or a barrier can skip the barriers of \
                      an outer loop that the other invocations wait at; run the loops to their ends and guard the \
-                     work with `if`"
+                     work with `if`{}",
+                    self.subgroup_note
                 ),
             );
         } else if self.loops.last() == Some(&true) {
@@ -232,7 +423,8 @@ impl Pass {
                 node,
                 &format!(
                     "`{name}` in a loop that holds a `workgroup_barrier()` lets some invocations skip a barrier \
-                     the others wait at; run the loop to its end and guard the work inside it with `if`"
+                     the others wait at; run the loop to its end and guard the work inside it with `if`{}",
+                    self.subgroup_note
                 ),
             );
         }
@@ -252,6 +444,38 @@ impl<'ast> Visit<'ast> for Pass {
             };
             self.reject(Code::BarrierPosition, call, message);
         }
+        if let Some(name) = subgroup_operation(call) {
+            if !self.subgroups_allowed {
+                let message = if self.is_kernel {
+                    format!(
+                        "`{name}` is a subgroup operation, which only a body that says `requires(subgroups)` may \
+                         use: put it in a `#[variant(of = .., requires(subgroups))]` body, or give the kernel \
+                         `requires(subgroups)` when it has no portable body"
+                    )
+                } else {
+                    format!(
+                        "`{name}` is a subgroup operation, which only the body of a kernel with \
+                         `requires(subgroups)` may call: a helper may be called under a condition, so not every \
+                         invocation of the subgroup would reach it; call it from the kernel body"
+                    )
+                };
+                self.reject(Code::SubgroupNotAllowed, call, &message);
+            } else if !self
+                .approved_subgroups
+                .contains(&(std::ptr::from_ref(call) as usize))
+            {
+                self.reject(
+                    Code::SubgroupPosition,
+                    call,
+                    &format!(
+                        "`{name}` is allowed only as the whole value of a `let` or an assignment, or as an operand of \
+                         arithmetic or a comparison there (not under `&&` or `||`), at the top level of the kernel \
+                         body or of a top-level `for a..b` loop with two literal bounds: every invocation of the \
+                         subgroup has to reach it, and the value of an `if`, an index or a method call may not"
+                    ),
+                );
+            }
+        }
         visit::visit_expr_call(self, call);
     }
 
@@ -260,18 +484,21 @@ impl<'ast> Visit<'ast> for Pass {
             self.reject(
                 Code::ReturnInBarrierKernel,
                 expression,
-                "a kernel with workgroup memory or a barrier has no `return`: an invocation that returns early \
-                 never reaches the barriers the others wait at; guard the rest of the work with `if`",
+                &format!(
+                    "a kernel with workgroup memory or a barrier has no `return`: an invocation that returns early \
+                     never reaches the barriers the others wait at; guard the rest of the work with `if`{}",
+                    self.subgroup_note
+                ),
             );
         }
         visit::visit_expr_return(self, expression);
     }
 
     fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
-        let mut finder = Finder(false);
+        let mut finder = Finder::default();
         finder.visit_block(&expression.body);
         self.visit_expr(&expression.expr);
-        self.loops.push(finder.0);
+        self.loops.push(finder.found());
         self.visit_block(&expression.body);
         self.loops.pop();
     }
@@ -292,8 +519,11 @@ impl<'ast> Visit<'ast> for Pass {
             self.reject(
                 Code::ReturnInBarrierKernel,
                 expression,
-                "a kernel with workgroup memory or a barrier has no early exit: `?` can leave the kernel before the \
-                 barriers the other invocations wait at; guard the rest of the work with `if`",
+                &format!(
+                    "a kernel with workgroup memory or a barrier has no early exit: `?` can leave the kernel before \
+                     the barriers the other invocations wait at; guard the rest of the work with `if`{}",
+                    self.subgroup_note
+                ),
             );
         }
         visit::visit_expr_try(self, expression);
@@ -310,7 +540,7 @@ mod tests {
     }
 
     fn message(function: &syn::ItemFn, barrier_kernel: bool) -> Option<String> {
-        check(function, true, barrier_kernel)
+        check(function, true, barrier_kernel, false)
             .err()
             .map(|error| error.to_string())
     }

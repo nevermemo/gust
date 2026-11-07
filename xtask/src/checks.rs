@@ -172,6 +172,23 @@ pub(crate) const VARIANT_GOLDEN_STEMS: [&str; 1] = ["variant"];
 pub(crate) const VARIANT_GOLDEN_SPIRV: [&str; 2] =
     ["variant__double.spv", "variant__double_subgroups.spv"];
 
+/// The golden of the subgroup operations fixture (m8.s): one section per body, "subgroup__<kernel>.spv".
+pub(crate) const SUBGROUP_GOLDEN_STEMS: [&str; 1] = ["subgroup"];
+pub(crate) const SUBGROUP_GOLDEN_SPIRV: [&str; 12] = [
+    "subgroup__count_if.spv",
+    "subgroup__count_if_subgroups.spv",
+    "subgroup__lanes_f32.spv",
+    "subgroup__lanes_f32_subgroups.spv",
+    "subgroup__lanes_i32.spv",
+    "subgroup__lanes_i32_subgroups.spv",
+    "subgroup__lanes_u32.spv",
+    "subgroup__lanes_u32_subgroups.spv",
+    "subgroup__partial_sums.spv",
+    "subgroup__partial_sums_subgroups.spv",
+    "subgroup__votes.spv",
+    "subgroup__votes_subgroups.spv",
+];
+
 pub(crate) const WORKGROUP_GOLDEN_STEMS: [&str; 1] = ["workgroup"];
 pub(crate) const WORKGROUP_GOLDEN_SPIRV: [&str; 2] =
     ["workgroup__block_sum.spv", "workgroup__local_ids.spv"];
@@ -250,7 +267,7 @@ pub(crate) const COMPACT_GOLDEN_SPIRV: [&str; 5] = [
 
 /// Every golden set `verify` exports and validates after the examples' SPIR-V: the area (the directory under the
 /// target directory's `golden-spirv`), the fixture stems and the expected file names.
-pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 12] = [
+pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 13] = [
     ("vectors", &VECTOR_GOLDEN_STEMS, &VECTOR_GOLDEN_SPIRV),
     ("uniforms", &UNIFORM_GOLDEN_STEMS, &UNIFORM_GOLDEN_SPIRV),
     ("map", &MAP_GOLDEN_STEMS, &MAP_GOLDEN_SPIRV),
@@ -267,6 +284,7 @@ pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 12] = [
     ("textures", &TEXTURES_GOLDEN_STEMS, &TEXTURES_GOLDEN_SPIRV),
     ("pixel", &PIXEL_GOLDEN_STEMS, &PIXEL_GOLDEN_SPIRV),
     ("variant", &VARIANT_GOLDEN_STEMS, &VARIANT_GOLDEN_SPIRV),
+    ("subgroup", &SUBGROUP_GOLDEN_STEMS, &SUBGROUP_GOLDEN_SPIRV),
 ];
 
 /// The cargo calls of `cargo xtask check-cpu` (a step of the Unit suite): the non-ignored,

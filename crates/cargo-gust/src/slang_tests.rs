@@ -105,8 +105,9 @@ fn the_asset_table_has_the_three_pinned_archives_with_their_digests() {
 }
 
 #[test]
-fn the_shipped_list_of_validated_builds_is_empty_and_the_release_is_the_pin() {
-    // 2026.21 was validated with the release archive, which prints the bare pin; no source build is listed.
+fn the_shipped_list_of_validated_builds_is_empty() {
+    // 2026.21 was validated with the release archive, which prints the bare pin; no source build is listed. The check
+    // below is an identity check (the pin matches itself); the asset table above holds that the release is the pin.
     assert!(VALIDATED_BUILDS.is_empty(), "{VALIDATED_BUILDS:?}");
     assert!(matches_pin(SLANG_VERSION, VALIDATED_BUILDS));
     // So with the shipped list a `git describe` build of the pin is not the pin, whatever it looks like, and neither is
@@ -361,10 +362,8 @@ fn a_mismatched_slangc_on_path_is_refused_with_the_install_command_unless_allowe
     assert!(!found.pinned);
     assert_eq!(found.source, Source::Path);
     // The flag never overrides a pinned install in the cache.
-    let cached = fake_slangc(
-        &scratch.0.join("cargo/gust/slang/2026.21/bin"),
-        SLANG_VERSION,
-    );
+    let cache = scratch.0.join("cargo/gust/slang").join(SLANG_VERSION);
+    let cached = fake_slangc(&cache.join("bin"), SLANG_VERSION);
     assert_eq!(locate(&env, true, &read_version).unwrap().slangc, cached);
 }
 
@@ -670,7 +669,7 @@ fn a_failed_extraction_removes_the_partial_directory_and_no_version_directory_ap
     let error = install(&root, &asset, &tools, PID).unwrap_err();
     assert!(error.contains("unexpected end of archive"), "{error}");
     assert!(!root.join(SLANG_VERSION).exists());
-    assert!(!root.join(format!("2026.21.partial-{PID}")).exists());
+    assert!(!root.join(format!("{SLANG_VERSION}.partial-{PID}")).exists());
     // The verified archive stays, so the next try does not download again.
     assert_eq!(tree(&root), ["archives", "archives/slang-test.tar.gz"]);
     tools.fail_extract_after_writing = false;
@@ -689,7 +688,7 @@ fn an_archive_without_slangc_and_a_failed_download_leave_nothing_behind() {
     let error = install(&root, &asset, &tools, PID).unwrap_err();
     assert!(error.contains("not a Slang release archive"), "{error}");
     assert!(!root.join(SLANG_VERSION).exists());
-    assert!(!root.join(format!("2026.21.partial-{PID}")).exists());
+    assert!(!root.join(format!("{SLANG_VERSION}.partial-{PID}")).exists());
 
     let scratch = Scratch::new("install-download-fail");
     let root = scratch.0.join("cache");
@@ -730,7 +729,7 @@ fn an_install_that_loses_the_race_to_another_process_succeeds_and_cleans_its_par
     }));
     let installed = install(&root, &asset, &tools, PID).unwrap();
     assert_eq!(installed, Installed::Already(root.join(SLANG_VERSION)));
-    assert!(!root.join(format!("2026.21.partial-{PID}")).exists());
+    assert!(!root.join(format!("{SLANG_VERSION}.partial-{PID}")).exists());
 }
 
 /// A `Fetch` that serves fixed bytes but extracts with the real `tar`.
@@ -781,5 +780,5 @@ fn the_real_tar_extracts_a_good_archive_and_a_bad_one_leaves_no_version_director
     let error = install(&root, &asset, &RealTar(garbage), PID).unwrap_err();
     assert!(error.contains("tar") && error.contains("failed"), "{error}");
     assert!(!root.join(SLANG_VERSION).exists());
-    assert!(!root.join(format!("2026.21.partial-{PID}")).exists());
+    assert!(!root.join(format!("{SLANG_VERSION}.partial-{PID}")).exists());
 }

@@ -223,6 +223,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(accepted.helper, named);
+        // Plumbing only: the fixture reports the pin, so this checks that the version is carried through.
         assert_eq!(accepted.slangc.version, crate::slang::SLANG_VERSION);
         // A helper of schema 1 or 2 cannot take the stage argument: refused by its schema, with the rebuild command,
         // although its tag is the right one (mx.k review S1).

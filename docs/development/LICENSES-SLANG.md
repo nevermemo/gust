@@ -5,15 +5,20 @@ m4.r). GUST does not redistribute the bundle: the manager fetches it from Slang'
 keeps the archive layout, and leaves the bundle's own `LICENSE`, `LICENSES/` and `third-party-notices/` beside the
 binaries. `cargo gust slang install` lists them when it finishes, and `cargo gust doctor` points to them.
 
-The 2026.21 archives were audited on 2026-11-08 (slice m8.p), each against the 2026.20 archive of the same platform, and
-every archive was checked against its published SHA-256 before it was extracted or read (the 2026.21 digests are the
+The 2026.21 archives were audited on 2026-11-07 (slice m8.p; every date in this file is UTC), each against the 2026.20
+archive of the same platform, and every archive was checked against its published SHA-256 before it was extracted or read (the 2026.21 digests are the
 table in `crates/cargo-gust/src/slang.rs`, the 2026.20 ones are in the section below). What was run: file listings and
 text diffs of `LICENSE`, `LICENSES/`, `third-party-notices/`, `README.md` and `share/slang/agent-skills/` between the
 two versions on each platform, a read of every changed text, and a string scan for "GNU General Public" and "GNU
 Lesser" of the executables and libraries in `bin/` and `lib/` of all three 2026.21 archives (Windows: 11 `.exe` and
 `.dll` files; Linux: 11; macOS: 13; no hit in any). The Linux and macOS archives were extracted on Windows, which
 could not create their few symlinks (3 and 1 of them); every regular file was extracted and the listings come from
-the archives themselves. Nothing from any archive was run in this audit. Rule (D46) as below.
+the archives themselves. Nothing from any archive was run in this audit. Rule (D46) as below. The file listings (of
+`bin/`, `lib/`, the notice directories and `LICENSE`), the digests, the scan output and the `mi_malloc` counts of this
+audit, all repeated on 2026-11-07 for all six archives (2026.20 and 2026.21, all three platforms), are saved as text
+under `plans/m8/probe/m8p-lic/` of the project's working area (outside the repository): `digests.txt`, `listing-*.txt`,
+`gpl-scan.txt` (every file of `bin/` and `lib/`, so more entries than the executables counted above, and no hit) and
+`mimalloc-counts.txt`, `mimalloc-markers.txt`.
 
 | Archive | SHA-256 | Verdict |
 | --- | --- | --- |
@@ -36,9 +41,25 @@ the archives themselves. Nothing from any archive was run in this audit. Rule (D
 - The listings differ by two documentation examples that 2026.21 no longer ships
   (`share/doc/slang/generated/tests/design/target-pipelines/metal/nonuniform-resource-index-rejected-metal.slang` and
   `.../wgsl/non-uniform-resource-index-rejected.slang`) and by the version in library file names. Nothing was added.
-- Windows `slang-compiler.dll` carries the same number of `mi_malloc` strings in both versions (14 by this count), so
-  the set of bundled components did not change on that platform. The Linux and macOS compiler libraries have two
-  such strings each in 2026.21; they were not counted in 2026.20.
+- `mi_malloc` strings, counted the same way (`grep -a -o mi_malloc`) in the compiler library of every platform and both
+  versions: Windows `slang-compiler.dll` 14 in 2026.20 and 14 in 2026.21; the Linux `libslang-compiler.so` 2 and 2; the
+  macOS `libslang-compiler.dylib` 2 and 2 (`mimalloc-counts.txt`, `mimalloc-markers.txt`). Supporting evidence only: the
+  count did not change on any platform, and the unchanged notice directory is the main evidence, so the conclusion that
+  the set of bundled components did not change is an inference. The 2026.20 section below says twelve for the Windows
+  DLL; that was a line count (`grep -a -c`: 12 lines hold the 14 occurrences), and the same line count of the 2026.21
+  DLL is 12 too, so the two audits agree.
+- Whether those strings are linked code or references differs by platform (an inference from strings; nothing was
+  run). The Windows DLL holds the text of mimalloc's header (163 `mi_decl_export` declarations in 2026.21, 139 in
+  2026.20), `mi_process_init`, the runtime messages "mimalloc: error: " and "mimalloc: warning: " and the option
+  format strings, which is what a linked allocator carries; its `mimalloc-LICENSE` ships. The Linux and macOS compiler
+  libraries hold only the text of Slang's own shim (six occurrences of `SLANG_ENABLE_MIMALLOC`, `#include <mimalloc.h>`
+  and the calls `mi_malloc(size)` and `mi_malloc_aligned(size, ALIGNMENT)`): source text embedded in the library, with
+  no header text, no runtime message and no option string. That reads as references to a build option that those builds
+  do not enable, not as linked mimalloc, which would fit the missing notice on those two platforms. Strings cannot
+  prove that. Open item, beside the accept rows below and not changing them: no one has checked the Linux and macOS
+  libraries for mimalloc symbols (an `nm` or `objdump` pass), so if a later audit finds mimalloc linked there, upstream
+  ships no mimalloc notice for those platforms. The verdict stays under D46, because mimalloc is MIT-licensed and GUST
+  does not redistribute the bundle.
 
 ## The named checks (2026.21)
 
@@ -76,7 +97,8 @@ notices kept; a copyleft or non-commercial component stops the download path for
 - The two directories and the files in them are the same on all three platforms, except for `mimalloc-LICENSE`.
 - No licence was removed. The notices are new texts for components that the 2026.13.1 binaries already carried (the
   earlier audit recorded their attributions inside the binaries); mimalloc is the one new component on Windows: the
-  2026.13.1 binaries had no `mi_malloc` string and the 2026.20 `slang-compiler.dll` has twelve. Its licence is MIT.
+  2026.13.1 binaries had no `mi_malloc` string and the 2026.20 `slang-compiler.dll` has twelve lines with such a string
+  (14 occurrences; see the count note under "What changed from 2026.20 to 2026.21"). Its licence is MIT.
 - GUST uses `slangc` and the compiler library (`slang-compiler`, plus the `slang` compatibility name), and probably
   `slang-glslang` (glslang and SPIRV-Tools) on the SPIR-V path. That last one is inferred from strings, not run.
   GUST does not use `slang-llvm` (LLVM and Clang), `slang-rt`, `gfx`, the GLSL module or the `slang`, `slangd` and

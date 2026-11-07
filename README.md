@@ -976,8 +976,8 @@ The direct syntax translator currently supports:
   [DIAGNOSTICS](docs/DIAGNOSTICS.md)). Typed buffers of them (`Vec2`, `Vec4`, `Mat2`, `Mat4` and padding-free
   structs of these) are created, dispatched on the GPU and checked against the CPU twin (M6 m6.g1, StorageV2);
   3-wide vectors and `Mat3` are locals and helper values only. Limitations: the constants `Mat2::IDENTITY` and
-  `Mat3::IDENTITY` crash the runner when their SPIR-V is handed to wgpu on slangc 2026.20 (the faulting layer is not
-  isolated; the executed WGSL route is fine, and no M6 GPU case executes SPIR-V); see
+  `Mat3::IDENTITY` crash the runner when their SPIR-V is handed to wgpu on slangc 2026.20 (not re-measured on 2026.21;
+  the faulting layer is not isolated; the executed WGSL route is fine, and no M6 GPU case executes SPIR-V); see
   [SEMANTICS](docs/SEMANTICS.md) section 4;
 - uniform parameters, `Uniform<T>` or its alias `ConstantBuffer<T>`, whose `T` is a struct of the module: read one
   field at a time and laid out `Std140V1` with explicit padding (M6 m6.u2; E0205 to E0209 and E0321 in

@@ -526,17 +526,17 @@ const SYNTHETIC_BUILD: &str = "2026.21-1-g0a1b2c3d4";
 fn the_pin_rule_is_exactly_the_one_of_cargo_gust() {
     // slang_tests.rs:104-169 (`matches_pin`), with the pin fixed.
     let validated = [SYNTHETIC_BUILD];
-    for reported in ["2026.21", SYNTHETIC_BUILD] {
+    for reported in [SLANG_PIN, SYNTHETIC_BUILD] {
         assert!(matches_pin(reported, &validated), "{reported}");
     }
-    assert!(matches_pin("2026.21", &[]));
+    assert!(matches_pin(SLANG_PIN, &[]));
     assert!(!matches_pin(SYNTHETIC_BUILD, &[]));
     assert!(!matches_pin(SYNTHETIC_BUILD, VALIDATED_BUILDS));
     for reported in [
         "",
         "2026.2",
         "2026.210",
-        "2026.21",
+        "2026.22",
         "2026.21-",
         "2026.21-rc1",
         "2026.21-1",
@@ -553,8 +553,8 @@ fn the_pin_rule_is_exactly_the_one_of_cargo_gust() {
     }
     // A listed tag that does not extend the pin is not the pin.
     assert!(!matches_pin(
-        "2026.21-1-g0a1b2c3d4",
-        &["2026.21-1-g0a1b2c3d4"]
+        "2026.22-1-g0a1b2c3d4",
+        &["2026.22-1-g0a1b2c3d4"]
     ));
 }
 

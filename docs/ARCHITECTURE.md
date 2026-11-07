@@ -638,8 +638,8 @@ endings.
 
 `reflect::reflect` and `Reflection::from_json` still read `slangc -reflection-json`.
 That CLI record omits aggregate size, alignment, and buffer stride in the tested
-Slang 2026.20 (and in 2026.13.1 before the bump), so `cross_check_pod` on it returns an explicitly partial report
-(`aggregate_size_verified`, `alignment_verified`, `element_stride_verified` false).
+Slang 2026.20 (not re-checked on 2026.21) and in 2026.13.1 before the bump, so `cross_check_pod` on it returns an
+explicitly partial report (`aggregate_size_verified`, `alignment_verified`, `element_stride_verified` false).
 It is kept as inspectable evidence and is not consulted by the runtime. Missing
 values are never inferred from the host layout. Nothing widens `GpuPod`.
 

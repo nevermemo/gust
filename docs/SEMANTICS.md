@@ -878,15 +878,16 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
 
     | Form | RTX 5090 (Vulkan) | Radeon 890M (Vulkan) | lavapipe (CI `dev+subgroups` step) |
     | --- | --- | --- | --- |
-    | `subgroup_broadcast_first` on `i32` and `f32` | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
-    | `subgroup_broadcast` on `f32` with a literal lane (`WaveBroadcastLaneAt`) | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
+    | `subgroup_broadcast_first` on `i32` and `f32` | ran | not run on the Radeon 890M | passed (run 42378261589) |
+    | `subgroup_broadcast` on `f32` with a literal lane (`WaveBroadcastLaneAt`) | ran | not run on the Radeon 890M | passed (run 42378261589) |
     | `subgroup_broadcast` on `i32` with a literal lane (`WaveBroadcastLaneAt`) | not run on any adapter | not run | not run |
-    | `subgroup_broadcast` on `i32` with a computed lane (`WaveReadLaneAt`, the form of S3's cell) | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
+    | `subgroup_broadcast` on `i32` with a computed lane (`WaveReadLaneAt`, the form of S3's cell) | ran | not run on the Radeon 890M | passed (run 42378261589) |
     | `subgroup_broadcast` on `f32` with a computed lane (`WaveReadLaneAt`) | not run on any adapter | not run | not run |
-    | `subgroup_shuffle` on `i32` and `f32`, and on `u32` (computed lane, `WaveShuffle`; every shuffle in the fixtures has a computed lane; S3's cell was `WaveReadLaneAt`) | ran | not run on the Radeon 890M | to be recorded (passed, run id) |
+    | `subgroup_shuffle` on `i32` and `f32`, and on `u32` (computed lane, `WaveShuffle`; every shuffle in the fixtures has a computed lane; S3's cell was `WaveReadLaneAt`) | ran | not run on the Radeon 890M | passed (run 42378261589) |
 
-    The tests open the first Vulkan adapter, so the Radeon 890M was not selected in this slice. The lavapipe cell is
-    filled in from the CI run of the `dev+subgroups` step, which runs the same file.
+    The tests open the first Vulkan adapter, so the Radeon 890M was not selected in this slice. The lavapipe cells are
+    from the CI run of the `dev+subgroups` step, which runs the same file: run 42378261589 passed all 15 tests of
+    `tests/subgroup.rs` on `8e59357`.
   - **The WGSL fix-up.** wgpu 30 rejects what slangc writes for a subgroup kernel in two places (the `enable subgroups;`
     line, wgpu issue 5555, and an `i32` lane argument of `subgroupShuffle` and `subgroupBroadcast`, issue 10818), so
     `gust::slang::wgsl::fixup_subgroups` edits the text: it removes the `enable` line and rewrites the lane argument

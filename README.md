@@ -276,8 +276,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gust-compute = "0.1"
-gust-compute-wgpu = "0.1"
+gust-compute = "0.2.0-dev"
+gust-compute-wgpu = "0.2.0-dev"
 
 [features]
 # Run-time compile through the Slang toolchain, for development only (`cargo run --features gust-dev`).
@@ -287,8 +287,9 @@ gust-dev = ["gust-compute-wgpu/slang-runtime"]
 `gust-dev` is a feature of your own crate that turns on the backend's run-time compiler, and it has to be your own
 feature. A `slang-runtime` feature on the dependency line makes `cargo build --release` fail, because a release build
 refuses the run-time compiler (D68). One on a `[dev-dependencies]` entry never reaches `cargo run`, which then stops
-with "built without the `slang-runtime` feature". The dependencies say `0.1` and nothing more: the library crates pin
-each other to one exact version, so a range cannot mix two releases.
+with "built without the `slang-runtime` feature". The dependencies say `0.2.0-dev` (`0.2` once 0.2.0 is released; a
+caret requirement does not match a pre-release) and nothing more: the library crates pin each other to one exact
+version, so a range cannot mix two releases.
 
 And this `src/main.rs`:
 

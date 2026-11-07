@@ -4,8 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-gust-compute = "0.1"
-gust-compute-wgpu = "0.1"
+gust-compute = "0.2.0-dev"
+gust-compute-wgpu = "0.2.0-dev"
 
 [features]
 # Run-time compile through the Slang toolchain, for development only (`cargo run --features gust-dev`).

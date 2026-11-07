@@ -247,6 +247,58 @@ jobs:
       - name: Release checks R1 to R8
         run: cargo --locked xtask check-release --check-only
 
+  semver:
+    # The report of what a branch breaks against the release line (M8 plan section 1, slice m8.v): `cargo
+    # semver-checks` for the two library crates, `gust-compute` and `gust-compute-wgpu`, against the git ref
+    # `release/0.1` (there is no `v0.1.0` tag and no registry baseline: 0.1.0 is not published). The report is uploaded
+    # as an artifact. It does not judge the macro language (the proc-macro crate has no API for the tool to compare),
+    # and its list is not a proof: its report for `gust-compute-wgpu` was empty although m8.w1 added the `GpuKernel`
+    # bound to that crate's entry points.
+    # `--release-type patch` is on purpose: the versions say 0.1.0 to 0.2.0-dev, which the tool counts as a major
+    # change and then runs no lint at all ("0 checks, 260 skip"); asked for a patch, it lists every break.
+    # The job does NOT fail on what the tool finds: a 0.x minor release may break (README, "Stability"), so the
+    # findings are the list for the CHANGELOG, not a red light. It does fail when the tool, the baseline or a build is
+    # missing: the step requires a "Summary" line for each of the two crates. On a push to `release/0.1` itself the
+    # baseline is the branch, so the report is empty.
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Every branch, so that `origin/release/0.1` is there on a pull request and on a push to main.
+          fetch-depth: 0
+      - name: Install Rust
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: The baseline branch
+        # The tool clones this repository and checks the revision out, so the revision must be a local ref. A fetch into
+        # the checked-out branch is refused (a push to `release/0.1`), hence `git branch` and only when it is missing.
+        run: git rev-parse --verify -q refs/heads/release/0.1 || git branch release/0.1 origin/release/0.1
+      - name: Install cargo-semver-checks
+        # Pinned to the version of the local runs (needs Rust 1.93 or newer); `--locked` builds it with the lockfile it
+        # was published with. About 13 minutes from nothing on the development PC; no cache, as in the other jobs.
+        run: cargo install cargo-semver-checks --locked --version 0.51.0
+      - name: Semver report against release/0.1
+        run: |
+          set +e
+          cargo semver-checks -p gust-compute -p gust-compute-wgpu --baseline-rev release/0.1 --release-type patch \
+            > semver-report.txt 2>&1
+          status=$?
+          set -e
+          cat semver-report.txt
+          echo "cargo semver-checks exited with $status (findings are expected; see the report)"
+          summaries=$(grep -c '^ *Summary ' semver-report.txt || true)
+          if [ "$summaries" -ne 2 ]; then
+            echo "::error::expected a Summary line for each of the two crates, got $summaries"
+            exit 1
+          fi
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: semver-report-${{ github.run_id }}
+          path: semver-report.txt
+          if-no-files-found: warn
+
   wasm:
     # The browser surface of gust-wgpu (D45, R4.9, slice m4.g2): `gust`, `gust-wgpu` and `examples/web-vector-add` lint
     # clean for `wasm32-unknown-unknown` under `GUST_PROFILE=web` (a plain wasm32 check infers `dev`; only `web` is the

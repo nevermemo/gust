@@ -370,7 +370,7 @@ fn the_committed_manifests_keep_the_bridge_out_and_the_kernels_packageable() {
     let kernels = fixture_file("kernels/Cargo.toml");
     assert!(dependency_disables_defaults(&kernels, "gust"));
     // R2-4: `gust` by version plus path, and no `publish = false` (`cargo package` refuses such a package).
-    assert!(kernels.contains("version = \"0.1.0\", path = \"../../../crates/gust\""));
+    assert!(kernels.contains("version = \"0.2.0-dev\", path = \"../../../crates/gust\""));
     assert!(
         !kernels
             .lines()
@@ -1044,7 +1044,7 @@ fn the_versions_come_from_the_manifests_and_the_consumer_patches_all_four_packag
     let root = root_manifest();
     assert_eq!(
         section_version(&root, "workspace.package").as_deref(),
-        Some("0.1.0")
+        Some("0.2.0-dev")
     );
     assert_eq!(
         section_version(&fixture_file("kernels/Cargo.toml"), "package").as_deref(),

@@ -1325,6 +1325,12 @@ impl HeadlessDevice {
     /// `max_buffer_size`, the storage binding size and the workgroups per dimension to the adapter's own
     /// ([`LimitsPolicy::Adapter`]) and asks for `float32-filterable` when the adapter offers it, and so does
     /// [`default_device`]. Use [`with_options`](Self::with_options) to get those on a device of your own.
+    ///
+    /// It requests the capabilities this build was compiled for ([`gust::capability::enabled`], the ones
+    /// `GUST_PROFILE` named: none under `dev` or `native`, subgroups under `dev+subgroups`), as
+    /// [`DeviceOptions::default()`](DeviceOptions) does, so that a `+subgroups` binary, which holds no portable body, can
+    /// run its kernels here. An adapter that lacks one makes the open fail with `Error::MissingCapability`; use
+    /// `with_options(DeviceOptions::default().with_capabilities(&[]))` to open without.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn new() -> Result<Self, Error> {
         pollster::block_on(Self::new_async(wgpu::Backends::VULKAN))
@@ -1337,13 +1343,16 @@ impl HeadlessDevice {
     /// this; call it from a thread that may block, or use `new`. In the browser there is no pause between
     /// attempts. Opening the device completes without anyone polling it: wgpu drives the adapter and device
     /// requests itself, unlike the readbacks.
+    ///
+    /// Like `new`, it requests the capabilities of this build ([`gust::capability::enabled`]). In a browser a
+    /// non-empty set is refused with `Error::MissingCapability`: the pinned wgpu cannot request subgroups there.
     pub async fn new_async(backends: wgpu::Backends) -> Result<Self, Error> {
         Self::new_async_with(DeviceOptions {
             backends,
             adapter: AdapterChoice::HighPerformance,
             limits: LimitsPolicy::Default,
             features: FeaturesPolicy::Default,
-            capabilities: &[],
+            capabilities: gust::capability::enabled(),
         })
         .await
     }
@@ -1382,11 +1391,13 @@ impl HeadlessDevice {
         capabilities: &'static [Capability],
     ) -> Result<Self, Error> {
         let adapter_info = adapter.get_info();
-        // A capability the adapter lacks ends the open here (D23's startup failure), before wgpu is asked for anything.
+        // A capability the adapter lacks ends the open here (D23's startup failure), before the device is requested.
+        // In a browser nothing is requestable: a non-empty set is refused there with the same error (ruling 5).
         let capability_features = device::required_capability_features(
             capabilities,
             adapter.features(),
             &adapter_info.name,
+            cfg!(target_arch = "wasm32"),
         )?;
         let subgroup_sizes = device::adapter_subgroup_sizes(adapter.features(), &adapter_info);
         let timestamp_queries = adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY);

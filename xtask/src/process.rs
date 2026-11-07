@@ -330,7 +330,31 @@ pub(crate) fn run_cargo_test_captured(
     root: &Path,
     args: &[String],
 ) -> Result<(TestTotals, String), String> {
-    let mut child = workspace_command("cargo")
+    run_cargo_test_captured_under(root, args, None)
+}
+
+/// The cargo child of [`run_cargo_test_captured_under`], before its arguments: a [`workspace_command`] whose
+/// `GUST_PROFILE` is replaced by `profile` when it is `Some`. `None` keeps the [`WORKSPACE_PROFILE`] that every
+/// workspace cargo child gets; the profile is set after [`workspace_command`], so it wins. A function of its own so that
+/// a unit test can read the environment the child will get (the tests of a gust-wgpu target pass under any profile, so
+/// their result alone does not show that the profile reached the build).
+pub(crate) fn cargo_test_command(profile: Option<&str>) -> Command {
+    let mut command = workspace_command("cargo");
+    if let Some(profile) = profile {
+        command.env(PROFILE_VARIABLE, profile);
+    }
+    command
+}
+
+/// [`run_cargo_test_captured`] with the `GUST_PROFILE` of the child replaced by `profile` when it is `Some` (m8.w2:
+/// `cargo xtask test --suite Gpu --profile dev+subgroups --test <target>`); see [`cargo_test_command`].
+pub(crate) fn run_cargo_test_captured_under(
+    root: &Path,
+    args: &[String],
+    profile: Option<&str>,
+) -> Result<(TestTotals, String), String> {
+    let mut command = cargo_test_command(profile);
+    let mut child = command
         .args(args)
         .current_dir(root)
         .stdin(Stdio::inherit())
@@ -408,6 +432,52 @@ mod test_counts_tests;
 #[cfg(test)]
 #[path = "tests/workspace_profile.rs"]
 mod workspace_profile_tests;
+
+#[cfg(test)]
+mod cargo_test_command_tests {
+    use std::{
+        ffi::{OsStr, OsString},
+        process::Command,
+    };
+
+    use super::{PROFILE_VARIABLE, cargo_test_command, workspace_command};
+
+    /// What `command` sets `GUST_PROFILE` to in its child, read from the command itself; `None` when it leaves it alone.
+    fn profile_of(command: &Command) -> Option<OsString> {
+        command
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new(PROFILE_VARIABLE))
+            .and_then(|(_, value)| value.map(ToOwned::to_owned))
+    }
+
+    #[test]
+    fn the_profile_of_a_profile_run_reaches_its_one_cargo_child() {
+        // The profile wins over the `dev` that every workspace cargo child is given first.
+        let command = cargo_test_command(Some("dev+subgroups"));
+        assert_eq!(profile_of(&command), Some(OsString::from("dev+subgroups")));
+        assert_eq!(
+            command
+                .get_envs()
+                .filter(|(name, _)| *name == OsStr::new(PROFILE_VARIABLE))
+                .count(),
+            1,
+            "one value, not two"
+        );
+        assert_eq!(command.get_program(), OsStr::new("cargo"));
+    }
+
+    #[test]
+    fn a_run_without_a_profile_and_every_other_child_keep_dev() {
+        assert_eq!(
+            profile_of(&cargo_test_command(None)),
+            Some(OsString::from("dev"))
+        );
+        assert_eq!(
+            profile_of(&workspace_command("cargo")),
+            Some(OsString::from("dev"))
+        );
+    }
+}
 
 #[cfg(test)]
 mod helper_export_tests {

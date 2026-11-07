@@ -180,20 +180,26 @@ fn the_default_options_ask_for_the_adapters_limits_on_native() {
     assert_eq!(defaults.limits, LimitsPolicy::Adapter);
     // D90: the optional features follow the same two defaults as the limits.
     assert_eq!(defaults.features, FeaturesPolicy::Adapter);
-    // `HeadlessDevice::new` is unchanged: wgpu's default limits, and no optional feature.
+    // `HeadlessDevice::new` is unchanged: wgpu's default limits, and no optional feature. It requests the capabilities
+    // of the build, as the default options do (m8.w2; `tests/capabilities.rs` pins that under both profiles).
     let plain = HeadlessDevice::new().expect("a Vulkan adapter");
     assert_eq!(plain.limits(), &wgpu::Limits::default());
     assert!(!plain.float32_filterable());
+    assert_eq!(plain.capabilities(), gust::capability::enabled());
 }
 
-/// Capabilities (M8, m8.w1): the options hold none until asked, `with_capabilities` sets exactly the set it is given and
-/// nothing else, and a device reports wgpu's subgroup range for the adapter whether or not it was opened with the
-/// capability.
+/// Capabilities (M8, m8.w1, m8.w2): the options hold the build's set (`gust::capability::enabled()`) until asked
+/// otherwise, `with_capabilities` sets exactly the set it is given and nothing else, and a device reports wgpu's
+/// subgroup range for the adapter whether or not it was opened with the capability.
 /// A request the adapter cannot meet is unit-tested over fake feature sets (`required_capability_features`).
 #[test]
 fn capabilities_are_an_option_of_their_own() {
-    // The one line that says what the default is (m8.w2 changes it); the rest does not depend on it.
-    assert!(DeviceOptions::default().capabilities.is_empty());
+    // The line that says what the default is: the build's own set, empty under `dev` and `[Subgroups]` under
+    // `dev+subgroups`. Everything below opens with an explicit set, so it does not depend on the profile.
+    assert_eq!(
+        DeviceOptions::default().capabilities,
+        gust::capability::enabled()
+    );
     let none = DeviceOptions::default().with_capabilities(&[]);
     let asked = none.clone().with_capabilities(&[Capability::Subgroups]);
     assert_eq!(asked.capabilities, &[Capability::Subgroups]);
@@ -237,6 +243,8 @@ fn the_default_device_opens_once_with_the_options_set_before_it() {
     // `set_default_options` governs the optional features too (D90): `Default` turns `float32-filterable` off even
     // on an adapter that offers it.
     assert!(!first.float32_filterable());
+    // The options came from `DeviceOptions::default()`, so the device holds the build's capabilities (m8.w2).
+    assert_eq!(first.capabilities(), gust::capability::enabled());
     let second = gust_wgpu::default_device().expect("and is still there");
     assert!(
         std::sync::Arc::ptr_eq(&first, &second),

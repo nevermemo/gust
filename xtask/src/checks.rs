@@ -441,6 +441,8 @@ pub(crate) fn check_feature(area: Option<&str>) -> Result<(), String> {
                 "graph",
                 "--test",
                 "subgroup",
+                "--test",
+                "capabilities",
             ],
         ),
         "reflection" => {
@@ -943,7 +945,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "gpu-semantics: semantics/numeric/option/loops/struct assignment GPU differential tests, the known-mismatch ledger and the scalar coretests"
         }
         "gpu-runtime" => {
-            "gpu-runtime: reflection gate, cache/runtime mismatch tests, launch-limit checks and buffer layout assertions, typed calls and derived graph edges, device capabilities (a kernel's `requires` and `target` against the device, m8.w1)"
+            "gpu-runtime: reflection gate, cache/runtime mismatch tests, launch-limit checks and buffer layout assertions, typed calls and derived graph edges, device capabilities (a kernel's `requires` and `target` against the device, m8.w1; the build's default capability set, m8.w2)"
         }
         "reflection" => {
             "reflection: native Slang helper + core/wgpu reflection contract + the naga layout gate (the WGSL of every golden against the descriptors' layouts)"

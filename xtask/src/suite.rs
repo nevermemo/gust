@@ -5,11 +5,14 @@ use crate::{
     difftest::check_difftest,
     docs::docs_check,
     lint::lint,
-    process::{TestTotals, require_command, run_cargo_test_captured, run_counted, run_direct},
+    process::{
+        TestTotals, require_command, run_cargo_test_captured, run_cargo_test_captured_under,
+        run_counted, run_direct,
+    },
     ui::check_ui,
     verify::{
         ALGO_GPU_CALL, GPU_SUITE_CALL, GPU_SUITE_PIN, VerifyMode, check_algo_gpu_counts,
-        check_gpu_suite_counts, verify,
+        check_gpu_suite_counts, check_gpu_target_profile, gpu_target_pin, run_gpu_target, verify,
     },
     workspace::workspace_root,
 };
@@ -400,22 +403,85 @@ impl Step {
     }
 }
 
-/// `cargo xtask test --suite <Unit|Cpu|Slangc|Spirv|Reflect|Gpu|Full> [--skip-difftest]`.
-pub(crate) fn test_command(args: &[String]) -> Result<(), String> {
+/// What `cargo xtask test` was asked to run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TestRequest {
+    /// A whole suite, with or without `--skip-difftest`.
+    Suite { suite: Suite, skip_difftest: bool },
+    /// One gust-wgpu test target of the Gpu suite under a `GUST_PROFILE` (m8.w2): `--suite Gpu --profile <p> --test <t>`.
+    Target { profile: String, target: String },
+}
+
+/// Reads the arguments of `cargo xtask test`. The profile form is fixed in shape and checked here, so a bad profile or
+/// an unpinned target fails before anything is built.
+pub(crate) fn parse_test_args(args: &[String]) -> Result<TestRequest, String> {
     let usage = || {
         format!(
-            "usage: cargo xtask test --suite {} [--skip-difftest]",
+            "usage: cargo xtask test --suite {} [--skip-difftest]\n       cargo xtask test --suite Gpu --profile <dev|dev+capability> --test <gust-wgpu test target>",
             Suite::names().join("|")
         )
     };
-    let (suite, skip_difftest) = match args {
-        [flag, name] if flag == "--suite" => (Suite::parse(name)?, false),
+    match args {
+        [flag, name] if flag == "--suite" => Ok(TestRequest::Suite {
+            suite: Suite::parse(name)?,
+            skip_difftest: false,
+        }),
         [flag, name, skip] if flag == "--suite" && skip == "--skip-difftest" => {
-            (Suite::parse(name)?, true)
+            Ok(TestRequest::Suite {
+                suite: Suite::parse(name)?,
+                skip_difftest: true,
+            })
         }
-        _ => return Err(usage()),
-    };
-    run_suite(suite, skip_difftest)
+        [flag, name, profile_flag, profile, test_flag, target]
+            if flag == "--suite" && profile_flag == "--profile" && test_flag == "--test" =>
+        {
+            let suite = Suite::parse(name)?;
+            if suite != Suite::Gpu {
+                return Err(format!(
+                    "--profile and --test run one gust-wgpu test target under a profile and exist for --suite Gpu only, not {}",
+                    suite.name()
+                ));
+            }
+            check_gpu_target_profile(profile)?;
+            gpu_target_pin(target)?;
+            Ok(TestRequest::Target {
+                profile: profile.clone(),
+                target: target.clone(),
+            })
+        }
+        _ => Err(usage()),
+    }
+}
+
+/// `cargo xtask test --suite <Unit|Cpu|Slangc|Spirv|Reflect|Gpu|Full> [--skip-difftest]`, or
+/// `cargo xtask test --suite Gpu --profile <dev|dev+capability> --test <target>` (m8.w2): one test target of
+/// gust-compute-wgpu on the adapter under that `GUST_PROFILE`, counted against `GPU_TARGET_PINS`. m8.s runs
+/// `--profile dev+subgroups --test subgroup`; the whole Gpu suite (its pin, `GPU_SUITE_PIN`, describes `dev`) is
+/// run without the two flags.
+pub(crate) fn test_command(args: &[String]) -> Result<(), String> {
+    match parse_test_args(args)? {
+        TestRequest::Suite {
+            suite,
+            skip_difftest,
+        } => run_suite(suite, skip_difftest),
+        TestRequest::Target { profile, target } => run_profile_target(&profile, &target),
+    }
+}
+
+/// The steps of the profile form: `slangc` on `PATH` (the tests compile kernels at run time), then the target.
+fn run_profile_target(profile: &str, target: &str) -> Result<(), String> {
+    println!("== suite Gpu, target {target} under GUST_PROFILE={profile}");
+    println!("-- require slangc on PATH");
+    require_command("slangc").map_err(|error| format!("suite Gpu failed: {error}"))?;
+    let root = workspace_root()?;
+    let label = format!("cargo test --locked -p gust-compute-wgpu --test {target}");
+    println!("-- {label} (GUST_PROFILE={profile})");
+    run_gpu_target(&root, profile, target, &run_cargo_test_captured_under)
+        .map_err(|error| format!("suite Gpu failed at `{label}`: {error}"))?;
+    println!(
+        "Suite Gpu passed for the target {target} under GUST_PROFILE={profile}. It does not cover the other targets or the whole-suite count (GPU_SUITE_PIN is for dev)."
+    );
+    Ok(())
 }
 
 /// The steps a run executes and the steps `--skip-difftest` leaves out (those of [`DIFFTEST_UNIT_STEPS`]). The flag on

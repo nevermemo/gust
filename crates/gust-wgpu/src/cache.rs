@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 
-use gust::{Artifact, Format, KernelDescriptor, Shape};
+use gust::{Artifact, Format, KernelDescriptor, Shape, capability::Capability};
 
 /// Observable state of one device's compiled-kernel cache.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -46,7 +46,8 @@ pub(crate) fn preferred_artifact(kernel: &KernelDescriptor) -> Option<&'static A
 /// descriptor's static slices, not their contents: two descriptors that share every slice share a pipeline, and
 /// descriptors that differ in any field below never share one. The artifact and its reflection JSON are in the key
 /// because a cache hit skips `verify_artifact`: an artifact that was never verified must not be able to borrow the
-/// pipeline of one that was.
+/// pipeline of one that was. The one field that is by content is `requires`: the set of capabilities (D142), small, and
+/// compared and hashed in order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct KernelCacheKey {
     entry_point: &'static str,
@@ -58,6 +59,9 @@ pub(crate) struct KernelCacheKey {
     /// descriptors that differ only in it never share a pipeline.
     shape: Shape,
     workgroup_size: [u32; 3],
+    /// The capabilities the selected body needs (M8, D142), by content: the same pipeline never serves a descriptor that
+    /// differs only in what it requires, and a device only ever caches kernels whose `requires` it was opened with.
+    requires: &'static [Capability],
     artifact_address: usize,
     artifact_bytes: usize,
     artifact_key: Option<&'static str>,
@@ -77,6 +81,7 @@ impl KernelCacheKey {
             parameters: kernel.parameters.len(),
             shape: kernel.shape,
             workgroup_size: kernel.workgroup_size,
+            requires: kernel.requires,
             artifact_address: artifact.map_or(0, |artifact| artifact.bytes.as_ptr() as usize),
             artifact_bytes: artifact.map_or(0, |artifact| artifact.bytes.len()),
             artifact_key: artifact.map(|artifact| artifact.key),
@@ -227,6 +232,18 @@ mod tests {
             .with_compatible_shapes(&[Shape::Pixel]);
         assert_ne!(key(&KERNEL), key(&pixel));
         assert_eq!(key(&pixel), key(&pixel));
+    }
+
+    #[test]
+    fn descriptors_that_differ_only_in_what_they_require_have_different_keys() {
+        let subgroups = KERNEL.with_requires(&[Capability::Subgroups]);
+        assert_ne!(key(&KERNEL), key(&subgroups));
+        assert_eq!(key(&subgroups), key(&subgroups));
+        // By content: another slice with the same capabilities is the same pipeline.
+        let again = KERNEL.with_requires(Box::leak(Box::new([Capability::Subgroups])));
+        assert_eq!(key(&subgroups), key(&again));
+        // And the empty set is the default.
+        assert_eq!(key(&KERNEL), key(&KERNEL.with_requires(&[])));
     }
 
     #[test]

@@ -1,6 +1,9 @@
 use std::{error, fmt};
 
-use gust::{Access, BindingKind, ParameterKind, ResourceLayout, Shape};
+use gust::{
+    Access, BindingKind, ParameterKind, ResourceLayout, Shape, capability::Capability,
+    target::Target,
+};
 
 use crate::GpuBufferAccess;
 
@@ -356,6 +359,38 @@ pub enum Error {
         /// The address mode that was given.
         address: gust::texture::Address,
     },
+    /// A device capability is missing (M8, D23, D142). With `kernel: None` it is a refusal at open: the device options
+    /// request `capability` (`DeviceOptions::with_capabilities`) and the adapter, or the browser, does not offer it, so
+    /// no device exists. With `kernel: Some(..)` it is a refusal at launch: the kernel's `requires` names `capability`
+    /// and this device was not opened with it. `adapter` is the adapter's name.
+    MissingCapability {
+        /// The capability that is missing.
+        capability: Capability,
+        /// The name of the adapter the device is, or would have been, opened on.
+        adapter: String,
+        /// The kernel that requires the capability, or `None` when the refusal is the device's own.
+        kernel: Option<String>,
+    },
+    /// A kernel built for another target (`KernelDescriptor::target` is not `Target::Gpu`, today `Target::Cpu`) reached a
+    /// GPU device. The typed entry points refuse this at compile time (the `GpuKernel` bound); this is the run-time
+    /// refusal for a kernel passed by its descriptor, and nothing is submitted.
+    KernelTarget {
+        /// The kernel's qualified name.
+        kernel: String,
+        /// The target the descriptor is built for.
+        target: Target,
+    },
+    /// A kernel that requires subgroups has a workgroup whose invocation count is not a multiple of the largest subgroup
+    /// size wgpu reports for the adapter, so some subgroup would run partly empty. Only full subgroups are supported
+    /// (D140).
+    SubgroupSize {
+        /// The kernel's qualified name.
+        kernel: String,
+        /// The invocations in one workgroup (the product of the workgroup size).
+        invocations: u64,
+        /// The largest subgroup size wgpu reports for the adapter (`AdapterInfo::subgroup_max_size`).
+        subgroup_max: u32,
+    },
 }
 
 impl fmt::Display for Error {
@@ -618,6 +653,37 @@ impl fmt::Display for Error {
             Self::SamplerOptions { filter, address } => write!(
                 formatter,
                 "this backend maps no sampler with filter {filter:?} and address mode {address:?}",
+            ),
+            Self::MissingCapability {
+                capability,
+                adapter,
+                kernel: None,
+            } => write!(
+                formatter,
+                "the adapter `{adapter}` does not offer the `{}` capability that the device options request",
+                capability.name(),
+            ),
+            Self::MissingCapability {
+                capability,
+                adapter,
+                kernel: Some(kernel),
+            } => write!(
+                formatter,
+                "kernel `{kernel}` requires the `{}` capability, which this device (adapter `{adapter}`) was not opened with; open it with `DeviceOptions::with_capabilities`",
+                capability.name(),
+            ),
+            Self::KernelTarget { kernel, target } => write!(
+                formatter,
+                "kernel `{kernel}` is built for the `{}` target and cannot run on a GPU device; run it on a `CpuDevice`, or route its tag to `gpu`",
+                target.name(),
+            ),
+            Self::SubgroupSize {
+                kernel,
+                invocations,
+                subgroup_max,
+            } => write!(
+                formatter,
+                "kernel `{kernel}` runs {invocations} invocations per workgroup, which is not a multiple of {subgroup_max}, the largest subgroup size wgpu reports for this adapter; a subgroup kernel needs full subgroups",
             ),
         }
     }

@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gust::{Access, Call, GpuPod, Kernel, TypeLayout, pod_slice_as_bytes};
+use gust::{Access, Call, GpuPod, TypeLayout, pod_slice_as_bytes, target::GpuKernel};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::{
@@ -224,7 +224,7 @@ impl<'a> StagedGraph<'a> {
 
     /// Typed twin of [`dispatch`](Self::dispatch): run a typed [`Call`], with derived edges. The call
     /// must outlive the graph, which records its bindings.
-    pub fn run<'r: 'a, K: Kernel, const N: usize>(
+    pub fn run<'r: 'a, K: GpuKernel, const N: usize>(
         &mut self,
         call: &'a Call<'r, HeadlessDevice, K, N>,
     ) -> NodeId {
@@ -242,7 +242,7 @@ impl<'a> StagedGraph<'a> {
     /// is unvalidated, so the kernel that writes `args` must clamp. wgpu checks the limits of the
     /// real device, so a limit lowered with `HeadlessDevice::with_limits` never applies to indirect
     /// counts; every other limit GUST checks still does.
-    pub fn run_indirect<'r: 'a, K: Kernel, const N: usize, A: GpuPod>(
+    pub fn run_indirect<'r: 'a, K: GpuKernel, const N: usize, A: GpuPod>(
         &mut self,
         call: &'a Call<'r, HeadlessDevice, K, N>,
         args: &'a GpuBuffer<A>,

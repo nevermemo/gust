@@ -1,0 +1,13 @@
+# Keys matched against the one error of `cargo check --message-format json` (see gpupod-missing/expected.txt). A
+# hand-written `Kernel` without the marker `impl gust::target::GpuKernel for Probe {}` is a kernel with no GPU form (the
+# state of a kernel the macro routes to the CPU, D137): the typed `Run` impl of `HeadlessDevice` is bounded on the marker,
+# so the call at `main.rs:46` fails under `cargo check` with the wording of `#[diagnostic::on_unimplemented]` on
+# `gust::target::GpuKernel`, which names the kernel. The runtime backstop for a descriptor is `Error::KernelTarget`.
+code: E0277
+file: headless-cpu-kernel/src/main.rs
+line: 46
+message: `HeadlessDevice` cannot run the kernel `Probe`: it is routed to the CPU in this build
+message: call it on a `CpuDevice`, or route its tag to `gpu`
+message: a hand-written `Kernel` impl that runs on a GPU adds `impl gust::target::GpuKernel for Probe {}`
+message: required for `HeadlessDevice` to implement `Run<Probe, 1>`
+label: this kernel has no GPU form in this build

@@ -10,7 +10,7 @@ use std::future::Future;
 #[cfg(not(target_arch = "wasm32"))]
 use std::sync::Arc;
 
-use gust::{GpuPod, pod_slice_as_bytes};
+use gust::{GpuPod, capability::Capability, pod_slice_as_bytes};
 use wgpu::util::{BufferInitDescriptor, DeviceExt};
 
 use crate::{Error, GpuBuffer, GpuBufferAccess, HeadlessDevice, assert_pod_matches_storage_layout};
@@ -146,6 +146,11 @@ pub struct DeviceOptions {
     pub limits: LimitsPolicy,
     /// Which optional features to request from the adapter.
     pub features: FeaturesPolicy,
+    /// The capabilities (M8, D23) the device is opened with; a kernel's `requires` must be a subset. Empty by default.
+    /// A capability the adapter does not offer is [`Error::MissingCapability`] at open, and no device exists: it is
+    /// never dropped silently (D142). The set is separate from [`features`](Self::features), which holds the optional
+    /// features GUST asks for on its own.
+    pub capabilities: &'static [Capability],
 }
 
 impl Default for DeviceOptions {
@@ -175,6 +180,7 @@ impl Default for DeviceOptions {
             adapter: AdapterChoice::HighPerformance,
             limits,
             features,
+            capabilities: &[],
         }
     }
 }
@@ -208,6 +214,60 @@ impl DeviceOptions {
         self.features = features;
         self
     }
+
+    /// These options with the capability set replaced by `capabilities`: the device is opened with exactly these, and
+    /// opening it fails with [`Error::MissingCapability`] when the adapter lacks one. A kernel whose `requires` names a
+    /// capability runs only on a device opened with it.
+    #[must_use]
+    pub fn with_capabilities(mut self, capabilities: &'static [Capability]) -> Self {
+        self.capabilities = capabilities;
+        self
+    }
+}
+
+/// The wgpu features a capability needs.
+fn capability_features(capability: Capability) -> wgpu::Features {
+    match capability {
+        Capability::Subgroups => wgpu::Features::SUBGROUP,
+        // `Capability` is `#[non_exhaustive]`: a capability this backend does not know has no feature to ask for, and
+        // the empty set is "not offered" (see `required_capability_features`).
+        _ => wgpu::Features::empty(),
+    }
+}
+
+/// The features to add to the device descriptor for the requested `capabilities`, or the first capability that the
+/// adapter (offering `available`) does not provide, as [`Error::MissingCapability`] naming `adapter`. A capability this
+/// backend has no feature for is refused too: a request is never dropped silently.
+pub(crate) fn required_capability_features(
+    capabilities: &[Capability],
+    available: wgpu::Features,
+    adapter: &str,
+) -> Result<wgpu::Features, Error> {
+    let mut required = wgpu::Features::empty();
+    for &capability in capabilities {
+        let feature = capability_features(capability);
+        if feature.is_empty() || !available.contains(feature) {
+            return Err(Error::MissingCapability {
+                capability,
+                adapter: adapter.to_owned(),
+                kernel: None,
+            });
+        }
+        required |= feature;
+    }
+    Ok(required)
+}
+
+/// The subgroup size range as wgpu reports it for the adapter (a fixed 4..64 on Metal), or `None` when the adapter does
+/// not offer subgroup operations. The range is what the adapter can use, not what one dispatch gets: the lane count a shader sees can differ between dispatches of
+/// one device (spike S3: an AMD 890M on DX12 reported 32 in one kernel and 64 in the others).
+pub(crate) fn adapter_subgroup_sizes(
+    features: wgpu::Features,
+    info: &wgpu::AdapterInfo,
+) -> Option<(u32, u32)> {
+    features
+        .contains(wgpu::Features::SUBGROUP)
+        .then_some((info.subgroup_min_size, info.subgroup_max_size))
 }
 
 impl HeadlessDevice {
@@ -697,6 +757,86 @@ mod tests {
             }
             other => panic!("expected Poll for a non-memory error, got {other:?}"),
         }
+    }
+
+    /// The open-refusal path with fake feature sets: it needs no adapter, so it runs where no GPU has subgroups.
+    #[test]
+    fn a_requested_capability_the_adapter_lacks_is_missing_capability() {
+        let adapter = "Fake Adapter";
+        let with = wgpu::Features::SUBGROUP | wgpu::Features::TIMESTAMP_QUERY;
+        let without = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::FLOAT32_FILTERABLE;
+
+        // Nothing requested asks for nothing, whatever the adapter has.
+        assert_eq!(
+            required_capability_features(&[], without, adapter).unwrap(),
+            wgpu::Features::empty()
+        );
+        assert_eq!(
+            required_capability_features(&[], with, adapter).unwrap(),
+            wgpu::Features::empty()
+        );
+        // The adapter has it: exactly its feature is asked for, nothing else.
+        assert_eq!(
+            required_capability_features(&[Capability::Subgroups], with, adapter).unwrap(),
+            wgpu::Features::SUBGROUP
+        );
+        // The adapter lacks it: a typed refusal that names the capability and the adapter, and no kernel.
+        match required_capability_features(&[Capability::Subgroups], without, adapter) {
+            Err(Error::MissingCapability {
+                capability,
+                adapter: name,
+                kernel,
+            }) => {
+                assert_eq!(capability, Capability::Subgroups);
+                assert_eq!(name, adapter);
+                assert_eq!(kernel, None);
+            }
+            other => panic!("expected MissingCapability, got {other:?}"),
+        }
+        let text = required_capability_features(&[Capability::Subgroups], without, adapter)
+            .unwrap_err()
+            .to_string();
+        assert_eq!(
+            text,
+            "the adapter `Fake Adapter` does not offer the `subgroups` capability that the device options request"
+        );
+        // An empty adapter feature set refuses too.
+        assert!(
+            required_capability_features(
+                &[Capability::Subgroups],
+                wgpu::Features::empty(),
+                adapter
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn the_subgroup_range_is_reported_only_for_an_adapter_that_offers_subgroups() {
+        let mut info = wgpu::AdapterInfo::new(wgpu::DeviceType::DiscreteGpu, wgpu::Backend::Vulkan);
+        info.subgroup_min_size = 32;
+        info.subgroup_max_size = 64;
+        assert_eq!(
+            adapter_subgroup_sizes(wgpu::Features::SUBGROUP, &info),
+            Some((32, 64))
+        );
+        assert_eq!(
+            adapter_subgroup_sizes(wgpu::Features::TIMESTAMP_QUERY, &info),
+            None
+        );
+    }
+
+    #[test]
+    fn device_options_hold_no_capability_until_asked() {
+        // The one line that says what the default is (m8.w2 changes it); the rest does not depend on it.
+        assert!(DeviceOptions::default().capabilities.is_empty());
+        let none = DeviceOptions::default().with_capabilities(&[]);
+        let options = none.clone().with_capabilities(&[Capability::Subgroups]);
+        assert_eq!(options.capabilities, &[Capability::Subgroups]);
+        assert_ne!(options, none);
+        // The setter replaces the set and touches no other field.
+        let back = options.clone().with_capabilities(&[]);
+        assert_eq!(back, none);
     }
 
     #[test]

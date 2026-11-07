@@ -527,10 +527,13 @@ hidden from the docs, but its path and that line are covered by the stability pr
 Variants (M8, m8.b1, D139). A function marked `#[variant(of = kernel, requires(cap, ..))]` is another body of the
 kernel `kernel`, with the signature of the kernel token for token and no options of its own (the workgroup size and
 the shape are the kernel's; `#[kernel(.., requires(..))]` gives the kernel's own body a set). The macro lowers a variant
-to a kernel before the validator runs, with the attribute `#[kernel(<the kernel's workgroup_size and shape>, cpu =
-"unsupported", requires(<the variant's own>))]`, so every body is validated and emitted in every build, judged by its
-own attribute (a variant has no twin, so it may use a barrier; a later check of the subgroup operations a body may use
-reads its `requires`), and has its own entry point (`gpu_<module>_<function>`), content key and export record; the
+to a kernel before the validator runs, with the attribute `#[kernel(<the kernel's workgroup_size and shape>, <cpu>,
+requires(<the variant's own>))]`, so every body is validated and emitted in every build, judged by its own attribute.
+The `<cpu>` is `cpu = "unsupported"` for a body with a non-empty set (the kernel's own body included), which never has a
+twin and so may use a barrier, and the kernel's own `cpu` option for the portable body (the body whose set is empty),
+which the twin is built from and which is therefore judged as the twin's body (a barrier in it is GUST-E0717 unless the
+kernel says `cpu = "unsupported"`). A later check of the subgroup operations a body may use reads its `requires`. Each
+body has its own entry point (`gpu_<module>_<function>`), content key and export record; the
 kernel keeps its one handle and typed calls, and its CPU twin and `cpu` form are the portable body's (the body whose
 set is empty, the kernel's own or its `requires()` variant, whichever body the build selects; a kernel with no such
 body has no CPU form). A build selects the body with the largest

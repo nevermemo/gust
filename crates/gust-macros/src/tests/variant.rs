@@ -15,7 +15,8 @@ use crate::{
         testing::{assert_code, assert_codes, assert_rendered_code, parse_str},
     },
     expand::{
-        Capability, CapabilitySet, Environment, Profile, content_key, expand_in, kernel_options,
+        Capability, CapabilitySet, CpuTwin, Environment, Profile, content_key, expand_in,
+        kernel_options,
         variant::{self, Choice, KernelBodies, VariantBody},
     },
     regression_tests::assert_golden,
@@ -370,6 +371,7 @@ impl BodiesBuilder {
             kernel: "sum".to_owned(),
             span: Span::call_site(),
             own: CapabilitySet::from_bits(own),
+            cpu: CpuTwin::Emitted,
             variants: Vec::new(),
         })
     }
@@ -1149,21 +1151,129 @@ fn a_lowered_variant_has_the_layout_of_its_kernel_and_its_own_requirement_and_no
 }
 
 #[test]
-fn a_portable_variant_of_a_kernel_that_requires_lowers_with_no_requirement() {
+fn a_portable_variant_of_a_kernel_that_requires_lowers_with_the_kernels_cpu_and_no_requirement() {
     let source = module_text(
         NEEDS_SUBGROUPS,
         &function_text("#[variant(of = sum, requires())]", "sum_portable"),
     );
     // Not the kernel's `requires(subgroups)`: the body is portable, and a subgroup operation in it would be refused
-    // (m8.s reads the attribute).
+    // (m8.s reads the attribute). The kernel wrote no `cpu`, so neither does the body its twin is built from.
     assert_eq!(
         lowered_kernel_attribute(&source, "sum_portable"),
+        "#[kernel(workgroup_size(64,1,1))]"
+    );
+    // The own body needs a capability, so it never has a twin: its attribute says so.
+    assert_eq!(
+        lowered_kernel_attribute(&source, "sum"),
+        "#[kernel(workgroup_size(64,1,1),cpu=\"unsupported\",requires(subgroups))]"
+    );
+    // The kernel's `cpu` is the portable body's, not the own body's.
+    let unsupported = module_text(
+        "#[kernel(workgroup_size(64, 1, 1), requires(subgroups), cpu = \"unsupported\")]",
+        &function_text("#[variant(of = sum, requires())]", "sum_portable"),
+    );
+    assert_eq!(
+        lowered_kernel_attribute(&unsupported, "sum_portable"),
         "#[kernel(workgroup_size(64,1,1),cpu=\"unsupported\")]"
     );
     assert_eq!(
-        lowered_kernel_attribute(&source, "sum"),
-        "#[kernel(workgroup_size(64,1,1),requires(subgroups))]"
+        lowered_kernel_attribute(&unsupported, "sum"),
+        "#[kernel(workgroup_size(64,1,1),cpu=\"unsupported\",requires(subgroups))]"
     );
+    // A variant with a non-empty set never gets the kernel's `cpu` option, whichever way it is written.
+    let both = module_text(
+        "#[kernel(workgroup_size(64, 1, 1), cpu = \"unsupported\")]",
+        &function_text("#[variant(of = sum, requires(subgroups))]", "sum_subgroups"),
+    );
+    assert_eq!(
+        lowered_kernel_attribute(&both, "sum_subgroups"),
+        "#[kernel(workgroup_size(64,1,1),cpu=\"unsupported\",requires(subgroups))]"
+    );
+}
+
+/// `sum` under `kernel_attribute` and its `requires()` variant `sum_portable`, with `workgroup_barrier()` in the body
+/// that `barrier_in` names (`"sum"` or `"sum_portable"`).
+fn barrier_pair(kernel_attribute: &str, barrier_in: &str) -> String {
+    let body = |name: &str| {
+        let barrier = if name == barrier_in {
+            "workgroup_barrier();"
+        } else {
+            ""
+        };
+        format!(
+            "pub fn {name}({PARAMETERS}) {{
+        {barrier}
+        if id.x < out.len() {{ out[id.x] = data[id.x]; }}
+    }}"
+        )
+    };
+    format!(
+        "mod reduce {{
+    {kernel_attribute}
+    {}
+    #[variant(of = sum, requires())]
+    {}
+}}",
+        body("sum"),
+        body("sum_portable")
+    )
+}
+
+#[test]
+fn a_barrier_in_the_subgroup_own_body_is_accepted_when_a_portable_variant_is_the_twin() {
+    let source = barrier_pair(NEEDS_SUBGROUPS, "sum");
+    for built in [
+        Profile::Other,
+        profile("native+subgroups"),
+        profile("native"),
+        Profile::Cpu,
+    ] {
+        let text = squashed(&expand(&source, built).unwrap());
+        // The twin is the portable variant's: it calls its typecheck function, and the own body has none.
+        assert!(
+            text.matches("__gpu_typecheck_sum_portable(").count() >= 2,
+            "{built:?}: {text}"
+        );
+        assert_eq!(
+            text.matches("__gpu_typecheck_sum(").count(),
+            1,
+            "{built:?}: {text}"
+        );
+        assert!(
+            text.contains("for::gust::cpu::CpuDevice"),
+            "{built:?}: {text}"
+        );
+    }
+    // The own body is lowered as a body that has no twin.
+    assert_eq!(
+        lowered_kernel_attribute(&source, "sum"),
+        "#[kernel(workgroup_size(64,1,1),cpu=\"unsupported\",requires(subgroups))]"
+    );
+}
+
+#[test]
+fn a_barrier_in_the_portable_variant_is_e0717_at_the_variant_unless_the_kernel_says_unsupported() {
+    let source = barrier_pair(NEEDS_SUBGROUPS, "sum_portable");
+    for built in [Profile::Other, profile("native+subgroups"), Profile::Cpu] {
+        let error = rejected(expand(&source, built));
+        assert_code(&error, Code::BarrierKernelCpu);
+        let text = error.to_string();
+        assert!(text.contains("kernel `sum_portable`"), "{built:?}: {text}");
+    }
+    // With `cpu = "unsupported"` on the kernel the portable body has no twin, so the barrier is accepted.
+    let unsupported = barrier_pair(
+        "#[kernel(workgroup_size(64, 1, 1), requires(subgroups), cpu = \"unsupported\")]",
+        "sum_portable",
+    );
+    let text = squashed(&expand(&unsupported, Profile::Other).unwrap());
+    assert!(!text.contains("for::gust::cpu::CpuDevice"), "{text}");
+    // ... and it has no CPU form either: a list that names `cpu` is E0744.
+    let error = rejected(expand_declaring(
+        &unsupported,
+        Some(r#"["native+subgroups", "cpu"]"#),
+        profile("native+subgroups"),
+    ));
+    assert_code(&error, Code::ProfileNotCovered);
 }
 
 #[test]
@@ -1173,7 +1283,7 @@ fn a_variant_may_use_a_barrier_of_a_kernel_that_has_a_cpu_twin() {
         workgroup_barrier();
         if id.x < out.len() { out[id.x] = data[id.x]; }
     }";
-    // `sum` is twin-able (no `cpu = \"unsupported\"`), yet its variant has no twin and so no E0717.
+    // `sum` is twin-able (no `cpu = \"unsupported\"`), yet its variant (a non-empty set) has no twin and so no E0717.
     assert!(expand(&module_text(WORKGROUP, barrier), Profile::Other).is_ok());
     assert!(
         expand(

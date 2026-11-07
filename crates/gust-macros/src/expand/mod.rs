@@ -490,6 +490,12 @@ fn expand_validated_with(
         let body_facts = plan.body_of(&original_name_text);
         let kernel_name =
             owner.map_or_else(|| original_name_text.clone(), |owner| owner.kernel.clone());
+        // The kernel's `cpu` option belongs to its portable body, which is lowered with it; the own body of a kernel
+        // that requires a capability is lowered with `cpu = "unsupported"`, so a kernel of the plan reads its `cpu`
+        // from the bodies, not from its own attribute (M8, D139).
+        let cpu = plan
+            .kernel(&original_name_text)
+            .map_or(cpu, |bodies| bodies.cpu);
         let is_selected = selected
             .get(&kernel_name)
             .is_none_or(|chosen| *chosen == original_name_text);
@@ -829,8 +835,10 @@ fn expand_validated_with(
 /// The `#[kernel]` function is the kernel and its portable body (or, with `#[kernel(requires(..))]`, a body that needs
 /// capabilities itself). [`lower`] turns every variant into a `#[kernel]` function, before validation, so that the
 /// validator and the Slang emitter see plain kernels and every body is validated and lowered in every build. The
-/// lowered attribute has the kernel's `workgroup_size` and `shape`, `cpu = "unsupported"` (a variant has no twin) and
-/// the variant's own `requires(..)`: never the kernel's `cpu` or `requires`. [`VariantPlan`] remembers which body
+/// lowered attribute has the kernel's `workgroup_size` and `shape`, the body's own `requires(..)` and a `cpu`: the
+/// kernel's own `cpu` for the portable body (the body whose set is empty, which is the one the twin is built from, so
+/// the validator judges it by that option), `cpu = "unsupported"` for every body that requires a capability (it never
+/// has a twin). The kernel's own body is lowered the same way. [`VariantPlan`] remembers which body
 /// belongs to which kernel. The expansion builds every body (and writes the record of each in export mode), selects
 /// one per kernel for the profile ([`VariantPlan::select`]) and gives the kernel's descriptor that body's Slang and
 /// artifact; the handle and the typed calls are the kernel's own, and the CPU twin is the portable body's (the body
@@ -863,6 +871,9 @@ pub(crate) mod variant {
         pub span: Span,
         /// What the kernel's own body requires (`#[kernel(requires(..))]`; empty for a portable body).
         pub own: CapabilitySet,
+        /// The kernel's `cpu` option as written. It belongs to the portable body only (the empty-set body, whose twin
+        /// the kernel gets); every other body is lowered with `cpu = "unsupported"` and so is never the twin's.
+        pub cpu: CpuTwin,
         /// The variants, in source order.
         pub variants: Vec<VariantBody>,
     }
@@ -1288,15 +1299,26 @@ pub(crate) mod variant {
         requires: CapabilitySet,
         /// The options a variant of the kernel shares (`workgroup_size(..)` and `shape = ..`), as written.
         layout: Vec<proc_macro2::TokenStream>,
+        /// The `cpu = "unsupported"` the kernel wrote, as written (none when it wrote none or a faulty one).
+        cpu_tokens: Option<proc_macro2::TokenStream>,
+        /// What `cpu_tokens` says.
+        cpu: CpuTwin,
+        /// Whether the attribute is made of options this module re-spells (`workgroup_size`, `shape`, a valid `cpu`
+        /// and `requires`). Any other option, or a walk that failed, is left for `kernel_attribute_facts` to report on
+        /// the attribute as written, so the attribute is not rewritten.
+        rewritable: bool,
     }
 
-    /// The `requires(..)` and the layout options of a `#[kernel(..)]` attribute. Every other option is the business of
-    /// `kernel_attribute_facts`, which reports its errors; only an unknown capability and a second `requires(..)`
-    /// (GUST-E0740, as on `#[variant]`) are reported here.
+    /// The `requires(..)`, the `cpu` and the layout options of a `#[kernel(..)]` attribute. Every other option is the
+    /// business of `kernel_attribute_facts`, which reports its errors; only an unknown capability and a second
+    /// `requires(..)` (GUST-E0740, as on `#[variant]`) are reported here.
     fn kernel_parts(attribute: &syn::Attribute) -> syn::Result<KernelParts> {
         let mut parts = KernelParts {
             requires: CapabilitySet::EMPTY,
             layout: Vec::new(),
+            cpu_tokens: None,
+            cpu: CpuTwin::Emitted,
+            rewritable: true,
         };
         if matches!(attribute.meta, syn::Meta::Path(_)) {
             return Ok(parts);
@@ -1304,62 +1326,87 @@ pub(crate) mod variant {
         let mut seen_requires = false;
         let mut first_error: Option<syn::Error> = None;
         // A failure of the walk itself (an option that does not parse) is left for `kernel_attribute_facts`.
-        let _ = diagnostics::parse_nested_meta(attribute, Code::MalformedKernelAttribute, |meta| {
-            if meta.path.is_ident("requires") {
-                let found = requires_from(meta.input);
-                if seen_requires && first_error.is_none() {
-                    first_error = Some(diagnostics::meta_error(
-                        &meta,
-                        Code::VariantAttribute,
-                        "duplicate `requires` option",
-                    ));
-                }
-                seen_requires = true;
-                match found {
-                    Ok(found) => parts.requires = parts.requires.union(found),
-                    Err(error)
-                        if first_error.is_none() && is_coded(&error, Code::UnknownCapability) =>
-                    {
-                        first_error = Some(error);
+        let walk =
+            diagnostics::parse_nested_meta(attribute, Code::MalformedKernelAttribute, |meta| {
+                if meta.path.is_ident("requires") {
+                    let found = requires_from(meta.input);
+                    if seen_requires && first_error.is_none() {
+                        first_error = Some(diagnostics::meta_error(
+                            &meta,
+                            Code::VariantAttribute,
+                            "duplicate `requires` option",
+                        ));
                     }
-                    Err(error) => return Err(error),
+                    seen_requires = true;
+                    match found {
+                        Ok(found) => parts.requires = parts.requires.union(found),
+                        Err(error)
+                            if first_error.is_none()
+                                && is_coded(&error, Code::UnknownCapability) =>
+                        {
+                            first_error = Some(error);
+                        }
+                        Err(error) => return Err(error),
+                    }
+                } else if meta.path.is_ident("workgroup_size") {
+                    let path = meta.path.clone();
+                    let content;
+                    syn::parenthesized!(content in meta.input);
+                    let inner: proc_macro2::TokenStream = content.parse()?;
+                    parts.layout.push(quote::quote!(#path(#inner)));
+                } else if meta.path.is_ident("shape") {
+                    let path = meta.path.clone();
+                    let value: syn::Ident = meta.value()?.parse()?;
+                    parts.layout.push(quote::quote!(#path = #value));
+                } else if meta.path.is_ident("cpu") {
+                    let path = meta.path.clone();
+                    let value: syn::LitStr = meta.value()?.parse()?;
+                    if value.value() == "unsupported" && parts.cpu_tokens.is_none() {
+                        parts.cpu_tokens = Some(quote::quote!(#path = #value));
+                        parts.cpu = CpuTwin::Unsupported;
+                    } else {
+                        // A duplicate or an unknown value: `kernel_attribute_facts` reports it.
+                        parts.rewritable = false;
+                    }
+                } else {
+                    parts.rewritable = false;
+                    if meta.input.peek(syn::token::Paren) {
+                        let content;
+                        syn::parenthesized!(content in meta.input);
+                        content.parse::<proc_macro2::TokenStream>()?;
+                    } else if meta.input.peek(syn::Token![=]) {
+                        meta.value()?.parse::<syn::Expr>()?;
+                    }
                 }
-            } else if meta.path.is_ident("workgroup_size") {
-                let path = meta.path.clone();
-                let content;
-                syn::parenthesized!(content in meta.input);
-                let inner: proc_macro2::TokenStream = content.parse()?;
-                parts.layout.push(quote::quote!(#path(#inner)));
-            } else if meta.path.is_ident("shape") {
-                let path = meta.path.clone();
-                let value: syn::Ident = meta.value()?.parse()?;
-                parts.layout.push(quote::quote!(#path = #value));
-            } else if meta.input.peek(syn::token::Paren) {
-                let content;
-                syn::parenthesized!(content in meta.input);
-                content.parse::<proc_macro2::TokenStream>()?;
-            } else if meta.input.peek(syn::Token![=]) {
-                meta.value()?.parse::<syn::Expr>()?;
-            }
-            Ok(())
-        });
+                Ok(())
+            });
+        if walk.is_err() {
+            parts.rewritable = false;
+        }
         match first_error {
             Some(error) => Err(error),
             None => Ok(parts),
         }
     }
 
-    /// The attribute a variant is lowered to: the kernel's `workgroup_size` and `shape`, `cpu = "unsupported"` (a
-    /// variant never has a twin, D139) and the variant's own `requires(..)`. The kernel's `cpu` and `requires` are
-    /// not the variant's: the validator judges a body by its own attribute, and m8.s reads the capabilities a body
-    /// may use from it.
+    /// The attribute a body is lowered to: the kernel's `workgroup_size` and `shape`, the body's own `requires(..)`
+    /// and its `cpu`. The `cpu` option belongs to the portable body, the one whose set is empty (it is the body the
+    /// kernel's twin is built from, so the validator judges it with the kernel's `cpu`, GUST-E0717): that body gets
+    /// the kernel's `cpu` as written, or none. Every body with a non-empty set gets `cpu = "unsupported"`: it never
+    /// has a twin (D139). The kernel's `requires` is not a variant's: the validator judges a body by its own
+    /// attribute, and m8.s reads the capabilities a body may use from it.
     fn lowered_attribute(
         layout: &[proc_macro2::TokenStream],
         requires: CapabilitySet,
+        kernel_cpu: Option<&proc_macro2::TokenStream>,
         span: Span,
     ) -> syn::Attribute {
         let mut options: Vec<proc_macro2::TokenStream> = layout.to_vec();
-        options.push(quote::quote_spanned!(span=> cpu = "unsupported"));
+        if !requires.is_empty() {
+            options.push(quote::quote_spanned!(span=> cpu = "unsupported"));
+        } else if let Some(cpu) = kernel_cpu {
+            options.push(cpu.clone());
+        }
         if !requires.is_empty() {
             let names = requires
                 .names()
@@ -1474,6 +1521,13 @@ pub(crate) mod variant {
         own: CapabilitySet,
         /// The options a variant of the kernel shares.
         layout: Vec<proc_macro2::TokenStream>,
+        /// The kernel's `cpu = "unsupported"` as written, and what it says.
+        cpu_tokens: Option<proc_macro2::TokenStream>,
+        cpu: CpuTwin,
+        /// Where the `#[kernel]` attribute stands among the function's, and whether it may be rewritten (see
+        /// `KernelParts::rewritable`).
+        position: usize,
+        rewritable: bool,
     }
 
     /// Lowers the variants of `module` to kernels and returns the plan: the check of the attributes (GUST-E0740 to
@@ -1506,15 +1560,23 @@ pub(crate) mod variant {
                 .enumerate()
                 .filter(|(_, attribute)| is_variant(attribute))
                 .collect();
-            let kernel_attribute = function.attrs.iter().find(|a| is_kernel(a));
+            let kernel_attribute = function
+                .attrs
+                .iter()
+                .enumerate()
+                .find(|(_, a)| is_kernel(a));
             match (found.as_slice(), kernel_attribute) {
                 ([], None) => {}
-                ([], Some(attribute)) => {
+                ([], Some((position, attribute))) => {
                     let parts = kernel_parts(attribute)?;
                     kernels.push(KernelFound {
                         index,
                         own: parts.requires,
                         layout: parts.layout,
+                        cpu_tokens: parts.cpu_tokens,
+                        cpu: parts.cpu,
+                        position,
+                        rewritable: parts.rewritable,
                     });
                 }
                 ([(position, attribute)], None) => {
@@ -1588,6 +1650,7 @@ pub(crate) mod variant {
                 kernel: function.sig.ident.to_string(),
                 span: function.sig.ident.span(),
                 own: kernel.own,
+                cpu: kernel.cpu,
                 variants: variants
                     .iter()
                     .filter(|variant| variant.of == function.sig.ident)
@@ -1616,9 +1679,10 @@ pub(crate) mod variant {
             }
         }
 
-        // The rewrite: a variant is a function with the kernel's `workgroup_size` and `shape`, `cpu = "unsupported"`
-        // and its own `requires(..)` (never the kernel's `cpu` or `requires`).
-        let rewrites: Vec<(usize, usize, syn::Attribute)> = variants
+        // The rewrite: a variant is a function with the kernel's `workgroup_size` and `shape`, its own `requires(..)`
+        // and a `cpu`: the kernel's when its set is empty (the portable body, whose twin the kernel gets), otherwise
+        // `cpu = "unsupported"`. The kernel's own body is rewritten the same way when its set is not empty.
+        let mut rewrites: Vec<(usize, usize, syn::Attribute)> = variants
             .iter()
             .filter_map(|variant| {
                 let kernel = kernel_named(items, &kernels, &variant.of)?;
@@ -1627,10 +1691,27 @@ pub(crate) mod variant {
                 Some((
                     variant.index,
                     variant.position,
-                    lowered_attribute(&kernel.layout, variant.requires, span),
+                    lowered_attribute(
+                        &kernel.layout,
+                        variant.requires,
+                        kernel.cpu_tokens.as_ref(),
+                        span,
+                    ),
                 ))
             })
             .collect();
+        for kernel in &kernels {
+            if kernel.own.is_empty() || !kernel.rewritable {
+                continue;
+            }
+            let written = &function_at(items, kernel.index).attrs[kernel.position];
+            let span = written.pound_token.spans[0];
+            rewrites.push((
+                kernel.index,
+                kernel.position,
+                lowered_attribute(&kernel.layout, kernel.own, None, span),
+            ));
+        }
         for (index, position, attribute) in rewrites {
             if let syn::Item::Fn(function) = &mut items[index] {
                 function.attrs[position] = attribute;

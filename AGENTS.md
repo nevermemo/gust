@@ -101,13 +101,18 @@ Do not wait for Codex during normal local swarm work.
   real GPU tests, typed buffers, pipeline caching, ordered batches, and async jobs.
 - No new custom shader instruction IR or handwritten SPIR-V backend. An eventual
   execution graph is a high-level CPU/GPU scheduling model, not a replacement for Slang.
-- Targets are chosen at build time (D21). A production build contains one target, a
-  GPU target or the CPU target, never both, so there is no runtime CPU fallback.
+- Targets are chosen at build time (D21), and since M8 per routed function (D65, D137):
+  each kernel of a production build has exactly one target, the GPU or the CPU, never
+  both, so there is no runtime CPU fallback and no runtime switching. A build with no
+  route tags and no `gust.toml` is the D21 build, one target for the whole build, and
+  `GUST_PROFILE=cpu` is still the all-CPU build. A build that routes a kernel to the CPU
+  holds that kernel's CPU body (the D22 and D51 contract) beside the GPU pipelines of
+  the others, and a route flip changes that kernel's call sites (a call names its device).
   Test builds may contain both pipelines through `cfg(test)` or `--cfg gust_dual`,
   never through a Cargo feature (D26). Shadow bodies execute only under the
   semantics contract (D22, `docs/SEMANTICS.md`): since M3 they run as CPU twins in
-  test and dual builds, and in no production build except the `cpu` target (D51), whose
-  runtime they are. Independent host references stay
+  test and dual builds, and in no production build except the `cpu` target and a
+  CPU-routed kernel (D51, D65), whose runtime they are. Independent host references stay
   required for semantics fixtures; a twin assertion is added to them and to the GPU
   assertion, never in place of either, and is never GPU evidence.
 - Workflow commands live in `cargo xtask`; do not add shell or PowerShell scripts
@@ -122,7 +127,12 @@ Do not wait for Codex during normal local swarm work.
 - Do not rename crates, initialize Git, remove working examples, add dependencies,
   or expand architecture merely to align branding. Explain necessary changes. The published package names are D48's
   (`gust-compute`, `gust-compute-macros`, `gust-compute-wgpu`); the directories and the library names (`gust`,
-  `gust_macros`, `gust_wgpu`) stay.
+  `gust_macros`, `gust_wgpu`) stay. The one dependency M8 added is `toml` (1.x, `default-features = false`, features
+  `std` and `parse`) in `gust-compute-macros` (D138): `cargo publish` rewrites a dependent's manifest (header tables,
+  literal strings), which a hand-written reader of the source form would refuse, and the macro must read the
+  `[package.metadata.gust]` of the crate that uses it. It brings `toml_parser`, `toml_datetime`, `serde_spanned` and
+  `winnow` (MIT or Apache-2.0, `winnow` MIT only; minimum Rust 1.85 or lower). `cargo-gust` keeps its own small
+  reader of `gust.toml` and gained no dependency.
 - Parallel lanes may each use one branch and one Git worktree (owner decision
   2026-10-23). Update a branch by merging `main` into it; never rebase commits that
   were already pushed.

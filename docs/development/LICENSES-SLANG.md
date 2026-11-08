@@ -6,19 +6,19 @@ keeps the archive layout, and leaves the bundle's own `LICENSE`, `LICENSES/` and
 binaries. `cargo gust slang install` lists them when it finishes, and `cargo gust doctor` points to them.
 
 The 2026.21 archives were audited on 2026-11-07 (slice m8.p; every date in this file is UTC), each against the 2026.20
-archive of the same platform, and every archive was checked against its published SHA-256 before it was extracted or read (the 2026.21 digests are the
-table in `crates/cargo-gust/src/slang.rs`, the 2026.20 ones are in the section below). What was run: file listings and
-text diffs of `LICENSE`, `LICENSES/`, `third-party-notices/`, `README.md` and `share/slang/agent-skills/` between the
-two versions on each platform, a read of every changed text, and a string scan for "GNU General Public" and "GNU
-Lesser" of the executables and libraries in `bin/` and `lib/` of all three 2026.21 archives (Windows: 11 `.exe` and
-`.dll` files; Linux: 11; macOS: 13; no hit in any). The Linux and macOS archives were extracted on Windows, which
-could not create their few symlinks (3 and 1 of them); every regular file was extracted and the listings come from
-the archives themselves. Nothing from any archive was run in this audit. Rule (D46) as below. The file listings (of
-`bin/`, `lib/`, the notice directories and `LICENSE`), the digests, the scan output and the `mi_malloc` counts of this
-audit, all repeated on 2026-11-07 for all six archives (2026.20 and 2026.21, all three platforms), are saved as text
-under `plans/m8/probe/m8p-lic/` of the project's working area (outside the repository): `digests.txt`, `listing-*.txt`,
-`gpl-scan.txt` (every file of `bin/` and `lib/`, so more entries than the executables counted above, and no hit) and
-`mimalloc-counts.txt`, `mimalloc-markers.txt`.
+archive of the same platform, and every archive was checked against its published SHA-256 before it was extracted or
+read (the 2026.21 digests are the table in `crates/cargo-gust/src/slang.rs`, the 2026.20 ones are in the section below).
+What was run: file listings and text diffs of `LICENSE`, `LICENSES/`, `third-party-notices/`, `README.md` and
+`share/slang/agent-skills/` between the two versions on each platform, a read of every changed text, and a string scan
+for "GNU General Public" and "GNU Lesser" of the executables and libraries in `bin/` and `lib/` of all three 2026.21
+archives (Windows: 11 `.exe` and `.dll` files; Linux: 11; macOS: 13; no hit in any). The Linux and macOS archives were
+extracted on Windows, which could not create their few symlinks (3 and 1 of them); every regular file was extracted and
+the listings come from the archives themselves. Nothing from any archive was run in this audit. Rule (D46) as below. The
+file listings (of `bin/`, `lib/`, the notice directories and `LICENSE`), the digests, the scan output and the
+`mi_malloc` counts of this audit, all repeated on 2026-11-07 for all six archives (2026.20 and 2026.21, all three
+platforms), are saved as text under `plans/m8/probe/m8p-lic/` of the project's working area (outside the repository):
+`digests.txt`, `listing-*.txt`, `gpl-scan.txt` (every file of `bin/` and `lib/`, so more entries than the executables
+counted above, and no hit) and `mimalloc-counts.txt`, `mimalloc-markers.txt`.
 
 | Archive | SHA-256 | Verdict |
 | --- | --- | --- |
@@ -32,8 +32,8 @@ under `plans/m8/probe/m8p-lic/` of the project's working area (outside the repos
   platforms. The third-party notice files are the same six (and `mimalloc-LICENSE` on Windows only).
 - `third-party-notices/spirv-tools-LICENSE` gains a section headed `File: utils/git-sync-deps`: a BSD-3-Clause text
   (Google Inc.), 29 lines, on all three platforms; the rest of the file is unchanged. It is a permissive licence for a
-  SPIRV-Tools helper script; the archives list no such script, so it is a notice for source that is not shipped (inferred
-  from the listings).
+  SPIRV-Tools helper script; the archives list no such script, so it is a notice for source that is not shipped
+  (inferred from the listings).
 - Windows `mimalloc-LICENSE` (MIT): only the copyright years change, 2018-2021 to 2018-2025. The other notices
   (`cmark-COPYING`, `glslang-LICENSE.txt`, `lz4-LICENSE`, `miniz-LICENSE`, `unordered_dense-LICENSE`) are byte for byte
   the same on every platform.

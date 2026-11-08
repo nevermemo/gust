@@ -159,7 +159,8 @@ of call sites, so its record is schema 2 and has no `source`: equal bodies write
 record bytes (`write_once` makes the second write a no-op). Each call site writes a
 sidecar `<key>.<site16>.site.json` (`schema` 2, `key`, `file`, `lines`), where `site16`
 is FNV-1a 64 over the relative file, a zero byte and the decimal line of the call.
-`cargo gust` reads schemas 1, 2 and 3; the record keeps every call site, sorted by file and first line, and the
+`cargo gust` reads schemas 1, 2, 3 and 4 (schema 3 adds a pixel shape, schema 4 a capability variant: below); the
+record keeps every call site, sorted by file and first line, and the
 `SourceOrigin` of a schema 2 kernel is the first one's. A `.site.json` next to a schema 1 record, a schema 2
 record without one, and a sidecar of another key are errors.
 
@@ -395,7 +396,11 @@ kernel whose shape is not `grid`: a `#[gpu]` grid kernel keeps schema 1 and a `p
 byte for byte. A reader of schemas 1 and 2 refuses a schema 3 record, and a `shape` in a record that says schema 1 or
 2 is an error. The manifest (`gust-artifacts/manifest.json`) is schema 1 while every kernel is a grid kernel (no
 `shape` key anywhere; `cargo gust init` writes it) and schema 2 once one is not: then every kernel entry carries
-`shape`. A schema 1 manifest reads as all grid, and `check` compares each entry's shape with its record's.
+`shape`. A schema 1 manifest reads as all grid, and `check` compares each entry's shape with its record's. Schema 3
+(M8, D139) is schema 2's grammar plus a `variants` list on the entry of a kernel that has a variant or needs a
+capability (one `{key, requires, variant}` item per body, sorted by key); it is written exactly when some entry has
+`variants`, so a crate without variants keeps the bytes it had, and a reader of schemas 1 and 2 refuses it. The record
+of a body is schema 4 (below), and `cargo gust` reads record schemas 1 to 4 and manifest schemas 1 to 3.
 
 Textures (slices mx.t1 to mx.t3, D64, D90, D92). `gust::texture` names no wgpu type (D02). It holds the formats
 (`Format`, nine variants, tied to the Rust type of one texel by the sealed marker types `R32Uint` to `Rgba32Float`),
@@ -517,8 +522,9 @@ setter changes each field (`BASE.with_shape(..)` replaces the struct-update form
 `KernelDescriptor::__gust_descriptor(..)`, so a field added later is a compile error in the macro's output until the
 macro sets it (the macro binds each slice to a constant first, because the `'static` borrow of a function argument is
 promoted only when the array is a constant expression, which a parameter's layout block is not). The macro also
-implements the hidden marker `gust::target::GpuKernel` for every kernel it builds; the GPU runtime will bound its typed
-entry points on it (m8.w1) so that a kernel routed to the CPU (m8.r1) is an `E0277` at the call site, and a hand-written
+implements the hidden marker `gust::target::GpuKernel` for every kernel it builds, except one routed to the CPU; the GPU
+runtime bounds its typed entry points on it (`gust-wgpu` `lib.rs`, and `run` and `run_indirect` of the staged graph), so
+that a kernel routed to the CPU is an `E0277` at the call site, and a hand-written
 `Kernel` implementation that runs on a GPU device adds `impl gust::target::GpuKernel for MyKernel {}`: the trait is
 hidden from the docs, but its path and that line are covered by the stability promise.
 `gust::routes::variable_name(package, tag)` spells the variable `GUST_ROUTE__<package>__<tag>` for the driver;

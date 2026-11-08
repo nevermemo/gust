@@ -8,43 +8,114 @@ breaks existing code bumps the minor version, and the promise is described in th
 ## Unreleased (0.2.0)
 
 The workspace version is `0.2.0-dev`. Work for 0.2.0 lands on `main`; the 0.1.0 line continues on the branch
-`release/0.1`. This list is what the milestone has merged so far.
+`release/0.1`. This list is what the milestone (M8) has merged. 0.2.0 has one listed break (B1, below), and it is the
+last of its kind: the descriptor is `#[non_exhaustive]` from now on.
 
 ### Added
 
 - Capabilities in the build profile. `GUST_PROFILE` takes `<target>(+<capability>)*`, and `subgroups` is the first
-  capability (`dev+subgroups`); `gust::capability::enabled()` and `cfg(gust_capability = "..")` read it. A malformed
-  `[package.metadata.gust]` table is `GUST-E0753`.
-- Variants. `#[variant(of = kernel, requires(..))]` gives a kernel a second body for devices that have a capability, and
-  the macro checks that the declared profiles are all covered (`GUST-E0740` to `GUST-E0744`, `GUST-E0750`). `cargo
-  gust` reads and writes artifact record schema 4 and manifest schema 3 for them; kernels without variants keep the
-  bytes they had.
+  capability (`dev+subgroups` is the test profile, `native+subgroups` the strict one; `web+subgroups` and a capability
+  on `cpu` are refused, `f16` and `atomics64` are reserved names). `gust::capability` (`Capability`, `enabled()`) and
+  `cfg(gust_capability = "..")` read it.
+- `[package.metadata.gust]` in a kernel crate's `Cargo.toml`: `profiles` (the build profiles the crate declares; the
+  default is `["native", "web", "cpu"]`), `limits = "portable"` and `routes`. A malformed table is `GUST-E0753` with the
+  line and column.
+- Variants. `#[variant(of = kernel, requires(..))]` gives a kernel another body for devices that have a capability
+  (the aliases `vulkan` and `webgpu` are the sets `subgroups` and none), and the macro checks that every declared
+  profile has a body (`GUST-E0740` to `GUST-E0744`, `GUST-E0750`). `cargo gust` reads and writes artifact record
+  schema 4 and manifest schema 3 for them; kernels without variants keep the bytes they had.
 - Subgroup operations (21, as shadow functions such as `subgroup_add`, `subgroup_ballot`, `subgroup_shuffle`), accepted
   only in a body that requires `subgroups` and only where every invocation reaches them (`GUST-E0745`, `GUST-E0747`,
   `GUST-E0751`). The WGSL that Slang writes for them is repaired for the pinned `naga` by a text fix-up, in the
-  run-time compiler, the reflected bridge and `cargo gust build`.
-- `gust-compute-wgpu` opens its devices with the capabilities of the build, refuses a kernel whose `requires` the device
-  does not meet before launch (`Error::MissingCapability`, `Error::KernelTarget`, `Error::SubgroupSize`), and reports
-  the adapter's subgroup size range.
-- An opt-in portable floor: `limits = "portable"` in `[package.metadata.gust]` checks every kernel against
+  run-time compiler, the reflected bridge and `cargo gust build`. They ran on an RTX 5090 (subgroup size 32) and on
+  lavapipe in CI (size 8); no browser has run one, and the Radeon 890M has not run the fixtures.
+- `gust-compute-wgpu` opens its devices with the capabilities of the build (`DeviceOptions::capabilities` and
+  `with_capabilities`, `HeadlessDevice::capabilities()` and `subgroup_sizes()`), refuses a request the adapter cannot
+  meet when the device opens, and refuses a kernel whose `requires` the device does not meet before launch
+  (`Error::MissingCapability`, `Error::KernelTarget`, `Error::SubgroupSize`; the enum is `#[non_exhaustive]`).
+- An opt-in portable floor: `limits = "portable"` checks every `#[kernel]` of a `#[gpu]` module against
   `gust::limits::PORTABLE`, WebGPU's default limits (`GUST-E0746`).
-- New public modules of `gust-compute`: `gust::target` (`Target`) and `gust::routes` (`variable_name`,
-  `VARIABLE_PREFIX`, the spelling of the build-time route variables).
+- Build-time routing. `#[gpu(route = "tag")]` on a module or a function sends its kernels to the CPU or the GPU for a
+  whole build; the tags are declared in `[package.metadata.gust.routes]` (`GUST-E0748`, `GUST-E0749`) and chosen by a
+  `gust.toml` beside the application's manifest. `cargo gust build`, `check`, `run` and `test` read it, set one
+  `GUST_ROUTE__<package>__<tag>` variable per tag and write `gust-artifacts/routes.json`; `cargo gust run` and `test`
+  are new. Without a `gust.toml` and without route tags a build is exactly what it was.
+- New public modules of `gust-compute`: `gust::capability`, `gust::limits`, `gust::target` (`Target`, and the hidden
+  `GpuKernel` marker) and `gust::routes` (`variable_name`, `VARIABLE_PREFIX`).
 
 ### Changed, and may break code written for 0.1.0
 
-- `KernelDescriptor` is `#[non_exhaustive]` and has new fields (`variant`, `requires`, `target`). Build one with
-  `KernelDescriptor::new` and the `with_*` setters instead of a struct literal. `cargo semver-checks` lists this one.
+- **B1: `KernelDescriptor` is `#[non_exhaustive]`** and has new fields (`variant`, `requires`, `target`). A struct
+  literal, or a struct update from a base value, no longer compiles outside `gust-compute`. Migration: build one with
+  `KernelDescriptor::new(module, name, entry_point, workgroup_size, parameters, slang_source)`, which sets the grid
+  shape, no artifacts, the portable variant, no capability and the GPU target, and change a field with its `with_*`
+  setter (`with_shape`, `with_source`, `with_artifacts`, `with_variant`, `with_requires`, `with_target` and the
+  others). Kernels written with `#[gpu]` need no change. `cargo semver-checks` lists this one.
 - The generic entry points of `gust-compute-wgpu` and the runs of `StagedGraph` require the `GpuKernel` marker.
   `#[gpu]` kernels get the marker from the macro, so they need no change. A hand-written `Kernel` impl that runs on
   `HeadlessDevice` adds `impl gust::target::GpuKernel for MyKernel {}`; without it the call is E0277 with a message
   that says so. The semver tool does not list this change (the marker is `#[doc(hidden)]`).
-- `gust-compute-macros` depends on `toml` 1 (no default features; `std` and `parse`) to read `[package.metadata.gust]`.
+- `DeviceOptions::default()` and `HeadlessDevice::new()` now request `gust::capability::enabled()`. In a build with no
+  capability that is the empty set, as before; in a `+subgroups` build they open a device with the feature or fail with
+  `Error::MissingCapability`.
+- Documented, not a break of 0.1.0 code: a route flip changes which device a kernel's call sites compile against. A
+  kernel call names its device, so a kernel routed to the CPU has no `GpuKernel` impl (its `HeadlessDevice` calls are
+  E0277) and has `CpuDevice` calls instead, and flipping the route back reverses both. Only the calls of a generated
+  element-wise map (`name::map`) are the same on either target. No 0.1.0 kernel is routed. A device handle that
+  follows the route is not built in 0.2.0.
 - The pinned Slang is 2026.21 (`cargo gust slang install` fetches it); the 0.1.0 line stays on 2026.20. Artifacts
   built with 2026.20 fail `cargo gust check` ("the manifest was built with Slang `2026.20` but the installed helper
   reports `2026.21`"); run `cargo gust build` again (or pass `--allow-slang-mismatch`). The emitted WGSL of one
   kernel kind changes visibly: a compare-exchange now retries after a spurious failure (Slang #13918, read from the
   emitted text). That stays inside the weak contract of `atomic_compare_exchange`, but it is a change in GPU behaviour.
+
+### A new dependency
+
+`gust-compute-macros` depends on `toml` 1 (no default features; `std` and `parse`) to read `[package.metadata.gust]`.
+It brings four more crates, so a build of `gust-compute` compiles five that 0.1.0 did not: `toml`, `toml_parser`,
+`toml_datetime` and `serde_spanned` (MIT or Apache-2.0) and `winnow` (MIT). Each declares a minimum Rust of 1.85 or
+lower, under the workspace's 1.90. The reason is that `cargo publish` rewrites a manifest, so a reader of the source
+form that was written by hand would refuse the form a published crate carries. This is not a code break.
+
+### Compatibility with 0.1.0
+
+The `semver` job of CI compares `gust-compute` and `gust-compute-wgpu` with the branch `release/0.1` (0.1.0) with
+`cargo-semver-checks` 0.51.0. On the merge of m8.x1 into `main` (the latest green `ci.yml` run of `main` when this was
+written: run 42518513308, job `semver`; the job treats its findings as expected and stays green), the job found:
+
+- `gust-compute`: 229 checks, 228 passed, 31 skipped, 1 failed. The failure is `struct_marked_non_exhaustive` for
+  `KernelDescriptor` (`crates/gust/src/descriptor.rs`), which is B1, so the tool says a new major version is required
+  (for 0.x, a minor bump).
+- `gust-compute-wgpu`: 229 checks, all passed, 31 skipped, no version update required.
+- What the job cannot see: the `GpuKernel` bound (hidden from the docs), the changed defaults above, the `toml`
+  dependency, and `cargo-gust` (a binary).
+
+The tree holds 113 package and workspace manifests of examples, fixtures and tests (`examples/`, `tests/` and
+`crates/gust-algo`) that already exist on `release/0.1`. This is what `git diff release/0.1 main` says of each, and
+which gate of `main` builds it (`check-examples` builds the examples but `web-vector-add`, which `check-web` builds;
+`check-cpu` their twins; `check-ui` the `tests/ui` fixtures; `check-dual`, `check-cpu-target`, `check-precompiled` and
+`check-difftest` the fixture workspaces of the same names; `check-feature algo` and the Gpu suite `gust-algo`):
+
+- **94 unchanged**: no file in the crate's directory differs.
+- **4 changed only in derived files**, source untouched: `examples/map-chain` (its committed artifacts, written again
+  for Slang 2026.21), `tests/difftest/template` (its `Cargo.lock`) and the `tests/ui` crates `profile-native-artifact`
+  and `profile-native-no-manifest` (one artifact file each).
+- **15 changed in a source file or a manifest.**
+  - Four are the B1 migration, the only edits that existing code needed: the `tests/ui` crates
+    `typed-call-buffer-for-sampler`, `typed-call-buffer-for-texture`, `typed-call-sampler-for-buffer` and
+    `typed-call-texture-ok` wrote a `KernelDescriptor` literal and now call `KernelDescriptor::new(..)` and add `impl
+    gust::target::GpuKernel for Blur {}` (three of the `expected.txt` files only change a line number).
+  - One is a version literal: `tests/precompiled/kernels` names its `gust` path dependency `0.2.0-dev` (RELEASE.md lists
+    it for the release).
+  - Ten only gained things: `crates/gust-algo` (the `evidence` module and an example, additive; not published),
+    `examples/web-vector-add` (an added `check-web` assertion that a subgroup request is refused, and re-written
+    artifacts), `tests/cpu-target` and its `kernels` (a `routed` crate and a `variant` module), `tests/dual` with its
+    `consumer` and `kernel-lib` (a routed module and binary), `tests/difftest` (the format 7 harness and the profile
+    flags), `tests/precompiled` (an expectation file) and the `tests/ui` workspace (new members and fixture crates).
+
+By this comparison the only source edits that 0.1.0 code needed are the four B1 migrations. That is a statement about
+the diff, not about a run: whether each gate is green on a commit is recorded in STATUS, and the gates that 0.2.0 adds
+(`check-routing`, the `dev+subgroups` batches) only add fixtures.
 
 ## 0.1.0 (not yet published)
 

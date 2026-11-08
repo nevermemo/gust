@@ -93,14 +93,14 @@ major changes and release validation, but the ordinary workspace loop prioritize
 compiler/runtime feedback over full example proofs.
 
 Compiling a kernel at run time (launching `slangc` and the native reflection helper) is the
-`slang-runtime` feature of `gust-compute` and `gust-compute-wgpu`, off by default (D44). Eleven of the twelve examples
-(all but `web-vector-add`) enable it in their manifests, and `gust-compute` and `gust-compute-wgpu` enable it for
-their own tests through a dev-dependency on themselves, so `cargo run -p vector-add`, `cargo test -p gust-compute-wgpu`
-and `cargo test --workspace` need no flag. A crate of your own that runs kernels this way during
-development has a feature of its own, `gust-dev = ["gust-compute-wgpu/slang-runtime"]` ("Install from crates.io"), or
-passes `--features gust-compute-wgpu/slang-runtime`, so that its normal dependencies, and a release build, hold no
-process-spawning compiler. A `[dev-dependencies]` entry with the feature serves `cargo test` and examples, but never
-`cargo run` of a binary. Check that state with
+`slang-runtime` feature of `gust-compute` and `gust-compute-wgpu`, off by default (D44). Eleven of the thirteen examples
+(all but `web-vector-add` and `subgroup-reduce`) enable it in their manifests, and `gust-compute` and
+`gust-compute-wgpu` enable it for their own tests through a dev-dependency on themselves, so `cargo run -p vector-add`,
+`cargo test -p gust-compute-wgpu` and `cargo test --workspace` need no flag. A crate of your own that runs kernels this
+way during development has a feature of its own, `gust-dev = ["gust-compute-wgpu/slang-runtime"]` ("Install from
+crates.io"), or passes `--features gust-compute-wgpu/slang-runtime`, so that its normal dependencies, and a release
+build, hold no process-spawning compiler. A `[dev-dependencies]` entry with the feature serves `cargo test` and
+examples, but never `cargo run` of a binary. Check that state with
 `cargo check -p gust-compute -p gust-compute-wgpu --no-default-features --lib` (the Unit suite runs it).
 
 Build profiles (D44, D51): the environment variable `GUST_PROFILE` is `dev`, `native`, `web` or `cpu`, and
@@ -132,6 +132,18 @@ contains no Slang bridge, helper or GPU runtime. A kernel marked `#[kernel(cpu =
 `dispatch` on it does not compile. Kernels run on one thread, in ascending `global_id.x`, with one exception: the calls
 of an element-wise map (`#[gpu]` on a function) run in parallel chunks of the output (see "Current subset").
 `cargo xtask check-cpu-target` is the evidence (the `Cpu` tier).
+
+Capabilities (D138). `GUST_PROFILE` may name capabilities after its target, `<target>(+<capability>)*`, for example
+`native+subgroups`. The one capability of this release is `subgroups`. `f16` and `atomics64` are reserved names that
+the build script refuses as not supported, `cpu` takes none, and `web+subgroups` is refused because the pinned wgpu
+(30.0.1) cannot request the feature in a browser. The build script sets `cfg(gust_capability = "subgroups")`, and
+`gust::capability::enabled()` lists the capabilities of the build. `dev+subgroups` is the profile that the tests of
+subgroup kernels use, because `dev` keeps the run-time compiler that a strict profile refuses; `native+subgroups` is the
+strict form that ships. A crate declares what it builds for under `[package.metadata.gust]` in its own `Cargo.toml`:
+`profiles` (the build profiles it supports, `["native", "web", "cpu"]` when absent), `limits = "portable"` and `routes`
+(see "Capability variants and subgroup operations" and "Routing kernels to the CPU or the GPU at build time"). The
+macro reads that table with the `toml` crate; a table it cannot read is GUST-E0753, and the message gives the line and
+column in `Cargo.toml`.
 
 For the full release-readiness check (including ignored example tests, all nine
 examples, and mandatory external validation of the twenty SPIR-V files of the examples and of nine golden sets):
@@ -424,15 +436,26 @@ a `gust.toml`.
 
 Without a `gust.toml`, nothing changes and plain cargo's rules apply. Plain `cargo build` sets no variable, and no
 `cargo gust` command yet builds a routed release binary: only `run` and `test` compile a binary under the driver.
-`cargo xtask check-routing` is the evidence (see the command table near the top).
+Changing the `gust.toml` rebuilds the crates that use a tag, in both directions (measured by `cargo xtask
+check-routing`: a route that goes from unset to set recompiles too). A route flip is a call-site change: a kernel call
+names its device, so a kernel routed to the CPU is called on `CpuDevice` and one routed to the GPU on `HeadlessDevice`,
+and only the generated element-wise map (`name::map`) is the same on both ("Upgrading from 0.1.0 to 0.2.0").
+`cargo xtask check-routing` is the evidence (see the command table near the top); everything it runs but its `gpu`
+case is `Cpu` evidence.
 
 ## Platforms
 
 - **Supported:** Vulkan on Windows and Linux. The native backend asks wgpu for Vulkan only, so
   `HeadlessDevice::new()` needs a Vulkan compute adapter. In the browser the backend uses WebGPU through
   `wasm32-unknown-unknown` (`examples/web-vector-add`, the strict `web` profile, `cargo xtask check-web`).
-- **Not supported in 0.1.0:** macOS and Metal (no Metal backend is compiled), and DX12 is not claimed. Software
-  adapters such as Mesa lavapipe run the GPU tests in CI as `Gpu (software)` evidence; they are not a target.
+- **Subgroups (M8):** a `+subgroups` build needs a Vulkan adapter that offers subgroup operations. Its tests ran on the
+  RTX 5090 (subgroup size 32) and on lavapipe in CI (size 8); the Radeon 890M is a spike and `gust-algo` observation,
+  not a test run ([SEMANTICS](docs/SEMANTICS.md)). In the browser `web+subgroups` is refused at build time, and a device
+  opened with a capability there is `Error::MissingCapability`: the pinned wgpu cannot request the feature, so a web
+  build runs the portable body. `check-web` shows that refusal in Chrome 156; it says nothing about the adapter.
+- **Not supported in 0.1.0:** macOS and Metal (no Metal backend is compiled), and DX12 is not claimed (the spike S3
+  probe ran DX12, but `gust-compute-wgpu` does not compile it). Software adapters such as Mesa lavapipe run the GPU
+  tests in CI as `Gpu (software)` evidence; they are not a target.
 - **CPU:** a `GUST_PROFILE=cpu` build contains no GPU runtime and runs the kernels as plain Rust (see "Try it").
 - **SPIR-V:** SPIR-V is exported (`cargo gust build --format spirv`) and validated with `spirv-val` when that is on
   `PATH`; the runtime executes the WGSL. Running the exported SPIR-V is planned for a 0.1.x release (D114).
@@ -453,8 +476,11 @@ The promise covers:
   `#[non_exhaustive]` enum may gain variants, so match it with a wildcard arm. A minor bump may grow `Access` (a
   write-only access, say);
 - the commands of `cargo-gust` and the lines they print, which scripts and CI read;
-- the file formats: `gust-artifacts/manifest.json`, the record files and the reflection records; a newer release reads
-  every older schema (D82, D89, D91);
+- the file formats: `gust-artifacts/manifest.json` (schema 3 since 0.2.0), the record files (schema 4) and the reflection
+  records; a newer release reads every older schema (D82, D89, D91, D139);
+- the modules that 0.2.0 adds to `gust-compute` (`gust::capability`, `gust::limits`, `gust::target`, `gust::routes`),
+  `GUST_PROFILE`'s `+capability` suffix, the `[package.metadata.gust]` table and `gust.toml`, and the hidden marker
+  `gust::target::GpuKernel` with the line that a hand-written `Kernel` adds (below);
 - the diagnostic codes, `GUST-E....` ([DIAGNOSTICS](docs/DIAGNOSTICS.md)): a code keeps its meaning, the message text
   may be reworded.
 
@@ -469,6 +495,35 @@ the toolchain support (the rules for finding Slang that `cargo-gust` shares with
 has run on one hardware adapter, the RTX 5090 (Vulkan), and on the lavapipe software adapter, and on no other hardware.
 Headless Chrome on that same NVIDIA GPU has run a `pixel` kernel and no texture kernel. Another vendor's GPU, or a
 phone, may show a difference the tests have not seen ([Shapes](#shapes-grid-and-pixel) lists what has run).
+
+### Upgrading from 0.1.0 to 0.2.0
+
+0.2.0 is a minor bump because of one break, B1, and it is the last one of its kind; the rest of M8 only adds
+([CHANGELOG](CHANGELOG.md) has the full list, with the report of the `semver` CI job).
+
+- **B1: `KernelDescriptor` is `#[non_exhaustive]`.** A struct literal, or a struct update from a base value, no longer
+  compiles outside `gust-compute`, because the descriptor gained `variant`, `requires` and `target`. Build one with
+  `KernelDescriptor::new(module, name, entry_point, workgroup_size, parameters, slang_source)`, which sets the grid
+  shape, no capability and the GPU target, and change a field with its `with_*` setter (`with_shape`, `with_source`,
+  `with_artifacts` and the others). A later field is not a break again. Kernels written with `#[gpu]` need no change.
+  A hand-written `Kernel` implementation that runs on `HeadlessDevice` also adds one line,
+  `impl gust::target::GpuKernel for MyKernel {}`; without it the call is an E0277 that says the device cannot run the
+  kernel. The semver tool does not list that line, because the marker is `#[doc(hidden)]`.
+- **A route flip is a call-site change (documented, not a break).** Routing sends a kernel to the CPU or the GPU for a
+  whole build (see "Routing kernels to the CPU or the GPU at build time"), and a typed call names its device. A kernel
+  routed to the CPU has no `GpuKernel` impl, so its `HeadlessDevice` calls stop compiling (E0277) and its `CpuDevice`
+  calls start to; flipping the route back reverses both. Only the calls of a generated element-wise map (`name::map`)
+  do not name a device and are the same on either target. No 0.1.0 kernel is routed, so none breaks; a target-agnostic
+  device handle that the route would choose is filed in NEXT_TASKS, not built.
+- **A new dependency.** `gust-compute-macros` depends on `toml` 1 (no default features; `std` and `parse`) to read
+  `[package.metadata.gust]`, which adds four more crates to a build of `gust-compute`: `toml_parser`, `toml_datetime`,
+  `serde_spanned` and `winnow`. All five are MIT or Apache-2.0 (`winnow` is MIT) and declare a minimum Rust of 1.85
+  or lower, under the workspace's 1.90. The reason is that `cargo publish` rewrites a manifest (headers for inline tables, literal
+  strings), so a hand-written reader of the source form would refuse the form a published crate carries.
+- **Changed behaviour.** `DeviceOptions::default()` and `HeadlessDevice::new()` now request
+  `gust::capability::enabled()`. In a build without a capability that is the empty set, as before; in a `+subgroups` build they open a device with
+  the feature, or fail with `Error::MissingCapability`. The pinned Slang is 2026.21 (D150); `cargo gust check` refuses
+  artifacts built with 2026.20 until `cargo gust build` is run again.
 
 ## Minimum Rust
 
@@ -945,6 +1000,55 @@ pub fn block_sum(
   control pin the new diagnostics. One adapter only; a read of workgroup memory the validator cannot see is
   outside the defined domain and no test can observe it ([SEMANTICS](docs/SEMANTICS.md)).
 
+## Capability variants and subgroup operations
+
+A kernel can have another body for devices that offer a capability (exists, M8, D23, D139). The `#[kernel]` function is
+the kernel and its portable body; a `#[variant]` function beside it is an alternative with the same signature, token for
+token, and no options of its own (the workgroup size, the shape and the `cpu` option are the kernel's):
+
+```rust
+#[kernel(workgroup_size(64, 1, 1))]
+pub fn double(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mut out: RWStructuredBuffer<u32>) { /* portable */ }
+
+#[variant(of = double, requires(subgroups))]
+pub fn double_subgroups(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mut out: RWStructuredBuffer<u32>) {
+    /* the form for a device with subgroup operations */
+}
+```
+
+- A build uses one body: the one with the largest `requires` set that the capabilities of `GUST_PROFILE` contain, else
+  the portable body. The names `vulkan` (the set `subgroups`) and `webgpu` (the empty set) are aliases. Every body is
+  validated and lowered in every build, and `cargo gust build` exports the artifact of every body (record schema 4 and
+  manifest schema 3, written only for a kernel with a variant or a required capability, so other crates keep their
+  bytes). The CPU twin and the `cpu` target always use the portable body. The codes are GUST-E0740 to E0744 and E0750
+  ([DIAGNOSTICS](docs/DIAGNOSTICS.md)).
+- A crate's `profiles` list is checked for exhaustiveness: every declared GPU profile needs a body for every kernel
+  (GUST-E0744). A kernel that says `cpu = "unsupported"` meets the `cpu` entry of the default list, so a 0.1.0 crate
+  needs no manifest change; an explicit `profiles` list that names `cpu` is stricter and refuses such a kernel.
+- Subgroup operations are 21 functions (`subgroup_add`, `subgroup_ballot`, `subgroup_shuffle`, `subgroup_size()`,
+  `subgroup_lane()` and the rest; [SEMANTICS](docs/SEMANTICS.md) lists them with their types). They are accepted only
+  in the body of a kernel that requires `subgroups`, never in a helper (GUST-E0745), only where every invocation of the
+  subgroup reaches them (the placement rule of `workgroup_barrier()`, GUST-E0747), and in a kernel whose invocation
+  count per workgroup is a multiple of 64 (GUST-E0751). The macro is the only uniformity check: the GPU compiler stack
+  checks none. The lane count is a property of the pipeline, so a kernel reads `subgroup_size()` and never assumes one.
+  The WGSL that Slang writes for these operations is repaired for the pinned naga by a text fix-up (D141).
+- On the host, `HeadlessDevice::new()` and `DeviceOptions::default()` open the device with the capabilities of the build
+  (`gust::capability::enabled()`), and `DeviceOptions::with_capabilities` chooses another set. An adapter that lacks a
+  requested capability gives `Error::MissingCapability` when the device is opened; in a browser any non-empty set is
+  that refusal, because the pinned wgpu cannot request it there. A kernel whose `requires` the device was not opened
+  with is the same error at launch, and a workgroup that is not whole subgroups is `Error::SubgroupSize`.
+  `HeadlessDevice::subgroup_sizes()` is the adapter's range as wgpu reports it.
+- Evidence is narrow and labelled *measured*: a subgroup body has no CPU twin. The tests of `gust-compute-wgpu` ran on
+  the RTX 5090 (subgroup size 32) and, in CI, on Mesa lavapipe (size 8); the Radeon 890M ran the spike's cells and the
+  `gust-algo` evidence kernel but not these tests, and no browser has run a subgroup kernel ([SEMANTICS](docs/SEMANTICS.md)
+  has the table). `examples/subgroup-reduce` builds under the strict `native+subgroups` profile from committed artifacts.
+  The subgroup form of the `gust-algo` reduction was not faster than the shipped one, so `gust_algo::evidence` keeps it
+  outside the variant set (D146).
+- The portable floor is opt-in. A crate that sets `limits = "portable"` under `[package.metadata.gust]` has every
+  `#[kernel]` of its `#[gpu]` modules checked against `gust::limits::PORTABLE`, WebGPU's default limits (256 invocations
+  per workgroup, 8 storage buffers, 16 KiB of workgroup memory and the rest of the table), and an overshoot is
+  GUST-E0746. Element-wise maps and `par_for!` are not checked, and a crate without the setting is not checked at all.
+
 ## Examples
 
 The workspace contains ten runnable programs (and `web-vector-add`, a browser module run by
@@ -1066,7 +1170,13 @@ The direct syntax translator currently supports:
 - 2-D textures and samplers (MX, D64, D90): `Texture2D<T>`, `StorageTexture2D<F>` (the three `r32` formats),
   `WriteTexture2D<F>` (nine formats) and `Sampler` parameters with `load`, `store`, `sample`, `width` and `height`
   (GUST-E0731 to E0736); see "Textures and samplers". Three-wide texels, converting formats, 1-D, 3-D, cube, array and
-  multisampled textures, comparison samplers and mip levels other than 0 are not in the dialect.
+  multisampled textures, comparison samplers and mip levels other than 0 are not in the dialect;
+- capability variants and subgroup operations (M8, D139, D140): `#[variant(of = .., requires(..))]` bodies, the 21
+  `subgroup_*` functions in a body that requires `subgroups`, and the opt-in portable floor (`limits = "portable"`);
+  GUST-E0740 to E0751 and E0753; see "Capability variants and subgroup operations";
+- build-time routing (M8, D65 to D67, D137): `#[gpu(route = "<tag>")]` on a module or a `#[gpu] fn` sends it to the CPU
+  or the GPU for a whole build, chosen by `GUST_ROUTE__*` variables that `cargo gust` sets from a `gust.toml`;
+  GUST-E0748 and E0749; see "Routing kernels to the CPU or the GPU at build time".
 
 The validator intentionally rejects allocation, standard-library access, macros,
 closures, async/await, references (other than an atomic's `&mut buffer[index]`
@@ -1121,7 +1231,10 @@ Around the translator, the host side currently provides:
   (`LimitsPolicy::Default`, wgpu's portable ones, or `Adapter`, the adapter's own buffer size, storage binding size
   and workgroups per dimension). `default_device()` opens `DeviceOptions::default()` once per process (native:
   Vulkan, high-performance, adapter limits), and `set_default_options` changes that before the first use (after it,
-  `Error::DefaultDeviceOpened`). Tests: `gust-wgpu/tests/device_options.rs`;
+  `Error::DefaultDeviceOpened`). Since M8 (D142) the options also carry the capabilities the device is opened with
+  (`with_capabilities`; `default()` and `HeadlessDevice::new()` take `gust::capability::enabled()`), and a capability
+  the adapter lacks is `Error::MissingCapability` at open. Tests: `gust-wgpu/tests/device_options.rs` and
+  `capabilities.rs`;
 - fallible buffer constructors (m7.a0, D84): `try_create_typed_buffer`, `create_zeroed_buffer` and `GpuVec` check
   `max_buffer_size` before any wgpu call (`Error::DeviceLimit`), and on native an allocation the adapter cannot serve is
   `Error::OutOfMemory` (a unit test only, no hardware run); `create_typed_buffer` stays infallible and unchecked;
@@ -1144,16 +1257,19 @@ Around the translator, the host side currently provides:
   exact. A float sum is within the per-level bound of `gust_algo::bound` (`f32_sum_bound_v1` for v1, `f32_sum_bound`
   for v0) of the exact sum, not a bit pattern; the two variants may differ in the last bits, and the tests compare
   each with a reference, never with each other. The kernels compile at run time through the crate's `slang-runtime`
-  feature; it ships no precompiled artifacts. Tests: `cargo xtask check-feature algo` (the adapter cases are pinned by
-  name in the Gpu suite, see [VALIDATION](docs/development/VALIDATION.md)).
+  feature; it ships no precompiled artifacts. `gust_algo::evidence` holds the subgroup form of the reduction's block step
+  as measured evidence: it was not faster than v1 in any of six cells on the RTX 5090 and the Radeon 890M, so it is not a
+  variant of the shipped kernel (D146) and not part of what the crate offers. Tests: `cargo xtask check-feature algo`
+  (the adapter cases are pinned by name in the Gpu suite, see [VALIDATION](docs/development/VALIDATION.md)).
 
 Its CPU backend, `gust::cpu`, runs the Rust body of each kernel that has a typed call, unless it opts out with
 `#[kernel(cpu = "unsupported")]`: as a test twin (emitted under
 `cfg(test)` or `--cfg gust_dual`) and, under `GUST_PROFILE=cpu`, as the production CPU target described above.
 The twin is test evidence next to the GPU and the independent host
 reference, never in place of them, and never GPU evidence; where it may differ from the
-GPU, [SEMANTICS](docs/SEMANTICS.md) lists the limitation. It does not yet provide a compile-time portable limit floor
-(roadmap M8) or an access mode in the buffer type. A kernel with workgroup memory or a barrier has no CPU twin and says
+GPU, [SEMANTICS](docs/SEMANTICS.md) lists the limitation. The compile-time portable limit floor is opt-in
+(`limits = "portable"`, GUST-E0746; "Capability variants and subgroup operations"), and no access mode exists in the
+buffer type yet. A kernel with workgroup memory or a barrier has no CPU twin and says
 `cpu = "unsupported"` (E0717): no CPU strategy for barriers exists, and `cpu = "lockstep"` is rejected (E0709), because
 the threaded lockstep twin measured far too slow (S7.4, D118).
 
@@ -1190,7 +1306,10 @@ examples/
   map-chain/
   texture-threshold/
   web-vector-add/
+  shape-bench/          the same kernels as grid and pixel kernels: bit identity and timing (cargo run -p shape-bench)
+  subgroup-reduce/      a subgroup kernel under the strict native+subgroups profile (D138)
 tests/fixtures/         reviewed golden Slang and GPU semantics fixtures
+tests/routing/          workspace of its own: the routing driver check (cargo xtask check-routing)
 tests/ui/               compile-fail fixtures for the stable diagnostics (check-ui)
 tests/dual/             workspace of its own: the dual-build (CPU twin) check
 tests/cpu-target/       workspace of its own: the production CPU target check
@@ -1237,3 +1356,8 @@ See [the architecture note](docs/ARCHITECTURE.md) for the boundary decisions and
 their rationale.
 
 Licensed under MIT or Apache-2.0.
+
+Since 0.2.0 the dependencies of `gust-compute-macros` include `toml` and the four crates it brings in. Their licences:
+`toml`, `toml_parser`, `toml_datetime` and `serde_spanned` are MIT or Apache-2.0, and `winnow` is MIT. The Slang
+toolchain that `cargo gust slang install` downloads is separate and has its own notices
+([licence notes](docs/development/LICENSES-SLANG.md)).

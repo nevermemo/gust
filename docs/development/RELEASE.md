@@ -155,13 +155,23 @@ pre-release, so the development line names the pre-release and the release must 
 
 - the `toml` block of the README's "A first program" and `xtask/src/release/hello-gust/Cargo.toml` (the same text,
   which a unit test compares) go from `"0.2.0-dev"` to `"0.2"`, and the sentence under that block is reworded;
-- the README's two install lines (`cargo install cargo-gust --locked --version 0.2.0-dev`) become `--version "~0.2"`,
-  and so do the `--version "~0.1"` lines of `crates/gust/README.md`, `crates/cargo-gust/README.md`, the install hint of
-  `crates/cargo-gust/src/doctor.rs` (and its test) and the doc comment of `crates/cargo-gust/src/main.rs`; the note at
-  the top of the README that names `0.2.0-dev` is removed;
+- the README's two install lines (`cargo install cargo-gust --locked --version 0.2.0-dev`, at "Try it" and "Set up the
+  tools") become `--version "~0.2"`, and so do the `--version "~0.1"` lines of `crates/gust/README.md` (line 18) and
+  `crates/cargo-gust/README.md` (line 11) and the doc comment `--version ~0.1` of `crates/cargo-gust/src/main.rs`
+  (line 130); the note at the top of the README that names `0.2.0-dev` is removed. The install hint of
+  `crates/cargo-gust/src/doctor.rs` and its test need no edit: since m8.x1 the hint derives `~0.x` from the package
+  version (`CARGO_PKG_VERSION_MAJOR` and `_MINOR`), so the bump changes it;
+- the README's version literals of 0.1.0: the renamed-dependency example in "Renamed dependencies and name clashes"
+  (`version = "0.1"`, becomes `"0.2"`), the "Not supported in 0.1.0" bullet of "Platforms" and the "known limit of
+  0.1.0" sentence of "Textures and samplers" (each says which release the statement was last checked for: re-check,
+  then name 0.2.0), and the sentence of "Install from crates.io" that calls 0.1.0 the first release (true as it
+  stands; read it once);
 - `tests/precompiled/kernels/Cargo.toml`: the `version = "0.2.0-dev"` of its `gust` path dependency becomes `"0.2.0"`;
 - `CHANGELOG.md`: "Unreleased (0.2.0)" becomes "0.2.0" and loses its sentence about the workspace version; once 0.1.0
-  is published, the "(not yet published)" heading note and the deferral sentences of its entry are removed.
+  is published, the "(not yet published)" heading note and the deferral sentences of its entry are removed. The
+  "Compatibility with 0.1.0" part (the `semver` report and the list of crates) is a record of one commit: rerun the job
+  on the release commit and update its run id and counts;
+- the `semver` job's baseline, as the next section says.
 
 R7 cannot see most of this, with one exception: when the workspace version has no pre-release part, it fails if the
 `hello-gust` fixture still names a pre-release requirement. That is the guard against a missed edit; search the

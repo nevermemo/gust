@@ -1,0 +1,16 @@
+[package]
+name = "gpu-app"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Dispatches `physics::scale` on a GPU through the run-time Slang bridge (the Gpu step of check-routing; it needs `slangc`
+# and a Vulkan adapter). Its `gust.toml` routes `physics` to the GPU; routed to the CPU, the same call does not compile
+# (`GpuKernel`, E0277), which the step also shows.
+[dependencies]
+route-kernels = { path = "../route-kernels" }
+gust = { package = "gust-compute", path = "../../../crates/gust", features = ["slang-runtime"] }
+gust-wgpu = { package = "gust-compute-wgpu", path = "../../../crates/gust-wgpu", features = ["slang-runtime"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

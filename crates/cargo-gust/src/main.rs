@@ -38,6 +38,22 @@
 //!   bytes (S3). It prints one line per problem; the exit code is 1 when there is one. A plain `check` does not run
 //!   `slangc -version`: it compares the helper's tag with the manifest's, so a matching older Slang passes. Only
 //!   `build` and `check --recompile` require the pinned `slangc` and a helper of the same build.
+//! - `cargo gust run [cargo arguments]` and `cargo gust test [cargo arguments]` are `cargo run` and `cargo test` with
+//!   the route variables of the package's `gust.toml` set (M8, D65 to D67; see [`routes`]). They are the driver's
+//!   commands that compile a binary. `-p`, `--manifest-path`, `--release`, `--profile` and `--target` are read to
+//!   find the package and the build profile, and `--features`, `--all-features`, `--no-default-features`, `--locked`,
+//!   `--frozen`, `--offline` and `--config` also reach the `cargo metadata` call that reads the declarations; every
+//!   argument is passed to cargo unchanged. `--workspace` and `--all` are refused when a member they select (less
+//!   `--exclude`) has a `gust.toml`, and pass through when none has one (also at a workspace root whose default
+//!   members are several packages, with no `-p`). `build` and `check` set the same variables on the `cargo check`
+//!   that collects the kernels, and read the `gust.toml` beside the package they work on. With no `gust.toml` beside
+//!   the package's manifest all four behave as before, and an old `gust-artifacts/routes.json` is removed. Otherwise
+//!   the driver validates the file against the tags that the crates of the build declare in
+//!   `[package.metadata.gust.routes]`, sets one `GUST_ROUTE__<package>__<tag>` per declared tag and writes the
+//!   resolved table (tag, target, deciding level) to `gust-artifacts/routes.json` (`build`, `run` and `test`, after
+//!   the toolchain check in `build`; `check` leaves it alone and does not count it as a stray). The one-line-per-tag
+//!   summary and the notes on a preset `GUST_ROUTE__*` variable go to standard error. An error names `gust.toml`, the
+//!   line and the tag, and cargo does not build (`cargo metadata` runs to read the declarations).
 //! - `cargo gust doctor` shows the located Slang and where its licence notices are, the helper (refused when it was
 //!   built against another Slang than the located `slangc`), `spirv-val`, the profile a build here would get and the
 //!   install command.
@@ -149,6 +165,7 @@ mod json;
 mod manifest;
 mod msvc;
 mod record;
+mod routes;
 mod sha256;
 mod slang;
 mod store;
@@ -190,6 +207,8 @@ fn main() -> ExitCode {
         cli::Command::Init(target) => commands::init(&target),
         cli::Command::Build(options) => commands::build(&options),
         cli::Command::Check(options) => commands::check(&options),
+        cli::Command::Run(options) => commands::cargo_with_routes("run", &options),
+        cli::Command::Test(options) => commands::cargo_with_routes("test", &options),
         cli::Command::Doctor => commands::doctor(),
         cli::Command::Slang(command) => commands::slang(&command),
     };

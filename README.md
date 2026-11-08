@@ -183,6 +183,7 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-difftest [--seeds <list\|range\|random:N>] [--cpu-only] [--report PATH]` | Differential test of generated scalar kernels (`tests/difftest`, `docs/development/DIFFTEST.md`); `--cpu-only` needs no slangc and no GPU | runs `difftest-run` and fails unless its report has the requested seeds and mode, `programs_executed` equal to 16 times the seeds, no mismatch (named by seed) and, without `--cpu-only`, an adapter; without `--cpu-only` it also runs the `short_circuit` GPU test. `--cpu-only --seeds 1-4` is the last step of the Unit suite; the Gpu suite and `check-full` run all 8 seeds |
 | `cargo xtask check-dual [--check-only]` | Cross-crate dual-build evidence; `--check-only` needs no slangc and no GPU | refuses a preset `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` or `CARGO_BUILD_RUSTFLAGS`; checks `tests/dual` with fmt and clippy, builds the workspace with `--cfg gust_dual` (through `CARGO_ENCODED_RUSTFLAGS`) in `<target>/dual`, runs clippy `-D warnings` on vector-add and polynomial with the cfg, then checks the `tests/dual` fixture: without the cfg a dependent's own `cfg(test)` (E1) and a production binary (E3) get no CPU twin of a library kernel (one E0277 each); with it the twin test runs and passes (E2). The full mode (GPU) also runs vector-add and polynomial with the cfg, which must print `CPU twin: matches (N elements, max ULP k)`, and vector-add without it, which must not. CI's `unit` job runs `--check-only`; `check-full` runs the full mode |
 | `cargo xtask check-cpu-target` | Production CPU target evidence (`Cpu` tier; no slangc, no GPU) | builds the fixture `tests/cpu-target` in release under `GUST_PROFILE=cpu` and runs it against host references (E-a); scans the binary for `slangc`, `gust-slang-reflect`, `wgpu` and `vulkan` and reads `cargo tree -e features` (E-b); builds with `--cfg gust_dual` (E-c); checks four refusals (E-d to E-g: the missing twin without the profile, `gust-wgpu` under `cpu`, the bridge feature under `cpu`, an opted-out kernel); flips the profile six times in one target directory (E-h); runs `cargo test -p kernels` under `cpu` (E-i). Stops at the first failing step and names it. CI runs it as the job `cpu-target`, beside `unit` |
+| `cargo xtask check-routing [--check-only] [--case NAME]` | Routing driver evidence (cargo only with `--check-only`; CI job `routing`) | copies the fixture `tests/routing` to a scratch directory and checks plain cargo, seven `gust.toml` and profile states (the probe's targets, `routes.json` and a golden table agree), nine refused files (file, line and tag), `cargo gust test` and `run` (the plain-cargo control must fail with the E0277 "cannot run the kernel"), the flip of the route variable in both directions in one target directory, and rustfmt and clippy on the fixture, each package under its own route; without `--check-only` the GPU-routed kernel also runs on the adapter the machine has (named in the output) |
 | `cargo xtask bless` | Update reviewed Slang goldens | reruns the golden tests with `BLESS_GOLDEN=1`, which rewrites changed `tests/fixtures/*.slang`, prints a line diff and fails the test; lists changed fixtures with `git diff --stat`. Exits non-zero whenever a fixture changed: review the diff, then run `cargo xtask check-feature macro` |
 | `cargo xtask test --suite Unit\|Cpu\|Slangc\|Spirv\|Reflect\|Gpu\|Full [--skip-difftest]` | One evidence tier as one command; `--skip-difftest` (CI) leaves out the differential harness steps, which have their own job | Unit: macro and xtask tests, lint, docs-check, check-arch, check-ui, check-cpu, the `gust::cpu` unit tests, the format check, clippy and tests of `tests/difftest`, the CPU-only differential batch. Cpu: `check-cpu-target`. Slangc: Unit plus `gust` library tests. Spirv: `check-artifacts`. Reflect: `check-feature reflection`. Gpu: all `gust-wgpu` tests, all `gust-algo` tests (its `gpu::` tests required by name), then the differential batch of 8 seeds. Full: `check-full`. Each suite prints what it does not cover; a missing tool or adapter fails it |
 | `cargo xtask check-fast` | Fast routine confidence | policy lint, docs-check, check-arch, check-ui, helper version check, fmt check, macro tests, core lib tests, wgpu tests (all `--locked`) |
@@ -368,6 +369,62 @@ called `gust` and `gust_wgpu`. Two things follow.
   manifest; the spike measured the error, not that remedy. With a stand-in crate named `gust` (the real one does not
   build on current stable for an unrelated reason), a transitive dependency on it built, and `cargo doc` of both only
   warned about an output filename collision.
+
+## Routing kernels to the CPU or the GPU at build time
+
+A kernel crate declares route tags in its `Cargo.toml`, and a module opts in with `#[gust::gpu(route = "physics")]`:
+
+```toml
+[package.metadata.gust.routes]
+physics = { targets = ["gpu", "cpu"], default = "gpu" }
+"physics.broadphase" = {}          # a child tag follows an entry or a default of its parent
+```
+
+The application that builds the crate chooses, in a `gust.toml` beside the `Cargo.toml` of the package that `cargo gust`
+works on. The key is the Cargo package name and the tag, the value is `"gpu"`, `"cpu"` or a table keyed by build profile:
+
+```toml
+[routes]
+"kernel-lib::physics" = "cpu"
+"kernel-lib::physics.broadphase" = { native = "gpu", web = "cpu" }   # dev uses the native key
+```
+
+`cargo gust run` and `cargo gust test` are `cargo run` and `cargo test` with the variables set: they are the driver's
+commands that compile a binary, and they read the `gust.toml` beside the package they build (the application). `cargo gust
+build` and `cargo gust check` are the artifact exporter and its checker: they read the `gust.toml` beside the package they
+work on, which is usually the kernel crate (`cargo gust build -p kernel-lib` does not read the application's file), and
+they set the same variables on the `cargo check` that collects the kernels. All four check every entry against what the
+crates of the build declare, and give cargo one variable `GUST_ROUTE__<package>__<tag>` per declared tag.
+
+`run` and `test` pass every other argument to cargo unchanged. They read the build profile from `GUST_PROFILE`, else
+from `--release` and `--target wasm32...` (set `GUST_PROFILE` when a custom cargo profile decides it), and
+`--features`, `--all-features`, `--no-default-features`, `--locked`, `--frozen`, `--offline` and `--config` also go to
+the `cargo metadata` call that reads the declarations. `--workspace` and `--all` are refused when any member they
+select (all, less the `--exclude`d ones) has a `gust.toml`, which the error names (the driver routes one package at a
+time; name one package with `-p`), and pass through unchanged when no selected member has one. The same check applies
+with no `-p` at a workspace root whose default members are several packages (a virtual root, or `default-members`),
+where plain cargo builds all of them.
+
+The resolved table, with the level that decided each tag (`profile`, `entry`, `default` or `fallback`), is written to
+`gust-artifacts/routes.json` by `build`, `run` and `test`. It is a build output that changes with the profile, so ignore
+it in git; without a `gust.toml` the driver removes an old one. A summary of one line per tag goes to standard error, with
+a note when a `GUST_ROUTE__*` variable you set differs from the driver's value or matches no declared tag (the driver's
+value wins). The order is the one the `#[gpu]` macro uses: under `GUST_PROFILE=cpu` every tag goes to the CPU; otherwise
+the nearest `gust.toml` entry, then the nearest `default` in the declarations, then the GPU.
+
+A mistake (an unknown tag, a target outside the tag's `targets`, two packages whose names give one variable) is an
+error with file, line and tag before cargo builds (`cargo metadata` runs to read the declarations). A route that names
+a capability profile is refused in this release. Two versions of one package share their variables, so they are
+accepted only when their whole `routes` tables are equal (`targets` compared as sets); otherwise they are refused
+(unify the versions). Two limits of the checks: a tag's own entry is checked against its `targets` for every profile
+key, but an entry a child inherits from its parent only for the build's profile (`"solver" = { web = "cpu" }` passes
+under `dev` and fails under `web`); and every package of the build that declares routes is validated, even one whose
+tags the application never uses, so a malformed declaration in a dependency fails every `cargo gust` command that has
+a `gust.toml`.
+
+Without a `gust.toml`, nothing changes and plain cargo's rules apply. Plain `cargo build` sets no variable, and no
+`cargo gust` command yet builds a routed release binary: only `run` and `test` compile a binary under the driver.
+`cargo xtask check-routing` is the evidence (see the command table near the top).
 
 ## Platforms
 

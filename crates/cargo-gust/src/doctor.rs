@@ -292,6 +292,10 @@ pub(crate) fn lines(facts: &Facts) -> (Vec<String>, bool) {
             .to_owned(),
     );
     out.push(
+        "routing (M8): `cargo gust build`, `check`, `run` and `test` read a gust.toml beside the package's Cargo.toml and set GUST_ROUTE__<package>__<tag> for the tags the build's crates declare; without one, plain cargo's rules apply (the source defaults). `run` and `test` take the profile from GUST_PROFILE, else from --release and --target wasm32"
+            .to_owned(),
+    );
+    out.push(
         "install: cargo install cargo-gust --locked --version ~0.1 (this tool enables gust's internal cargo-gust-bridge feature, so a plain release install needs no GUST_PROFILE)"
             .to_owned(),
     );

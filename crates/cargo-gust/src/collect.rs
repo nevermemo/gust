@@ -50,7 +50,12 @@ impl Package {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Workspace {
     pub(crate) target_directory: PathBuf,
+    /// The directory of the workspace's root manifest.
+    pub(crate) root: PathBuf,
     pub(crate) packages: Vec<Package>,
+    /// What cargo builds at the root with no `-p` and no `--workspace` (`workspace_default_members`); `None` when
+    /// this cargo does not report it.
+    pub(crate) default_members: Option<Vec<Package>>,
 }
 
 /// The cargo to run: the `CARGO` variable cargo sets for its subcommands, else `cargo` from `PATH`.
@@ -83,6 +88,10 @@ pub(crate) fn parse_metadata(text: &str) -> Result<Workspace, String> {
         .ok_or("cargo metadata: no `packages` array")?
         .iter()
         .map(|package| {
+            let id = package
+                .get("id")
+                .and_then(json::Json::as_str)
+                .unwrap_or_default();
             let name = package
                 .get("name")
                 .and_then(json::Json::as_str)
@@ -93,15 +102,34 @@ pub(crate) fn parse_metadata(text: &str) -> Result<Workspace, String> {
                 .ok_or_else(|| {
                     format!("cargo metadata: package `{name}` has no `manifest_path`")
                 })?;
-            Ok(Package {
-                name: name.to_owned(),
-                manifest_path: PathBuf::from(manifest_path),
-            })
+            Ok((
+                id.to_owned(),
+                Package {
+                    name: name.to_owned(),
+                    manifest_path: PathBuf::from(manifest_path),
+                },
+            ))
         })
         .collect::<Result<Vec<_>, String>>()?;
+    let default_members = root
+        .get("workspace_default_members")
+        .and_then(json::Json::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(json::Json::as_str)
+                .filter_map(|id| packages.iter().find(|(known, _)| known == id))
+                .map(|(_, package)| package.clone())
+                .collect()
+        });
     Ok(Workspace {
         target_directory: PathBuf::from(target_directory),
-        packages,
+        root: root
+            .get("workspace_root")
+            .and_then(json::Json::as_str)
+            .map(PathBuf::from)
+            .unwrap_or_default(),
+        packages: packages.into_iter().map(|(_, package)| package).collect(),
+        default_members,
     })
 }
 

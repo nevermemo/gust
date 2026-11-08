@@ -1,0 +1,13 @@
+# Fixture workspace for the routing driver (`cargo gust run`, `test`, `build`, `check` and their `gust.toml`; m8.r2, D65 to D67,
+# D137): a kernel crate that declares route tags, a probe that prints where each of its kernels was built to run, and two
+# apps that choose a route. It is a workspace root of its own, so the root workspace does not contain it, and it has its own
+# committed `Cargo.lock` (the `tests/cpu-target` and `tests/dual` pattern). `cargo xtask check-routing` copies it to a scratch
+# directory, writes the apps' `gust.toml` per state, and builds with a target directory of its own.
+#
+# - `route-kernels` declares the tags and holds one kernel module per tag: `physics` (`physics`), `broadphase`
+#   (`physics.broadphase`, a child of `physics`) and `fusion` (`fusion`, which defaults to the CPU).
+# - `probe` prints each kernel's `DESCRIPTOR.target`; `cpu-app` dispatches `physics::scale` on `CpuDevice` (a binary and a
+#   `#[test]`); `gpu-app` dispatches it on a GPU (the Gpu step of the check).
+[workspace]
+members = ["route-kernels", "probe", "cpu-app", "gpu-app"]
+resolver = "3"

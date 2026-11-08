@@ -1,0 +1,13 @@
+[package]
+name = "probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Prints the target each kernel of `route-kernels` was built for. It holds no kernel of its own, so every line it prints is
+# decided by the variables the build had when `route-kernels` expanded.
+[dependencies]
+route-kernels = { path = "../route-kernels" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

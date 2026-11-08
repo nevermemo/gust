@@ -166,6 +166,10 @@ fn prune(
     }
     found.sort();
     for (name, path, is_dir) in found {
+        // The routing driver's table (m8.r2) is not an artifact: a build neither lists nor removes it.
+        if !is_dir && name == crate::routes::ROUTES_FILE {
+            continue;
+        }
         if keep.iter().any(|file| file.name == name) {
             continue;
         }
@@ -457,6 +461,37 @@ pub(crate) mod tests {
         .unwrap();
         assert_eq!(events, [r#"Staged("a.wgsl")"#, r#"Moved("a.wgsl")"#]);
         assert_eq!(third.written, ["a.wgsl"]);
+    }
+
+    #[test]
+    fn the_routing_table_survives_a_commit_that_prunes() {
+        let scratch = Scratch::new("prune-routes");
+        let dir = scratch.0.join("gust-artifacts");
+        commit(
+            &dir,
+            &[file("keep.wgsl", "K")],
+            &file("manifest.json", "M1"),
+            &mut no_fault,
+        )
+        .unwrap();
+        fs::write(dir.join(crate::routes::ROUTES_FILE), "{}").unwrap();
+        fs::write(dir.join("stray.txt"), "x").unwrap();
+        let result = commit(
+            &dir,
+            &[file("keep.wgsl", "K")],
+            &file("manifest.json", "M2"),
+            &mut no_fault,
+        )
+        .unwrap();
+        assert_eq!(result.pruned, ["stray.txt"]);
+        assert_eq!(
+            listing(&dir),
+            [
+                pair("keep.wgsl", "K"),
+                pair("manifest.json", "M2"),
+                pair("routes.json", "{}")
+            ]
+        );
     }
 
     #[test]

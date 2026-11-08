@@ -1,4 +1,4 @@
-//! The commands: `init`, `build`, `check` and `doctor`, and the pure core of `build`.
+//! The commands: `init`, `build`, `check`, `run`, `test` and `doctor`, and the pure core of `build`.
 
 use std::{
     ffi::OsString,
@@ -11,13 +11,14 @@ use gust::Format;
 
 use crate::{
     check::{self, Report},
-    cli::{BuildOptions, CheckOptions, SlangCommand, Target},
+    cli::{BuildOptions, CargoOptions, CheckOptions, SlangCommand, Target},
     collect::{self, CollectPlan, Package, clean_command, collect, fresh_nonce, metadata_command},
     doctor::{self, Facts},
     export::{self, Compiler, HelperCompiler, formats_with_wgsl, verify_stored},
     helper,
     manifest::{MANIFEST_FILE, Manifest, format_name},
     record::Record,
+    routes::{self, RoutePlan},
     slang::{self, Env, Located, SLANG_VERSION, Source},
     store::{self, Commit, Event, read_dir_state},
     toolchain, tools,
@@ -49,7 +50,8 @@ fn run_status(command: &mut Command) -> Result<bool, String> {
         })
 }
 
-fn resolve(target: &Target) -> Result<Context, String> {
+/// The cargo to run and what `cargo metadata --no-deps` says about the workspace of `target`.
+fn read_workspace(target: &Target) -> Result<(OsString, collect::Workspace), String> {
     let cargo = collect::cargo_program(std::env::var_os("CARGO"));
     let output = metadata_command(&cargo, target.manifest_path.as_deref())
         .output()
@@ -61,12 +63,31 @@ fn resolve(target: &Target) -> Result<Context, String> {
         ));
     }
     let workspace = collect::parse_metadata(&String::from_utf8_lossy(&output.stdout))?;
-    let manifest = match &target.manifest_path {
+    Ok((cargo, workspace))
+}
+
+fn resolve(target: &Target) -> Result<Context, String> {
+    let (cargo, workspace) = read_workspace(target)?;
+    select_context(cargo, workspace, target)
+}
+
+/// The manifest cargo works on: `--manifest-path`, else the closest `Cargo.toml` from the current directory.
+fn manifest_of(target: &Target) -> Option<PathBuf> {
+    match &target.manifest_path {
         Some(path) => Some(fs::canonicalize(path).unwrap_or_else(|_| path.clone())),
         None => std::env::current_dir()
             .ok()
             .and_then(|cwd| collect::find_manifest(&cwd, &|path| path.is_file())),
-    };
+    }
+}
+
+/// The package of `target` in `workspace`, with what a command needs to know about it.
+fn select_context(
+    cargo: OsString,
+    workspace: collect::Workspace,
+    target: &Target,
+) -> Result<Context, String> {
+    let manifest = manifest_of(target);
     let package =
         collect::select_package(&workspace, target.package.as_deref(), manifest.as_deref())?
             .clone();
@@ -98,6 +119,105 @@ fn collect_records(
     run: &dyn Fn(&mut Command) -> Result<bool, String>,
 ) -> Result<Vec<Record>, String> {
     collect(&collect_plan(ctx), run)
+}
+
+/// The routing of the package's `gust.toml` for the collect step (`dev`, the profile it runs under), or `None` when no
+/// `gust.toml` is beside the manifest (M8, m8.r2). `build` and `check` have no cargo arguments to forward.
+fn collect_routes(ctx: &Context) -> Result<Option<RoutePlan>, String> {
+    routes::plan(&ctx.cargo, &ctx.package, collect::COLLECT_PROFILE, &[])
+}
+
+/// Sets the route variables of `routes` on `command`, if there are any. `build` and `check` use it through
+/// [`routed_runner`]; `run` and `test` build their command with `routes::cargo_command`, which calls
+/// `RoutePlan::apply` for the same variables.
+fn apply_routes(routes: Option<&RoutePlan>, command: &mut Command) {
+    if let Some(plan) = routes {
+        plan.apply(command);
+    }
+}
+
+/// The runner of the collect step of `build` and `check`: `run` after the route variables are set on the command.
+fn routed_runner<'a>(
+    routes: Option<&'a RoutePlan>,
+    run: &'a dyn Fn(&mut Command) -> Result<bool, String>,
+) -> impl Fn(&mut Command) -> Result<bool, String> + 'a {
+    move |command| {
+        apply_routes(routes, command);
+        run(command)
+    }
+}
+
+/// What the driver says about a plan, on the error stream (`run` hands its standard output to the program): one line
+/// per tag, then a note for each preset `GUST_ROUTE__*` variable that differs from the plan or matches no tag.
+fn report_routes(plan: &RoutePlan) {
+    for line in plan.summary() {
+        eprintln!("{line}");
+    }
+    let preset: Vec<(String, String)> = std::env::vars_os()
+        .map(|(name, value)| {
+            (
+                name.to_string_lossy().into_owned(),
+                value.to_string_lossy().into_owned(),
+            )
+        })
+        .collect();
+    for line in plan.notes(&preset) {
+        eprintln!("{line}");
+    }
+}
+
+/// Writes the table and reports the plan, or, when no `gust.toml` applies, removes the table an earlier run left.
+fn settle_routes(ctx: &Context, plan: Option<&RoutePlan>) -> Result<(), String> {
+    match plan {
+        Some(plan) => {
+            plan.write()?;
+            report_routes(plan);
+            Ok(())
+        }
+        None => routes::forget(&ctx.package),
+    }
+}
+
+/// Runs `cargo <verb> <arguments>` as given, with the routes of `plan`, and returns cargo's exit code.
+fn spawn_cargo(
+    cargo: &OsString,
+    verb: &str,
+    arguments: &[String],
+    plan: Option<&RoutePlan>,
+) -> Result<i32, String> {
+    let status = routes::cargo_command(cargo, verb, arguments, plan)
+        .status()
+        .map_err(|error| format!("cannot run `cargo {verb}`: {error}"))?;
+    Ok(status.code().unwrap_or(2))
+}
+
+/// `cargo gust run` and `cargo gust test`: cargo with the route variables of the package's `gust.toml` (m8.r2). The
+/// exit status is cargo's.
+pub(crate) fn cargo_with_routes(verb: &str, options: &CargoOptions) -> Result<i32, String> {
+    let (cargo, workspace) = read_workspace(&options.target)?;
+    if options.workspace {
+        // `--workspace` and `--all` build every member, which the driver cannot route one by one: refused when a
+        // selected member has a `gust.toml`, else cargo runs as asked (also from a virtual root, where no package is
+        // selected and none applies).
+        routes::refuse_workspace(&workspace.packages, &routes::excluded(&options.arguments))?;
+        return spawn_cargo(&cargo, verb, &options.arguments, None);
+    }
+    // No `-p`, at a workspace root whose default members are several packages (a virtual root, or `default-members`):
+    // cargo builds all of them, so the same member check applies.
+    if options.target.package.is_none()
+        && let Some(selected) = manifest_of(&options.target)
+            .and_then(|manifest| routes::default_selection(&workspace, &manifest))
+    {
+        routes::refuse_workspace(selected, &[])?;
+        return spawn_cargo(&cargo, verb, &options.arguments, None);
+    }
+    let ctx = select_context(cargo, workspace, &options.target)?;
+    let gust_profile =
+        std::env::var_os("GUST_PROFILE").map(|value| value.to_string_lossy().into_owned());
+    let profile = routes::build_profile(gust_profile.as_deref(), &options.arguments)?;
+    let plan = routes::plan(&ctx.cargo, &ctx.package, profile, &options.arguments)?;
+    settle_routes(&ctx, plan.as_ref())?;
+    spawn_cargo(&ctx.cargo, verb, &options.arguments, plan.as_ref())
 }
 
 /// The helper executable, or the error that says how to get one. It does not look at Slang itself: `check` without
@@ -170,6 +290,9 @@ pub(crate) fn formats_for_build(requested: &[Format], state: &store::DirState) -
 
 pub(crate) fn build(options: &BuildOptions) -> Result<i32, String> {
     let ctx = resolve(&options.target)?;
+    // The routing first: an error in `gust.toml` needs no Slang and no build. The table is written below, once the
+    // toolchain is known to be there.
+    let routes = collect_routes(&ctx)?;
     let state = read_dir_state(&ctx.artifacts)?;
     let requested = formats_with_wgsl(&options.formats);
     let formats = formats_for_build(&options.formats, &state);
@@ -184,6 +307,7 @@ pub(crate) fn build(options: &BuildOptions) -> Result<i32, String> {
     if let Some(note) = slang::version_note(&toolchain.slangc) {
         println!("gust: {note}");
     }
+    settle_routes(&ctx, routes.as_ref())?;
     let helper = toolchain.helper;
     let spirv_val = if formats.contains(&Format::Spirv) {
         let found = tools::find_spirv_val(std::env::var_os("PATH").as_deref());
@@ -198,7 +322,7 @@ pub(crate) fn build(options: &BuildOptions) -> Result<i32, String> {
     };
     let manifest_missing_before = !ctx.artifacts.join(MANIFEST_FILE).is_file();
     println!("gust: collecting the kernels of `{}`", ctx.package.name);
-    let records = collect_records(&ctx, &run_status)?;
+    let records = collect_records(&ctx, &routed_runner(routes.as_ref(), &run_status))?;
     println!("gust: compiling {} kernel(s)", records.len());
     let compiler = HelperCompiler { helper, spirv_val };
     // Everything is compiled and verified before the clean runs, and the clean comes before the manifest is created,
@@ -225,7 +349,13 @@ pub(crate) fn build(options: &BuildOptions) -> Result<i32, String> {
 
 pub(crate) fn check(options: &CheckOptions) -> Result<i32, String> {
     let ctx = resolve(&options.target)?;
-    let records = export::dedupe(collect_records(&ctx, &run_status)?)?;
+    // `check` reads: it resolves the routing (so a bad `gust.toml` fails here too) and sets the variables, but it does
+    // not write `routes.json`.
+    let routes = collect_routes(&ctx)?;
+    let records = export::dedupe(collect_records(
+        &ctx,
+        &routed_runner(routes.as_ref(), &run_status),
+    )?)?;
     let state = read_dir_state(&ctx.artifacts)?;
     let helper = if options.recompile {
         // Recompiling uses the compiler, so it needs the pinned Slang and a helper of the same build (R4.8).
@@ -573,6 +703,66 @@ mod tests {
         store::tests::Scratch,
         testdata::SAMPLE_KEY,
     };
+
+    #[test]
+    fn the_runner_of_the_collect_step_sets_the_routes_before_it_runs_the_command() {
+        let row = |tag: &str, target: &'static str| routes::Row {
+            package: "kernel-lib".to_owned(),
+            tag: tag.to_owned(),
+            variable: format!("GUST_ROUTE__kernel_lib__{tag}"),
+            target,
+            level: routes::Level::Entry,
+            from: None,
+        };
+        let plan = RoutePlan::new(
+            "dev",
+            vec![row("physics", "cpu"), row("fusion", "gpu")],
+            PathBuf::from("/w/app/gust-artifacts"),
+        );
+        let seen = std::cell::RefCell::new(Vec::new());
+        let run = |command: &mut Command| -> Result<bool, String> {
+            let envs: Vec<(String, String)> = command
+                .get_envs()
+                .map(|(name, value)| {
+                    (
+                        name.to_string_lossy().into_owned(),
+                        value
+                            .map(|v| v.to_string_lossy().into_owned())
+                            .unwrap_or_default(),
+                    )
+                })
+                .collect();
+            seen.borrow_mut().push(envs);
+            Ok(true)
+        };
+        // With a plan the variables are on the command when the inner runner sees it.
+        let routed = routed_runner(Some(&plan), &run);
+        assert_eq!(routed(&mut Command::new("cargo")), Ok(true));
+        let mut first = seen.borrow()[0].clone();
+        first.sort();
+        assert_eq!(
+            first,
+            [
+                (
+                    "GUST_ROUTE__kernel_lib__fusion".to_owned(),
+                    "gpu".to_owned()
+                ),
+                (
+                    "GUST_ROUTE__kernel_lib__physics".to_owned(),
+                    "cpu".to_owned()
+                ),
+            ]
+        );
+        // Without one the command is left as it is, and the inner result comes back.
+        let plain = routed_runner(None, &run);
+        assert_eq!(plain(&mut Command::new("cargo")), Ok(true));
+        assert!(seen.borrow()[1].is_empty());
+        let failing = |_: &mut Command| -> Result<bool, String> { Err("boom".to_owned()) };
+        assert_eq!(
+            routed_runner(Some(&plan), &failing)(&mut Command::new("cargo")),
+            Err("boom".to_owned())
+        );
+    }
 
     fn build_into(
         dir: &Path,

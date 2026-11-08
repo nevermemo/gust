@@ -522,11 +522,12 @@ setter changes each field (`BASE.with_shape(..)` replaces the struct-update form
 `KernelDescriptor::__gust_descriptor(..)`, so a field added later is a compile error in the macro's output until the
 macro sets it (the macro binds each slice to a constant first, because the `'static` borrow of a function argument is
 promoted only when the array is a constant expression, which a parameter's layout block is not). The macro also
-implements the hidden marker `gust::target::GpuKernel` for every kernel it builds, except one routed to the CPU; the GPU
-runtime bounds its typed entry points on it (`gust-wgpu` `lib.rs`, and `run` and `run_indirect` of the staged graph), so
-that a kernel routed to the CPU is an `E0277` at the call site, and a hand-written
-`Kernel` implementation that runs on a GPU device adds `impl gust::target::GpuKernel for MyKernel {}`: the trait is
-hidden from the docs, but its path and that line are covered by the stability promise.
+implements the hidden marker `gust::target::GpuKernel` for every kernel it builds, except one routed to the CPU and
+every kernel under `GUST_PROFILE=cpu` (D137); the GPU runtime bounds its typed entry points on it (`gust-wgpu`
+`lib.rs`, and `run` and `run_indirect` of the staged graph), so that a kernel routed to the CPU is an `E0277` at the
+call site, and a hand-written `Kernel` implementation that runs on a GPU device adds
+`impl gust::target::GpuKernel for MyKernel {}`: the trait is hidden from the docs, but its path and that line are
+covered by the stability promise.
 `gust::routes::variable_name(package, tag)` spells the variable `GUST_ROUTE__<package>__<tag>` for the driver;
 `gust-compute-macros` cannot depend on `gust-compute`, so it keeps a byte-for-byte copy (as with `content_key`,
 `gust-macros/src/expand/artifact.rs`), and both crates assert one golden table of `(package, tag, variable)` triples.

@@ -1489,10 +1489,10 @@ Decision: D138.
 
 ### Numbers in the M8 range that are not assigned, and the M8 errors that are not macro codes
 
-E0737, E0738, E0739 and E0752 are not assigned and have no heading: the range was set aside for M8's slices, and they ended
-without needing them (E0752 was the planned refusal of a CPU route on a web profile; spike S0 ended in the answer
-that the route is allowed, D151). A number is never reused for something else, so they stay free for a later check of
-the same family, and a code appears on this page only when the macro reports it.
+E0737, E0738, E0739 and E0752 are not assigned and have no heading: the range was set aside for M8's slices, and they
+ended without needing them (E0752 was the planned refusal of a CPU route on a web profile; spike S0 ended in the
+answer that the route is allowed, D151). A number is never reused for something else, so they stay free for a later
+check of the same family, and a code appears on this page only when the macro reports it.
 
 The driver (`cargo gust build`, `check`, `run`, `test` with a `gust.toml`, D151) reports its mistakes as plain errors
 with the file, the line and the tag (an unknown tag, a target outside the tag's `targets`, a route that names a

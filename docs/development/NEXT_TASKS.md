@@ -299,7 +299,7 @@ test module; do not mix that mechanical move with behavior changes.
   out-of-memory), and the branch that reports a non-out-of-memory scope error as `Error::Poll` was never observed on
   hardware (D123).
 - Storage barriers (`storageBarrier`: a workgroup barrier over storage memory): M7 has `workgroup_barrier()` only
-  (D100, D101); the storage form was planned for M8 and moved out of it (the M8 plan of D136 lists it as out: recorded, not
+  (D100, D101); the storage form was planned for M8 and moved out of it (D147 records that it left M8: recorded, not
   built; M8 shipped subgroup operations, variants, routing and the opt-in floor instead). It orders the accesses of one
   workgroup and gives no ordering between workgroups of a dispatch.
 - docs/ARCHITECTURE.md: the paragraphs "Shapes" (mx.k) and "Layouts in the record" (m7.lv) sit under `### gust-algo`
@@ -440,8 +440,8 @@ test module; do not mix that mechanical move with behavior changes.
   `par_for!` forwarding `$crate`, would remove that step.
 - Release tooling for 0.1.x (the Fable and Codex sanity checks): `cargo-semver-checks` (done in M8 as the CI job
   `semver`, above, D132) and still open `cargo-release` or `release-plz` for the four-way version bump RELEASE.md does
-  by hand; `cargo-msrv` adds nothing
-  the MSRV gate lacks. check-release stays the gate: no tool builds the README recipe from the unpacked crates.
+  by hand; `cargo-msrv` adds nothing the MSRV gate lacks. check-release stays the gate: no tool builds the README
+  recipe from the unpacked crates.
 - check-release R5 against docs.rs: R5 builds the host target only, and skips the nightly run with a note when no
   nightly toolchain is installed. docs.rs also builds gust-compute-wgpu for `wasm32-unknown-unknown`, where probe mr.e
   found the 19 unresolved links mr.f fixed. Run the metadata's targets in R5's nightly run, and make a missing nightly
@@ -468,11 +468,14 @@ test module; do not mix that mechanical move with behavior changes.
   crate READMEs' `~0.1`, the doc comment of `cargo-gust`'s `main.rs`), and CHANGELOG's `toml` text left "may break" for
   its own section. Open at release: rerun the `semver` job and update the "Compatibility with 0.1.0" part of the
   CHANGELOG entry (run id and counts).
-- A device handle that follows the route (D137, D145 file it): in 0.2.0 a kernel call names its device, so flipping a
+- A device handle that follows the route (D136 and D137 file it): in 0.2.0 a kernel call names its device, so flipping a
   route in `gust.toml` changes the call sites of that kernel (only `name::map` is the same on both targets). A handle
   that the route chooses (one device type whose calls run on the target the route names) would make a flip a
   `gust.toml` change only. A design question for a later milestone, not built.
-- Subgroup evidence leftovers (the m8.e review and re-check, for m8.x unless noted):
+- `crates/gust-algo/examples/sg_ab.rs` (the subgroup A/B program of m8.e; VALIDATION.md, "Subgroup evidence") is
+  compiled by the workspace builds and never run by a suite, so its table rests on the hand runs recorded there. Run it
+  from a suite (or from `check-full` on an adapter) if the table is to stay checked; filed with no slice (after M8).
+- Subgroup evidence leftovers (the m8.e review and re-check); both are open and filed with no slice (after M8):
   - `evidence::sum_u32`'s size guard puts the device's minimum in `DeviceLimit.maximum` (the limit is now spelled
     `subgroup_min_size`; `DeviceLimit` has no field for a minimum);
   - the gate scripts' START lines name the commit but not a hash of the uncommitted tree.

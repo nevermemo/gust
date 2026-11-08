@@ -145,8 +145,9 @@ strict form that ships. A crate declares what it builds for under `[package.meta
 macro reads that table with the `toml` crate; a table it cannot read is GUST-E0753, and the message gives the line and
 column in `Cargo.toml`.
 
-For the full release-readiness check (including ignored example tests, all nine
-examples, and mandatory external validation of the twenty SPIR-V files of the examples and of nine golden sets):
+For the full release-readiness check (including ignored example tests, every example,
+and mandatory external validation of the SPIR-V files of the examples (`EXPECTED_SPIRV` in `xtask/src/workspace.rs`, 21
+files) and of the golden sets (`GOLDEN_SPIRV_SETS` in `xtask/src/checks.rs`, 13 sets)):
 
 ```sh
 cargo xtask check-full
@@ -201,7 +202,7 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-fast` | Fast routine confidence | policy lint, docs-check, check-arch, check-ui, helper version check, fmt check, macro tests, core lib tests, wgpu tests (all `--locked`) |
 | `cargo xtask check-workspace` | Default workspace confidence | `--locked` workspace tests with example packages excluded entirely |
 | `cargo xtask check-examples` | Major example behavior confidence | every example test (`-- --include-ignored`, counted: no passed test or an ignored one fails it) plus example binaries |
-| `cargo xtask check-artifacts` | Artifact/export confidence | example binaries plus external SPIR-V validation of their twenty files and of the files of nine golden sets (vectors and products, uniforms, map, grid, workgroup, `par_for`, reduce, scan, compact), with an `OpCopyLogical` count each |
+| `cargo xtask check-artifacts` | Artifact/export confidence | example binaries plus external SPIR-V validation of their files (`EXPECTED_SPIRV`) and of the files of the golden sets (`GOLDEN_SPIRV_SETS`: vectors and products, uniforms, map, grid, workgroup, `par_for`, reduce, scan, compact, textures, pixel, variant, subgroup), with an `OpCopyLogical` count each |
 | `cargo xtask check-full [--skip-web]` | Release confidence | full staged verification, then the whole `check-precompiled` and `check-web`, then `check-difftest`; `--skip-web` leaves out `check-web` only and records it |
 | `cargo xtask status` | Resume context | git status, active claim, validation summary, suggested check |
 | `cargo xtask doctor` | Environment readiness | required tools and reflection helper status; exits non-zero when cargo, rustc, slangc or the helper is missing |
@@ -476,8 +477,8 @@ The promise covers:
   `#[non_exhaustive]` enum may gain variants, so match it with a wildcard arm. A minor bump may grow `Access` (a
   write-only access, say);
 - the commands of `cargo-gust` and the lines they print, which scripts and CI read;
-- the file formats: `gust-artifacts/manifest.json` (schema 3 since 0.2.0), the record files (schema 4) and the reflection
-  records; a newer release reads every older schema (D82, D89, D91, D139);
+- the file formats: `gust-artifacts/manifest.json` (up to schema 3 since 0.2.0), the record files (up to schema 4) and
+  the reflection records; a newer release reads every older schema (D82, D89, D91, D139);
 - the modules that 0.2.0 adds to `gust-compute` (`gust::capability`, `gust::limits`, `gust::target`, `gust::routes`),
   `GUST_PROFILE`'s `+capability` suffix, the `[package.metadata.gust]` table and `gust.toml`, and the hidden marker
   `gust::target::GpuKernel` with the line that a hand-written `Kernel` adds (below);
@@ -498,17 +499,18 @@ phone, may show a difference the tests have not seen ([Shapes](#shapes-grid-and-
 
 ### Upgrading from 0.1.0 to 0.2.0
 
-0.2.0 is a minor bump because of one break, B1, and it is the last one of its kind; the rest of M8 only adds
-([CHANGELOG](CHANGELOG.md) has the full list, with the report of the `semver` CI job).
+0.2.0 is a minor bump because of one break, B1, in two parts (the descriptor constructor and setters, and the
+`GpuKernel` bound), and it is the last one of its kind; the rest of M8 only adds ([CHANGELOG](CHANGELOG.md) has the
+full list, with the report of the `semver` CI job).
 
-- **B1: `KernelDescriptor` is `#[non_exhaustive]`.** A struct literal, or a struct update from a base value, no longer
-  compiles outside `gust-compute`, because the descriptor gained `variant`, `requires` and `target`. Build one with
-  `KernelDescriptor::new(module, name, entry_point, workgroup_size, parameters, slang_source)`, which sets the grid
+- **B1, part 1: `KernelDescriptor` is `#[non_exhaustive]`.** A struct literal, or a struct update from a base value, no
+  longer compiles outside `gust-compute`, because the descriptor gained `variant`, `requires` and `target`. Build one
+  with `KernelDescriptor::new(module, name, entry_point, workgroup_size, parameters, slang_source)`, which sets the grid
   shape, no capability and the GPU target, and change a field with its `with_*` setter (`with_shape`, `with_source`,
   `with_artifacts` and the others). A later field is not a break again. Kernels written with `#[gpu]` need no change.
-  A hand-written `Kernel` implementation that runs on `HeadlessDevice` also adds one line,
-  `impl gust::target::GpuKernel for MyKernel {}`; without it the call is an E0277 that says the device cannot run the
-  kernel. The semver tool does not list that line, because the marker is `#[doc(hidden)]`.
+- **B1, part 2: the `GpuKernel` bound.** A hand-written `Kernel` implementation that runs on `HeadlessDevice` also adds
+  one line, `impl gust::target::GpuKernel for MyKernel {}`; without it the call is an E0277 that says the device
+  cannot run the kernel. The semver tool does not list that line, because the marker is `#[doc(hidden)]`.
 - **A route flip is a call-site change (documented, not a break).** Routing sends a kernel to the CPU or the GPU for a
   whole build (see "Routing kernels to the CPU or the GPU at build time"), and a typed call names its device. A kernel
   routed to the CPU has no `GpuKernel` impl, so its `HeadlessDevice` calls stop compiling (E0277) and its `CpuDevice`
@@ -518,12 +520,13 @@ phone, may show a difference the tests have not seen ([Shapes](#shapes-grid-and-
 - **A new dependency.** `gust-compute-macros` depends on `toml` 1 (no default features; `std` and `parse`) to read
   `[package.metadata.gust]`, which adds four more crates to a build of `gust-compute`: `toml_parser`, `toml_datetime`,
   `serde_spanned` and `winnow`. All five are MIT or Apache-2.0 (`winnow` is MIT) and declare a minimum Rust of 1.85
-  or lower, under the workspace's 1.90. The reason is that `cargo publish` rewrites a manifest (headers for inline tables, literal
-  strings), so a hand-written reader of the source form would refuse the form a published crate carries.
+  or lower, under the workspace's 1.90. The reason is that `cargo publish` rewrites a manifest (headers for inline
+  tables, literal strings), so a hand-written reader of the source form would refuse the form a published crate
+  carries.
 - **Changed behaviour.** `DeviceOptions::default()` and `HeadlessDevice::new()` now request
-  `gust::capability::enabled()`. In a build without a capability that is the empty set, as before; in a `+subgroups` build they open a device with
-  the feature, or fail with `Error::MissingCapability`. The pinned Slang is 2026.21 (D150); `cargo gust check` refuses
-  artifacts built with 2026.20 until `cargo gust build` is run again.
+  `gust::capability::enabled()`. In a build without a capability that is the empty set, as before; in a `+subgroups`
+  build they open a device with the feature, or fail with `Error::MissingCapability`. The pinned Slang is 2026.21
+  (D150); `cargo gust check` refuses artifacts built with 2026.20 until `cargo gust build` is run again.
 
 ## Minimum Rust
 
@@ -1040,8 +1043,9 @@ pub fn double_subgroups(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mu
   `HeadlessDevice::subgroup_sizes()` is the adapter's range as wgpu reports it.
 - Evidence is narrow and labelled *measured*: a subgroup body has no CPU twin. The tests of `gust-compute-wgpu` ran on
   the RTX 5090 (subgroup size 32) and, in CI, on Mesa lavapipe (size 8); the Radeon 890M ran the spike's cells and the
-  `gust-algo` evidence kernel but not these tests, and no browser has run a subgroup kernel ([SEMANTICS](docs/SEMANTICS.md)
-  has the table). `examples/subgroup-reduce` builds under the strict `native+subgroups` profile from committed artifacts.
+  `gust-algo` evidence kernel but not these tests, and no browser has run a subgroup kernel
+  ([SEMANTICS](docs/SEMANTICS.md) has the table). `examples/subgroup-reduce` builds under the strict `native+subgroups`
+  profile from committed artifacts.
   The subgroup form of the `gust-algo` reduction was not faster than the shipped one, so `gust_algo::evidence` keeps it
   outside the variant set (D146).
 - The portable floor is opt-in. A crate that sets `limits = "portable"` under `[package.metadata.gust]` has every
@@ -1051,8 +1055,8 @@ pub fn double_subgroups(id: SV_DispatchThreadID, data: StructuredBuffer<u32>, mu
 
 ## Examples
 
-The workspace contains ten runnable programs (and `web-vector-add`, a browser module run by
-`cargo xtask check-web`, which also runs a `pixel` form of its kernel):
+The workspace contains twelve runnable programs (every directory of `examples/` but `web-vector-add`, which is a
+browser module run by `cargo xtask check-web`, and which also runs a `pixel` form of its kernel):
 
 - `vector-add` uses the preferred Slang-shaped Rust vocabulary, runs through the
   generated typed `dispatch`, and demonstrates artifact export.
@@ -1092,6 +1096,14 @@ The workspace contains ten runnable programs (and `web-vector-add`, a browser mo
   counts the texels brighter than one half into a buffer with `atomic_add`, and writes a 0 or 1 mask to a
   write-only `r32uint` texture. It checks the mask and the count against a host loop on the GPU and on the CPU
   twin, and exports its Slang, WGSL, SPIR-V and readable wgpu host code.
+- `shape-bench` writes the same five kernels as `grid` and as `pixel` kernels, asserts that every variant writes
+  every element and that the integer kernel gives the same bits in both shapes, and prints the time of each shape.
+  It asserts no duration; the table of `--full` is a measurement, not a gate.
+- `subgroup-reduce` writes one kernel twice: the portable body, and the body that a build with the `subgroups`
+  capability gets (lane count, lane, ballot popcount and inclusive prefix sum of each subgroup). It checks the words
+  against a host model that is rebuilt from the subgroup size the adapter reports. It enables no `slang-runtime`:
+  `GUST_PROFILE=native+subgroups cargo run -p subgroup-reduce` runs the committed artifacts. Under a profile without
+  the capability it says so and checks nothing.
 
 Release-mode benchmark examples use fixed sizes selected in each example's
 `main` function, kept within the default limit of 65 535 workgroups per dispatch
@@ -1173,7 +1185,7 @@ The direct syntax translator currently supports:
   multisampled textures, comparison samplers and mip levels other than 0 are not in the dialect;
 - capability variants and subgroup operations (M8, D139, D140): `#[variant(of = .., requires(..))]` bodies, the 21
   `subgroup_*` functions in a body that requires `subgroups`, and the opt-in portable floor (`limits = "portable"`);
-  GUST-E0740 to E0751 and E0753; see "Capability variants and subgroup operations";
+  GUST-E0740 to E0747, E0750, E0751 and E0753; see "Capability variants and subgroup operations";
 - build-time routing (M8, D65 to D67, D137): `#[gpu(route = "<tag>")]` on a module or a `#[gpu] fn` sends it to the CPU
   or the GPU for a whole build, chosen by `GUST_ROUTE__*` variables that `cargo gust` sets from a `gust.toml`;
   GUST-E0748 and E0749; see "Routing kernels to the CPU or the GPU at build time".
@@ -1257,10 +1269,11 @@ Around the translator, the host side currently provides:
   exact. A float sum is within the per-level bound of `gust_algo::bound` (`f32_sum_bound_v1` for v1, `f32_sum_bound`
   for v0) of the exact sum, not a bit pattern; the two variants may differ in the last bits, and the tests compare
   each with a reference, never with each other. The kernels compile at run time through the crate's `slang-runtime`
-  feature; it ships no precompiled artifacts. `gust_algo::evidence` holds the subgroup form of the reduction's block step
-  as measured evidence: it was not faster than v1 in any of six cells on the RTX 5090 and the Radeon 890M, so it is not a
-  variant of the shipped kernel (D146) and not part of what the crate offers. Tests: `cargo xtask check-feature algo`
-  (the adapter cases are pinned by name in the Gpu suite, see [VALIDATION](docs/development/VALIDATION.md)).
+  feature; it ships no precompiled artifacts. `gust_algo::evidence` holds the subgroup form of the reduction's block
+  step as measured evidence: it was not faster than v1 in any of six cells on the RTX 5090 and the Radeon 890M, so it
+  is not a variant of the shipped kernel (D146) and not part of what the crate offers. Tests:
+  `cargo xtask check-feature algo` (the adapter cases are pinned by name in the Gpu suite, see
+  [VALIDATION](docs/development/VALIDATION.md)).
 
 Its CPU backend, `gust::cpu`, runs the Rust body of each kernel that has a typed call, unless it opts out with
 `#[kernel(cpu = "unsupported")]`: as a test twin (emitted under

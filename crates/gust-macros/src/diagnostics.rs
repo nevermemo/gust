@@ -407,7 +407,8 @@ codes! {
     /// A body that uses subgroup operations whose invocation count is not a multiple of 64 (m8.s, D140).
     SubgroupInvocations = 751 => "GUST-E0751";
 
-    // E0753: the crate's declarations in its manifest (M8, D138). E0737 to E0752 belong to the other M8 slices.
+    // E0753: the crate's declarations in its manifest (M8, D138).
+    // E0737 to E0739 and E0752 are not assigned (docs/DIAGNOSTICS.md).
     /// A malformed `[package.metadata.gust]` table in the `Cargo.toml` of the crate that holds the `#[gpu]` module, the `#[gpu]` function or the `par_for!` call.
     GustMetadata = 753 => "GUST-E0753";
 

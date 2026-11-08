@@ -8,8 +8,9 @@ breaks existing code bumps the minor version, and the promise is described in th
 ## Unreleased (0.2.0)
 
 The workspace version is `0.2.0-dev`. Work for 0.2.0 lands on `main`; the 0.1.0 line continues on the branch
-`release/0.1`. This list is what the milestone (M8) has merged. 0.2.0 has one listed break (B1, below), and it is the
-last of its kind: the descriptor is `#[non_exhaustive]` from now on.
+`release/0.1`. This list is what the milestone (M8) has merged. 0.2.0 has one listed break (B1, below, in two parts:
+the descriptor constructor and setters, and the `GpuKernel` bound), and it is the last of its kind: the descriptor is
+`#[non_exhaustive]` from now on.
 
 ### Added
 
@@ -45,16 +46,17 @@ last of its kind: the descriptor is `#[non_exhaustive]` from now on.
 
 ### Changed, and may break code written for 0.1.0
 
-- **B1: `KernelDescriptor` is `#[non_exhaustive]`** and has new fields (`variant`, `requires`, `target`). A struct
-  literal, or a struct update from a base value, no longer compiles outside `gust-compute`. Migration: build one with
-  `KernelDescriptor::new(module, name, entry_point, workgroup_size, parameters, slang_source)`, which sets the grid
-  shape, no artifacts, the portable variant, no capability and the GPU target, and change a field with its `with_*`
-  setter (`with_shape`, `with_source`, `with_artifacts`, `with_variant`, `with_requires`, `with_target` and the
-  others). Kernels written with `#[gpu]` need no change. `cargo semver-checks` lists this one.
-- The generic entry points of `gust-compute-wgpu` and the runs of `StagedGraph` require the `GpuKernel` marker.
-  `#[gpu]` kernels get the marker from the macro, so they need no change. A hand-written `Kernel` impl that runs on
-  `HeadlessDevice` adds `impl gust::target::GpuKernel for MyKernel {}`; without it the call is E0277 with a message
-  that says so. The semver tool does not list this change (the marker is `#[doc(hidden)]`).
+- **B1, part 1: `KernelDescriptor` is `#[non_exhaustive]`** and has new fields (`variant`, `requires`, `target`).
+  A struct literal, or a struct update from a base value, no longer compiles outside `gust-compute`. Migration: build
+  one with `KernelDescriptor::new(module, name, entry_point, workgroup_size, parameters, slang_source)`, which sets the
+  grid shape, no artifacts, the portable variant, no capability and the GPU target, and change a field with its
+  `with_*` setter (`with_shape`, `with_source`, `with_artifacts`, `with_variant`, `with_requires`, `with_target` and
+  the others). Kernels written with `#[gpu]` need no change. `cargo semver-checks` lists this one.
+- **B1, part 2: the `GpuKernel` bound.** The generic entry points of `gust-compute-wgpu` and the runs of `StagedGraph`
+  require the `GpuKernel` marker. `#[gpu]` kernels get the marker from the macro, so they need no change. A
+  hand-written `Kernel` impl that runs on `HeadlessDevice` adds `impl gust::target::GpuKernel for MyKernel {}`;
+  without it the call is E0277 with a message that says so. The semver tool does not list this change (the marker is
+  `#[doc(hidden)]`).
 - `DeviceOptions::default()` and `HeadlessDevice::new()` now request `gust::capability::enabled()`. In a build with no
   capability that is the empty set, as before; in a `+subgroups` build they open a device with the feature or fail with
   `Error::MissingCapability`.
@@ -80,8 +82,9 @@ form that was written by hand would refuse the form a published crate carries. T
 ### Compatibility with 0.1.0
 
 The `semver` job of CI compares `gust-compute` and `gust-compute-wgpu` with the branch `release/0.1` (0.1.0) with
-`cargo-semver-checks` 0.51.0. On the merge of m8.x1 into `main` (the latest green `ci.yml` run of `main` when this was
-written: run 42518513308, job `semver`; the job treats its findings as expected and stays green), the job found:
+`cargo-semver-checks` 0.51.0. On the merge of m8.x1 into `main` (`ci.yml` run 42518513308, job `semver`; the job treats
+its findings as expected and stays green; run 42518612375 on `main` at `85d62fd` was green too, and `c245266..85d62fd`
+changed documentation only, so the counts hold), the job found:
 
 - `gust-compute`: 229 checks, 228 passed, 31 skipped, 1 failed. The failure is `struct_marked_non_exhaustive` for
   `KernelDescriptor` (`crates/gust/src/descriptor.rs`), which is B1, so the tool says a new major version is required
@@ -101,17 +104,18 @@ which gate of `main` builds it (`check-examples` builds the examples but `web-ve
   for Slang 2026.21), `tests/difftest/template` (its `Cargo.lock`) and the `tests/ui` crates `profile-native-artifact`
   and `profile-native-no-manifest` (one artifact file each).
 - **15 changed in a source file or a manifest.**
-  - Four are the B1 migration, the only edits that existing code needed: the `tests/ui` crates
+  - Four are the B1 migration (both parts), the only edits that existing code needed: the `tests/ui` crates
     `typed-call-buffer-for-sampler`, `typed-call-buffer-for-texture`, `typed-call-sampler-for-buffer` and
     `typed-call-texture-ok` wrote a `KernelDescriptor` literal and now call `KernelDescriptor::new(..)` and add `impl
     gust::target::GpuKernel for Blur {}` (three of the `expected.txt` files only change a line number).
   - One is a version literal: `tests/precompiled/kernels` names its `gust` path dependency `0.2.0-dev` (RELEASE.md lists
-    it for the release).
-  - Ten only gained things: `crates/gust-algo` (the `evidence` module and an example, additive; not published),
-    `examples/web-vector-add` (an added `check-web` assertion that a subgroup request is refused, and re-written
-    artifacts), `tests/cpu-target` and its `kernels` (a `routed` crate and a `variant` module), `tests/dual` with its
-    `consumer` and `kernel-lib` (a routed module and binary), `tests/difftest` (the format 7 harness and the profile
-    flags), `tests/precompiled` (an expectation file) and the `tests/ui` workspace (new members and fixture crates).
+    it for the release); its manifest and one reflection file are also written again by the new Slang.
+  - Ten only gained things (and `tests/difftest` a re-stamped seed file): `crates/gust-algo` (the `evidence` module and
+    an example, additive; not published), `examples/web-vector-add` (an added `check-web` assertion that a subgroup
+    request is refused, and re-written artifacts), `tests/cpu-target` and its `kernels` (a `routed` crate and a
+    `variant` module), `tests/dual` with its `consumer` and `kernel-lib` (a routed module and binary), `tests/difftest`
+    (the format 7 harness and the profile flags; `seeds.txt` takes the new format stamp and all eight program hashes),
+    `tests/precompiled` (an expectation file) and the `tests/ui` workspace (new members and fixture crates).
 
 By this comparison the only source edits that 0.1.0 code needed are the four B1 migrations. That is a statement about
 the diff, not about a run: whether each gate is green on a commit is recorded in STATUS, and the gates that 0.2.0 adds

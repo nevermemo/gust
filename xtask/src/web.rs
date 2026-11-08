@@ -11,6 +11,9 @@
 //!
 //! What this is evidence for: the real `gust-compute-wgpu` vector-add ran on the browser's GPU in both forms (grid and pixel,
 //! mx.w), and each equalled the host reference and the other bit for bit.
+//! The page also reports, after the adapter words, the key each kernel selected (M8, slice m8.e); the check compares them
+//! with the committed manifest (`selected_key_problems`) and requires the page to say that a device opened with the
+//! `subgroups` capability was refused with `MissingCapability` (the browser backend offers no capability, D142).
 //! The label printed at the end is `Gpu (WebGPU, Chrome <version>, <vendor> <architecture>)`, or `Gpu (software ...)`
 //! when the adapter is a software one. Nothing here runs Slang: the shader is the committed WGSL artifact.
 //!
@@ -231,10 +234,26 @@ pub(crate) fn check_web_report(args: &[String]) -> Result<String, String> {
         started.elapsed().as_secs_f64()
     );
     match outcome {
-        Outcome::Result(PageResult::Ok { label }) => Ok(format!(
-            "check-web passed: the page logged `{OK_PREFIX}{label}`: the real gust-wgpu vector-add (1000 and 8197 elements) ran in both forms, grid and pixel, on the browser GPU, and each equalled the host reference and the other bit for bit. The job contract of the browser held for each submission (status Pending right after the submit and Complete after the awaited readback; wait, wait_timeout and the generated dispatch return Error::WouldBlock), and map_gpu read back the host's result through to_vec_async.\n  evidence: {}\n  {timings}",
-            evidence_label(chrome_version.as_deref(), &label)
-        )),
+        Outcome::Result(PageResult::Ok { label }) => {
+            let (adapter, selected) = split_page_label(&label).map_err(|error| {
+                format!("check-web: the page logged `{OK_PREFIX}{label}`: {error}\n  {timings}")
+            })?;
+            let manifest_path = root.join(MANIFEST_PATH);
+            let manifest = fs::read_to_string(&manifest_path)
+                .map_err(|error| format!("check-web: {}: {error}", manifest_path.display()))?;
+            let problems = selected_key_problems(&selected, &manifest);
+            if !problems.is_empty() {
+                return Err(format!(
+                    "check-web: the page logged `{OK_PREFIX}{label}` but its selected kernels do not match the committed manifest:\n  {}\n  {timings}",
+                    problems.join("\n  ")
+                ));
+            }
+            Ok(format!(
+                "check-web passed: the page logged `{OK_PREFIX}{label}`: the real gust-wgpu vector-add (1000 and 8197 elements) ran in both forms, grid and pixel, on the browser GPU, and each equalled the host reference and the other bit for bit. The job contract of the browser held for each submission (status Pending right after the submit and Complete after the awaited readback; wait, wait_timeout and the generated dispatch return Error::WouldBlock), and map_gpu read back the host's result through to_vec_async. The key each of the {} kernels selected is one the committed manifest lists, none needs a capability, and a device opened with the subgroups capability was refused with Error::MissingCapability.\n  evidence: {}\n  {timings}",
+                selected.len(),
+                evidence_label(chrome_version.as_deref(), &adapter)
+            ))
+        }
         Outcome::Result(PageResult::Fail { reason }) => Err(format!(
             "check-web: the page logged `{FAIL_PREFIX}{reason}`\n  {timings}"
         )),
@@ -293,6 +312,231 @@ pub(crate) fn evidence_label(version: Option<&str>, adapter: &str) -> String {
         "{kind}, Chrome {}, {adapter})",
         version.unwrap_or("unknown version")
     )
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The selected key (M8, slice m8.e)
+
+/// The committed manifest of the example, relative to the repository root.
+const MANIFEST_PATH: &str = "examples/web-vector-add/gust-artifacts/manifest.json";
+
+/// The last part of the page's `GUST_OK` line: a device opened with the `subgroups` capability was refused.
+const SUBGROUPS_REFUSED: &str = "subgroups MissingCapability";
+
+/// One kernel as the wasm module reports it (`selected_kernels` of the example): the body its build selected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SelectedKernel {
+    pub(crate) module: String,
+    pub(crate) name: String,
+    pub(crate) key: String,
+    /// The variant function's name, empty for the kernel's portable body.
+    pub(crate) variant: String,
+    /// How many capabilities the selected body requires.
+    pub(crate) requires: usize,
+}
+
+/// Splits the label of the page's `GUST_OK` line, `<vendor> <architecture> | selected <kernel=key:variant:n ...> |
+/// subgroups MissingCapability`, into the adapter words and the kernels the build selected. An OK line without the
+/// selected kernels, or without the refusal of the `subgroups` capability, is an error: the page did not prove them.
+pub(crate) fn split_page_label(label: &str) -> Result<(String, Vec<SelectedKernel>), String> {
+    let parts: Vec<&str> = label.split(" | ").collect();
+    let [adapter, selected, refusal] = parts.as_slice() else {
+        return Err(format!(
+            "the OK line has {} part(s) separated by ` | `, expected 3: the adapter words, `selected ...` and `{SUBGROUPS_REFUSED}`",
+            parts.len()
+        ));
+    };
+    if *refusal != SUBGROUPS_REFUSED {
+        return Err(format!(
+            "the OK line does not say `{SUBGROUPS_REFUSED}` (the refusal of a device opened with the subgroups capability): {refusal:?}"
+        ));
+    }
+    let Some(list) = (*selected == "selected")
+        .then_some("")
+        .or_else(|| selected.strip_prefix("selected "))
+    else {
+        return Err(format!("the OK line has no `selected` part: {selected:?}"));
+    };
+    let mut kernels = Vec::new();
+    for item in list.split_whitespace() {
+        let bad = || {
+            format!("the selected kernel {item:?} is not `<module>.<kernel>=<key>:<variant>:<n>`")
+        };
+        let (path, rest) = item.split_once('=').ok_or_else(bad)?;
+        let (module, name) = path.split_once('.').ok_or_else(bad)?;
+        let fields: Vec<&str> = rest.split(':').collect();
+        let [key, variant, requires] = fields.as_slice() else {
+            return Err(bad());
+        };
+        kernels.push(SelectedKernel {
+            module: module.to_owned(),
+            name: name.to_owned(),
+            key: (*key).to_owned(),
+            variant: if *variant == "-" {
+                String::new()
+            } else {
+                (*variant).to_owned()
+            },
+            requires: requires.parse().map_err(|_| bad())?,
+        });
+    }
+    if kernels.is_empty() {
+        return Err("the OK line selects no kernel".into());
+    }
+    Ok(((*adapter).to_owned(), kernels))
+}
+
+/// One body the manifest lists for a kernel: its key, its variant function (empty for the portable body) and how many
+/// capabilities it requires.
+type ListedBody = (String, String, usize);
+
+/// A kernel's `(module, name)`.
+type KernelPath = (String, String);
+
+/// The bodies the manifest lists for one kernel.
+type ListedKernel = (KernelPath, Vec<ListedBody>);
+
+/// A kernel, the keys of its own entries and the bodies a `variants` list gives.
+type ManifestEntry = (KernelPath, Vec<String>, Vec<ListedBody>);
+
+/// The bodies the manifest lists, grouped by `(module, name)`: the items of a `variants` list when the kernel has one
+/// (schema 3; each body also has an entry of its own), else the key of the entry, the portable body.
+fn listed_bodies(manifest: &str) -> Result<Vec<ListedKernel>, String> {
+    let json = crate::json::parse(manifest)
+        .map_err(|error| format!("the committed manifest does not parse: {error}"))?;
+    let kernels = json
+        .get("kernels")
+        .and_then(|kernels| kernels.as_array())
+        .ok_or("the committed manifest has no `kernels` array")?;
+    let mut listed: Vec<ListedKernel> = Vec::new();
+    // (module, name) -> the entries' own keys, and the bodies a `variants` list gives (schema 3).
+    let mut entries: Vec<ManifestEntry> = Vec::new();
+    for entry in kernels {
+        let text = |key: &str| {
+            entry
+                .get(key)
+                .and_then(|value| value.as_str())
+                .map(str::to_owned)
+        };
+        let (Some(module), Some(name), Some(key)) = (text("module"), text("name"), text("key"))
+        else {
+            return Err("a manifest kernel has no `module`, `name` or `key` string".into());
+        };
+        let position = entries
+            .iter()
+            .position(|(path, _, _)| *path == (module.clone(), name.clone()))
+            .unwrap_or_else(|| {
+                entries.push(((module, name), Vec::new(), Vec::new()));
+                entries.len() - 1
+            });
+        entries[position].1.push(key);
+        for variant in entry
+            .get("variants")
+            .and_then(|variants| variants.as_array())
+            .unwrap_or(&[])
+        {
+            let (Some(key), Some(function)) = (
+                variant.get("key").and_then(|value| value.as_str()),
+                variant.get("variant").and_then(|value| value.as_str()),
+            ) else {
+                return Err("a manifest variant has no `key` or `variant` string".into());
+            };
+            let requires = variant
+                .get("requires")
+                .and_then(|requires| requires.as_array())
+                .map_or(0, <[crate::json::Json]>::len);
+            entries[position]
+                .2
+                .push((key.to_owned(), function.to_owned(), requires));
+        }
+    }
+    for (path, keys, bodies) in entries {
+        // With a `variants` list the list is the kernel's bodies (each has an entry of its own, whose key is not a
+        // portable body); without one the entry's key is the portable body.
+        let bodies = if bodies.is_empty() {
+            keys.into_iter()
+                .map(|key| (key, String::new(), 0))
+                .collect()
+        } else {
+            bodies
+        };
+        listed.push((path, bodies));
+    }
+    Ok(listed)
+}
+
+/// What is wrong with the kernels a browser build selected, judged against the committed manifest: each must be a
+/// kernel of the manifest, with a key (and variant) the manifest lists for it, embedding an artifact; every kernel of
+/// the manifest must be selected once; and a build for the browser selects no body that requires a capability (its
+/// WebGPU backend offers none, D142).
+pub(crate) fn selected_key_problems(selected: &[SelectedKernel], manifest: &str) -> Vec<String> {
+    let listed = match listed_bodies(manifest) {
+        Ok(listed) => listed,
+        Err(error) => return vec![error],
+    };
+    let mut problems = Vec::new();
+    for kernel in selected {
+        let path = format!("{}.{}", kernel.module, kernel.name);
+        let Some((_, bodies)) = listed
+            .iter()
+            .find(|(path, _)| path.0 == kernel.module && path.1 == kernel.name)
+        else {
+            problems.push(format!(
+                "the page selected {path}, which the committed manifest does not list"
+            ));
+            continue;
+        };
+        let body = bodies
+            .iter()
+            .find(|(key, variant, _)| *key == kernel.key && *variant == kernel.variant);
+        if kernel.key == "none" {
+            problems.push(format!(
+                "{path}: the build embedded no artifact, so it selected no key"
+            ));
+        } else if let Some((_, _, listed_requires)) = body {
+            if *listed_requires != kernel.requires {
+                problems.push(format!(
+                    "{path}: the page says the selected body requires {} capability(ies), the manifest says {listed_requires}",
+                    kernel.requires
+                ));
+            }
+        } else {
+            problems.push(format!(
+                "{path}: the selected key {} (variant {:?}) is not a body the committed manifest lists for it ({})",
+                kernel.key,
+                kernel.variant,
+                bodies
+                    .iter()
+                    .map(|(key, variant, _)| format!("{key}/{variant:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        if kernel.requires != 0 {
+            problems.push(format!(
+                "{path}: a build for the browser selected a body that requires {} capability(ies); the browser's WebGPU backend offers none",
+                kernel.requires
+            ));
+        }
+        let times = selected
+            .iter()
+            .filter(|other| other.module == kernel.module && other.name == kernel.name)
+            .count();
+        if times != 1 {
+            problems.push(format!("{path} is selected {times} times in the OK line"));
+        }
+    }
+    for ((module, name), _) in &listed {
+        if !selected
+            .iter()
+            .any(|kernel| kernel.module == *module && kernel.name == *name)
+        {
+            problems.push(format!(
+                "the committed manifest lists {module}.{name}, which the page did not report"
+            ));
+        }
+    }
+    problems
 }
 
 // ---------------------------------------------------------------------------------------------------------------

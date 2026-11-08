@@ -36,6 +36,7 @@ pub mod compact_kernels;
 #[cfg(any(test, gust_dual))]
 pub mod cpu;
 mod error;
+pub mod evidence;
 pub mod kernels;
 mod limits;
 pub mod reduce;

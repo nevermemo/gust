@@ -280,6 +280,14 @@ fn verify_inner(
             return Err(error);
         }
     }
+    if matches!(mode, VerifyMode::Examples | VerifyMode::Full) {
+        // The strict proof of the subgroups capability (M8, slice m8.e): its own cargo calls, one of them under a
+        // profile of its own, so it runs in process and is recorded like the other xtask checks.
+        let outcome = check_strict_subgroups_example(root)
+            .map(|summary| format!("{summary}\n"))
+            .map_err(|error| vec![error]);
+        report_check(checks, STRICT_SUBGROUPS_PACKAGE, outcome)?;
+    }
     if runs_check_dual(mode) {
         // The dual build and the example runs with the CPU twin (D26): its cargo calls are its own, with their own
         // target directory and rustflags, so it runs in process and is recorded like the other xtask checks.
@@ -892,7 +900,7 @@ pub(crate) const ALGO_GPU_CALL: [&str; 4] = ["test", "--locked", "-p", "gust-alg
 /// The `gpu::` tests of `gust-algo`, by name: each must be reported `ok`, and no other `tests::gpu::` test may exist
 /// ([`check_algo_gpu_counts`]), so a deleted or an unpinned adapter test fails the gate. The twins would still satisfy
 /// a plain "at least one test ran". Adding or removing a `gpu::` test changes this list in the same commit.
-pub(crate) const ALGO_GPU_TESTS: [&str; 49] = [
+pub(crate) const ALGO_GPU_TESTS: [&str; 50] = [
     "tests::gpu::gpu_a_compaction_chain_runs_on_the_device_with_the_device_count",
     "tests::gpu::gpu_a_compaction_past_the_binding_limit_is_a_device_limit_error_before_any_dispatch",
     "tests::gpu::gpu_a_compaction_past_the_workgroup_limit_is_a_device_limit_error_before_any_dispatch",
@@ -909,6 +917,7 @@ pub(crate) const ALGO_GPU_TESTS: [&str; 49] = [
     "tests::gpu::gpu_compaction_is_exact_at_every_boundary",
     "tests::gpu::gpu_compaction_leaves_the_flags_alone_and_returns_its_buffers",
     "tests::gpu::gpu_empty_inputs",
+    "tests::gpu::gpu_evidence_block_sum_equals_the_reference_and_v1_whichever_body_the_build_selects",
     "tests::gpu::gpu_float_min_and_max_are_exact",
     "tests::gpu::gpu_float_sum_of_the_tie_ladder_is_within_the_bound",
     "tests::gpu::gpu_float_sums_are_within_the_per_level_bound",
@@ -1273,6 +1282,98 @@ fn check_counted_call(call: &[String], stdout: &str) -> Result<(), String> {
 /// The cargo call that runs one example binary and exports its SPIR-V (the Spirv suite).
 pub(crate) fn example_run_args(example: &str) -> [&str; 5] {
     ["run", "--locked", "--quiet", "-p", example]
+}
+
+/// The package of the strict proof of the `subgroups` capability (M8, slice m8.e; plan section 2.1): not one of
+/// [`EXAMPLES`], because it runs under a profile of its own and writes no SPIR-V.
+pub(crate) const STRICT_SUBGROUPS_PACKAGE: &str = "subgroup-reduce";
+
+/// The profile it is built and run under: a strict one (the committed `gust-artifacts/`, no Slang at build or run
+/// time) with the capability.
+pub(crate) const STRICT_SUBGROUPS_PROFILE: &str = "native+subgroups";
+
+/// The cargo call of the strict run (run under [`STRICT_SUBGROUPS_PROFILE`] in a target directory of its own).
+pub(crate) fn strict_subgroups_args() -> Vec<String> {
+    owned_args(&["run", "--locked", "--quiet", "-p", STRICT_SUBGROUPS_PACKAGE])
+}
+
+/// The cargo call that runs the example's tests under `dev`, the ignored one included: the host model against
+/// hand-built words, and the program on the adapter with the portable body (a `dev` build has no capability).
+pub(crate) fn strict_subgroups_test_args() -> Vec<String> {
+    owned_args(&[
+        "test",
+        "--locked",
+        "-p",
+        STRICT_SUBGROUPS_PACKAGE,
+        "--",
+        "--include-ignored",
+    ])
+}
+
+/// What is wrong with the output of the strict run: the three checks of the example must have passed on the subgroup
+/// body, and the portable body must not be what ran.
+pub(crate) fn strict_subgroups_problems(stdout: &str) -> Vec<String> {
+    let mut problems = Vec::new();
+    for needle in [
+        "subgroup-reduce: OK body=subgroups",
+        "subgroup-reduce: lane count ",
+        "subgroup-reduce: ballot popcount: ",
+        "subgroup-reduce: prefix sum: ",
+    ] {
+        if !stdout.contains(needle) {
+            problems.push(format!(
+                "the strict run printed no line with `{needle}`, so the subgroup body was not shown to run"
+            ));
+        }
+    }
+    if stdout.contains("body=portable") {
+        problems.push(
+            "the strict run ran the portable body: the build did not select the subgroup body"
+                .to_owned(),
+        );
+    }
+    problems
+}
+
+/// Builds and runs `examples/subgroup-reduce` under `GUST_PROFILE=native+subgroups`: a strict profile, so the build
+/// embeds the committed WGSL and cannot call Slang (the package does not enable `slang-runtime`, which a strict profile
+/// refuses), and the capability, so the build selects the subgroup body. The program opens the machine's default
+/// device, checks the lane count, the ballot popcount and the prefix sum it wrote against a host model, and prints
+/// `subgroup-reduce: OK body=subgroups`; [`strict_subgroups_problems`] requires those lines. First the example's
+/// tests under `dev`, which need an adapter too (the portable body writes zeros).
+fn check_strict_subgroups_example(root: &Path) -> Result<String, String> {
+    run_cargo_test_captured(root, &strict_subgroups_test_args())?;
+    let target = crate::workspace::cargo_target_dir(root).join("strict-subgroups");
+    let args = strict_subgroups_args();
+    println!(
+        "-- GUST_PROFILE={STRICT_SUBGROUPS_PROFILE} cargo {}",
+        args.join(" ")
+    );
+    let output = Command::new("cargo")
+        .args(&args)
+        .current_dir(root)
+        .env("GUST_PROFILE", STRICT_SUBGROUPS_PROFILE)
+        .env("CARGO_TARGET_DIR", &target)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| format!("could not launch cargo: {error}"))?;
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    print!("{stdout}");
+    eprint!("{}", String::from_utf8_lossy(&output.stderr));
+    if !output.status.success() {
+        return Err(format!(
+            "GUST_PROFILE={STRICT_SUBGROUPS_PROFILE} cargo {} failed (exit {})",
+            args.join(" "),
+            output.status.code().unwrap_or(-1)
+        ));
+    }
+    let problems = strict_subgroups_problems(&stdout);
+    if !problems.is_empty() {
+        return Err(problems.join("\n"));
+    }
+    Ok(format!(
+        "{STRICT_SUBGROUPS_PACKAGE} passed: its tests under dev, and the program under GUST_PROFILE={STRICT_SUBGROUPS_PROFILE} from committed artifacts: lane count, ballot popcount and prefix sum equal the host model on the adapter it names"
+    ))
 }
 
 /// Compares the exported SPIR-V file names with the expected kernels and names the

@@ -154,3 +154,22 @@ fn the_shipped_variants_are_the_measured_ones() {
         );
     }
 }
+
+/// Slice m8.e (D146, Opus 14): the subgroup form of the block step is an evidence pair beside the shipped kernels, not a
+/// variant of them. The build selects exactly one body of the pair (the portable tree under `dev`, the subgroup body
+/// under `dev+subgroups`), which the descriptor's `requires` and the Slang text both say without an adapter, and the
+/// shipped set still runs v1 everywhere: the public reductions do not move with the profile.
+#[test]
+fn the_evidence_pair_selects_the_body_of_the_profile_and_the_shipped_set_does_not_move() {
+    let enabled = gust::capability::enabled();
+    let descriptor = &crate::evidence::block_sum_kernels::block_sum::DESCRIPTOR;
+    assert_eq!(descriptor.requires, enabled);
+    assert_eq!(
+        descriptor.slang_source.contains("WaveActiveSum"),
+        !enabled.is_empty(),
+        "the subgroup add is in the selected body exactly when the build has the capability"
+    );
+    for operation in OPERATIONS {
+        assert_eq!(shipped(operation), Variant::V1, "{operation:?}");
+    }
+}

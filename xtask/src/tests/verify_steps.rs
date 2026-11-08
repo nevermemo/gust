@@ -1,7 +1,8 @@
 use super::{
     RELEASE_LEDGER_TEST, RELEASE_LEDGER_TESTS, RELEASE_ONLY_CPU_TEST, RELEASE_ONLY_SLANG_TEST,
-    RELEASE_ONLY_TESTS, RELEASE_SLANG_TESTS, VerifyMode, cargo_calls, check_counted_call,
-    check_ledger, counts_tests, example_run_args,
+    RELEASE_ONLY_TESTS, RELEASE_SLANG_TESTS, STRICT_SUBGROUPS_PACKAGE, STRICT_SUBGROUPS_PROFILE,
+    VerifyMode, cargo_calls, check_counted_call, check_ledger, counts_tests, example_run_args,
+    strict_subgroups_args, strict_subgroups_problems, strict_subgroups_test_args,
 };
 use crate::workspace::{EXAMPLES, SMOKE_EXAMPLES, workspace_test_args};
 
@@ -404,4 +405,80 @@ fn the_release_call_must_report_both_release_only_tests_by_name() {
     // Other counted calls (the examples) do not need the names.
     let example = owned(&["test", "-p", "polynomial", "--", "--include-ignored"]);
     assert_eq!(check_counted_call(&example, summary), Ok(()));
+}
+
+// ---- the strict proof of the subgroups capability (m8.e) ----
+
+/// The strict run is the locked, quiet run of one package, in the examples and full modes only, and the package is not
+/// one of the examples the other modes run (it writes no SPIR-V and runs under a profile of its own).
+#[test]
+fn the_strict_subgroups_run_is_one_locked_package_and_not_an_example_of_the_other_modes() {
+    assert_eq!(
+        strict_subgroups_args(),
+        owned(&["run", "--locked", "--quiet", "-p", "subgroup-reduce"])
+    );
+    assert_eq!(STRICT_SUBGROUPS_PACKAGE, "subgroup-reduce");
+    assert_eq!(STRICT_SUBGROUPS_PROFILE, "native+subgroups");
+    let tests = strict_subgroups_test_args();
+    assert!(tests.contains(&"--locked".to_owned()));
+    assert!(counts_tests(&tests), "the test call must be a counted one");
+    assert!(!EXAMPLES.contains(&STRICT_SUBGROUPS_PACKAGE));
+    for mode in ALL_MODES {
+        assert!(
+            !cargo_calls(mode)
+                .iter()
+                .any(|call| call.iter().any(|arg| arg == STRICT_SUBGROUPS_PACKAGE)),
+            "{mode:?}"
+        );
+    }
+}
+
+/// The source calls the strict check in the examples and full modes only, after the mode's own cargo calls.
+#[test]
+fn the_strict_subgroups_check_runs_in_the_examples_and_full_modes_after_the_cargo_calls() {
+    let source = include_str!("../verify.rs").replace("\r\n", "\n");
+    let body = &source[source.find("fn verify_inner(").expect("verify_inner")..];
+    let calls = body.find("for args in cargo_calls(mode) {").unwrap();
+    let strict = body
+        .find("matches!(mode, VerifyMode::Examples | VerifyMode::Full)")
+        .unwrap();
+    let call = body.find("check_strict_subgroups_example(root)").unwrap();
+    let dual = body.find("if runs_check_dual(mode) {").unwrap();
+    assert!(calls < strict && strict < call && call < dual);
+}
+
+const STRICT_GOOD: &str = "subgroup-reduce: adapter NVIDIA GeForce RTX 5090\n\
+    subgroup-reduce: lane count 32 to 32 over 300 invocations in 10 subgroups\n\
+    subgroup-reduce: ballot popcount: 150 elements over 10, as the host counts them\n\
+    subgroup-reduce: prefix sum: the subgroups' last prefix sums add up to 4500, the sum of the data\n\
+    subgroup-reduce: OK body=subgroups\n";
+
+/// Mutations: each line of the output is needed, and the portable body is never accepted as the proof.
+#[test]
+fn the_strict_run_is_judged_on_its_printed_lines() {
+    assert!(strict_subgroups_problems(STRICT_GOOD).is_empty());
+    for dropped in [
+        "OK body=subgroups",
+        "lane count ",
+        "ballot popcount: ",
+        "prefix sum: ",
+    ] {
+        let text: String = STRICT_GOOD
+            .lines()
+            .filter(|line| !line.contains(dropped))
+            .map(|line| format!("{line}\n"))
+            .collect();
+        let problems = strict_subgroups_problems(&text);
+        assert_eq!(problems.len(), 1, "{dropped}: {problems:?}");
+        assert!(problems[0].contains(dropped), "{problems:?}");
+    }
+    let portable = "subgroup-reduce: adapter x\n\
+        subgroup-reduce: the portable body ran (this build has no subgroups capability): nothing to check\n\
+        subgroup-reduce: OK body=portable\n";
+    let problems = strict_subgroups_problems(portable);
+    assert!(
+        problems.iter().any(|p| p.contains("ran the portable body")),
+        "{problems:?}"
+    );
+    assert!(strict_subgroups_problems("").len() >= 4);
 }

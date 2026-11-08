@@ -139,6 +139,13 @@ pub struct Options {
     pub target_dir: PathBuf,
     /// The repository root (the generated manifest points at its `crates/`).
     pub repo_root: PathBuf,
+    /// The `GUST_PROFILE` the run crate is built and run under: `dev` (the default) or `dev+<capability>` (M8: `dev+subgroups`,
+    /// the profiles that keep the run-time compiler the run crate needs).
+    pub profile: String,
+    /// `GUST_EXPORT_DIR` of the run crate's build, when set: the macro writes its records (`<key>.slang` and
+    /// `<key>.kernel.json` of every kernel) under `<dir>/<package>/`. The directory must be new for the run (the macro
+    /// keeps a file that exists with other bytes, and cargo re-expands the crate only when the value changes).
+    pub export_dir: Option<PathBuf>,
 }
 
 /// The planned programs of one seed, with the discard counts and the time the planning took.
@@ -381,6 +388,8 @@ fn cargo_step(
     cpu_only: bool,
     log: &Path,
     env: &[(&str, &Path)],
+    profile: &str,
+    export_dir: Option<&Path>,
     deadline: Option<Duration>,
 ) -> Result<f64, String> {
     let mut command = cargo_command();
@@ -390,11 +399,14 @@ fn cargo_step(
         .arg("--manifest-path")
         .arg(crate_dir.join("Cargo.toml"))
         .env("CARGO_TARGET_DIR", target_dir)
-        .env("GUST_PROFILE", "dev")
+        .env("GUST_PROFILE", profile)
         .env("DIFFTEST_CPU_ONLY", if cpu_only { "1" } else { "0" })
         .stdin(Stdio::null());
     if let Some(out_dir) = out_dir {
         command.env("DIFFTEST_OUT", out_dir);
+    }
+    if let Some(export_dir) = export_dir {
+        command.env("GUST_EXPORT_DIR", export_dir);
     }
     for (key, value) in env {
         command.env(key, value);
@@ -650,6 +662,7 @@ pub fn build_report(
             "mode",
             Json::str(if options.cpu_only { "cpu-only" } else { "gpu" }),
         ),
+        ("profile", Json::str(&options.profile)),
         ("passed", Json::Bool(passed)),
         (
             "seeds",
@@ -736,6 +749,8 @@ pub fn execute_shapes(
             options.cpu_only,
             &dir.join("build.log"),
             &[],
+            &options.profile,
+            options.export_dir.as_deref(),
             deadline,
         )
     };
@@ -772,6 +787,8 @@ pub fn execute_shapes(
         options.cpu_only,
         &dir.join("run.log"),
         env,
+        &options.profile,
+        options.export_dir.as_deref(),
         deadline,
     )?;
     let raws = read_results(&out, plan)?;
@@ -1090,6 +1107,8 @@ mod tests {
             shapes: vec![Shape::Grid],
             target_dir: PathBuf::new(),
             repo_root: PathBuf::new(),
+            profile: "dev".to_owned(),
+            export_dir: None,
         };
         let outcome = build_report(
             &options,
@@ -1300,6 +1319,8 @@ mod tests {
             shapes: vec![Shape::Grid, Shape::Pixel],
             target_dir: PathBuf::new(),
             repo_root: PathBuf::new(),
+            profile: "dev".to_owned(),
+            export_dir: None,
         };
         let mut shapes = pixel_plan();
         for (program, reason) in [

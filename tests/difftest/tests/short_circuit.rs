@@ -94,6 +94,8 @@ fn options(cpu_only: bool) -> Options {
         seeds: Vec::new(),
         cpu_only,
         shapes: vec![Shape::Grid],
+        profile: "dev".to_owned(),
+        export_dir: None,
         target_dir: target_dir(),
         repo_root: std::path::absolute(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
             .expect("absolute repository root"),

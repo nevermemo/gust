@@ -9,8 +9,8 @@
 //! collide with a user name, and removing the prefix where an emitted name starts (a word boundary, in front of a name) from a slangc message gives back the Rust spelling.
 //!
 //! An entry is in the table for one or both of two reasons, first measured on slangc 2026.13.1 (D46) and checked again
-//! on the pinned 2026.20 (slice m4.z, 2026-11-02: the table tests of `crates/gust/tests/diagnostics.rs` passed
-//! unchanged, 24 tests):
+//! on 2026.20 (slice m4.z, 2026-11-02: the table tests of `crates/gust/tests/diagnostics.rs` passed unchanged, 24
+//! tests); the Slangc tier, which runs that test file, passed on the pinned 2026.21 (slice m8.p):
 //!
 //! - **class 1, `fails_in` not empty:** the bare name makes slangc fail in the listed positions (S6.3, S6.3b:
 //!   `plans/m6/probe/kw/kw_results.json` and `kw_results3.json`, both targets agreeing). The table test compiles the

@@ -276,7 +276,7 @@ fn the_records_rebuild_the_macros_own_descriptors() {
             .unwrap();
         assert_eq!(
             stored.verify(&record).unwrap(),
-            "2026.20",
+            crate::slang::SLANG_VERSION,
             "{}",
             stored.name
         );
@@ -297,7 +297,7 @@ fn a_null_record_is_filled_with_the_macros_layouts_for_vectors_and_matrices() {
         );
         assert_eq!(
             stored.verify(&record).unwrap(),
-            "2026.20",
+            crate::slang::SLANG_VERSION,
             "{}",
             stored.name
         );
@@ -550,7 +550,10 @@ fn storage_matrices_are_described_by_the_macro_and_confirmed_by_the_reflection()
     );
     // Slang's reflection agrees with every one of them: the stored artifact verifies with these layouts, and a record
     // with all layouts null is filled with the same numbers.
-    assert_eq!(MATRICES.verify(&record).unwrap(), "2026.20");
+    assert_eq!(
+        MATRICES.verify(&record).unwrap(),
+        crate::slang::SLANG_VERSION
+    );
     let filled = completed_descriptor(&MATRICES.null_record(), MATRICES.reflection).unwrap();
     assert_eq!(layouts(&filled), layouts(MATRICES.kernel));
 }

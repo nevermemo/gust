@@ -194,7 +194,7 @@ mod tests {
         for value in ["gust-slang-reflect", "./helper", "rel/helper"] {
             setup.env.helper = Some(OsString::from(value));
             let error = require_with(&setup.env, false, &pinned, &|_| {
-                Ok("gust-slang-reflect schema=3 slang=2026.20".to_owned())
+                Ok("gust-slang-reflect schema=3 slang=2026.21".to_owned())
             })
             .unwrap_err();
             assert!(
@@ -219,16 +219,17 @@ mod tests {
             &setup.env,
             false,
             &pinned,
-            &output("gust-slang-reflect schema=3 slang=2026.20\n"),
+            &output("gust-slang-reflect schema=3 slang=2026.21\n"),
         )
         .unwrap();
         assert_eq!(accepted.helper, named);
-        assert_eq!(accepted.slangc.version, "2026.20");
+        // Plumbing only: the fixture reports the pin, so this checks that the version is carried through.
+        assert_eq!(accepted.slangc.version, crate::slang::SLANG_VERSION);
         // A helper of schema 1 or 2 cannot take the stage argument: refused by its schema, with the rebuild command,
         // although its tag is the right one (mx.k review S1).
         for text in [
-            "gust-slang-reflect schema=1 slang=2026.20\n",
-            "gust-slang-reflect schema=2 slang=2026.20\n",
+            "gust-slang-reflect schema=1 slang=2026.21\n",
+            "gust-slang-reflect schema=2 slang=2026.21\n",
         ] {
             let error = require_with(&setup.env, false, &pinned, &output(text)).unwrap_err();
             assert!(

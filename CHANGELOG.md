@@ -40,6 +40,11 @@ The workspace version is `0.2.0-dev`. Work for 0.2.0 lands on `main`; the 0.1.0 
   `HeadlessDevice` adds `impl gust::target::GpuKernel for MyKernel {}`; without it the call is E0277 with a message
   that says so. The semver tool does not list this change (the marker is `#[doc(hidden)]`).
 - `gust-compute-macros` depends on `toml` 1 (no default features; `std` and `parse`) to read `[package.metadata.gust]`.
+- The pinned Slang is 2026.21 (`cargo gust slang install` fetches it); the 0.1.0 line stays on 2026.20. Artifacts
+  built with 2026.20 fail `cargo gust check` ("the manifest was built with Slang `2026.20` but the installed helper
+  reports `2026.21`"); run `cargo gust build` again (or pass `--allow-slang-mismatch`). The emitted WGSL of one
+  kernel kind changes visibly: a compare-exchange now retries after a spurious failure (Slang #13918, read from the
+  emitted text). That stays inside the weak contract of `atomic_compare_exchange`, but it is a change in GPU behaviour.
 
 ## 0.1.0 (not yet published)
 

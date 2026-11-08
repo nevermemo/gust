@@ -487,23 +487,23 @@ mod tests {
     fn facts() -> Facts {
         Facts {
             version: "0.1.0".to_owned(),
-            pin: "2026.20".to_owned(),
+            pin: slang::SLANG_VERSION.to_owned(),
             slangc: Ok(Located {
-                slangc: PathBuf::from("/slang/2026.20/bin/slangc"),
-                version: "2026.20".to_owned(),
+                slangc: PathBuf::from("/slang/2026.21/bin/slangc"),
+                version: slang::SLANG_VERSION.to_owned(),
                 source: Source::Cache,
                 pinned: true,
                 root: Some(PathBuf::from("/slang")),
             }),
             notices: vec![
-                PathBuf::from("/slang/2026.20/LICENSE"),
-                PathBuf::from("/slang/2026.20/LICENSES"),
-                PathBuf::from("/slang/2026.20/third-party-notices"),
+                PathBuf::from("/slang/2026.21/LICENSE"),
+                PathBuf::from("/slang/2026.21/LICENSES"),
+                PathBuf::from("/slang/2026.21/third-party-notices"),
             ],
             path_slangc: None,
             helper_candidate: PathBuf::from("gust-slang-reflect"),
             helper_found: Some(PathBuf::from("/tools/gust-slang-reflect")),
-            helper_slang: Some(Ok("2026.20".to_owned())),
+            helper_slang: Some(Ok(slang::SLANG_VERSION.to_owned())),
             spirv_val: Some(PathBuf::from("/tools/spirv-val")),
             gust_profile: None,
         }
@@ -523,12 +523,12 @@ mod tests {
             text.contains(&"helper: found at /tools/gust-slang-reflect".to_owned()),
             "{text:?}"
         );
-        assert!(text.contains(&"  Slang build: 2026.20".to_owned()));
-        assert!(text.contains(&"slangc: found at /slang/2026.20/bin/slangc".to_owned()));
-        assert!(text.contains(&"  Slang 2026.20 (cargo cache); the pin is 2026.20".to_owned()));
+        assert!(text.contains(&"  Slang build: 2026.21".to_owned()));
+        assert!(text.contains(&"slangc: found at /slang/2026.21/bin/slangc".to_owned()));
+        assert!(text.contains(&"  Slang 2026.21 (cargo cache); the pin is 2026.21".to_owned()));
         for notice in ["LICENSE", "LICENSES", "third-party-notices"] {
             assert!(
-                text.contains(&format!("  licence notice: /slang/2026.20/{notice}")),
+                text.contains(&format!("  licence notice: /slang/2026.21/{notice}")),
                 "{notice}: {text:?}"
             );
         }
@@ -612,13 +612,13 @@ mod tests {
             .unwrap_or_else(|| panic!("{text:?}"));
         assert!(
             refused.contains("built against Slang `2025.1.0`")
-                && refused.contains("is Slang `2026.20`")
+                && refused.contains("is Slang `2026.21`")
                 && refused.contains("cargo gust slang build-helper"),
             "{refused}"
         );
         // The pin matching is not enough: two builds of the pinned version still differ.
         let mut other_build = facts();
-        other_build.helper_slang = Some(Ok("2026.20-1-g0a1b2c3d4".to_owned()));
+        other_build.helper_slang = Some(Ok("2026.21-1-g0a1b2c3d4".to_owned()));
         assert!(!lines(&other_build).1);
     }
 
@@ -631,7 +631,7 @@ mod tests {
 
     #[test]
     fn a_path_slangc_of_another_version_is_named_with_both_versions_and_the_managed_fix() {
-        // Mutation (b): the managed 2026.20 is found, but the first slangc on PATH reports another version.
+        // Mutation (b): the managed 2026.21 is found, but the first slangc on PATH reports another version.
         let mut shadowed = facts();
         shadowed.path_slangc = Some((
             PathBuf::from("/vulkan/Bin/slangc"),
@@ -643,9 +643,9 @@ mod tests {
         let warning = warning_of(&shadowed).unwrap_or_else(|| panic!("{text:?}"));
         assert_eq!(
             warning,
-            "warning: the first slangc on PATH (/vulkan/Bin/slangc) is Slang `2026.13.1`, not the pin 2026.20; cargo \
+            "warning: the first slangc on PATH (/vulkan/Bin/slangc) is Slang `2026.13.1`, not the pin 2026.21; cargo \
              gust uses the managed install, but tools that do not know it (such as `cargo xtask` in a GUST checkout) \
-             take PATH and would mix versions: put /slang/2026.20/bin first on PATH"
+             take PATH and would mix versions: put /slang/2026.21/bin first on PATH"
         );
         // A PATH slangc that cannot report its version is named too.
         shadowed.path_slangc = Some((
@@ -655,10 +655,13 @@ mod tests {
         assert!(
             warning_of(&shadowed)
                 .unwrap()
-                .contains("cannot report its version (exit 3); the pin is 2026.20")
+                .contains("cannot report its version (exit 3); the pin is 2026.21")
         );
         // The pin on PATH, no slangc on PATH, or the located slangc being the PATH one: nothing to add.
-        shadowed.path_slangc = Some((PathBuf::from("/other/slangc"), Ok("2026.20".to_owned())));
+        shadowed.path_slangc = Some((
+            PathBuf::from("/other/slangc"),
+            Ok(slang::SLANG_VERSION.to_owned()),
+        ));
         assert_eq!(warning_of(&shadowed), None);
         shadowed.path_slangc = None;
         assert_eq!(warning_of(&shadowed), None);
@@ -667,7 +670,10 @@ mod tests {
             located.source = Source::Path;
             located.root = None;
         }
-        on_path.path_slangc = Some((PathBuf::from("/p/slangc"), Ok("2026.20".to_owned())));
+        on_path.path_slangc = Some((
+            PathBuf::from("/p/slangc"),
+            Ok(slang::SLANG_VERSION.to_owned()),
+        ));
         assert_eq!(warning_of(&on_path), None);
     }
 
@@ -691,10 +697,10 @@ mod tests {
         assert!(!healthy);
         let line = text
             .iter()
-            .find(|line| line.starts_with("slangc: NOT found as the pinned Slang 2026.20"))
+            .find(|line| line.starts_with("slangc: NOT found as the pinned Slang 2026.21"))
             .unwrap_or_else(|| panic!("{text:?}"));
         assert!(
-            line.contains("is Slang `2026.13.1`, not 2026.20")
+            line.contains("is Slang `2026.13.1`, not 2026.21")
                 && line.contains("run `cargo gust slang install`"),
             "{line}"
         );
@@ -707,15 +713,15 @@ mod tests {
     fn a_missing_pinned_slangc_is_not_healthy_and_carries_the_locate_error() {
         let mut missing = facts();
         missing.slangc =
-            Err("Slang 2026.20 was not found: run `cargo gust slang install`".to_owned());
+            Err("Slang 2026.21 was not found: run `cargo gust slang install`".to_owned());
         missing.notices.clear();
         let (text, healthy) = lines(&missing);
         assert!(!healthy);
         assert!(
             text.contains(
                 &concat!(
-                    "slangc: NOT found as the pinned Slang 2026.20: ",
-                    "Slang 2026.20 was not found: run `cargo gust slang install`"
+                    "slangc: NOT found as the pinned Slang 2026.21: ",
+                    "Slang 2026.21 was not found: run `cargo gust slang install`"
                 )
                 .to_owned()
             ),

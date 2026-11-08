@@ -452,8 +452,6 @@ test module; do not mix that mechanical move with behavior changes.
   does not. Adopt them in `gust::limits::PORTABLE` (m8.f) at the next wgpu bump.
 - gfx-rs/wgpu#10876 (filed 2026-11-07): an opt-in `REQUIRE_FULL_SUBGROUPS` for compute pipelines on Vulkan. Until
   it lands, D140's full-subgroup assumption rests on the behaviour of the six adapters tested.
-- Slang 2026.21 is out: a premise spike (a separate Slang home, digests checked, every golden set re-emitted and
-  the diffs classified, D141's fix-up checked on the new WGSL) before a pin bump; `release/0.1` stays on 2026.20.
 - Subgroup evidence (the m8.s review): an end-to-end `cargo gust build` of a body that calls a subgroup operation;
   a Radeon 890M run of tests/subgroup.rs (the tests open the first Vulkan adapter); a check that shows which body a
   CPU dispatch ran (the one-lane shadows give the portable output); a literal lane of 128 or more refused in the
@@ -461,6 +459,20 @@ test module; do not mix that mechanical move with behavior changes.
 - For the 0.2.0 release (the m8.v re-check): RELEASE.md's "Releasing 0.2.0 from main" also covers README :360,
   :377 and :565; `cargo gust doctor` takes its `~0.1` from the package version; the `semver` job runs on pull
   requests into main only (`github.base_ref`); CHANGELOG's `toml` line moves out of "may break".
+- Test binaries that run in no `cargo xtask test` suite and in no CI job (m8.p survey of `crates/*/tests/*.rs` and
+  every package's lib, bin and doc tests against `xtask/src/suite.rs`, `verify.rs`, `checks.rs` and both workflows):
+  - the whole `cargo-gust` package (its 258 tests, 2 of them `#[ignore]`d and needing the helper); only
+    `check-full`'s workspace run reaches it, which is why its 2026.20 pin literals went unnoticed until the m8.p bump
+    (20 of 258 tests failed on the bumped tree);
+  - `gust-compute` `--test toolchain` (its pin-rule test broke on the same bump, found by the m8.p review);
+  - `gust-compute` `--test parallel` (only `check-feature dispatch` runs it), `--test pixel_twin`, `--test
+    textures_twin`, and `--doc` (the doc tests of `gust-compute`; the suites run its `--lib` and named test files).
+  On the m8.p tree (2026.21) all of them pass: toolchain 12 passed 1 ignored, parallel 12, pixel_twin 6, textures_twin
+  4, doc 19 (two runs of 9 and 10), cargo-gust 256 passed 2 ignored and, with `-- --ignored`, 2 passed. Fix: a Unit
+  step for the tests that need neither Slang nor the helper (the three twin files, `toolchain`, `--doc`, and most of
+  `cargo-gust`), and a Slangc step for the ones that do (`testdata::variant::the_helper_builds_the_stored_artifacts`
+  needs the helper). Not done in m8.p. The other packages' tests (macros, xtask, `gust-compute-wgpu`, `gust-algo`, the examples) are reached
+  by a suite or a CI job.
 
 ## Deferred language/runtime breadth
 

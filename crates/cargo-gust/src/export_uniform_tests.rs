@@ -243,9 +243,15 @@ fn the_macro_writes_the_uniform_layouts_and_the_record_rebuilds_its_descriptor()
 #[test]
 fn a_uniform_kernel_verifies_as_a_program_verifies_it() {
     for stored in [SCALE, SHIFTED] {
-        assert_eq!(stored.verify(&stored.record()).unwrap(), "2026.20");
+        assert_eq!(
+            stored.verify(&stored.record()).unwrap(),
+            crate::slang::SLANG_VERSION
+        );
         // A record with null layouts verifies too: they are filled from the reflection.
-        assert_eq!(stored.verify(&stored.null_record()).unwrap(), "2026.20");
+        assert_eq!(
+            stored.verify(&stored.null_record()).unwrap(),
+            crate::slang::SLANG_VERSION
+        );
     }
 }
 
@@ -253,7 +259,10 @@ fn a_uniform_kernel_verifies_as_a_program_verifies_it() {
 fn uniform_and_storage_layouts_are_completed_together() {
     let record = SHIFTED.null_record();
     assert_eq!(record.unchecked_parameters(), ["o", "g", "src", "out"]);
-    assert_eq!(SHIFTED.verify(&record).unwrap(), "2026.20");
+    assert_eq!(
+        SHIFTED.verify(&record).unwrap(),
+        crate::slang::SLANG_VERSION
+    );
 }
 
 #[test]
@@ -301,7 +310,10 @@ fn the_plan_of_a_uniform_kernel_is_built_by_the_export_path() {
         &StoredCompiler,
     )
     .unwrap();
-    assert_eq!(planned.manifest.slang.as_deref(), Some("2026.20"));
+    assert_eq!(
+        planned.manifest.slang.as_deref(),
+        Some(crate::slang::SLANG_VERSION)
+    );
     assert_eq!(planned.manifest.kernels.len(), 2);
     let names: Vec<&str> = planned
         .files
@@ -492,7 +504,7 @@ fn a_std140_valid_difference_from_the_macro_is_now_caught_at_export() {
         // A null layout is filled from the document itself, so that check cannot see it (and says so in the manifest).
         assert_eq!(
             verify_stored(&stored.null_record(), Format::Wgsl, stored.wgsl, &renamed).unwrap(),
-            "2026.20",
+            crate::slang::SLANG_VERSION,
             "{}",
             stored.name
         );
@@ -569,7 +581,7 @@ fn the_helper_builds_the_stored_artifacts() {
             "{}",
             stored.name
         );
-        assert_eq!(compiled.compiler, "2026.20");
+        assert_eq!(compiled.compiler, crate::slang::SLANG_VERSION);
     }
     // And the artifacts verify in the macro's own descriptor, which carries the std140 layouts.
     for stored in [SCALE, SHIFTED] {

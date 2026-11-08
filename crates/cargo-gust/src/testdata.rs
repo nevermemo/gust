@@ -503,7 +503,10 @@ pub(crate) mod variant {
                 .unwrap();
             assert_eq!(reflection.bytes, body.reflection.as_bytes());
         }
-        assert_eq!(planned.manifest.slang.as_deref(), Some("2026.20"));
+        assert_eq!(
+            planned.manifest.slang.as_deref(),
+            Some(crate::slang::SLANG_VERSION)
+        );
     }
 
     #[test]
@@ -573,7 +576,7 @@ pub(crate) mod variant {
                 "{}",
                 body.entry_point
             );
-            assert_eq!(compiled.compiler, "2026.20");
+            assert_eq!(compiled.compiler, crate::slang::SLANG_VERSION);
         }
     }
 }

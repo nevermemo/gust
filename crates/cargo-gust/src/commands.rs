@@ -1,4 +1,4 @@
-//! The commands: `init`, `build`, `check` and `doctor`, and the pure core of `build`.
+//! The commands: `init`, `build`, `check`, `run`, `test` and `doctor`, and the pure core of `build`.
 
 use std::{
     ffi::OsString,
@@ -11,13 +11,14 @@ use gust::Format;
 
 use crate::{
     check::{self, Report},
-    cli::{BuildOptions, CheckOptions, SlangCommand, Target},
+    cli::{BuildOptions, CargoOptions, CheckOptions, SlangCommand, Target},
     collect::{self, CollectPlan, Package, clean_command, collect, fresh_nonce, metadata_command},
     doctor::{self, Facts},
     export::{self, Compiler, HelperCompiler, formats_with_wgsl, verify_stored},
     helper,
     manifest::{MANIFEST_FILE, Manifest, format_name},
     record::Record,
+    routes::{self, RoutePlan},
     slang::{self, Env, Located, SLANG_VERSION, Source},
     store::{self, Commit, Event, read_dir_state},
     toolchain, tools,
@@ -100,6 +101,43 @@ fn collect_records(
     collect(&collect_plan(ctx), run)
 }
 
+/// The routing of the package's `gust.toml` for the collect step (`dev`, the profile it runs under), or `None` when no
+/// `gust.toml` is beside the manifest (M8, m8.r2).
+fn collect_routes(ctx: &Context) -> Result<Option<RoutePlan>, String> {
+    routes::plan(&ctx.cargo, &ctx.package, collect::COLLECT_PROFILE)
+}
+
+/// [`run_status`] with the route variables of `routes` set on the command first: the collect step of `build` and
+/// `check` runs through here, and `run` and `test` set the same variables through [`RoutePlan::apply`].
+fn run_routed(routes: Option<&RoutePlan>, command: &mut Command) -> Result<bool, String> {
+    if let Some(plan) = routes {
+        plan.apply(command);
+    }
+    run_status(command)
+}
+
+/// `cargo gust run` and `cargo gust test`: cargo with the route variables of the package's `gust.toml` (m8.r2). The
+/// exit status is cargo's.
+pub(crate) fn cargo_with_routes(verb: &str, options: &CargoOptions) -> Result<i32, String> {
+    let ctx = resolve(&options.target)?;
+    let gust_profile =
+        std::env::var_os("GUST_PROFILE").map(|value| value.to_string_lossy().into_owned());
+    let profile = routes::build_profile(gust_profile.as_deref(), &options.arguments)?;
+    let plan = routes::plan(&ctx.cargo, &ctx.package, profile)?;
+    if let Some(plan) = &plan {
+        plan.write()?;
+        // On the error stream: `run` hands its standard output to the program.
+        for line in plan.summary() {
+            eprintln!("{line}");
+        }
+    }
+    let mut command = routes::cargo_command(&ctx.cargo, verb, &options.arguments, plan.as_ref());
+    let status = command
+        .status()
+        .map_err(|error| format!("cannot run `cargo {verb}`: {error}"))?;
+    Ok(status.code().unwrap_or(2))
+}
+
 /// The helper executable, or the error that says how to get one. It does not look at Slang itself: `check` without
 /// `--recompile` only needs the helper's build tag.
 fn require_helper() -> Result<PathBuf, String> {
@@ -170,6 +208,14 @@ pub(crate) fn formats_for_build(requested: &[Format], state: &store::DirState) -
 
 pub(crate) fn build(options: &BuildOptions) -> Result<i32, String> {
     let ctx = resolve(&options.target)?;
+    // The routing first: an error in `gust.toml` needs no Slang and no cargo.
+    let routes = collect_routes(&ctx)?;
+    if let Some(plan) = &routes {
+        plan.write()?;
+        for line in plan.summary() {
+            println!("{line}");
+        }
+    }
     let state = read_dir_state(&ctx.artifacts)?;
     let requested = formats_with_wgsl(&options.formats);
     let formats = formats_for_build(&options.formats, &state);
@@ -198,7 +244,7 @@ pub(crate) fn build(options: &BuildOptions) -> Result<i32, String> {
     };
     let manifest_missing_before = !ctx.artifacts.join(MANIFEST_FILE).is_file();
     println!("gust: collecting the kernels of `{}`", ctx.package.name);
-    let records = collect_records(&ctx, &run_status)?;
+    let records = collect_records(&ctx, &|command| run_routed(routes.as_ref(), command))?;
     println!("gust: compiling {} kernel(s)", records.len());
     let compiler = HelperCompiler { helper, spirv_val };
     // Everything is compiled and verified before the clean runs, and the clean comes before the manifest is created,
@@ -225,7 +271,12 @@ pub(crate) fn build(options: &BuildOptions) -> Result<i32, String> {
 
 pub(crate) fn check(options: &CheckOptions) -> Result<i32, String> {
     let ctx = resolve(&options.target)?;
-    let records = export::dedupe(collect_records(&ctx, &run_status)?)?;
+    // `check` reads: it resolves the routing (so a bad `gust.toml` fails here too) and sets the variables, but it does
+    // not write `routes.json`.
+    let routes = collect_routes(&ctx)?;
+    let records = export::dedupe(collect_records(&ctx, &|command| {
+        run_routed(routes.as_ref(), command)
+    })?)?;
     let state = read_dir_state(&ctx.artifacts)?;
     let helper = if options.recompile {
         // Recompiling uses the compiler, so it needs the pinned Slang and a helper of the same build (R4.8).

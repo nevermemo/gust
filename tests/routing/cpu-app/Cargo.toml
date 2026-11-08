@@ -1,0 +1,14 @@
+[package]
+name = "cpu-app"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Runs `physics::scale` on `CpuDevice`. Its `gust.toml` routes `physics` to the CPU; the same source built by plain `cargo` is
+# a GPU kernel and its `#[test]` fails, which is how check-routing shows that `cargo gust test` passes the variables.
+[dependencies]
+route-kernels = { path = "../route-kernels" }
+gust = { package = "gust-compute", path = "../../../crates/gust", default-features = false }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

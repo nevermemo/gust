@@ -130,6 +130,10 @@ pub(crate) fn run(inputs: &Inputs<'_>) -> Report {
         }
     }
     for (name, _) in &state.files {
+        // The routing driver's table (m8.r2) is not an artifact and is not a stray.
+        if name == crate::routes::ROUTES_FILE {
+            continue;
+        }
         if !expected.contains(name) {
             report.problems.push(format!(
                 "`{name}` is not part of the manifest (a stray file or a stale artifact); `cargo gust build` prunes it"

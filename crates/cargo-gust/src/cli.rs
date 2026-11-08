@@ -11,6 +11,8 @@ USAGE:
     cargo gust init   [-p <crate>] [--manifest-path <path>]
     cargo gust build  [-p <crate>] [--manifest-path <path>] [--format wgsl|spirv]... [--allow-slang-mismatch]
     cargo gust check  [-p <crate>] [--manifest-path <path>] [--recompile] [--allow-slang-mismatch]
+    cargo gust run    [cargo run arguments]
+    cargo gust test   [cargo test arguments]
     cargo gust doctor
     cargo gust slang install
     cargo gust slang locate [--allow-slang-mismatch]
@@ -25,6 +27,11 @@ COMMANDS:
              --recompile also recompiles and compares the bytes; --allow-slang-mismatch accepts another Slang build
              a plain check compares the manifest's Slang build with the helper's and does not run slangc; build and
              check --recompile require the pinned slangc and a helper of the same build
+    run      cargo run with the route variables of the package's gust.toml (D65 to D67); test is cargo test likewise
+             -p, --manifest-path, --release, --profile and --target are read (the package and the build profile), and
+             every argument is passed to cargo unchanged. build and check read gust.toml too. A gust.toml beside the
+             package's Cargo.toml routes the tags that the crates of the build declare, and the resolved table is
+             written to gust-artifacts/routes.json; without a gust.toml nothing changes
     doctor   show Slang, the native helper, the build profile and how to install this tool
     slang    manage the pinned Slang (the authors who export need it; consumers and production builds do not)
                install       download the pinned release, verify its SHA-256 and unpack it into the cache
@@ -59,6 +66,15 @@ pub(crate) struct CheckOptions {
     pub(crate) allow_slang_mismatch: bool,
 }
 
+/// `cargo gust run` and `cargo gust test` (m8.r2): cargo's own arguments, read for the package and the build profile
+/// and passed on unchanged.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CargoOptions {
+    pub(crate) target: Target,
+    /// Every argument after the command, as given.
+    pub(crate) arguments: Vec<String>,
+}
+
 /// `cargo gust slang <command>`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SlangCommand {
@@ -78,6 +94,8 @@ pub(crate) enum Command {
     Init(Target),
     Build(BuildOptions),
     Check(CheckOptions),
+    Run(CargoOptions),
+    Test(CargoOptions),
     Doctor,
     Slang(SlangCommand),
     Help,
@@ -129,6 +147,8 @@ pub(crate) fn parse(args: &[String]) -> Result<Command, String> {
                 target: parsed.target,
             }))
         }
+        "run" => cargo_options(rest).map(Command::Run),
+        "test" => cargo_options(rest).map(Command::Test),
         "doctor" => {
             options(rest, &[], &[])?;
             Ok(Command::Doctor)
@@ -136,6 +156,57 @@ pub(crate) fn parse(args: &[String]) -> Result<Command, String> {
         "slang" => slang(rest).map(Command::Slang),
         other => Err(format!("unknown command `{other}`")),
     }
+}
+
+/// Parse what follows `run` or `test`: cargo's arguments. The package (`-p`, `--package`) and the manifest
+/// (`--manifest-path`) are read before the first `--`, in cargo's spellings (`-p x`, `-px`, `--package x`,
+/// `--package=x`); everything is kept for cargo.
+fn cargo_options(args: &[String]) -> Result<CargoOptions, String> {
+    let mut target = Target::default();
+    let mut index = 0;
+    while let Some(argument) = args.get(index) {
+        index += 1;
+        if argument == "--" {
+            break;
+        }
+        let (name, inline) = match argument.split_once('=') {
+            Some((name, value)) if name.starts_with("--") => (name, Some(value.to_owned())),
+            _ => (argument.as_str(), None),
+        };
+        let attached = argument
+            .strip_prefix("-p")
+            .filter(|rest| !rest.is_empty() && !rest.starts_with('-'));
+        if !matches!(name, "-p" | "--package" | "--manifest-path") && attached.is_none() {
+            continue;
+        }
+        let value = match (inline, attached) {
+            (Some(value), _) => value,
+            (None, Some(value)) => value.to_owned(),
+            (None, None) => {
+                let value = args
+                    .get(index)
+                    .ok_or_else(|| format!("`{name}` needs a value"))?;
+                index += 1;
+                value.clone()
+            }
+        };
+        if value.is_empty() {
+            return Err(format!("`{name}` needs a non-empty value"));
+        }
+        if name == "--manifest-path" {
+            if target.manifest_path.replace(PathBuf::from(value)).is_some() {
+                return Err("`--manifest-path` was given twice".to_owned());
+            }
+        } else if target.package.replace(value).is_some() {
+            return Err(
+                "`-p` was given twice; `cargo gust run` and `test` work on one package".to_owned(),
+            );
+        }
+    }
+    Ok(CargoOptions {
+        target,
+        arguments: args.to_vec(),
+    })
 }
 
 /// Parse what follows `slang`.
@@ -453,6 +524,8 @@ mod tests {
             "slang install",
             "slang locate",
             "slang build-helper",
+            "run",
+            "test",
             "help",
         ] {
             assert!(
@@ -461,5 +534,48 @@ mod tests {
             );
         }
         assert!(USAGE.contains("GUST_SLANG_HOME"));
+    }
+
+    #[test]
+    fn run_and_test_read_the_package_and_pass_every_argument_on() {
+        for (line, package, manifest) in [
+            ("run", None, None),
+            ("run -p app", Some("app"), None),
+            ("run -papp --release", Some("app"), None),
+            ("test --package app -- --nocapture", Some("app"), None),
+            ("test --package=app", Some("app"), None),
+            (
+                "run --manifest-path a/Cargo.toml",
+                None,
+                Some("a/Cargo.toml"),
+            ),
+            // After `--` the words belong to the program or the test harness.
+            ("run -p app -- -p other", Some("app"), None),
+            ("test -- --package other", None, None),
+        ] {
+            let args = words(line);
+            let parsed = parse(&args).unwrap();
+            let (Command::Run(options) | Command::Test(options)) = parsed else {
+                panic!("{line}: {parsed:?}");
+            };
+            assert_eq!(options.target.package.as_deref(), package, "{line}");
+            assert_eq!(
+                options.target.manifest_path.as_deref(),
+                manifest.map(std::path::Path::new),
+                "{line}"
+            );
+            assert_eq!(options.arguments, args[1..], "{line}");
+        }
+        for (line, expected) in [
+            ("run -p", "needs a value"),
+            ("run -p a -p b", "was given twice"),
+            ("test --package a --package=b", "was given twice"),
+            ("run --manifest-path", "needs a value"),
+            ("run --manifest-path a --manifest-path b", "was given twice"),
+            ("run --package=", "needs a non-empty value"),
+        ] {
+            let error = parse(&words(line)).unwrap_err();
+            assert!(error.contains(expected), "{line}: {error}");
+        }
     }
 }

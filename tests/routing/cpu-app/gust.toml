@@ -1,0 +1,3 @@
+# The routes of this app (m8.r2): `cargo gust run|test -p cpu-app` sets GUST_ROUTE__route_kernels__physics=cpu from this file.
+[routes]
+"route-kernels::physics" = "cpu"

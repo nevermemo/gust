@@ -152,6 +152,19 @@ fn strays_directories_and_leftover_staging_are_reported() {
 }
 
 #[test]
+fn the_routing_table_beside_the_artifacts_is_not_a_stray() {
+    // `routes.json` is written by the routing driver (m8.r2); a check neither counts it nor asks for its removal.
+    let records = kernels();
+    let mut state = state_of(&planned(records.clone(), &[Format::Wgsl]));
+    state
+        .files
+        .push((crate::routes::ROUTES_FILE.to_owned(), b"{}".to_vec()));
+    state.files.sort();
+    let report = check(&records, &state);
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+}
+
+#[test]
 fn a_changed_artifact_or_reflection_fails_on_its_sha256() {
     let records = kernels();
     let good = state_of(&planned(records.clone(), &[Format::Wgsl]));

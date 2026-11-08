@@ -483,6 +483,16 @@ test module; do not mix that mechanical move with behavior changes.
   - the manifest reader accepts `targets = []` (`crates/gust-macros/src/manifest.rs`, m8.a's reader), so every
     route of such a tag is an E0749 that names the empty set; an E0753 at the key, like an empty `profiles` (D138),
     would be clearer.
+- Subgroup evidence leftovers (the m8.e review and re-check, for m8.x unless noted):
+  - the `dev+subgroups` half of gust-algo's evidence tests runs by hand only; bring gust-algo under
+    `cargo xtask test --profile` (today it runs gust-wgpu targets only);
+  - no gate builds `examples/subgroup-reduce` under plain `native`, so its portable artifact is checked only when
+    something builds it (a stale one fails loudly, never silently); add that build or a `cargo gust build`
+    reproduction compare to check-examples;
+  - `evidence::sum_u32`'s size guard puts the device's minimum in `DeviceLimit.maximum` and spells the limit
+    `min_subgroup_size`, not wgpu's `subgroup_min_size`;
+  - the difftest result format gained a required `capabilities` field without a `format` bump;
+  - the gate scripts' START lines name the commit but not a hash of the uncommitted tree.
 
 ## Deferred language/runtime breadth
 

@@ -51,7 +51,13 @@ pin is 2026.21 (D150; spike SL21, slice m8.p, merge `b6d7c61`; 26 main gates gre
 expansion is in (m8.r1, merge `b859af7`; 26 main gates green on the merge, 2026-11-08T06:13Z; lavapipe runs 42442568375 and 42448880812 green): the macro resolves each kernel's target from the `cpu`
 profile, the route variable and the manifest's `routes`, and a CPU-routed kernel has no `GpuKernel` impl (D137,
 amended). check-cpu-target E-j's flips now fail on a stale expansion: with the route's `option_env!` removed, the
-gate failed. A release wasm32 build with no `GUST_PROFILE` and a CPU route builds (no E0752). Next: m8.e.
+gate failed. A release wasm32 build with no `GUST_PROFILE` and a CPU route builds (no E0752). Subgroup evidence
+is in (m8.e, merge `e9150ad`; 26 main gates green on the merge, 2026-11-08T10:34Z; lavapipe runs 42461935960 and 42466622279 green). Measured first under a pre-registered rule (faster only when the
+subgroup form's slowest of three interleaved runs beats v1's fastest), the subgroup sum was faster in none of six
+cells (RTX 5090 and Radeon 890M, Vulkan, 1e6 to 1e8 elements), so it ships as `gust_algo::evidence`, outside the
+variant set, and the shipped `sum` is unchanged. check-difftest now runs a `dev+subgroups` batch whose results must
+report the profile's capabilities and whose records must equal the `dev` batch's byte for byte (RTX 5090 and
+lavapipe); `examples/subgroup-reduce` is the strict `native+subgroups` proof. Next: m8.r2.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

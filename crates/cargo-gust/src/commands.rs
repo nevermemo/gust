@@ -71,18 +71,23 @@ fn resolve(target: &Target) -> Result<Context, String> {
     select_context(cargo, workspace, target)
 }
 
+/// The manifest cargo works on: `--manifest-path`, else the closest `Cargo.toml` from the current directory.
+fn manifest_of(target: &Target) -> Option<PathBuf> {
+    match &target.manifest_path {
+        Some(path) => Some(fs::canonicalize(path).unwrap_or_else(|_| path.clone())),
+        None => std::env::current_dir()
+            .ok()
+            .and_then(|cwd| collect::find_manifest(&cwd, &|path| path.is_file())),
+    }
+}
+
 /// The package of `target` in `workspace`, with what a command needs to know about it.
 fn select_context(
     cargo: OsString,
     workspace: collect::Workspace,
     target: &Target,
 ) -> Result<Context, String> {
-    let manifest = match &target.manifest_path {
-        Some(path) => Some(fs::canonicalize(path).unwrap_or_else(|_| path.clone())),
-        None => std::env::current_dir()
-            .ok()
-            .and_then(|cwd| collect::find_manifest(&cwd, &|path| path.is_file())),
-    };
+    let manifest = manifest_of(target);
     let package =
         collect::select_package(&workspace, target.package.as_deref(), manifest.as_deref())?
             .clone();
@@ -195,6 +200,15 @@ pub(crate) fn cargo_with_routes(verb: &str, options: &CargoOptions) -> Result<i3
         // selected member has a `gust.toml`, else cargo runs as asked (also from a virtual root, where no package is
         // selected and none applies).
         routes::refuse_workspace(&workspace.packages, &routes::excluded(&options.arguments))?;
+        return spawn_cargo(&cargo, verb, &options.arguments, None);
+    }
+    // No `-p`, at a workspace root whose default members are several packages (a virtual root, or `default-members`):
+    // cargo builds all of them, so the same member check applies.
+    if options.target.package.is_none()
+        && let Some(selected) = manifest_of(&options.target)
+            .and_then(|manifest| routes::default_selection(&workspace, &manifest))
+    {
+        routes::refuse_workspace(selected, &[])?;
         return spawn_cargo(&cargo, verb, &options.arguments, None);
     }
     let ctx = select_context(cargo, workspace, &options.target)?;

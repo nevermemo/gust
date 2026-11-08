@@ -44,7 +44,7 @@ use std::{
 use gust::routes::{VARIABLE_PREFIX, is_valid_tag, variable_name};
 
 use crate::{
-    collect::{Package, path_key},
+    collect::{Package, Workspace, path_key},
     commands::ARTIFACTS_DIR,
     doctor,
     json::{self, Json},
@@ -1162,10 +1162,31 @@ pub(crate) fn excluded(arguments: &[String]) -> Vec<String> {
     names
 }
 
-/// `run` and `test` with `--workspace` or `--all` build every member (less the `--exclude`d ones), but the driver
-/// routes one package at a time: a member with a `gust.toml` of its own would be built without its routes, and a test
-/// that only checks numbers passes on the wrong path. Refused when any selected member has a `gust.toml`, naming each;
-/// when none has one the arguments pass through unchanged.
+/// The packages cargo builds at the workspace root when neither `-p` nor `--workspace` is given: the default members.
+/// `None` when `manifest` is not the root manifest, or when the default selection is just the root package itself (the
+/// ordinary case, which the driver routes as one package).
+pub(crate) fn default_selection<'a>(
+    workspace: &'a Workspace,
+    manifest: &Path,
+) -> Option<&'a [Package]> {
+    let defaults = workspace.default_members.as_deref()?;
+    let at_root = manifest
+        .parent()
+        .is_some_and(|directory| path_key(directory) == path_key(&workspace.root));
+    if !at_root {
+        return None;
+    }
+    match defaults {
+        [only] if path_key(&only.manifest_path) == path_key(manifest) => None,
+        _ => Some(defaults),
+    }
+}
+
+/// `run` and `test` with `--workspace` or `--all` (every member, less the `--exclude`d ones), or at a workspace root
+/// whose default selection is several packages ([`default_selection`]), build several packages, but the driver routes
+/// one package at a time: a member with a `gust.toml` of its own would be built without its routes, and a test that
+/// only checks numbers passes on the wrong path. Refused when any selected member has a `gust.toml`, naming each; when
+/// none has one the arguments pass through unchanged.
 pub(crate) fn refuse_workspace(members: &[Package], excluded: &[String]) -> Result<(), String> {
     let routed: Vec<String> = members
         .iter()
@@ -1182,7 +1203,7 @@ pub(crate) fn refuse_workspace(members: &[Package], excluded: &[String]) -> Resu
         return Ok(());
     }
     Err(format!(
-        "`--workspace` and `--all` build several packages, but the driver routes one package at a time and would build {} without its routes; name one package with -p and run the packages one by one, or `--exclude` the members that have a {CONFIG_FILE}",
+        "`--workspace`, `--all` and the default members of a workspace root build several packages, but the driver routes one package at a time and would build {} without its routes; name one package with -p and run the packages one by one, or `--exclude` the members that have a {CONFIG_FILE}",
         routed.join(", ")
     ))
 }
@@ -1971,7 +1992,7 @@ mod tests {
         let members = [member("app", true), member("tools", false)];
         let error = refuse_workspace(&members, &[]).unwrap_err();
         assert!(
-            error.contains("`--workspace` and `--all`")
+            error.contains("`--workspace`, `--all`")
                 && error.contains("`app`")
                 && error.contains("gust.toml")
                 && !error.contains("`tools`")
@@ -1983,6 +2004,87 @@ mod tests {
         assert_eq!(refuse_workspace(&members, &["app".to_owned()]), Ok(()));
         // No member has one.
         assert_eq!(refuse_workspace(&members[1..], &[]), Ok(()));
+    }
+
+    /// `cargo metadata --no-deps` for a workspace at `root` whose packages are `members` (`name`, directory relative to
+    /// the root; "" is the root package) and whose default members are `defaults` (names).
+    fn workspace_at(
+        root: &str,
+        members: &[(&str, &str)],
+        defaults: &[&str],
+    ) -> crate::collect::Workspace {
+        let path = |directory: &str| {
+            if directory.is_empty() {
+                format!("{root}/Cargo.toml")
+            } else {
+                format!("{root}/{directory}/Cargo.toml")
+            }
+        };
+        let packages: Vec<String> = members
+            .iter()
+            .map(|(name, directory)| {
+                format!(
+                    r#"{{"id":"{name} 0.0.0","name":"{name}","manifest_path":"{}"}}"#,
+                    path(directory)
+                )
+            })
+            .collect();
+        let ids: Vec<String> = defaults
+            .iter()
+            .map(|name| format!(r#""{name} 0.0.0""#))
+            .collect();
+        let text = format!(
+            r#"{{"packages":[{}],"workspace_default_members":[{}],"workspace_root":"{root}","target_directory":"{root}/target"}}"#,
+            packages.join(","),
+            ids.join(",")
+        );
+        crate::collect::parse_metadata(&text).unwrap()
+    }
+
+    #[test]
+    fn the_default_selection_of_a_workspace_root_is_checked_like_a_workspace_run() {
+        let scratch = crate::store::tests::Scratch::new("routes-default-selection");
+        let root = scratch.0.to_string_lossy().replace('\\', "/");
+        let manifest = |directory: &str| {
+            if directory.is_empty() {
+                scratch.0.join("Cargo.toml")
+            } else {
+                scratch.0.join(directory).join("Cargo.toml")
+            }
+        };
+        // A virtual root with two members and no gust.toml: cargo builds both, the arguments pass through.
+        let workspace = workspace_at(&root, &[("a", "a"), ("b", "b")], &["a", "b"]);
+        let selected = default_selection(&workspace, &manifest(""))
+            .expect("a virtual root selects its defaults");
+        assert_eq!(selected.len(), 2);
+        assert_eq!(refuse_workspace(selected, &[]), Ok(()));
+        // One routed member: refused, and named.
+        fs::create_dir_all(scratch.0.join("a")).unwrap();
+        fs::write(scratch.0.join("a").join(CONFIG_FILE), "[routes]\n").unwrap();
+        let error = refuse_workspace(selected, &[]).unwrap_err();
+        assert!(error.contains("`a`") && !error.contains("`b`"), "{error}");
+        // A root package with `default-members` that names another member: that member's file is checked too.
+        fs::create_dir_all(scratch.0.join("other")).unwrap();
+        fs::write(scratch.0.join("other").join(CONFIG_FILE), "[routes]\n").unwrap();
+        let workspace = workspace_at(
+            &root,
+            &[("root", ""), ("other", "other")],
+            &["root", "other"],
+        );
+        let selected = default_selection(&workspace, &manifest(""))
+            .expect("default-members select two packages");
+        let error = refuse_workspace(selected, &[]).unwrap_err();
+        assert!(
+            error.contains("`other`") && !error.contains("`root`"),
+            "{error}"
+        );
+        // The ordinary cases are the driver's own: the root package alone, a member's manifest, and an unknown selection.
+        let workspace = workspace_at(&root, &[("root", ""), ("other", "other")], &["root"]);
+        assert!(default_selection(&workspace, &manifest("")).is_none());
+        assert!(default_selection(&workspace, &manifest("other")).is_none());
+        let mut unknown = workspace.clone();
+        unknown.default_members = None;
+        assert!(default_selection(&unknown, &manifest("")).is_none());
     }
 
     #[test]

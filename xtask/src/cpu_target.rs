@@ -28,9 +28,12 @@
 //!   cases, not the kernels of `app` (E-a judges those).
 //! - E-j (m8.r1, D65 to D67): the routed crate `routed` under the strict profile `native`, where an unrouted kernel needs a
 //!   precompiled artifact. With `GUST_ROUTE__routed__physics=cpu` it builds in release with no artifact, runs on
-//!   `CpuDevice`, matches its host loop and holds none of the [`FORBIDDEN`] strings; without the variable it fails with the
+//!   `CpuDevice`, matches its host loop (its binary also calls a CPU-routed `#[gpu(route = ..)] fn` map, which compiles
+//!   and runs in this non-`cpu` build) and holds none of the [`FORBIDDEN`] strings; without the variable it fails with the
 //!   one E0080 of `e-j-expected.txt`; and in one warm target directory the variable flips set, unset, set, unset, each set
-//!   state building and matching and each unset state failing like the control.
+//!   state building and matching and each unset state failing like the control. Every state is the same command, `cargo
+//!   build --release -p routed --bin routed --message-format json`, so an unset state would reuse the set state's unit
+//!   (and build) if the macro did not track the variable.
 
 use std::{
     cell::RefCell,
@@ -65,6 +68,11 @@ pub(crate) const ROUTE_VARIABLE: &str = "GUST_ROUTE__routed__physics";
 /// What the `routed` binary prints, exactly once, when `scale` ran on `CpuDevice` and equalled its host loop.
 pub(crate) const ROUTED_LINE: &str =
     "CPU target: matches (routed::scale, 1024 elements, max ULP 0)";
+
+/// What the `routed` binary prints, exactly once, when its CPU-routed map function `triple` (a `#[gpu(route = ..)] fn`
+/// compiled in a `native` build, review r1 S6) ran through `map` and `map_on` and equalled its host loop.
+pub(crate) const ROUTED_MAP_LINE: &str =
+    "CPU target: routed map matches (routed::triple, 1024 elements)";
 
 /// The kernels `app` runs, as it names them in its `CPU target: matches (<kernel>, ..)` lines.
 pub(crate) const KERNELS: [&str; 6] = [
@@ -432,34 +440,27 @@ pub(crate) fn e_i_test(dirs: &Dirs) -> Call {
     )
 }
 
-/// One build of the routed crate for E-j, under `native`: a release build with the route variable when `routed` (the
-/// binary is run and scanned), else a `check` of the same crate without it, which must fail. `directory` is the target
-/// directory (`dirs.main` for the first pair, `dirs.flip` for the flips).
+/// One build of the routed crate for E-j, under `native`: always `cargo build --release -p routed --bin routed
+/// --message-format json`, with the route variable when `routed` (the binary is run and scanned) and without it
+/// otherwise (the build must fail, and its JSON is judged). The command is the same in every state, so a state reuses
+/// the unit of an earlier state whenever cargo thinks that unit is fresh: the flips then ask cargo whether the variable
+/// is tracked, and a stale expansion would keep the previous route. `directory` is the target directory (`dirs.main`
+/// for the first pair, `dirs.flip` for the flips).
 pub(crate) fn e_j_build(directory: &str, routed: bool) -> Call {
-    let mut call = if routed {
-        fixture_call(
-            &["build", "--release"],
-            &[
-                "-p",
-                "routed",
-                "--bin",
-                "routed",
-                "--message-format",
-                "json-render-diagnostics",
-            ],
-            Some(directory),
-            Profile::Native,
-            false,
-        )
-    } else {
-        fixture_call(
-            &["check"],
-            &["-p", "routed", "--message-format", "json"],
-            Some(directory),
-            Profile::Native,
-            false,
-        )
-    };
+    let mut call = fixture_call(
+        &["build", "--release"],
+        &[
+            "-p",
+            "routed",
+            "--bin",
+            "routed",
+            "--message-format",
+            "json",
+        ],
+        Some(directory),
+        Profile::Native,
+        false,
+    );
     if routed {
         call.route = Some((ROUTE_VARIABLE, "cpu"));
     }
@@ -1114,7 +1115,8 @@ impl Check {
         ))
     }
 
-    /// Runs the built `routed` at `path`: it must exit 0 and print [`ROUTED_LINE`] exactly once.
+    /// Runs the built `routed` at `path`: it must exit 0 and print [`ROUTED_LINE`] and [`ROUTED_MAP_LINE`], each exactly
+    /// once.
     fn routed_matches(&self, path: &Path) -> Result<(), String> {
         let output = Command::new(path)
             .current_dir(&self.root)
@@ -1130,15 +1132,14 @@ impl Check {
                 String::from_utf8_lossy(&output.stderr).trim()
             ));
         }
-        let found = stdout
-            .lines()
-            .filter(|line| line.trim() == ROUTED_LINE)
-            .count();
-        if found != 1 {
-            problems.push(format!(
-                "`routed` must print `{ROUTED_LINE}` exactly once, and printed it {found} time(s): {}",
-                stdout.trim()
-            ));
+        for wanted in [ROUTED_LINE, ROUTED_MAP_LINE] {
+            let found = stdout.lines().filter(|line| line.trim() == wanted).count();
+            if found != 1 {
+                problems.push(format!(
+                    "`routed` must print `{wanted}` exactly once, and printed it {found} time(s): {}",
+                    stdout.trim()
+                ));
+            }
         }
         if problems.is_empty() {
             Ok(())
@@ -1171,7 +1172,9 @@ impl Check {
         .map_err(|error| {
             format!("the unrouted control did not fail as e-j-expected.txt says: {error}")
         })?;
-        // The flips in one warm directory: a stale expansion would keep the previous route.
+        // The flips in one warm directory, every state the same `cargo build --release` of `routed`: a stale
+        // expansion (the variable not tracked) would keep the previous route, so an unset state would reuse the
+        // set state's unit and build, which fails this check.
         let mut states = Vec::new();
         for (index, routed) in ROUTE_FLIPS.into_iter().enumerate() {
             let number = index + 1;
@@ -1195,7 +1198,7 @@ impl Check {
             states.push(word);
         }
         Ok(format!(
-            "`routed` under GUST_PROFILE=native with {ROUTE_VARIABLE}=cpu built with no artifact, ran on CpuDevice and matched its host loop (the release binary ({} bytes) holds none of the forbidden strings); without the variable it failed with the one E0080 of e-j-expected.txt; in one warm directory the variable went {}: every set state built and matched, every unset state failed like the control",
+            "`routed` under GUST_PROFILE=native with {ROUTE_VARIABLE}=cpu built with no artifact, ran on CpuDevice and matched its host loop (the release binary ({} bytes) holds none of the forbidden strings); without the variable it failed with the one E0080 of e-j-expected.txt; in one warm directory the same `cargo build --release` of `routed` went {} (the variable set or removed): every set state built and matched, every unset state failed like the control, so no unset state reused an expansion built with the route",
             bytes.len(),
             states.join(" -> ")
         ))

@@ -6,10 +6,10 @@ use std::{
 use super::{
     CPU_PROFILE, CPU_TARGET_DIR, Call, Dirs, FINAL_LINE, FLIPS, FORBIDDEN, KERNELS,
     MAP_LINE_PREFIX, NATIVE_PROFILE, PAR_FOR_LINE_PREFIX, Profile, REFUSAL_FILE, REFUSAL_ITEM,
-    ROUTE_FLIPS, ROUTE_VARIABLE, ROUTED_LINE, SCAN_CONTROL, STEPS, all_calls, e_a_build, e_b_tree,
-    e_c_build, e_d_check, e_e_check, e_f_check, e_g_check, e_h_build, e_i_test, e_j_build,
-    executable_of, judge_run, match_problems, match_summary, parse_match_line, passed_tests,
-    refusal_line, relative_to, scan, scan_problems, tree_problems, with_located_line,
+    ROUTE_FLIPS, ROUTE_VARIABLE, ROUTED_LINE, ROUTED_MAP_LINE, SCAN_CONTROL, STEPS, all_calls,
+    e_a_build, e_b_tree, e_c_build, e_d_check, e_e_check, e_f_check, e_g_check, e_h_build,
+    e_i_test, e_j_build, executable_of, judge_run, match_problems, match_summary, parse_match_line,
+    passed_tests, refusal_line, relative_to, scan, scan_problems, tree_problems, with_located_line,
 };
 use crate::{
     checks::{DUAL_RUSTFLAGS, DUAL_RUSTFLAGS_VARIABLE, RUSTFLAGS_VARIABLES},
@@ -954,7 +954,8 @@ fn the_calls_are_exactly_these() {
             route: None
         }
     );
-    // E-j: the routed crate under the strict profile, with the route variable (release build) or without it (check).
+    // E-j: the routed crate under the strict profile. Every state is the same release build, with the route variable
+    // or without it (M1: a different command per state could not see a stale expansion).
     assert_eq!(
         e_j_build(&d.main, true),
         Call {
@@ -966,7 +967,7 @@ fn the_calls_are_exactly_these() {
                     "--bin",
                     "routed",
                     "--message-format",
-                    "json-render-diagnostics"
+                    "json"
                 ],
                 Some("T/cpu-target")
             ),
@@ -979,8 +980,15 @@ fn the_calls_are_exactly_these() {
         e_j_build(&d.flip, false),
         Call {
             args: fixture(
-                &["check"],
-                &["-p", "routed", "--message-format", "json"],
+                &["build", "--release"],
+                &[
+                    "-p",
+                    "routed",
+                    "--bin",
+                    "routed",
+                    "--message-format",
+                    "json"
+                ],
                 Some("T/cpu-target-flip")
             ),
             profile: Profile::Native,
@@ -1076,8 +1084,11 @@ fn the_route_flips_in_both_directions_and_the_route_reaches_only_the_set_states(
             variable(&call, PROFILE_VARIABLE),
             Some(Some(NATIVE_PROFILE.to_owned()))
         );
-        assert_eq!(call.args.iter().any(|arg| arg == "--release"), routed);
-        assert_eq!(call.args[0] == "check", !routed);
+        // M1: set and unset states are one command, `cargo build --release` of the same unit, so that a state can
+        // reuse the unit of the state before it.
+        assert_eq!(call.args, e_j_build(&d.flip, true).args, "state {routed}");
+        assert_eq!(call.args[0], "build");
+        assert!(call.args.iter().any(|arg| arg == "--release"));
     }
     assert!(
         e_j_build(&d.main, true).shown().starts_with(
@@ -1085,6 +1096,18 @@ fn the_route_flips_in_both_directions_and_the_route_reaches_only_the_set_states(
         )
     );
     assert!(ROUTED_LINE.starts_with("CPU target: matches (routed::scale, "));
+    assert!(ROUTED_MAP_LINE.starts_with("CPU target: routed map matches (routed::triple, "));
+    // The binary of the fixture prints exactly these two lines (a rename of either side fails here, not in a run).
+    let main = fixture_root_file("tests/cpu-target/routed/src/main.rs");
+    assert!(main.contains(
+        "println!(\"CPU target: matches (routed::scale, {ELEMENTS} elements, max ULP {worst})\");"
+    ));
+    assert!(main.contains(
+        "println!(\"CPU target: routed map matches (routed::triple, {ELEMENTS} elements)\");"
+    ));
+    assert!(ROUTED_MAP_LINE.ends_with("1024 elements)"));
+    assert!(main.contains("const ELEMENTS: usize = 1024;"));
+    assert!(main.contains("#[gust::gpu(route = \"physics\")]\npub fn triple("));
 }
 
 #[test]

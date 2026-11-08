@@ -1542,7 +1542,9 @@ pub(crate) fn dual_steps(target_dir: &str) -> Vec<DualStep> {
         },
         // E4 (m8.r1): a module routed to the CPU is a CPU body in a production build. `prod-routed` dispatches
         // `kernel-lib`'s `routed` module on `CpuDevice`; with the tag routed to the CPU it builds without the cfg and
-        // runs, and without the route the same source is E3's error for the GPU kernel.
+        // runs, and without the route the same source is E3's error for the GPU kernel. E4-control is a `cargo build`
+        // (JSON), not a `cargo check`, so that it is a cpu-to-unset flip of the very unit E4-routed built: a macro
+        // that did not track the route variable would leave `kernel-lib` stale and the control would compile.
         DualStep {
             id: "E4-routed",
             args: strings(&[
@@ -1568,7 +1570,7 @@ pub(crate) fn dual_steps(target_dir: &str) -> Vec<DualStep> {
         DualStep {
             id: "E4-control",
             args: strings(&[
-                "check",
+                "build",
                 "--locked",
                 "--color",
                 "never",

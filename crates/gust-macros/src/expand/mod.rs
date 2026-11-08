@@ -477,11 +477,14 @@ fn expand_validated_with(
     let profile = route
         .as_ref()
         .map_or(profile, |route| route.effective(profile));
-    // The module's kernels share one target: the CPU's when the module is routed to it (a tag resolved to `cpu`,
-    // `GUST_PROFILE=cpu` included), else the GPU's, which is what an untagged module has under every profile.
+    // A tag that resolved to `cpu` (a CPU route): the module needs no artifact and no manifest check.
     let routed_cpu = route
         .as_ref()
         .is_some_and(|route| route.target == routing::Target::Cpu);
+    // The module's kernels share one target: the CPU's when the effective profile is `cpu`, that is when the build is
+    // the `cpu` profile (every item, tagged or not: D137's first level) or the module's tag resolved to `cpu`; else
+    // the GPU's. An untagged module under `cpu` keeps its no-op `require_artifact(false)`, as it had before routing.
+    let cpu_target = profile == Profile::Cpu;
     // Every declared GPU profile has a body of every kernel (E0744), and the profile of this build has one (E0750).
     let declared = variant::Declared::new(declarations.profiles.as_deref());
     declared.check(plan)?;
@@ -769,7 +772,7 @@ fn expand_validated_with(
     // Every body is built; each kernel now takes the body this build selected. A kernel built for the GPU carries the
     // marker the GPU runtime bounds its typed entry points on; one routed to the CPU does not, so `HeadlessDevice`
     // refuses it at the call site (D137).
-    let target_path = if routed_cpu {
+    let target_path = if cpu_target {
         quote!(::gust::target::Target::Cpu)
     } else {
         quote!(::gust::target::Target::Gpu)
@@ -822,7 +825,7 @@ fn expand_validated_with(
             .collect();
 
         descriptor_paths.push(name.clone());
-        let gpu_marker = if routed_cpu {
+        let gpu_marker = if cpu_target {
             TokenStream::new()
         } else {
             quote!(impl ::gust::target::GpuKernel for #name {})
@@ -941,8 +944,8 @@ fn expand_validated_with(
 /// looked at here, and its expansion is what it was before routing.
 ///
 /// The macro cannot depend on `gust` (the dependency runs the other way), so [`variable_name`] and [`is_valid_tag`]
-/// are byte-for-byte copies of `gust::routes::variable_name` and `gust::routes::is_valid_tag` (the `content_key`
-/// precedent in `artifact.rs`); `tests/routes.rs` asserts the golden `(package, tag, variable)` table of
+/// are token-for-token copies of `gust::routes::variable_name` and `gust::routes::is_valid_tag` (the `content_key`
+/// precedent in `artifact.rs`; `tests/routes.rs` compares the lexed token streams, so layout and comments may differ); `tests/routes.rs` asserts the golden `(package, tag, variable)` table of
 /// `crates/gust/src/routes.rs`, pasted verbatim, so the two spellings cannot drift unnoticed.
 pub(crate) mod routing {
     use proc_macro2::{Span, TokenStream};

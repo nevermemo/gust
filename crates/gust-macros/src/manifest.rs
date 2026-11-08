@@ -61,7 +61,8 @@ pub(crate) struct Declarations {
     pub profiles: Option<Vec<String>>,
     /// `limits`; `None` when the key is absent.
     pub limits: Option<Limits>,
-    /// `routes`, in the order of the tags' names. Read for syntax only; routing is m8.r1's.
+    /// `routes`, in the order of the tags' names. The macro's routing (`expand::routing`, m8.r1) resolves a module's tag
+    /// against it.
     pub routes: Vec<Route>,
 }
 

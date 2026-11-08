@@ -345,7 +345,7 @@ fn the_argument_lists_are_exactly_these() {
         (
             "E4-control",
             owned(&[
-                "check",
+                "build",
                 "--locked",
                 "--color",
                 "never",

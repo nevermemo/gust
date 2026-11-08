@@ -1,5 +1,5 @@
 # Keys matched by `cargo xtask check-dual` (step E4-control) against the one error of
-#   cargo check --locked --manifest-path tests/dual/Cargo.toml -p consumer --bin prod-routed
+#   cargo build --locked --manifest-path tests/dual/Cargo.toml -p consumer --bin prod-routed
 # built WITHOUT `--cfg gust_dual` and WITHOUT the route variable (format as in e1-expected.txt). The tag `physics` of
 # `kernel-lib` is unrouted, so `kernel_lib::routed` is a GPU kernel and the unconditional typed `dispatch` on
 # `gust::cpu::CpuDevice` in `consumer/src/bin/prod-routed.rs` has no `Run` impl, as in E3. Step E4-routed builds and runs

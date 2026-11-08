@@ -2706,9 +2706,11 @@ fn the_cpu_expansion_is_the_other_expansion_without_the_gate_and_nothing_else() 
     let other = expansion_for(VECTOR_ADD, Profile::Other).to_string();
     let cpu = expansion_for(VECTOR_ADD, Profile::Cpu).to_string();
     assert_ne!(other, cpu);
+    // Besides the gate, the `cpu` profile is the CPU target (D137, review r1 S1): the descriptor says `Cpu` and there
+    // is no `GpuKernel` impl.
     assert_eq!(
         squeezed(&cpu),
-        squeezed(&other.replace(TWIN_CFG, UNGATED_IMPL))
+        squeezed(&cpu_target_of(&other.replace(TWIN_CFG, UNGATED_IMPL)))
     );
 }
 
@@ -2771,7 +2773,19 @@ fn kernels_without_a_twin_have_none_under_cpu_either() {
     let other = expansion_for(opted_out, Profile::Other).to_string();
     assert!(!cpu.contains("impl :: gust :: Run"), "{cpu}");
     assert!(!cpu.contains(":: cpu :: CpuDevice"), "{cpu}");
-    assert_eq!(squeezed(&cpu), squeezed(&other));
+    assert_eq!(squeezed(&cpu), squeezed(&cpu_target_of(&other)));
+}
+
+/// `text`, an expansion for a GPU build, as the `cpu` profile has it besides the gate: `Target::Cpu` in the descriptor
+/// and no `GpuKernel` impl (the marker is the one empty impl of the expansion).
+fn cpu_target_of(text: &str) -> String {
+    let text = text.replace("Target :: Gpu", "Target :: Cpu");
+    let marker = "impl :: gust :: target :: GpuKernel for ";
+    let Some(start) = text.find(marker) else {
+        return text;
+    };
+    let end = start + text[start..].find('}').expect("the marker's closing brace") + 1;
+    format!("{}{}", &text[..start], &text[end..])
 }
 
 /// A uniform parameter is no reason for a kernel to lack a twin since D57: under `cpu` it is the same ungated impl.

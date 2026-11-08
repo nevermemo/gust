@@ -70,9 +70,10 @@ fn golden_rows(source: &str) -> Vec<String> {
     panic!("no complete GOLDEN table");
 }
 
-/// The text of the function `name` in `source`, from its signature line to the closing brace at the signature's
-/// indentation, with every whitespace character removed (rustfmt wraps the copy at a deeper indent than the original)
-/// and `pub fn` / `pub(crate) fn` read as one spelling.
+/// The token stream of the function `name` in `source`, from its signature line to the closing brace at the
+/// signature's indentation, as text: the lexer drops comments and layout (rustfmt wraps the copy at a deeper indent
+/// than the original) and keeps every token, string and char literals included, so `"__"` and `"_ _"` differ.
+/// `pub fn` and `pub(crate) fn` are read as one spelling.
 fn function_text(source: &str, name: &str) -> String {
     let mut lines = Vec::new();
     let mut indent = None;
@@ -90,11 +91,36 @@ fn function_text(source: &str, name: &str) -> String {
         } else {
             lines.push(trimmed.to_owned());
             if trimmed == "}" && Some(here) == indent {
-                return lines.concat().split_whitespace().collect();
+                return tokens(&lines.join("\n"));
             }
         }
     }
     panic!("no complete function {name}");
+}
+
+/// `source` lexed and printed back: the same text for the same tokens, whatever the layout and comments.
+fn tokens(source: &str) -> String {
+    source
+        .parse::<proc_macro2::TokenStream>()
+        .unwrap_or_else(|error| panic!("not Rust tokens: {error}\n{source}"))
+        .to_string()
+}
+
+#[test]
+fn the_comparison_ignores_layout_and_comments_but_not_a_character_in_a_literal() {
+    // N1: a literal's characters are tokens. The old comparison removed every whitespace character, so a `' '` or a
+    // `"_ _"` crept into a copy would not have been seen.
+    let base = "fn f(s: &mut String) { s.push_str(\"__\"); s.push('x'); }";
+    let relaid = "fn f(s: &mut String) {\n    // a note\n    s.push_str(\n        \"__\"\n    );\n    s.push('x');\n}";
+    assert_eq!(tokens(base), tokens(relaid));
+    for changed in [
+        base.replace("\"__\"", "\"_ _\""),
+        base.replace("'x'", "' '"),
+        base.replace("\"__\"", "\"_\""),
+        base.replace("push_str", "push_string"),
+    ] {
+        assert_ne!(tokens(base), tokens(&changed), "{changed}");
+    }
 }
 
 #[test]
@@ -688,14 +714,21 @@ fn an_untagged_module_is_what_it_was_and_reads_no_route() {
 }
 
 #[test]
-fn an_untagged_module_under_the_cpu_profile_keeps_the_gpu_target() {
-    // The route is a per-tag choice (D65): the profile alone changes the gate and the lookup, not the target.
+fn an_untagged_module_under_the_cpu_profile_is_a_cpu_target() {
+    // D137's first level: the `cpu` profile sends every item to the CPU, tagged or not, so the descriptor says `Cpu`
+    // and there is no `GpuKernel` impl (review r1, S1).
     let scratch = Crate::new("untagged-cpu", "physics = {}");
     let cpu = text(VECTOR_ADD, scratch.path(), Profile::Cpu, None, &[]);
-    assert!(cpu.contains("Target :: Gpu"), "{cpu}");
-    assert!(cpu.contains(GPU_MARKER), "{cpu}");
+    assert!(
+        cpu.contains("target : :: gust :: target :: Target :: Cpu"),
+        "{cpu}"
+    );
+    assert!(!cpu.contains("Target :: Gpu"), "{cpu}");
+    assert!(!cpu.contains("GpuKernel"), "{cpu}");
     assert_eq!(cpu.matches(UNGATED_IMPL).count(), 1, "{cpu}");
     assert_eq!(cpu.matches(GATE).count(), 0, "{cpu}");
+    // The no-op artifact check of the `cpu` profile stays as it was before routing; only a CPU route drops it.
+    assert_eq!(cpu.matches("require_artifact (false)").count(), 1, "{cpu}");
 }
 
 #[test]
@@ -752,7 +785,10 @@ fn a_cpu_routed_module_is_a_cpu_body_in_a_gpu_build() {
 }
 
 #[test]
-fn a_cpu_routed_module_is_the_cpu_profile_expansion_with_the_target_and_the_marker_changed() {
+fn a_cpu_routed_module_is_the_cpu_profile_expansion_plus_the_tracked_variable() {
+    // Since S1 the `cpu` profile gives an untagged module the CPU target and no marker too, so a CPU-routed module in
+    // a GPU build is that expansion, token for token, except for the tracked variable and the no-op artifact check
+    // that only a CPU route drops.
     let scratch = Crate::new("cpu-equal", "physics = {}");
     let cpu_profile = text(VECTOR_ADD, scratch.path(), Profile::Cpu, None, &[]);
     let routed = text(
@@ -762,16 +798,10 @@ fn a_cpu_routed_module_is_the_cpu_profile_expansion_with_the_target_and_the_mark
         Some("physics"),
         &[(PHYSICS, "cpu")],
     );
-    let expected = cpu_profile
-        .replace("Target :: Gpu", "Target :: Cpu")
-        .replace(
-            "const _ : () = :: gust :: profile :: require_artifact (false) ;",
-            "",
-        );
-    let marker_start = expected.find(GPU_MARKER).expect("the marker");
-    let marker_end = marker_start + expected[marker_start..].find('}').unwrap() + 1;
-    let mut expected = expected;
-    expected.replace_range(marker_start..marker_end, "");
+    let expected = cpu_profile.replace(
+        "const _ : () = :: gust :: profile :: require_artifact (false) ;",
+        "",
+    );
     assert_eq!(
         squeezed(&routed.replace(&tracked(PHYSICS), "")),
         squeezed(&expected)

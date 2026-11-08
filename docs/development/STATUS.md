@@ -45,8 +45,9 @@ m8.b2, m8.s and m8.v are merged (merge `e11a3f0`; the 27 main gates on the merge
 17:44Z; lavapipe green on every lane; main's CI green, ci 42397829562 and gpu-software 42397829548). The
 `semver` job's first run reports B1 only (`KernelDescriptor` `#[non_exhaustive]`; nothing for gust-compute-wgpu).
 Subgroup operations (m8.s): tests/subgroup.rs passed on the RTX 5090 at subgroup size 32 and on lavapipe at size 8
-(run 42378261589); not run on the Radeon 890M. Local gates load a newer Vulkan validation layer (D149). Next: the
-Slang 2026.21 premise spike, then m8.r1.
+(run 42378261589); not run on the Radeon 890M. Local gates load a newer Vulkan validation layer (D149). The Slang
+pin is 2026.21 (D150; spike SL21, slice m8.p, merge `b6d7c61`; 26 main gates green on the merge, 2026-11-08T01:07Z; lavapipe runs 42421531994 and 42427279802 green); `release/0.1` stays on
+2026.20. The bump found test binaries that no suite or CI job runs (NEXT_TASKS, M8 follow-ups). Next: m8.r1.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

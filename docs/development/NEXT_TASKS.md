@@ -120,9 +120,10 @@ test module; do not mix that mechanical move with behavior changes.
 - gpu-software installs Mesa from one Ubuntu snapshot; m5.f1 added retries, but a long snapshot.ubuntu.com outage
   (three failures on 2026-11-02) still stops it. A tested fallback source (wgpu's CI uses `gfx-rs/ci-build`) would
   need its own identity assertions (D52).
-- Before M8: reconcile D65 (CPU bodies in `dev`, `native` and `web` production builds) with D26 and its fixtures
-  (`typed-call-no-cpu-twin`, check-dual E1 and E3) and with the macro's one process-wide profile read (M5 sanity
-  check; in the M8 row).
+- Done in M8 (m8.r1, D137 and D145, which amend D26's proofs): D65 (CPU bodies in `dev`, `native` and `web` production
+  builds) is reconciled with D26 and its fixtures (`typed-call-no-cpu-twin`, check-dual E1 and E3 stay for untagged and
+  GPU-routed kernels; `typed-call-routed-*` and check-dual E4 prove the routed case) and with the macro's process-wide
+  profile read (the target is resolved per kernel at expansion, nearest first).
 
 ## M6 follow-ups (filed during M6)
 
@@ -191,7 +192,10 @@ test module; do not mix that mechanical move with behavior changes.
   refused with `MatchPattern`); a classifier unit test of the map kernel passes an empty helper set and so sees a
   spurious `Unrecognised` (pass `helper_names` of the module); `Error::Borrowed`'s doc in `gust::cpu` still says "the
   buffer"; `expand` computes `helper_names` once per kernel instead of once per module.
-- After 0.1.0 (D132): a public-API baseline, `cargo-semver-checks` against the published 0.1.0 in CI for 0.1.x.
+- Partly done in M8 (m8.v, D132): the CI job `semver` runs `cargo-semver-checks` for `gust-compute` and
+  `gust-compute-wgpu` against the branch `release/0.1` on pull requests into `main` and on pushes to `main`. Still open:
+  after 0.1.0 is published, the baseline becomes the published version, and a 0.1.x branch gets its own job (RELEASE.md,
+  "The semver baseline").
 - mr.t2 follow-ups (Opus review): xtask still starts the helper without the ETXTBSY retry (the two launches in
   `xtask/src/verify.rs`; xtask has no `gust` dependency); a third copy of `HELPER_VARIABLE` and `default_helper` is left
   in `xtask/src/release.rs`; `gust::slang` now checks the `slangc` version, so D72's `__gust_keep` follow-up can be
@@ -243,14 +247,15 @@ test module; do not mix that mechanical move with behavior changes.
 - m7.av follow-ups (the access violation above; STATUS m7.av to m7.av4c): the crash is in the Vulkan validation layer of
   Vulkan SDK 1.4.357.0 (its bundled mimalloc 3.3.2), needs concurrent tests, and disappears with the layer disabled; it
   is a fault of the test environment, not of GUST, wgpu or the driver. Gates keep validation on, because the layer
-  catches API misuse; a Gpu-step crash with rc 0xc0000005 is rerun alone, as before. Mitigated on the development PC by D149 (a newer
-  layer through `VK_ADD_LAYER_PATH`, 30 of 30 clean); retired by an owner install of a Vulkan SDK whose layer bundles
-  mimalloc 3.4.1 or later. An upstream issue is not needed: mimalloc 3.4.1 fixed it. Not needed now: the shared test-device helper per binary (m7.av2's change stays; fewer devices presumably
-  start fewer of the layer's queue threads), and crash-dump capture. If a crash ever shows a stack outside the layer,
-  reopen this. dense64 (m7.a2 follow-ups, below): the dispatch is tiny (0.015 ms); the whole call takes about 14 ms warm
-  and 37 to 68 ms after about 3 s of GPU idle, whether the CPU sleeps or spins. A guess, not a finding: the idle PCIe
-  link or power state slows the copies. Next: one run of the probe with no other GPU work, then fix the README cell text
-  and add a warm-up to the README bench.
+  catches API misuse; a Gpu-step crash with rc 0xc0000005 is rerun alone, as before. Mitigated on the development PC by
+  D149 (a newer layer through `VK_ADD_LAYER_PATH`, 30 of 30 clean); retired by an owner install of a Vulkan SDK whose
+  layer bundles mimalloc 3.4.1 or later. An upstream issue is not needed: mimalloc 3.4.1 fixed it. Not needed now: the
+  shared test-device helper per binary (m7.av2's change stays; fewer devices presumably start fewer of the layer's queue
+  threads), and crash-dump capture. If a crash ever shows a stack outside the layer, reopen this. dense64 (m7.a2
+  follow-ups, below): the dispatch is tiny (0.015 ms); the whole call takes about 14 ms warm and 37 to 68 ms after about
+  3 s of GPU idle, whether the CPU sleeps or spins. A guess, not a finding: the idle PCIe link or power state slows the
+  copies. Next: one run of the probe with no other GPU work, then fix the README cell text and add a warm-up to the
+  README bench.
 - m7.p follow-ups: `doctor` and `check` list only a `par_for!` kernel's origin site (`Record.sites` holds them all);
   the naga layout gate skips `par_for!` kernels (take their descriptors through the hidden `descriptor;` form, or
   delete it); the over-cap error is `map::Error::Device`, not an extent variant (needs `Extent` in
@@ -294,7 +299,8 @@ test module; do not mix that mechanical move with behavior changes.
   out-of-memory), and the branch that reports a non-out-of-memory scope error as `Error::Poll` was never observed on
   hardware (D123).
 - Storage barriers (`storageBarrier`: a workgroup barrier over storage memory): M7 has `workgroup_barrier()` only
-  (D100, D101); the storage form comes with M8 (M7 plan sections 7 and 9, D23). It orders the accesses of one
+  (D100, D101); the storage form was planned for M8 and moved out of it (D147 records that it left M8: recorded, not
+  built; M8 shipped subgroup operations, variants, routing and the opt-in floor instead). It orders the accesses of one
   workgroup and gives no ordering between workgroups of a dispatch.
 - docs/ARCHITECTURE.md: the paragraphs "Shapes" (mx.k) and "Layouts in the record" (m7.lv) sit under `### gust-algo`
   and belong with `gust-macros` and `cargo gust`; move them (m7.x3 review, older text). STATUS tidy (M7 sanity,
@@ -432,9 +438,10 @@ test module; do not mix that mechanical move with behavior changes.
 - `#[gpu(crate = ..)]` and a `$crate` forwarder in `par_for!`: generated code names `::gust::` and `::gust_wgpu::`
   (D106), so a consumer that renames a dependency adds `extern crate <name> as gust;`. A `crate = ..` argument, and
   `par_for!` forwarding `$crate`, would remove that step.
-- Release tooling for 0.1.x (the Fable and Codex sanity checks): `cargo-semver-checks` (above, D132) and
-  `cargo-release` or `release-plz` for the four-way version bump RELEASE.md does by hand; `cargo-msrv` adds nothing
-  the MSRV gate lacks. check-release stays the gate: no tool builds the README recipe from the unpacked crates.
+- Release tooling for 0.1.x (the Fable and Codex sanity checks): `cargo-semver-checks` (done in M8 as the CI job
+  `semver`, above, D132) and still open `cargo-release` or `release-plz` for the four-way version bump RELEASE.md does
+  by hand; `cargo-msrv` adds nothing the MSRV gate lacks. check-release stays the gate: no tool builds the README
+  recipe from the unpacked crates.
 - check-release R5 against docs.rs: R5 builds the host target only, and skips the nightly run with a note when no
   nightly toolchain is installed. docs.rs also builds gust-compute-wgpu for `wasm32-unknown-unknown`, where probe mr.e
   found the 19 unresolved links mr.f fixed. Run the metadata's targets in R5's nightly run, and make a missing nightly
@@ -456,17 +463,25 @@ test module; do not mix that mechanical move with behavior changes.
   a Radeon 890M run of tests/subgroup.rs (the tests open the first Vulkan adapter); a check that shows which body a
   CPU dispatch ran (the one-lane shadows give the portable output); a literal lane of 128 or more refused in the
   macro. `i32` broadcast with a literal lane and `f32` broadcast with a computed lane are not run on any adapter.
-- For the 0.2.0 release (the m8.v re-check): RELEASE.md's "Releasing 0.2.0 from main" also covers README :360,
-  :377 and :565; CHANGELOG's `toml` line moves out of "may break" (m8.x2).
-- Subgroup evidence leftovers (the m8.e review and re-check, for m8.x unless noted):
+- For the 0.2.0 release (the m8.v re-check; done in m8.x2): RELEASE.md's "Releasing 0.2.0 from main" now lists every
+  version literal (the README's renamed-dependency example, "Not supported in 0.1.0" and "known limit of 0.1.0", the two
+  crate READMEs' `~0.1`, the doc comment of `cargo-gust`'s `main.rs`), and CHANGELOG's `toml` text left "may break" for
+  its own section. Open at release: rerun the `semver` job and update the "Compatibility with 0.1.0" part of the
+  CHANGELOG entry (run id and counts).
+- A device handle that follows the route (D136 and D137 file it): in 0.2.0 a kernel call names its device, so flipping a
+  route in `gust.toml` changes the call sites of that kernel (only `name::map` is the same on both targets). A handle
+  that the route chooses (one device type whose calls run on the target the route names) would make a flip a
+  `gust.toml` change only. A design question for a later milestone, not built.
+- `crates/gust-algo/examples/sg_ab.rs` (the subgroup A/B program of m8.e; VALIDATION.md, "Subgroup evidence") is
+  compiled by the workspace builds and never run by a suite, so its table rests on the hand runs recorded there. Run it
+  from a suite (or from `check-full` on an adapter) if the table is to stay checked; filed with no slice (after M8).
+- Subgroup evidence leftovers (the m8.e review and re-check); both are open and filed with no slice (after M8):
   - `evidence::sum_u32`'s size guard puts the device's minimum in `DeviceLimit.maximum` (the limit is now spelled
     `subgroup_min_size`; `DeviceLimit` has no field for a minimum);
   - the gate scripts' START lines name the commit but not a hash of the uncommitted tree.
 - Routing driver leftovers (the m8.r2 review and re-checks):
   - no `cargo gust` command builds a routed release binary (only `run` and `test` compile one); add one, or a
     `cargo gust build --bin` mode (owner's call: it extends D67's command list);
-  - SEMANTICS' routing paragraph describes only the macro: add the driver, `gust.toml` and the measured
-    unset-to-set rebuild (m8.x);
   - no test fails if `build` stops using `routed_runner` (accepted for M8: exported artifacts do not depend on
     the route).
 

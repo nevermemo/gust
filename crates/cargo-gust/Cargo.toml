@@ -20,8 +20,9 @@ path = "src/main.rs"
 # The tool compiles and verifies kernels, so it needs the run-time Slang bridge that production builds refuse (D44).
 # The repository's xtask builds it under GUST_PROFILE=dev. A plain `cargo install cargo-gust` has no such variable,
 # so it also enables the internal `cargo-gust-bridge` feature (D108), which makes a release build without
-# GUST_PROFILE `dev` for `gust`'s build script. The `=0.1.0` pin of D107 stays in the workspace entry: with
-# `workspace = true`, `features` adds to the features of that entry and cannot change its version requirement.
+# GUST_PROFILE `dev` for `gust`'s build script. The exact pin of D107 (the workspace version, `=0.2.0-dev` until the
+# release) stays in the workspace entry: with `workspace = true`, `features` adds to the features of that entry and
+# cannot change its version requirement.
 [dependencies]
 gust = { workspace = true, features = ["slang-runtime", "cargo-gust-bridge"] }
 

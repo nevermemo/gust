@@ -1,7 +1,8 @@
 # Differential program generator (`tests/difftest`)
 
 Status: slices m5.c1a (the integer core), m5.c1a2 (floats v1, the exact-interval subset of R1-4), m5.c1b (the batch
-runner `difftest-run`), m5.c1c (the shrinker) and m6.d (vectors and matrices, DIFFTEST_FORMAT 6). The crate generates
+runner `difftest-run`), m5.c1c (the shrinker), m6.d (vectors and matrices, DIFFTEST_FORMAT 6) and m8.x1 (the result
+file carries the build's capabilities, DIFFTEST_FORMAT 7; the program space is the one of format 6). The crate generates
 integer, boolean and `f32` kernels from a seed, and (since format 6) kernels that compute with the `gust::math` vectors
 and matrices as locals and intermediates (buffers and results stay scalar), evaluates them with an independent
 interpreter that tracks the defined domain (and, for floats, an interval of every value a conforming WGSL implementation
@@ -364,12 +365,23 @@ tests/difftest/template/Cargo.lock" instead of cargo's message.
 ## The batch runner (`difftest-run`)
 
 ```text
-difftest-run --seeds 1-2 [--shapes grid,pixel] [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR]
+difftest-run --seeds 1-2 [--shapes grid,pixel] [--profile P] [--export-dir DIR] [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR]
 difftest-run --refresh-lock [--repo-root DIR]
 ```
 
 `--shapes` takes `grid` (the default) or `grid,pixel`; see Shapes below. `--shrink` refuses it (the reducer carries no
 pixel kernel).
+
+`--profile` sets the `GUST_PROFILE` the run crate is built under (M8; default `dev`). The run crate compiles Slang at
+run time, which only `dev` and `dev+<capability>` keep, so any other profile is refused; `dev+subgroups` builds every
+program with the subgroup capability (the generated programs use no subgroup construct, so this checks that the
+capability changes nothing for them). `--export-dir DIR` sets `GUST_EXPORT_DIR`, so the macro writes the export records
+of the run crate into `DIR`; `check-difftest` runs a `dev` batch and a `dev+subgroups` batch with a fresh directory
+each and requires the two trees to list the same files with the same bytes (VALIDATION, "Subgroup evidence"). The
+report names the `profile` and, from the programs' own results, `capabilities_in_every_result` and
+`capabilities_in_any_result`. Format 7 (m8.x1) added the `capabilities` field to every result file (what
+`gust::capability::enabled()` was in the run crate's build); the reader requires it and refuses a result file whose
+`format` is not 7, so a result left by an older build cannot pass as a new one.
 
 `--seeds` takes a range, a list or both (`1-4`, `3`, `1,3,5-6`); the report goes to stdout without `--report`. The
 target directory is `--target-dir`, else `CARGO_TARGET_DIR`, else `tests/difftest/target`. Exit status: 0 every program

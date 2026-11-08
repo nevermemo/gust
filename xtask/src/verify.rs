@@ -1518,8 +1518,9 @@ fn run_strict_build(
 /// tests under `dev`, which need an adapter too (the portable body writes zeros), then a build under plain `native`
 /// ([`strict_subgroups_portable_args`]), which looks up the portable bodies' committed artifacts, so a stale portable
 /// artifact fails here and not only in a user's build, then `cargo gust check --recompile`
-/// ([`strict_subgroups_recompile_args`]), which rebuilds every body with Slang and compares the bytes of all four
-/// committed artifacts, so a portable artifact with wrong bytes under an unchanged key fails too.
+/// ([`strict_subgroups_recompile_args`]), which rebuilds every body with Slang and compares the bytes of both committed
+/// artifacts (the example has two bodies, each a WGSL file with its reflection record), so a portable artifact with
+/// wrong bytes under an unchanged key fails too.
 fn check_strict_subgroups_example(root: &Path) -> Result<String, String> {
     run_cargo_test_captured(root, &strict_subgroups_test_args())?;
     let target = crate::workspace::cargo_target_dir(root).join("strict-subgroups");
@@ -1564,7 +1565,7 @@ fn check_strict_subgroups_example(root: &Path) -> Result<String, String> {
         return Err(problems.join("\n"));
     }
     Ok(format!(
-        "{STRICT_SUBGROUPS_PACKAGE} passed: its tests under dev, a build under GUST_PROFILE={STRICT_PORTABLE_PROFILE} (the portable bodies find their committed artifacts), `cargo gust check --recompile` (all four committed artifacts equal a recompile with the pinned Slang), and the program under GUST_PROFILE={STRICT_SUBGROUPS_PROFILE} from committed artifacts: lane count, ballot popcount and prefix sum equal the host model on the adapter it names"
+        "{STRICT_SUBGROUPS_PACKAGE} passed: its tests under dev, a build under GUST_PROFILE={STRICT_PORTABLE_PROFILE} (the portable bodies find their committed artifacts), `cargo gust check --recompile` (both committed artifacts, WGSL and reflection, equal a recompile with the pinned Slang), and the program under GUST_PROFILE={STRICT_SUBGROUPS_PROFILE} from committed artifacts: lane count, ballot popcount and prefix sum equal the host model on the adapter it names"
     ))
 }
 

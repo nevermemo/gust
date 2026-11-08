@@ -1416,15 +1416,6 @@ Fixtures: `tests/ui/subgroup-portable-body` and `tests/ui/subgroup-in-helper` (`
 Write instead: put the operation in a `#[variant(of = k, requires(subgroups))]` body beside the portable one, and call it from the kernel body itself.
 Decision: D140, D139.
 
-### GUST-E0747 subgroup operation in a position where not every invocation reaches it
-
-A subgroup operation combines the invocations of a subgroup, so it is a rendezvous like `workgroup_barrier()` (M8, D140): the macro is the only uniformity authority (the GPU compiler does not check it), and it approves a call only as the whole value of a `let`, an assignment or a compound assignment, or as an operand of arithmetic, a comparison, a cast or a unary operator there (and as the argument of another operation), at the top level of the kernel body or of a top-level `for a..b` loop with two literal bounds. Refused: under an `if` (a condition or either arm), under `&&` or `||` (short-circuit), in an index, as a method receiver, as a statement of its own, in a loop whose bounds are not literals, in a loop inside a loop, and as the value of an `if`. A call under a condition that differs per invocation would combine only the active invocations, and what that gives is a documented row, not a guarantee (D39, `docs/SEMANTICS.md`).
-Reached through `#[gpu]`.
-Rejected: `if p { let r = subgroup_add(x); }`, `let r = p && subgroup_all(p);`, `data[subgroup_add(x)]`, `for s in 0u32..x { .. subgroup_add(s) .. }`.
-Fixtures: `tests/ui/subgroup-in-if` and `tests/ui/subgroup-under-and` (`cargo xtask check-ui`).
-Write instead: compute the operation unconditionally at the top level of the body, and use its result under the condition.
-Decision: D140.
-
 ### GUST-E0746 kernel over the portable floor
 
 A kernel of a crate that sets `limits = "portable"` in `[package.metadata.gust]` is over one of the limits of `gust::limits::PORTABLE`, which are WebGPU's defaults (M8, D143, D36). The check is opt-in: a crate without the setting is never checked against the table here, and gets the launch checks of `gust-compute-wgpu` (D36) only. The macro counts what the source of each kernel decides, in this order, and reports the first that is over: the `workgroup_size` per axis (`max_compute_workgroup_size_x`, `_y` at 256 and `_z` at 64; a kernel with no option has the grid default of 64 x 1 x 1) and their product (`max_compute_invocations_per_workgroup`, 256); the storage buffers (`max_storage_buffers_per_shader_stage`, 8, read-only and read-write parameters together), uniform buffers (`max_uniform_buffers_per_shader_stage`, 12), sampled textures (`max_sampled_textures_per_shader_stage`, 16), storage textures (`max_storage_textures_per_shader_stage`, 4, read-write and write-only together) and samplers (`max_samplers_per_shader_stage`, 16); and the workgroup memory (`max_compute_workgroup_storage_size`, 16384 bytes, counted as E0718 counts it). A `shape = pixel` kernel has no workgroup, so only the resource counts apply to it.
@@ -1438,6 +1429,15 @@ Rejected (each with `limits = "portable"`): `workgroup_size(257, 1, 1)`, `workgr
 Fixtures: `tests/ui/limits-workgroup-size-x`, `limits-workgroup-size-y`, `limits-workgroup-size-z`, `limits-invocations`, `limits-storage-buffers`, `limits-uniform-buffers`, `limits-sampled-textures`, `limits-storage-textures`, `limits-samplers` and `limits-workgroup-memory` fail; `limits-at-floor` (every limit reached exactly) and `limits-not-portable` (an over-the-floor kernel in a crate without the setting) compile (`cargo xtask check-ui`). The unit tests are in `crates/gust-macros/src/validate/limits.rs`.
 Write instead: a smaller workgroup, fewer bindings, shorter `Workgroup` arrays, or remove `limits = "portable"` if the crate targets only devices with higher limits.
 Decision: D143.
+
+### GUST-E0747 subgroup operation in a position where not every invocation reaches it
+
+A subgroup operation combines the invocations of a subgroup, so it is a rendezvous like `workgroup_barrier()` (M8, D140): the macro is the only uniformity authority (the GPU compiler does not check it), and it approves a call only as the whole value of a `let`, an assignment or a compound assignment, or as an operand of arithmetic, a comparison, a cast or a unary operator there (and as the argument of another operation), at the top level of the kernel body or of a top-level `for a..b` loop with two literal bounds. Refused: under an `if` (a condition or either arm), under `&&` or `||` (short-circuit), in an index, as a method receiver, as a statement of its own, in a loop whose bounds are not literals, in a loop inside a loop, and as the value of an `if`. A call under a condition that differs per invocation would combine only the active invocations, and what that gives is a documented row, not a guarantee (D39, `docs/SEMANTICS.md`).
+Reached through `#[gpu]`.
+Rejected: `if p { let r = subgroup_add(x); }`, `let r = p && subgroup_all(p);`, `data[subgroup_add(x)]`, `for s in 0u32..x { .. subgroup_add(s) .. }`.
+Fixtures: `tests/ui/subgroup-in-if` and `tests/ui/subgroup-under-and` (`cargo xtask check-ui`).
+Write instead: compute the operation unconditionally at the top level of the body, and use its result under the condition.
+Decision: D140.
 
 ### GUST-E0748 route tag ill-named or not declared
 
@@ -1486,6 +1486,26 @@ Rejected: `profile = ["native"]` (the key is `profiles`), `profiles = ["web+subg
 Fixtures: `tests/ui/profile-manifest-malformed` and `tests/ui/profile-manifest-empty-targets` (`cargo xtask check-ui`); the exact line, column and message of each case are pinned by `crates/gust-macros/src/tests/manifest.rs`, with the corpus of source forms and the manifest `cargo package` wrote.
 Write instead: the keys are `profiles` (an array of profile strings), `limits = "portable"` and `routes` (a table of tags, each `{ targets = ["gpu", "cpu"], default = "gpu" }`); a dotted tag is a quoted key, `"physics.broadphase" = {}`; omit `targets` for the default instead of writing an empty list.
 Decision: D138.
+
+### Numbers in the M8 range that are not assigned, and the M8 errors that are not macro codes
+
+E0737, E0738, E0739 and E0752 are not assigned and have no heading: the range was set aside for M8's slices, and they
+ended without needing them (E0752 was the planned refusal of a CPU route on a web profile; spike S0 ended in the
+answer that the route is allowed, D151). A number is never reused for something else, so they stay free for a later
+check of the same family, and a code appears on this page only when the macro reports it.
+
+The driver (`cargo gust build`, `check`, `run`, `test` with a `gust.toml`, D151) reports its mistakes as plain errors
+with the file, the line and the tag (an unknown tag, a target outside the tag's `targets`, a route that names a
+capability profile, two packages that give one variable name, `--workspace` over a member with a `gust.toml`); they
+have no code, because the driver is a tool and not the macro, and they happen before cargo builds.
+
+Three run-time errors of `gust-compute-wgpu` belong to M8 and are values of `Error`, not macro codes:
+`MissingCapability { capability, adapter, kernel }` (at open, when the device options request a capability the adapter
+does not offer, `kernel` is `None`; at launch, when a kernel's `requires` names a capability the device was not opened
+with; on `wasm32` every non-empty request is refused at open), `KernelTarget` (a kernel passed by its descriptor whose
+target is not the GPU; the typed entry points refuse the same case at compile time with E0277) and `SubgroupSize` (a
+subgroup kernel whose workgroup is not a multiple of the largest subgroup size wgpu reports for the adapter, which
+GUST-E0751 checks against 64 at compile time). Decisions: D140, D142, D145.
 
 ## E08xx: emitter-only rejections
 

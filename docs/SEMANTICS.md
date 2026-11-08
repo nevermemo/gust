@@ -26,11 +26,11 @@ describes the intended behaviour and is not evidence.
   driver 610.88, slangc 2026.20, 2026-11-01 (the semantics were first measured on slangc 2026.13.1, 2026-10-24, and the
   Gpu suite passed again on 2026.20 and on the pinned 2026.21, 2026-11-07). The WGSL specification is the portable
   reference for this path. The contract does not extend to Slang's other targets: Slang itself leaves, for example,
-  integer division by zero undefined. Every `/`, `%`, `/=` and `%=` whose divisor is not a literal lowers to the overloaded helper
-  `__gust_div` or `__gust_rem` (`__gust_div_assign` and `__gust_rem_assign` with the place `inout`, so it is
-  evaluated once), whose body is the plain operator, because slangc folds integer division and refuses a divisor that
-  folds to zero even in code that no invocation runs (D74, cured in slice m6.dv); slangc keeps each helper as a WGSL
-  function, so the WGSL calls `_gust_div_0(..)` and `_gust_rem_0(..)` where the operator stood, a literal divisor
+  integer division by zero undefined. Every `/`, `%`, `/=` and `%=` whose divisor is not a literal lowers to the
+  overloaded helper `__gust_div` or `__gust_rem` (`__gust_div_assign` and `__gust_rem_assign` with the place `inout`, so
+  it is evaluated once), whose body is the plain operator, because slangc folds integer division and refuses a divisor
+  that folds to zero even in code that no invocation runs (D74, cured in slice m6.dv); slangc keeps each helper as a
+  WGSL function, so the WGSL calls `_gust_div_0(..)` and `_gust_rem_0(..)` where the operator stood, a literal divisor
   stays a plain operator (a literal zero is rejected by the validator, E0317), and the results do not change
   (`crates/gust-wgpu/tests/division.rs` compares them with a host reference and with KM-01 to KM-03). The test
   `the_emitted_wgsl_uses_plain_operators_and_conversions` checks that shifts, signed subtraction and multiplication,
@@ -103,7 +103,9 @@ describes the intended behaviour and is not evidence.
   the crate. A CPU-routed module is expanded as under `GUST_PROFILE=cpu`: it has `Run` for `CpuDevice`, no artifact
   lookup and no manifest check, its descriptor says `Target::Cpu`, and it has no `GpuKernel` implementation, so a call
   on `HeadlessDevice` fails to compile (E0277). A route flip therefore changes which device the kernel's call sites
-  compile against. A CPU-routed kernel is still held to the GPU portable floor: the `limits = "portable"` check
+  compile against: a kernel call names its device, so a flip is a call-site change, and only a generated element-wise
+  map (`name::map`) is the same on either target (D137, D145; a target-agnostic device handle is filed in NEXT_TASKS,
+  not built). A CPU-routed kernel is still held to the GPU portable floor: the `limits = "portable"` check
   (GUST-E0746) and every other check that does not depend on the target run under every profile and every route, so the
   kernel's source raises no new validation error (E07xx) when a build moves it back to the GPU. That move still needs
   the GPU form: under a strict profile (`native` or `web`) the kernel needs its precompiled artifact (`cargo gust
@@ -113,6 +115,18 @@ describes the intended behaviour and is not evidence.
   `routed` under `native`, a CPU-routed kernel and a CPU-routed `#[gpu(route = ..)] fn` map built and run, then the
   same `cargo build --release` flipped set, unset, set, unset in one warm directory, where each unset state must
   recompile and fail like the control); both are `Cpu` evidence, never GPU evidence.
+  The **routing driver** (exists, m8.r2, D151) is where an application sets the variables without writing them:
+  `cargo gust build`, `check`, `run` and `test` read a `gust.toml` beside the selected package (`[routes]`, entries
+  `"<package>::<tag>" = "gpu" | "cpu"` or a table keyed by the build profile `dev`, `native`, `web`), validate it
+  against the `[package.metadata.gust.routes]` tables that `cargo metadata` reports, resolve each declared tag the way
+  the macro does (the `cpu` profile, the nearest entry, the declaring crate's defaults, the GPU), set one
+  `GUST_ROUTE__<package>__<tag>` variable per tag on the cargo it starts, and write the resolved table to
+  `gust-artifacts/routes.json` (a build output; removed when no `gust.toml` applies). A change to the `gust.toml`
+  rebuilds in both directions, as `cargo xtask check-routing` measured (with the route tracking removed, the
+  unset-to-set flip fails). A route to a capability profile is refused; `--workspace`, `--all` and a workspace root's
+  default selection are refused when any selected member has a `gust.toml`; no `cargo gust` command builds a routed
+  release binary yet (NEXT_TASKS). Without `--check-only` the check also runs a GPU step that names its adapter, and
+  only that step is GPU evidence.
 - **Uniforms (exist, m6.u1 host API and m6.u2 macro).** A uniform is one value in a constant buffer, bound to a
   `Uniform<T>` (alias `ConstantBuffer<T>`) parameter through a resource of kind `gust::kind::Uniform` (`GpuUniform<T>`
   on the GPU, `CpuUniform<T>` on the twin). The generated call names `Resource::Kind` in every bound (`Storage` for a
@@ -637,18 +651,18 @@ compares bit for bit. Measured on the RTX 5090 (Vulkan, driver 610.88, slangc 20
 every `-m` lane equals the twin's sign flip, subnormals kept, and `-v` of `+0` gave `-0` and of `-0` gave `+0` (115
 lanes), so this device shows no difference in either; another device or driver may.
 
-**Limitation (D39): constant `Mat2::IDENTITY` and `Mat3::IDENTITY` on the SPIR-V pipeline.** On slangc 2026.20
-(not re-measured on 2026.21; the SPIR-V of the `vectors` golden, which holds these constants, is byte-identical on
-2026.21 in spike SL21, so the crash is expected to be unchanged) a kernel that multiplies by a compile-time constant `float2x2` or `float3x3` (what `Mat2::IDENTITY` and
-`Mat3::IDENTITY` lower to) emits SPIR-V that crashes the process (segmentation fault, exit 139 in a probe harness
-on the RTX 5090) when its SPIR-V is handed to wgpu (the faulting layer is not isolated: the probe notes say naga's
-module creation passed and `create_compute_pipeline` crashed). The same source is correct as WGSL, correct
-through SPIR-V passthrough, correct with a runtime `float3x3`, and correct for a constant `float4x4`. The executed
-route of `gust-wgpu` is WGSL, which is why the `vectors` test uses the constants. No M6 GPU case executes SPIR-V (the
-Spirv tier is `spirv-val` of the exported modules), so the matrix and uniform layout decorations of the SPIR-V have
-never been executed. The exported SPIR-V of that module
-is valid (`spirv-val`, vulkan1.2, checked by hand for the six kernels of `vectors`) but must not be dispatched through
-the SPIR-V ingestion path. This is a difference of toolchain behavior, documented and not chased.
+**Limitation (D39): constant `Mat2::IDENTITY` and `Mat3::IDENTITY` on the SPIR-V pipeline.** On slangc 2026.20 (not
+re-measured on 2026.21; the SPIR-V of the `vectors` golden, which holds these constants, is byte-identical on 2026.21 in
+spike SL21, so the crash is expected to be unchanged) a kernel that multiplies by a compile-time constant `float2x2` or
+`float3x3` (what `Mat2::IDENTITY` and `Mat3::IDENTITY` lower to) emits SPIR-V that crashes the process (segmentation
+fault, exit 139 in a probe harness on the RTX 5090) when its SPIR-V is handed to wgpu (the faulting layer is not
+isolated: the probe notes say naga's module creation passed and `create_compute_pipeline` crashed). The same source is
+correct as WGSL, correct through SPIR-V passthrough, correct with a runtime `float3x3`, and correct for a constant
+`float4x4`. The executed route of `gust-wgpu` is WGSL, which is why the `vectors` test uses the constants. No M6 GPU
+case executes SPIR-V (the Spirv tier is `spirv-val` of the exported modules), so the matrix and uniform layout
+decorations of the SPIR-V have never been executed. The exported SPIR-V of that module is valid (`spirv-val`, vulkan1.2,
+checked by hand for the six kernels of `vectors`) but must not be dispatched through the SPIR-V ingestion path. This is
+a difference of toolchain behavior, documented and not chased.
 
 **Texture sampling (slice mx.t1).** `Texture2D::sample(sampler, u, v)` is outside the exact contract (D22): the CPU twin
 computes the formula below in `f32`, and a GPU result is accepted inside the error domain below. A `load` or `store` is

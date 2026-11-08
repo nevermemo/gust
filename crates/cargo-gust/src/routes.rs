@@ -2122,16 +2122,10 @@ mod tests {
                 && notes[0].contains("resolves it to `cpu`"),
             "{notes:?}"
         );
-        // Names compare without case on Windows only; elsewhere the lowercase spelling is a variable of its own.
+        // Names compare without case on Windows only. There the lowercase prefix is a route variable that equals the
+        // resolved value (silent); elsewhere it is not a route variable at all (silent too).
         let lowercase = plan.notes(&preset(&[("gust_route__KERNEL_LIB__physics", "cpu")]));
-        if cfg!(windows) {
-            assert!(lowercase.is_empty(), "{lowercase:?}");
-        } else {
-            assert!(
-                lowercase.len() == 1 && lowercase[0].contains("matches no route tag"),
-                "{lowercase:?}"
-            );
-        }
+        assert!(lowercase.is_empty(), "{lowercase:?}");
         let notes = plan.notes(&preset(&[("GUST_ROUTE__kernel_lib__phyiscs", "cpu")]));
         assert!(
             notes.len() == 1 && notes[0].contains("matches no route tag"),

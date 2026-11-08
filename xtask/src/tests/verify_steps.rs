@@ -3,7 +3,7 @@ use super::{
     RELEASE_ONLY_TESTS, RELEASE_SLANG_TESTS, STRICT_PORTABLE_PROFILE, STRICT_SUBGROUPS_PACKAGE,
     STRICT_SUBGROUPS_PROFILE, VerifyMode, cargo_calls, check_counted_call, check_ledger,
     counts_tests, example_run_args, strict_subgroups_args, strict_subgroups_portable_args,
-    strict_subgroups_problems, strict_subgroups_test_args,
+    strict_subgroups_problems, strict_subgroups_recompile_args, strict_subgroups_test_args,
 };
 use crate::workspace::{EXAMPLES, SMOKE_EXAMPLES, workspace_test_args};
 
@@ -467,7 +467,31 @@ fn the_strict_check_also_builds_the_example_under_plain_native_before_the_strict
     let portable = body.find("STRICT_PORTABLE_PROFILE").unwrap();
     let portable_args = body.find("strict_subgroups_portable_args()").unwrap();
     let strict = body.find("strict_subgroups_args()").unwrap();
-    assert!(tests < portable && portable < portable_args && portable_args < strict);
+    // The recompile check (m8.x1 fix round 1, S2) sits between the portable build and the strict run: it compares the
+    // bytes of the portable artifacts, which neither the portable build (a key lookup) nor the strict run reads.
+    let recompile = body.find("strict_subgroups_recompile_args()").unwrap();
+    assert!(
+        tests < portable
+            && portable < portable_args
+            && portable_args < recompile
+            && recompile < strict
+    );
+    assert!(body.contains("run_direct_args(root, \"cargo\", &recompile)"));
+    assert_eq!(
+        strict_subgroups_recompile_args(),
+        owned(&[
+            "run",
+            "--locked",
+            "--quiet",
+            "-p",
+            "cargo-gust",
+            "--",
+            "check",
+            "-p",
+            "subgroup-reduce",
+            "--recompile"
+        ])
+    );
     // Both builds share the target directory `target`, so cargo reuses what the profile change leaves.
     assert!(
         body.contains("&target,"),

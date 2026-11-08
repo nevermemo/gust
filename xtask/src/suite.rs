@@ -5,12 +5,14 @@ use crate::{
     difftest::check_difftest,
     docs::docs_check,
     lint::lint,
-    process::{require_command, run_cargo_test_captured_under, run_counted, run_direct},
+    process::{
+        require_command, run_cargo_test_captured_under, run_counted, run_direct, without_colors,
+    },
     ui::check_ui,
     verify::{
-        ALGO_GPU_CALL, GPU_SUITE_CALL, GPU_SUITE_PIN, ProfileTestRunner, VerifyMode,
-        check_algo_gpu_counts, check_gpu_suite_counts, check_gpu_target_profile, gpu_target_pin,
-        name_adapter, run_gpu_profile_suite, run_gpu_target, verify,
+        ADAPTER_INFO_ARGS, ALGO_GPU_CALL, GPU_SUITE_CALL, GPU_SUITE_PIN, ProfileTestRunner,
+        VerifyMode, check_algo_gpu_counts, check_gpu_suite_counts, check_gpu_target_profile,
+        gpu_target_pin, name_adapter, run_gpu_profile_suite, run_gpu_target, verify,
     },
     workspace::workspace_root,
 };
@@ -34,12 +36,16 @@ type TestRunner<'a> = ProfileTestRunner<'a>;
 
 /// A `cargo test` call whose output must report each test of `names` as `ok` (`test <name> ... ok`), under `profile`
 /// when it is given. The name is the one libtest prints, module path included, so a renamed, moved, ignored or deleted
-/// test fails the step even when other tests of the call still pass.
+/// test fails the step even when other tests of the call still pass. `lines` are the beginnings of lines that the output
+/// must also hold (the call has `--show-output`, so a passing test's prints are in it): the proof that the `profile`
+/// reached the build, for tests that pass under any profile. A line is found when a trimmed line of the output starts
+/// with it.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct NamedTests {
     pub(crate) args: &'static [&'static str],
     pub(crate) names: &'static [&'static str],
     pub(crate) profile: Option<&'static str>,
+    pub(crate) lines: &'static [&'static str],
 }
 
 /// One step of a suite. Every step is an existing command or a `cargo test` call.
@@ -218,11 +224,12 @@ const CORE_TOOLCHAIN_TESTS: Step = Step::CountedCargo(&[
 ]);
 const CORE_DOC_TESTS: Step =
     Step::CountedCargo(&["test", "--locked", "-p", "gust-compute", "--doc"]);
-/// The name of the one `cargo-gust` test that needs the native helper and is not `#[ignore]`d
-/// (`testdata::variant::the_helper_builds_the_stored_artifacts`); the others of its name are `#[ignore]`d.
+/// The name filter of the tests of `cargo-gust` that build the stored artifacts with the native helper (the one of
+/// `testdata::variant` is not `#[ignore]`d, the one of `export::uniform_tests` is).
 const HELPER_BUILD_TEST: &str = "the_helper_builds_the_stored_artifacts";
-/// Every test of `cargo-gust` that needs neither Slang nor the helper (295 tests: 292 pass, the three helper-backed ones
-/// are left to [`CARGO_GUST_HELPER_TESTS`] and [`CARGO_GUST_VARIANT_GATE`]).
+/// Every test of `cargo-gust` that needs neither Slang nor the helper (295 tests: 292 pass, one is ignored for the helper
+/// and two are skipped by their full names with `--exact`, so a test that merely has the text in its name is not
+/// dropped; the helper-backed ones are left to [`CARGO_GUST_HELPER_TESTS`] and [`CARGO_GUST_VARIANT_GATE`]).
 const CARGO_GUST_TESTS: Step = Step::CountedCargo(&[
     "test",
     "--locked",
@@ -230,7 +237,10 @@ const CARGO_GUST_TESTS: Step = Step::CountedCargo(&[
     "cargo-gust",
     "--",
     "--skip",
-    HELPER_BUILD_TEST,
+    "export::uniform_tests::the_helper_builds_the_stored_artifacts",
+    "--skip",
+    "testdata::variant::the_helper_builds_the_stored_artifacts",
+    "--exact",
 ]);
 /// The three helper-backed tests of `cargo-gust` (the Slangc tier: slangc and the reflection helper are on `PATH`; the
 /// `#[ignore]`d two run through `--include-ignored`): the real compile step on the stored records of the export and of
@@ -252,10 +262,13 @@ const CARGO_GUST_HELPER_TESTS: NamedTests = NamedTests {
         "testdata::variant::the_helper_builds_the_stored_artifacts",
     ],
     profile: None,
+    lines: &[],
 };
 /// The `dev+subgroups` variant gate (m8.b2 R2): the variant fixture of `cargo-gust` (`testdata::variant`, six tests,
 /// the helper-backed one included) under the build that selects the subgroup bodies, so the stored four artifacts and
-/// the macro's selection agree under the capability as well as without it.
+/// the macro's selection agree under the capability as well as without it. These tests pass under any profile (they are
+/// "driven by key", testdata.rs), so their `ok` lines do not show that the capability reached the build; the call has
+/// `--show-output` and the output must hold the print the fixture makes of the capabilities it checked under.
 const CARGO_GUST_VARIANT_GATE: NamedTests = NamedTests {
     args: &[
         "test",
@@ -264,6 +277,7 @@ const CARGO_GUST_VARIANT_GATE: NamedTests = NamedTests {
         "cargo-gust",
         "--",
         "--include-ignored",
+        "--show-output",
         "testdata::variant::",
     ],
     names: &[
@@ -275,6 +289,7 @@ const CARGO_GUST_VARIANT_GATE: NamedTests = NamedTests {
         "testdata::variant::without_the_variants_the_same_kernel_gives_a_schema_1_manifest",
     ],
     profile: Some("dev+subgroups"),
+    lines: &["checked under capabilities [Subgroups]: "],
 };
 /// The Unit tier's differential batch (R1-13): seeds 1 to 4, 64 programs, the interpreter against the CPU twin. No
 /// adapter and no Slang; it builds the generated crate (`gust` and `gust-wgpu`) with cargo.
@@ -473,10 +488,7 @@ impl Step {
                 Some(profile) => format!("GUST_PROFILE={profile} cargo {}", tests.args.join(" ")),
                 None => format!("cargo {}", tests.args.join(" ")),
             },
-            Self::NameAdapter => {
-                "name the adapter (cargo run -p gust-compute-wgpu --example adapter_info)"
-                    .to_owned()
-            }
+            Self::NameAdapter => format!("name the adapter: cargo {}", ADAPTER_INFO_ARGS.join(" ")),
             Self::RequireTool(tool) => format!("require {tool} on PATH"),
             Self::Lint => "cargo xtask lint".to_owned(),
             Self::DocsCheck => "cargo xtask docs-check".to_owned(),
@@ -517,13 +529,30 @@ impl Step {
                 let call: Vec<String> = tests.args.iter().map(|arg| (*arg).to_owned()).collect();
                 let (_, stdout) = test_runner(&root, &call, tests.profile)?;
                 let missing = tests_not_ok(&stdout, tests.names);
-                if missing.is_empty() {
+                if !missing.is_empty() {
+                    return Err(format!(
+                        "cargo {}: the test(s) `{}` did not run and pass (renamed, moved, ignored, deleted or filtered out? NamedTests in xtask/src/suite.rs names them)",
+                        call.join(" "),
+                        missing.join("`, `")
+                    ));
+                }
+                let plain = without_colors(&stdout);
+                let absent: Vec<&str> = tests
+                    .lines
+                    .iter()
+                    .copied()
+                    .filter(|wanted| !plain.lines().any(|line| line.trim().starts_with(wanted)))
+                    .collect();
+                if absent.is_empty() {
                     return Ok(());
                 }
                 Err(format!(
-                    "cargo {}: the test(s) `{}` did not run and pass (renamed, moved, ignored, deleted or filtered out? NamedTests in xtask/src/suite.rs names them)",
+                    "cargo {}{}: the output has no line starting `{}`; the tests passed, but nothing shows that GUST_PROFILE reached the build (or `--show-output`, or the print, is gone)",
                     call.join(" "),
-                    missing.join("`, `")
+                    tests
+                        .profile
+                        .map_or_else(String::new, |profile| format!(" (GUST_PROFILE={profile})")),
+                    absent.join("`, `")
                 ))
             }
             Self::NameAdapter => {

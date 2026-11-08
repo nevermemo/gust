@@ -467,7 +467,17 @@ mod tests {
             let found = select_package(&workspace, None, Some(Path::new(manifest))).unwrap();
             assert_eq!(found.name, "app", "{manifest}");
         }
-        assert_eq!(by_name.directory(), Path::new("C:\\ws\\kern"));
+        // A backslash path has a parent on Windows only; `cargo metadata` gives `/` paths elsewhere.
+        if cfg!(windows) {
+            assert_eq!(by_name.directory(), Path::new("C:\\ws\\kern"));
+        }
+        let unix = parse_metadata(
+            r#"{"packages":[{"name":"kern-els","manifest_path":"/ws/kern/Cargo.toml"}],
+            "target_directory":"/ws/target","workspace_root":"/ws"}"#,
+        )
+        .unwrap();
+        let by_name = select_package(&unix, Some("kern-els"), None).unwrap();
+        assert_eq!(by_name.directory(), Path::new("/ws/kern"));
     }
 
     #[test]

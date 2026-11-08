@@ -106,7 +106,10 @@ const UNIT: [Step; 24] = [
         "cargo-gust",
         "--",
         "--skip",
-        "the_helper_builds_the_stored_artifacts",
+        "export::uniform_tests::the_helper_builds_the_stored_artifacts",
+        "--skip",
+        "testdata::variant::the_helper_builds_the_stored_artifacts",
+        "--exact",
     ]),
     Step::Cargo(&[
         "clippy",
@@ -229,6 +232,7 @@ fn slangc_is_unit_plus_the_core_library_tests_and_requires_slangc() {
             "testdata::variant::the_helper_builds_the_stored_artifacts",
         ],
         profile: None,
+        lines: &[],
     }));
     expected.push(Step::Named(&NamedTests {
         args: &[
@@ -238,6 +242,7 @@ fn slangc_is_unit_plus_the_core_library_tests_and_requires_slangc() {
             "cargo-gust",
             "--",
             "--include-ignored",
+            "--show-output",
             "testdata::variant::",
         ],
         names: &[
@@ -249,6 +254,7 @@ fn slangc_is_unit_plus_the_core_library_tests_and_requires_slangc() {
             "testdata::variant::without_the_variants_the_same_kernel_gives_a_schema_1_manifest",
         ],
         profile: Some("dev+subgroups"),
+        lines: &["checked under capabilities [Subgroups]: "],
     }));
     assert_eq!(Suite::Slangc.steps(), expected);
 }
@@ -1672,6 +1678,11 @@ fn the_named_steps_need_each_named_test_ok_and_pass_their_profile_to_the_runner(
                 let state = if skipped == Some(*name) { state } else { "ok" };
                 text.push_str(&format!("test {name} ... {state}\n"));
             }
+            // What `--show-output` adds: the prints of the passing tests, among them the lines the step requires.
+            text.push_str("\nsuccesses:\n\n---- x stdout ----\n");
+            for line in tests.lines {
+                text.push_str(&format!("{line}double_subgroups (0123456789abcdef)\n"));
+            }
             text.push_str(&format!(
                 "test result: ok. {} passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.0s\n",
                 tests.names.len()
@@ -1711,6 +1722,35 @@ fn the_named_steps_need_each_named_test_ok_and_pass_their_profile_to_the_runner(
                 .unwrap_err();
             assert!(error.contains(name), "{name}: {error}");
         }
+        // The required lines (m8.x1 fix round 1, S1): every test is `ok`, but the print that shows the capability reached
+        // the build is missing (a cargo that reused the `dev` binary prints `[]`), or `--show-output` is gone.
+        for line in tests.lines {
+            let dev = output(None, "ok").replace(line, "checked under capabilities []: ");
+            let gone: String = output(None, "ok")
+                .lines()
+                .filter(|text| !text.starts_with(line))
+                .map(|text| format!("{text}\n"))
+                .collect();
+            for text in [dev, gone] {
+                let error = step.run_in(root, &profile_runner(&seen, text)).unwrap_err();
+                assert!(
+                    error.contains(&format!("no line starting `{line}`"))
+                        && error.contains("GUST_PROFILE=dev+subgroups")
+                        && error.contains("--show-output"),
+                    "{error}"
+                );
+            }
+        }
+        assert_eq!(
+            tests.lines.is_empty(),
+            tests.profile.is_none(),
+            "a step with a profile names the line that shows it"
+        );
+        assert_eq!(
+            tests.args.contains(&"--show-output"),
+            !tests.lines.is_empty(),
+            "the lines are read from the prints of passing tests"
+        );
         // The runner's own failure and a call that ran nothing pass through.
         let failing = |_: &Path, _: &[String], _: Option<&str>| Err("cargo failed".to_owned());
         assert_eq!(step.run_in(root, &failing), Err("cargo failed".to_owned()));
@@ -1722,6 +1762,7 @@ fn the_named_steps_need_each_named_test_ok_and_pass_their_profile_to_the_runner(
 #[test]
 fn every_test_file_of_gust_compute_is_run_by_a_suite_step() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/gust/tests");
+    // Top-level `*.rs` files only: a test target in a subdirectory (`tests/<dir>/main.rs`) is not seen by this guard.
     let mut files = Vec::new();
     for entry in std::fs::read_dir(&dir).unwrap() {
         let path = entry.unwrap().path();
@@ -1768,7 +1809,7 @@ fn the_adapter_line_names_the_device_its_type_and_its_driver() {
     );
     assert_eq!(
         Step::NameAdapter.label(),
-        "name the adapter (cargo run -p gust-compute-wgpu --example adapter_info)"
+        "name the adapter: cargo run --locked --quiet -p gust-compute-wgpu --example adapter_info"
     );
 }
 

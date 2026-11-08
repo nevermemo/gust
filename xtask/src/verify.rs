@@ -16,7 +16,7 @@ use crate::{
     process::{
         CheckRecord, HELPER_VARIABLE, TestTotals, report_check, repository_helper, require_command,
         require_tests_ran, run_cargo_test_captured, run_checked, run_checked_owned,
-        sum_test_results, without_colors, workspace_command,
+        run_direct_args, sum_test_results, without_colors, workspace_command,
     },
     reflect::{BuildOptions, build_slang_reflect},
     release::check_release_report,
@@ -1410,6 +1410,25 @@ pub(crate) fn strict_subgroups_args() -> Vec<String> {
 /// the capability, so the build selects the portable bodies and embeds their committed artifacts (m8.x1).
 pub(crate) const STRICT_PORTABLE_PROFILE: &str = "native";
 
+/// The cargo call of the recompile check: `cargo gust check -p subgroup-reduce --recompile`, the command that ci.yml
+/// runs for tests/precompiled. It runs under the workspace profile (`dev`), which collects every body of the example,
+/// the portable and the subgroup ones, builds each with the pinned Slang and compares the committed artifacts byte for
+/// byte. It needs slangc and the reflection helper, as the rest of check-examples does.
+pub(crate) fn strict_subgroups_recompile_args() -> Vec<String> {
+    owned_args(&[
+        "run",
+        "--locked",
+        "--quiet",
+        "-p",
+        "cargo-gust",
+        "--",
+        "check",
+        "-p",
+        STRICT_SUBGROUPS_PACKAGE,
+        "--recompile",
+    ])
+}
+
 /// The cargo call of the portable build (run under [`STRICT_PORTABLE_PROFILE`], in the target directory of the strict
 /// run). It only builds: a strict profile looks the committed artifact up by the key of the body's source, and the macro
 /// refuses a body that has none, so a portable body edited without `cargo gust build` fails here although the strict
@@ -1498,7 +1517,9 @@ fn run_strict_build(
 /// `subgroup-reduce: OK body=subgroups`; [`strict_subgroups_problems`] requires those lines. First the example's
 /// tests under `dev`, which need an adapter too (the portable body writes zeros), then a build under plain `native`
 /// ([`strict_subgroups_portable_args`]), which looks up the portable bodies' committed artifacts, so a stale portable
-/// artifact fails here and not only in a user's build.
+/// artifact fails here and not only in a user's build, then `cargo gust check --recompile`
+/// ([`strict_subgroups_recompile_args`]), which rebuilds every body with Slang and compares the bytes of all four
+/// committed artifacts, so a portable artifact with wrong bytes under an unchanged key fails too.
 fn check_strict_subgroups_example(root: &Path) -> Result<String, String> {
     run_cargo_test_captured(root, &strict_subgroups_test_args())?;
     let target = crate::workspace::cargo_target_dir(root).join("strict-subgroups");
@@ -1508,6 +1529,13 @@ fn check_strict_subgroups_example(root: &Path) -> Result<String, String> {
         STRICT_PORTABLE_PROFILE,
         &strict_subgroups_portable_args(),
     )?;
+    let recompile = strict_subgroups_recompile_args();
+    println!("-- cargo {}", recompile.join(" "));
+    run_direct_args(root, "cargo", &recompile).map_err(|error| {
+        format!(
+            "the committed artifacts of {STRICT_SUBGROUPS_PACKAGE} differ from a recompile with the pinned Slang (run `cargo gust build -p {STRICT_SUBGROUPS_PACKAGE}` and review the diff): {error}"
+        )
+    })?;
     let args = strict_subgroups_args();
     println!(
         "-- GUST_PROFILE={STRICT_SUBGROUPS_PROFILE} cargo {}",
@@ -1536,7 +1564,7 @@ fn check_strict_subgroups_example(root: &Path) -> Result<String, String> {
         return Err(problems.join("\n"));
     }
     Ok(format!(
-        "{STRICT_SUBGROUPS_PACKAGE} passed: its tests under dev, and the program under GUST_PROFILE={STRICT_SUBGROUPS_PROFILE} from committed artifacts: lane count, ballot popcount and prefix sum equal the host model on the adapter it names"
+        "{STRICT_SUBGROUPS_PACKAGE} passed: its tests under dev, a build under GUST_PROFILE={STRICT_PORTABLE_PROFILE} (the portable bodies find their committed artifacts), `cargo gust check --recompile` (all four committed artifacts equal a recompile with the pinned Slang), and the program under GUST_PROFILE={STRICT_SUBGROUPS_PROFILE} from committed artifacts: lane count, ballot popcount and prefix sum equal the host model on the adapter it names"
     ))
 }
 

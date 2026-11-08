@@ -1575,6 +1575,17 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
         "{:?}",
         malformed.expectation
     );
+    // An empty `targets` of a route is E0753 at the key (m8.x1): the fixture's line 8 column 13, and not the E0749 that
+    // an empty set would make of every route.
+    let empty_targets = find("profile-manifest-empty-targets");
+    assert!(empty_targets.env.is_empty(), "{:?}", empty_targets.env);
+    assert!(
+        matches!(&empty_targets.expectation, Expectation::Fails(wanted)
+            if wanted.code == "none"
+                && wanted.messages.iter().any(|text| text.starts_with("[GUST-E0753] Cargo.toml:8:13: an empty `targets` list names no target for the route `physics`"))),
+        "{:?}",
+        empty_targets.expectation
+    );
     // Variants (m8.b1, D139): the pair compiles, and each way it goes wrong is the one error of its fixture. None but
     // `variant-ok-subgroups` sets a variable: the workspace's `dev` has no capability, which is what `variant-no-body`
     // needs. `variant-ok-subgroups` builds under `dev+subgroups`, so that rustc compiles the selected variant.
@@ -1807,7 +1818,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 132] = [
+const PINNED_FIXTURES: [&str; 133] = [
     "barrier-in-helper",
     "barrier-in-if",
     "barrier-in-nested-for",
@@ -1861,6 +1872,7 @@ const PINNED_FIXTURES: [&str; 132] = [
     "profile-dev-subgroups",
     "profile-empty",
     "profile-f16",
+    "profile-manifest-empty-targets",
     "profile-manifest-malformed",
     "profile-native-artifact",
     "profile-native-bridge",

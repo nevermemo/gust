@@ -162,6 +162,9 @@ fn the_shipped_variants_are_the_measured_ones() {
 #[test]
 fn the_evidence_pair_selects_the_body_of_the_profile_and_the_shipped_set_does_not_move() {
     let enabled = gust::capability::enabled();
+    // Read by `cargo xtask test --suite Gpu --profile <p>` from the output (`--show-output`): the profile reached the
+    // build of this crate, not only the build of gust-wgpu (`BUILD_CAPABILITIES_TARGET` does the same for that crate).
+    println!("capabilities of this build: {enabled:?}");
     let descriptor = &crate::evidence::block_sum_kernels::block_sum::DESCRIPTOR;
     assert_eq!(descriptor.requires, enabled);
     assert_eq!(
@@ -175,7 +178,7 @@ fn the_evidence_pair_selects_the_body_of_the_profile_and_the_shipped_set_does_no
 }
 
 /// Slice m8.e, Opus S1: the subgroup body adds 32 totals at most, so a device that reports a minimum subgroup size
-/// below 8 is refused by the host (`DeviceLimit`, limit `min_subgroup_size`) when the build selects that body, and
+/// below 8 is refused by the host (`DeviceLimit`, limit `subgroup_min_size`) when the build selects that body, and
 /// nothing else is: not the portable body, not a device that reports no range, not a minimum of 8 and above (the
 /// guard needs no device, it takes what `HeadlessDevice::subgroup_sizes` reports).
 #[test]
@@ -190,7 +193,7 @@ fn the_subgroup_body_is_refused_on_a_device_whose_smallest_subgroup_is_below_eig
                 maximum,
                 ..
             })) => {
-                assert_eq!(limit, "min_subgroup_size");
+                assert_eq!(limit, "subgroup_min_size");
                 assert_eq!(requested, 8);
                 assert_eq!(maximum, u64::from(minimum));
             }

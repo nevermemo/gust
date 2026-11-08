@@ -118,7 +118,10 @@ pub const MIN_SUBGROUP_SIZE: u32 = 8;
 /// The host-side guard of the subgroup body: `requires_subgroups` says that the build selected it, `sizes` is
 /// `HeadlessDevice::subgroup_sizes`. A device that reports no range is left to the capability error of the dispatch.
 /// A reported minimum below [`MIN_SUBGROUP_SIZE`] is refused as a `DeviceLimit` (the existing variant that reads
-/// "needs 8 for `min_subgroup_size`, the limit is 4"), whatever the range's maximum is.
+/// "needs 8 for `subgroup_min_size`, the limit is 4"), whatever the range's maximum is. The limit is spelled as wgpu
+/// spells it (`AdapterInfo::subgroup_min_size`). `DeviceLimit` has the fields `requested` and `maximum` only, no field
+/// that means a minimum, so the device's reported minimum stays in `maximum` (the value the device allows) and the
+/// size the body needs in `requested`; the message reads right, the field name does not.
 pub(crate) fn check_subgroup_sizes(
     requires_subgroups: bool,
     sizes: Option<(u32, u32)>,
@@ -127,7 +130,7 @@ pub(crate) fn check_subgroup_sizes(
         Some((minimum, _)) if requires_subgroups && minimum < MIN_SUBGROUP_SIZE => {
             Err(Error::Device(gust_wgpu::Error::DeviceLimit {
                 kernel: "gust_algo::evidence".to_owned(),
-                limit: "min_subgroup_size",
+                limit: "subgroup_min_size",
                 requested: u64::from(MIN_SUBGROUP_SIZE),
                 maximum: u64::from(minimum),
             }))
@@ -146,7 +149,7 @@ pub(crate) fn check_subgroup_sizes(
 /// `Error::Device` for a device failure, an input past the storage binding limit or a first dispatch past the
 /// workgroup limit (before any buffer is taken), or the capability error of a build whose body needs `subgroups` on a
 /// device opened without it. A build that selects the subgroup body also gets `Error::Device(gust_wgpu::Error::DeviceLimit)` (limit
-/// `min_subgroup_size`, before any buffer is taken) on a device whose reported minimum subgroup size is below
+/// `subgroup_min_size`, before any buffer is taken) on a device whose reported minimum subgroup size is below
 /// [`MIN_SUBGROUP_SIZE`], where the body would add a wrong sum (see the limitations in the module doc).
 pub fn sum_u32(input: &GpuVec<u32>) -> Result<u32, Error> {
     if input.is_empty() {

@@ -448,7 +448,32 @@ fn is_absolute(path: &str) -> bool {
 /// case must report exactly one error-level message;
 /// warnings and the summary `failure-note` are ignored, and a second error is a problem of its
 /// own that names it.
+///
+/// The messages say `cargo check`, which is what the fixtures of `check-ui` run; a check that judges another cargo call
+/// (a release build, say) uses [`judge_for`] to have its own command in them.
 pub(crate) fn judge(
+    case: &str,
+    target: &str,
+    expectation: &Expectation,
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+) -> Vec<String> {
+    judge_for(
+        "cargo check",
+        case,
+        target,
+        expectation,
+        success,
+        stdout,
+        stderr,
+    )
+}
+
+/// [`judge`] for a cargo call that is not `cargo check`: `command` (for example `cargo build --release`) is the call the
+/// messages name, so that a failing release build is not reported as a failed `cargo check`.
+pub(crate) fn judge_for(
+    command: &str,
     case: &str,
     target: &str,
     expectation: &Expectation,
@@ -465,11 +490,11 @@ pub(crate) fn judge(
     match expectation {
         Expectation::Compiles if success => Vec::new(),
         Expectation::Compiles => vec![format!(
-            "{case}: has no expected.txt so it must compile, but `cargo check` failed:\n{}",
+            "{case}: has no expected.txt so it must compile, but `{command}` failed:\n{}",
             shown()
         )],
         Expectation::BuildFails(_) if success => vec![format!(
-            "{case}: has `{BUILD_ERROR}:` lines in expected.txt so `cargo check` must fail in a build script, but it compiled"
+            "{case}: has `{BUILD_ERROR}:` lines in expected.txt so `{command}` must fail in a build script, but it compiled"
         )],
         Expectation::BuildFails(texts) => {
             let cargo_text = stderr.replace('\\', "/");
@@ -487,7 +512,7 @@ pub(crate) fn judge(
             }
             if !cargo_text.contains(GUST_SCRIPT_FAILED) {
                 problems.push(format!(
-                    "{case}: `cargo check` failed, but not in the build script of `gust` (cargo's output has no `{GUST_SCRIPT_FAILED}..`)"
+                    "{case}: `{command}` failed, but not in the build script of `gust` (cargo's output has no `{GUST_SCRIPT_FAILED}..`)"
                 ));
             }
             for text in texts {
@@ -503,10 +528,10 @@ pub(crate) fn judge(
             problems
         }
         Expectation::Fails(_) if success => vec![format!(
-            "{case}: has an expected.txt so `cargo check` must fail, but it compiled"
+            "{case}: has an expected.txt so `{command}` must fail, but it compiled"
         )],
         Expectation::Fails(_) if errors.is_empty() => vec![format!(
-            "{case}: `cargo check` failed but printed no error-level compiler-message of its own, so expected.txt cannot match; cargo said:\n{}",
+            "{case}: `{command}` failed but printed no error-level compiler-message of its own, so expected.txt cannot match; cargo said:\n{}",
             shown()
         )],
         Expectation::Fails(_) if errors.len() > 1 => vec![

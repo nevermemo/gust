@@ -8,6 +8,7 @@
 use std::path::Path;
 
 use crate::ast::Ty;
+use crate::generator::DIFFTEST_FORMAT;
 use crate::json::{self, Json};
 use crate::runsrc::Planned;
 
@@ -144,6 +145,14 @@ pub fn parse_result(file_text: &str) -> Result<Raw, String> {
     let json = json::parse(file_text)?;
     if field(&json, "end")? != &Json::Bool(true) {
         return Err("the file is not complete".into());
+    }
+    // A file of another format was written by another build of the run program (the result fields change with the
+    // format), so it is refused by its stamp and not by whichever field happens to be missing first.
+    let format = number(&json, "format")?;
+    if format != u64::from(DIFFTEST_FORMAT) {
+        return Err(format!(
+            "the file has format {format}, this harness reads format {DIFFTEST_FORMAT} (a stale result directory, or a run program built by another version)"
+        ));
     }
     let count = usize::try_from(number(&json, "count")?).map_err(|e| e.to_string())?;
     let interp = field(&json, "interp")?
@@ -747,7 +756,7 @@ mod tests {
     fn result_text(program: &str, count: usize, extra: &str) -> String {
         let words = vec!["1"; count].join(",");
         format!(
-            "{{\"format\": 2, \"program\": \"{program}\", \"seed\": 7, \"attempt\": 3, \"index\": 4, \"count\": {count}, \
+            "{{\"format\": {DIFFTEST_FORMAT}, \"program\": \"{program}\", \"seed\": 7, \"attempt\": 3, \"index\": 4, \"count\": {count}, \
              \"out_ty\": \"u32\", \"mode\": \"cpu-only\", \"adapter\": null, \"capabilities\": [], \"interp\": [{words}], \"twin\": [{words}], \
              \"twin_error\": null, \"twin_ns\": 5, \"gpu\": null, \"gpu_error\": null, \"wgsl_validated\": false, \
              \"gpu_first_ns\": 0, \"gpu_warm_ns\": 0{extra}, \"end\": true}}"
@@ -776,6 +785,34 @@ mod tests {
         assert_eq!(parse_result(&with).unwrap().capabilities, ["subgroups"]);
         let without = result_text("s7_a3", 2, "").replace("\"capabilities\"", "\"caps\"");
         assert!(parse_result(&without).unwrap_err().contains("capabilities"));
+    }
+
+    /// m8.x1: the format of the file is read and must be this harness's. A file of the format before the one that made
+    /// `capabilities` required (6), one of a later format and one without the field are refused, each by the format.
+    #[test]
+    fn a_result_file_of_another_format_is_refused_by_its_format() {
+        let current = result_text("s7_a3", 2, "");
+        assert!(current.contains(&format!("\"format\": {DIFFTEST_FORMAT},")));
+        assert!(parse_result(&current).is_ok());
+        for other in [DIFFTEST_FORMAT - 1, DIFFTEST_FORMAT + 1, 2] {
+            let stale = current.replace(
+                &format!("\"format\": {DIFFTEST_FORMAT},"),
+                &format!("\"format\": {other},"),
+            );
+            let error = parse_result(&stale).unwrap_err();
+            assert!(
+                error.contains(&format!("format {other}"))
+                    && error.contains(&format!("reads format {DIFFTEST_FORMAT}")),
+                "{other}: {error}"
+            );
+        }
+        let missing = current.replace("\"format\"", "\"layout\"");
+        assert!(parse_result(&missing).unwrap_err().contains("format"));
+        let text = current.replace(
+            &format!("\"format\": {DIFFTEST_FORMAT},"),
+            &format!("\"format\": \"{DIFFTEST_FORMAT}\","),
+        );
+        assert!(parse_result(&text).unwrap_err().contains("format"));
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {

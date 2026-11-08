@@ -1,8 +1,9 @@
 use super::{
     RELEASE_LEDGER_TEST, RELEASE_LEDGER_TESTS, RELEASE_ONLY_CPU_TEST, RELEASE_ONLY_SLANG_TEST,
-    RELEASE_ONLY_TESTS, RELEASE_SLANG_TESTS, STRICT_SUBGROUPS_PACKAGE, STRICT_SUBGROUPS_PROFILE,
-    VerifyMode, cargo_calls, check_counted_call, check_ledger, counts_tests, example_run_args,
-    strict_subgroups_args, strict_subgroups_problems, strict_subgroups_test_args,
+    RELEASE_ONLY_TESTS, RELEASE_SLANG_TESTS, STRICT_PORTABLE_PROFILE, STRICT_SUBGROUPS_PACKAGE,
+    STRICT_SUBGROUPS_PROFILE, VerifyMode, cargo_calls, check_counted_call, check_ledger,
+    counts_tests, example_run_args, strict_subgroups_args, strict_subgroups_portable_args,
+    strict_subgroups_problems, strict_subgroups_test_args,
 };
 use crate::workspace::{EXAMPLES, SMOKE_EXAMPLES, workspace_test_args};
 
@@ -445,6 +446,33 @@ fn the_strict_subgroups_check_runs_in_the_examples_and_full_modes_after_the_carg
     let call = body.find("check_strict_subgroups_example(root)").unwrap();
     let dual = body.find("if runs_check_dual(mode) {").unwrap();
     assert!(calls < strict && strict < call && call < dual);
+}
+
+/// m8.x1: the example is also built under plain `native` (the portable bodies, whose committed artifacts the strict run
+/// never embeds), in the same target directory, after the example's tests and before the strict run.
+#[test]
+fn the_strict_check_also_builds_the_example_under_plain_native_before_the_strict_run() {
+    assert_eq!(STRICT_PORTABLE_PROFILE, "native");
+    assert_ne!(STRICT_PORTABLE_PROFILE, STRICT_SUBGROUPS_PROFILE);
+    assert_eq!(
+        strict_subgroups_portable_args(),
+        owned(&["build", "--locked", "--quiet", "-p", "subgroup-reduce"])
+    );
+    let source = include_str!("../verify.rs").replace("\r\n", "\n");
+    let body = &source[source
+        .find("fn check_strict_subgroups_example(")
+        .expect("the check")..];
+    let body = &body[..body.find("\n}\n").expect("its end")];
+    let tests = body.find("run_cargo_test_captured(root").unwrap();
+    let portable = body.find("STRICT_PORTABLE_PROFILE").unwrap();
+    let portable_args = body.find("strict_subgroups_portable_args()").unwrap();
+    let strict = body.find("strict_subgroups_args()").unwrap();
+    assert!(tests < portable && portable < portable_args && portable_args < strict);
+    // Both builds share the target directory `target`, so cargo reuses what the profile change leaves.
+    assert!(
+        body.contains("&target,"),
+        "the portable build lost the shared target directory"
+    );
 }
 
 const STRICT_GOOD: &str = "subgroup-reduce: adapter NVIDIA GeForce RTX 5090\n\

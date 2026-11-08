@@ -27,8 +27,11 @@ use crate::prng::{Prng, byte_stream};
 /// unchanged, the programs that format 4 refused for that reason come back. 6: the vector programs (slice m6.d): a
 /// seed's batch is its first ten in-domain programs of the float space (the same programs as in format 5, in the same
 /// order) followed by six in-domain programs of the vector space, drawn from the attempt numbers
-/// `VECTOR_ATTEMPT_BASE..`; the scalar decoding is unchanged, the last six programs of every seed are new.
-pub const DIFFTEST_FORMAT: u32 = 6;
+/// `VECTOR_ATTEMPT_BASE..`; the scalar decoding is unchanged, the last six programs of every seed are new. 7: no
+/// decoding change (m8.x1): the result file of every program carries the `capabilities` of its build, a field the reader
+/// (`classify::parse_result`) requires, and the reader refuses a file whose `format` is not this number; the emitted text
+/// differs from format 6 by its stamp only, so `seeds.txt` changes by its stamp and its hashes.
+pub const DIFFTEST_FORMAT: u32 = 7;
 
 /// Which programs the generator writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

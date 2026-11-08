@@ -676,7 +676,8 @@ mod pixel {
         // An output is a storage parameter with a binding and read-write access, as under `grid`.
         assert!(text.contains("::gust::ParameterKind::Storage"), "{text}");
         assert!(text.contains("::gust::Access::ReadWrite"), "{text}");
-        // Every kernel is built for the GPU target until routing exists (m8.r1), whatever its shape.
+        // A module with no route tag, under a GPU profile, is built for the GPU target whatever its kernels' shapes:
+        // routing (m8.r1) moves a module to the CPU only through a tag or the `cpu` profile.
         assert_eq!(
             text.matches("target:::gust::target::Target::Gpu,").count(),
             3,

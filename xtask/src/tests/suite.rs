@@ -1,21 +1,24 @@
 use super::{
-    DIFFTEST_UNIT_STEPS, Step, Suite, TestRequest, parse_test_args, plan_suite, test_command,
+    DIFFTEST_UNIT_STEPS, NamedTests, Step, Suite, TestRequest, parse_test_args, plan_suite,
+    test_command,
 };
 use crate::{
     checks::{CPU_TESTS, GPU_SEMANTICS_TESTS, REFLECTION_TESTS},
     cpu_target::{Dirs, all_calls},
     difftest::{DifftestStep, Mode, Options, batch_args, short_circuit_args, steps},
     process::{TestTotals, sum_test_results},
+    validation::AdapterRecord,
     verify::{
         ALGO_GPU_CALL, ALGO_GPU_TESTS, GPU_SUITE_CALL, GPU_SUITE_PIN, GPU_TARGET_PINS,
-        RELEASE_SLANG_TESTS, VerifyMode, cargo_calls as mode_cargo_calls, check_gpu_suite_counts,
-        example_run_args, judges_algo_gpu, run_gpu_target,
+        RELEASE_SLANG_TESTS, VerifyMode, adapter_line, algo_profile_call,
+        cargo_calls as mode_cargo_calls, check_gpu_suite_counts, example_run_args, judges_algo_gpu,
+        run_gpu_profile_suite, run_gpu_target,
     },
     workspace::EXAMPLES,
 };
 use std::{cell::RefCell, path::Path};
 
-const UNIT: [Step; 18] = [
+const UNIT: [Step; 24] = [
     Step::Cargo(&["test", "--locked", "-p", "gust-compute-macros"]),
     Step::Cargo(&["test", "--locked", "-p", "xtask"]),
     Step::Lint,
@@ -62,6 +65,48 @@ const UNIT: [Step; 18] = [
         "gust-compute",
         "--test",
         "uniforms_twin",
+    ]),
+    Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--test",
+        "pixel_twin",
+    ]),
+    Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--test",
+        "textures_twin",
+    ]),
+    Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--test",
+        "parallel",
+    ]),
+    Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "gust-compute",
+        "--test",
+        "toolchain",
+    ]),
+    Step::CountedCargo(&["test", "--locked", "-p", "gust-compute", "--doc"]),
+    Step::CountedCargo(&[
+        "test",
+        "--locked",
+        "-p",
+        "cargo-gust",
+        "--",
+        "--skip",
+        "the_helper_builds_the_stored_artifacts",
     ]),
     Step::Cargo(&[
         "clippy",
@@ -166,6 +211,45 @@ fn slangc_is_unit_plus_the_core_library_tests_and_requires_slangc() {
         "--test",
         "naga_layout",
     ]));
+    // m8.x1: the helper-backed tests of cargo-gust, by name, and the variant gate under the capability.
+    expected.push(Step::Named(&NamedTests {
+        args: &[
+            "test",
+            "--locked",
+            "-p",
+            "cargo-gust",
+            "--",
+            "--include-ignored",
+            "the_helper_builds_the_stored_artifacts",
+            "schema_3_output",
+        ],
+        names: &[
+            "export::uniform_tests::the_helper_builds_the_stored_artifacts",
+            "helper::tests::schema_3_output_of_the_built_helper_matches_the_committed_expectations",
+            "testdata::variant::the_helper_builds_the_stored_artifacts",
+        ],
+        profile: None,
+    }));
+    expected.push(Step::Named(&NamedTests {
+        args: &[
+            "test",
+            "--locked",
+            "-p",
+            "cargo-gust",
+            "--",
+            "--include-ignored",
+            "testdata::variant::",
+        ],
+        names: &[
+            "testdata::variant::the_helper_builds_the_stored_artifacts",
+            "testdata::variant::the_macro_makes_today_what_the_stored_selected_bodies_are",
+            "testdata::variant::the_plan_of_the_stored_records_is_the_stored_manifest_byte_for_byte",
+            "testdata::variant::the_stored_manifest_reads_back_and_is_what_the_sources_give",
+            "testdata::variant::the_stored_records_are_the_macros_and_carry_the_facts_of_their_bodies",
+            "testdata::variant::without_the_variants_the_same_kernel_gives_a_schema_1_manifest",
+        ],
+        profile: Some("dev+subgroups"),
+    }));
     assert_eq!(Suite::Slangc.steps(), expected);
 }
 
@@ -287,6 +371,25 @@ fn ci_runs_the_harness_steps_in_a_job_of_their_own_and_the_unit_jobs_skip_them()
             "{line}: {difftest}"
         );
     }
+}
+
+/// The `semver` job compares a branch with the line it was cut from, so it runs on a pull request into `main` and on a
+/// push to `main`, and on nothing else (m8.x1: a pull request into `release/0.1` was compared with its own line).
+#[test]
+fn the_semver_job_runs_on_pull_requests_into_main_and_pushes_to_main_only() {
+    let ci = workflow_text("ci.yml");
+    let job = job_text(&ci, "semver");
+    let conditions: Vec<&str> = job
+        .lines()
+        .filter(|line| line.starts_with("    if:"))
+        .collect();
+    assert_eq!(
+        conditions,
+        [
+            "    if: (github.event_name == 'pull_request' && github.base_ref == 'main') || github.ref == 'refs/heads/main'"
+        ],
+        "{job}"
+    );
 }
 
 /// The text of the step `name` of a workflow job: from its `- name:` line to the next step.
@@ -444,6 +547,7 @@ fn the_other_tiers_alias_existing_commands() {
         Suite::Gpu.steps(),
         vec![
             Step::RequireTool("slangc"),
+            Step::NameAdapter,
             Step::GpuSuite,
             Step::AlgoGpuSuite,
             Step::CheckDifftest(&[])
@@ -507,8 +611,10 @@ fn gpu_suite_output(passed: u64, lines: u64) -> String {
 fn recording_runner(
     calls: &RefCell<Vec<Vec<String>>>,
     output: String,
-) -> impl Fn(&Path, &[String]) -> Result<(TestTotals, String), String> + '_ {
-    move |_, args| {
+) -> impl Fn(&Path, &[String], Option<&str>) -> Result<(TestTotals, String), String> + '_ {
+    move |_, args, profile| {
+        // The plain steps run under the workspace profile: they never ask for another one.
+        assert_eq!(profile, None, "{args:?}");
         calls.borrow_mut().push(args.to_vec());
         Ok((sum_test_results(&output), output.clone()))
     }
@@ -542,7 +648,7 @@ fn the_gpu_suite_step_runs_the_captured_runner_and_fails_on_a_drifted_count() {
         assert!(error.contains("GPU_SUITE_PIN"), "{passed} {lines}: {error}");
     }
     // The runner's own failure (cargo failed, nothing ran) passes through.
-    let failing = |_: &Path, _: &[String]| Err("cargo failed".to_owned());
+    let failing = |_: &Path, _: &[String], _: Option<&str>| Err("cargo failed".to_owned());
     assert_eq!(
         Step::GpuSuite.run_in(root, &failing),
         Err("cargo failed".to_owned())
@@ -559,6 +665,9 @@ fn cargo_calls(step: Step) -> Vec<Vec<String>> {
         Step::Cargo(args) | Step::CountedCargo(args) => vec![owned(args)],
         Step::GpuSuite => vec![owned(&GPU_SUITE_CALL)],
         Step::AlgoGpuSuite => vec![owned(&ALGO_GPU_CALL)],
+        Step::Named(tests) => vec![owned(tests.args)],
+        // `adapter_info` is a `cargo run` of an example; its call is `ADAPTER_INFO_ARGS`, pinned in verify.
+        Step::NameAdapter => Vec::new(),
         Step::CheckCpu => CPU_TESTS.iter().map(|args| owned(args)).collect(),
         // The calls of `check-cpu-target` are listed by its own data (and pinned by its own tests).
         Step::CheckCpuTarget => all_calls(&Dirs::under("TARGET"))
@@ -930,7 +1039,10 @@ fn the_tiers_wire_the_difftest_batch_in() {
         );
     }
     assert!(Suite::Full.covers().contains("subgroup-reduce"));
-    assert!(Suite::Gpu.not_covered().contains("evidence test"));
+    // m8.x1: the gust-algo run under the capability is the profile form now, so the suite no longer lists it as missing.
+    assert!(!Suite::Gpu.not_covered().contains("evidence test"));
+    assert!(Suite::Gpu.not_covered().contains("--profile dev+subgroups"));
+    assert!(Suite::Gpu.covers().contains("adapter_info"));
     let options = Options::parse_with(&[], 1).unwrap();
     assert_eq!(
         (options.mode, options.expected_programs()),
@@ -1103,10 +1215,9 @@ fn the_profile_argument_is_parsed_checked_and_only_for_the_gpu_suite() {
         error.contains("GPU_TARGET_PINS") && error.contains("capabilities, subgroup"),
         "{error}"
     );
-    // The wrong order, a missing half and extra words are the usage error, which keeps the old flag in it.
+    // The wrong order, `--test` without a profile and extra words are the usage error, which keeps the old flag in it.
     for args in [
         strings(&["--suite", "Gpu", "--test", "subgroup", "--profile", "dev"]),
-        strings(&["--suite", "Gpu", "--profile", "dev"]),
         strings(&["--suite", "Gpu", "--test", "subgroup"]),
         strings(&["--profile", "dev", "--test", "subgroup"]),
         strings(&[
@@ -1311,6 +1422,353 @@ fn a_profile_run_requires_the_capabilities_line_of_the_build() {
             &profile_runner(&seen, gpu_suite_output(other_passed, 1))
         ),
         Ok(())
+    );
+}
+
+/// A runner for the profile form without a target: it answers each call as the real test would under `profile`, the
+/// pinned count (and the capabilities line, for the `capabilities` target) for a gust-wgpu target, every `gpu::` test of
+/// gust-algo (and the capabilities line its own build prints when `algo_prints` is set) for gust-algo.
+fn profile_suite_runner<'a>(
+    seen: &'a Seen,
+    profile: &'a str,
+    algo_prints: bool,
+) -> impl Fn(&Path, &[String], Option<&str>) -> Result<(TestTotals, String), String> + 'a {
+    move |_, args, run_profile| {
+        seen.borrow_mut()
+            .push((args.to_vec(), run_profile.map(str::to_owned)));
+        let output = if args.iter().any(|arg| arg == "gust-algo") {
+            let text = algo_output(&ALGO_GPU_TESTS);
+            if algo_prints {
+                with_build_capabilities(text, profile)
+            } else {
+                text
+            }
+        } else {
+            let target = args
+                .iter()
+                .skip_while(|arg| *arg != "--test")
+                .nth(1)
+                .expect("a gust-wgpu call names its target");
+            let passed = GPU_TARGET_PINS
+                .iter()
+                .find(|(name, _)| *name == target.as_str())
+                .expect("a pinned target")
+                .1;
+            let text = gpu_suite_output(passed, 1);
+            if target == "capabilities" {
+                with_build_capabilities(text, profile)
+            } else {
+                text
+            }
+        };
+        Ok((sum_test_results(&output), output))
+    }
+}
+
+/// Ruling 2 of m8.x1: `--suite Gpu --profile <p>` without `--test` is a request of its own (the pinned gust-wgpu targets,
+/// then gust-algo), and only for the Gpu suite and a profile the run-time compiler allows.
+#[test]
+fn the_profile_argument_without_a_target_is_a_request_for_the_targets_and_gust_algo() {
+    assert_eq!(
+        parse_test_args(&strings(&["--suite", "Gpu", "--profile", "dev+subgroups"])),
+        Ok(TestRequest::Profile {
+            profile: "dev+subgroups".to_owned()
+        })
+    );
+    assert_eq!(
+        parse_test_args(&strings(&["--suite", "gpu", "--profile", "dev"])),
+        Ok(TestRequest::Profile {
+            profile: "dev".to_owned()
+        })
+    );
+    let error = parse_test_args(&strings(&["--suite", "Unit", "--profile", "dev"])).unwrap_err();
+    assert!(error.contains("--suite Gpu only, not Unit"), "{error}");
+    for profile in ["native", "native+subgroups", "dev+", "devx", ""] {
+        let error =
+            parse_test_args(&strings(&["--suite", "Gpu", "--profile", profile])).unwrap_err();
+        assert!(error.contains("--profile"), "{profile}: {error}");
+    }
+    // The usage text shows both forms, `--test` optional.
+    let usage = parse_test_args(&[]).unwrap_err();
+    assert!(
+        usage.contains("[--test <gust-wgpu test target>]"),
+        "{usage}"
+    );
+}
+
+/// The profile run makes the pinned gust-wgpu calls and then the gust-algo call, each under the profile, announces them in
+/// that order, and fails when gust-algo's own build did not receive the profile, when an adapter test is gone, or when a
+/// target before it failed (nothing after it runs).
+#[test]
+fn the_profile_suite_runs_the_pinned_targets_and_then_gust_algo_under_the_profile() {
+    let root = Path::new("ROOT");
+    let profile = "dev+subgroups";
+    let seen = RefCell::new(Vec::new());
+    let mut announced = Vec::new();
+    let result = run_gpu_profile_suite(
+        root,
+        profile,
+        &profile_suite_runner(&seen, profile, true),
+        &mut |call: &str| announced.push(call.to_owned()),
+    );
+    assert_eq!(result, Ok(()));
+    let mut calls: Vec<Vec<String>> = GPU_TARGET_PINS
+        .iter()
+        .map(|(target, _)| {
+            strings(&[
+                "test",
+                "--locked",
+                "-p",
+                "gust-compute-wgpu",
+                "--test",
+                target,
+                "--",
+                "--show-output",
+            ])
+        })
+        .collect();
+    let mut algo = owned_call(&ALGO_GPU_CALL);
+    algo.extend(strings(&["--", "--show-output"]));
+    assert_eq!(algo, algo_profile_call());
+    calls.push(algo);
+    let expected: Vec<(Vec<String>, Option<String>)> = calls
+        .iter()
+        .map(|call| (call.clone(), Some(profile.to_owned())))
+        .collect();
+    assert_eq!(*seen.borrow(), expected);
+    assert_eq!(
+        announced,
+        calls
+            .iter()
+            .map(|call| format!("cargo {} (GUST_PROFILE={profile})", call.join(" ")))
+            .collect::<Vec<_>>()
+    );
+
+    // gust-algo's build printed no capabilities line, or the line of another profile: the profile did not reach it, and
+    // the plain counts of its tests would pass for any profile.
+    for wrong in [false, true] {
+        let seen = RefCell::new(Vec::new());
+        let error = if wrong {
+            // The gust-wgpu targets report the profile; only gust-algo's build reports `dev`.
+            let runner = |root: &Path, args: &[String], run_profile: Option<&str>| {
+                let reported = if args.iter().any(|arg| arg == "gust-algo") {
+                    "dev"
+                } else {
+                    profile
+                };
+                profile_suite_runner(&seen, reported, true)(root, args, run_profile)
+            };
+            run_gpu_profile_suite(root, profile, &runner, &mut |_: &str| {})
+        } else {
+            run_gpu_profile_suite(
+                root,
+                profile,
+                &profile_suite_runner(&seen, profile, false),
+                &mut |_: &str| {},
+            )
+        }
+        .unwrap_err();
+        assert!(
+            error.contains("the build did not receive GUST_PROFILE=dev+subgroups")
+                && error.contains("crates/gust-algo")
+                && error.contains("`capabilities of this build: [Subgroups]`"),
+            "{wrong}: {error}"
+        );
+    }
+
+    // An adapter test deleted from gust-algo's output is named, as in the plain suite.
+    let runner = |root: &Path, args: &[String], run_profile: Option<&str>| {
+        if args.iter().any(|arg| arg == "gust-algo") {
+            let output = with_build_capabilities(algo_output(&ALGO_GPU_TESTS[1..]), profile);
+            Ok((sum_test_results(&output), output))
+        } else {
+            profile_suite_runner(&RefCell::new(Vec::new()), profile, true)(root, args, run_profile)
+        }
+    };
+    let error = run_gpu_profile_suite(root, profile, &runner, &mut |_: &str| {}).unwrap_err();
+    assert!(
+        error.contains(ALGO_GPU_TESTS[0]) && error.contains("ALGO_GPU_TESTS"),
+        "{error}"
+    );
+
+    // A failing first target ends the run: gust-algo is not called.
+    let seen = RefCell::new(Vec::new());
+    let failing = |_: &Path, args: &[String], run_profile: Option<&str>| {
+        seen.borrow_mut()
+            .push((args.to_vec(), run_profile.map(str::to_owned)));
+        Err("cargo failed".to_owned())
+    };
+    assert_eq!(
+        run_gpu_profile_suite(root, profile, &failing, &mut |_: &str| {}),
+        Err("cargo failed".to_owned())
+    );
+    assert_eq!(seen.borrow().len(), 1);
+
+    // A refused profile never reaches cargo.
+    let seen = RefCell::new(Vec::new());
+    assert!(
+        run_gpu_profile_suite(
+            root,
+            "native",
+            &profile_suite_runner(&seen, "native", true),
+            &mut |_: &str| {}
+        )
+        .is_err()
+    );
+    assert!(seen.borrow().is_empty());
+}
+
+/// The gust-algo test that prints the capabilities line is part of the plain `gust-algo` call too, and its print is in
+/// the source the judge reads, so a removed `println!` cannot leave the profile run passing on the counts alone.
+#[test]
+fn the_gust_algo_test_prints_the_capabilities_of_its_build() {
+    let source = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/gust-algo/src/tests/variant.rs"),
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    let function = source
+        .find("fn the_evidence_pair_selects_the_body_of_the_profile_and_the_shipped_set_does_not_move()")
+        .expect("the evidence pair test");
+    assert!(
+        source[function..]
+            .lines()
+            .take(6)
+            .any(|line| line.trim() == r#"println!("capabilities of this build: {enabled:?}");"#),
+        "the print of the capabilities of gust-algo's build is gone"
+    );
+}
+
+/// The Slangc tier's two named steps (m8.x1): each needs every one of its tests reported `ok` (an `#[ignore]`d test that
+/// `--include-ignored` did not run, a renamed or a deleted one fails), and the variant gate asks for the subgroups
+/// capability while the helper step asks for none.
+#[test]
+fn the_named_steps_need_each_named_test_ok_and_pass_their_profile_to_the_runner() {
+    let root = Path::new("ROOT");
+    let named: Vec<&NamedTests> = Suite::Slangc
+        .steps()
+        .into_iter()
+        .filter_map(|step| match step {
+            Step::Named(tests) => Some(tests),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(named.len(), 2);
+    assert_eq!(
+        named.iter().map(|tests| tests.profile).collect::<Vec<_>>(),
+        [None, Some("dev+subgroups")]
+    );
+    assert!(
+        Suite::Unit
+            .steps()
+            .iter()
+            .all(|step| !matches!(step, Step::Named(_) | Step::NameAdapter))
+    );
+    for tests in named {
+        let step = Step::Named(tests);
+        let output = |skipped: Option<&str>, state: &str| {
+            let mut text = String::new();
+            for name in tests.names {
+                let state = if skipped == Some(*name) { state } else { "ok" };
+                text.push_str(&format!("test {name} ... {state}\n"));
+            }
+            text.push_str(&format!(
+                "test result: ok. {} passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 1.0s\n",
+                tests.names.len()
+            ));
+            text
+        };
+        let seen = RefCell::new(Vec::new());
+        assert_eq!(
+            step.run_in(root, &profile_runner(&seen, output(None, "ok"))),
+            Ok(()),
+            "{step:?}"
+        );
+        assert_eq!(
+            *seen.borrow(),
+            vec![(owned_call(tests.args), tests.profile.map(str::to_owned))]
+        );
+        assert!(step.label().ends_with(&tests.args.join(" ")));
+        assert_eq!(
+            step.label().starts_with("GUST_PROFILE=dev+subgroups "),
+            tests.profile.is_some()
+        );
+        for name in tests.names {
+            for state in ["ignored, needs the native helper", "FAILED"] {
+                let error = step
+                    .run_in(root, &profile_runner(&seen, output(Some(*name), state)))
+                    .unwrap_err();
+                assert!(error.contains(name), "{name} {state}: {error}");
+            }
+            // The test is not in the output at all (renamed, moved or deleted).
+            let without: String = output(None, "ok")
+                .lines()
+                .filter(|line| !line.contains(name))
+                .map(|line| format!("{line}\n"))
+                .collect();
+            let error = step
+                .run_in(root, &profile_runner(&seen, without))
+                .unwrap_err();
+            assert!(error.contains(name), "{name}: {error}");
+        }
+        // The runner's own failure and a call that ran nothing pass through.
+        let failing = |_: &Path, _: &[String], _: Option<&str>| Err("cargo failed".to_owned());
+        assert_eq!(step.run_in(root, &failing), Err("cargo failed".to_owned()));
+    }
+}
+
+/// Every test file of `gust-compute` (crates/gust/tests) is run by some step of some suite (m8.x1: four of them were in
+/// none), so a file added later without a step fails here, not silently in CI.
+#[test]
+fn every_test_file_of_gust_compute_is_run_by_a_suite_step() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/gust/tests");
+    let mut files = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|extension| extension == "rs") {
+            files.push(path.file_stem().unwrap().to_string_lossy().into_owned());
+        }
+    }
+    files.sort();
+    assert!(files.len() >= 9, "{files:?}");
+    let calls: Vec<Vec<String>> = Suite::names()
+        .into_iter()
+        .flat_map(|name| Suite::parse(name).unwrap().steps())
+        .flat_map(cargo_calls)
+        .collect();
+    for file in files {
+        let run = calls.iter().any(|call| {
+            call.iter().any(|arg| arg == "gust-compute")
+                && call
+                    .windows(2)
+                    .any(|pair| pair[0] == "--test" && pair[1] == file)
+        });
+        assert!(run, "crates/gust/tests/{file}.rs is run by no suite step");
+    }
+}
+
+/// The adapter line of the Gpu suite's log names the device, its type and backend, and the driver when there is one.
+#[test]
+fn the_adapter_line_names_the_device_its_type_and_its_driver() {
+    let line = |driver: &str, info: &str| {
+        adapter_line(
+            &AdapterRecord::parse(&format!(
+                r#"{{"name":"NVIDIA GeForce RTX 5090","vendor":4318,"device":10,"device_type":"DiscreteGpu","backend":"Vulkan","driver":"{driver}","driver_info":"{info}"}}"#
+            ))
+            .unwrap(),
+        )
+    };
+    assert_eq!(
+        line("NVIDIA", "580.97"),
+        "adapter: NVIDIA GeForce RTX 5090 (DiscreteGpu, Vulkan, driver NVIDIA 580.97)"
+    );
+    assert_eq!(
+        line("", ""),
+        "adapter: NVIDIA GeForce RTX 5090 (DiscreteGpu, Vulkan, driver unnamed)"
+    );
+    assert_eq!(
+        Step::NameAdapter.label(),
+        "name the adapter (cargo run -p gust-compute-wgpu --example adapter_info)"
     );
 }
 

@@ -56,8 +56,9 @@ impl PortableLimits {
     /// Every limit of this value as `(wgpu's name, value)`, in a fixed order: the three workgroup axes, the invocations,
     /// the storage buffers, the uniform buffers, the sampled textures, the storage textures, the samplers and the
     /// workgroup memory. The values are `self`'s fields, so a copy of [`PORTABLE`] with a field changed reports the
-    /// changed value. An iterator, so a later release that adds a limit does not change this signature.
-    pub fn entries(&self) -> impl ExactSizeIterator<Item = (&'static str, u32)> {
+    /// changed value. An iterator, so a later release that adds a limit does not change this signature. It borrows
+    /// nothing from `self` (`use<>`: edition 2024 would otherwise capture the receiver's lifetime).
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = (&'static str, u32)> + use<> {
         [
             (
                 "max_compute_workgroup_size_x",

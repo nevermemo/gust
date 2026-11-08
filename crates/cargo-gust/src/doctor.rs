@@ -20,6 +20,15 @@ use crate::{
 /// `gust::toolchain`.
 const GUST_COMPUTE_VERSION: &str = gust::toolchain::GUST_VERSION;
 
+/// The version requirement of the install line: `~MAJOR.MINOR` of this package's own version (`CARGO_PKG_VERSION_*`),
+/// so the text follows the release line and no literal needs a bump at each release.
+const INSTALL_REQUIREMENT: &str = concat!(
+    "~",
+    env!("CARGO_PKG_VERSION_MAJOR"),
+    ".",
+    env!("CARGO_PKG_VERSION_MINOR")
+);
+
 /// The values `GUST_PROFILE` may take.
 const PROFILES: [&str; 4] = ["dev", "native", "web", "cpu"];
 
@@ -295,10 +304,9 @@ pub(crate) fn lines(facts: &Facts) -> (Vec<String>, bool) {
         "routing (M8): `cargo gust build`, `check`, `run` and `test` read a gust.toml beside the package's Cargo.toml and set GUST_ROUTE__<package>__<tag> for the tags the build's crates declare; without one, plain cargo's rules apply (the source defaults). `run` and `test` take the profile from GUST_PROFILE, else from --release and --target wasm32"
             .to_owned(),
     );
-    out.push(
-        "install: cargo install cargo-gust --locked --version ~0.1 (this tool enables gust's internal cargo-gust-bridge feature, so a plain release install needs no GUST_PROFILE)"
-            .to_owned(),
-    );
+    out.push(format!(
+        "install: cargo install cargo-gust --locked --version {INSTALL_REQUIREMENT} (this tool enables gust's internal cargo-gust-bridge feature, so a plain release install needs no GUST_PROFILE)"
+    ));
     (out, healthy)
 }
 
@@ -549,11 +557,16 @@ mod tests {
         assert!(text.iter().any(|line| line.starts_with(
             "  profile of `cargo build --release --target wasm32-unknown-unknown`: web (inferred"
         )));
-        assert!(
-            text.last()
-                .unwrap()
-                .starts_with("install: cargo install cargo-gust --locked --version ~0.1")
-        );
+        // The install line names the release line of this very package (`~MAJOR.MINOR` of its version), read here from
+        // the whole version string and not from the two pieces the code uses.
+        let version = env!("CARGO_PKG_VERSION");
+        let mut numbers = version.split(['.', '-']);
+        let (major, minor) = (numbers.next().unwrap(), numbers.next().unwrap());
+        let requirement = format!("~{major}.{minor}");
+        assert_eq!(super::INSTALL_REQUIREMENT, requirement, "{version}");
+        assert!(text.last().unwrap().starts_with(&format!(
+            "install: cargo install cargo-gust --locked --version {requirement} ("
+        )));
     }
 
     #[test]

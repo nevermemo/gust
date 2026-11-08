@@ -1,0 +1,11 @@
+[package]
+name = "typed-call-routed-ill-named"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata.gust.routes]
+physics = {}
+
+[dependencies]
+gust = { package = "gust-compute", path = "../../../crates/gust" }

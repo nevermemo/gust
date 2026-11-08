@@ -37,7 +37,7 @@ use proc_macro2::{Literal, TokenStream};
 use quote::{format_ident, quote};
 use syn::ext::IdentExt as _;
 
-use super::{Environment, Identity, Profile, expand_validated};
+use super::{Environment, Identity, Profile, expand_validated_routed, routing};
 use crate::{
     diagnostics::{self, Code},
     math_types,
@@ -113,21 +113,63 @@ pub(crate) fn map_kernel(function: &syn::ItemFn, profile: Profile) -> syn::Resul
     Ok(MapKernel { module, host })
 }
 
-/// Expands `#[gpu]` on a free function for `profile`: the function as written, then its module.
-pub(crate) fn expand_map(function: syn::ItemFn, profile: Profile) -> syn::Result<TokenStream> {
-    expand_map_in(function, &Environment::from_process(), profile)
+/// Expands `#[gpu]` on a free function for `profile`: the function as written, then its module. The function may carry
+/// a route (`#[gpu(route = "tag")] fn`, M8, D65 to D67).
+pub(crate) fn expand_map_routed(
+    function: syn::ItemFn,
+    profile: Profile,
+    request: &routing::Request<'_>,
+) -> syn::Result<TokenStream> {
+    expand_map_in_routed(function, &Environment::from_process(), profile, request)
 }
 
-/// [`expand_map`] with the environment given, as the module expansion has it.
+/// [`expand_map_routed`] with the environment given and no route, as the module expansion has it.
+#[cfg(test)]
 pub(super) fn expand_map_in(
     function: syn::ItemFn,
     environment: &Environment,
     profile: Profile,
 ) -> syn::Result<TokenStream> {
+    expand_map_in_routed(function, environment, profile, &routing::Request::none())
+}
+
+/// [`expand_map_in`] with the route the attribute named. The host functions depend on the profile (the `cpu` family
+/// under the CPU target), so the route is resolved here first and `build` gets the profile the module is built for;
+/// the expansion resolves it again for the kernel's own items (the same answer, the manifest read twice). A malformed
+/// manifest is GUST-E0753 at the function's name, as the module expansion reports it at the module's.
+pub(crate) fn expand_map_in_routed(
+    function: syn::ItemFn,
+    environment: &Environment,
+    profile: Profile,
+    request: &routing::Request<'_>,
+) -> syn::Result<TokenStream> {
     let signature = check_signature(&function)?;
     validate(&function)?;
-    let (module, host) = build(&function, &signature, profile);
-    let expanded = expand_validated(module, environment, profile, &GRID, &host, Identity::Module)?;
+    let built_for = if request.tag.is_some() {
+        let declarations = crate::manifest::read_dir(environment.manifest_dir.as_deref())
+            .map_err(|error| {
+                diagnostics::error_at(
+                    Code::GustMetadata,
+                    function.sig.ident.span(),
+                    error.to_string(),
+                )
+            })?
+            .unwrap_or_default();
+        routing::resolve(request, environment, &declarations, profile)?
+            .map_or(profile, |route| route.effective(profile))
+    } else {
+        profile
+    };
+    let (module, host) = build(&function, &signature, built_for);
+    let expanded = expand_validated_routed(
+        module,
+        environment,
+        profile,
+        &GRID,
+        &host,
+        Identity::Module,
+        request,
+    )?;
     Ok(quote! {
         #function
 

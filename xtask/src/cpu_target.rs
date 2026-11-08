@@ -26,6 +26,11 @@
 //! - E-i: `cargo test -p kernels` under `cpu` compiles the kernels with `cfg(test)` (still one impl) and exits 0. The
 //!   crate has a few tests (the map case and the hand-worked `vector_ops` case), so this proves the build and those
 //!   cases, not the kernels of `app` (E-a judges those).
+//! - E-j (m8.r1, D65 to D67): the routed crate `routed` under the strict profile `native`, where an unrouted kernel needs a
+//!   precompiled artifact. With `GUST_ROUTE__routed__physics=cpu` it builds in release with no artifact, runs on
+//!   `CpuDevice`, matches its host loop and holds none of the [`FORBIDDEN`] strings; without the variable it fails with the
+//!   one E0080 of `e-j-expected.txt`; and in one warm target directory the variable flips set, unset, set, unset, each set
+//!   state building and matching and each unset state failing like the control.
 
 use std::{
     cell::RefCell,
@@ -49,6 +54,17 @@ pub(crate) const CPU_TARGET_DIR: &str = "tests/cpu-target";
 
 /// The value of `GUST_PROFILE` of the production CPU target.
 pub(crate) const CPU_PROFILE: &str = "cpu";
+
+/// The strict profile E-j builds the routed crate under: a kernel not routed to the CPU needs an artifact there.
+pub(crate) const NATIVE_PROFILE: &str = "native";
+
+/// The variable E-j sets: the route of the tag `physics` of the package `routed`
+/// (`gust::routes::variable_name("routed", "physics")`).
+pub(crate) const ROUTE_VARIABLE: &str = "GUST_ROUTE__routed__physics";
+
+/// What the `routed` binary prints, exactly once, when `scale` ran on `CpuDevice` and equalled its host loop.
+pub(crate) const ROUTED_LINE: &str =
+    "CPU target: matches (routed::scale, 1024 elements, max ULP 0)";
 
 /// The kernels `app` runs, as it names them in its `CPU target: matches (<kernel>, ..)` lines.
 pub(crate) const KERNELS: [&str; 6] = [
@@ -106,6 +122,10 @@ pub(crate) const FLIPS: [Profile; 6] = [
     Profile::Unset,
 ];
 
+/// The states of E-j's flips in one target directory: the route variable set to `cpu` (`true`) or removed (`false`).
+/// Both directions occur twice, as in [`FLIPS`].
+pub(crate) const ROUTE_FLIPS: [bool; 4] = [true, false, true, false];
+
 /// The `GUST_PROFILE` a cargo child gets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Profile {
@@ -113,6 +133,8 @@ pub(crate) enum Profile {
     Cpu,
     /// `GUST_PROFILE=dev`, what every workspace command of xtask uses.
     Dev,
+    /// `GUST_PROFILE=native`: strict, so a kernel with no artifact is an error unless it is routed to the CPU (E-j).
+    Native,
     /// The variable is removed: a debug build then infers `dev`, and what matters for E-h is that the variable
     /// changed from `cpu` to nothing.
     Unset,
@@ -123,6 +145,7 @@ impl Profile {
         match self {
             Self::Cpu => "cpu",
             Self::Dev => "dev",
+            Self::Native => "native",
             Self::Unset => "unset",
         }
     }
@@ -136,6 +159,8 @@ pub(crate) struct Call {
     pub(crate) profile: Profile,
     /// Whether the child gets `CARGO_ENCODED_RUSTFLAGS` with `--cfg gust_dual` (E-c only).
     pub(crate) cfg: bool,
+    /// A route variable the child gets, as `(name, value)` (E-j only).
+    pub(crate) route: Option<(&'static str, &'static str)>,
 }
 
 impl Call {
@@ -146,10 +171,17 @@ impl Call {
             id,
             args: self.args.clone(),
             cfg: self.cfg,
-            profile: (self.profile == Profile::Cpu).then_some(CPU_PROFILE),
+            profile: match self.profile {
+                Profile::Cpu => Some(CPU_PROFILE),
+                Profile::Native => Some(NATIVE_PROFILE),
+                Profile::Dev | Profile::Unset => None,
+            },
             kind: DualKind::Build,
         };
         let mut command = dual_command(root, &step);
+        if let Some((name, value)) = self.route {
+            command.env(name, value);
+        }
         if self.profile == Profile::Unset {
             command.env_remove(PROFILE_VARIABLE);
         }
@@ -165,7 +197,11 @@ impl Call {
         match self.profile {
             Profile::Cpu => env.push_str(&format!("{PROFILE_VARIABLE}={CPU_PROFILE} ")),
             Profile::Dev => env.push_str(&format!("{PROFILE_VARIABLE}=dev ")),
+            Profile::Native => env.push_str(&format!("{PROFILE_VARIABLE}={NATIVE_PROFILE} ")),
             Profile::Unset => env.push_str(&format!("(no {PROFILE_VARIABLE}) ")),
+        }
+        if let Some((name, value)) = self.route {
+            env.push_str(&format!("{name}={value} "));
         }
         let mut shown: Vec<String> = Vec::with_capacity(self.args.len());
         let mut args = self.args.iter();
@@ -223,7 +259,12 @@ fn call(args: &[&str], directory: Option<&str>, profile: Profile, cfg: bool) -> 
         args.push("--target-dir".to_owned());
         args.push(directory.to_owned());
     }
-    Call { args, profile, cfg }
+    Call {
+        args,
+        profile,
+        cfg,
+        route: None,
+    }
 }
 
 /// A `cargo <verb> --locked --color never --manifest-path <fixture> <rest>` call.
@@ -391,7 +432,42 @@ pub(crate) fn e_i_test(dirs: &Dirs) -> Call {
     )
 }
 
-/// Every cargo call of the check, in order, for a test that pins them (E-h once per state of [`FLIPS`]).
+/// One build of the routed crate for E-j, under `native`: a release build with the route variable when `routed` (the
+/// binary is run and scanned), else a `check` of the same crate without it, which must fail. `directory` is the target
+/// directory (`dirs.main` for the first pair, `dirs.flip` for the flips).
+pub(crate) fn e_j_build(directory: &str, routed: bool) -> Call {
+    let mut call = if routed {
+        fixture_call(
+            &["build", "--release"],
+            &[
+                "-p",
+                "routed",
+                "--bin",
+                "routed",
+                "--message-format",
+                "json-render-diagnostics",
+            ],
+            Some(directory),
+            Profile::Native,
+            false,
+        )
+    } else {
+        fixture_call(
+            &["check"],
+            &["-p", "routed", "--message-format", "json"],
+            Some(directory),
+            Profile::Native,
+            false,
+        )
+    };
+    if routed {
+        call.route = Some((ROUTE_VARIABLE, "cpu"));
+    }
+    call
+}
+
+/// Every cargo call of the check, in order, for a test that pins them (E-h once per state of [`FLIPS`], E-j twice and then
+/// once per state of [`ROUTE_FLIPS`]).
 #[cfg(test)]
 pub(crate) fn all_calls(dirs: &Dirs) -> Vec<(&'static str, Call)> {
     let mut calls = vec![
@@ -407,6 +483,11 @@ pub(crate) fn all_calls(dirs: &Dirs) -> Vec<(&'static str, Call)> {
         calls.push(("E-h", e_h_build(dirs, profile)));
     }
     calls.push(("E-i", e_i_test(dirs)));
+    calls.push(("E-j", e_j_build(&dirs.main, true)));
+    calls.push(("E-j", e_j_build(&dirs.main, false)));
+    for routed in ROUTE_FLIPS {
+        calls.push(("E-j", e_j_build(&dirs.flip, routed)));
+    }
     calls
 }
 
@@ -1033,6 +1114,93 @@ impl Check {
         ))
     }
 
+    /// Runs the built `routed` at `path`: it must exit 0 and print [`ROUTED_LINE`] exactly once.
+    fn routed_matches(&self, path: &Path) -> Result<(), String> {
+        let output = Command::new(path)
+            .current_dir(&self.root)
+            .stdin(Stdio::null())
+            .output()
+            .map_err(|error| format!("could not run the built `routed`: {error}"))?;
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let mut problems = Vec::new();
+        if !output.status.success() {
+            problems.push(format!(
+                "`routed` exited with {}: {}",
+                exit_code(output.status),
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        let found = stdout
+            .lines()
+            .filter(|line| line.trim() == ROUTED_LINE)
+            .count();
+        if found != 1 {
+            problems.push(format!(
+                "`routed` must print `{ROUTED_LINE}` exactly once, and printed it {found} time(s): {}",
+                stdout.trim()
+            ));
+        }
+        if problems.is_empty() {
+            Ok(())
+        } else {
+            Err(problems_error(&problems))
+        }
+    }
+
+    fn e_j(&self) -> Result<String, String> {
+        // The routed build under the strict profile: no artifact, and it runs.
+        let call = e_j_build(&self.dirs.main, true);
+        let output = self.must_succeed("E-j", &call)?;
+        let path = executable_of(&String::from_utf8_lossy(&output.stdout), "routed")?;
+        self.routed_matches(&path)?;
+        let bytes = fs::read(&path)
+            .map_err(|error| format!("could not read the release `routed`: {error}"))?;
+        let report = scan(&bytes);
+        let problems = scan_problems(&report);
+        if !problems.is_empty() {
+            return Err(problems_error(&problems));
+        }
+        // The control: the same crate under the same profile without the route is the missing-artifact error.
+        self.fails_like(
+            "E-j",
+            &e_j_build(&self.dirs.main, false),
+            "e-j-expected.txt",
+            "routed",
+            "routed",
+        )
+        .map_err(|error| {
+            format!("the unrouted control did not fail as e-j-expected.txt says: {error}")
+        })?;
+        // The flips in one warm directory: a stale expansion would keep the previous route.
+        let mut states = Vec::new();
+        for (index, routed) in ROUTE_FLIPS.into_iter().enumerate() {
+            let number = index + 1;
+            let call = e_j_build(&self.dirs.flip, routed);
+            let word = if routed { "set" } else { "unset" };
+            let state = format!("state {number} ({word})");
+            if routed {
+                let output = self
+                    .must_succeed("E-j", &call)
+                    .map_err(|error| format!("{state}: {error}"))?;
+                let path = executable_of(&String::from_utf8_lossy(&output.stdout), "routed")
+                    .map_err(|error| format!("{state}: {error}"))?;
+                self.routed_matches(&path)
+                    .map_err(|error| format!("{state}: {error}"))?;
+            } else {
+                self.fails_like("E-j", &call, "e-j-expected.txt", "routed", "routed")
+                    .map_err(|error| {
+                        format!("{state}: the build did not fail like the control: {error}")
+                    })?;
+            }
+            states.push(word);
+        }
+        Ok(format!(
+            "`routed` under GUST_PROFILE=native with {ROUTE_VARIABLE}=cpu built with no artifact, ran on CpuDevice and matched its host loop (the release binary ({} bytes) holds none of the forbidden strings); without the variable it failed with the one E0080 of e-j-expected.txt; in one warm directory the variable went {}: every set state built and matched, every unset state failed like the control",
+            bytes.len(),
+            states.join(" -> ")
+        ))
+    }
+
     fn e_i(&self) -> Result<String, String> {
         let output = self.must_succeed("E-i", &e_i_test(&self.dirs))?;
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -1056,7 +1224,7 @@ impl Check {
 type StepFunction = fn(&Check) -> Result<String, String>;
 
 /// The steps in order: id, and the function that runs it and returns the summary of its result.
-const STEPS: [(&str, StepFunction); 9] = [
+const STEPS: [(&str, StepFunction); 10] = [
     ("E-a", Check::e_a),
     ("E-b", Check::e_b),
     ("E-c", Check::e_c),
@@ -1066,6 +1234,7 @@ const STEPS: [(&str, StepFunction); 9] = [
     ("E-g", Check::e_g),
     ("E-h", Check::e_h),
     ("E-i", Check::e_i),
+    ("E-j", Check::e_j),
 ];
 
 /// `cargo xtask check-cpu-target`: see the module documentation. Needs cargo only. The fixture builds in

@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see kernel-cpu-bad-value/expected.txt).
+# GUST-E0749 is a macro error, so `code: none`. It is reported at the kernel's name (line 8 of main.rs).
+code: none
+file: typed-call-routed-outside-set/src/main.rs
+line: 8
+message: [GUST-E0749] kernel `scale` is routed to `cpu` by the variable `GUST_ROUTE__typed_call_routed_outside_set__physics`, but the route tag `physics` allows `targets = ["gpu"]`

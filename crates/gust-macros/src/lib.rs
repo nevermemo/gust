@@ -78,6 +78,10 @@ mod variant_tests;
 #[path = "tests/subgroup.rs"]
 mod subgroup_tests;
 
+#[cfg(test)]
+#[path = "tests/routes.rs"]
+mod routes_tests;
+
 /// Marks an inline Rust module as GUST GPU code, or a free scalar function as an element-wise map (D60).
 ///
 /// On a module, the macro validates a deliberately small Rust subset, translates each
@@ -94,7 +98,13 @@ pub fn gpu(attribute: TokenStream, item: TokenStream) -> TokenStream {
     // read: `std::env::var` alone is not tracked.
     let value = std::env::var("GUST_PROFILE").ok();
     let profile = expand::Profile::from_value(value.as_deref());
-    gpu_impl_with(attribute.into(), item.into(), profile).into()
+    gpu_impl_routed(
+        attribute.into(),
+        item.into(),
+        profile,
+        &expand::routing::process_variable,
+    )
+    .into()
 }
 
 /// A parallel loop written at the call site (slice m7.p, plan section 3.1):
@@ -155,30 +165,49 @@ pub(crate) fn gpu_impl(
 /// [`recover`]), so rustc and editors still resolve the module's items and the one real
 /// diagnostic is not buried in follow-on "cannot find" errors. The attribute-argument
 /// error is reported before a parse error, as before.
+///
+/// No route variable is read: a test that wants one calls [`gpu_impl_routed`] with a table.
+#[cfg(test)]
 pub(crate) fn gpu_impl_with(
     attribute: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
     profile: expand::Profile,
 ) -> proc_macro2::TokenStream {
+    gpu_impl_routed(attribute, item, profile, &|_| None)
+}
+
+/// [`gpu_impl_with`] with the place the route variables are read from (the process for the macro, M8, D66). The one
+/// argument `#[gpu]` takes is `route = "<tag>"`; anything else is GUST-E0701.
+pub(crate) fn gpu_impl_routed(
+    attribute: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+    profile: expand::Profile,
+    variables: &dyn Fn(&str) -> Option<String>,
+) -> proc_macro2::TokenStream {
     // `syn` words the parse failure itself; the code is added in front.
     let parsed = diagnostics::parse2::<syn::Item>(Code::ItemNotModule, item.clone());
-    if !attribute.is_empty() {
-        let error = diagnostics::error_at(
-            Code::GpuArguments,
-            proc_macro2::Span::call_site(),
-            "#[gpu] does not accept arguments in the current Rust-to-Slang subset",
-        );
-        let module = match parsed {
-            Ok(syn::Item::Mod(module)) => Some(without_nested_gpu(module)),
-            _ => None,
-        };
-        return recover::beside_error(error, &item, module);
-    }
+    let tag = if attribute.is_empty() {
+        None
+    } else {
+        match expand::routing::parse_attribute(attribute) {
+            Ok(tag) => Some(tag),
+            Err(error) => {
+                let module = match parsed {
+                    Ok(syn::Item::Mod(module)) => Some(without_nested_gpu(module)),
+                    _ => None,
+                };
+                return recover::beside_error(error, &item, module);
+            }
+        }
+    };
+    let request = expand::routing::Request { tag, variables };
     match parsed {
-        Ok(syn::Item::Mod(module)) => match expand::expand_with(module.clone(), profile) {
-            Ok(tokens) => tokens,
-            Err(error) => recover::beside_error(error, &item, Some(without_nested_gpu(module))),
-        },
+        Ok(syn::Item::Mod(module)) => {
+            match expand::expand_with_routed(module.clone(), profile, &request) {
+                Ok(tokens) => tokens,
+                Err(error) => recover::beside_error(error, &item, Some(without_nested_gpu(module))),
+            }
+        }
         // A free function: the element-wise map calls of D60 (m7.a1). On error the function follows the error as
         // written.
         // A `#[variant]` on it is GUST-E0740: the function is one body. It goes back without the attribute, which
@@ -192,7 +221,7 @@ pub(crate) fn gpu_impl_with(
                     None,
                 );
             }
-            match expand::expand_map(function, profile) {
+            match expand::expand_map_routed(function, profile, &request) {
                 Ok(tokens) => tokens,
                 Err(error) => recover::beside_error(error, &item, None),
             }

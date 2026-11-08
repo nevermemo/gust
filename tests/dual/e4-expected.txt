@@ -1,0 +1,12 @@
+# Keys matched by `cargo xtask check-dual` (step E4-control) against the one error of
+#   cargo check --locked --manifest-path tests/dual/Cargo.toml -p consumer --bin prod-routed
+# built WITHOUT `--cfg gust_dual` and WITHOUT the route variable (format as in e1-expected.txt). The tag `physics` of
+# `kernel-lib` is unrouted, so `kernel_lib::routed` is a GPU kernel and the unconditional typed `dispatch` on
+# `gust::cpu::CpuDevice` in `consumer/src/bin/prod-routed.rs` has no `Run` impl, as in E3. Step E4-routed builds and runs
+# the same source with `GUST_ROUTE__kernel_lib__physics=cpu`.
+code: E0277
+file: consumer/src/bin/prod-routed.rs
+line: 13
+message: `CpuDevice` cannot run the kernel `scale`
+message: the trait `Run<scale, 2>` is not implemented for `CpuDevice`
+label: this device has no executable form of the kernel

@@ -1,0 +1,11 @@
+[package]
+name = "typed-call-routed-outside-set"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata.gust.routes]
+physics = { targets = ["gpu"] }
+
+[dependencies]
+gust = { package = "gust-compute", path = "../../../crates/gust" }

@@ -88,6 +88,23 @@ describes the intended behaviour and is not evidence.
   - *Evidence.* `cargo xtask check-cpu-target` builds a fixture in release under `cpu`, runs three kernels against
     independent host references, scans the binary for the compiler, the helper and the GPU runtime, and checks the
     refusals. That is `Cpu` evidence, never GPU evidence (D42).
+- **Build-time routing (exists, m8.r1, D65 to D67, D137).** `#[gpu(route = "<tag>")]` on a module or a function sends
+  that item to one target for the whole build, where `GUST_PROFILE=cpu` sends every item. The tag is declared in the
+  owning crate's `[package.metadata.gust.routes]` (a tag is used only by the crate that declares it, GUST-E0748
+  otherwise), and the target is the first of these that is set: `GUST_PROFILE=cpu`; the variable
+  `GUST_ROUTE__<package>__<tag>` (the package name with `-` as `_`, the tag with `.` as `__`; the value `gpu` or `cpu`);
+  the tag's `default`, then the `default` of each dotted ancestor of the tag; else the GPU. A `default = "gpu"` yields to
+  `GUST_PROFILE=cpu`. A variable `gpu` under `GUST_PROFILE=cpu` is GUST-E0749, and so is a target outside the tag's set
+  (an explicit `targets`, else GPU and CPU for a kernel with a CPU form and the GPU only for one without; GUST-E0744
+  when `targets` names `cpu` for a kernel that has no CPU form). The macro tracks the variable, so changing it rebuilds
+  the crate. A CPU-routed module is expanded as under `GUST_PROFILE=cpu`: it has `Run` for `CpuDevice`, no artifact
+  lookup and no manifest check, its descriptor says `Target::Cpu`, and it has no `GpuKernel` implementation, so a call
+  on `HeadlessDevice` fails to compile (E0277). A route flip therefore changes which device the kernel's call sites
+  compile against. A CPU-routed kernel is still held to the GPU portable floor: the `limits = "portable"` check
+  (GUST-E0746) and every other check that does not depend on the target run under every profile and every route, so a
+  kernel can be moved back to the GPU without a new error. Evidence is `cargo xtask check-dual` E4 (a routed kernel
+  library and its consumer) and `cargo xtask check-cpu-target` E-j (the strict profile with and without the variable, in
+  one warm directory); both are `Cpu` evidence, never GPU evidence.
 - **Uniforms (exist, m6.u1 host API and m6.u2 macro).** A uniform is one value in a constant buffer, bound to a
   `Uniform<T>` (alias `ConstantBuffer<T>`) parameter through a resource of kind `gust::kind::Uniform` (`GpuUniform<T>`
   on the GPU, `CpuUniform<T>` on the twin). The generated call names `Resource::Kind` in every bound (`Storage` for a

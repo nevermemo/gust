@@ -1040,13 +1040,13 @@ Decision: T10.
 
 ## E07xx: macro entry and `#[kernel]` options
 
-### GUST-E0701 `#[gpu]` takes no arguments
+### GUST-E0701 `#[gpu]` takes one argument, `route = "<tag>"`
 
-The attribute has no options yet.
+The attribute has one option, `route = "<tag>"` (build-time routing, M8: GUST-E0748, GUST-E0749); anything else, a second argument included, is this error.
 Reached through `#[gpu]`.
-Rejected: `#[gpu(debug)] mod shaders { ... }`.
-Write instead: `#[gpu] mod shaders { ... }`.
-Decision: D02.
+Rejected: `#[gpu(debug)] mod shaders { ... }`, `#[gpu(route = 5)]`, `#[gpu(route = "a", "b")]`.
+Write instead: `#[gpu] mod shaders { ... }`, or `#[gpu(route = "physics")] mod shaders { ... }` with the tag declared in `Cargo.toml`.
+Decision: D02, D65.
 
 ### GUST-E0702 item is not a module or a function, or does not parse as one
 
@@ -1400,11 +1400,12 @@ Decision: D139.
 ### GUST-E0744 declared profile not covered
 
 A profile the crate declares in `[package.metadata.gust] profiles` that a kernel has no body for (M8, D139, D23). The list is the exhaustiveness rule: for every declared GPU profile (`native`, `web`, each with its capabilities; a `dev` build is checked as `native`), every kernel needs a body whose `requires` the profile contains. Without a list the default is `["native", "web", "cpu"]`. The `cpu` entry is met by the kernel's CPU form, which is the portable body's (the body whose set is empty: the kernel's own, or its `requires()` variant): a kernel with `cpu = "unsupported"` has none, and so has a kernel every body of which requires a capability, and that is an error only when the crate wrote the list (an explicit list, even one equal to the default, is stricter than the absent key), because under the default list the kernel's own `cpu = "unsupported"` is the arm that meets the entry (and a kernel with no portable body is already refused at `native`). The message says when the profile is the default list (the manifest has no `profiles` key). The check runs in every build, the CPU build included.
+The same code covers a route tag's set (m8.r1, D65): a `#[gpu(route = "tag")]` module whose tag lists `cpu` in `targets` (`[package.metadata.gust.routes]`) while one of its kernels has no CPU form (`cpu = "unsupported"`, or every body requires a capability) is refused at that kernel, in every build and whatever the tag is routed to, because the declaration is false. A tag with no `targets` key has no such declaration: its set is `gpu` and `cpu` for a kernel with a CPU form and `gpu` alone for one without (GUST-E0749 judges the route against it).
 Reached through `#[gpu]`.
-Rejected: a kernel with `requires(subgroups)` and no variant under the default list (`native` has no capability); the same under `profiles = ["native+subgroups", "web"]`; `cpu = "unsupported"` under `profiles = ["native", "cpu"]`; a kernel with `requires(subgroups)` and no `requires()` variant under `profiles = ["native+subgroups", "cpu"]`.
-Fixtures: `tests/ui/variant-not-covered` and `tests/ui/variant-cpu-unsupported` (`cargo xtask check-ui`).
-Write instead: add a variant that requires less (`requires()` covers every profile), declare profiles with the capability, or drop `cpu` from `profiles` (or the `cpu = "unsupported"` from the kernel).
-Decision: D139, D138.
+Rejected: a kernel with `requires(subgroups)` and no variant under the default list (`native` has no capability); the same under `profiles = ["native+subgroups", "web"]`; `cpu = "unsupported"` under `profiles = ["native", "cpu"]`; a kernel with `requires(subgroups)` and no `requires()` variant under `profiles = ["native+subgroups", "cpu"]`; `cpu = "unsupported"` in a module routed by a tag declared `targets = ["gpu", "cpu"]`.
+Fixtures: `tests/ui/variant-not-covered` and `tests/ui/variant-cpu-unsupported` (`cargo xtask check-ui`); the tag case is `tests/ui/typed-call-routed-no-cpu-form`.
+Write instead: add a variant that requires less (`requires()` covers every profile), declare profiles with the capability, or drop `cpu` from `profiles` (or the `cpu = "unsupported"` from the kernel); for a tag, give the kernel a CPU form or drop `cpu` from the tag's `targets`.
+Decision: D139, D138, D65.
 
 ### GUST-E0745 subgroup operation outside a body that requires subgroups
 
@@ -1436,6 +1437,27 @@ Rejected (each with `limits = "portable"`): `workgroup_size(257, 1, 1)`, `workgr
 Fixtures: `tests/ui/limits-workgroup-size-x`, `limits-workgroup-size-y`, `limits-workgroup-size-z`, `limits-invocations`, `limits-storage-buffers`, `limits-uniform-buffers`, `limits-sampled-textures`, `limits-storage-textures`, `limits-samplers` and `limits-workgroup-memory` fail; `limits-at-floor` (every limit reached exactly) and `limits-not-portable` (an over-the-floor kernel in a crate without the setting) compile (`cargo xtask check-ui`). The unit tests are in `crates/gust-macros/src/validate/limits.rs`.
 Write instead: a smaller workgroup, fewer bindings, shorter `Workgroup` arrays, or remove `limits = "portable"` if the crate targets only devices with higher limits.
 Decision: D143.
+
+A kernel routed to the CPU (`#[gpu(route = "tag")]`, GUST-E0748) is held to this floor too. The check runs in `#[gpu]` before the route is resolved and does not consult it: a route is a per-build choice that a variable flips, so the source must stay valid for the GPU in every build (m8.r1).
+
+### GUST-E0748 route tag ill-named or not declared
+
+The `route = "<tag>"` of `#[gpu]` names a tag that cannot be used (M8, D65 to D67, m8.r1). A tag is declared in the `[package.metadata.gust.routes]` table of the `Cargo.toml` of the crate that uses it, and in M8 **only that crate uses it**: the macro cannot read a dependency's manifest, so a tag declared by another crate is "not declared" here (the app routes a dependency's tag through `gust.toml`, m8.r2). The code covers: a tag that is not well-formed (segments of `[a-z0-9_]+` joined by single `.`, with no `__` anywhere, because `__` spells the `.` in the route variable `GUST_ROUTE__<package>__<tag>`, and no segment that begins or ends with `_`, because `a_.b` and `a._b` would name one variable; no empty segment, so no leading, trailing or doubled `.`); a key of the routes table that is not a well-formed tag (checked when a module is routed, as the tag itself is); and a tag that the crate's table does not declare, with the declared ones named. The error is spanned over the string literal.
+Reached through `#[gpu]` on a module and on a function.
+Rejected: `#[gpu(route = "Physics")]`, `#[gpu(route = "a__b")]`, `#[gpu(route = "a_.b")]`, `#[gpu(route = "a..b")]`, `#[gpu(route = "")]`; `#[gpu(route = "render")]` in a crate whose table declares `physics`, or has no table.
+Fixtures: `tests/ui/typed-call-routed-undeclared` and `tests/ui/typed-call-routed-ill-named` (`cargo xtask check-ui`); the unit tests are in `crates/gust-macros/src/tests/routes.rs`, which also pins the macro's copy of `gust::routes::variable_name` and `is_valid_tag` against the golden table of `crates/gust/src/routes.rs`.
+Write instead: declare the tag in `[package.metadata.gust.routes]` of the crate that uses it (`physics = {}`, a dotted tag as a quoted key), and name it with lower-case segments joined by `.`.
+Decision: D65, D66, D67.
+
+### GUST-E0749 route target not allowed
+
+A `#[gpu(route = "tag")]` module or function resolves to a target that the build cannot honour (M8, D65 to D67, m8.r1). The target is resolved once per module, nearest first: `GUST_PROFILE=cpu`; the variable `GUST_ROUTE__<package>__<tag>` (`-` in the package name is `_`, each `.` of the tag is `__`; an empty variable is unset); the tag's `default` in `Cargo.toml`, then each dotted ancestor's (`physics.broadphase`, then `physics`); then the GPU. A source `default = "gpu"` yields to `GUST_PROFILE=cpu` (a crate with the usual default still builds for the CPU); a variable does not. The error is reported for: a variable whose value is not `gpu` or `cpu`; a variable that says `gpu` under `GUST_PROFILE=cpu`, because the CPU build holds no GPU form; and a resolved target that is outside the tag's set, judged per kernel and spanned at the kernel. The set is the tag's `targets` as written, else `gpu` and `cpu` for a kernel with a CPU form and `gpu` alone for a kernel without (`cpu = "unsupported"`, or every body requires a capability). Under `GUST_PROFILE=cpu` the set is not consulted (the profile decides, as it does for an untagged GPU-only kernel, which has no impl in that build); a `targets` that lists `cpu` for a kernel with no CPU form is GUST-E0744.
+A CPU-routed module is a CPU body in any build: `impl Run for CpuDevice` ungated, no artifact looked up or required, `Target::Cpu` in its descriptor and no `gust::target::GpuKernel` impl, so a `HeadlessDevice` call of its kernel fails at the call with `HeadlessDevice cannot run the kernel ..: it is routed to the CPU in this build`. A GPU-routed or untagged module keeps the GPU form, and `CpuDevice` calls need the dual build or the twin as before (D26). Flipping a route therefore changes which device the kernel's call sites compile against.
+Reached through `#[gpu]` on a module and on a function.
+Rejected: `GUST_ROUTE__demo__physics=tpu`; `GUST_ROUTE__demo__physics=gpu` with `GUST_PROFILE=cpu`; `physics = { targets = ["gpu"] }` with the tag routed to `cpu`; `physics = { targets = ["cpu"] }` with nothing routing it (the GPU); a `cpu = "unsupported"` kernel in a module whose tag has no `targets` and is routed to `cpu`.
+Fixtures: `tests/ui/typed-call-routed-outside-set` and `tests/ui/typed-call-routed-cpu-profile-gpu` (`cargo xtask check-ui`); `typed-call-routed-cpu`, `typed-call-routed-default`, `typed-call-routed-gpu` and `typed-call-routed-headless` show the accepted routes and the call-site consequence; check-dual E4 and check-cpu-target E-j run a routed module.
+Write instead: route the tag to a target in its set (unset the variable, or set it to `gpu` or `cpu`), or change the tag's `targets`.
+Decision: D65, D66, D67, D137.
 
 ### GUST-E0750 no body for the build profile
 

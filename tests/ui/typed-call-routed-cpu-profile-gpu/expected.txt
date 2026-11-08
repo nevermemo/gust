@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see kernel-cpu-bad-value/expected.txt).
+# GUST-E0749 is a macro error, so `code: none`; it is reported at the string literal of the route (line 4 of main.rs).
+code: none
+file: typed-call-routed-cpu-profile-gpu/src/main.rs
+line: 4
+message: [GUST-E0749] the route tag `physics` is routed to `gpu` by `GUST_ROUTE__typed_call_routed_cpu_profile_gpu__physics`, but GUST_PROFILE=cpu builds the CPU target only

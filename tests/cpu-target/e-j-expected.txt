@@ -1,0 +1,10 @@
+# Step E-j: keys matched against the one error of the `routed` crate built under the strict profile `native` WITHOUT the
+# route variable (format as in e-e-expected.txt; `file` is relative to tests/cpu-target):
+#   GUST_PROFILE=native cargo check --locked -p routed --message-format json
+# The tag `physics` is unrouted, so `scale` is a GPU kernel, and a strict profile needs its precompiled artifact: the
+# `require_artifact` const the macro emitted at the kernel panics, as in tests/ui/profile-native-no-artifact. With
+# `GUST_ROUTE__routed__physics=cpu` the same crate builds (a CPU-routed kernel has no artifact to require).
+code: E0080
+file: routed/src/lib.rs
+line: 12
+message: evaluation panicked: gust: a strict profile (GUST_PROFILE native or web) needs a precompiled artifact for this kernel; run `cargo gust build`, or build with GUST_PROFILE=dev

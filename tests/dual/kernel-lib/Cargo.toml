@@ -11,3 +11,8 @@ gust = { package = "gust-compute", path = "../../../crates/gust" }
 # `--cfg gust_dual` sets, so that a hand-written `cfg(gust_dual)` is not an unexpected cfg here.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }
+
+# The route tag of the `routed` module (m8.r1). `default` is left out: plain `cargo` builds the GPU form, and E4 routes
+# the tag to the CPU with the variable `cargo gust` would set.
+[package.metadata.gust.routes]
+physics = { targets = ["gpu", "cpu"] }

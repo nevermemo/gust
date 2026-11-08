@@ -19,3 +19,10 @@ test = false
 # `--cfg gust_dual` sets, so that a hand-written `cfg(gust_dual)` is not an unexpected cfg here.
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }
+
+# `prod-routed` is a production binary too (never a test target); check-dual E4 builds and runs it with the route set,
+# and checks it without.
+[[bin]]
+name = "prod-routed"
+path = "src/bin/prod-routed.rs"
+test = false

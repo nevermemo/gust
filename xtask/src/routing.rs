@@ -10,10 +10,12 @@
 //!   and a golden table must agree: this pins the driver's resolution to the macro's (one resolution, D137).
 //! - `errors` (R3): bad `gust.toml` files fail with exit 2, file, line and tag, before cargo starts.
 //! - `test-run` (R4): `cargo gust test` and `cargo gust run` pass the variables to the build (the control, plain
-//!   `cargo test`, fails).
+//!   `cargo test`, fails with the E0277 "cannot run the kernel": under plain cargo a GPU kernel is called on `CpuDevice`).
 //! - `flip` (R5): one warm target directory and one cargo command, the route variable unset, set and unset again, in both
 //!   directions twice; each state must rebuild and print the new target. With the macro's route tracking removed this case
 //!   must fail (the mutation proof, done by hand: `--case flip`).
+//! - `lint` (R7): `cargo fmt --check` on the fixture, and clippy (all targets, warnings denied) per fixture package under
+//!   that package's own route. It is part of `--check-only`, so CI covers the fixture's style.
 //! - `gpu` (R6, not with `--check-only`): `gpu-app` dispatches the GPU-routed kernel on an adapter (named in the output);
 //!   routed to the CPU, the same source does not compile.
 
@@ -68,7 +70,15 @@ const FALLBACK: &str = "fallback";
 const PROFILE: &str = "profile";
 
 /// The case names, in the order they run.
-pub(crate) const CASES: [&str; 6] = ["plain", "resolution", "errors", "test-run", "flip", "gpu"];
+pub(crate) const CASES: [&str; 7] = [
+    "plain",
+    "resolution",
+    "errors",
+    "test-run",
+    "flip",
+    "lint",
+    "gpu",
+];
 
 /// One state of the resolution case: a profile, the body of the probe's `gust.toml` after `[routes]`, and the target and
 /// level `routes.json` must give each of [`TAGS`]. The probe's observed lines are derived from the rows.
@@ -590,11 +600,23 @@ impl Check {
             self.cargo_command(&["test", "--locked", "-q", "-p", "cpu-app"]),
             "cargo test -p cpu-app",
         )?;
+        // The control must fail for the reason that matters: under plain cargo `physics::scale` is a GPU kernel and the
+        // call on `CpuDevice` is an E0277, "cannot run the kernel". A network error, a lock mismatch or another compile
+        // error does not count.
+        let control_text = control.everything();
         if control.success {
             return Err(
                 "the control, plain `cargo test -p cpu-app`, passed: the test does not depend on the route"
                     .to_owned(),
             );
+        }
+        if !control_text.contains("E0277") || !control_text.contains("cannot run the kernel") {
+            return Err(format!(
+                "the control, plain `cargo test -p cpu-app`, failed for another reason than the E0277 \"cannot run the kernel\" of a GPU kernel on `CpuDevice` (exit {}):
+{}",
+                control.code,
+                tail(&control_text, 25)
+            ));
         }
         let test = exec(
             self.driver_command("test", &["--locked", "-p", "cpu-app"], None),
@@ -629,7 +651,7 @@ impl Check {
                 ));
             }
         }
-        Ok("cargo gust test passes where plain cargo test fails; cargo gust run runs the CPU-routed kernel under dev and native".to_owned())
+        Ok("cargo gust test passes where plain cargo test fails with E0277 (cannot run the kernel); cargo gust run runs the CPU-routed kernel under dev and native".to_owned())
     }
 
     /// R5: the flip, in both directions, in one warm target directory with one cargo command.
@@ -653,6 +675,47 @@ impl Check {
             "the build followed every change of the route variable ({})",
             steps.join(", ")
         ))
+    }
+
+    /// R7: the fixture is formatted, and clippy has nothing to say about a package built under its own route (the CPU
+    /// apps with `physics` on the CPU, `gpu-app` on the GPU; the variable is what the driver would set).
+    fn lint(&self) -> Result<String, String> {
+        let format = exec(
+            self.cargo_command(&["fmt", "--all", "--check"]),
+            "cargo fmt --all --check",
+        )?;
+        if !format.success {
+            return Err(format!(
+                "cargo fmt --check found a difference in tests/routing (exit {}):
+{}",
+                format.code,
+                tail(&format.everything(), 25)
+            ));
+        }
+        let physics = format!("{ROUTE_PREFIX}route_kernels__physics");
+        for (packages, route) in [
+            (&["route-kernels", "probe", "cpu-app"][..], "cpu"),
+            (&["gpu-app"][..], "gpu"),
+        ] {
+            let mut arguments = vec!["clippy", "--locked", "--all-targets"];
+            for package in packages {
+                arguments.extend(["-p", package]);
+            }
+            arguments.extend(["--", "-D", "warnings"]);
+            let mut command = self.cargo_command(&arguments);
+            command.env(&physics, route);
+            let done = exec(command, "cargo clippy")?;
+            if !done.success {
+                return Err(format!(
+                    "clippy on {} with physics on the {route} (exit {}):
+{}",
+                    packages.join(", "),
+                    done.code,
+                    tail(&done.everything(), 30)
+                ));
+            }
+        }
+        Ok("rustfmt is clean, and clippy (all targets, -D warnings) passes for each package under its own route".to_owned())
     }
 
     /// R6: the GPU step, on the adapter the machine has.
@@ -785,6 +848,7 @@ pub(crate) fn check_routing(args: &[String]) -> Result<(), String> {
             "errors" => check.errors(),
             "test-run" => check.test_run(),
             "flip" => check.flip(),
+            "lint" => check.lint(),
             "gpu" => check.gpu(),
             other => Err(format!("no case `{other}`")),
         }

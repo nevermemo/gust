@@ -17,7 +17,7 @@
 //! starts, and writes the resolved table to `gust-artifacts/routes.json`.
 //!
 //! The resolution, nearest first (D66, D137 as amended): the `cpu` profile sends every tag to the CPU (an entry that
-//! says `gpu` is an error before cargo starts, and the tag's `targets` are not consulted); else the nearest entry of
+//! says `gpu` is an error before cargo builds, and the tag's `targets` are not consulted); else the nearest entry of
 //! the tag or one of its declared ancestors that has a decision for the build's profile; else the nearest declared
 //! `default`; else the GPU. A target-keyed entry uses the key of the profile (`dev`, `native`, `web`); a `dev` build
 //! uses its `dev` key, else the `native` one (D138: a dev build is checked as `native`). The result must lie in the
@@ -41,7 +41,7 @@ use std::{
     process::Command,
 };
 
-use gust::routes::{is_valid_tag, variable_name};
+use gust::routes::{VARIABLE_PREFIX, is_valid_tag, variable_name};
 
 use crate::{
     collect::{Package, path_key},
@@ -630,9 +630,13 @@ fn target_name(name: &str) -> Option<&'static str> {
 type DeclaredMap<'a> = BTreeMap<(String, String), (&'a Declaring, &'a Declared)>;
 
 /// The tags of the graph by `(package, tag)`, checked: well-named, valid `targets` and `default`, and no two that
-/// spell one variable (the spelling is not injective across package names, `gust::routes::variable_name`).
+/// spell one variable. Every declaring package of the build is checked, also one whose tags `gust.toml` never names and
+/// no module uses (the macro reads only the tags it expands, so it is lazier): a malformed declaration in any
+/// dependency stops a routed command, with its `Cargo.toml` and line. Two versions of one package that declare a tag the
+/// same way share one variable and count once. The spelling is not injective across package names
+/// (`gust::routes::variable_name`), which is the other collision.
 fn declared_tags(graph: &Graph) -> Result<DeclaredMap<'_>, String> {
-    let mut tags = BTreeMap::new();
+    let mut tags: DeclaredMap<'_> = BTreeMap::new();
     let mut variables: BTreeMap<String, String> = BTreeMap::new();
     for package in &graph.declaring {
         for declared in &package.tags {
@@ -664,6 +668,21 @@ fn declared_tags(graph: &Graph) -> Result<DeclaredMap<'_>, String> {
             }
             let variable = variable_name(&package.name, &declared.tag);
             let folded = variable.to_ascii_uppercase();
+            // Two versions of one package declare the same pair: they share one variable, which reaches both macros.
+            // Agreeing declarations resolve once; differing ones cannot be routed apart and are refused.
+            if let Some(&(first, earlier)) = tags.get(&(package.name.clone(), declared.tag.clone()))
+            {
+                if earlier.targets == declared.targets && earlier.default == declared.default {
+                    continue;
+                }
+                return Err(format!(
+                    "{place}: two versions of `{}` ({} and {}) declare `{}` differently; one variable, `{variable}`, routes both; unify the versions",
+                    package.name,
+                    first.manifest.display(),
+                    package.manifest.display(),
+                    declared.tag
+                ));
+            }
             let description = format!("`{full}` ({place})");
             if let Some(first) = variables.get(&folded) {
                 return Err(format!(
@@ -796,7 +815,7 @@ pub(crate) fn resolve(
     let entries = checked_entries(graph, &declared, config, file)?;
     let cpu = profile == "cpu";
     let mut rows = Vec::new();
-    for ((package, tag), (_, info)) in &declared {
+    for ((package, tag), (owner_of_tag, info)) in &declared {
         let full = format!("{package}::{tag}");
         let variable = variable_name(package, tag);
         // The nearest entry with a decision for this build.
@@ -828,7 +847,9 @@ pub(crate) fn resolve(
             });
             continue;
         }
-        // An entry of this very tag is checked for every profile, not only this one.
+        // An entry of this very tag is checked for every profile, not only this one. An entry inherited from an ancestor
+        // is checked for this build's profile only, so `"solver" = { web = "cpu" }` passes under `dev` and is refused under
+        // `web` for a child that allows only the GPU (a conflict shows when the profile that causes it builds).
         if let Some(own) = entries.get(&(package.clone(), tag.clone())) {
             for target in own.targets() {
                 if !allowed(info).contains(&target) {
@@ -891,7 +912,8 @@ pub(crate) fn resolve(
         }
         if !allowed(info).contains(&"gpu") {
             return Err(format!(
-                "{file}: tag `{full}`: no entry and no default routes it, which leaves the GPU, but the tag allows only {}; add a default or an entry",
+                "{}: tag `{full}`: no entry and no default routes it, which leaves the GPU, but the tag allows only {}; add a `default` to the declaration, or an entry for it in {file}",
+                owner_of_tag.place(info),
                 set_words(info)
             ));
         }
@@ -980,6 +1002,33 @@ impl RoutePlan {
             .map_err(|error| format!("cannot write {}: {error}", path.display()))
     }
 
+    /// Notes on `GUST_ROUTE__*` variables the environment already holds (`preset`: name and value): the driver sets
+    /// every declared tag, so a preset that differs is overridden, and one that matches no declared tag (a typo) has no
+    /// effect. Names compare without case, as environment names do on Windows.
+    pub(crate) fn notes(&self, preset: &[(String, String)]) -> Vec<String> {
+        let mut notes = Vec::new();
+        for (name, value) in preset {
+            if !name.to_ascii_uppercase().starts_with(VARIABLE_PREFIX) {
+                continue;
+            }
+            match self
+                .rows
+                .iter()
+                .find(|row| row.variable.eq_ignore_ascii_case(name))
+            {
+                Some(row) if row.target != value => notes.push(format!(
+                    "gust: note: {name}={value} is set in the environment; {CONFIG_FILE} resolves it to `{}`, which is what the build gets",
+                    row.target
+                )),
+                Some(_) => {}
+                None => notes.push(format!(
+                    "gust: note: {name} is set in the environment but matches no route tag that the crates of this build declare; the driver does not use it"
+                )),
+            }
+        }
+        notes
+    }
+
     /// One line per tag for the terminal.
     pub(crate) fn summary(&self) -> Vec<String> {
         self.rows
@@ -1002,21 +1051,89 @@ impl RoutePlan {
     }
 }
 
-/// `cargo metadata --format-version 1 --manifest-path <path>`, with the dependencies (the declarations of the
-/// packages the build uses are in them).
-pub(crate) fn metadata_command(cargo: &OsString, manifest_path: &Path) -> Command {
+/// The arguments of a `run` or `test` that change which packages the build uses or whether `Cargo.lock` may change:
+/// the feature selection, `--locked`, `--frozen` and `--offline`. `cargo metadata` gets the same ones, so its graph
+/// holds the optional dependencies that `--features` turns on, and `--locked` is not defeated by a metadata call that
+/// rewrites a stale lock. Words after `--` belong to the program.
+pub(crate) fn metadata_flags(arguments: &[String]) -> Vec<String> {
+    let mut flags = Vec::new();
+    let mut index = 0;
+    while let Some(argument) = arguments.get(index) {
+        index += 1;
+        match argument.as_str() {
+            "--" => break,
+            "--all-features" | "--no-default-features" | "--locked" | "--frozen" | "--offline" => {
+                flags.push(argument.clone());
+            }
+            "--features" | "-F" => {
+                flags.push(argument.clone());
+                if let Some(value) = arguments.get(index) {
+                    flags.push(value.clone());
+                    index += 1;
+                }
+            }
+            other if other.starts_with("--features=") => flags.push(argument.clone()),
+            other if other.starts_with("-F") && other.len() > 2 => flags.push(argument.clone()),
+            _ => {}
+        }
+    }
+    flags
+}
+
+/// `cargo metadata --format-version 1 --manifest-path <path>` plus the flags of [`metadata_flags`] for `arguments`,
+/// with the dependencies (the declarations of the packages the build uses are in them).
+pub(crate) fn metadata_command(
+    cargo: &OsString,
+    manifest_path: &Path,
+    arguments: &[String],
+) -> Command {
     let mut command = Command::new(cargo);
     command
         .args(["metadata", "--format-version", "1", "--manifest-path"])
-        .arg(manifest_path);
+        .arg(manifest_path)
+        .args(metadata_flags(arguments));
     command
 }
 
-/// The plan for the selected package: `None` when no `gust.toml` is beside its manifest. `profile` is the build's.
+/// Whether a `gust.toml` is beside the manifest of `package`.
+pub(crate) fn has_config(package: &Package) -> bool {
+    package.directory().join(CONFIG_FILE).is_file()
+}
+
+/// `run` and `test` with `--workspace`, `--all` or `--exclude` build several packages, but the driver routes the one
+/// selected package: its `gust.toml` would reach every member and the others' files would be ignored in silence. Refused
+/// when the selected package has a `gust.toml`; without one, the arguments pass through unchanged.
+pub(crate) fn refuse_workspace(
+    workspace: bool,
+    package: &str,
+    has_config: bool,
+) -> Result<(), String> {
+    if workspace && has_config {
+        return Err(format!(
+            "`--workspace`, `--all` and `--exclude` build several packages, but only the {CONFIG_FILE} beside `{package}` is read and it would route all of them; name one package with -p and run the packages one by one"
+        ));
+    }
+    Ok(())
+}
+
+/// Removes the `routes.json` of `package`: no `gust.toml` applies, so the table describes routes the build no longer
+/// has. A file that is not there is fine.
+pub(crate) fn forget(package: &Package) -> Result<(), String> {
+    let path = package.directory().join(ARTIFACTS_DIR).join(ROUTES_FILE);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("cannot remove {}: {error}", path.display())),
+    }
+}
+
+/// The plan for the selected package: `None` when no `gust.toml` is beside its manifest. `profile` is the build's;
+/// `arguments` are the user's cargo arguments (see [`metadata_flags`]; `build` and `check` have none).
 pub(crate) fn plan(
     cargo: &OsString,
     package: &Package,
     profile: &str,
+    arguments: &[String],
 ) -> Result<Option<RoutePlan>, String> {
     let config_path = package.directory().join(CONFIG_FILE);
     if !config_path.is_file() {
@@ -1026,7 +1143,7 @@ pub(crate) fn plan(
     let text =
         fs::read_to_string(&config_path).map_err(|error| format!("cannot read {file}: {error}"))?;
     let config = parse_config(&text, &file)?;
-    let output = metadata_command(cargo, &package.manifest_path)
+    let output = metadata_command(cargo, &package.manifest_path, arguments)
         .output()
         .map_err(|error| format!("cannot run `cargo metadata`: {error}"))?;
     if !output.status.success() {
@@ -1104,7 +1221,6 @@ pub(crate) fn cargo_command(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collect::{CollectPlan, collect_command};
     use std::collections::BTreeSet;
 
     const FILE: &str = "gust.toml";
@@ -1233,17 +1349,6 @@ mod tests {
         );
         assert_eq!(physics.default.as_deref(), Some("gpu"));
         assert_eq!(kernel_lib.tags[0].targets, None);
-    }
-
-    #[test]
-    fn a_published_manifest_and_a_source_manifest_give_one_declaration() {
-        // The JSON `cargo metadata` printed for the inline form and for the header form `cargo package` writes was the
-        // same text (checked at the start of m8.r2, plans/m8/probe/m8r2-plan.md); the reader sees only JSON.
-        let source =
-            r#"{"physics":{"targets":["gpu","cpu"],"default":"gpu"},"physics.broadphase":{}}"#;
-        let graph = graph_of(source);
-        assert_eq!(graph.declaring[0].tags.len(), 2);
-        assert_eq!(graph.declaring[0].tags[1].tag, "physics.broadphase");
     }
 
     #[test]
@@ -1620,6 +1725,176 @@ mod tests {
         assert_eq!(resolved(one, "dev").unwrap(), resolved(two, "dev").unwrap());
     }
 
+    /// `app` depends on two versions of `kernel-lib`, which declare `physics` as `first` and `second`.
+    fn two_versions(first: &str, second: &str) -> Graph {
+        let metadata = format!(
+            r#"{{"packages":[
+{{"id":"app","name":"app","manifest_path":"/w/app/Cargo.toml","metadata":null}},
+{{"id":"k1","name":"kernel-lib","manifest_path":"/w/k1/Cargo.toml","metadata":{{"gust":{{"routes":{{"physics":{first}}}}}}}}},
+{{"id":"k2","name":"kernel-lib","manifest_path":"/w/k2/Cargo.toml","metadata":{{"gust":{{"routes":{{"physics":{second}}}}}}}}}
+],"resolve":{{"nodes":[{{"id":"app","dependencies":["k1","k2"]}},{{"id":"k1","dependencies":[]}},{{"id":"k2","dependencies":[]}}]}}}}"#
+        );
+        read_graph(&metadata, Path::new("/w/app/Cargo.toml"), &|_| None).unwrap()
+    }
+
+    #[test]
+    fn two_versions_that_declare_a_tag_alike_share_one_variable_and_resolve_once() {
+        let alike = r#"{"targets":["gpu","cpu"],"default":"gpu"}"#;
+        let graph = two_versions(alike, alike);
+        assert_eq!(graph.declaring.len(), 2);
+        let config = parse_config("[routes]\n\"kernel-lib::physics\" = \"cpu\"\n", FILE).unwrap();
+        let rows = resolve(&graph, &config, FILE, "dev").unwrap();
+        assert_eq!(table(&rows), ["physics cpu entry"]);
+        assert_eq!(rows[0].variable, "GUST_ROUTE__kernel_lib__physics");
+        // Without an entry too: the pair counts once.
+        assert_eq!(
+            table(&resolve(&graph, &Config::default(), FILE, "dev").unwrap()),
+            ["physics gpu default"]
+        );
+    }
+
+    #[test]
+    fn two_versions_that_declare_a_tag_differently_are_refused_with_advice_that_fits() {
+        for (first, second) in [
+            (r#"{"default":"gpu"}"#, r#"{"default":"cpu"}"#),
+            (r#"{"targets":["gpu"]}"#, r#"{}"#),
+        ] {
+            let graph = two_versions(first, second);
+            let error = resolve(&graph, &Config::default(), FILE, "dev").unwrap_err();
+            assert!(
+                error.contains("two versions of `kernel-lib`")
+                    && error.contains("/w/k1/Cargo.toml")
+                    && error.contains("/w/k2/Cargo.toml")
+                    && error.contains("declare `physics` differently")
+                    && error.contains("GUST_ROUTE__kernel_lib__physics")
+                    && error.contains("unify the versions")
+                    && !error.contains("rename"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tag_with_no_gpu_form_and_no_default_names_its_declaration() {
+        let graph = graph_of(r#"{"a":{"targets":["cpu"]}}"#);
+        let error = resolve(&graph, &Config::default(), FILE, "dev").unwrap_err();
+        assert!(
+            error.starts_with("/w/kernel-lib/Cargo.toml: tag `kernel-lib::a`:")
+                && error.contains("add a `default` to the declaration")
+                && error.contains("an entry for it in gust.toml"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn cargo_metadata_gets_the_feature_and_lock_flags_of_the_command() {
+        let cargo = OsString::from("cargo");
+        let manifest = Path::new("/w/app/Cargo.toml");
+        let args_of = |line: &str| -> Vec<String> {
+            let command = metadata_command(&cargo, manifest, &words(line));
+            command
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+        let base = [
+            "metadata",
+            "--format-version",
+            "1",
+            "--manifest-path",
+            "/w/app/Cargo.toml",
+        ];
+        assert_eq!(args_of("-p app --release"), base);
+        let mut wanted = base.map(str::to_owned).to_vec();
+        wanted.extend(words(
+            "--features phys,more --all-features --no-default-features --locked --frozen --offline",
+        ));
+        assert_eq!(
+            args_of(
+                "--features phys,more -p app --all-features --no-default-features --locked --frozen --offline"
+            ),
+            wanted
+        );
+        // The spellings of a feature list, and nothing after `--`.
+        assert_eq!(args_of("--features=a")[5..], ["--features=a"]);
+        assert_eq!(args_of("-F a,b")[5..], ["-F", "a,b"]);
+        assert_eq!(args_of("-Fa")[5..], ["-Fa"]);
+        assert_eq!(args_of("-p app -- --locked --features x"), base);
+        assert_eq!(args_of("--release --target wasm32-unknown-unknown"), base);
+    }
+
+    #[test]
+    fn a_workspace_run_is_refused_only_when_the_selected_package_has_a_gust_toml() {
+        let error = refuse_workspace(true, "app", true).unwrap_err();
+        assert!(
+            error.contains("`--workspace`, `--all` and `--exclude`")
+                && error.contains("gust.toml beside `app`")
+                && error.contains("-p"),
+            "{error}"
+        );
+        assert_eq!(refuse_workspace(true, "app", false), Ok(()));
+        assert_eq!(refuse_workspace(false, "app", true), Ok(()));
+    }
+
+    #[test]
+    fn a_preset_route_variable_that_differs_or_matches_no_tag_gets_a_note() {
+        let plan = plan_of("[routes]\n\"kernel-lib::physics\" = \"cpu\"\n");
+        let preset = |pairs: &[(&str, &str)]| -> Vec<(String, String)> {
+            pairs
+                .iter()
+                .map(|(n, v)| ((*n).to_owned(), (*v).to_owned()))
+                .collect()
+        };
+        // Equal to the resolved value, or not a route variable: silent.
+        assert!(
+            plan.notes(&preset(&[
+                ("GUST_ROUTE__kernel_lib__physics", "cpu"),
+                ("PATH", "x")
+            ]))
+            .is_empty()
+        );
+        let notes = plan.notes(&preset(&[("GUST_ROUTE__kernel_lib__physics", "gpu")]));
+        assert_eq!(notes.len(), 1, "{notes:?}");
+        assert!(
+            notes[0].contains("GUST_ROUTE__kernel_lib__physics=gpu")
+                && notes[0].contains("resolves it to `cpu`"),
+            "{notes:?}"
+        );
+        // Names compare without case, and a typo matches nothing.
+        assert!(
+            plan.notes(&preset(&[("gust_route__KERNEL_LIB__physics", "cpu")]))
+                .is_empty()
+        );
+        let notes = plan.notes(&preset(&[("GUST_ROUTE__kernel_lib__phyiscs", "cpu")]));
+        assert!(
+            notes.len() == 1 && notes[0].contains("matches no route tag"),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn forgetting_the_table_removes_the_file_and_tolerates_its_absence() {
+        let scratch = crate::store::tests::Scratch::new("routes-forget");
+        let artifacts = scratch.0.join(ARTIFACTS_DIR);
+        fs::create_dir_all(&artifacts).unwrap();
+        fs::write(artifacts.join(ROUTES_FILE), "{}").unwrap();
+        fs::write(artifacts.join("manifest.json"), "{}").unwrap();
+        let package = Package {
+            name: "app".to_owned(),
+            manifest_path: scratch.0.join("Cargo.toml"),
+        };
+        forget(&package).unwrap();
+        assert!(!artifacts.join(ROUTES_FILE).exists());
+        assert!(
+            artifacts.join("manifest.json").is_file(),
+            "only the table goes"
+        );
+        forget(&package).unwrap();
+        assert!(!has_config(&package));
+        fs::write(scratch.0.join(CONFIG_FILE), "[routes]\n").unwrap();
+        assert!(has_config(&package));
+    }
+
     // ---- the plan ----
 
     fn plan_of(toml: &str) -> RoutePlan {
@@ -1685,7 +1960,8 @@ mod tests {
     }
 
     #[test]
-    fn build_check_run_and_test_pass_the_same_route_variables() {
+    fn run_and_test_commands_carry_the_route_variables_of_the_plan() {
+        // The `build` and `check` side (the runner of the collect step) is tested in commands.rs, `routed_runner`.
         let plan = plan_of("[routes]\n\"kernel-lib::physics\" = \"cpu\"\n");
         let wanted: BTreeSet<(String, String)> = plan.variables().into_iter().collect();
         assert_eq!(wanted.len(), 4);
@@ -1693,17 +1969,6 @@ mod tests {
             "GUST_ROUTE__kernel_lib__physics".to_owned(),
             "cpu".to_owned()
         )));
-        // `build` and `check` collect through `collect_command`, to which `commands.rs` applies the plan.
-        let collect = CollectPlan {
-            cargo: OsString::from("cargo"),
-            package: "app".to_owned(),
-            manifest_path: None,
-            target_directory: PathBuf::from("/w/target"),
-            nonce: "1".to_owned(),
-        };
-        let mut build = collect_command(&collect);
-        plan.apply(&mut build);
-        assert_eq!(route_envs(&build), wanted);
         let cargo = OsString::from("cargo");
         let arguments = [
             "-p".to_owned(),

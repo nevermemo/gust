@@ -88,13 +88,14 @@ jobs:
     # the route variable (unset, set, defaulted, in both directions) in one warm target directory. Cargo only: no slangc, no
     # GPU and no lavapipe step. Not covered here: the Gpu step (the GPU-routed kernel on a named adapter) and the mutation
     # proof of the flip case; both are local (`cargo xtask check-routing`, and `--case flip` against a macro without its
-    # route tracking). A job of its own because the fixture builds from nothing on a runner and would lengthen `unit`.
+    # route tracking). The `lint` case runs here too: rustfmt on the fixture and clippy (-D warnings) per fixture package
+    # under its own route. A job of its own because the fixture builds from nothing on a runner and would lengthen `unit`.
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install Rust
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component rustfmt,clippy
       - name: Routing driver
         run: cargo --locked xtask check-routing --check-only
 

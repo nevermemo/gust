@@ -71,6 +71,8 @@ pub(crate) struct CheckOptions {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CargoOptions {
     pub(crate) target: Target,
+    /// `--workspace`, `--all` or `--exclude` was given (before any `--`): the build covers several packages.
+    pub(crate) workspace: bool,
     /// Every argument after the command, as given.
     pub(crate) arguments: Vec<String>,
 }
@@ -163,6 +165,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Command, String> {
 /// `--package=x`); everything is kept for cargo.
 fn cargo_options(args: &[String]) -> Result<CargoOptions, String> {
     let mut target = Target::default();
+    let mut workspace = false;
     let mut index = 0;
     while let Some(argument) = args.get(index) {
         index += 1;
@@ -176,6 +179,10 @@ fn cargo_options(args: &[String]) -> Result<CargoOptions, String> {
         let attached = argument
             .strip_prefix("-p")
             .filter(|rest| !rest.is_empty() && !rest.starts_with('-'));
+        if matches!(name, "--workspace" | "--all" | "--exclude") {
+            workspace = true;
+            continue;
+        }
         if !matches!(name, "-p" | "--package" | "--manifest-path") && attached.is_none() {
             continue;
         }
@@ -205,6 +212,7 @@ fn cargo_options(args: &[String]) -> Result<CargoOptions, String> {
     }
     Ok(CargoOptions {
         target,
+        workspace,
         arguments: args.to_vec(),
     })
 }
@@ -576,6 +584,29 @@ mod tests {
         ] {
             let error = parse(&words(line)).unwrap_err();
             assert!(error.contains(expected), "{line}: {error}");
+        }
+    }
+
+    #[test]
+    fn run_and_test_notice_a_workspace_build_before_the_program_arguments() {
+        for (line, workspace) in [
+            ("test", false),
+            ("test -p app", false),
+            ("test --workspace", true),
+            ("test --all", true),
+            ("test --workspace --exclude other", true),
+            ("test --exclude=other", true),
+            ("run -p app -- --workspace", false),
+            ("test -p app --workspace -- --nocapture", true),
+        ] {
+            let args = words(line);
+            let parsed = parse(&args).unwrap();
+            let (Command::Run(options) | Command::Test(options)) = parsed else {
+                panic!("{line}: {parsed:?}");
+            };
+            assert_eq!(options.workspace, workspace, "{line}");
+            // Every argument still reaches cargo.
+            assert_eq!(options.arguments, args[1..], "{line}");
         }
     }
 }

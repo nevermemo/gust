@@ -5,7 +5,8 @@ edition = "2024"
 publish = false
 
 # Runs `physics::scale` on `CpuDevice`. Its `gust.toml` routes `physics` to the CPU; the same source built by plain `cargo` is
-# a GPU kernel and its `#[test]` fails, which is how check-routing shows that `cargo gust test` passes the variables.
+# a GPU kernel that `CpuDevice` cannot run (E0277, so the crate does not compile), which is how check-routing shows that
+# `cargo gust test` passes the variables.
 [dependencies]
 route-kernels = { path = "../route-kernels" }
 gust = { package = "gust-compute", path = "../../../crates/gust", default-features = false }

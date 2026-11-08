@@ -17,8 +17,9 @@ pub fn run_scale() -> Vec<f32> {
 mod tests {
     use super::*;
 
-    /// Passes under `cargo gust test` with `physics = "cpu"` in this package's `gust.toml`; plain `cargo test` leaves the
-    /// route at its default (gpu) and the first assertion fails.
+    /// Passes under `cargo gust test` with `physics = "cpu"` in this package's `gust.toml`. Plain `cargo test` leaves the
+    /// route at its default (gpu) and this crate does not compile: `physics::scale` is a GPU kernel, and the call on
+    /// `CpuDevice` is an E0277 ("cannot run the kernel"), which `check-routing` requires of its control.
     #[test]
     fn the_cpu_route_reached_the_build() {
         assert_eq!(

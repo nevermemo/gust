@@ -23,7 +23,7 @@ fn options_name_the_cases_and_check_only_leaves_out_the_gpu() {
     assert_eq!(Options::parse(&[]).unwrap().cases, CASES);
     assert_eq!(
         Options::parse(&args(&["--check-only"])).unwrap().cases,
-        ["plain", "resolution", "errors", "test-run", "flip"]
+        ["plain", "resolution", "errors", "test-run", "flip", "lint"]
     );
     // Cases run in their own order whatever the order given, and a repeat is one.
     assert_eq!(
@@ -211,6 +211,8 @@ fn ci_runs_check_routing_in_a_job_of_its_own_with_no_gpu_and_no_lavapipe() {
         "{job}"
     );
     assert!(job.contains("    runs-on: ubuntu-latest\n"), "{job}");
+    // The lint case runs rustfmt and clippy, so the job installs both.
+    assert!(job.contains(" --component rustfmt,clippy\n"), "{job}");
     assert!(job.contains("      - uses: actions/checkout@"), "{job}");
     let code: String = job
         .lines()

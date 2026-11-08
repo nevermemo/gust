@@ -473,6 +473,16 @@ test module; do not mix that mechanical move with behavior changes.
   `cargo-gust`), and a Slangc step for the ones that do (`testdata::variant::the_helper_builds_the_stored_artifacts`
   needs the helper). Not done in m8.p. The other packages' tests (macros, xtask, `gust-compute-wgpu`, `gust-algo`, the examples) are reached
   by a suite or a CI job.
+- Routing leftovers (the m8.r1 review and re-check, for m8.x unless noted):
+  - stale "until routing exists" texts at `crates/gust/tests/profile.rs:679`,
+    `crates/gust-macros/src/expand/mod.rs:884` and `docs/ARCHITECTURE.md:552`;
+  - `xtask/src/ui.rs:506` still prints "`cargo check` must fail" for E-j, whose states are now release builds;
+  - E-j detects a stale expansion only in the set-to-unset direction; unset-to-set is argued (check-dual E1, then
+    E4-routed) but not measured;
+  - the Gpu suite's log names no adapter (its footer asks the run record to name it);
+  - the manifest reader accepts `targets = []` (`crates/gust-macros/src/manifest.rs`, m8.a's reader), so every
+    route of such a tag is an E0749 that names the empty set; an E0753 at the key, like an empty `profiles` (D138),
+    would be clearer.
 
 ## Deferred language/runtime breadth
 

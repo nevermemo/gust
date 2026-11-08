@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see kernel-cpu-bad-value/expected.txt).
+# GUST-E0748 is a macro error, so `code: none`; it is reported at the string literal of the route (line 5 of main.rs).
+code: none
+file: typed-call-routed-ill-named/src/main.rs
+line: 5
+message: [GUST-E0748] the route tag `physics__broadphase` is ill-named: a segment holds `__`, which spells the `.` of the route variable

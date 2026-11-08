@@ -17,5 +17,5 @@
 # e-f-expected.txt and e-g-expected.txt (formats: tests/ui/typed-call-no-cpu-twin/expected.txt and
 # tests/ui/profile-native-bridge/expected.txt; `file` is relative to tests/cpu-target).
 [workspace]
-members = ["kernels", "app", "optout", "app-with-wgpu"]
+members = ["kernels", "app", "optout", "app-with-wgpu", "routed"]
 resolver = "3"

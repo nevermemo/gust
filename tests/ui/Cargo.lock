@@ -1474,6 +1474,70 @@ dependencies = [
 ]
 
 [[package]]
+name = "typed-call-routed-cpu"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "typed-call-routed-cpu-profile-gpu"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "typed-call-routed-default"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "typed-call-routed-gpu"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "typed-call-routed-headless"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+ "gust-compute-wgpu",
+]
+
+[[package]]
+name = "typed-call-routed-ill-named"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "typed-call-routed-no-cpu-form"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "typed-call-routed-outside-set"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "typed-call-routed-undeclared"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "typed-call-sampler-for-buffer"
 version = "0.0.0"
 dependencies = [

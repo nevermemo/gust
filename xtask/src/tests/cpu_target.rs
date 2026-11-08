@@ -5,9 +5,10 @@ use std::{
 
 use super::{
     CPU_PROFILE, CPU_TARGET_DIR, Call, Dirs, FINAL_LINE, FLIPS, FORBIDDEN, KERNELS,
-    MAP_LINE_PREFIX, PAR_FOR_LINE_PREFIX, Profile, REFUSAL_FILE, REFUSAL_ITEM, SCAN_CONTROL, STEPS,
-    all_calls, e_a_build, e_b_tree, e_c_build, e_d_check, e_e_check, e_f_check, e_g_check,
-    e_h_build, e_i_test, executable_of, judge_run, match_problems, match_summary, parse_match_line,
+    MAP_LINE_PREFIX, NATIVE_PROFILE, PAR_FOR_LINE_PREFIX, Profile, REFUSAL_FILE, REFUSAL_ITEM,
+    ROUTE_FLIPS, ROUTE_VARIABLE, ROUTED_LINE, ROUTED_MAP_LINE, SCAN_CONTROL, STEPS, all_calls,
+    e_a_build, e_b_tree, e_c_build, e_d_check, e_e_check, e_f_check, e_g_check, e_h_build,
+    e_i_test, e_j_build, executable_of, judge_run, match_problems, match_summary, parse_match_line,
     passed_tests, refusal_line, relative_to, scan, scan_problems, tree_problems, with_located_line,
 };
 use crate::{
@@ -805,7 +806,8 @@ fn the_calls_are_exactly_these() {
                 Some("T/cpu-target")
             ),
             profile: Profile::Cpu,
-            cfg: false
+            cfg: false,
+            route: None
         }
     );
     assert_eq!(
@@ -813,7 +815,8 @@ fn the_calls_are_exactly_these() {
         Call {
             args: fixture(&["tree"], &["-e", "features", "-p", "app"], None),
             profile: Profile::Cpu,
-            cfg: false
+            cfg: false,
+            route: None
         }
     );
     assert_eq!(
@@ -832,7 +835,8 @@ fn the_calls_are_exactly_these() {
                 Some("T/cpu-target-dual")
             ),
             profile: Profile::Cpu,
-            cfg: true
+            cfg: true,
+            route: None
         }
     );
     assert_eq!(
@@ -851,7 +855,8 @@ fn the_calls_are_exactly_these() {
                 Some("T/cpu-target")
             ),
             profile: Profile::Dev,
-            cfg: false
+            cfg: false,
+            route: None
         }
     );
     assert_eq!(
@@ -863,7 +868,8 @@ fn the_calls_are_exactly_these() {
                 Some("T/cpu-target")
             ),
             profile: Profile::Cpu,
-            cfg: false
+            cfg: false,
+            route: None
         }
     );
     assert_eq!(
@@ -882,7 +888,8 @@ fn the_calls_are_exactly_these() {
                 Some("T/cpu-target")
             ),
             profile: Profile::Cpu,
-            cfg: false
+            cfg: false,
+            route: None
         }
     );
     assert_eq!(
@@ -894,7 +901,8 @@ fn the_calls_are_exactly_these() {
                 Some("T/cpu-target")
             ),
             profile: Profile::Cpu,
-            cfg: false
+            cfg: false,
+            route: None
         }
     );
     assert_eq!(
@@ -913,7 +921,8 @@ fn the_calls_are_exactly_these() {
                 Some("T/cpu-target-flip")
             ),
             profile: Profile::Cpu,
-            cfg: false
+            cfg: false,
+            route: None
         }
     );
     assert_eq!(
@@ -932,7 +941,8 @@ fn the_calls_are_exactly_these() {
                 Some("T/cpu-target-flip")
             ),
             profile: Profile::Unset,
-            cfg: false
+            cfg: false,
+            route: None
         }
     );
     assert_eq!(
@@ -940,7 +950,50 @@ fn the_calls_are_exactly_these() {
         Call {
             args: fixture(&["test"], &["-p", "kernels"], Some("T/cpu-target")),
             profile: Profile::Cpu,
-            cfg: false
+            cfg: false,
+            route: None
+        }
+    );
+    // E-j: the routed crate under the strict profile. Every state is the same release build, with the route variable
+    // or without it (M1: a different command per state could not see a stale expansion).
+    assert_eq!(
+        e_j_build(&d.main, true),
+        Call {
+            args: fixture(
+                &["build", "--release"],
+                &[
+                    "-p",
+                    "routed",
+                    "--bin",
+                    "routed",
+                    "--message-format",
+                    "json"
+                ],
+                Some("T/cpu-target")
+            ),
+            profile: Profile::Native,
+            cfg: false,
+            route: Some(("GUST_ROUTE__routed__physics", "cpu"))
+        }
+    );
+    assert_eq!(
+        e_j_build(&d.flip, false),
+        Call {
+            args: fixture(
+                &["build", "--release"],
+                &[
+                    "-p",
+                    "routed",
+                    "--bin",
+                    "routed",
+                    "--message-format",
+                    "json"
+                ],
+                Some("T/cpu-target-flip")
+            ),
+            profile: Profile::Native,
+            cfg: false,
+            route: None
         }
     );
 }
@@ -948,7 +1001,7 @@ fn the_calls_are_exactly_these() {
 #[test]
 fn every_call_is_locked_and_builds_in_one_of_the_three_target_directories() {
     let calls = all_calls(&dirs());
-    assert_eq!(calls.len(), 7 + FLIPS.len() + 1);
+    assert_eq!(calls.len(), 7 + FLIPS.len() + 1 + 2 + ROUTE_FLIPS.len());
     for (id, call) in &calls {
         assert!(
             call.args.iter().any(|arg| arg == "--locked"),
@@ -987,6 +1040,74 @@ fn every_call_is_locked_and_builds_in_one_of_the_three_target_directories() {
             .filter(|(id, _)| ["E-a", "E-d", "E-e", "E-f", "E-g", "E-i"].contains(id))
             .all(|(_, call)| call.args.contains(&main))
     );
+    // E-j: its first two calls build in the main directory, its flips in the warm directory of their own.
+    let e_j: Vec<&Call> = calls
+        .iter()
+        .filter(|(id, _)| *id == "E-j")
+        .map(|(_, call)| call)
+        .collect();
+    assert_eq!(e_j.len(), 2 + ROUTE_FLIPS.len());
+    assert!(e_j[..2].iter().all(|call| call.args.contains(&main)));
+    assert!(e_j[2..].iter().all(|call| call.args.contains(&dirs().flip)));
+}
+
+#[test]
+fn the_route_flips_in_both_directions_and_the_route_reaches_only_the_set_states() {
+    assert!(ROUTE_FLIPS[0]);
+    for pair in ROUTE_FLIPS.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "a flip that does not flip: {ROUTE_FLIPS:?}"
+        );
+    }
+    let to_unset = ROUTE_FLIPS
+        .windows(2)
+        .filter(|p| *p == [true, false])
+        .count();
+    let to_set = ROUTE_FLIPS
+        .windows(2)
+        .filter(|p| *p == [false, true])
+        .count();
+    assert!(to_unset >= 2 && to_set >= 1, "{ROUTE_FLIPS:?}");
+    let d = dirs();
+    // The variable is the one `gust::routes::variable_name("routed", "physics")` spells, and it reaches only the states
+    // that route; every E-j state builds under the strict profile, which is what makes the artifact matter.
+    assert_eq!(ROUTE_VARIABLE, "GUST_ROUTE__routed__physics");
+    assert_eq!(NATIVE_PROFILE, "native");
+    for routed in ROUTE_FLIPS {
+        let call = e_j_build(&d.flip, routed);
+        assert_eq!(
+            variable(&call, ROUTE_VARIABLE),
+            routed.then(|| Some("cpu".to_owned()))
+        );
+        assert_eq!(
+            variable(&call, PROFILE_VARIABLE),
+            Some(Some(NATIVE_PROFILE.to_owned()))
+        );
+        // M1: set and unset states are one command, `cargo build --release` of the same unit, so that a state can
+        // reuse the unit of the state before it.
+        assert_eq!(call.args, e_j_build(&d.flip, true).args, "state {routed}");
+        assert_eq!(call.args[0], "build");
+        assert!(call.args.iter().any(|arg| arg == "--release"));
+    }
+    assert!(
+        e_j_build(&d.main, true).shown().starts_with(
+            "GUST_PROFILE=native GUST_ROUTE__routed__physics=cpu cargo build --release"
+        )
+    );
+    assert!(ROUTED_LINE.starts_with("CPU target: matches (routed::scale, "));
+    assert!(ROUTED_MAP_LINE.starts_with("CPU target: routed map matches (routed::triple, "));
+    // The binary of the fixture prints exactly these two lines (a rename of either side fails here, not in a run).
+    let main = fixture_root_file("tests/cpu-target/routed/src/main.rs");
+    assert!(main.contains(
+        "println!(\"CPU target: matches (routed::scale, {ELEMENTS} elements, max ULP {worst})\");"
+    ));
+    assert!(main.contains(
+        "println!(\"CPU target: routed map matches (routed::triple, {ELEMENTS} elements)\");"
+    ));
+    assert!(ROUTED_MAP_LINE.ends_with("1024 elements)"));
+    assert!(main.contains("const ELEMENTS: usize = 1024;"));
+    assert!(main.contains("#[gust::gpu(route = \"physics\")]\npub fn triple("));
 }
 
 #[test]
@@ -1109,7 +1230,7 @@ fn the_steps_run_in_the_order_of_the_plan() {
     assert_eq!(
         ids,
         [
-            "E-a", "E-b", "E-c", "E-d", "E-e", "E-f", "E-g", "E-h", "E-i"
+            "E-a", "E-b", "E-c", "E-d", "E-e", "E-f", "E-g", "E-h", "E-i", "E-j"
         ]
     );
 }

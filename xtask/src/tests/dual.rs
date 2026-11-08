@@ -146,6 +146,8 @@ fn the_spawned_child_has_no_rustflags_variable_but_the_cfg_on_the_cfg_steps() {
             ("E2-compile", true),
             ("E2-run", true),
             ("E3", false),
+            ("E4-routed", false),
+            ("E4-control", false),
             ("run-vector-add", true),
             ("run-polynomial", true),
             ("run-vector-add-no-cfg", false),
@@ -179,6 +181,13 @@ fn the_spawned_child_has_no_rustflags_variable_but_the_cfg_on_the_cfg_steps() {
         let wanted_args: Vec<OsString> = step.args.iter().map(|arg| os(arg)).collect();
         assert_eq!(args, wanted_args, "{}", step.id);
         assert_eq!(directory, Some(PathBuf::from("ROOT")), "{}", step.id);
+        if step.id == "E4-routed" {
+            // The route variable of E4 is the one addition, and it sorts between the profile and RUSTFLAGS.
+            let mut routed = without_cfg.clone();
+            routed.insert(3, (os("GUST_ROUTE__kernel_lib__physics"), Some(os("cpu"))));
+            assert_eq!(envs, routed, "{}", step.id);
+            continue;
+        }
         let expected = if step.cfg { &with_cfg } else { &without_cfg };
         assert_eq!(&envs, expected, "{}", step.id);
     }
@@ -318,6 +327,38 @@ fn the_argument_lists_are_exactly_these() {
                 "json",
             ]),
         ),
+        (
+            "E4-routed",
+            owned(&[
+                "run",
+                "--locked",
+                "--color",
+                "never",
+                "--manifest-path",
+                manifest,
+                "-p",
+                "consumer",
+                "--bin",
+                "prod-routed",
+            ]),
+        ),
+        (
+            "E4-control",
+            owned(&[
+                "build",
+                "--locked",
+                "--color",
+                "never",
+                "--manifest-path",
+                manifest,
+                "-p",
+                "consumer",
+                "--bin",
+                "prod-routed",
+                "--message-format",
+                "json",
+            ]),
+        ),
     ];
     let actual: Vec<(&str, Vec<String>)> = dual_steps("TARGET")
         .into_iter()
@@ -400,6 +441,8 @@ fn the_check_only_mode_has_no_example_run_and_the_full_mode_adds_them_last() {
             "E2-compile",
             "E2-run",
             "E3",
+            "E4-routed",
+            "E4-control",
         ]
     );
     let mut full = check_only.clone();
@@ -408,7 +451,10 @@ fn the_check_only_mode_has_no_example_run_and_the_full_mode_adds_them_last() {
     // CI's mode runs no example, so it needs no GPU: nothing in it is a `cargo run`.
     for step in dual_steps_for(DualMode::CheckOnly, "TARGET") {
         assert!(!matches!(step.kind, DualKind::Runs { .. }), "{}", step.id);
-        assert_ne!(step.args[0], "run", "{}", step.id);
+        // E4 is a `cargo run` too, of a binary that dispatches on `CpuDevice`: it needs no GPU.
+        if !matches!(step.kind, DualKind::Routed { .. }) {
+            assert_ne!(step.args[0], "run", "{}", step.id);
+        }
     }
 }
 
@@ -497,6 +543,8 @@ fn the_steps_run_in_the_order_fmt_build_clippy_e1_e2_e3_and_e2_is_judged_by_its_
             "E2-compile",
             "E2-run",
             "E3",
+            "E4-routed",
+            "E4-control",
         ]
     );
     assert_eq!(step("fmt").kind, DualKind::Build);
@@ -530,6 +578,22 @@ fn the_steps_run_in_the_order_fmt_build_clippy_e1_e2_e3_and_e2_is_judged_by_its_
             case: "consumer",
             target: "prod",
             expected: "e3-expected.txt"
+        }
+    );
+    assert_eq!(
+        step("E4-routed").kind,
+        DualKind::Routed {
+            variable: "GUST_ROUTE__kernel_lib__physics",
+            value: "cpu",
+            line: "routed: [2.0, 4.0, 6.0]"
+        }
+    );
+    assert_eq!(
+        step("E4-control").kind,
+        DualKind::Fails {
+            case: "consumer",
+            target: "prod-routed",
+            expected: "e4-expected.txt"
         }
     );
 }

@@ -1718,6 +1718,49 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
         assert_eq!(find(name).env, variable("cpu"), "{name}");
     }
     assert_eq!(find("par-for-ok").expectation, Expectation::Compiles);
+    // The routed fixtures (m8.r1): the route variable is `GUST_ROUTE__<package, - as _>__physics`. A tag routed to the
+    // CPU, by the variable or by its `default`, compiles a `CpuDevice` call; routed to the GPU it is the E0277 of the
+    // missing twin; the others are the macro's errors.
+    assert_eq!(
+        find("typed-call-routed-cpu").env,
+        [(
+            "GUST_ROUTE__typed_call_routed_cpu__physics".to_owned(),
+            "cpu".to_owned()
+        )]
+    );
+    assert_eq!(
+        find("typed-call-routed-cpu").expectation,
+        Expectation::Compiles
+    );
+    assert_eq!(
+        find("typed-call-routed-default").expectation,
+        Expectation::Compiles
+    );
+    assert!(find("typed-call-routed-default").env.is_empty());
+    assert_eq!(
+        find("typed-call-routed-cpu-profile-gpu").env,
+        [
+            ("GUST_PROFILE".to_owned(), "cpu".to_owned()),
+            (
+                "GUST_ROUTE__typed_call_routed_cpu_profile_gpu__physics".to_owned(),
+                "gpu".to_owned()
+            )
+        ]
+    );
+    for name in [
+        "typed-call-routed-gpu",
+        "typed-call-routed-headless",
+        "typed-call-routed-undeclared",
+        "typed-call-routed-ill-named",
+        "typed-call-routed-outside-set",
+        "typed-call-routed-cpu-profile-gpu",
+        "typed-call-routed-no-cpu-form",
+    ] {
+        assert!(
+            matches!(find(name).expectation, Expectation::Fails(_)),
+            "{name}"
+        );
+    }
     // No other fixture has variables of its own.
     let with_env: Vec<&str> = cases
         .iter()
@@ -1752,6 +1795,10 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
             "profile-unknown-capability",
             "subgroup-ok",
             "typed-call-cpu-target",
+            "typed-call-routed-cpu",
+            "typed-call-routed-cpu-profile-gpu",
+            "typed-call-routed-gpu",
+            "typed-call-routed-outside-set",
             "variant-ok-subgroups"
         ]
     );
@@ -1760,7 +1807,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 123] = [
+const PINNED_FIXTURES: [&str; 132] = [
     "barrier-in-helper",
     "barrier-in-if",
     "barrier-in-nested-for",
@@ -1869,6 +1916,15 @@ const PINNED_FIXTURES: [&str; 123] = [
     "typed-call-no-cpu-twin",
     "typed-call-no-run",
     "typed-call-ok",
+    "typed-call-routed-cpu",
+    "typed-call-routed-cpu-profile-gpu",
+    "typed-call-routed-default",
+    "typed-call-routed-gpu",
+    "typed-call-routed-headless",
+    "typed-call-routed-ill-named",
+    "typed-call-routed-no-cpu-form",
+    "typed-call-routed-outside-set",
+    "typed-call-routed-undeclared",
     "typed-call-sampler-for-buffer",
     "typed-call-texture-for-buffer",
     "typed-call-texture-ok",

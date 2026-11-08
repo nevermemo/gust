@@ -78,8 +78,9 @@ pub struct KernelDescriptor {
     /// The capabilities the selected body needs (M8, D23): empty for the portable body. A device that lacks one of
     /// them cannot run the kernel. The derived `PartialEq`/`Eq` compare it.
     pub requires: &'static [Capability],
-    /// The target this kernel is built for in this build (M8, D65, D137): [`Target::Gpu`] for every kernel until
-    /// routing exists. A GPU device will refuse a kernel whose target is [`Target::Cpu`] (m8.w1).
+    /// The target this kernel is built for in this build (M8, D65, D137): [`Target::Cpu`] for a kernel of a module
+    /// routed to the CPU and for every kernel under `GUST_PROFILE=cpu`, else [`Target::Gpu`]. A GPU device refuses a
+    /// kernel whose target is [`Target::Cpu`] (m8.w1).
     pub target: Target,
 }
 

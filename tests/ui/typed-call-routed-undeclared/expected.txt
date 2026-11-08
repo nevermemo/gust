@@ -1,0 +1,7 @@
+# Keys matched against the one error of `cargo check --message-format json` (see kernel-cpu-bad-value/expected.txt).
+# GUST-E0748 is a macro error, so `code: none`. It is reported at the string literal of `route = "render"` (line 5 of
+# main.rs); the message names the tag and the tags the crate does declare.
+code: none
+file: typed-call-routed-undeclared/src/main.rs
+line: 5
+message: [GUST-E0748] the route tag `render` is not declared in `[package.metadata.gust.routes]` of this crate's Cargo.toml (it declares `physics`)

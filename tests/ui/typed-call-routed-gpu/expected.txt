@@ -1,0 +1,9 @@
+# Keys matched against the one error of `cargo check --message-format json` (see gpupod-missing/expected.txt). The tag is
+# routed to the GPU, so the kernel has no CPU form in a non-test build: the wording of `#[diagnostic::on_unimplemented]` on
+# `Run` and the user's file and line (the device argument of the generated `dispatch`) are compared, exactly as in
+# `typed-call-no-cpu-twin`. `typed-call-routed-cpu` is the same source routed to the CPU, which compiles.
+code: E0277
+file: typed-call-routed-gpu/src/main.rs
+line: 27
+message: `CpuDevice` cannot run the kernel `scale`
+label: this device has no executable form of the kernel

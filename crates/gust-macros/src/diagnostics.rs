@@ -396,6 +396,12 @@ codes! {
     /// operand of pure arithmetic or a comparison there) at the top level of the kernel body or of a literal-range
     /// `for` (m8.s, D140).
     SubgroupPosition = 747 => "GUST-E0747";
+    /// A route tag that is ill-named or that the crate does not declare in `[package.metadata.gust.routes]`
+    /// (m8.r1, D66).
+    RouteTag = 748 => "GUST-E0748";
+    /// A route target the tag cannot take: a variable that is neither `gpu` nor `cpu`, `gpu` chosen under
+    /// `GUST_PROFILE=cpu`, or a target outside the tag's set (m8.r1, D66).
+    RouteTarget = 749 => "GUST-E0749";
     /// No body of a kernel can be used by the profile being built.
     NoBodySelectable = 750 => "GUST-E0750";
     /// A body that uses subgroup operations whose invocation count is not a multiple of 64 (m8.s, D140).
@@ -1276,6 +1282,7 @@ mod tests {
             || file.ends_with("src/tests/manifest.rs")
             || file.ends_with("src/tests/variant.rs")
             || file.ends_with("src/tests/subgroup.rs")
+            || file.ends_with("src/tests/routes.rs")
             || file.ends_with("src/validate/mod.rs")
             || file.ends_with("src/validate/limits.rs")
             || file.ends_with("src/validate/classify/tests.rs")

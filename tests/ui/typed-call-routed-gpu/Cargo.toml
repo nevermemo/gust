@@ -1,0 +1,13 @@
+[package]
+name = "typed-call-routed-gpu"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# The source default routes the tag to the CPU; the variable of env.txt (`gpu`) beats it, which is what this fixture
+# proves end to end (with `physics = {}` an unset variable and `gpu` would give the same error).
+[package.metadata.gust.routes]
+physics = { default = "cpu" }
+
+[dependencies]
+gust = { package = "gust-compute", path = "../../../crates/gust" }

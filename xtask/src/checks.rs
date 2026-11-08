@@ -1021,7 +1021,7 @@ pub(crate) fn explanation(area: Option<&str>) -> Result<&'static str, String> {
             "check-cpu: `cargo test --locked` of the examples with a CPU twin (vector-add, polynomial, signal-pipeline, particle-step, typed-pipeline, atomic-counter, staged-graph, component-pool, map-chain, texture-threshold, shape-bench), running the non-ignored twin tests against the host references (a package that runs no test fails, and each package's twin tests and derivation-domain guard must be reported `ok` by name); needs neither slangc nor a GPU; a step of the Unit suite"
         }
         "check-dual" => {
-            "check-dual: the dual test build (`--cfg gust_dual`, D26) and its cross-crate proof, with its own target directory <target>/dual: tests/dual is formatted (`cargo fmt --check`) and passes clippy with -D warnings (the root fmt and CI clippy do not reach that workspace), as do vector-add and polynomial with the cfg (CI's clippy compiles their dual code out); the workspace builds with the cfg; in tests/dual a consumer's test (E1) and production binary (E3) each fail with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib` without the cfg, and with it (E2) the test passes. Without `--check-only` it then runs `cargo run` of vector-add and polynomial with the cfg, which must print the `CPU twin: matches (N elements, max ULP k)` line (polynomial also the twin's time beside run_cpu's), and of vector-add without the cfg, which must not mention the twin; that part needs a Vulkan GPU, and `check-full` runs it. Refuses to run while RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS or CARGO_BUILD_RUSTFLAGS is set (it delivers the cfg through CARGO_ENCODED_RUSTFLAGS). `--check-only` is the CPU-only mode CI runs; it needs cargo only"
+            "check-dual: the dual test build (`--cfg gust_dual`, D26) and its cross-crate proof, with its own target directory <target>/dual: tests/dual is formatted (`cargo fmt --check`) and passes clippy with -D warnings (the root fmt and CI clippy do not reach that workspace), as do vector-add and polynomial with the cfg (CI's clippy compiles their dual code out); the workspace builds with the cfg; in tests/dual a consumer's test (E1) and production binary (E3) each fail with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib` without the cfg, and with it (E2) the test passes; a production binary that dispatches a module routed to the CPU (E4: `GUST_ROUTE__kernel_lib__physics=cpu`, no cfg) builds and runs on `gust::cpu::CpuDevice`, and the same source without the route fails with exactly one E0277 (E4-control). Without `--check-only` it then runs `cargo run` of vector-add and polynomial with the cfg, which must print the `CPU twin: matches (N elements, max ULP k)` line (polynomial also the twin's time beside run_cpu's), and of vector-add without the cfg, which must not mention the twin; that part needs a Vulkan GPU, and `check-full` runs it. Refuses to run while RUSTFLAGS, CARGO_ENCODED_RUSTFLAGS or CARGO_BUILD_RUSTFLAGS is set (it delivers the cfg through CARGO_ENCODED_RUSTFLAGS). `--check-only` is the CPU-only mode CI runs; it needs cargo only"
         }
         "check-cpu-target" => {
             "check-cpu-target: the production CPU target (D21, D51) on the fixture workspace tests/cpu-target, with cargo only (no slangc, no GPU), in <target>/cpu-target, cpu-target-dual and cpu-target-flip: E-a builds `app` in release under GUST_PROFILE=cpu and runs it (one `CPU target: matches` line per kernel, the `CPU target: map calls match (..)` line of the map case (which includes the parallel map of m7.c) and the `CPU target: par_for calls match (..)` line of the par_for case, each exactly once, the final line); E-b scans that binary for slangc, gust-slang-reflect, wgpu and vulkan (any letter case, with a control string) and reads `cargo tree -e features -p app`; E-c builds and runs it under cpu with --cfg gust_dual; E-d to E-g judge the four refusals on tests/cpu-target/e-*-expected.txt (E-e is the E0080 of gust-wgpu's require_gpu_target); E-h flips the profile cpu, unset, cpu, unset, cpu, unset in one directory; E-i runs cargo test -p kernels under cpu. Stops at the first failing step and names it. The Cpu suite is this command; CI's unit job runs it"
@@ -1278,12 +1278,22 @@ pub(crate) enum DualKind {
     /// and show no `slang-runtime` ([`crate::precompiled::tree_problems`]). It builds nothing and takes no
     /// `--target-dir`.
     Tree,
+    /// E4 (m8.r1, D65 to D67): a production binary that dispatches a routed module on `CpuDevice`, built with no
+    /// `--cfg gust_dual` and with the tag routed to the CPU by the variable `variable` set to `value` (the one `cargo
+    /// gust` sets from the app's `gust.toml`, m8.r2). It must run, and its standard output must hold the line `line`
+    /// exactly. The same source without the variable is the one E0277 of `e4-expected.txt` (a [`DualKind::Fails`]
+    /// step).
+    Routed {
+        variable: &'static str,
+        value: &'static str,
+        line: &'static str,
+    },
 }
 
 /// One cargo call of `check-dual`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DualStep {
-    /// `fmt`, `build`, `clippy`, `clippy-examples`, `E1`, `E2-compile`, `E2-run`, `E3` or, in Full mode,
+    /// `fmt`, `build`, `clippy`, `clippy-examples`, `E1`, `E2-compile`, `E2-run`, `E3`, `E4-routed`, `E4-control` or, in Full mode,
     /// `run-vector-add`, `run-polynomial` or `run-vector-add-no-cfg`; the steps of the precompiled fixture
     /// ([`precompiled_dual_steps`]) are `E5-build`, `E5-test` and `E5-tree`.
     pub(crate) id: &'static str,
@@ -1309,6 +1319,12 @@ impl DualStep {
         if let Some(profile) = self.profile {
             env.push((PROFILE_VARIABLE, profile));
         }
+        if let DualKind::Routed {
+            variable, value, ..
+        } = &self.kind
+        {
+            env.push((*variable, *value));
+        }
         env
     }
 
@@ -1321,6 +1337,12 @@ impl DualStep {
         }
         if let Some(profile) = self.profile {
             env.push_str(&format!("{PROFILE_VARIABLE}={profile} "));
+        }
+        if let DualKind::Routed {
+            variable, value, ..
+        } = &self.kind
+        {
+            env.push_str(&format!("{variable}={value} "));
         }
         let mut shown: Vec<&str> = Vec::with_capacity(self.args.len());
         let mut args = self.args.iter().map(String::as_str);
@@ -1518,7 +1540,94 @@ pub(crate) fn dual_steps(target_dir: &str) -> Vec<DualStep> {
                 expected: "e3-expected.txt",
             },
         },
+        // E4 (m8.r1): a module routed to the CPU is a CPU body in a production build. `prod-routed` dispatches
+        // `kernel-lib`'s `routed` module on `CpuDevice`; with the tag routed to the CPU it builds without the cfg and
+        // runs, and without the route the same source is E3's error for the GPU kernel. E4-control is a `cargo build`
+        // (JSON), not a `cargo check`, so that it is a cpu-to-unset flip of the very unit E4-routed built: a macro
+        // that did not track the route variable would leave `kernel-lib` stale and the control would compile.
+        DualStep {
+            id: "E4-routed",
+            args: strings(&[
+                "run",
+                "--locked",
+                "--color",
+                "never",
+                "--manifest-path",
+                &manifest,
+                "-p",
+                "consumer",
+                "--bin",
+                "prod-routed",
+            ]),
+            cfg: false,
+            profile: None,
+            kind: DualKind::Routed {
+                variable: ROUTE_VARIABLE,
+                value: "cpu",
+                line: ROUTED_LINE,
+            },
+        },
+        DualStep {
+            id: "E4-control",
+            args: strings(&[
+                "build",
+                "--locked",
+                "--color",
+                "never",
+                "--manifest-path",
+                &manifest,
+                "-p",
+                "consumer",
+                "--bin",
+                "prod-routed",
+                "--message-format",
+                "json",
+            ]),
+            cfg: false,
+            profile: None,
+            kind: DualKind::Fails {
+                case: "consumer",
+                target: "prod-routed",
+                expected: "e4-expected.txt",
+            },
+        },
     ]
+}
+
+/// The variable E4 sets: the route of the tag `physics` of the package `kernel-lib`
+/// (`gust::routes::variable_name("kernel-lib", "physics")`).
+pub(crate) const ROUTE_VARIABLE: &str = "GUST_ROUTE__kernel_lib__physics";
+
+/// What `consumer`'s `prod-routed` prints when the routed module ran on `CpuDevice`: the doubled input.
+pub(crate) const ROUTED_LINE: &str = "routed: [2.0, 4.0, 6.0]";
+
+/// The problems of a [`DualKind::Routed`] step for the outcome of its `cargo run`: none when it succeeded and printed
+/// the line exactly once.
+pub(crate) fn routed_run_problems(
+    id: &str,
+    line: &str,
+    success: bool,
+    stdout: &str,
+    stderr: &str,
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    if !success {
+        problems.push(format!(
+            "check-dual {id}: `cargo run` of the routed binary failed; with the tag routed to the CPU it must build and run without --cfg gust_dual:\n{stderr}"
+        ));
+        return problems;
+    }
+    let found = without_colors(stdout)
+        .lines()
+        .filter(|printed| printed.trim() == line)
+        .count();
+    if found != 1 {
+        problems.push(format!(
+            "check-dual {id}: expected the line `{line}` exactly once on standard output, found it {found} time(s); output was: {}",
+            stdout.trim()
+        ));
+    }
+    problems
 }
 
 /// The example runs of the full mode, in order (debug profile, so debug sizes): `vector-add` and `polynomial` with the
@@ -1845,7 +1954,8 @@ pub(crate) fn target_rustflags_variables(names: impl Iterator<Item = OsString>) 
 /// 4. E1 (no cfg): `tests/dual`'s `consumer` test fails with exactly one E0277, the missing twin of the dependency.
 /// 5. E2 (cfg): the same test compiles and passes, which is the proof that the cfg reached `kernel-lib`.
 /// 6. E3 (no cfg): a production binary fails with exactly that one error.
-/// 7. Full mode only: `cargo run -p vector-add` and `-p polynomial` with the cfg print the `CPU twin: matches` line,
+/// 7. E4 (no cfg): a module routed to the CPU runs on `CpuDevice` in a production binary; unrouted it is E3's error.
+/// 8. Full mode only: `cargo run -p vector-add` and `-p polynomial` with the cfg print the `CPU twin: matches` line,
 ///    and `-p vector-add` without it prints nothing about the twin.
 pub(crate) fn check_dual(args: &[String]) -> Result<(), String> {
     let mode = parse_dual_args(args)?;
@@ -1881,7 +1991,7 @@ pub(crate) fn check_dual(args: &[String]) -> Result<(), String> {
         run_dual_step(&root, &step)?;
     }
     println!(
-        "check-dual passed: tests/dual is formatted and passes clippy with -D warnings; the workspace built with --cfg gust_dual; without it the tests/dual consumer's test (E1) and binary (E3) each failed with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib`, and with it (E2) the test dispatched on `gust::cpu::CpuDevice` and passed, together with the overflow-mode test of a package with its own override and the two tests that dispatch an overflowing integer kernel (the dependency's twin followed the dependency's mode, the twin of the dependent's own kernel the dependent's). Last, the precompiled fixture tests/precompiled (E5 of check-precompiled) built with the cfg under GUST_PROFILE=native, its `app` test ran the CPU twin of the fixture's own kernel against the host reference, and `cargo tree -e features` of `app` showed no slang-runtime."
+        "check-dual passed: tests/dual is formatted and passes clippy with -D warnings; the workspace built with --cfg gust_dual; without it the tests/dual consumer's test (E1) and binary (E3) each failed with exactly one E0277 for the missing CPU twin of the dependency `kernel-lib`, and with it (E2) the test dispatched on `gust::cpu::CpuDevice` and passed, and a production binary with a module routed to the CPU (E4) ran on `CpuDevice` with no cfg while the unrouted source (E4-control) failed with exactly one E0277, together with the overflow-mode test of a package with its own override and the two tests that dispatch an overflowing integer kernel (the dependency's twin followed the dependency's mode, the twin of the dependent's own kernel the dependent's). Last, the precompiled fixture tests/precompiled (E5 of check-precompiled) built with the cfg under GUST_PROFILE=native, its `app` test ran the CPU twin of the fixture's own kernel against the host reference, and `cargo tree -e features` of `app` showed no slang-runtime."
     );
     match mode {
         DualMode::CheckOnly => println!(
@@ -1986,6 +2096,20 @@ pub(crate) fn run_dual_step(root: &Path, step: &DualStep) -> Result<(), String> 
                 println!("  {line}");
             }
             let problems = twin_run_problems(id, *twin, also, &stdout);
+            if problems.is_empty() {
+                return Ok(());
+            }
+            Err(problems.join("\n"))
+        }
+        DualKind::Routed { line, .. } => {
+            let output = dual_command(root, step).output().map_err(launch)?;
+            let problems = routed_run_problems(
+                id,
+                line,
+                output.status.success(),
+                &String::from_utf8_lossy(&output.stdout),
+                &String::from_utf8_lossy(&output.stderr),
+            );
             if problems.is_empty() {
                 return Ok(());
             }

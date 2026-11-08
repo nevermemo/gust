@@ -1,0 +1,10 @@
+# Keys matched against the one error of `cargo check --message-format json` (see gpupod-missing/expected.txt). The tag is
+# routed to the CPU, so the macro emits no `impl gust::target::GpuKernel for scale`; `HeadlessDevice`'s typed `Run` impl is
+# bounded on the marker, so the call fails under `cargo check` with the wording of `#[diagnostic::on_unimplemented]` on
+# `gust::target::GpuKernel` (see headless-cpu-kernel/expected.txt, which is the hand-written form of the same state).
+code: E0277
+file: typed-call-routed-headless/src/main.rs
+line: 33
+message: `HeadlessDevice` cannot run the kernel `scale`: it is routed to the CPU in this build
+message: call it on a `CpuDevice`, or route its tag to `gpu`
+label: this kernel has no GPU form in this build

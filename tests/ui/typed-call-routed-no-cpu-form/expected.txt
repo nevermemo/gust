@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see kernel-cpu-bad-value/expected.txt).
+# GUST-E0744 is a macro error, so `code: none`. It is reported at the kernel's name (line 8 of main.rs).
+code: none
+file: typed-call-routed-no-cpu-form/src/main.rs
+line: 8
+message: [GUST-E0744] kernel `scale` has no CPU form, but the route tag `physics` lists `cpu` in `targets`

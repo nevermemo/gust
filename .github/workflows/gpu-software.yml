@@ -26,6 +26,18 @@
 # 25 s on a warm runner (run 42071043309). No other step is. The `+subgroups` step (m8.w2) is on the pull request list
 # inside the budget: about 4 s on a warm runner (run 42328392310, 02:20:00Z to 02:20:04Z; the new profile recompiled only
 # gust-compute and gust-compute-wgpu, 1.98 s, and the shared CARGO_TARGET_DIR stays).
+#
+# Slice m8.e adds a second batch to every `check-difftest` (the same seeds under `dev+subgroups`; its exported
+# records must be byte for byte those of the `dev` batch, and every program reports the capabilities of its own
+# build) and the strict `subgroup-reduce` run (GUST_PROFILE=native+subgroups) to `check-examples`. D146 asked for a
+# branch dispatch before any lavapipe step is wired: run 42461935960 (lane/m8.e, `extended`, Mesa 25.2.8, subgroup
+# size 8, job 18 min 53 s of the 40-minute timeout) passed. Nightly differential step: 626 s (seeds 1-72, the `dev`
+# batch 1152 programs and the `dev+subgroups` batch 1152 programs, 0 mismatches in both, about 298 s for the second,
+# 2304 record files equal). Cross-shape step: 37.6 s (two batches of 32 programs, about 18 s each; it was 25 s with
+# one batch). `check-examples`: 97 s, of which the strict `subgroup-reduce` run (lane count 8, 38 subgroups over 300
+# invocations) is about 22 s with its build. The pull request list's differential step (2 seeds) was not timed by
+# this dispatch, which ran the nightly list; its second batch costs about what its first does, so expect that step to
+# roughly double (an estimate, not a measurement). The time budgets above are from before m8.e.
 name: gpu-software
 
 on:
@@ -253,6 +265,9 @@ jobs:
         # job (run 41442659698, seeds 1-8: 45.5 s of `difftest-run` for 128 programs; run 41518009197 at format 6, seeds
         # 1-2: 9.2 s for 32), 72 seeds are expected to take 5 to 7 minutes of the nightly job's 40-minute timeout. The
         # step name is pinned by a test in xtask/src/tests/suite.rs and still says "all 8".
+        # Since m8.e the command also runs the batch again under `dev+subgroups` and compares the records (the head of
+        # this file has the measured cost): 626 s on the nightly list in run 42461935960, where the estimate above
+        # counted one batch.
         run: |
           set -o pipefail
           seeds=1-2

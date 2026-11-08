@@ -920,6 +920,17 @@ fn the_tiers_wire_the_difftest_batch_in() {
         "cargo xtask check-difftest"
     );
     assert!(Suite::Gpu.covers().contains("short_circuit"));
+    // Slice m8.e (Opus S2): the second batch, its byte compare and the subgroups requirement are named.
+    for suite in [Suite::Gpu, Suite::Full] {
+        assert!(suite.covers().contains("dev+subgroups"), "{suite:?}");
+        assert!(suite.covers().contains("byte"), "{suite:?}");
+        assert!(
+            suite.not_covered().contains("subgroup operations"),
+            "{suite:?}"
+        );
+    }
+    assert!(Suite::Full.covers().contains("subgroup-reduce"));
+    assert!(Suite::Gpu.not_covered().contains("evidence test"));
     let options = Options::parse_with(&[], 1).unwrap();
     assert_eq!(
         (options.mode, options.expected_programs()),

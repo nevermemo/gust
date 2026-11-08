@@ -1,0 +1,17 @@
+[package]
+name = "subgroup-reduce"
+description = "Subgroup lane count, ballot popcount and prefix sum, built from committed artifacts under native+subgroups"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+# No `slang-runtime`: the strict proof of this example is that it builds and runs under `GUST_PROFILE=native+subgroups`
+# from `gust-artifacts/` alone, and a strict profile refuses the run-time Slang compiler.
+[dependencies]
+gust.workspace = true
+gust-wgpu.workspace = true
+
+[lints]
+workspace = true

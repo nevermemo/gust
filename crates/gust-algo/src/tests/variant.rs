@@ -154,3 +154,60 @@ fn the_shipped_variants_are_the_measured_ones() {
         );
     }
 }
+
+/// Slice m8.e (D146, Opus 14): the subgroup form of the block step is an evidence pair beside the shipped kernels, not a
+/// variant of them. The build selects exactly one body of the pair (the portable tree under `dev`, the subgroup body
+/// under `dev+subgroups`), which the descriptor's `requires` and the Slang text both say without an adapter, and the
+/// shipped set still runs v1 everywhere: the public reductions do not move with the profile.
+#[test]
+fn the_evidence_pair_selects_the_body_of_the_profile_and_the_shipped_set_does_not_move() {
+    let enabled = gust::capability::enabled();
+    let descriptor = &crate::evidence::block_sum_kernels::block_sum::DESCRIPTOR;
+    assert_eq!(descriptor.requires, enabled);
+    assert_eq!(
+        descriptor.slang_source.contains("WaveActiveSum"),
+        !enabled.is_empty(),
+        "the subgroup add is in the selected body exactly when the build has the capability"
+    );
+    for operation in OPERATIONS {
+        assert_eq!(shipped(operation), Variant::V1, "{operation:?}");
+    }
+}
+
+/// Slice m8.e, Opus S1: the subgroup body adds 32 totals at most, so a device that reports a minimum subgroup size
+/// below 8 is refused by the host (`DeviceLimit`, limit `min_subgroup_size`) when the build selects that body, and
+/// nothing else is: not the portable body, not a device that reports no range, not a minimum of 8 and above (the
+/// guard needs no device, it takes what `HeadlessDevice::subgroup_sizes` reports).
+#[test]
+fn the_subgroup_body_is_refused_on_a_device_whose_smallest_subgroup_is_below_eight() {
+    use crate::evidence::{MIN_SUBGROUP_SIZE, check_subgroup_sizes};
+    assert_eq!(MIN_SUBGROUP_SIZE, 8);
+    for minimum in [1, 2, 4, 7] {
+        match check_subgroup_sizes(true, Some((minimum, 64))) {
+            Err(crate::Error::Device(gust_wgpu::Error::DeviceLimit {
+                limit,
+                requested,
+                maximum,
+                ..
+            })) => {
+                assert_eq!(limit, "min_subgroup_size");
+                assert_eq!(requested, 8);
+                assert_eq!(maximum, u64::from(minimum));
+            }
+            other => panic!("minimum {minimum}: {other:?}"),
+        }
+        assert!(
+            check_subgroup_sizes(false, Some((minimum, 64))).is_ok(),
+            "the portable body works at any size, minimum {minimum}"
+        );
+    }
+    for sizes in [
+        Some((8, 8)),
+        Some((8, 128)),
+        Some((32, 64)),
+        Some((64, 128)),
+        None,
+    ] {
+        assert!(check_subgroup_sizes(true, sizes).is_ok(), "{sizes:?}");
+    }
+}

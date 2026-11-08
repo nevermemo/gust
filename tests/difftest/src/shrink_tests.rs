@@ -161,6 +161,7 @@ fn run_fake(planned: &Planned) -> Raw {
         out_ty: p.out_ty().name().into(),
         mode: "gpu".into(),
         adapter: Some("fake adapter".into()),
+        capabilities: Vec::new(),
         interp: planned.expected.clone(),
         twin: Ok(planned.expected.clone()),
         gpu: Some(Ok(gpu)),

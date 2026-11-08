@@ -261,6 +261,128 @@ dead branch no longer fails with E30002; a literal zero divisor is E0317, and th
 file missing) fails the command as well and is never reported as a pass; a report left by an earlier run cannot pass the next one (the file is removed
 first). Measured costs are in DIFFTEST, "Gates".
 
+## Subgroup evidence (slice m8.e, M8; D140, D146, Opus 14)
+
+The subgroup form of the reduction's per-block step was measured against the shipped v1 before it was allowed to become
+a variant. The shipped step is `sum_u32_block` (`crates/gust-algo`, one workgroup of 256 lanes per 8192 elements, a
+32-term lane chain, an eight-round shared-memory tree); its subgroup form (`gust_algo::evidence`) keeps the lane chain
+and replaces the tree by one `subgroup_add`, one write of each subgroup's total to workgroup memory, one barrier and a
+sum of the at most 32 totals. The program is `crates/gust-algo/examples/sg_ab.rs`, a release build under
+`GUST_PROFILE=dev+subgroups`; it times one `u32` sum end to end (the batch, the fence wait and the read-back of the
+result), as the m7.r4 `ab` example does, after five warm-up pairs, and checks both forms against the host sum on every
+call. A *run* is the median of 200, 100 and 30 calls at 1e6, 1e7 and 1e8 elements. Three runs of each form were taken
+interleaved (v1, subgroup, v1, subgroup, v1, subgroup). The rule was registered before the first run: the subgroup form
+is faster at a size only when its **slowest** run is below v1's **fastest**, and it becomes the `requires(subgroups)`
+variant of the shipped kernel only if it is faster at every size on both adapters; otherwise it stays a separate
+evidence kernel and the shipped kernel is untouched. No size was run twice.
+
+v1 ran first in every pair. Under a downward drift of the run times across the three runs (on the RTX 5090 at 1e7 both
+forms drift down: v1 456.5 to 393.6 µs, subgroup 430.7 to 349.9) that order favours the form that runs second, but the
+rule compares the subgroup form's slowest run, an early one under such a drift, with v1's fastest run, a late one. A
+downward drift therefore makes "faster" harder to reach, not easier: the order cannot have produced a false "faster".
+It could have hidden a small real gain, so the outcome below reads "no gain shown by this method", not "no gain". A
+smoke run at 1e5 elements on the RTX 5090, taken before the series to check the harness and not a table size, gave a
+v1 median of 397.2 and a subgroup median of 414.5 µs (not faster).
+
+Measured 2026-11-08, a quiet window (the RTX 5090 held 2769 MiB of 32607 MiB at 0 % utilisation before every
+size, read with `nvidia-smi`; nothing on the 890M was monitored beyond that), slangc 2026.21, Vulkan. Times are microseconds per sum; the three runs, then the median
+of the three.
+
+| Adapter | Elements | v1 (3 runs) | v1 median | Subgroup (3 runs) | Subgroup median | Faster by the rule |
+| --- | --- | --- | --- | --- | --- | --- |
+| NVIDIA GeForce RTX 5090, driver 610.88, subgroup size 32 | 1e6 | 373.9 / 404.3 / 414.3 | 404.3 | 365.1 / 394.6 / 420.1 | 394.6 | no |
+| NVIDIA GeForce RTX 5090 | 1e7 | 456.5 / 439.3 / 393.6 | 439.3 | 430.7 / 394.5 / 349.9 | 394.5 | no |
+| NVIDIA GeForce RTX 5090 | 1e8 | 785.4 / 773.7 / 772.2 | 773.7 | 780.9 / 742.8 / 798.1 | 780.9 | no |
+| AMD Radeon 890M Graphics, driver 26.10.1 (LLPC), subgroup size 32 to 64 | 1e6 | 616.2 / 611.3 / 622.5 | 616.2 | 639.1 / 598.6 / 608.6 | 608.6 | no |
+| AMD Radeon 890M Graphics | 1e7 | 1058.8 / 1111.5 / 1132.6 | 1111.5 | 1143.7 / 1166.1 / 1103.3 | 1143.7 | no |
+| AMD Radeon 890M Graphics | 1e8 | 5947.7 / 6155.0 / 5829.8 | 5947.7 | 6026.5 / 5973.8 / 6105.9 | 6026.5 | no |
+
+Outcome: the subgroup form is not faster in any of the six cells, and the medians are within 11 % of each other in
+both directions (0.97 to 1.11 v1 over subgroup), so it is **a separate evidence kernel**: `variant::shipped`, the
+public reductions, `tests/fixtures/reduce.rs` and the goldens are unchanged, and `Variant` has no third member. The
+closeness has two different causes. At 1e6 and 1e7 on the RTX 5090 the medians are about equal (about 400 µs) and the
+fastest single calls are 250 to 280 µs: the fixed cost of one end-to-end call (submit, fence wait, read-back)
+dominates there, so the method cannot see the tree's barrier cost at those sizes, and the run medians vary by up to
+about 25 % within one form (v1 at 1e7: 456.5 to 393.6 µs). At 1e8 on the RTX 5090 and on the Radeon rows the time
+grows with the data, which fits a reduction bound by memory traffic (not measured separately).
+The RTX 5090 rows are `Gpu` evidence for that adapter. The Radeon rows are an observation (D146) on the second adapter:
+every timed call of both forms asserted the exact sum, so the 890M ran the subgroup body correctly at all three sizes,
+but the program did not read the subgroup size in the shader, so the wave size the body used there (the adapter reports
+32 to 64) is not recorded, and the rows say nothing about any other AMD part. Both adapters are Vulkan; DX12 was not
+measured. The raw logs (with the
+`nvidia-smi` lines of each size) are kept in the work area of the slice, not in the repository.
+
+What the evidence kernel is checked by: `tests::gpu::gpu_evidence_block_sum_equals_the_reference_and_v1_whichever_body_the_build_selects`
+(pinned in `ALGO_GPU_TESTS`) compares `evidence::sum_u32` with the `i128` reference and with shipped v1 in one process,
+and runs under `dev` (the portable body of the pair) and under `GUST_PROFILE=dev+subgroups` (the subgroup body); the
+Unit test `the_evidence_pair_selects_the_body_of_the_profile_and_the_shipped_set_does_not_move` pins which body each
+profile selects. The `dev+subgroups` run is not wired into the Gpu suite: `cargo xtask test --suite Gpu` runs the
+`dev` pins only, so the subgroup half of that test is run by hand (`GUST_PROFILE=dev+subgroups cargo test --locked -p
+gust-algo gpu_evidence -- --show-output`) on the RTX 5090; the test prints `gust-algo evidence body: requires
+[Subgroups], subgroup sizes ...` and the log of a pass shows it, which is what ties the log to the profile (a plain
+pass reads the same under `dev`). Bringing gust-algo under `cargo xtask test --profile`, which runs gust-wgpu targets
+only, is a follow-up (NEXT_TASKS), as are the `dev+subgroups` run of the Unit test above and `examples/sg_ab.rs`
+(compiled, never run by a suite).
+
+Limitations of the subgroup body (D39: documented, not chased). It adds at most 32 per-subgroup totals, so it is
+correct for the subgroup sizes 8 to 128 only; the WARP adapter reports a size of 4 (`docs/SEMANTICS.md`).
+`evidence::sum_u32` therefore returns `Error::Device(DeviceLimit { limit: "min_subgroup_size", .. })` on a device whose
+reported minimum is below 8 when the build selected the subgroup body, instead of a wrong sum (the body itself is the
+one the table measured and was not changed; the guard is the unit test
+`the_subgroup_body_is_refused_on_a_device_whose_smallest_subgroup_is_below_eight`, which needs no device). The body also
+assumes the linear lane mapping (`lane == index % size`, the subgroup of invocation `i` being `i / size`) that every
+adapter measured so far shows; this kernel does not check it at run time, whereas `examples/subgroup-reduce` does.
+Metal reports a fixed 4..64, so the guard refuses the subgroup body there whatever the GPU really does.
+
+The remaining proofs of the row, all run on 2026-11-08:
+
+- **Cross-variant difftest.** `cargo xtask check-difftest` (Gpu mode) now runs a third step, the batch under
+  `GUST_PROFILE=dev+subgroups` (`difftest-run --profile dev+subgroups`), next to the `dev` batch. Both batches export
+  their records (`--export-dir`, a fresh directory each) and the step requires the two trees to be non-empty, to list
+  the same files and to hold the same bytes; the report of each batch names its profile, and (Opus S4) every program
+  of the run crate writes into its own result the capabilities its build was compiled for
+  (`gust::capability::enabled()`, the set the device it opens is requested with), so the report lists the capabilities
+  found in every result and in any result and `check-difftest` requires exactly the profile's: `subgroups` in every
+  result of the second batch and none in any result of the `dev` batch. That is what shows the profile reached the
+  run crate's build, not only its command line. Result on the RTX 5090 (driver 610.88): 128 of 128 programs executed,
+  0 mismatches, in both batches, every program of the second batch reported `subgroups` and none of the `dev` batch
+  did, and the 256 exported record files are byte for byte the same (the `dev` batch: cargo build 24.0 s, run 55.9 s;
+  the `dev+subgroups` batch: build 13.4 s, run 54.8 s). This says the generated Slang and kernel records do not depend on the subgroup profile for programs
+  that use no subgroup construct; it does not run a subgroup kernel (the corpus has none) and says nothing about
+  another adapter. The summary prints the second batch's cargo build and run times after the pass line.
+- **Strict program.** `examples/subgroup-reduce` runs under `GUST_PROFILE=native+subgroups` from its committed
+  `gust-artifacts/` (no `slang-runtime`; its dev tests run first under `dev`). On the RTX 5090 (subgroup size 32 to
+  32) the program printed lane count 32 over 300 invocations in 10 subgroups, a ballot popcount of 197 and prefix sums
+  adding up to 4511, each equal to the host model, and `OK body=subgroups`. `check-examples` runs it. The program also
+  requires the lane counts it saw to lie inside the range the device reports. Not run on the Radeon 890M. The portable
+  body's committed artifact is not read by a strict `native+subgroups` build (a build looks only at the artifact of
+  the body it selects, `crates/gust-macros/src/expand/mod.rs`), and `check-artifacts` does not cover example artifacts,
+  so nothing in these gates compares that file with its source.
+- **Web.** `check-web` now requires the page label to name the selected kernel keys and checks each against
+  `examples/web-vector-add/gust-artifacts/manifest.json`, and the page asserts that a device requested with
+  `with_capabilities(&[Subgroups])` fails with `MissingCapability` (the optional assertion; D142: the Chrome WebGPU
+  backend maps no subgroup feature). Result: Chrome 156.0.8078.74, adapter `nvidia blackwell`: the three selected
+  keys match the manifest (no variants) and the subgroup request was refused. `Gpu (WebGPU, Chrome)` evidence for that
+  one adapter only.
+- **lavapipe (`Gpu (software)`, D146's branch dispatch).** `gpu-software.yml` was dispatched on `lane/m8.e` with
+  `extended` (run 42461935960, commit 777db47, 2026-11-08, conclusion success, job 18 min 53 s). The device is
+  `llvmpipe (LLVM 20.1.2, 256 bits)`, Mesa 25.2.8, a CPU device, subgroup size range 8 to 8. This is the tree before
+  the capability check of the difftest reports and the other fixes of the review round, so the rows below were not
+  produced by the final tree.
+  - `dev+subgroups` difftest batch, nightly list (seeds 1-72): 1152 of 1152 programs executed, 0 mismatches, in the
+    `dev` batch and in the `dev+subgroups` batch, and the 2304 exported record files are byte for byte those of the
+    `dev` batch. Cross-shape step (`--shapes grid,pixel`, seeds 1-2): 32 of 32 programs in each batch, 0 mismatches,
+    128 record files equal.
+  - `subgroup-reduce` under `GUST_PROFILE=native+subgroups` from the committed artifacts (`check-examples`): lane count
+    8 to 8 over 300 invocations in 38 subgroups, ballot popcount 197, prefix total 4511, `OK body=subgroups`.
+  - Step times on the runner (run 42461935960, one run, not a warm-runner measurement): the differential step 626 s
+    (the second batch about 298 s of it), the cross-shape step 37.6 s (it was 25 s with one batch, run 42071043309),
+    `check-examples` 97 s (the strict `subgroup-reduce` run about 22 s with its build), the job 18 min 53 s of its
+    40-minute timeout. The pull request list's differential step (2 seeds) was not timed: the dispatch ran the
+    nightly list.
+  - This is software execution of the compiler's output and of the host code; it says nothing about the subgroup
+    behaviour of any hardware driver.
+
 ## Single-stage commands
 
 Workflow commands live in `cargo xtask` (D27); no shell or PowerShell scripts are tracked.

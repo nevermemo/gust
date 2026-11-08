@@ -5,6 +5,13 @@
 //! `programs_executed` equal to `16 x seeds`, no mismatch, and (on the GPU tier) an adapter. On the GPU tier it also
 //! runs the `short_circuit` test of the harness crate with `--ignored`, the one test no other gate runs.
 //!
+//! The GPU tier ends with a second batch of the same seeds under `GUST_PROFILE=dev+subgroups` (M8, slice m8.e): the
+//! run crate is built and run with the `subgroups` capability, its report must pass and say that profile, and the
+//! records the macro exports for it (`GUST_EXPORT_DIR`, a new directory for each batch) must equal, file for file and
+//! byte for byte, the records of the `dev` batch. The corpus has no kernel with a variant, so the capability may not
+//! change a byte the compiler writes. A kernel whose variant the capability does select is not in the corpus; the
+//! `gust-algo` evidence tests and `examples/subgroup-reduce` cover that case.
+//!
 //! ```text
 //! cargo xtask check-difftest [--seeds <list|range|random:N>] [--shapes grid,pixel] [--cpu-only] [--report PATH]
 //! ```
@@ -58,6 +65,9 @@ const MAX_RANGE: u64 = 4096;
 
 const USAGE: &str = "usage: cargo xtask check-difftest [--seeds <list|range|random:N>] [--shapes grid,pixel] [--cpu-only] [--report PATH]";
 
+/// The `GUST_PROFILE` of the batch that proves the capability changes no artifact of the corpus ([`DifftestStep::ProfileArtifacts`]).
+pub(crate) const SUBGROUPS_PROFILE: &str = "dev+subgroups";
+
 /// The shapes `--shapes` names for the Full mode of `verify` when the caller names none.
 pub(crate) const FULL_SHAPES: &str = "grid,pixel";
 
@@ -86,12 +96,21 @@ pub(crate) enum DifftestStep {
     /// `cargo test --test short_circuit -- --ignored` of the harness crate: the GPU must skip a right operand that
     /// would read out of bounds. Gpu tier only.
     ShortCircuitGpu,
+    /// `difftest-run --profile dev+subgroups` over the same seeds (M8, slice m8.e, plan section 3): the corpus run crate built
+    /// and run with the `subgroups` capability must pass, and the records the macro exports for it (`GUST_EXPORT_DIR`) must
+    /// equal, byte for byte, the records of the `dev` batch: no corpus program has a variant, so the capability changes
+    /// nothing the compiler writes. Gpu tier only (the run opens a device with the capability).
+    ProfileArtifacts,
 }
 
 /// The steps of a mode. The GPU test belongs to the adapter run and to nothing else.
 pub(crate) fn steps(mode: Mode) -> Vec<DifftestStep> {
     match mode {
-        Mode::Gpu => vec![DifftestStep::Batch, DifftestStep::ShortCircuitGpu],
+        Mode::Gpu => vec![
+            DifftestStep::Batch,
+            DifftestStep::ShortCircuitGpu,
+            DifftestStep::ProfileArtifacts,
+        ],
         Mode::CpuOnly => vec![DifftestStep::Batch],
     }
 }
@@ -319,6 +338,175 @@ pub(crate) fn short_circuit_args() -> Vec<String> {
     .collect()
 }
 
+/// The arguments that make a batch run under `profile` and export its records to `export_dir`, appended to
+/// [`batch_args`] (M8, slice m8.e).
+pub(crate) fn export_args(profile: &str, export_dir: &Path) -> Vec<String> {
+    vec![
+        "--profile".to_owned(),
+        profile.to_owned(),
+        "--export-dir".to_owned(),
+        export_dir.to_string_lossy().into_owned(),
+    ]
+}
+
+/// What is wrong with the `profile` of `report` for a run that asked for `expected`. A report from before `--profile`
+/// has no such field and ran `dev`.
+pub(crate) fn profile_problems(report: &Report, expected: &str) -> Vec<String> {
+    let ran = report.profile.as_deref().unwrap_or("dev");
+    if ran == expected {
+        Vec::new()
+    } else {
+        vec![format!(
+            "the report ran under the profile `{ran}`, this batch asked for `{expected}`"
+        )]
+    }
+}
+
+/// The capabilities a batch under `profile` must report from inside the run crate: the names after the target in the
+/// profile (`dev+subgroups` has `subgroups`, `dev` has none).
+pub(crate) fn expected_capabilities(profile: &str) -> Vec<String> {
+    profile.split('+').skip(1).map(str::to_owned).collect()
+}
+
+/// What is wrong with the capabilities the programs of `report` reported (Opus S4): the profile argument is echoed by the
+/// harness, but `gust::capability::enabled()` is read by the program itself, so this is the proof that the profile
+/// reached the run crate's build. Every result must report exactly the capabilities of `profile` (so the `dev` batch
+/// reports none and the `dev+subgroups` batch reports `subgroups` in every result); a report that names none of them
+/// proves nothing.
+pub(crate) fn capability_problems(report: &Report, profile: &str) -> Vec<String> {
+    let expected = expected_capabilities(profile);
+    let (Some(every), Some(any)) = (
+        &report.capabilities_in_every_result,
+        &report.capabilities_in_any_result,
+    ) else {
+        return vec![format!(
+            "the report does not say which capabilities the programs were built with, so the profile `{profile}` is not shown to have reached the build"
+        )];
+    };
+    let mut problems = Vec::new();
+    for name in &expected {
+        if !every.contains(name) {
+            problems.push(format!(
+                "the profile `{profile}` builds with `{name}`, but not every program reported it (in every result: {every:?}, in any: {any:?})"
+            ));
+        }
+    }
+    for name in any {
+        if !expected.contains(name) {
+            problems.push(format!(
+                "a program reported the capability `{name}`, which the profile `{profile}` does not build with"
+            ));
+        }
+    }
+    problems
+}
+
+/// Every file under `root`, as (path relative to `root` with `/`, bytes), sorted by path. A directory that does not
+/// exist is an empty tree (the macro creates its record directory only when it writes a record).
+pub(crate) fn record_tree(root: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
+    fn walk(base: &Path, dir: &Path, found: &mut Vec<(String, Vec<u8>)>) -> Result<(), String> {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(format!("{}: {error}", dir.display())),
+        };
+        for entry in entries {
+            let path = entry
+                .map_err(|error| format!("{}: {error}", dir.display()))?
+                .path();
+            if path.is_dir() {
+                walk(base, &path, found)?;
+            } else {
+                let relative = path
+                    .strip_prefix(base)
+                    .map_err(|error| format!("{}: {error}", path.display()))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                let bytes =
+                    fs::read(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+                found.push((relative, bytes));
+            }
+        }
+        Ok(())
+    }
+    let mut found = Vec::new();
+    walk(root, root, &mut found)?;
+    found.sort();
+    Ok(found)
+}
+
+/// What differs between the records of the `dev` batch and those of the `dev+subgroups` batch: both must hold at least
+/// one record, the same files, and the same bytes in each (the compiler writes the same Slang and the same kernel
+/// description whether or not the build has the capability, because no program of the corpus has a variant).
+pub(crate) fn record_problems(
+    dev: &[(String, Vec<u8>)],
+    subgroups: &[(String, Vec<u8>)],
+) -> Vec<String> {
+    const LISTED: usize = 5;
+    let mut problems = Vec::new();
+    if dev.is_empty() {
+        problems.push("the dev batch exported no records, so there is nothing to compare".into());
+    }
+    if subgroups.is_empty() {
+        problems.push("the dev+subgroups batch exported no records".into());
+    }
+    if dev.is_empty() || subgroups.is_empty() {
+        return problems;
+    }
+    let names =
+        |tree: &[(String, Vec<u8>)]| tree.iter().map(|entry| entry.0.clone()).collect::<Vec<_>>();
+    let (dev_names, subgroup_names) = (names(dev), names(subgroups));
+    let only = |from: &[String], other: &[String]| {
+        from.iter()
+            .filter(|name| !other.contains(name))
+            .take(LISTED)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let (only_dev, only_subgroups) = (
+        only(&dev_names, &subgroup_names),
+        only(&subgroup_names, &dev_names),
+    );
+    if !only_dev.is_empty() || !only_subgroups.is_empty() {
+        problems.push(format!(
+            "the two batches exported different records: only in dev [{}], only in dev+subgroups [{}] ({} and {} records)",
+            only_dev.join(", "),
+            only_subgroups.join(", "),
+            dev.len(),
+            subgroups.len()
+        ));
+    }
+    let mut different = Vec::new();
+    for (name, bytes) in dev {
+        if let Some((_, other)) = subgroups.iter().find(|entry| &entry.0 == name)
+            && other != bytes
+        {
+            different.push(name.clone());
+        }
+    }
+    if !different.is_empty() {
+        problems.push(format!(
+            "{} record(s) differ between the dev and the dev+subgroups batch, for example [{}]",
+            different.len(),
+            different
+                .iter()
+                .take(LISTED)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    problems
+}
+
+/// A directory name that is new for each run: the record directory of the macro must not hold the records of an
+/// earlier run, and cargo re-expands the run crate only when `GUST_EXPORT_DIR` changes.
+fn fresh_record_dirs(target: &Path) -> (PathBuf, PathBuf) {
+    let nonce = format!("{:016x}", clock_entropy());
+    let base = target.join("difftest-records").join(nonce);
+    (base.join("dev"), base.join("dev-subgroups"))
+}
+
 /// One disagreement of a report.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MismatchRecord {
@@ -371,6 +559,12 @@ pub(crate) struct Report {
     pub(crate) mismatches: Vec<MismatchRecord>,
     pub(crate) cargo_build_s: f64,
     pub(crate) cargo_run_s: f64,
+    /// Absent in a report from before `--profile` (m8.e); such a report ran `dev`.
+    pub(crate) profile: Option<String>,
+    /// The capabilities every program of the batch reported for the run crate's own build (`gust::capability::enabled`, in
+    /// lower case as the profile spells them), and those at least one reported. Absent in a report from before m8.e.
+    pub(crate) capabilities_in_every_result: Option<Vec<String>>,
+    pub(crate) capabilities_in_any_result: Option<Vec<String>>,
     /// Absent in a report from before `--shapes`.
     pub(crate) shapes: Option<ShapesRecord>,
 }
@@ -485,6 +679,26 @@ pub(crate) fn parse_report(source: &str) -> Result<Report, String> {
         None => None,
         Some(section) => Some(parse_shapes_record(section)?),
     };
+    let profile = match json.get("profile") {
+        None => None,
+        Some(_) => Some(text(&json, "profile")?),
+    };
+    let names = |key: &str| -> Result<Option<Vec<String>>, String> {
+        json.get(key)
+            .map(|_| {
+                array(&json, key)?
+                    .iter()
+                    .map(|name| {
+                        name.as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| format!("report.json `{key}` holds a non-text item"))
+                    })
+                    .collect()
+            })
+            .transpose()
+    };
+    let capabilities_in_every_result = names("capabilities_in_every_result")?;
+    let capabilities_in_any_result = names("capabilities_in_any_result")?;
     Ok(Report {
         mode: text(&json, "mode")?,
         passed,
@@ -500,6 +714,9 @@ pub(crate) fn parse_report(source: &str) -> Result<Report, String> {
         cargo_build_s: float(timing, "cargo_build_s")?,
         cargo_run_s: float(timing, "cargo_run_s")?,
         shapes,
+        profile,
+        capabilities_in_every_result,
+        capabilities_in_any_result,
     })
 }
 
@@ -916,16 +1133,50 @@ fn run_steps(
     );
     let mut problems = Vec::new();
     let mut summary = Vec::new();
-    for step in steps(options.mode) {
+    let all_steps = steps(options.mode);
+    // The record directories are named before the first step: the `dev` batch exports into one of them, the
+    // `dev+subgroups` batch into the other, and the last step compares the two.
+    let records = all_steps
+        .contains(&DifftestStep::ProfileArtifacts)
+        .then(|| fresh_record_dirs(target));
+    let mut compared = None;
+    let mut subgroups_timing = None;
+    for step in all_steps {
         match step {
             DifftestStep::Batch => {
-                let judgement = run_batch(options, root, target, report_path)?;
+                let export = records.as_ref().map(|dirs| dirs.0.as_path());
+                let judgement = run_batch(options, root, target, report_path, "dev", export)?;
                 problems.extend(judgement.problems);
                 summary = judgement.summary;
             }
             DifftestStep::ShortCircuitGpu => {
                 println!("-- short_circuit (GPU, --ignored)");
                 problems.extend(run_short_circuit(root, target)?);
+            }
+            DifftestStep::ProfileArtifacts => {
+                let (dev_dir, subgroups_dir) = records
+                    .as_ref()
+                    .ok_or("check-difftest: the profile step has no record directories")?;
+                println!("-- difftest-run under GUST_PROFILE={SUBGROUPS_PROFILE}");
+                let judgement = run_batch(
+                    options,
+                    root,
+                    target,
+                    &subgroups_report_path(report_path),
+                    SUBGROUPS_PROFILE,
+                    Some(subgroups_dir),
+                )?;
+                // The last summary line of a passing batch is its harness timing (cargo build, cargo run).
+                subgroups_timing = judgement.summary.last().cloned();
+                problems.extend(
+                    judgement
+                        .problems
+                        .into_iter()
+                        .map(|problem| format!("[{SUBGROUPS_PROFILE}] {problem}")),
+                );
+                let (dev, subgroups) = (record_tree(dev_dir)?, record_tree(subgroups_dir)?);
+                problems.extend(record_problems(&dev, &subgroups));
+                compared = Some(dev.len());
             }
         }
     }
@@ -945,21 +1196,45 @@ fn run_steps(
     let mut passed = format!(
         "check-difftest passed in {seconds:.1} s{}:\n{}",
         if options.mode == Mode::Gpu {
-            " (the batch and the short_circuit GPU test)"
+            " (the batch, the short_circuit GPU test and the dev+subgroups batch)"
         } else {
             " (cpu-only: interpreter against twin; no adapter, no GPU evidence)"
         },
         summary.join("\n")
     );
+    if let Some(count) = compared {
+        passed.push_str(&format!(
+            "\n  {SUBGROUPS_PROFILE}: the batch passed, every program reported the capabilities of the profile from its own build, and its {count} exported record file(s) are byte for byte those of the dev batch"
+        ));
+        if let Some(timing) = subgroups_timing {
+            passed.push_str(&format!(
+                "\n  {SUBGROUPS_PROFILE} batch: {}",
+                timing.trim_start()
+            ));
+        }
+    }
     passed.push_str(&format!("\n  report: {}", report_path.display()));
     Ok(passed)
 }
 
+/// The report of the `dev+subgroups` batch, beside the report of the `dev` one.
+fn subgroups_report_path(report_path: &Path) -> PathBuf {
+    let stem = report_path.file_stem().map_or_else(
+        || "difftest-report".to_owned(),
+        |stem| stem.to_string_lossy().into_owned(),
+    );
+    report_path.with_file_name(format!("{stem}-subgroups.json"))
+}
+
+/// One `difftest-run` batch under `profile`, exporting its records to `export` when that is given (a profile other
+/// than `dev` needs it: the arguments that choose the profile are the ones that name the record directory).
 fn run_batch(
     options: &Options,
     root: &Path,
     target: &Path,
     report_path: &Path,
+    profile: &str,
+    export: Option<&Path>,
 ) -> Result<Judgement, String> {
     // A report left by an earlier run must not be able to pass this one.
     match fs::remove_file(report_path) {
@@ -978,7 +1253,14 @@ fn run_batch(
     }
     fs::create_dir_all(target)
         .map_err(|error| format!("check-difftest: {}: {error}", target.display()))?;
-    let args = batch_args(options, target, report_path);
+    let mut args = batch_args(options, target, report_path);
+    if let Some(dir) = export {
+        args.extend(export_args(profile, dir));
+    } else if profile != "dev" {
+        return Err(format!(
+            "check-difftest: a batch under the profile `{profile}` needs a record directory"
+        ));
+    }
     println!("-- cargo {}", args.join(" "));
     let status = workspace_command("cargo")
         .args(&args)
@@ -991,7 +1273,16 @@ fn run_batch(
         .map_err(|error| format!("check-difftest: could not launch cargo: {error}"))?;
     let report = fs::read_to_string(report_path)
         .map_err(|error| format!("{}: {error}", report_path.display()));
-    Ok(judge_batch(options, status.code(), report))
+    let mut judgement = judge_batch(options, status.code(), report.clone());
+    if let Ok(parsed) = report.and_then(|source| parse_report(&source)) {
+        judgement
+            .problems
+            .extend(profile_problems(&parsed, profile));
+        judgement
+            .problems
+            .extend(capability_problems(&parsed, profile));
+    }
+    Ok(judgement)
 }
 
 fn run_short_circuit(root: &Path, target: &Path) -> Result<Vec<String>, String> {

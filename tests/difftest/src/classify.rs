@@ -65,6 +65,8 @@ pub struct Raw {
     pub out_ty: String,
     pub mode: String,
     pub adapter: Option<String>,
+    /// The capabilities the run crate was built for (`GUST_PROFILE`), as the program itself reports them (`gust::capability::enabled`).
+    pub capabilities: Vec<String>,
     pub interp: Vec<u32>,
     pub twin: Result<Vec<u32>, String>,
     /// `None` when the GPU was not used (`--cpu-only`).
@@ -198,6 +200,15 @@ pub fn parse_result(file_text: &str) -> Result<Raw, String> {
         out_ty: text(&json, "out_ty")?,
         mode,
         adapter: field(&json, "adapter")?.as_str().map(str::to_owned),
+        capabilities: field(&json, "capabilities")?
+            .as_array()
+            .and_then(|names| {
+                names
+                    .iter()
+                    .map(|name| name.as_str().map(str::to_owned))
+                    .collect()
+            })
+            .ok_or("field \"capabilities\" is not an array of text")?,
         interp,
         twin,
         gpu,
@@ -581,6 +592,7 @@ mod tests {
             out_ty: planned.program.out_ty().name().into(),
             mode: if gpu.is_some() { "gpu" } else { "cpu-only" }.into(),
             adapter: None,
+            capabilities: Vec::new(),
             interp: planned.expected.clone(),
             twin,
             gpu,
@@ -736,7 +748,7 @@ mod tests {
         let words = vec!["1"; count].join(",");
         format!(
             "{{\"format\": 2, \"program\": \"{program}\", \"seed\": 7, \"attempt\": 3, \"index\": 4, \"count\": {count}, \
-             \"out_ty\": \"u32\", \"mode\": \"cpu-only\", \"adapter\": null, \"interp\": [{words}], \"twin\": [{words}], \
+             \"out_ty\": \"u32\", \"mode\": \"cpu-only\", \"adapter\": null, \"capabilities\": [], \"interp\": [{words}], \"twin\": [{words}], \
              \"twin_error\": null, \"twin_ns\": 5, \"gpu\": null, \"gpu_error\": null, \"wgsl_validated\": false, \
              \"gpu_first_ns\": 0, \"gpu_warm_ns\": 0{extra}, \"end\": true}}"
         )
@@ -758,6 +770,12 @@ mod tests {
         assert!(parse_result(&both).unwrap_err().contains("exactly one"));
         let mode = result_text("s7_a3", 2, "").replace("cpu-only", "gpu");
         assert!(parse_result(&mode).unwrap_err().contains("mode"));
+        // The capabilities the program reports are read, and a file without them is refused (Opus S4).
+        let with = result_text("s7_a3", 2, "")
+            .replace("\"capabilities\": []", "\"capabilities\": [\"subgroups\"]");
+        assert_eq!(parse_result(&with).unwrap().capabilities, ["subgroups"]);
+        let without = result_text("s7_a3", 2, "").replace("\"capabilities\"", "\"caps\"");
+        assert!(parse_result(&without).unwrap_err().contains("capabilities"));
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {

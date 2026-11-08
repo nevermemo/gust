@@ -133,6 +133,13 @@
         field("out_ty", json_text(case.out_ty));
         field("mode", json_text(if cpu_only { "cpu-only" } else { "gpu" }));
         field("adapter", adapter.as_deref().map_or("null".to_owned(), json_text));
+        // The capabilities this build was compiled for (`GUST_PROFILE`), read by the program itself: the device above
+        // is opened with exactly these (D142), so the profile reached the run crate's build, not only its command line.
+        let capabilities: Vec<String> = gust::capability::enabled()
+            .iter()
+            .map(|capability| json_text(capability.name()))
+            .collect();
+        field("capabilities", format!("[{}]", capabilities.join(",")));
         field("interp", json_words(&data.interp));
         match &outcome.twin {
             Ok((bits, ns)) => {

@@ -14,15 +14,15 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use gust_wgpu::{DeviceHandle, DeviceOptions, GpuVec, HeadlessDevice, default_device};
 
 use super::common::{
-    Backend, COMPACT_LENGTHS, GPU_C, LENGTHS, SCAN_LENGTHS, Shape, assert_f32_sum,
+    Backend, COMPACT_LENGTHS, GPU_C, LENGTHS, Rng, SCAN_LENGTHS, Shape, assert_f32_sum,
     assert_f32_sum_by, assert_same, compact_cases, deep_compact_cases, deep_scan_cases,
-    empty_cases, f32_input, float_min_max_cases, float_sum_cases, gather_edge_cases, integer_cases,
-    out_of_range_index_cases, reference_indices, reference_scan, scan_cases, tie_ladder,
-    wrapping_cases,
+    empty_cases, exact_sum, f32_input, float_min_max_cases, float_sum_cases, gather_edge_cases,
+    integer_cases, out_of_range_index_cases, reference_indices, reference_scan, scan_cases,
+    tie_ladder, wrapping_cases,
 };
 use super::struct_gather::{particles, population, reference};
 use crate::{
-    Error, Variant, bound, compact,
+    Error, Variant, bound, compact, evidence,
     reduce::{self, Element},
     scan,
     schedule::{BlockSchedule, Pass, ScanSchedule, Schedule, TileSchedule},
@@ -1534,4 +1534,61 @@ fn gpu_v0_runs_the_deepest_schedules() {
     assert_f32_sum("v0 tie ladder", &ladder, gpu.sum(&ladder), GPU_C);
     drop(ladder);
     deep_scan_cases(&gpu);
+}
+
+/// The lengths of the evidence sum: around the lane chain (32 terms of 256 lanes), the 8192-element block, a length that
+/// is no multiple of anything and two passes' worth of workgroups (1e6 is 123 workgroups, 1e7 is 1221).
+const EVIDENCE_LENGTHS: [usize; 15] = [
+    1, 2, 31, 32, 33, 255, 256, 257, 8_191, 8_192, 8_193, 65_537, 1_000_003, 2_000_029, 9_999_991,
+];
+
+/// Slice m8.e (D146, Opus 14): the per-block step of the `u32` sum as the pair of bodies of
+/// [`evidence::block_sum_kernels`], whichever body the build selects (the portable tree under `dev`, the subgroup one
+/// under `dev+subgroups`, which is where the subgroup body is judged), against the independent `i128` reference and
+/// against the shipped v1 on the same input, in one process: the cross-variant test. The profile decides which body
+/// ran, and the test says so by asserting the descriptor and the device agree with `gust::capability::enabled()`.
+#[test]
+fn gpu_evidence_block_sum_equals_the_reference_and_v1_whichever_body_the_build_selects() {
+    let device = device();
+    let enabled = gust::capability::enabled();
+    let selected = &evidence::block_sum_kernels::block_sum::DESCRIPTOR;
+    assert_eq!(selected.requires, enabled, "the selected body's requires");
+    assert_eq!(device.capabilities(), enabled, "the device's capabilities");
+    eprintln!(
+        "gust-algo evidence body: requires {:?}, subgroup sizes {:?}",
+        selected.requires,
+        device.subgroup_sizes()
+    );
+    let empty = GpuVec::<u32>::from_slice_on(&device, &[]).unwrap();
+    assert_eq!(evidence::sum_u32(&empty).unwrap(), 0);
+    for n in EVIDENCE_LENGTHS {
+        let mut rng = Rng::new(0xE71D + n as u64);
+        // No partial of any grouping overflows: every element is below 2^32 / n.
+        let cap = (u64::from(u32::MAX) / n as u64).max(1);
+        let random: Vec<u32> = (0..n).map(|_| rng.below(cap) as u32).collect();
+        let mut last = vec![0_u32; n];
+        last[n - 1] = u32::MAX;
+        let mut middle = vec![0_u32; n];
+        middle[n / 2] = u32::MAX;
+        for (what, values) in [
+            ("random", random),
+            ("ones", vec![1_u32; n]),
+            ("zeros", vec![0_u32; n]),
+            ("only the last element", last),
+            ("only the middle element", middle),
+        ] {
+            let input = GpuVec::from_slice_on(&device, &values).unwrap();
+            let want = exact_sum(&values);
+            assert_eq!(
+                i128::from(evidence::sum_u32(&input).unwrap()),
+                want,
+                "evidence sum, {what}, n = {n}"
+            );
+            assert_eq!(
+                i128::from(reduce::sum_with(Variant::V1, &input).unwrap()),
+                want,
+                "v1 sum, {what}, n = {n}"
+            );
+        }
+    }
 }

@@ -269,10 +269,10 @@ impl Suite {
                 "the D17 layout gate: native reflection helper, core and wgpu reflection tests, and the naga layout gate (every fixture's WGSL checked by wgpu's naga against the descriptors' layouts)"
             }
             Self::Gpu => {
-                "all gust-wgpu tests on the first Vulkan adapter wgpu finds (their `test result:` lines checked against GPU_SUITE_PIN, as in verify --mode gpu), then all gust-algo tests (the reduce and scan calls, their dispatch counts and the float bound on the adapter; its `gpu::` tests are pinned by name), then the differential batch of all 8 seeds (128 generated kernels: interpreter, CPU twin and GPU compared; report.json judged by cargo xtask check-difftest) and the short_circuit GPU test of tests/difftest"
+                "all gust-wgpu tests on the first Vulkan adapter wgpu finds (their `test result:` lines checked against GPU_SUITE_PIN, as in verify --mode gpu), then all gust-algo tests (the reduce and scan calls, their dispatch counts and the float bound on the adapter; its `gpu::` tests are pinned by name), then the differential batch of all 8 seeds (128 generated kernels: interpreter, CPU twin and GPU compared; report.json judged by cargo xtask check-difftest), the short_circuit GPU test of tests/difftest and the same batch again under GUST_PROFILE=dev+subgroups (judged the same way; every program must report the `subgroups` capability from its own build, and its exported records must be byte for byte those of the `dev` batch). The dev+subgroups batch opens its device with the subgroups capability, so the first Vulkan adapter must offer subgroup operations or the suite fails with MissingCapability"
             }
             Self::Full => {
-                "the release gate: lint, fmt, clippy, workspace tests, the fmt, clippy and tests of the harness crate tests/difftest, the release-profile Slang tests of the gust library and the release-profile known-mismatch ledger, examples, artifacts and SPIR-V validation, check-dual in full mode, then the whole check-precompiled, the whole check-web (Chrome with a WebGPU adapter; a missing one fails the suite, only `cargo xtask check-full --skip-web` goes without, and records that) and, last, check-difftest (all 8 seeds on the adapter and the short_circuit GPU test); writes .ai/VALIDATION.json"
+                "the release gate: lint, fmt, clippy, workspace tests, the fmt, clippy and tests of the harness crate tests/difftest, the release-profile Slang tests of the gust library and the release-profile known-mismatch ledger, examples (including `subgroup-reduce`, run under GUST_PROFILE=native+subgroups from its committed artifacts, which also needs an adapter with subgroup operations), artifacts and SPIR-V validation, check-dual in full mode, then the whole check-precompiled, the whole check-web (Chrome with a WebGPU adapter; a missing one fails the suite, only `cargo xtask check-full --skip-web` goes without, and records that) and, last, check-difftest (all 8 seeds on the adapter, the short_circuit GPU test and the dev+subgroups batch with its byte compare); writes .ai/VALIDATION.json"
             }
         }
     }
@@ -292,10 +292,10 @@ impl Suite {
             }
             Self::Reflect => "unit tests, SPIR-V validation, or GPU readback of kernel results",
             Self::Gpu => {
-                "SPIR-V validation or lint; the device is whatever wgpu picks, so name it in the run record"
+                "SPIR-V validation or lint; the device is whatever wgpu picks, so name it in the run record, and the dev+subgroups batch needs that adapter to offer subgroup operations (a first adapter without them fails the suite instead of skipping the batch); the dev+subgroups run of the gust-algo evidence test is not part of the suite"
             }
             Self::Full => {
-                "nothing named here is skipped, but a software adapter is only Gpu (software)"
+                "nothing named here is skipped, but a software adapter is only Gpu (software); the dev+subgroups batch and the subgroup-reduce example need an adapter with subgroup operations, and the Chrome WebGPU backend maps no subgroup feature, so the web check shows only that the request is refused"
             }
         }
     }

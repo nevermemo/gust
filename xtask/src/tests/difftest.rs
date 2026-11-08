@@ -1,10 +1,11 @@
 use std::path::Path;
 
 use super::{
-    DEFAULT_SEEDS, DifftestStep, FULL_SHAPES, Mode, Options, PROGRAMS_PER_SEED,
-    SHORT_CIRCUIT_GPU_TEST, batch_args, judge_batch, parse_report, parse_seeds, parse_shapes,
-    random_seeds, report_problems, seed_list, short_circuit_args, short_circuit_problems, steps,
-    with_full_shapes,
+    DEFAULT_SEEDS, DifftestStep, FULL_SHAPES, Mode, Options, PROGRAMS_PER_SEED, Report,
+    SHORT_CIRCUIT_GPU_TEST, SUBGROUPS_PROFILE, batch_args, capability_problems,
+    expected_capabilities, export_args, judge_batch, parse_report, parse_seeds, parse_shapes,
+    profile_problems, random_seeds, record_problems, record_tree, report_problems, seed_list,
+    short_circuit_args, short_circuit_problems, steps, with_full_shapes,
 };
 
 fn owned(args: &[&str]) -> Vec<String> {
@@ -124,12 +125,17 @@ fn arguments_are_checked() {
 
 // ---- the step list ----
 
-/// Mutation (c): the Gpu tier runs the batch and then the `short_circuit` GPU test, and only the Gpu tier does.
+/// Mutation (c): the Gpu tier runs the batch, then the `short_circuit` GPU test, then the `dev+subgroups` batch, and
+/// only the Gpu tier does (m8.e).
 #[test]
-fn the_gpu_tier_runs_the_batch_and_the_short_circuit_gpu_test() {
+fn the_gpu_tier_runs_the_batch_the_short_circuit_gpu_test_and_the_profile_batch() {
     assert_eq!(
         steps(Mode::Gpu),
-        [DifftestStep::Batch, DifftestStep::ShortCircuitGpu]
+        [
+            DifftestStep::Batch,
+            DifftestStep::ShortCircuitGpu,
+            DifftestStep::ProfileArtifacts
+        ]
     );
     assert_eq!(steps(Mode::CpuOnly), [DifftestStep::Batch]);
 }
@@ -1032,4 +1038,235 @@ fn a_report_written_with_the_pixel_shape_parses_and_passes() {
         Ok(REAL_GPU.to_owned()),
     );
     assert!(!found.problems.is_empty(), "{:?}", found.problems);
+}
+
+// ---- the dev+subgroups batch (m8.e) ----
+
+/// The arguments that choose the profile and the record directory follow the ones of the plain batch, so the run is the
+/// locked, named-seed run it always was, under another profile.
+#[test]
+fn the_profile_batch_is_the_plain_batch_with_a_profile_and_a_record_directory() {
+    let plain = batch_args(&options(&[]), Path::new("T"), Path::new("R.json"));
+    let mut profile_batch = plain.clone();
+    profile_batch.extend(export_args(SUBGROUPS_PROFILE, Path::new("T/records/x")));
+    assert_eq!(&profile_batch[..plain.len()], plain.as_slice());
+    assert_eq!(
+        &profile_batch[plain.len()..],
+        owned(&["--profile", "dev+subgroups", "--export-dir", "T/records/x"])
+    );
+    assert!(profile_batch.contains(&"--locked".to_owned()));
+    assert_eq!(SUBGROUPS_PROFILE, "dev+subgroups");
+}
+
+/// A report says which profile it ran under; a report from before the field ran `dev`.
+#[test]
+fn a_report_must_say_the_profile_the_batch_asked_for() {
+    let plain = parse_report(&good("gpu", &[1, 2])).unwrap();
+    assert_eq!(plain.profile, None);
+    assert!(profile_problems(&plain, "dev").is_empty());
+    let wrong = profile_problems(&plain, SUBGROUPS_PROFILE);
+    assert_eq!(wrong.len(), 1, "{wrong:?}");
+    assert!(wrong[0].contains("`dev`") && wrong[0].contains("dev+subgroups"));
+
+    let text = good("gpu", &[1, 2]).replace(
+        "\"mode\":\"gpu\",",
+        "\"mode\":\"gpu\",\"profile\":\"dev+subgroups\",",
+    );
+    let report = parse_report(&text).unwrap();
+    assert_eq!(report.profile.as_deref(), Some("dev+subgroups"));
+    assert!(profile_problems(&report, SUBGROUPS_PROFILE).is_empty());
+    assert!(!profile_problems(&report, "dev").is_empty());
+    // The profile does not change the other judgements of the report.
+    assert!(report_problems(&report, &options(&["--seeds", "1-2"])).is_empty());
+    // A profile that is not text proves nothing.
+    let bad = good("gpu", &[1, 2]).replace("\"mode\":\"gpu\",", "\"mode\":\"gpu\",\"profile\":3,");
+    assert!(parse_report(&bad).is_err());
+}
+
+fn tree(files: &[(&str, &str)]) -> Vec<(String, Vec<u8>)> {
+    files
+        .iter()
+        .map(|(name, text)| ((*name).to_owned(), text.as_bytes().to_vec()))
+        .collect()
+}
+
+/// Mutations: an empty side, a file on one side only, a changed byte, each fails and names what differs; equal trees
+/// pass, whatever the count.
+#[test]
+fn the_records_of_the_two_batches_must_be_the_same_files_with_the_same_bytes() {
+    let dev = tree(&[
+        ("pkg/a.kernel.json", "{\"k\":1}"),
+        ("pkg/a.slang", "void a() {}"),
+    ]);
+    assert!(record_problems(&dev, &dev.clone()).is_empty());
+
+    let empty = record_problems(&[], &dev);
+    assert!(
+        empty
+            .iter()
+            .any(|p| p.contains("dev batch exported no records"))
+    );
+    let empty = record_problems(&dev, &[]);
+    assert!(
+        empty
+            .iter()
+            .any(|p| p.contains("dev+subgroups batch exported no records"))
+    );
+    assert_eq!(record_problems(&[], &[]).len(), 2);
+
+    let mut fewer = dev.clone();
+    fewer.pop();
+    let found = record_problems(&dev, &fewer);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("only in dev [pkg/a.slang]"), "{found:?}");
+    let found = record_problems(&fewer, &dev);
+    assert!(
+        found[0].contains("only in dev+subgroups [pkg/a.slang]"),
+        "{found:?}"
+    );
+
+    let mut changed = dev.clone();
+    changed[1].1 = b"void a() { }".to_vec();
+    let found = record_problems(&dev, &changed);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(
+        found[0].contains("1 record(s) differ") && found[0].contains("pkg/a.slang"),
+        "{found:?}"
+    );
+
+    // A renamed file is both a missing and an extra file.
+    let mut renamed = dev.clone();
+    renamed[0].0 = "pkg/b.kernel.json".to_owned();
+    let found = record_problems(&dev, &renamed);
+    assert!(found[0].contains("pkg/a.kernel.json") && found[0].contains("pkg/b.kernel.json"));
+}
+
+/// The tree reader sees nested files with `/` paths, sorted, and a missing directory is an empty tree.
+#[test]
+fn a_record_tree_is_read_with_relative_paths_and_a_missing_directory_is_empty() {
+    let root = std::env::temp_dir().join(format!("xtask-record-tree-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(record_tree(&root).unwrap(), Vec::new());
+    std::fs::create_dir_all(root.join("pkg")).unwrap();
+    std::fs::write(root.join("pkg").join("b.slang"), b"two").unwrap();
+    std::fs::write(root.join("pkg").join("a.kernel.json"), b"one").unwrap();
+    let found = record_tree(&root).unwrap();
+    std::fs::remove_dir_all(&root).unwrap();
+    assert_eq!(
+        found,
+        vec![
+            ("pkg/a.kernel.json".to_owned(), b"one".to_vec()),
+            ("pkg/b.slang".to_owned(), b"two".to_vec()),
+        ]
+    );
+}
+
+/// The check-difftest source runs the profile step only after the plain batch and the short-circuit test, hands the
+/// `dev` batch a record directory, and compares the two trees; a refactor that drops one of these fails here.
+#[test]
+fn the_profile_step_exports_the_dev_batch_and_compares_the_two_trees() {
+    let source = repo_file(include_str!("../difftest.rs"));
+    let run = source
+        .split("fn run_steps(")
+        .nth(1)
+        .and_then(|rest| rest.split("\nfn run_batch").next())
+        .expect("run_steps");
+    for needle in [
+        "fresh_record_dirs(target)",
+        "run_batch(options, root, target, report_path, \"dev\", export)",
+        "SUBGROUPS_PROFILE,",
+        "record_problems(&dev, &subgroups)",
+    ] {
+        assert!(run.contains(needle), "{needle}");
+    }
+    let batch = run.find("DifftestStep::Batch =>").unwrap();
+    let short = run.find("DifftestStep::ShortCircuitGpu =>").unwrap();
+    let profile = run.find("DifftestStep::ProfileArtifacts =>").unwrap();
+    assert!(batch < short && short < profile);
+}
+
+/// A good report with the capabilities the programs reported (Opus S4): `every` is what each result named, `any` what
+/// at least one did.
+fn with_capabilities(every: &[&str], any: &[&str]) -> Report {
+    let list = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| format!("{name:?}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let text = good("gpu", &[1, 2]).replace(
+        "\"mode\":\"gpu\",",
+        &format!(
+            "\"mode\":\"gpu\",\"capabilities_in_every_result\":[{}],\"capabilities_in_any_result\":[{}],",
+            list(every),
+            list(any)
+        ),
+    );
+    parse_report(&text).unwrap()
+}
+
+/// The profile argument is only echoed by the harness; the capabilities are read by each program from its own build, so
+/// a batch whose build did not get the profile fails here (the mutation: the second batch's results lack `subgroups`).
+#[test]
+fn the_capabilities_the_programs_report_must_be_those_of_the_profile() {
+    assert!(expected_capabilities("dev").is_empty());
+    assert_eq!(expected_capabilities(SUBGROUPS_PROFILE), ["subgroups"]);
+    assert_eq!(expected_capabilities("native+subgroups"), ["subgroups"]);
+
+    // The two honest batches.
+    let dev = with_capabilities(&[], &[]);
+    assert!(capability_problems(&dev, "dev").is_empty());
+    let subgroups = with_capabilities(&["subgroups"], &["subgroups"]);
+    assert!(capability_problems(&subgroups, SUBGROUPS_PROFILE).is_empty());
+
+    // The second batch whose results lack `subgroups`: the profile did not reach the build.
+    let lacking = capability_problems(&dev, SUBGROUPS_PROFILE);
+    assert_eq!(lacking.len(), 1, "{lacking:?}");
+    assert!(
+        lacking[0].contains("builds with `subgroups`"),
+        "{lacking:?}"
+    );
+    // One result lacks it: in any, not in every.
+    let mixed = with_capabilities(&[], &["subgroups"]);
+    assert!(!capability_problems(&mixed, SUBGROUPS_PROFILE).is_empty());
+    // The `dev` batch must not have it, in any result.
+    let leaked = capability_problems(&subgroups, "dev");
+    assert_eq!(leaked.len(), 1, "{leaked:?}");
+    assert!(leaked[0].contains("does not build with"), "{leaked:?}");
+    assert!(!capability_problems(&mixed, "dev").is_empty());
+
+    // A report that names no capabilities (an old one, or a harness that stopped writing them) proves nothing.
+    let silent = parse_report(&good("gpu", &[1, 2])).unwrap();
+    assert_eq!(silent.capabilities_in_every_result, None);
+    for profile in ["dev", SUBGROUPS_PROFILE] {
+        let problems = capability_problems(&silent, profile);
+        assert_eq!(problems.len(), 1, "{profile}: {problems:?}");
+        assert!(problems[0].contains("does not say"), "{problems:?}");
+    }
+    // A capability list that is not text proves nothing.
+    let bad = good("gpu", &[1, 2]).replace(
+        "\"mode\":\"gpu\",",
+        "\"mode\":\"gpu\",\"capabilities_in_every_result\":[3],\"capabilities_in_any_result\":[],",
+    );
+    assert!(parse_report(&bad).is_err());
+}
+
+/// Both batches are judged by the capabilities, and the pass line prints the second batch's timing.
+#[test]
+fn every_batch_is_judged_by_the_capabilities_and_the_second_one_prints_its_timing() {
+    let source = repo_file(include_str!("../difftest.rs"));
+    let batch = source
+        .split("fn run_batch(")
+        .nth(1)
+        .and_then(|rest| rest.split("\nfn run_short_circuit").next())
+        .expect("run_batch");
+    assert!(batch.contains("capability_problems(&parsed, profile)"));
+    let run = source
+        .split("fn run_steps(")
+        .nth(1)
+        .and_then(|rest| rest.split("\nfn run_batch").next())
+        .expect("run_steps");
+    assert!(run.contains("subgroups_timing = judgement.summary.last().cloned()"));
+    assert!(run.contains("{SUBGROUPS_PROFILE} batch: {}"));
 }

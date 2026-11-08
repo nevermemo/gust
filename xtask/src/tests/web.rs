@@ -14,7 +14,8 @@ use super::{
     Options, PageResult, Platform, Server, WaitEnd, chrome_candidates, content_type,
     evidence_label, feature_scope_problems, find_in_path, join_within, kill_tree,
     locate_wasm_bindgen, locked_wasm_bindgen_version, parse_chrome_version, parse_cli_version,
-    parse_console_line, resolve_target, tree_enables_webgpu, wait_for_result,
+    parse_console_line, resolve_target, selected_key_problems, split_page_label,
+    tree_enables_webgpu, wait_for_result,
 };
 
 fn strings(items: &[&str]) -> Vec<String> {
@@ -816,4 +817,173 @@ fn a_wasm_bindgen_that_is_not_on_path_is_refused_with_the_install_command() {
     let unset = locate_wasm_bindgen(&Options::default(), "0.2.99", None).unwrap_err();
     assert!(unset.contains("wasm-bindgen is not on PATH"), "{unset}");
     let _ = fs::remove_dir_all(empty);
+}
+
+// ---- the selected key (m8.e) ----
+
+/// The committed manifest of the example, which the check compares the page's selected keys with.
+fn example_manifest() -> String {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join(super::MANIFEST_PATH);
+    fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+        .replace("\r\n", "\n")
+}
+
+const PAGE_LABEL: &str = "nvidia blackwell | selected vector_add.add_pixel=05f35ef1abaf4118:-:0 vector_add.add=52e85c5f03f72272:-:0 double_add.map_kernel=5f5fc9afb786701a:-:0 | subgroups MissingCapability";
+
+#[test]
+fn the_page_label_is_split_into_the_adapter_and_the_selected_kernels() {
+    let (adapter, selected) = split_page_label(PAGE_LABEL).unwrap();
+    assert_eq!(adapter, "nvidia blackwell");
+    assert_eq!(selected.len(), 3);
+    assert_eq!(
+        (
+            selected[1].module.as_str(),
+            selected[1].name.as_str(),
+            selected[1].key.as_str(),
+            selected[1].variant.as_str(),
+            selected[1].requires
+        ),
+        ("vector_add", "add", "52e85c5f03f72272", "", 0)
+    );
+    // A named variant keeps its name.
+    let (_, named) = split_page_label(
+        "a b | selected m.k=0123456789abcdef:fast:1 | subgroups MissingCapability",
+    )
+    .unwrap();
+    assert_eq!((named[0].variant.as_str(), named[0].requires), ("fast", 1));
+}
+
+#[test]
+fn a_page_label_that_proves_less_is_refused() {
+    for (label, needle) in [
+        ("nvidia blackwell", "expected 3"),
+        (
+            "nvidia blackwell | subgroups MissingCapability",
+            "expected 3",
+        ),
+        (
+            "nvidia blackwell | selected m.k=0123456789abcdef:-:0 | subgroups fine",
+            "does not say",
+        ),
+        (
+            "nvidia blackwell | chosen m.k=0123456789abcdef:-:0 | subgroups MissingCapability",
+            "no `selected` part",
+        ),
+        (
+            "nvidia blackwell | selected | subgroups MissingCapability",
+            "selects no kernel",
+        ),
+        (
+            "nvidia blackwell | selected m.k=0123456789abcdef:0 | subgroups MissingCapability",
+            "is not `<module>.<kernel>",
+        ),
+        (
+            "nvidia blackwell | selected m.k=0123456789abcdef:-:many | subgroups MissingCapability",
+            "is not `<module>.<kernel>",
+        ),
+        (
+            "nvidia blackwell | selected mk=0123456789abcdef:-:0 | subgroups MissingCapability",
+            "is not `<module>.<kernel>",
+        ),
+    ] {
+        let error = split_page_label(label).unwrap_err();
+        assert!(error.contains(needle), "{label:?}: {error}");
+    }
+}
+
+#[test]
+fn the_selected_keys_of_the_committed_example_match_its_manifest() {
+    let (_, selected) = split_page_label(PAGE_LABEL).unwrap();
+    let problems = selected_key_problems(&selected, &example_manifest());
+    assert!(problems.is_empty(), "{problems:?}");
+}
+
+/// Mutations: a key the manifest does not list, no artifact, a required capability, a kernel left out, a kernel the
+/// manifest does not have, a kernel twice.
+#[test]
+fn a_selected_key_the_manifest_does_not_list_fails() {
+    let manifest = example_manifest();
+    let label = |from: &str, to: &str| split_page_label(&PAGE_LABEL.replace(from, to)).unwrap().1;
+
+    let wrong_key = label("52e85c5f03f72272", "0000000000000000");
+    let problems = selected_key_problems(&wrong_key, &manifest);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("vector_add.add") && problems[0].contains("0000000000000000"));
+
+    let none = label("52e85c5f03f72272", "none");
+    assert!(selected_key_problems(&none, &manifest)[0].contains("embedded no artifact"));
+
+    let needs = label("52e85c5f03f72272:-:0", "52e85c5f03f72272:-:1");
+    let problems = selected_key_problems(&needs, &manifest);
+    assert!(
+        problems.iter().any(|p| p.contains("requires 1 capability")),
+        "{problems:?}"
+    );
+    assert!(
+        problems.iter().any(|p| p.contains("the manifest says 0")),
+        "{problems:?}"
+    );
+
+    // A variant name the manifest does not give that key is a different body.
+    let variant = label("52e85c5f03f72272:-:0", "52e85c5f03f72272:fast:0");
+    assert!(selected_key_problems(&variant, &manifest)[0].contains("not a body"));
+
+    let mut missing = split_page_label(PAGE_LABEL).unwrap().1;
+    let dropped = missing.remove(2);
+    let problems = selected_key_problems(&missing, &manifest);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains(&format!("{}.{}", dropped.module, dropped.name)));
+
+    let mut extra = split_page_label(PAGE_LABEL).unwrap().1;
+    extra[0].name = "elsewhere".to_owned();
+    let problems = selected_key_problems(&extra, &manifest);
+    assert!(
+        problems.iter().any(|p| p.contains("does not list")),
+        "{problems:?}"
+    );
+    assert!(
+        problems
+            .iter()
+            .any(|p| p.contains("add_pixel, which the page did not report")),
+        "{problems:?}"
+    );
+
+    let mut twice = split_page_label(PAGE_LABEL).unwrap().1;
+    twice.push(twice[0].clone());
+    assert!(
+        selected_key_problems(&twice, &manifest)
+            .iter()
+            .any(|p| p.contains("selected 2 times"))
+    );
+}
+
+/// A manifest with variants (schema 3): the key of a variant is a body the check accepts with the capabilities the
+/// manifest gives it, and the browser still refuses a build that selected it.
+#[test]
+fn a_variant_key_is_judged_by_the_capabilities_the_manifest_lists_for_it() {
+    let manifest = r#"{"kernels":[
+        {"key":"aaaaaaaaaaaaaaaa","module":"m","name":"k","variants":[
+            {"key":"aaaaaaaaaaaaaaaa","requires":[],"variant":""},
+            {"key":"bbbbbbbbbbbbbbbb","requires":["subgroups"],"variant":"fast"}]},
+        {"key":"bbbbbbbbbbbbbbbb","module":"m","name":"k"}]}"#;
+    let selected = |key: &str, variant: &str, requires: usize| {
+        split_page_label(&format!(
+            "a b | selected m.k={key}:{variant}:{requires} | subgroups MissingCapability"
+        ))
+        .unwrap()
+        .1
+    };
+    assert!(selected_key_problems(&selected("aaaaaaaaaaaaaaaa", "-", 0), manifest).is_empty());
+    let problems = selected_key_problems(&selected("bbbbbbbbbbbbbbbb", "fast", 1), manifest);
+    assert_eq!(problems.len(), 1, "{problems:?}");
+    assert!(problems[0].contains("browser selected a body that requires 1"));
+    let problems = selected_key_problems(&selected("bbbbbbbbbbbbbbbb", "fast", 0), manifest);
+    assert!(
+        problems.iter().any(|p| p.contains("the manifest says 1")),
+        "{problems:?}"
+    );
+    assert!(!selected_key_problems(&selected("aaaaaaaaaaaaaaaa", "-", 0), "{").is_empty());
 }

@@ -5,22 +5,27 @@
 //! under `GUST_PROFILE=web`, runs `wasm-bindgen --target web`, serves `index.html` with the result from a loopback
 //! server, opens it in headless Chrome and reads the one line that [`run`] logs to the console:
 //!
-//! - `GUST_OK <vendor> <architecture>` when both forms of the kernel (the `grid` form, a compute pass, and the
+//! - `GUST_OK <vendor> <architecture> | selected <module.kernel=key:variant:n ...> | subgroups MissingCapability` when both forms of the kernel (the `grid` form, a compute pass, and the
 //!   `pixel` form, a render pass whose fragments write the output buffer, D120) equal the host reference and each
 //!   other to the last bit, at [`LENGTH`] and at [`TWO_DRAWS`] elements, where the two words are what the browser says
 //!   about the adapter (`GPUAdapter.info`; wgpu's own `name` is empty there), and when the `WgpuJob` contract of the
 //!   browser holds for each submission (D69, `check_job_contract`): `status` is `Pending` right after the submit (in
 //!   the same synchronous run, so deterministic) and `Complete` after the awaited readback, `wait` and `wait_timeout`
 //!   return `Error::WouldBlock`, and so does the generated `dispatch`; and when the resident `map_gpu` of a function
-//!   (which submits and does not wait there) reads back, through `to_vec_async`, what the host computes;
+//!   (which submits and does not wait there) reads back, through `to_vec_async`, what the host computes; and when a device
+//!   opened with the `subgroups` capability is refused with `Error::MissingCapability` (wgpu's WebGPU backend maps no
+//!   subgroup feature, D142; M8, slice m8.e). The `selected` part names, for each kernel, the key of the artifact the build
+//!   embedded, the variant it selected (`-` for the portable body) and how many capabilities that body requires
+//!   ([`selected_kernels`]); `check-web` compares it with the committed manifest;
 //! - `GUST_FAIL <reason>` on any error or panic.
 //!
 //! The whole crate is `cfg(target_arch = "wasm32")`: on the host it is empty.
 #![cfg(target_arch = "wasm32")]
 
 use gust::JobStatus;
+use gust::capability::Capability;
 use gust::gpu;
-use gust_wgpu::{Error, GpuBufferAccess, HeadlessDevice, WgpuJob};
+use gust_wgpu::{DeviceOptions, Error, GpuBufferAccess, HeadlessDevice, WgpuJob};
 use js_sys::{Function, Object, Promise, Reflect};
 use wasm_bindgen::{JsCast, JsValue, prelude::wasm_bindgen};
 use wasm_bindgen_futures::JsFuture;
@@ -189,7 +194,61 @@ async fn vector_add_on_the_browser_gpu() -> Result<String, String> {
             doubled.len()
         ));
     }
-    Ok(browser_adapter_label().await)
+    subgroups_are_refused().await?;
+    Ok(format!(
+        "{} | selected {} | subgroups MissingCapability",
+        browser_adapter_label().await,
+        selected_kernels()
+    ))
+}
+
+/// The body this build selected for each kernel, as `check-web` reads it: `<module>.<kernel>=<key>:<variant>:<n>` with the
+/// key of the artifact the descriptor embeds (`none` when it embeds none), `-` for the portable body's empty variant
+/// name, and `n` the number of capabilities the body requires. `check-web` compares each triple with the committed
+/// manifest (M8, slice m8.e): the key must be one the manifest lists for that kernel, and a build for the browser may
+/// select no body that needs a capability.
+fn selected_kernels() -> String {
+    let modules = [vector_add::MODULE_DESCRIPTOR, double_add::MODULE_DESCRIPTOR];
+    modules
+        .iter()
+        .flat_map(|module| module.kernels.iter())
+        .map(|kernel| {
+            format!(
+                "{}.{}={}:{}:{}",
+                kernel.module,
+                kernel.name,
+                kernel
+                    .artifacts
+                    .first()
+                    .map_or("none", |artifact| artifact.key),
+                if kernel.variant.is_empty() {
+                    "-"
+                } else {
+                    kernel.variant
+                },
+                kernel.requires.len()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Opening a device with the `subgroups` capability must fail with `Error::MissingCapability` in the browser: wgpu 30's
+/// WebGPU backend maps no subgroup feature (D142), so the request is refused with the typed error and no device exists.
+async fn subgroups_are_refused() -> Result<(), String> {
+    let options = DeviceOptions::default().with_capabilities(&[Capability::Subgroups]);
+    match HeadlessDevice::new_async_with(options).await {
+        Err(Error::MissingCapability {
+            capability: Capability::Subgroups,
+            ..
+        }) => Ok(()),
+        Err(other) => Err(format!(
+            "opening a device with the subgroups capability must be MissingCapability in the browser, got {other}"
+        )),
+        Ok(_) => Err(
+            "opening a device with the subgroups capability must fail in the browser, but a device opened".to_owned(),
+        ),
+    }
 }
 
 /// The browser contract of `WgpuJob` (D69), checked after the job's awaited readback has resolved: `status` is

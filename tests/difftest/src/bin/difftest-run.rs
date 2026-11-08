@@ -2,7 +2,7 @@
 //! write `report.json`; or shrink one failing program. See docs/development/DIFFTEST.md.
 //!
 //! ```text
-//! difftest-run --seeds 1-2 [--shapes grid,pixel] [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR]
+//! difftest-run --seeds 1-2 [--shapes grid,pixel] [--profile P] [--export-dir DIR] [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR]
 //! difftest-run --shrink <seed>:<index> [--cpu-only] [--report PATH] [--max-candidates N] [--max-minutes M] [--target-dir DIR] [--repo-root DIR]
 //! difftest-run --refresh-lock [--repo-root DIR]
 //! ```
@@ -25,6 +25,8 @@ struct Args {
     shrink: Option<String>,
     shapes: Option<String>,
     cpu_only: bool,
+    profile: Option<String>,
+    export_dir: Option<PathBuf>,
     report: Option<PathBuf>,
     target_dir: Option<PathBuf>,
     repo_root: Option<PathBuf>,
@@ -39,6 +41,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
         shrink: None,
         shapes: None,
         cpu_only: false,
+        profile: None,
+        export_dir: None,
         report: None,
         target_dir: None,
         repo_root: None,
@@ -57,6 +61,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--seeds" => parsed.seeds = Some(value("--seeds")?),
             "--shrink" => parsed.shrink = Some(value("--shrink")?),
             "--shapes" => parsed.shapes = Some(value("--shapes")?),
+            "--profile" => parsed.profile = Some(value("--profile")?),
+            "--export-dir" => parsed.export_dir = Some(PathBuf::from(value("--export-dir")?)),
             "--cpu-only" => parsed.cpu_only = true,
             "--report" => parsed.report = Some(PathBuf::from(value("--report")?)),
             "--target-dir" => parsed.target_dir = Some(PathBuf::from(value("--target-dir")?)),
@@ -82,6 +88,14 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 .into(),
         );
     }
+    if let Some(profile) = &parsed.profile {
+        // The run crate compiles Slang at run time, which only `dev` and `dev+<capability>` keep (gust's build script).
+        if profile != "dev" && !profile.starts_with("dev+") {
+            return Err(format!(
+                "--profile {profile:?}: the run crate needs the run-time compiler, so the profile is `dev` or `dev+<capability>`"
+            ));
+        }
+    }
     if (parsed.max_candidates.is_some() || parsed.max_minutes.is_some()) && parsed.shrink.is_none()
     {
         return Err("--max-candidates and --max-minutes belong to --shrink".into());
@@ -89,7 +103,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
     Ok(parsed)
 }
 
-const USAGE: &str = "usage: difftest-run --seeds 1-2 [--shapes grid,pixel] [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR] | --shrink <seed>:<index> [--cpu-only] [--report PATH] [--max-candidates N] [--max-minutes M] | --refresh-lock [--repo-root DIR]";
+const USAGE: &str = "usage: difftest-run --seeds 1-2 [--shapes grid,pixel] [--profile P] [--export-dir DIR] [--cpu-only] [--report PATH] [--target-dir DIR] [--repo-root DIR] | --shrink <seed>:<index> [--cpu-only] [--report PATH] [--max-candidates N] [--max-minutes M] | --refresh-lock [--repo-root DIR]";
 
 /// The repository root: the `--repo-root` argument, else two levels above `tests/difftest` (this crate's manifest).
 fn repo_root(given: Option<PathBuf>) -> Result<PathBuf, String> {
@@ -135,12 +149,19 @@ fn main_inner() -> Result<ExitCode, String> {
         Some(text) => parse_shapes(text)?,
         None => vec![Shape::Grid],
     };
+    let export_dir = args
+        .export_dir
+        .map(std::path::absolute)
+        .transpose()
+        .map_err(|e| format!("--export-dir: {e}"))?;
     let options = Options {
         seeds,
         cpu_only: args.cpu_only,
         shapes,
         target_dir,
         repo_root,
+        profile: args.profile.unwrap_or_else(|| "dev".to_owned()),
+        export_dir,
     };
     if let Some(target) = &args.shrink {
         let mut limits = Limits::default();

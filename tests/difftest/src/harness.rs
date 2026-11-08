@@ -139,6 +139,13 @@ pub struct Options {
     pub target_dir: PathBuf,
     /// The repository root (the generated manifest points at its `crates/`).
     pub repo_root: PathBuf,
+    /// The `GUST_PROFILE` the run crate is built and run under: `dev` (the default) or `dev+<capability>` (M8: `dev+subgroups`,
+    /// the profiles that keep the run-time compiler the run crate needs).
+    pub profile: String,
+    /// `GUST_EXPORT_DIR` of the run crate's build, when set: the macro writes its records (`<key>.slang` and
+    /// `<key>.kernel.json` of every kernel) under `<dir>/<package>/`. The directory must be new for the run (the macro
+    /// keeps a file that exists with other bytes, and cargo re-expands the crate only when the value changes).
+    pub export_dir: Option<PathBuf>,
 }
 
 /// The planned programs of one seed, with the discard counts and the time the planning took.
@@ -381,6 +388,8 @@ fn cargo_step(
     cpu_only: bool,
     log: &Path,
     env: &[(&str, &Path)],
+    profile: &str,
+    export_dir: Option<&Path>,
     deadline: Option<Duration>,
 ) -> Result<f64, String> {
     let mut command = cargo_command();
@@ -390,11 +399,14 @@ fn cargo_step(
         .arg("--manifest-path")
         .arg(crate_dir.join("Cargo.toml"))
         .env("CARGO_TARGET_DIR", target_dir)
-        .env("GUST_PROFILE", "dev")
+        .env("GUST_PROFILE", profile)
         .env("DIFFTEST_CPU_ONLY", if cpu_only { "1" } else { "0" })
         .stdin(Stdio::null());
     if let Some(out_dir) = out_dir {
         command.env("DIFFTEST_OUT", out_dir);
+    }
+    if let Some(export_dir) = export_dir {
+        command.env("GUST_EXPORT_DIR", export_dir);
     }
     for (key, value) in env {
         command.env(key, value);
@@ -582,6 +594,22 @@ pub fn build_report(
         })
         .collect();
     let adapter = raws.iter().find_map(|r| r.adapter.clone());
+    // The capabilities the programs report (the run crate's own `gust::capability::enabled`): those in every result and
+    // those in at least one, so the checker can require one in all of them and refuse one in any.
+    let in_every: Vec<String> = raws.first().map_or_else(Vec::new, |first| {
+        first
+            .capabilities
+            .iter()
+            .filter(|name| raws.iter().all(|raw| raw.capabilities.contains(name)))
+            .cloned()
+            .collect()
+    });
+    let in_any: Vec<String> = raws
+        .iter()
+        .flat_map(|raw| raw.capabilities.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
     let sum = |f: fn(&Raw) -> u64| raws.iter().map(f).sum::<u64>();
     let max = |f: fn(&Raw) -> u64| raws.iter().map(f).max().unwrap_or(0);
     let mean = |total: u64| {
@@ -650,6 +678,7 @@ pub fn build_report(
             "mode",
             Json::str(if options.cpu_only { "cpu-only" } else { "gpu" }),
         ),
+        ("profile", Json::str(&options.profile)),
         ("passed", Json::Bool(passed)),
         (
             "seeds",
@@ -658,6 +687,14 @@ pub fn build_report(
         ("programs_requested", Json::uint(requested as u64)),
         ("programs_executed", Json::uint(executed as u64)),
         ("adapter", adapter.map_or(Json::Null, Json::Str)),
+        (
+            "capabilities_in_every_result",
+            Json::Arr(in_every.iter().map(|name| Json::str(name)).collect()),
+        ),
+        (
+            "capabilities_in_any_result",
+            Json::Arr(in_any.iter().map(|name| Json::str(name)).collect()),
+        ),
         ("per_seed", Json::Arr(per_seed)),
         (
             "discards",
@@ -736,6 +773,8 @@ pub fn execute_shapes(
             options.cpu_only,
             &dir.join("build.log"),
             &[],
+            &options.profile,
+            options.export_dir.as_deref(),
             deadline,
         )
     };
@@ -772,6 +811,8 @@ pub fn execute_shapes(
         options.cpu_only,
         &dir.join("run.log"),
         env,
+        &options.profile,
+        options.export_dir.as_deref(),
         deadline,
     )?;
     let raws = read_results(&out, plan)?;
@@ -1090,6 +1131,8 @@ mod tests {
             shapes: vec![Shape::Grid],
             target_dir: PathBuf::new(),
             repo_root: PathBuf::new(),
+            profile: "dev".to_owned(),
+            export_dir: None,
         };
         let outcome = build_report(
             &options,
@@ -1174,6 +1217,7 @@ mod tests {
             out_ty: "u32".into(),
             mode: "cpu-only".into(),
             adapter: None,
+            capabilities: Vec::new(),
             interp: vec![1],
             twin: Ok(vec![1]),
             gpu: None,
@@ -1300,6 +1344,8 @@ mod tests {
             shapes: vec![Shape::Grid, Shape::Pixel],
             target_dir: PathBuf::new(),
             repo_root: PathBuf::new(),
+            profile: "dev".to_owned(),
+            export_dir: None,
         };
         let mut shapes = pixel_plan();
         for (program, reason) in [
@@ -1372,5 +1418,59 @@ mod tests {
                 .get("pixel_twin_ms_total")
                 .is_none()
         );
+    }
+    /// Opus S4: the report names the capabilities the programs themselves reported, those in every result and those
+    /// in any, so a profile that did not reach the build shows in the report.
+    #[test]
+    fn the_report_names_the_capabilities_the_programs_reported() {
+        let plans = vec![plan_seed_timed(1).unwrap()];
+        let options = Options {
+            seeds: vec![1],
+            cpu_only: true,
+            shapes: vec![Shape::Grid],
+            target_dir: PathBuf::new(),
+            repo_root: PathBuf::new(),
+            profile: "dev+subgroups".to_owned(),
+            export_dir: None,
+        };
+        let names = |report: &Json, key: &str| -> Vec<String> {
+            report
+                .get(key)
+                .and_then(Json::as_array)
+                .unwrap()
+                .iter()
+                .map(|name| name.as_str().unwrap().to_owned())
+                .collect()
+        };
+        let report_of = |raws: &[Raw]| {
+            build_report(
+                &options,
+                &plans,
+                raws,
+                &[],
+                Json::Null,
+                &CargoRun::default(),
+                &ShapePlan::new(&options.shapes),
+            )
+            .report
+        };
+        let with = |capabilities: &[&str]| {
+            let mut raw = raw_with("s1_a0", false);
+            raw.capabilities = capabilities.iter().map(|name| (*name).to_owned()).collect();
+            raw
+        };
+        let all = report_of(&[with(&["subgroups"]), with(&["subgroups"])]);
+        assert_eq!(names(&all, "capabilities_in_every_result"), ["subgroups"]);
+        assert_eq!(names(&all, "capabilities_in_any_result"), ["subgroups"]);
+        // One result without it: in any, not in every.
+        let mixed = report_of(&[with(&["subgroups"]), with(&[])]);
+        assert!(names(&mixed, "capabilities_in_every_result").is_empty());
+        assert_eq!(names(&mixed, "capabilities_in_any_result"), ["subgroups"]);
+        let none = report_of(&[with(&[]), with(&[])]);
+        assert!(names(&none, "capabilities_in_every_result").is_empty());
+        assert!(names(&none, "capabilities_in_any_result").is_empty());
+        // No results: both empty, and the report cannot pass.
+        let empty = report_of(&[]);
+        assert!(names(&empty, "capabilities_in_every_result").is_empty());
     }
 }

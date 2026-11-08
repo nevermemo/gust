@@ -173,3 +173,41 @@ fn the_evidence_pair_selects_the_body_of_the_profile_and_the_shipped_set_does_no
         assert_eq!(shipped(operation), Variant::V1, "{operation:?}");
     }
 }
+
+/// Slice m8.e, Opus S1: the subgroup body adds 32 totals at most, so a device that reports a minimum subgroup size
+/// below 8 is refused by the host (`DeviceLimit`, limit `min_subgroup_size`) when the build selects that body, and
+/// nothing else is: not the portable body, not a device that reports no range, not a minimum of 8 and above (the
+/// guard needs no device, it takes what `HeadlessDevice::subgroup_sizes` reports).
+#[test]
+fn the_subgroup_body_is_refused_on_a_device_whose_smallest_subgroup_is_below_eight() {
+    use crate::evidence::{MIN_SUBGROUP_SIZE, check_subgroup_sizes};
+    assert_eq!(MIN_SUBGROUP_SIZE, 8);
+    for minimum in [1, 2, 4, 7] {
+        match check_subgroup_sizes(true, Some((minimum, 64))) {
+            Err(crate::Error::Device(gust_wgpu::Error::DeviceLimit {
+                limit,
+                requested,
+                maximum,
+                ..
+            })) => {
+                assert_eq!(limit, "min_subgroup_size");
+                assert_eq!(requested, 8);
+                assert_eq!(maximum, u64::from(minimum));
+            }
+            other => panic!("minimum {minimum}: {other:?}"),
+        }
+        assert!(
+            check_subgroup_sizes(false, Some((minimum, 64))).is_ok(),
+            "the portable body works at any size, minimum {minimum}"
+        );
+    }
+    for sizes in [
+        Some((8, 8)),
+        Some((8, 128)),
+        Some((32, 64)),
+        Some((64, 128)),
+        None,
+    ] {
+        assert!(check_subgroup_sizes(true, sizes).is_ok(), "{sizes:?}");
+    }
+}

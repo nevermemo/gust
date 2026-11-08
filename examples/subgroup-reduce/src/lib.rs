@@ -232,6 +232,15 @@ pub fn run() -> Result<Vec<String>, String> {
         return Ok(lines);
     }
     let found = check(&words, &data)?;
+    // The lane counts the shader saw must lie inside the range the device reports (Opus N3).
+    if let Some((minimum, maximum)) = device.subgroup_sizes() {
+        let (smallest, largest) = found.sizes;
+        if smallest < minimum as usize || largest > maximum as usize {
+            return Err(format!(
+                "the shader saw lane counts {smallest} to {largest}, outside the {minimum} to {maximum} the device reports"
+            ));
+        }
+    }
     lines.push(format!(
         "subgroup-reduce: lane count {} to {} over {} invocations in {} subgroups",
         found.sizes.0, found.sizes.1, found.invocations, found.subgroups
@@ -311,6 +320,12 @@ mod tests {
             check(&words, &data)
                 .unwrap_err()
                 .contains("subgroup size 24")
+        );
+        words[0] = 1;
+        assert!(
+            check(&words, &data)
+                .unwrap_err()
+                .contains("subgroup size 1")
         );
         assert!(check(&vec![0; good.len()], &data).is_err());
         // Too few words.

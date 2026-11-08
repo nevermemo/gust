@@ -27,6 +27,9 @@
 //! pattern. The v0 kernels run on `gust::cpu::CpuDevice` through their twins in test and dual builds ([`cpu`]); a twin
 //! result is never GPU evidence.
 //!
+//! [`evidence`] is the subgroup form of the reduction's block step, kept as measured evidence: not for users, and not part
+//! of what this crate promises (see `docs/development/VALIDATION.md`, "Subgroup evidence").
+//!
 //! Kernels are compiled at run time through gust-wgpu's `slang-runtime` feature (enable this crate's feature of the
 //! same name); the crate ships no precompiled artifacts.
 

@@ -1,11 +1,11 @@
 use std::path::Path;
 
 use super::{
-    DEFAULT_SEEDS, DifftestStep, FULL_SHAPES, Mode, Options, PROGRAMS_PER_SEED,
-    SHORT_CIRCUIT_GPU_TEST, SUBGROUPS_PROFILE, batch_args, export_args, judge_batch, parse_report,
-    parse_seeds, parse_shapes, profile_problems, random_seeds, record_problems, record_tree,
-    report_problems, seed_list, short_circuit_args, short_circuit_problems, steps,
-    with_full_shapes,
+    DEFAULT_SEEDS, DifftestStep, FULL_SHAPES, Mode, Options, PROGRAMS_PER_SEED, Report,
+    SHORT_CIRCUIT_GPU_TEST, SUBGROUPS_PROFILE, batch_args, capability_problems,
+    expected_capabilities, export_args, judge_batch, parse_report, parse_seeds, parse_shapes,
+    profile_problems, random_seeds, record_problems, record_tree, report_problems, seed_list,
+    short_circuit_args, short_circuit_problems, steps, with_full_shapes,
 };
 
 fn owned(args: &[&str]) -> Vec<String> {
@@ -1183,4 +1183,90 @@ fn the_profile_step_exports_the_dev_batch_and_compares_the_two_trees() {
     let short = run.find("DifftestStep::ShortCircuitGpu =>").unwrap();
     let profile = run.find("DifftestStep::ProfileArtifacts =>").unwrap();
     assert!(batch < short && short < profile);
+}
+
+/// A good report with the capabilities the programs reported (Opus S4): `every` is what each result named, `any` what
+/// at least one did.
+fn with_capabilities(every: &[&str], any: &[&str]) -> Report {
+    let list = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| format!("{name:?}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let text = good("gpu", &[1, 2]).replace(
+        "\"mode\":\"gpu\",",
+        &format!(
+            "\"mode\":\"gpu\",\"capabilities_in_every_result\":[{}],\"capabilities_in_any_result\":[{}],",
+            list(every),
+            list(any)
+        ),
+    );
+    parse_report(&text).unwrap()
+}
+
+/// The profile argument is only echoed by the harness; the capabilities are read by each program from its own build, so
+/// a batch whose build did not get the profile fails here (the mutation: the second batch's results lack `subgroups`).
+#[test]
+fn the_capabilities_the_programs_report_must_be_those_of_the_profile() {
+    assert!(expected_capabilities("dev").is_empty());
+    assert_eq!(expected_capabilities(SUBGROUPS_PROFILE), ["subgroups"]);
+    assert_eq!(expected_capabilities("native+subgroups"), ["subgroups"]);
+
+    // The two honest batches.
+    let dev = with_capabilities(&[], &[]);
+    assert!(capability_problems(&dev, "dev").is_empty());
+    let subgroups = with_capabilities(&["subgroups"], &["subgroups"]);
+    assert!(capability_problems(&subgroups, SUBGROUPS_PROFILE).is_empty());
+
+    // The second batch whose results lack `subgroups`: the profile did not reach the build.
+    let lacking = capability_problems(&dev, SUBGROUPS_PROFILE);
+    assert_eq!(lacking.len(), 1, "{lacking:?}");
+    assert!(
+        lacking[0].contains("builds with `subgroups`"),
+        "{lacking:?}"
+    );
+    // One result lacks it: in any, not in every.
+    let mixed = with_capabilities(&[], &["subgroups"]);
+    assert!(!capability_problems(&mixed, SUBGROUPS_PROFILE).is_empty());
+    // The `dev` batch must not have it, in any result.
+    let leaked = capability_problems(&subgroups, "dev");
+    assert_eq!(leaked.len(), 1, "{leaked:?}");
+    assert!(leaked[0].contains("does not build with"), "{leaked:?}");
+    assert!(!capability_problems(&mixed, "dev").is_empty());
+
+    // A report that names no capabilities (an old one, or a harness that stopped writing them) proves nothing.
+    let silent = parse_report(&good("gpu", &[1, 2])).unwrap();
+    assert_eq!(silent.capabilities_in_every_result, None);
+    for profile in ["dev", SUBGROUPS_PROFILE] {
+        let problems = capability_problems(&silent, profile);
+        assert_eq!(problems.len(), 1, "{profile}: {problems:?}");
+        assert!(problems[0].contains("does not say"), "{problems:?}");
+    }
+    // A capability list that is not text proves nothing.
+    let bad = good("gpu", &[1, 2]).replace(
+        "\"mode\":\"gpu\",",
+        "\"mode\":\"gpu\",\"capabilities_in_every_result\":[3],\"capabilities_in_any_result\":[],",
+    );
+    assert!(parse_report(&bad).is_err());
+}
+
+/// Both batches are judged by the capabilities, and the pass line prints the second batch's timing.
+#[test]
+fn every_batch_is_judged_by_the_capabilities_and_the_second_one_prints_its_timing() {
+    let source = repo_file(include_str!("../difftest.rs"));
+    let batch = source
+        .split("fn run_batch(")
+        .nth(1)
+        .and_then(|rest| rest.split("\nfn run_short_circuit").next())
+        .expect("run_batch");
+    assert!(batch.contains("capability_problems(&parsed, profile)"));
+    let run = source
+        .split("fn run_steps(")
+        .nth(1)
+        .and_then(|rest| rest.split("\nfn run_batch").next())
+        .expect("run_steps");
+    assert!(run.contains("subgroups_timing = judgement.summary.last().cloned()"));
+    assert!(run.contains("{SUBGROUPS_PROFILE} batch: {}"));
 }

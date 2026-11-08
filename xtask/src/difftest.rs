@@ -362,6 +362,45 @@ pub(crate) fn profile_problems(report: &Report, expected: &str) -> Vec<String> {
     }
 }
 
+/// The capabilities a batch under `profile` must report from inside the run crate: the names after the target in the
+/// profile (`dev+subgroups` has `subgroups`, `dev` has none).
+pub(crate) fn expected_capabilities(profile: &str) -> Vec<String> {
+    profile.split('+').skip(1).map(str::to_owned).collect()
+}
+
+/// What is wrong with the capabilities the programs of `report` reported (Opus S4): the profile argument is echoed by the
+/// harness, but `gust::capability::enabled()` is read by the program itself, so this is the proof that the profile
+/// reached the run crate's build. Every result must report exactly the capabilities of `profile` (so the `dev` batch
+/// reports none and the `dev+subgroups` batch reports `subgroups` in every result); a report that names none of them
+/// proves nothing.
+pub(crate) fn capability_problems(report: &Report, profile: &str) -> Vec<String> {
+    let expected = expected_capabilities(profile);
+    let (Some(every), Some(any)) = (
+        &report.capabilities_in_every_result,
+        &report.capabilities_in_any_result,
+    ) else {
+        return vec![format!(
+            "the report does not say which capabilities the programs were built with, so the profile `{profile}` is not shown to have reached the build"
+        )];
+    };
+    let mut problems = Vec::new();
+    for name in &expected {
+        if !every.contains(name) {
+            problems.push(format!(
+                "the profile `{profile}` builds with `{name}`, but not every program reported it (in every result: {every:?}, in any: {any:?})"
+            ));
+        }
+    }
+    for name in any {
+        if !expected.contains(name) {
+            problems.push(format!(
+                "a program reported the capability `{name}`, which the profile `{profile}` does not build with"
+            ));
+        }
+    }
+    problems
+}
+
 /// Every file under `root`, as (path relative to `root` with `/`, bytes), sorted by path. A directory that does not
 /// exist is an empty tree (the macro creates its record directory only when it writes a record).
 pub(crate) fn record_tree(root: &Path) -> Result<Vec<(String, Vec<u8>)>, String> {
@@ -522,6 +561,10 @@ pub(crate) struct Report {
     pub(crate) cargo_run_s: f64,
     /// Absent in a report from before `--profile` (m8.e); such a report ran `dev`.
     pub(crate) profile: Option<String>,
+    /// The capabilities every program of the batch reported for the run crate's own build (`gust::capability::enabled`, in
+    /// lower case as the profile spells them), and those at least one reported. Absent in a report from before m8.e.
+    pub(crate) capabilities_in_every_result: Option<Vec<String>>,
+    pub(crate) capabilities_in_any_result: Option<Vec<String>>,
     /// Absent in a report from before `--shapes`.
     pub(crate) shapes: Option<ShapesRecord>,
 }
@@ -640,6 +683,22 @@ pub(crate) fn parse_report(source: &str) -> Result<Report, String> {
         None => None,
         Some(_) => Some(text(&json, "profile")?),
     };
+    let names = |key: &str| -> Result<Option<Vec<String>>, String> {
+        json.get(key)
+            .map(|_| {
+                array(&json, key)?
+                    .iter()
+                    .map(|name| {
+                        name.as_str()
+                            .map(str::to_owned)
+                            .ok_or_else(|| format!("report.json `{key}` holds a non-text item"))
+                    })
+                    .collect()
+            })
+            .transpose()
+    };
+    let capabilities_in_every_result = names("capabilities_in_every_result")?;
+    let capabilities_in_any_result = names("capabilities_in_any_result")?;
     Ok(Report {
         mode: text(&json, "mode")?,
         passed,
@@ -656,6 +715,8 @@ pub(crate) fn parse_report(source: &str) -> Result<Report, String> {
         cargo_run_s: float(timing, "cargo_run_s")?,
         shapes,
         profile,
+        capabilities_in_every_result,
+        capabilities_in_any_result,
     })
 }
 
@@ -1079,6 +1140,7 @@ fn run_steps(
         .contains(&DifftestStep::ProfileArtifacts)
         .then(|| fresh_record_dirs(target));
     let mut compared = None;
+    let mut subgroups_timing = None;
     for step in all_steps {
         match step {
             DifftestStep::Batch => {
@@ -1104,6 +1166,8 @@ fn run_steps(
                     SUBGROUPS_PROFILE,
                     Some(subgroups_dir),
                 )?;
+                // The last summary line of a passing batch is its harness timing (cargo build, cargo run).
+                subgroups_timing = judgement.summary.last().cloned();
                 problems.extend(
                     judgement
                         .problems
@@ -1140,8 +1204,14 @@ fn run_steps(
     );
     if let Some(count) = compared {
         passed.push_str(&format!(
-            "\n  {SUBGROUPS_PROFILE}: the batch passed and its {count} exported record file(s) are byte for byte those of the dev batch"
+            "\n  {SUBGROUPS_PROFILE}: the batch passed, every program reported the capabilities of the profile from its own build, and its {count} exported record file(s) are byte for byte those of the dev batch"
         ));
+        if let Some(timing) = subgroups_timing {
+            passed.push_str(&format!(
+                "\n  {SUBGROUPS_PROFILE} batch: {}",
+                timing.trim_start()
+            ));
+        }
     }
     passed.push_str(&format!("\n  report: {}", report_path.display()));
     Ok(passed)
@@ -1208,6 +1278,9 @@ fn run_batch(
         judgement
             .problems
             .extend(profile_problems(&parsed, profile));
+        judgement
+            .problems
+            .extend(capability_problems(&parsed, profile));
     }
     Ok(judgement)
 }

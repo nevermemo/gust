@@ -57,7 +57,13 @@ subgroup form's slowest of three interleaved runs beats v1's fastest), the subgr
 cells (RTX 5090 and Radeon 890M, Vulkan, 1e6 to 1e8 elements), so it ships as `gust_algo::evidence`, outside the
 variant set, and the shipped `sum` is unchanged. check-difftest now runs a `dev+subgroups` batch whose results must
 report the profile's capabilities and whose records must equal the `dev` batch's byte for byte (RTX 5090 and
-lavapipe); `examples/subgroup-reduce` is the strict `native+subgroups` proof. Next: m8.r2.
+lavapipe); `examples/subgroup-reduce` is the strict `native+subgroups` proof. The routing
+driver is in (m8.r2, merge `5238deb`, D151; 27 main gates green on the merge, 2026-11-08T15:17Z; lavapipe runs 42486455270 and 42487784359 green): `cargo gust build|check|run|test` read `gust.toml`,
+validate it against `cargo metadata`'s declarations, set one route variable per declared tag and write
+`routes.json`. check-routing measured the rebuild in both directions (with the route tracking removed, the
+unset-to-set flip failed) and ran its GPU case on the RTX 5090; the CI `routing` job runs the GPU-free cases. Not
+covered in the first round: its rc lines were deleted (the stop-rule logs remain), and check-dual ran
+`--check-only`; the fix rounds ran check-dual in full. Next: m8.x.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

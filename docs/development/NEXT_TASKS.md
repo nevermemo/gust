@@ -493,6 +493,13 @@ test module; do not mix that mechanical move with behavior changes.
     `min_subgroup_size`, not wgpu's `subgroup_min_size`;
   - the difftest result format gained a required `capabilities` field without a `format` bump;
   - the gate scripts' START lines name the commit but not a hash of the uncommitted tree.
+- Routing driver leftovers (the m8.r2 review and re-checks):
+  - no `cargo gust` command builds a routed release binary (only `run` and `test` compile one); add one, or a
+    `cargo gust build --bin` mode (owner's call: it extends D67's command list);
+  - SEMANTICS' routing paragraph describes only the macro: add the driver, `gust.toml` and the measured
+    unset-to-set rebuild (m8.x);
+  - no test fails if `build` stops using `routed_runner` (accepted for M8: exported artifacts do not depend on
+    the route).
 
 ## Deferred language/runtime breadth
 

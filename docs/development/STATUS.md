@@ -63,7 +63,14 @@ validate it against `cargo metadata`'s declarations, set one route variable per 
 `routes.json`. check-routing measured the rebuild in both directions (with the route tracking removed, the
 unset-to-set flip failed) and ran its GPU case on the RTX 5090; the CI `routing` job runs the GPU-free cases. Not
 covered in the first round: its rc lines were deleted (the stop-rule logs remain), and check-dual ran
-`--check-only`; the fix rounds ran check-dual in full. Next: m8.x.
+`--check-only`; the fix rounds ran check-dual in full. The tidy pass's code half is in (m8.x1, merge
+`c245266`; 27 main gates green on the merge, 2026-11-08T20:07Z; pull request CI 42511073744 and lavapipe 42511073531 green on a630103): Unit runs gust-compute's `pixel_twin`, `textures_twin`, `parallel`, `toolchain`
+and doc tests and cargo-gust's tests; Slangc runs the helper-backed cargo-gust tests and `testdata::variant`
+under `dev+subgroups`, requiring each named test and the capability line; `--suite Gpu --profile` also runs
+gust-algo; check-examples builds `subgroup-reduce` under plain `native` and runs its recompile check; `targets = []`
+is E0753; the difftest result format is 7. Their first Linux run (a draft pull request, nevermemo/gust#4) failed
+two cargo-gust tests that judged Windows paths; both were fixed in test code. The builder once moved round 0's rc
+file aside, so lines of a superseded batch are lost; every final gate has its line. Next: m8.x2.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -457,41 +457,10 @@ test module; do not mix that mechanical move with behavior changes.
   CPU dispatch ran (the one-lane shadows give the portable output); a literal lane of 128 or more refused in the
   macro. `i32` broadcast with a literal lane and `f32` broadcast with a computed lane are not run on any adapter.
 - For the 0.2.0 release (the m8.v re-check): RELEASE.md's "Releasing 0.2.0 from main" also covers README :360,
-  :377 and :565; `cargo gust doctor` takes its `~0.1` from the package version; the `semver` job runs on pull
-  requests into main only (`github.base_ref`); CHANGELOG's `toml` line moves out of "may break".
-- Test binaries that run in no `cargo xtask test` suite and in no CI job (m8.p survey of `crates/*/tests/*.rs` and
-  every package's lib, bin and doc tests against `xtask/src/suite.rs`, `verify.rs`, `checks.rs` and both workflows):
-  - the whole `cargo-gust` package (its 258 tests, 2 of them `#[ignore]`d and needing the helper); only
-    `check-full`'s workspace run reaches it, which is why its 2026.20 pin literals went unnoticed until the m8.p bump
-    (20 of 258 tests failed on the bumped tree);
-  - `gust-compute` `--test toolchain` (its pin-rule test broke on the same bump, found by the m8.p review);
-  - `gust-compute` `--test parallel` (only `check-feature dispatch` runs it), `--test pixel_twin`, `--test
-    textures_twin`, and `--doc` (the doc tests of `gust-compute`; the suites run its `--lib` and named test files).
-  On the m8.p tree (2026.21) all of them pass: toolchain 12 passed 1 ignored, parallel 12, pixel_twin 6, textures_twin
-  4, doc 19 (two runs of 9 and 10), cargo-gust 256 passed 2 ignored and, with `-- --ignored`, 2 passed. Fix: a Unit
-  step for the tests that need neither Slang nor the helper (the three twin files, `toolchain`, `--doc`, and most of
-  `cargo-gust`), and a Slangc step for the ones that do (`testdata::variant::the_helper_builds_the_stored_artifacts`
-  needs the helper). Not done in m8.p. The other packages' tests (macros, xtask, `gust-compute-wgpu`, `gust-algo`, the examples) are reached
-  by a suite or a CI job.
-- Routing leftovers (the m8.r1 review and re-check, for m8.x unless noted):
-  - stale "until routing exists" texts at `crates/gust/tests/profile.rs:679`,
-    `crates/gust-macros/src/expand/mod.rs:884` and `docs/ARCHITECTURE.md:552`;
-  - `xtask/src/ui.rs:506` still prints "`cargo check` must fail" for E-j, whose states are now release builds;
-  - E-j detects a stale expansion only in the set-to-unset direction; unset-to-set is argued (check-dual E1, then
-    E4-routed) but not measured;
-  - the Gpu suite's log names no adapter (its footer asks the run record to name it);
-  - the manifest reader accepts `targets = []` (`crates/gust-macros/src/manifest.rs`, m8.a's reader), so every
-    route of such a tag is an E0749 that names the empty set; an E0753 at the key, like an empty `profiles` (D138),
-    would be clearer.
+  :377 and :565; CHANGELOG's `toml` line moves out of "may break" (m8.x2).
 - Subgroup evidence leftovers (the m8.e review and re-check, for m8.x unless noted):
-  - the `dev+subgroups` half of gust-algo's evidence tests runs by hand only; bring gust-algo under
-    `cargo xtask test --profile` (today it runs gust-wgpu targets only);
-  - no gate builds `examples/subgroup-reduce` under plain `native`, so its portable artifact is checked only when
-    something builds it (a stale one fails loudly, never silently); add that build or a `cargo gust build`
-    reproduction compare to check-examples;
-  - `evidence::sum_u32`'s size guard puts the device's minimum in `DeviceLimit.maximum` and spells the limit
-    `min_subgroup_size`, not wgpu's `subgroup_min_size`;
-  - the difftest result format gained a required `capabilities` field without a `format` bump;
+  - `evidence::sum_u32`'s size guard puts the device's minimum in `DeviceLimit.maximum` (the limit is now spelled
+    `subgroup_min_size`; `DeviceLimit` has no field for a minimum);
   - the gate scripts' START lines name the commit but not a hash of the uncommitted tree.
 - Routing driver leftovers (the m8.r2 review and re-checks):
   - no `cargo gust` command builds a routed release binary (only `run` and `test` compile one); add one, or a

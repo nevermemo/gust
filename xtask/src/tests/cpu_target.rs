@@ -7,9 +7,10 @@ use super::{
     CPU_PROFILE, CPU_TARGET_DIR, Call, Dirs, FINAL_LINE, FLIPS, FORBIDDEN, KERNELS,
     MAP_LINE_PREFIX, NATIVE_PROFILE, PAR_FOR_LINE_PREFIX, Profile, REFUSAL_FILE, REFUSAL_ITEM,
     ROUTE_FLIPS, ROUTE_VARIABLE, ROUTED_LINE, ROUTED_MAP_LINE, SCAN_CONTROL, STEPS, all_calls,
-    e_a_build, e_b_tree, e_c_build, e_d_check, e_e_check, e_f_check, e_g_check, e_h_build,
-    e_i_test, e_j_build, executable_of, judge_run, match_problems, match_summary, parse_match_line,
-    passed_tests, refusal_line, relative_to, scan, scan_problems, tree_problems, with_located_line,
+    command_of, e_a_build, e_b_tree, e_c_build, e_d_check, e_e_check, e_f_check, e_g_check,
+    e_h_build, e_i_test, e_j_build, executable_of, judge_run, match_problems, match_summary,
+    parse_match_line, passed_tests, refusal_line, relative_to, scan, scan_problems, tree_problems,
+    with_located_line,
 };
 use crate::{
     checks::{DUAL_RUSTFLAGS, DUAL_RUSTFLAGS_VARIABLE, RUSTFLAGS_VARIABLES},
@@ -708,6 +709,7 @@ fn e_e_accepts_the_absolute_path_cargo_reports_for_the_dependency() {
             ("crates/gust-wgpu", "gust_wgpu"),
             root,
             (false, &stdout, ""),
+            "cargo check",
         );
         assert_eq!(result, Ok(()), "{root}");
     }
@@ -723,6 +725,7 @@ fn e_e_rejects_a_wrong_line_a_wrong_message_a_wrong_code_and_a_build_that_passed
             ("crates/gust-wgpu", "gust_wgpu"),
             "/r",
             (success, stdout, ""),
+            "cargo check",
         )
     };
     let good = error_line("gust_wgpu", "E0080", REFUSAL, file, 81);
@@ -763,6 +766,26 @@ fn e_e_rejects_a_wrong_line_a_wrong_message_a_wrong_code_and_a_build_that_passed
     // Two errors are not the one error.
     let twice = format!("{good}\n{good}");
     assert!(run(&twice, false, 81).unwrap_err().contains("2 errors"));
+}
+
+#[test]
+fn a_message_names_the_cargo_command_that_was_run() {
+    // E-j judges release builds: the message must not say `cargo check`.
+    assert_eq!(command_of(&e_j_build("/t", false)), "cargo build --release");
+    let message = judge_run(
+        "e-e-expected.txt",
+        &e_e_text(81),
+        ("crates/gust-wgpu", "gust_wgpu"),
+        "/r",
+        (true, "", ""),
+        "cargo build --release",
+    )
+    .unwrap_err();
+    assert!(
+        message.contains("`cargo build --release` must fail, but it compiled"),
+        "{message}"
+    );
+    assert!(!message.contains("cargo check"), "{message}");
 }
 
 // ---- the cargo calls ----

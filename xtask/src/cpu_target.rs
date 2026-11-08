@@ -48,7 +48,7 @@ use crate::{
     json::{self, Json},
     precompiled::count_occurrences,
     process::{PROFILE_VARIABLE, exit_code, without_colors},
-    ui::{Expectation, judge, parse_expectation},
+    ui::{Expectation, judge_for, parse_expectation},
     workspace::{cargo_target_dir, workspace_root},
 };
 
@@ -855,21 +855,35 @@ fn problems_error(problems: &[String]) -> String {
     )
 }
 
+/// The cargo call as a message names it: `cargo` and its subcommand, with `--release` when the call has it
+/// (`cargo build --release` for E-j, `cargo check` for a check), not the whole argument list.
+pub(crate) fn command_of(call: &Call) -> String {
+    let verb = call.args.first().map_or("", String::as_str);
+    if call.args.iter().any(|arg| arg == "--release") {
+        format!("cargo {verb} --release")
+    } else {
+        format!("cargo {verb}")
+    }
+}
+
 /// Judges one run that had to fail: `text` is the expectation file called `name` (for messages), `scope` the
 /// `(case, target)` of `ui::judge`, `root` the repository root to take off cargo's absolute paths ([`relative_to`]),
-/// and `run` the `(success, stdout, stderr)` of the cargo call.
+/// `run` the `(success, stdout, stderr)` of the cargo call, and `command` the call as the messages name it
+/// ([`command_of`]: `cargo check`, or `cargo build --release` for E-j, whose states are release builds).
 pub(crate) fn judge_run(
     name: &str,
     text: &str,
     scope: (&str, &str),
     root: &str,
     run: (bool, &str, &str),
+    command: &str,
 ) -> Result<(), String> {
     let expectation: Expectation =
         parse_expectation(text).map_err(|error| format!("{name}: {error}"))?;
     let (case, target) = scope;
     let (success, stdout, stderr) = run;
-    let problems = judge(
+    let problems = judge_for(
+        command,
         case,
         target,
         &expectation,
@@ -913,14 +927,13 @@ impl Check {
 
     /// Judges the output of a call that must fail against the expectation file `name`, as `check-ui` and
     /// `check-dual` do. `case` is the directory the expected `file:` is relative to, `target` the cargo target
-    /// whose error counts.
+    /// whose error counts; `call` is the cargo call that was run, which the messages name ([`command_of`]).
     fn judge_failure(
         &self,
         name: &str,
-        case: &str,
-        target: &str,
+        (case, target): (&str, &str),
         text: &str,
-        output: &Output,
+        (call, output): (&Call, &Output),
     ) -> Result<(), String> {
         judge_run(
             &format!("{CPU_TARGET_DIR}/{name}"),
@@ -932,6 +945,7 @@ impl Check {
                 &String::from_utf8_lossy(&output.stdout),
                 &String::from_utf8_lossy(&output.stderr),
             ),
+            &command_of(call),
         )
     }
 
@@ -946,7 +960,7 @@ impl Check {
     ) -> Result<(), String> {
         let text = self.expectation_text(name)?;
         let output = self.output(id, call)?;
-        self.judge_failure(name, case, target, &text, &output)
+        self.judge_failure(name, (case, target), &text, (call, &output))
     }
 
     /// Builds `app` with `call` (a `cargo build` that prints cargo's JSON) and returns the path cargo reports for
@@ -1041,7 +1055,8 @@ impl Check {
 
     fn e_e(&self) -> Result<String, String> {
         let text = self.expectation_text("e-e-expected.txt")?;
-        let output = self.output("E-e", &e_e_check(&self.dirs))?;
+        let call = e_e_check(&self.dirs);
+        let output = self.output("E-e", &call)?;
         // A build that succeeded is the failure to report, whatever line the item is on (a placeholder, since the
         // expectation needs a number).
         let line = if output.status.success() {
@@ -1054,10 +1069,9 @@ impl Check {
         let text = with_located_line(&text, line);
         self.judge_failure(
             "e-e-expected.txt",
-            "crates/gust-wgpu",
-            "gust_wgpu",
+            ("crates/gust-wgpu", "gust_wgpu"),
             &text,
-            &output,
+            (&call, &output),
         )?;
         Ok(format!(
             "`app-with-wgpu` under cpu fails with the one E0080 of e-e-expected.txt, raised at {REFUSAL_FILE}:{line} by `gust-compute-wgpu`'s `require_gpu_target`"

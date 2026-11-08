@@ -1,0 +1,7 @@
+# Keys matched against the one error of `cargo check --message-format json` (see kernel-cpu-bad-value/expected.txt).
+# GUST-E0753 is a macro error, so `code: none`. It is reported at the name of the `#[gpu]` module (line 6 of main.rs),
+# because a proc macro cannot point into Cargo.toml; the message names the line and column there (`targets = []`).
+code: none
+file: profile-manifest-empty-targets/src/main.rs
+line: 6
+message: [GUST-E0753] Cargo.toml:8:13: an empty `targets` list names no target for the route `physics`; omit the key for the default

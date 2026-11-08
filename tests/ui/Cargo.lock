@@ -867,6 +867,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "profile-manifest-empty-targets"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "profile-manifest-malformed"
 version = "0.0.0"
 dependencies = [

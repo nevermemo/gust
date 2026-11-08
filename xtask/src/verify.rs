@@ -16,7 +16,7 @@ use crate::{
     process::{
         CheckRecord, HELPER_VARIABLE, TestTotals, report_check, repository_helper, require_command,
         require_tests_ran, run_cargo_test_captured, run_checked, run_checked_owned,
-        sum_test_results, without_colors,
+        run_direct_args, sum_test_results, without_colors, workspace_command,
     },
     reflect::{BuildOptions, build_slang_reflect},
     release::check_release_report,
@@ -1178,16 +1178,125 @@ pub(crate) fn run_gpu_target(
     let (_, stdout) = runner(root, &call, Some(profile))?;
     check_pinned_counts(&call, &stdout, pin, "GPU_TARGET_PINS")?;
     if target == BUILD_CAPABILITIES_TARGET {
-        let wanted = build_capabilities_line(profile);
-        let plain = without_colors(&stdout);
-        if !plain.lines().any(|line| line.trim().ends_with(&wanted)) {
-            return Err(format!(
-                "cargo {}: the output has no line ending `{wanted}`; the build did not receive GUST_PROFILE={profile} (or `--show-output`, or the print of the_builds_capabilities_follow_the_profile_variable in crates/gust-wgpu/tests/capabilities.rs, is gone)",
-                call.join(" ")
-            ));
-        }
+        require_capabilities_line(
+            &call,
+            &stdout,
+            profile,
+            "the_builds_capabilities_follow_the_profile_variable in crates/gust-wgpu/tests/capabilities.rs",
+        )?;
     }
     Ok(())
+}
+
+/// Requires that `stdout` (a `--show-output` run) has the line [`build_capabilities_line`] gives for `profile`: the proof
+/// that the profile reached the build of the crate under test. `print_site` names the test whose print is read, for the
+/// message when the line is missing.
+fn require_capabilities_line(
+    call: &[String],
+    stdout: &str,
+    profile: &str,
+    print_site: &str,
+) -> Result<(), String> {
+    let wanted = build_capabilities_line(profile);
+    let plain = without_colors(stdout);
+    if plain.lines().any(|line| line.trim().ends_with(&wanted)) {
+        return Ok(());
+    }
+    Err(format!(
+        "cargo {}: the output has no line ending `{wanted}`; the build did not receive GUST_PROFILE={profile} (or `--show-output`, or the print of {print_site}, is gone)",
+        call.join(" ")
+    ))
+}
+
+/// The test of `gust-algo` whose print [`require_capabilities_line`] reads in [`run_algo_under_profile`].
+const ALGO_CAPABILITIES_PRINT_SITE: &str = "the_evidence_pair_selects_the_body_of_the_profile_and_the_shipped_set_does_not_move in crates/gust-algo/src/tests/variant.rs";
+
+/// The cargo call of `gust-algo` under a profile (m8.x1): [`ALGO_GPU_CALL`] and `--show-output`, so that the output
+/// carries the capabilities line of the build.
+pub(crate) fn algo_profile_call() -> Vec<String> {
+    let mut call = owned_args(&ALGO_GPU_CALL);
+    call.extend(owned_args(&["--", "--show-output"]));
+    call
+}
+
+/// Every test of `gust-algo` under `GUST_PROFILE=<profile>` through `runner`, judged as the plain Gpu suite judges it
+/// ([`check_algo_gpu_counts`]: the `gpu::` tests by name) and, besides, by the capabilities line the crate's own build
+/// prints, so that a profile that did not reach this crate cannot pass as the profile's run (ruling 2 of m8.x1: the
+/// gust-algo evidence pair selects its body by the build's capabilities).
+pub(crate) fn run_algo_under_profile(
+    root: &Path,
+    profile: &str,
+    runner: &ProfileTestRunner<'_>,
+) -> Result<(), String> {
+    check_gpu_target_profile(profile)?;
+    let call = algo_profile_call();
+    let (_, stdout) = runner(root, &call, Some(profile))?;
+    check_algo_gpu_counts(&call, &stdout)?;
+    require_capabilities_line(&call, &stdout, profile, ALGO_CAPABILITIES_PRINT_SITE)
+}
+
+/// The gust-wgpu targets of [`GPU_TARGET_PINS`], then `gust-algo` ([`run_algo_under_profile`]), all under `profile`:
+/// `cargo xtask test --suite Gpu --profile <profile>` without `--test`. `announce` is told each call before it runs.
+pub(crate) fn run_gpu_profile_suite(
+    root: &Path,
+    profile: &str,
+    runner: &ProfileTestRunner<'_>,
+    announce: &mut dyn FnMut(&str),
+) -> Result<(), String> {
+    check_gpu_target_profile(profile)?;
+    for (target, _) in GPU_TARGET_PINS {
+        announce(&format!(
+            "cargo {} (GUST_PROFILE={profile})",
+            gpu_target_call(target).join(" ")
+        ));
+        run_gpu_target(root, profile, target, runner)?;
+    }
+    announce(&format!(
+        "cargo {} (GUST_PROFILE={profile})",
+        algo_profile_call().join(" ")
+    ));
+    run_algo_under_profile(root, profile, runner)
+}
+
+/// The adapter line the Gpu suite prints (m8.x1: a log names the device it ran on): name, type, backend and driver.
+pub(crate) fn adapter_line(adapter: &AdapterRecord) -> String {
+    let driver = [adapter.driver.as_str(), adapter.driver_info.as_str()]
+        .into_iter()
+        .filter(|part| !part.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!(
+        "adapter: {} ({}, {}, driver {})",
+        adapter.name,
+        adapter.device_type,
+        adapter.backend,
+        if driver.is_empty() {
+            "unnamed"
+        } else {
+            &driver
+        }
+    )
+}
+
+/// Runs [`ADAPTER_INFO_ARGS`] and returns [`adapter_line`] of the adapter it names (`HeadlessDevice` picks the first
+/// Vulkan adapter, the one the Gpu suite's tests open). A run that fails or names no adapter is an error.
+pub(crate) fn name_adapter(root: &Path) -> Result<String, String> {
+    let output = workspace_command("cargo")
+        .args(ADAPTER_INFO_ARGS)
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::inherit())
+        .output()
+        .map_err(|error| format!("could not launch cargo: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "cargo {} failed (exit {})",
+            ADAPTER_INFO_ARGS.join(" "),
+            output.status.code().unwrap_or(-1)
+        ));
+    }
+    let record = AdapterRecord::parse(&String::from_utf8_lossy(&output.stdout))?;
+    Ok(adapter_line(&record))
 }
 
 /// The guard for [`ALGO_GPU_CALL`] on its captured `stdout`: tests ran and none failed or was ignored, every test of
@@ -1297,6 +1406,44 @@ pub(crate) fn strict_subgroups_args() -> Vec<String> {
     owned_args(&["run", "--locked", "--quiet", "-p", STRICT_SUBGROUPS_PACKAGE])
 }
 
+/// The profile of the portable build of the same example: `native` is strict as [`STRICT_SUBGROUPS_PROFILE`] is, without
+/// the capability, so the build selects the portable bodies and embeds their committed artifacts (m8.x1).
+pub(crate) const STRICT_PORTABLE_PROFILE: &str = "native";
+
+/// The cargo call of the recompile check: `cargo gust check -p subgroup-reduce --recompile`, the command that ci.yml
+/// runs for tests/precompiled. It runs under the workspace profile (`dev`), which collects every body of the example,
+/// the portable and the subgroup ones, builds each with the pinned Slang and compares the committed artifacts byte for
+/// byte. It needs slangc and the reflection helper, as the rest of check-examples does.
+pub(crate) fn strict_subgroups_recompile_args() -> Vec<String> {
+    owned_args(&[
+        "run",
+        "--locked",
+        "--quiet",
+        "-p",
+        "cargo-gust",
+        "--",
+        "check",
+        "-p",
+        STRICT_SUBGROUPS_PACKAGE,
+        "--recompile",
+    ])
+}
+
+/// The cargo call of the portable build (run under [`STRICT_PORTABLE_PROFILE`], in the target directory of the strict
+/// run). It only builds: a strict profile looks the committed artifact up by the key of the body's source, and the macro
+/// refuses a body that has none, so a portable body edited without `cargo gust build` fails here although the strict
+/// run, which selects the subgroup bodies, never embeds the portable artifacts (shown by changing the portable body
+/// of the example: `native` fails with "needs a precompiled artifact", `native+subgroups` builds).
+pub(crate) fn strict_subgroups_portable_args() -> Vec<String> {
+    owned_args(&[
+        "build",
+        "--locked",
+        "--quiet",
+        "-p",
+        STRICT_SUBGROUPS_PACKAGE,
+    ])
+}
+
 /// The cargo call that runs the example's tests under `dev`, the ignored one included: the host model against
 /// hand-built words, and the program on the adapter with the portable body (a `dev` build has no capability).
 pub(crate) fn strict_subgroups_test_args() -> Vec<String> {
@@ -1335,15 +1482,60 @@ pub(crate) fn strict_subgroups_problems(stdout: &str) -> Vec<String> {
     problems
 }
 
+/// Runs the cargo call `args` under `GUST_PROFILE=<profile>` in `target` and fails with the cargo output when it fails.
+fn run_strict_build(
+    root: &Path,
+    target: &Path,
+    profile: &str,
+    args: &[String],
+) -> Result<(), String> {
+    println!("-- GUST_PROFILE={profile} cargo {}", args.join(" "));
+    let output = Command::new("cargo")
+        .args(args)
+        .current_dir(root)
+        .env("GUST_PROFILE", profile)
+        .env("CARGO_TARGET_DIR", target)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|error| format!("could not launch cargo: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    Err(format!(
+        "GUST_PROFILE={profile} cargo {} failed (exit {}); the portable artifacts of {STRICT_SUBGROUPS_PACKAGE} are stale if the output below says a precompiled artifact is needed (run `cargo gust build` on the example):\n{}{}",
+        args.join(" "),
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    ))
+}
+
 /// Builds and runs `examples/subgroup-reduce` under `GUST_PROFILE=native+subgroups`: a strict profile, so the build
 /// embeds the committed WGSL and cannot call Slang (the package does not enable `slang-runtime`, which a strict profile
 /// refuses), and the capability, so the build selects the subgroup body. The program opens the machine's default
 /// device, checks the lane count, the ballot popcount and the prefix sum it wrote against a host model, and prints
 /// `subgroup-reduce: OK body=subgroups`; [`strict_subgroups_problems`] requires those lines. First the example's
-/// tests under `dev`, which need an adapter too (the portable body writes zeros).
+/// tests under `dev`, which need an adapter too (the portable body writes zeros), then a build under plain `native`
+/// ([`strict_subgroups_portable_args`]), which looks up the portable bodies' committed artifacts, so a stale portable
+/// artifact fails here and not only in a user's build, then `cargo gust check --recompile`
+/// ([`strict_subgroups_recompile_args`]), which rebuilds every body with Slang and compares the bytes of all four
+/// committed artifacts, so a portable artifact with wrong bytes under an unchanged key fails too.
 fn check_strict_subgroups_example(root: &Path) -> Result<String, String> {
     run_cargo_test_captured(root, &strict_subgroups_test_args())?;
     let target = crate::workspace::cargo_target_dir(root).join("strict-subgroups");
+    run_strict_build(
+        root,
+        &target,
+        STRICT_PORTABLE_PROFILE,
+        &strict_subgroups_portable_args(),
+    )?;
+    let recompile = strict_subgroups_recompile_args();
+    println!("-- cargo {}", recompile.join(" "));
+    run_direct_args(root, "cargo", &recompile).map_err(|error| {
+        format!(
+            "the committed artifacts of {STRICT_SUBGROUPS_PACKAGE} differ from a recompile with the pinned Slang (run `cargo gust build -p {STRICT_SUBGROUPS_PACKAGE}` and review the diff): {error}"
+        )
+    })?;
     let args = strict_subgroups_args();
     println!(
         "-- GUST_PROFILE={STRICT_SUBGROUPS_PROFILE} cargo {}",
@@ -1372,7 +1564,7 @@ fn check_strict_subgroups_example(root: &Path) -> Result<String, String> {
         return Err(problems.join("\n"));
     }
     Ok(format!(
-        "{STRICT_SUBGROUPS_PACKAGE} passed: its tests under dev, and the program under GUST_PROFILE={STRICT_SUBGROUPS_PROFILE} from committed artifacts: lane count, ballot popcount and prefix sum equal the host model on the adapter it names"
+        "{STRICT_SUBGROUPS_PACKAGE} passed: its tests under dev, a build under GUST_PROFILE={STRICT_PORTABLE_PROFILE} (the portable bodies find their committed artifacts), `cargo gust check --recompile` (all four committed artifacts equal a recompile with the pinned Slang), and the program under GUST_PROFILE={STRICT_SUBGROUPS_PROFILE} from committed artifacts: lane count, ballot popcount and prefix sum equal the host model on the adapter it names"
     ))
 }
 

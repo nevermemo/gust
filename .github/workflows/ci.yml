@@ -281,10 +281,11 @@ jobs:
     # The job does NOT fail on what the tool finds: a 0.x minor release may break (README, "Stability"), so the
     # findings are the list for the CHANGELOG, not a red light. It does fail when the tool, the baseline or a build is
     # missing: the step requires a "Summary" line for each of the two crates.
-    # It runs on pull requests and on pushes to `main` only. A push to `release/0.1` never runs it (that branch has
-    # its own workflow files, which got only the trigger commit), and if the job were copied there it would compare the
-    # branch with itself. The baseline rule for later lines is in docs/development/RELEASE.md.
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    # It runs on pull requests into `main` and on pushes to `main` only. A pull request into another branch
+    # (`release/0.1`, say) is not compared with the line it is already on, and a push to `release/0.1` never runs it
+    # (that branch has its own workflow files, which got only the trigger commit); if the job were copied there it
+    # would compare the branch with itself. The baseline rule for later lines is in docs/development/RELEASE.md.
+    if: (github.event_name == 'pull_request' && github.base_ref == 'main') || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

@@ -466,6 +466,25 @@ fn a_wrong_value_names_its_line_and_column() {
             23,
             "a dev build is checked as `native` with the same capabilities; list `native...`",
         ),
+        // An empty `targets` names no target (m8.x1): at the key, like an empty `profiles`, in each form of the table.
+        (
+            "[package.metadata.gust.routes]\nphysics = { targets = [] }\n",
+            6,
+            13,
+            "an empty `targets` list names no target for the route `physics`; omit the key for the default",
+        ),
+        (
+            "[package.metadata.gust.routes.physics]\ntargets = []\n",
+            6,
+            1,
+            "an empty `targets` list names no target for the route `physics`; omit the key for the default",
+        ),
+        (
+            "[package.metadata.gust.routes]\n\"physics.broadphase\" = { default = \"gpu\", targets = [] }\n",
+            6,
+            43,
+            "an empty `targets` list names no target for the route `physics.broadphase`; omit the key for the default",
+        ),
         // Wrong shapes that the corpus did not have (m8.a review, N6).
         (
             "[package.metadata.gust.routes]\nphysics = { targets = \"gpu\" }\n",

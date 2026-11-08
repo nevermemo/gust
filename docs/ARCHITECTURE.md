@@ -539,8 +539,9 @@ set is empty, the kernel's own or its `requires()` variant, whichever body the b
 body has no CPU form). A build selects the body with the largest
 `requires` set that the capabilities of `GUST_PROFILE` contain (`gust::capability::Capability`; the alias `vulkan` is
 `subgroups` and `webgpu` is the empty set), and the descriptor carries that body's entry point, Slang, artifacts,
-`variant` (the function's name, `""` for the kernel's own body) and `requires`; `target` stays `Gpu` until m8.r1. Two
-bodies that some device has both sets of are a tie (GUST-E0743), checked over every subset of the capabilities in every
+`variant` (the function's name, `""` for the kernel's own body) and `requires`; `target` is the module's route (m8.r1:
+`Cpu` for a module routed to the CPU and for the `cpu` profile, else `Gpu`). Two bodies that some device has both sets
+of are a tie (GUST-E0743), checked over every subset of the capabilities in every
 build. Exhaustiveness reads `[package.metadata.gust] profiles` (the default list `["native", "web", "cpu"]` when the key
 is absent; an explicit list is stricter and an explicit `cpu` entry needs a CPU form): every declared GPU profile needs
 a body for every kernel (GUST-E0744), and the build's own profile needs one (GUST-E0750; not in export mode, which writes every body under the fixed
@@ -549,9 +550,11 @@ is schema 4 when its `requires` is non-empty or it is a variant: schema 1 or 3's
 in declaration order) and `variant` (`""` for the kernel's own body); the portable body of a kernel keeps its schema
 1, 2 or 3, byte for byte, and so does every module without a variant. `name` is the kernel's name for every body.
 rustc proves the signatures equal with a const that makes the two functions the elements of one array.
-Until m8.r1 the macro sets `Target::Gpu` on every descriptor, and no routing byte
-changes. `gust-compute-macros` declares the `toml` crate (1.x, `std` and `parse` only) for the reader of
-`[package.metadata.gust]` that m8.a adds; nothing uses it yet.
+Since m8.r1 the macro sets each descriptor's `target` from the module's route (`Target::Cpu` for a module routed to the
+CPU and for the `cpu` profile, `Target::Gpu` otherwise), and a module with no route tag expands as it did before
+routing. `gust-compute-macros` declares the `toml` crate (1.x, `std` and `parse` only) for the reader of
+`[package.metadata.gust]` (m8.a: `profiles`, `limits`, `routes`) that every `#[gpu]` expansion and every `par_for!`
+expansion uses.
 
 ## Struct ABI
 

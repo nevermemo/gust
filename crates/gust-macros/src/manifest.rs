@@ -31,7 +31,9 @@
 //! equal to the default, is stricter (plan section 2.1, Q4). An explicit list is never empty (an empty list declares
 //! no build, so there would be nothing for the exhaustiveness check to hold), never repeats an entry, and names no
 //! `dev` profile: a dev build is checked as `native` with the same capabilities (D138), so the list says
-//! `native...`. Each of these is GUST-E0753 at the offending entry (at the key for the empty list).
+//! `native...`. Each of these is GUST-E0753 at the offending entry (at the key for the empty list). A route's `targets`
+//! is never empty either: `targets = []` is GUST-E0753 at the key, where it would otherwise make every route of the tag
+//! an E0749 that names the empty set.
 
 use std::{fs, path::Path};
 
@@ -78,7 +80,7 @@ pub(crate) enum Limits {
 pub(crate) struct Route {
     /// The key as written (`physics`, or `physics.broadphase` when quoted). Its syntax is judged by E0748 (m8.r1).
     pub tag: String,
-    /// `targets`, `gpu` and `cpu`; `None` when absent.
+    /// `targets`, `gpu` and `cpu`; `None` when absent, never an empty list (E0753).
     pub targets: Option<Vec<String>>,
     /// `default`, `gpu` or `cpu`; `None` when absent.
     pub default: Option<String>,
@@ -354,6 +356,17 @@ fn routes(text: &str, value: &Spanned<DeValue<'_>>) -> Result<Vec<Route>, Manife
             match name_of(key) {
                 "targets" => {
                     let names = strings(text, field, "targets")?;
+                    if names.is_empty() {
+                        // At the key, as an empty `profiles` is (D138): no target is none of the targets a kernel
+                        // could be built for, so every route of the tag would be an E0749 that names the empty set.
+                        return Err(place(
+                            text,
+                            Some(key.span().start),
+                            format!(
+                                "an empty `targets` list names no target for the route `{tag_name}`; omit the key for the default"
+                            ),
+                        ));
+                    }
                     for (name, offset) in &names {
                         route_target(text, name, *offset)?;
                     }

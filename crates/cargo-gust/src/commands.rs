@@ -869,9 +869,11 @@ mod tests {
         use std::cell::Cell;
         let scratch = Scratch::new("one-run");
         let ctx = context_in(&scratch);
-        // `build` collects with `collect_records(&ctx, run)` and so does `check` (which then dedupes): each is one call
-        // here, and the counting runner stands for cargo, writing the record of every body as the macro's export mode
-        // does under the one `GUST_PROFILE=dev` run. A second run of cargo in either command (a profile loop) fails this.
+        // This pins one cargo run per `collect_records(&ctx, run)` call, which is what `build` and `check` each make
+        // (`check` then dedupes). It calls `collect_records` itself, once per command name, so it does not count the
+        // calls that `build` or `check` make: that each of them calls it once is a reading of the code. The counting
+        // runner stands for cargo, writing the record of every body as the macro's export mode does under the one
+        // `GUST_PROFILE=dev` run. A second cargo run inside `collect_records` (a profile loop) fails this.
         for command_name in ["build", "check"] {
             let runs = Cell::new(0);
             let run = |command: &mut Command| -> Result<bool, String> {

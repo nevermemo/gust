@@ -50,7 +50,8 @@ fn run_status(command: &mut Command) -> Result<bool, String> {
         })
 }
 
-fn resolve(target: &Target) -> Result<Context, String> {
+/// The cargo to run and what `cargo metadata --no-deps` says about the workspace of `target`.
+fn read_workspace(target: &Target) -> Result<(OsString, collect::Workspace), String> {
     let cargo = collect::cargo_program(std::env::var_os("CARGO"));
     let output = metadata_command(&cargo, target.manifest_path.as_deref())
         .output()
@@ -62,6 +63,20 @@ fn resolve(target: &Target) -> Result<Context, String> {
         ));
     }
     let workspace = collect::parse_metadata(&String::from_utf8_lossy(&output.stdout))?;
+    Ok((cargo, workspace))
+}
+
+fn resolve(target: &Target) -> Result<Context, String> {
+    let (cargo, workspace) = read_workspace(target)?;
+    select_context(cargo, workspace, target)
+}
+
+/// The package of `target` in `workspace`, with what a command needs to know about it.
+fn select_context(
+    cargo: OsString,
+    workspace: collect::Workspace,
+    target: &Target,
+) -> Result<Context, String> {
     let manifest = match &target.manifest_path {
         Some(path) => Some(fs::canonicalize(path).unwrap_or_else(|_| path.clone())),
         None => std::env::current_dir()
@@ -107,8 +122,9 @@ fn collect_routes(ctx: &Context) -> Result<Option<RoutePlan>, String> {
     routes::plan(&ctx.cargo, &ctx.package, collect::COLLECT_PROFILE, &[])
 }
 
-/// Sets the route variables of `routes` on `command`, if there are any: the one place where `build`, `check`, `run` and
-/// `test` give a cargo child its routes.
+/// Sets the route variables of `routes` on `command`, if there are any. `build` and `check` use it through
+/// [`routed_runner`]; `run` and `test` build their command with `routes::cargo_command`, which calls
+/// `RoutePlan::apply` for the same variables.
 fn apply_routes(routes: Option<&RoutePlan>, command: &mut Command) {
     if let Some(plan) = routes {
         plan.apply(command);
@@ -173,20 +189,15 @@ fn spawn_cargo(
 /// `cargo gust run` and `cargo gust test`: cargo with the route variables of the package's `gust.toml` (m8.r2). The
 /// exit status is cargo's.
 pub(crate) fn cargo_with_routes(verb: &str, options: &CargoOptions) -> Result<i32, String> {
-    let ctx = match resolve(&options.target) {
-        Ok(ctx) => ctx,
-        // `--workspace` from a virtual root selects no package, so no `gust.toml` applies: cargo runs as asked.
-        Err(_) if options.workspace && options.target.package.is_none() => {
-            let cargo = collect::cargo_program(std::env::var_os("CARGO"));
-            return spawn_cargo(&cargo, verb, &options.arguments, None);
-        }
-        Err(error) => return Err(error),
-    };
-    routes::refuse_workspace(
-        options.workspace,
-        &ctx.package.name,
-        routes::has_config(&ctx.package),
-    )?;
+    let (cargo, workspace) = read_workspace(&options.target)?;
+    if options.workspace {
+        // `--workspace` and `--all` build every member, which the driver cannot route one by one: refused when a
+        // selected member has a `gust.toml`, else cargo runs as asked (also from a virtual root, where no package is
+        // selected and none applies).
+        routes::refuse_workspace(&workspace.packages, &routes::excluded(&options.arguments))?;
+        return spawn_cargo(&cargo, verb, &options.arguments, None);
+    }
+    let ctx = select_context(cargo, workspace, &options.target)?;
     let gust_profile =
         std::env::var_os("GUST_PROFILE").map(|value| value.to_string_lossy().into_owned());
     let profile = routes::build_profile(gust_profile.as_deref(), &options.arguments)?;

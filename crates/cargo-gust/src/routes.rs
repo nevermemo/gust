@@ -632,13 +632,32 @@ type DeclaredMap<'a> = BTreeMap<(String, String), (&'a Declaring, &'a Declared)>
 /// The tags of the graph by `(package, tag)`, checked: well-named, valid `targets` and `default`, and no two that
 /// spell one variable. Every declaring package of the build is checked, also one whose tags `gust.toml` never names and
 /// no module uses (the macro reads only the tags it expands, so it is lazier): a malformed declaration in any
-/// dependency stops a routed command, with its `Cargo.toml` and line. Two versions of one package that declare a tag the
-/// same way share one variable and count once. The spelling is not injective across package names
+/// dependency stops a routed command, with its `Cargo.toml` and line. Two versions of one package share their
+/// variables, so they are accepted (and count once) only when their whole `routes` tables are equal ([`first_difference`]):
+/// an unset variable is resolved by each macro from its own version's chain of ancestor defaults, which one value
+/// cannot serve when the chains differ. The spelling is not injective across package names
 /// (`gust::routes::variable_name`), which is the other collision.
 fn declared_tags(graph: &Graph) -> Result<DeclaredMap<'_>, String> {
     let mut tags: DeclaredMap<'_> = BTreeMap::new();
     let mut variables: BTreeMap<String, String> = BTreeMap::new();
-    for package in &graph.declaring {
+    for (index, package) in graph.declaring.iter().enumerate() {
+        if let Some(first) = graph.declaring[..index]
+            .iter()
+            .find(|earlier| earlier.name == package.name)
+        {
+            match first_difference(first, package) {
+                None => continue,
+                Some(tag) => {
+                    return Err(format!(
+                        "two versions of `{}` ({} and {}) declare `{tag}` differently; one variable, `{}`, routes both; unify the versions",
+                        package.name,
+                        first.manifest.display(),
+                        package.manifest.display(),
+                        variable_name(&package.name, &tag)
+                    ));
+                }
+            }
+        }
         for declared in &package.tags {
             let place = package.place(declared);
             let full = format!("{}::{}", package.name, declared.tag);
@@ -668,21 +687,6 @@ fn declared_tags(graph: &Graph) -> Result<DeclaredMap<'_>, String> {
             }
             let variable = variable_name(&package.name, &declared.tag);
             let folded = variable.to_ascii_uppercase();
-            // Two versions of one package declare the same pair: they share one variable, which reaches both macros.
-            // Agreeing declarations resolve once; differing ones cannot be routed apart and are refused.
-            if let Some(&(first, earlier)) = tags.get(&(package.name.clone(), declared.tag.clone()))
-            {
-                if earlier.targets == declared.targets && earlier.default == declared.default {
-                    continue;
-                }
-                return Err(format!(
-                    "{place}: two versions of `{}` ({} and {}) declare `{}` differently; one variable, `{variable}`, routes both; unify the versions",
-                    package.name,
-                    first.manifest.display(),
-                    package.manifest.display(),
-                    declared.tag
-                ));
-            }
             let description = format!("`{full}` ({place})");
             if let Some(first) = variables.get(&folded) {
                 return Err(format!(
@@ -697,6 +701,34 @@ fn declared_tags(graph: &Graph) -> Result<DeclaredMap<'_>, String> {
         }
     }
     Ok(tags)
+}
+
+/// The first tag (in tag order) on which the `routes` tables of two packages differ: declared by one only, or with other
+/// `targets` (compared as sets, so the order of the list does not matter) or another `default`.
+fn first_difference(first: &Declaring, second: &Declaring) -> Option<String> {
+    /// What the comparison looks at: `targets` as a sorted set, and `default`.
+    type Shape = (Option<Vec<String>>, Option<String>);
+    fn shape(package: &Declaring, tag: &str) -> Option<Shape> {
+        let declared = package.tags.iter().find(|declared| declared.tag == tag)?;
+        let targets = declared.targets.as_ref().map(|list| {
+            let mut names = list.clone();
+            names.sort_unstable();
+            names.dedup();
+            names
+        });
+        Some((targets, declared.default.clone()))
+    }
+    let mut tags: Vec<&str> = first
+        .tags
+        .iter()
+        .chain(&second.tags)
+        .map(|declared| declared.tag.as_str())
+        .collect();
+    tags.sort_unstable();
+    tags.dedup();
+    tags.into_iter()
+        .find(|tag| shape(first, tag) != shape(second, tag))
+        .map(str::to_owned)
 }
 
 /// The set of targets a declared tag allows.
@@ -1004,18 +1036,23 @@ impl RoutePlan {
 
     /// Notes on `GUST_ROUTE__*` variables the environment already holds (`preset`: name and value): the driver sets
     /// every declared tag, so a preset that differs is overridden, and one that matches no declared tag (a typo) has no
-    /// effect. Names compare without case, as environment names do on Windows.
+    /// effect. Names compare without case on Windows only, where environment names are case-insensitive; elsewhere
+    /// `gust_route__x` is a variable of its own that no macro reads.
     pub(crate) fn notes(&self, preset: &[(String, String)]) -> Vec<String> {
+        let same = |a: &str, b: &str| {
+            if cfg!(windows) {
+                a.eq_ignore_ascii_case(b)
+            } else {
+                a == b
+            }
+        };
         let mut notes = Vec::new();
         for (name, value) in preset {
-            if !name.to_ascii_uppercase().starts_with(VARIABLE_PREFIX) {
+            let prefix = name.get(..VARIABLE_PREFIX.len());
+            if !prefix.is_some_and(|prefix| same(prefix, VARIABLE_PREFIX)) {
                 continue;
             }
-            match self
-                .rows
-                .iter()
-                .find(|row| row.variable.eq_ignore_ascii_case(name))
-            {
+            match self.rows.iter().find(|row| same(&row.variable, name)) {
                 Some(row) if row.target != value => notes.push(format!(
                     "gust: note: {name}={value} is set in the environment; {CONFIG_FILE} resolves it to `{}`, which is what the build gets",
                     row.target
@@ -1052,7 +1089,8 @@ impl RoutePlan {
 }
 
 /// The arguments of a `run` or `test` that change which packages the build uses or whether `Cargo.lock` may change:
-/// the feature selection, `--locked`, `--frozen` and `--offline`. `cargo metadata` gets the same ones, so its graph
+/// the feature selection, `--locked`, `--frozen`, `--offline` and `--config` (a `--config` can change the registry, the
+/// source replacement or `net.offline`; `-Z` flags are not forwarded). `cargo metadata` gets the same ones, so its graph
 /// holds the optional dependencies that `--features` turns on, and `--locked` is not defeated by a metadata call that
 /// rewrites a stale lock. Words after `--` belong to the program.
 pub(crate) fn metadata_flags(arguments: &[String]) -> Vec<String> {
@@ -1065,14 +1103,16 @@ pub(crate) fn metadata_flags(arguments: &[String]) -> Vec<String> {
             "--all-features" | "--no-default-features" | "--locked" | "--frozen" | "--offline" => {
                 flags.push(argument.clone());
             }
-            "--features" | "-F" => {
+            "--features" | "-F" | "--config" => {
                 flags.push(argument.clone());
                 if let Some(value) = arguments.get(index) {
                     flags.push(value.clone());
                     index += 1;
                 }
             }
-            other if other.starts_with("--features=") => flags.push(argument.clone()),
+            other if other.starts_with("--features=") || other.starts_with("--config=") => {
+                flags.push(argument.clone());
+            }
             other if other.starts_with("-F") && other.len() > 2 => flags.push(argument.clone()),
             _ => {}
         }
@@ -1100,20 +1140,51 @@ pub(crate) fn has_config(package: &Package) -> bool {
     package.directory().join(CONFIG_FILE).is_file()
 }
 
-/// `run` and `test` with `--workspace`, `--all` or `--exclude` build several packages, but the driver routes the one
-/// selected package: its `gust.toml` would reach every member and the others' files would be ignored in silence. Refused
-/// when the selected package has a `gust.toml`; without one, the arguments pass through unchanged.
-pub(crate) fn refuse_workspace(
-    workspace: bool,
-    package: &str,
-    has_config: bool,
-) -> Result<(), String> {
-    if workspace && has_config {
-        return Err(format!(
-            "`--workspace`, `--all` and `--exclude` build several packages, but only the {CONFIG_FILE} beside `{package}` is read and it would route all of them; name one package with -p and run the packages one by one"
-        ));
+/// The package names given to `--exclude` (`--exclude X` and `--exclude=X`, before any `--`). Names are taken as
+/// written: a glob pattern excludes nothing here, which can only make the check below stricter.
+pub(crate) fn excluded(arguments: &[String]) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut index = 0;
+    while let Some(argument) = arguments.get(index) {
+        index += 1;
+        if argument == "--" {
+            break;
+        }
+        if argument == "--exclude" {
+            if let Some(value) = arguments.get(index) {
+                names.push(value.clone());
+                index += 1;
+            }
+        } else if let Some(value) = argument.strip_prefix("--exclude=") {
+            names.push(value.to_owned());
+        }
     }
-    Ok(())
+    names
+}
+
+/// `run` and `test` with `--workspace` or `--all` build every member (less the `--exclude`d ones), but the driver
+/// routes one package at a time: a member with a `gust.toml` of its own would be built without its routes, and a test
+/// that only checks numbers passes on the wrong path. Refused when any selected member has a `gust.toml`, naming each;
+/// when none has one the arguments pass through unchanged.
+pub(crate) fn refuse_workspace(members: &[Package], excluded: &[String]) -> Result<(), String> {
+    let routed: Vec<String> = members
+        .iter()
+        .filter(|member| !excluded.contains(&member.name) && has_config(member))
+        .map(|member| {
+            format!(
+                "`{}` ({})",
+                member.name,
+                member.directory().join(CONFIG_FILE).display()
+            )
+        })
+        .collect();
+    if routed.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "`--workspace` and `--all` build several packages, but the driver routes one package at a time and would build {} without its routes; name one package with -p and run the packages one by one, or `--exclude` the members that have a {CONFIG_FILE}",
+        routed.join(", ")
+    ))
 }
 
 /// Removes the `routes.json` of `package`: no `gust.toml` applies, so the table describes routes the build no longer
@@ -1727,11 +1798,19 @@ mod tests {
 
     /// `app` depends on two versions of `kernel-lib`, which declare `physics` as `first` and `second`.
     fn two_versions(first: &str, second: &str) -> Graph {
+        two_versions_of(
+            &format!("{{\"physics\":{first}}}"),
+            &format!("{{\"physics\":{second}}}"),
+        )
+    }
+
+    /// `app` depends on two versions of `kernel-lib` whose whole `routes` tables are `first` and `second` (JSON objects).
+    fn two_versions_of(first: &str, second: &str) -> Graph {
         let metadata = format!(
             r#"{{"packages":[
 {{"id":"app","name":"app","manifest_path":"/w/app/Cargo.toml","metadata":null}},
-{{"id":"k1","name":"kernel-lib","manifest_path":"/w/k1/Cargo.toml","metadata":{{"gust":{{"routes":{{"physics":{first}}}}}}}}},
-{{"id":"k2","name":"kernel-lib","manifest_path":"/w/k2/Cargo.toml","metadata":{{"gust":{{"routes":{{"physics":{second}}}}}}}}}
+{{"id":"k1","name":"kernel-lib","manifest_path":"/w/k1/Cargo.toml","metadata":{{"gust":{{"routes":{first}}}}}}},
+{{"id":"k2","name":"kernel-lib","manifest_path":"/w/k2/Cargo.toml","metadata":{{"gust":{{"routes":{second}}}}}}}
 ],"resolve":{{"nodes":[{{"id":"app","dependencies":["k1","k2"]}},{{"id":"k1","dependencies":[]}},{{"id":"k2","dependencies":[]}}]}}}}"#
         );
         read_graph(&metadata, Path::new("/w/app/Cargo.toml"), &|_| None).unwrap()
@@ -1772,6 +1851,52 @@ mod tests {
                 "{error}"
             );
         }
+    }
+
+    #[test]
+    fn two_versions_are_compared_as_whole_tables_with_targets_as_sets() {
+        // The order of `targets` does not matter.
+        let graph = two_versions(
+            r#"{"targets":["gpu","cpu"],"default":"gpu"}"#,
+            r#"{"targets":["cpu","gpu"],"default":"gpu"}"#,
+        );
+        let rows = resolve(&graph, &Config::default(), FILE, "dev").unwrap();
+        assert_eq!(table(&rows), ["physics gpu default"]);
+        // Only an ancestor's default differs: the child `physics.broadphase` is declared alike by both, but the macro of
+        // each version resolves it from its own chain, so one variable cannot serve both.
+        let graph = two_versions_of(
+            r#"{"physics":{"default":"cpu"},"physics.broadphase":{}}"#,
+            r#"{"physics":{},"physics.broadphase":{}}"#,
+        );
+        let error = resolve(&graph, &Config::default(), FILE, "dev").unwrap_err();
+        assert!(
+            error.contains("two versions of `kernel-lib`")
+                && error.contains("/w/k1/Cargo.toml")
+                && error.contains("/w/k2/Cargo.toml")
+                && error.contains("declare `physics` differently")
+                && error.contains("unify the versions"),
+            "{error}"
+        );
+        // A tag that only one version declares is a difference too.
+        let graph = two_versions_of(
+            r#"{"physics":{},"physics.broadphase":{}}"#,
+            r#"{"physics":{}}"#,
+        );
+        let error = resolve(&graph, &Config::default(), FILE, "dev").unwrap_err();
+        assert!(
+            error.contains("declare `physics.broadphase` differently"),
+            "{error}"
+        );
+        // Equal tables: resolved once.
+        let graph = two_versions_of(
+            r#"{"physics":{"default":"cpu"},"physics.broadphase":{}}"#,
+            r#"{"physics.broadphase":{},"physics":{"default":"cpu"}}"#,
+        );
+        let rows = resolve(&graph, &Config::default(), FILE, "dev").unwrap();
+        assert_eq!(
+            table(&rows),
+            ["physics cpu default", "physics.broadphase cpu default"]
+        );
     }
 
     #[test]
@@ -1819,21 +1944,56 @@ mod tests {
         assert_eq!(args_of("--features=a")[5..], ["--features=a"]);
         assert_eq!(args_of("-F a,b")[5..], ["-F", "a,b"]);
         assert_eq!(args_of("-Fa")[5..], ["-Fa"]);
+        // `--config` in both spellings (its value is one word), and `-Z` is left out.
+        assert_eq!(
+            args_of("--config net.offline=true --config=a.b=c -Z unstable-options")[5..],
+            ["--config", "net.offline=true", "--config=a.b=c"]
+        );
         assert_eq!(args_of("-p app -- --locked --features x"), base);
         assert_eq!(args_of("--release --target wasm32-unknown-unknown"), base);
     }
 
     #[test]
-    fn a_workspace_run_is_refused_only_when_the_selected_package_has_a_gust_toml() {
-        let error = refuse_workspace(true, "app", true).unwrap_err();
+    fn a_workspace_run_is_refused_when_any_selected_member_has_a_gust_toml() {
+        // A virtual root `w` with members `app` (routed) and `tools` (no gust.toml).
+        let scratch = crate::store::tests::Scratch::new("routes-workspace");
+        let member = |name: &str, routed: bool| {
+            let directory = scratch.0.join(name);
+            fs::create_dir_all(&directory).unwrap();
+            if routed {
+                fs::write(directory.join(CONFIG_FILE), "[routes]\n").unwrap();
+            }
+            Package {
+                name: name.to_owned(),
+                manifest_path: directory.join("Cargo.toml"),
+            }
+        };
+        let members = [member("app", true), member("tools", false)];
+        let error = refuse_workspace(&members, &[]).unwrap_err();
         assert!(
-            error.contains("`--workspace`, `--all` and `--exclude`")
-                && error.contains("gust.toml beside `app`")
-                && error.contains("-p"),
+            error.contains("`--workspace` and `--all`")
+                && error.contains("`app`")
+                && error.contains("gust.toml")
+                && !error.contains("`tools`")
+                && error.contains("-p")
+                && error.contains("`--exclude`"),
             "{error}"
         );
-        assert_eq!(refuse_workspace(true, "app", false), Ok(()));
-        assert_eq!(refuse_workspace(false, "app", true), Ok(()));
+        // Excluding the routed member leaves nothing to route: the arguments pass through.
+        assert_eq!(refuse_workspace(&members, &["app".to_owned()]), Ok(()));
+        // No member has one.
+        assert_eq!(refuse_workspace(&members[1..], &[]), Ok(()));
+    }
+
+    #[test]
+    fn the_excluded_names_are_read_in_both_spellings_and_stop_at_the_double_dash() {
+        assert_eq!(
+            excluded(&words(
+                "--workspace --exclude a --exclude=b -p c -- --exclude d"
+            )),
+            ["a", "b"]
+        );
+        assert!(excluded(&words("--workspace --release")).is_empty());
     }
 
     #[test]
@@ -1860,11 +2020,16 @@ mod tests {
                 && notes[0].contains("resolves it to `cpu`"),
             "{notes:?}"
         );
-        // Names compare without case, and a typo matches nothing.
-        assert!(
-            plan.notes(&preset(&[("gust_route__KERNEL_LIB__physics", "cpu")]))
-                .is_empty()
-        );
+        // Names compare without case on Windows only; elsewhere the lowercase spelling is a variable of its own.
+        let lowercase = plan.notes(&preset(&[("gust_route__KERNEL_LIB__physics", "cpu")]));
+        if cfg!(windows) {
+            assert!(lowercase.is_empty(), "{lowercase:?}");
+        } else {
+            assert!(
+                lowercase.len() == 1 && lowercase[0].contains("matches no route tag"),
+                "{lowercase:?}"
+            );
+        }
         let notes = plan.notes(&preset(&[("GUST_ROUTE__kernel_lib__phyiscs", "cpu")]));
         assert!(
             notes.len() == 1 && notes[0].contains("matches no route tag"),

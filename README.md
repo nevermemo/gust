@@ -398,9 +398,10 @@ crates of the build declare, and give cargo one variable `GUST_ROUTE__<package>_
 
 `run` and `test` pass every other argument to cargo unchanged. They read the build profile from `GUST_PROFILE`, else from
 `--release` and `--target wasm32...` (set `GUST_PROFILE` when a custom cargo profile decides it), and `--features`,
-`--all-features`, `--no-default-features`, `--locked`, `--frozen` and `--offline` also go to the `cargo metadata` call that
-reads the declarations. `--workspace`, `--all` and `--exclude` are refused when the selected package has a `gust.toml`
-(the file would route every member; name one package with `-p`) and pass through unchanged when none applies.
+`--all-features`, `--no-default-features`, `--locked`, `--frozen`, `--offline` and `--config` also go to the `cargo metadata`
+call that reads the declarations. `--workspace` and `--all` are refused when any member they select (all, less the
+`--exclude`d ones) has a `gust.toml`, which the error names (the driver routes one package at a time; name one package
+with `-p`), and pass through unchanged when no selected member has one, also from a virtual root.
 
 The resolved table, with the level that decided each tag (`profile`, `entry`, `default` or `fallback`), is written to
 `gust-artifacts/routes.json` by `build`, `run` and `test`. It is a build output that changes with the profile, so ignore
@@ -411,8 +412,8 @@ the nearest `gust.toml` entry, then the nearest `default` in the declarations, t
 
 A mistake (an unknown tag, a target outside the tag's `targets`, two packages whose names give one variable) is an error
 with file, line and tag before cargo builds (`cargo metadata` runs to read the declarations). A route that names a
-capability profile is refused in this release. Two versions of one package that declare a tag alike share its variable;
-declared differently, they are refused (unify the versions). Two limits of the checks: a tag's own entry is checked
+capability profile is refused in this release. Two versions of one package share their variables, so they are accepted only when their whole `routes`
+tables are equal (`targets` compared as sets); otherwise they are refused (unify the versions). Two limits of the checks: a tag's own entry is checked
 against its `targets` for every profile key, but an entry a child inherits from its parent only for the build's profile
 (`"solver" = { web = "cpu" }` passes under `dev` and fails under `web`); and every package of the build that declares
 routes is validated, even one whose tags the application never uses, so a malformed declaration in a dependency fails

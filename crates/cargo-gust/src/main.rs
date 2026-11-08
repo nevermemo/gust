@@ -41,10 +41,10 @@
 //! - `cargo gust run [cargo arguments]` and `cargo gust test [cargo arguments]` are `cargo run` and `cargo test` with the
 //!   route variables of the package's `gust.toml` set (M8, D65 to D67; see [`routes`]). They are the driver's commands
 //!   that compile a binary. `-p`, `--manifest-path`, `--release`, `--profile` and `--target` are read to find the
-//!   package and the build profile, and `--features`, `--all-features`, `--no-default-features`, `--locked`, `--frozen`
-//!   and `--offline` also reach the `cargo metadata` call that reads the declarations; every argument is passed to cargo
-//!   unchanged. `--workspace`, `--all` and `--exclude` are refused when the selected package has a `gust.toml` and pass
-//!   through when none applies. `build` and `check` set the same variables on the `cargo check` that collects the
+//!   package and the build profile, and `--features`, `--all-features`, `--no-default-features`, `--locked`, `--frozen`,
+//!   `--offline` and `--config` also reach the `cargo metadata` call that reads the declarations; every argument is
+//!   passed to cargo unchanged. `--workspace` and `--all` are refused when a member they select (less `--exclude`) has a
+//!   `gust.toml`, and pass through when none has one. `build` and `check` set the same variables on the `cargo check` that collects the
 //!   kernels, and read the `gust.toml` beside the package they work on. With no `gust.toml` beside the package's manifest
 //!   all four behave as before, and an old `gust-artifacts/routes.json` is removed. Otherwise the driver validates the
 //!   file against the tags that the crates of the build declare in `[package.metadata.gust.routes]`, sets one

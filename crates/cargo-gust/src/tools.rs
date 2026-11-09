@@ -40,18 +40,22 @@ pub(crate) fn helper_hint() -> &'static str {
     "build it with `cargo gust slang build-helper` (in the GUST repository `cargo xtask build-slang-reflect` does the same), or set GUST_SLANG_REFLECT to the helper executable"
 }
 
-/// The reflection schema a helper must write for this tool to use it (mx.k): every compile passes the kernel's stage
-/// as a seventh argument, which a helper of schema 1 or 2 refuses with its usage text.
+/// The reflection schema a helper must write at least for this tool to use it (mx.k): every compile passes the kernel's
+/// stage as a seventh argument, which a helper of schema 1 or 2 refuses with its usage text. Slice r2 raises this floor
+/// to 4 once Rust arrays can reach the helper.
 pub(crate) const REQUIRED_HELPER_SCHEMA: &str = "3";
 
+/// The schemas a helper may print: the floor and schema 4 (arrays, m9.r2h). The set `xtask` accepts is the same.
+pub(crate) const ACCEPTED_HELPER_SCHEMAS: [&str; 2] = [REQUIRED_HELPER_SCHEMA, "4"];
+
 /// Read the Slang build tag from the output of `gust-slang-reflect --version`:
-/// `gust-slang-reflect schema=3 slang=<tag>`. A helper of schema 1 or 2 is refused, naming the schema found and the
-/// rebuild command; [`parse_helper_report`] reads any schema, for the build's staleness check.
+/// `gust-slang-reflect schema=<3 or 4> slang=<tag>`. A helper of schema 1 or 2 is refused, naming the schema found and
+/// the rebuild command; [`parse_helper_report`] reads any schema, for the build's staleness check.
 pub(crate) fn parse_helper_version(output: &str) -> Result<String, String> {
     let (schema, tag) = parse_helper_report(output)?;
-    if schema != REQUIRED_HELPER_SCHEMA {
+    if !ACCEPTED_HELPER_SCHEMAS.contains(&schema.as_str()) {
         return Err(format!(
-            "the helper reports schema {schema}, but this tool needs schema {REQUIRED_HELPER_SCHEMA} (a helper of an \
+            "the helper reports schema {schema}, but this tool needs schema {REQUIRED_HELPER_SCHEMA} or 4 (a helper of an \
              older schema cannot take the stage argument); rebuild it with `cargo gust slang build-helper --force` \
              (in the GUST repository `cargo xtask build-slang-reflect --force`)"
         ));
@@ -79,11 +83,11 @@ pub(crate) fn parse_helper_report(output: &str) -> Result<(String, String), Stri
         }
     }
     match (schema, slang) {
-        (Some(schema @ ("1" | "2" | "3")), Some(tag)) if !tag.is_empty() => {
+        (Some(schema @ ("1" | "2" | "3" | "4")), Some(tag)) if !tag.is_empty() => {
             Ok((schema.to_owned(), tag.to_owned()))
         }
-        (Some(other), _) if !matches!(other, "1" | "2" | "3") => Err(format!(
-            "the helper reports schema {other}; this tool reads schemas 1, 2 and 3"
+        (Some(other), _) if !matches!(other, "1" | "2" | "3" | "4") => Err(format!(
+            "the helper reports schema {other}; this tool reads schemas 1, 2, 3 and 4"
         )),
         _ => Err(format!(
             "the helper's `--version` output has no schema and slang tag: `{line}`"
@@ -138,14 +142,19 @@ mod tests {
             );
         }
         // The build's staleness check still reads every schema, to say what is stale.
-        for schema in ["1", "2", "3"] {
+        for schema in ["1", "2", "3", "4"] {
             let output = format!("gust-slang-reflect schema={schema} slang=x\n");
             assert_eq!(parse_helper_report(&output).unwrap().0, schema);
+        }
+        // The shared schema-3 helper and the schema-4 one (arrays, m9.r2h) are both usable.
+        for schema in ["3", "4"] {
+            let output = format!("gust-slang-reflect schema={schema} slang=2026.21\n");
+            assert_eq!(parse_helper_version(&output).unwrap(), "2026.21");
         }
         for (bad, expected) in [
             ("", "unexpected"),
             ("slangc 2026.13.1\n", "unexpected"),
-            ("gust-slang-reflect schema=4 slang=x\n", "schema 4"),
+            ("gust-slang-reflect schema=5 slang=x\n", "schema 5"),
             ("gust-slang-reflect slang=x\n", "no schema"),
             ("gust-slang-reflect schema=1 slang=\n", "no schema"),
             ("gust-slang-reflect schema=1\n", "no schema"),

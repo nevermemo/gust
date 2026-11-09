@@ -572,11 +572,16 @@ fn a_helper_is_refused_unless_its_tag_is_the_pin_and_its_schema_is_the_current_o
         check_helper_pin(&helper("2026.20-1-g0a1b2c3d4"), &validated, "h"),
         Ok(())
     );
+    // Schema 4 (arrays, m9.r2h) is accepted beside 3.
+    assert_eq!(
+        check_helper_pin("gust-slang-reflect schema=4 slang=2026.20\n", &pin, "h"),
+        Ok(())
+    );
     // Stage 1's helper of the right Slang, with schema 1, is refused; so is one that prints no schema or a later one.
     for output in [
         "gust-slang-reflect schema=1 slang=2026.20\n",
         "gust-slang-reflect slang=2026.20\n",
-        "gust-slang-reflect schema=4 slang=2026.20\n",
+        "gust-slang-reflect schema=5 slang=2026.20\n",
     ] {
         let error = check_helper_pin(output, &pin, "the helper named by X").unwrap_err();
         assert!(

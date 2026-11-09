@@ -42,8 +42,10 @@ fn schema_3_is_written_only_for_textures_samplers_and_a_non_compute_stage() {
     // these pins catch an edit that widens schema 3 to every document or drops the compute default of the stage.
     let source = HELPER_SOURCE.replace("\r\n", "\n");
     assert!(
-        source.contains("const int schema = use.shapes ? 3 : (use.newKinds ? 2 : 1);"),
-        "schema 3 must be written only when a texture, a sampler or a non-compute stage is present"
+        source.contains(
+            "const int schema = use.arrays ? 4 : (use.shapes ? 3 : (use.newKinds ? 2 : 1));"
+        ),
+        "schema 3 must be written only when a texture, a sampler or a non-compute stage is present (and no array)"
     );
     assert!(
         source.contains("use.shapes = !compute;"),
@@ -397,9 +399,9 @@ fn reports(output: &'static str) -> impl Fn(&Path) -> Result<String, String> {
 
 #[test]
 fn a_helper_is_current_only_when_its_stamp_schema_and_slang_tag_are_this_tools_and_the_sdks() {
-    let (_scratch, exe, stamp) = stamped_helper("staleness", "3", "2026.20");
+    let (_scratch, exe, stamp) = stamped_helper("staleness", "4", "2026.20");
     let sdk = Ok("2026.20".to_owned());
-    let current = reports("gust-slang-reflect schema=3 slang=2026.20\n");
+    let current = reports("gust-slang-reflect schema=4 slang=2026.20\n");
     assert_eq!(staleness(&exe, &stamp, &sdk, &current), Ok(None));
     // A helper built against another Slang is stale whatever the times of its files say; the reason names both tags.
     for old in [
@@ -408,7 +410,7 @@ fn a_helper_is_current_only_when_its_stamp_schema_and_slang_tag_are_this_tools_a
         "2026.20-1-g0a1b2c3d4",
         "2026.2",
     ] {
-        let output = format!("gust-slang-reflect schema=3 slang={old}\n");
+        let output = format!("gust-slang-reflect schema=4 slang={old}\n");
         let older = move |_: &Path| Ok(output.clone());
         let reason = staleness(&exe, &stamp, &sdk, &older).unwrap().unwrap();
         assert_eq!(
@@ -420,12 +422,12 @@ fn a_helper_is_current_only_when_its_stamp_schema_and_slang_tag_are_this_tools_a
 
 #[test]
 fn a_helper_without_this_sources_stamp_is_stale() {
-    let (_scratch, exe, stamp) = stamped_helper("staleness-stamp", "3", "2026.20");
+    let (_scratch, exe, stamp) = stamped_helper("staleness-stamp", "4", "2026.20");
     let sdk = Ok("2026.20".to_owned());
-    let current = reports("gust-slang-reflect schema=3 slang=2026.20\n");
+    let current = reports("gust-slang-reflect schema=4 slang=2026.20\n");
     assert_eq!(staleness(&exe, &stamp, &sdk, &current), Ok(None));
     // A stamp of another probe source (a helper built by a tool with a different source) is stale.
-    let other = stamp_text("3", "2026.20").replace(&source_sha256(), &"0".repeat(64));
+    let other = stamp_text("4", "2026.20").replace(&source_sha256(), &"0".repeat(64));
     fs::write(&stamp, other).unwrap();
     let reason = staleness(&exe, &stamp, &sdk, &current).unwrap().unwrap();
     assert!(
@@ -441,7 +443,7 @@ fn a_helper_without_this_sources_stamp_is_stale() {
     let reason = staleness(&exe, &stamp, &sdk, &current).unwrap().unwrap();
     assert!(reason.starts_with("it has no build stamp"), "{reason}");
     // A helper replaced after its build (the stamp names another tag than the helper prints) is stale.
-    fs::write(&stamp, stamp_text("3", "2026.19")).unwrap();
+    fs::write(&stamp, stamp_text("4", "2026.19")).unwrap();
     let reason = staleness(&exe, &stamp, &sdk, &current).unwrap().unwrap();
     assert!(reason.contains("replaced after the build"), "{reason}");
 }
@@ -451,47 +453,48 @@ fn a_stamp_does_not_depend_on_which_tool_wrote_it() {
     // Two cargo-gust versions with the same probe source write byte-identical stamps for the same helper, so neither
     // rebuilds the other's helper.
     assert_eq!(
-        stamp_text("3", "2026.20"),
+        stamp_text("4", "2026.20"),
         format!(
-            "gust-slang-reflect build stamp\nsource-sha256={}\nschema=3\nslang=2026.20\n",
+            "gust-slang-reflect build stamp\nsource-sha256={}\nschema=4\nslang=2026.20\n",
             source_sha256()
         )
     );
     assert_eq!(
-        parse_stamp(&stamp_text("3", "2026.20")),
-        Some((source_sha256(), "3".to_owned(), "2026.20".to_owned()))
+        parse_stamp(&stamp_text("4", "2026.20")),
+        Some((source_sha256(), "4".to_owned(), "2026.20".to_owned()))
     );
-    assert_eq!(parse_stamp("schema=3\nslang=x\n"), None);
-    assert_eq!(parse_stamp("source-sha256=\nschema=3\nslang=x\n"), None);
+    assert_eq!(parse_stamp("schema=4\nslang=x\n"), None);
+    assert_eq!(parse_stamp("source-sha256=\nschema=4\nslang=x\n"), None);
 }
 
 #[test]
 fn a_helper_with_another_schema_or_no_readable_version_is_stale() {
-    let (_scratch, exe, stamp) = stamped_helper("staleness-schema", "3", "2026.20");
+    let (_scratch, exe, stamp) = stamped_helper("staleness-schema", "4", "2026.20");
     let sdk = Ok("2026.20".to_owned());
     let reason = |output: &'static str| staleness(&exe, &stamp, &sdk, &reports(output)).unwrap();
     // The helpers of the earlier schemas (a schema-2 helper from before mx.t0a) are rebuilt.
-    for old in ["1", "2"] {
+    for old in ["1", "2", "3"] {
         let output: &'static str = match old {
             "1" => "gust-slang-reflect schema=1 slang=2026.20\n",
-            _ => "gust-slang-reflect schema=2 slang=2026.20\n",
+            "2" => "gust-slang-reflect schema=2 slang=2026.20\n",
+            _ => "gust-slang-reflect schema=3 slang=2026.20\n",
         };
         assert_eq!(
             reason(output),
             Some(format!(
-                "it prints schema {old}, but the source prints schema 3"
+                "it prints schema {old}, but the source prints schema 4"
             ))
         );
     }
-    for unreadable in ["", "slangc 2026.20\n", "gust-slang-reflect schema=3\n"] {
+    for unreadable in ["", "slangc 2026.20\n", "gust-slang-reflect schema=4\n"] {
         let reason = reason(unreadable).unwrap();
         assert!(
             reason.contains("--version") || reason.contains("unexpected"),
             "{unreadable:?}: {reason}"
         );
     }
-    let reason = reason("gust-slang-reflect schema=4 slang=2026.20\n").unwrap();
-    assert!(reason.contains("schema 4"), "{reason}");
+    let reason = reason("gust-slang-reflect schema=5 slang=2026.20\n").unwrap();
+    assert!(reason.contains("schema 5"), "{reason}");
     let failing = |_: &Path| Err::<String, String>("exit 3".to_owned());
     assert_eq!(
         staleness(&exe, &stamp, &sdk, &failing),
@@ -499,7 +502,7 @@ fn a_helper_with_another_schema_or_no_readable_version_is_stale() {
     );
     // An SDK that cannot name its version never makes a helper current.
     let unknown = Err("no slangc".to_owned());
-    let current = reports("gust-slang-reflect schema=3 slang=2026.20\n");
+    let current = reports("gust-slang-reflect schema=4 slang=2026.20\n");
     assert_eq!(
         staleness(&exe, &stamp, &unknown, &current),
         Ok(Some(

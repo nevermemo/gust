@@ -487,10 +487,13 @@ fn pin_rule(root: &Path) -> Result<PinRule, String> {
     pin_rule_of(&source)
 }
 
-/// The reflection schema xtask requires of the helper: `schema=3` (mx.t0a). Since mx.k every compile passes the
+/// The reflection schema xtask requires of the helper: `schema=3` (mx.t0a) or the later `schema=4` (m9.r2h, which adds
+/// arrays and writes them only when a program has one). Since mx.k every compile passes the
 /// kernel's stage as a seventh argument, which a helper of schema 2 refuses with its usage text, so an older helper is
 /// refused here, at the gate, and not at its first compile.
 const HELPER_SCHEMA: &str = "3";
+/// The schemas a helper may print: [`HELPER_SCHEMA`] and the one that adds arrays.
+const HELPER_SCHEMAS: [&str; 2] = [HELPER_SCHEMA, "4"];
 
 /// Fails unless the helper writes the schema xtask reads and was built against the Slang the pin names (the pin
 /// itself, or a validated build, see [`PinRule`]). `which` says what the helper is, for the message, which names both
@@ -517,9 +520,9 @@ pub(crate) fn check_helper_pin(
     let schema = helper_output
         .split_whitespace()
         .find_map(|word| word.strip_prefix("schema="));
-    if schema != Some(HELPER_SCHEMA) {
+    if !schema.is_some_and(|schema| HELPER_SCHEMAS.contains(&schema)) {
         return Err(format!(
-            "{which} prints `schema={}`, but xtask needs `schema={HELPER_SCHEMA}` (a helper of an older schema \
+            "{which} prints `schema={}`, but xtask needs `schema=3` or `schema=4` (a helper of an older schema \
              cannot take the stage argument); rebuild it with the current `cargo gust slang build-helper --force` \
              (`cargo xtask build-slang-reflect --force` in the GUST repository)",
             schema.unwrap_or("<none>")
@@ -612,8 +615,12 @@ pub(crate) fn prepare_helper_with(
             if let Some(slangc) = &slangc {
                 check_helper_tag(&named, slangc)?;
             }
+            let schema = named
+                .split_whitespace()
+                .find_map(|word| word.strip_prefix("schema="))
+                .unwrap_or("?");
             println!(
-                "Using the reflection helper named by {HELPER_VARIABLE}: its Slang tag is the pin `{pin}`."
+                "Using the reflection helper named by {HELPER_VARIABLE}: its Slang tag is the pin `{pin}`, its reflection schema is {schema}."
             );
             Ok(())
         }

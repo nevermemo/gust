@@ -83,11 +83,15 @@ static const char* scalar_name(slang::TypeReflection::ScalarType scalar)
 // anywhere in the program makes the document schema 2: a top-level matrixLayout and the new type kinds. A texture, a
 // sampler or a stage other than compute makes it schema 3 (mx.t0a): schema 2's grammar (matrixLayout included) plus a
 // top-level "stage", texture and sampler bindings and, for a fragment entry, "targets" and no "workgroupSize". Nothing
-// else writes schema 3, so every document a compute kernel over buffers produced before stays byte-identical.
+// else writes schema 3, so every document a compute kernel over buffers produced before stays byte-identical. An array
+// anywhere in a buffer element makes it schema 4 (m9.r2h): schema 3's grammar (stage, textures, samplers, targets) plus the
+// type kind "array" (elementCount, elementStride, elementType). Nothing else writes schema 4 either.
 struct SchemaUse
 {
     bool newKinds = false;
     bool shapes = false;
+    bool arrays = false;
+    bool inConstantBuffer = false; // set while the element of a constant buffer is described
 };
 
 // The pipeline stage the caller expects the entry point to have (the optional seventh argument; compute by default).
@@ -165,6 +169,21 @@ static std::string type_json(slang::TypeLayoutReflection* type, SchemaUse& use, 
                << ",\"rows\":" << type->getRowCount() << ",\"columns\":" << type->getColumnCount()
                << ",\"matrixLayout\":" << json_string(matrix_layout_name(type->getMatrixLayoutMode()));
         break;
+    case slang::TypeReflection::Kind::Array:
+    {
+        // "stride" above is the stride of this array as an element of something else; "elementStride" is the distance
+        // between its own elements (Slang's uniformStride). An unsized array is refused by known() (in the size check above or here).
+        // The plan refuses uniform arrays (E0215): the std140 and WGSL uniform array rules are not measured, so the helper does not vouch for them.
+        if (use.inConstantBuffer) throw std::runtime_error("arrays in a constant buffer are not supported (uniform array layouts are not measured)");
+        use.arrays = true;
+        const auto count = known(type->getElementCount(), "array element count");
+        const auto elementStride = known(type->getElementStride(SLANG_PARAMETER_CATEGORY_UNIFORM), "array element stride");
+        auto element = type->getElementTypeLayout();
+        if (count == 0 || elementStride == 0 || !element) throw std::runtime_error("missing array layout");
+        output << ",\"kind\":\"array\",\"elementCount\":" << count << ",\"elementStride\":" << elementStride
+               << ",\"elementType\":" << type_json(element, use, depth + 1);
+        break;
+    }
     case slang::TypeReflection::Kind::Struct:
         if (!type->getFieldCount()) throw std::runtime_error("empty struct layout");
         output << ",\"kind\":\"struct\",\"fields\":[";
@@ -185,7 +204,8 @@ static std::string type_json(slang::TypeLayoutReflection* type, SchemaUse& use, 
         output << ']';
         break;
     default:
-        throw std::runtime_error("unsupported element type; only 32-bit scalars, vectors, matrices and structs are supported");
+        throw std::runtime_error(
+            "unsupported element type; only 32-bit scalars, vectors, matrices, arrays and structs are supported");
     }
     output << '}';
     return output.str();
@@ -331,7 +351,9 @@ static std::string reflection_json(slang::ProgramLayout* layout, const char* ent
             auto element = type->getElementTypeLayout();
             if (!element) throw std::runtime_error("missing constant-buffer element layout");
             use.newKinds = true;
+            use.inConstantBuffer = true;
             const auto elementJson = type_json(element, use);
+            use.inConstantBuffer = false;
             if (index) parameters << ',';
             parameters << "{\"name\":" << json_string(resource->getName())
                        << ",\"binding\":{\"kind\":\"descriptorTableSlot\",\"count\":1,\"index\":"
@@ -436,9 +458,9 @@ static std::string reflection_json(slang::ProgramLayout* layout, const char* ent
                    << ",\"type\":{\"kind\":\"resource\",\"baseShape\":\"structuredBuffer\",\"access\":"
                    << json_string(access) << ",\"resultType\":" << elementJson << "}}";
     }
-    // Key order: schemaVersion, matrixLayout (schema 2 and 3), compiler, target, entryPoint, stage (schema 3),
+    // Key order: schemaVersion, matrixLayout (schema 2 to 4), compiler, target, entryPoint, stage (schema 3 and 4),
     // sourceHash, artifactHash, workgroupSize (compute only), parameters, targets (fragment only).
-    const int schema = use.shapes ? 3 : (use.newKinds ? 2 : 1);
+    const int schema = use.arrays ? 4 : (use.shapes ? 3 : (use.newKinds ? 2 : 1));
     std::ostringstream output;
     output << "{\"schemaVersion\":" << schema;
     if (schema >= 2) output << ",\"matrixLayout\":" << json_string(matrix_layout_name(kMatrixLayoutMode));
@@ -564,7 +586,7 @@ int main(int argc, char** argv)
         check(slang::createGlobalSession(global.writeRef()), "createGlobalSession failed");
         if (argc == 2 && std::string(argv[1]) == "--version")
         {
-            std::cout << "gust-slang-reflect schema=3 slang=" << global->getBuildTagString() << '\n';
+            std::cout << "gust-slang-reflect schema=4 slang=" << global->getBuildTagString() << '\n';
             return 0;
         }
         std::ifstream stream(argv[1], std::ios::binary);

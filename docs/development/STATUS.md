@@ -70,7 +70,13 @@ under `dev+subgroups`, requiring each named test and the capability line; `--sui
 gust-algo; check-examples builds `subgroup-reduce` under plain `native` and runs its recompile check; `targets = []`
 is E0753; the difftest result format is 7. Their first Linux run (a draft pull request, nevermemo/gust#4) failed
 two cargo-gust tests that judged Windows paths; both were fixed in test code. The builder once moved round 0's rc
-file aside, so lines of a superseded batch are lost; every final gate has its line. Next: m8.x2.
+file aside, so lines of a superseded batch are lost; every final gate has its line. The prose half is in (m8.x2,
+merge `4219bb5`; 27 main gates green on the merge, 2026-11-09T00:17Z; pull request CI 42532267792 and lavapipe 42532267814 green on a1f91ca): README, ARCHITECTURE, SEMANTICS, DIAGNOSTICS, AGENTS.md,
+VALIDATION, DIFFTEST, RELEASE.md, NEXT_TASKS and the seven skills describe M8 as built; CHANGELOG 0.2.0 carries the
+semver report (one break, B1, in two parts) and the compatibility list (113 manifests on `release/0.1`: 94 unchanged,
+4 derived-only, 15 changed, each built by a main gate). The Opus review (0/3/13, re-check MERGE) found stale counts
+and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138's licence wording. Next: the M8
+close.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -685,6 +685,16 @@ fn tracked(name: &str) -> String {
     )
 }
 
+/// The variable `cargo gust` sets to the profile it resolved the routes for (m8.z).
+const ROUTED: &str = "GUST_ROUTED_PROFILE";
+
+/// `routed` without the `option_env!` items of the route variable and of `GUST_ROUTED_PROFILE`.
+fn without_tracking(routed: &str) -> String {
+    routed
+        .replace(&tracked(PHYSICS), "")
+        .replace(&tracked(ROUTED), "")
+}
+
 const GPU_MARKER: &str = "impl :: gust :: target :: GpuKernel for add";
 const GATE: &str = "# [cfg (any (test , gust_dual))]";
 const UNGATED_IMPL: &str = "impl :: gust :: Run < add , 3 > for :: gust :: cpu :: CpuDevice";
@@ -745,7 +755,7 @@ fn a_gpu_routed_module_is_the_untagged_one_plus_the_tracked_variable() {
         );
         assert_eq!(routed.matches(&tracked(PHYSICS)).count(), 1, "{routed}");
         assert_eq!(
-            squeezed(&routed.replace(&tracked(PHYSICS), "")),
+            squeezed(&without_tracking(&routed)),
             squeezed(&plain),
             "{variables:?}"
         );
@@ -802,10 +812,7 @@ fn a_cpu_routed_module_is_the_cpu_profile_expansion_plus_the_tracked_variable() 
         "const _ : () = :: gust :: profile :: require_artifact (false) ;",
         "",
     );
-    assert_eq!(
-        squeezed(&routed.replace(&tracked(PHYSICS), "")),
-        squeezed(&expected)
-    );
+    assert_eq!(squeezed(&without_tracking(&routed)), squeezed(&expected));
 }
 
 #[test]
@@ -1365,4 +1372,126 @@ fn a_route_on_a_function_is_resolved_too() {
 fn a_route_on_another_item_is_still_not_a_module() {
     let output = output_text("route = \"physics\"", "struct S;");
     assert!(output.contains("[GUST-E0702]"), "{output}");
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// The guard against a build the driver did not resolve the routes for (m8.z)
+
+/// The `if` the guard emits for a build of `gust` with the profile `built`.
+fn guard_branch(built: &str) -> String {
+    format!(":: gust :: profile :: is_profile (\"{built}\")")
+}
+
+#[test]
+fn a_tagged_module_without_a_routed_profile_tracks_the_variable_and_checks_nothing() {
+    // Plain cargo (D67): the variable is read so that rustc tracks it, and nothing is compared.
+    let scratch = Crate::new("guard-unset", "physics = {}");
+    let routed = text(
+        VECTOR_ADD,
+        scratch.path(),
+        Profile::Other,
+        Some("physics"),
+        &[],
+    );
+    assert_eq!(routed.matches(&tracked(ROUTED)).count(), 1, "{routed}");
+    assert!(!routed.contains("is_profile"), "{routed}");
+    assert!(!routed.contains("panic"), "{routed}");
+}
+
+#[test]
+fn a_routed_profile_makes_one_check_per_other_profile_naming_both() {
+    let scratch = Crate::new("guard-set", "physics = {}");
+    for routed_profile in ["dev", "native", "web", "cpu"] {
+        let routed = text(
+            VECTOR_ADD,
+            scratch.path(),
+            Profile::Other,
+            Some("physics"),
+            &[(ROUTED, routed_profile)],
+        );
+        assert_eq!(routed.matches(&tracked(ROUTED)).count(), 1, "{routed}");
+        assert_eq!(routed.matches("is_profile").count(), 3, "{routed}");
+        assert!(!routed.contains(&guard_branch(routed_profile)), "{routed}");
+        for built in ["dev", "native", "web", "cpu"] {
+            if built == routed_profile {
+                continue;
+            }
+            assert!(routed.contains(&guard_branch(built)), "{built}: {routed}");
+            let message = routing::routed_message(routed_profile, built);
+            assert!(routed.contains(&message), "{routed_profile} {built}");
+            assert!(
+                message.contains(&format!("for the profile `{routed_profile}`"))
+                    && message.contains(&format!("of gust is `{built}`")),
+                "{message}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_message_of_the_guard_names_the_causes_and_the_ways_out() {
+    let message = routing::routed_message("dev", "web");
+    for part in [
+        "(GUST_ROUTED_PROFILE)",
+        "`build.target` in .cargo/config.toml",
+        "CARGO_BUILD_TARGET",
+        "a custom profile inherits `release`",
+        "set only in the `[env]` table of the config",
+        "built for the host as a build dependency",
+        "set GUST_PROFILE=web",
+        "set GUST_PROFILE to the profile you mean in the environment",
+        "unset it if you are running plain cargo",
+    ] {
+        assert!(message.contains(part), "{part}: {message}");
+    }
+    // It is the literal of a `panic!`, which reads `{` and `}` as a format.
+    assert!(
+        !message.contains('{') && !message.contains('}'),
+        "{message}"
+    );
+}
+
+#[test]
+fn a_routed_profile_that_is_no_profile_differs_from_all_four() {
+    let scratch = Crate::new("guard-bogus", "physics = {}");
+    let routed = text(
+        VECTOR_ADD,
+        scratch.path(),
+        Profile::Other,
+        Some("physics"),
+        &[(ROUTED, "bogus")],
+    );
+    assert_eq!(routed.matches("is_profile").count(), 4, "{routed}");
+}
+
+#[test]
+fn an_untagged_module_reads_no_routed_profile() {
+    // Only a kernel whose target comes from a route tag can be misrouted, so an untagged module is what it was.
+    let scratch = Crate::new("guard-untagged", "physics = {}");
+    let plain = text(VECTOR_ADD, scratch.path(), Profile::Other, None, &[]);
+    let with_variable = text(
+        VECTOR_ADD,
+        scratch.path(),
+        Profile::Other,
+        None,
+        &[(ROUTED, "native")],
+    );
+    assert_eq!(plain, with_variable);
+    assert!(!plain.contains(ROUTED), "{plain}");
+}
+
+#[test]
+fn the_guard_does_not_change_the_target_a_tag_resolves_to() {
+    // The guard reads the profile; it never decides one.
+    let scratch = Crate::new("guard-target", "physics = { default = \"cpu\" }");
+    for variables in [&[][..], &[(ROUTED, "dev")][..], &[(ROUTED, "native")][..]] {
+        let routed = text(
+            VECTOR_ADD,
+            scratch.path(),
+            Profile::Other,
+            Some("physics"),
+            variables,
+        );
+        assert!(routed.contains("Target :: Cpu"), "{variables:?}: {routed}");
+    }
 }

@@ -8,9 +8,10 @@ breaks existing code bumps the minor version, and the promise is described in th
 ## Unreleased (0.2.0)
 
 The workspace version is `0.2.0-dev`. Work for 0.2.0 lands on `main`; the 0.1.0 line continues on the branch
-`release/0.1`. This list is what the milestone (M8) has merged. 0.2.0 has one listed break (B1, below, in two parts:
-the descriptor constructor and setters, and the `GpuKernel` bound), and it is the last of its kind: the descriptor is
-`#[non_exhaustive]` from now on.
+`release/0.1`. This list is what the milestone (M8) has merged. 0.2.0 has two listed breaks. B1, below, in two parts (the
+descriptor constructor and setters, and the `GpuKernel` bound), is the last of its kind: the descriptor is
+`#[non_exhaustive]` from now on. The other is a function name in a `#[gpu]` module that is now reserved (the 21 subgroup
+operations).
 
 ### Added
 
@@ -29,7 +30,8 @@ the descriptor constructor and setters, and the `GpuKernel` bound), and it is th
   only in a body that requires `subgroups` and only where every invocation reaches them (`GUST-E0745`, `GUST-E0747`,
   `GUST-E0751`). The WGSL that Slang writes for them is repaired for the pinned `naga` by a text fix-up, in the
   run-time compiler, the reflected bridge and `cargo gust build`. They ran on an RTX 5090 (subgroup size 32) and on
-  lavapipe in CI (size 8); no browser has run one, and the Radeon 890M has not run the fixtures.
+  lavapipe in CI (size 8), except two forms of `subgroup_broadcast` (`i32` with a literal lane, `f32` with a computed
+  lane) that only the RTX 5090 has run so far; no browser has run one, and the Radeon 890M has not run the fixtures.
 - `gust-compute-wgpu` opens its devices with the capabilities of the build (`DeviceOptions::capabilities` and
   `with_capabilities`, `HeadlessDevice::capabilities()` and `subgroup_sizes()`), refuses a request the adapter cannot
   meet when the device opens, and refuses a kernel whose `requires` the device does not meet before launch
@@ -40,7 +42,14 @@ the descriptor constructor and setters, and the `GpuKernel` bound), and it is th
   whole build; the tags are declared in `[package.metadata.gust.routes]` (`GUST-E0748`, `GUST-E0749`) and chosen by a
   `gust.toml` beside the application's manifest. `cargo gust build`, `check`, `run` and `test` read it, set one
   `GUST_ROUTE__<package>__<tag>` variable per tag and write `gust-artifacts/routes.json`; `cargo gust run` and `test`
-  are new. Without a `gust.toml` and without route tags a build is exactly what it was.
+  are new. Without a `gust.toml` and without route tags a build is exactly what it was. The driver reads the profile
+  from its command line and environment, so it also sets `GUST_ROUTED_PROFILE` to the profile it resolved the routes
+  for, and the `#[gpu]` expansion of a routed module fails the compilation of its crate, naming both profiles, when
+  cargo's own view differs (a target from `build.target` or `CARGO_BUILD_TARGET`, a custom profile that inherits
+  `release`, a `GUST_PROFILE` set only in the config's `[env]`) instead of routing the kernels for another profile.
+  Plain cargo sets nothing and is unchanged; a switch between plain cargo and `cargo gust` rebuilds the routed crates
+  and the application, not `gust`.
+- A hidden `gust::profile::is_profile` (the check the `#[gpu]` macro writes for a routed module; not public API).
 - New public modules of `gust-compute`: `gust::capability`, `gust::limits`, `gust::target` (`Target`, and the hidden
   `GpuKernel` marker) and `gust::routes` (`variable_name`, `VARIABLE_PREFIX`).
 
@@ -57,6 +66,12 @@ the descriptor constructor and setters, and the `GpuKernel` bound), and it is th
   hand-written `Kernel` impl that runs on `HeadlessDevice` adds `impl gust::target::GpuKernel for MyKernel {}`;
   without it the call is E0277 with a message that says so. The semver tool does not list this change (the marker is
   `#[doc(hidden)]`).
+- **Subgroup names are reserved in a `#[gpu]` module** (`GUST-E0745`). A function of a `#[gpu]` module, a kernel or a
+  helper, can no longer be named like one of the 21 subgroup operations (`subgroup_add`, `subgroup_size`,
+  `subgroup_ballot` and the rest, listed in `docs/SEMANTICS.md`), because a call of the name is that operation. A 0.1.0
+  module that has a helper with one of these names no longer compiles, with an error on the function. Migration:
+  rename the function. It is not part of B1 (the semver tool cannot see it: it is a macro check); no example or fixture
+  of this repository had such a name (the unit test that pins the error is the one place that writes one).
 - `DeviceOptions::default()` and `HeadlessDevice::new()` now request `gust::capability::enabled()`. In a build with no
   capability that is the empty set, as before; in a `+subgroups` build they open a device with the feature or fail with
   `Error::MissingCapability`.

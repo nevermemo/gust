@@ -15,8 +15,8 @@ use crate::{
     precompiled::check_precompiled_report,
     process::{
         CheckRecord, HELPER_VARIABLE, TestTotals, report_check, repository_helper, require_command,
-        require_tests_ran, run_cargo_test_captured, run_checked, run_checked_owned,
-        run_direct_args, sum_test_results, without_colors, workspace_command,
+        require_tests_ran, run_cargo_test_captured, run_cargo_test_captured_under, run_checked,
+        run_checked_owned, run_direct_args, sum_test_results, without_colors, workspace_command,
     },
     reflect::{BuildOptions, build_slang_reflect},
     release::check_release_report,
@@ -287,6 +287,16 @@ fn verify_inner(
             .map(|summary| format!("{summary}\n"))
             .map_err(|error| vec![error]);
         report_check(checks, STRICT_SUBGROUPS_PACKAGE, outcome)?;
+    }
+    if mode == VerifyMode::Full {
+        // The whole Gpu suite under the `dev+subgroups` profile (M8, m8.z, S3 of the M8 sanity checks): the pinned
+        // gust-wgpu targets and then every test of gust-algo, whose subgroup body is selected only by that profile. The
+        // workspace tests above are the plain run (`dev`: the portable bodies), so without this step nothing in the
+        // release gate ran that body. It runs in process and is recorded like the other xtask checks.
+        let outcome = check_gpu_suite_under_profile(root, FULL_GPU_PROFILE)
+            .map(|summary| format!("{summary}\n"))
+            .map_err(|error| vec![error]);
+        report_check(checks, FULL_GPU_PROFILE_CHECK, outcome)?;
     }
     if runs_check_dual(mode) {
         // The dual build and the example runs with the CPU twin (D26): its cargo calls are its own, with their own
@@ -979,7 +989,7 @@ pub(crate) struct GpuSuitePin {
 ///
 /// prints `<passed> <lines>`; the output must also show no line other than `0 failed; 0 ignored`.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 409,
+    passed: 411,
     result_lines: 36,
 };
 
@@ -1079,7 +1089,7 @@ fn check_pinned_counts(
 /// tests each must pass (m8.w2). The whole suite is pinned by [`GPU_SUITE_PIN`] under `dev` only; a profile run is one
 /// target, so its count is pinned here. Adding or removing a test of a listed target changes its entry in the same commit,
 /// and a target that is not listed cannot be run under a profile.
-pub(crate) const GPU_TARGET_PINS: [(&str, u64); 2] = [("capabilities", 6), ("subgroup", 15)];
+pub(crate) const GPU_TARGET_PINS: [(&str, u64); 2] = [("capabilities", 6), ("subgroup", 17)];
 
 /// The cargo call of one gust-wgpu test target ([`GPU_TARGET_PINS`]). `--show-output` makes the harness print the
 /// output of the passing tests too, which is where [`BUILD_CAPABILITIES_TARGET`] reports the capabilities of the build.
@@ -1391,6 +1401,25 @@ fn check_counted_call(call: &[String], stdout: &str) -> Result<(), String> {
 /// The cargo call that runs one example binary and exports its SPIR-V (the Spirv suite).
 pub(crate) fn example_run_args(example: &str) -> [&str; 5] {
     ["run", "--locked", "--quiet", "-p", example]
+}
+
+/// The profile of the standing run of the profile form of the Gpu suite in the Full mode (m8.z, S3 of the M8 sanity
+/// checks): `cargo xtask test --suite Gpu --profile dev+subgroups`, after the workspace tests, which are the plain run.
+pub(crate) const FULL_GPU_PROFILE: &str = "dev+subgroups";
+
+/// How that step is named in the record (`.ai/VALIDATION.json`) and in the failure message of the Full mode.
+pub(crate) const FULL_GPU_PROFILE_CHECK: &str = "test --suite Gpu --profile dev+subgroups";
+
+/// The profile form of the Gpu suite under `profile`, as `cargo xtask test --suite Gpu --profile <profile>` runs it
+/// ([`run_gpu_profile_suite`]) with the cargo runner of the Gpu suite. The adapter is the one the Full mode already
+/// named, so it is not named again.
+fn check_gpu_suite_under_profile(root: &Path, profile: &str) -> Result<String, String> {
+    let mut announce = |call: &str| println!("-- {call}");
+    run_gpu_profile_suite(root, profile, &run_cargo_test_captured_under, &mut announce)
+        .map_err(|error| format!("suite Gpu under GUST_PROFILE={profile} failed: {error}"))?;
+    Ok(format!(
+        "suite Gpu passed under GUST_PROFILE={profile}: the pinned gust-wgpu targets and then gust-algo, each with the capabilities line of its own build"
+    ))
 }
 
 /// The package of the strict proof of the `subgroups` capability (M8, slice m8.e; plan section 2.1): not one of

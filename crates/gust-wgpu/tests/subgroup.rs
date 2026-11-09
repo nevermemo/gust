@@ -459,13 +459,15 @@ fn report(device: &HeadlessDevice, what: &str) {
 
 #[test]
 fn the_selected_body_follows_the_build_and_keeps_the_layout_of_the_kernel() {
-    let kernels: [&KernelDescriptor; 6] = [
+    let kernels: [&KernelDescriptor; 8] = [
         &subgroup::partial_sums::DESCRIPTOR,
         &subgroup::count_if::DESCRIPTOR,
         &subgroup::lanes_u32::DESCRIPTOR,
         &subgroup::lanes_i32::DESCRIPTOR,
         &subgroup::lanes_f32::DESCRIPTOR,
         &subgroup::votes::DESCRIPTOR,
+        &subgroup_forms::broadcast_literal_i32::DESCRIPTOR,
+        &subgroup_forms::broadcast_computed_f32::DESCRIPTOR,
     ];
     for descriptor in kernels {
         // The kernel keeps its name and its handle; the variant is the body the descriptor describes.
@@ -928,4 +930,177 @@ fn a_macro_kernel_with_a_ragged_workgroup_is_refused_before_it_compiles() {
         other => panic!("expected SubgroupSize, got {other:?}"),
     }
     assert_eq!(device.read_typed_buffer(&out).unwrap(), input);
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Two forms of `subgroup_broadcast` that no other kernel here holds (m8.z, S4 of the M8 sanity checks)
+
+/// `subgroup_broadcast` on `i32` with a literal lane (`WaveBroadcastLaneAt`, the literal form) and on `f32` with a
+/// computed lane (`WaveReadLaneAt`). The kernels of `tests/fixtures/subgroup.rs` hold the other forms of the three
+/// broadcast and shuffle operations; this module is a second one, here, because that fixture is also the golden of the
+/// macro's tests. Each kernel writes three words per element: the broadcast value, the subgroup size and the lane. The
+/// portable body writes zeros, as the fixture's do.
+#[gust::gpu]
+mod subgroup_forms {
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn broadcast_literal_i32(
+        id: SV_DispatchThreadID,
+        data: StructuredBuffer<i32>,
+        mut out: RWStructuredBuffer<i32>,
+    ) {
+        if id.x < data.len() {
+            for word in 0u32..3u32 {
+                out[id.x * 3u32 + word] = 0i32;
+            }
+        }
+    }
+
+    #[variant(of = broadcast_literal_i32, requires(subgroups))]
+    pub fn broadcast_literal_i32_subgroups(
+        id: SV_DispatchThreadID,
+        data: StructuredBuffer<i32>,
+        mut out: RWStructuredBuffer<i32>,
+    ) {
+        let mut x = 0i32;
+        if id.x < data.len() {
+            x = data[id.x];
+        }
+        let lane = subgroup_lane();
+        let size = subgroup_size();
+        let fourth = subgroup_broadcast(x, 3u32);
+        if id.x < data.len() {
+            let base = id.x * 3u32;
+            out[base] = fourth;
+            out[base + 1u32] = size as i32;
+            out[base + 2u32] = lane as i32;
+        }
+    }
+
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn broadcast_computed_f32(
+        id: SV_DispatchThreadID,
+        data: StructuredBuffer<f32>,
+        mut out: RWStructuredBuffer<f32>,
+    ) {
+        if id.x < data.len() {
+            for word in 0u32..3u32 {
+                out[id.x * 3u32 + word] = 0.0f32;
+            }
+        }
+    }
+
+    #[variant(of = broadcast_computed_f32, requires(subgroups))]
+    pub fn broadcast_computed_f32_subgroups(
+        id: SV_DispatchThreadID,
+        data: StructuredBuffer<f32>,
+        mut out: RWStructuredBuffer<f32>,
+    ) {
+        let mut x = 0.0f32;
+        if id.x < data.len() {
+            x = data[id.x];
+        }
+        let lane = subgroup_lane();
+        let size = subgroup_size();
+        let middle = subgroup_broadcast(x, size / 2u32);
+        if id.x < data.len() {
+            let base = id.x * 3u32;
+            out[base] = middle;
+            out[base + 1u32] = size as f32;
+            out[base + 2u32] = lane as f32;
+        }
+    }
+}
+
+#[test]
+fn broadcast_of_i32_with_a_literal_lane_matches_the_host_model() {
+    let device = headless();
+    report(&device, "broadcast_literal_i32");
+    let descriptor = &subgroup_forms::broadcast_literal_i32::DESCRIPTOR;
+    assert_eq!(descriptor.requires, gust::capability::enabled());
+    if selected() {
+        // The form under test: a literal lane is `WaveBroadcastLaneAt`, and WGSL's `subgroupBroadcast`.
+        assert!(
+            descriptor
+                .slang_source
+                .contains("WaveBroadcastLaneAt(x, uint(3))"),
+            "{}",
+            descriptor.slang_source
+        );
+        let wgsl = gust::slang::compile_wgsl(descriptor).unwrap();
+        assert!(wgsl.contains("subgroupBroadcast("), "{wgsl}");
+        assert!(!wgsl.contains("enable subgroups"), "{wgsl}");
+    }
+    for count in [256usize, 300] {
+        let input: Vec<i32> = (0..count)
+            .map(|i| ((i * 37 + 11) % 28) as i32 - 14)
+            .collect();
+        let got = run(&device, descriptor, &input, 3, 0x5EED_i32);
+        if !selected() {
+            assert!(
+                got.iter().all(|word| *word == 0),
+                "the portable body writes zeros"
+            );
+            continue;
+        }
+        // An invocation past the end of the data holds 0 and still takes part.
+        let value = |j: usize| input.get(j).copied().unwrap_or(0);
+        for index in 0..count {
+            let words = &got[index * 3..index * 3 + 3];
+            let (size, lane) = (words[1] as usize, words[2] as usize);
+            let base = geometry(index, size, lane);
+            assert!(
+                size > 3,
+                "invocation {index}: lane 3 of a subgroup of {size}"
+            );
+            let expected = [value(base + 3), size as i32, lane as i32];
+            words_equal(index, words, &expected, 0x5EED_i32, "broadcast_literal_i32");
+        }
+    }
+}
+
+#[test]
+fn broadcast_of_f32_with_a_computed_lane_matches_the_host_model() {
+    let device = headless();
+    report(&device, "broadcast_computed_f32");
+    let descriptor = &subgroup_forms::broadcast_computed_f32::DESCRIPTOR;
+    assert_eq!(descriptor.requires, gust::capability::enabled());
+    if selected() {
+        // The form under test: a computed lane is `WaveReadLaneAt`, which WGSL spells `subgroupShuffle`.
+        assert!(
+            descriptor.slang_source.contains("WaveReadLaneAt(x, "),
+            "{}",
+            descriptor.slang_source
+        );
+        assert!(!descriptor.slang_source.contains("WaveBroadcastLaneAt"));
+        let wgsl = gust::slang::compile_wgsl(descriptor).unwrap();
+        assert!(wgsl.contains("subgroupShuffle("), "{wgsl}");
+        assert!(!wgsl.contains("enable subgroups"), "{wgsl}");
+    }
+    // Powers of two, so the comparison is bit for bit (as `lanes_f32`).
+    let powers = [0.5f32, 1.0, 2.0, 1.0, 0.5, 2.0, 1.0];
+    let sentinel = 12_345.0f32;
+    for count in [256usize, 300] {
+        let input: Vec<f32> = (0..count).map(|i| powers[(i * 3 + 2) % 7]).collect();
+        let got = run(&device, descriptor, &input, 3, sentinel);
+        if !selected() {
+            assert!(
+                got.iter().all(|word| *word == 0.0),
+                "the portable body writes zeros"
+            );
+            continue;
+        }
+        let value = |j: usize| input.get(j).copied().unwrap_or(0.0);
+        let bits = |words: &[f32]| words.iter().map(|w| w.to_bits()).collect::<Vec<_>>();
+        for index in 0..count {
+            let words = &got[index * 3..index * 3 + 3];
+            let (size, lane) = (words[1] as usize, words[2] as usize);
+            let base = geometry(index, size, lane);
+            let expected = [value(base + size / 2), size as f32, lane as f32];
+            assert_eq!(
+                bits(words),
+                bits(&expected),
+                "broadcast_computed_f32: invocation {index}"
+            );
+        }
+    }
 }

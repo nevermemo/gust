@@ -121,7 +121,23 @@ describes the intended behaviour and is not evidence.
   against the `[package.metadata.gust.routes]` tables that `cargo metadata` reports, resolve each declared tag the way
   the macro does (the `cpu` profile, the nearest entry, the declaring crate's defaults, the GPU), set one
   `GUST_ROUTE__<package>__<tag>` variable per tag on the cargo it starts, and write the resolved table to
-  `gust-artifacts/routes.json` (a build output; removed when no `gust.toml` applies). A change to the `gust.toml`
+  `gust-artifacts/routes.json` (a build output; removed when no `gust.toml` applies). The driver resolves the profile
+  from its own command line and process environment only (`--release`, `-r`, `--profile release`, `--target wasm32-..`
+  and `GUST_PROFILE`), while `gust`'s build script infers it from what cargo hands it (`PROFILE` and the target
+  architecture), which also see `build.target` in `.cargo/config.toml`, `CARGO_BUILD_TARGET`, a custom profile that
+  inherits `release` and a `GUST_PROFILE` set in the `[env]` table of the config. So the driver also sets
+  `GUST_ROUTED_PROFILE` to the profile it resolved the routes for (m8.z), and the code the `#[gpu]` macro writes for a
+  module with a route tag reads it with `option_env!` and compares it with the profile `gust` was built for (a hidden
+  `gust::profile::is_profile`). When they differ, that crate does not compile: the error is at the route's literal and
+  names both profiles and the likely cause, so a kernel is never routed for a profile the build is not. Only a module
+  with a route tag can be misrouted, so only those carry the check; the build script of `gust` does not read the
+  variable. Plain cargo sets no `GUST_ROUTED_PROFILE`, nothing is compared, and it behaves as before (D67); a driver run
+  that applies no `gust.toml` removes a stale inherited value. A switch between plain cargo (or rust-analyzer) and
+  `cargo gust` in one target directory rebuilds the routed kernel crates and the application only, as a route change
+  does (measured in m8.z: two crates in the routing fixture; with the check in `gust`'s build script it was three, `gust`
+  among them, and in a real application the whole `gust` cone). A routed kernel crate compiled for the host as a build
+  dependency of a `wasm32` release build infers `native` where the driver resolved `web`, and is refused too; set
+  `GUST_PROFILE=web` in the environment then, so that both copies infer `web`. A change to the `gust.toml`
   rebuilds in both directions, as `cargo xtask check-routing` measured (with the route tracking removed, the
   unset-to-set flip fails). A route to a capability profile is refused; `--workspace`, `--all` and a workspace root's
   default selection are refused when any selected member has a `gust.toml`; no `cargo gust` command builds a routed
@@ -913,21 +929,26 @@ A kernel is inside the contract only if both of these hold. A sequential CPU twi
   - **Forms beyond S3's cells (ruling 4).** S3 ran `broadcast_first`, `broadcast` and `shuffle` on `u32` only, and its
     computed-lane cell was `WaveReadLaneAt`. The dialect also takes `i32` and `f32` for the three (`SubgroupScalar`),
     and `subgroup_shuffle` with a computed lane lowers to `WaveShuffle`. These forms are exercised by
-    `crates/gust-wgpu/tests/subgroup.rs` (`lanes_u32`, `lanes_i32`, `lanes_f32`) and ran on the adapters below; a
-    cell that did not run on an adapter says so:
+    `crates/gust-wgpu/tests/subgroup.rs` (`lanes_u32`, `lanes_i32`, `lanes_f32`, and, since m8.z, the two cells
+    `broadcast_literal_i32` and `broadcast_computed_f32` of its own `subgroup_forms` module) and ran on the adapters
+    below; a cell that did not run on an adapter says so:
 
     | Form | RTX 5090 (Vulkan) | Radeon 890M (Vulkan) | lavapipe (CI `dev+subgroups` step) |
     | --- | --- | --- | --- |
     | `subgroup_broadcast_first` on `i32` and `f32` | ran | not run on the Radeon 890M | passed (run 42378261589) |
     | `subgroup_broadcast` on `f32` with a literal lane (`WaveBroadcastLaneAt`) | ran | not run on the Radeon 890M | passed (run 42378261589) |
-    | `subgroup_broadcast` on `i32` with a literal lane (`WaveBroadcastLaneAt`) | not run on any adapter | not run | not run |
+    | `subgroup_broadcast` on `i32` with a literal lane (`WaveBroadcastLaneAt`) | ran (m8.z, `broadcast_literal_i32`, size 32) | not run on the Radeon 890M | not run (the CI step has not run the m8.z tests yet) |
     | `subgroup_broadcast` on `i32` with a computed lane (`WaveReadLaneAt`, the form of S3's cell) | ran | not run on the Radeon 890M | passed (run 42378261589) |
-    | `subgroup_broadcast` on `f32` with a computed lane (`WaveReadLaneAt`) | not run on any adapter | not run | not run |
+    | `subgroup_broadcast` on `f32` with a computed lane (`WaveReadLaneAt`) | ran (m8.z, `broadcast_computed_f32`, size 32) | not run on the Radeon 890M | not run (the CI step has not run the m8.z tests yet) |
     | `subgroup_shuffle` on `i32` and `f32`, and on `u32` (computed lane, `WaveShuffle`; every shuffle in the fixtures has a computed lane; S3's cell was `WaveReadLaneAt`) | ran | not run on the Radeon 890M | passed (run 42378261589) |
 
     The tests open the first Vulkan adapter, so the Radeon 890M was not selected in this slice. The lavapipe cells are
     from the CI run of the `dev+subgroups` step, which runs the same file: run 42378261589 passed all 15 tests of
-    `tests/subgroup.rs` on `8e59357`.
+    `tests/subgroup.rs` on `8e59357`; the file has 17 since m8.z. The two m8.z cells ran on the RTX 5090 under
+    `cargo xtask test --suite Gpu --profile dev+subgroups` (the 17 tests of `subgroup` and the 6 of `capabilities`
+    passed, then `gust-algo`), each comparing every invocation of 256 and 300 elements with the host model and checking
+    that the selected body holds the form (`WaveBroadcastLaneAt(x, uint(3))`, or `WaveReadLaneAt`, and the WGSL
+    `subgroupBroadcast` or `subgroupShuffle`). Neither cell has run on lavapipe or the Radeon 890M.
   - **The WGSL fix-up.** wgpu 30 rejects what slangc writes for a subgroup kernel in two places (the `enable subgroups;`
     line, wgpu issue 5555, and an `i32` lane argument of `subgroupShuffle` and `subgroupBroadcast`, issue 10818), so
     `gust::slang::wgsl::fixup_subgroups` edits the text: it removes the `enable` line and rewrites the lane argument

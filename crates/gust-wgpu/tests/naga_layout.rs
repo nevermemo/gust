@@ -101,6 +101,7 @@ fixture_functions!(
     "../../../tests/fixtures/map.rs",
     [saxpy, clamp_signed, even_and, mirror, add_one]
 );
+fixture!(f_methods, methods, "../../../tests/fixtures/methods.rs");
 fixture!(f_mismatch, mismatch, "../../../tests/fixtures/mismatch.rs");
 fixture!(f_numeric, numeric, "../../../tests/fixtures/numeric.rs");
 fixture!(f_option, optional, "../../../tests/fixtures/option.rs");
@@ -132,7 +133,7 @@ struct Golden {
     kernels: &'static [KernelDescriptor],
 }
 
-fn goldens() -> [Golden; 19] {
+fn goldens() -> [Golden; 20] {
     [
         Golden {
             file: "atomics.slang",
@@ -169,6 +170,12 @@ fn goldens() -> [Golden; 19] {
             text: include_str!("../../../tests/fixtures/map.slang"),
             entries: 5,
             kernels: f_map::KERNELS,
+        },
+        Golden {
+            file: "methods.slang",
+            text: include_str!("../../../tests/fixtures/methods.slang"),
+            entries: 1,
+            kernels: f_methods::KERNELS,
         },
         Golden {
             file: "mismatch.slang",
@@ -760,8 +767,8 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
     problems
 }
 
-/// The compute and fragment entries the nineteen goldens hold in all (pinned per golden in [`goldens`]).
-const GOLDEN_ENTRIES: usize = 96;
+/// The compute and fragment entries the twenty goldens hold in all (pinned per golden in [`goldens`]).
+const GOLDEN_ENTRIES: usize = 97;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`
 /// (`atomics.slang` has one entry for the ten kernels of the module) and of `numeric.rs` (one of two).

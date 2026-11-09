@@ -817,3 +817,57 @@ fn a_helper_reaches_no_resource_and_holds_no_barrier_which_the_classifier_relies
         "a barrier in a helper (D94); {FIX}\n{source}"
     );
 }
+
+/// A module with a struct, one method of it and a kernel that calls the method on a storage element and on a local.
+const METHOD_PROBE: &str = "mod m { pub struct P { pub x: f32 } \
+    impl P { pub fn twice(&self) -> f32 { self.x * 2.0f32 } } \
+    #[kernel] pub fn k(id: SV_DispatchThreadID, items: StructuredBuffer<P>, mut out: RWStructuredBuffer<f32>) { \
+    let local = items[id.x]; out[id.x] = items[id.x].twice() + local.twice(); } }";
+
+#[test]
+fn a_call_of_a_method_of_the_module_is_one_listed_neutral_kind_and_keeps_pixel() {
+    // D133 (slice m9.a1): the ledger lists the call of a module method by one entry, found through the `.name` marker
+    // of `helper_names`; the validator and the emitter accept the probe.
+    let listed: Vec<&str> = LEDGER
+        .iter()
+        .filter(|entry| entry.class == Class::ModuleMethod)
+        .map(|entry| entry.kind)
+        .collect();
+    assert_eq!(listed, ["method"], "{FIX}");
+    assert_eq!(
+        verdict(METHOD_PROBE),
+        Accepted,
+        "the validator and the emitter now refuse a method call; {FIX}"
+    );
+    let module = module(METHOD_PROBE);
+    let helpers = crate::validate::helper_names(&module);
+    assert!(helpers.contains(".twice"), "{helpers:?}");
+    let classification = classification_of_module(&module);
+    assert!(
+        !classification
+            .exclusions
+            .iter()
+            .any(|exclusion| exclusion.why == Why::Unrecognised),
+        "{:?}",
+        classification.exclusions
+    );
+    assert!(
+        classification.allows(Shape::Pixel),
+        "{:?}",
+        classification.exclusions
+    );
+    assert!(matches!(
+        kinds::lookup(Class::ModuleMethod, "method").map(|entry| entry.handling),
+        Some(Handling::Neutral)
+    ));
+    // Without the marker the call is a method the ledger does not know: `grid` only, the default of D94.
+    let classification = classify_function(kernel_of(&module), &HashSet::new());
+    assert!(
+        classification
+            .exclusions
+            .iter()
+            .any(|exclusion| exclusion.why == Why::Unrecognised),
+        "{:?}",
+        classification.exclusions
+    );
+}

@@ -485,12 +485,23 @@ pub fn validate_module(module: &syn::ItemMod) -> syn::Result<()> {
 }
 
 /// The names of the helper functions of `module`: every function that is not a `#[kernel]`. These are the free
-/// functions a kernel body may call (`visit_expr_call`); the shape classifier reads the same set (D94).
+/// functions a kernel body may call (`visit_expr_call`); the shape classifier reads the same set (D94). The set also
+/// holds one marker per method of an `impl` block, `.name`, which is not an identifier and so never clashes with a
+/// function: it is how the classifier knows a method call as a call of the module's own method (slice m9.a1).
 pub(crate) fn helper_names(module: &syn::ItemMod) -> HashSet<String> {
-    module
-        .content
-        .iter()
-        .flat_map(|(_, items)| items)
+    let items = module.content.iter().flat_map(|(_, items)| items);
+    let methods = items.clone().flat_map(|item| match item {
+        syn::Item::Impl(block) => block
+            .items
+            .iter()
+            .filter_map(|inner| match inner {
+                syn::ImplItem::Fn(method) => Some(format!(".{}", method.sig.ident)),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    });
+    items
         .filter_map(|item| match item {
             syn::Item::Fn(function)
                 if !function
@@ -502,6 +513,7 @@ pub(crate) fn helper_names(module: &syn::ItemMod) -> HashSet<String> {
             }
             _ => None,
         })
+        .chain(methods)
         .collect()
 }
 
@@ -520,6 +532,22 @@ pub(crate) fn validate_module_in(
     };
 
     let function_names = helper_names(module);
+    let methods = method_table(items);
+    let struct_fields: HashMap<String, HashSet<String>> = items
+        .iter()
+        .filter_map(|item| match item {
+            syn::Item::Struct(item) => Some((
+                item.ident.unraw().to_string(),
+                item.fields
+                    .iter()
+                    .filter_map(|field| field.ident.as_ref().map(|name| name.unraw().to_string()))
+                    .collect(),
+            )),
+            _ => None,
+        })
+        .collect();
+    let mut impls_seen = HashSet::new();
+    let mut deferred: Vec<syn::Error> = Vec::new();
 
     let result_helpers = items
         .iter()
@@ -548,14 +576,33 @@ pub(crate) fn validate_module_in(
                          already is GPU code, and its functions are helpers or `#[kernel]`s",
                     ));
                 }
-                validate_function(stage, function, &function_names, &result_helpers)?
+                validate_function(
+                    stage,
+                    function,
+                    &function_names,
+                    &result_helpers,
+                    &methods,
+                    false,
+                )?
             }
             syn::Item::Struct(item) => validate_struct(item)?,
+            syn::Item::Impl(item) => validate_impl(
+                stage,
+                item,
+                &ImplContext {
+                    function_names: &function_names,
+                    result_helpers: &result_helpers,
+                    methods: &methods,
+                    struct_fields: &struct_fields,
+                },
+                &mut impls_seen,
+                &mut deferred,
+            )?,
             _ => {
                 return Err(diagnostics::error(
                     Code::UnsupportedModuleItem,
                     item,
-                    "GPU modules may currently contain only functions and plain structs",
+                    "GPU modules may currently contain only functions, plain structs and `impl` blocks of those structs; enums, traits, constants, `use` items and type aliases are not accepted",
                 ));
             }
         }
@@ -576,6 +623,15 @@ pub(crate) fn validate_module_in(
         }
     }
     crate::uniform::check_padding(stage, items)?;
+    // The declarations a1 does not accept yet (`&mut self`, `self`) come last, so a module that has another fault is
+    // reported for that fault alone (X1 is one E0333, not an E0333 and an E0116).
+    let mut deferred = deferred.into_iter();
+    if let Some(mut first) = deferred.next() {
+        for error in deferred {
+            first.combine(error);
+        }
+        return Err(first);
+    }
     Ok(())
 }
 
@@ -680,6 +736,251 @@ fn check_padding(
     Ok(())
 }
 
+/// The module's method names, each with whether some `impl` declares a method of that name with `&mut self` or by
+/// value `self` (slice m9.a1). The macro sees no types, so a call `recv.m(..)` is judged by the name alone, as the
+/// conservative call graph of D162 will judge it: a name is mutating when any method of it is.
+type MethodTable = HashMap<String, bool>;
+
+/// The receiver of `signature` when it is the first parameter.
+fn receiver_of(signature: &syn::Signature) -> Option<&syn::Receiver> {
+    match signature.inputs.first() {
+        Some(syn::FnArg::Receiver(receiver)) => Some(receiver),
+        _ => None,
+    }
+}
+
+/// Whether a receiver is `&mut self`, `mut self` or `self`: anything but `&self`.
+fn receiver_is_mutating(receiver: &syn::Receiver) -> bool {
+    receiver.reference.is_none() || receiver.mutability.is_some()
+}
+
+/// The method names of every `impl` block of `items`.
+fn method_table(items: &[syn::Item]) -> MethodTable {
+    let mut table = MethodTable::new();
+    for item in items {
+        let syn::Item::Impl(item) = item else {
+            continue;
+        };
+        for inner in &item.items {
+            if let syn::ImplItem::Fn(method) = inner {
+                let mutating = receiver_of(&method.sig).is_some_and(receiver_is_mutating);
+                *table
+                    .entry(method.sig.ident.unraw().to_string())
+                    .or_default() |= mutating;
+            }
+        }
+    }
+    table
+}
+
+/// Slang words that start a member declaration of a struct or name the enclosing type: a method of that name would be
+/// a constructor, a subscript, a property or the type itself (GUST-E0328).
+pub(crate) const SLANG_MEMBER_KEYWORDS: &[&str] =
+    &["This", "init", "property", "subscript", "this"];
+
+/// Why a method called `name` cannot be one (GUST-E0328), or `None`: the name is a method the dialect gives a meaning
+/// to (the emitter and the validator read the name alone), a Slang member keyword, or a field of the same struct
+/// (Slang has one namespace for the members of a struct).
+pub(crate) fn method_name_clash(name: &str, fields: &HashSet<String>) -> Option<String> {
+    let dialect = matches!(
+        name,
+        "global_id"
+            | "len"
+            | "is_some"
+            | "is_none"
+            | "is_ok"
+            | "is_err"
+            | "unwrap_or"
+            | "unwrap"
+            | "expect"
+    ) || wrapping_arity(name).is_some()
+        || math_types::is_swizzle(name)
+        || math_types::method_arity(name).is_some()
+        || texture::Method::from_name(name).is_some();
+    if dialect {
+        return Some(format!(
+            "`{name}` is a method of the dialect, and a call of the name means that method: choose another name for this one"
+        ));
+    }
+    if SLANG_MEMBER_KEYWORDS.contains(&name) {
+        return Some(format!(
+            "`{name}` is a Slang member keyword, so a member function of that name would not be a method: choose another name"
+        ));
+    }
+    if fields.contains(name) {
+        return Some(format!(
+            "`{name}` is also a field of this struct, and a Slang struct has one namespace for its members: rename the method or the field"
+        ));
+    }
+    None
+}
+
+/// What `validate_impl` reads of the module.
+struct ImplContext<'a> {
+    function_names: &'a HashSet<String>,
+    result_helpers: &'a HashSet<String>,
+    methods: &'a MethodTable,
+    struct_fields: &'a HashMap<String, HashSet<String>>,
+}
+
+/// Checks one `impl` block (slice m9.a1): an inherent `impl S` of a struct of the module, once per struct, holding
+/// methods that take `&self` and value parameters. The declarations of `&mut self` and `self` methods are checked
+/// like the others but refused at the end (`deferred`, GUST-E0116): they arrive with slice m9.a2.
+fn validate_impl(
+    stage: &dyn StageProfile,
+    item: &syn::ItemImpl,
+    context: &ImplContext<'_>,
+    seen: &mut HashSet<String>,
+    deferred: &mut Vec<syn::Error>,
+) -> syn::Result<()> {
+    if item.unsafety.is_some() || item.defaultness.is_some() {
+        return Err(diagnostics::error(
+            Code::UnsupportedModuleItem,
+            item,
+            "an `impl` of a GPU module is a plain inherent `impl S { .. }`: not `unsafe` and not `default`",
+        ));
+    }
+    if let Some((_, path, _)) = &item.trait_ {
+        let blanket = item.generics.type_params().any(|parameter| {
+            matches!(item.self_ty.as_ref(), syn::Type::Path(own) if own.qself.is_none() && own.path.is_ident(&parameter.ident))
+        });
+        return Err(if blanket {
+            diagnostics::error(
+                Code::ImplForeignType,
+                item,
+                "a blanket `impl` is not part of the dialect: implement methods for a struct of this module",
+            )
+        } else {
+            diagnostics::error(
+                Code::UnsupportedModuleItem,
+                path,
+                "trait impls are not accepted yet: write the methods in an inherent `impl S { .. }`",
+            )
+        });
+    }
+    if !item.generics.params.is_empty() || item.generics.where_clause.is_some() {
+        return Err(diagnostics::error(
+            Code::ExternOrGenericFunction,
+            &item.generics,
+            "generic and lifetime parameters on an `impl` are not supported yet",
+        ));
+    }
+    let name = match item.self_ty.as_ref() {
+        syn::Type::Path(own)
+            if own.qself.is_none()
+                && own.path.segments.len() == 1
+                && own.path.leading_colon.is_none()
+                && own.path.segments[0].arguments.is_none() =>
+        {
+            own.path.segments[0].ident.unraw().to_string()
+        }
+        _ => String::new(),
+    };
+    let Some(fields) = context.struct_fields.get(&name) else {
+        return Err(diagnostics::error(
+            Code::ImplForeignType,
+            &item.self_ty,
+            "an `impl` is for a struct defined in this `#[gpu]` module; a type from elsewhere has no Slang definition to hold the methods",
+        ));
+    };
+    if !seen.insert(name.clone()) {
+        return Err(diagnostics::error(
+            Code::UnsupportedModuleItem,
+            item,
+            format!(
+                "`{name}` has another `impl` block: several `impl` blocks of one struct are not accepted yet, put the methods in one"
+            ),
+        ));
+    }
+    for inner in &item.items {
+        let syn::ImplItem::Fn(method) = inner else {
+            return Err(diagnostics::error(
+                Code::UnsupportedModuleItem,
+                inner,
+                "an `impl` of a GPU module holds methods only: associated constants, types and macros are not accepted",
+            ));
+        };
+        validate_method(stage, method, fields, context, deferred)?;
+    }
+    Ok(())
+}
+
+/// Checks one method: the name (E0328), the receiver, the attributes, then the body and signature as a helper's, with
+/// the receiver taken off (it is `this`).
+fn validate_method(
+    stage: &dyn StageProfile,
+    method: &syn::ImplItemFn,
+    fields: &HashSet<String>,
+    context: &ImplContext<'_>,
+    deferred: &mut Vec<syn::Error>,
+) -> syn::Result<()> {
+    if let Some(attribute) = method.attrs.iter().find(|attribute| {
+        attribute.path().is_ident("kernel")
+            || attribute.path().is_ident("variant")
+            || is_gpu_attribute(attribute)
+    }) {
+        return Err(diagnostics::error(
+            Code::UnsupportedAttribute,
+            attribute,
+            "a method cannot be a kernel or a variant: kernels are free functions of the module",
+        ));
+    }
+    if let Some(message) = method_name_clash(&method.sig.ident.unraw().to_string(), fields) {
+        return Err(diagnostics::error(
+            Code::MethodNameClash,
+            &method.sig.ident,
+            message,
+        ));
+    }
+    let Some(receiver) = receiver_of(&method.sig) else {
+        return Err(diagnostics::error(
+            Code::UnsupportedModuleItem,
+            &method.sig,
+            "associated functions without a receiver are not accepted yet (slice m9.a2): write a method that takes `&self`, or a free helper function",
+        ));
+    };
+    if receiver.colon_token.is_some() {
+        return Err(diagnostics::error(
+            Code::SelfParameter,
+            receiver,
+            "write the receiver as `&self`: a typed `self: Type` receiver is not accepted",
+        ));
+    }
+    if receiver_is_mutating(receiver) {
+        deferred.push(diagnostics::error(
+            Code::SelfParameter,
+            receiver,
+            "only `&self` methods are accepted in this release: `&mut self` and `self` methods arrive with slice m9.a2",
+        ));
+    }
+    let function = method_as_function(method);
+    validate_function(
+        stage,
+        &function,
+        context.function_names,
+        context.result_helpers,
+        context.methods,
+        true,
+    )
+}
+
+/// The method as a free function without its receiver, which the validation of a helper then judges: value
+/// parameters only, no `Workgroup`, no barrier or subgroup operation. Spans are the method's own.
+fn method_as_function(method: &syn::ImplItemFn) -> syn::ItemFn {
+    let mut signature = method.sig.clone();
+    signature.inputs = signature
+        .inputs
+        .into_iter()
+        .filter(|argument| matches!(argument, syn::FnArg::Typed(_)))
+        .collect();
+    syn::ItemFn {
+        attrs: method.attrs.clone(),
+        vis: method.vis.clone(),
+        sig: signature,
+        block: Box::new(method.block.clone()),
+    }
+}
+
 fn validate_struct(item: &syn::ItemStruct) -> syn::Result<()> {
     let struct_name = item.ident.unraw().to_string();
     if math_types::is_reserved_type_name(&struct_name) {
@@ -757,6 +1058,8 @@ fn validate_function(
     function: &syn::ItemFn,
     function_names: &HashSet<String>,
     result_helpers: &HashSet<String>,
+    methods: &MethodTable,
+    in_method: bool,
 ) -> syn::Result<()> {
     use crate::slang::{ParameterFlavor, parameter_flavor_in};
 
@@ -881,6 +1184,8 @@ fn validate_function(
     }
 
     let mut visitor = RestrictedVisitor::new(function_names.clone(), result_helpers.clone());
+    visitor.methods = methods.clone();
+    visitor.in_method = in_method;
     visitor.atomic_buffers = atomic_buffer_names(function);
     for argument in &function.sig.inputs {
         if let syn::FnArg::Typed(argument) = argument
@@ -1159,6 +1464,10 @@ struct RestrictedVisitor {
     result_forbidden: Option<&'static str>,
     /// Number of enclosing `for` loops; `break`/`continue` need at least one.
     loop_depth: usize,
+    /// The module's method names, each with whether some impl declares it with `&mut self` or `self` (m9.a1).
+    methods: MethodTable,
+    /// Set while the body of a method is visited: it calls no helper and no method yet (slice m9.a2).
+    in_method: bool,
     error: Option<syn::Error>,
 }
 
@@ -1181,6 +1490,8 @@ impl RestrictedVisitor {
             option_forbidden: None,
             result_forbidden: None,
             loop_depth: 0,
+            methods: MethodTable::new(),
+            in_method: false,
             error: None,
         }
     }
@@ -1358,6 +1669,58 @@ impl RestrictedVisitor {
             self.visit_expr(argument);
         }
         true
+    }
+
+    /// The identifier a place expression is rooted in: `out` for `out`, `out[i]`, `out[i].a.b` and parenthesised forms.
+    fn place_root(expression: &syn::Expr) -> Option<String> {
+        match expression {
+            syn::Expr::Path(path) if path.qself.is_none() => {
+                path.path.get_ident().map(ToString::to_string)
+            }
+            syn::Expr::Field(field) => Self::place_root(&field.base),
+            syn::Expr::Index(index) => Self::place_root(&index.expr),
+            syn::Expr::Paren(paren) => Self::place_root(&paren.expr),
+            syn::Expr::Group(group) => Self::place_root(&group.expr),
+            _ => None,
+        }
+    }
+
+    /// A call `recv.name(args)` of a method of the module (slice m9.a1). A `&self` method copies its receiver, so any
+    /// place may be one. A method that takes `&mut self` or `self` would write through a storage, uniform, workgroup
+    /// or texture place, a shared write that the kernel statements do not show, so it is refused there (GUST-E0333,
+    /// D154); the validator decides from the root identifier of the receiver, no type is needed.
+    fn check_module_method_call(&mut self, call: &syn::ExprMethodCall, mutating: bool) {
+        let method = call.method.to_string();
+        if self.in_method {
+            self.reject(
+                Code::UnknownCall,
+                call,
+                &format!(
+                    "a method cannot call the method `.{method}(..)` yet: the call graph that refuses recursion arrives with slice m9.a2"
+                ),
+            );
+            return;
+        }
+        if mutating
+            && let Some(root) = Self::place_root(&call.receiver)
+            && (self.resources.contains(&root)
+                || self.uniforms.contains(&root)
+                || self.textures.contains_key(&root)
+                || self.derived_ids.contains(&root))
+        {
+            self.reject(
+                Code::MutatingMethodOnSharedPlace,
+                call,
+                &format!(
+                    "`.{method}(..)` takes `&mut self` or `self`, and `{root}` is a storage, uniform, workgroup or texture parameter: a method would write through it where no statement shows the write; copy the element to a local, call the method on the local and store the result (`out[i] = value;`)"
+                ),
+            );
+            return;
+        }
+        self.visit_expr(&call.receiver);
+        for argument in &call.args {
+            self.visit_expr(argument);
+        }
     }
 
     fn reject(&mut self, code: Code, node: impl quote::ToTokens, message: &str) {
@@ -1849,6 +2212,14 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 .is_some_and(|ident| self.function_names.contains(&ident.to_string())),
             _ => false,
         };
+        if allowed && self.in_method {
+            self.reject(
+                Code::UnknownCall,
+                call,
+                "a method cannot call a helper function yet: the call graph that refuses recursion arrives with slice m9.a2",
+            );
+            return;
+        }
         if !allowed {
             self.reject(
                 Code::UnknownCall,
@@ -1913,6 +2284,10 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         ) || wrapping_arity(&method).is_some()
             || math_types::is_swizzle(&method)
             || math_types::method_arity(&method).is_some();
+        if !in_dialect && let Some(&mutating) = self.methods.get(&method) {
+            self.check_module_method_call(call, mutating);
+            return;
+        }
         // A type argument on a method outside the dialect is that method's problem (E0305, E0325), not a built-in's.
         if call.turbofish.is_some() && in_dialect {
             self.reject(

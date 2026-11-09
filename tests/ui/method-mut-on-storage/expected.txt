@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: method-mut-on-storage/src/main.rs
+line: 21
+message: [GUST-E0333] `.bump(..)` takes `&mut self` or `self`

@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: method-name-clash/src/main.rs
+line: 11
+message: [GUST-E0328] `len` is a method of the dialect

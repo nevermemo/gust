@@ -150,11 +150,11 @@ Decision: D02.
 
 ### GUST-E0102 unsupported module item
 
-A GPU module holds functions and plain structs only.
+A GPU module holds functions, plain structs and one inherent `impl` block per struct.
 Reached through `#[gpu]`.
-Rejected: `const`, `static`, `enum`, `impl`, `trait`, `use`, nested `mod`, type aliases.
-Write instead: pass constants as uniform or value parameters, or write them inline.
-Decision: D02.
+Rejected: `const`, `static`, `enum`, `trait`, `use`, nested `mod`, type aliases; an `impl` that is an `unsafe impl`, a trait impl (`impl Clone for S`), a second `impl` block for the same struct, or one with an associated function (no receiver, `fn make() -> S`), an associated `const` or an associated type (methods with a receiver are accepted since M9 slice m9.a1, see GUST-E0116 for the receivers not yet accepted).
+Write instead: pass constants as uniform or value parameters, or write them inline; put every method of a struct in one `impl S { .. }` block.
+Decision: D02, D133 (methods).
 
 ### GUST-E0103 generic struct
 
@@ -265,11 +265,12 @@ Decision: D02.
 
 ### GUST-E0116 `self` parameter
 
-GPU functions are free functions; there is no receiver to lower.
+A free function has no receiver, and a method takes `&self` only for now: a method that takes `&mut self`, `self` or `mut self`, or a typed receiver (`self: Box<Self>`), is not accepted yet (a mutating method arrives with M9 slice m9.a2). A `&self` method of an `impl` block is accepted (GUST-E0121 for the impl rules). The report for a declaration of that kind comes last: when the rest of the module is also wrong, the other error is shown first, and a call of a `&mut self` method on a storage, uniform, workgroup or texture place is GUST-E0333 instead.
 Reached through `#[gpu]`.
-Rejected: `fn f(&self) -> u32`.
-Write instead: pass the value as an ordinary parameter.
-Decision: D02.
+Rejected: `fn f(&self) -> u32` outside an `impl`, `impl S { fn bump(&mut self) {} }`, `impl S { fn take(self) {} }`.
+Write instead: `&self` for a method that reads, or pass the value as an ordinary parameter to a free function and return the new value.
+Fixture: `tests/ui/method-mut-self-not-yet` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D02, D154 (M9 plan 2.1).
 
 ### GUST-E0117 parameter needs an identifier
 
@@ -294,6 +295,15 @@ Reached through `#[gpu]`.
 Rejected: `fn helper(mut s: Workgroup<[f32; 64]>) { .. }`.
 Write instead: declare the array on the kernel and pass the helper the values it needs, `helper(s[lid.x])`.
 Decision: D42 (M7 plan 4.2 rule 4, slice m7.g1).
+
+### GUST-E0121 `impl` for a type the module does not define
+
+An `impl` block of a GPU module must be an inherent block (`impl S { .. }`) of a struct declared in the same module, so that the methods become members of the generated Slang struct. A trait impl with a blanket form (`impl<T> Anything for T`), an impl for a type that is not a struct of the module (a built-in vector or matrix, a tuple, a path to another module, an undeclared name) is rejected with this code. Trait impls for a module struct and a second inherent block for the same struct are GUST-E0102 for now. A generic impl or method is GUST-E0114.
+Reached through `#[gpu]`.
+Rejected: `impl Elsewhere { .. }`, `impl Mat4 { .. }`, `impl<T> Anything for T { }`, `impl (u32, u32) { }`.
+Write instead: declare the struct in the same `#[gpu]` module and put the methods in its `impl` block.
+Fixture: `tests/ui/method-impl-foreign` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D154 (M9 plan 2.1, slice m9.a1).
 
 ## E02xx: types
 
@@ -639,6 +649,24 @@ Rejected: `workgroup_barrier(1u32);`, `let x = workgroup_barrier();`, `let f = w
 Write instead: `workgroup_barrier();`. Where the barrier may stand is GUST-E0414.
 Decision: D42 (M7 plan 4.1, slice m7.g1).
 
+### GUST-E0328 method name clashes with a built-in
+
+A method of a module struct becomes a member function of the generated Slang struct and is called as `recv.name(args)`, so its name must not be one that a call already means something else for: a method of the dialect (`len`, `global_id`, `is_some`, `unwrap`, `wrapping_add`, `dot`, `mul_vec4`, `transpose`, the texture methods `load`, `store`, `sample`, `width`, `height` and every other built-in method, GUST-E0325), a vector swizzle (`xy`, `xyz`, `wzyx` and every other two to four letters of `x`, `y`, `z`, `w`), a Slang keyword that may not name a member (`This`, `init`, `property`, `subscript`, `this`), or the name of a field of its own struct (the getter pattern `fn radius(&self)` next to a field `radius`, where `s.radius` and `s.radius()` would collide as Slang members). Reserved Slang names that every identifier shares are renamed by the emitter and are no clash.
+Reached through `#[gpu]`.
+Rejected: `impl S { fn len(&self) -> u32 { .. } }`, `fn xy(&self) -> f32`, `fn init(&self) -> u32`, `fn v(&self) -> u32` in `struct S { v: u32 }`.
+Write instead: another name, `length`, `radius_value`, `get_v`.
+Fixture: `tests/ui/method-name-clash` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D154 (M9 plan 2.1, slice m9.a1).
+
+### GUST-E0333 mutating method on a shared place
+
+A method that takes `&mut self` or `self` would write through its receiver. On a storage buffer element, a uniform, a workgroup array or a texture that write is shared with the other invocations, and no statement of the kernel shows it, so a call whose receiver is rooted in such a parameter is rejected at the call. The validator decides from the first identifier of the receiver place (`out` in `out[i].bump()`), by the method name: a name that a `&mut self` or `self` method of any struct of the module has is a mutating call. A `&self` method may be called on any place, the callee reads a copy of the element (spike M9.s0 P1b). Until M9 slice m9.a2 accepts mutating methods at all, the declaration is GUST-E0116, and a module that also contains a call of this kind reports this code, once, instead.
+Reached through `#[gpu]`.
+Rejected: `out[0].bump()` and `out[i].bump()` for a storage parameter `out`, `u.bump()` for a uniform, `scratch[l].bump()` for a workgroup array, when a method `bump` takes `&mut self`.
+Write instead: copy the element to a local, call the method on the local and store the result, `let mut c = out[i]; c.bump(); out[i] = c;` once mutating methods are accepted.
+Fixture: `tests/ui/method-mut-on-storage` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D154 (M9 plan 2.1, X1 of spike M9.s0, slice m9.a1).
+
 ## E04xx: control flow and loops
 
 A GPU thread must always terminate and must never wait on another workgroup, so the
@@ -751,9 +779,9 @@ Decision: D18.
 
 ### GUST-E0414 barrier at a position not every invocation reaches
 
-A control barrier is undefined unless every invocation of the workgroup reaches it the same number of times. The dialect cannot prove that for arbitrary control flow, so it admits two positions in a kernel that uses workgroup memory or a barrier: a statement of the kernel body, and a statement of the body of a `for` loop that is itself a statement of the kernel body and whose range is two integer literals (`for round in 0u32..8u32`). Every invocation runs that loop for the same trip count. A barrier anywhere else is rejected: in an `if` or a block, in a loop whose bounds are not two literals, in a loop nested in another loop, and in a helper or a map function (a helper may be called under a condition). `while` and `loop` are rejected for their own sake (GUST-E0402, GUST-E0401), so a barrier in one is reported by that code and not by this one.
+A control barrier is undefined unless every invocation of the workgroup reaches it the same number of times. The dialect cannot prove that for arbitrary control flow, so it admits two positions in a kernel that uses workgroup memory or a barrier: a statement of the kernel body, and a statement of the body of a `for` loop that is itself a statement of the kernel body and whose range is two integer literals (`for round in 0u32..8u32`). Every invocation runs that loop for the same trip count. A barrier anywhere else is rejected: in an `if` or a block, in a loop whose bounds are not two literals, in a loop nested in another loop, and in a helper, a method or a map function (a helper or a method may be called under a condition). `while` and `loop` are rejected for their own sake (GUST-E0402, GUST-E0401), so a barrier in one is reported by that code and not by this one.
 Reached through `#[gpu]`. The check runs when the rest of the function has been accepted, so a function holds one report, not two.
-Rejected: `if lid.x < 8u32 { workgroup_barrier(); }`, `for r in 0u32..4u32 { if r == 1u32 { workgroup_barrier(); } }`, `for r in 0u32..4u32 { for q in 0u32..4u32 { workgroup_barrier(); } }`, `for r in 0u32..n { workgroup_barrier(); }`, `fn sync() { workgroup_barrier(); }`.
+Rejected: `if lid.x < 8u32 { workgroup_barrier(); }`, `for r in 0u32..4u32 { if r == 1u32 { workgroup_barrier(); } }`, `for r in 0u32..4u32 { for q in 0u32..4u32 { workgroup_barrier(); } }`, `for r in 0u32..n { workgroup_barrier(); }`, `fn sync() { workgroup_barrier(); }`, `impl S { fn sync(&self) { workgroup_barrier(); } }`.
 Fixture: `tests/ui/barrier-in-if`, `tests/ui/barrier-in-nested-for`, `tests/ui/barrier-in-helper`, and `tests/ui/barrier-in-while` (GUST-E0402; the `while` is rejected first) (`cargo xtask check-ui`, `code: none` plus the message).
 Write instead: do the guarded work in an `if` and call the barrier after it, at the top level of the kernel body or of a literal-range loop.
 Decision: D42 (M7 plan 4.2 rule 1, slice m7.g1).

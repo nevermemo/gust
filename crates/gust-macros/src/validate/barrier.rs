@@ -440,7 +440,7 @@ impl<'ast> Visit<'ast> for Pass {
                  `for a..b` loop with two literal bounds: every invocation of the workgroup has to reach it the \
                  same number of times"
             } else {
-                "`workgroup_barrier()` is allowed only in a kernel: a helper may be called under a condition, so \
+                "`workgroup_barrier()` is allowed only in a kernel: a helper or a method may be called under a condition, so \
                  not every invocation would reach the barrier; call the barrier from the kernel body"
             };
             self.reject(Code::BarrierPosition, call, message);

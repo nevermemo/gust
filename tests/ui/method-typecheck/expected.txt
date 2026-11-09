@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# rustc's own error: the mismatch is the tail expression of the method.
+code: E0308
+file: method-typecheck/src/main.rs
+line: 13
+message: mismatched types

@@ -295,18 +295,36 @@ fn native_scalar_programs_stay_schema_one() {
     }
 }
 
-/// The schema the helper under test prints for `--version` (`gust-slang-reflect schema=<n> slang=<tag>`).
+/// Whether this run is the explicit schema-3 compatibility run (`GUST_REFLECT_SCHEMA3_COMPAT=1`): the helper under test
+/// is the shared schema-3 helper, and the array tests assert that it refuses arrays as it always did. Without the
+/// variable the helper must be schema 4 and the array tests assert the reflected numbers, so a stale helper fails the
+/// run instead of passing it by taking the refusal branch.
+fn schema3_compat() -> bool {
+    std::env::var("GUST_REFLECT_SCHEMA3_COMPAT").is_ok_and(|value| value == "1")
+}
+
+/// The schema the helper under test prints for `--version` (`gust-slang-reflect schema=<n> slang=<tag>`), which must
+/// be 4, or 3 in the compatibility run.
 fn helper_schema() -> u32 {
     let helper = gust::reflect::native_compiler_path();
     let output = std::process::Command::new(&helper)
         .arg("--version")
         .output()
         .unwrap_or_else(|error| panic!("{}: {error}", helper.display()));
-    String::from_utf8_lossy(&output.stdout)
+    let schema: u32 = String::from_utf8_lossy(&output.stdout)
         .split_whitespace()
         .find_map(|word| word.strip_prefix("schema="))
         .and_then(|schema| schema.parse().ok())
-        .unwrap_or_else(|| panic!("no schema in the --version output of {}", helper.display()))
+        .unwrap_or_else(|| panic!("no schema in the --version output of {}", helper.display()));
+    let expected = if schema3_compat() { 3 } else { 4 };
+    assert_eq!(
+        schema,
+        expected,
+        "the helper {} prints schema {schema}; these tests need schema {expected} (set GUST_REFLECT_SCHEMA3_COMPAT=1 only \
+         for the compatibility run with the shared schema-3 helper)",
+        helper.display()
+    );
+    schema
 }
 
 /// `tests/fixtures/schema4/arrays.slang` as a kernel: five structured buffers with arrays in them.
@@ -472,12 +490,46 @@ fn native_reflects_arrays_as_schema_four() {
     }
 }
 
-/// A program without an array stays schema 1, 2 or 3 even under a schema-4 helper, so no committed document changes.
+/// Slice m9.r2h review S2: the plan refuses uniform arrays (E0215), so the helper refuses an array inside a constant
+/// buffer, on both targets, with a message that says so (a schema-3 helper says "unsupported element type" instead).
 #[test]
-fn native_programs_without_arrays_keep_their_schema_under_a_schema_four_helper() {
+fn native_refuses_an_array_in_a_constant_buffer() {
+    const SOURCE: &str = "struct U { float scale; float a[4]; };\n[[vk::binding(0, 0)]] ConstantBuffer<U> frame;\n[[vk::binding(1, 0)]] RWStructuredBuffer<float> output;\n[shader(\"compute\")]\n[numthreads(64, 1, 1)]\nvoid main(uint3 id : SV_DispatchThreadID) { output[id.x] = frame.scale + frame.a[id.x % 4]; }\n";
+    let message = if helper_schema() >= 4 {
+        "arrays in a constant buffer are not supported"
+    } else {
+        "unsupported element type"
+    };
     for target in [Target::Wgsl, Target::Spirv] {
-        let compiled = compile_reflected(&layout_kernel(), target).unwrap();
-        assert_eq!(compiled.reflection.schema_version, 2, "{target:?}");
+        let mut kernel = layout_kernel();
+        kernel.slang_source = SOURCE;
+        let error = compile_reflected(&kernel, target).unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                gust::reflect::Error::Compiler(
+                    gust::slang::Error::CompilationFailed { target: failed, .. }
+                ) if *failed == target
+            ),
+            "{target:?}: {error:?}"
+        );
+        assert!(error.to_string().contains(message), "{target:?}: {error}");
+    }
+}
+
+/// Review N5: an unsized array in a buffer element never reaches the helper, because Slang itself refuses the source
+/// ("non-addressable type cannot be used in StructuredBuffer"); the refusal is pinned so a Slang that accepts it shows.
+#[test]
+fn an_unsized_array_in_a_buffer_element_is_refused_by_slang() {
+    const SOURCE: &str = "struct T { float a; float t[]; };\n[[vk::binding(0, 0)]] StructuredBuffer<T> ts;\n[[vk::binding(1, 0)]] RWStructuredBuffer<float> output;\n[shader(\"compute\")]\n[numthreads(64, 1, 1)]\nvoid main(uint3 id : SV_DispatchThreadID) { output[id.x] = ts[id.x].a; }\n";
+    for target in [Target::Wgsl, Target::Spirv] {
+        let mut kernel = layout_kernel();
+        kernel.slang_source = SOURCE;
+        let error = compile_reflected(&kernel, target).unwrap_err();
+        assert!(
+            error.to_string().contains("non-addressable"),
+            "{target:?}: {error}"
+        );
     }
 }
 

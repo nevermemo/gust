@@ -522,7 +522,7 @@ pub(crate) fn check_helper_pin(
         .find_map(|word| word.strip_prefix("schema="));
     if !schema.is_some_and(|schema| HELPER_SCHEMAS.contains(&schema)) {
         return Err(format!(
-            "{which} prints `schema={}`, but xtask needs `schema={HELPER_SCHEMA}` or later (a helper of an older schema \
+            "{which} prints `schema={}`, but xtask needs `schema=3` or `schema=4` (a helper of an older schema \
              cannot take the stage argument); rebuild it with the current `cargo gust slang build-helper --force` \
              (`cargo xtask build-slang-reflect --force` in the GUST repository)",
             schema.unwrap_or("<none>")
@@ -615,8 +615,12 @@ pub(crate) fn prepare_helper_with(
             if let Some(slangc) = &slangc {
                 check_helper_tag(&named, slangc)?;
             }
+            let schema = named
+                .split_whitespace()
+                .find_map(|word| word.strip_prefix("schema="))
+                .unwrap_or("?");
             println!(
-                "Using the reflection helper named by {HELPER_VARIABLE}: its Slang tag is the pin `{pin}`."
+                "Using the reflection helper named by {HELPER_VARIABLE}: its Slang tag is the pin `{pin}`, its reflection schema is {schema}."
             );
             Ok(())
         }

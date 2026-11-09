@@ -4,7 +4,7 @@
 //! problem. Where things are looked for is `gust::toolchain`'s business (D109): this module asks it, so the run-time
 //! bridge and this tool find the same binaries. The helper compatibility rule (R4.8): the helper reports its reflection
 //! schema and the Slang build tag of the library it loads (`gust-slang-reflect --version`). The schema must be the one
-//! this tool needs (3, see [`tools::REQUIRED_HELPER_SCHEMA`]) and the tag must equal what the located `slangc -version`
+//! this tool accepts (3 or 4, see [`tools::ACCEPTED_HELPER_SCHEMAS`]) and the tag must equal what the located `slangc -version`
 //! prints. Both come from one Slang build, so the tag comparison is exact, not the pin rule of [`slang::matches_pin`].
 
 use std::path::{Path, PathBuf};

@@ -821,7 +821,8 @@ compile one entry point and reflect the identical linked program; the result car
 the artifact, its hashes, the compiler build tag, and complete layouts (`StorageV1`
 buffers; schema 2 adds vectors, matrices and constant buffers, matrices column-major; schema 3 adds 2D
 textures, samplers and fragment entries, and the helper writes it only when a program has one of those, so every
-compute kernel over buffers still gets its schema 1 or 2 document unchanged).
+compute kernel over buffers still gets its schema 1 or 2 document unchanged; schema 4 adds fixed-size arrays in
+structured-buffer elements, written only when a program has one, and an array in a constant buffer is refused).
 `Reflection::cross_check_kernel` compares that evidence against the descriptor and
 fails on any difference. The SPIR-V it produces is byte-identical to `compile_spirv`,
 and its WGSL differs from `compile_wgsl` only in line endings. The older

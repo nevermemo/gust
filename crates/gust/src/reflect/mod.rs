@@ -757,7 +757,7 @@ impl Reflection {
         Self::read_json(target, &root, false, 1)
     }
 
-    /// `schema` is the document's `schemaVersion` (1, 2 or 3): under 1 exactly the pre-schema-2 grammar is read, and
+    /// `schema` is the document's `schemaVersion` (1 to 4): under 1 exactly the pre-schema-2 grammar is read, and
     /// the texture, sampler, `stage` and `targets` members exist from 3 on only.
     fn read_json(target: Target, root: &Json, complete: bool, schema: u32) -> Result<Self, Error> {
         let stage = read_stage(root, schema)?;
@@ -3825,7 +3825,8 @@ mod tests {
     }
 
     /// `struct P { float a[4]; float2 b[2]; uint n; }` as a structured buffer, and `float[2][3]` as another; the numbers
-    /// are the spike's (a at 0 size 16; b at 16 size 16, align 8, element stride 8; n at 32; P size 40 align 8).
+    /// are derived from the spike's per-type numbers (a at 0 size 16; b at 16 size 16, align 8, element stride 8; n at 32;
+    /// P size 40 align 8), not copied from a table row.
     fn array_parameters() -> Vec<String> {
         let vec2 = r#"{"size":8,"alignment":8,"stride":8,"name":"vector","kind":"vector","scalarType":"float32","elementCount":2}"#;
         let b = format!(
@@ -3923,23 +3924,52 @@ mod tests {
             );
         }
         let one = || array_parameters().remove(1);
-        for (bad, replacement) in [
+        for (bad, replacement, expected) in [
             (
                 r#""elementCount":2,"elementStride":12"#,
                 r#""elementCount":0,"elementStride":12"#,
+                "positive elementCount",
             ),
             (
                 r#""elementCount":2,"elementStride":12"#,
                 r#""elementCount":2,"elementStride":0"#,
+                "positive elementCount",
             ),
-            (r#""elementCount":2,"#, ""),
-            (r#""elementStride":12,"#, ""),
+            (r#""elementCount":2,"#, "", "missing elementCount"),
+            (r#""elementStride":12,"#, "", "missing elementStride"),
+            (
+                r#""elementType":"#,
+                r#""elementTypo":"#,
+                "missing elementType",
+            ),
+            // Lower bounds (hand-written): the outer element is 12 bytes of alignment 4, so a stride under 12 overlaps
+            // the next element, 14 is off the alignment, and two elements 12 apart need 24 bytes, not 20.
+            (
+                r#""elementCount":2,"elementStride":12"#,
+                r#""elementCount":2,"elementStride":8"#,
+                "smaller than its element's size",
+            ),
+            (
+                r#""elementCount":2,"elementStride":12"#,
+                r#""elementCount":2,"elementStride":14"#,
+                "not a multiple of its element's alignment",
+            ),
+            (
+                r#""size":24,"#,
+                r#""size":20,"#,
+                "smaller than its elements need",
+            ),
         ] {
             let parameter = one().replacen(bad, replacement, 1);
             assert_ne!(parameter, one(), "{bad}");
             let error = read(&document_with_schema(4, &[parameter]), &kernel).unwrap_err();
-            assert!(matches!(error, Error::Invalid(_)), "{bad}: {error}");
+            assert!(
+                matches!(error, Error::Invalid(_)) && error.to_string().contains(expected),
+                "{bad}: {error}"
+            );
         }
+        // Only lower bounds are checked: the unpadded tight case (two elements 12 apart in exactly 24 bytes) must read.
+        assert!(read(&document_with_schema(4, &[one()]), &kernel).is_ok());
         // Another unsupported kind is still refused under schema 4, with the schema-4 list of kinds.
         let parameter = one().replacen(r#""kind":"array""#, r#""kind":"texture""#, 1);
         let error = read(&document_with_schema(4, &[parameter]), &kernel)
@@ -3965,17 +3995,33 @@ mod tests {
 
     #[test]
     fn a_host_type_checked_against_an_array_is_a_mismatch_not_a_match() {
-        // Until the array host layouts exist (slice r2) no descriptor names an array, so a scalar host element over a
-        // reflected array reports a mismatch instead of passing.
+        // Until the array host layouts exist (slice r2) no descriptor names an array. A reflected `float[1]` has the
+        // size 4, alignment 4 and stride 4 of `f32`, so every number coincides and only the type kind can refuse it.
+        let parameter = format!(
+            r#"{{"name":"one","binding":{{"kind":"descriptorTableSlot","count":1,"index":0,"space":0}},"elementStride":4,"type":{{"kind":"resource","baseShape":"structuredBuffer","access":"read","resultType":{}}}}}"#,
+            float_array_body(1)
+        );
         let compiled = read(
-            &document_with_schema(4, &array_parameters()),
+            &document_with_schema(4, &[parameter]),
             &kernel_with(Vec::new()),
         )
         .unwrap();
-        let mut resource = compiled.reflection.resources[1].clone();
-        resource.element_stride = Some(4);
-        let error = cross_check_pod::<f32>(&resource).unwrap_err();
-        assert!(matches!(error, Error::Mismatch(_)), "{error}");
+        let resource = &compiled.reflection.resources[0];
+        let (element, count, stride) = array_of(&resource.element);
+        assert_eq!((count, stride, element.size), (1, 4, Some(4)));
+        assert_eq!(
+            (
+                resource.element.size,
+                resource.element.alignment,
+                resource.element.stride
+            ),
+            (Some(4), Some(4), Some(4))
+        );
+        let error = cross_check_pod::<f32>(resource).unwrap_err();
+        assert!(
+            matches!(&error, Error::Mismatch(message) if message.contains("type or field count differs")),
+            "{error}"
+        );
     }
 }
 
@@ -4074,8 +4120,34 @@ fn read_type(value: &Json, complete: bool, schema: u32) -> Result<ReflectedType,
                     "an array needs a positive elementCount and elementStride",
                 ));
             }
+            let element = read_type(value.get("elementType")?, complete, schema)?;
+            // Lower bounds only: an HLSL-style rule set may leave the last element unpadded, so `size` need not be
+            // `count * stride`, but no element may overlap the next, sit off its alignment, or fall outside the array.
+            let (size, element_size, alignment) = (
+                value.get("size")?.u32()?,
+                element.size.unwrap_or(0),
+                element.alignment.unwrap_or(0),
+            );
+            if element_stride < element_size {
+                return Err(invalid(
+                    "an array's elementStride is smaller than its element's size",
+                ));
+            }
+            if alignment == 0 || element_stride % alignment != 0 {
+                return Err(invalid(
+                    "an array's elementStride is not a multiple of its element's alignment",
+                ));
+            }
+            let needed = (count - 1)
+                .checked_mul(element_stride)
+                .and_then(|used| used.checked_add(element_size));
+            if needed.is_none_or(|needed| size < needed) {
+                return Err(invalid(
+                    "an array's size is smaller than its elements need (elementCount - 1) * elementStride + element size",
+                ));
+            }
             ReflectedTypeKind::Array {
-                element: Box::new(read_type(value.get("elementType")?, complete, schema)?),
+                element: Box::new(element),
                 count,
                 element_stride,
             }

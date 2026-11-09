@@ -91,6 +91,7 @@ struct SchemaUse
     bool newKinds = false;
     bool shapes = false;
     bool arrays = false;
+    bool inConstantBuffer = false; // set while the element of a constant buffer is described
 };
 
 // The pipeline stage the caller expects the entry point to have (the optional seventh argument; compute by default).
@@ -171,7 +172,9 @@ static std::string type_json(slang::TypeLayoutReflection* type, SchemaUse& use, 
     case slang::TypeReflection::Kind::Array:
     {
         // "stride" above is the stride of this array as an element of something else; "elementStride" is the distance
-        // between its own elements (Slang's uniformStride). An unsized array is unbounded and is refused by known().
+        // between its own elements (Slang's uniformStride). An unsized array is refused by known() (in the size check above or here).
+        // The plan refuses uniform arrays (E0215): the std140 and WGSL uniform array rules are not measured, so the helper does not vouch for them.
+        if (use.inConstantBuffer) throw std::runtime_error("arrays in a constant buffer are not supported (uniform array layouts are not measured)");
         use.arrays = true;
         const auto count = known(type->getElementCount(), "array element count");
         const auto elementStride = known(type->getElementStride(SLANG_PARAMETER_CATEGORY_UNIFORM), "array element stride");
@@ -348,7 +351,9 @@ static std::string reflection_json(slang::ProgramLayout* layout, const char* ent
             auto element = type->getElementTypeLayout();
             if (!element) throw std::runtime_error("missing constant-buffer element layout");
             use.newKinds = true;
+            use.inConstantBuffer = true;
             const auto elementJson = type_json(element, use);
+            use.inConstantBuffer = false;
             if (index) parameters << ',';
             parameters << "{\"name\":" << json_string(resource->getName())
                        << ",\"binding\":{\"kind\":\"descriptorTableSlot\",\"count\":1,\"index\":"

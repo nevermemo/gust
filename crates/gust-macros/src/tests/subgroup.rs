@@ -598,7 +598,8 @@ fn huge_workgroup_dimensions_are_the_coded_error_with_the_exact_product() {
             &format!("#[kernel(workgroup_size({size}))]"),
         )
     };
-    // Every product here is over `u64::MAX` (the first is 2^66 - 2^35 + 4) and odd or not a multiple of 64: all refused.
+    // None is a multiple of 64, so all are refused. The first (2^66 - 2^35 + 4) and the second (about 2^96) are over
+    // `u64::MAX`, which the old product overflowed; the third, (2^32 - 1)^2, still fits a `u64` and is the control.
     for (size, product) in [
         ("4294967295, 4294967295, 4", max * max * 4),
         ("4294967295, 4294967295, 4294967295", max * max * max),

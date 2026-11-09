@@ -462,8 +462,9 @@ test module; do not mix that mechanical move with behavior changes.
 - Subgroup evidence (the m8.s review): an end-to-end `cargo gust build` of a body that calls a subgroup operation;
   a Radeon 890M run of tests/subgroup.rs (the tests open the first Vulkan adapter); a check that shows which body a
   CPU dispatch ran (the one-lane shadows give the portable output); a literal lane of 128 or more refused in the
-  macro. `i32` broadcast with a literal lane and `f32` broadcast with a computed lane ran on the RTX 5090 and on lavapipe (run 42573264225) but never on the 890M (m8.z
-  added the two cells to tests/subgroup.rs).
+  macro. `i32` broadcast with a literal lane and `f32` broadcast with a computed
+  lane ran on the RTX 5090 and on lavapipe (run 42573264225) but never on the 890M (m8.z added the two cells to
+  tests/subgroup.rs).
 - For the 0.2.0 release (the m8.v re-check; done in m8.x2): RELEASE.md's "Releasing 0.2.0 from main" now lists every
   version literal (the README's renamed-dependency example, "Not supported in 0.1.0" and "known limit of 0.1.0", the two
   crate READMEs' `~0.1`, the doc comment of `cargo-gust`'s `main.rs`), and CHANGELOG's `toml` text left "may break" for

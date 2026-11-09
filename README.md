@@ -451,8 +451,9 @@ case is `Cpu` evidence.
   `HeadlessDevice::new()` needs a Vulkan compute adapter. In the browser the backend uses WebGPU through
   `wasm32-unknown-unknown` (`examples/web-vector-add`, the strict `web` profile, `cargo xtask check-web`).
 - **Subgroups (M8):** a `+subgroups` build needs a Vulkan adapter that offers subgroup operations. Its tests ran on the
-  RTX 5090 (subgroup size 32) and on lavapipe in CI (size 8), except two forms of `subgroup_broadcast` that only the
-  RTX 5090 has run; the Radeon 890M is a spike and `gust-algo` observation, not a test run
+  RTX 5090 (subgroup size 32) and on lavapipe in CI (size 8), the two m8.z forms of `subgroup_broadcast`
+  included (gpu-software run 42573264225, `dev+subgroups` step); the Radeon 890M is a spike and `gust-algo`
+  observation, not a test run
   ([SEMANTICS](docs/SEMANTICS.md)). In the browser `web+subgroups` is refused at build time, and a device
   opened with a capability there is `Error::MissingCapability`: the pinned wgpu cannot request the feature, so a web
   build runs the portable body. `check-web` shows that refusal in Chrome 156; it says nothing about the adapter.

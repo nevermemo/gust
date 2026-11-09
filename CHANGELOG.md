@@ -30,8 +30,9 @@ operations).
   only in a body that requires `subgroups` and only where every invocation reaches them (`GUST-E0745`, `GUST-E0747`,
   `GUST-E0751`). The WGSL that Slang writes for them is repaired for the pinned `naga` by a text fix-up, in the
   run-time compiler, the reflected bridge and `cargo gust build`. They ran on an RTX 5090 (subgroup size 32) and on
-  lavapipe in CI (size 8), except two forms of `subgroup_broadcast` (`i32` with a literal lane, `f32` with a computed
-  lane) that only the RTX 5090 has run so far; no browser has run one, and the Radeon 890M has not run the fixtures.
+  lavapipe in CI (size 8), the two m8.z forms of `subgroup_broadcast` (`i32` with a literal lane, `f32` with a computed
+  lane) included (gpu-software run 42573264225, `dev+subgroups` step); no browser has run one, and the Radeon 890M has
+  not run the fixtures.
 - `gust-compute-wgpu` opens its devices with the capabilities of the build (`DeviceOptions::capabilities` and
   `with_capabilities`, `HeadlessDevice::capabilities()` and `subgroup_sizes()`), refuses a request the adapter cannot
   meet when the device opens, and refuses a kernel whose `requires` the device does not meet before launch

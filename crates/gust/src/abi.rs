@@ -236,8 +236,9 @@ impl TypeLayout {
                     None => false,
                 }
             }
-            // Arrays are storage-buffer types only (D159): a constant buffer rounds array strides up to 16, which no
-            // Rust array matches (E0215). Elements are never arrays (E0217).
+            // Arrays are storage-buffer types only: this is D159's scope choice (E0215), not a layout impossibility. A
+            // constant buffer rounds the array stride up to 16, which a Rust `[Vec4; N]` or `[Mat4; N]` already has;
+            // std140 arrays are to be revisited when wanted. Elements are never arrays (E0217).
             TypeLayoutKind::Array { element, count } => {
                 !std140
                     && !matches!(element.kind, TypeLayoutKind::Array { .. })
@@ -302,9 +303,15 @@ impl TypeLayout {
     }
 
     /// An array of `count` (at least 1) elements of `element`: size `element.stride * count`, the element's alignment,
-    /// stride equal to the size, the numbers of the measured std430 arrays (spike P4b). Whether the description is a
-    /// buffer type is for [`TypeLayout::is_storage_v2`] to say: it requires `element.stride == element.size` (the
-    /// element rule of D159, which excludes `Vec3` and `Mat3`) and a non-array element.
+    /// stride equal to the size. For an element whose stride equals its size these are the measured std430 numbers
+    /// (spike P4b); for another element (a three-wide vector, say: 24 and 16 here, 32 and 16 in std430) they are not,
+    /// and this constructor does not check. Whether the description is a buffer type is for
+    /// [`TypeLayout::is_storage_v2`] to say: it requires `element.stride == element.size` (the element rule of D159,
+    /// which excludes the three-wide types `Vec3`, `IVec3`, `UVec3` and `Mat3`) and a non-array element.
+    ///
+    /// # Panics
+    ///
+    /// When `count` is 0 or `element.stride * count` overflows `u32` (in a `const`, a compile error).
     pub const fn array(element: &'static TypeLayout, count: u32) -> Self {
         assert!(count >= 1, "an array has at least one element");
         let Some(size) = element.stride.checked_mul(count) else {
@@ -506,8 +513,11 @@ impl ResourceLayout {
 ///
 /// `[T; N]` implements `GpuPod` for `N` in 1..=32 and 64, 128, 256, 512, 1024, 2048 and 4096 (39 impls, no blanket
 /// impl, so `[T; 0]` has none) when `T: GpuPod`, `T`'s std430 stride equals its Rust size, and `T` is not an array.
-/// `Vec3` and `Mat3` are not `GpuPod`, so they cannot be elements; a hand-written element with a padded stride, or an
-/// array element, fails when `LAYOUT` is used (a compile-time assertion).
+/// `Vec3`, `IVec3`, `UVec3` and `Mat3` are not `GpuPod`, so they cannot be elements; a hand-written element whose layout
+/// disagrees with Rust (stride, size or alignment), is not a storage type (a `Std140V1` struct with `align(16)`, say)
+/// or is an array fails when `LAYOUT` is used. That check is a constant evaluated after monomorphisation, so
+/// `cargo check` may not report it and `cargo build` does (the macro half, slice r2a, refuses these types in `#[gpu]`
+/// modules at expansion).
 ///
 /// ```
 /// use gust::{GpuPod, TypeLayoutKind};
@@ -555,6 +565,25 @@ impl ResourceLayout {
 /// let _ = <[Padded; 2] as GpuPod>::LAYOUT;
 /// ```
 ///
+/// An element whose layout alignment differs from the Rust type's is refused too (its own message names the alignment):
+///
+/// ```compile_fail,E0080
+/// use gust::{GpuPod, ScalarKind, TypeLayout, TypeLayoutKind};
+/// #[derive(Clone, Copy)]
+/// #[repr(C)]
+/// struct Wide(u32);
+/// unsafe impl GpuPod for Wide {
+///     const LAYOUT: TypeLayout = TypeLayout {
+///         name: "Wide",
+///         size: 4,
+///         alignment: 8,
+///         stride: 4,
+///         kind: TypeLayoutKind::Scalar(ScalarKind::U32),
+///     };
+/// }
+/// let _ = <[Wide; 2] as GpuPod>::LAYOUT;
+/// ```
+///
 /// A nested array is refused (E0217 in the dialect):
 ///
 /// ```compile_fail,E0080
@@ -564,7 +593,7 @@ impl ResourceLayout {
     message = "`{Self}` is not a GUST GPU POD type",
     label = "declare a plain struct inside the same `#[gpu]` module so that the macro implements `GpuPod` for it; `u32`, `i32` and `f32` already implement it",
     note = "an `unsafe impl` written by hand must uphold the layout contract in the safety section of `GpuPod`",
-    note = "arrays `[T; N]` implement it for N in 1..=32 and 64, 128, 256, 512, 1024, 2048, 4096 (not 0), when `T` does and its std430 stride equals its Rust size; `Vec3` and `Mat3` do not implement it, so they cannot be array elements"
+    note = "arrays `[T; N]` implement it for N in 1..=32 and 64, 128, 256, 512, 1024, 2048, 4096 (not 0), when `T` does and its std430 stride equals its Rust size; `Vec3`, `IVec3`, `UVec3` and `Mat3` do not implement it, so they cannot be array elements"
 )]
 pub unsafe trait GpuPod: Copy + 'static {
     /// The layout of `Self`. It must match Rust's size, alignment, field order and offsets.
@@ -587,21 +616,34 @@ unsafe impl GpuPod for f32 {
 ///
 /// The element rule (D159) is enforced here, at compile time, when `LAYOUT` is used: the element's std430 stride must
 /// equal its Rust size (so the Rust array is the GPU array byte for byte), its Rust alignment must equal its layout
-/// alignment, and it must be a buffer type that is not itself an array (nested arrays are E0217). `Vec3` and `Mat3`
-/// are not `GpuPod` at all; a hand-written `GpuPod` type with a padded stride trips this assertion. Written as an
-/// associated const of a helper so that `&T::LAYOUT` is a `'static` reference.
+/// alignment, and it must be a buffer type that is not itself an array (nested arrays are E0217). `Vec3`, `IVec3`,
+/// `UVec3` and `Mat3` are not `GpuPod` at all; a hand-written `GpuPod` type that breaks one of these trips its own
+/// assertion below. This is a post-monomorphisation constant: `cargo check` may not report it, `cargo build` does.
+/// Written as an associated const of a helper so that `&T::LAYOUT` is a `'static` reference.
 struct ArrayOf<T>(core::marker::PhantomData<T>);
 
 impl<T: GpuPod> ArrayOf<T> {
     const ELEMENT_OK: () = {
         let element = T::LAYOUT;
         assert!(
-            element.stride as usize == mem::size_of::<T>()
-                && element.size as usize == mem::size_of::<T>()
-                && element.alignment as usize == mem::align_of::<T>()
-                && element.is_storage_v2()
-                && !matches!(element.kind, TypeLayoutKind::Array { .. }),
-            "array element rule (D159): the element must be a non-array storage type whose std430 stride equals its Rust size (Vec3 and Mat3 do not qualify)"
+            element.stride as usize == mem::size_of::<T>(),
+            "array element rule (D159): the element's layout stride differs from its Rust size (a padded stride, as of Vec3, IVec3, UVec3 and Mat3, cannot be an array element)"
+        );
+        assert!(
+            element.size as usize == mem::size_of::<T>(),
+            "array element rule (D159): the element's layout size differs from its Rust size"
+        );
+        assert!(
+            element.alignment as usize == mem::align_of::<T>(),
+            "array element rule (D159): the element's layout alignment differs from its Rust alignment"
+        );
+        assert!(
+            !matches!(element.kind, TypeLayoutKind::Array { .. }),
+            "array element rule (E0217): an array element cannot itself be an array"
+        );
+        assert!(
+            element.is_storage_v2(),
+            "array element rule (D159): the element's layout is not a StorageV2 type (a Std140V1 struct with align(16) is one example)"
         );
     };
     const ELEMENT: TypeLayout = {

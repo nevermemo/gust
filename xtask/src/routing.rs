@@ -41,7 +41,12 @@ pub(crate) const FIXTURE_DIR: &str = "tests/routing";
 const ROUTE_PREFIX: &str = "GUST_ROUTE__";
 
 /// Variables every child starts without (the route variables are removed by prefix).
-const CLEARED: [&str; 3] = [PROFILE_VARIABLE, "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"];
+const CLEARED: [&str; 4] = [
+    PROFILE_VARIABLE,
+    "GUST_ROUTED_PROFILE",
+    "RUSTFLAGS",
+    "CARGO_ENCODED_RUSTFLAGS",
+];
 
 /// What `cpu-app` prints when `physics::scale` ran on `CpuDevice`.
 pub(crate) const CPU_APP_LINE: &str =

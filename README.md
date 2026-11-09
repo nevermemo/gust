@@ -154,7 +154,8 @@ cargo xtask check-full
 ```
 
 It also runs the format check, clippy and tests of the differential-test harness (`tests/difftest`, a workspace of
-its own), the whole `check-precompiled` (the fixture `tests/precompiled`, with a GPU, Slang and the crates.io
+its own), the whole Gpu suite again under `GUST_PROFILE=dev+subgroups` (the pinned `gust-compute-wgpu` targets and
+`gust-algo`, so the subgroup bodies run; it needs an adapter with subgroup operations), the whole `check-precompiled` (the fixture `tests/precompiled`, with a GPU, Slang and the crates.io
 registry), the whole `check-release` (packaging, docs and the crates.io recipe run on the GPU, with the registry), the
 whole `check-web` (the browser WebGPU run: wasm32 target, `wasm-bindgen-cli`, Chrome with a WebGPU adapter) and, last,
 `check-difftest` (generated kernels on an interpreter, the CPU twin and the GPU: all 8 seeds, 128 programs, and the
@@ -203,7 +204,7 @@ Purpose-built check commands keep the inner loop honest:
 | `cargo xtask check-workspace` | Default workspace confidence | `--locked` workspace tests with example packages excluded entirely |
 | `cargo xtask check-examples` | Major example behavior confidence | every example test (`-- --include-ignored`, counted: no passed test or an ignored one fails it) plus example binaries |
 | `cargo xtask check-artifacts` | Artifact/export confidence | example binaries plus external SPIR-V validation of their files (`EXPECTED_SPIRV`) and of the files of the golden sets (`GOLDEN_SPIRV_SETS`: vectors and products, uniforms, map, grid, workgroup, `par_for`, reduce, scan, compact, textures, pixel, variant, subgroup), with an `OpCopyLogical` count each |
-| `cargo xtask check-full [--skip-web]` | Release confidence | full staged verification, then the whole `check-precompiled` and `check-web`, then `check-difftest`; `--skip-web` leaves out `check-web` only and records it |
+| `cargo xtask check-full [--skip-web]` | Release confidence | full staged verification, the Gpu suite again under `dev+subgroups`, then the whole `check-precompiled` and `check-web`, then `check-difftest`; `--skip-web` leaves out `check-web` only and records it |
 | `cargo xtask status` | Resume context | git status, active claim, validation summary, suggested check |
 | `cargo xtask doctor` | Environment readiness | required tools and reflection helper status; exits non-zero when cargo, rustc, slangc or the helper is missing |
 | `cargo xtask doctor --smoke` | Toolchain smoke test | doctor, then a hand-written Slang kernel compiled to WGSL and SPIR-V in a fresh target directory and the SPIR-V validated; the Rust frontend and GPU execution are not run |
@@ -450,11 +451,12 @@ case is `Cpu` evidence.
   `HeadlessDevice::new()` needs a Vulkan compute adapter. In the browser the backend uses WebGPU through
   `wasm32-unknown-unknown` (`examples/web-vector-add`, the strict `web` profile, `cargo xtask check-web`).
 - **Subgroups (M8):** a `+subgroups` build needs a Vulkan adapter that offers subgroup operations. Its tests ran on the
-  RTX 5090 (subgroup size 32) and on lavapipe in CI (size 8); the Radeon 890M is a spike and `gust-algo` observation,
-  not a test run ([SEMANTICS](docs/SEMANTICS.md)). In the browser `web+subgroups` is refused at build time, and a device
+  RTX 5090 (subgroup size 32) and on lavapipe in CI (size 8), except two forms of `subgroup_broadcast` that only the
+  RTX 5090 has run; the Radeon 890M is a spike and `gust-algo` observation, not a test run
+  ([SEMANTICS](docs/SEMANTICS.md)). In the browser `web+subgroups` is refused at build time, and a device
   opened with a capability there is `Error::MissingCapability`: the pinned wgpu cannot request the feature, so a web
   build runs the portable body. `check-web` shows that refusal in Chrome 156; it says nothing about the adapter.
-- **Not supported in 0.1.0:** macOS and Metal (no Metal backend is compiled), and DX12 is not claimed (the spike S3
+- **Not supported as of 0.2.0-dev:** macOS and Metal (no Metal backend is compiled), and DX12 is not claimed (the spike S3
   probe ran DX12, but `gust-compute-wgpu` does not compile it). Software adapters such as Mesa lavapipe run the GPU
   tests in CI as `Gpu (software)` evidence; they are not a target.
 - **CPU:** a `GUST_PROFILE=cpu` build contains no GPU runtime and runs the kernels as plain Rust (see "Try it").

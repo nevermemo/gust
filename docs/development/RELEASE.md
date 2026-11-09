@@ -162,7 +162,7 @@ pre-release, so the development line names the pre-release and the release must 
   `crates/cargo-gust/src/doctor.rs` and its test need no edit: since m8.x1 the hint derives `~0.x` from the package
   version (`CARGO_PKG_VERSION_MAJOR` and `_MINOR`), so the bump changes it;
 - the README's version literals of 0.1.0: the renamed-dependency example in "Renamed dependencies and name clashes"
-  (`version = "0.1"`, becomes `"0.2"`), the "Not supported in 0.1.0" bullet of "Platforms" and the "known limit of
+  (`version = "0.1"`, becomes `"0.2"`), the "Not supported as of 0.2.0-dev" bullet of "Platforms" and the "known limit of
   0.1.0" sentence of "Textures and samplers" (each says which release the statement was last checked for: re-check,
   then name 0.2.0), and the sentence of "Install from crates.io" that calls 0.1.0 the first release (true as it
   stands; read it once);

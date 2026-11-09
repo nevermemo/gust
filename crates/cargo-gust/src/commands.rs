@@ -743,6 +743,8 @@ mod tests {
         assert_eq!(
             first,
             [
+                // The profile the plan was resolved for (m8.z), which `gust`'s build script checks.
+                ("GUST_ROUTED_PROFILE".to_owned(), "dev".to_owned()),
                 (
                     "GUST_ROUTE__kernel_lib__fusion".to_owned(),
                     "gpu".to_owned()

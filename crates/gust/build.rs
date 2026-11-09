@@ -16,6 +16,13 @@
 //! says so with a `cargo:warning`) instead of `native`; a `wasm32` build stays `web`. An explicit `GUST_PROFILE`
 //! always wins over it.
 //!
+//! `cargo gust` (the routing driver, M8) also sets `GUST_ROUTED_PROFILE` to the profile it resolved the routes of a
+//! `gust.toml` for, from the command line and the environment. This script compares it with the profile it infers
+//! from cargo's `PROFILE` and the target architecture and fails the build when they differ (a target from
+//! `build.target` or `CARGO_BUILD_TARGET`, or a custom profile that inherits `release`), because the kernels would
+//! otherwise be routed for another profile without a word. Plain cargo does not set it, and then nothing is compared
+//! (D67).
+//!
 //! The decision is a pure function of [`Inputs`] that returns the exact lines this script prints, so the unit tests
 //! (`cargo test -p gust-compute`, which includes this file from `src/profile.rs`) pin them.
 
@@ -47,6 +54,9 @@ struct Inputs<'a> {
     slang_runtime: bool,
     /// `CARGO_FEATURE_CARGO_GUST_BRIDGE` is set (the internal feature `cargo-gust-bridge`, D108).
     bridge: bool,
+    /// `GUST_ROUTED_PROFILE`: the profile `cargo gust` resolved the routes for (m8.z); `None` when it is not set (plain
+    /// cargo, or a `cargo gust` run that applies no `gust.toml`). An empty value is `Some("")`.
+    routed: Option<&'a str>,
 }
 
 /// The effective profile, and whether it was inferred from a release build (no explicit `GUST_PROFILE`). With
@@ -167,9 +177,35 @@ fn check_cfg() -> String {
     )
 }
 
+/// The variable `cargo gust` sets to the profile it resolved when it applies a `gust.toml` (m8.z, S1 of the M8 sanity
+/// checks). It is the target part of the profile (`dev`, `native`, `web` or `cpu`), the one the routes were resolved for.
+const ROUTED_PROFILE_VARIABLE: &str = "GUST_ROUTED_PROFILE";
+
+/// The guard of the routing driver: `cargo gust` resolved its routes for one profile from its command line and
+/// environment (`--release`, `--profile release`, `--target wasm32-..`, `GUST_PROFILE`), while this script infers the
+/// profile from what cargo hands it, which also sees `build.target` in `.cargo/config.toml`, `CARGO_BUILD_TARGET`, a
+/// custom profile that inherits `release` and a `GUST_PROFILE` set in the config's `[env]` table. When the two
+/// differ, the kernels would be routed for a profile this build is not, silently, so the build fails and names
+/// both. `routed` unset (plain cargo, D67) is no check, and the check never changes the profile.
+fn routed_guard(routed: Option<&str>, profile: &str) -> Result<(), String> {
+    match routed {
+        Some(routed) if routed != profile => Err(format!(
+            "gust: `cargo gust` resolved the routes of this build for the profile `{routed}` ({ROUTED_PROFILE_VARIABLE}), but \
+             the build script of gust infers `{profile}` from GUST_PROFILE, cargo's PROFILE and the target architecture. The \
+             driver reads only its command line and environment, so they differ when the target comes from `build.target` in \
+             .cargo/config.toml or from CARGO_BUILD_TARGET, when a custom profile inherits `release`, or when GUST_PROFILE is \
+             set only in the `[env]` table of the config. Pass `--release` and `--target` to `cargo gust` itself, or set \
+             GUST_PROFILE to the profile you mean in the environment, so that both agree. ({ROUTED_PROFILE_VARIABLE} is set \
+             by `cargo gust` only; unset it if you are running plain cargo.)"
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// The lines (without the trailing newline) this script prints for cargo, or the reason the build must fail.
 fn directives(inputs: &Inputs<'_>) -> Result<Vec<String>, String> {
     let (profile, inferred) = effective(inputs)?;
+    routed_guard(inputs.routed, profile)?;
     let capabilities = capabilities(inputs, profile)?;
     if inputs.slang_runtime && profile == "cpu" {
         // `cpu` is never inferred, so there is no origin to name.
@@ -193,6 +229,7 @@ fn directives(inputs: &Inputs<'_>) -> Result<Vec<String>, String> {
     let mut lines = vec![
         "cargo:rerun-if-changed=build.rs".to_owned(),
         "cargo:rerun-if-env-changed=GUST_PROFILE".to_owned(),
+        format!("cargo:rerun-if-env-changed={ROUTED_PROFILE_VARIABLE}"),
         check_cfg(),
         check_cfg_capability(),
     ];
@@ -213,8 +250,11 @@ fn directives(inputs: &Inputs<'_>) -> Result<Vec<String>, String> {
 
 fn main() -> ExitCode {
     let value = env::var_os("GUST_PROFILE").map(|value| value.to_string_lossy().into_owned());
+    let routed =
+        env::var_os(ROUTED_PROFILE_VARIABLE).map(|value| value.to_string_lossy().into_owned());
     let inputs = Inputs {
         profile: value.as_deref(),
+        routed: routed.as_deref(),
         release: env::var("PROFILE").is_ok_and(|profile| profile == "release"),
         wasm: env::var("CARGO_CFG_TARGET_ARCH").is_ok_and(|arch| arch == "wasm32"),
         slang_runtime: env::var_os("CARGO_FEATURE_SLANG_RUNTIME").is_some(),
@@ -236,7 +276,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Inputs, directives, effective};
+    use super::{Inputs, directives, effective, routed_guard};
 
     const NONE: Inputs<'static> = Inputs {
         profile: None,
@@ -244,6 +284,7 @@ mod tests {
         wasm: false,
         slang_runtime: false,
         bridge: false,
+        routed: None,
     };
 
     fn cfg_line(profile: &str) -> String {
@@ -266,12 +307,13 @@ mod tests {
     }
 
     /// The whole output of a build with no `GUST_PROFILE`, line for line (m8.a, S6): the next line anyone adds is a
-    /// deliberate change of this test. The `cfg(gust_capability)` declaration is the one line m8.a added.
+    /// deliberate change of this test. The `cfg(gust_capability)` declaration is the one line m8.a added, and the `rerun-if-env-changed` of `GUST_ROUTED_PROFILE` the one m8.z added.
     #[test]
     fn the_whole_output_of_a_build_without_a_variable_is_pinned() {
         let head = [
             "cargo:rerun-if-changed=build.rs",
             "cargo:rerun-if-env-changed=GUST_PROFILE",
+            "cargo:rerun-if-env-changed=GUST_ROUTED_PROFILE",
             "cargo:rustc-check-cfg=cfg(gust_profile, values(\"dev\", \"native\", \"web\", \"cpu\"))",
             "cargo:rustc-check-cfg=cfg(gust_capability, values(\"subgroups\"))",
         ];
@@ -337,6 +379,7 @@ mod tests {
                         wasm,
                         slang_runtime: false,
                         bridge: false,
+                        routed: None,
                     };
                     let lines = directives(&inputs).unwrap();
                     assert!(lines.contains(&cfg_line(name)), "{name}: {lines:?}");
@@ -550,6 +593,7 @@ mod tests {
                 wasm: false,
                 slang_runtime: true,
                 bridge: false,
+                routed: None,
             };
             let lines = directives(&inputs).unwrap();
             assert!(lines.contains(&cfg_line("dev")), "{lines:?}");
@@ -952,6 +996,130 @@ mod tests {
         let inputs = Inputs {
             profile: Some("bogus"),
             slang_runtime: true,
+            ..NONE
+        };
+        assert_eq!(
+            directives(&inputs),
+            Err("gust: unknown GUST_PROFILE `bogus`; use dev, native, web or cpu".to_owned())
+        );
+    }
+
+    // ---- the routing driver's guard (m8.z) ----
+
+    /// A build `cargo gust` did not resolve (`routed` unset, plain cargo) is checked against nothing, whatever it infers
+    /// (D67): the output is what it was, and the function is `Ok` for every profile.
+    #[test]
+    fn without_a_routed_profile_there_is_no_check() {
+        for profile in ["dev", "native", "web", "cpu"] {
+            assert_eq!(routed_guard(None, profile), Ok(()), "{profile}");
+        }
+        for (release, wasm) in [(false, false), (true, false), (true, true)] {
+            let inputs = Inputs {
+                release,
+                wasm,
+                ..NONE
+            };
+            assert!(directives(&inputs).is_ok(), "{release} {wasm}");
+        }
+    }
+
+    #[test]
+    fn a_routed_profile_that_equals_the_inferred_one_passes_and_changes_no_line() {
+        let release = Inputs {
+            release: true,
+            ..NONE
+        };
+        let web = Inputs {
+            release: true,
+            wasm: true,
+            ..NONE
+        };
+        for (inputs, routed) in [(NONE, "dev"), (release, "native"), (web, "web")] {
+            let routed_inputs = Inputs {
+                routed: Some(routed),
+                ..inputs
+            };
+            assert_eq!(
+                directives(&routed_inputs),
+                directives(&inputs),
+                "routed {routed}"
+            );
+        }
+        // An explicit profile is its own: the driver took the same value, capabilities after the target aside.
+        for (value, routed) in [
+            ("native+subgroups", "native"),
+            ("dev+subgroups", "dev"),
+            ("cpu", "cpu"),
+        ] {
+            let inputs = Inputs {
+                profile: Some(value),
+                routed: Some(routed),
+                ..NONE
+            };
+            assert!(directives(&inputs).is_ok(), "{value} routed {routed}");
+        }
+    }
+
+    /// The case the guard exists for: the driver read a command line without `--release` or `--target` (profile `dev`),
+    /// and the build is a release build for `wasm32` (a configured target, or a custom profile that inherits `release`).
+    /// The message names both profiles and the cause.
+    #[test]
+    fn a_routed_profile_that_differs_from_the_inferred_one_fails_the_build_naming_both() {
+        let web = Inputs {
+            release: true,
+            wasm: true,
+            routed: Some("dev"),
+            ..NONE
+        };
+        let message = directives(&web).unwrap_err();
+        assert!(
+            message.starts_with(
+                "gust: `cargo gust` resolved the routes of this build for the profile `dev` (GUST_ROUTED_PROFILE), but the build script of gust infers `web`"
+            ),
+            "{message}"
+        );
+        for cause in [
+            "`build.target` in .cargo/config.toml",
+            "CARGO_BUILD_TARGET",
+            "a custom profile inherits `release`",
+            "set only in the `[env]` table of the config",
+            "set GUST_PROFILE to the profile you mean in the environment",
+        ] {
+            assert!(message.contains(cause), "{cause}: {message}");
+        }
+        // The other direction: the driver saw `--release` (native), the build is a debug build.
+        let debug = Inputs {
+            routed: Some("native"),
+            ..NONE
+        };
+        let message = directives(&debug).unwrap_err();
+        assert!(message.contains("for the profile `native`"), "{message}");
+        assert!(message.contains("infers `dev`"), "{message}");
+        // An explicit profile that the driver did not see is a mismatch as well, and the guard comes before the other
+        // refusals of the profile.
+        let explicit = Inputs {
+            profile: Some("native+subgroups"),
+            routed: Some("dev"),
+            slang_runtime: true,
+            ..NONE
+        };
+        let message = directives(&explicit).unwrap_err();
+        assert!(message.contains("infers `native`"), "{message}");
+        assert!(!message.contains("slang-runtime"), "{message}");
+        // An empty value is not "unset": it names no profile, so it differs from every profile.
+        let empty = Inputs {
+            routed: Some(""),
+            ..NONE
+        };
+        assert!(directives(&empty).unwrap_err().contains("profile `` ("));
+    }
+
+    /// The guard only reads; an unknown `GUST_PROFILE` is still reported first, as before.
+    #[test]
+    fn an_unknown_profile_is_reported_before_the_guard() {
+        let inputs = Inputs {
+            profile: Some("bogus"),
+            routed: Some("dev"),
             ..NONE
         };
         assert_eq!(

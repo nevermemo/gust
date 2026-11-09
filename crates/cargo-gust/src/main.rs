@@ -53,7 +53,10 @@
 //!   resolved table (tag, target, deciding level) to `gust-artifacts/routes.json` (`build`, `run` and `test`, after
 //!   the toolchain check in `build`; `check` leaves it alone and does not count it as a stray). The one-line-per-tag
 //!   summary and the notes on a preset `GUST_ROUTE__*` variable go to standard error. An error names `gust.toml`, the
-//!   line and the tag, and cargo does not build (`cargo metadata` runs to read the declarations).
+//!   line and the tag, and cargo does not build (`cargo metadata` runs to read the declarations). The driver also sets
+//!   `GUST_ROUTED_PROFILE` to the profile it resolved the routes for, read from the command line only; the build script
+//!   of `gust` fails the build when the profile it infers is another one (a target from `build.target` or
+//!   `CARGO_BUILD_TARGET`, or a custom profile that inherits `release`), so a kernel is never routed for the wrong profile.
 //! - `cargo gust doctor` shows the located Slang and where its licence notices are, the helper (refused when it was
 //!   built against another Slang than the located `slangc`), `spirv-val`, the profile a build here would get and the
 //!   install command.

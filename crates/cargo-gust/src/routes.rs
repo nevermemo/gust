@@ -59,6 +59,13 @@ pub(crate) const ROUTES_FILE: &str = "routes.json";
 /// The two route targets.
 const TARGETS: [&str; 2] = ["gpu", "cpu"];
 
+/// The variable the driver sets, beside the route variables, to the profile it resolved them for (m8.z). `gust`'s build
+/// script compares it with the profile it infers and fails the build when they differ, because the driver reads the
+/// command line only and the build also sees `build.target`, `CARGO_BUILD_TARGET` and custom profiles. The name is
+/// `gust`'s (`ROUTED_PROFILE_VARIABLE` in `crates/gust/build.rs`; a build script cannot share a constant); the name
+/// does not start with `GUST_ROUTE__`, so it is neither a route variable nor reported by [`RoutePlan::notes`].
+pub(crate) const ROUTED_PROFILE_VARIABLE: &str = "GUST_ROUTED_PROFILE";
+
 /// The profiles a target-keyed entry may name.
 const PLATFORM_KEYS: [&str; 3] = ["dev", "native", "web"];
 
@@ -991,11 +998,13 @@ impl RoutePlan {
             .collect()
     }
 
-    /// Sets the route variables on a cargo command. Every command that builds goes through here.
+    /// Sets the route variables on a cargo command, and [`ROUTED_PROFILE_VARIABLE`] to the profile they were resolved for
+    /// (a preset value is overridden, as the route variables are). Every command that builds goes through here.
     pub(crate) fn apply(&self, command: &mut Command) {
         for (name, value) in self.variables() {
             command.env(name, value);
         }
+        command.env(ROUTED_PROFILE_VARIABLE, &self.profile);
     }
 
     /// `routes.json`: tag, target and deciding level, in the order of the rows, so that a rerun gives the same bytes.
@@ -2249,6 +2258,65 @@ mod tests {
         assert_eq!(args, ["run", "-p", "app", "--", "x"]);
         // Without a plan nothing is set.
         assert!(route_envs(&cargo_command(&cargo, "run", &arguments, None)).is_empty());
+    }
+
+    /// The value a command sets for `name` (`None`: it sets nothing for it).
+    fn env_value(command: &Command, name: &str) -> Option<String> {
+        command
+            .get_envs()
+            .find(|(key, _)| key.to_string_lossy() == name)
+            .and_then(|(_, value)| value)
+            .map(|value| value.to_string_lossy().into_owned())
+    }
+
+    /// m8.z (S1 of the M8 sanity checks): a command with routes also carries the profile they were resolved for, which
+    /// `gust`'s build script compares with the profile it infers. A command without routes carries nothing, so plain
+    /// behaviour (D67) is unchanged, and the variable is not one of the route variables.
+    #[test]
+    fn commands_with_routes_export_the_profile_the_routes_were_resolved_for() {
+        // The name is the one `gust`'s build script reads; a build script cannot share a constant, so the source is read.
+        assert_eq!(ROUTED_PROFILE_VARIABLE, "GUST_ROUTED_PROFILE");
+        let script = include_str!("../../gust/build.rs").replace("\r\n", "\n");
+        assert!(
+            script.contains(&format!(
+                "const ROUTED_PROFILE_VARIABLE: &str = \"{ROUTED_PROFILE_VARIABLE}\";"
+            )),
+            "crates/gust/build.rs reads another variable"
+        );
+        let cargo = OsString::from("cargo");
+        let arguments = ["-p".to_owned(), "app".to_owned()];
+        let rows = plan_of("[routes]\n\"kernel-lib::physics\" = \"cpu\"\n").rows;
+        for profile in ["dev", "native", "web", "cpu"] {
+            let plan = RoutePlan::new(
+                profile,
+                rows.clone(),
+                PathBuf::from("/w/app/gust-artifacts"),
+            );
+            for verb in ["run", "test"] {
+                let command = cargo_command(&cargo, verb, &arguments, Some(&plan));
+                assert_eq!(
+                    env_value(&command, ROUTED_PROFILE_VARIABLE).as_deref(),
+                    Some(profile),
+                    "{verb} {profile}"
+                );
+                // Not a route variable: the set of route variables is what it was.
+                assert_eq!(route_envs(&command).len(), plan.rows.len(), "{verb}");
+            }
+            // The collect step of build and check goes through `apply` too.
+            let mut collect = Command::new("cargo");
+            plan.apply(&mut collect);
+            assert_eq!(
+                env_value(&collect, ROUTED_PROFILE_VARIABLE).as_deref(),
+                Some(profile)
+            );
+        }
+        let plain = cargo_command(&cargo, "run", &arguments, None);
+        assert_eq!(env_value(&plain, ROUTED_PROFILE_VARIABLE), None);
+        // A preset value of the driver's own environment is overridden, as the route variables are, and the notes about
+        // presets do not mention it.
+        let plan = plan_of("[routes]\n");
+        let preset = vec![(ROUTED_PROFILE_VARIABLE.to_owned(), "native".to_owned())];
+        assert!(plan.notes(&preset).is_empty());
     }
 
     // ---- the profile of run and test ----

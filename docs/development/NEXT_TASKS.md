@@ -462,7 +462,8 @@ test module; do not mix that mechanical move with behavior changes.
 - Subgroup evidence (the m8.s review): an end-to-end `cargo gust build` of a body that calls a subgroup operation;
   a Radeon 890M run of tests/subgroup.rs (the tests open the first Vulkan adapter); a check that shows which body a
   CPU dispatch ran (the one-lane shadows give the portable output); a literal lane of 128 or more refused in the
-  macro. `i32` broadcast with a literal lane and `f32` broadcast with a computed lane are not run on any adapter.
+  macro. `i32` broadcast with a literal lane and `f32` broadcast with a computed lane ran only on the RTX 5090 (m8.z
+  added the two cells to tests/subgroup.rs); lavapipe's CI step has not run them yet and the 890M never.
 - For the 0.2.0 release (the m8.v re-check; done in m8.x2): RELEASE.md's "Releasing 0.2.0 from main" now lists every
   version literal (the README's renamed-dependency example, "Not supported in 0.1.0" and "known limit of 0.1.0", the two
   crate READMEs' `~0.1`, the doc comment of `cargo-gust`'s `main.rs`), and CHANGELOG's `toml` text left "may break" for
@@ -471,7 +472,25 @@ test module; do not mix that mechanical move with behavior changes.
 - A device handle that follows the route (D136 and D137 file it): in 0.2.0 a kernel call names its device, so flipping a
   route in `gust.toml` changes the call sites of that kernel (only `name::map` is the same on both targets). A handle
   that the route chooses (one device type whose calls run on the target the route names) would make a flip a
-  `gust.toml` change only. A design question for a later milestone, not built.
+  `gust.toml` change only. A design question for a later milestone, not built. Timing (the M8 sanity checks,
+  2026-11-09): run the spike before the 0.2.0 publish, because the release freezes the call API that a route flip
+  changes; M9 does not touch that API, so it need not come before M9.
+- Re-probe browser subgroups (the dropped slice m8.u; probe u0) when a wgpu release above 30.0.1 exists. At 30.0.1 the
+  WebGPU backend does not map `SUBGROUP`, naga refuses `enable subgroups;` and a non-`u32` lane id, and trunk has
+  moved (MSRV 1.95 against GUST's 1.90). Open upstream: gfx-rs/wgpu#10876, #10818 and #5555. A pin bump also retires
+  or re-exports the WGSL fix-up (`gust::slang::wgsl::fixup_subgroups`).
+- The `device_options` adapter-enumeration flake: `an_adapter_that_does_not_exist_is_no_adapter` (gust-wgpu
+  `tests/device_options.rs:86`) failed once on the two-adapter development PC (enumerate returned 0, then index 0
+  opened). The mx.p1b note above records the same family: a Gpu-suite test (`limits`, `device_options`) failed with
+  `NoAdapter` in two runs while other GPU work ran, and passed alone and on rerun. Not caused by M8. Fix when it recurs: re-enumerate, or skip the test when the
+  enumeration is empty.
+- The portable floor (`limits = "portable"`, GUST-E0746) checks `#[kernel]` functions only. It does not check the
+  `#[gpu] fn` element-wise maps or `par_for!` calls, which stay with the launch checks of `gust-compute-wgpu`
+  (`DeviceLimit` at run time). README's "The portable floor is opt-in" bullet, SEMANTICS' "The portable floor (opt-in,
+  m8.f, D143)" and DIAGNOSTICS' GUST-E0746 entry say so. A build-time check for them is open and filed with no slice.
+- A run of `crates/gust-wgpu/tests/subgroup.rs` on the Radeon 890M with adapter selection (`DeviceOptions` by index or
+  name; the tests open the first Vulkan adapter, so the 890M column of SEMANTICS' subgroup table is "not run"). About
+  fifteen minutes; it closes that column.
 - `crates/gust-algo/examples/sg_ab.rs` (the subgroup A/B program of m8.e; VALIDATION.md, "Subgroup evidence") is
   compiled by the workspace builds and never run by a suite, so its table rests on the hand runs recorded there. Run it
   from a suite (or from `check-full` on an adapter) if the table is to stay checked; filed with no slice (after M8).

@@ -1,8 +1,9 @@
 use super::{
-    RELEASE_LEDGER_TEST, RELEASE_LEDGER_TESTS, RELEASE_ONLY_CPU_TEST, RELEASE_ONLY_SLANG_TEST,
-    RELEASE_ONLY_TESTS, RELEASE_SLANG_TESTS, STRICT_PORTABLE_PROFILE, STRICT_SUBGROUPS_PACKAGE,
-    STRICT_SUBGROUPS_PROFILE, VerifyMode, cargo_calls, check_counted_call, check_ledger,
-    counts_tests, example_run_args, strict_subgroups_args, strict_subgroups_portable_args,
+    FULL_GPU_PROFILE, FULL_GPU_PROFILE_CHECK, RELEASE_LEDGER_TEST, RELEASE_LEDGER_TESTS,
+    RELEASE_ONLY_CPU_TEST, RELEASE_ONLY_SLANG_TEST, RELEASE_ONLY_TESTS, RELEASE_SLANG_TESTS,
+    STRICT_PORTABLE_PROFILE, STRICT_SUBGROUPS_PACKAGE, STRICT_SUBGROUPS_PROFILE, VerifyMode,
+    cargo_calls, check_counted_call, check_gpu_target_profile, check_ledger, counts_tests,
+    example_run_args, strict_subgroups_args, strict_subgroups_portable_args,
     strict_subgroups_problems, strict_subgroups_recompile_args, strict_subgroups_test_args,
 };
 use crate::workspace::{EXAMPLES, SMOKE_EXAMPLES, workspace_test_args};
@@ -533,4 +534,55 @@ fn the_strict_run_is_judged_on_its_printed_lines() {
         "{problems:?}"
     );
     assert!(strict_subgroups_problems("").len() >= 4);
+}
+
+// ---- the whole Gpu suite under dev+subgroups in the release gate (m8.z, S3 of the M8 sanity checks) ----
+
+/// The Full mode runs `--suite Gpu --profile dev+subgroups` (the pinned gust-wgpu targets and then gust-algo, whose
+/// subgroup body only that profile selects) as one recorded step, after the workspace tests (the plain run) and the
+/// strict example, before `check-dual`, in the Full mode only. A test that reads the source, so dropping the step, moving
+/// it out of the Full branch or changing what it calls fails here.
+#[test]
+fn the_full_mode_runs_the_gpu_suite_under_dev_subgroups_after_the_plain_run() {
+    assert_eq!(FULL_GPU_PROFILE, "dev+subgroups");
+    assert_eq!(
+        FULL_GPU_PROFILE_CHECK,
+        "test --suite Gpu --profile dev+subgroups"
+    );
+    assert_eq!(check_gpu_target_profile(FULL_GPU_PROFILE), Ok(()));
+    let source = include_str!("../verify.rs").replace("\r\n", "\n");
+    let body = &source[source.find("fn verify_inner(").expect("verify_inner")..];
+    let body = &body[..body.find("\n}\n").expect("its end")];
+    let calls = body.find("for args in cargo_calls(mode) {").unwrap();
+    let strict = body.find("check_strict_subgroups_example(root)").unwrap();
+    let gate = body
+        .find("check_gpu_suite_under_profile(root, FULL_GPU_PROFILE)")
+        .expect("the Full mode must run the Gpu suite under dev+subgroups");
+    let dual = body.find("if runs_check_dual(mode) {").unwrap();
+    assert!(calls < strict && strict < gate && gate < dual);
+    // Inside a branch of the Full mode alone, and recorded under its name.
+    let open = body[..gate]
+        .rfind("if mode == VerifyMode::Full {")
+        .expect("the step sits in an `if mode == VerifyMode::Full` branch");
+    assert!(
+        !body[open..gate].contains("\n    }\n"),
+        "the branch closes before the step"
+    );
+    assert!(body[gate..].contains("report_check(checks, FULL_GPU_PROFILE_CHECK, outcome)?;"));
+    // What the step runs is the profile form of the suite (the targets, then gust-algo), through the suite's own runner.
+    let function = &source[source
+        .find("fn check_gpu_suite_under_profile(")
+        .expect("the step's function")..];
+    let function = &function[..function.find("\n}\n").expect("its end")];
+    assert!(function.contains("run_gpu_profile_suite("));
+    assert!(function.contains("&run_cargo_test_captured_under"));
+    // The other modes do not run it (Gpu mode and the Gpu suite have their own calls).
+    for mode in ALL_MODES {
+        assert!(
+            !cargo_calls(mode)
+                .iter()
+                .any(|call| call.iter().any(|arg| arg == FULL_GPU_PROFILE)),
+            "{mode:?}"
+        );
+    }
 }

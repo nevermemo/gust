@@ -26,6 +26,7 @@ use std::collections::HashSet;
 
 use proc_macro2::TokenStream;
 use quote::ToTokens;
+use syn::ext::IdentExt as _;
 use syn::visit::{self, Visit};
 
 use super::Why;
@@ -204,6 +205,9 @@ pub(super) const LEDGER: &[Entry] = &[
     // validator refuses each, so the classifier scans only the kernel and relies on those refusals, as for a helper); the
     // receiver is an ordinary place expression the scan walks. Mutation through a shared receiver is GUST-E0333.
     module_method("method", Neutral),
+    // An associated function of an `impl` block, `S::f(..)` (slice m9.a2): the marker `S::f` in `helpers`. Like a method it
+    // takes values and returns a value, holds no resource, barrier or subgroup operation, and may call helpers and methods.
+    module_method("associated", Neutral),
     // ---- callees: the forms of `visit_expr_call` (validate/mod.rs) that accept a call ----
     // A free function declared in the module, which is not a `#[kernel]`. A helper takes value parameters only
     // (`Code::HelperResourceParameter`) and holds no barrier (`Code::BarrierPosition`), so it reaches no resource, no
@@ -341,6 +345,21 @@ pub(super) fn callee_kind(call: &syn::ExprCall, helpers: &HashSet<String>) -> Op
     helpers.contains(&name).then(|| "helper".to_owned())
 }
 
+/// Whether `call` is `S::f(..)` for an associated function `f` of an `impl` of `S` (the marker `S::f` is in `helpers`).
+pub(super) fn is_associated_call(call: &syn::ExprCall, helpers: &HashSet<String>) -> bool {
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return false;
+    };
+    path.qself.is_none()
+        && path.path.leading_colon.is_none()
+        && path.path.segments.len() == 2
+        && helpers.contains(&format!(
+            "{}::{}",
+            path.path.segments[0].ident.unraw(),
+            path.path.segments[1].ident.unraw()
+        ))
+}
+
 /// What the ledger makes of the body of a kernel: the nodes whose kind rules `pixel` out and the nodes whose kind is not
 /// listed at all, in source order. `helpers` are the module's helper functions (`validate::helper_names`).
 pub(super) fn scan(block: &syn::Block, helpers: &HashSet<String>) -> Vec<(Why, TokenStream)> {
@@ -404,6 +423,14 @@ impl<'ast> Visit<'ast> for KindScan<'_> {
             visit::visit_expr_call(self, call);
             return;
         }
+        // An associated function of an `impl` block (`S::f(..)`, `Self::f(..)` cannot stand in a kernel): the marker
+        // `S::f` of `helper_names` decides, as the marker `.name` does for a method.
+        if is_associated_call(call, self.helpers) {
+            if self.check(Class::ModuleMethod, Some("associated"), call) {
+                visit::visit_expr_call(self, call);
+            }
+            return;
+        }
         let kind = callee_kind(call, self.helpers);
         if self.check(Class::Callee, kind.as_deref(), call) {
             visit::visit_expr_call(self, call);
@@ -411,7 +438,7 @@ impl<'ast> Visit<'ast> for KindScan<'_> {
     }
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        let name = call.method.to_string();
+        let name = call.method.unraw().to_string();
         // A name of the module's own methods never is a dialect name (GUST-E0328), so the marker decides first.
         let (class, kind) = if self.helpers.contains(&format!(".{name}")) {
             (Class::ModuleMethod, "method")

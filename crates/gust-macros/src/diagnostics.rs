@@ -102,6 +102,8 @@ codes! {
     PodStructNamedFields = 118 => "GUST-E0118";
     /// A `Workgroup<..>` parameter on a function that is not a kernel.
     WorkgroupParameterOnHelper = 119 => "GUST-E0119";
+    /// A call that can reach its own function again through the module's conservative call graph (recursion).
+    RecursiveCall = 120 => "GUST-E0120";
     /// An `impl` for a type the module does not define, or a blanket `impl`.
     ImplForeignType = 121 => "GUST-E0121";
 
@@ -221,6 +223,8 @@ codes! {
     ReturnInBarrierKernel = 415 => "GUST-E0415";
     /// `break` or `continue` in a loop that contains a barrier.
     JumpInBarrierLoop = 416 => "GUST-E0416";
+    /// A `&mut self` method call in a `for` range bound (the emitted bound pattern evaluates in another order).
+    ForBoundSideEffect = 421 => "GUST-E0421";
 
     // E05xx: Option and Result.
     /// `Option` in a struct field or resource element type.

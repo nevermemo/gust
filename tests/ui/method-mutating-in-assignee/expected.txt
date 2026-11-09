@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: method-mutating-in-assignee/src/main.rs
+line: 20
+message: [GUST-E0421] the place of an assignment calls `.next(..)`

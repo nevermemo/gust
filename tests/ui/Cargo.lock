@@ -202,6 +202,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
+name = "for-bound-mutating"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "futures-core"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -586,6 +593,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "method-mut-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "method-mut-on-rvalue"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "method-mut-on-storage"
 version = "0.0.0"
 dependencies = [
@@ -593,7 +614,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "method-mut-self-not-yet"
+name = "method-mutating-in-assignee"
 version = "0.0.0"
 dependencies = [
  "gust-compute",
@@ -608,6 +629,34 @@ dependencies = [
 
 [[package]]
 name = "method-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "method-recursion-direct"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "method-recursion-mutual"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "method-recursion-through"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "method-self-mut-binding"
 version = "0.0.0"
 dependencies = [
  "gust-compute",

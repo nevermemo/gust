@@ -5700,6 +5700,16 @@ fn methods_golden() {
     );
 }
 
+#[test]
+fn methods_mut_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/methods_mut.rs")).unwrap();
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "methods_mut.slang",
+        &include_str!("../../../../tests/fixtures/methods_mut.slang").replace("\r\n", "\n"),
+    );
+}
+
 const COUNTER_MODULE: &str = "mod m {
     pub struct Counter { pub n: uint }
     impl Counter {
@@ -5739,23 +5749,40 @@ fn a_self_method_is_a_struct_member_and_a_call_is_a_member_call() {
 
 #[test]
 fn x1_a_mutating_method_on_a_storage_element_is_one_e0333() {
-    // The declaration of `bump` is E0116 too, but it is reported last, only when nothing else is wrong.
+    // The declaration of `bump` is accepted since m9.a2; the call on the storage element is the one error.
     let error = translate(COUNTER_MODULE).expect_err("X1");
     crate::diagnostics::testing::assert_codes(&error, &[Code::MutatingMethodOnSharedPlace]);
 }
 
 #[test]
-fn a_mutating_method_is_refused_at_its_declaration_when_nothing_else_is_wrong() {
+fn receivers_are_ref_self_ref_mut_self_and_self_and_not_mut_self_or_a_typed_one() {
     let source = "mod m {
         pub struct Counter { pub n: uint }
         impl Counter { pub fn bump(&mut self) { self.n = self.n + 1u32; } }
         #[kernel]
         pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = 1u32; }
     }";
-    assert_rejected(source, Code::SelfParameter);
-    assert_rejected(&source.replace("&mut self", "self"), Code::SelfParameter);
+    let slang = translate(source).unwrap().replace("\r\n", "\n");
+    assert!(
+        slang.contains("    [mutating] void bump()\n    {\n        this.n = (this.n + uint(1));"),
+        "{slang}"
+    );
+    // By value: a plain member, which reads its copy.
+    let by_value = translate(&source.replace(
+        "&mut self) { self.n = self.n + 1u32; }",
+        "self) -> uint { self.n }",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(by_value.contains("    uint bump()\n"), "{by_value}");
+    assert!(!by_value.contains("[mutating]"), "{by_value}");
+    // `mut self` and a typed receiver stay E0116.
     assert_rejected(
         &source.replace("&mut self", "mut self"),
+        Code::SelfParameter,
+    );
+    assert_rejected(
+        &source.replace("&mut self", "self: Box<Self>"),
         Code::SelfParameter,
     );
 }
@@ -5815,19 +5842,11 @@ fn an_impl_for_a_type_the_module_does_not_define_is_e0121() {
 fn impl_shapes_that_are_not_accepted_yet_keep_their_own_codes() {
     for (item, code) in [
         (
-            "impl A { pub fn make() -> uint { 1u32 } }",
-            Code::UnsupportedModuleItem,
-        ),
-        (
             "impl A { const K: uint = 1u32; }",
             Code::UnsupportedModuleItem,
         ),
         (
             "impl Clone for A { fn clone(&self) -> A { *self } }",
-            Code::UnsupportedModuleItem,
-        ),
-        (
-            "impl A { pub fn f(&self) -> uint { 1u32 } } impl A { pub fn g(&self) -> uint { 2u32 } }",
             Code::UnsupportedModuleItem,
         ),
         ("impl<T> A { }", Code::ExternOrGenericFunction),
@@ -5852,12 +5871,12 @@ fn impl_shapes_that_are_not_accepted_yet_keep_their_own_codes() {
             Code::BarrierPosition,
         ),
         (
-            "impl A { pub fn f(&self) -> uint { g() } }",
+            "impl A { pub fn f(&self) -> uint { nowhere() } }",
             Code::UnknownCall,
         ),
         (
-            "impl A { pub fn f(&self) -> uint { self.h() } pub fn h(&self) -> uint { 1u32 } }",
-            Code::UnknownCall,
+            "impl A { pub fn f(&self) -> uint { self.nowhere() } }",
+            Code::UnsupportedMethod,
         ),
     ] {
         let source = format!(
@@ -5988,16 +6007,37 @@ fn a_parameter_or_local_named_this_does_not_shadow_the_receiver() {
 }
 
 #[test]
-fn self_in_a_type_or_a_struct_literal_is_not_accepted_yet() {
-    for body in [
-        "pub fn again(&self) -> Self { Circle { r: self.r } }",
-        "pub fn again(&self) -> Circle { let c: Self = Circle { r: self.r }; c }",
-        "pub fn again(&self) -> Circle { Self { r: self.r } }",
+fn self_is_the_struct_of_the_impl_in_types_literals_and_associated_calls_and_nowhere_else() {
+    let source = translate(
+        "mod m {
+            pub struct Circle { pub r: f32 }
+            impl Circle {
+                pub fn unit() -> Self { let c = Self { r: 1.0f32 }; c }
+                pub fn again(&self) -> Self { let c: Self = Self { r: self.r }; c }
+                pub fn twin(&self) -> Self { let d = Self::unit(); d }
+            }
+            #[kernel]
+            pub fn run(id: SV_DispatchThreadID, items: StructuredBuffer<Circle>, mut out: RWStructuredBuffer<f32>) {
+                out[id.x] = items[id.x].twin().r + Circle::unit().r;
+            }
+        }",
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(source.contains("static Circle unit()"), "{source}");
+    assert!(source.contains("Circle again()"), "{source}");
+    assert!(source.contains("var d = Circle.unit();"), "{source}");
+    assert!(!source.contains("Self"), "{source}");
+    // Outside an `impl`, and as any other path, it has no lowering.
+    for item in [
+        "fn free() -> Self { Circle { r: 1.0f32 } }",
+        "impl Circle { pub fn k(&self) -> f32 { Self::K } }",
+        "impl Circle { pub fn k(&self) -> f32 { let f = Self::unit; 1.0f32 } pub fn unit() -> Circle { Circle { r: 1.0f32 } } }",
     ] {
         let source = format!(
-            "mod m {{ pub struct Circle {{ pub r: f32 }} impl Circle {{ {body} }} #[kernel] pub fn run(id: SV_DispatchThreadID) {{}} }}"
+            "mod m {{ pub struct Circle {{ pub r: f32 }} {item} #[kernel] pub fn run(id: SV_DispatchThreadID) {{}} }}"
         );
-        assert_rejected(&source, Code::UnsupportedModuleItem);
+        assert!(translate(&source).is_err(), "{source}");
     }
 }
 
@@ -6055,4 +6095,235 @@ fn raw_identifiers_name_the_same_struct_and_method() {
     .replace("\r\n", "\n");
     assert!(source.contains("float area()"), "{source}");
     assert!(source.contains("items[id.x].area()"), "{source}");
+}
+
+/// A kernel that stores a value computed by the call in `$body` (slice m9.a2 tests).
+fn with_kernel(items: &str, body: &str) -> String {
+    format!(
+        "mod m {{ {items} #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {{ {body} }} }}"
+    )
+}
+
+#[test]
+fn recursion_is_gust_e0120_direct_mutual_through_a_method_and_by_name() {
+    // Direct, mutual, through a method, a helper that reaches itself by a method, and by name (D162).
+    let cases = [
+        "fn f(n: u32) -> u32 { f(n) }",
+        "fn a(n: u32) -> u32 { b(n) } fn b(n: u32) -> u32 { a(n) }",
+        "pub struct S { pub n: u32 } impl S { fn go(&self) -> u32 { self.go() } }",
+        "pub struct S { pub n: u32 } impl S { fn go(&self) -> u32 { Self::again(self.n) } fn again(n: u32) -> u32 { S::again(n) } }",
+        "pub struct S { pub n: u32 } impl S { fn go(&self) -> u32 { h(self.n) } } fn h(n: u32) -> u32 { let s = S { n: n }; s.go() }",
+        // By name: `x.go()` is an edge to every method named `go`, `S::go` included, so this is a cycle that Rust does not have (D162).
+        "pub struct S { pub n: u32 } pub struct T { pub n: u32 } \
+         impl S { fn go(&self) -> u32 { let t = T { n: self.n }; t.go() } } \
+         impl T { fn go(&self) -> u32 { self.n } }",
+    ];
+    for items in cases {
+        let source = with_kernel(items, "out[id.x] = id.x;");
+        let outcome = translate(&source);
+        let error = outcome.expect_err(&source);
+        assert_code_for(&error, Code::RecursiveCall, &source);
+    }
+    let source = with_kernel(
+        "pub struct S { pub n: u32 } pub struct T { pub n: u32 } \
+         impl S { fn go(&self) -> u32 { let t = T { n: self.n }; t.go() } } \
+         impl T { fn go(&self) -> u32 { let s = S { n: self.n }; s.go() } }",
+        "out[id.x] = id.x;",
+    );
+    assert_rejected(&source, Code::RecursiveCall);
+    // A graph without a cycle is accepted: a diamond.
+    let source = with_kernel(
+        "fn a(n: u32) -> u32 { b(n) + c(n) } fn b(n: u32) -> u32 { d(n) } fn c(n: u32) -> u32 { d(n) } fn d(n: u32) -> u32 { n }",
+        "out[id.x] = a(id.x);",
+    );
+    assert!(translate(&source).is_ok(), "{source}");
+}
+
+#[test]
+fn a_mutating_call_in_a_for_bound_is_gust_e0421_and_a_read_is_not() {
+    let items = "pub struct C { pub n: u32 } impl C { fn next(&mut self) -> u32 { self.n = self.n + 1u32; self.n } fn peek(&self) -> u32 { self.n } }";
+    for body in [
+        "let mut c = C { n: 0u32 }; for i in 0u32..c.next() { out[i] = i; }",
+        "let mut c = C { n: 0u32 }; for i in c.next()..4u32 { out[i] = i; }",
+    ] {
+        assert_rejected(&with_kernel(items, body), Code::ForBoundSideEffect);
+    }
+    let body = "let c = C { n: 3u32 }; for i in 0u32..c.peek() { out[i] = i; }";
+    assert!(translate(&with_kernel(items, body)).is_ok());
+}
+
+#[test]
+fn a_mutating_call_needs_a_local_place_and_a_value_parameter_or_an_rvalue_is_gust_e0333() {
+    let items = "pub struct C { pub n: u32 } impl C { fn bump(&mut self) { self.n = self.n + 1u32; } } \
+                 fn make() -> C { let c = C { n: 0u32 }; c }";
+    assert_rejected(
+        &with_kernel(items, "make().bump();"),
+        Code::MutatingMethodOnSharedPlace,
+    );
+    assert_rejected(
+        &with_kernel(
+            "pub struct C { pub n: u32 } impl C { fn bump(&mut self) { self.n = self.n + 1u32; } } fn by_value(c: C) -> u32 { c.bump(); c.n }",
+            "out[id.x] = 0u32;",
+        ),
+        Code::MutatingMethodOnSharedPlace,
+    );
+    let ok = "let mut c = C { n: 0u32 }; c.bump(); out[id.x] = c.n;";
+    translate(&with_kernel(items, ok)).unwrap();
+}
+
+#[test]
+fn a_helper_named_like_a_method_or_like_a_field_of_the_owner_is_gust_e0328() {
+    let source = with_kernel(
+        "pub struct S { pub n: u32 } impl S { fn area(&self) -> u32 { self.n } } fn area(n: u32) -> u32 { n }",
+        "out[id.x] = id.x;",
+    );
+    assert_rejected(&source, Code::MethodNameClash);
+    let source = with_kernel(
+        "pub struct S { pub total: u32 } impl S { fn go(&self) -> u32 { total(self.total) } } fn total(n: u32) -> u32 { n }",
+        "out[id.x] = id.x;",
+    );
+    assert_rejected(&source, Code::MethodNameClash);
+}
+
+#[test]
+fn several_impl_blocks_and_the_self_path_form_are_accepted_and_an_impl_attribute_is_not() {
+    let source = with_kernel(
+        "pub struct S { pub n: u32 } impl S { fn one(&self) -> u32 { self.n } } impl self::S { fn two(&self) -> u32 { self.one() + 1u32 } }",
+        "let s = S { n: id.x }; out[id.x] = s.two();",
+    );
+    let text = translate(&source).unwrap();
+    assert!(
+        text.contains("uint one()") && text.contains("uint two()"),
+        "{text}"
+    );
+    let source = with_kernel(
+        "pub struct S { pub n: u32 } #[inline] impl S { fn one(&self) -> u32 { self.n } }",
+        "out[id.x] = id.x;",
+    );
+    assert_rejected(&source, Code::UnsupportedAttribute);
+}
+
+#[test]
+fn associated_calls_resolve_by_path_and_a_receiver_function_by_path_is_not_accepted() {
+    let items = "pub struct S { pub n: u32 } impl S { fn make(n: u32) -> S { let s = S { n: n }; s } fn get(&self) -> u32 { self.n } }";
+    let ok = with_kernel(items, "let s = S::make(id.x); out[id.x] = s.get();");
+    let text = translate(&ok).unwrap().replace("\r\n", "\n");
+    assert!(text.contains("static S "), "{text}");
+    assert_rejected(
+        &with_kernel(items, "let s = S::make(1u32); out[id.x] = S::get(s);"),
+        Code::UnknownCall,
+    );
+    assert_rejected(
+        &with_kernel(items, "out[id.x] = S::nowhere(1u32);"),
+        Code::UnknownCall,
+    );
+}
+
+#[test]
+fn a_method_cannot_open_a_barrier_or_call_a_kernel() {
+    let source = with_kernel(
+        "pub struct S { pub n: u32 } impl S { fn sync(&self) -> u32 { workgroup_barrier(); self.n } }",
+        "out[id.x] = id.x;",
+    );
+    assert_rejected(&source, Code::BarrierPosition);
+    let source = "mod m { pub struct S { pub n: u32 } impl S { fn go(&self) -> u32 { run2(self.n) } } \
+        #[kernel] pub fn run2(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = id.x; } \
+        #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = id.x; } }";
+    assert!(translate(source).is_err());
+}
+
+const ORDER_ITEMS: &str = "pub struct C { pub n: u32 } \
+    impl C { fn next(&mut self) -> u32 { self.n = self.n + 1u32; self.n } fn bump(&mut self) -> u32 { self.n = self.n + 1u32; 2u32 } }";
+
+#[test]
+fn a_mutating_call_in_an_assignee_or_a_matrix_mul_assign_value_is_gust_e0421() {
+    // Review m9.a2 M1: Rust evaluates the value before the place, Slang evaluates a call in the place first.
+    for body in [
+        "let mut c = C { n: 5u32 }; out[c.next()] = c.next();",
+        "let mut d = C { n: 5u32 }; out[d.bump()] = d.n;",
+        "let mut c = C { n: 5u32 }; out[c.next()] += c.next();",
+        "let mut d = C { n: 5u32 }; out[d.next()] /= d.next();",
+        "let mut c = C { n: 1u32 }; out[c.n] /= c.next();",
+        "let mut c = C { n: 1u32 }; out[c.n] %= c.next();",
+        "let mut c = C { n: 1u32 }; out[c.n] ^= c.next();",
+        // The value of `*=` in a module that names a matrix (the `__gust_mul` path).
+        "let m = Mat4::IDENTITY; let mut c = C { n: 5u32 }; c.n *= c.bump();",
+    ] {
+        assert_rejected(&with_kernel(ORDER_ITEMS, body), Code::ForBoundSideEffect);
+    }
+    // What already matches Rust stays accepted.
+    for body in [
+        "let mut c = C { n: 5u32 }; out[c.n] = c.next();",
+        "let mut c = C { n: 5u32 }; c.n += c.bump();",
+        "let mut e = C { n: 5u32 }; e.n /= e.bump();",
+        // Without a matrix in the module `*=` is the plain operator.
+        "let mut c = C { n: 5u32 }; c.n *= c.bump();",
+    ] {
+        let source = with_kernel(ORDER_ITEMS, body);
+        translate(&source).unwrap_or_else(|error| panic!("{body}: {error}"));
+    }
+}
+
+#[test]
+fn a_mutating_call_in_the_start_bound_that_the_end_call_changes_is_gust_e0421() {
+    // Review m9.a2 S1: Rust reads `c.n` first, the emitted loop runs the end bound first, so the start differs.
+    let source = with_kernel(
+        ORDER_ITEMS,
+        "let mut c = C { n: 1u32 }; for i in c.n..c.next() { out[id.x] = i; }",
+    );
+    assert_rejected(&source, Code::ForBoundSideEffect);
+}
+
+#[test]
+fn self_as_a_value_in_a_mut_self_method_is_gust_e0116_and_in_the_other_receivers_it_is_not() {
+    // Review m9.a2 M2: `let c = self;` binds the reference in Rust and copies in Slang.
+    for method in [
+        "fn set(&mut self) { let c = self; c.n = 9u32; }",
+        "fn set(&mut self) { let c = self; c.bump(); }",
+    ] {
+        let items = format!(
+            "pub struct C {{ pub n: u32 }} impl C {{ fn bump(&mut self) {{ self.n = self.n + 1u32; }} {method} }}"
+        );
+        assert_rejected(
+            &with_kernel(&items, "out[id.x] = id.x;"),
+            Code::SelfParameter,
+        );
+    }
+    // A by-value `self` and a `&self` copy in both languages: accepted.
+    let items = "pub struct C { pub n: u32 } impl C { \
+        fn with(self, n: u32) -> C { let mut c = self; c.n = n; c } \
+        fn peek(&self) -> u32 { let c = self; c.n } \
+        fn keep(&mut self) -> u32 { (self).n = (self).n + 1u32; (self).n } }";
+    let source = with_kernel(
+        items,
+        "let c = C { n: 1u32 }; let d = c.with(7u32); out[id.x] = d.n + c.peek();",
+    );
+    translate(&source).unwrap();
+}
+
+#[test]
+fn an_impl_attribute_other_than_doc_and_lints_is_gust_e0115() {
+    for attribute in ["#[cfg(test)]", "#[derive(Clone)]", "#[kernel]", "#[inline]"] {
+        let source = with_kernel(
+            &format!(
+                "pub struct S {{ pub n: u32 }} {attribute} impl S {{ fn one(&self) -> u32 {{ self.n }} }}"
+            ),
+            "out[id.x] = id.x;",
+        );
+        assert_rejected(&source, Code::UnsupportedAttribute);
+    }
+    let source = with_kernel(
+        "pub struct S { pub n: u32 } #[allow(dead_code)] impl S { fn one(&self) -> u32 { self.n } }",
+        "out[id.x] = id.x;",
+    );
+    translate(&source).unwrap();
+}
+
+#[test]
+fn a_raw_helper_name_clashes_with_a_method_of_the_same_name() {
+    let source = with_kernel(
+        "pub struct S { pub n: u32 } impl S { fn area(&self) -> u32 { self.n } } fn r#area(n: u32) -> u32 { n }",
+        "out[id.x] = id.x;",
+    );
+    assert_rejected(&source, Code::MethodNameClash);
 }

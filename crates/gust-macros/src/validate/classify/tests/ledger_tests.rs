@@ -833,7 +833,7 @@ fn a_call_of_a_method_of_the_module_is_one_listed_neutral_kind_and_keeps_pixel()
         .filter(|entry| entry.class == Class::ModuleMethod)
         .map(|entry| entry.kind)
         .collect();
-    assert_eq!(listed, ["method"], "{FIX}");
+    assert_eq!(listed, ["method", "associated"], "{FIX}");
     assert_eq!(
         verdict(METHOD_PROBE),
         Accepted,
@@ -867,6 +867,43 @@ fn a_call_of_a_method_of_the_module_is_one_listed_neutral_kind_and_keeps_pixel()
             .exclusions
             .iter()
             .any(|exclusion| exclusion.why == Why::Unrecognised),
+        "{:?}",
+        classification.exclusions
+    );
+}
+
+/// A module with an associated function (no receiver) of a struct and a kernel that calls it by path (slice m9.a2).
+const ASSOCIATED_PROBE: &str = "mod m { pub struct P { pub x: f32 } \
+    impl P { pub fn unit() -> P { let p = P { x: 1.0f32 }; p } } \
+    #[kernel] pub fn k(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) { \
+    let p = P::unit(); out[id.x] = p.x; } }";
+
+#[test]
+fn a_call_of_an_associated_function_is_one_listed_neutral_kind_and_keeps_pixel() {
+    // D133 (slice m9.a2): `Struct::name(..)` is found through the `Struct::name` marker of `helper_names`.
+    assert!(matches!(
+        kinds::lookup(Class::ModuleMethod, "associated").map(|entry| entry.handling),
+        Some(Handling::Neutral)
+    ));
+    assert_eq!(
+        verdict(ASSOCIATED_PROBE),
+        Accepted,
+        "the validator and the emitter now refuse an associated call; {FIX}"
+    );
+    let module = module(ASSOCIATED_PROBE);
+    let helpers = crate::validate::helper_names(&module);
+    assert!(helpers.contains("P::unit"), "{helpers:?}");
+    let classification = classification_of_module(&module);
+    assert!(
+        !classification
+            .exclusions
+            .iter()
+            .any(|exclusion| exclusion.why == Why::Unrecognised),
+        "{:?}",
+        classification.exclusions
+    );
+    assert!(
+        classification.allows(Shape::Pixel),
         "{:?}",
         classification.exclusions
     );

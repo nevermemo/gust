@@ -193,6 +193,10 @@ pub(crate) const SUBGROUP_GOLDEN_SPIRV: [&str; 12] = [
 pub(crate) const METHODS_GOLDEN_STEMS: [&str; 1] = ["methods"];
 pub(crate) const METHODS_GOLDEN_SPIRV: [&str; 1] = ["methods__run.spv"];
 
+/// The golden of the mutating-methods fixture (m9.a2): one kernel, "methods_mut__run.spv".
+pub(crate) const METHODS_MUT_GOLDEN_STEMS: [&str; 1] = ["methods_mut"];
+pub(crate) const METHODS_MUT_GOLDEN_SPIRV: [&str; 1] = ["methods_mut__run.spv"];
+
 pub(crate) const WORKGROUP_GOLDEN_STEMS: [&str; 1] = ["workgroup"];
 pub(crate) const WORKGROUP_GOLDEN_SPIRV: [&str; 2] =
     ["workgroup__block_sum.spv", "workgroup__local_ids.spv"];
@@ -271,7 +275,7 @@ pub(crate) const COMPACT_GOLDEN_SPIRV: [&str; 5] = [
 
 /// Every golden set `verify` exports and validates after the examples' SPIR-V: the area (the directory under the
 /// target directory's `golden-spirv`), the fixture stems and the expected file names.
-pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 14] = [
+pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 15] = [
     ("vectors", &VECTOR_GOLDEN_STEMS, &VECTOR_GOLDEN_SPIRV),
     ("uniforms", &UNIFORM_GOLDEN_STEMS, &UNIFORM_GOLDEN_SPIRV),
     ("map", &MAP_GOLDEN_STEMS, &MAP_GOLDEN_SPIRV),
@@ -290,6 +294,11 @@ pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 14] = [
     ("variant", &VARIANT_GOLDEN_STEMS, &VARIANT_GOLDEN_SPIRV),
     ("subgroup", &SUBGROUP_GOLDEN_STEMS, &SUBGROUP_GOLDEN_SPIRV),
     ("methods", &METHODS_GOLDEN_STEMS, &METHODS_GOLDEN_SPIRV),
+    (
+        "methods_mut",
+        &METHODS_MUT_GOLDEN_STEMS,
+        &METHODS_MUT_GOLDEN_SPIRV,
+    ),
 ];
 
 /// The cargo calls of `cargo xtask check-cpu` (a step of the Unit suite): the non-ignored,

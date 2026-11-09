@@ -58,6 +58,31 @@ impl Drop for LoweringScope {
     }
 }
 
+thread_local! {
+    /// The Rust name of the struct whose `impl` block is being emitted: `Self` in a method is that struct (slice m9.a2).
+    static SELF_STRUCT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The struct `Self` stands for, while the methods of its `impl` blocks are emitted.
+fn self_struct() -> Option<String> {
+    SELF_STRUCT.with(|cell| cell.borrow().clone())
+}
+
+/// Sets [`SELF_STRUCT`] for a scope and restores the previous value when dropped.
+struct SelfScope(Option<String>);
+
+impl SelfScope {
+    fn enter(name: &str) -> Self {
+        Self(SELF_STRUCT.with(|cell| cell.replace(Some(name.to_owned()))))
+    }
+}
+
+impl Drop for SelfScope {
+    fn drop(&mut self) {
+        SELF_STRUCT.with(|cell| *cell.borrow_mut() = self.0.take());
+    }
+}
+
 /// How often each identifier occurs in the tokens of a module, after raw stripping (`r#Mat4` counts as `Mat4`).
 fn count_identifiers(
     stream: proc_macro2::TokenStream,
@@ -675,16 +700,16 @@ pub(crate) fn emit_kernel_in(
     })
 }
 
-/// The methods of the `impl` blocks of `item`, in source order (slice m9.a1): the validator accepts one inherent block per
-/// struct, and a Slang struct holds its member functions.
+/// The functions of the `impl` blocks of `item`, in source order (slices m9.a1 and m9.a2): the validator accepts any
+/// number of inherent blocks per struct, and a Slang struct holds its member functions.
 fn methods_of<'a>(items: &'a [syn::Item], item: &syn::ItemStruct) -> Vec<&'a syn::ImplItemFn> {
     items
         .iter()
         .filter_map(|candidate| match candidate {
             syn::Item::Impl(block)
                 if block.trait_.is_none()
-                    && matches!(block.self_ty.as_ref(), syn::Type::Path(own)
-                        if own.path.get_ident().is_some_and(|name| name.unraw() == item.ident.unraw())) =>
+                    && crate::validate::impl_self_name(block)
+                        .is_some_and(|name| item.ident.unraw() == name) =>
             {
                 Some(block)
             }
@@ -714,6 +739,8 @@ fn emit_struct(
         let name = emit_ident(field.ident.as_ref().expect("named field"));
         writeln!(output, "    {} {name};", emit_type(&field.ty)?).unwrap();
     }
+    // `Self` in the body of a method is this struct (slice m9.a2).
+    let _self_scope = SelfScope::enter(&item.ident.unraw().to_string());
     for method in methods {
         writeln!(output).unwrap();
         emit_function(output, table, 1, &method.sig, &method.block)?;
@@ -734,7 +761,8 @@ fn emit_helper(
 }
 
 /// A function at `depth` levels of indentation: a helper at 0, a method inside its struct at 1. A receiver is `this` in
-/// Slang and is not a parameter; a `&self` method is a plain member function, which Slang does not let mutate.
+/// Slang and is not a parameter; a `&self` or `self` method is a plain member function, which Slang does not let
+/// mutate, a `&mut self` method is `[mutating]`, and a function without a receiver is `static` (slice m9.a2).
 fn emit_function(
     output: &mut String,
     table: &mut LineTable,
@@ -748,9 +776,19 @@ fn emit_function(
         syn::ReturnType::Default => "void".to_owned(),
         syn::ReturnType::Type(_, ty) => emit_type(ty)?,
     };
+    let qualifier = match signature.inputs.first() {
+        _ if depth == 0 => "",
+        Some(syn::FnArg::Receiver(receiver))
+            if receiver.reference.is_some() && receiver.mutability.is_some() =>
+        {
+            "[mutating] "
+        }
+        Some(syn::FnArg::Receiver(_)) => "",
+        _ => "static ",
+    };
     write!(
         output,
-        "{padding}{return_type} {}(",
+        "{padding}{qualifier}{return_type} {}(",
         emit_ident(&signature.ident)
     )
     .unwrap();
@@ -1288,6 +1326,28 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         syn::Expr::Call(call) if crate::validate::subgroup_operation(call).is_some() => {
             emit_subgroup_call(call)?
         }
+        // An associated function, `S::f(..)` or `Self::f(..)` (slice m9.a2): Slang calls a `static` member as `S.f(..)`.
+        // Both names are renamed like their declarations. The validator admits only paths of two plain segments here.
+        syn::Expr::Call(call) if associated_call_path(call).is_some() => {
+            let (owner, member) = associated_call_path(call).expect("guarded by the match arm");
+            let owner = if owner == "Self" {
+                collisions::emit_name(&self_struct().ok_or_else(|| {
+                    diagnostics::error(
+                        Code::UnknownCall,
+                        call,
+                        "`Self` outside an `impl` block has no lowering",
+                    )
+                })?)
+                .into_owned()
+            } else {
+                collisions::emit_name(&owner).into_owned()
+            };
+            format!(
+                "{owner}.{}({})",
+                collisions::emit_name(&member),
+                emit_list(call.args.iter())?.join(", ")
+            )
+        }
         syn::Expr::Call(call) => format!(
             "{}({})",
             emit_expression(&call.func)?,
@@ -1442,6 +1502,29 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             ));
         }
     })
+}
+
+/// The two names of a call `Owner::member(..)` of two plain segments (`S::f`, `Self::f`), unraw. A math constructor is the
+/// same shape but has its own arm before this one is asked.
+fn associated_call_path(call: &syn::ExprCall) -> Option<(String, String)> {
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return None;
+    };
+    if path.qself.is_some()
+        || path.path.leading_colon.is_some()
+        || path.path.segments.len() != 2
+        || path
+            .path
+            .segments
+            .iter()
+            .any(|segment| !segment.arguments.is_none())
+    {
+        return None;
+    }
+    Some((
+        path.path.segments[0].ident.unraw().to_string(),
+        path.path.segments[1].ident.unraw().to_string(),
+    ))
 }
 
 /// The math type and member of a call to a constructor of `gust::math` (`Vec4::new`, `Mat4::from_cols`, ..).
@@ -2031,6 +2114,10 @@ fn emit_type(ty: &syn::Type) -> syn::Result<String> {
         "Result" => "__GustResult".to_owned(),
         "SV_DispatchThreadID" | "LocalId" | "GroupId" | "SV_GroupThreadID" | "SV_GroupID" => {
             "uint3".to_owned()
+        }
+        // `Self` in an `impl` block is the struct of the block (slice m9.a2).
+        "Self" if self_struct().is_some() => {
+            collisions::emit_name(&self_struct().expect("guarded by the match arm")).into_owned()
         }
         name if math_types::math_type(name).is_some() => math_types::math_type(name)
             .expect("guarded by the match arm")

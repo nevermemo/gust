@@ -102,6 +102,8 @@ codes! {
     PodStructNamedFields = 118 => "GUST-E0118";
     /// A `Workgroup<..>` parameter on a function that is not a kernel.
     WorkgroupParameterOnHelper = 119 => "GUST-E0119";
+    /// An `impl` for a type the module does not define, or a blanket `impl`.
+    ImplForeignType = 121 => "GUST-E0121";
 
     // E02xx: types.
     /// A primitive type outside the 32-bit scalar subset.
@@ -180,6 +182,10 @@ codes! {
     UnsuffixedLiteralLet = 326 => "GUST-E0326";
     /// `workgroup_barrier(..)` with arguments, or anywhere but a statement of its own.
     BarrierForm = 327 => "GUST-E0327";
+    /// A method named like a dialect method, a Slang member keyword or a field of its struct.
+    MethodNameClash = 328 => "GUST-E0328";
+    /// A `&mut self` or by-value `self` method called on a storage, uniform, workgroup or texture place.
+    MutatingMethodOnSharedPlace = 333 => "GUST-E0333";
 
     // E04xx: control flow and loops.
     /// A `loop` expression.

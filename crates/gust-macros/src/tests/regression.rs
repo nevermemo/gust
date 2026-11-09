@@ -5686,3 +5686,372 @@ fn the_messages_for_a_missing_method_and_a_misused_name_fit_the_type() {
     );
     assert!(!sampler.contains(".load("), "{sampler}");
 }
+
+// ---- Methods in `impl` blocks (slice m9.a1, M9 plan 2.1) ----
+
+#[test]
+fn methods_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/methods.rs")).unwrap();
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "methods.slang",
+        &include_str!("../../../../tests/fixtures/methods.slang").replace("\r\n", "\n"),
+    );
+}
+
+const COUNTER_MODULE: &str = "mod m {
+    pub struct Counter { pub n: uint }
+    impl Counter {
+        pub fn bump(&mut self) { self.n = self.n + 1u32; }
+        pub fn read(&self) -> uint { self.n }
+    }
+    #[kernel]
+    pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<Counter>) {
+        if id.x > 0u32 { out[0u32].bump(); }
+    }
+}";
+
+#[test]
+fn a_self_method_is_a_struct_member_and_a_call_is_a_member_call() {
+    let source = translate(
+        "mod m {
+            pub struct Pair { pub a: f32, pub b: f32 }
+            impl Pair {
+                pub fn mix(&self, k: f32) -> f32 { self.a * k + self.b }
+            }
+            #[kernel]
+            pub fn run(id: SV_DispatchThreadID, pairs: StructuredBuffer<Pair>, mut out: RWStructuredBuffer<f32>) {
+                let local = pairs[id.x];
+                out[id.x] = local.mix(2.0f32) + pairs[id.x].mix(3.0f32);
+            }
+        }",
+    )
+    .unwrap();
+    let source = source.replace("\r\n", "\n");
+    assert!(
+        source.contains("struct Pair\n{\n    float a;\n    float b;\n\n    float mix(float k)\n    {\n        return ((this.a * k) + this.b);\n    }\n};"),
+        "{source}"
+    );
+    assert!(source.contains("local.mix(float(2.0))"), "{source}");
+    assert!(source.contains("pairs[id.x].mix(float(3.0))"), "{source}");
+}
+
+#[test]
+fn x1_a_mutating_method_on_a_storage_element_is_one_e0333() {
+    // The declaration of `bump` is E0116 too, but it is reported last, only when nothing else is wrong.
+    let error = translate(COUNTER_MODULE).expect_err("X1");
+    crate::diagnostics::testing::assert_codes(&error, &[Code::MutatingMethodOnSharedPlace]);
+}
+
+#[test]
+fn a_mutating_method_is_refused_at_its_declaration_when_nothing_else_is_wrong() {
+    let source = "mod m {
+        pub struct Counter { pub n: uint }
+        impl Counter { pub fn bump(&mut self) { self.n = self.n + 1u32; } }
+        #[kernel]
+        pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = 1u32; }
+    }";
+    assert_rejected(source, Code::SelfParameter);
+    assert_rejected(&source.replace("&mut self", "self"), Code::SelfParameter);
+    assert_rejected(
+        &source.replace("&mut self", "mut self"),
+        Code::SelfParameter,
+    );
+}
+
+#[test]
+fn a_mutating_method_on_a_workgroup_or_uniform_root_is_e0333() {
+    for (parameters, receiver) in [
+        ("mut scratch: Workgroup<[uint; 4]>", "scratch[0u32]"),
+        ("u: Uniform<Counter>", "u.n"),
+        ("input: StructuredBuffer<Counter>", "input[0u32]"),
+    ] {
+        let source = format!(
+            "mod m {{
+                pub struct Counter {{ pub n: uint }}
+                impl Counter {{ pub fn bump(&mut self) {{ self.n = self.n + 1u32; }} }}
+                #[kernel(workgroup_size(64, 1, 1), cpu = \"unsupported\")]
+                pub fn run(id: SV_DispatchThreadID, {parameters}) {{ {receiver}.bump(); }}
+            }}"
+        );
+        assert_rejected(&source, Code::MutatingMethodOnSharedPlace);
+    }
+}
+
+#[test]
+fn a_shared_place_may_be_the_receiver_of_a_self_method() {
+    // `&self` copies the element (spike P1b), on a buffer element and on a field of one.
+    translate(
+        "mod m {
+            pub struct Inner { pub v: f32 }
+            pub struct Outer { pub inner: Inner }
+            impl Inner { pub fn get_v(&self) -> f32 { self.v } }
+            #[kernel]
+            pub fn run(id: SV_DispatchThreadID, items: StructuredBuffer<Outer>, mut out: RWStructuredBuffer<f32>) {
+                out[id.x] = items[id.x].inner.get_v();
+            }
+        }",
+    )
+    .unwrap();
+}
+
+#[test]
+fn an_impl_for_a_type_the_module_does_not_define_is_e0121() {
+    for item in [
+        "impl Elsewhere { pub fn f(&self) -> uint { 1u32 } }",
+        "impl<T> Anything for T { }",
+        "impl Mat4 { pub fn f(&self) -> uint { 1u32 } }",
+        "impl (uint, uint) { }",
+    ] {
+        let source = format!(
+            "mod m {{ pub struct A {{ pub x: uint }} {item} #[kernel] pub fn run(id: SV_DispatchThreadID) {{}} }}"
+        );
+        assert_rejected(&source, Code::ImplForeignType);
+    }
+}
+
+#[test]
+fn impl_shapes_that_are_not_accepted_yet_keep_their_own_codes() {
+    for (item, code) in [
+        (
+            "impl A { pub fn make() -> uint { 1u32 } }",
+            Code::UnsupportedModuleItem,
+        ),
+        (
+            "impl A { const K: uint = 1u32; }",
+            Code::UnsupportedModuleItem,
+        ),
+        (
+            "impl Clone for A { fn clone(&self) -> A { *self } }",
+            Code::UnsupportedModuleItem,
+        ),
+        (
+            "impl A { pub fn f(&self) -> uint { 1u32 } } impl A { pub fn g(&self) -> uint { 2u32 } }",
+            Code::UnsupportedModuleItem,
+        ),
+        ("impl<T> A { }", Code::ExternOrGenericFunction),
+        (
+            "impl A { pub fn f<T>(&self) -> uint { 1u32 } }",
+            Code::ExternOrGenericFunction,
+        ),
+        (
+            "impl A { pub fn f(self: Box<Self>) -> uint { 1u32 } }",
+            Code::SelfParameter,
+        ),
+        (
+            "impl A { #[kernel] pub fn f(&self) {} }",
+            Code::UnsupportedAttribute,
+        ),
+        (
+            "impl A { pub fn f(&self, b: StructuredBuffer<uint>) -> uint { 1u32 } }",
+            Code::HelperResourceParameter,
+        ),
+        (
+            "impl A { pub fn f(&self) { workgroup_barrier(); } }",
+            Code::BarrierPosition,
+        ),
+        (
+            "impl A { pub fn f(&self) -> uint { g() } }",
+            Code::UnknownCall,
+        ),
+        (
+            "impl A { pub fn f(&self) -> uint { self.h() } pub fn h(&self) -> uint { 1u32 } }",
+            Code::UnknownCall,
+        ),
+    ] {
+        let source = format!(
+            "mod m {{ pub struct A {{ pub x: uint }} fn g() -> uint {{ 1u32 }} {item} #[kernel] pub fn run(id: SV_DispatchThreadID) {{}} }}"
+        );
+        assert_rejected(&source, code);
+    }
+}
+
+#[test]
+fn a_method_cannot_take_the_name_of_a_dialect_method_a_slang_member_keyword_or_a_field() {
+    let mut names: Vec<String> = [
+        "global_id",
+        "len",
+        "is_some",
+        "is_none",
+        "is_ok",
+        "is_err",
+        "unwrap_or",
+        "unwrap",
+        "expect",
+        "wrapping_add",
+        "wrapping_sub",
+        "wrapping_mul",
+        "wrapping_neg",
+        "dot",
+        "mul_vec2",
+        "mul_vec3",
+        "mul_vec4",
+        "mul_mat2",
+        "mul_mat3",
+        "mul_mat4",
+        "transpose",
+        "load",
+        "store",
+        "sample",
+        "width",
+        "height",
+    ]
+    .iter()
+    .map(|name| (*name).to_owned())
+    .collect();
+    names.extend(
+        crate::validate::SLANG_MEMBER_KEYWORDS
+            .iter()
+            .map(|name| (*name).to_owned()),
+    );
+    // Every swizzle: two to four of x, y, z, w.
+    let letters = ['x', 'y', 'z', 'w'];
+    for length in 2..=4_u32 {
+        for index in 0..4_usize.pow(length) {
+            let name: String = (0..length)
+                .map(|place| letters[(index / 4_usize.pow(place)) % 4])
+                .collect();
+            names.push(name);
+        }
+    }
+    assert_eq!(names.len(), 26 + 5 + 16 + 64 + 256);
+    for name in &names {
+        let source = format!(
+            "mod m {{ pub struct A {{ pub v: uint }} impl A {{ pub fn {name}(&self) -> uint {{ 1u32 }} }} #[kernel] pub fn run(id: SV_DispatchThreadID) {{}} }}"
+        );
+        assert_rejected(&source, Code::MethodNameClash);
+    }
+    // A method named like a field of its own struct, the getter pattern.
+    assert_rejected(
+        "mod m { pub struct A { pub v: uint } impl A { pub fn v(&self) -> uint { self.v } } #[kernel] pub fn run(id: SV_DispatchThreadID) {} }",
+        Code::MethodNameClash,
+    );
+    // A field of another struct is no clash, and an ordinary name is none.
+    translate(
+        "mod m { pub struct A { pub v: uint } pub struct B { pub w: uint } impl B { pub fn v(&self) -> uint { self.w } } #[kernel] pub fn run(id: SV_DispatchThreadID) {} }",
+    )
+    .unwrap();
+}
+
+#[test]
+fn the_module_item_message_names_impl_blocks() {
+    let error = translate(
+        "mod m { const K: uint = 1u32; #[kernel] pub fn run(id: SV_DispatchThreadID) {} }",
+    )
+    .expect_err("const");
+    assert_code(&error, Code::UnsupportedModuleItem);
+    assert!(error.to_string().contains("`impl` blocks"), "{error}");
+}
+
+#[test]
+fn a_helper_may_call_a_method() {
+    translate(
+        "mod m {
+            pub struct A { pub x: uint }
+            impl A { pub fn twice(&self) -> uint { self.x * 2u32 } }
+            fn via(a: A) -> uint { a.twice() }
+            #[kernel]
+            pub fn run(id: SV_DispatchThreadID, items: StructuredBuffer<A>, mut out: RWStructuredBuffer<uint>) {
+                out[id.x] = via(items[id.x]);
+            }
+        }",
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_parameter_or_local_named_this_does_not_shadow_the_receiver() {
+    // `this` is how a receiver is written in Slang; a user `this` is renamed like every name of the collision table
+    // (review r1, M1): `(this.a - this.a)` would compile and give 0.0 on the GPU.
+    let source = translate(
+        "mod m {
+            pub struct S { pub a: f32 }
+            impl S {
+                pub fn diff(&self, this: S) -> f32 { self.a - this.a }
+                pub fn other(&self, o: S) -> f32 { let this = o; self.a - this.a }
+            }
+            #[kernel]
+            pub fn run(id: SV_DispatchThreadID, items: StructuredBuffer<S>, mut out: RWStructuredBuffer<f32>) {
+                out[id.x] = items[id.x].diff(items[0u32]) + items[id.x].other(items[0u32]);
+            }
+        }",
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(source.contains("float diff(S __gust_r_this)"), "{source}");
+    assert!(
+        source.contains("return (this.a - __gust_r_this.a);"),
+        "{source}"
+    );
+    assert!(source.contains("var __gust_r_this = o;"), "{source}");
+}
+
+#[test]
+fn self_in_a_type_or_a_struct_literal_is_not_accepted_yet() {
+    for body in [
+        "pub fn again(&self) -> Self { Circle { r: self.r } }",
+        "pub fn again(&self) -> Circle { let c: Self = Circle { r: self.r }; c }",
+        "pub fn again(&self) -> Circle { Self { r: self.r } }",
+    ] {
+        let source = format!(
+            "mod m {{ pub struct Circle {{ pub r: f32 }} impl Circle {{ {body} }} #[kernel] pub fn run(id: SV_DispatchThreadID) {{}} }}"
+        );
+        assert_rejected(&source, Code::UnsupportedModuleItem);
+    }
+}
+
+#[test]
+fn a_dereference_is_an_unsupported_expression() {
+    for body in [
+        "pub fn copy(&self) -> Circle { *self }",
+        "pub fn value(&self) -> f32 { (*self).r }",
+    ] {
+        let source = format!(
+            "mod m {{ pub struct Circle {{ pub r: f32 }} impl Circle {{ {body} }} #[kernel] pub fn run(id: SV_DispatchThreadID) {{}} }}"
+        );
+        assert_rejected(&source, Code::UnsupportedExpression);
+    }
+    assert_rejected(
+        "mod m { #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { let x = 1u32; out[id.x] = *x; } }",
+        Code::UnsupportedExpression,
+    );
+}
+
+#[test]
+fn a_texture_receiver_is_e0735_and_an_invocation_id_receiver_is_e0333() {
+    let source = |parameters: &str, body: &str| {
+        format!(
+            "mod m {{ pub struct Counter {{ pub n: uint }}
+             impl Counter {{ pub fn bump(&mut self) {{ self.n = self.n + 1u32; }} }}
+             #[kernel(workgroup_size(64, 1, 1))] pub fn run(id: SV_DispatchThreadID, {parameters}) {{ {body} }} }}"
+        )
+    };
+    assert_rejected(
+        &source("image: Texture2D<Vec4>", "image.bump();"),
+        Code::TextureMethod,
+    );
+    assert_rejected(
+        &source("lid: LocalId", "lid.bump();"),
+        Code::MutatingMethodOnSharedPlace,
+    );
+    let error = translate(&source("lid: LocalId", "lid.bump();")).expect_err("lid");
+    assert!(!error.to_string().contains("texture"), "{error}");
+}
+
+#[test]
+fn raw_identifiers_name_the_same_struct_and_method() {
+    let source = translate(
+        "mod m {
+            pub struct Circle { pub r: f32 }
+            impl r#Circle { pub fn r#area(&self) -> f32 { self.r } }
+            #[kernel]
+            pub fn run(id: SV_DispatchThreadID, items: StructuredBuffer<Circle>, mut out: RWStructuredBuffer<f32>) {
+                out[id.x] = items[id.x].r#area();
+            }
+        }",
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(source.contains("float area()"), "{source}");
+    assert!(source.contains("items[id.x].area()"), "{source}");
+}

@@ -43,6 +43,8 @@ pub(super) enum Class {
     Pattern,
     /// A built-in method of the dialect, by name.
     Method,
+    /// A call of a method of an `impl` block of the module, by the marker `.name` in `helpers` (slice m9.a1).
+    ModuleMethod,
     /// The form of the callee of a call (`Expr::Call`): a helper, a built-in by name, or a math-type constructor.
     Callee,
 }
@@ -88,6 +90,10 @@ const fn method(kind: &'static str, handling: Handling) -> Entry {
 
 const fn callee(kind: &'static str, handling: Handling) -> Entry {
     entry(Class::Callee, kind, handling)
+}
+
+const fn module_method(kind: &'static str, handling: Handling) -> Entry {
+    entry(Class::ModuleMethod, kind, handling)
 }
 
 use Handling::{Excluded, Inspected, Neutral};
@@ -193,6 +199,11 @@ pub(super) const LEDGER: &[Entry] = &[
     method("sample", Neutral),
     method("width", Neutral),
     method("height", Neutral),
+    // ---- a method of the module: `recv.name(args)` where an `impl` block declares `name` (D133, slice m9.a1) ----
+    // The method has value parameters and a value result and holds no barrier, subgroup operation, resource or call (the
+    // validator refuses each, so the classifier scans only the kernel and relies on those refusals, as for a helper); the
+    // receiver is an ordinary place expression the scan walks. Mutation through a shared receiver is GUST-E0333.
+    module_method("method", Neutral),
     // ---- callees: the forms of `visit_expr_call` (validate/mod.rs) that accept a call ----
     // A free function declared in the module, which is not a `#[kernel]`. A helper takes value parameters only
     // (`Code::HelperResourceParameter`) and holds no barrier (`Code::BarrierPosition`), so it reaches no resource, no
@@ -401,7 +412,13 @@ impl<'ast> Visit<'ast> for KindScan<'_> {
 
     fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
         let name = call.method.to_string();
-        if self.check(Class::Method, Some(method_kind(&name)), call) {
+        // A name of the module's own methods never is a dialect name (GUST-E0328), so the marker decides first.
+        let (class, kind) = if self.helpers.contains(&format!(".{name}")) {
+            (Class::ModuleMethod, "method")
+        } else {
+            (Class::Method, method_kind(&name))
+        };
+        if self.check(class, Some(kind), call) {
             visit::visit_expr_method_call(self, call);
         }
     }

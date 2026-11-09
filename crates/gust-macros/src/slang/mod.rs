@@ -508,7 +508,7 @@ pub(crate) fn emit_kernel_in(
 
     for item in items {
         if let syn::Item::Struct(item) = item {
-            emit_struct(&mut output, &mut table, item)?;
+            emit_struct(&mut output, &mut table, item, &methods_of(items, item))?;
         }
     }
 
@@ -675,10 +675,34 @@ pub(crate) fn emit_kernel_in(
     })
 }
 
+/// The methods of the `impl` blocks of `item`, in source order (slice m9.a1): the validator accepts one inherent block per
+/// struct, and a Slang struct holds its member functions.
+fn methods_of<'a>(items: &'a [syn::Item], item: &syn::ItemStruct) -> Vec<&'a syn::ImplItemFn> {
+    items
+        .iter()
+        .filter_map(|candidate| match candidate {
+            syn::Item::Impl(block)
+                if block.trait_.is_none()
+                    && matches!(block.self_ty.as_ref(), syn::Type::Path(own)
+                        if own.path.get_ident().is_some_and(|name| name.unraw() == item.ident.unraw())) =>
+            {
+                Some(block)
+            }
+            _ => None,
+        })
+        .flat_map(|block| &block.items)
+        .filter_map(|inner| match inner {
+            syn::ImplItem::Fn(method) => Some(method),
+            _ => None,
+        })
+        .collect()
+}
+
 fn emit_struct(
     output: &mut String,
     table: &mut LineTable,
     item: &syn::ItemStruct,
+    methods: &[&syn::ImplItemFn],
 ) -> syn::Result<()> {
     let record = table.begin(output, item.ident.span());
     writeln!(output, "struct {}", emit_ident(&item.ident)).unwrap();
@@ -690,6 +714,10 @@ fn emit_struct(
         let name = emit_ident(field.ident.as_ref().expect("named field"));
         writeln!(output, "    {} {name};", emit_type(&field.ty)?).unwrap();
     }
+    for method in methods {
+        writeln!(output).unwrap();
+        emit_function(output, table, 1, &method.sig, &method.block)?;
+    }
     table.finish_at_next(output, record);
     writeln!(output, "}};\n").unwrap();
     Ok(())
@@ -700,30 +728,55 @@ fn emit_helper(
     table: &mut LineTable,
     function: &syn::ItemFn,
 ) -> syn::Result<()> {
-    let record = table.begin(output, function.sig.ident.span());
-    let return_type = match &function.sig.output {
+    emit_function(output, table, 0, &function.sig, &function.block)?;
+    writeln!(output).unwrap();
+    Ok(())
+}
+
+/// A function at `depth` levels of indentation: a helper at 0, a method inside its struct at 1. A receiver is `this` in
+/// Slang and is not a parameter; a `&self` method is a plain member function, which Slang does not let mutate.
+fn emit_function(
+    output: &mut String,
+    table: &mut LineTable,
+    depth: usize,
+    signature: &syn::Signature,
+    block: &syn::Block,
+) -> syn::Result<()> {
+    let padding = "    ".repeat(depth);
+    let record = table.begin(output, signature.ident.span());
+    let return_type = match &signature.output {
         syn::ReturnType::Default => "void".to_owned(),
         syn::ReturnType::Type(_, ty) => emit_type(ty)?,
     };
-    write!(output, "{return_type} {}(", emit_ident(&function.sig.ident)).unwrap();
-    for (index, argument) in function.sig.inputs.iter().enumerate() {
-        if index != 0 {
+    write!(
+        output,
+        "{padding}{return_type} {}(",
+        emit_ident(&signature.ident)
+    )
+    .unwrap();
+    let mut first = true;
+    for argument in &signature.inputs {
+        if depth > 0 && matches!(argument, syn::FnArg::Receiver(_)) {
+            continue;
+        }
+        if !first {
             write!(output, ", ").unwrap();
         }
+        first = false;
         let (name, ty) = typed_argument(argument)?;
         write!(output, "{} {}", emit_type(ty)?, emit_ident(name)).unwrap();
     }
     writeln!(output, ")").unwrap();
-    writeln!(output, "{{").unwrap();
+    writeln!(output, "{padding}{{").unwrap();
     emit_statements(
         output,
         table,
-        &function.block.stmts,
-        1,
+        &block.stmts,
+        depth + 1,
         return_type != "void",
     )?;
     table.finish_at_next(output, record);
-    writeln!(output, "}}\n").unwrap();
+    writeln!(output, "{padding}}}").unwrap();
     Ok(())
 }
 
@@ -1317,8 +1370,21 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
                 emit_expression(&call.args[0])?
             )
         }
+        // Every other method call is a method of the module: the validator refuses a name that is neither a dialect method
+        // nor one (GUST-E0305, E0325), and a method cannot take a dialect name (GUST-E0328). Slang resolves the receiver's
+        // type, so the call is the member call as written (D156).
+        syn::Expr::MethodCall(call) => format!(
+            "{}.{}({})",
+            emit_expression(&call.receiver)?,
+            emit_ident(&call.method),
+            emit_list(call.args.iter())?.join(", ")
+        ),
         syn::Expr::Paren(paren) => format!("({})", emit_expression(&paren.expr)?),
         syn::Expr::Path(path) if path.path.is_ident("None") => "none".to_owned(),
+        // The receiver of a method is `this` in Slang (slice m9.a1).
+        syn::Expr::Path(path) if path.qself.is_none() && path.path.is_ident("self") => {
+            "this".to_owned()
+        }
         syn::Expr::Path(path)
             if path.qself.is_none()
                 && matches!(

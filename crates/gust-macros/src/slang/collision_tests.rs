@@ -207,6 +207,7 @@ fn the_class_2_entries_are_the_names_the_emitted_text_uses() {
         "matrix",
         "mul",
         "none",
+        "this",
         "transpose",
         "true",
         "uint",

@@ -13,13 +13,21 @@ use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 //   mean     = (input + 16) / 6     (adds input, 10, then k = 0..3, which sum to 6, so total = input + 16 and
 //                                    count = 6; integer division)                       : 2, 3, 3, 3, 4
 //   looped   = 4                    (`Counter::unit()` has n 0 and step 1; four `bump`s in a loop)
-//   helper   = input + 6            (the helper `drive` makes a counter with step 3 and calls `bump_twice`): 6, 8, 10, 12, 14
+//   helper   = input + 10           (the helper `drive` makes a counter with step 5 and calls `bump_twice`): 10, 12, 14, 16, 18
+//   kept     = input + 2            (`let kept = counter;` after one `bump`, then two more: the copy does not follow): 2, 4, 6, 8, 10
+//   after    = input + 6            (`counter.n` after the by-value `value()` call: the receiver is unchanged)      : 6, 8, 10, 12, 14
+//   shifted  = input + 106          (`shifted(self)` adds 100 to its own copy)                                     : 106, 108, 110, 112, 114
+//   nested   = input + 8            (`wrap.inner.bump()` twice on a field of a local, step 4)                      : 8, 10, 12, 14, 16
 const BUMPED: [u32; 5] = [2, 4, 6, 8, 10];
 const CONSUMED: [u32; 5] = [6, 8, 10, 12, 14];
 const SCALED: [u32; 5] = [18, 24, 30, 36, 42];
 const MEAN: [u32; 5] = [2, 3, 3, 3, 4];
 const LOOPED: u32 = 4;
-const HELPER: [u32; 5] = [6, 8, 10, 12, 14];
+const HELPER: [u32; 5] = [10, 12, 14, 16, 18];
+const KEPT: [u32; 5] = [2, 4, 6, 8, 10];
+const AFTER: [u32; 5] = [6, 8, 10, 12, 14];
+const SHIFTED: [u32; 5] = [106, 108, 110, 112, 114];
+const NESTED: [u32; 5] = [8, 10, 12, 14, 16];
 
 #[test]
 fn mutating_methods_execute_on_gpu_and_on_the_cpu_twin() {
@@ -38,6 +46,10 @@ fn mutating_methods_execute_on_gpu_and_on_the_cpu_twin() {
                 mean: u32::MAX,
                 looped: u32::MAX,
                 helper: u32::MAX,
+                kept: u32::MAX,
+                after: u32::MAX,
+                shifted: u32::MAX,
+                nested: u32::MAX,
             };
             count
         ];
@@ -63,6 +75,10 @@ fn mutating_methods_execute_on_gpu_and_on_the_cpu_twin() {
                 assert_eq!(got[i].mean, MEAN[i % 5], "mean {note}");
                 assert_eq!(got[i].looped, LOOPED, "looped {note}");
                 assert_eq!(got[i].helper, HELPER[i % 5], "helper {note}");
+                assert_eq!(got[i].kept, KEPT[i % 5], "kept {note}");
+                assert_eq!(got[i].after, AFTER[i % 5], "after {note}");
+                assert_eq!(got[i].shifted, SHIFTED[i % 5], "shifted {note}");
+                assert_eq!(got[i].nested, NESTED[i % 5], "nested {note}");
             }
         }
     }
@@ -80,6 +96,7 @@ fn the_mutating_method_fixture_compiles_to_wgsl_with_its_members() {
         "Counter_bump",
         "Counter_bump_twice",
         "Counter_value",
+        "Counter_shifted",
         "Counter_scaled",
         "Counter_unit",
         "Acc_add",
@@ -90,13 +107,19 @@ fn the_mutating_method_fixture_compiles_to_wgsl_with_its_members() {
             "no function `{name}` in the WGSL\n{wgsl}"
         );
     }
-    // `[mutating]` takes the receiver by pointer; a method on `self` by value takes it as a value.
+    // `[mutating]` takes the receiver by pointer; a method on `self` by value takes it as a value. Matched on the
+    // line of the function, without Slang's numbered suffixes.
+    let line_of = |prefix: &str| {
+        wgsl.lines()
+            .find(|line| {
+                line.strip_prefix(prefix)
+                    .is_some_and(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+            })
+            .unwrap_or_else(|| panic!("no `{prefix}` in the WGSL\n{wgsl}"))
+    };
     assert!(
-        wgsl.contains("fn Counter_bump_0( this_0 : ptr<function, Counter_0>)"),
+        line_of("fn Counter_bump_").contains("ptr<function, Counter_0>"),
         "{wgsl}"
     );
-    assert!(
-        wgsl.contains("fn Counter_value_0( this_3 : Counter_0)"),
-        "{wgsl}"
-    );
+    assert!(!line_of("fn Counter_value_").contains("ptr<"), "{wgsl}");
 }

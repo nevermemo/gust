@@ -152,7 +152,7 @@ Decision: D02.
 
 A GPU module holds functions, plain structs and the inherent `impl` blocks of its structs (several blocks for one struct are allowed).
 Reached through `#[gpu]`.
-Rejected: `const`, `static`, `enum`, `trait`, `use`, nested `mod`, type aliases; an `impl` that is an `unsafe impl`, a trait impl (`impl Clone for S`), an associated `const` or an associated type, a `Self` anywhere but inside an `impl` block (inside one it is the struct of the block, in a type, a struct literal or a path such as `Self::make()`), and a path to an associated function that has a receiver (`S::area(c)`; write `c.area()`). A call of an associated function that no struct has (`S::nowhere()`) is GUST-E0302. Methods and associated functions are accepted since M9 slices m9.a1 and m9.a2.
+Rejected: `const`, `static`, `enum`, `trait`, `use`, nested `mod`, type aliases; an `impl` that is an `unsafe impl`, a trait impl (`impl Clone for S`), an associated `const` or an associated type, a `Self` anywhere but inside an `impl` block (inside one it is the struct of the block, in a type, a struct literal or a path such as `Self::make()`). A path call of a function that has a receiver (`S::area(c)`; write `c.area()`) or of an associated function that no struct has (`S::nowhere()`) is GUST-E0302, not this code. Methods and associated functions are accepted since M9 slices m9.a1 and m9.a2.
 Write instead: pass constants as uniform or value parameters, or write them inline.
 Decision: D02, D133 (methods), D154.
 
@@ -259,7 +259,7 @@ An attribute with no proven Rust-to-Slang meaning cannot be silently dropped.
 Allowed attributes: `doc`, `allow`, `warn`, `deny`, `forbid`, `derive` (on structs),
 and `kernel`.
 Reached through `#[gpu]`.
-Rejected: `#[cfg(..)]`, `#[inline]`, `#[must_use]` and every other attribute.
+Rejected: `#[cfg(..)]`, `#[inline]`, `#[must_use]` and every other attribute. On an `impl` block only `doc`, `allow`, `warn`, `deny` and `forbid` are accepted (`#[derive(..)]` and `#[kernel]` are errors in rustc there, `#[cfg(..)]` would let the Slang and the twin disagree about the methods).
 Write instead: remove the attribute.
 Decision: D02.
 
@@ -268,7 +268,7 @@ Decision: D02.
 A free function has no receiver. A method takes `&self`, `&mut self` or `self` (a `&mut self` method is lowered with the Slang attribute `[mutating]` and can be called on a local place only, GUST-E0333 for a storage, uniform, workgroup or invocation-id place). A function of an `impl` block without a receiver is an associated function (`static` in Slang). The receivers `mut self` and the typed forms (`self: Box<Self>`, `self: &Self`) are refused at once, where they stand, with this code.
 Reached through `#[gpu]`.
 Rejected: `fn f(&self) -> u32` outside an `impl`, `impl S { fn bump(mut self) {} }`, `impl S { fn area(self: Box<Self>) {} }`.
-Write instead: `&self` for a method that reads, `&mut self` for a method that changes its receiver, `self` for a method that consumes a copy; no `mut` on the receiver.
+Write instead: `&self` for a method that reads, `&mut self` for a method that changes its receiver, `self` for a method that consumes a copy; no `mut` on the receiver. In a `&mut self` method `self` is used only as the base of a field (`self.n`) or the receiver of a call (`self.bump()`): `let c = self;` binds the reference in Rust and copies in Slang, so it is this code too; write through `self.field` directly (a `self` or `&self` method may copy it, as in Rust).
 Fixture: `tests/ui/method-self-mut-binding` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D02, D154 (M9 plan 2.1).
 
@@ -670,10 +670,10 @@ Decision: D154 (M9 plan 2.1, slice m9.a1).
 
 ### GUST-E0333 mutating method on a shared place
 
-A method that takes `&mut self` or `self` would write through its receiver. On a storage buffer element, a uniform or a workgroup array that write is shared with the other invocations, and no statement of the kernel shows it, so a call whose receiver is rooted in such a parameter is rejected at the call. The validator decides from the first identifier of the receiver place (`out` in `out[i].bump()`), by the method name: a name that a `&mut self` or `self` method of any struct of the module has is a mutating call. A `&self` method may be called on any place, the callee reads a copy of the element (spike M9.s0 P1b). A `&mut self` method is accepted on a `let mut` local (and a field or element of one) only, so the same code covers a receiver that is not a place (`make().bump()`, a literal) and a root that is a by-value parameter (a change to it would be lost in Slang).
+A method that takes `&mut self` or `self` would write through its receiver. On a storage buffer element, a uniform or a workgroup array that write is shared with the other invocations, and no statement of the kernel shows it, so a call whose receiver is rooted in such a parameter is rejected at the call. The validator decides from the first identifier of the receiver place (`out` in `out[i].bump()`), by the method name: a name that a `&mut self` or `self` method of any struct of the module has is a mutating call. A `&self` method may be called on any place, the callee reads a copy of the element (spike M9.s0 P1b). A `&mut self` method is accepted on a `let mut` local (and a field or element of one) only, so the same code covers a receiver that is not a place (`make().bump()`, a literal) and a root that is a by-value parameter (Slang passes it as a read-only value; write `let mut copy = c;` first).
 Reached through `#[gpu]`.
 Rejected: `out[0].bump()` and `out[i].bump()` for a storage parameter `out`, `u.bump()` for a uniform, `scratch[l].bump()` for a workgroup array, when a method `bump` takes `&mut self`; `lid.bump()` and `gid.bump()` (invocation ids) too. A texture receiver (`tex.bump()`) is GUST-E0735 instead, because the texture methods are checked first.
-Write instead: copy the element to a local, call the method on the local and store the result, `let mut c = out[i]; c.bump(); out[i] = c;` once mutating methods are accepted.
+Write instead: copy the element to a local, call the method on the local and store the result, `let mut c = out[i]; c.bump(); out[i] = c;`.
 Fixture: `tests/ui/method-mut-on-storage` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, X1 of spike M9.s0, slice m9.a1).
 
@@ -814,13 +814,18 @@ Fixture: `tests/ui/break-in-barrier-loop`, `tests/ui/continue-in-barrier-loop`, 
 Write instead: run the loop to its end and guard the work in each iteration with `if`.
 Decision: D42 (M7 plan 4.2 rule 2, slice m7.g1).
 
-### GUST-E0421 `for` bound with a mutating method call
+### GUST-E0421 `&mut self` call whose evaluation order differs from Rust's
 
-The emitted Slang loop evaluates the end bound of a range before the start bound (spike M9.s0 P9, measured on the WGSL and the SPIR-V target), where Rust evaluates the start first. A bound that only reads gives the same loop either way, so the dialect refuses the one bound that could tell the difference: a call of a `&mut self` method (or a `self` method) in the start or the end of a `for` range. Reads, helper calls and `&self` methods are fine there.
+A call of a `&mut self` method is refused where the GPU would evaluate it in another order than Rust (a method that only reads, a `self` method and a helper have no effect to reorder). Three places:
+- the start or the end of a `for` range: the emitted Slang loop evaluates the end bound before the start bound (spike M9.s0 P9, measured on the WGSL and the SPIR-V target), where Rust evaluates the start first (`for i in c.n..c.next()`);
+- anywhere in the place (the assignee) of `=` or of a compound assignment: Rust evaluates the assigned value before the place, Slang evaluates a call inside the place first (`out[c.next()] = c.next()` writes another element, `out[d.bump()] = d.n` stores the new value; review m9.a2);
+- the value of `*=` in a module that names `Mat2`, `Mat3` or `Mat4`: it is lowered to `place = __gust_mul(place, value)`, which reads the place before the call and loses the method's write.
+
+Forms that already match Rust stay accepted: `out[c.n] = c.next()`, `c.n += c.bump()`, `e.n /= e.bump()`, a struct literal that holds a call, and `*=` with a call in a module without a matrix.
 Reached through `#[gpu]`.
-Rejected: `for i in 0u32..c.next() { .. }` and `for i in c.next()..c.next() { .. }` when `next` takes `&mut self`.
-Write instead: call the method before the loop and use the value, `let n = c.next(); for i in 0u32..n { .. }`.
-Fixture: `tests/ui/for-bound-mutating` (`cargo xtask check-ui`, `code: none` plus the message).
+Rejected: `for i in 0u32..c.next() { .. }`, `for i in c.n..c.next() { .. }`, `out[c.next()] = v;`, `out[c.next()] += v;`, `c.n *= c.bump();` (with a matrix in the module), when `next` and `bump` take `&mut self`.
+Write instead: call the method before the statement and use the value, `let n = c.next(); for i in 0u32..n { .. }` or `let k = c.next(); out[k] = v;`.
+Fixture: `tests/ui/for-bound-mutating` and `tests/ui/method-mutating-in-assignee` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, spike M9.s0 P9, slice m9.a2).
 
 ## E05xx: Option and Result

@@ -671,9 +671,9 @@ fn unrenamed(kernel: &KernelDescriptor) -> KernelDescriptor {
 /// allowed" is a real compiler error on it.
 fn recursing(kernel: &KernelDescriptor, from: &str, to: &str) -> KernelDescriptor {
     let call = format!("{from}(");
+    let declarations = kernel.slang_source.matches(&format!("uint {call}")).count();
     assert!(
-        kernel.slang_source.contains(&format!("uint {call}"))
-            && kernel.slang_source.contains(&call),
+        declarations == 1 && kernel.slang_source.matches(&call).count() > declarations,
         "`{}` has no call of `{from}` to turn into a recursion:\n{}",
         kernel.entry_point,
         kernel.slang_source

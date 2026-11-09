@@ -759,6 +759,19 @@ struct MethodTable {
     by_name: HashMap<String, MethodFacts>,
     /// Every function of an `impl` block, by `Struct::name`, with whether it has a receiver.
     members: HashMap<String, bool>,
+    /// Whether the module names `Mat2`, `Mat3` or `Mat4`: the emitter then lowers `*=` to `__gust_mul` (D79).
+    matrix: bool,
+}
+
+/// Whether any identifier in `stream` is one of the matrix type names (as `slang::module_lowering` counts them).
+fn names_matrix(stream: proc_macro2::TokenStream) -> bool {
+    stream.into_iter().any(|tree| match tree {
+        proc_macro2::TokenTree::Ident(ident) => {
+            matches!(ident.unraw().to_string().as_str(), "Mat2" | "Mat3" | "Mat4")
+        }
+        proc_macro2::TokenTree::Group(group) => names_matrix(group.stream()),
+        _ => false,
+    })
 }
 
 /// The receiver of `signature` when it is the first parameter.
@@ -798,7 +811,12 @@ pub(crate) fn impl_self_name(item: &syn::ItemImpl) -> Option<String> {
 
 /// The members of every `impl` block of `items`.
 fn method_table(items: &[syn::Item]) -> MethodTable {
-    let mut table = MethodTable::default();
+    let mut table = MethodTable {
+        matrix: items
+            .iter()
+            .any(|item| names_matrix(item.to_token_stream())),
+        ..MethodTable::default()
+    };
     for item in items {
         let syn::Item::Impl(block) = item else {
             continue;
@@ -897,10 +915,10 @@ fn validate_impl(
             "an `impl` of a GPU module is a plain inherent `impl S { .. }`: not `unsafe` and not `default`",
         ));
     }
-    // The attributes of the block go through the allowlist of the attributes of a function, with its code (review m9.a1
-    // N4): `#[cfg(..)] impl S` would let the Slang and the CPU twin disagree about which methods exist.
+    // The attributes of the block: documentation and lint levels only, with the code of an attribute on a function
+    // (review m9.a1 N4, m9.a2 N3): `#[cfg(..)] impl S` would let the Slang and the CPU twin disagree about which methods exist.
     for attribute in &item.attrs {
-        if let Some(message) = attribute_refusal(attribute) {
+        if let Some(message) = impl_attribute_refusal(attribute) {
             return Err(diagnostics::error(
                 Code::UnsupportedAttribute,
                 attribute,
@@ -987,7 +1005,11 @@ fn validate_method(
     }
     // Inside a Slang struct an unqualified call finds the member before the free function of the same name (measured
     // on slangc 2026.21: the member captured the call), and a method may call a helper since slice m9.a2.
-    if context.function_names.contains(&name) {
+    if context
+        .function_names
+        .iter()
+        .any(|helper| helper.trim_start_matches("r#") == name)
+    {
         return Err(diagnostics::error(
             Code::MethodNameClash,
             &method.sig.ident,
@@ -1020,7 +1042,20 @@ fn validate_method(
         context.result_helpers,
         context.methods,
         Some(owner),
-    )
+    )?;
+    // In Rust `let c = self;` in a `&mut self` method binds the reference, and a write through `c` reaches the receiver; in Slang
+    // it copies `this`, and the write is lost (review m9.a2 M2). A `self` or `&self` method copies in both languages.
+    if let Some(receiver) = receiver_of(&method.sig)
+        && receiver_is_ref_mut(receiver)
+        && let Some(path) = bare_self_use(&method.block)
+    {
+        return Err(diagnostics::error(
+            Code::SelfParameter,
+            path,
+            "`self` is used as a value in a `&mut self` method (`let c = self;`, `f(self)`, `return self`): Rust binds the reference there, and Slang copies the struct, so a write through the copy would be lost; write through `self.field` directly, or call a method on `self`",
+        ));
+    }
+    Ok(())
 }
 
 /// The method as a free function without its receiver, which the validation of a helper then judges: value
@@ -1051,6 +1086,49 @@ fn attribute_refusal(attribute: &syn::Attribute) -> Option<&'static str> {
         .iter()
         .any(|name| attribute.path().is_ident(name)))
     .then_some("this attribute has no proven Rust-to-Slang meaning and cannot be dropped")
+}
+
+/// Why `attribute` is refused on an `impl` block: only documentation and lint levels are (`derive` and `kernel` are
+/// errors in rustc there, and `cfg` would let the Slang and the twin disagree about the methods).
+fn impl_attribute_refusal(attribute: &syn::Attribute) -> Option<&'static str> {
+    (!["doc", "allow", "warn", "deny", "forbid"]
+        .iter()
+        .any(|name| attribute.path().is_ident(name)))
+    .then_some("only documentation and lint attributes (`doc`, `allow`, `warn`, `deny`, `forbid`) are accepted on an `impl` block: any other has no proven Rust-to-Slang meaning and cannot be dropped")
+}
+
+/// The first use of `self` as a value in `block`: any `self` that is not the base of a field access (`self.n`) or the
+/// receiver of a method call (`self.bump()`).
+fn bare_self_use(block: &syn::Block) -> Option<&syn::ExprPath> {
+    struct Scan<'a> {
+        found: Option<&'a syn::ExprPath>,
+    }
+    fn is_self(expression: &syn::Expr) -> bool {
+        matches!(expression, syn::Expr::Path(path) if path.qself.is_none() && path.path.is_ident("self"))
+    }
+    impl<'a> Visit<'a> for Scan<'a> {
+        fn visit_expr_field(&mut self, field: &'a syn::ExprField) {
+            if !is_self(&field.base) {
+                visit::visit_expr_field(self, field);
+            }
+        }
+        fn visit_expr_method_call(&mut self, call: &'a syn::ExprMethodCall) {
+            if !is_self(&call.receiver) {
+                self.visit_expr(&call.receiver);
+            }
+            for argument in &call.args {
+                self.visit_expr(argument);
+            }
+        }
+        fn visit_expr_path(&mut self, path: &'a syn::ExprPath) {
+            if self.found.is_none() && path.qself.is_none() && path.path.is_ident("self") {
+                self.found = Some(path);
+            }
+        }
+    }
+    let mut scan = Scan { found: None };
+    scan.visit_block(block);
+    scan.found
 }
 
 fn validate_struct(item: &syn::ItemStruct) -> syn::Result<()> {
@@ -1813,6 +1891,23 @@ impl RestrictedVisitor {
     /// (or on `self` inside a `&mut self` method). A receiver that is no place (the result of a call, a literal) has no
     /// Slang lvalue to mutate, and a value parameter is an `in` parameter there (slangc warns that the change is lost),
     /// so both are GUST-E0333 as well: copy the value to a `let mut` local first.
+    /// GUST-E0421 for the place of an assignment: Rust evaluates the value before the place, and Slang evaluates a call
+    /// inside the place first (review m9.a2 M1), so a `&mut self` call there would run in the other order.
+    fn reject_mutating_in_place(&mut self, place: &syn::Expr) -> bool {
+        if let Some(call) = first_mutating_call(&self.methods, place) {
+            self.reject(
+                Code::ForBoundSideEffect,
+                call,
+                &format!(
+                    "the place of an assignment calls `.{}(..)`, which takes `&mut self`: Rust evaluates the assigned value before the place and Slang evaluates the call in the place first, so the order of the effects would differ; call the method before the statement and use the value (`let i = c.next(); out[i] = value;`)",
+                    call.method.unraw()
+                ),
+            );
+            return true;
+        }
+        false
+    }
+
     fn check_module_method_call(&mut self, call: &syn::ExprMethodCall, facts: MethodFacts) {
         let method = call.method.to_string();
         let root = Self::place_root(&call.receiver);
@@ -1835,7 +1930,7 @@ impl RestrictedVisitor {
             let problem = match &root {
                 None => Some("the receiver is not a place (it is the result of a call, a literal or a block)".to_owned()),
                 Some(root) if self.value_params.contains(root) => Some(format!(
-                    "`{root}` is a parameter, and a parameter is passed by value in Slang, so a change to it would be lost"
+                    "`{root}` is a parameter, which Slang passes as a read-only value (`in`); the dialect asks for an explicit local copy before a mutating call"
                 )),
                 Some(_) => None,
             };
@@ -2414,7 +2509,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             self.reject(
                 Code::UnknownCall,
                 call,
-                "only calls to helper functions declared in the same GPU module are allowed",
+                "only calls to helper functions declared in the same GPU module are allowed, and `S::f(..)` or `Self::f(..)` for an associated function of a struct of the module (the path form `self::S::f(..)` is not accepted: write `S::f(..)`)",
             );
             return;
         }
@@ -2436,7 +2531,47 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         visit::visit_expr_index(self, index);
     }
 
+    fn visit_expr_assign(&mut self, assign: &'ast syn::ExprAssign) {
+        if self.reject_mutating_in_place(&assign.left) {
+            return;
+        }
+        visit::visit_expr_assign(self, assign);
+    }
+
     fn visit_expr_binary(&mut self, binary: &'ast syn::ExprBinary) {
+        // The place of an assignment or compound assignment, and the value of `*=` in a module that names a matrix
+        // (lowered to `place = __gust_mul(place, value)`), evaluate a `&mut self` call in another order than Rust
+        // (GUST-E0421, review m9.a2 M1). Reads that already match, `out[c.n] = c.next()` and `c.n += c.bump()`, stay.
+        let is_assign_op = matches!(
+            binary.op,
+            syn::BinOp::AddAssign(_)
+                | syn::BinOp::SubAssign(_)
+                | syn::BinOp::MulAssign(_)
+                | syn::BinOp::DivAssign(_)
+                | syn::BinOp::RemAssign(_)
+                | syn::BinOp::BitXorAssign(_)
+                | syn::BinOp::BitAndAssign(_)
+                | syn::BinOp::BitOrAssign(_)
+                | syn::BinOp::ShlAssign(_)
+                | syn::BinOp::ShrAssign(_)
+        );
+        if is_assign_op && self.reject_mutating_in_place(&binary.left) {
+            return;
+        }
+        if self.methods.matrix
+            && matches!(binary.op, syn::BinOp::MulAssign(_))
+            && let Some(call) = first_mutating_call(&self.methods, &binary.right)
+        {
+            self.reject(
+                Code::ForBoundSideEffect,
+                call,
+                &format!(
+                    "the value of `*=` calls `.{}(..)`, which takes `&mut self`: in a module that names a matrix `*=` is lowered to `place = __gust_mul(place, value)`, which reads the place before the call; write `let v = ..; x = x * v;`",
+                    call.method.unraw()
+                ),
+            );
+            return;
+        }
         let is_div_or_rem = matches!(
             binary.op,
             syn::BinOp::Div(_)

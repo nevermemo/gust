@@ -614,6 +614,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "method-mutating-in-assignee"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "method-name-clash"
 version = "0.0.0"
 dependencies = [

@@ -5,6 +5,11 @@ mod methods_mut {
         pub step: uint,
     }
 
+    pub struct Wrap {
+        pub inner: Counter,
+        pub tag: uint,
+    }
+
     pub struct Acc {
         pub total: uint,
         pub count: uint,
@@ -18,6 +23,10 @@ mod methods_mut {
         pub mean: uint,
         pub looped: uint,
         pub helper: uint,
+        pub kept: uint,
+        pub after: uint,
+        pub shifted: uint,
+        pub nested: uint,
     }
 
     impl Counter {
@@ -46,6 +55,13 @@ mod methods_mut {
         // `self` by value.
         pub fn value(self) -> uint {
             self.n
+        }
+
+        // `self` by value works on a copy: the caller's receiver does not change.
+        pub fn shifted(self) -> uint {
+            let mut copy = self;
+            copy.n += 100u32;
+            copy.n
         }
 
         // A method that calls a helper.
@@ -82,7 +98,7 @@ mod methods_mut {
 
     // A helper that calls methods.
     fn drive(start: uint) -> uint {
-        let mut counter = Counter::new(start, 3u32);
+        let mut counter = Counter::new(start, 5u32);
         counter.bump_twice();
         counter.value()
     }
@@ -98,9 +114,21 @@ mod methods_mut {
             let mut counter = Counter::new(input[i], 2u32);
             counter.bump();
             let bumped = counter.n;
+            // A copy taken here does not follow the later writes to `counter`.
+            let kept = counter;
             counter.bump_twice();
             let scaled = counter.scaled(3u32);
             let consumed = counter.value();
+            let after = counter.n;
+            let shifted = counter.shifted();
+            // A `&mut self` call on a field of a local writes the field.
+            let mut wrap = Wrap {
+                inner: Counter::new(input[i], 4u32),
+                tag: 1u32,
+            };
+            wrap.inner.bump();
+            wrap.inner.bump();
+            let nested = wrap.inner.n;
             let mut acc = Acc {
                 total: 0u32,
                 count: 0u32,
@@ -122,6 +150,10 @@ mod methods_mut {
                 mean,
                 looped,
                 helper,
+                kept: kept.n,
+                after,
+                shifted,
+                nested,
             };
         }
     }

@@ -67,8 +67,12 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   `GUST-E0333`, so do a `let mut c = out[i]; c.bump(); out[i] = c;`), `self` by value, associated functions without a
   receiver (`static` in Slang, called `S::make(..)` or `Self::make(..)`), `Self` as the name of the struct in types,
   literals and paths, several `impl` blocks for a struct, `impl self::S`, and calls between methods and helpers in both
-  directions. `GUST-E0421` refuses a `&mut self` call in the bound of a `for` range (the Slang loop evaluates its end
-  bound first). A helper named like a method, or like a field of the struct whose method calls it, is `GUST-E0328`
+  directions. `GUST-E0421` refuses a `&mut self` call whose order of evaluation on the GPU would differ from Rust's: in
+  the bound of a `for` range (the Slang loop evaluates its end bound first), anywhere in the place of an assignment
+  or compound assignment (Slang evaluates the call in the index first), and in the value of `*=` in a module that
+  names a matrix. In a `&mut self` method, `self` as a value (`let c = self;`) is `GUST-E0116`: Rust binds a
+  reference there and Slang copies. A helper named like a method, or like a field of the struct whose method calls it,
+  is `GUST-E0328`
   (Slang resolves an unqualified call to the member first). An attribute on an `impl` block is `GUST-E0115`.
 
 ### Changed, and may break code written for 0.1.0
@@ -93,10 +97,13 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
 - **B3: recursion is refused in every `#[gpu]` module** (`GUST-E0120`). The validator builds a conservative call graph
   from names (`f(..)` to the helper, `x.m(..)` to every method named `m`, `S::f(..)` to the function of `S`) and refuses a
   cycle. A 0.1.0 module that routed a kernel to the CPU and kept a recursive helper compiled before, because a
-  CPU-routed module is not translated; with 0.2.0 the same source is `GUST-E0120`, because the check runs wherever
-  the `#[gpu]` module is validated. Migration: rewrite the recursion as a `for` loop with a fixed trip count. No
-  example or fixture of this repository had a recursive function. A call `x.m(..)` also counts as a call of every
-  method named `m` of another struct, so rename a method that calls another struct's method of the same name.
+  CPU-routed module is not translated, and so did a GPU-routed module whose recursive helper was never dispatched
+  (slangc ran only at dispatch); with 0.2.0 the same source is `GUST-E0120`, because the check runs wherever the
+  `#[gpu]` module is validated. Migration: rewrite the recursion as a `for` loop with a fixed trip count. No example
+  of this repository had a recursive function; `crates/gust/tests/diagnostics.rs` had three recursive helpers (fixtures
+  for the Slang line table), which were rewritten to put the recursive call into the Slang text. A call `x.m(..)` also
+  counts as a call of every method named `m` of another struct, so rename a method that calls another struct's
+  method of the same name.
 - `DeviceOptions::default()` and `HeadlessDevice::new()` now request `gust::capability::enabled()`. In a build with no
   capability that is the empty set, as before; in a `+subgroups` build they open a device with the feature or fail with
   `Error::MissingCapability`.

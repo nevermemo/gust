@@ -6230,3 +6230,96 @@ fn a_method_cannot_open_a_barrier_or_call_a_kernel() {
         #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { out[id.x] = id.x; } }";
     assert!(translate(source).is_err());
 }
+
+const ORDER_ITEMS: &str = "pub struct C { pub n: u32 } \
+    impl C { fn next(&mut self) -> u32 { self.n = self.n + 1u32; self.n } fn bump(&mut self) -> u32 { self.n = self.n + 1u32; 2u32 } }";
+
+#[test]
+fn a_mutating_call_in_an_assignee_or_a_matrix_mul_assign_value_is_gust_e0421() {
+    // Review m9.a2 M1: Rust evaluates the value before the place, Slang evaluates a call in the place first.
+    for body in [
+        "let mut c = C { n: 5u32 }; out[c.next()] = c.next();",
+        "let mut d = C { n: 5u32 }; out[d.bump()] = d.n;",
+        "let mut c = C { n: 5u32 }; out[c.next()] += c.next();",
+        "let mut d = C { n: 5u32 }; out[d.next()] /= d.next();",
+        // The value of `*=` in a module that names a matrix (the `__gust_mul` path).
+        "let m = Mat4::IDENTITY; let mut c = C { n: 5u32 }; c.n *= c.bump();",
+    ] {
+        assert_rejected(&with_kernel(ORDER_ITEMS, body), Code::ForBoundSideEffect);
+    }
+    // What already matches Rust stays accepted.
+    for body in [
+        "let mut c = C { n: 5u32 }; out[c.n] = c.next();",
+        "let mut c = C { n: 5u32 }; c.n += c.bump();",
+        "let mut e = C { n: 5u32 }; e.n /= e.bump();",
+        // Without a matrix in the module `*=` is the plain operator.
+        "let mut c = C { n: 5u32 }; c.n *= c.bump();",
+    ] {
+        let source = with_kernel(ORDER_ITEMS, body);
+        translate(&source).unwrap_or_else(|error| panic!("{body}: {error}"));
+    }
+}
+
+#[test]
+fn a_mutating_call_in_the_start_bound_that_the_end_call_changes_is_gust_e0421() {
+    // Review m9.a2 S1: Rust reads `c.n` first, the emitted loop runs the end bound first, so the start differs.
+    let source = with_kernel(
+        ORDER_ITEMS,
+        "let mut c = C { n: 1u32 }; for i in c.n..c.next() { out[id.x] = i; }",
+    );
+    assert_rejected(&source, Code::ForBoundSideEffect);
+}
+
+#[test]
+fn self_as_a_value_in_a_mut_self_method_is_gust_e0116_and_in_the_other_receivers_it_is_not() {
+    // Review m9.a2 M2: `let c = self;` binds the reference in Rust and copies in Slang.
+    for method in [
+        "fn set(&mut self) { let c = self; c.n = 9u32; }",
+        "fn set(&mut self) { let c = self; c.bump(); }",
+    ] {
+        let items = format!(
+            "pub struct C {{ pub n: u32 }} impl C {{ fn bump(&mut self) {{ self.n = self.n + 1u32; }} {method} }}"
+        );
+        assert_rejected(
+            &with_kernel(&items, "out[id.x] = id.x;"),
+            Code::SelfParameter,
+        );
+    }
+    // A by-value `self` and a `&self` copy in both languages: accepted.
+    let items = "pub struct C { pub n: u32 } impl C { \
+        fn with(self, n: u32) -> C { let mut c = self; c.n = n; c } \
+        fn peek(&self) -> u32 { let c = self; c.n } \
+        fn keep(&mut self) -> u32 { self.n = self.n + 1u32; self.n } }";
+    let source = with_kernel(
+        items,
+        "let c = C { n: 1u32 }; let d = c.with(7u32); out[id.x] = d.n + c.peek();",
+    );
+    translate(&source).unwrap();
+}
+
+#[test]
+fn an_impl_attribute_other_than_doc_and_lints_is_gust_e0115() {
+    for attribute in ["#[cfg(test)]", "#[derive(Clone)]", "#[kernel]", "#[inline]"] {
+        let source = with_kernel(
+            &format!(
+                "pub struct S {{ pub n: u32 }} {attribute} impl S {{ fn one(&self) -> u32 {{ self.n }} }}"
+            ),
+            "out[id.x] = id.x;",
+        );
+        assert_rejected(&source, Code::UnsupportedAttribute);
+    }
+    let source = with_kernel(
+        "pub struct S { pub n: u32 } #[allow(dead_code)] impl S { fn one(&self) -> u32 { self.n } }",
+        "out[id.x] = id.x;",
+    );
+    translate(&source).unwrap();
+}
+
+#[test]
+fn a_raw_helper_name_clashes_with_a_method_of_the_same_name() {
+    let source = with_kernel(
+        "pub struct S { pub n: u32 } impl S { fn area(&self) -> u32 { self.n } } fn r#area(n: u32) -> u32 { n }",
+        "out[id.x] = id.x;",
+    );
+    assert_rejected(&source, Code::MethodNameClash);
+}

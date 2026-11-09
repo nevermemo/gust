@@ -69,6 +69,13 @@ struct Counter
         return this.n;
     }
 
+    uint shifted()
+    {
+        var copy = this;
+        (copy.n += uint(100));
+        return copy.n;
+    }
+
     uint scaled(uint factor)
     {
         return scale_by(this.n, factor);
@@ -78,6 +85,12 @@ struct Counter
     {
         return Counter.__gust_r_new(uint(0), uint(1));
     }
+};
+
+struct Wrap
+{
+    Counter inner;
+    uint tag;
 };
 
 struct Acc
@@ -109,6 +122,10 @@ struct Results
     uint mean;
     uint looped;
     uint helper;
+    uint kept;
+    uint after;
+    uint shifted;
+    uint nested;
 };
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint> input;
@@ -121,7 +138,7 @@ uint scale_by(uint value, uint factor)
 
 uint drive(uint start)
 {
-    var counter = Counter.__gust_r_new(start, uint(3));
+    var counter = Counter.__gust_r_new(start, uint(5));
     counter.bump_twice();
     return counter.value();
 }
@@ -143,18 +160,28 @@ void gpu_methods_mut_run(uint3 id : SV_DispatchThreadID)
         var counter = Counter.__gust_r_new(input[i], uint(2));
         counter.bump();
         var bumped = counter.n;
+        var kept = counter;
         counter.bump_twice();
         var scaled = counter.scaled(uint(3));
         var consumed = counter.value();
-        Acc __gust_struct_6;
-        __gust_struct_6.total = uint(0);
-        __gust_struct_6.count = uint(0);
-        Acc acc = __gust_struct_6;
+        var after = counter.n;
+        var shifted = counter.shifted();
+        Wrap __gust_struct_9;
+        __gust_struct_9.inner = Counter.__gust_r_new(input[i], uint(4));
+        __gust_struct_9.tag = uint(1);
+        Wrap wrap = __gust_struct_9;
+        wrap.inner.bump();
+        wrap.inner.bump();
+        var nested = wrap.inner.n;
+        Acc __gust_struct_13;
+        __gust_struct_13.total = uint(0);
+        __gust_struct_13.count = uint(0);
+        Acc acc = __gust_struct_13;
         acc.add(input[i]);
         acc.add(uint(10));
         var unit = Counter.unit();
-        var __gust_end_10 = uint(4);
-        for (var k = uint(0); k < __gust_end_10; k++)
+        var __gust_end_17 = uint(4);
+        for (var k = uint(0); k < __gust_end_17; k++)
         {
             unit.bump();
             acc.add(k);
@@ -162,13 +189,17 @@ void gpu_methods_mut_run(uint3 id : SV_DispatchThreadID)
         var mean = acc.mean();
         var looped = unit.value();
         var helper = drive(input[i]);
-        Results __gust_struct_14;
-        __gust_struct_14.bumped = bumped;
-        __gust_struct_14.consumed = consumed;
-        __gust_struct_14.scaled = scaled;
-        __gust_struct_14.mean = mean;
-        __gust_struct_14.looped = looped;
-        __gust_struct_14.helper = helper;
-        results[i] = __gust_struct_14;
+        Results __gust_struct_21;
+        __gust_struct_21.bumped = bumped;
+        __gust_struct_21.consumed = consumed;
+        __gust_struct_21.scaled = scaled;
+        __gust_struct_21.mean = mean;
+        __gust_struct_21.looped = looped;
+        __gust_struct_21.helper = helper;
+        __gust_struct_21.kept = kept.n;
+        __gust_struct_21.after = after;
+        __gust_struct_21.shifted = shifted;
+        __gust_struct_21.nested = nested;
+        results[i] = __gust_struct_21;
     }
 }

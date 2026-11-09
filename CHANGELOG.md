@@ -53,7 +53,15 @@ operations).
   (an empty value included) is a compile error of its own that names the variable, the value and the four profiles.
 - A hidden `gust::profile::is_profile` (the check the `#[gpu]` macro writes for a routed module; not public API).
 - New public modules of `gust-compute`: `gust::capability`, `gust::limits`, `gust::target` (`Target`, and the hidden
-  `GpuKernel` marker) and `gust::routes` (`variable_name`, `VARIABLE_PREFIX`).
+  `GpuKernel` marker), `gust::routes` (`variable_name`, `VARIABLE_PREFIX`) and `gust::routed` (below).
+- A device handle that follows the route. `gust::routed::RoutedDevice` is one device type whose calls run each kernel on
+  the target its build resolved, so a kernel call is the same source whether `gust.toml` routes the kernel to the CPU
+  or to the GPU (`RoutedDevice::with_gpu(HeadlessDevice::new()?)`, or `RoutedDevice::<NoGpu>::cpu_only()`; buffers from
+  `device.buffer(&[..])`, read with `buffer.read(&device)`). The `#[gpu]` macro writes one more line per kernel, an
+  `impl gust::routed::Routed` that names the kernel's side (`OnGpu` or `OnCpu`); a GPU-routed kernel on a handle with no
+  GPU is `Error::NoGpu { kernel }`, never a panic. It is additive: `CpuDevice`, `HeadlessDevice` and every explicit-device
+  call are unchanged, and `gust` still does not depend on `gust-wgpu`. Limits: storage buffers only (no uniforms,
+  textures or samplers), calls are synchronous, and a call that changes side copies the whole buffer.
 
 ### Changed, and may break code written for 0.1.0
 

@@ -112,6 +112,7 @@ pub mod graph;
 mod map_host;
 pub mod pool;
 mod render;
+mod routed;
 mod texture;
 mod vec;
 pub use cache::PipelineCacheStats;

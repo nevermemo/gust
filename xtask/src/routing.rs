@@ -21,7 +21,8 @@
 //! - `lint` (R7): `cargo fmt --check` on the fixture, and clippy (all targets, warnings denied) per fixture package under
 //!   that package's own route. It is part of `--check-only`, so CI covers the fixture's style.
 //! - `gpu` (R6, not with `--check-only`): `gpu-app` dispatches the GPU-routed kernel on an adapter (named in the output);
-//!   routed to the CPU, the same source does not compile.
+//!   routed to the CPU, the same source does not compile. Then `handle-app` (m9.h1), one source that calls the kernel through
+//!   a `RoutedDevice`, is built and run under both routes and must print the target of each route and the same values.
 
 use std::{
     env,
@@ -62,7 +63,15 @@ pub(crate) const CPU_APP_LINE: &str =
 /// What `gpu-app` prints when `physics::scale` ran on the GPU.
 pub(crate) const GPU_APP_LINE: &str = "routing: physics::scale ran on the GPU [2.0, 4.0, 6.0, 8.0]";
 
-/// The line of `gpu-app` that names the adapter.
+/// What `handle-app` prints when `physics::scale` ran through the handle on the GPU (route `gpu`).
+pub(crate) const HANDLE_GPU_LINE: &str =
+    "routing: handle ran physics::scale on Gpu [2.0, 4.0, 6.0, 8.0]";
+
+/// What `handle-app` prints, from the same source, when the route is `cpu`.
+pub(crate) const HANDLE_CPU_LINE: &str =
+    "routing: handle ran physics::scale on Cpu [2.0, 4.0, 6.0, 8.0]";
+
+/// The line of `gpu-app` and `handle-app` that names the adapter.
 const ADAPTER_PREFIX: &str = "adapter: ";
 
 /// The tags `route-kernels` declares, in the order of `routes.json` (by package, then tag).
@@ -768,8 +777,11 @@ impl Check {
         }
         let physics = format!("{ROUTE_PREFIX}route_kernels__physics");
         for (packages, route) in [
-            (&["route-kernels", "probe", "cpu-app"][..], "cpu"),
-            (&["gpu-app"][..], "gpu"),
+            (
+                &["route-kernels", "probe", "cpu-app", "handle-app"][..],
+                "cpu",
+            ),
+            (&["gpu-app", "handle-app"][..], "gpu"),
         ] {
             let mut arguments = vec!["clippy", "--locked", "--all-targets"];
             for package in packages {
@@ -826,8 +838,52 @@ impl Check {
             ));
         }
         self.write_entries("gpu-app", "\"route-kernels::physics\" = \"gpu\"\n")?;
+        let handle = self.handle()?;
         Ok(format!(
-            "physics::scale ran on the GPU `{adapter}` and matched its host values; routed to the cpu the same source fails with E0277"
+            "physics::scale ran on the GPU `{adapter}` and matched its host values; routed to the cpu the same source fails with E0277; {handle}"
+        ))
+    }
+
+    /// The handle half of R6 (m9.h1): `handle-app` is one source that calls `physics::scale` through a `RoutedDevice`. Built
+    /// with `physics` on the GPU it must run the kernel on the adapter and say `Gpu`; built with `physics` on the CPU, from
+    /// the same file, it must compile (unlike `gpu-app`) and say `Cpu`. Both print the same values.
+    fn handle(&self) -> Result<String, String> {
+        let mut adapter = None;
+        for (route, wanted) in [("gpu", HANDLE_GPU_LINE), ("cpu", HANDLE_CPU_LINE)] {
+            self.write_entries(
+                "handle-app",
+                &format!("\"route-kernels::physics\" = \"{route}\"\n"),
+            )?;
+            let run = exec(
+                self.driver_command("run", &["--locked", "-q", "-p", "handle-app"], None),
+                "cargo gust run -p handle-app",
+            )?;
+            let lines = run.lines();
+            let found = lines.iter().filter(|line| *line == wanted).count();
+            if !run.success || found != 1 {
+                return Err(format!(
+                    "`cargo gust run -p handle-app` with physics on the {route} (exit {}) must print `{wanted}` once:\n{}",
+                    run.code,
+                    tail(&run.everything(), 30)
+                ));
+            }
+            if route == "gpu" {
+                adapter = lines
+                    .iter()
+                    .find_map(|line| line.strip_prefix(ADAPTER_PREFIX))
+                    .map(str::to_owned);
+                if adapter.is_none() {
+                    return Err(format!(
+                        "`cargo gust run -p handle-app` on the GPU route must name an adapter:\n{}",
+                        tail(&run.everything(), 30)
+                    ));
+                }
+            }
+        }
+        self.write_entries("handle-app", "\"route-kernels::physics\" = \"gpu\"\n")?;
+        Ok(format!(
+            "handle-app, one source through a RoutedDevice, ran physics::scale on the GPU `{}` and, with only the route changed, on the CPU, with the same values",
+            adapter.unwrap_or_default()
         ))
     }
 }

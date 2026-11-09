@@ -1,0 +1,16 @@
+[package]
+name = "handle-app"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Calls `physics::scale` through one `RoutedDevice` (m9.h1): the same source is built with `physics` routed to the GPU
+# and routed to the CPU, and runs on the target the build chose (the `gpu` case of check-routing; it needs `slangc` and a
+# Vulkan adapter for the GPU route). Unlike `gpu-app`, nothing in the call site names a target.
+[dependencies]
+route-kernels = { path = "../route-kernels" }
+gust = { package = "gust-compute", path = "../../../crates/gust", features = ["slang-runtime"] }
+gust-wgpu = { package = "gust-compute-wgpu", path = "../../../crates/gust-wgpu", features = ["slang-runtime"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(gust_dual)'] }

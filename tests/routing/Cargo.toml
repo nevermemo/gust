@@ -7,7 +7,8 @@
 # - `route-kernels` declares the tags and holds one kernel module per tag: `physics` (`physics`), `broadphase`
 #   (`physics.broadphase`, a child of `physics`) and `fusion` (`fusion`, which defaults to the CPU).
 # - `probe` prints each kernel's `DESCRIPTOR.target`; `cpu-app` dispatches `physics::scale` on `CpuDevice` (a binary and a
-#   `#[test]`); `gpu-app` dispatches it on a GPU (the Gpu step of the check).
+#   `#[test]`); `gpu-app` dispatches it on a GPU (the Gpu step of the check); `handle-app` calls it through one
+#   `RoutedDevice`, whose source is the same under both routes (the same step).
 [workspace]
-members = ["route-kernels", "probe", "cpu-app", "gpu-app"]
+members = ["route-kernels", "probe", "cpu-app", "gpu-app", "handle-app"]
 resolver = "3"

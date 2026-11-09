@@ -204,6 +204,7 @@ pub mod math;
 #[doc(hidden)]
 pub mod profile;
 pub mod reflect;
+pub mod routed;
 pub mod routes;
 mod runtime;
 pub mod slang;

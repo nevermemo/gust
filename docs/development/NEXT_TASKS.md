@@ -470,12 +470,12 @@ test module; do not mix that mechanical move with behavior changes.
   crate READMEs' `~0.1`, the doc comment of `cargo-gust`'s `main.rs`), and CHANGELOG's `toml` text left "may break" for
   its own section. Open at release: rerun the `semver` job and update the "Compatibility with 0.1.0" part of the
   CHANGELOG entry (run id and counts).
-- A device handle that follows the route (D136 and D137 file it): in 0.2.0 a kernel call names its device, so flipping a
-  route in `gust.toml` changes the call sites of that kernel (only `name::map` is the same on both targets). A handle
-  that the route chooses (one device type whose calls run on the target the route names) would make a flip a
-  `gust.toml` change only. A design question for a later milestone, not built. Timing (the M8 sanity checks,
-  2026-11-09): run the spike before the 0.2.0 publish, because the release freezes the call API that a route flip
-  changes; M9 does not touch that API, so it need not come before M9.
+- The routed device handle (D136, D137; spike m9.h, built in m9.h1 as `gust::routed::RoutedDevice`, additive, `Run` and
+  `Call` unchanged) is built for storage buffers only. What remains: uniforms, textures and samplers through the handle
+  (the `GpuUniform` and `SampledCall` paths need the same two-sided mirroring); asynchronous submission (every call
+  through the handle finishes inside `submit_call`, so there is no GPU overlap); transfers (a call that changes side
+  copies the whole buffer, and D35's transfer insertion is the real answer); and a measured cost, the transfer cost and
+  the handle's overhead against a direct call, which no run has measured.
 - Re-probe browser subgroups (the dropped slice m8.u; probe u0) when a wgpu release above 30.0.1 exists. At 30.0.1 the
   WebGPU backend does not map `SUBGROUP`, naga refuses `enable subgroups;` and a non-`u32` lane id, and trunk has
   moved (MSRV 1.95 against GUST's 1.90). Open upstream: gfx-rs/wgpu#10876, #10818 and #5555. A pin bump also retires

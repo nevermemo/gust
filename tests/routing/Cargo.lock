@@ -238,6 +238,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "handle-app"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+ "gust-compute-wgpu",
+ "route-kernels",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

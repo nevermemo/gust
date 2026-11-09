@@ -830,6 +830,12 @@ fn expand_validated_with(
         } else {
             quote!(impl ::gust::target::GpuKernel for #name {})
         };
+        // The kernel's target as a type, for `gust::routed::RoutedDevice` (m9.h1): the side the marker above implies.
+        let routed_side = if cpu_target {
+            quote!(::gust::routed::OnCpu)
+        } else {
+            quote!(::gust::routed::OnGpu)
+        };
         generated.push(quote! {
             #[doc = #handle_doc]
             #[allow(non_camel_case_types)]
@@ -864,6 +870,10 @@ fn expand_validated_with(
             }
 
             #gpu_marker
+
+            impl ::gust::routed::Routed for #name {
+                type Side = #routed_side;
+            }
 
             #typed_calls
 

@@ -586,6 +586,39 @@ fn the_invocation_count_of_a_body_with_operations_is_a_multiple_of_64() {
     check(&with_size("32, 1, 1", "let r = x;")).unwrap();
 }
 
+/// m9.0 (Codex, M8 sanity pass): `workgroup_size` has no upper bound, and the product of the three dimensions was taken
+/// in `u64`, so dimensions near `u32::MAX` overflowed it and the macro panicked (overflow checks are on in a dev build
+/// of a proc macro) instead of reporting E0751. The product is exact in `u128`.
+#[test]
+fn huge_workgroup_dimensions_are_the_coded_error_with_the_exact_product() {
+    let max = u128::from(u32::MAX);
+    let with_size = |size: &str| {
+        pair(&body("let r = subgroup_add(x);")).replace(
+            "#[kernel(workgroup_size(64, 1, 1))]",
+            &format!("#[kernel(workgroup_size({size}))]"),
+        )
+    };
+    // None is a multiple of 64, so all are refused. The first (2^66 - 2^35 + 4) and the second (about 2^96) are over
+    // `u64::MAX`, which the old product overflowed; the third, (2^32 - 1)^2, still fits a `u64` and is the control.
+    for (size, product) in [
+        ("4294967295, 4294967295, 4", max * max * 4),
+        ("4294967295, 4294967295, 4294967295", max * max * max),
+        ("4294967295, 1, 4294967295", max * max),
+    ] {
+        let error = rejected(&with_size(size));
+        assert_code(&error, Code::SubgroupInvocations);
+        let text = error.to_string();
+        assert!(
+            text.contains(&format!("`workgroup_size({size})` has {product}")),
+            "{size}: {text}"
+        );
+        assert!(text.contains("multiple of 64"), "{size}: {text}");
+    }
+    // A product that is a multiple of 64 and over `u64` is accepted: 4294967232 is 2^32 - 64, which 64 divides.
+    check(&with_size("4294967232, 4294967232, 64")).unwrap();
+    check(&with_size("4294967232, 4294967232, 4294967232")).unwrap();
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // The classifier
 
@@ -661,6 +694,42 @@ fn the_fixture_expands_under_every_profile_and_the_selected_body_follows_the_cap
     assert!(!portable.contains("WaveActiveSum"), "{portable}");
     // The `cpu` form is the portable body; the subgroup bodies have none (D42).
     expand(&module, "cpu");
+}
+
+/// m9.0, the audit of the other places that read the workgroup dimensions (the descriptor, the artifact record, the
+/// entry point and the local and group ids of the Slang, the CPU twin's id arithmetic, the portable floor and the
+/// workgroup-memory sum): a kernel without subgroup operations at the largest dimensions expands, under every profile
+/// that has a form for it, without a panic, and carries the dimensions as the numbers they are.
+#[test]
+fn a_kernel_with_the_largest_workgroup_dimensions_expands_without_a_panic() {
+    let source = "mod m {
+    #[kernel(workgroup_size(4294967295, 4294967295, 4294967295))]
+    pub fn k(id: SV_DispatchThreadID, local: LocalId, group: GroupId, mut out: RWStructuredBuffer<u32>) {
+        out[id.x] = local.x + group.y + local.z;
+    }
+}";
+    for profile in ["dev", "native", "web", "dev+subgroups", "cpu"] {
+        let text = expand(source, profile);
+        assert!(
+            text.contains("workgroup_size:[4294967295u32,4294967295u32,4294967295u32]"),
+            "{profile}: {text}"
+        );
+    }
+    // The twin divides by the sizes as literals, and the Slang does the same in `uint` arithmetic.
+    let twin = expand(source, "dev");
+    assert!(twin.contains("__gust_id.x%4294967295u32"), "{twin}");
+    assert!(twin.contains("__gust_id.y/4294967295u32"), "{twin}");
+    let slang = slang_of(source, "k");
+    assert!(
+        slang.contains("[numthreads(4294967295, 4294967295, 4294967295)]"),
+        "{slang}"
+    );
+    assert!(
+        slang.contains("uint3 local = uint3(")
+            && slang.contains("% 4294967295u")
+            && slang.contains("/ 4294967295u"),
+        "{slang}"
+    );
 }
 
 #[test]

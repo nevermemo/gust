@@ -3,8 +3,9 @@
 ## Current state
 
 - Branch: `main`
-- Active: roadmap MR (the first public release; the owner publishes, RELEASE.md); M7 (D126) and MX (D129) are closed,
-  and M6 (language breadth I) is closed (D86). See the "Now and next" section of [ROADMAP.md](../ROADMAP.md) and
+- Active: M8 (capability variants, 0.2.0) is closed (D153); M9 (language breadth II) is next, and its plan comes
+  first. The 0.2.0 publish stays the owner's act (D148, RELEASE.md). M7 (D126) and MX (D129) are closed, and M6
+  (language breadth I) is closed (D86). See the "Now and next" section of [ROADMAP.md](../ROADMAP.md) and
   [STATUS.md](STATUS.md).
 - M0 is closed (D28), and M0.15 (the CI `unit` job is a required check on `main`) followed on
   2026-11-01. M1 (diagnostics) is closed (D33), M2 (typed host API) is closed (D37), and
@@ -24,10 +25,8 @@
 
 ## Evidence
 
-- Last full record: `cargo xtask check-full` passed at `7dd9c3d` (2026-11-02, M5 close, NVIDIA GeForce RTX 5090 /
-  Vulkan, Slang v2026.20, clean tree: workspace tests, the release-only tests
-  by name, every example test with `--include-ignored`, `check-dual` in full mode, 13 SPIR-V artifacts validated,
-  the whole `check-precompiled` and `check-web`, no skipped check); details in STATUS.
+- Last full record: `cargo xtask check-full` passed at `2f96e69` (2026-11-09, 05:11 to 05:53Z, M8 close, RTX 5090 /
+  Vulkan, driver 610.88, Slang v2026.21, with the `dev+subgroups` Gpu step); details in STATUS and D153.
 - CI `unit` and `msrv` jobs green on main.
 - Evidence tiers and labels: [VALIDATION.md](VALIDATION.md).
 

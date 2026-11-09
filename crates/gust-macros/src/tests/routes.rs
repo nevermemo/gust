@@ -1451,17 +1451,167 @@ fn the_message_of_the_guard_names_the_causes_and_the_ways_out() {
     );
 }
 
+/// The tokens of `message` as a string literal, the way the expansion's text spells it.
+fn literal(message: &str) -> String {
+    proc_macro2::Literal::string(message).to_string()
+}
+
 #[test]
-fn a_routed_profile_that_is_no_profile_differs_from_all_four() {
+fn a_routed_profile_that_is_no_profile_is_a_compile_error_naming_the_variable_the_value_and_the_profiles()
+ {
+    // m9.0 (m8.z re-check N2 and N3). Before, "bogus" made four checks that each named a profile it was not, a value
+    // with a `{` was a format-string error of the `panic!`, and an empty value was no check at all. Now every value that
+    // is not a profile is one error that names the variable, the value and the profiles.
     let scratch = Crate::new("guard-bogus", "physics = {}");
-    let routed = text(
+    for (value, shown) in [
+        ("bogus", "\"bogus\""),
+        ("", "\"\""),
+        ("DEV", "\"DEV\""),
+        ("dev ", "\"dev \""),
+        ("dev+subgroups", "\"dev+subgroups\""),
+        ("de{v}", "\"de{v}\""),
+        ("{0}", "\"{0}\""),
+        ("}{", "\"}{\""),
+        ("a\"b", "\"a\\\"b\""),
+    ] {
+        let routed = text(
+            VECTOR_ADD,
+            scratch.path(),
+            Profile::Other,
+            Some("physics"),
+            &[(ROUTED, value)],
+        );
+        let message = routing::unknown_routed_profile_message(value);
+        assert!(
+            message.contains("GUST_ROUTED_PROFILE")
+                && message.contains(&format!("is {shown},"))
+                && message.contains("the valid profiles are dev, native, web, cpu."),
+            "{value:?}: {message}"
+        );
+        // One `compile_error!` that carries the message, no check against the build and no `panic!` (a `{` in the value
+        // would be a format string there), and the variable is still tracked.
+        assert_eq!(
+            routed.matches("compile_error").count(),
+            1,
+            "{value:?}: {routed}"
+        );
+        assert!(routed.contains(&literal(&message)), "{value:?}: {routed}");
+        assert!(!routed.contains("is_profile"), "{value:?}: {routed}");
+        assert!(!routed.contains("panic"), "{value:?}: {routed}");
+        assert_eq!(
+            routed.matches(&tracked(ROUTED)).count(),
+            1,
+            "{value:?}: {routed}"
+        );
+        // The rest of the module is still expanded: the guard is one error beside it, not a replacement for it.
+        assert!(routed.contains(GPU_MARKER), "{value:?}: {routed}");
+    }
+    // The four profiles are not errors, and their message is unchanged.
+    for value in ["dev", "native", "web", "cpu"] {
+        let routed = text(
+            VECTOR_ADD,
+            scratch.path(),
+            Profile::Other,
+            Some("physics"),
+            &[(ROUTED, value)],
+        );
+        assert!(!routed.contains("compile_error"), "{value}: {routed}");
+    }
+}
+
+#[test]
+fn the_process_keeps_an_empty_routed_profile_and_no_other_empty_variable() {
+    use std::ffi::OsString;
+
+    let value = |text: &str| Some(OsString::from(text));
+    // Unset is unset for both: plain cargo, nothing is checked (D67).
+    assert_eq!(routing::variable_value(ROUTED, None), None);
+    assert_eq!(routing::variable_value(PHYSICS, None), None);
+    // Empty: a route variable reads it as unset (as it always did), the routed profile reads it as a value to refuse.
+    assert_eq!(routing::variable_value(PHYSICS, value("")), None);
+    assert_eq!(
+        routing::variable_value(ROUTED, value("")),
+        Some(String::new())
+    );
+    assert_eq!(
+        routing::variable_value(ROUTED, value("web")),
+        Some("web".to_owned())
+    );
+    assert_eq!(
+        routing::variable_value(PHYSICS, value("cpu")),
+        Some("cpu".to_owned())
+    );
+    // Text that is not UTF-8 is unset for a route variable and, lossily read, a value the guard refuses for the routed
+    // profile. (`OsString` from wide units is the portable way to make one.)
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStringExt as _;
+        let lone_surrogate = OsString::from_wide(&[0xD800]);
+        assert_eq!(
+            routing::variable_value(PHYSICS, Some(lone_surrogate.clone())),
+            None
+        );
+        let routed = routing::variable_value(ROUTED, Some(lone_surrogate)).unwrap();
+        assert!(!routed.is_empty() && !["dev", "native", "web", "cpu"].contains(&routed.as_str()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStringExt as _;
+        let invalid = OsString::from_vec(vec![0xFF]);
+        assert_eq!(
+            routing::variable_value(PHYSICS, Some(invalid.clone())),
+            None
+        );
+        let routed = routing::variable_value(ROUTED, Some(invalid)).unwrap();
+        assert!(!routed.is_empty() && !["dev", "native", "web", "cpu"].contains(&routed.as_str()));
+    }
+}
+
+#[test]
+fn two_routed_modules_in_one_crate_each_carry_their_own_check() {
+    // m9.0 (m8.z re-check N3). Each module's expansion holds its own `option_env!` and its own three `is_profile` checks,
+    // spanned at its own tag; the items are `const _`, so two of them in one crate do not collide. That the two checks
+    // both fire in rustc is the probe in the report of the slice (one crate, two modules, `GUST_ROUTED_PROFILE=web` under
+    // a `dev` build: two errors, one per tag literal).
+    let scratch = Crate::new("guard-two", "physics = {}\nfusion = {}");
+    let second = VECTOR_ADD
+        .replace("vector_add", "vector_two")
+        .replace("fn add(", "fn two(");
+    assert_ne!(second, VECTOR_ADD);
+    let first = text(
         VECTOR_ADD,
         scratch.path(),
         Profile::Other,
         Some("physics"),
-        &[(ROUTED, "bogus")],
+        &[(ROUTED, "web")],
     );
-    assert_eq!(routed.matches("is_profile").count(), 4, "{routed}");
+    let other = text(
+        &second,
+        scratch.path(),
+        Profile::Other,
+        Some("fusion"),
+        &[(ROUTED, "web")],
+    );
+    for (name, expansion) in [("vector_add", &first), ("vector_two", &other)] {
+        assert!(expansion.contains(&format!("mod {name}")), "{expansion}");
+        assert_eq!(
+            expansion.matches(&tracked(ROUTED)).count(),
+            1,
+            "{expansion}"
+        );
+        assert_eq!(expansion.matches("is_profile").count(), 3, "{expansion}");
+        for built in ["dev", "native", "cpu"] {
+            assert!(
+                expansion.contains(&guard_branch(built)),
+                "{built}: {expansion}"
+            );
+            assert!(
+                expansion.contains(&routing::routed_message("web", built)),
+                "{built}: {expansion}"
+            );
+        }
+        assert!(!expansion.contains(&guard_branch("web")), "{expansion}");
+    }
 }
 
 #[test]

@@ -1,0 +1,7 @@
+# Keys matched against the one error of `cargo check --message-format json` (see variant-no-body/expected.txt).
+# A macro error is a `compile_error!` and has no rustc code, so `code: none`. The second message line is the exact product.
+code: none
+file: subgroup-workgroup-size-overflow/src/main.rs
+line: 7
+message: [GUST-E0751] kernel `totals` calls subgroup operations
+message: `workgroup_size(4294967295, 4294967295, 4)` has 73786976260478468100

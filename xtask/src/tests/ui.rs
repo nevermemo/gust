@@ -1629,6 +1629,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
         ("subgroup-after-return", "GUST-E0415"),
         ("subgroup-in-while", "GUST-E0402"),
         ("subgroup-workgroup-size", "GUST-E0751"),
+        ("subgroup-workgroup-size-overflow", "GUST-E0751"),
     ] {
         let case = find(name);
         assert!(case.env.is_empty(), "{name}: {:?}", case.env);
@@ -1818,7 +1819,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 133] = [
+const PINNED_FIXTURES: [&str; 134] = [
     "barrier-in-helper",
     "barrier-in-if",
     "barrier-in-nested-for",
@@ -1913,6 +1914,7 @@ const PINNED_FIXTURES: [&str; 133] = [
     "subgroup-portable-body",
     "subgroup-under-and",
     "subgroup-workgroup-size",
+    "subgroup-workgroup-size-overflow",
     "texture-as-value",
     "texture-bad-format",
     "texture-method",

@@ -187,9 +187,9 @@ pub fn subgroup_broadcast_first<T: SubgroupScalar>(value: T) -> T {
 /// The `value` of invocation `lane` of the subgroup, for a `lane` that is the same in every invocation. A literal
 /// `lane` is `WaveBroadcastLaneAt` (`subgroupBroadcast`); any other expression is `WaveReadLaneAt`, which is
 /// `subgroupShuffle` (WGSL's broadcast takes a constant). The shadow is the subgroup of one invocation. S3 covered
-/// `u32`. Beyond it, `f32` with a literal lane and `i32` with a computed lane ran on the RTX 5090 and on lavapipe; `i32`
-/// with a literal lane and `f32` with a computed lane did not run on any adapter, and none ran on the Radeon 890M
-/// (`docs/SEMANTICS.md`, "Forms beyond S3's cells").
+/// `u32`. Beyond it, all four forms ran on the RTX 5090 and on lavapipe: `f32` and `i32` with a literal lane, and `i32`
+/// and `f32` with a computed lane (`i32` with a literal lane and `f32` with a computed lane are the two cells m8.z
+/// added to `tests/subgroup.rs`); none ran on the Radeon 890M (`docs/SEMANTICS.md`, "Forms beyond S3's cells").
 pub fn subgroup_broadcast<T: SubgroupScalar>(value: T, lane: u32) -> T {
     let _ = lane;
     value

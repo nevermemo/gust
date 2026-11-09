@@ -518,11 +518,33 @@ fn the_server_binds_loopback_and_serves_only_get_of_plain_files() {
         ])
     );
 
+    // After `stop` the server has dropped its listener and answers nothing. The test does not assume the port stays
+    // free: another test's server (the tests run in one process, on ephemeral loopback ports) may have been given the
+    // freed port, and a connect to it succeeds (CI run 42557064111). So the first assertion reads the server's own state
+    // (the accept thread, which owns the listener, has ended). The request that follows goes to whoever holds the
+    // port, if anyone does; either way this server must not have recorded it: a server whose `stop` did not stop would
+    // answer, and record the request before it writes the response.
     let address = server.addr();
+    let served_before = server.served();
+    assert!(
+        !server.listener_closed(),
+        "the listener is open before stop"
+    );
     server.stop();
     assert!(
-        TcpStream::connect_timeout(&address, Duration::from_secs(2)).is_err(),
+        server.listener_closed(),
         "the listener is closed after stop"
+    );
+    if let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_secs(2)) {
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+        let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+        let _ = stream.write_all(b"GET /after-stop HTTP/1.1\r\n\r\n");
+        let _ = stream.read_to_end(&mut Vec::new());
+    }
+    assert_eq!(
+        server.served(),
+        served_before,
+        "the stopped server answered a request"
     );
     let _ = fs::remove_dir_all(directory);
 }

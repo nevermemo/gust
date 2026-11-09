@@ -1016,7 +1016,9 @@ fn check_workgroup_rules(
         && let Some((options, _)) = crate::expand::kernel_attribute_in(stage, function)?
     {
         let [x, y, z] = options.workgroup_size;
-        let invocations = u64::from(x) * u64::from(y) * u64::from(z);
+        // In `u128`: three `u32` dimensions multiply to under 2^96, whereas `workgroup_size` has no upper bound and the
+        // product in `u64` overflowed (and panicked the macro) for dimensions near `u32::MAX`.
+        let invocations = u128::from(x) * u128::from(y) * u128::from(z);
         if !invocations.is_multiple_of(64) {
             return Err(diagnostics::error(
                 Code::SubgroupInvocations,

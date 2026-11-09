@@ -455,19 +455,6 @@ test module; do not mix that mechanical move with behavior changes.
 
 ## M8 follow-ups (filed during M8)
 
-- From Codex's M8 confirming sanity pass (plans/m8/sanity-codex.md in the coordinator's work area), for a small
-  slice before M9's first: E0751 multiplies the three `u32` workgroup dimensions in `u64`
-  (`crates/gust-macros/src/validate/mod.rs`, the full-subgroups check), so huge dimensions overflow and the macro
-  panics instead of reporting a coded error (read from the source, not run); multiply in `u128` or checked, with a
-  UI fixture. The rustdoc of `gust::subgroup_broadcast` (`crates/gust/src/runtime.rs`) still says two forms ran on
-  no adapter; m8.z ran them on the RTX 5090 and lavapipe. `docs/development/HANDOFF.md` still names MR and M5.
-- The routed-profile guard (m8.z review re-check): a hand-set `GUST_ROUTED_PROFILE` containing `{` gives a
-  format-string error instead of the guard's message, and an empty value means no check; validate the value and
-  name it in the error. No test covers two routed modules in one crate (each carries its own check).
-- `xtask/src/tests/web.rs:523` (`the_server_binds_loopback_and_serves_only_get_of_plain_files`) failed once on
-  Linux CI (run 42557064111 on m8.z's `62ea3b4`, which touched no web file; the job's rerun passed): a
-  connect to the stopped server's address succeeded, likely another test's listener on the freed port. The
-  assertion should not depend on the port staying free.
 - wgpu trunk has `max_storage_buffers_in_fragment_stage` and `max_storage_textures_in_fragment_stage`; wgpu 30.0.1
   does not. Adopt them in `gust::limits::PORTABLE` (m8.f) at the next wgpu bump.
 - gfx-rs/wgpu#10876 (filed 2026-11-07): an opt-in `REQUIRE_FULL_SUBGROUPS` for compute pipelines on Vulkan. Until
@@ -475,8 +462,9 @@ test module; do not mix that mechanical move with behavior changes.
 - Subgroup evidence (the m8.s review): an end-to-end `cargo gust build` of a body that calls a subgroup operation;
   a Radeon 890M run of tests/subgroup.rs (the tests open the first Vulkan adapter); a check that shows which body a
   CPU dispatch ran (the one-lane shadows give the portable output); a literal lane of 128 or more refused in the
-  macro. `i32` broadcast with a literal lane and `f32` broadcast with a computed lane ran only on the RTX 5090 (m8.z
-  added the two cells to tests/subgroup.rs); lavapipe's CI step has not run them yet and the 890M never.
+  macro. `i32` broadcast with a literal lane and `f32` broadcast with a computed
+  lane ran on the RTX 5090 and on lavapipe (run 42573264225) but never on the 890M (m8.z added the two cells to
+  tests/subgroup.rs).
 - For the 0.2.0 release (the m8.v re-check; done in m8.x2): RELEASE.md's "Releasing 0.2.0 from main" now lists every
   version literal (the README's renamed-dependency example, "Not supported in 0.1.0" and "known limit of 0.1.0", the two
   crate READMEs' `~0.1`, the doc comment of `cargo-gust`'s `main.rs`), and CHANGELOG's `toml` text left "may break" for

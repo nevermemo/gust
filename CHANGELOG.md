@@ -30,8 +30,9 @@ operations).
   only in a body that requires `subgroups` and only where every invocation reaches them (`GUST-E0745`, `GUST-E0747`,
   `GUST-E0751`). The WGSL that Slang writes for them is repaired for the pinned `naga` by a text fix-up, in the
   run-time compiler, the reflected bridge and `cargo gust build`. They ran on an RTX 5090 (subgroup size 32) and on
-  lavapipe in CI (size 8), except two forms of `subgroup_broadcast` (`i32` with a literal lane, `f32` with a computed
-  lane) that only the RTX 5090 has run so far; no browser has run one, and the Radeon 890M has not run the fixtures.
+  lavapipe in CI (size 8), the two m8.z forms of `subgroup_broadcast` (`i32` with a literal lane, `f32` with a computed
+  lane) included (gpu-software run 42573264225, `dev+subgroups` step); no browser has run one, and the Radeon 890M has
+  not run the fixtures.
 - `gust-compute-wgpu` opens its devices with the capabilities of the build (`DeviceOptions::capabilities` and
   `with_capabilities`, `HeadlessDevice::capabilities()` and `subgroup_sizes()`), refuses a request the adapter cannot
   meet when the device opens, and refuses a kernel whose `requires` the device does not meet before launch
@@ -48,7 +49,8 @@ operations).
   cargo's own view differs (a target from `build.target` or `CARGO_BUILD_TARGET`, a custom profile that inherits
   `release`, a `GUST_PROFILE` set only in the config's `[env]`) instead of routing the kernels for another profile.
   Plain cargo sets nothing and is unchanged; a switch between plain cargo and `cargo gust` rebuilds the routed crates
-  and the application, not `gust`.
+  and the application, not `gust`. A `GUST_ROUTED_PROFILE` set by hand to anything but `dev`, `native`, `web` or `cpu`
+  (an empty value included) is a compile error of its own that names the variable, the value and the four profiles.
 - A hidden `gust::profile::is_profile` (the check the `#[gpu]` macro writes for a routed module; not public API).
 - New public modules of `gust-compute`: `gust::capability`, `gust::limits`, `gust::target` (`Target`, and the hidden
   `GpuKernel` marker) and `gust::routes` (`variable_name`, `VARIABLE_PREFIX`).

@@ -1123,7 +1123,8 @@ pub(crate) mod routing {
     pub(crate) struct Request<'a> {
         /// The tag; `None` for a module or function with no `route` (nothing here is looked at then).
         pub tag: Option<Tag>,
-        /// The value of the variable called `name`, `None` when it is unset or empty.
+        /// The value of the variable called `name`, `None` when it is unset or empty (but for `GUST_ROUTED_PROFILE`, whose
+        /// empty value is a value: the guard refuses it).
         pub variables: &'a dyn Fn(&str) -> Option<String>,
     }
 
@@ -1143,8 +1144,21 @@ pub(crate) mod routing {
 
     /// The value of the process environment variable `name`, `None` when it is unset, empty or not text. The macro
     /// reads each route variable once per expansion, and emits the `option_env!` that makes rustc track the read.
+    ///
+    /// `GUST_ROUTED_PROFILE` is the exception (m9.0): unset means plain cargo and nothing is checked, but a variable set
+    /// to nothing, or to text that is not UTF-8 (read lossily), is a value the guard has to refuse, so it is kept.
     pub(crate) fn process_variable(name: &str) -> Option<String> {
-        std::env::var(name).ok().filter(|value| !value.is_empty())
+        variable_value(name, std::env::var_os(name))
+    }
+
+    /// What [`process_variable`] makes of the value the process has for `name` (a function of the value, so that a unit
+    /// test reaches the empty and the non-UTF-8 cases without setting an environment variable).
+    pub(crate) fn variable_value(name: &str, value: Option<std::ffi::OsString>) -> Option<String> {
+        let value = value?;
+        if name == ROUTED_PROFILE_VARIABLE {
+            return Some(value.to_string_lossy().into_owned());
+        }
+        value.into_string().ok().filter(|value| !value.is_empty())
     }
 
     /// The variable `cargo gust` sets to the target part of the profile it resolved the routes for (m8.z).
@@ -1166,6 +1180,18 @@ pub(crate) mod routing {
              environment then, so that both copies infer `web`). Pass `--release` and `--target` to `cargo gust` itself, or \
              set GUST_PROFILE to the profile you mean in the environment, so that both agree. ({ROUTED_PROFILE_VARIABLE} is \
              set by `cargo gust` only; unset it if you are running plain cargo.)"
+        )
+    }
+
+    /// The text of the compile error of a routed module when `GUST_ROUTED_PROFILE` holds `value`, which is none of the
+    /// profiles (`ROUTED_PROFILES`; an empty value included), so there is nothing to compare the build with (m9.0). It is
+    /// the literal of a `compile_error!`, not a format, and the value is written with its escapes (`{value:?}`).
+    pub(crate) fn unknown_routed_profile_message(value: &str) -> String {
+        format!(
+            "gust: {ROUTED_PROFILE_VARIABLE} is {value:?}, which is not a build profile; the valid profiles are {}. \
+             `cargo gust` sets this variable to the profile it resolved the routes for, so it is never empty; unset it if you \
+             are running plain cargo, or set it to the profile you mean.",
+            ROUTED_PROFILES.join(", ")
         )
     }
 
@@ -1370,7 +1396,8 @@ pub(crate) mod routing {
         /// application, and not `gust` (D67's measured scope). When the variable is set the expansion also checks it
         /// against the profile `gust` was built for (`gust::profile::is_profile`, a hidden item). The check is a const
         /// evaluation spanned at the route's literal, so a mismatch is a compile error there. Unset, plain cargo, nothing
-        /// is checked (D67).
+        /// is checked (D67). Set to anything but a profile (empty included, which is not unset), it is a compile error of
+        /// its own that names the variable, the value and the profiles (m9.0).
         ///
         /// The macro cannot see the profile `gust` was built for, only `gust`'s constant can, so there is one `if` per
         /// profile that is not the routed one, each with a message that names both.
@@ -1383,6 +1410,15 @@ pub(crate) mod routing {
             let Some(routed) = routed else {
                 return tracking;
             };
+            // A value that is no profile (a typo, an empty variable, text with a `{`) cannot be compared with the build:
+            // it is its own compile error, and no `panic!` carries it (m9.0).
+            if !ROUTED_PROFILES.contains(&routed) {
+                let message = unknown_routed_profile_message(routed);
+                return quote_spanned! { span =>
+                    #tracking
+                    ::core::compile_error!(#message);
+                };
+            }
             let checks = ROUTED_PROFILES
                 .iter()
                 .filter(|built| **built != routed)

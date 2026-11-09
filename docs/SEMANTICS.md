@@ -135,8 +135,9 @@ describes the intended behaviour and is not evidence.
   that applies no `gust.toml` removes a stale inherited value. A switch between plain cargo (or rust-analyzer) and
   `cargo gust` in one target directory rebuilds the routed kernel crates and the application only, as a route change
   does (measured in m8.z: two crates in the routing fixture; with the check in `gust`'s build script it was three, `gust`
-  among them, and in a real application the whole `gust` cone). A routed kernel crate compiled for the host as a build
-  dependency of a `wasm32` release build infers `native` where the driver resolved `web`, and is refused too; set
+  among them; in a real application every crate that depends on `gust` would rebuild, inferred from Cargo's rule
+  that a rerun build script rebuilds its dependents, not measured). A routed kernel crate compiled for the host as a
+  build dependency of a `wasm32` release build infers `native` where the driver resolved `web`, and is refused too; set
   `GUST_PROFILE=web` in the environment then, so that both copies infer `web`. A change to the `gust.toml`
   rebuilds in both directions, as `cargo xtask check-routing` measured (with the route tracking removed, the
   unset-to-set flip fails). A route to a capability profile is refused; `--workspace`, `--all` and a workspace root's

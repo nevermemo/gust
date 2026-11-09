@@ -75,8 +75,26 @@ merge `4219bb5`; 27 main gates green on the merge, 2026-11-09T00:17Z; pull reque
 VALIDATION, DIFFTEST, RELEASE.md, NEXT_TASKS and the seven skills describe M8 as built; CHANGELOG 0.2.0 carries the
 semver report (one break, B1, in two parts) and the compatibility list (113 manifests on `release/0.1`: 94 unchanged,
 4 derived-only, 15 changed, each built by a main gate). The Opus review (0/3/13, re-check MERGE) found stale counts
-and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138's licence wording. Next: the M8
-close.
+and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138's licence wording.
+
+- M8 close records (M8 plan §4 row "close"; 2026-11-09; D153). (i) `cargo xtask check-full` passed at `2f96e69`
+  (2026-11-09, 05:11 to 05:53Z, NVIDIA GeForce RTX 5090 / Vulkan, driver 610.88, Slang v2026.21; clean tree), with the
+  `dev+subgroups` Gpu step m8.z added; `check-full` and `check-release --check-only` had also passed on the first
+  closing candidate `c0c89c1` (00:21 to 01:12Z). (ii) The 27 main gates passed on the m8.z merge `2f96e69` (03:50 to
+  05:10Z). (iii) Linux and lavapipe: main CI 42569921459 green on `2f96e69` (attempt 3; attempts 1 and 2 failed in the
+  slang job on GitHub release-download 504s), pull request CI 42557064111 green on its rerun on `62ea3b4`, and
+  gpu-software run 42569921556 green on `2f96e69`. (iv) The sanity checks, Fable (plans/m8/sanity-fable.md) and Opus in
+  the Codex slot (plans/m8/sanity-opus.md; Codex was out of quota until 05:37Z), both said "proceed with fixes"; Codex's
+  confirming pass on `2f96e69` (plans/m8/sanity-codex.md) said the same, found S1 to S4 closed by m8.z and one new item,
+  filed in NEXT_TASKS: E0751's invocation product can overflow. Nothing reopened M8. Opus found what Fable missed:
+  `cargo gust` inferred the profile from its command line only, so a target from cargo config or a custom profile could
+  route a kernel for the wrong profile silently. (v) Slice m8.z (merge `2f96e69`; Opus review 0/3/6, re-check MERGE)
+  fixed it with `GUST_ROUTED_PROFILE`, checked in the code the macro writes for a routed module after a measurement
+  (with the check in `gust`'s build script a plain-cargo/driver switch recompiled three crates in the routing fixture,
+  `gust` among them; in the macro's output two), added check-routing's `guard` case through the real driver, restored
+  the flip's unset-to-set mutation proof, ran the two never-run subgroup broadcast forms on the RTX 5090 and lavapipe,
+  put the `dev+subgroups` Gpu suite (gust-algo included) into `check-full`, and named the E0745 subgroup-name break in
+  CHANGELOG. Next: the M9 plan.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so
@@ -1380,8 +1398,8 @@ full_check_needed_before_commit: no
 - Last complete compiler feature: MX (execution shapes and textures: the stage-profile trait, the `pixel` shape,
   textures and samplers, the classifier and the shape pin; D129); before it M7 (map generator, `GpuVec` residency,
   `par_for!`, shared memory and barriers, multi-dimensional dispatch, wrapping arithmetic, gust-algo; D126)
-- Last full validation: `cargo xtask check-full` passed at `27a461a` (MX close records, 2026-11-05, 13:14 to 13:46Z,
-  NVIDIA GeForce RTX 5090 / Vulkan, driver 610.88, Slang v2026.20; clean tree), through the shared cargo slot wrapper:
+- Last full validation: `cargo xtask check-full` passed at `2f96e69` (M8 close records, 2026-11-09, 05:11 to 05:53Z,
+  NVIDIA GeForce RTX 5090 / Vulkan, driver 610.88, Slang v2026.21; clean tree), through the shared cargo slot wrapper:
   workspace tests, the release-only tests required by name, every example test with `--include-ignored`, `check-dual` in
   full mode, the SPIR-V artifacts through `spirv-val`, and `check-web` with the browser run, and since mx.p1c the
   difftest with `--shapes grid,pixel`. The step output, including the `GUST_OK` line, lives in the local

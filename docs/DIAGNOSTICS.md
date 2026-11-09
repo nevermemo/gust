@@ -152,7 +152,7 @@ Decision: D02.
 
 A GPU module holds functions, plain structs and one inherent `impl` block per struct.
 Reached through `#[gpu]`.
-Rejected: `const`, `static`, `enum`, `trait`, `use`, nested `mod`, type aliases; an `impl` that is an `unsafe impl`, a trait impl (`impl Clone for S`), a second `impl` block for the same struct, or one with an associated function (no receiver, `fn make() -> S`), an associated `const` or an associated type (methods with a receiver are accepted since M9 slice m9.a1, see GUST-E0116 for the receivers not yet accepted).
+Rejected: `const`, `static`, `enum`, `trait`, `use`, nested `mod`, type aliases; an `impl` that is an `unsafe impl`, a trait impl (`impl Clone for S`), a second `impl` block for the same struct, or one with an associated function (no receiver, `fn make() -> S`), an associated `const` or an associated type, or a `Self` in a type or a struct literal (`-> Self`, `Self { .. }`; slice m9.a2 lowers it, write the name of the struct) (methods with a receiver are accepted since M9 slice m9.a1, see GUST-E0116 for the receivers not yet accepted).
 Write instead: pass constants as uniform or value parameters, or write them inline; put every method of a struct in one `impl S { .. }` block.
 Decision: D02, D133 (methods).
 
@@ -265,7 +265,7 @@ Decision: D02.
 
 ### GUST-E0116 `self` parameter
 
-A free function has no receiver, and a method takes `&self` only for now: a method that takes `&mut self`, `self` or `mut self`, or a typed receiver (`self: Box<Self>`), is not accepted yet (a mutating method arrives with M9 slice m9.a2). A `&self` method of an `impl` block is accepted (GUST-E0121 for the impl rules). The report for a declaration of that kind comes last: when the rest of the module is also wrong, the other error is shown first, and a call of a `&mut self` method on a storage, uniform, workgroup or texture place is GUST-E0333 instead.
+A free function has no receiver, and a method takes `&self` only for now: a method that takes `&mut self`, `self` or `mut self`, or a typed receiver (`self: Box<Self>`), is not accepted yet (a mutating method arrives with M9 slice m9.a2). A `&self` method of an `impl` block is accepted (GUST-E0121 for the impl rules). A typed receiver is refused at once, where it stands. The declarations of `&mut self`, `self` and `mut self` methods are reported last: when the rest of the module is also wrong, the other error is shown first, and a call of a `&mut self` method on a storage, uniform, workgroup or invocation-id place is GUST-E0333 instead.
 Reached through `#[gpu]`.
 Rejected: `fn f(&self) -> u32` outside an `impl`, `impl S { fn bump(&mut self) {} }`, `impl S { fn take(self) {} }`.
 Write instead: `&self` for a method that reads, or pass the value as an ordinary parameter to a free function and return the new value.
@@ -651,7 +651,7 @@ Decision: D42 (M7 plan 4.1, slice m7.g1).
 
 ### GUST-E0328 method name clashes with a built-in
 
-A method of a module struct becomes a member function of the generated Slang struct and is called as `recv.name(args)`, so its name must not be one that a call already means something else for: a method of the dialect (`len`, `global_id`, `is_some`, `unwrap`, `wrapping_add`, `dot`, `mul_vec4`, `transpose`, the texture methods `load`, `store`, `sample`, `width`, `height` and every other built-in method, GUST-E0325), a vector swizzle (`xy`, `xyz`, `wzyx` and every other two to four letters of `x`, `y`, `z`, `w`), a Slang keyword that may not name a member (`This`, `init`, `property`, `subscript`, `this`), or the name of a field of its own struct (the getter pattern `fn radius(&self)` next to a field `radius`, where `s.radius` and `s.radius()` would collide as Slang members). Reserved Slang names that every identifier shares are renamed by the emitter and are no clash.
+A method of a module struct becomes a member function of the generated Slang struct and is called as `recv.name(args)`, so its name must not be one that a call already means something else for: a method of the dialect (`len`, `global_id`, `is_some`, `unwrap`, `wrapping_add`, `dot`, `mul_vec4`, `transpose`, the texture methods `load`, `store`, `sample`, `width`, `height` and every other built-in method, GUST-E0325), a vector swizzle (`xy`, `xyz`, `wzyx` and every other two to four letters of `x`, `y`, `z`, `w`), a word GUST reserves as a method name because it begins a member declaration of a Slang struct or names the struct (`This`, `init`, `property`, `subscript`, `this`), or the name of a field of its own struct (the getter pattern `fn radius(&self)` next to a field `radius`, where `s.radius` and `s.radius()` would collide as Slang members). Reserved Slang names that every identifier shares are renamed by the emitter and are no clash.
 Reached through `#[gpu]`.
 Rejected: `impl S { fn len(&self) -> u32 { .. } }`, `fn xy(&self) -> f32`, `fn init(&self) -> u32`, `fn v(&self) -> u32` in `struct S { v: u32 }`.
 Write instead: another name, `length`, `radius_value`, `get_v`.
@@ -660,9 +660,9 @@ Decision: D154 (M9 plan 2.1, slice m9.a1).
 
 ### GUST-E0333 mutating method on a shared place
 
-A method that takes `&mut self` or `self` would write through its receiver. On a storage buffer element, a uniform, a workgroup array or a texture that write is shared with the other invocations, and no statement of the kernel shows it, so a call whose receiver is rooted in such a parameter is rejected at the call. The validator decides from the first identifier of the receiver place (`out` in `out[i].bump()`), by the method name: a name that a `&mut self` or `self` method of any struct of the module has is a mutating call. A `&self` method may be called on any place, the callee reads a copy of the element (spike M9.s0 P1b). Until M9 slice m9.a2 accepts mutating methods at all, the declaration is GUST-E0116, and a module that also contains a call of this kind reports this code, once, instead.
+A method that takes `&mut self` or `self` would write through its receiver. On a storage buffer element, a uniform or a workgroup array that write is shared with the other invocations, and no statement of the kernel shows it, so a call whose receiver is rooted in such a parameter is rejected at the call. The validator decides from the first identifier of the receiver place (`out` in `out[i].bump()`), by the method name: a name that a `&mut self` or `self` method of any struct of the module has is a mutating call. A `&self` method may be called on any place, the callee reads a copy of the element (spike M9.s0 P1b). Until M9 slice m9.a2 accepts mutating methods at all, the declaration is GUST-E0116, and a module that also contains a call of this kind reports this code, once, instead.
 Reached through `#[gpu]`.
-Rejected: `out[0].bump()` and `out[i].bump()` for a storage parameter `out`, `u.bump()` for a uniform, `scratch[l].bump()` for a workgroup array, when a method `bump` takes `&mut self`.
+Rejected: `out[0].bump()` and `out[i].bump()` for a storage parameter `out`, `u.bump()` for a uniform, `scratch[l].bump()` for a workgroup array, when a method `bump` takes `&mut self`; `lid.bump()` and `gid.bump()` (invocation ids) too. A texture receiver (`tex.bump()`) is GUST-E0735 instead, because the texture methods are checked first.
 Write instead: copy the element to a local, call the method on the local and store the result, `let mut c = out[i]; c.bump(); out[i] = c;` once mutating methods are accepted.
 Fixture: `tests/ui/method-mut-on-storage` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, X1 of spike M9.s0, slice m9.a1).
@@ -1634,7 +1634,7 @@ Decision: D02.
 
 An expression form the emitter has no lowering for.
 Reached through `#[gpu]`.
-Rejected: a tuple expression `(1u32, 2u32)`, an array repeat `[0u32; 4]`, a block used as a value `{ 1u32 }`.
+Rejected: a tuple expression `(1u32, 2u32)`, an array repeat `[0u32; 4]`, a block used as a value `{ 1u32 }`, the dereference `*x` (`*self` included: no value of the dialect is a reference, so write `self.field` or use a local copy).
 Write instead: the supported expression forms listed in the validator codes above.
 Decision: D02.
 

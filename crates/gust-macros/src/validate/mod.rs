@@ -804,7 +804,7 @@ pub(crate) fn method_name_clash(name: &str, fields: &HashSet<String>) -> Option<
     }
     if SLANG_MEMBER_KEYWORDS.contains(&name) {
         return Some(format!(
-            "`{name}` is a Slang member keyword, so a member function of that name would not be a method: choose another name"
+            "`{name}` is reserved by GUST as a method name (it starts a member declaration of a Slang struct, or names the struct itself): choose another name"
         ));
     }
     if fields.contains(name) {
@@ -1705,14 +1705,13 @@ impl RestrictedVisitor {
             && let Some(root) = Self::place_root(&call.receiver)
             && (self.resources.contains(&root)
                 || self.uniforms.contains(&root)
-                || self.textures.contains_key(&root)
                 || self.derived_ids.contains(&root))
         {
             self.reject(
                 Code::MutatingMethodOnSharedPlace,
                 call,
                 &format!(
-                    "`.{method}(..)` takes `&mut self` or `self`, and `{root}` is a storage, uniform, workgroup or texture parameter: a method would write through it where no statement shows the write; copy the element to a local, call the method on the local and store the result (`out[i] = value;`)"
+                    "`.{method}(..)` takes `&mut self` or `self`, and `{root}` is a storage buffer, a uniform, a workgroup array or an invocation id of the kernel: a method would write through it where no statement shows the write; copy the element to a local, call the method on the local and store the result (`out[i] = value;`)"
                 ),
             );
             return;
@@ -1912,6 +1911,19 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_path(&mut self, path: &'ast syn::Path) {
+        // `Self` in a type or a struct literal arrives with slice m9.a2, which lowers it to the name of the struct.
+        if path
+            .segments
+            .first()
+            .is_some_and(|segment| segment.ident == "Self")
+        {
+            self.reject(
+                Code::UnsupportedModuleItem,
+                path,
+                "`Self` is not accepted yet (slice m9.a2 lowers it to the struct name): write the name of the struct",
+            );
+            return;
+        }
         for segment in &path.segments {
             if BANNED_NAMES.contains(&segment.ident.to_string().as_str()) {
                 self.reject(
@@ -2284,7 +2296,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         ) || wrapping_arity(&method).is_some()
             || math_types::is_swizzle(&method)
             || math_types::method_arity(&method).is_some();
-        if !in_dialect && let Some(&mutating) = self.methods.get(&method) {
+        if !in_dialect && let Some(&mutating) = self.methods.get(&call.method.unraw().to_string()) {
             self.check_module_method_call(call, mutating);
             return;
         }
@@ -2800,6 +2812,32 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             "await is CPU-only and cannot appear in GPU code",
         );
     }
+
+    fn visit_expr_unary(&mut self, expression: &'ast syn::ExprUnary) {
+        // `*x` dereferences a reference, and no value of the dialect is one (`&self` is lowered to `this`, which is not
+        // a pointer), so Slang would be handed `*this`: refused here with the code of an unsupported expression.
+        let before = self
+            .error
+            .as_ref()
+            .map_or(0, |error| error.into_iter().count());
+        visit::visit_expr_unary(self, expression);
+        // The operand is judged first (`*u` on a whole uniform is GUST-E0321), and the dereference only when nothing
+        // in the operand was refused, so one expression gives one report.
+        let after = self
+            .error
+            .as_ref()
+            .map_or(0, |error| error.into_iter().count());
+        if matches!(expression.op, syn::UnOp::Deref(_)) && before == after {
+            self.reject(
+                Code::UnsupportedExpression,
+                expression,
+                "the dereference `*` is not part of the Rust-to-Slang value model: use the value (`self.field`, a local copy) instead of `*self`",
+            );
+        }
+    }
+
+    // The `Self` type of a shorthand receiver is not written in the source: the receiver is judged by its own rules.
+    fn visit_receiver(&mut self, _receiver: &'ast syn::Receiver) {}
 
     fn visit_expr_reference(&mut self, expression: &'ast syn::ExprReference) {
         self.reject(

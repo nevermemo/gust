@@ -1,7 +1,5 @@
-// A method that takes `&mut self` called on an element of a storage buffer would write through the buffer where no
-// statement shows the write: GUST-E0333 at the call (spike M9.s0, fixture X1). It is the one error: the declaration
-// of `bump` is GUST-E0116 until M9 slice m9.a2, and that report comes last, only when nothing else is wrong.
-// expected.txt pins the code and the line of the call.
+// X1 (m9.a1, GUST-E0333): a `&mut self` method on a storage element, called under a condition. The write would be a
+// shared write hidden in a call, so the receiver rule refuses it: a mutating receiver must be an invocation-local place.
 
 #[gust::gpu]
 mod block {

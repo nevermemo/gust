@@ -14,6 +14,22 @@ struct Circle
     {
         return (((this.radius + by)) * this.scale);
     }
+
+    float gap(Circle __gust_r_this)
+    {
+        return (this.radius - __gust_r_this.radius);
+    }
+};
+
+struct Results
+{
+    float area;
+    float grown;
+    float gap;
+    float ring_area;
+    float weight;
+    uint clamped;
+    uint extent;
 };
 
 struct Span
@@ -40,13 +56,30 @@ struct Span
     }
 };
 
+struct Disc
+{
+    float radius;
+    float scale;
+    float pad0;
+    float pad1;
+
+    float weight(float by)
+    {
+        return ((this.radius * by) + this.scale);
+    }
+};
+
+struct Frame
+{
+    Disc disc;
+};
+
 [[vk::binding(0, 0)]] StructuredBuffer<Circle> circles;
 [[vk::binding(1, 0)]] StructuredBuffer<Span> spans;
 [[vk::binding(2, 0)]] StructuredBuffer<uint> input;
-[[vk::binding(3, 0)]] RWStructuredBuffer<float> areas;
-[[vk::binding(4, 0)]] RWStructuredBuffer<float> grown;
-[[vk::binding(5, 0)]] RWStructuredBuffer<uint> clamped;
-[[vk::binding(6, 0)]] RWStructuredBuffer<uint> extents;
+[[vk::binding(3, 0)]] ConstantBuffer<Frame> frame;
+[[vk::binding(4, 0)]] RWStructuredBuffer<Circle> ring;
+[[vk::binding(5, 0)]] RWStructuredBuffer<Results> results;
 
 // @rust kernel: methods::run
 [shader("compute")]
@@ -62,25 +95,36 @@ void gpu_methods_run(uint3 id : SV_DispatchThreadID)
     uint __gpu_len_input;
     uint __gpu_stride_input;
     input.GetDimensions(__gpu_len_input, __gpu_stride_input);
-    uint __gpu_len_areas;
-    uint __gpu_stride_areas;
-    areas.GetDimensions(__gpu_len_areas, __gpu_stride_areas);
-    uint __gpu_len_grown;
-    uint __gpu_stride_grown;
-    grown.GetDimensions(__gpu_len_grown, __gpu_stride_grown);
-    uint __gpu_len_clamped;
-    uint __gpu_stride_clamped;
-    clamped.GetDimensions(__gpu_len_clamped, __gpu_stride_clamped);
-    uint __gpu_len_extents;
-    uint __gpu_stride_extents;
-    extents.GetDimensions(__gpu_len_extents, __gpu_stride_extents);
+    uint __gpu_len_ring;
+    uint __gpu_stride_ring;
+    ring.GetDimensions(__gpu_len_ring, __gpu_stride_ring);
+    uint __gpu_len_results;
+    uint __gpu_stride_results;
+    results.GetDimensions(__gpu_len_results, __gpu_stride_results);
     var i = id.x;
     if ((i < __gpu_len_circles))
     {
-        areas[i] = circles[i].area();
+        var area = circles[i].area();
         var circle = circles[i];
-        grown[i] = circle.grown(float(2.0));
-        clamped[i] = spans[i].clamp_into(input[i]);
-        extents[i] = spans[i].extent();
+        var grown = circle.grown(float(2.0));
+        var clamped = spans[i].clamp_into(input[i]);
+        var extent = spans[i].extent();
+        Circle __gust_struct_5;
+        __gust_struct_5.radius = float(0.25);
+        __gust_struct_5.scale = float(1.0);
+        Circle probe = __gust_struct_5;
+        var gap = circles[i].gap(probe);
+        var ring_area = ring[i].area();
+        var weight = frame.disc.weight(float(4.0));
+        ring[i].scale = float(1.0);
+        Results __gust_struct_10;
+        __gust_struct_10.area = area;
+        __gust_struct_10.grown = grown;
+        __gust_struct_10.gap = gap;
+        __gust_struct_10.ring_area = ring_area;
+        __gust_struct_10.weight = weight;
+        __gust_struct_10.clamped = clamped;
+        __gust_struct_10.extent = extent;
+        results[i] = __gust_struct_10;
     }
 }

@@ -684,7 +684,7 @@ fn methods_of<'a>(items: &'a [syn::Item], item: &syn::ItemStruct) -> Vec<&'a syn
             syn::Item::Impl(block)
                 if block.trait_.is_none()
                     && matches!(block.self_ty.as_ref(), syn::Type::Path(own)
-                        if own.path.is_ident(&item.ident)) =>
+                        if own.path.get_ident().is_some_and(|name| name.unraw() == item.ident.unraw())) =>
             {
                 Some(block)
             }

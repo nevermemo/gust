@@ -5760,7 +5760,7 @@ fn a_mutating_method_is_refused_at_its_declaration_when_nothing_else_is_wrong() 
 }
 
 #[test]
-fn a_mutating_method_on_a_workgroup_uniform_or_texture_root_is_e0333() {
+fn a_mutating_method_on_a_workgroup_or_uniform_root_is_e0333() {
     for (parameters, receiver) in [
         ("mut scratch: Workgroup<[uint; 4]>", "scratch[0u32]"),
         ("u: Uniform<Counter>", "u.n"),
@@ -5957,4 +5957,101 @@ fn a_helper_may_call_a_method() {
         }",
     )
     .unwrap();
+}
+
+#[test]
+fn a_parameter_or_local_named_this_does_not_shadow_the_receiver() {
+    // `this` is how a receiver is written in Slang; a user `this` is renamed like every name of the collision table
+    // (review r1, M1): `(this.a - this.a)` would compile and give 0.0 on the GPU.
+    let source = translate(
+        "mod m {
+            pub struct S { pub a: f32 }
+            impl S {
+                pub fn diff(&self, this: S) -> f32 { self.a - this.a }
+                pub fn other(&self, o: S) -> f32 { let this = o; self.a - this.a }
+            }
+            #[kernel]
+            pub fn run(id: SV_DispatchThreadID, items: StructuredBuffer<S>, mut out: RWStructuredBuffer<f32>) {
+                out[id.x] = items[id.x].diff(items[0u32]) + items[id.x].other(items[0u32]);
+            }
+        }",
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(source.contains("float diff(S __gust_r_this)"), "{source}");
+    assert!(
+        source.contains("return (this.a - __gust_r_this.a);"),
+        "{source}"
+    );
+    assert!(source.contains("var __gust_r_this = o;"), "{source}");
+}
+
+#[test]
+fn self_in_a_type_or_a_struct_literal_is_not_accepted_yet() {
+    for body in [
+        "pub fn again(&self) -> Self { Circle { r: self.r } }",
+        "pub fn again(&self) -> Circle { let c: Self = Circle { r: self.r }; c }",
+        "pub fn again(&self) -> Circle { Self { r: self.r } }",
+    ] {
+        let source = format!(
+            "mod m {{ pub struct Circle {{ pub r: f32 }} impl Circle {{ {body} }} #[kernel] pub fn run(id: SV_DispatchThreadID) {{}} }}"
+        );
+        assert_rejected(&source, Code::UnsupportedModuleItem);
+    }
+}
+
+#[test]
+fn a_dereference_is_an_unsupported_expression() {
+    for body in [
+        "pub fn copy(&self) -> Circle { *self }",
+        "pub fn value(&self) -> f32 { (*self).r }",
+    ] {
+        let source = format!(
+            "mod m {{ pub struct Circle {{ pub r: f32 }} impl Circle {{ {body} }} #[kernel] pub fn run(id: SV_DispatchThreadID) {{}} }}"
+        );
+        assert_rejected(&source, Code::UnsupportedExpression);
+    }
+    assert_rejected(
+        "mod m { #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) { let x = 1u32; out[id.x] = *x; } }",
+        Code::UnsupportedExpression,
+    );
+}
+
+#[test]
+fn a_texture_receiver_is_e0735_and_an_invocation_id_receiver_is_e0333() {
+    let source = |parameters: &str, body: &str| {
+        format!(
+            "mod m {{ pub struct Counter {{ pub n: uint }}
+             impl Counter {{ pub fn bump(&mut self) {{ self.n = self.n + 1u32; }} }}
+             #[kernel(workgroup_size(64, 1, 1))] pub fn run(id: SV_DispatchThreadID, {parameters}) {{ {body} }} }}"
+        )
+    };
+    assert_rejected(
+        &source("image: Texture2D<Vec4>", "image.bump();"),
+        Code::TextureMethod,
+    );
+    assert_rejected(
+        &source("lid: LocalId", "lid.bump();"),
+        Code::MutatingMethodOnSharedPlace,
+    );
+    let error = translate(&source("lid: LocalId", "lid.bump();")).expect_err("lid");
+    assert!(!error.to_string().contains("texture"), "{error}");
+}
+
+#[test]
+fn raw_identifiers_name_the_same_struct_and_method() {
+    let source = translate(
+        "mod m {
+            pub struct Circle { pub r: f32 }
+            impl r#Circle { pub fn r#area(&self) -> f32 { self.r } }
+            #[kernel]
+            pub fn run(id: SV_DispatchThreadID, items: StructuredBuffer<Circle>, mut out: RWStructuredBuffer<f32>) {
+                out[id.x] = items[id.x].r#area();
+            }
+        }",
+    )
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(source.contains("float area()"), "{source}");
+    assert!(source.contains("items[id.x].area()"), "{source}");
 }

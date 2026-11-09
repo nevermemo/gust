@@ -2,5 +2,5 @@
 # A macro error is a compile_error!: code none.
 code: none
 file: method-mut-on-storage/src/main.rs
-line: 21
+line: 19
 message: [GUST-E0333] `.bump(..)` takes `&mut self` or `self`

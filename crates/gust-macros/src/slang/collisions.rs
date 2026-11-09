@@ -182,6 +182,10 @@ pub const COLLISIONS: &[Collision] = &[
     hard("spirv_asm", &[Local, Helper, Global, HelperParameter]),
     hard("struct", &[Struct, Global]),
     hard("switch", &[Struct, Global]),
+    // The receiver of a method is written `this`. A parameter or local of that name inside a method would take its
+    // place and compile (`this.a - this.a`), so the bare name is a silent capture, not a failure at a declaration
+    // (measured 2026-11-09 on slangc 2026.21: every position takes it; the member probe `capture_source` fails).
+    emitted("this"),
     // M6 (`Mat4::transpose`).
     emitted("transpose"),
     // See `false`.
@@ -342,6 +346,14 @@ pub fn capture_source(entry: &str, spelled: &str) -> Option<String> {
         "true" => bool_local("false", "true ? 7u : 9u"),
         "false" => bool_local("true", "false ? 7u : 9u"),
         "var" => local("var y = 2.0; ob[gid.x] = uint(y);"),
+        // The receiver of a member function, captured by a parameter of that name: `this.a` is then a member of a float.
+        "this" => format!(
+            "struct S {{ float a; float f(float {n}) {{ return this.a - {n}; }} }};
+RWStructuredBuffer<S> sb;
+RWStructuredBuffer<float> ob;
+{KERNEL}{{ ob[gid.x] = sb[gid.x].f(1.0); }}
+"
+        ),
         _ => return None,
     })
 }

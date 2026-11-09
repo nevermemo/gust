@@ -55,10 +55,11 @@ operations).
 - New public modules of `gust-compute`: `gust::capability`, `gust::limits`, `gust::target` (`Target`, and the hidden
   `GpuKernel` marker) and `gust::routes` (`variable_name`, `VARIABLE_PREFIX`).
 - Methods (M9, slice a1). A `#[gpu]` module may hold one `impl S { .. }` block per struct, with `&self` methods
-  that take value parameters and return a value; a call `recv.m(args)` works on any place, a storage element included
-  (the method reads a copy). In Slang the methods are members of the struct. A method cannot call a function or another
-  method yet, `&mut self` and `self` methods are `GUST-E0116` until the next slice, a call of one on a storage, uniform,
-  workgroup or texture place is `GUST-E0333`, an `impl` for a type the module does not define is `GUST-E0121` and a
+  that take value parameters and return a value; a call `recv.m(args)` works on a storage element (a read-write one
+  included), a field of a uniform, a workgroup element or a local (the method reads a copy); a whole uniform is
+  `GUST-E0321`. In Slang the methods are members of the struct. A method cannot call a function or another
+  method yet, `&mut self` and `self` methods are `GUST-E0116` until the next slice, a call of one on a storage, uniform or
+  workgroup place is `GUST-E0333` (a texture receiver is `GUST-E0735`), an `impl` for a type the module does not define is `GUST-E0121` and a
   method named like a built-in method, a swizzle, a Slang member keyword or a field of its struct is `GUST-E0328`.
 
 ### Changed, and may break code written for 0.1.0

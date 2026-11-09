@@ -1133,6 +1133,14 @@ impl Server {
             let _ = thread.join();
         }
     }
+
+    /// Whether the accept thread, which owns the listener, has ended and dropped it. Only that thread holds a clone of
+    /// `stop` (a connection's thread gets `served` and the directory), so the count is 1 once it has returned. A test hook:
+    /// it answers from the server's own state, where a connect to the freed port can reach another listener.
+    #[cfg(test)]
+    pub(crate) fn listener_closed(&self) -> bool {
+        Arc::strong_count(&self.stop) == 1
+    }
 }
 
 impl Drop for Server {

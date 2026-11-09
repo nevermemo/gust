@@ -329,6 +329,31 @@ mod tests {
         assert_eq!(copy, golden);
     }
 
+    /// m9.0: `workgroup_size` has no upper bound, so the invocation count of the largest dimensions (about 2^96) does not
+    /// fit the `u64` of the measurement: it saturates, which is over every limit, and the first violation in the
+    /// order of the floor (the x axis) is the one reported. No arithmetic here can panic.
+    #[test]
+    fn the_largest_dimensions_are_over_the_floor_without_an_overflow() {
+        let shape = Spec {
+            size: Some([u32::MAX; 3]),
+            ..Spec::new()
+        };
+        let text = refused(&shape);
+        assert!(
+            text.contains(
+                "its workgroup size along x is 4294967295, over `max_compute_workgroup_size_x` = 256 "
+            ),
+            "{text}"
+        );
+        let module = shape.module("");
+        let syn::Item::Fn(function) = &module.content.as_ref().unwrap().1[0] else {
+            panic!("the kernel is the one item");
+        };
+        let measured = measure(&GRID, function, [u32::MAX; 3], false);
+        assert_eq!(measured[INVOCATIONS], Some(u64::MAX));
+        assert_eq!(measured[WORKGROUP_Z], Some(u64::from(u32::MAX)));
+    }
+
     #[test]
     fn a_kernel_exactly_at_every_limit_passes() {
         // One kernel cannot sit at the axis maxima and the invocation maximum together, so the axes take three.

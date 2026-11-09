@@ -48,7 +48,8 @@ operations).
   cargo's own view differs (a target from `build.target` or `CARGO_BUILD_TARGET`, a custom profile that inherits
   `release`, a `GUST_PROFILE` set only in the config's `[env]`) instead of routing the kernels for another profile.
   Plain cargo sets nothing and is unchanged; a switch between plain cargo and `cargo gust` rebuilds the routed crates
-  and the application, not `gust`.
+  and the application, not `gust`. A `GUST_ROUTED_PROFILE` set by hand to anything but `dev`, `native`, `web` or `cpu`
+  (an empty value included) is a compile error of its own that names the variable, the value and the four profiles.
 - A hidden `gust::profile::is_profile` (the check the `#[gpu]` macro writes for a routed module; not public API).
 - New public modules of `gust-compute`: `gust::capability`, `gust::limits`, `gust::target` (`Target`, and the hidden
   `GpuKernel` marker) and `gust::routes` (`variable_name`, `VARIABLE_PREFIX`).

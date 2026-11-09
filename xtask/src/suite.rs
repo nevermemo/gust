@@ -186,6 +186,17 @@ const NAGA_LAYOUT_GATE: Step = Step::Cargo(&[
     "--test",
     "naga_layout",
 ]);
+/// The routed device handle without a GPU runtime (m9.h1): `RoutedDevice<NoGpu>` runs a CPU-routed kernel, refuses a
+/// GPU-routed one with `Error::NoGpu`, and refuses a buffer of another handle. Counted. The GPU half is the
+/// `device_handle` test of `gust-compute-wgpu` (Gpu suite, `GPU_SUITE_PIN`).
+const CORE_ROUTED_HANDLE: Step = Step::CountedCargo(&[
+    "test",
+    "--locked",
+    "-p",
+    "gust-compute",
+    "--test",
+    "routed_handle",
+]);
 /// The test binaries of `gust-compute` that need neither Slang nor the helper nor an adapter, and were in no suite
 /// (m8.x1, the survey of m8.p): the pixel and texture twins on the CPU device, the parallel CPU dispatch, the toolchain
 /// discovery tests (one ignored child process test stays ignored), and the doc tests. Each runs in the `unit` CI job,
@@ -378,7 +389,7 @@ impl Suite {
     pub(crate) fn covers(self) -> &'static str {
         match self {
             Self::Unit => {
-                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), the uniforms_twin test (the uniforms fixture on the CPU twin against a hand reference), the pixel_twin, textures_twin, parallel and toolchain test binaries and the doc tests of gust-compute, the tests of cargo-gust that need no helper, clippy and check of gust and gust-wgpu without default features (the slang-runtime off state), the format check, clippy and tests of the harness crate tests/difftest (a workspace of its own; CI runs them in the job `difftest`, and `--skip-difftest` leaves them out of the `unit` and `slang` jobs), and the differential batch of seeds 1 to 4 in its CPU-only mode (64 generated kernels: an independent interpreter against the CPU twin, report.json judged by cargo xtask check-difftest); no external tools"
+                "macro validation and translation tests, xtask tests, lint, docs-check, check-arch, check-ui, check-cpu (the CPU twins of the examples against their host references), the gust::cpu unit tests, the gust::artifact tests (verify_artifact on a real precompiled fixture), the coretests_twin test (the scalar Rust core test cases on the CPU twin against their literals), the uniforms_twin test (the uniforms fixture on the CPU twin against a hand reference), the pixel_twin, textures_twin, parallel, routed_handle (the routed device handle without a GPU runtime) and toolchain test binaries and the doc tests of gust-compute, the tests of cargo-gust that need no helper, clippy and check of gust and gust-wgpu without default features (the slang-runtime off state), the format check, clippy and tests of the harness crate tests/difftest (a workspace of its own; CI runs them in the job `difftest`, and `--skip-difftest` leaves them out of the `unit` and `slang` jobs), and the differential batch of seeds 1 to 4 in its CPU-only mode (64 generated kernels: an independent interpreter against the CPU twin, report.json judged by cargo xtask check-difftest); no external tools"
             }
             Self::Cpu => {
                 "the production CPU target (GUST_PROFILE=cpu) on the fixture tests/cpu-target: the kernels build in release, run on gust::cpu::CpuDevice and equal independent host references; the binary holds no compiler, helper or GPU runtime; gust-wgpu refuses the profile; the cfg(test) and --cfg gust_dual builds keep one impl; the profile flips rebuild correctly; cargo only"
@@ -441,6 +452,7 @@ impl Suite {
             CORE_PIXEL_TWIN,
             CORE_TEXTURES_TWIN,
             CORE_PARALLEL_TESTS,
+            CORE_ROUTED_HANDLE,
             CORE_TOOLCHAIN_TESTS,
             CORE_DOC_TESTS,
             CARGO_GUST_TESTS,

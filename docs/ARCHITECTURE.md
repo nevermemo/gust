@@ -208,6 +208,16 @@ error, and argument order among buffers of one element type is not checked at al
 Generated names use the reserved `__gust_` prefix so that no user parameter name
 can collide.
 
+`gust::routed` (m9.h1, D65, D137; `crates/gust/src/routed.rs`, with `GpuBackend for HeadlessDevice` in
+`crates/gust-wgpu/src/routed.rs`) is the device handle that follows the route. `RoutedDevice<G>` holds a `CpuDevice`
+and, optionally, a GPU device `G: GpuBackend`, and implements `Run<K, N>` for every `K: Routed` by the kernel's
+associated `Routed::Side` (`OnGpu` or `OnCpu`), which the `#[gpu]` macro writes beside the `GpuKernel` marker (one
+associated type, because two blanket impls bounded on the two markers overlap, E0119). The dispatch is static, `gust`
+does not depend on `gust-wgpu`, and the explicit-device entry points are unchanged. Its buffers keep a host copy and a
+device copy and copy the whole buffer to the side that runs a call; a call that writes a buffer makes its side the only
+valid one. It covers storage buffers only and its calls are synchronous; the limits are listed in the module's
+documentation.
+
 `gust::map` (D60, slice m7.a1, amended by D99 and D122) is the host side of the element-wise map.
 `MapHost: TypedDevice` is what a device offers it (`upload`, `zeroed`, `readback`, `readback_async` and `map_error`);
 `CpuDevice` implements it in `gust`, and `HeadlessDevice` in `gust-wgpu` (`map_host.rs`). `MapArg<H, D>` is what a call

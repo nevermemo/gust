@@ -165,6 +165,7 @@ fn the_fixture_manifests_are_rewritten_to_the_repository_path() {
         "probe/Cargo.toml",
         "cpu-app/Cargo.toml",
         "gpu-app/Cargo.toml",
+        "handle-app/Cargo.toml",
     ] {
         let text = repository_file(&format!("{FIXTURE_DIR}/{path}"));
         let rewritten = rewrite_manifest(&text, "/r");

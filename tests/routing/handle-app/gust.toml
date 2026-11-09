@@ -1,0 +1,4 @@
+# The routes of this app (m9.h1): the GPU step of `cargo xtask check-routing` rewrites this file to run the same source
+# on the GPU and on the CPU.
+[routes]
+"route-kernels::physics" = "gpu"

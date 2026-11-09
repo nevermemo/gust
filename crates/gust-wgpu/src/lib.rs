@@ -112,6 +112,10 @@ pub mod graph;
 mod map_host;
 pub mod pool;
 mod render;
+// `GpuBackend for HeadlessDevice` reads buffers back with `read_typed_buffer`, which does not exist on wasm32, where a
+// call cannot block either, so the routed handle has no GPU backend there (`RoutedDevice<NoGpu>` does).
+#[cfg(not(target_arch = "wasm32"))]
+mod routed;
 mod texture;
 mod vec;
 pub use cache::PipelineCacheStats;

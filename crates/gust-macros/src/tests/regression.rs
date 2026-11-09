@@ -2780,6 +2780,7 @@ fn kernels_without_a_twin_have_none_under_cpu_either() {
 /// and no `GpuKernel` impl (the marker is the one empty impl of the expansion).
 fn cpu_target_of(text: &str) -> String {
     let text = text.replace("Target :: Gpu", "Target :: Cpu");
+    let text = text.replace(":: routed :: OnGpu", ":: routed :: OnCpu");
     let marker = "impl :: gust :: target :: GpuKernel for ";
     let Some(start) = text.find(marker) else {
         return text;

@@ -1,6 +1,6 @@
 # Current status
 
-## Active: roadmap M8 (2026-11-07)
+## Active: roadmap M9 (2026-11-09)
 
 The roadmap agreed with the owner is in [ROADMAP.md](../ROADMAP.md). M0 closed on
 2026-10-23 after a two-reviewer sanity check (D28): every M0 item is done; M0.15
@@ -94,7 +94,19 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   `gust` among them; in the macro's output two), added check-routing's `guard` case through the real driver, restored
   the flip's unset-to-set mutation proof, ran the two never-run subgroup broadcast forms on the RTX 5090 and lavapipe,
   put the `dev+subgroups` Gpu suite (gust-algo included) into `check-full`, and named the E0745 subgroup-name break in
-  CHANGELOG. Next: the M9 plan.
+  CHANGELOG.
+- M9 (language breadth II) began 2026-11-09.
+- m9.0, the fixes M8's last sanity pass filed (merge `65e6bac`; Opus review MERGE AFTER FIXES 0/1/4, re-check MERGE).
+  E0751 multiplies the workgroup dimensions in `u128` (a UI fixture pins the exact product; a `u64` mutation panicked
+  as Codex predicted); the other workgroup arithmetic was audited and none can panic. The routed-profile guard refuses
+  a `GUST_ROUTED_PROFILE` that is not a profile, empty included; a rustc probe in the coordinator's work area showed
+  two routed modules in one crate each refuse a mismatch (not a repository test). The web-server test reads the
+  server's own listener state (20 of 20 loop runs; a `stop()` that does not stop fails it). SEMANTICS, CHANGELOG,
+  README and the rustdoc now say the two m8.z broadcast forms ran on lavapipe (gpu-software run 42573264225,
+  `dev+subgroups` step, size 8). Gates: 27 main gates green on the merge, 2026-11-09, 11:31 to 12:52Z; pull request CI
+  42608293459 and 42609507515 and lavapipe 42608293727, 42609507406 and 42608290355 green on the lane.
+- The M9 plan (Revision 1.2, Fable; Codex review REVISE, re-check REVISE 2/2/1, the last items checked by the
+  coordinator) is adopted as D154 to D164. Next: slice m9.s0, the Slang and naga probes.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so
@@ -1395,9 +1407,11 @@ full_check_needed_before_commit: no
 ## Current baseline
 
 - Branch: `main`
-- Last complete compiler feature: MX (execution shapes and textures: the stage-profile trait, the `pixel` shape,
-  textures and samplers, the classifier and the shape pin; D129); before it M7 (map generator, `GpuVec` residency,
-  `par_for!`, shared memory and barriers, multi-dimensional dispatch, wrapping arithmetic, gust-algo; D126)
+- Last complete compiler feature: M8 (capability variants: `#[variant]`, `GUST_PROFILE` capabilities, subgroup
+  operations, the portable floor, routing and `cargo gust`; D153); before it MX (execution shapes and textures: the
+  stage-profile trait, the `pixel` shape, textures and samplers, the classifier and the shape pin; D129); before it M7
+  (map generator, `GpuVec` residency, `par_for!`, shared memory and barriers, multi-dimensional dispatch, wrapping
+  arithmetic, gust-algo; D126)
 - Last full validation: `cargo xtask check-full` passed at `2f96e69` (M8 close records, 2026-11-09, 05:11 to 05:53Z,
   NVIDIA GeForce RTX 5090 / Vulkan, driver 610.88, Slang v2026.21; clean tree), through the shared cargo slot wrapper:
   workspace tests, the release-only tests required by name, every example test with `--include-ignored`, `check-dual` in

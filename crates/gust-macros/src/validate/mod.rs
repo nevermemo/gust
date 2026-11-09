@@ -1097,6 +1097,19 @@ fn impl_attribute_refusal(attribute: &syn::Attribute) -> Option<&'static str> {
     .then_some("only documentation and lint attributes (`doc`, `allow`, `warn`, `deny`, `forbid`) are accepted on an `impl` block: any other has no proven Rust-to-Slang meaning and cannot be dropped")
 }
 
+/// Whether `place` holds an index expression anywhere (`a[i]`, `a[i].f`, `a.f[i]`).
+fn place_has_index(place: &syn::Expr) -> bool {
+    struct Scan(bool);
+    impl<'a> Visit<'a> for Scan {
+        fn visit_expr_index(&mut self, _: &'a syn::ExprIndex) {
+            self.0 = true;
+        }
+    }
+    let mut scan = Scan(false);
+    scan.visit_expr(place);
+    scan.0
+}
+
 /// The first use of `self` as a value in `block`: any `self` that is not the base of a field access (`self.n`) or the
 /// receiver of a method call (`self.bump()`).
 fn bare_self_use(block: &syn::Block) -> Option<&syn::ExprPath> {
@@ -1104,7 +1117,11 @@ fn bare_self_use(block: &syn::Block) -> Option<&syn::ExprPath> {
         found: Option<&'a syn::ExprPath>,
     }
     fn is_self(expression: &syn::Expr) -> bool {
-        matches!(expression, syn::Expr::Path(path) if path.qself.is_none() && path.path.is_ident("self"))
+        match expression {
+            syn::Expr::Paren(inner) => is_self(&inner.expr),
+            syn::Expr::Path(path) => path.qself.is_none() && path.path.is_ident("self"),
+            _ => false,
+        }
     }
     impl<'a> Visit<'a> for Scan<'a> {
         fn visit_expr_field(&mut self, field: &'a syn::ExprField) {
@@ -2556,6 +2573,26 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 | syn::BinOp::ShrAssign(_)
         );
         if is_assign_op && self.reject_mutating_in_place(&binary.left) {
+            return;
+        }
+        // `/=`, `%=` and `^=` lower to the `inout` helpers `__gust_div_assign`, `__gust_rem_assign` and
+        // `__gust_xor_assign` (no other operator does), and slangc computes the index of an indexed place before the
+        // value: `out[c.n] /= c.next()` would change another element than Rust (re-check m9.a2 R1). A place with no
+        // index (`e.n /= e.bump()`) has no address to compute early and stays accepted.
+        if matches!(
+            binary.op,
+            syn::BinOp::DivAssign(_) | syn::BinOp::RemAssign(_) | syn::BinOp::BitXorAssign(_)
+        ) && place_has_index(&binary.left)
+            && let Some(call) = first_mutating_call(&self.methods, &binary.right)
+        {
+            self.reject(
+                Code::ForBoundSideEffect,
+                call,
+                &format!(
+                    "the value of `/=`, `%=` or `^=` on an indexed place calls `.{}(..)`, which takes `&mut self`: these operators lower to an `inout` helper and Slang computes the index before the call, so another element than Rust's would change; call the method first (`let v = c.next(); out[i] /= v;`)",
+                    call.method.unraw()
+                ),
+            );
             return;
         }
         if self.methods.matrix

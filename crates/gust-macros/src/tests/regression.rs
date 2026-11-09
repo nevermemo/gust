@@ -6242,6 +6242,9 @@ fn a_mutating_call_in_an_assignee_or_a_matrix_mul_assign_value_is_gust_e0421() {
         "let mut d = C { n: 5u32 }; out[d.bump()] = d.n;",
         "let mut c = C { n: 5u32 }; out[c.next()] += c.next();",
         "let mut d = C { n: 5u32 }; out[d.next()] /= d.next();",
+        "let mut c = C { n: 1u32 }; out[c.n] /= c.next();",
+        "let mut c = C { n: 1u32 }; out[c.n] %= c.next();",
+        "let mut c = C { n: 1u32 }; out[c.n] ^= c.next();",
         // The value of `*=` in a module that names a matrix (the `__gust_mul` path).
         "let m = Mat4::IDENTITY; let mut c = C { n: 5u32 }; c.n *= c.bump();",
     ] {
@@ -6289,7 +6292,7 @@ fn self_as_a_value_in_a_mut_self_method_is_gust_e0116_and_in_the_other_receivers
     let items = "pub struct C { pub n: u32 } impl C { \
         fn with(self, n: u32) -> C { let mut c = self; c.n = n; c } \
         fn peek(&self) -> u32 { let c = self; c.n } \
-        fn keep(&mut self) -> u32 { self.n = self.n + 1u32; self.n } }";
+        fn keep(&mut self) -> u32 { (self).n = (self).n + 1u32; (self).n } }";
     let source = with_kernel(
         items,
         "let c = C { n: 1u32 }; let d = c.with(7u32); out[id.x] = d.n + c.peek();",

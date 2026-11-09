@@ -15,7 +15,7 @@ use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 //   looped   = 4                    (`Counter::unit()` has n 0 and step 1; four `bump`s in a loop)
 //   helper   = input + 10           (the helper `drive` makes a counter with step 5 and calls `bump_twice`): 10, 12, 14, 16, 18
 //   kept     = input + 2            (`let kept = counter;` after one `bump`, then two more: the copy does not follow): 2, 4, 6, 8, 10
-//   after    = input + 6            (`counter.n` after the by-value `value()` call: the receiver is unchanged)      : 6, 8, 10, 12, 14
+//   after    = input + 6            (`counter.n` read after the by-value `value()` and `shifted()` calls: unchanged)  : 6, 8, 10, 12, 14
 //   shifted  = input + 106          (`shifted(self)` adds 100 to its own copy)                                     : 106, 108, 110, 112, 114
 //   nested   = input + 8            (`wrap.inner.bump()` twice on a field of a local, step 4)                      : 8, 10, 12, 14, 16
 const BUMPED: [u32; 5] = [2, 4, 6, 8, 10];

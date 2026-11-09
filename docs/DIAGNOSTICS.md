@@ -820,10 +820,11 @@ A call of a `&mut self` method is refused where the GPU would evaluate it in ano
 - the start or the end of a `for` range: the emitted Slang loop evaluates the end bound before the start bound (spike M9.s0 P9, measured on the WGSL and the SPIR-V target), where Rust evaluates the start first (`for i in c.n..c.next()`);
 - anywhere in the place (the assignee) of `=` or of a compound assignment: Rust evaluates the assigned value before the place, Slang evaluates a call inside the place first (`out[c.next()] = c.next()` writes another element, `out[d.bump()] = d.n` stores the new value; review m9.a2);
 - the value of `*=` in a module that names `Mat2`, `Mat3` or `Mat4`: it is lowered to `place = __gust_mul(place, value)`, which reads the place before the call and loses the method's write.
+- the value of `/=`, `%=` or `^=` on an indexed place: these three lower to `inout` helpers (`__gust_div_assign`, `__gust_rem_assign`, `__gust_xor_assign`) and Slang computes the index before the call, so `out[c.n] /= c.next()` changes another element than Rust (a place with no index, `e.n /= e.bump()`, has no address to compute early; no other operator lowers through a helper).
 
-Forms that already match Rust stay accepted: `out[c.n] = c.next()`, `c.n += c.bump()`, `e.n /= e.bump()`, a struct literal that holds a call, and `*=` with a call in a module without a matrix.
+Forms that already match Rust stay accepted: `out[c.n] = c.next()`, `out[c.n] += c.next()`, `c.n += c.bump()`, `e.n /= e.bump()`, a struct literal that holds a call, and `*=` with a call in a module without a matrix.
 Reached through `#[gpu]`.
-Rejected: `for i in 0u32..c.next() { .. }`, `for i in c.n..c.next() { .. }`, `out[c.next()] = v;`, `out[c.next()] += v;`, `c.n *= c.bump();` (with a matrix in the module), when `next` and `bump` take `&mut self`.
+Rejected: `for i in 0u32..c.next() { .. }`, `for i in c.n..c.next() { .. }`, `out[c.next()] = v;`, `out[c.next()] += v;`, `out[c.n] /= c.next();` (also `%=`, `^=`), `c.n *= c.bump();` (with a matrix in the module), when `next` and `bump` take `&mut self`.
 Write instead: call the method before the statement and use the value, `let n = c.next(); for i in 0u32..n { .. }` or `let k = c.next(); out[k] = v;`.
 Fixture: `tests/ui/for-bound-mutating` and `tests/ui/method-mutating-in-assignee` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, spike M9.s0 P9, slice m9.a2).

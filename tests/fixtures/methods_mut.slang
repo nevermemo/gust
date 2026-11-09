@@ -164,8 +164,8 @@ void gpu_methods_mut_run(uint3 id : SV_DispatchThreadID)
         counter.bump_twice();
         var scaled = counter.scaled(uint(3));
         var consumed = counter.value();
-        var after = counter.n;
         var shifted = counter.shifted();
+        var after = counter.n;
         Wrap __gust_struct_9;
         __gust_struct_9.inner = Counter.__gust_r_new(input[i], uint(4));
         __gust_struct_9.tag = uint(1);

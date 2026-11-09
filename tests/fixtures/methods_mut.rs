@@ -119,8 +119,9 @@ mod methods_mut {
             counter.bump_twice();
             let scaled = counter.scaled(3u32);
             let consumed = counter.value();
-            let after = counter.n;
             let shifted = counter.shifted();
+            // Read after the by-value call: the receiver is unchanged.
+            let after = counter.n;
             // A `&mut self` call on a field of a local writes the field.
             let mut wrap = Wrap {
                 inner: Counter::new(input[i], 4u32),

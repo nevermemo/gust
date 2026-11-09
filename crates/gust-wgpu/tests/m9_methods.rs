@@ -149,7 +149,19 @@ fn the_method_fixture_compiles_to_wgsl() {
     let wgsl = gust::slang::compile_wgsl(descriptor).unwrap();
     // The kernel is a compute entry, and the methods are functions of the output that it calls under their own names.
     assert!(wgsl.contains("compute"), "{wgsl}");
-    for name in ["area", "grown", "gap", "weight", "extent", "clamp_into"] {
-        assert!(wgsl.contains(name), "no `{name}` in the WGSL\n{wgsl}");
+    // Slang writes a member `m` of the struct `S` as the function `S_m_<n>` (read from the real WGSL). Four of these
+    // six names are also field names of `Results`, so the bare name proves nothing: the owner prefix does.
+    for name in [
+        "Circle_area",
+        "Circle_grown",
+        "Circle_gap",
+        "Disc_weight",
+        "Span_extent",
+        "Span_clamp_into",
+    ] {
+        assert!(
+            wgsl.contains(&format!("fn {name}_")),
+            "no function `{name}` in the WGSL\n{wgsl}"
+        );
     }
 }

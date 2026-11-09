@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: for-bound-mutating/src/main.rs
+line: 19
+message: [GUST-E0421] the bound of a `for` range calls `.next(..)`

@@ -8,10 +8,10 @@ breaks existing code bumps the minor version, and the promise is described in th
 ## Unreleased (0.2.0)
 
 The workspace version is `0.2.0-dev`. Work for 0.2.0 lands on `main`; the 0.1.0 line continues on the branch
-`release/0.1`. This list is what the milestone (M8) has merged. 0.2.0 has two listed breaks. B1, below, in two parts (the
+`release/0.1`. This list is what the milestone (M8) has merged. 0.2.0 has three listed breaks. B1, below, in two parts (the
 descriptor constructor and setters, and the `GpuKernel` bound), is the last of its kind: the descriptor is
-`#[non_exhaustive]` from now on. The other is a function name in a `#[gpu]` module that is now reserved (the 21 subgroup
-operations).
+`#[non_exhaustive]` from now on. The second is a function name in a `#[gpu]` module that is now reserved (the 21 subgroup
+operations). The third, B3, is that recursion is refused (`GUST-E0120`).
 
 ### Added
 
@@ -57,11 +57,19 @@ operations).
 - Methods (M9, slice a1). A `#[gpu]` module may hold one `impl S { .. }` block per struct, with `&self` methods that
   take value parameters and return a value; a call `recv.m(args)` works on a storage element (a read-write one
   included), a field of a uniform or a local (the method reads a copy); a whole uniform is `GUST-E0321`. In Slang the
-  methods are members of the struct. A method cannot call a function or another method yet, `&mut self` and `self`
+  methods are members of the struct. Part 2 below adds the rest. Until then (a1): `&mut self` and `self`
   methods are `GUST-E0116` until the next slice, a call of one on a storage, uniform or workgroup place is
   `GUST-E0333` (a texture receiver is `GUST-E0735`), an `impl` for a type the module does not define is `GUST-E0121`
   and a method named like a built-in method, a swizzle, a Slang member keyword or a field of its struct is
   `GUST-E0328`.
+- Methods, part 2 (M9, slice a2). `&mut self` methods (lowered as Slang `[mutating]`; callable on a `let mut` local, a
+  field or an element of one, and on nothing else: a storage, uniform, workgroup or invocation-id place stays
+  `GUST-E0333`, so do a `let mut c = out[i]; c.bump(); out[i] = c;`), `self` by value, associated functions without a
+  receiver (`static` in Slang, called `S::make(..)` or `Self::make(..)`), `Self` as the name of the struct in types,
+  literals and paths, several `impl` blocks for a struct, `impl self::S`, and calls between methods and helpers in both
+  directions. `GUST-E0421` refuses a `&mut self` call in the bound of a `for` range (the Slang loop evaluates its end
+  bound first). A helper named like a method, or like a field of the struct whose method calls it, is `GUST-E0328`
+  (Slang resolves an unqualified call to the member first). An attribute on an `impl` block is `GUST-E0115`.
 
 ### Changed, and may break code written for 0.1.0
 
@@ -82,6 +90,13 @@ operations).
   module that has a helper with one of these names no longer compiles, with an error on the function. Migration:
   rename the function. It is not part of B1 (the semver tool cannot see it: it is a macro check); no example or fixture
   of this repository had such a name (the unit test that pins the error is the one place that writes one).
+- **B3: recursion is refused in every `#[gpu]` module** (`GUST-E0120`). The validator builds a conservative call graph
+  from names (`f(..)` to the helper, `x.m(..)` to every method named `m`, `S::f(..)` to the function of `S`) and refuses a
+  cycle. A 0.1.0 module that routed a kernel to the CPU and kept a recursive helper compiled before, because a
+  CPU-routed module is not translated; with 0.2.0 the same source is `GUST-E0120`, because the check runs wherever
+  the `#[gpu]` module is validated. Migration: rewrite the recursion as a `for` loop with a fixed trip count. No
+  example or fixture of this repository had a recursive function. A call `x.m(..)` also counts as a call of every
+  method named `m` of another struct, so rename a method that calls another struct's method of the same name.
 - `DeviceOptions::default()` and `HeadlessDevice::new()` now request `gust::capability::enabled()`. In a build with no
   capability that is the empty set, as before; in a `+subgroups` build they open a device with the feature or fail with
   `Error::MissingCapability`.

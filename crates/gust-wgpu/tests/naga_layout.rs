@@ -9,7 +9,7 @@
 //!
 //! The WGSL set (the test names its size and fails on drift):
 //!
-//! - 19 of the 20 Slang goldens of `tests/fixtures/*.slang`; `par_for.slang` (slice m7.p) is filtered out, because the
+//! - 20 of the 21 Slang goldens of `tests/fixtures/*.slang`; `par_for.slang` (slice m7.p) is filtered out, because the
 //!   module of a `par_for!` kernel stands inside the block of its call, so no descriptor can be named from here (its
 //!   ten kernels run in `tests/par_for.rs`). The test
 //!   `the_goldens_are_the_fixtures_directory` pins the file list against the directory, and the fixture `.rs` list
@@ -102,6 +102,11 @@ fixture_functions!(
     [saxpy, clamp_signed, even_and, mirror, add_one]
 );
 fixture!(f_methods, methods, "../../../tests/fixtures/methods.rs");
+fixture!(
+    f_methods_mut,
+    methods_mut,
+    "../../../tests/fixtures/methods_mut.rs"
+);
 fixture!(f_mismatch, mismatch, "../../../tests/fixtures/mismatch.rs");
 fixture!(f_numeric, numeric, "../../../tests/fixtures/numeric.rs");
 fixture!(f_option, optional, "../../../tests/fixtures/option.rs");
@@ -133,7 +138,7 @@ struct Golden {
     kernels: &'static [KernelDescriptor],
 }
 
-fn goldens() -> [Golden; 20] {
+fn goldens() -> [Golden; 21] {
     [
         Golden {
             file: "atomics.slang",
@@ -176,6 +181,12 @@ fn goldens() -> [Golden; 20] {
             text: include_str!("../../../tests/fixtures/methods.slang"),
             entries: 1,
             kernels: f_methods::KERNELS,
+        },
+        Golden {
+            file: "methods_mut.slang",
+            text: include_str!("../../../tests/fixtures/methods_mut.slang"),
+            entries: 1,
+            kernels: f_methods_mut::KERNELS,
         },
         Golden {
             file: "mismatch.slang",
@@ -767,8 +778,8 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
     problems
 }
 
-/// The compute and fragment entries the twenty goldens hold in all (pinned per golden in [`goldens`]).
-const GOLDEN_ENTRIES: usize = 97;
+/// The compute and fragment entries the twenty-one goldens hold in all (pinned per golden in [`goldens`]).
+const GOLDEN_ENTRIES: usize = 98;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`
 /// (`atomics.slang` has one entry for the ten kernels of the module) and of `numeric.rs` (one of two).

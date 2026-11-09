@@ -150,11 +150,11 @@ Decision: D02.
 
 ### GUST-E0102 unsupported module item
 
-A GPU module holds functions, plain structs and one inherent `impl` block per struct.
+A GPU module holds functions, plain structs and the inherent `impl` blocks of its structs (several blocks for one struct are allowed).
 Reached through `#[gpu]`.
-Rejected: `const`, `static`, `enum`, `trait`, `use`, nested `mod`, type aliases; an `impl` that is an `unsafe impl`, a trait impl (`impl Clone for S`), a second `impl` block for the same struct, or one with an associated function (no receiver, `fn make() -> S`), an associated `const` or an associated type, or a `Self` in a type or a struct literal (`-> Self`, `Self { .. }`; slice m9.a2 lowers it, write the name of the struct) (methods with a receiver are accepted since M9 slice m9.a1, see GUST-E0116 for the receivers not yet accepted).
-Write instead: pass constants as uniform or value parameters, or write them inline; put every method of a struct in one `impl S { .. }` block.
-Decision: D02, D133 (methods).
+Rejected: `const`, `static`, `enum`, `trait`, `use`, nested `mod`, type aliases; an `impl` that is an `unsafe impl`, a trait impl (`impl Clone for S`), an associated `const` or an associated type, a `Self` anywhere but inside an `impl` block (inside one it is the struct of the block, in a type, a struct literal or a path such as `Self::make()`), and a path to an associated function that has a receiver (`S::area(c)`; write `c.area()`). A call of an associated function that no struct has (`S::nowhere()`) is GUST-E0302. Methods and associated functions are accepted since M9 slices m9.a1 and m9.a2.
+Write instead: pass constants as uniform or value parameters, or write them inline.
+Decision: D02, D133 (methods), D154.
 
 ### GUST-E0103 generic struct
 
@@ -265,11 +265,11 @@ Decision: D02.
 
 ### GUST-E0116 `self` parameter
 
-A free function has no receiver, and a method takes `&self` only for now: a method that takes `&mut self`, `self` or `mut self`, or a typed receiver (`self: Box<Self>`), is not accepted yet (a mutating method arrives with M9 slice m9.a2). A `&self` method of an `impl` block is accepted (GUST-E0121 for the impl rules). A typed receiver is refused at once, where it stands. The declarations of `&mut self`, `self` and `mut self` methods are reported last: when the rest of the module is also wrong, the other error is shown first, and a call of a `&mut self` method on a storage, uniform, workgroup or invocation-id place is GUST-E0333 instead.
+A free function has no receiver. A method takes `&self`, `&mut self` or `self` (a `&mut self` method is lowered with the Slang attribute `[mutating]` and can be called on a local place only, GUST-E0333 for a storage, uniform, workgroup or invocation-id place). A function of an `impl` block without a receiver is an associated function (`static` in Slang). The receivers `mut self` and the typed forms (`self: Box<Self>`, `self: &Self`) are refused at once, where they stand, with this code.
 Reached through `#[gpu]`.
-Rejected: `fn f(&self) -> u32` outside an `impl`, `impl S { fn bump(&mut self) {} }`, `impl S { fn take(self) {} }`.
-Write instead: `&self` for a method that reads, or pass the value as an ordinary parameter to a free function and return the new value.
-Fixture: `tests/ui/method-mut-self-not-yet` (`cargo xtask check-ui`, `code: none` plus the message).
+Rejected: `fn f(&self) -> u32` outside an `impl`, `impl S { fn bump(mut self) {} }`, `impl S { fn area(self: Box<Self>) {} }`.
+Write instead: `&self` for a method that reads, `&mut self` for a method that changes its receiver, `self` for a method that consumes a copy; no `mut` on the receiver.
+Fixture: `tests/ui/method-self-mut-binding` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D02, D154 (M9 plan 2.1).
 
 ### GUST-E0117 parameter needs an identifier
@@ -296,9 +296,18 @@ Rejected: `fn helper(mut s: Workgroup<[f32; 64]>) { .. }`.
 Write instead: declare the array on the kernel and pass the helper the values it needs, `helper(s[lid.x])`.
 Decision: D42 (M7 plan 4.2 rule 4, slice m7.g1).
 
+### GUST-E0120 recursive call
+
+Recursion has no GPU lowering, and the dialect keeps its call graph acyclic. The check builds a conservative graph of the module from names alone, without types: a call `f(..)` is an edge to the helper `f`, a call `x.m(..)` is an edge to every method named `m` of every `impl` block, and a path call `S::f(..)` or `Self::f(..)` is an edge to the function `f` of the blocks of `S`. A cycle is reported at the call that closes it, with the chain (`a -> b -> a`). Because the receiver's type is not known, a method that calls another struct's method of the same name is a cycle too (the message says so); rename one of them. The graph carries no uniformity: every callee is validated as a helper (value parameters only, no barrier, subgroup operation, atomic or buffer access), which keeps D154 closed.
+Reached through `#[gpu]`.
+Rejected: `fn f(n: u32) -> u32 { f(n - 1u32) }`, `fn a() { b() } fn b() { a() }`, `impl S { fn go(&self) { self.go() } }`, and a helper that calls a method that calls the helper.
+Write instead: a `for` loop with a fixed trip count that does the same work.
+Fixture: `tests/ui/method-recursion-direct`, `tests/ui/method-recursion-mutual` and `tests/ui/method-recursion-through` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D162 (M9 plan 1 item 3, slice m9.a2).
+
 ### GUST-E0121 `impl` for a type the module does not define
 
-An `impl` block of a GPU module must be an inherent block (`impl S { .. }`) of a struct declared in the same module, so that the methods become members of the generated Slang struct. A trait impl with a blanket form (`impl<T> Anything for T`), an impl for a type that is not a struct of the module (a built-in vector or matrix, a tuple, a path to another module, an undeclared name) is rejected with this code. Trait impls for a module struct and a second inherent block for the same struct are GUST-E0102 for now. A generic impl or method is GUST-E0114.
+An `impl` block of a GPU module must be an inherent block (`impl S { .. }`) of a struct declared in the same module, so that the methods become members of the generated Slang struct. A trait impl with a blanket form (`impl<T> Anything for T`), an impl for a type that is not a struct of the module (a built-in vector or matrix, a tuple, a path to another module, an undeclared name) is rejected with this code. Several inherent blocks for one struct are accepted (slice m9.a2), and so is the path form `impl self::S`; an attribute on an `impl` block (`#[cfg(..)]`, `#[inline]`) is GUST-E0115, and a trait impl for a module struct is GUST-E0102. A generic impl or method is GUST-E0114.
 Reached through `#[gpu]`.
 Rejected: `impl Elsewhere { .. }`, `impl Mat4 { .. }`, `impl<T> Anything for T { }`, `impl (u32, u32) { }`.
 Write instead: declare the struct in the same `#[gpu]` module and put the methods in its `impl` block.
@@ -652,6 +661,7 @@ Decision: D42 (M7 plan 4.1, slice m7.g1).
 ### GUST-E0328 method name clashes with a built-in
 
 A method of a module struct becomes a member function of the generated Slang struct and is called as `recv.name(args)`, so its name must not be one that a call already means something else for: a method of the dialect (`len`, `global_id`, `is_some`, `unwrap`, `wrapping_add`, `dot`, `mul_vec4`, `transpose`, the texture methods `load`, `store`, `sample`, `width`, `height` and every other built-in method, GUST-E0325), a vector swizzle (`xy`, `xyz`, `wzyx` and every other two to four letters of `x`, `y`, `z`, `w`), a word GUST reserves as a method name because it begins a member declaration of a Slang struct or names the struct (`This`, `init`, `property`, `subscript`, `this`), or the name of a field of its own struct (the getter pattern `fn radius(&self)` next to a field `radius`, where `s.radius` and `s.radius()` would collide as Slang members). Reserved Slang names that every identifier shares are renamed by the emitter and are no clash.
+A helper function and a method must not share a name, and a helper must not be named like a field of the struct whose method calls it: inside the Slang struct an unqualified call finds a member before a free function (measured on slangc 2026.21), so the call would reach the member or fail. The rule is a check of the module, the same for a name in the call of a method and in the call of a helper.
 Reached through `#[gpu]`.
 Rejected: `impl S { fn len(&self) -> u32 { .. } }`, `fn xy(&self) -> f32`, `fn init(&self) -> u32`, `fn v(&self) -> u32` in `struct S { v: u32 }`.
 Write instead: another name, `length`, `radius_value`, `get_v`.
@@ -660,7 +670,7 @@ Decision: D154 (M9 plan 2.1, slice m9.a1).
 
 ### GUST-E0333 mutating method on a shared place
 
-A method that takes `&mut self` or `self` would write through its receiver. On a storage buffer element, a uniform or a workgroup array that write is shared with the other invocations, and no statement of the kernel shows it, so a call whose receiver is rooted in such a parameter is rejected at the call. The validator decides from the first identifier of the receiver place (`out` in `out[i].bump()`), by the method name: a name that a `&mut self` or `self` method of any struct of the module has is a mutating call. A `&self` method may be called on any place, the callee reads a copy of the element (spike M9.s0 P1b). Until M9 slice m9.a2 accepts mutating methods at all, the declaration is GUST-E0116, and a module that also contains a call of this kind reports this code, once, instead.
+A method that takes `&mut self` or `self` would write through its receiver. On a storage buffer element, a uniform or a workgroup array that write is shared with the other invocations, and no statement of the kernel shows it, so a call whose receiver is rooted in such a parameter is rejected at the call. The validator decides from the first identifier of the receiver place (`out` in `out[i].bump()`), by the method name: a name that a `&mut self` or `self` method of any struct of the module has is a mutating call. A `&self` method may be called on any place, the callee reads a copy of the element (spike M9.s0 P1b). A `&mut self` method is accepted on a `let mut` local (and a field or element of one) only, so the same code covers a receiver that is not a place (`make().bump()`, a literal) and a root that is a by-value parameter (a change to it would be lost in Slang).
 Reached through `#[gpu]`.
 Rejected: `out[0].bump()` and `out[i].bump()` for a storage parameter `out`, `u.bump()` for a uniform, `scratch[l].bump()` for a workgroup array, when a method `bump` takes `&mut self`; `lid.bump()` and `gid.bump()` (invocation ids) too. A texture receiver (`tex.bump()`) is GUST-E0735 instead, because the texture methods are checked first.
 Write instead: copy the element to a local, call the method on the local and store the result, `let mut c = out[i]; c.bump(); out[i] = c;` once mutating methods are accepted.
@@ -803,6 +813,15 @@ Rejected: `for r in 0u32..4u32 { if r == 2u32 { break; } workgroup_barrier(); }`
 Fixture: `tests/ui/break-in-barrier-loop`, `tests/ui/continue-in-barrier-loop`, `tests/ui/labelled-break-in-barrier-kernel` (GUST-E0403) and `tests/ui/question-mark-in-barrier-kernel` (GUST-E0311) (`cargo xtask check-ui`, `code: none` plus the message).
 Write instead: run the loop to its end and guard the work in each iteration with `if`.
 Decision: D42 (M7 plan 4.2 rule 2, slice m7.g1).
+
+### GUST-E0421 `for` bound with a mutating method call
+
+The emitted Slang loop evaluates the end bound of a range before the start bound (spike M9.s0 P9, measured on the WGSL and the SPIR-V target), where Rust evaluates the start first. A bound that only reads gives the same loop either way, so the dialect refuses the one bound that could tell the difference: a call of a `&mut self` method (or a `self` method) in the start or the end of a `for` range. Reads, helper calls and `&self` methods are fine there.
+Reached through `#[gpu]`.
+Rejected: `for i in 0u32..c.next() { .. }` and `for i in c.next()..c.next() { .. }` when `next` takes `&mut self`.
+Write instead: call the method before the loop and use the value, `let n = c.next(); for i in 0u32..n { .. }`.
+Fixture: `tests/ui/for-bound-mutating` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D154 (M9 plan 2.1, spike M9.s0 P9, slice m9.a2).
 
 ## E05xx: Option and Result
 

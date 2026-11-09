@@ -6,7 +6,9 @@
 //! used); the macro now renames it (`__gust_r_new`, M6 plan 2.5) and the kernel compiles, so
 //! those fixtures keep their line tables and the failing tests take the emitted text
 //! with the prefix deleted (`unrenamed`): the bare `new` is the same syntax error on the
-//! same lines. A self-recursive helper is "recursion not allowed". The expected Rust line is
+//! same lines. A self-recursive helper is "recursion not allowed": the validator refuses one now (GUST-E0120), so
+//! the three recursion fixtures call a `_step` helper and `recursing` writes the recursive call into their Slang. The
+//! expected Rust line is
 //! found by searching
 //! this very file for a marker comment, so no line number is written down by hand.
 //!
@@ -62,11 +64,15 @@ mod keyword_local {
 
 #[gust::gpu]
 mod recursive_helper {
+    fn count_down_step(n: uint) -> uint {
+        n
+    }
+
     fn count_down(n: uint) -> uint {
         if n == 0u32 {
             0u32
         } else {
-            count_down(n - 1u32) // FAILS: recursion
+            count_down_step(n - 1u32) // FAILS: recursion
         }
     }
 
@@ -478,13 +484,17 @@ mod keyword_in_helper {
 
 #[gust::gpu]
 mod recursion_with_locals {
+    fn factorial_step(n: uint) -> uint {
+        n
+    }
+
     fn factorial(n: uint) -> uint {
         let base = n;
         let next = n - 1u32;
         if n <= 1u32 {
             1u32
         } else {
-            base * factorial(next) // FAILS: recursion with locals
+            base * factorial_step(next) // FAILS: recursion with locals
         }
     }
 
@@ -514,11 +524,15 @@ mod keyword_in_nested_if {
 
 #[gust::gpu]
 mod recursion_in_loop {
+    fn spread_step(n: uint) -> uint {
+        n
+    }
+
     #[allow(clippy::assign_op_pattern)]
     fn spread(n: uint) -> uint {
         let mut total = 0u32;
         for i in 0u32..n {
-            total = total + spread(i); // FAILS: recursion in loop
+            total = total + spread_step(i); // FAILS: recursion in loop
         }
         total
     }
@@ -649,6 +663,49 @@ fn unrenamed(kernel: &KernelDescriptor) -> KernelDescriptor {
     kernel.with_slang_source(Box::leak(text.into_boxed_str()))
 }
 
+/// The three recursion fixtures cannot be written as Rust any more: the validator refuses a call cycle (GUST-E0120,
+/// M9 slice m9.a2), so the macro never hands such a helper to slangc. Each module therefore calls a sibling
+/// `<name>_step` helper at the marked line, and this function turns the macro's own output into the recursive text:
+/// every call `<from>(` becomes `<to>(`, the declaration `uint <from>(` stays. Same line count, same line table, same
+/// statements as the macro wrote; only the callee name of the marked call differs, and slangc's "recursion not
+/// allowed" is a real compiler error on it.
+fn recursing(kernel: &KernelDescriptor, from: &str, to: &str) -> KernelDescriptor {
+    let call = format!("{from}(");
+    assert!(
+        kernel.slang_source.contains(&format!("uint {call}"))
+            && kernel.slang_source.contains(&call),
+        "`{}` has no call of `{from}` to turn into a recursion:\n{}",
+        kernel.entry_point,
+        kernel.slang_source
+    );
+    let text = kernel
+        .slang_source
+        .replace(&format!("uint {call}"), "uint \u{1}(")
+        .replace(&call, &format!("{to}("))
+        .replace("uint \u{1}(", &format!("uint {call}"));
+    kernel.with_slang_source(Box::leak(text.into_boxed_str()))
+}
+
+fn recursion_kernel() -> KernelDescriptor {
+    recursing(
+        &recursive_helper::run::DESCRIPTOR,
+        "count_down_step",
+        "count_down",
+    )
+}
+
+fn recursion_with_locals_kernel() -> KernelDescriptor {
+    recursing(
+        &recursion_with_locals::run::DESCRIPTOR,
+        "factorial_step",
+        "factorial",
+    )
+}
+
+fn recursion_in_loop_kernel() -> KernelDescriptor {
+    recursing(&recursion_in_loop::run::DESCRIPTOR, "spread_step", "spread")
+}
+
 /// The 1-based line of this file whose code ends with the `// FAILS: <what>` marker.
 fn marked_line(what: &str) -> u32 {
     line_ending_with(&format!("// FAILS: {what}"))
@@ -745,6 +802,7 @@ fn assert_table_is_recorded(kernel: &KernelDescriptor) {
 fn descriptors_record_the_defining_file_and_an_ordered_line_table() {
     assert_table_is_recorded(&keyword_local::run::DESCRIPTOR);
     assert_table_is_recorded(&recursive_helper::run::DESCRIPTOR);
+    assert_table_is_recorded(&recursion_kernel());
     assert_eq!(
         <keyword_local::run as Kernel>::DESCRIPTOR.source,
         keyword_local::run::DESCRIPTOR.source
@@ -795,7 +853,7 @@ fn a_slang_only_syntax_error_in_a_kernel_names_the_rust_line() {
 fn a_slang_only_recursion_error_in_a_helper_names_the_rust_line() {
     let expected = marked_line("recursion");
     for target in [Target::Wgsl, Target::Spirv] {
-        let diagnostics = failure(&recursive_helper::run::DESCRIPTOR, target);
+        let diagnostics = failure(&recursion_kernel(), target);
         assert!(
             diagnostics.contains("recursion"),
             "{target:?}: the failure is Slang's recursion rule: {diagnostics}"
@@ -806,7 +864,7 @@ fn a_slang_only_recursion_error_in_a_helper_names_the_rust_line() {
             "{target:?}: {diagnostics}"
         );
         assert_eq!(line, expected, "{target:?}: {diagnostics}");
-        assert_compiler_location(&diagnostics, &recursive_helper::run::DESCRIPTOR, expected);
+        assert_compiler_location(&diagnostics, &recursion_kernel(), expected);
     }
 }
 
@@ -880,11 +938,7 @@ fn deliberate_failures() -> Vec<(&'static str, KernelDescriptor, u32)> {
             unrenamed(&keyword_local::run::DESCRIPTOR),
             marked_line("keyword local"),
         ),
-        (
-            "recursion",
-            recursive_helper::run::DESCRIPTOR,
-            marked_line("recursion"),
-        ),
+        ("recursion", recursion_kernel(), marked_line("recursion")),
         (
             "else-if chain",
             unrenamed(&else_if_chain::run::DESCRIPTOR),
@@ -912,7 +966,7 @@ fn deliberate_failures() -> Vec<(&'static str, KernelDescriptor, u32)> {
         ),
         (
             "recursion with locals",
-            recursion_with_locals::run::DESCRIPTOR,
+            recursion_with_locals_kernel(),
             marked_line("recursion with locals"),
         ),
         (
@@ -922,7 +976,7 @@ fn deliberate_failures() -> Vec<(&'static str, KernelDescriptor, u32)> {
         ),
         (
             "recursion in loop",
-            recursion_in_loop::run::DESCRIPTOR,
+            recursion_in_loop_kernel(),
             marked_line("recursion in loop"),
         ),
     ]
@@ -1185,6 +1239,7 @@ fn assert_unknown_origin(diagnostics: &str, kernel: &str, preceding: &[&str], co
 #[test]
 fn the_reflect_path_names_the_kernel_construct_and_rust_line() {
     let keyword_local = unrenamed(&keyword_local::run::DESCRIPTOR);
+    let recursion = recursion_kernel();
     let cases = [
         (
             &keyword_local,
@@ -1194,7 +1249,7 @@ fn the_reflect_path_names_the_kernel_construct_and_rust_line() {
         // The error is in a helper above the first kernel marker, which has a
         // Rust line but no construct: the kernel is still named, once.
         (
-            &recursive_helper::run::DESCRIPTOR,
+            &recursion,
             "recursive_helper::run",
             marked_line("recursion"),
         ),
@@ -1215,10 +1270,11 @@ fn the_reflect_path_names_the_kernel_construct_and_rust_line() {
 #[test]
 fn the_reflect_path_without_a_line_table_keeps_the_text_from_before_the_table() {
     let keyword_local = unrenamed(&keyword_local::run::DESCRIPTOR);
+    let recursion = recursion_kernel();
     for target in [Target::Wgsl, Target::Spirv] {
         for (kernel, name) in [
             (&keyword_local, "keyword_local::run"),
-            (&recursive_helper::run::DESCRIPTOR, "recursive_helper::run"),
+            (&recursion, "recursive_helper::run"),
         ] {
             let diagnostics = reflect_failure(&without_source(kernel), target);
             assert_unknown_origin(
@@ -1250,7 +1306,7 @@ fn the_helper_path_names_the_kernel_construct_and_rust_line() {
         assert!(diagnostics.contains("reflection helper: "), "{diagnostics}");
 
         // A helper above the first kernel marker: a Rust line, but no construct.
-        let kernel = &recursive_helper::run::DESCRIPTOR;
+        let kernel = &recursion_kernel();
         let expected = marked_line("recursion");
         let diagnostics = helper_failure(kernel, target, slang_line_of(kernel, expected));
         assert_known_origin(

@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: method-recursion-mutual/src/main.rs
+line: 16
+message: [GUST-E0120] these functions call each other in a cycle (even -> odd -> even)

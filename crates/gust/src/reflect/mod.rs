@@ -6,7 +6,7 @@
 //!
 //! # Schema versions of the native reflection JSON
 //!
-//! The reader accepts `schemaVersion` 1, 2 and 3. Schema 1 describes exactly what it always did: 32-bit scalars and
+//! The reader accepts `schemaVersion` 1, 2, 3 and 4. Schema 1 describes exactly what it always did: 32-bit scalars and
 //! structs of them, in structured buffers. Schema 2 adds, beside those, the type kinds `vector`
 //! (`scalarType`, `elementCount`) and `matrix` (`scalarType`, `rows`, `columns`, `matrixLayout`; its `stride` is the
 //! column stride), the parameter type `constantBuffer` (`elementType`, `size`), and a mandatory top-level
@@ -22,6 +22,13 @@
 //! every document of a compute kernel over buffers stays schema 1 or 2, byte for byte, and the reader reads those
 //! exactly as before (a texture in a schema-1 or schema-2 document is refused with the old message). A document of
 //! schema 1 or 2 describes a compute entry point: [`Reflection::stage`] is [`Stage::Compute`] for it.
+//!
+//! Schema 4 (m9.r2h) is schema 3's grammar plus one type kind, `array`: `elementCount` (at least 1), `elementStride`
+//! (the bytes between two elements) and `elementType` (any type, an array or a struct included), beside the `size`,
+//! `alignment` and `stride` every type has. The helper writes it only when an array occurs in a buffer element, so every
+//! other document keeps its schema and its bytes, and the reader refuses an `array` in a document of schema 3 or below
+//! with the old message. It is read into [`ReflectedTypeKind::Array`]; checking a host type against it is the work of
+//! the array host layouts (slice r2), until which a descriptor cannot name an array and the check reports a mismatch.
 //!
 //! # Where the CLI gate would sit
 //!
@@ -124,7 +131,7 @@ pub struct Reflection {
     /// The compile target the document describes.
     pub target: Target,
     /// The `schemaVersion` the document was read under: 1 for the CLI JSON path and for schema-1 native documents,
-    /// 2 for schema-2 native documents, 3 for schema-3 native documents.
+    /// 2 for schema-2 native documents, 3 for schema-3 native documents, 4 for schema-4 native documents (arrays).
     pub schema_version: u32,
     /// The pipeline stage of the entry point: the document's `stage` under schema 3, [`Stage::Compute`] under 1 and
     /// 2 (which describe compute entry points only).
@@ -270,6 +277,16 @@ pub enum ReflectedTypeKind {
     },
     /// A struct: its fields in document order.
     Struct(Vec<ReflectedField>),
+    /// Schema 4 only: a fixed-size array. The [`ReflectedType`] around it carries the size, alignment and stride of the
+    /// whole array.
+    Array {
+        /// The element type; an array again for a nested array.
+        element: Box<ReflectedType>,
+        /// The number of elements, at least 1.
+        count: u32,
+        /// The bytes between two consecutive elements.
+        element_stride: u32,
+    },
 }
 /// One field of a reflected struct.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2278,9 +2295,9 @@ mod tests {
     }
 
     #[test]
-    fn only_schema_versions_one_to_three_are_read() {
+    fn only_schema_versions_one_to_four_are_read() {
         let kernel = kernel_with(Vec::new());
-        for version in ["0", "4", "4294967295"] {
+        for version in ["0", "5", "4294967295"] {
             let json = document(1, None, &[]).replacen(
                 r#""schemaVersion":1"#,
                 &format!(r#""schemaVersion":{version}"#),
@@ -3784,12 +3801,188 @@ mod tests {
             "unexpected compiler resource bindings"
         );
     }
+
+    // ---- schema 4: arrays (slice m9.r2h) ----
+
+    /// A document of `schema` (3 or 4) for a compute entry point, whose parameters are the given JSON objects.
+    fn document_with_schema(schema: u32, parameters: &[String]) -> String {
+        document3("compute", parameters, &[]).replacen(
+            r#""schemaVersion":3"#,
+            &format!(r#""schemaVersion":{schema}"#),
+            1,
+        )
+    }
+
+    const FLOAT_BODY: &str = r#"{"size":4,"alignment":4,"stride":4,"name":"float","kind":"scalar","scalarType":"float32"}"#;
+
+    /// `float[count]`, hand-written: size 4 * count, element stride 4.
+    fn float_array_body(count: u32) -> String {
+        format!(
+            r#"{{"size":{},"alignment":4,"stride":{},"name":"Array","kind":"array","elementCount":{count},"elementStride":4,"elementType":{FLOAT_BODY}}}"#,
+            4 * count,
+            4 * count
+        )
+    }
+
+    /// `struct P { float a[4]; float2 b[2]; uint n; }` as a structured buffer, and `float[2][3]` as another; the numbers
+    /// are the spike's (a at 0 size 16; b at 16 size 16, align 8, element stride 8; n at 32; P size 40 align 8).
+    fn array_parameters() -> Vec<String> {
+        let vec2 = r#"{"size":8,"alignment":8,"stride":8,"name":"vector","kind":"vector","scalarType":"float32","elementCount":2}"#;
+        let b = format!(
+            r#"{{"size":16,"alignment":8,"stride":16,"name":"Array","kind":"array","elementCount":2,"elementStride":8,"elementType":{vec2}}}"#
+        );
+        let uint = r#"{"size":4,"alignment":4,"stride":4,"name":"uint","kind":"scalar","scalarType":"uint32"}"#;
+        let field = |name: &str, offset: u32, size: u32, ty: &str| {
+            format!(
+                r#"{{"name":"{name}","binding":{{"kind":"uniform","offset":{offset},"size":{size}}},"type":{ty}}}"#
+            )
+        };
+        let p = format!(
+            r#"{{"size":40,"alignment":8,"stride":40,"name":"P","kind":"struct","fields":[{},{},{}]}}"#,
+            field("a", 0, 16, &float_array_body(4)),
+            field("b", 16, 16, &b),
+            field("n", 32, 4, uint)
+        );
+        let nested = format!(
+            r#"{{"size":24,"alignment":4,"stride":24,"name":"Array","kind":"array","elementCount":2,"elementStride":12,"elementType":{}}}"#,
+            float_array_body(3)
+        );
+        let buffer = |name: &str, index: u32, stride: u32, element: &str| {
+            format!(
+                r#"{{"name":"{name}","binding":{{"kind":"descriptorTableSlot","count":1,"index":{index},"space":0}},"elementStride":{stride},"type":{{"kind":"resource","baseShape":"structuredBuffer","access":"read","resultType":{element}}}}}"#
+            )
+        };
+        vec![buffer("ps", 0, 40, &p), buffer("grid", 1, 24, &nested)]
+    }
+
+    fn array_of(ty: &ReflectedType) -> (&ReflectedType, u32, u32) {
+        let ReflectedTypeKind::Array {
+            element,
+            count,
+            element_stride,
+        } = &ty.kind
+        else {
+            panic!("an array expected, got {ty:?}")
+        };
+        (element, *count, *element_stride)
+    }
+
+    #[test]
+    fn schema_four_reads_arrays_in_fields_nested_and_as_buffer_elements() {
+        let compiled = read(
+            &document_with_schema(4, &array_parameters()),
+            &kernel_with(Vec::new()),
+        )
+        .unwrap();
+        let reflection = &compiled.reflection;
+        assert_eq!(reflection.schema_version, 4);
+        assert_eq!(reflection.stage, Stage::Compute);
+        let ReflectedTypeKind::Struct(fields) = &reflection.resources[0].element.kind else {
+            panic!("a struct expected")
+        };
+        let a = &fields[0];
+        assert_eq!((a.name.as_str(), a.offset, a.size), ("a", 0, 16));
+        let (element, count, stride) = array_of(&a.ty);
+        assert_eq!((count, stride), (4, 4));
+        assert_eq!(element.kind, ReflectedTypeKind::Scalar(ScalarKind::F32));
+        assert_eq!((a.ty.size, a.ty.alignment), (Some(16), Some(4)));
+        let b = &fields[1];
+        assert_eq!((b.offset, b.size, b.ty.alignment), (16, 16, Some(8)));
+        let (element, count, stride) = array_of(&b.ty);
+        assert_eq!((count, stride), (2, 8));
+        assert_eq!(
+            element.kind,
+            ReflectedTypeKind::Vector {
+                scalar: ScalarKind::F32,
+                count: 2
+            }
+        );
+        assert_eq!(fields[2].offset, 32);
+        assert_eq!(reflection.resources[0].element_stride, Some(40));
+        // A buffer element that is an array of arrays.
+        let grid = &reflection.resources[1];
+        assert_eq!(grid.element_stride, Some(24));
+        let (inner, count, stride) = array_of(&grid.element);
+        assert_eq!((count, stride), (2, 12));
+        let (leaf, count, stride) = array_of(inner);
+        assert_eq!((count, stride), (3, 4));
+        assert_eq!(leaf.kind, ReflectedTypeKind::Scalar(ScalarKind::F32));
+        assert_eq!((grid.element.size, inner.size), (Some(24), Some(12)));
+    }
+
+    #[test]
+    fn an_array_is_refused_below_schema_four_and_when_malformed() {
+        let kernel = kernel_with(Vec::new());
+        for schema in [2, 3] {
+            let error = read(&document_with_schema(schema, &array_parameters()), &kernel)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains("unsupported element type"),
+                "{schema}: {error}"
+            );
+        }
+        let one = || array_parameters().remove(1);
+        for (bad, replacement) in [
+            (
+                r#""elementCount":2,"elementStride":12"#,
+                r#""elementCount":0,"elementStride":12"#,
+            ),
+            (
+                r#""elementCount":2,"elementStride":12"#,
+                r#""elementCount":2,"elementStride":0"#,
+            ),
+            (r#""elementCount":2,"#, ""),
+            (r#""elementStride":12,"#, ""),
+        ] {
+            let parameter = one().replacen(bad, replacement, 1);
+            assert_ne!(parameter, one(), "{bad}");
+            let error = read(&document_with_schema(4, &[parameter]), &kernel).unwrap_err();
+            assert!(matches!(error, Error::Invalid(_)), "{bad}: {error}");
+        }
+        // Another unsupported kind is still refused under schema 4, with the schema-4 list of kinds.
+        let parameter = one().replacen(r#""kind":"array""#, r#""kind":"texture""#, 1);
+        let error = read(&document_with_schema(4, &[parameter]), &kernel)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("arrays and structs"), "{error}");
+    }
+
+    #[test]
+    fn schema_three_documents_are_read_as_before() {
+        let compiled = read(
+            &document_with_schema(3, &[storage_json("pts", 0, STORAGE_STRUCT, "read")]),
+            &kernel_with(Vec::new()),
+        )
+        .unwrap();
+        assert_eq!(compiled.reflection.schema_version, 3);
+        let ReflectedTypeKind::Struct(fields) = &compiled.reflection.resources[0].element.kind
+        else {
+            panic!("a struct expected")
+        };
+        assert_eq!(fields[1].offset, 8);
+    }
+
+    #[test]
+    fn a_host_type_checked_against_an_array_is_a_mismatch_not_a_match() {
+        // Until the array host layouts exist (slice r2) no descriptor names an array, so a scalar host element over a
+        // reflected array reports a mismatch instead of passing.
+        let compiled = read(
+            &document_with_schema(4, &array_parameters()),
+            &kernel_with(Vec::new()),
+        )
+        .unwrap();
+        let mut resource = compiled.reflection.resources[1].clone();
+        resource.element_stride = Some(4);
+        let error = cross_check_pod::<f32>(&resource).unwrap_err();
+        assert!(matches!(error, Error::Mismatch(_)), "{error}");
+    }
 }
 
-/// The document's `schemaVersion`: 1, 2 or 3, nothing else.
+/// The document's `schemaVersion`: 1, 2, 3 or 4, nothing else.
 fn read_schema_version(root: &Json) -> Result<u32, Error> {
     match root.get("schemaVersion")?.u32()? {
-        version @ (1..=3) => Ok(version),
+        version @ (1..=4) => Ok(version),
         _ => Err(invalid("unsupported native reflection schema version")),
     }
 }
@@ -3832,7 +4025,7 @@ fn read_dimension(value: &Json, key: &str) -> Result<u32, Error> {
     }
 }
 
-/// `schema` is the document's `schemaVersion`; the `vector` and `matrix` kinds exist from 2 on.
+/// `schema` is the document's `schemaVersion`; the `vector` and `matrix` kinds exist from 2 on, `array` from 4 on.
 fn read_type(value: &Json, complete: bool, schema: u32) -> Result<ReflectedType, Error> {
     let kind = match value.get("kind")?.string()? {
         "scalar" => ReflectedTypeKind::Scalar(read_scalar(value)?),
@@ -3869,6 +4062,28 @@ fn read_type(value: &Json, complete: bool, schema: u32) -> Result<ReflectedType,
                 return Err(invalid("empty struct layout"));
             }
             ReflectedTypeKind::Struct(fields)
+        }
+        "array" if schema >= 4 => {
+            if !complete {
+                return Err(invalid("an array needs a complete layout document"));
+            }
+            let count = value.get("elementCount")?.u32()?;
+            let element_stride = value.get("elementStride")?.u32()?;
+            if count == 0 || element_stride == 0 {
+                return Err(invalid(
+                    "an array needs a positive elementCount and elementStride",
+                ));
+            }
+            ReflectedTypeKind::Array {
+                element: Box::new(read_type(value.get("elementType")?, complete, schema)?),
+                count,
+                element_stride,
+            }
+        }
+        _ if schema >= 4 => {
+            return Err(invalid(
+                "unsupported element type (only 32-bit scalars, vectors, matrices, arrays and structs)",
+            ));
         }
         _ if schema >= 2 => {
             return Err(invalid(

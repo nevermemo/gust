@@ -295,6 +295,203 @@ fn native_scalar_programs_stay_schema_one() {
     }
 }
 
+/// The schema the helper under test prints for `--version` (`gust-slang-reflect schema=<n> slang=<tag>`).
+fn helper_schema() -> u32 {
+    let helper = gust::reflect::native_compiler_path();
+    let output = std::process::Command::new(&helper)
+        .arg("--version")
+        .output()
+        .unwrap_or_else(|error| panic!("{}: {error}", helper.display()));
+    String::from_utf8_lossy(&output.stdout)
+        .split_whitespace()
+        .find_map(|word| word.strip_prefix("schema="))
+        .and_then(|schema| schema.parse().ok())
+        .unwrap_or_else(|| panic!("no schema in the --version output of {}", helper.display()))
+}
+
+/// `tests/fixtures/schema4/arrays.slang` as a kernel: five structured buffers with arrays in them.
+fn array_kernel() -> gust::KernelDescriptor {
+    let mut kernel = sample::run::DESCRIPTOR;
+    kernel.slang_source = include_str!("fixtures/schema4/arrays.slang");
+    kernel.entry_point = "main";
+    kernel.workgroup_size = [64, 1, 1];
+    kernel
+}
+
+/// An array's shape: (count, element stride, element), and its own (size, alignment, stride).
+fn array_shape(ty: &gust::ReflectedType) -> (u32, u32, &gust::ReflectedType, [Option<u32>; 3]) {
+    let gust::ReflectedTypeKind::Array {
+        element,
+        count,
+        element_stride,
+    } = &ty.kind
+    else {
+        panic!("an array expected, got {ty:?}")
+    };
+    (
+        *count,
+        *element_stride,
+        element,
+        [ty.size, ty.alignment, ty.stride],
+    )
+}
+
+/// Slice m9.r2h: the helper's array arm (schema 4). Every expected number is written by hand from the m9.s0 spike's
+/// P4b/P10 table (`float3[2]` is size 32, align 16, stride 16: the layout a Rust `[Vec3; 2]` does not have), not copied
+/// from the helper's output. A schema-3 helper must still refuse the program, as it always did.
+#[test]
+fn native_reflects_arrays_as_schema_four() {
+    for target in [Target::Wgsl, Target::Spirv] {
+        if helper_schema() < 4 {
+            let error = compile_reflected(&array_kernel(), target).unwrap_err();
+            assert!(
+                error.to_string().contains("unsupported element type"),
+                "{target:?}: {error}"
+            );
+            continue;
+        }
+        let compiled = compile_reflected(&array_kernel(), target)
+            .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+        let reflection = &compiled.reflection;
+        assert_eq!(reflection.schema_version, 4, "{target:?}");
+        let names: Vec<&str> = reflection
+            .resources
+            .iter()
+            .map(|r| r.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            ["ps", "quads", "pairs", "rs", "ss", "output"],
+            "{target:?}"
+        );
+        let resource = |name: &str| {
+            reflection
+                .resources
+                .iter()
+                .find(|r| r.name == name)
+                .unwrap()
+        };
+        let f32_kind = gust::ReflectedTypeKind::Scalar(gust::ScalarKind::F32);
+
+        // struct P: offset, field size, array size, alignment, array stride (element stride), count, element
+        let ps = resource("ps");
+        assert_eq!(
+            (ps.element.size, ps.element.alignment, ps.element.stride),
+            (Some(272), Some(16), Some(272))
+        );
+        assert_eq!(ps.element_stride, Some(272));
+        let fields = struct_fields(ps);
+        let expected: [(&str, u32, u32, u32, u32, u32); 6] = [
+            // name, offset, size, alignment, element stride, count
+            ("a", 0, 16, 4, 4, 4),
+            ("b", 16, 16, 8, 8, 2),
+            ("c", 32, 32, 16, 16, 2),
+            ("d", 64, 32, 16, 16, 2),
+            ("e", 96, 32, 8, 16, 2),
+            ("f", 128, 128, 16, 64, 2),
+        ];
+        assert_eq!(fields.len(), 7, "{target:?}");
+        for (field, (name, offset, size, alignment, stride, count)) in fields.iter().zip(expected) {
+            assert_eq!(field.name, name, "{target:?}");
+            assert_eq!(
+                (field.offset, field.size),
+                (offset, size),
+                "{target:?} {name}"
+            );
+            let (found_count, found_stride, _, own) = array_shape(&field.ty);
+            assert_eq!(
+                (found_count, found_stride),
+                (count, stride),
+                "{target:?} {name}"
+            );
+            assert_eq!(
+                (own[0], own[1]),
+                (Some(size), Some(alignment)),
+                "{target:?} {name}"
+            );
+        }
+        assert_eq!(array_shape(&fields[0].ty).2.kind, f32_kind);
+        assert_eq!(array_shape(&fields[1].ty).2.kind, vector(2));
+        assert_eq!(array_shape(&fields[2].ty).2.kind, vector(3));
+        assert_eq!(array_shape(&fields[3].ty).2.kind, vector(4));
+        // float2x2[2]: matrix elements of 16 bytes (column stride 8); float4x4[2]: 64 bytes (column stride 16).
+        assert_eq!(
+            matrix_of(array_shape(&fields[4].ty).2),
+            (2, 2, "column", [Some(16), Some(8), Some(8)])
+        );
+        assert_eq!(
+            matrix_of(array_shape(&fields[5].ty).2),
+            (4, 4, "column", [Some(64), Some(16), Some(16)])
+        );
+        assert_eq!((fields[6].name.as_str(), fields[6].offset), ("g", 256));
+        assert_eq!(fields[6].ty.kind, f32_kind);
+
+        // StructuredBuffer<float[4]>: size 16, align 4, stride 16, four floats 4 bytes apart.
+        let quads = resource("quads");
+        assert_eq!(quads.element_stride, Some(16));
+        let (count, stride, element, own) = array_shape(&quads.element);
+        assert_eq!((count, stride, own), (4, 4, [Some(16), Some(4), Some(16)]));
+        assert_eq!(element.kind, f32_kind);
+        // RWStructuredBuffer<float2[2]>: size 16, align 8, stride 16.
+        let pairs = resource("pairs");
+        assert_eq!(pairs.access, gust::Access::ReadWrite);
+        assert_eq!(pairs.element_stride, Some(16));
+        let (count, stride, element, own) = array_shape(&pairs.element);
+        assert_eq!((count, stride, own), (2, 8, [Some(16), Some(8), Some(16)]));
+        assert_eq!(element.kind, vector(2));
+
+        // struct R { Q q[3]; uint n; } with Q { float x, y }: size 28, q at 0 (count 3, element stride 8), n at 24.
+        let rs = resource("rs");
+        assert_eq!(
+            (rs.element.size, rs.element.alignment, rs.element_stride),
+            (Some(28), Some(4), Some(28))
+        );
+        assert_eq!(field_placement(rs), [("q", 0, 24), ("n", 24, 4)]);
+        let (count, stride, element, _) = array_shape(&struct_fields(rs)[0].ty);
+        assert_eq!((count, stride), (3, 8));
+        assert_eq!(field_placement_of(element), [("x", 0, 4), ("y", 4, 4)]);
+
+        // struct S { float h[2][3]; uint k; }: derived by hand (not in the spike): h 24 bytes, two rows of three floats
+        // 12 bytes apart, k at 24, S 28. Cross-checked before asserting against `slangc -reflection-json` on the same
+        // source (both targets: h size 24 / uniformStride 12 / count 2, inner size 12 / uniformStride 4 / count 3, k offset
+        // 24, S size 28 align 4); that is a measurement of the compiler, not of the helper.
+        let ss = resource("ss");
+        assert_eq!((ss.element.size, ss.element.alignment), (Some(28), Some(4)));
+        assert_eq!(field_placement(ss), [("h", 0, 24), ("k", 24, 4)]);
+        let (rows, row_stride, row, own) = array_shape(&struct_fields(ss)[0].ty);
+        assert_eq!((rows, row_stride, own[0]), (2, 12, Some(24)));
+        let (columns, column_stride, leaf, own) = array_shape(row);
+        assert_eq!((columns, column_stride, own[0]), (3, 4, Some(12)));
+        assert_eq!(leaf.kind, f32_kind);
+    }
+    // The two targets agree on every resource (the spike found the reflection JSON byte-identical apart from identity).
+    if helper_schema() >= 4 {
+        let wgsl = compile_reflected(&array_kernel(), Target::Wgsl).unwrap();
+        let spirv = compile_reflected(&array_kernel(), Target::Spirv).unwrap();
+        assert_eq!(wgsl.reflection.resources, spirv.reflection.resources);
+    }
+}
+
+/// A program without an array stays schema 1, 2 or 3 even under a schema-4 helper, so no committed document changes.
+#[test]
+fn native_programs_without_arrays_keep_their_schema_under_a_schema_four_helper() {
+    for target in [Target::Wgsl, Target::Spirv] {
+        let compiled = compile_reflected(&layout_kernel(), target).unwrap();
+        assert_eq!(compiled.reflection.schema_version, 2, "{target:?}");
+    }
+}
+
+/// (name, offset, size) of the fields of a reflected struct type.
+fn field_placement_of(ty: &gust::ReflectedType) -> Vec<(&str, u32, u32)> {
+    let gust::ReflectedTypeKind::Struct(fields) = &ty.kind else {
+        panic!("a struct expected, got {ty:?}")
+    };
+    fields
+        .iter()
+        .map(|field| (field.name.as_str(), field.offset, field.size))
+        .collect()
+}
+
 /// What the helper still has no layout for is refused by the helper itself, not by the Rust reader afterwards.
 #[test]
 fn native_still_refuses_what_the_dialect_cannot_describe() {
@@ -305,12 +502,17 @@ fn native_still_refuses_what_the_dialect_cannot_describe() {
     let wide_scalar = format!(
         "[[vk::binding(0, 0)]] StructuredBuffer<double2> input;\n{OUTPUT}output[id.x] = float(input[id.x].x); }}\n"
     );
-    for (source, target, message) in [
-        (&array, Target::Wgsl, "unsupported element type"),
-        (&array, Target::Spirv, "unsupported element type"),
+    // A schema-3 helper (the shared one) has no array arm and refuses an array; a schema-4 helper reflects it (see
+    // `native_reflects_arrays_as_schema_four`).
+    let mut cases = vec![
         // WGSL has no 64-bit float: Slang itself refuses that program, so only SPIR-V reaches the helper.
         (&wide_scalar, Target::Spirv, "unsupported scalar type"),
-    ] {
+    ];
+    if helper_schema() < 4 {
+        cases.push((&array, Target::Wgsl, "unsupported element type"));
+        cases.push((&array, Target::Spirv, "unsupported element type"));
+    }
+    for (source, target, message) in cases {
         let mut kernel = layout_kernel();
         kernel.slang_source = Box::leak(source.clone().into_boxed_str());
         let error = compile_reflected(&kernel, target).unwrap_err();

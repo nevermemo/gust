@@ -133,6 +133,8 @@ fn collect_routes(ctx: &Context) -> Result<Option<RoutePlan>, String> {
 fn apply_routes(routes: Option<&RoutePlan>, command: &mut Command) {
     if let Some(plan) = routes {
         plan.apply(command);
+    } else {
+        routes::without_routed_profile(command);
     }
 }
 
@@ -743,7 +745,7 @@ mod tests {
         assert_eq!(
             first,
             [
-                // The profile the plan was resolved for (m8.z), which `gust`'s build script checks.
+                // The profile the plan was resolved for (m8.z), which the macro's guard checks.
                 ("GUST_ROUTED_PROFILE".to_owned(), "dev".to_owned()),
                 (
                     "GUST_ROUTE__kernel_lib__fusion".to_owned(),
@@ -755,10 +757,14 @@ mod tests {
                 ),
             ]
         );
-        // Without one the command is left as it is, and the inner result comes back.
+        // Without one the routes are left alone, a stale `GUST_ROUTED_PROFILE` is removed (an entry without a value) and the
+        // inner result comes back.
         let plain = routed_runner(None, &run);
         assert_eq!(plain(&mut Command::new("cargo")), Ok(true));
-        assert!(seen.borrow()[1].is_empty());
+        assert_eq!(
+            seen.borrow()[1],
+            [("GUST_ROUTED_PROFILE".to_owned(), String::new())]
+        );
         let failing = |_: &mut Command| -> Result<bool, String> { Err("boom".to_owned()) };
         assert_eq!(
             routed_runner(Some(&plan), &failing)(&mut Command::new("cargo")),

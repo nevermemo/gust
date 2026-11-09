@@ -26,8 +26,10 @@
 //!
 //! What the macro knows and this driver cannot: the per-kernel set (a kernel declared `cpu = "unsupported"` under a tag
 //! with no `targets` allows only the GPU), so the macro's own E0749 stays the backstop; and the true profile of a
-//! `run` or `test` whose profile cargo infers (a custom cargo profile): the driver reads `GUST_PROFILE`, else
-//! `--release`, `--profile release` and `--target wasm32-*`, as `gust`'s build script does for those cases.
+//! `run` or `test` whose profile cargo infers (a custom cargo profile, `build.target` or `CARGO_BUILD_TARGET`): the
+//! driver reads `GUST_PROFILE`, else `--release`, `--profile release` and `--target wasm32-*`, as `gust`'s build script
+//! does for those cases. It gives the profile it read to cargo as `GUST_ROUTED_PROFILE`, and the `#[gpu]` expansion of a
+//! routed module fails the compilation of that crate when `gust` was built for another profile (m8.z).
 //!
 //! The `gust.toml` reader is a small subset of TOML (a `[routes]` table, quoted keys, strings and one-line inline
 //! tables), written here so that the tool keeps depending on nothing but `gust`; anything else is an error that
@@ -59,12 +61,21 @@ pub(crate) const ROUTES_FILE: &str = "routes.json";
 /// The two route targets.
 const TARGETS: [&str; 2] = ["gpu", "cpu"];
 
-/// The variable the driver sets, beside the route variables, to the profile it resolved them for (m8.z). `gust`'s build
-/// script compares it with the profile it infers and fails the build when they differ, because the driver reads the
-/// command line only and the build also sees `build.target`, `CARGO_BUILD_TARGET` and custom profiles. The name is
-/// `gust`'s (`ROUTED_PROFILE_VARIABLE` in `crates/gust/build.rs`; a build script cannot share a constant); the name
-/// does not start with `GUST_ROUTE__`, so it is neither a route variable nor reported by [`RoutePlan::notes`].
+/// The variable the driver sets, beside the route variables, to the profile it resolved them for (m8.z). The `#[gpu]`
+/// expansion of a module with a route tag compares it with the profile `gust` was built for and fails the compilation
+/// of that crate when they differ, because the driver reads its command line and `GUST_PROFILE` only, and the build
+/// also sees `build.target`, `CARGO_BUILD_TARGET` and custom profiles. The name is the macro's
+/// (`ROUTED_PROFILE_VARIABLE` in `crates/gust-macros/src/expand/mod.rs`; the macro cannot depend on this tool, so a
+/// test reads the source); it does not start with `GUST_ROUTE__`, so it is neither a route variable nor reported by
+/// [`RoutePlan::notes`].
 pub(crate) const ROUTED_PROFILE_VARIABLE: &str = "GUST_ROUTED_PROFILE";
+
+/// Removes [`ROUTED_PROFILE_VARIABLE`] from a command that applies no routes: only a driver run that applies a plan sets
+/// it, so one inherited from an outer `cargo gust run` or `test` (a program that starts cargo again) is stale, and the
+/// guard would refuse a build of another profile.
+pub(crate) fn without_routed_profile(command: &mut Command) {
+    command.env_remove(ROUTED_PROFILE_VARIABLE);
+}
 
 /// The profiles a target-keyed entry may name.
 const PLATFORM_KEYS: [&str; 3] = ["dev", "native", "web"];
@@ -1315,6 +1326,8 @@ pub(crate) fn cargo_command(
     command.arg(verb).args(arguments);
     if let Some(plan) = plan {
         plan.apply(&mut command);
+    } else {
+        without_routed_profile(&mut command);
     }
     command
 }
@@ -2270,18 +2283,20 @@ mod tests {
     }
 
     /// m8.z (S1 of the M8 sanity checks): a command with routes also carries the profile they were resolved for, which
-    /// `gust`'s build script compares with the profile it infers. A command without routes carries nothing, so plain
+    /// the `#[gpu]` expansion of a routed module compares with the profile `gust` was built for. A command without
+    /// routes carries nothing, and removes a stale inherited value (the variable is the driver's own), so plain
     /// behaviour (D67) is unchanged, and the variable is not one of the route variables.
     #[test]
     fn commands_with_routes_export_the_profile_the_routes_were_resolved_for() {
-        // The name is the one `gust`'s build script reads; a build script cannot share a constant, so the source is read.
+        // The name is the one the macro reads; the macro cannot depend on this tool, so the source is read.
         assert_eq!(ROUTED_PROFILE_VARIABLE, "GUST_ROUTED_PROFILE");
-        let script = include_str!("../../gust/build.rs").replace("\r\n", "\n");
+        let macro_source =
+            include_str!("../../gust-macros/src/expand/mod.rs").replace("\r\n", "\n");
         assert!(
-            script.contains(&format!(
-                "const ROUTED_PROFILE_VARIABLE: &str = \"{ROUTED_PROFILE_VARIABLE}\";"
+            macro_source.contains(&format!(
+                "pub(crate) const ROUTED_PROFILE_VARIABLE: &str = \"{ROUTED_PROFILE_VARIABLE}\";"
             )),
-            "crates/gust/build.rs reads another variable"
+            "crates/gust-macros/src/expand/mod.rs reads another variable"
         );
         let cargo = OsString::from("cargo");
         let arguments = ["-p".to_owned(), "app".to_owned()];
@@ -2312,6 +2327,17 @@ mod tests {
         }
         let plain = cargo_command(&cargo, "run", &arguments, None);
         assert_eq!(env_value(&plain, ROUTED_PROFILE_VARIABLE), None);
+        // Nothing is set, and a value the driver inherited (from an outer `cargo gust run` whose program starts cargo
+        // again) is removed, so that a build of another profile is not refused for it.
+        assert!(
+            plain.get_envs().any(
+                |(key, value)| key.to_string_lossy() == ROUTED_PROFILE_VARIABLE && value.is_none()
+            ),
+            "the stale variable must be removed"
+        );
+        let mut collect = Command::new("cargo");
+        without_routed_profile(&mut collect);
+        assert_eq!(env_value(&collect, ROUTED_PROFILE_VARIABLE), None);
         // A preset value of the driver's own environment is overridden, as the route variables are, and the notes about
         // presets do not mention it.
         let plan = plan_of("[routes]\n");

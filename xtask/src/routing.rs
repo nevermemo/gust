@@ -11,9 +11,13 @@
 //! - `errors` (R3): bad `gust.toml` files fail with exit 2, file, line and tag, before cargo starts.
 //! - `test-run` (R4): `cargo gust test` and `cargo gust run` pass the variables to the build (the control, plain
 //!   `cargo test`, fails with the E0277 "cannot run the kernel": under plain cargo a GPU kernel is called on `CpuDevice`).
+//! - `guard` (R8): `cargo gust run -p cpu-app --profile dist`, with `dist` inheriting `release` (a build the driver reads
+//!   as `dev`, cargo as `native`), fails to compile `route-kernels` with the message of the macro's guard, which names both
+//!   profiles (m8.z); plain cargo, which sets no `GUST_ROUTED_PROFILE`, is not refused for it.
 //! - `flip` (R5): one warm target directory and one cargo command, the route variable unset, set and unset again, in both
-//!   directions twice; each state must rebuild and print the new target. With the macro's route tracking removed this case
-//!   must fail (the mutation proof, done by hand: `--case flip`).
+//!   directions twice; each state must rebuild and print the new target. Both states carry `GUST_ROUTED_PROFILE=dev`, so
+//!   that only the route variable differs. With the macro's route tracking removed this case must fail (the mutation proof,
+//!   done by hand: `--case flip`).
 //! - `lint` (R7): `cargo fmt --check` on the fixture, and clippy (all targets, warnings denied) per fixture package under
 //!   that package's own route. It is part of `--check-only`, so CI covers the fixture's style.
 //! - `gpu` (R6, not with `--check-only`): `gpu-app` dispatches the GPU-routed kernel on an adapter (named in the output);
@@ -40,10 +44,13 @@ pub(crate) const FIXTURE_DIR: &str = "tests/routing";
 /// The prefix of every route variable (`gust::routes::VARIABLE_PREFIX`).
 const ROUTE_PREFIX: &str = "GUST_ROUTE__";
 
+/// The variable `cargo gust` sets to the profile it resolved the routes for (m8.z; `cargo-gust`'s `ROUTED_PROFILE_VARIABLE`).
+const ROUTED_PROFILE_VARIABLE: &str = "GUST_ROUTED_PROFILE";
+
 /// Variables every child starts without (the route variables are removed by prefix).
 const CLEARED: [&str; 4] = [
     PROFILE_VARIABLE,
-    "GUST_ROUTED_PROFILE",
+    ROUTED_PROFILE_VARIABLE,
     "RUSTFLAGS",
     "CARGO_ENCODED_RUSTFLAGS",
 ];
@@ -75,11 +82,12 @@ const FALLBACK: &str = "fallback";
 const PROFILE: &str = "profile";
 
 /// The case names, in the order they run.
-pub(crate) const CASES: [&str; 7] = [
+pub(crate) const CASES: [&str; 8] = [
     "plain",
     "resolution",
     "errors",
     "test-run",
+    "guard",
     "flip",
     "lint",
     "gpu",
@@ -498,11 +506,14 @@ impl Check {
         )
     }
 
-    fn plain_probe(&self) -> Result<Done, String> {
-        exec(
-            self.cargo_command(&["run", "--locked", "-q", "-p", "probe"]),
-            "cargo run -p probe",
-        )
+    /// Plain `cargo run -p probe`, with `GUST_ROUTED_PROFILE` set to `routed` when it is `Some`. The flip gives it the
+    /// value the driver gives (`dev`), so that the route variables are the only difference between its states.
+    fn plain_probe(&self, routed: Option<&str>) -> Result<Done, String> {
+        let mut command = self.cargo_command(&["run", "--locked", "-q", "-p", "probe"]);
+        if let Some(routed) = routed {
+            command.env(ROUTED_PROFILE_VARIABLE, routed);
+        }
+        exec(command, "cargo run -p probe")
     }
 
     fn require_probe(done: &Done, wanted: &[String], label: &str) -> Result<(), String> {
@@ -525,7 +536,7 @@ impl Check {
     /// R1: plain cargo gives the macro's own defaults.
     fn plain(&self) -> Result<String, String> {
         self.write_entries("probe", "\"route-kernels::physics\" = \"cpu\"\n")?;
-        let done = self.plain_probe()?;
+        let done = self.plain_probe(None)?;
         Self::require_probe(
             &done,
             &probe_lines_for("gpu", "gpu", "cpu"),
@@ -659,13 +670,71 @@ impl Check {
         Ok("cargo gust test passes where plain cargo test fails with E0277 (cannot run the kernel); cargo gust run runs the CPU-routed kernel under dev and native".to_owned())
     }
 
+    /// R8: the driver and cargo disagree on the profile, and the guard says so (m8.z). `dist` inherits `release`: the
+    /// driver, which reads `--release`, `--profile release` and `GUST_PROFILE` only, resolves the routes of `cpu-app` for
+    /// `dev`, and cargo builds `native`. `route-kernels` must then fail to compile with the macro's message, naming both
+    /// profiles, whatever `GUST_ROUTED_PROFILE` the driver inherited. Plain cargo, which sets no such variable, must not be
+    /// refused with it.
+    fn guard(&self) -> Result<String, String> {
+        let arguments = ["--locked", "-q", "-p", "cpu-app", "--profile", "dist"];
+        let mut driver = self.driver_command("run", &arguments, None);
+        driver
+            .env("CARGO_PROFILE_DIST_INHERITS", "release")
+            // A value the driver inherited is overridden by the one it resolved.
+            .env(ROUTED_PROFILE_VARIABLE, "web");
+        let done = exec(driver, "cargo gust run -p cpu-app --profile dist")?;
+        let text = done.everything();
+        if done.success {
+            return Err(
+                "`cargo gust run -p cpu-app --profile dist` (dist inherits release) passed: the driver resolved the routes for `dev` and cargo built `native`, and nothing said so"
+                    .to_owned(),
+            );
+        }
+        for wanted in [
+            "resolved the routes of this build for the profile `dev` (GUST_ROUTED_PROFILE)",
+            "this build of gust is `native`",
+            "build.target",
+            "CARGO_BUILD_TARGET",
+        ] {
+            if !text.contains(wanted) {
+                return Err(format!(
+                    "`cargo gust run -p cpu-app --profile dist` failed (exit {}), but its output does not say `{wanted}`:\n{}",
+                    done.code,
+                    tail(&text, 30)
+                ));
+            }
+        }
+        // The control: the same build under plain cargo is refused for the strict profile (no artifact), and not for the
+        // guard, which only a driver run triggers.
+        let mut plain = self.cargo_command(&[
+            "run",
+            "--locked",
+            "-q",
+            "-p",
+            "cpu-app",
+            "--profile",
+            "dist",
+        ]);
+        plain.env("CARGO_PROFILE_DIST_INHERITS", "release");
+        let control = exec(plain, "cargo run -p cpu-app --profile dist")?;
+        let control_text = control.everything();
+        if control.success || control_text.contains("resolved the routes") {
+            return Err(format!(
+                "the control, plain `cargo run -p cpu-app --profile dist`, must fail for the strict profile and not for the guard (exit {}):\n{}",
+                control.code,
+                tail(&control_text, 25)
+            ));
+        }
+        Ok("cargo gust run with a profile cargo builds as native (dist inherits release) fails in route-kernels naming dev and native; plain cargo is not refused for the guard".to_owned())
+    }
+
     /// R5: the flip, in both directions, in one warm target directory with one cargo command.
     fn flip(&self) -> Result<String, String> {
         let mut steps = Vec::new();
         for (index, via) in FLIPS.into_iter().enumerate() {
             let target = flip_target(via);
             let done = match via {
-                Via::Unset => self.plain_probe()?,
+                Via::Unset => self.plain_probe(Some("dev"))?,
                 Via::Entry => self.driver_probe("\"route-kernels::physics\" = \"cpu\"\n", None)?,
                 Via::Default => self.driver_probe("", None)?,
             };
@@ -852,6 +921,7 @@ pub(crate) fn check_routing(args: &[String]) -> Result<(), String> {
             "resolution" => check.resolution(),
             "errors" => check.errors(),
             "test-run" => check.test_run(),
+            "guard" => check.guard(),
             "flip" => check.flip(),
             "lint" => check.lint(),
             "gpu" => check.gpu(),

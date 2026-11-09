@@ -23,7 +23,15 @@ fn options_name_the_cases_and_check_only_leaves_out_the_gpu() {
     assert_eq!(Options::parse(&[]).unwrap().cases, CASES);
     assert_eq!(
         Options::parse(&args(&["--check-only"])).unwrap().cases,
-        ["plain", "resolution", "errors", "test-run", "flip", "lint"]
+        [
+            "plain",
+            "resolution",
+            "errors",
+            "test-run",
+            "guard",
+            "flip",
+            "lint"
+        ]
     );
     // Cases run in their own order whatever the order given, and a repeat is one.
     assert_eq!(
@@ -233,4 +241,49 @@ fn ci_runs_check_routing_in_a_job_of_its_own_with_no_gpu_and_no_lavapipe() {
     assert_eq!(steps, 1, "{ci}");
     let unit = ci.split("\n  msrv:").next().unwrap();
     assert!(!unit.contains("check-routing"), "{unit}");
+}
+
+/// m8.z (review r1, SF1): the plain state of the flip carries the `GUST_ROUTED_PROFILE` the driver gives, so that only the
+/// route variables differ between its states. Without it the unset-to-set direction also changed the variable, which
+/// made a rebuild whether or not the route tracking worked.
+#[test]
+fn the_flip_gives_its_plain_state_the_routed_profile_of_the_driver() {
+    let source = repository_file("xtask/src/routing.rs");
+    assert!(
+        source.contains("Via::Unset => self.plain_probe(Some(\"dev\"))?,"),
+        "the plain state of the flip must set GUST_ROUTED_PROFILE=dev"
+    );
+    // The plain case is plain cargo as a user runs it: no such variable.
+    assert!(source.contains("let done = self.plain_probe(None)?;"));
+    // The probe's other callers pass nothing.
+    assert_eq!(source.matches("self.plain_probe(").count(), 2);
+}
+
+/// m8.z (review r1, SF2): the guard runs through the real driver, in `--check-only` too (it needs no GPU), with a custom
+/// profile that inherits `release` and no change to the fixture's manifests.
+#[test]
+fn the_guard_case_runs_the_driver_with_a_profile_that_inherits_release() {
+    assert!(CASES.contains(&"guard"));
+    assert!(
+        Options::parse(&args(&["--check-only"]))
+            .unwrap()
+            .cases
+            .contains(&"guard")
+    );
+    let source = repository_file("xtask/src/routing.rs");
+    let body = &source[source.find("    fn guard(&self)").expect("fn guard")..];
+    let body = &body[..body.find("    /// R5").expect("the next case")];
+    for needed in [
+        "self.driver_command(\"run\"",
+        "\"--profile\", \"dist\"",
+        "CARGO_PROFILE_DIST_INHERITS\", \"release\"",
+        "resolved the routes of this build for the profile `dev` (GUST_ROUTED_PROFILE)",
+        "this build of gust is `native`",
+        "if done.success",
+    ] {
+        assert!(body.contains(needed), "{needed}");
+    }
+    // The driver's own value wins over an inherited one, and the fixture's manifests are left alone.
+    assert!(body.contains(".env(ROUTED_PROFILE_VARIABLE, \"web\")"));
+    assert!(!body.contains("fs::write"));
 }

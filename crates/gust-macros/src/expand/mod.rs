@@ -882,13 +882,20 @@ fn expand_validated_with(
     items.insert(0, syn::parse_quote! { use ::gust::prelude::*; });
     // The route variable of a routed module is read the way `GUST_PROFILE` is, so that cargo re-expands the module when
     // it changes; an untagged module reads none (its expansion text is what it was before routing).
+    // It also reads `GUST_ROUTED_PROFILE` and, when `cargo gust` set it, checks it against the profile `gust` was built
+    // for (`Resolved::guard`).
     let tracked_environment = {
         let base = tracked_environment();
         let routes = route
             .as_ref()
             .map(routing::Resolved::tracking)
             .unwrap_or_default();
-        quote!(#base #routes)
+        let routed = (request.variables)(routing::ROUTED_PROFILE_VARIABLE);
+        let guard = route
+            .as_ref()
+            .map(|route| route.guard(routed.as_deref()))
+            .unwrap_or_default();
+        quote!(#base #routes #guard)
     };
     let manifest_include = artifact::manifest_tokens(manifest_present);
     // One check per module, not per kernel: the manifest is a property of the crate, so N kernels with a pair and no
@@ -949,7 +956,7 @@ fn expand_validated_with(
 /// `crates/gust/src/routes.rs`, pasted verbatim, so the two spellings cannot drift unnoticed.
 pub(crate) mod routing {
     use proc_macro2::{Span, TokenStream};
-    use quote::quote;
+    use quote::{quote, quote_spanned};
     use syn::parse::{Parse, ParseStream};
 
     use super::{Environment, Profile};
@@ -1140,6 +1147,28 @@ pub(crate) mod routing {
         std::env::var(name).ok().filter(|value| !value.is_empty())
     }
 
+    /// The variable `cargo gust` sets to the target part of the profile it resolved the routes for (m8.z).
+    pub(crate) const ROUTED_PROFILE_VARIABLE: &str = "GUST_ROUTED_PROFILE";
+
+    /// The profiles a build can have, as `gust::profile::NAME` spells them.
+    const ROUTED_PROFILES: [&str; 4] = ["dev", "native", "web", "cpu"];
+
+    /// The text of the compile error of a routed module built for `built` while the driver resolved its routes for
+    /// `routed`. It holds no `{` or `}`: it is the literal of a `panic!`.
+    pub(crate) fn routed_message(routed: &str, built: &str) -> String {
+        format!(
+            "gust: `cargo gust` resolved the routes of this build for the profile `{routed}` ({ROUTED_PROFILE_VARIABLE}), but \
+             this build of gust is `{built}`: gust infers its profile from GUST_PROFILE, cargo's PROFILE and the target \
+             architecture, and the driver reads only its own command line and environment, so they differ when the target \
+             comes from `build.target` in .cargo/config.toml or from CARGO_BUILD_TARGET, when a custom profile inherits \
+             `release`, when GUST_PROFILE is set only in the `[env]` table of the config, or when this crate is built for the \
+             host as a build dependency (a wasm32 release build builds it as `native`; set GUST_PROFILE=web in the \
+             environment then, so that both copies infer `web`). Pass `--release` and `--target` to `cargo gust` itself, or \
+             set GUST_PROFILE to the profile you mean in the environment, so that both agree. ({ROUTED_PROFILE_VARIABLE} is \
+             set by `cargo gust` only; unset it if you are running plain cargo.)"
+        )
+    }
+
     /// What decided a module's target, for the words of an error.
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub(crate) enum Level {
@@ -1327,6 +1356,49 @@ pub(crate) mod routing {
             };
             quote! {
                 const _: ::core::option::Option<&::core::primitive::str> = ::core::option_env!(#name);
+            }
+        }
+
+        /// The guard of a routed module against a build the driver did not resolve its routes for (m8.z).
+        ///
+        /// `cargo gust` resolves the routes for the profile it sees (its command line and `GUST_PROFILE`) and gives that
+        /// profile to cargo as `GUST_ROUTED_PROFILE`. Cargo can build another one (`build.target` or `CARGO_BUILD_TARGET`
+        /// in its config, a custom profile that inherits `release`), and then the routes are for a build this is not.
+        ///
+        /// The expansion reads the variable with `option_env!`, so rustc tracks it for the routed crate alone, as it does
+        /// the route variables: a switch between plain cargo and the driver then recompiles the routed crates and the
+        /// application, and not `gust` (D67's measured scope). When the variable is set the expansion also checks it
+        /// against the profile `gust` was built for (`gust::profile::is_profile`, a hidden item). The check is a const
+        /// evaluation spanned at the route's literal, so a mismatch is a compile error there. Unset, plain cargo, nothing
+        /// is checked (D67).
+        ///
+        /// The macro cannot see the profile `gust` was built for, only `gust`'s constant can, so there is one `if` per
+        /// profile that is not the routed one, each with a message that names both.
+        pub(crate) fn guard(&self, routed: Option<&str>) -> TokenStream {
+            let span = self.tag.span;
+            let tracking = quote_spanned! { span =>
+                const _: ::core::option::Option<&::core::primitive::str> =
+                    ::core::option_env!("GUST_ROUTED_PROFILE");
+            };
+            let Some(routed) = routed else {
+                return tracking;
+            };
+            let checks = ROUTED_PROFILES
+                .iter()
+                .filter(|built| **built != routed)
+                .map(|built| {
+                    let message = routed_message(routed, built);
+                    quote_spanned! { span =>
+                        if ::gust::profile::is_profile(#built) {
+                            ::core::panic!(#message);
+                        }
+                    }
+                });
+            quote_spanned! { span =>
+                #tracking
+                const _: () = {
+                    #(#checks)*
+                };
             }
         }
 

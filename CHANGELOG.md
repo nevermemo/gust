@@ -44,9 +44,12 @@ operations).
   `GUST_ROUTE__<package>__<tag>` variable per tag and write `gust-artifacts/routes.json`; `cargo gust run` and `test`
   are new. Without a `gust.toml` and without route tags a build is exactly what it was. The driver reads the profile
   from its command line and environment, so it also sets `GUST_ROUTED_PROFILE` to the profile it resolved the routes
-  for, and `gust`'s build script fails the build, naming both profiles, when cargo's own view differs (a target from
-  `build.target` or `CARGO_BUILD_TARGET`, a custom profile that inherits `release`, a `GUST_PROFILE` set only in the
-  config's `[env]`) instead of routing the kernels for another profile. Plain cargo sets nothing and is unchanged.
+  for, and the `#[gpu]` expansion of a routed module fails the compilation of its crate, naming both profiles, when
+  cargo's own view differs (a target from `build.target` or `CARGO_BUILD_TARGET`, a custom profile that inherits
+  `release`, a `GUST_PROFILE` set only in the config's `[env]`) instead of routing the kernels for another profile.
+  Plain cargo sets nothing and is unchanged; a switch between plain cargo and `cargo gust` rebuilds the routed crates
+  and the application, not `gust`.
+- A hidden `gust::profile::is_profile` (the check the `#[gpu]` macro writes for a routed module; not public API).
 - New public modules of `gust-compute`: `gust::capability`, `gust::limits`, `gust::target` (`Target`, and the hidden
   `GpuKernel` marker) and `gust::routes` (`variable_name`, `VARIABLE_PREFIX`).
 

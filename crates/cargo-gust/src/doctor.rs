@@ -301,7 +301,7 @@ pub(crate) fn lines(facts: &Facts) -> (Vec<String>, bool) {
             .to_owned(),
     );
     out.push(
-        "routing (M8): `cargo gust build`, `check`, `run` and `test` read a gust.toml beside the package's Cargo.toml and set GUST_ROUTE__<package>__<tag> for the tags the build's crates declare; without one, plain cargo's rules apply (the source defaults). `run` and `test` take the profile from GUST_PROFILE, else from --release and --target wasm32"
+        "routing (M8): `cargo gust build`, `check`, `run` and `test` read a gust.toml beside the package's Cargo.toml and set GUST_ROUTE__<package>__<tag> for the tags the build's crates declare; without one, plain cargo's rules apply (the source defaults). `run` and `test` take the profile from GUST_PROFILE, else from --release and --target wasm32, and a routed kernel crate fails to compile when cargo builds another profile (a target from the cargo config, a custom profile; GUST_ROUTED_PROFILE)"
             .to_owned(),
     );
     out.push(format!(

@@ -302,8 +302,9 @@ jobs:
         # on lavapipe's 8..8 range; `tests/capabilities.rs`: the default device holds the build's set). Since m8.s
         # `tests/subgroup.rs` also runs the subgroup operations of the fixtures against a host model (selected only
         # under this profile); the device-decision tests use plain Slang with hand-written `requires` descriptors.
-        # The Gpu suite step above already runs both files on this lavapipe under `dev`. After the cross-shape test and `!cancelled()` as it has, so that a red differential test neither skips
-        # this step nor is skipped by it. No condition on GPU_SOFTWARE_NIGHTLY: both lists run it, a pull request
+        # The Gpu suite step above already runs both files on this lavapipe under `dev`. This step comes after the
+        # cross-shape test and has `!cancelled()`, so that a red differential test neither skips this step nor is skipped
+        # by it. No condition on GPU_SOFTWARE_NIGHTLY: both lists run it, a pull request
         # included. Pinned by `gpu_software_runs_the_subgroup_targets_under_the_profile` in xtask/src/tests/suite.rs.
         if: ${{ !cancelled() }}
         run: |

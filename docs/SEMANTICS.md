@@ -126,11 +126,18 @@ describes the intended behaviour and is not evidence.
   and `GUST_PROFILE`), while `gust`'s build script infers it from what cargo hands it (`PROFILE` and the target
   architecture), which also see `build.target` in `.cargo/config.toml`, `CARGO_BUILD_TARGET`, a custom profile that
   inherits `release` and a `GUST_PROFILE` set in the `[env]` table of the config. So the driver also sets
-  `GUST_ROUTED_PROFILE` to the profile it resolved the routes for (m8.z), and the build script fails the build, naming
-  both profiles and the likely cause, when the profile it infers is another one: a kernel is never routed for a profile
-  the build is not. Plain cargo sets no `GUST_ROUTED_PROFILE`, nothing is compared, and it behaves as before (D67). A
-  copy of `gust` compiled for the host as a build dependency of a `wasm32` release build infers another profile than the
-  one the driver resolved and is refused too; nothing in the tree builds it so. A change to the `gust.toml`
+  `GUST_ROUTED_PROFILE` to the profile it resolved the routes for (m8.z), and the code the `#[gpu]` macro writes for a
+  module with a route tag reads it with `option_env!` and compares it with the profile `gust` was built for (a hidden
+  `gust::profile::is_profile`). When they differ, that crate does not compile: the error is at the route's literal and
+  names both profiles and the likely cause, so a kernel is never routed for a profile the build is not. Only a module
+  with a route tag can be misrouted, so only those carry the check; the build script of `gust` does not read the
+  variable. Plain cargo sets no `GUST_ROUTED_PROFILE`, nothing is compared, and it behaves as before (D67); a driver run
+  that applies no `gust.toml` removes a stale inherited value. A switch between plain cargo (or rust-analyzer) and
+  `cargo gust` in one target directory rebuilds the routed kernel crates and the application only, as a route change
+  does (measured in m8.z: two crates in the routing fixture; with the check in `gust`'s build script it was three, `gust`
+  among them, and in a real application the whole `gust` cone). A routed kernel crate compiled for the host as a build
+  dependency of a `wasm32` release build infers `native` where the driver resolved `web`, and is refused too; set
+  `GUST_PROFILE=web` in the environment then, so that both copies infer `web`. A change to the `gust.toml`
   rebuilds in both directions, as `cargo xtask check-routing` measured (with the route tracking removed, the
   unset-to-set flip fails). A route to a capability profile is refused; `--workspace`, `--all` and a workspace root's
   default selection are refused when any selected member has a `gust.toml`; no `cargo gust` command builds a routed

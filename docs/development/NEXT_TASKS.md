@@ -482,8 +482,9 @@ test module; do not mix that mechanical move with behavior changes.
 - The `device_options` adapter-enumeration flake: `an_adapter_that_does_not_exist_is_no_adapter` (gust-wgpu
   `tests/device_options.rs:86`) failed once on the two-adapter development PC (enumerate returned 0, then index 0
   opened). The mx.p1b note above records the same family: a Gpu-suite test (`limits`, `device_options`) failed with
-  `NoAdapter` in two runs while other GPU work ran, and passed alone and on rerun. Not caused by M8. Fix when it recurs: re-enumerate, or skip the test when the
-  enumeration is empty.
+  `NoAdapter` in two runs while other GPU work ran, and passed alone and on rerun. Not caused by M8. Fix when it
+  recurs: retry the enumeration, or fail with a message that names the empty enumeration (a test is never skipped
+  silently, AGENTS.md).
 - The portable floor (`limits = "portable"`, GUST-E0746) checks `#[kernel]` functions only. It does not check the
   `#[gpu] fn` element-wise maps or `par_for!` calls, which stay with the launch checks of `gust-compute-wgpu`
   (`DeviceLimit` at run time). README's "The portable floor is opt-in" bullet, SEMANTICS' "The portable floor (opt-in,

@@ -38,6 +38,34 @@ const fn cpu_profile(name: &str) -> bool {
     matches!(name.as_bytes(), b"cpu")
 }
 
+/// Whether the profile this build of `gust` has is `name` (`dev`, `native`, `web` or `cpu`).
+///
+/// Hidden: the code the `#[gpu]` macro writes for a module with a route tag calls it, and nothing else (m8.z). The
+/// macro cannot see the profile this build inferred, only this constant can; it compares it with the profile
+/// `cargo gust` resolved the routes for (`GUST_ROUTED_PROFILE`) and fails the compilation of the routed crate when the
+/// two differ.
+#[doc(hidden)]
+#[must_use]
+pub const fn is_profile(name: &str) -> bool {
+    same_name(NAME, name)
+}
+
+/// Whether the two names are the same text (a slice `==` is not `const`).
+const fn same_name(left: &str, right: &str) -> bool {
+    let (left, right) = (left.as_bytes(), right.as_bytes());
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
+}
+
 /// The text of the compile error that [`require_artifact`] raises.
 const MISSING: &str = "gust: a strict profile (GUST_PROFILE native or web) needs a precompiled artifact for this kernel; run `cargo gust build`, or build with GUST_PROFILE=dev";
 
@@ -97,8 +125,8 @@ const fn check_manifest(strict: bool, present: bool) {
 mod tests {
     use super::{
         IS_CPU, MISSING, MISSING_MANIFEST, NAME, NOT_A_GPU_TARGET, STRICT, check_artifact,
-        check_gpu_target, check_manifest, cpu_profile, require_artifact, require_gpu_target,
-        require_manifest, strict_profile,
+        check_gpu_target, check_manifest, cpu_profile, is_profile, require_artifact,
+        require_gpu_target, require_manifest, same_name, strict_profile,
     };
 
     // A satisfied assert is a build-time proof too: these items fail the compilation of the test build otherwise.
@@ -113,6 +141,28 @@ mod tests {
     const _: () = check_gpu_target(false);
     // `cpu` uses no artifact, so it is never strict about one: the two flags are exclusive.
     const _: () = assert!(!(STRICT && IS_CPU));
+
+    // The check the macro writes for a routed module passes when the routed profile is this build's.
+    const _: () = assert!(is_profile(NAME));
+
+    #[test]
+    fn the_routed_check_asks_for_exact_names_and_one_of_the_four_is_this_build() {
+        let names = ["dev", "native", "web", "cpu"];
+        assert_eq!(names.iter().filter(|name| is_profile(name)).count(), 1);
+        assert!(is_profile(NAME));
+        assert!(same_name("web", "web"));
+        for (left, right) in [
+            ("web", "we"),
+            ("web", "webb"),
+            ("dev", "Dev"),
+            ("", "dev"),
+            ("dev", ""),
+            ("dev+subgroups", "dev"),
+        ] {
+            assert!(!same_name(left, right), "{left:?} against {right:?}");
+        }
+        assert!(same_name("", ""));
+    }
 
     #[test]
     fn the_name_is_one_of_the_four_profiles_and_strict_means_native_or_web() {

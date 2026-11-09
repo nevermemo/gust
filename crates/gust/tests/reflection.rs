@@ -935,6 +935,156 @@ mod host_layouts {
     }
 }
 
+/// Slice m9.r2b (D17, D159): the host layouts of arrays against the real schema-4 helper, on both targets. A hand-written
+/// Slang program with `StructuredBuffer<float[4]>` and a struct `S { float a[4]; float2 b[3]; }`; the expected numbers
+/// are written by hand from the m9.s0 spike's P4b table (float[4]: size 16, align 4; float2[3]: size 24, align 8,
+/// element stride 8; S: a at 0, b at 16, size 40, align 8) and are the same numbers as `[f32; 4]`'s `GpuPod::LAYOUT`
+/// and a `#[repr(C)]` Rust struct. A mutated host layout is refused, so the check is not vacuous.
+#[test]
+fn the_real_helper_output_passes_the_cross_check_for_array_host_layouts() {
+    use gust::{
+        GpuPod, ParameterDescriptor, ParameterKind, ResourceBinding, ResourceLayout,
+        StructFieldLayout, TypeLayout, TypeLayoutKind, math::Vec2,
+    };
+    if helper_schema() < 4 {
+        return;
+    }
+    const SOURCE: &str = "struct S { float a[4]; float2 b[3]; };\n[[vk::binding(0, 0)]] RWStructuredBuffer<float> output;\n[[vk::binding(1, 0)]] StructuredBuffer<float[4]> quads;\n[[vk::binding(2, 0)]] StructuredBuffer<S> ss;\n[shader(\"compute\")]\n[numthreads(64, 1, 1)]\nvoid main(uint3 id : SV_DispatchThreadID)\n{\n    output[id.x] = quads[id.x][1] + ss[id.x].a[2] + ss[id.x].b[2].y;\n}\n";
+    const F32: TypeLayout = <f32 as GpuPod>::LAYOUT;
+    const V2: TypeLayout = <Vec2 as GpuPod>::LAYOUT;
+    const FOUR: TypeLayout = TypeLayout::array(&F32, 4);
+    const THREE_V2: TypeLayout = TypeLayout::array(&V2, 3);
+    const S: TypeLayout = TypeLayout::structure(
+        "S",
+        40,
+        8,
+        &[
+            StructFieldLayout {
+                name: "a",
+                offset: 0,
+                ty: FOUR,
+            },
+            StructFieldLayout {
+                name: "b",
+                offset: 16,
+                ty: THREE_V2,
+            },
+        ],
+    );
+    assert_eq!((FOUR.size, FOUR.alignment, FOUR.stride), (16, 4, 16));
+    assert_eq!(FOUR, <[f32; 4] as GpuPod>::LAYOUT);
+    assert_eq!(
+        (THREE_V2.size, THREE_V2.alignment, THREE_V2.stride),
+        (24, 8, 24)
+    );
+    #[repr(C)]
+    #[allow(dead_code)] // only its size, alignment and offsets are read
+    struct RustS {
+        a: [f32; 4],
+        b: [Vec2; 3],
+    }
+    assert_eq!(
+        (
+            std::mem::offset_of!(RustS, b),
+            std::mem::size_of::<RustS>(),
+            std::mem::align_of::<RustS>()
+        ),
+        (16, 40, 8)
+    );
+    let parameters = |four: TypeLayout, s: TypeLayout| {
+        let parameter = |name, access, layout, binding| ParameterDescriptor {
+            name,
+            rust_type: "T",
+            kind: ParameterKind::Storage,
+            access,
+            resource_layout: Some(layout),
+            binding: Some(ResourceBinding { group: 0, binding }),
+        };
+        vec![
+            parameter(
+                "output",
+                gust::Access::ReadWrite,
+                ResourceLayout::storage_v1(F32),
+                0,
+            ),
+            parameter(
+                "quads",
+                gust::Access::ReadOnly,
+                ResourceLayout::storage_v1(four),
+                1,
+            ),
+            parameter(
+                "ss",
+                gust::Access::ReadOnly,
+                ResourceLayout::storage_v2(s),
+                2,
+            ),
+        ]
+    };
+    let mut kernel = layout_kernel();
+    kernel.slang_source = SOURCE;
+    kernel.parameters = Box::leak(parameters(FOUR, S).into_boxed_slice());
+    for target in [Target::Wgsl, Target::Spirv] {
+        let compiled = compile_reflected(&kernel, target)
+            .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+        assert_eq!(compiled.reflection.schema_version, 4, "{target:?}");
+        let reports = compiled
+            .reflection
+            .cross_check_kernel(&kernel)
+            .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+        assert_eq!(reports.len(), 3, "{target:?}");
+        assert!(
+            reports.iter().all(|report| report.is_full_abi_match()),
+            "{target:?}: {reports:?}"
+        );
+        let checked: Vec<usize> = reports.iter().map(|report| report.checked_fields).collect();
+        assert_eq!(checked, [0, 0, 2], "{target:?}");
+        // The `GpuPod` impl of `[f32; 4]` agrees with the helper on its own.
+        let quads = compiled
+            .reflection
+            .resources
+            .iter()
+            .find(|resource| resource.name == "quads")
+            .unwrap();
+        assert!(
+            cross_check_pod::<[f32; 4]>(quads)
+                .unwrap_or_else(|error| panic!("{target:?}: {error}"))
+                .is_full_abi_match(),
+            "{target:?}"
+        );
+        // Each single difference in the host layout is refused.
+        let TypeLayoutKind::Struct(fields) = S.kind else {
+            panic!("a struct layout")
+        };
+        let with_field_b = |b: TypeLayout| {
+            let mut fields = fields.to_vec();
+            fields[1].ty = b;
+            let mut layout = S;
+            layout.kind = TypeLayoutKind::Struct(Box::leak(fields.into_boxed_slice()));
+            layout
+        };
+        let wrong_count = TypeLayout::array(&V2, 2);
+        let wrong_element = TypeLayout::array(&<gust::math::Vec4 as GpuPod>::LAYOUT, 3);
+        for (what, four, s) in [
+            ("quads count", TypeLayout::array(&F32, 3), S),
+            (
+                "quads element",
+                TypeLayout::array(&<u32 as GpuPod>::LAYOUT, 4),
+                S,
+            ),
+            ("S.b count", FOUR, with_field_b(wrong_count)),
+            ("S.b element", FOUR, with_field_b(wrong_element)),
+        ] {
+            let mut wrong = kernel;
+            wrong.parameters = Box::leak(parameters(four, s).into_boxed_slice());
+            assert!(
+                compiled.reflection.cross_check_kernel(&wrong).is_err(),
+                "{target:?}: {what} was accepted"
+            );
+        }
+    }
+}
+
 /// Slice m6.r fix round 1: the real helper output end to end through `cross_check_kernel`, with hand-written host
 /// layouts: a storage struct with a `Vec2` (`StorageV2`) and a constant buffer with a vector, a matrix, a nested
 /// struct and a `Vec2` (`Std140V1`). The fields are checked, and a wrong host layout is refused.

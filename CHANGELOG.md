@@ -71,6 +71,16 @@ operations).
   call are unchanged, and `gust` still does not depend on `gust-wgpu`. Limits: storage buffers only (no uniforms,
   textures or samplers), calls are synchronous, a call that changes side copies the whole buffer, and there is no GPU
   backend on wasm32 (`RoutedDevice<NoGpu>` works there).
+- Fixed-size array layouts (m9.r2b, D159). `gust::TypeLayoutKind::Array { element, count }` and
+  `TypeLayout::array(element, count)` describe `[T; N]` (size `element.stride * count`, the element's alignment). 39
+  `GpuPod` impls, `[T; N]` for `N` in 1 to 32 and 64, 128, 256, 512, 1024, 2048 and 4096 (no blanket impl, so `[T; 0]`
+  has none), when `T: GpuPod`, `T`'s std430 stride equals its Rust size and `T` is not an array; a hand-written element
+  that breaks the rule fails when `LAYOUT` is used (E0080), `Vec3` and `Mat3` are not `GpuPod`, and the
+  `on_unimplemented` note names the lengths. Arrays are `StorageV1` or `StorageV2` types (an array of vectors, matrices
+  or structs of them) and never `Std140V1`. The reflection cross-check compares a host array with the schema-4 reflection
+  (count, element stride, element, size), and `gust-compute-wgpu`'s binding checks accept the array kind. The enum is
+  `#[non_exhaustive]` on `release/0.1` too, so the new variant is not a break (a `match` outside the crate already needs
+  a wildcard arm). No `#[gpu]` module can name an array yet; that is the macro half of the slice (r2a).
 
 ### Changed, and may break code written for 0.1.0
 

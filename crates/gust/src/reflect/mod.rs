@@ -27,8 +27,9 @@
 //! (the bytes between two elements) and `elementType` (any type, an array or a struct included), beside the `size`,
 //! `alignment` and `stride` every type has. The helper writes it only when an array occurs in a buffer element, so every
 //! other document keeps its schema and its bytes, and the reader refuses an `array` in a document of schema 3 or below
-//! with the old message. It is read into [`ReflectedTypeKind::Array`]; checking a host type against it is the work of
-//! the array host layouts (slice r2), until which a descriptor cannot name an array and the check reports a mismatch.
+//! with the old message. It is read into [`ReflectedTypeKind::Array`], and a host [`TypeLayoutKind::Array`] is checked
+//! against it (m9.r2b): the count, the element stride and the element type, recursively, beside the size, alignment and
+//! stride of the array itself.
 //!
 //! # Where the CLI gate would sit
 //!
@@ -1977,6 +1978,11 @@ mod tests {
                     .collect();
                 format!(r#""kind":"struct","fields":[{}]"#, fields.join(","))
             }
+            TypeLayoutKind::Array { element, count } => format!(
+                r#""kind":"array","elementCount":{count},"elementStride":{},"elementType":{{{}}}"#,
+                element.stride,
+                type_body(*element)
+            ),
         };
         format!("{head},{tail}")
     }
@@ -4023,6 +4029,140 @@ mod tests {
             "{error}"
         );
     }
+
+    // m9.r2b: a host array layout against a schema-4 reflection (the documents are written from the host layout by
+    // `type_body`, so each mutation below is the one difference).
+
+    fn array_kernel(layout: TypeLayout) -> (String, KernelDescriptor) {
+        let json = document_with_schema(4, &[storage_json("a", 0, layout, "read")]);
+        let kernel = kernel_with(vec![parameter(
+            "a",
+            ParameterKind::Storage,
+            Access::ReadOnly,
+            ResourceLayout::storage_v2(layout),
+            0,
+        )]);
+        (json, kernel)
+    }
+
+    #[test]
+    fn an_array_host_layout_matches_its_reflection_and_each_single_difference_is_refused() {
+        // `Vec2 a[3]` as a buffer element: size 24, alignment 8, element stride 8 (spike P4b: float2[2] is 16/8/8).
+        const THREE_V2: TypeLayout = TypeLayout::array(&VEC2, 3);
+        let (json, kernel) = array_kernel(THREE_V2);
+        assert_eq!(
+            (THREE_V2.size, THREE_V2.alignment, THREE_V2.stride),
+            (24, 8, 24)
+        );
+        let compiled = read(&json, &kernel).unwrap();
+        let reports = compiled.reflection.cross_check_kernel(&kernel).unwrap();
+        assert!(reports.iter().all(|report| report.is_full_abi_match()));
+        let cases: &[(&str, &str, &str)] = &[
+            // The reader only accepts a count that fits the size, so the count shrinks (a bigger one is refused when
+            // the document is read).
+            (
+                r#""elementCount":3"#,
+                r#""elementCount":2"#,
+                "a.elementCount: host 3, compiler 2",
+            ),
+            (
+                r#""scalarType":"float32","elementCount":2"#,
+                r#""scalarType":"int32","elementCount":2"#,
+                "a[]: type or field count differs",
+            ),
+            (
+                r#""size":24,"alignment":8"#,
+                r#""size":32,"alignment":8"#,
+                "a.size: host 24, compiler 32",
+            ),
+            (
+                r#""stride":8,"name":"Vec2""#,
+                r#""stride":16,"name":"Vec2""#,
+                "a[].stride: host 8, compiler 16",
+            ),
+        ];
+        for (find, replace, expected) in cases {
+            assert!(json.contains(find), "the fixture lost `{find}`");
+            let edited = json.replacen(find, replace, 1);
+            assert_eq!(&mismatch_of(&edited, &kernel), expected, "{find}");
+        }
+        // The element stride alone: with one element the reader accepts any stride from the element's size up, so the
+        // size does not change with it.
+        const ONE_V2: TypeLayout = TypeLayout::array(&VEC2, 1);
+        let (json, kernel) = array_kernel(ONE_V2);
+        let edited = json.replacen(
+            r#""elementStride":8,"elementType""#,
+            r#""elementStride":16,"elementType""#,
+            1,
+        );
+        assert_ne!(edited, json);
+        assert_eq!(
+            mismatch_of(&edited, &kernel),
+            "a.elementStride: host 8, compiler 16"
+        );
+        // A scalar array, and a matrix array (the element stride of a matrix is the whole matrix, 64).
+        const FOUR_F: TypeLayout = TypeLayout::array(&F32_LAYOUT, 4);
+        const TWO_M4: TypeLayout = TypeLayout::array(&MAT4, 2);
+        assert_eq!(
+            (FOUR_F.size, FOUR_F.alignment, TWO_M4.size, TWO_M4.alignment),
+            (16, 4, 128, 16)
+        );
+        for layout in [FOUR_F, TWO_M4] {
+            let (json, kernel) = array_kernel(layout);
+            let compiled = read(&json, &kernel).unwrap();
+            assert!(compiled.reflection.cross_check_kernel(&kernel).is_ok());
+        }
+        // The scalar array against a document that says the element is an unsigned integer.
+        let (json, kernel) = array_kernel(FOUR_F);
+        let edited = json.replacen(r#""scalarType":"float32""#, r#""scalarType":"uint32""#, 1);
+        assert_eq!(
+            mismatch_of(&edited, &kernel),
+            "a[]: type or field count differs"
+        );
+    }
+
+    #[test]
+    fn a_struct_with_array_fields_matches_its_reflection() {
+        // struct S { float a[4]; float2 b[3]; }: a at 0 (16 bytes), b at 16 (24 bytes, alignment 8), size 40.
+        const A: TypeLayout = TypeLayout::array(&F32_LAYOUT, 4);
+        const B: TypeLayout = TypeLayout::array(&VEC2, 3);
+        let s = make_struct("S", 40, 8, &[member("a", 0, A), member("b", 16, B)]);
+        let (json, kernel) = array_kernel(s);
+        let compiled = read(&json, &kernel).unwrap();
+        let reports = compiled.reflection.cross_check_kernel(&kernel).unwrap();
+        assert!(reports.iter().all(|report| report.is_full_abi_match()));
+        assert_eq!(reports[0].checked_fields, 2);
+        for (find, replace, expected) in [
+            (
+                r#""elementCount":4,"elementStride":4"#,
+                r#""elementCount":3,"elementStride":4"#,
+                "a.a.elementCount: host 4, compiler 3",
+            ),
+            (
+                r#""scalarType":"float32","elementCount":2"#,
+                r#""scalarType":"int32","elementCount":2"#,
+                "a.b[]: type or field count differs",
+            ),
+            (
+                r#""name":"b","binding":{"kind":"uniform","offset":16"#,
+                r#""name":"b","binding":{"kind":"uniform","offset":24"#,
+                "a.b.offset: host 16, compiler 24",
+            ),
+        ] {
+            assert!(json.contains(find), "the fixture lost `{find}`");
+            let edited = json.replacen(find, replace, 1);
+            assert_eq!(&mismatch_of(&edited, &kernel), expected, "{find}");
+        }
+    }
+
+    #[test]
+    fn an_array_host_layout_against_a_non_array_reflection_is_a_mismatch() {
+        const FOUR_F: TypeLayout = TypeLayout::array(&F32_LAYOUT, 4);
+        let (_, kernel) = array_kernel(FOUR_F);
+        let json = document_with_schema(4, &[storage_json("a", 0, F32_LAYOUT, "read")]);
+        let compiled = read(&json, &kernel).unwrap();
+        assert!(compiled.reflection.cross_check_kernel(&kernel).is_err());
+    }
 }
 
 /// The document's `schemaVersion`: 1, 2, 3 or 4, nothing else.
@@ -4042,6 +4182,8 @@ fn schema_one_gap(parameter: &crate::ParameterDescriptor) -> Option<&'static str
             TypeLayoutKind::Vector { .. } => Some("vector"),
             TypeLayoutKind::Matrix { .. } => Some("matrix"),
             TypeLayoutKind::Struct(fields) => fields.iter().find_map(|field| layout_gap(field.ty)),
+            // Only schema 4 describes an array (m9.r2b).
+            TypeLayoutKind::Array { .. } => Some("array"),
         }
     }
     if parameter.kind == crate::ParameterKind::Uniform {
@@ -4333,6 +4475,24 @@ fn check_type(
                 check_type(host.ty, &compiler.ty, &path, report)?;
             }
             Ok(())
+        }
+        // Schema 4 (m9.r2b): the array's size, alignment and stride were compared above; here the count, the distance
+        // between elements and the element type, recursively.
+        (
+            TypeLayoutKind::Array { element, count },
+            ReflectedTypeKind::Array {
+                element: compiler_element,
+                count: compiler_count,
+                element_stride,
+            },
+        ) => {
+            equal(count, *compiler_count, &format!("{path}.elementCount"))?;
+            equal(
+                element.stride,
+                *element_stride,
+                &format!("{path}.elementStride"),
+            )?;
+            check_type(*element, compiler_element, &format!("{path}[]"), report)
         }
         _ => Err(Error::Mismatch(format!(
             "{path}: type or field count differs"

@@ -56,7 +56,10 @@ every buffer element type and struct field is a padding-free layout (StorageV1, 
 is involved; Std140V1 for structs a uniform reaches, which get `#[repr(C, align(16))]`) matching Rust's size and
 alignment; a failure is error E0080 that names the field
 or the parameter. The macro still does not reflect: layouts and bindings are
-assigned here and verified against Slang at run time (D17).
+assigned here and verified against Slang at run time (D17). Since m9.r2b (D159) a layout can also be an array
+(`TypeLayoutKind::Array`): `[T; N]` for the 39 lengths with a `GpuPod` impl, whose element is a non-array storage type
+with std430 stride equal to its Rust size (so no `Vec3` or `Mat3`), is a `StorageV1` or `StorageV2` layout of size
+`stride * N` and the element's alignment, and is never `Std140V1`; the macro does not emit arrays yet.
 
 The current translator emits one self-contained Slang compilation unit per
 kernel. It includes the module's struct declarations, non-kernel helper functions,

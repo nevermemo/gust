@@ -1,4 +1,4 @@
-//! `HeadlessDevice` as the GPU side of `gust::routed::RoutedDevice` (m9.h1).
+//! `HeadlessDevice` as the GPU side of `gust::routed::RoutedDevice` (m9.h1). Not built on wasm32 (see `lib.rs`).
 
 use gust::GpuPod;
 use gust::routed::GpuBackend;

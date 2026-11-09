@@ -61,7 +61,8 @@ operations).
   `impl gust::routed::Routed` that names the kernel's side (`OnGpu` or `OnCpu`); a GPU-routed kernel on a handle with no
   GPU is `Error::NoGpu { kernel }`, never a panic. It is additive: `CpuDevice`, `HeadlessDevice` and every explicit-device
   call are unchanged, and `gust` still does not depend on `gust-wgpu`. Limits: storage buffers only (no uniforms,
-  textures or samplers), calls are synchronous, and a call that changes side copies the whole buffer.
+  textures or samplers), calls are synchronous, a call that changes side copies the whole buffer, and there is no GPU
+  backend on wasm32 (`RoutedDevice<NoGpu>` works there).
 
 ### Changed, and may break code written for 0.1.0
 

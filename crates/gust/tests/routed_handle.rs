@@ -6,7 +6,7 @@
 //! (D26, D42), not read from the twin.
 
 use gust::cpu::{CpuDevice, CpuJob, Error as CpuError};
-use gust::routed::{Buffer, Error, NoGpu, OnCpu, OnGpu, Routed, RoutedDevice};
+use gust::routed::{Error, NoGpu, OnCpu, OnGpu, Routed, RoutedBuffer, RoutedDevice};
 use gust::{Access, Call, Kernel, KernelDescriptor, LengthRule, Resource, Run};
 
 #[gust::gpu]
@@ -55,7 +55,7 @@ impl Run<Triple, 2> for CpuDevice {
     }
 }
 
-type F32Buffer = Buffer<f32, NoGpu>;
+type F32Buffer = RoutedBuffer<f32, NoGpu>;
 
 /// The call site for a kernel with no generated `dispatch` (`Triple`): input read-only, output read-write.
 fn triple(
@@ -146,4 +146,59 @@ fn a_buffer_of_another_handle_is_refused_by_the_cpu_device_check() {
     assert_eq!(out.read(&device).unwrap(), [0.0, 0.0]);
     triple(&device, 2, &input, &out).unwrap();
     assert_eq!(out.read(&device).unwrap(), [3.0, 6.0]);
+}
+
+/// A CPU-routed kernel that writes its first output element and then panics, as an out-of-bounds index in a kernel body
+/// would (D39).
+struct Boom;
+
+impl Kernel for Boom {
+    const DESCRIPTOR: KernelDescriptor = kernels::triple_body::DESCRIPTOR;
+}
+
+impl Routed for Boom {
+    type Side = OnCpu;
+}
+
+impl Run<Boom, 2> for CpuDevice {
+    fn submit_call(&self, call: &Call<'_, Self, Boom, 2>) -> Result<CpuJob, CpuError> {
+        let [_, out] = *call.bindings();
+        let mut out = gust::cpu::write::<f32>(out, "out")?;
+        out[0] = 99.0;
+        panic!("a kernel body failed part-way");
+    }
+}
+
+#[test]
+fn a_cpu_kernel_that_panics_part_way_leaves_the_copies_in_agreement() {
+    let device = RoutedDevice::<NoGpu>::cpu_only();
+    let input = device.buffer(&[1.0f32, 2.0]).unwrap();
+    let out = device.buffer(&[0.0f32; 2]).unwrap();
+    let call = Call::<RoutedDevice<NoGpu>, Boom, 2>::new(
+        2,
+        [
+            input.bind(Access::ReadOnly, LengthRule::Shared),
+            out.bind(Access::ReadWrite, LengthRule::Shared),
+        ],
+    );
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = device.dispatch_call(&call);
+    }));
+    assert!(caught.is_err(), "the kernel panicked");
+    // The write that happened before the panic is what the buffer holds; the host copy is the one source.
+    assert_eq!(out.read(&device).unwrap(), [99.0, 0.0]);
+    triple(&device, 2, &out, &input).unwrap();
+    assert_eq!(input.read(&device).unwrap(), [297.0, 0.0]);
+}
+
+#[test]
+fn a_buffer_bound_twice_with_a_write_is_refused_and_unchanged() {
+    let device = RoutedDevice::<NoGpu>::cpu_only();
+    let both = device.buffer(&[1.0f32, 2.0]).unwrap();
+    let error = triple(&device, 2, &both, &both).unwrap_err();
+    assert!(
+        matches!(error, Error::Cpu(CpuError::Aliased { .. })),
+        "{error}"
+    );
+    assert_eq!(both.read(&device).unwrap(), [1.0, 2.0]);
 }

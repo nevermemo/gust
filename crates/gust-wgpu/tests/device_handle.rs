@@ -6,7 +6,7 @@
 //! are worked by hand (D26, D42); the GPU values come from the adapter, never from the twin.
 
 use gust::cpu::{CpuDevice, CpuJob, Error as CpuError};
-use gust::routed::{Buffer, Error, OnCpu, Routed, RoutedDevice};
+use gust::routed::{Error, OnCpu, Routed, RoutedBuffer, RoutedDevice};
 use gust::{Access, Call, Kernel, KernelDescriptor, LengthRule, Resource, Run};
 use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 
@@ -59,7 +59,7 @@ impl Run<Plus1, 2> for CpuDevice {
     }
 }
 
-type F32Buffer = Buffer<f32, HeadlessDevice>;
+type F32Buffer = RoutedBuffer<f32, HeadlessDevice>;
 
 fn plus1(
     device: &RoutedDevice<HeadlessDevice>,
@@ -172,4 +172,83 @@ fn explicit_device_calls_still_work_beside_the_handle() {
     let out = device.create_typed_buffer("out", &[0.0f32; 2], GpuBufferAccess::ReadWrite);
     on_gpu::scale2::dispatch(&device, 2, &input, &out).unwrap();
     assert_eq!(device.read_typed_buffer(&out).unwrap(), [2.0, 4.0]);
+}
+
+fn foreign_kernel(error: &Error) -> Option<&str> {
+    match error {
+        Error::ForeignBuffer { kernel } => kernel.as_deref(),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_buffer_the_handle_cannot_move_is_a_foreign_buffer_on_all_three_paths() {
+    let device = gpu_handle();
+    let cpu_only = RoutedDevice::<HeadlessDevice>::cpu_only();
+    let out = device.buffer(&[0.0f32; 2]).unwrap();
+
+    // 1. A buffer of a handle without a GPU, written on the host (so the GPU would need an upload), used by a GPU kernel.
+    let made_without_gpu = cpu_only.buffer(&[1.0f32, 2.0]).unwrap();
+    made_without_gpu.write(&[3.0, 4.0]).unwrap();
+    let error = on_gpu::scale2::dispatch(&device, 2, &made_without_gpu, &out).unwrap_err();
+    assert_eq!(foreign_kernel(&error), Some("on_gpu::scale2"), "{error}");
+
+    // 2. The same kind of buffer unwritten: valid on both sides, but it has no device copy to bind.
+    let unwritten = cpu_only.buffer(&[1.0f32, 2.0]).unwrap();
+    let error = on_gpu::scale2::dispatch(&device, 2, &unwritten, &out).unwrap_err();
+    assert_eq!(foreign_kernel(&error), Some("on_gpu::scale2"), "{error}");
+
+    // 3. A buffer the GPU wrote, read through a handle that has no GPU.
+    let input = device.buffer(&[1.0f32, 2.0]).unwrap();
+    on_gpu::scale2::dispatch(&device, 2, &input, &out).unwrap();
+    let error = out.read(&cpu_only).unwrap_err();
+    assert!(
+        matches!(error, Error::ForeignBuffer { kernel: None }),
+        "{error}"
+    );
+    // Through its own handle it reads back what the GPU wrote.
+    assert_eq!(out.read(&device).unwrap(), [2.0, 4.0]);
+}
+
+/// A CPU-routed kernel that writes its first output element and then panics (D39).
+struct Boom;
+
+impl Kernel for Boom {
+    const DESCRIPTOR: KernelDescriptor = twin::plus1_body::DESCRIPTOR;
+}
+
+impl Routed for Boom {
+    type Side = OnCpu;
+}
+
+impl Run<Boom, 2> for CpuDevice {
+    fn submit_call(&self, call: &Call<'_, Self, Boom, 2>) -> Result<CpuJob, CpuError> {
+        let [_, out] = *call.bindings();
+        let mut out = gust::cpu::write::<f32>(out, "out")?;
+        out[0] = 99.0;
+        panic!("a kernel body failed part-way");
+    }
+}
+
+#[test]
+fn after_a_cpu_kernel_panics_part_way_the_gpu_copy_agrees_with_the_host_copy() {
+    let device = gpu_handle();
+    let input = device.buffer(&[1.0f32, 2.0]).unwrap();
+    let out = device.buffer(&[0.0f32; 2]).unwrap();
+    let call = Call::<RoutedDevice<HeadlessDevice>, Boom, 2>::new(
+        2,
+        [
+            input.bind(Access::ReadOnly, LengthRule::Shared),
+            out.bind(Access::ReadWrite, LengthRule::Shared),
+        ],
+    );
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = device.dispatch_call(&call);
+    }));
+    assert!(caught.is_err(), "the kernel panicked");
+    // The host holds the partial write. A GPU kernel reading `out` must see it, not the older device copy [0, 0].
+    let doubled = device.buffer(&[0.0f32; 2]).unwrap();
+    on_gpu::scale2::dispatch(&device, 2, &out, &doubled).unwrap();
+    assert_eq!(doubled.read(&device).unwrap(), [198.0, 0.0]);
+    assert_eq!(out.read(&device).unwrap(), [99.0, 0.0]);
 }

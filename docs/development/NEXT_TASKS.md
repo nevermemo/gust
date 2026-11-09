@@ -476,6 +476,15 @@ test module; do not mix that mechanical move with behavior changes.
   through the handle finishes inside `submit_call`, so there is no GPU overlap); transfers (a call that changes side
   copies the whole buffer, and D35's transfer insertion is the real answer); and a measured cost, the transfer cost and
   the handle's overhead against a direct call, which no run has measured.
+  Review nits left open (m9.h1 re-check): the `Error::NoGpu` rustdoc still says "or its buffer was made before a GPU
+  existed" (that case is now `ForeignBuffer`); `routed_handle`'s panic test passes on the code before the
+  mark-before-dispatch fix too (the GPU test proves the fix; say so or drop the claim); a wait that fails after
+  submission is untested; `SideRun`'s `on_unimplemented` message is untested; the `map_on` limit could say that
+  `name::map` already follows the route (D65). The closing evidence must record the wasm32 check's command
+  (`GUST_PROFILE=web`, `wasm32-unknown-unknown`): m9.h1's log was a cache replay.
+- The reflection helper's schema 4 (m9.r2h re-check nits): wrap the helper's lines 175-177 at 120 characters; add a
+  test that a `ConstantBuffer` bound before a `StructuredBuffer<float[4]>` does not leak the constant-buffer flag;
+  print the schema on xtask's build-into-target path too (only the `GUST_SLANG_REFLECT` path prints it).
 - Re-probe browser subgroups (the dropped slice m8.u; probe u0) when a wgpu release above 30.0.1 exists. At 30.0.1 the
   WebGPU backend does not map `SUBGROUP`, naga refuses `enable subgroups;` and a non-`u32` lane id, and trunk has
   moved (MSRV 1.95 against GUST's 1.90). Open upstream: gfx-rs/wgpu#10876, #10818 and #5555. A pin bump also retires

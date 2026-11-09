@@ -106,7 +106,36 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   `dev+subgroups` step, size 8). Gates: 27 main gates green on the merge, 2026-11-09, 11:31 to 12:52Z; pull request CI
   42608293459 and 42609507515 and lavapipe 42608293727, 42609507406 and 42608290355 green on the lane.
 - The M9 plan (Revision 1.2, Fable; Codex review REVISE, re-check REVISE 2/2/1, the last items checked by the
-  coordinator) is adopted as D154 to D164. Next: slice m9.s0, the Slang and naga probes.
+  coordinator) is adopted as D154 to D164.
+- m9.s0, the Slang and naga probes (report in the coordinator's work area; slangc 2026.21, the naga of wgpu 30.0.1,
+  spirv-val). P1 to P7 came out A: methods (`[mutating]`, `static`), enums lowered to `switch`, tuples, arrays as
+  values and in buffers, interfaces and generics compile and validate on WGSL and SPIR-V, and the runs that executed
+  match hand-computed values on both; P7 also showed that Slang accepts a barrier or subgroup operation inside a
+  callee under divergent control without a diagnosis, so the macro stays the authority (D154). P8 (lambdas) came out
+  B. P9's measured evaluation order fits no pre-registered outcome exactly and confirms the E0421 refusal (a `for`
+  bound that calls a `&mut self` method). P10 came out C for the schema-3 reflection helper, which refuses arrays,
+  so the helper's array arm was pulled ahead as m9.r2h.
+- m9.r2h, the helper half of slice r2b (merge `80a0cf9`; Opus review MERGE AFTER FIXES 0/4/7, re-check MERGE 0/0/3).
+  The reflection helper's schema 4 reports an array's element count, element stride and element type instead of
+  refusing it; arrays in a constant buffer are still refused; the reader bounds-checks stride, alignment and size;
+  schema-3 documents keep their bytes, and cargo-gust and xtask accept helper schema 3 and 4. The array tests fail on
+  a schema-3 helper unless `GUST_REFLECT_SCHEMA3_COMPAT=1`, so CI's green run (pull request CI 42662678984, lavapipe
+  42662658567) used the schema-4 helper it built with g++ from the lane's source, the first g++ build of the helper.
+  27 main gates green on the merge with the schema-4 helper, 2026-11-09, 17:52 to 19:00Z.
+- m9.a1, methods minimal (merge `cd44fa5`; Opus review MERGE AFTER FIXES 2/3/6, re-check MERGE 0/0/2). `&self` methods
+  in `impl` blocks on module structs lower to Slang struct members (`self` to `this`, and a user `this` is renamed so
+  it cannot shadow the receiver). A method call on a storage, uniform or workgroup place is E0333 (fixture X1,
+  pre-registered by m9.s0, gives exactly one error); a texture receiver is E0735; E0121 and E0328 cover unknown
+  impl targets and reserved names. The GPU test's expected values are hand-written and ran on the RTX 5090. Pull
+  request CI 42669427301 and gpu-software 42669427276 green; 27 main gates green on the merge, 19:01 to 20:12Z.
+- m9.h1, the routed device handle (merge `b4ddc53`; spike m9.h outcome A; Opus review MERGE AFTER FIXES 1/5/8,
+  re-check MERGE 0/0/5; D165). `gust::routed::RoutedDevice` runs each kernel on the target its build resolved: the
+  macro emits `impl Routed for K { type Side = OnGpu | OnCpu }`, so a route flip in gust.toml no longer changes call
+  sites. It is additive (explicit-device calls are unchanged), `gust` still does not depend on `gust-wgpu`, and it is
+  not built on wasm32. A GPU-routed kernel on a handle with no GPU returns `Error::NoGpu` before any copy or write;
+  a buffer from another handle is `Error::ForeignBuffer`. Storage buffers only, synchronous, whole-buffer copies
+  when a call changes side (NEXT_TASKS lists what remains). Pull request CI 42682136785 (all 10 jobs, wasm
+  included) and lavapipe 42682128305 green; 27 main gates green on the merge, 2026-11-09, 20:14 to 21:28Z.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

@@ -166,6 +166,9 @@ pub(super) const LEDGER: &[Entry] = &[
     entry(Class::Pattern, "Type", Neutral),
     entry(Class::Pattern, "TupleStruct", Neutral),
     entry(Class::Pattern, "Wild", Neutral),
+    // The arm patterns of an enum `match` (m9.e1): `E::A`, and `E::A | E::B`. A `let`, `for` or `if let` takes neither.
+    entry(Class::Pattern, "Path", Neutral),
+    entry(Class::Pattern, "Or", Neutral),
     // ---- built-in methods ----
     method(
         "global_id",
@@ -302,6 +305,8 @@ pub(super) fn pattern_kind(pattern: &syn::Pat) -> Option<&'static str> {
         syn::Pat::Type(_) => "Type",
         syn::Pat::TupleStruct(_) => "TupleStruct",
         syn::Pat::Wild(_) => "Wild",
+        syn::Pat::Path(_) => "Path",
+        syn::Pat::Or(_) => "Or",
         _ => return None,
     })
 }

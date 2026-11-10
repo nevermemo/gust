@@ -106,6 +106,10 @@ codes! {
     RecursiveCall = 120 => "GUST-E0120";
     /// An `impl` for a type the module does not define, or a blanket `impl`.
     ImplForeignType = 121 => "GUST-E0121";
+    /// An `enum` outside the field-less shape: fields on a variant, a discriminant that is not an integer literal, a
+    /// missing `PartialEq` derive, a `repr` other than `u32` or `i32`, generics, no variants, or an `as` to the other
+    /// integer type than the repr.
+    EnumShape = 122 => "GUST-E0122";
 
     // E02xx: types.
     /// A primitive type outside the 32-bit scalar subset.
@@ -130,6 +134,8 @@ codes! {
     /// A `Workgroup<..>` that is not `Workgroup<[T; N]>` with a supported `T` and a nonzero literal `N`, or that
     /// is used anywhere but as a kernel parameter type.
     WorkgroupShape = 210 => "GUST-E0210";
+    /// An enum as a struct field, a buffer or uniform element, or the payload of an `Option` or `Result`.
+    EnumInResource = 211 => "GUST-E0211";
 
     // E03xx: expressions and calls.
     /// A CPU-only library or type name.
@@ -223,6 +229,10 @@ codes! {
     ReturnInBarrierKernel = 415 => "GUST-E0415";
     /// `break` or `continue` in a loop that contains a barrier.
     JumpInBarrierLoop = 416 => "GUST-E0416";
+    /// `break` or `continue` in a `match` arm, aimed at a loop around the `match` (Slang's `break` binds to the `switch`).
+    JumpInMatchArm = 417 => "GUST-E0417";
+    /// A guard (`if cond`) on an arm of an enum `match`.
+    EnumMatchGuard = 418 => "GUST-E0418";
     /// A `&mut self` method call in a `for` range bound (the emitted bound pattern evaluates in another order).
     ForBoundSideEffect = 421 => "GUST-E0421";
 

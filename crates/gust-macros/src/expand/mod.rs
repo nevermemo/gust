@@ -544,6 +544,22 @@ fn expand_validated_with(
         generated.push(gpu_pod_impl(item, &rules)?);
     }
 
+    // A field-less enum is `#[repr(u32)]` unless it says `repr(i32)`, and `Clone` and `Copy`; the user derives the
+    // comparison (m9.e1, D157). There is no `GpuPod`: an enum is never stored (GUST-E0211).
+    for item in items.iter_mut() {
+        let syn::Item::Enum(item) = item else {
+            continue;
+        };
+        if !item
+            .attrs
+            .iter()
+            .any(|attribute| attribute.path().is_ident("repr"))
+        {
+            item.attrs.push(syn::parse_quote!(#[repr(u32)]));
+        }
+        item.attrs.push(syn::parse_quote!(#[derive(Clone, Copy)]));
+    }
+
     for item in items.iter_mut() {
         let syn::Item::Fn(function) = item else {
             continue;

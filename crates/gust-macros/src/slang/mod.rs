@@ -531,6 +531,12 @@ pub(crate) fn emit_kernel_in(
     let mut atomic = AtomicUsage(std::collections::HashSet::new());
     atomic.visit_item_fn(kernel);
 
+    // Enums first, in source order: a function and a switch name them, and a struct cannot (GUST-E0211).
+    for item in items {
+        if let syn::Item::Enum(item) = item {
+            emit_enum(&mut output, &mut table, item)?;
+        }
+    }
     for item in items {
         if let syn::Item::Struct(item) = item {
             emit_struct(&mut output, &mut table, item, &methods_of(items, item))?;
@@ -723,6 +729,161 @@ fn methods_of<'a>(items: &'a [syn::Item], item: &syn::ItemStruct) -> Vec<&'a syn
         .collect()
 }
 
+/// `enum E : uint { A, B = 3, C };` (slice m9.e1, D157): a field-less enum of the module, with the integer type of its
+/// `repr` (`uint`, or `int` for `#[repr(i32)]`). The discriminants are the integer literals the validator accepted, so
+/// the values count up in Slang exactly as they do in Rust.
+fn emit_enum(output: &mut String, table: &mut LineTable, item: &syn::ItemEnum) -> syn::Result<()> {
+    let signed = item.attrs.iter().any(|attribute| {
+        attribute.path().is_ident("repr")
+            && matches!(&attribute.meta, syn::Meta::List(list)
+                if list.tokens.clone().into_iter().any(|tree| matches!(tree,
+                    proc_macro2::TokenTree::Ident(ident) if ident == "i32")))
+    });
+    let record = table.begin(output, item.ident.span());
+    let mut members = Vec::new();
+    for variant in &item.variants {
+        let name = emit_ident(&variant.ident);
+        members.push(match &variant.discriminant {
+            None => name,
+            Some((_, discriminant)) => format!("{name} = {}", emit_discriminant(discriminant)?),
+        });
+    }
+    writeln!(
+        output,
+        "enum {} : {} {{ {} }};\n",
+        emit_ident(&item.ident),
+        if signed { "int" } else { "uint" },
+        members.join(", ")
+    )
+    .unwrap();
+    table.finish_written(output, record);
+    Ok(())
+}
+
+/// The Slang text of an enum discriminant: an integer literal, or `-` and one (the validator took nothing else).
+fn emit_discriminant(expression: &syn::Expr) -> syn::Result<String> {
+    match expression {
+        syn::Expr::Lit(literal) => match &literal.lit {
+            syn::Lit::Int(value) => integer_literal(value, false),
+            other => Err(diagnostics::error(
+                Code::EnumShape,
+                other,
+                "a discriminant is an integer literal",
+            )),
+        },
+        syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
+            match unary.expr.as_ref() {
+                syn::Expr::Lit(literal) => match &literal.lit {
+                    syn::Lit::Int(value) => Ok(format!("-{}", integer_literal(value, true)?)),
+                    other => Err(diagnostics::error(
+                        Code::EnumShape,
+                        other,
+                        "a discriminant is an integer literal",
+                    )),
+                },
+                other => Err(diagnostics::error(
+                    Code::EnumShape,
+                    other,
+                    "a discriminant is an integer literal",
+                )),
+            }
+        }
+        other => Err(diagnostics::error(
+            Code::EnumShape,
+            other,
+            "a discriminant is an integer literal",
+        )),
+    }
+}
+
+/// `switch (scrutinee) { case E::A: case E::B: { .. break; } default: { .. break; } }` for a statement `match` on an
+/// enum (slice m9.e1, D157). The scrutinee is one expression in the `switch`, so it is evaluated once. An arm that ends
+/// in `return` gets no `break` (slangc warns about unreachable code). An enum `match`
+/// without a `_` arm makes its last arm the `default` (in any position: rustc proved the arms exhaustive, and WGSL needs
+/// the function to return in every case of a `switch`; measured: slangc error 41009 otherwise).
+fn emit_enum_match(
+    output: &mut String,
+    table: &mut LineTable,
+    expression: &syn::ExprMatch,
+    indent: usize,
+    index: usize,
+) -> syn::Result<()> {
+    let padding = "    ".repeat(indent);
+    let inner = "    ".repeat(indent + 1);
+    let has_wildcard = expression
+        .arms
+        .iter()
+        .any(|arm| matches!(arm.pat, syn::Pat::Wild(_)));
+    writeln!(output, "{padding}// @gust construct: match #{index}").unwrap();
+    writeln!(
+        output,
+        "{padding}switch ({})",
+        emit_expression(&expression.expr)?
+    )
+    .unwrap();
+    writeln!(output, "{padding}{{").unwrap();
+    for (position, arm) in expression.arms.iter().enumerate() {
+        let last = position + 1 == expression.arms.len();
+        if matches!(arm.pat, syn::Pat::Wild(_)) || (!has_wildcard && last) {
+            writeln!(output, "{inner}default:").unwrap();
+        } else {
+            let mut alternatives = Vec::new();
+            flatten_alternatives(&arm.pat, &mut alternatives);
+            for pattern in alternatives {
+                let syn::Pat::Path(path) = pattern else {
+                    return Err(diagnostics::error(
+                        Code::MatchPattern,
+                        pattern,
+                        "an enum `match` arm is `E::A`, `E::A | E::B` or `_`",
+                    ));
+                };
+                writeln!(output, "{inner}case {}:", emit_variant_path(&path.path)).unwrap();
+            }
+        }
+        let syn::Expr::Block(body) = arm.body.as_ref() else {
+            return Err(diagnostics::error(
+                Code::MatchArmBlock,
+                &arm.body,
+                "each arm of a statement `match` is a block",
+            ));
+        };
+        writeln!(output, "{inner}{{").unwrap();
+        emit_statements(output, table, &body.block.stmts, indent + 2, false)?;
+        let returns = matches!(
+            body.block.stmts.last(),
+            Some(syn::Stmt::Expr(syn::Expr::Return(_), _))
+        );
+        if !returns {
+            writeln!(output, "{}break;", "    ".repeat(indent + 2)).unwrap();
+        }
+        writeln!(output, "{inner}}}").unwrap();
+    }
+    writeln!(output, "{padding}}}").unwrap();
+    Ok(())
+}
+
+/// The alternatives of an arm pattern: `A | B` flattened, parentheses looked through.
+fn flatten_alternatives<'p>(pattern: &'p syn::Pat, out: &mut Vec<&'p syn::Pat>) {
+    match pattern {
+        syn::Pat::Or(or) => {
+            for case in &or.cases {
+                flatten_alternatives(case, out);
+            }
+        }
+        syn::Pat::Paren(inner) => flatten_alternatives(&inner.pat, out),
+        other => out.push(other),
+    }
+}
+
+/// `E::V` as Slang spells it: both names renamed as their declarations are.
+fn emit_variant_path(path: &syn::Path) -> String {
+    path.segments
+        .iter()
+        .map(|segment| emit_ident(&segment.ident))
+        .collect::<Vec<_>>()
+        .join("::")
+}
+
 fn emit_struct(
     output: &mut String,
     table: &mut LineTable,
@@ -892,6 +1053,9 @@ fn emit_statement(
                 is_tail && semicolon.is_none(),
                 index,
             )?,
+            syn::Expr::Match(expression) if crate::validate::is_enum_match(expression) => {
+                emit_enum_match(output, table, expression, indent, index)?
+            }
             syn::Expr::Match(expression) => {
                 emit_result_match(output, table, expression, indent, index)?
             }
@@ -1460,6 +1624,14 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         // declaration. A longer path names a type or module first and is emitted as written.
         syn::Expr::Path(path) if path.path.get_ident().is_some() && path.qself.is_none() => {
             emit_ident(path.path.get_ident().expect("guarded by the match arm"))
+        }
+        // `E::V`, a variant of an enum of the module (the validator took no other two-segment path value).
+        syn::Expr::Path(path)
+            if path.qself.is_none()
+                && path.path.leading_colon.is_none()
+                && path.path.segments.len() == 2 =>
+        {
+            emit_variant_path(&path.path)
         }
         syn::Expr::Path(path) => path.path.to_token_stream().to_string().replace(" :: ", "."),
         syn::Expr::Return(expression) => match &expression.expr {

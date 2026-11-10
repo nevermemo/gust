@@ -6327,3 +6327,345 @@ fn a_raw_helper_name_clashes_with_a_method_of_the_same_name() {
     );
     assert_rejected(&source, Code::MethodNameClash);
 }
+
+// ---- Enums and the statement `match` on them (slice m9.e1, M9 plan 2.2, D157) ----
+
+#[test]
+fn enums_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/enums.rs")).unwrap();
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "enums.slang",
+        &include_str!("../../../../tests/fixtures/enums.slang").replace("\r\n", "\n"),
+    );
+}
+
+const MODE_ENUM: &str = "#[derive(PartialEq, Eq)] pub enum Mode { A, B = 3, C }";
+
+fn with_mode(items: &str, body: &str) -> String {
+    with_kernel(&format!("{MODE_ENUM} {items}"), body)
+}
+
+#[test]
+fn an_enum_is_a_slang_enum_with_its_discriminants_and_a_match_is_a_switch() {
+    let source = translate(&with_mode(
+        "fn f(m: Mode) -> u32 { let mut o = 1u32; match m { Mode::A => { o += 1u32; } Mode::B | Mode::C => { o += 2u32; } } o }",
+        "out[id.x] = f(Mode::C) + (Mode::B as u32);",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(
+        source.contains("enum Mode : uint { A, B = 3, C };"),
+        "{source}"
+    );
+    // Grouped alternatives are adjacent labels of one body; every arm ends in `break`; the scrutinee is written once.
+    assert!(
+        source.contains(
+            "switch (m)\n    {\n        case Mode::A:\n        {\n            (o += uint(1));\n            break;\n        }\n        default:\n        {\n            (o += uint(2));\n            break;\n        }\n    }"
+        ),
+        "{source}"
+    );
+    assert!(source.contains("f(Mode::C)"), "{source}");
+    assert!(source.contains("uint(Mode::B)"), "{source}");
+}
+
+#[test]
+fn a_signed_enum_is_an_int_enum_with_negative_discriminants() {
+    let source = translate(&with_kernel(
+        "#[derive(PartialEq, Eq)] #[repr(i32)] pub enum Sign { Neg = -2, Mid, Pos = 5 }",
+        "let s = Sign::Mid; out[id.x] = (s as i32) as u32;",
+    ))
+    .unwrap();
+    assert!(
+        source.contains("enum Sign : int { Neg = -2, Mid, Pos = 5 };"),
+        "{source}"
+    );
+    assert!(source.contains("int(s)"), "{source}");
+}
+
+#[test]
+fn a_match_in_the_tail_of_a_function_with_a_result_ends_in_default_unless_it_has_one() {
+    // Measured: WGSL refuses a `switch` whose arms all return when it has no `default` (slangc 41009), and rustc has
+    // proven the arms exhaustive, so the last arm is the `default`.
+    let tail = "fn g(m: Mode) -> u32 { match m { Mode::A => { return 1u32; } Mode::B => { return 2u32; } Mode::C => { return 3u32; } } }";
+    let source = translate(&with_mode(tail, "out[id.x] = g(Mode::A);"))
+        .unwrap()
+        .replace("\r\n", "\n");
+    assert!(
+        source.contains("case Mode::B:\n        {\n            return uint(2);\n        }\n        default:\n        {\n            return uint(3);\n        }"),
+        "{source}"
+    );
+    assert!(!source.contains("case Mode::C"), "{source}");
+    // With a `_` arm the labels stay; a `break` is not written after a `return`.
+    let wild =
+        "fn g(m: Mode) -> u32 { match m { Mode::A => { return 1u32; } _ => { return 2u32; } } }";
+    let source = translate(&with_mode(wild, "out[id.x] = g(Mode::A);")).unwrap();
+    assert!(source.contains("case Mode::A:"), "{source}");
+    assert!(!source.contains("break;"), "{source}");
+    // Any enum `match` without a `_` ends in `default`, wherever it stands: the last arm's alternatives fold into it.
+    let early = "fn g(m: Mode) -> u32 { match m { Mode::A => { return 1u32; } Mode::B | Mode::C => { } } 7u32 }";
+    let source = translate(&with_mode(early, "out[id.x] = g(Mode::A);")).unwrap();
+    assert!(source.contains("case Mode::A:"), "{source}");
+    assert!(source.contains("default:"), "{source}");
+    assert!(!source.contains("case Mode::C:"), "{source}");
+    // A tail `match` with a trailing `;` (slangc 41009 without the `default`).
+    let semicolon = "fn g(m: Mode) -> u32 { match m { Mode::A => { return 1u32; } Mode::B => { return 2u32; } Mode::C => { return 3u32; } }; }";
+    let source = translate(&with_mode(semicolon, "out[id.x] = g(Mode::A);")).unwrap();
+    assert!(source.contains("default:"), "{source}");
+    assert!(!source.contains("case Mode::C"), "{source}");
+    // A `match` that is the tail of an arm of a tail `match`: both switches end in `default`.
+    let nested = "fn g(m: Mode, n: Mode) -> u32 { match m { Mode::A => { match n { Mode::A => { return 1u32; } Mode::B => { return 2u32; } Mode::C => { return 3u32; } } } _ => { return 4u32; } } }";
+    let source = translate(&with_mode(nested, "out[id.x] = g(Mode::A, Mode::B);"))
+        .unwrap()
+        .replace("\r\n", "\n");
+    assert!(source.contains("case Mode::B:"), "{source}");
+    assert!(!source.contains("case Mode::C"), "{source}");
+    assert_eq!(source.matches("default:").count(), 2, "{source}");
+}
+
+#[test]
+fn enum_declaration_shapes_outside_the_contract_are_gust_e0122() {
+    let cases = [
+        // A data-carrying variant, a tuple one and a struct one.
+        "#[derive(PartialEq, Eq)] pub enum E { A(u32), B }",
+        "#[derive(PartialEq, Eq)] pub enum E { A { x: u32 }, B }",
+        // A discriminant that is not an integer literal, and a negative one without a signed repr.
+        "#[derive(PartialEq, Eq)] pub enum E { A = 1 + 2, B }",
+        "#[derive(PartialEq, Eq)] pub enum E { A = -1, B }",
+        "#[derive(PartialEq, Eq)] pub enum E { A = 1.5, B }",
+        // `PartialEq` missing, or only another trait derived.
+        "pub enum E { A, B }",
+        "#[derive(Debug)] pub enum E { A, B }",
+        // Generics, no variants, a repr the Slang enum has no type for, manual Clone and Copy, a variant attribute.
+        "#[derive(PartialEq, Eq)] pub enum E<T> { A, B }",
+        "#[derive(PartialEq, Eq)] pub enum E {}",
+        "#[derive(PartialEq, Eq)] #[repr(u8)] pub enum E { A, B }",
+        "#[derive(PartialEq, Eq)] #[repr(u32, C)] pub enum E { A, B }",
+        "#[derive(PartialEq, Eq, Clone, Copy)] pub enum E { A, B }",
+        "#[derive(PartialEq, Eq)] pub enum E { #[default] A, B }",
+    ];
+    for items in cases {
+        assert_rejected(&with_kernel(items, "out[id.x] = id.x;"), Code::EnumShape);
+    }
+    // Casting to the other integer type, to a float, or a variant to the other integer type.
+    for items in [
+        "fn f(m: Mode) -> i32 { m as i32 }",
+        "fn f(m: Mode) -> f32 { m as f32 }",
+        "fn f() -> i32 { Mode::A as i32 }",
+        "fn h() -> Mode { Mode::A } fn f() -> i32 { h() as i32 }",
+    ] {
+        assert_rejected(&with_mode(items, "out[id.x] = id.x;"), Code::EnumShape);
+    }
+    // The signed enum casts to `i32` only.
+    assert_rejected(
+        &with_kernel(
+            "#[derive(PartialEq, Eq)] #[repr(i32)] pub enum S { A = -1, B } fn f(s: S) -> u32 { s as u32 }",
+            "out[id.x] = id.x;",
+        ),
+        Code::EnumShape,
+    );
+}
+
+#[test]
+fn an_enum_is_never_stored_gust_e0211() {
+    // A struct field; an `Option` or `Result` result (a struct field of `Option` type is GUST-E0501 first).
+    for items in [
+        "pub struct S { pub m: Mode }",
+        "fn f() -> Option<Mode> { Some(Mode::A) }",
+        "fn f() -> Result<Mode, Mode> { Ok(Mode::A) }",
+    ] {
+        assert_rejected(&with_mode(items, "out[id.x] = id.x;"), Code::EnumInResource);
+    }
+    let kernel = |parameter: &str| {
+        format!(
+            "mod m {{ {MODE_ENUM} #[kernel] pub fn run(id: SV_DispatchThreadID, {parameter}, mut out: RWStructuredBuffer<uint>) {{ out[id.x] = 1u32; }} }}"
+        )
+    };
+    for parameter in [
+        "modes: StructuredBuffer<Mode>",
+        "mut modes: RWStructuredBuffer<Mode>",
+        "setting: Uniform<Mode>",
+        // Workgroup memory used to stop at the workgroup shape check (E0210) before the enum check ran.
+        "mut scratch: Workgroup<[Mode; 4]>",
+    ] {
+        assert_rejected(&kernel(parameter), Code::EnumInResource);
+    }
+}
+
+#[test]
+fn a_match_arm_on_an_enum_takes_no_guard_gust_e0418() {
+    assert_rejected(
+        &with_mode(
+            "",
+            "match Mode::A { Mode::A if id.x > 1u32 => { out[id.x] = 1u32; } _ => { out[id.x] = 2u32; } }",
+        ),
+        Code::EnumMatchGuard,
+    );
+}
+
+#[test]
+fn a_break_or_continue_in_an_arm_aimed_at_the_loop_is_gust_e0417() {
+    for jump in ["break;", "continue;"] {
+        let body = format!(
+            "for k in 0u32..4u32 {{ match Mode::A {{ Mode::A => {{ out[id.x] = k; {jump} }} _ => {{ }} }} }}"
+        );
+        assert_rejected(&with_mode("", &body), Code::JumpInMatchArm);
+    }
+    // Nested: the arm of an inner `match` still binds to its own `switch`.
+    assert_rejected(
+        &with_mode(
+            "",
+            "for k in 0u32..4u32 { match Mode::A { Mode::A => { match Mode::B { Mode::B => { break; } _ => { } } } _ => { } } }",
+        ),
+        Code::JumpInMatchArm,
+    );
+    // A `for` inside the arm is its own target; a jump after the `match` is the loop target.
+    translate(&with_mode(
+        "",
+        "for k in 0u32..4u32 { match Mode::A { Mode::A => { for j in 0u32..2u32 { if j == 1u32 { break; } out[id.x] = j; } } _ => { } } if k == 2u32 { break; } }",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn other_arm_patterns_scrutinees_and_bodies_of_an_enum_match_are_refused() {
+    // A binding, a literal, a wildcard inside `|`, an unknown variant, a repeated variant, an arm after `_`, another enum.
+    let arms = [
+        "match Mode::A { Mode::A => { } other => { out[id.x] = 1u32; } }",
+        "match Mode::A { Mode::A => { } 1u32 => { } _ => { } }",
+        "match Mode::A { Mode::A | _ => { } }",
+        "match Mode::A { Mode::A => { } Mode::Z => { } _ => { } }",
+        "match Mode::A { Mode::A => { } Mode::A => { } _ => { } }",
+        "match Mode::A { _ => { } Mode::A => { } }",
+        "match Mode::A { Mode::A => { } Other::A => { } _ => { } }",
+    ];
+    for arm in arms {
+        assert_rejected(&with_mode("", arm), Code::MatchPattern);
+    }
+    // The scrutinee: a field.
+    assert_rejected(
+        &with_mode("", "match id.x { Mode::A => { } _ => { } }"),
+        Code::MatchScrutinee,
+    );
+    // An arm that is not a block.
+    assert_rejected(
+        &with_mode(
+            "",
+            "match Mode::A { Mode::A => out[id.x] = 1u32, _ => { } }",
+        ),
+        Code::MatchArmBlock,
+    );
+    // The value form belongs to a later slice: a tail expression in an arm, or the `match` as a value.
+    assert_rejected(
+        &with_mode("", "match Mode::A { Mode::A => { 1u32 } _ => { 2u32 } }"),
+        Code::MatchAsValue,
+    );
+    assert_rejected(
+        &with_mode(
+            "",
+            "let x: u32 = match Mode::A { Mode::A => { 1u32 } _ => { 2u32 } }; out[id.x] = x;",
+        ),
+        Code::MatchAsValue,
+    );
+}
+
+#[test]
+fn an_impl_on_an_enum_is_gust_e0121_and_says_why() {
+    let source = with_mode(
+        "impl Mode { fn one(&self) -> u32 { 1u32 } }",
+        "out[id.x] = 1u32;",
+    );
+    let error = translate(&source).expect_err(&source);
+    assert_code_for(&error, Code::ImplForeignType, &source);
+    assert!(error.to_string().contains("methods on an enum"), "{error}");
+}
+
+#[test]
+fn enum_values_are_locals_parameters_and_results_and_compare_with_eq_and_ne() {
+    translate(&with_mode(
+        "fn pick(m: Mode, n: Mode) -> Mode { if m == n { return n; } if m != Mode::A { return m; } Mode::C }",
+        "let m = pick(Mode::A, Mode::B); let n: Mode = Mode::C; if m != n { out[id.x] = pick(n, m) as u32; }",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn an_enum_local_is_scoped_to_its_block_loop_and_if_let() {
+    // `m as i32` is refused for an unsigned enum and fine for a plain integer, so it tells which one `m` is.
+    let cast = "out[id.x] = (m as i32) as u32;";
+    // Shadowed in an inner block, a loop or an `if let`, the name is a plain integer there ..
+    translate(&with_mode(
+        "",
+        &format!(
+            "let m = Mode::A; {{ let m = 5u32; {cast} }} for m in 0u32..2u32 {{ {cast} }} if let Some(m) = Some(3u32) {{ {cast} }}"
+        ),
+    ))
+    .unwrap();
+    // .. and the outer enum is an enum again afterwards.
+    for after in [
+        "{ let m = 5u32; out[id.x] = m; }",
+        "for m in 0u32..2u32 { out[id.x] = m; }",
+        "if let Some(m) = Some(3u32) { out[id.x] = m; }",
+    ] {
+        assert_rejected(
+            &with_mode("", &format!("let m = Mode::A; {after} {cast}")),
+            Code::EnumShape,
+        );
+    }
+}
+
+#[test]
+fn only_variants_of_an_enum_of_the_module_are_two_segment_values() {
+    // The emitter prints any two-segment value path as `A::B`; this pins that the validator lets nothing else
+    // through: an unknown variant, a path of a type that is no enum of the module, an associated constant.
+    for value in ["Mode::Z", "Other::A", "u32::MAX", "f32::INFINITY"] {
+        let body = format!("let x = {value}; out[id.x] = 1u32;");
+        assert!(translate(&with_mode("", &body)).is_err(), "{value}");
+    }
+    assert_rejected(
+        &with_mode("", "let x = Other::A; out[id.x] = 1u32;"),
+        Code::ForeignPath,
+    );
+    translate(&with_mode("", "let x = Mode::A; out[id.x] = 1u32;")).unwrap();
+}
+
+#[test]
+fn a_match_of_only_a_wildcard_on_an_enum_is_an_enum_match() {
+    let source = translate(&with_mode(
+        "",
+        "let m = Mode::B; match m { _ => { out[id.x] = 1u32; } }",
+    ))
+    .unwrap();
+    assert!(source.contains("switch (m)"), "{source}");
+    assert!(source.contains("default:"), "{source}");
+    assert!(!source.contains("case "), "{source}");
+    // Not an enum value: the enum message, not the `Result` one.
+    assert_rejected(
+        &with_mode("", "let n = 3u32; match n { _ => { out[id.x] = 1u32; } }"),
+        Code::MatchScrutinee,
+    );
+}
+
+#[test]
+fn a_return_in_an_arm_of_a_helper_is_legal() {
+    translate(&with_mode(
+        "fn g(m: Mode) -> u32 { match m { Mode::A => { return 1u32; } _ => { } } 0u32 }",
+        "out[id.x] = g(Mode::B);",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn an_enum_name_that_slang_reserves_is_renamed_in_every_position() {
+    // `class` is a Slang keyword: the declaration, the label and the value all go through `emit_name`.
+    let source = translate(&with_kernel(
+        "#[derive(PartialEq, Eq)] pub enum class { new, other }",
+        "let c = class::new; match c { class::new => { out[id.x] = 1u32; } _ => { } }",
+    ))
+    .unwrap();
+    assert!(
+        source.contains("case __gust_r_class::__gust_r_new:"),
+        "{source}"
+    );
+    assert!(source.contains("enum __gust_r_class : uint"), "{source}");
+}

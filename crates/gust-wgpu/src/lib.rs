@@ -179,6 +179,16 @@ const fn padding_free(layout: gust::TypeLayout) -> bool {
             }
             sum == layout.size
         }
+        // Elements back to back: padding-free when the element is, its stride is its size and the sizes add up.
+        gust::TypeLayoutKind::Array { element, count } => {
+            if element.stride != element.size || !padding_free(*element) {
+                return false;
+            }
+            match element.size.checked_mul(count) {
+                Some(total) => total == layout.size,
+                None => false,
+            }
+        }
         // A kind this release does not know cannot be shown padding-free, so it is not a `GpuPod` layout.
         _ => false,
     }
@@ -4171,6 +4181,102 @@ mod tests {
                 element.name
             );
         }
+    }
+
+    /// Slice m9.r2b (D159): array layouts pass the binding checks and a mismatch fails them, with the existing errors.
+    #[test]
+    fn array_layouts_pass_the_binding_checks_and_a_mismatch_fails() {
+        use gust::math::{Mat4, Vec2};
+        const F: gust::TypeLayout = <f32 as GpuPod>::LAYOUT;
+        const PAIR: gust::TypeLayout = <[f32; 2] as GpuPod>::LAYOUT;
+        const WITH_ARRAY: gust::TypeLayout = gust::TypeLayout::structure(
+            "WithArray",
+            24,
+            4,
+            &[
+                gust::StructFieldLayout {
+                    name: "a",
+                    offset: 0,
+                    ty: <[f32; 4] as GpuPod>::LAYOUT,
+                },
+                gust::StructFieldLayout {
+                    name: "p",
+                    offset: 16,
+                    ty: PAIR,
+                },
+            ],
+        );
+        // The assertion every typed allocation runs: arrays of honest elements are accepted.
+        assert_pod_matches_storage_layout::<[f32; 4]>();
+        assert_pod_matches_storage_layout::<[Vec2; 3]>();
+        assert_pod_matches_storage_layout::<[Mat4; 2]>();
+        for layout in [
+            <[f32; 4] as GpuPod>::LAYOUT,
+            <[Vec2; 3] as GpuPod>::LAYOUT,
+            <[Mat4; 2] as GpuPod>::LAYOUT,
+            WITH_ARRAY,
+        ] {
+            assert!(padding_free(layout), "{}", layout.name);
+        }
+        // A wrong total, and an element whose stride is not its size, are not padding-free.
+        let mut wrong = <[Vec2; 3] as GpuPod>::LAYOUT;
+        wrong.size = 32;
+        assert!(!padding_free(wrong));
+        const PADDED_ELEMENT: gust::TypeLayout = gust::TypeLayout {
+            name: "P",
+            size: 12,
+            alignment: 4,
+            stride: 16,
+            kind: gust::TypeLayoutKind::Scalar(gust::ScalarKind::U32),
+        };
+        const PADDED_ARRAY: gust::TypeLayout = gust::TypeLayout {
+            name: "array",
+            size: 24,
+            alignment: 4,
+            stride: 24,
+            kind: gust::TypeLayoutKind::Array {
+                element: &PADDED_ELEMENT,
+                count: 2,
+            },
+        };
+        assert!(!padding_free(PADDED_ARRAY));
+        // The resource rule: a float array is StorageV1, one with vectors StorageV2.
+        assert_eq!(
+            buffer_resource_layout(<[f32; 4] as GpuPod>::LAYOUT),
+            ResourceLayout::storage_v1(<[f32; 4] as GpuPod>::LAYOUT)
+        );
+        assert_eq!(
+            buffer_resource_layout(WITH_ARRAY),
+            ResourceLayout::storage_v1(WITH_ARRAY)
+        );
+        assert_eq!(
+            buffer_resource_layout(<[Vec2; 3] as GpuPod>::LAYOUT),
+            ResourceLayout::storage_v2(<[Vec2; 3] as GpuPod>::LAYOUT)
+        );
+        // The binding check: the descriptor's layout against the buffer's.
+        let four = binding_resource_layout(BindingKind::Storage, <[f32; 4] as GpuPod>::LAYOUT);
+        let parameter = ParameterDescriptor {
+            resource_layout: Some(four),
+            ..PARAMETERS[0]
+        };
+        assert!(validate_binding_layout(&parameter, four).is_ok());
+        for actual in [
+            // A different count, a different element, a scalar, a struct holding the array.
+            binding_resource_layout(BindingKind::Storage, <[f32; 3] as GpuPod>::LAYOUT),
+            binding_resource_layout(BindingKind::Storage, <[u32; 4] as GpuPod>::LAYOUT),
+            binding_resource_layout(BindingKind::Storage, F),
+            binding_resource_layout(BindingKind::Storage, WITH_ARRAY),
+        ] {
+            assert!(
+                matches!(
+                    validate_binding_layout(&parameter, actual),
+                    Err(Error::UnsupportedResourceLayout { .. })
+                ),
+                "{actual:?}"
+            );
+        }
+        // An array is not a constant-buffer type.
+        assert!(check_uniform_type::<[f32; 4]>().is_err());
     }
 
     /// `DESCRIPTOR` with its one storage parameter relabelled.

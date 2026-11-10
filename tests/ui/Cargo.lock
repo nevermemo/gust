@@ -190,6 +190,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "enum-cast-type"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "enum-data-variant"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "enum-discriminant"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "enum-in-buffer"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "enum-in-field"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "enum-no-partialeq"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "enum-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "equivalent"
 version = "1.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -580,6 +629,20 @@ dependencies = [
 
 [[package]]
 name = "map-u32-for-bool"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "match-break-in-arm"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "match-guard"
 version = "0.0.0"
 dependencies = [
  "gust-compute",
@@ -2085,6 +2148,13 @@ dependencies = [
 
 [[package]]
 name = "wrapping-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "x2-return-in-match-arm"
 version = "0.0.0"
 dependencies = [
  "gust-compute",

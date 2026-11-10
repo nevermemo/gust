@@ -84,6 +84,28 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   reference there and Slang copies. A helper named like a method, or like a field of the struct whose method calls it,
   is `GUST-E0328`
   (Slang resolves an unqualified call to the member first). An attribute on an `impl` block is `GUST-E0115`.
+- Fixed-size array layouts (m9.r2b, D159). `gust::TypeLayoutKind::Array { element, count }` and
+  `TypeLayout::array(element, count)` describe `[T; N]` (size `element.stride * count`, the element's alignment). 39
+  `GpuPod` impls, `[T; N]` for `N` in 1 to 32 and 64, 128, 256, 512, 1024, 2048 and 4096 (no blanket impl, so `[T; 0]`
+  has none), when `T: GpuPod`, `T`'s std430 stride equals its Rust size and `T` is not an array; a hand-written element
+  that breaks the rule fails when `LAYOUT` is used (E0080; a post-monomorphisation constant, so `cargo build` reports it
+  and `cargo check` may not), `Vec3`, `IVec3`, `UVec3` and `Mat3` are not `GpuPod`, and the
+  `on_unimplemented` note names the lengths. Arrays are `StorageV1` or `StorageV2` types (an array of vectors, matrices
+  or structs of them) and never `Std140V1` (D159's scope: uniform arrays are refused for now, E0215). The reflection cross-check compares a host array with the schema-4 reflection
+  (count, element stride, element, size), and `gust-compute-wgpu`'s binding checks accept the array kind. The enum is
+  `#[non_exhaustive]` on `release/0.1` too, so the new variant is not a break (a `match` outside the crate already needs
+  a wildcard arm). No `#[gpu]` module can name an array yet; that is the macro half of the slice (r2a).
+- Enums and the statement `match` (M9, slice e1). A `#[gpu]` module may hold a field-less `enum` (`enum E { A, B = 3, C }`;
+  the macro adds `Clone`, `Copy` and `#[repr(u32)]`, `#[repr(i32)]` is allowed, the user derives `PartialEq, Eq`). Values
+  are locals, parameters and results of helpers, compared with `==` and `!=`, and cast with `as u32` (`as i32` for a signed
+  enum) only. A statement `match` on an enum (`E::A => { .. }`, `E::A | E::B => { .. }`, `_ => { .. }`) becomes a Slang
+  `switch`; a `return` in an arm is legal in a helper and stays `GUST-E0415` in a kernel with workgroup memory or a
+  barrier. Refused: a data variant, a computed discriminant, a missing `PartialEq` or an `as` to another type
+  (`GUST-E0122`), an enum in a struct field, a buffer, a uniform, workgroup memory, an `Option` or a `Result`
+  (`GUST-E0211`), a `break` or `continue` in an arm aimed at the loop around the `match` (`GUST-E0417`), a guard
+  (`GUST-E0418`), bindings and other patterns (`GUST-E0521`), other scrutinees (`GUST-E0515`) and methods on an enum
+  (`GUST-E0121`). The value form of `match` is a later slice. On an RTX 5090 the fixture runs equal to a hand-written
+  table, and the evaluation order of calls in a scrutinee, in `==` and `!=`, and in enum arguments is Rust's.
 
 ### Changed, and may break code written for 0.1.0
 

@@ -136,6 +136,38 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   a buffer from another handle is `Error::ForeignBuffer`. Storage buffers only, synchronous, whole-buffer copies
   when a call changes side (NEXT_TASKS lists what remains). Pull request CI 42682136785 (all 10 jobs, wasm
   included) and lavapipe 42682128305 green; 27 main gates green on the merge, 2026-11-09, 20:14 to 21:28Z.
+- m9.a2, methods II (merge `4f477ad`; Opus review MERGE AFTER FIXES 2/3/6, re-check r1 MERGE AFTER FIXES, re-check
+  r2 MERGE). `&mut self` methods lower to Slang `[mutating]` members on local places, `self` by value and associated
+  functions (`static`), `Self`, several `impl` blocks and methods calling methods are accepted. A conservative,
+  name-based call graph refuses recursion (E0120, D162). The reviews found three evaluation-order bugs by hand,
+  where the GPU and the CPU twin would silently disagree; each is refused rather than reordered (no golden moved):
+  E0421 covers a `&mut self` call in a `for` bound, in the place of `=`/`op=`, in the value of `/=`, `%=` or `^=`
+  on an indexed place (Slang lowers these through an `inout` helper that copies the place first) and in the value
+  of a matrix-module `*=`; `self` used as a value in a `&mut self` method is E0116. 27 main gates green on the
+  merge, 2026-11-09, 23:23Z to 2026-11-10, 00:41Z (GPU pin 422/39).
+- m9.r1m, the measurement before the array impls (report in the coordinator's work area): 39 `GpuPod for [T; N]`
+  impls (1 to 32 and the powers of two to 4096) cost nothing measurable (the median build of gust-compute was
+  0.38 s faster with them, inside 1.34 s of noise), so the set stays at 39 and no blanket impl is needed.
+- m9.r2b, the runtime half of fixed-size arrays in buffers (merge `ea13399`; Opus review MERGE 0/2/6, fixed;
+  re-check MERGE 0/0/3; D159). `TypeLayoutKind::Array` and `TypeLayout::array`, the 39 impls, a compile-time
+  element rule with one message per failing condition, std140 arrays refused (E0215), the reflection cross-check
+  and gust-wgpu's binding checks for arrays, and a Reflect test against the schema-4 helper. Additive
+  (`TypeLayoutKind` is `#[non_exhaustive]`). The macro half (a `#[gpu]` module naming an array) is m9.r2a, which
+  must carry a GPU round-trip of an array. 27 main gates green on the merge, 2026-11-10, 00:42 to 01:59Z (pin
+  423/39).
+- m9.e1, user enums and the statement `match` (merge `0f9bc16`; Opus review MERGE AFTER FIXES 0/4/8, re-check
+  MERGE 0/0/2; D157). Field-less enums with a `u32` or `i32` repr and literal discriminants lower to Slang
+  `enum E : uint|int`; a statement `match` lowers to `switch`, and every enum `match` without `_` ends in
+  `default` (rustc's exhaustiveness makes that sound, and the WGSL path needs a taken case). Enums in fields,
+  buffers, uniforms, workgroup memory, `Option` or `Result` are E0211 (an invalid bit pattern could reach a
+  `switch`); guards E0418, bindings E0521, `break`/`continue` aimed at an outer loop E0417 (Slang's `break` binds to
+  the `switch`). Fixture X2 (`return` in an arm of a barrier kernel) is exactly one E0415 as pre-registered. Slang
+  evaluates the scrutinee once and `==` on two calls left to right, as Rust does. PR CI and lavapipe 42732814709
+  green; 27 main gates green on the merge, 2026-11-10, 04:40 to 06:01Z (pin 425/40).
+- The difftest grows per lowering (D166): m9.d1a (methods, format 8) is in review; its first review found that the
+  order-sensitive shapes the methods reviews found by hand were almost never generated, so its fix round biases
+  the generator toward them and pins that each is reached. m9.e2 (value-form `match`, integer-literal patterns,
+  E0419) is in review.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

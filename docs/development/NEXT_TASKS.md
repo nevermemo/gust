@@ -515,6 +515,16 @@ test module; do not mix that mechanical move with behavior changes.
   - no test fails if `build` stops using `routed_runner` (accepted for M8: exported artifacts do not depend on
     the route).
 
+## M9 follow-ups (filed during M9)
+
+- m9.r2b re-check nits: two of the mutation checks reach only the array check, two `ArrayOf::ELEMENT_OK`
+  assertions have no doctest, and the stride message names `Vec3` where it means any 12-byte element.
+- m9.r2a must carry a GPU round-trip of an array in a buffer (r2b's evidence is host-side and reflection only).
+- m9.e1 re-check nits: an enum local named like the binding of an `Ok(m)` arm in a `Result` match gets a false
+  E0122; a malformed enum that is also a field reports E0211 before its E0122.
+- The arrays difftest slice: generate `out[c.n] = c.next()` (an indexed place whose index is not a call), the
+  nearest accepted neighbour of m9.a2's first order bug; it needs local arrays (m9.d1a review S3).
+
 ## Deferred language/runtime breadth
 
 Additional binding groups and

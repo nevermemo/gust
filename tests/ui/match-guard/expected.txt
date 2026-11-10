@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: match-guard/src/main.rs
+line: 22
+message: [GUST-E0418] a `match` arm on an enum takes no `if` guard

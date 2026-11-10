@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: enum-no-partialeq/src/main.rs
+line: 6
+message: [GUST-E0122] `Level` needs `#[derive(PartialEq, Eq)]`

@@ -150,9 +150,9 @@ Decision: D02.
 
 ### GUST-E0102 unsupported module item
 
-A GPU module holds functions, plain structs and the inherent `impl` blocks of its structs (several blocks for one struct are allowed).
+A GPU module holds functions, plain structs, field-less enums (GUST-E0122) and the inherent `impl` blocks of its structs (several blocks for one struct are allowed).
 Reached through `#[gpu]`.
-Rejected: `const`, `static`, `enum`, `trait`, `use`, nested `mod`, type aliases; an `impl` that is an `unsafe impl`, a trait impl (`impl Clone for S`), an associated `const` or an associated type, a `Self` anywhere but inside an `impl` block (inside one it is the struct of the block, in a type, a struct literal or a path such as `Self::make()`). A path call of a function that has a receiver (`S::area(c)`; write `c.area()`) or of an associated function that no struct has (`S::nowhere()`) is GUST-E0302, not this code. Methods and associated functions are accepted since M9 slices m9.a1 and m9.a2.
+Rejected: `const`, `static`, `trait`, `use`, nested `mod`, type aliases; an `impl` that is an `unsafe impl`, a trait impl (`impl Clone for S`), an associated `const` or an associated type, a `Self` anywhere but inside an `impl` block (inside one it is the struct of the block, in a type, a struct literal or a path such as `Self::make()`). A path call of a function that has a receiver (`S::area(c)`; write `c.area()`) or of an associated function that no struct has (`S::nowhere()`) is GUST-E0302, not this code. Methods and associated functions are accepted since M9 slices m9.a1 and m9.a2.
 Write instead: pass constants as uniform or value parameters, or write them inline.
 Decision: D02, D133 (methods), D154.
 
@@ -314,6 +314,18 @@ Write instead: declare the struct in the same `#[gpu]` module and put the method
 Fixture: `tests/ui/method-impl-foreign` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, slice m9.a1).
 
+An `impl` block for an enum of the module (`impl Mode { .. }`) is this code too, with the message "methods on an enum are not supported": enums have no methods in M9 (slice m9.e1); write a free function that takes the enum.
+
+### GUST-E0122 enum shape outside the contract
+
+A `#[gpu]` module accepts a field-less `enum` whose variants become the values of a Slang `enum E : uint { A, B = 3, C };`. The macro adds `#[derive(Clone, Copy)]` and `#[repr(u32)]` itself (an explicit `#[repr(u32)]` or `#[repr(i32)]` is allowed, and `i32` makes a signed Slang enum); the user derives `PartialEq` (and `Eq`), because `==`, `!=` and `match` compare enum values and the CPU twin must be able to do the same. Discriminants are integer literals (`B = 3`, and `-2` with `#[repr(i32)]`); a variant without one counts up from the one before, in Rust and in Slang alike. An enum casts with `as` to its repr type only (`as u32`, or `as i32` for the signed enum). The check is by name: an enum parameter, a local declared with the enum, a variant path (`Mode::A as u32`) or a call of a helper that returns the enum; a cast of any other expression is not tracked.
+Reached through `#[gpu]`.
+Rejected: a variant with data (`A(u32)`, `A { x: u32 }`); a discriminant that is not an integer literal (`A = 1 + 2`, `A = 1.5`) or is negative without `#[repr(i32)]`; a missing `PartialEq` derive; a generic enum or one with no variants; a repr other than `u32` or `i32` (`#[repr(u8)]`, `#[repr(u32, C)]`); `Clone` or `Copy` derived by hand; an attribute on a variant other than documentation and lints; `m as i32`, `m as f32` or `Mode::A as i32` on a `repr(u32)` enum, and `s as u32` on a `repr(i32)` one.
+Write instead: the shape above; for a value with data, use a struct and an integer tag, and convert at the cast.
+Name collisions (not checked by the macro, loud in slangc, and the same for a struct): an enum named like a Slang modifier that the emitter does not rename, or like a function of the module, gives a slangc error at the declaration or a use, not a silent change; rename the enum. Names that every identifier shares (`class`, `new` ..) are renamed by the emitter and are no clash.
+Fixture: `tests/ui/enum-data-variant`, `tests/ui/enum-discriminant`, `tests/ui/enum-no-partialeq` and `tests/ui/enum-cast-type` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D157 (M9 plan 2.2, slice m9.e1).
+
 ## E02xx: types
 
 ### GUST-E0201 unsupported primitive type
@@ -396,6 +408,15 @@ Reached through `#[gpu]`.
 Rejected: `Workgroup<f32>`, `Workgroup<[f32; 0]>`, `Workgroup<[f32; LEN]>`, `Workgroup<[f64; 4]>`, `Workgroup<[Mat4; 4]>`, `Workgroup<[Item; 4]>`, `let s: Workgroup<[f32; 4]> = ..;`, `fn f() -> Workgroup<[f32; 4]>`.
 Write instead: `mut scratch: Workgroup<[f32; 256]>` as a kernel parameter, with a literal length and a supported element.
 Decision: D42 (M7 plan 4.1, slice m7.g1).
+
+### GUST-E0211 enum in a struct field, a buffer, a uniform, workgroup memory, an `Option` or a `Result`
+
+An enum is a value of the invocation and is never stored: it has no `GpuPod` layout (a stored word could be none of its variants), and `Option` and `Result` have no proven layout for it. The enum lives in locals, parameters and results of helpers; store its integer (`mode as u32`) and match on it where it is read.
+Reached through `#[gpu]`.
+Rejected: `struct S { m: Mode }`, `StructuredBuffer<Mode>`, `RWStructuredBuffer<Mode>`, a uniform or `Workgroup<[Mode; N]>` parameter, `Option<Mode>` and `Result<Mode, Mode>` in a result or a local (a struct field of `Option` type is GUST-E0501 first).
+Write instead: a `u32` (or `i32`) field or element holding `mode as u32`, and a helper that turns it back into the enum.
+Fixture: `tests/ui/enum-in-field` and `tests/ui/enum-in-buffer` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D157 (M9 plan 2.2, slice m9.e1).
 
 ## E03xx: expressions and calls
 
@@ -800,8 +821,8 @@ Decision: D42 (M7 plan 4.2 rule 1, slice m7.g1).
 
 An invocation that returns early never reaches the barriers the others wait at, so a kernel that uses workgroup memory or a barrier has no `return`: its body ends by falling off the end. A `return` in a helper that such a kernel calls is fine; the helper contains no barrier. The `?` operator is an early exit too, so the barrier pass also rejects it in such a kernel with this code; today GUST-E0311 rejects `?` in every function first, so the pass is the default that holds if a later slice admits `?` (tested by calling the pass directly). A kernel that calls a subgroup operation (M8, D140) is held to the same rule, because the operation is a rendezvous of the subgroup too; its message then leads with the subgroup case.
 Reached through `#[gpu]`.
-Rejected: `workgroup_barrier(); return;`, `if lid.x == 0u32 { return; }` in a kernel that has a `Workgroup` parameter.
-Fixture: `tests/ui/return-in-barrier-kernel` (`cargo xtask check-ui`, `code: none` plus the message).
+Rejected: `workgroup_barrier(); return;`, `if lid.x == 0u32 { return; }` in a kernel that has a `Workgroup` parameter, and a `return` in an arm of an enum `match` of such a kernel (a `return` in an arm of a helper is legal).
+Fixture: `tests/ui/return-in-barrier-kernel` and `tests/ui/x2-return-in-match-arm` (`cargo xtask check-ui`, `code: none` plus the message).
 Write instead: guard the rest of the work with `if`.
 Decision: D42 (M7 plan 4.2 rule 2, slice m7.g1).
 
@@ -813,6 +834,24 @@ Rejected: `for r in 0u32..4u32 { if r == 2u32 { break; } workgroup_barrier(); }`
 Fixture: `tests/ui/break-in-barrier-loop`, `tests/ui/continue-in-barrier-loop`, `tests/ui/labelled-break-in-barrier-kernel` (GUST-E0403) and `tests/ui/question-mark-in-barrier-kernel` (GUST-E0311) (`cargo xtask check-ui`, `code: none` plus the message).
 Write instead: run the loop to its end and guard the work in each iteration with `if`.
 Decision: D42 (M7 plan 4.2 rule 2, slice m7.g1).
+
+### GUST-E0417 `break` or `continue` in an arm of an enum `match`
+
+A statement `match` on an enum is a Slang `switch`, and in Slang a `break` ends the `switch`, not the loop around it, so a `break` written in an arm and aimed at an enclosing `for` loop would mean something else on the GPU than in Rust. A `continue` is refused for symmetry with `break`, not because it would go wrong: measured, Slang's `continue` inside a `switch` does continue the loop around it (the refusal is conservative, and can be lifted by a later slice). The rule covers an unlabelled `break` or `continue` whose innermost enclosing construct is an arm, however deep the `if`s inside it; a `for` loop inside the arm is its own target, and a jump after the `match` is the loop's.
+Reached through `#[gpu]`.
+Rejected: `for k in 0u32..4u32 { match m { Mode::A => { break; } _ => { } } }`, the same with `continue;`, and a `break` in an arm of a `match` nested in an arm.
+Write instead: set a flag in the arm and test it after the `match`, `if done { break; }`, or move the `match` into a helper that returns.
+Fixture: `tests/ui/match-break-in-arm` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D157 (M9 plan 2.2, slice m9.e1).
+
+### GUST-E0418 guard on an enum `match` arm
+
+A statement `match` on an enum lowers to a `switch`, which has no guards, and a guard (`Mode::A if x > 1 => ..`) would make the coverage of the arm depend on a run-time value. The arm takes no `if`.
+Reached through `#[gpu]`.
+Rejected: `match m { Mode::A if x > 1u32 => { .. } _ => { .. } }`.
+Write instead: test the condition inside the arm with an `if`.
+Fixture: `tests/ui/match-guard` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D157 (M9 plan 2.2, slice m9.e1).
 
 ### GUST-E0421 `&mut self` call whose evaluation order differs from Rust's
 
@@ -933,7 +972,7 @@ Decision: D14.
 
 ### GUST-E0513 Result match as a value
 
-A `match` on a `Result` is a statement, not an expression with a value.
+A `match` on a `Result` or on an enum is a statement, not an expression with a value. For an enum `match` this also fires when an arm ends in a value (an expression without `;`, such as `Mode::A => { c.reset() }`): end the arm's last statement with `;`.
 Reached through `#[gpu]`.
 Rejected: `let x = match r { Ok(v) => { v } Err(e) => { e } };`.
 Write instead: assign inside the arms to a `let mut` local, and end the match with `;`.
@@ -949,15 +988,15 @@ Decision: D14.
 
 ### GUST-E0515 match scrutinee
 
-Only a known `Result<T, T>` local, parameter or same-module helper call can be matched.
+Only a known `Result<T, T>` local, parameter or same-module helper call can be matched in a `Result` match, and only a local, a parameter, a call or a variant of a known enum in an enum `match` (a larger expression is bound to a local first).
 Reached through `#[gpu]`.
-Rejected: `match 1u32 { .. }`, a match on an `Option`.
+Rejected: `match 1u32 { .. }`, a match on an `Option`, `match a + b { E::A => { .. } .. }` and a `match` of `_` alone on something that is not an enum.
 Write instead: bind the value to a `Result<T, T>` local first, or use `if let` for `Option`.
 Decision: D14.
 
 ### GUST-E0516 match arm attribute
 
-A match arm carries no attributes.
+A match arm carries no attributes, in a `Result` match or in an enum `match`.
 Reached through `#[gpu]`.
 Rejected: `#[allow(unused)] Ok(x) => { .. }`.
 Write instead: remove the attribute.
@@ -973,7 +1012,7 @@ Decision: D14.
 
 ### GUST-E0518 match arm block
 
-Each arm body is a block.
+Each arm body is a block, in a `Result` match and in an enum `match`.
 Reached through `#[gpu]`.
 Rejected: `Ok(x) => x`.
 Write instead: `Ok(x) => { .. }`.
@@ -997,9 +1036,9 @@ Decision: D14.
 
 ### GUST-E0521 match pattern
 
-Arm patterns are `Ok(identifier)` and `Err(identifier)`.
+In a `Result` match the arm patterns are `Ok(identifier)` and `Err(identifier)`; in an enum `match` they are `E::A`, `E::A | E::B` and `_` (the enum's own variants, each named once, none after `_`). A pattern of another shape is refused with this code in both.
 Reached through `#[gpu]`.
-Rejected: `_ => { .. }`, `Ok((x, y)) => { .. }`.
+Rejected: `_ => { .. }` in a `Result` match, `Ok((x, y)) => { .. }`, and in an enum `match` a variant of another enum, a variant named twice or after `_`, a binding or a literal.
 Write instead: `Ok(x) => { .. }` and `Err(e) => { .. }`.
 Decision: D14.
 

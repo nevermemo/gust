@@ -568,6 +568,8 @@ pub(crate) fn validate_module_in(
             _ => None,
         })
         .collect();
+    // Before the item loop: a `Workgroup<[Mode; 4]>` parameter would otherwise stop at the workgroup shape check (E0210).
+    check_enum_layout(stage, items, &methods.enums)?;
 
     for item in items {
         match item {
@@ -604,11 +606,12 @@ pub(crate) fn validate_module_in(
                     struct_fields: &struct_fields,
                 },
             )?,
+            syn::Item::Enum(item) => validate_enum(item)?,
             _ => {
                 return Err(diagnostics::error(
                     Code::UnsupportedModuleItem,
                     item,
-                    "GPU modules may currently contain only functions, plain structs and `impl` blocks of those structs; enums, traits, constants, `use` items and type aliases are not accepted",
+                    "GPU modules may currently contain only functions, plain structs, field-less enums and `impl` blocks of those structs; traits, constants, `use` items and type aliases are not accepted",
                 ));
             }
         }
@@ -761,6 +764,48 @@ struct MethodTable {
     members: HashMap<String, bool>,
     /// Whether the module names `Mat2`, `Mat3` or `Mat4`: the emitter then lowers `*=` to `__gust_mul` (D79).
     matrix: bool,
+    /// The module's enums by name (slice m9.e1). They live in this table because the visitor already holds it.
+    enums: HashMap<String, EnumFacts>,
+    /// The helper functions whose result type is an enum of the module, by name, with the enum's name.
+    enum_returns: HashMap<String, String>,
+}
+
+/// What the validator knows of a field-less enum of the module (slice m9.e1, D157).
+#[derive(Clone, Debug, Default)]
+struct EnumFacts {
+    /// Whether the repr is `i32` (else `u32`).
+    signed: bool,
+    /// The variant names, unraw.
+    variants: Vec<String>,
+}
+
+impl EnumFacts {
+    /// The integer type the enum casts to, as Rust spells it.
+    fn repr_name(&self) -> &'static str {
+        if self.signed { "i32" } else { "u32" }
+    }
+}
+
+/// Whether the attributes of an enum carry `#[repr(i32)]` (the strict reading of `repr` is `validate_enum`'s).
+fn enum_is_signed(attributes: &[syn::Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.path().is_ident("repr")
+            && matches!(&attribute.meta, syn::Meta::List(list)
+                if list.tokens.clone().into_iter().any(|tree| matches!(tree,
+                    proc_macro2::TokenTree::Ident(ident) if ident == "i32")))
+    })
+}
+
+/// The name of the enum of `module` that `ty` is, when it is a plain name of one.
+fn enum_type_name(ty: &syn::Type, enums: &HashMap<String, EnumFacts>) -> Option<String> {
+    let syn::Type::Path(path) = ty else {
+        return None;
+    };
+    if path.qself.is_some() {
+        return None;
+    }
+    let name = path.path.get_ident()?.unraw().to_string();
+    enums.contains_key(&name).then_some(name)
 }
 
 /// Whether any identifier in `stream` is one of the matrix type names (as `slang::module_lowering` counts them).
@@ -817,6 +862,31 @@ fn method_table(items: &[syn::Item]) -> MethodTable {
             .any(|item| names_matrix(item.to_token_stream())),
         ..MethodTable::default()
     };
+    for item in items {
+        if let syn::Item::Enum(item) = item {
+            table.enums.insert(
+                item.ident.unraw().to_string(),
+                EnumFacts {
+                    signed: enum_is_signed(&item.attrs),
+                    variants: item
+                        .variants
+                        .iter()
+                        .map(|variant| variant.ident.unraw().to_string())
+                        .collect(),
+                },
+            );
+        }
+    }
+    for item in items {
+        if let syn::Item::Fn(function) = item
+            && let syn::ReturnType::Type(_, ty) = &function.sig.output
+            && let Some(name) = enum_type_name(ty, &table.enums)
+        {
+            table
+                .enum_returns
+                .insert(function.sig.ident.to_string(), name);
+        }
+    }
     for item in items {
         let syn::Item::Impl(block) = item else {
             continue;
@@ -953,10 +1023,15 @@ fn validate_impl(
     }
     let name = impl_self_name(item).unwrap_or_default();
     let Some(fields) = context.struct_fields.get(&name) else {
+        let message = if context.methods.enums.contains_key(&name) {
+            "methods on an enum are not supported: an `impl` is for a struct defined in this `#[gpu]` module; write a free function that takes the enum"
+        } else {
+            "an `impl` is for a struct defined in this `#[gpu]` module; a type from elsewhere has no Slang definition to hold the methods"
+        };
         return Err(diagnostics::error(
             Code::ImplForeignType,
             &item.self_ty,
-            "an `impl` is for a struct defined in this `#[gpu]` module; a type from elsewhere has no Slang definition to hold the methods",
+            message,
         ));
     };
     let owner = Owner {
@@ -1220,6 +1295,230 @@ fn validate_struct(item: &syn::ItemStruct) -> syn::Result<()> {
     visitor.finish()
 }
 
+/// The integer literal of an enum discriminant (`3`, `3u32`, `-2` with a signed repr), and whether it is negated.
+fn enum_discriminant(expression: &syn::Expr, signed: bool) -> Option<()> {
+    match expression {
+        syn::Expr::Lit(literal) if matches!(literal.lit, syn::Lit::Int(_)) => Some(()),
+        syn::Expr::Unary(unary)
+            if signed
+                && matches!(unary.op, syn::UnOp::Neg(_))
+                && matches!(unary.expr.as_ref(), syn::Expr::Lit(literal) if matches!(literal.lit, syn::Lit::Int(_))) =>
+        {
+            Some(())
+        }
+        _ => None,
+    }
+}
+
+/// Checks one `enum` of a GPU module (slice m9.e1, D157, GUST-E0122): field-less variants, integer-literal
+/// discriminants, `repr(u32)` (the default) or `repr(i32)`, `PartialEq` derived by the user. The macro adds `Clone`,
+/// `Copy` and the default `repr` itself, as it does for structs, so writing them is refused.
+fn validate_enum(item: &syn::ItemEnum) -> syn::Result<()> {
+    let name = item.ident.unraw().to_string();
+    if math_types::is_reserved_type_name(&name) {
+        return Err(diagnostics::error(
+            Code::ReservedTypeName,
+            &item.ident,
+            format!(
+                "`{name}` is a type the dialect maps to a Slang type itself, so an enum cannot be named that; choose another name"
+            ),
+        ));
+    }
+    if !item.generics.params.is_empty() || item.generics.where_clause.is_some() {
+        return Err(diagnostics::error(
+            Code::EnumShape,
+            &item.generics,
+            "generic enums are not supported: a GPU enum is a plain list of named integer values",
+        ));
+    }
+    if item.variants.is_empty() {
+        return Err(diagnostics::error(
+            Code::EnumShape,
+            item,
+            "a GPU enum needs at least one variant",
+        ));
+    }
+    let mut signed = false;
+    let mut partial_eq = false;
+    for attribute in &item.attrs {
+        if attribute.path().is_ident("repr") {
+            let reprs = diagnostics::parse_args_with(
+                attribute,
+                Code::EnumShape,
+                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+            )?;
+            match reprs.iter().collect::<Vec<_>>().as_slice() {
+                [only] if only.is_ident("u32") => {}
+                [only] if only.is_ident("i32") => signed = true,
+                _ => {
+                    return Err(diagnostics::error(
+                        Code::EnumShape,
+                        attribute,
+                        "a GPU enum is `#[repr(u32)]` (the default, written by the macro) or `#[repr(i32)]`: the Slang enum has a 32-bit integer type",
+                    ));
+                }
+            }
+        } else if attribute.path().is_ident("derive") {
+            let derives = diagnostics::parse_args_with(
+                attribute,
+                Code::MalformedDerive,
+                syn::punctuated::Punctuated::<syn::Path, syn::Token![,]>::parse_terminated,
+            )?;
+            for path in &derives {
+                let last = path
+                    .segments
+                    .last()
+                    .map(|segment| segment.ident.to_string());
+                match last.as_deref() {
+                    Some("Clone" | "Copy") => {
+                        return Err(diagnostics::error(
+                            Code::EnumShape,
+                            attribute,
+                            "GPU enums receive Clone and Copy automatically",
+                        ));
+                    }
+                    Some("PartialEq") => partial_eq = true,
+                    _ => {}
+                }
+            }
+        } else if let Some(message) = attribute_refusal(attribute) {
+            return Err(diagnostics::error(
+                Code::UnsupportedAttribute,
+                attribute,
+                message,
+            ));
+        }
+    }
+    if !partial_eq {
+        return Err(diagnostics::error(
+            Code::EnumShape,
+            &item.ident,
+            format!(
+                "`{name}` needs `#[derive(PartialEq, Eq)]`: `==`, `!=` and `match` compare enum values, and the CPU twin must be able to do the same"
+            ),
+        ));
+    }
+    for variant in &item.variants {
+        if !matches!(variant.fields, syn::Fields::Unit) {
+            return Err(diagnostics::error(
+                Code::EnumShape,
+                variant,
+                "a GPU enum variant carries no data: data-carrying variants have no Slang lowering yet",
+            ));
+        }
+        if let Some(attribute) = variant.attrs.iter().find(|attribute| {
+            !["doc", "allow", "warn", "deny", "forbid"]
+                .iter()
+                .any(|name| attribute.path().is_ident(name))
+        }) {
+            return Err(diagnostics::error(
+                Code::EnumShape,
+                attribute,
+                "a variant of a GPU enum takes documentation and lint attributes only",
+            ));
+        }
+        if let Some((_, discriminant)) = &variant.discriminant
+            && enum_discriminant(discriminant, signed).is_none()
+        {
+            return Err(diagnostics::error(
+                Code::EnumShape,
+                discriminant,
+                "a discriminant is an integer literal (`B = 3`; a negative one needs `#[repr(i32)]`): a computed value would have to be evaluated by both Rust and Slang",
+            ));
+        }
+    }
+    // The names and the discriminant expressions go through the generic checks (reserved prefixes); `repr` is judged
+    // above and is not on the attribute allowlist of the visitor.
+    let mut clean = item.clone();
+    clean
+        .attrs
+        .retain(|attribute| !attribute.path().is_ident("repr"));
+    let mut visitor = RestrictedVisitor::new(HashSet::new(), HashSet::new());
+    visitor.visit_item_enum(&clean);
+    visitor.finish()
+}
+
+/// GUST-E0211: an enum is a value of the invocation, never a stored one. No `GpuPod` exists for a type with invalid bit
+/// patterns, so a struct field, a buffer or uniform element (or a `Workgroup` element) naming an enum is refused.
+fn check_enum_layout(
+    stage: &dyn StageProfile,
+    items: &[syn::Item],
+    enums: &HashMap<String, EnumFacts>,
+) -> syn::Result<()> {
+    use crate::slang::{ParameterFlavor, parameter_flavor_in};
+
+    if enums.is_empty() {
+        return Ok(());
+    }
+    /// The first plain path to an enum anywhere inside a type.
+    struct Mention<'e> {
+        enums: &'e HashMap<String, EnumFacts>,
+        found: Option<String>,
+    }
+    impl<'ast> Visit<'ast> for Mention<'_> {
+        fn visit_type_path(&mut self, ty: &'ast syn::TypePath) {
+            if let Some(name) = ty.path.get_ident().map(|ident| ident.unraw().to_string())
+                && self.enums.contains_key(&name)
+            {
+                self.found.get_or_insert(name);
+            }
+            visit::visit_type_path(self, ty);
+        }
+    }
+    let mention = |ty: &syn::Type| {
+        let mut scan = Mention { enums, found: None };
+        scan.visit_type(ty);
+        scan.found
+    };
+    for item in items {
+        match item {
+            syn::Item::Struct(item) => {
+                for field in &item.fields {
+                    if let Some(name) = mention(&field.ty) {
+                        return Err(diagnostics::error(
+                            Code::EnumInResource,
+                            &field.ty,
+                            format!(
+                                "`{name}` is an enum, and an enum is not a field of a struct: it has no `GpuPod` layout (a stored value could be none of its variants); keep the enum in a local or a parameter and store its integer (`mode as u32`)"
+                            ),
+                        ));
+                    }
+                }
+            }
+            syn::Item::Fn(function)
+                if function
+                    .attrs
+                    .iter()
+                    .any(|attribute| attribute.path().is_ident("kernel")) =>
+            {
+                for argument in &function.sig.inputs {
+                    let syn::FnArg::Typed(argument) = argument else {
+                        continue;
+                    };
+                    if matches!(
+                        parameter_flavor_in(stage, &argument.ty),
+                        ParameterFlavor::StorageRead
+                            | ParameterFlavor::StorageReadWrite
+                            | ParameterFlavor::Uniform
+                            | ParameterFlavor::Workgroup
+                    ) && let Some(name) = mention(&argument.ty)
+                    {
+                        return Err(diagnostics::error(
+                            Code::EnumInResource,
+                            &argument.ty,
+                            format!(
+                                "`{name}` is an enum, and an enum is not the element of a buffer, a uniform or workgroup memory: it has no `GpuPod` layout; store its integer (`mode as u32`) and match on it where it is used"
+                            ),
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn validate_function(
     stage: &dyn StageProfile,
     function: &syn::ItemFn,
@@ -1363,6 +1662,11 @@ fn validate_function(
         {
             if parameter_flavor_in(stage, &argument.ty) == ParameterFlavor::Value {
                 visitor.value_params.insert(name.ident.unraw().to_string());
+                if let Some(enum_name) = enum_type_name(&argument.ty, &methods.enums) {
+                    visitor
+                        .enum_values
+                        .insert(name.ident.unraw().to_string(), enum_name);
+                }
             }
             match parameter_flavor_in(stage, &argument.ty) {
                 ParameterFlavor::Invocation => {
@@ -1643,6 +1947,88 @@ struct TextureFacts {
     filterable: bool,
 }
 
+/// `expression` without the parentheses and invisible groups around it.
+fn strip_parens(expression: &syn::Expr) -> &syn::Expr {
+    match expression {
+        syn::Expr::Paren(inner) => strip_parens(&inner.expr),
+        syn::Expr::Group(inner) => strip_parens(&inner.expr),
+        other => other,
+    }
+}
+
+/// The alternatives of a pattern: `A | B` flattened (parentheses looked through), any other pattern as itself.
+fn flatten_or<'p>(pattern: &'p syn::Pat, out: &mut Vec<&'p syn::Pat>) {
+    match pattern {
+        syn::Pat::Or(or) => {
+            for case in &or.cases {
+                flatten_or(case, out);
+            }
+        }
+        syn::Pat::Paren(inner) => flatten_or(&inner.pat, out),
+        other => out.push(other),
+    }
+}
+
+/// The first path pattern of an arm pattern (`E::A | E::B` gives `E::A`).
+fn first_variant_path(pattern: &syn::Pat) -> Option<&syn::Path> {
+    let mut alternatives = Vec::new();
+    flatten_or(pattern, &mut alternatives);
+    alternatives.into_iter().find_map(|pattern| match pattern {
+        syn::Pat::Path(path) if path.qself.is_none() => Some(&path.path),
+        _ => None,
+    })
+}
+
+/// Whether `expression` is a `match` with a path pattern in some arm: the enum form (slice m9.e1). A `Result` match
+/// has `Ok(..)`/`Err(..)` arms and never a path.
+pub(crate) fn is_enum_match(expression: &syn::ExprMatch) -> bool {
+    expression
+        .arms
+        .iter()
+        .any(|arm| first_variant_path(&arm.pat).is_some())
+        // A `match` of `_` arms alone is no `Result` match either (that needs `Ok`/`Err`): it is the enum form.
+        || (!expression.arms.is_empty()
+            && expression
+                .arms
+                .iter()
+                .all(|arm| matches!(arm.pat, syn::Pat::Wild(_))))
+}
+
+/// The tail expression of a block when it is a value (no `;`, not a statement-like expression): the value form of a
+/// `match` arm, which this slice does not lower.
+fn value_tail(block: &syn::Block) -> Option<&syn::Expr> {
+    match block.stmts.last()? {
+        syn::Stmt::Expr(expression, None)
+            if !matches!(
+                expression,
+                syn::Expr::If(_)
+                    | syn::Expr::Match(_)
+                    | syn::Expr::ForLoop(_)
+                    | syn::Expr::Block(_)
+                    | syn::Expr::Return(_)
+                    | syn::Expr::Break(_)
+                    | syn::Expr::Continue(_)
+                    | syn::Expr::Assign(_)
+            ) && !is_compound_assignment(expression) =>
+        {
+            Some(expression)
+        }
+        _ => None,
+    }
+}
+
+/// Whether `expression` is `a += b` and its kin (syn 2 spells them as binary expressions).
+fn is_compound_assignment(expression: &syn::Expr) -> bool {
+    matches!(
+        expression,
+        syn::Expr::Binary(binary) if matches!(binary.op,
+            syn::BinOp::AddAssign(_) | syn::BinOp::SubAssign(_) | syn::BinOp::MulAssign(_)
+            | syn::BinOp::DivAssign(_) | syn::BinOp::RemAssign(_) | syn::BinOp::BitXorAssign(_)
+            | syn::BinOp::BitAndAssign(_) | syn::BinOp::BitOrAssign(_) | syn::BinOp::ShlAssign(_)
+            | syn::BinOp::ShrAssign(_))
+    )
+}
+
 struct RestrictedVisitor {
     function_names: HashSet<String>,
     result_helpers: HashSet<String>,
@@ -1680,6 +2066,11 @@ struct RestrictedVisitor {
     owner_fields: HashSet<String>,
     /// The value parameters of the function (not its receiver): a `&mut self` method is not called on one of them.
     value_params: HashSet<String>,
+    /// The `loop_depth` at the start of each enclosing enum `match` arm, innermost last: a `break` or `continue` at that
+    /// depth would bind to the Slang `switch`, not to the Rust loop (GUST-E0417).
+    switch_depths: Vec<usize>,
+    /// The parameters and locals whose type is an enum of the module, with the enum's name (by name, as `value_params`).
+    enum_values: HashMap<String, String>,
     error: Option<syn::Error>,
 }
 
@@ -1706,7 +2097,186 @@ impl RestrictedVisitor {
             self_struct: None,
             owner_fields: HashSet::new(),
             value_params: HashSet::new(),
+            switch_depths: Vec::new(),
+            enum_values: HashMap::new(),
             error: None,
+        }
+    }
+
+    /// The enum of the module that `expression` is a value of, when the macro can tell without types: a variant path, a
+    /// parameter or local declared with the enum, or a call of a helper that returns one.
+    fn enum_of(&self, expression: &syn::Expr) -> Option<String> {
+        match expression {
+            syn::Expr::Paren(inner) => self.enum_of(&inner.expr),
+            syn::Expr::Group(inner) => self.enum_of(&inner.expr),
+            syn::Expr::Path(path) if path.qself.is_none() => {
+                if let Some(name) = path.path.get_ident() {
+                    return self.enum_values.get(&name.unraw().to_string()).cloned();
+                }
+                let (enum_name, _) = self.variant_path(&path.path)?;
+                Some(enum_name)
+            }
+            syn::Expr::Call(call) => {
+                let syn::Expr::Path(path) = call.func.as_ref() else {
+                    return None;
+                };
+                let name = path.path.get_ident()?.to_string();
+                self.methods.enum_returns.get(&name).cloned()
+            }
+            _ => None,
+        }
+    }
+
+    /// `(enum, variant)` when `path` is `E::V` with `E` an enum of the module and `V` one of its variants.
+    fn variant_path(&self, path: &syn::Path) -> Option<(String, String)> {
+        if path.leading_colon.is_some() || path.segments.len() != 2 {
+            return None;
+        }
+        let first = &path.segments[0];
+        let last = &path.segments[1];
+        if !first.arguments.is_none() || !last.arguments.is_none() {
+            return None;
+        }
+        let enum_name = first.ident.unraw().to_string();
+        let variant = last.ident.unraw().to_string();
+        self.methods
+            .enums
+            .get(&enum_name)?
+            .variants
+            .contains(&variant)
+            .then_some((enum_name, variant))
+    }
+
+    /// Whether `tokens` name an enum of the module anywhere.
+    fn mentions_enum(&self, tokens: impl quote::ToTokens) -> bool {
+        fn scan(stream: proc_macro2::TokenStream, enums: &HashMap<String, EnumFacts>) -> bool {
+            stream.into_iter().any(|tree| match tree {
+                proc_macro2::TokenTree::Ident(ident) => {
+                    enums.contains_key(&ident.unraw().to_string())
+                }
+                proc_macro2::TokenTree::Group(group) => scan(group.stream(), enums),
+                _ => false,
+            })
+        }
+        !self.methods.enums.is_empty() && scan(tokens.to_token_stream(), &self.methods.enums)
+    }
+
+    /// Judges a statement `match` on an enum (slice m9.e1, D157) and visits its parts; it lowers to a Slang `switch`.
+    fn check_enum_match(&mut self, expression: &syn::ExprMatch) {
+        let scrutinee_ok = matches!(
+            strip_parens(&expression.expr),
+            syn::Expr::Path(_) | syn::Expr::Call(_) | syn::Expr::MethodCall(_)
+        );
+        // A method call's enum is not tracked; the first arm names it.
+        let named_by_arm = expression
+            .arms
+            .iter()
+            .find_map(|arm| first_variant_path(&arm.pat))
+            .and_then(|path| {
+                let owner = path.segments.first()?.ident.unraw().to_string();
+                self.methods.enums.contains_key(&owner).then_some(owner)
+            });
+        let Some(enum_name) = scrutinee_ok
+            .then(|| self.enum_of(&expression.expr).or(named_by_arm))
+            .flatten()
+        else {
+            self.reject(
+                Code::MatchScrutinee,
+                &expression.expr,
+                "a `match` on an enum takes a local, a parameter, a call or a variant as its scrutinee: bind a larger expression to a local first (`let m = ..; match m { .. }`)",
+            );
+            return;
+        };
+        let variants = self.methods.enums[&enum_name].variants.clone();
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut wildcard = false;
+        for arm in &expression.arms {
+            if let Some(attribute) = arm.attrs.first() {
+                self.reject(
+                    Code::MatchArmAttribute,
+                    attribute,
+                    "attributes on a `match` arm are not supported",
+                );
+                return;
+            }
+            if let Some((_, guard)) = &arm.guard {
+                self.reject(
+                    Code::EnumMatchGuard,
+                    guard,
+                    "a `match` arm on an enum takes no `if` guard: the Slang `switch` has no guard, and a guard would make the arm's coverage depend on a run-time value; test the condition inside the arm",
+                );
+                return;
+            }
+            let mut alternatives: Vec<&syn::Pat> = Vec::new();
+            flatten_or(&arm.pat, &mut alternatives);
+            let lone = alternatives.len() == 1;
+            for pattern in alternatives {
+                match pattern {
+                    syn::Pat::Wild(_) if lone => {
+                        if wildcard {
+                            self.reject(Code::MatchPattern, pattern, "a `match` has one `_` arm");
+                            return;
+                        }
+                        wildcard = true;
+                    }
+                    syn::Pat::Path(path) if path.qself.is_none() => {
+                        match self.variant_path(&path.path) {
+                            Some((owner, variant)) if owner == enum_name => {
+                                if !seen.insert(variant.clone()) || wildcard {
+                                    self.reject(
+                                        Code::MatchPattern,
+                                        pattern,
+                                        &format!("`{owner}::{variant}` is matched twice, or after `_`: the second arm can never run"),
+                                    );
+                                    return;
+                                }
+                            }
+                            _ => {
+                                self.reject(
+                                    Code::MatchPattern,
+                                    pattern,
+                                    &format!("a `match` arm on `{enum_name}` names one of its variants as `{enum_name}::Variant`"),
+                                );
+                                return;
+                            }
+                        }
+                    }
+                    _ => {
+                        self.reject(
+                            Code::MatchPattern,
+                            pattern,
+                            "an enum `match` arm is `E::A`, `E::A | E::B` or `_`: bindings, literals, tuples and ranges have no lowering (an `_` joined by `|` is refused as well)",
+                        );
+                        return;
+                    }
+                }
+            }
+            if !matches!(arm.body.as_ref(), syn::Expr::Block(_)) {
+                self.reject(
+                    Code::MatchArmBlock,
+                    &arm.body,
+                    "each arm of a statement `match` is a block: `E::A => { .. }`",
+                );
+                return;
+            }
+        }
+        let _ = variants;
+        self.visit_expr(&expression.expr);
+        for arm in &expression.arms {
+            let syn::Expr::Block(body) = arm.body.as_ref() else {
+                continue;
+            };
+            if let Some(tail) = value_tail(&body.block) {
+                self.reject(
+                    Code::MatchAsValue,
+                    tail,
+                    "the arms of a statement `match` end in a statement; a tail expression makes the `match` a value, which is not supported yet: end the arm's last statement with `;`",
+                );
+                return;
+            }
+            self.switch_depths.push(self.loop_depth);
+            self.visit_block(&body.block);
+            self.switch_depths.pop();
         }
     }
 
@@ -2025,6 +2595,19 @@ impl RestrictedVisitor {
                 node,
                 &format!("`{name}` outside a loop has no meaning"),
             );
+        } else if self.switch_depths.last() == Some(&self.loop_depth) {
+            let reason = if name == "break" {
+                "would end the Slang `switch`, not the loop around it"
+            } else {
+                "is refused for symmetry with `break` (Slang's `continue` inside a `switch` does continue the loop)"
+            };
+            self.reject(
+                Code::JumpInMatchArm,
+                node,
+                &format!(
+                    "`{name}` in an arm of an enum `match` {reason}; set a flag the loop tests, or move the `match` into a helper that returns"
+                ),
+            );
         }
     }
 
@@ -2224,6 +2807,15 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             }
             return;
         }
+        if (option_payload(ty).is_some() || result_payload(ty).is_some()) && self.mentions_enum(ty)
+        {
+            self.reject(
+                Code::EnumInResource,
+                ty,
+                "an enum is not the payload of an `Option` or a `Result`: it has no `GpuPod` layout and no proven `Option` lowering; return the enum from a helper, or its integer",
+            );
+            return;
+        }
         if let Some(payload) = option_payload(ty) {
             if let Some(context) = self.option_forbidden {
                 self.reject(
@@ -2329,6 +2921,30 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_cast(&mut self, cast: &'ast syn::ExprCast) {
+        if let Some(enum_name) = self.enum_of(&cast.expr) {
+            let repr = self.methods.enums[&enum_name].repr_name();
+            let target = match cast.ty.as_ref() {
+                syn::Type::Path(path) => path.path.get_ident().map(|ident| ident.to_string()),
+                _ => None,
+            };
+            let matches_repr = target.as_deref().is_some_and(|target| {
+                target == repr
+                    || (repr == "u32" && target == "uint")
+                    || (repr == "i32" && target == "int")
+            });
+            if !matches_repr {
+                self.reject(
+                    Code::EnumShape,
+                    &cast.ty,
+                    &format!(
+                        "an enum casts to its repr type only: `{enum_name}` is `#[repr({repr})]`, so write `as {repr}`"
+                    ),
+                );
+                return;
+            }
+            self.visit_expr(&cast.expr);
+            return;
+        }
         let supported = match cast.ty.as_ref() {
             syn::Type::Path(path) => path
                 .path
@@ -2840,6 +3456,10 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             );
             return;
         }
+        // `E::V` names a variant of an enum of the module (slice m9.e1).
+        if path.qself.is_none() && self.variant_path(&path.path).is_some() {
+            return;
+        }
         // A bare path value must be a single identifier (a local variable or
         // parameter). Multi-segment paths are associated constants or foreign
         // items (e.g. `f32::INFINITY`, `u32::MAX`), which have no Slang lowering.
@@ -2913,7 +3533,11 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
         self.visit_pat_ident(name);
         self.visit_expr(&binding.expr);
+        // The bound name is not an enum value inside the block (it may shadow one), and the outer meaning returns after.
+        let outer = self.enum_values.clone();
+        self.enum_values.remove(&text);
         self.visit_block(&expression.then_branch);
+        self.enum_values = outer;
         if let Some((_, alternative)) = &expression.else_branch {
             self.visit_expr(alternative);
         }
@@ -2923,7 +3547,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         self.reject(
             Code::MatchAsValue,
             expression,
-            "Result match is supported only as a statement, not as a value",
+            "a `match` (on a `Result` or on an enum) is supported only as a statement, not as a value",
         );
     }
 
@@ -3051,8 +3675,20 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         self.visit_expr(start);
         self.visit_expr(end);
         self.loop_depth += 1;
+        let outer = self.enum_values.clone();
+        if let Some(variable) = variable {
+            self.enum_values.remove(&variable.ident.unraw().to_string());
+        }
         self.visit_block(&expression.body);
+        self.enum_values = outer;
         self.loop_depth -= 1;
+    }
+
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        // An enum local lives to the end of its block: a `let` inside it that shadows an outer name is forgotten after.
+        let outer = self.enum_values.clone();
+        visit::visit_block(self, block);
+        self.enum_values = outer;
     }
 
     fn visit_expr_while(&mut self, expression: &'ast syn::ExprWhile) {
@@ -3075,6 +3711,9 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_stmt(&mut self, statement: &'ast syn::Stmt) {
         match statement {
+            syn::Stmt::Expr(syn::Expr::Match(expression), _) if is_enum_match(expression) => {
+                self.check_enum_match(expression);
+            }
             syn::Stmt::Expr(syn::Expr::Match(expression), semicolon) => {
                 let (ok_name, _, err_name, _) = match result_match_arms(expression) {
                     Ok(arms) => arms,
@@ -3265,6 +3904,28 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         visit::visit_local(self, local);
+        // The enum a local holds (by name; a rebinding to anything else forgets it).
+        if let Ok((binding, _)) = crate::slang::local_binding(&local.pat) {
+            let annotated = match &local.pat {
+                syn::Pat::Type(typed) => enum_type_name(&typed.ty, &self.methods.enums),
+                _ => None,
+            };
+            let held = annotated.or_else(|| {
+                local
+                    .init
+                    .as_ref()
+                    .and_then(|initial| self.enum_of(&initial.expr))
+            });
+            let key = binding.ident.unraw().to_string();
+            match held {
+                Some(enum_name) => {
+                    self.enum_values.insert(key, enum_name);
+                }
+                None => {
+                    self.enum_values.remove(&key);
+                }
+            }
+        }
         let (pattern, annotated_result) = match &local.pat {
             syn::Pat::Ident(pattern) => (pattern, false),
             syn::Pat::Type(typed) => {

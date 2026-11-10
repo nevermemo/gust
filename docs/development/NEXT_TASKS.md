@@ -524,6 +524,19 @@ test module; do not mix that mechanical move with behavior changes.
   E0122; a malformed enum that is also a field reports E0211 before its E0122.
 - The arrays difftest slice: generate `out[c.n] = c.next()` (an indexed place whose index is not a call), the
   nearest accepted neighbour of m9.a2's first order bug; it needs local arrays (m9.d1a review S3).
+- m9.e2 re-check nits: a value `match` in the tail of a nested block or `if` is still E0518 rather than E0419; a
+  `return 1u32` arm in a tail `match` gets E0419's "gives a value" wording.
+- m9.f1 re-check nits: no test has two kernels where only one wraps a list in `__gust_keep`; seed 31 (where the
+  bug was first seen) was not rerun alone after the fix (the 64-seed run covers it).
+- m9.t limitations and nits: tuple comparisons are refused (E0213) although slangc lowers them with Rust's
+  semantics, a slice with GPU cases can admit them; an enum bound by an unannotated destructuring loses the E0122
+  cast check; a workgroup array parameter and the invocation id are not yet refused as tuple literal elements
+  (no wrong value); the element check uses the GRID profile's parameter types only; a helper named like a known
+  method (`len`, `min`) that returns a tuple can over-refuse `==` by name.
+- m9.d1b re-check nits: `return` inside a `match` arm is written in 24 programs of the wide run but runs in only
+  4; DIFFTEST.md says a build-failure shrink needs no GPU dispatch, but the measured shrink took 514 s for 60
+  candidates; a GPU-free slangc sweep is a candidate CI step; the summary parser in `xtask/src/difftest.rs` has
+  no unit test; the rc file's iteration lines are unlabelled.
 
 ## Deferred language/runtime breadth
 

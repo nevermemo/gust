@@ -164,10 +164,32 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   the `switch`). Fixture X2 (`return` in an arm of a barrier kernel) is exactly one E0415 as pre-registered. Slang
   evaluates the scrutinee once and `==` on two calls left to right, as Rust does. PR CI and lavapipe 42732814709
   green; 27 main gates green on the merge, 2026-11-10, 04:40 to 06:01Z (pin 425/40).
-- The difftest grows per lowering (D166): m9.d1a (methods, format 8) is in review; its first review found that the
-  order-sensitive shapes the methods reviews found by hand were almost never generated, so its fix round biases
-  the generator toward them and pins that each is reached. m9.e2 (value-form `match`, integer-literal patterns,
-  E0419) is in review.
+- m9.d1a, the difftest learns methods (merge `cce661d`; format 8; D166; Opus review MERGE AFTER FIXES, re-check
+  MERGE). Its first review found that the order-sensitive shapes the methods reviews had found by hand were
+  almost never generated; the fix round biases the generator toward them and pins that each is reached. 27 main
+  gates green on the merge, 2026-11-10, 06:55 to 08:16Z (pin 425/40).
+- m9.e2, the value-form `match` and integer-literal patterns (merge `f6b6156`; Opus review MERGE AFTER FIXES
+  0/3/4, re-check MERGE 0/0/2). A value `match` is accepted as the initializer of a typed `let` and lowers to
+  `T x;` and a `switch` whose arms assign `x`; in any other position it is E0419 (the review found the tail of a
+  function still gave E0518; fixed). 27 main gates green on the merge, 08:18 to 09:50Z (pin 427/41).
+- m9.f1, `__gust_keep` for method-call arguments (merge `b2d6826`; Opus review MERGE 0/1/4, re-check MERGE
+  0/0/2). The difftest m9.d1b found it: `v.m(a < b, c)` failed in slangc (undefined `__gust_keep`) because a
+  text scan that decided whether to define the helper had no method-call arm. The fix removes the scan: the
+  emitter records each use as it writes it, and the kernel gets the helper exactly when it is used, so a new
+  list form (tuples, arrays) cannot drift from the definition. 27 main gates green on the merge, ending
+  17:14Z after a rerun (the first run was stopped for an owner quiet window; pin 433/41).
+- m9.t, tuples (merge `8a69d82`; Opus review MERGE AFTER FIXES 2/3/7, re-check MERGE 0/0/3). Two to eight
+  elements in locals, parameters, helper and method results and method arguments; `t.0`, element assignment,
+  `f().1` and destructuring `let`; lowered to Slang `Tuple`, `makeTuple` and `._N`, elements in Rust's order
+  (11 cases measured on the GPU). The review found a reserved-prefix binding in a destructuring that captured a
+  renamed local (a wrong value, no error; now E0901) and resources as tuple elements (now E0212). Tuple
+  comparisons stay refused (E0213, "not supported yet"); slangc 2026.21 lowers them with Rust's semantics, the
+  basis for a later slice. 27 main gates green on the merge, ending 18:37Z (pin 435/42).
+- m9.d1b, the difftest learns enums and `match` (merge `ccc829e`; format 9; Opus review MERGE AFTER FIXES
+  2/5/7, re-check MERGE). A slangc build failure is a shrinkable mismatch, and the harness crate's fmt, clippy
+  and tests are gates. Wide run after m9.f1: seeds 1 to 64, 1 024 programs (192 enum programs), 0 mismatches in
+  `dev` and `dev+subgroups` on the RTX 5090. Lavapipe failed twice on an Ubuntu snapshot outage (502/503 on the
+  Mesa install), green on rerun. 27 main gates green on the merge, ending 19:59Z (pin 435/42).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

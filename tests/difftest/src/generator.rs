@@ -417,6 +417,13 @@ impl Gen<'_> {
         {
             return call;
         }
+        // The order-sensitive pairs: a read and a `&mut self` call on one root, a call right of `&&`/`||`.
+        if self.methods
+            && self.b.chance(22)
+            && let Some(pair) = self.root_binary(ty, d)
+        {
+            return pair;
+        }
         if ty == Ty::Bool {
             return self.bool_expr(d);
         }
@@ -1590,19 +1597,48 @@ impl Gen<'_> {
                 self.struct_expr(j, 3, true)
                     .unwrap_or_else(|| place_value(&place, ty)),
             ),
-            Ty::Bool => (None, self.expr(Ty::Bool, 3)),
-            _ if self.b.chance(55) => {
-                let op = [
-                    BinOp::Add,
-                    BinOp::Add,
-                    BinOp::Sub,
-                    BinOp::BitXor,
-                    BinOp::BitOr,
-                    BinOp::Mul,
-                ][self.b.below(6) as usize];
-                (Some(op), self.expr(ty, 3))
+            _ => {
+                debug_assert!(ty.is_int(), "a struct field is a u32 or an i32");
+                let op = self.b.chance(55).then(|| {
+                    [
+                        BinOp::Add,
+                        BinOp::Add,
+                        BinOp::Sub,
+                        BinOp::BitXor,
+                        BinOp::BitXor,
+                        BinOp::BitOr,
+                        BinOp::Mul,
+                        BinOp::Div,
+                        BinOp::Rem,
+                        BinOp::BitAnd,
+                        BinOp::Shl,
+                        BinOp::Shr,
+                    ][self.b.below(12) as usize]
+                });
+                // A shift takes a `u32` amount whatever the place's type.
+                let value_ty = if op.is_some_and(|op| op.is_shift()) {
+                    Ty::U32
+                } else {
+                    ty
+                };
+                // A share of the values call a `&mut self` method on the place's own root: the order rules of
+                // `place op= value` (the place is read after the value) are only observable then.
+                let biased = if self.b.chance(60) {
+                    self.root_call(value_ty, place.root, 3)
+                } else {
+                    None
+                };
+                let value = match (biased, op) {
+                    (Some(call), Some(BinOp::Div | BinOp::Rem)) => {
+                        Expr::bin(BinOp::BitOr, call, Expr::Lit(value_ty, 1))
+                    }
+                    (Some(call), _) => call,
+                    (None, Some(BinOp::Div | BinOp::Rem)) => self.divisor(ty, 3),
+                    (None, Some(BinOp::Shl | BinOp::Shr)) => self.shift_amount(3),
+                    (None, _) => self.expr(ty, 3),
+                };
+                (op, value)
             }
-            _ => (None, self.expr(ty, 3)),
         };
         Stmt::Set {
             place,
@@ -1642,9 +1678,21 @@ impl Gen<'_> {
     /// self` call needs a writable receiver whose root no enclosing call is borrowing; while the arguments of a
     /// call that borrows its receiver (`&self`, `&mut self`) are drawn, no `&mut self` call on that root is drawn.
     fn call_parts(&mut self, f: usize, depth: u32) -> Option<(Option<Place>, Vec<Expr>)> {
+        self.call_parts_on(f, depth, None)
+    }
+
+    /// `call_parts` with the receiver chosen by the caller (`forced`), or drawn when `None`.
+    fn call_parts_on(
+        &mut self,
+        f: usize,
+        depth: u32,
+        forced: Option<Place>,
+    ) -> Option<(Option<Place>, Vec<Expr>)> {
         let def = self.table.fns[f].clone();
         let recv = if def.recv == Recv::None {
             None
+        } else if forced.is_some() {
+            forced
         } else {
             let places: Vec<Place> = self
                 .struct_places()
@@ -1678,6 +1726,14 @@ impl Gen<'_> {
                     Some(arg) => args.push(arg),
                     None => complete = false,
                 },
+                // A by-value call on `R` often gets a `&mut self` call on `R` among its arguments: the receiver is
+                // copied before they run.
+                scalar if def.recv == Recv::Value && self.b.chance(75) => {
+                    let root = recv.as_ref().map(|place| place.root);
+                    let call = root
+                        .and_then(|root| self.root_call(*scalar, root, depth.saturating_sub(1)));
+                    args.push(call.unwrap_or_else(|| self.expr(*scalar, depth)));
+                }
                 scalar => args.push(self.expr(*scalar, depth)),
             }
         }
@@ -1695,6 +1751,17 @@ impl Gen<'_> {
         if candidates.is_empty() {
             return None;
         }
+        // A third of the calls prefer a by-value method, whose receiver is copied before its arguments run.
+        let by_value: Vec<usize> = candidates
+            .iter()
+            .copied()
+            .filter(|&k| self.table.fns[k].recv == Recv::Value)
+            .collect();
+        let candidates = if !by_value.is_empty() && self.b.chance(33) {
+            by_value
+        } else {
+            candidates
+        };
         let f = candidates[self.b.below(candidates.len() as u32) as usize];
         let owner = {
             let def = &self.table.fns[f];
@@ -1711,6 +1778,87 @@ impl Gen<'_> {
             recv,
             args,
             ty,
+        })
+    }
+
+    /// A `&mut self` call of a method returning `ty` on a writable place of root `root`, if one is in reach and no
+    /// enclosing call is borrowing that root: the call whose effect on `root` a surrounding read or place can see.
+    fn root_call(&mut self, ty: Ty, root: Root, depth: u32) -> Option<Expr> {
+        if depth == 0 || self.forbid.contains(&root) {
+            return None;
+        }
+        let places = self.struct_places();
+        let on_root = |owner: Option<u8>| {
+            places
+                .iter()
+                .filter(|(place, j, writable)| *writable && place.root == root && Some(*j) == owner)
+                .map(|(place, ..)| place.clone())
+                .collect::<Vec<Place>>()
+        };
+        let candidates: Vec<usize> = (0..self.callable())
+            .filter(|&k| {
+                let def = &self.table.fns[k];
+                def.recv == Recv::Mut && def.ret == Some(ty) && !on_root(def.owner).is_empty()
+            })
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let f = candidates[self.b.below(candidates.len() as u32) as usize];
+        let receivers = on_root(self.table.fns[f].owner);
+        let recv = receivers[self.b.below(receivers.len() as u32) as usize].clone();
+        let (recv, args) = self.call_parts_on(f, depth, Some(recv))?;
+        Some(Expr::Call {
+            f,
+            owner: None,
+            recv,
+            args,
+            ty,
+        })
+    }
+
+    /// A binary whose operands are a read of a place and a `&mut self` call on its root (in either order, so the
+    /// read comes before or after the call), or, for `bool`, a condition reading a place and a `&mut self` call on
+    /// its root as the right operand of `&&`/`||`. `None` when there is no such pair in reach.
+    fn root_binary(&mut self, ty: Ty, depth: u32) -> Option<Expr> {
+        let mut readable: Vec<(Place, Ty)> = Vec::new();
+        for scalar in [Ty::U32, Ty::I32] {
+            readable.extend(
+                self.scalar_places(scalar)
+                    .into_iter()
+                    .map(|(p, _)| (p, scalar)),
+            );
+        }
+        if readable.is_empty() {
+            return None;
+        }
+        let (place, read_ty) = readable[self.b.below(readable.len() as u32) as usize].clone();
+        let depth = depth.max(1);
+        if ty == Ty::Bool {
+            let call = self.root_call(Ty::Bool, place.root, depth)?;
+            let bound = self.expr(read_ty, 1);
+            let cmp = [BinOp::Lt, BinOp::Ge, BinOp::Ne, BinOp::Eq][self.b.below(4) as usize];
+            let read = Expr::Read { place, ty: read_ty };
+            let op = [BinOp::And, BinOp::Or][self.b.below(2) as usize];
+            return Some(Expr::bin(op, Expr::bin(cmp, read, bound), call));
+        }
+        if read_ty != ty {
+            return None;
+        }
+        let call = self.root_call(ty, place.root, depth)?;
+        let read = Expr::Read { place, ty };
+        let op = [
+            BinOp::Add,
+            BinOp::Add,
+            BinOp::Sub,
+            BinOp::BitXor,
+            BinOp::BitOr,
+            BinOp::Mul,
+        ][self.b.below(6) as usize];
+        Some(if self.b.chance(50) {
+            Expr::bin(op, read, call)
+        } else {
+            Expr::bin(op, call, read)
         })
     }
 
@@ -1773,7 +1921,20 @@ impl Gen<'_> {
                         }
                     }
                     if values.len() == self.table.structs[usize::from(j)].fields.len() {
-                        return Some(Expr::StructLit { ty, fields: values });
+                        // Written in a permuted order a quarter of the time: Rust evaluates the fields as written.
+                        let mut order: Vec<u8> = (0..values.len() as u8).collect();
+                        if values.len() > 1 && self.b.chance(25) {
+                            for k in (1..order.len()).rev() {
+                                let other = self.b.below(k as u32 + 1) as usize;
+                                order.swap(k, other);
+                                values.swap(k, other);
+                            }
+                        }
+                        return Some(Expr::StructLit {
+                            ty,
+                            fields: values,
+                            order,
+                        });
                     }
                 }
                 1 => {
@@ -1820,7 +1981,13 @@ impl Gen<'_> {
 
     fn gen_fn(&mut self, k: usize) {
         let structs = self.table.structs.len() as u32;
-        let kind = self.b.weighted(&[20, 20, 28, 12, 20]);
+        // The first function is often a `&mut self` method returning `bool`: the right operand of an `&&`/`||`.
+        let first_bool = k == 0 && self.b.chance(35);
+        let kind = if first_bool {
+            2
+        } else {
+            self.b.weighted(&[20, 20, 28, 12, 20])
+        };
         let recv = [Recv::None, Recv::Shared, Recv::Mut, Recv::Value, Recv::None][kind];
         // An associated function builds its struct from a literal, which needs every field to be a scalar.
         let scalar_structs: Vec<u8> = (0..structs as u8)
@@ -1844,8 +2011,12 @@ impl Gen<'_> {
             .filter(|_| recv != Recv::None)
             .map(|o| (Ty::Struct(o), recv));
         let mut params = Vec::new();
-        for _ in 0..self.b.below(3) {
-            let ty = if self.b.chance(18) {
+        // A by-value method takes at least one parameter, mostly a `u32`: the slot of a `&mut self` call's value.
+        let count = self.b.below(3).max(u32::from(kind == 3));
+        for slot in 0..count {
+            let ty = if kind == 3 && slot == 0 && self.b.chance(70) {
+                Ty::U32
+            } else if self.b.chance(18) {
                 Ty::Struct(self.b.below(structs) as u8)
             } else {
                 [Ty::U32, Ty::I32, Ty::Bool][self.b.weighted(&[40, 40, 20])]
@@ -1855,6 +2026,7 @@ impl Gen<'_> {
             params.push((var, ty));
         }
         let ret = match kind {
+            _ if first_bool => Some(Ty::Bool),
             4 => owner.map(Ty::Struct),
             2 if self.b.chance(40) => None,
             _ => Some([Ty::U32, Ty::I32, Ty::Bool][self.b.weighted(&[40, 40, 20])]),

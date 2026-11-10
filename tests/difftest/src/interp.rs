@@ -15,8 +15,8 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::agg::{self, Agg, Scalar};
 use crate::ast::{
-    ASSIGN_COMP, BinOp, Expr, Place, Program, Recv, Root, STRUCT_LIT, Stmt, Ty, UnOp, call_name,
-    set_name,
+    ASSIGN_COMP, BinOp, Expr, Place, Program, Recv, Root, SHAPE_EXPR_CALL, SHAPE_STMT_CALL,
+    STRUCT_LIT, Stmt, Ty, UnOp, bin_shape, call_name, call_shape, set_name, set_shape,
 };
 use crate::float::{self, Fl};
 
@@ -472,6 +472,11 @@ impl Machine<'_> {
                 if let Some(counting) = &mut self.coverage {
                     counting.rhs_evaluated += 1;
                 }
+                if self.coverage.is_some()
+                    && let Some(shape) = bin_shape(&self.program.methods, *op, l, r)
+                {
+                    self.count_name(shape);
+                }
                 self.expr(r)
             }
             Expr::Bin {
@@ -511,23 +516,33 @@ impl Machine<'_> {
             | Expr::AggNeg { .. } => self.eval_aggregate(expr),
             Expr::Read { place, .. } => Ok(self.place_get(place)),
             Expr::Call { f, recv, args, .. } => {
+                if self.program.methods.fns[*f].recv == Recv::Mut {
+                    self.count_name(SHAPE_EXPR_CALL);
+                }
                 let value = self.call(*f, recv, args)?;
                 Ok(value.expect("a value call has a tail"))
             }
-            Expr::StructLit { fields, .. } => {
+            Expr::StructLit { fields, order, .. } => {
                 self.count_name(STRUCT_LIT);
-                // The fields in the order written, as Rust evaluates them; a nested struct contributes its components.
-                let mut parts = Vec::new();
-                for field in fields {
-                    match self.expr(field)? {
-                        Val::A(agg) => parts.extend_from_slice(agg.lanes()),
-                        scalar => parts.push(scalar.scalar()),
-                    }
+                // The fields in the order written, as Rust evaluates them; a nested struct contributes its
+                // components. The components are laid out in declaration order.
+                let mut by_decl = vec![Vec::new(); fields.len()];
+                for (field, &decl) in fields.iter().zip(order) {
+                    by_decl[usize::from(decl)] = match self.expr(field)? {
+                        Val::A(agg) => agg.lanes().to_vec(),
+                        scalar => vec![scalar.scalar()],
+                    };
                 }
+                let parts: Vec<_> = by_decl.into_iter().flatten().collect();
                 Ok(Val::A(Agg::new(&parts)))
             }
             Expr::Bin { op, ty, l, r } => {
                 self.count(KIND_BINARY, op.symbol(), ty.name());
+                if self.coverage.is_some()
+                    && let Some(shape) = bin_shape(&self.program.methods, *op, l, r)
+                {
+                    self.count_name(shape);
+                }
                 let left = self.expr(l)?.int();
                 let right = self.expr(r)?.int();
                 Ok(Val::I(binary(*op, *ty, left, right)?))
@@ -627,10 +642,27 @@ impl Machine<'_> {
         let program = self.program;
         let def = &program.methods.fns[f];
         self.count_name(call_name(def.recv, def.owner));
+        if self.coverage.is_some()
+            && let Some(shape) = call_shape(&program.methods, f, recv, args)
+        {
+            self.count_name(shape);
+        }
         let receiver = recv.as_ref().map(|place| self.place_get(place));
         let mut values = Vec::with_capacity(args.len());
         for arg in args {
             values.push(self.expr(arg)?);
+        }
+        // The arguments of a borrowing call (`&self`, `&mut self`) must not change the receiver, or the copy-in and
+        // copy-out model of this interpreter would differ from Rust's references (the generator and `ast::Check`
+        // keep it so).
+        if def.recv != Recv::Value
+            && let (Some(place), Some(before)) = (recv.as_ref(), receiver.as_ref())
+        {
+            debug_assert_eq!(
+                format!("{before:?}"),
+                format!("{:?}", self.place_get(place)),
+                "the arguments of a borrowing call changed its receiver"
+            );
         }
         for ((var, _), value) in def.params.iter().zip(values) {
             self.vars[*var as usize] = value;
@@ -678,6 +710,11 @@ impl Machine<'_> {
                     value,
                 } => {
                     self.count_name(&set_name(*op));
+                    if self.coverage.is_some()
+                        && let Some(shape) = set_shape(&self.program.methods, place, *op, value)
+                    {
+                        self.count_name(&shape);
+                    }
                     // Rust evaluates the assigned value first. For `place op= value` on primitives the right operand
                     // also comes before the place is read (Reference, "Compound assignment expressions"), so the
                     // place holds whatever the value's calls left in it.
@@ -692,6 +729,9 @@ impl Machine<'_> {
                     self.place_set(place, stored);
                 }
                 Stmt::Call { f, recv, args, .. } => {
+                    if self.program.methods.fns[*f].recv == Recv::Mut {
+                        self.count_name(SHAPE_STMT_CALL);
+                    }
                     self.call(*f, recv, args)?;
                 }
                 Stmt::If { cond, then, els } => {

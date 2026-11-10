@@ -337,11 +337,17 @@ pub enum Expr {
         args: Vec<Expr>,
         ty: Ty,
     },
-    /// `S0 { f0: a, f1: b }`: every field, in declaration order, evaluated in that order. (Format 8.)
-    StructLit { ty: Ty, fields: Vec<Expr> },
+    /// `S0 { f1: b, f0: a }`: every field once, in written order, evaluated in that order. `order[w]` is the
+    /// declaration index of the `w`th written field (a permutation; the identity is declaration order). (Format 8.)
+    StructLit {
+        ty: Ty,
+        fields: Vec<Expr>,
+        order: Vec<u8>,
+    },
 }
 
-/// A module struct: its fields in order, each a scalar (`u32`, `i32`, `bool`) or an earlier struct.
+/// A module struct: its fields in order, each a `u32`, an `i32` (not `bool`: a GPU struct is a `GpuPod` type) or an
+/// earlier struct.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StructDef {
     pub fields: Vec<Ty>,
@@ -487,6 +493,75 @@ pub fn set_name(op: Option<BinOp>) -> String {
         None => "set =".to_owned(),
         Some(op) => format!("set {}=", op.symbol()),
     }
+}
+
+/// Names of the order-sensitive shapes (round r1 of m9.d1a). The generator biases toward them, `operator_counts` counts
+/// them statically and the interpreter counts them when it runs the node, under the same names.
+pub const SHAPE_STMT_CALL: &str = "shape stmt &mut self call";
+pub const SHAPE_EXPR_CALL: &str = "shape expr &mut self call";
+pub const SHAPE_LOGIC_CALL: &str = "shape &mut self call right of &&/||";
+pub const SHAPE_READ_AND_CALL: &str = "shape read and &mut self call on one root";
+pub const SHAPE_VALUE_CALL_INNER: &str =
+    "shape by-value call with &mut self call on its root in its arguments";
+
+/// Whether `e` is a `&mut self` call, and on which root.
+fn mut_call_root(methods: &Methods, e: &Expr) -> Option<Root> {
+    match e {
+        Expr::Call {
+            f,
+            recv: Some(place),
+            ..
+        } if methods.fns[*f].recv == Recv::Mut => Some(place.root),
+        _ => None,
+    }
+}
+
+/// Whether `e` or a node below it is a `&mut self` call on `root`.
+fn contains_mut_call_on(methods: &Methods, e: &Expr, root: Root) -> bool {
+    let mut found = false;
+    walk_expr(e, &mut |n| found |= mut_call_root(methods, n) == Some(root));
+    found
+}
+
+/// `shape same-root set <op>=`: an assignment to a place whose value contains a `&mut self` call on the place's root.
+pub fn set_shape(
+    methods: &Methods,
+    place: &Place,
+    op: Option<BinOp>,
+    value: &Expr,
+) -> Option<String> {
+    contains_mut_call_on(methods, value, place.root)
+        .then(|| format!("shape same-root {}", set_name(op)))
+}
+
+/// The shape of a binary: a `&mut self` call as the right operand of `&&`/`||`, or a read of a place and a `&mut self`
+/// call on its root as the two operands.
+pub fn bin_shape(methods: &Methods, op: BinOp, l: &Expr, r: &Expr) -> Option<&'static str> {
+    if matches!(op, BinOp::And | BinOp::Or) && mut_call_root(methods, r).is_some() {
+        return Some(SHAPE_LOGIC_CALL);
+    }
+    let read_root = |e: &Expr| match e {
+        Expr::Read { place, .. } => Some(place.root),
+        _ => None,
+    };
+    let same = |a: Option<Root>, b: Option<Root>| a.is_some() && a == b;
+    (same(read_root(l), mut_call_root(methods, r)) || same(mut_call_root(methods, l), read_root(r)))
+        .then_some(SHAPE_READ_AND_CALL)
+}
+
+/// The shape of a call: a by-value call whose arguments contain a `&mut self` call on the receiver's root.
+pub fn call_shape(
+    methods: &Methods,
+    f: usize,
+    recv: &Option<Place>,
+    args: &[Expr],
+) -> Option<&'static str> {
+    let place = recv.as_ref()?;
+    (methods.fns[f].recv == Recv::Value
+        && args
+            .iter()
+            .any(|arg| contains_mut_call_on(methods, arg, place.root)))
+    .then_some(SHAPE_VALUE_CALL_INNER)
 }
 
 /// The counted name of a struct literal.
@@ -846,22 +921,27 @@ impl Program {
         found
     }
 
-    /// Whether the kernel itself calls a function, in an expression or as a statement (a method program that calls
-    /// nothing from the kernel tests nothing new).
+    /// Whether the kernel itself calls a method or an associated function, in an expression or as a statement (a
+    /// method program whose kernel calls nothing, or only free helpers, tests nothing new).
     pub fn has_call(&self) -> bool {
-        fn block(stmts: &[Stmt]) -> bool {
+        fn block(methods: &Methods, stmts: &[Stmt]) -> bool {
             stmts.iter().any(|stmt| match stmt {
-                Stmt::Call { .. } => true,
-                Stmt::If { then, els, .. } => block(then) || block(els),
-                Stmt::For { body, .. } => block(body),
+                Stmt::Call { f, .. } => is_method_or_assoc(methods, *f),
+                Stmt::If { then, els, .. } => block(methods, then) || block(methods, els),
+                Stmt::For { body, .. } => block(methods, body),
                 _ => false,
             })
         }
-        let mut found = block(&self.body);
-        walk_stmts(&self.body, &mut |e| found |= matches!(e, Expr::Call { .. }));
-        walk_expr(&self.result, &mut |e| {
-            found |= matches!(e, Expr::Call { .. })
-        });
+        fn is_method_or_assoc(methods: &Methods, f: usize) -> bool {
+            methods.fns[f].recv != Recv::None || methods.fns[f].owner.is_some()
+        }
+        let methods = &self.methods;
+        let mut found = block(methods, &self.body);
+        let mut look = |e: &Expr| {
+            found |= matches!(e, Expr::Call { f, .. } if is_method_or_assoc(methods, *f));
+        };
+        walk_stmts(&self.body, &mut look);
+        walk_expr(&self.result, &mut look);
         found
     }
 
@@ -1511,7 +1591,7 @@ impl Check<'_> {
                 Some(ret) if ret == *ty => Ok(()),
                 _ => Err(format!("a call of m{f} has the wrong type")),
             },
-            Expr::StructLit { ty, fields } => {
+            Expr::StructLit { ty, fields, order } => {
                 let Ty::Struct(j) = ty else {
                     return Err("a struct literal of a non-struct".into());
                 };
@@ -1521,7 +1601,15 @@ impl Check<'_> {
                 if fields.len() != def.fields.len() {
                     return Err(format!("S{j} literal has {} fields", fields.len()));
                 }
-                for (field, want) in fields.iter().zip(&def.fields) {
+                let mut seen = order.clone();
+                seen.sort_unstable();
+                if order.len() != fields.len()
+                    || seen.iter().enumerate().any(|(k, &d)| usize::from(d) != k)
+                {
+                    return Err(format!("S{j} literal order is not a permutation"));
+                }
+                for (field, &d) in fields.iter().zip(order) {
+                    let want = &def.fields[usize::from(d)];
                     self.expr(field)?;
                     if field.ty() != *want {
                         return Err(format!("a field of the S{j} literal has the wrong type"));
@@ -1628,6 +1716,19 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
         if let Some(name) = name {
             *counts.entry(name).or_default() += 1;
         }
+        let shape = match e {
+            Expr::Bin { op, l, r, .. } => bin_shape(methods, *op, l, r),
+            Expr::Call { f, recv, args, .. } => {
+                if methods.fns[*f].recv == Recv::Mut {
+                    *counts.entry(SHAPE_EXPR_CALL.to_owned()).or_default() += 1;
+                }
+                call_shape(methods, *f, recv, args)
+            }
+            _ => None,
+        };
+        if let Some(shape) = shape {
+            *counts.entry(shape.to_owned()).or_default() += 1;
+        }
         e.for_each_child(&mut |child| expr(methods, child, counts));
     }
     fn block(methods: &Methods, stmts: &[Stmt], counts: &mut BTreeMap<String, usize>) {
@@ -1639,12 +1740,23 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
                     *counts.entry(ASSIGN_COMP.to_owned()).or_default() += 1;
                     expr(methods, value, counts);
                 }
-                Stmt::Set { op, value, .. } => {
+                Stmt::Set {
+                    place, op, value, ..
+                } => {
                     *counts.entry(set_name(*op)).or_default() += 1;
+                    if let Some(shape) = set_shape(methods, place, *op, value) {
+                        *counts.entry(shape).or_default() += 1;
+                    }
                     expr(methods, value, counts);
                 }
-                Stmt::Call { f, args, .. } => {
+                Stmt::Call { f, recv, args, .. } => {
                     let def = &methods.fns[*f];
+                    if def.recv == Recv::Mut {
+                        *counts.entry(SHAPE_STMT_CALL.to_owned()).or_default() += 1;
+                    }
+                    if let Some(shape) = call_shape(methods, *f, recv, args) {
+                        *counts.entry(shape.to_owned()).or_default() += 1;
+                    }
                     *counts
                         .entry(call_name(def.recv, def.owner).to_owned())
                         .or_default() += 1;

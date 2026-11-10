@@ -106,9 +106,24 @@ fn run(args: &[String]) -> Result<(), String> {
                             || name == difftest::ast::ASSIGN_COMP
                             || name.starts_with("call ")
                             || name.starts_with("set ")
+                            || name.starts_with("shape ")
                             || name == difftest::ast::STRUCT_LIT
                         {
                             add(format!("operator {name}"), n as u64);
+                        }
+                    }
+                    // What the interpreter executes of the method constructs and the order-sensitive shapes (per
+                    // element, summed over the elements of the program).
+                    if !program.methods.is_empty()
+                        && let Ok((_, coverage)) = difftest::interp::run_covered(program)
+                    {
+                        for (name, n) in &coverage.operators {
+                            if name.starts_with("shape ")
+                                || name.starts_with("call ")
+                                || name.starts_with("set ")
+                            {
+                                add(format!("executed {name}"), *n);
+                            }
                         }
                     }
                 }

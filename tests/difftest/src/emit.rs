@@ -223,11 +223,11 @@ pub fn emit_expr(expr: &Expr) -> String {
             args,
             ..
         } => call_text(*f, *owner, recv, args),
-        Expr::StructLit { ty, fields } => {
+        Expr::StructLit { ty, fields, order } => {
             let fields: Vec<String> = fields
                 .iter()
-                .enumerate()
-                .map(|(k, field)| format!("f{k}: {}", emit_expr(field)))
+                .zip(order)
+                .map(|(field, k)| format!("f{k}: {}", emit_expr(field)))
                 .collect();
             format!("{} {{ {} }}", ty.name(), fields.join(", "))
         }

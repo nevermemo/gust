@@ -47,9 +47,19 @@ fn call(f: usize, recv: Place, args: Vec<Expr>) -> Expr {
 fn methods() -> Methods {
     let this = Place::this(S0);
     Methods {
-        structs: vec![StructDef {
-            fields: vec![Ty::U32],
-        }],
+        structs: vec![
+            StructDef {
+                fields: vec![Ty::U32],
+            },
+            // S1: two scalars (permuted-literal vector).
+            StructDef {
+                fields: vec![Ty::U32, Ty::U32],
+            },
+            // S2: a scalar and an S0 (nested-offset vector).
+            StructDef {
+                fields: vec![Ty::U32, S0],
+            },
+        ],
         fns: vec![
             FnDef {
                 owner: Some(0),
@@ -108,6 +118,7 @@ fn program(mut body: Vec<Stmt>, result: Expr) -> Program {
             init: Expr::StructLit {
                 ty: S0,
                 fields: vec![u(5)],
+                order: vec![0],
             },
         },
     );
@@ -168,6 +179,101 @@ fn a_by_value_receiver_is_copied_before_the_arguments_run() {
     // `c.plus(c.bump(1))`: `self` is a copy of `c` taken first (n = 5); the argument makes `c.n` 6 and is 6: 5 + 6.
     let result = call(1, local(), vec![call(0, local(), vec![u(1)])]);
     assert_eq!(value_of(&program(Vec::new(), result)), 11);
+}
+
+#[test]
+fn an_inout_style_compound_assignment_reads_its_place_after_the_call() {
+    // `c.n ^= c.bump(3)`: the call leaves 8 and returns 8, the place is then read (8): 8 ^ 8 = 0. Reading the place
+    // before the call (the order of an `inout` helper that copies it in first) would give 5 ^ 8 = 13.
+    let body = vec![Stmt::Set {
+        place: local().field(0),
+        ty: Ty::U32,
+        op: Some(BinOp::BitXor),
+        value: call(0, local(), vec![u(3)]),
+    }];
+    assert_eq!(value_of(&program(body, field(&local()))), 0);
+    // `c.n /= c.bump(1)`: 6 / 6 = 1 (the stale place would give 5 / 6 = 0); `%=`: 6 % 6 = 0 (stale: 5).
+    for (op, want) in [(BinOp::Div, 1), (BinOp::Rem, 0), (BinOp::BitAnd, 6)] {
+        let body = vec![Stmt::Set {
+            place: local().field(0),
+            ty: Ty::U32,
+            op: Some(op),
+            value: call(0, local(), vec![u(1)]),
+        }];
+        assert_eq!(value_of(&program(body, field(&local()))), want, "{op:?}");
+    }
+}
+
+#[test]
+fn a_write_back_to_a_nested_field_of_a_local_leaves_the_rest_alone() {
+    // `let mut v1 = S2 { f0: 100, f1: c }; v1.f1.bump(1);` (c.n is 5): v1.f1.n is 6, v1.f0 still 100, c still 5.
+    let nested = Place::var(1, Ty::Struct(2)).field(1);
+    let body = vec![
+        Stmt::Let {
+            var: 1,
+            ty: Ty::Struct(2),
+            mutable: true,
+            init: Expr::StructLit {
+                ty: Ty::Struct(2),
+                fields: vec![u(100), Expr::Var(0, S0)],
+                order: vec![0, 1],
+            },
+        },
+        Stmt::Call {
+            f: 0,
+            owner: None,
+            recv: Some(nested.clone()),
+            args: vec![u(1)],
+        },
+    ];
+    let read = |place: Place| Expr::Read { place, ty: Ty::U32 };
+    let outer = Place::var(1, Ty::Struct(2));
+    let result = Expr::bin(
+        BinOp::Add,
+        Expr::bin(
+            BinOp::Add,
+            Expr::bin(BinOp::Mul, read(outer.field(0)), u(10_000)),
+            Expr::bin(BinOp::Mul, read(nested.field(0)), u(100)),
+        ),
+        field(&local()),
+    );
+    assert_eq!(value_of(&program(body, result)), 1_000_000 + 600 + 5);
+}
+
+#[test]
+fn a_struct_literal_evaluates_its_fields_in_the_order_written() {
+    // `S1 { f1: c.bump(10), f0: c.bump(1) }`: f1 is evaluated first (c.n 15, value 15), then f0 (16): f0 = 16, f1 = 15.
+    // Evaluated in declaration order it would be f0 = 6, f1 = 16.
+    let body = vec![Stmt::Let {
+        var: 1,
+        ty: Ty::Struct(1),
+        mutable: false,
+        init: Expr::StructLit {
+            ty: Ty::Struct(1),
+            fields: vec![call(0, local(), vec![u(10)]), call(0, local(), vec![u(1)])],
+            order: vec![1, 0],
+        },
+    }];
+    let read = |k: u8| Expr::Read {
+        place: Place::var(1, Ty::Struct(1)).field(k),
+        ty: Ty::U32,
+    };
+    let result = Expr::bin(BinOp::Add, Expr::bin(BinOp::Mul, read(0), u(100)), read(1));
+    assert_eq!(value_of(&program(body, result)), 1600 + 15);
+    let text = emit_module(&program(
+        vec![Stmt::Let {
+            var: 1,
+            ty: Ty::Struct(1),
+            mutable: false,
+            init: Expr::StructLit {
+                ty: Ty::Struct(1),
+                fields: vec![u(1), u(2)],
+                order: vec![1, 0],
+            },
+        }],
+        u(0),
+    ));
+    assert!(text.contains("S1 { f1: 1u32, f0: 2u32 }"), "{text}");
 }
 
 #[test]
@@ -352,5 +458,37 @@ fn the_method_programs_of_the_first_seeds_write_every_kind_of_call_and_assignmen
         "set +=",
     ] {
         assert!(names.contains(wanted), "no `{wanted}` in {names:?}");
+    }
+}
+
+/// The order-sensitive shapes the generator is biased toward (round r1): each must be written within seeds 1 to 64 of
+/// the method space, or the order rules of the interpreter have no program behind them.
+#[test]
+fn the_order_sensitive_shapes_are_reachable_within_the_first_64_seeds() {
+    let mut totals = std::collections::BTreeMap::<String, usize>::new();
+    for p in method_programs(1..=64) {
+        for (name, n) in operator_counts(&p) {
+            *totals.entry(name).or_default() += n;
+        }
+    }
+    for wanted in [
+        "shape same-root set =",
+        "shape same-root set +=",
+        "shape same-root set ^=",
+        "shape same-root set /=",
+        "shape same-root set %=",
+        crate::ast::SHAPE_READ_AND_CALL,
+        crate::ast::SHAPE_VALUE_CALL_INNER,
+        crate::ast::SHAPE_LOGIC_CALL,
+        crate::ast::SHAPE_STMT_CALL,
+        crate::ast::SHAPE_EXPR_CALL,
+        "set &=",
+        "set /=",
+        "set %=",
+    ] {
+        assert!(
+            totals.get(wanted).copied().unwrap_or(0) > 0,
+            "`{wanted}` is never written in seeds 1-64 of the method space: {totals:?}"
+        );
     }
 }

@@ -935,6 +935,318 @@ mod host_layouts {
     }
 }
 
+/// Slice m9.r2b (D17, D159): the host layouts of arrays against the real schema-4 helper, on both targets. A hand-written
+/// Slang program with `StructuredBuffer<float[4]>` and a struct `S { float a[4]; float2 b[3]; }`; the expected numbers
+/// are written by hand from the m9.s0 spike's P4b table (float[4]: size 16, align 4; float2[3]: size 24, align 8,
+/// element stride 8; S: a at 0, b at 16, size 40, align 8) and are the same numbers as `[f32; 4]`'s `GpuPod::LAYOUT`
+/// and a `#[repr(C)]` Rust struct. A mutated host layout is refused, so the check is not vacuous.
+#[test]
+fn the_real_helper_output_passes_the_cross_check_for_array_host_layouts() {
+    use gust::{
+        GpuPod, ParameterDescriptor, ParameterKind, ResourceBinding, ResourceLayout,
+        StructFieldLayout, TypeLayout, TypeLayoutKind, math::Vec2,
+    };
+    if helper_schema() < 4 {
+        return;
+    }
+    const SOURCE: &str = "struct S { float a[4]; float2 b[3]; };\n[[vk::binding(0, 0)]] RWStructuredBuffer<float> output;\n[[vk::binding(1, 0)]] StructuredBuffer<float[4]> quads;\n[[vk::binding(2, 0)]] StructuredBuffer<S> ss;\n[shader(\"compute\")]\n[numthreads(64, 1, 1)]\nvoid main(uint3 id : SV_DispatchThreadID)\n{\n    output[id.x] = quads[id.x][1] + ss[id.x].a[2] + ss[id.x].b[2].y;\n}\n";
+    const F32: TypeLayout = <f32 as GpuPod>::LAYOUT;
+    const V2: TypeLayout = <Vec2 as GpuPod>::LAYOUT;
+    const FOUR: TypeLayout = TypeLayout::array(&F32, 4);
+    const THREE_V2: TypeLayout = TypeLayout::array(&V2, 3);
+    const S: TypeLayout = TypeLayout::structure(
+        "S",
+        40,
+        8,
+        &[
+            StructFieldLayout {
+                name: "a",
+                offset: 0,
+                ty: FOUR,
+            },
+            StructFieldLayout {
+                name: "b",
+                offset: 16,
+                ty: THREE_V2,
+            },
+        ],
+    );
+    assert_eq!((FOUR.size, FOUR.alignment, FOUR.stride), (16, 4, 16));
+    assert_eq!(FOUR, <[f32; 4] as GpuPod>::LAYOUT);
+    assert_eq!(
+        (THREE_V2.size, THREE_V2.alignment, THREE_V2.stride),
+        (24, 8, 24)
+    );
+    #[repr(C)]
+    #[allow(dead_code)] // only its size, alignment and offsets are read
+    struct RustS {
+        a: [f32; 4],
+        b: [Vec2; 3],
+    }
+    assert_eq!(
+        (
+            std::mem::offset_of!(RustS, b),
+            std::mem::size_of::<RustS>(),
+            std::mem::align_of::<RustS>()
+        ),
+        (16, 40, 8)
+    );
+    let parameters = |four: TypeLayout, s: TypeLayout| {
+        let parameter = |name, access, layout, binding| ParameterDescriptor {
+            name,
+            rust_type: "T",
+            kind: ParameterKind::Storage,
+            access,
+            resource_layout: Some(layout),
+            binding: Some(ResourceBinding { group: 0, binding }),
+        };
+        vec![
+            parameter(
+                "output",
+                gust::Access::ReadWrite,
+                ResourceLayout::storage_v1(F32),
+                0,
+            ),
+            parameter(
+                "quads",
+                gust::Access::ReadOnly,
+                ResourceLayout::storage_v1(four),
+                1,
+            ),
+            parameter(
+                "ss",
+                gust::Access::ReadOnly,
+                ResourceLayout::storage_v2(s),
+                2,
+            ),
+        ]
+    };
+    let mut kernel = layout_kernel();
+    kernel.slang_source = SOURCE;
+    kernel.parameters = Box::leak(parameters(FOUR, S).into_boxed_slice());
+    for target in [Target::Wgsl, Target::Spirv] {
+        let compiled = compile_reflected(&kernel, target)
+            .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+        assert_eq!(compiled.reflection.schema_version, 4, "{target:?}");
+        let reports = compiled
+            .reflection
+            .cross_check_kernel(&kernel)
+            .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+        assert_eq!(reports.len(), 3, "{target:?}");
+        assert!(
+            reports.iter().all(|report| report.is_full_abi_match()),
+            "{target:?}: {reports:?}"
+        );
+        let checked: Vec<usize> = reports.iter().map(|report| report.checked_fields).collect();
+        assert_eq!(checked, [0, 0, 2], "{target:?}");
+        // The `GpuPod` impl of `[f32; 4]` agrees with the helper on its own.
+        let quads = compiled
+            .reflection
+            .resources
+            .iter()
+            .find(|resource| resource.name == "quads")
+            .unwrap();
+        assert!(
+            cross_check_pod::<[f32; 4]>(quads)
+                .unwrap_or_else(|error| panic!("{target:?}: {error}"))
+                .is_full_abi_match(),
+            "{target:?}"
+        );
+        // Each single difference in the host layout is refused.
+        let TypeLayoutKind::Struct(fields) = S.kind else {
+            panic!("a struct layout")
+        };
+        let with_field_b = |b: TypeLayout| {
+            let mut fields = fields.to_vec();
+            fields[1].ty = b;
+            let mut layout = S;
+            layout.kind = TypeLayoutKind::Struct(Box::leak(fields.into_boxed_slice()));
+            layout
+        };
+        let wrong_count = TypeLayout::array(&V2, 2);
+        let wrong_element = TypeLayout::array(&<gust::math::Vec4 as GpuPod>::LAYOUT, 3);
+        for (what, four, s) in [
+            ("quads count", TypeLayout::array(&F32, 3), S),
+            (
+                "quads element",
+                TypeLayout::array(&<u32 as GpuPod>::LAYOUT, 4),
+                S,
+            ),
+            ("S.b count", FOUR, with_field_b(wrong_count)),
+            ("S.b element", FOUR, with_field_b(wrong_element)),
+        ] {
+            let mut wrong = kernel;
+            wrong.parameters = Box::leak(parameters(four, s).into_boxed_slice());
+            assert!(
+                compiled.reflection.cross_check_kernel(&wrong).is_err(),
+                "{target:?}: {what} was accepted"
+            );
+        }
+    }
+}
+
+/// Slice m9.r2b fix round 1 (review S1): the rest of the admitted element types against the real schema-4 helper, on both
+/// targets: `Vec4`, `Mat2`, `Mat4` and a struct element, as buffer elements and as struct fields. The numbers are
+/// written by hand from the m9.s0 spike's P4b table: `float4 d[2]` size 32, align 16, element stride 16; `float2x2 e[2]`
+/// size 32, align 8, element stride 16 (the element's own stride is its column stride 8); `float4x4 f[2]` size 128,
+/// align 16, element stride 64; `Q q[3]` with `Q { float x, y }` size 24, align 4, element stride 8; `P` has d at 0,
+/// e at 32, f at 64, q at 192, g at 216, size 224 (220 rounded up to its alignment 16). Each admitted array is also a
+/// buffer element of its own.
+#[test]
+fn the_real_helper_output_passes_the_cross_check_for_vec4_matrix_and_struct_array_elements() {
+    use gust::{
+        GpuPod, ParameterDescriptor, ParameterKind, ResourceBinding, ResourceLayout,
+        StructFieldLayout, TypeLayout, TypeLayoutKind,
+        math::{Mat2, Mat4, Vec4},
+    };
+    if helper_schema() < 4 {
+        return;
+    }
+    const SOURCE: &str = "struct Q { float x; float y; };\nstruct P { float4 d[2]; float2x2 e[2]; float4x4 f[2]; Q q[3]; float g; };\n[[vk::binding(0, 0)]] RWStructuredBuffer<float> output;\n[[vk::binding(1, 0)]] StructuredBuffer<P> ps;\n[[vk::binding(2, 0)]] StructuredBuffer<float4[2]> v4s;\n[[vk::binding(3, 0)]] StructuredBuffer<float2x2[2]> m2s;\n[[vk::binding(4, 0)]] StructuredBuffer<float4x4[2]> m4s;\n[[vk::binding(5, 0)]] StructuredBuffer<Q[3]> qs;\n[shader(\"compute\")]\n[numthreads(64, 1, 1)]\nvoid main(uint3 id : SV_DispatchThreadID)\n{\n    output[id.x] = ps[id.x].g + ps[id.x].d[1].x + ps[id.x].e[1][0][0] + ps[id.x].f[1][0][0] + ps[id.x].q[2].y\n        + v4s[id.x][1].x + m2s[id.x][1][0][0] + m4s[id.x][1][0][0] + qs[id.x][2].y;\n}\n";
+    const F32: TypeLayout = <f32 as GpuPod>::LAYOUT;
+    const V4: TypeLayout = <Vec4 as GpuPod>::LAYOUT;
+    const M2: TypeLayout = <Mat2 as GpuPod>::LAYOUT;
+    const M4: TypeLayout = <Mat4 as GpuPod>::LAYOUT;
+    const fn field(name: &'static str, offset: u32, ty: TypeLayout) -> StructFieldLayout {
+        StructFieldLayout { name, offset, ty }
+    }
+    const Q: TypeLayout =
+        TypeLayout::structure("Q", 8, 4, &[field("x", 0, F32), field("y", 4, F32)]);
+    const D: TypeLayout = TypeLayout::array(&V4, 2);
+    const E: TypeLayout = TypeLayout::array(&M2, 2);
+    const F: TypeLayout = TypeLayout::array(&M4, 2);
+    const QS: TypeLayout = TypeLayout::array(&Q, 3);
+    const P: TypeLayout = TypeLayout::structure(
+        "P",
+        224,
+        16,
+        &[
+            field("d", 0, D),
+            field("e", 32, E),
+            field("f", 64, F),
+            field("q", 192, QS),
+            field("g", 216, F32),
+        ],
+    );
+    assert_eq!((D.size, D.alignment, D.stride), (32, 16, 32));
+    assert_eq!((E.size, E.alignment, E.stride), (32, 8, 32));
+    assert_eq!((F.size, F.alignment, F.stride), (128, 16, 128));
+    assert_eq!((QS.size, QS.alignment, QS.stride), (24, 4, 24));
+    // The same buffer elements as the `GpuPod` impls.
+    assert_eq!(D, <[Vec4; 2] as GpuPod>::LAYOUT);
+    assert_eq!(E, <[Mat2; 2] as GpuPod>::LAYOUT);
+    assert_eq!(F, <[Mat4; 2] as GpuPod>::LAYOUT);
+    // [p, v4s, m2s, m4s, qs] in binding order 1 to 5.
+    let parameters = |layouts: [TypeLayout; 5]| {
+        let parameter = |name, layout, binding| ParameterDescriptor {
+            name,
+            rust_type: "T",
+            kind: ParameterKind::Storage,
+            access: if binding == 0 {
+                gust::Access::ReadWrite
+            } else {
+                gust::Access::ReadOnly
+            },
+            resource_layout: Some(layout),
+            binding: Some(ResourceBinding { group: 0, binding }),
+        };
+        let [p, v4s, m2s, m4s, qs] = layouts;
+        vec![
+            parameter("output", ResourceLayout::storage_v1(F32), 0),
+            parameter("ps", ResourceLayout::storage_v2(p), 1),
+            parameter("v4s", ResourceLayout::storage_v2(v4s), 2),
+            parameter("m2s", ResourceLayout::storage_v2(m2s), 3),
+            parameter("m4s", ResourceLayout::storage_v2(m4s), 4),
+            parameter("qs", ResourceLayout::storage_v2(qs), 5),
+        ]
+    };
+    let honest = [P, D, E, F, QS];
+    let mut kernel = layout_kernel();
+    kernel.slang_source = SOURCE;
+    kernel.parameters = Box::leak(parameters(honest).into_boxed_slice());
+    // `P` with its field `name` replaced by `ty`.
+    let with_field = |name: &str, ty: TypeLayout| {
+        let TypeLayoutKind::Struct(fields) = P.kind else {
+            panic!("a struct layout")
+        };
+        let mut fields = fields.to_vec();
+        fields.iter_mut().find(|f| f.name == name).unwrap().ty = ty;
+        let mut layout = P;
+        layout.kind = TypeLayoutKind::Struct(Box::leak(fields.into_boxed_slice()));
+        layout
+    };
+    let replaced = |index: usize, layout: TypeLayout| {
+        let mut layouts = honest;
+        layouts[index] = layout;
+        layouts
+    };
+    for target in [Target::Wgsl, Target::Spirv] {
+        let compiled = compile_reflected(&kernel, target)
+            .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+        let reports = compiled
+            .reflection
+            .cross_check_kernel(&kernel)
+            .unwrap_or_else(|error| panic!("{target:?}: {error}"));
+        assert_eq!(reports.len(), 6, "{target:?}");
+        assert!(
+            reports.iter().all(|report| report.is_full_abi_match()),
+            "{target:?}: {reports:?}"
+        );
+        // output 0; P: five fields and the two of Q; the four plain arrays; qs: the two of Q.
+        let checked: Vec<usize> = reports.iter().map(|report| report.checked_fields).collect();
+        assert_eq!(checked, [0, 7, 0, 0, 0, 2], "{target:?}");
+        // Each single difference in the host layout is refused.
+        let wrong_q = TypeLayout::array(&F32, 3);
+        let cases = [
+            (
+                "P.d count",
+                replaced(0, with_field("d", TypeLayout::array(&V4, 3))),
+            ),
+            (
+                "P.d element",
+                replaced(0, with_field("d", TypeLayout::array(&M2, 2))),
+            ),
+            (
+                "P.e element",
+                replaced(0, with_field("e", TypeLayout::array(&M4, 2))),
+            ),
+            (
+                "P.e count",
+                replaced(0, with_field("e", TypeLayout::array(&M2, 1))),
+            ),
+            (
+                "P.f count",
+                replaced(0, with_field("f", TypeLayout::array(&M4, 1))),
+            ),
+            (
+                "P.f element",
+                replaced(0, with_field("f", TypeLayout::array(&V4, 8))),
+            ),
+            ("P.q element", replaced(0, with_field("q", wrong_q))),
+            (
+                "P.q count",
+                replaced(0, with_field("q", TypeLayout::array(&Q, 2))),
+            ),
+            ("v4s count", replaced(1, TypeLayout::array(&V4, 3))),
+            ("v4s element", replaced(1, TypeLayout::array(&M2, 2))),
+            ("m2s count", replaced(2, TypeLayout::array(&M2, 3))),
+            ("m2s element", replaced(2, TypeLayout::array(&M4, 2))),
+            ("m4s count", replaced(3, TypeLayout::array(&M4, 1))),
+            ("m4s element", replaced(3, TypeLayout::array(&V4, 8))),
+            ("qs count", replaced(4, TypeLayout::array(&Q, 2))),
+            ("qs element", replaced(4, wrong_q)),
+        ];
+        for (what, layouts) in cases {
+            let mut wrong = kernel;
+            wrong.parameters = Box::leak(parameters(layouts).into_boxed_slice());
+            assert!(
+                compiled.reflection.cross_check_kernel(&wrong).is_err(),
+                "{target:?}: {what} was accepted"
+            );
+        }
+    }
+}
+
 /// Slice m6.r fix round 1: the real helper output end to end through `cross_check_kernel`, with hand-written host
 /// layouts: a storage struct with a `Vec2` (`StorageV2`) and a constant buffer with a vector, a matrix, a nested
 /// struct and a `Vec2` (`Std140V1`). The fields are checked, and a wrong host layout is refused.

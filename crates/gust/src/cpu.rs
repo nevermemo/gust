@@ -137,6 +137,17 @@ const fn padding_free(layout: TypeLayout) -> bool {
             }
             sum == layout.size
         }
+        // Elements back to back: padding-free when the element is, its stride is its size (the array rule does not
+        // rely on another file's check) and the sizes add up.
+        TypeLayoutKind::Array { element, count } => {
+            if element.stride != element.size || !padding_free(*element) {
+                return false;
+            }
+            match element.size.checked_mul(count) {
+                Some(total) => total == layout.size,
+                None => false,
+            }
+        }
     }
 }
 
@@ -2838,6 +2849,39 @@ mod tests {
             cpu.dispatch_call(&call),
             Err(Error::ElementType { parameter: "color" })
         );
+    }
+
+    // An array is padding-free when its element is, its element stride is the element size and the sizes add up
+    // (m9.r2b): the arm does not lean on the macro-side element rule.
+    #[test]
+    fn padding_free_arrays_need_a_padding_free_element_with_stride_equal_to_size() {
+        const V2: TypeLayout = <crate::math::Vec2 as GpuPod>::LAYOUT;
+        const ARR: TypeLayout = TypeLayout::array(&V2, 3);
+        assert_eq!((ARR.size, ARR.alignment), (24, 8));
+        assert!(padding_free(ARR));
+        // A wrong total size (the description lies about the array).
+        let mut wrong = ARR;
+        wrong.size = 32;
+        assert!(!padding_free(wrong));
+        // An element whose stride exceeds its size (a padded stride): not padding-free, whatever the sizes say.
+        const PADDED_ELEMENT: TypeLayout = TypeLayout {
+            name: "PaddedElement",
+            size: 12,
+            alignment: 8,
+            stride: 16,
+            kind: crate::TypeLayoutKind::Scalar(crate::ScalarKind::F32),
+        };
+        const PADDED_ARR: TypeLayout = TypeLayout {
+            name: "array",
+            size: 36,
+            alignment: 8,
+            stride: 36,
+            kind: crate::TypeLayoutKind::Array {
+                element: &PADDED_ELEMENT,
+                count: 3,
+            },
+        };
+        assert!(!padding_free(PADDED_ARR));
     }
 
     // The twin refuses the uniform types the GPU refuses (`create_uniform`), with the same wording. `unsafe_code` is

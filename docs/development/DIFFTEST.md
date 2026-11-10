@@ -292,19 +292,19 @@ right operands, same-root sets) still run in 4 programs of 16 and are counted ab
 `the_gated_batch_of_64_seeds_writes_the_vector_forms_that_it_wrote_when_measured` guards the batch itself (71 of 72
 forms); the older vector test guards the generator over its own space.
 
-**Wide run, seeds 1 to 64 on the RTX 5090: to be re-run after m9.f1.** The run of 2ac5f82 (1 024 programs, 192 of them
-enum programs) had 1 mismatch, in both the `dev` and the `dev+subgroups` batch. Seed 31, program 13 (`s31_a3000001`) did
-not compile: the kernel has a method call `v15.m2(a[i] < (-15i32), v16)`, a `<` comparison that is not the last argument
-of a method call, and the macro emits `__gust_keep(..)` for it (`emit_list`) while its `KeepUsage` visitor looks at
-calls, arrays and `^` but not at method calls, so the helper is never defined (slangc E30015, undefined identifier
-`__gust_keep`). This is a macro bug (D163), not a generator or interpreter difference, and the format-8 method space
-could already write it. Slice m9.f1 fixes it. The run must be repeated on the merged tree and this paragraph replaced by
-its result. The programs changed with round r1 of this slice, so seed 31 no longer decodes to that program; the same bug
-now fails the gated batch of seeds 1 to 4 instead (G5, seed 4 program 14, `s4_a3000027`, in `dev` and `dev+subgroups`:
-63 of 64 programs agree). `difftest-run --shrink 4:14` shrank it with the build-failure identity (60 candidates, 26
-accepted, stopped by the candidate budget; classification `gpu-error`, `build_failure` `E30015 '__gust_keep'`) to a module
-whose kernel holds `let mut v33: E1 = v27.m2(v27.m1(0u32 < v26.f1, E0::V0), 0u32, 0u32);`, a `<` comparison as the first
-of two arguments of a method call, which confirms the cause. Not minimal: the reducer stopped on its budget.
+**Wide run, seeds 1 to 64 on the RTX 5090, tree 2c768a1 (round r1 of this slice plus m9.f1): 0 mismatches.**
+`cargo xtask check-difftest --seeds 1-64` executed 1 024 of 1 024 programs (192 of them enum programs, 3 per seed) in
+`dev` and again under `dev+subgroups`, both with 0 mismatches, and the exported record files of the two batches are
+byte for byte the same (2 048 files). The adapter was an NVIDIA GeForce RTX 5090 (Vulkan, driver 610.88). The whole
+gate took 1 292.5 s (the batch, the `short_circuit` GPU test and the subgroups batch; cargo build 119.5 s and 106.5 s,
+cargo run 501 s each). The interpreter evaluations of the shapes and constructs are those listed under "Reachability"
+above (match 155 233, default rule 62 444, scrutinee shape 13 627, enum `==` shape 5 018, enum arguments on one root
+760, same-root `%=` 4 251). The earlier run of 2ac5f82 had one mismatch, a macro bug: a `<` comparison that is not the
+last argument of a method call made the macro emit `__gust_keep(..)` without defining it (slangc E30015). The same bug
+failed seed 4 program 14 of the gated batch after round r1, and `difftest-run --shrink 4:14` shrank it with the
+build-failure identity (60 candidates, `E30015 '__gust_keep'`) to a kernel holding
+`let mut v33: E1 = v27.m2(v27.m1(0u32 < v26.f1, E0::V0), 0u32, 0u32);`. Slice m9.f1 fixed it; G5 (seeds 1 to 4) and this
+run pass on the merged tree.
 
 **Build failures are shrinkable.** A `gpu-error` whose message is a slangc compilation failure has an identity: the
 error code and the first quoted name (`E30015 '__gust_keep'`, `shrink::build_signature`). `difftest-run --shrink` keeps

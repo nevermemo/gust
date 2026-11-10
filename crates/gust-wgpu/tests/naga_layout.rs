@@ -9,7 +9,7 @@
 //!
 //! The WGSL set (the test names its size and fails on drift):
 //!
-//! - 20 of the 21 Slang goldens of `tests/fixtures/*.slang`; `par_for.slang` (slice m7.p) is filtered out, because the
+//! - 21 of the 22 Slang goldens of `tests/fixtures/*.slang`; `par_for.slang` (slice m7.p) is filtered out, because the
 //!   module of a `par_for!` kernel stands inside the block of its call, so no descriptor can be named from here (its
 //!   ten kernels run in `tests/par_for.rs`). The test
 //!   `the_goldens_are_the_fixtures_directory` pins the file list against the directory, and the fixture `.rs` list
@@ -94,6 +94,7 @@ fixture!(
     coretests,
     "../../../tests/fixtures/coretests.rs"
 );
+fixture!(f_enums, enums, "../../../tests/fixtures/enums.rs");
 fixture!(f_grid, grid, "../../../tests/fixtures/grid.rs");
 fixture!(f_loops, loops, "../../../tests/fixtures/loops.rs");
 fixture_functions!(
@@ -138,7 +139,7 @@ struct Golden {
     kernels: &'static [KernelDescriptor],
 }
 
-fn goldens() -> [Golden; 21] {
+fn goldens() -> [Golden; 22] {
     [
         Golden {
             file: "atomics.slang",
@@ -157,6 +158,12 @@ fn goldens() -> [Golden; 21] {
             text: include_str!("../../../tests/fixtures/coretests.slang"),
             entries: 5,
             kernels: f_coretests::KERNELS,
+        },
+        Golden {
+            file: "enums.slang",
+            text: include_str!("../../../tests/fixtures/enums.slang"),
+            entries: 1,
+            kernels: f_enums::KERNELS,
         },
         Golden {
             file: "grid.slang",
@@ -778,8 +785,8 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
     problems
 }
 
-/// The compute and fragment entries the twenty-one goldens hold in all (pinned per golden in [`goldens`]).
-const GOLDEN_ENTRIES: usize = 98;
+/// The compute and fragment entries the twenty-two goldens hold in all (pinned per golden in [`goldens`]).
+const GOLDEN_ENTRIES: usize = 99;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`
 /// (`atomics.slang` has one entry for the ten kernels of the module) and of `numeric.rs` (one of two).

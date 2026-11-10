@@ -61,6 +61,7 @@ fn probe_module(parameters: &str, body: &str) -> String {
 fn probe_module_with(attribute: &str, parameters: &str, body: &str) -> String {
     format!(
         "mod m {{ pub struct P {{ pub x: f32 }} fn helper(v: f32) -> f32 {{ v }} \
+         #[derive(PartialEq, Eq)] pub enum Mode {{ A, B }} \
          {attribute} pub fn k({parameters}) {{ {body} }} }}"
     )
 }
@@ -306,8 +307,17 @@ const ACCEPTED_PATTERNS: &[(&str, &str)] = &[
     ("Wild", "for _ in 0u32..4u32 { } out[id.x] = 1.0f32;"),
 ];
 
+/// (kind, a body with a `match` whose arms are of that kind): the patterns of an enum `match` arm (m9.e1). The ledger
+/// lists them, and the `let`, `for` and `if let` positions below still refuse them.
+#[rustfmt::skip]
+const ARM_ONLY_PATTERNS: &[(&str, &str)] = &[
+    ("Path", "match Mode::A { Mode::A => { out[id.x] = 1.0f32; } _ => { out[id.x] = 2.0f32; } }"),
+    ("Or", "match Mode::A { Mode::A | Mode::B => { out[id.x] = 1.0f32; } }"),
+];
+
 /// (kind, a pattern of that kind): the kinds the validator refuses. Each is tried in every position where the
-/// validator takes a pattern (below), so a kind that one position starts to accept is noticed there.
+/// validator takes a pattern (below), so a kind that one position starts to accept is noticed there. The kinds of
+/// [`ARM_ONLY_PATTERNS`] are in the list for the positions that still refuse them.
 const REFUSED_PATTERNS: &[(&str, &str)] = &[
     ("Const", "const { 1u32 }"),
     ("Lit", "1u32"),
@@ -397,6 +407,15 @@ fn the_ledger_lists_exactly_the_pattern_kinds_the_validator_and_the_emitter_acce
         );
     }
 
+    for &(kind, body) in ARM_ONLY_PATTERNS {
+        let source = probe_module(PARAMETERS, body);
+        assert_eq!(
+            verdict(&source),
+            Accepted,
+            "an enum `match` arm of kind `{kind}`; {FIX}\n{source}"
+        );
+    }
+
     for &(kind, pattern) in REFUSED_PATTERNS {
         // A match arm takes every pattern (a top-level `|` and `..` included).
         let arm: syn::Expr = parse_str(&format!("match x {{ {pattern} => () }}"))
@@ -406,11 +425,20 @@ fn the_ledger_lists_exactly_the_pattern_kinds_the_validator_and_the_emitter_acce
         };
         let parsed = arm.arms[0].pat.clone();
         assert_eq!(variant_of(&format!("{parsed:?}")), kind, "`{pattern}`");
-        assert_eq!(kinds::pattern_kind(&parsed), None, "{kind}: {FIX}");
-        assert!(
-            kinds::lookup(Class::Pattern, kind).is_none(),
-            "{kind}: {FIX}"
-        );
+        let arm_only = ARM_ONLY_PATTERNS.iter().any(|probe| probe.0 == kind);
+        if arm_only {
+            assert_eq!(kinds::pattern_kind(&parsed), Some(kind), "{kind}: {FIX}");
+            assert!(
+                kinds::lookup(Class::Pattern, kind).is_some(),
+                "{kind}: {FIX}"
+            );
+        } else {
+            assert_eq!(kinds::pattern_kind(&parsed), None, "{kind}: {FIX}");
+            assert!(
+                kinds::lookup(Class::Pattern, kind).is_none(),
+                "{kind}: {FIX}"
+            );
+        }
         for (position, template, code) in PATTERN_POSITIONS {
             let source = probe_module(PARAMETERS, &template.replace("{}", pattern));
             if UNPARSEABLE_PATTERNS.contains(&(kind, position)) {

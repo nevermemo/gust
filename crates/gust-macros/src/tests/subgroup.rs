@@ -756,3 +756,52 @@ fn an_own_requires_with_a_cpu_option_that_lower_cannot_respell_is_unknown_cpu_va
     let error = rejected(source);
     assert_code(&error, Code::UnknownCpuValue);
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// The value form of `match` (m9.e2, review S3): an arm runs for some invocations only, like the branch of an `if`
+
+#[test]
+fn an_operation_in_a_value_match_arm_or_its_scrutinee_is_refused() {
+    for (what, statement) in [
+        (
+            "in an arm",
+            "let r: u32 = match x { 0 => subgroup_add(x), _ => 1u32 };",
+        ),
+        (
+            "in a block arm",
+            "let r: u32 = match x { 0 => { let t = subgroup_add(x); t } _ => 1u32 };",
+        ),
+        (
+            "in the default arm",
+            "let r: u32 = match x { 0 => 2u32, _ => subgroup_max(x) };",
+        ),
+        // Every invocation evaluates the scrutinee, but a `match` is not an approved position: a deliberate
+        // over-refusal (SEMANTICS.md).
+        (
+            "in the scrutinee",
+            "let r: u32 = match subgroup_add(x) { 0 => 2u32, _ => 1u32 };",
+        ),
+        (
+            "in the scrutinee of a statement match",
+            "match subgroup_add(x) { 0 => { x = 1u32; } _ => { x = 2u32; } }",
+        ),
+    ] {
+        let error = rejected(&pair(&body(statement)));
+        assert!(
+            error.to_string().contains("[GUST-E0747]"),
+            "{what}: {error}"
+        );
+        assert_code(&error, Code::SubgroupPosition);
+    }
+}
+
+#[test]
+fn an_operation_behind_a_helper_called_in_a_value_match_arm_is_refused() {
+    let source = pair(&body("let r: u32 = match x { 0 => double(x), _ => 1u32 };")).replace(
+        "mod m {",
+        "mod m {
+    fn double(v: u32) -> u32 { subgroup_add(v) }",
+    );
+    let error = rejected(&source);
+    assert_code(&error, Code::SubgroupNotAllowed);
+}

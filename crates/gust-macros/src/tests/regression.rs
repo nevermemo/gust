@@ -528,7 +528,7 @@ fn an_unannotated_unsuffixed_integer_literal_let_is_e0326() {
     );
     assert_rejected(
         &kernel_with_body("let y = match id.x { _ => 1 };"),
-        Code::MatchAsValue,
+        Code::ValueMatchForm,
     );
     // One error per such `let`, in source order; the annotated one between them is fine.
     let error = translate(&kernel_with_body("let a = 1; let b: u32 = 2; let c = 3;")).unwrap_err();
@@ -1668,6 +1668,59 @@ fn assert_table_is_well_formed(emitted: &EmittedKernel, rust_lines: usize) {
         }
         open.push(record);
     }
+}
+
+/// The `__gust_keep` definition is inserted after the kernel is emitted (m9.f1, r1), so the line table must move with
+/// it: every record still names the Slang line of its own statement.
+#[test]
+fn line_table_follows_the_inserted_keep_helper() {
+    let source = concat!(
+        "mod demo {\n",                                                               // 1
+        "    fn both(x: bool, y: bool) -> uint {\n",                                  // 2
+        "        if x { if y { return 1u32; } }\n",                                   // 3
+        "        0u32\n",                                                             // 4
+        "    }\n",                                                                    // 5
+        "    #[kernel]\n",                                                            // 6
+        "    fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {\n", // 7
+        "        let a = out[0];\n",                                                  // 8
+        "        out[1] = both(a < 3u32, a > 1u32);\n",                               // 9
+        "    }\n",                                                                    // 10
+        "}\n",
+    );
+    let emitted = translate_with_lines(source).unwrap();
+    assert_eq!(
+        emitted
+            .source
+            .matches("bool __gust_keep(bool value)")
+            .count(),
+        1,
+        "{}",
+        emitted.source
+    );
+    assert_table_is_well_formed(&emitted, 11);
+    let by_rust_line = |line: u32| {
+        let record = emitted
+            .lines
+            .iter()
+            .find(|record| record.rust_line == line)
+            .unwrap_or_else(|| panic!("no record for line {line}\n{}", emitted.source));
+        slang_line(&emitted.source, record.slang_start)
+    };
+    assert!(
+        by_rust_line(2).starts_with("uint both("),
+        "{}",
+        emitted.source
+    );
+    assert!(
+        by_rust_line(8).starts_with("var a = "),
+        "{}",
+        emitted.source
+    );
+    assert!(
+        by_rust_line(9).contains("both(__gust_keep("),
+        "{}",
+        emitted.source
+    );
 }
 
 #[test]
@@ -3485,6 +3538,92 @@ fn keep_is_not_added_where_the_list_cannot_misparse() {
     ] {
         assert!(source.contains(plain), "missing {plain}\n{source}");
     }
+}
+
+/// Every list kind that wraps an element defines the helper on its own (m9.f1: the scan missed method calls, so a
+/// module whose only wrapped list was a method call failed in slangc with an undefined `__gust_keep`). Each module
+/// here has exactly one wrapped list, so the helper's definition must come from that list alone. The macro crate has
+/// no slangc (the compile tests live in `gust-compute-wgpu`, which depends on it), so this test is textual: slangc
+/// compiles the method-only module (`keep_methods`) and the all-kinds module (`keep_calls`) in
+/// `crates/gust-wgpu/tests/m9_methods_mut.rs`. Arrays are not in the dialect before m9 r1, and constructor and
+/// subgroup operands are not `bool`, so those lists have no case here.
+#[test]
+fn keep_helper_is_defined_for_each_list_kind() {
+    let module = |extra: &str, body: &str| {
+        translate(&format!(
+            "mod m {{
+                pub struct S {{ pub n: uint }}
+                impl S {{
+                    pub fn get(&self, x: bool, y: bool) -> uint {{ if x {{ if y {{ return 1u32; }} }} self.n }}
+                    pub fn put(&mut self, x: bool, y: bool) {{ if x {{ if y {{ self.n = 1u32; }} }} }}
+                    pub fn make(x: bool, y: bool) -> uint {{ if x {{ if y {{ return 1u32; }} }} 0u32 }}
+                    {extra}
+                }}
+                fn plain(x: bool, y: bool) -> uint {{ if x {{ if y {{ return 1u32; }} }} 0u32 }}
+                #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {{
+                    let a: uint = out[0];
+                    let mut s = S {{ n: a }};
+                    {body}
+                }}
+            }}"
+        ))
+        .unwrap()
+    };
+    for (kind, body, wrapped) in [
+        (
+            "method call, &self",
+            "out[1] = s.get(a < 3u32, a > 1u32);",
+            "s.get(__gust_keep(",
+        ),
+        (
+            "method call, &mut self",
+            "s.put(a < 3u32, a > 1u32); out[1] = s.n;",
+            "s.put(__gust_keep(",
+        ),
+        (
+            "associated function",
+            "out[1] = S::make(a < 3u32, a > 1u32);",
+            "make(__gust_keep(",
+        ),
+        (
+            "Self:: call in a method",
+            "out[1] = s.again(a);",
+            "make(__gust_keep(",
+        ),
+        (
+            "function call",
+            "out[1] = plain(a < 3u32, a > 1u32);",
+            "plain(__gust_keep(",
+        ),
+        (
+            "xor operands",
+            "if (a < 3u32) ^ (a > 1u32) { out[1] = a; }",
+            "__gust_xor(__gust_keep(",
+        ),
+    ] {
+        let extra = "pub fn again(&self, a: uint) -> uint { Self::make(a < 3u32, a > 1u32) }";
+        let source = module(if kind.starts_with("Self") { extra } else { "" }, body);
+        assert_eq!(
+            source.matches("bool __gust_keep(bool value)").count(),
+            1,
+            "{kind}: no helper definition\n{source}"
+        );
+        assert!(
+            source.contains(wrapped),
+            "{kind}: missing {wrapped}\n{source}"
+        );
+        // The helper is defined before its first use.
+        assert!(
+            source.find("bool __gust_keep(bool") < source.find("(__gust_keep("),
+            "{kind}: {source}"
+        );
+    }
+    // A `<` in the last argument defines nothing.
+    let none = module(
+        "",
+        "out[1] = s.get(a > 1u32, a < 3u32); s.put(a > 1u32, a <= 3u32); out[2] = S::make(a > 1u32, a < 3u32);",
+    );
+    assert!(!none.contains("__gust_keep"), "{none}");
 }
 
 /// `__gust_keep` is emitted only in a module that has a list with a wrapped element, like the other `__gust_*`
@@ -6555,18 +6694,16 @@ fn other_arm_patterns_scrutinees_and_bodies_of_an_enum_match_are_refused() {
         ),
         Code::MatchArmBlock,
     );
-    // The value form belongs to a later slice: a tail expression in an arm, or the `match` as a value.
+    // A tail expression in an arm of a statement `match` makes it a value: the typed `let` is the value form (m9.e2).
     assert_rejected(
         &with_mode("", "match Mode::A { Mode::A => { 1u32 } _ => { 2u32 } }"),
         Code::MatchAsValue,
     );
-    assert_rejected(
-        &with_mode(
-            "",
-            "let x: u32 = match Mode::A { Mode::A => { 1u32 } _ => { 2u32 } }; out[id.x] = x;",
-        ),
-        Code::MatchAsValue,
-    );
+    translate(&with_mode(
+        "",
+        "let x: u32 = match Mode::A { Mode::A => { 1u32 } _ => { 2u32 } }; out[id.x] = x;",
+    ))
+    .unwrap();
 }
 
 #[test]
@@ -6668,4 +6805,419 @@ fn an_enum_name_that_slang_reserves_is_renamed_in_every_position() {
         "{source}"
     );
     assert!(source.contains("enum __gust_r_class : uint"), "{source}");
+}
+
+// ---- The value form of `match` and integer-literal patterns (slice m9.e2, M9 plan 2.2, D157) ----
+
+#[test]
+fn match_value_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/match_value.rs")).unwrap();
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "match_value.slang",
+        &include_str!("../../../../tests/fixtures/match_value.slang").replace("\r\n", "\n"),
+    );
+}
+
+#[test]
+fn a_value_match_declares_the_local_and_assigns_it_in_every_arm() {
+    let source = translate(&with_mode(
+        "fn f(m: Mode) -> u32 { let w: u32 = match m { Mode::A => 1u32, Mode::B | Mode::C => { let t = m as u32; t * 10u32 } }; w + 1u32 }",
+        "out[id.x] = f(Mode::C);",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    // Declared without a value (WGSL zero-initialises it, measured), assigned by each arm; no `_`, so the last arm is
+    // the `default` and the assignment is total.
+    assert!(
+        source.contains("    uint w;\n    // @gust construct: match #0\n    switch (m)\n"),
+        "{source}"
+    );
+    assert!(
+        source.contains(
+            "case Mode::A:\n        {\n            w = uint(1);\n            break;\n        }"
+        ),
+        "{source}"
+    );
+    assert!(
+        source.contains("default:\n        {\n            var t = uint(m);\n            w = (t * uint(10));\n            break;\n        }"),
+        "{source}"
+    );
+    assert!(source.contains("return (w + uint(1));"), "{source}");
+}
+
+#[test]
+fn integer_literal_patterns_become_case_labels_in_both_forms() {
+    let source = translate(&with_kernel(
+        "",
+        "let v = id.x; \
+         let a: u32 = match v { 0 => 1u32, 1 | 2u32 => 2u32, 3000000000 => 3u32, 4000000000u32 => 4u32, _ => 5u32 }; \
+         let s = v as i32; \
+         let b: i32 = match s { -2 => 1i32, -1i32 => 2i32, -2147483648i32 => 3i32, 2147483647 => 4i32, _ => 5i32 }; \
+         match v { 7 => { out[id.x] = a; } _ => { out[id.x] = b as u32; } }",
+    ))
+    .unwrap();
+    for label in [
+        "case 0:",
+        "case 1:",
+        "case uint(2):",
+        "case uint(3000000000):",
+        "case uint(4000000000):",
+        "case int(-2):",
+        "case int(-1):",
+        "case int(-2147483648):",
+        "case 2147483647:",
+        "case 7:",
+    ] {
+        assert!(source.contains(label), "{label}\n{source}");
+    }
+    assert_eq!(source.matches("default:").count(), 3, "{source}");
+}
+
+#[test]
+fn a_match_that_gives_a_value_outside_a_typed_let_is_gust_e0419() {
+    for body in [
+        // An untyped `let`, an argument, an operand, an assigned value, a returned value, a bound.
+        "let x = match id.x { 0 => 1u32, _ => 2u32 }; out[id.x] = x;",
+        "out[id.x] = match id.x { 0 => 1u32, _ => 2u32 };",
+        "let x: u32 = f(match id.x { 0 => 1u32, _ => 2u32 }); out[id.x] = x;",
+        "let x: u32 = 1u32 + match id.x { 0 => 1u32, _ => 2u32 }; out[id.x] = x;",
+        "let mut x = 0u32; x = match id.x { 0 => 1u32, _ => 2u32 }; out[id.x] = x;",
+        "for i in 0u32..match id.x { 0 => 1u32, _ => 2u32 } { out[i] = i; }",
+        "let m = Mode::A; let x = match m { Mode::A => 1u32, _ => 2u32 }; out[id.x] = x;",
+        "let x: u32 = (match id.x { 0 => 1u32, _ => 2u32 }) + 1u32; out[id.x] = x;",
+    ] {
+        assert_rejected(
+            &with_mode("fn f(v: u32) -> u32 { v }", body),
+            Code::ValueMatchForm,
+        );
+    }
+    // `return match ..` in a helper.
+    assert_rejected(
+        &with_mode(
+            "fn g(v: u32) -> u32 { return match v { 0 => 1u32, _ => 2u32 }; }",
+            "out[id.x] = g(id.x);",
+        ),
+        Code::ValueMatchForm,
+    );
+    // A `Result` match as a value keeps its own code.
+    assert_rejected(
+        &with_mode(
+            "",
+            "let r: Result<u32, u32> = Ok(1u32); let x: u32 = match r { Ok(v) => { v } Err(e) => { e } }; out[id.x] = x;",
+        ),
+        Code::MatchAsValue,
+    );
+}
+
+#[test]
+fn the_pattern_forms_an_integer_match_refuses_are_gust_e0521() {
+    let refused = [
+        // A range, a binding, a constant, a `bool`, a float, a character.
+        "match id.x { 0u32..=3u32 => { } _ => { } }",
+        "match id.x { 0 => { } n => { out[id.x] = n; } }",
+        "match id.x { 0 => { } u32::MAX => { } _ => { } }",
+        "match id.x { 0 => { } true => { } _ => { } }",
+        "match id.x { 0 => { } 1.5f32 => { } _ => { } }",
+        "match id.x { 0 => { } 'a' => { } _ => { } }",
+        // Another integer type, outside the 32-bit range, a negative `u32`.
+        "match id.x { 0 => { } 1u8 => { } _ => { } }",
+        "match id.x { 0 => { } 5000000000 => { } _ => { } }",
+        "match id.x { 0 => { } -1u32 => { } _ => { } }",
+        // Repeated, in two spellings, after `_`, or with `_` joined by `|`.
+        "match id.x { 1 => { } 1u32 => { } _ => { } }",
+        "match id.x { 1 | 2 => { } 2 => { } _ => { } }",
+        "match id.x { _ => { } 1 => { } }",
+        "match id.x { 1 | _ => { } }",
+        // No `_`: no list of literals covers a 32-bit integer.
+        "match id.x { 0 => { } 1 => { } }",
+        // An enum variant mixed with a literal.
+        "match id.x { 0 => { } Mode::A => { } _ => { } }",
+        "match Mode::A { Mode::A => { } 0 => { } _ => { } }",
+    ];
+    for body in refused {
+        assert_rejected(&with_mode("", body), Code::MatchPattern);
+    }
+    // The same patterns in the value form.
+    for body in [
+        "let x: u32 = match id.x { 0u32..=3u32 => 1u32, _ => 2u32 }; out[id.x] = x;",
+        "let x: u32 = match id.x { 0 => 1u32, n => n }; out[id.x] = x;",
+        "let x: u32 = match id.x { 0 => 1u32, 1 => 2u32 }; out[id.x] = x;",
+        "let x: u32 = match id.x { u32::MAX => 1u32, _ => 2u32 }; out[id.x] = x;",
+    ] {
+        assert_rejected(&with_mode("", body), Code::MatchPattern);
+    }
+    // A guard keeps its code.
+    assert_rejected(
+        &with_mode("", "match id.x { 0 if id.x > 1u32 => { } _ => { } }"),
+        Code::EnumMatchGuard,
+    );
+}
+
+#[test]
+fn an_integer_match_takes_any_scrutinee_and_an_enum_match_still_takes_the_few_it_did() {
+    translate(&with_mode(
+        "fn f(v: u32) -> u32 { v }",
+        "match (id.x % 4u32) + f(id.x) { 0 => { out[id.x] = 1u32; } _ => { out[id.x] = 2u32; } }",
+    ))
+    .unwrap();
+    // A path that is no enum of the module is a constant used as a pattern, whatever the scrutinee.
+    assert_rejected(
+        &with_mode("", "match id.x { Other::A => { } _ => { } }"),
+        Code::MatchPattern,
+    );
+    assert_rejected(
+        &with_mode("", "match id.x { Mode::A => { } _ => { } }"),
+        Code::MatchScrutinee,
+    );
+}
+
+#[test]
+fn the_arms_of_a_value_match_give_a_value() {
+    // Expression arms, block arms with a tail, a nested value `match` as an arm and as a tail, a `return` arm.
+    let source = translate(&with_mode(
+        "fn f(v: u32, m: Mode) -> u32 { \
+            let x: u32 = match v { \
+                0 => { return 9u32; } \
+                1 => match m { Mode::A => 10u32, _ => 11u32 }, \
+                2 => { let y = v + 1u32; match y { 3 => 30u32, _ => 31u32 } } \
+                _ => { { v + 5u32 } } \
+            }; \
+            x + 1u32 }",
+        "out[id.x] = f(id.x, Mode::B);",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    // The `return` arm has no `break` after it; the nested `switch`es assign the same local.
+    assert!(
+        source.contains("            return uint(9);\n        }\n"),
+        "{source}"
+    );
+    assert_eq!(source.matches("x = ").count(), 5, "{source}");
+    assert_eq!(source.matches("switch (").count(), 3, "{source}");
+    // An arm that gives no value: a block ending in a statement, an empty block.
+    for arm in ["0 => { out[id.x] = 1u32; }", "0 => {}"] {
+        assert_rejected(
+            &with_mode(
+                "",
+                &format!("let x: u32 = match id.x {{ {arm} _ => 2u32 }}; out[id.x] = x;"),
+            ),
+            Code::MatchArmBlock,
+        );
+    }
+    // A `break` in an arm aimed at the loop around the `match` binds to the `switch`.
+    assert_rejected(
+        &with_mode(
+            "",
+            "for k in 0u32..4u32 { let x: u32 = match k { 0 => { if k > 0u32 { break; } 1u32 } _ => 2u32 }; out[id.x] = x; }",
+        ),
+        Code::JumpInMatchArm,
+    );
+}
+
+#[test]
+fn a_struct_valued_arm_is_built_in_a_temporary_and_assigned() {
+    let source = translate(&with_kernel(
+        "pub struct P { pub a: u32, pub b: u32 }",
+        "let p: P = match id.x { 0 => P { a: 1u32, b: 2u32 }, _ => { let t = id.x; P { a: t, b: 3u32 } } }; out[id.x] = p.a + p.b;",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(source.contains("P p;"), "{source}");
+    assert!(source.contains("p = __gust_struct_0;"), "{source}");
+    assert!(source.contains("p = __gust_struct_1;"), "{source}");
+    assert_eq!(source.matches("P __gust_struct_").count(), 2, "{source}");
+}
+
+#[test]
+fn a_value_match_that_names_its_local_assigns_a_temporary() {
+    // The `match` reads the outer `k` (and an arm declares an `x` of its own): assigning the new local directly would
+    // read it before it is set, or assign the arm's own variable.
+    let source = translate(&with_kernel(
+        "",
+        "let k = id.x; if k < 100u32 { let k: u32 = match k { 0 => k + 10u32, _ => { let x = 1u32; x + k } }; out[id.x] = k; } \
+         let x: u32 = match id.x { 0 => 1u32, _ => { let x = 4u32; x + 1u32 } }; out[id.x] = x;",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(source.contains("uint __gust_match_2_0;"), "{source}");
+    assert!(source.contains("uint k = __gust_match_2_0;"), "{source}");
+    assert!(source.contains("uint x = __gust_match_1_2;"), "{source}");
+    // A name the `match` does not mention is the target itself.
+    let plain = translate(&with_kernel(
+        "",
+        "let y: u32 = match id.x { 0 => 1u32, _ => 2u32 }; out[id.x] = y;",
+    ))
+    .unwrap();
+    assert!(
+        plain.contains("uint y;") && !plain.contains("__gust_match"),
+        "{plain}"
+    );
+}
+
+#[test]
+fn a_barrier_in_a_value_arm_is_refused_like_the_statement_form() {
+    // D154: an arm is divergent control flow, and the barrier walk reaches the arm of a `let`'s initializer.
+    assert_rejected(
+        &with_kernel(
+            "",
+            "let x: u32 = match id.x { 0 => { workgroup_barrier(); 1u32 } _ => 2u32 }; out[id.x] = x;",
+        ),
+        Code::BarrierPosition,
+    );
+    assert_rejected(
+        &with_kernel("", "match id.x { 0 => { workgroup_barrier(); } _ => { } }"),
+        Code::BarrierPosition,
+    );
+}
+
+#[test]
+fn a_value_match_on_an_enum_without_a_wildcard_ends_in_default() {
+    let source = translate(&with_mode(
+        "fn f(m: Mode) -> u32 { let w: u32 = match m { Mode::A => 1u32, Mode::B => 2u32, Mode::C => 3u32 }; w + 0u32 }",
+        "out[id.x] = f(Mode::C);",
+    ))
+    .unwrap();
+    assert_eq!(source.matches("default:").count(), 1, "{source}");
+    assert_eq!(source.matches("case ").count(), 2, "{source}");
+}
+
+#[test]
+fn a_value_match_keeps_the_enum_a_typed_local_holds() {
+    // `let m: Mode = match ..` is an enum local: `m as i32` is refused for an unsigned enum, and a later `match m` is fine.
+    assert_rejected(
+        &with_mode(
+            "",
+            "let m: Mode = match id.x { 0 => Mode::A, _ => Mode::B }; out[id.x] = (m as i32) as u32;",
+        ),
+        Code::EnumShape,
+    );
+    translate(&with_mode(
+        "",
+        "let m: Mode = match id.x { 0 => Mode::A, _ => Mode::B }; match m { Mode::A => { out[id.x] = 1u32; } _ => { out[id.x] = 2u32; } }",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn the_evaluation_order_of_the_value_form_is_the_order_of_the_statements() {
+    // Nothing is refused for order (plan 2.2; probe p2): the scrutinee is one expression of the `switch`, an arm's
+    // value is one assignment to a fresh local, and an operand that reads a local before a call changes it is read first
+    // by Slang (the GPU test executes these against hand-written values).
+    translate(&with_kernel(
+        ORDER_ITEMS,
+        "let mut c = C { n: 5u32 }; \
+         let a: u32 = match c.n { 5 => c.n + c.next(), _ => 0u32 }; \
+         let b: u32 = match c.next() { 7 => c.next() * 10u32, _ => 0u32 }; \
+         out[id.x] = a + b;",
+    ))
+    .unwrap();
+    // The place of an assignment inside an arm keeps E0421.
+    assert_rejected(
+        &with_kernel(
+            ORDER_ITEMS,
+            "let mut c = C { n: 5u32 }; let a: u32 = match id.x { 0 => { out[c.next()] = c.next(); 1u32 } _ => 2u32 }; out[id.x] = a;",
+        ),
+        Code::ForBoundSideEffect,
+    );
+}
+
+// ---- Review r1 of m9.e2 ----
+
+#[test]
+fn a_match_that_gives_a_value_as_the_tail_of_a_function_is_gust_e0419() {
+    // S1: the commonest Rust form is the same refusal as the other value positions, with the typed `let` named.
+    for items in [
+        // An integer match with expression arms, an enum match with expression arms, block arms that end in values.
+        "fn f(v: u32) -> u32 { match v { 0 => 1u32, _ => 2u32 } }",
+        "fn f(m: Mode) -> u32 { match m { Mode::A => 1u32, _ => 2u32 } }",
+        "fn f(m: Mode) -> u32 { match m { Mode::A => { 1u32 } Mode::B | Mode::C => { let t = 3u32; t } } }",
+        "fn f(v: u32) -> u32 { match v { 0 => { 1u32 } _ => { 2u32 } } }",
+        // One arm gives a value, the other returns.
+        "fn f(v: u32) -> u32 { match v { 0 => { return 7u32; } _ => 2u32 } }",
+    ] {
+        let error = translate(&with_mode(items, "out[id.x] = f(id.x);")).expect_err(items);
+        assert_code_for(&error, Code::ValueMatchForm, items);
+        assert!(error.to_string().contains("typed `let`"), "{error}");
+    }
+    // The e1 statement form stays: a tail `match` whose arms return, or are unit blocks, in a helper and a kernel.
+    translate(&with_mode(
+        "fn f(m: Mode) -> u32 { match m { Mode::A => { return 1u32; } _ => { return 2u32; } } }",
+        "out[id.x] = f(Mode::A);",
+    ))
+    .unwrap();
+    translate(&with_mode(
+        "fn f(v: u32) -> u32 { match v { 0 => { return 1u32; } _ => { return 2u32; } } }",
+        "out[id.x] = f(id.x);",
+    ))
+    .unwrap();
+    translate(&with_mode(
+        "",
+        "match Mode::A { Mode::A => { out[id.x] = 1u32; } _ => { out[id.x] = 2u32; } }",
+    ))
+    .unwrap();
+    // The typed `let` form with the local returned is the way.
+    translate(&with_mode(
+        "fn f(v: u32) -> u32 { let r: u32 = match v { 0 => 1u32, _ => 2u32 }; r }",
+        "out[id.x] = f(id.x);",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn every_value_position_the_docs_list_is_gust_e0419() {
+    for body in [
+        // A condition, a struct field, an index, a method argument, a unary operand, a cast, a comparison.
+        "if (match id.x { 0 => 1u32, _ => 2u32 }) == 1u32 { out[0u32] = 1u32; }",
+        "let p = P { a: match id.x { 0 => 1u32, _ => 2u32 }, b: 0u32 }; out[id.x] = p.a;",
+        "out[match id.x { 0 => 1u32, _ => 2u32 }] = 1u32;",
+        "let x: u32 = 5u32.wrapping_add(match id.x { 0 => 1u32, _ => 2u32 }); out[id.x] = x;",
+        "let x: i32 = -(match id.x { 0 => 1i32, _ => 2i32 }); out[id.x] = x as u32;",
+        "let x: f32 = (match id.x { 0 => 1u32, _ => 2u32 }) as f32; out[id.x] = x as u32;",
+        "let x: bool = (match id.x { 0 => 1u32, _ => 2u32 }) == 2u32; out[id.x] = x as u32;",
+        // As the value of a compound assignment and as the right side of a typed `let` inside another expression.
+        "let mut y = 0u32; y += match id.x { 0 => 1u32, _ => 2u32 }; out[id.x] = y;",
+        "let t: (u32, u32) = (match id.x { 0 => 1u32, _ => 2u32 }, 1u32); out[id.x] = t.0;",
+    ] {
+        let source = with_kernel("pub struct P { pub a: u32, pub b: u32 }", body);
+        let error = translate(&source).expect_err(body);
+        assert!(
+            error.to_string().contains("[GUST-E0419]"),
+            "{body}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_literal_free_integer_match_names_the_integer_rule_in_gust_e0515() {
+    // N3: `match v { _ => .. }` on a `u32` is not an enum match.
+    let error = translate(&with_mode(
+        "",
+        "match id.x + 1u32 { _ => { out[id.x] = 1u32; } }",
+    ))
+    .expect_err("an _-only match");
+    assert_code_for(&error, Code::MatchScrutinee, "an _-only match");
+    assert!(error.to_string().contains("`u32` or `i32`"), "{error}");
+}
+
+#[test]
+fn two_mutating_calls_in_one_arm_and_in_two_struct_fields_run_in_the_order_of_rust() {
+    // N4: Slang evaluates binary operands left to right, and the struct literal is assigned field by field in order.
+    let source = translate(&with_kernel(
+        &format!("{ORDER_ITEMS} pub struct Q {{ pub a: u32, pub b: u32 }}"),
+        "let mut c = C { n: 0u32 }; \
+         let a: u32 = match id.x { 0 => c.next() * 10u32 + c.next(), _ => 0u32 }; \
+         let q: Q = match id.x { 0 => Q { a: c.next(), b: c.next() }, _ => Q { a: 0u32, b: 0u32 } }; \
+         out[id.x] = a + q.a + q.b;",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(
+        source.contains("((c.next() * uint(10)) + c.next())")
+            || source.contains("c.next() * uint(10)"),
+        "{source}"
+    );
+    let first = source.find("__gust_struct_0.a = c.next()").expect(&source);
+    let second = source.find("__gust_struct_0.b = c.next()").expect(&source);
+    assert!(first < second, "{source}");
 }

@@ -104,8 +104,16 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   (`GUST-E0122`), an enum in a struct field, a buffer, a uniform, workgroup memory, an `Option` or a `Result`
   (`GUST-E0211`), a `break` or `continue` in an arm aimed at the loop around the `match` (`GUST-E0417`), a guard
   (`GUST-E0418`), bindings and other patterns (`GUST-E0521`), other scrutinees (`GUST-E0515`) and methods on an enum
-  (`GUST-E0121`). The value form of `match` is a later slice. On an RTX 5090 the fixture runs equal to a hand-written
+  (`GUST-E0121`). The value form of `match` is in slice e2 below. On an RTX 5090 the fixture runs equal to a hand-written
   table, and the evaluation order of calls in a scrutinee, in `==` and `!=`, and in enum arguments is Rust's.
+- The value form of `match` and integer patterns (M9, slice e2). `let x: T = match e { .. };` with a typed `let` is accepted
+  for an enum, `u32` or `i32` scrutinee; an arm is an expression, or a block that ends in an expression or a `return`, and
+  the result may be a struct. An integer `match` (statement or value) takes literal patterns (`0`, `1 | 2`, `3u32`,
+  `-1i32`, within 32 bits) and needs a final `_`. It lowers to `T x;` and a `switch` whose arms assign `x`. A `match` that
+  gives a value anywhere else, a function's tail included, is `GUST-E0419`; ranges, bindings and constants as patterns stay `GUST-E0521`. The scrutinee
+  is read once and the operands of an arm are evaluated in the order of Rust (measured), so nothing is refused for order.
+  On an RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin.
+- Fixed (m9.f1): a method call with a `<` comparison argument before another argument, such as `s.m(a < b, c)`, failed in slangc with an undefined `__gust_keep`, because the scan that defines that helper did not visit method calls.
 
 ### Changed, and may break code written for 0.1.0
 

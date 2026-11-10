@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: match-value-position/src/main.rs
+line: 9
+message: [GUST-E0419] a `match` that gives a value is accepted only as the initializer of a typed `let`

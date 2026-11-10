@@ -1,10 +1,10 @@
-# DIFFTEST_FORMAT 8
+# DIFFTEST_FORMAT 9
 # seed programs discarded [reason=count ...] hash=<fnv1a64 of the emitted lib.rs and the input data>
-1 16 75 comparison-overlap=1 float-domain=5 index=1 no-aggregate=3 no-call=9 no-input-read=4 overflow=26 static=22 unboundable=4 hash=8fd2848c3fa9dd44
-2 16 74 division-by-zero=2 float-construct-not-in-v1=1 float-domain=16 index=2 no-aggregate=1 no-call=6 no-input-read=3 overflow=16 shift-amount=1 static=18 unboundable=8 hash=e4fe0c7bfa30d7e2
-3 16 83 division-by-zero=4 float-domain=13 index=1 no-aggregate=3 no-call=11 no-input-read=3 overflow=21 shift-amount=3 static=21 unboundable=3 hash=66ec5c4f6799ee1c
-4 16 101 comparison-overlap=5 division-by-zero=6 float-construct-not-in-v1=1 float-domain=25 index=3 min-over-minus-one=1 no-aggregate=5 no-call=4 no-input-read=5 overflow=21 shift-amount=1 static=21 unboundable=3 hash=a86e7db27d0e1253
-5 16 59 comparison-overlap=1 division-by-zero=4 float-domain=7 index=4 no-call=1 no-input-read=6 overflow=20 static=11 unboundable=5 hash=6c3a88e1763d38e4
-6 16 84 comparison-overlap=3 division-by-zero=4 float-construct-not-in-v1=1 float-domain=15 index=6 no-aggregate=7 no-call=1 no-input-read=3 overflow=18 shift-amount=3 static=18 unboundable=5 hash=8f6376469ca9c7e2
-7 16 80 comparison-overlap=4 division-by-zero=4 float-domain=14 index=6 no-aggregate=4 no-call=7 no-input-read=5 overflow=16 shift-amount=1 static=14 unboundable=5 hash=bcf2418d4d42b4be
-8 16 72 comparison-overlap=1 division-by-zero=1 float-domain=9 index=4 no-aggregate=2 no-call=5 no-input-read=2 overflow=18 shift-amount=1 static=27 unboundable=2 hash=22efc3471994e6bd
+1 16 94 comparison-overlap=1 division-by-zero=4 float-domain=4 index=2 min-over-minus-one=1 no-aggregate=3 no-call=17 no-input-read=3 no-match=5 overflow=30 static=22 unboundable=2 hash=f9464901d8e1724d
+2 16 62 float-construct-not-in-v1=1 float-domain=11 index=1 no-call=8 no-input-read=2 no-match=3 overflow=13 shift-amount=1 static=16 unboundable=6 hash=b81e1902e31c82ac
+3 16 95 division-by-zero=4 float-domain=9 index=1 no-aggregate=1 no-call=13 no-input-read=3 no-match=11 overflow=26 shift-amount=6 static=18 unboundable=3 hash=6dd4f763950af6fd
+4 16 92 comparison-overlap=4 division-by-zero=5 float-construct-not-in-v1=1 float-domain=19 index=3 min-over-minus-one=1 no-aggregate=4 no-call=7 no-input-read=5 no-match=4 overflow=18 shift-amount=1 static=19 unboundable=1 hash=3206aae796af177f
+5 16 45 comparison-overlap=1 division-by-zero=2 float-domain=6 index=4 no-call=1 no-input-read=4 overflow=18 static=6 unboundable=3 hash=f5169eb91416c5de
+6 16 69 comparison-overlap=3 division-by-zero=5 float-construct-not-in-v1=1 float-domain=6 index=5 no-aggregate=2 no-call=5 no-input-read=2 no-match=2 overflow=15 shift-amount=4 static=16 unboundable=3 hash=63bd55a9400c9a7b
+7 16 108 comparison-overlap=4 division-by-zero=8 float-domain=13 index=8 no-aggregate=4 no-call=9 no-input-read=5 no-match=3 overflow=25 shift-amount=2 static=22 unboundable=5 hash=1260903d048786f8
+8 16 51 comparison-overlap=1 division-by-zero=2 float-domain=8 index=4 no-aggregate=2 no-call=5 no-input-read=1 no-match=1 overflow=6 shift-amount=1 static=18 unboundable=2 hash=a01542f483afdd27

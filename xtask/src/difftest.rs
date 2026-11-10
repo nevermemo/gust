@@ -567,6 +567,27 @@ pub(crate) struct Report {
     pub(crate) capabilities_in_any_result: Option<Vec<String>>,
     /// Absent in a report from before `--shapes`.
     pub(crate) shapes: Option<ShapesRecord>,
+    /// The order-sensitive shapes and the `match` constructs of the program text and of the run, from `coverage.operators`
+    /// (empty in a report without coverage).
+    pub(crate) shape_rows: Vec<ShapeRow>,
+}
+
+/// One row of `coverage.operators` that names a shape or a `match` construct (slice m9.d1b).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShapeRow {
+    pub(crate) name: String,
+    pub(crate) programs_in_text: u64,
+    pub(crate) occurrences_in_text: u64,
+    pub(crate) programs_executing: u64,
+    pub(crate) evaluations: u64,
+}
+
+/// Whether a counted operator name is a shape or a `match` construct.
+fn is_shape_row(name: &str) -> bool {
+    name.starts_with("shape ")
+        || name.starts_with("match")
+        || name.starts_with("enum ")
+        || name == "return"
 }
 
 fn field<'a>(json: &'a Json, key: &str) -> Result<&'a Json, String> {
@@ -697,6 +718,7 @@ pub(crate) fn parse_report(source: &str) -> Result<Report, String> {
             })
             .transpose()
     };
+    let shape_rows = parse_shape_rows(&json)?;
     let capabilities_in_every_result = names("capabilities_in_every_result")?;
     let capabilities_in_any_result = names("capabilities_in_any_result")?;
     Ok(Report {
@@ -717,7 +739,40 @@ pub(crate) fn parse_report(source: &str) -> Result<Report, String> {
         profile,
         capabilities_in_every_result,
         capabilities_in_any_result,
+        shape_rows,
     })
+}
+
+/// The shape and `match` rows of `coverage.operators`; none when the report has no coverage.
+fn parse_shape_rows(json: &Json) -> Result<Vec<ShapeRow>, String> {
+    let Some(coverage) = json.get("coverage") else {
+        return Ok(Vec::new());
+    };
+    let Some(operators) = coverage.get("operators").and_then(Json::as_array) else {
+        return Ok(Vec::new());
+    };
+    let mut rows = Vec::new();
+    for entry in operators {
+        let name = text(entry, "operator")?;
+        if !is_shape_row(&name) {
+            continue;
+        }
+        let optional = |key: &str| -> Result<u64, String> {
+            if entry.get(key).is_some() {
+                uint(entry, key)
+            } else {
+                Ok(0)
+            }
+        };
+        rows.push(ShapeRow {
+            programs_in_text: optional("programs_in_text")?,
+            occurrences_in_text: optional("occurrences_in_text")?,
+            programs_executing: optional("programs_executing")?,
+            evaluations: optional("evaluations")?,
+            name,
+        });
+    }
+    Ok(rows)
 }
 
 fn parse_shapes_record(section: &Json) -> Result<ShapesRecord, String> {
@@ -1053,6 +1108,19 @@ fn report_summary(report: &Report, options: &Options) -> Vec<String> {
             line.push_str(&format!("\n    grid-only {count} x {reason}"));
         }
         lines.push(line);
+    }
+    if !report.shape_rows.is_empty() {
+        lines.push("  shapes and match constructs (programs in text, occurrences in text, programs executing, evaluations):".to_owned());
+        for row in &report.shape_rows {
+            lines.push(format!(
+                "    {}: {} programs, {} in text, {} executing, {} evaluations",
+                row.name,
+                row.programs_in_text,
+                row.occurrences_in_text,
+                row.programs_executing,
+                row.evaluations
+            ));
+        }
     }
     lines.push(format!(
         "  harness timing: cargo build {:.1} s, cargo run {:.1} s",

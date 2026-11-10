@@ -640,8 +640,8 @@ fn the_float_space_alone_still_writes_no_vectors() {
 }
 
 /// Seeds `1..=REACH_SEEDS` write every form of [`crate::ast::writable_aggregate_forms`]. Measured 2026-11-02:
-/// seeds 1 to 68 still miss `- Mat4 Mat4`, 72 do not (the bound is a round number just above the first one that
-/// works). Seeds 1 to 8, the gated batch, miss about half of the forms (see DIFFTEST.md, Coverage).
+/// seeds 1 to 68 still miss `- Mat4 Mat4`, 72 do not over the first five vector programs of a seed, as the batch of format 8 held them (format 9 keeps four per batch)
+/// (the bound is a round number just above the first one that works). Seeds 1 to 8, the gated batch, miss about half of the forms (see DIFFTEST.md, Coverage).
 const REACH_SEEDS: u64 = 72;
 
 /// The coverage the GPU batch of seeds 1 to 8 does not have: CPU only, over the generator alone. If a row of
@@ -651,9 +651,7 @@ const REACH_SEEDS: u64 = 72;
 fn the_generator_writes_every_binary_row_negation_and_swizzle_shape_within_the_first_seeds() {
     let mut written = std::collections::BTreeSet::new();
     for seed in 1..=REACH_SEEDS {
-        for p in &generate_batch(seed).unwrap().programs
-            [crate::generator::SCALAR_PROGRAMS_PER_SEED..crate::generator::VECTOR_END]
-        {
+        for p in &generate_batch_in(Space::Vector, seed).unwrap().programs[..5] {
             written.extend(operator_counts(p).into_keys());
         }
     }

@@ -3,7 +3,7 @@
 Status: slices m5.c1a (the integer core), m5.c1a2 (floats v1, the exact-interval subset of R1-4), m5.c1b (the batch
 runner `difftest-run`), m5.c1c (the shrinker), m6.d (vectors and matrices, DIFFTEST_FORMAT 6) and m8.x1 (the result
 file carries the build's capabilities, DIFFTEST_FORMAT 7; the program space is the one of format 6) and m9.d1a (module
-structs with methods, DIFFTEST_FORMAT 8). The crate generates
+structs with methods, DIFFTEST_FORMAT 8) and m9.d1b (enums and statement `match`, DIFFTEST_FORMAT 9). The crate generates
 integer, boolean and `f32` kernels from a seed, and (since format 6) kernels that compute with the `gust::math` vectors
 and matrices as locals and intermediates (buffers and results stay scalar), and (since format 8) integer kernels that call
 methods of module structs, evaluates them with an independent
@@ -226,6 +226,71 @@ the check that the parenthesisation and order of the text is the AST's is the CP
 runs on every program (and `--cpu-only` runs it without a GPU). The interpreter and the twin share the Rust order rules
 only through the Reference, not through code.
 
+## Enums and `match` (format 9, slice m9.d1b)
+
+D166. A mismatch in this space is a compiler bug (D163), an order or `switch` difference included; only out-of-bounds
+behaviour is D39. `DIFFTEST_FORMAT` is 9. A batch is seven float, four vector, two method and three enum programs
+(`PROGRAMS_PER_SEED` stays 16); the float and vector prefixes are byte for byte those of format 8.
+
+**Program space** (`Space::Enum`, attempts from `ENUM_ATTEMPT_BASE` = 3 000 000; the method space plus enums). One or two
+module enums of two to five variants, `u32` or `i32` repr (`#[repr(i32)]` written, `#[derive(PartialEq, Eq)]`), literal
+discriminants: an explicit value from a boundary list or the count-up of the macro (previous plus one, first zero), all
+distinct. Enum values come only from variant paths, variables (locals and parameters) and call results, never from an
+integer. Enum locals, parameters and returns (helpers, `&self`, `&mut self` and by-value methods; never a struct field
+or a buffer, E0211). `==` and `!=` on two enums, `as` to the repr type only (E0122). Statement `match`: the scrutinee is a
+variable, a call or a variant path (E0515); the variants are shuffled and cut into grouped arms (`E::A | E::B`); `_`
+replaces the last group 45 % of the time, otherwise every variant is named once and the last arm is the Slang `default`
+(the `default` rule); arms are blocks that assign, call methods, `return` (helpers only), hold a nested `match`, and a
+`match` may sit in a `for` body. No guard, no `break` or `continue`. A helper with a `return` carries a per-function
+`#[allow(unreachable_code)]` (the crate-level `allow` line is part of every older format's text and cannot change).
+An enum program without a `match` is discarded as `no-match` (a new class, with `no-call`).
+
+**Interpreter** (from the Rust Reference, not from the emitted Slang): the scrutinee is evaluated once, then the first
+arm that names the value runs (`_` names the rest); `==` evaluates the left operand first; arguments left to right;
+`return` stops the function and is carried out of `for` and `match`; `as` is the discriminant bits (an `i32` repr keeps
+its sign). The enum nodes are open in the static fold.
+
+**Order-sensitive shapes** (biased and counted statically and when executed, under the same names):
+`shape match scrutinee &mut self call on a root an arm uses`, `shape enum ==/!= of two calls on one root`,
+`shape enum argument built from a call`, `shape enum arguments built from calls on one root`. The constructs are
+counted as `match`, `match with _`, `match without _ (the default rule)`, `match grouped arm`, `match nested in an arm`,
+`match in a for body`, `match arm ends in return` / `calls` / `assigns`, `return`, `enum as u32` / `enum as i32`.
+
+**Reachability, seeds 1 to 64** (`difftest-gen stats 1-64`, the gated batch: 192 enum programs, 3 per seed; written /
+executed per element summed): match 462 / 207 516; with `_` 241 / 136 553; default rule 221 / 70 963; grouped arm 266 /
+84 216; nested 38 / 6 124; in a `for` 14 / 30 662; arm ends in return 39 / 16 850; return 71 / 4 460; scrutinee shape 21 /
+2 699; enum `==` shape 6 / 642; enum argument from a call 79 / 33 680; `enum as u32` 231 / 94 767, `as i32` 122 / 31 383.
+The shape `enum arguments built from calls on one root` is not written in the 3 enum programs per seed of the gated
+batch within seeds 1 to 64; the test `enum_tests` reaches it (written and executed) over the whole enum space of seeds
+1 to 64 (16 per seed), as it does every construct above. Enum attempts for 64 seeds: 1 170 for 192 programs (discards:
+`no-match` 217, `no-call` 240, `overflow` 268, `static` 168, `division-by-zero` 29, `index` 21, `no-input-read` 23,
+`shift-amount` 10, `min-over-minus-one` 2).
+
+**Wide run, seeds 1 to 64 on the RTX 5090** (1 024 programs, 192 of them enum programs): 1 mismatch, in both the `dev`
+and the `dev+subgroups` batch. Seed 31, program 13 (`s31_a3000001`) does not compile: the kernel has a method call
+`v15.m2(a[i] < (-15i32), v16)`, a `<` comparison that is not the last argument of a method call, and the macro emits
+`__gust_keep(..)` for it (`emit_list`) while its `KeepUsage` visitor looks at calls, arrays and `^` but not at method
+calls, so the helper is never defined (slangc E30015, `undefined identifier '__gust_keep'`). Read from the macro source,
+not yet confirmed by a hand-written minimal module. This is a macro bug (D163), not a generator or interpreter
+difference. The shrinker reports "does not fail (1 mismatches without an element)" for a build failure, so it did not
+shrink the program. The fix is outside this slice (`gust-macros`).
+
+**Leftovers of the m9.d1a re-check** (they change the method space, whose pin is re-taken as format 9): a biased shift
+amount is written `call & 31`; same-root `&=` and `>>=` are reachable (and required by `method_tests`); `coverage_json`
+carries `occurrences_in_text`; `check-difftest` prints the shape and `match` rows; expected-failure mutation runs are
+named `xfail-<name>` in the rc file, one mutant per run.
+
+**Mutation checks.** The interpreter has two test-only mutants, selected by `DIFFTEST_MUTANT` (compiled in test builds
+only): `first-arm-default` (the first arm acts as the default of the `match`) and `scrutinee-twice` (the scrutinee is
+evaluated again for every arm tried). `cargo test --lib enum_tests` with either set must fail (the vectors
+`the_scrutinee_is_evaluated_once_...` and `grouped_wild_and_default_arms_...`); in-process the test
+`the_vectors_catch_a_match_...` runs both through `run_mutant`.
+
+**Tests.** `enum_tests`: hand vectors (scrutinee once, grouped / `_` / default arms, `==` left to right, enum argument
+order, `return` in an arm in a `for`, `as` and a negative `i32` repr), the emitted text, the batch cut, the reachability
+over seeds 1 to 64 of the enum space, the mutants. `roundtrip`: `enum_programs_compile_through_the_macro_without_a_gust_diagnostic`
+compiles 192 enum programs. `corpus`: the method and enum spaces of seeds 1 to 4 are pinned as format 9.
+
 ## The domain filter
 
 The interpreter (`interp.rs`) evaluates the AST with checked operations, in Rust's evaluation order and with
@@ -332,9 +397,10 @@ against an adversarial CPU model, not against hardware.
 A program is a pure function of `(seed, attempt)`: `prng.rs` (xorshift64* seeded through SplitMix64) writes 4096 bytes,
 and `generator.rs` decodes them into the AST; bytes past the end read as zero, which selects the first option of every
 choice, so a truncated stream is still a valid, smaller program (the last pass of the shrinker relies on that).
-`generate_batch` walks attempts 0, 1, 2, ... and keeps the in-domain programs until it has eight (the float space), then
-walks attempts 1 000 000, 1 000 001, ... of the vector space until it has five more, then attempts 2 000 000, ... of the
-method space until it has three more (16 in all; `Batch.vector_attempts`, `Batch.vector_discarded`,
+`generate_batch` walks attempts 0, 1, 2, ... and keeps the in-domain programs until it has seven (the float space), then
+walks attempts 1 000 000, 1 000 001, ... of the vector space until it has four more, then attempts 2 000 000, ... of the
+method space until it has two more, then attempts 3 000 000, ... of the enum space until it has three more (16 in all;
+`Batch.enum_attempts` and `Batch.enum_discarded` count the fourth walk; `Batch.vector_attempts`, `Batch.vector_discarded`,
 `Batch.method_attempts` and `Batch.method_discarded` count the second and third walks apart, and `difftest-gen stats
 SEEDS` prints them). Before format 8 it kept ten float and six vector programs, before format 6 sixteen float programs.
 

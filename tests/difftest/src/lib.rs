@@ -12,6 +12,8 @@ pub mod agg;
 pub mod ast;
 pub mod classify;
 pub mod corpus;
+#[cfg(test)]
+mod enum_tests;
 pub mod emit;
 pub mod float;
 pub mod generator;

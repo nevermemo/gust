@@ -208,11 +208,13 @@ pub fn coverage_json(programs: &[&Program]) -> Result<Json, String> {
     let mut syntactic: BTreeMap<String, u64> = BTreeMap::new();
     let mut executed_programs: BTreeMap<String, u64> = BTreeMap::new();
     let mut evaluations: BTreeMap<String, u64> = BTreeMap::new();
+    let mut occurrences: BTreeMap<String, u64> = BTreeMap::new();
     let mut total = Coverage::default();
     let mut constant_conditions = 0;
     for program in programs {
-        for name in operator_counts(program).keys() {
+        for (name, n) in &operator_counts(program) {
             *syntactic.entry(name.clone()).or_default() += 1;
+            *occurrences.entry(name.clone()).or_default() += *n as u64;
         }
         let (_, coverage) = run_covered(program)
             .map_err(|f| format!("seed {} attempt {}: {f:?}", program.seed, program.attempt))?;
@@ -243,6 +245,10 @@ pub fn coverage_json(programs: &[&Program]) -> Result<Json, String> {
         operators.push(Json::obj(vec![
             ("operator", Json::str(name)),
             ("programs_in_text", Json::uint(in_text)),
+            (
+                "occurrences_in_text",
+                Json::uint(occurrences.get(name).copied().unwrap_or(0)),
+            ),
             ("programs_executing", Json::uint(executed)),
             (
                 "evaluations",

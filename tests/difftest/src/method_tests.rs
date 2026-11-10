@@ -104,6 +104,7 @@ fn methods() -> Methods {
                 tail: None,
             },
         ],
+        enums: Vec::new(),
     }
 }
 
@@ -379,8 +380,8 @@ fn the_method_space_is_selected_by_its_attempt_numbers_only() {
         let batch = generate_batch(seed).unwrap();
         assert_eq!(batch.programs.len(), PROGRAMS_PER_SEED);
         assert!(
-            batch.method_attempts >= 3
-                && batch.method_attempts == 3 + batch.method_discarded.values().sum::<u32>() as u64,
+            batch.method_attempts >= 2
+                && batch.method_attempts == 2 + batch.method_discarded.values().sum::<u32>() as u64,
             "seed {seed}: {} attempts, {:?}",
             batch.method_attempts,
             batch.method_discarded
@@ -436,6 +437,7 @@ fn stmt_callees(stmts: &[Stmt], out: &mut Vec<usize>) {
                 stmt_callees(els, out);
             }
             Stmt::For { body, .. } => stmt_callees(body, out),
+            Stmt::Match { arms, .. } => arms.iter().for_each(|arm| stmt_callees(&arm.body, out)),
             _ => {}
         }
     }
@@ -477,6 +479,8 @@ fn the_order_sensitive_shapes_are_reachable_within_the_first_64_seeds() {
         "shape same-root set ^=",
         "shape same-root set /=",
         "shape same-root set %=",
+        "shape same-root set &=",
+        "shape same-root set >>=",
         crate::ast::SHAPE_READ_AND_CALL,
         crate::ast::SHAPE_VALUE_CALL_INNER,
         crate::ast::SHAPE_LOGIC_CALL,
@@ -485,6 +489,7 @@ fn the_order_sensitive_shapes_are_reachable_within_the_first_64_seeds() {
         "set &=",
         "set /=",
         "set %=",
+        "set >>=",
     ] {
         assert!(
             totals.get(wanted).copied().unwrap_or(0) > 0,

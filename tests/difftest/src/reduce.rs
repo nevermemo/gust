@@ -4,7 +4,7 @@
 //! interpreter (`discard_reason`) and is strictly smaller by `size` (so the search terminates); results are cached by
 //! hash of text plus inputs. The seven passes run in order, each to a fixed point, until a round changes nothing.
 
-use crate::ast::{Expr, Program, Stmt, Ty, visit_exprs};
+use crate::ast::{Arm, Expr, Program, Stmt, Ty, visit_exprs};
 use crate::corpus::{fnv1a64, fnv1a64_update};
 use crate::emit::emit_module;
 use crate::generator::{BYTES_PER_PROGRAM, decode, discard_reason};
@@ -65,6 +65,7 @@ pub fn size(p: &Program) -> Size {
         stmts.iter().fold(0, |sum, stmt| match stmt {
             Stmt::If { then, els, .. } => sum + trip_total(then) + trip_total(els),
             Stmt::For { trips, body, .. } => sum + u64::from(*trips) + trip_total(body),
+            Stmt::Match { arms, .. } => sum + arms.iter().map(|arm| trip_total(&arm.body)).sum::<u64>(),
             _ => sum,
         })
     }
@@ -119,6 +120,10 @@ fn weight(stmt: &Stmt) -> usize {
     1 + match stmt {
         Stmt::If { then, els, .. } => then.iter().chain(els).map(weight).sum(),
         Stmt::For { body, .. } => body.iter().map(weight).sum(),
+        Stmt::Match { arms, .. } => arms
+            .iter()
+            .map(|arm| arm.body.iter().map(weight).sum::<usize>())
+            .sum(),
         _ => 0,
     }
 }
@@ -148,6 +153,16 @@ fn edit(
                 var: *var,
                 trips: *trips,
                 body: edit(body, at, f),
+            },
+            Stmt::Match { scrut, arms } => Stmt::Match {
+                scrut: scrut.clone(),
+                arms: arms
+                    .iter()
+                    .map(|arm| Arm {
+                        pat: arm.pat.clone(),
+                        body: edit(&arm.body, at, f),
+                    })
+                    .collect(),
             },
             other => other.clone(),
         });
@@ -185,6 +200,13 @@ fn roots_mut(stmts: &mut [Stmt], f: &mut dyn FnMut(&mut Expr)) {
                 roots_mut(els, f);
             }
             Stmt::For { body, .. } => roots_mut(body, f),
+            Stmt::Return { value } => f(value),
+            Stmt::Match { scrut, arms } => {
+                f(scrut);
+                for arm in arms {
+                    roots_mut(&mut arm.body, f);
+                }
+            }
         }
     }
 }
@@ -211,6 +233,7 @@ fn stmt_calls_mut(stmts: &mut [Stmt], f: &mut dyn FnMut(&mut usize)) {
                 stmt_calls_mut(els, f);
             }
             Stmt::For { body, .. } => stmt_calls_mut(body, f),
+            Stmt::Match { arms, .. } => arms.iter_mut().for_each(|arm| stmt_calls_mut(&mut arm.body, f)),
             _ => {}
         }
     }
@@ -297,6 +320,7 @@ fn statements(p: &Program, _: u32) -> Vec<Program> {
                     Some(if branch == 0 { then } else { els }.clone())
                 }
                 (true, Stmt::For { body, .. }) if branch == 0 => Some(body.clone()),
+                (true, Stmt::Match { arms, .. }) => arms.get(branch).map(|arm| arm.body.clone()),
                 _ => None,
             }));
         }
@@ -313,6 +337,7 @@ fn observed(p: &Program, element: u32) -> Vec<Program> {
         let value = seen.get(&(std::ptr::from_ref(e) as usize)).copied();
         if let Some(bits) = value
             && !matches!(e, Expr::Lit(..))
+            && !e.ty().is_enum()
             && !(bits == 0x8000_0000 && e.ty() != Ty::U32)
         {
             nodes.push((e.size(), n, e.ty(), bits));

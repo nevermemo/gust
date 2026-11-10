@@ -51,6 +51,10 @@ pub enum Ty {
     /// A struct of the module (format 8, slice m9.d1a): `S0`, `S1`, `S2`, an index into `Methods::structs`. Never a
     /// buffer element, a vector lane or a result type.
     Struct(u8),
+    /// A field-less enum of the module (format 9, slice m9.d1b): `E0`, `E1`, an index into `Methods::enums`. A value
+    /// lives in a local, a parameter or a result of a function; it is never a field, a buffer element, a vector lane
+    /// or a result type, and it comes only from a variant path, a variable or a call.
+    Enum(u8),
 }
 
 impl Ty {
@@ -72,8 +76,10 @@ impl Ty {
             Ty::Struct(0) => "S0",
             Ty::Struct(1) => "S1",
             Ty::Struct(2) => "S2",
-            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) => {
-                panic!("a width or struct outside the program space: {self:?}")
+            Ty::Enum(0) => "E0",
+            Ty::Enum(1) => "E1",
+            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) => {
+                panic!("a width, struct or enum outside the program space: {self:?}")
             }
         }
     }
@@ -85,16 +91,17 @@ impl Ty {
             Ty::I32 => "int",
             Ty::Bool => "bool",
             Ty::F32 => "float",
-            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) => {
+            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) => {
                 panic!("{} is not a buffer element type", self.name())
             }
         }
     }
 
-    /// The spelling of a struct field, a parameter or a return type: the dialect name of a scalar, `S<k>` of a struct.
+    /// The spelling of a struct field, a parameter or a return type: the dialect name of a scalar, `S<k>` of a struct,
+    /// `E<k>` of an enum.
     pub fn decl_name(self) -> &'static str {
         match self {
-            Ty::Struct(_) => self.name(),
+            Ty::Struct(_) | Ty::Enum(_) => self.name(),
             other => other.dialect_name(),
         }
     }
@@ -102,6 +109,11 @@ impl Ty {
     /// A struct of the module.
     pub fn is_struct(self) -> bool {
         matches!(self, Ty::Struct(_))
+    }
+
+    /// An enum of the module.
+    pub fn is_enum(self) -> bool {
+        matches!(self, Ty::Enum(_))
     }
 
     pub fn is_int(self) -> bool {
@@ -344,6 +356,46 @@ pub enum Expr {
         fields: Vec<Expr>,
         order: Vec<u8>,
     },
+    /// `E0::V1`: variant `v` of enum `e`. (Format 9.)
+    Variant { e: u8, v: u8 },
+    /// `x as u32`: an enum value as its repr type (`to` is `u32` or `i32`, the enum's repr; Rust allows no other
+    /// target here, E0122). (Format 9.)
+    EnumAs { to: Ty, e: Box<Expr> },
+}
+
+/// A field-less enum of the module (format 9): its repr and its variants `V0`, `V1`, ... A variant's value is a 32-bit
+/// pattern (an `i32` repr stores negative values in two's complement); `explicit` says the text writes `= value`, the
+/// others count up from the variant before (the first one from 0).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnumDef {
+    pub repr: Ty,
+    pub variants: Vec<(u32, bool)>,
+}
+
+impl EnumDef {
+    /// The value of variant `v` as a number of the repr type.
+    pub fn value(&self, v: u8) -> i64 {
+        let bits = self.variants[usize::from(v)].0;
+        if self.repr == Ty::I32 {
+            i64::from(bits as i32)
+        } else {
+            i64::from(bits)
+        }
+    }
+}
+
+/// A pattern of a `match` arm: one or more variants (`E0::V1 | E0::V3`), or `_`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pat {
+    Variants(Vec<u8>),
+    Wild,
+}
+
+/// One arm of a statement `match`: the pattern and the block it runs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Arm {
+    pub pat: Pat,
+    pub body: Vec<Stmt>,
 }
 
 /// A module struct: its fields in order, each a `u32`, an `i32` (not `bool`: a GPU struct is a `GpuPod` type) or an
@@ -385,11 +437,13 @@ pub struct FnDef {
 pub struct Methods {
     pub structs: Vec<StructDef>,
     pub fns: Vec<FnDef>,
+    /// The enums of an enum program (format 9); empty for every other space.
+    pub enums: Vec<EnumDef>,
 }
 
 impl Methods {
     pub fn is_empty(&self) -> bool {
-        self.structs.is_empty() && self.fns.is_empty()
+        self.structs.is_empty() && self.fns.is_empty() && self.enums.is_empty()
     }
 
     /// The number of scalar components of a value of struct `j`, nested structs flattened.
@@ -540,6 +594,16 @@ pub fn bin_shape(methods: &Methods, op: BinOp, l: &Expr, r: &Expr) -> Option<&'s
     if matches!(op, BinOp::And | BinOp::Or) && mut_call_root(methods, r).is_some() {
         return Some(SHAPE_LOGIC_CALL);
     }
+    // `==` or `!=` of two enum values that are calls mutating one root: the left call must run first.
+    if matches!(op, BinOp::Eq | BinOp::Ne) && l.ty().is_enum() {
+        let (mut left, mut right) = (Vec::new(), Vec::new());
+        mutating_roots(methods, l, &mut left);
+        mutating_roots(methods, r, &mut right);
+        return left
+            .iter()
+            .any(|root| right.contains(root))
+            .then_some(SHAPE_ENUM_EQ);
+    }
     let read_root = |e: &Expr| match e {
         Expr::Read { place, .. } => Some(place.root),
         _ => None,
@@ -564,12 +628,150 @@ pub fn call_shape(
     .then_some(SHAPE_VALUE_CALL_INNER)
 }
 
+/// Names of the constructs of the enum space (format 9, slice m9.d1b), counted statically by `operator_counts` and when
+/// executed by the interpreter, under the same names. The `shape` ones are the order-sensitive forms the generator is
+/// biased toward.
+pub const MATCH: &str = "match";
+pub const MATCH_WILD: &str = "match with _";
+pub const MATCH_DEFAULT: &str = "match without _ (the default rule)";
+pub const MATCH_GROUPED: &str = "match grouped arm";
+pub const MATCH_NESTED: &str = "match nested in an arm";
+pub const MATCH_IN_FOR: &str = "match in a for body";
+pub const MATCH_ARM_RETURN: &str = "match arm ends in return";
+pub const MATCH_ARM_CALL: &str = "match arm calls";
+pub const MATCH_ARM_SET: &str = "match arm assigns";
+pub const SHAPE_MATCH_SCRUTINEE: &str = "shape match scrutinee &mut self call on a root an arm uses";
+pub const SHAPE_ENUM_EQ: &str = "shape enum ==/!= of two calls on one root";
+pub const SHAPE_ENUM_ARG: &str = "shape enum argument built from a call";
+pub const SHAPE_ENUM_ARGS_ROOT: &str = "shape enum arguments built from calls on one root";
+
+/// The counted name of an enum value read as its repr type.
+pub fn enum_as_name(to: Ty) -> String {
+    format!("enum as {}", to.name())
+}
+
+/// Whether a statement list refers to `root` anywhere: a variable, a field read, a place written, a receiver.
+pub fn stmts_use_root(stmts: &[Stmt], root: Root) -> bool {
+    let mut found = false;
+    let mut look = |e: &Expr| {
+        found |= match e {
+            Expr::Var(v, _) => root == Root::Var(*v),
+            Expr::Read { place, .. } => place.root == root,
+            Expr::Call {
+                recv: Some(place), ..
+            } => place.root == root,
+            _ => false,
+        };
+    };
+    walk_stmts(stmts, &mut look);
+    fn block(stmts: &[Stmt], root: Root) -> bool {
+        stmts.iter().any(|stmt| match stmt {
+            Stmt::Set { place, .. } => place.root == root,
+            Stmt::Assign { var, .. } | Stmt::AssignComp { var, .. } => Root::Var(*var) == root,
+            Stmt::Call {
+                recv: Some(place), ..
+            } => place.root == root,
+            Stmt::If { then, els, .. } => block(then, root) || block(els, root),
+            Stmt::For { body, .. } => block(body, root),
+            Stmt::Match { arms, .. } => arms.iter().any(|arm| block(&arm.body, root)),
+            _ => false,
+        })
+    }
+    found || block(stmts, root)
+}
+
+/// The shape of a statement `match`: its scrutinee holds a `&mut self` call on a root that an arm uses.
+pub fn match_shape(methods: &Methods, scrut: &Expr, arms: &[Arm]) -> Option<&'static str> {
+    let mut roots = Vec::new();
+    mutating_roots(methods, scrut, &mut roots);
+    roots
+        .iter()
+        .any(|&root| arms.iter().any(|arm| stmts_use_root(&arm.body, root)))
+        .then_some(SHAPE_MATCH_SCRUTINEE)
+}
+
+/// The shapes of a call with enum arguments: an argument that is a call, and two arguments that are calls (or hold
+/// calls) mutating one root.
+pub fn enum_call_shapes(methods: &Methods, args: &[Expr]) -> Vec<&'static str> {
+    let mut shapes = Vec::new();
+    let built: Vec<&Expr> = args
+        .iter()
+        .filter(|arg| arg.ty().is_enum() && matches!(arg, Expr::Call { .. }))
+        .collect();
+    if !built.is_empty() {
+        shapes.push(SHAPE_ENUM_ARG);
+    }
+    let mut per_arg: Vec<Vec<Root>> = Vec::new();
+    for arg in &built {
+        let mut roots = Vec::new();
+        mutating_roots(methods, arg, &mut roots);
+        roots.dedup();
+        per_arg.push(roots);
+    }
+    let shared = per_arg.iter().enumerate().any(|(k, roots)| {
+        roots
+            .iter()
+            .any(|root| per_arg[k + 1..].iter().any(|other| other.contains(root)))
+    });
+    if shared {
+        shapes.push(SHAPE_ENUM_ARGS_ROOT);
+    }
+    shapes
+}
+
+/// The names a statement `match` counts under: itself, its kind of ending, a grouped arm, an arm that returns, calls or
+/// assigns, and where it sits (`in_for`: inside a loop body of its function, `nested`: inside an arm of a `match`).
+pub fn match_names(arms: &[Arm], in_for: bool, nested: bool) -> Vec<&'static str> {
+    let mut names = vec![MATCH];
+    names.push(if arms.iter().any(|arm| arm.pat == Pat::Wild) {
+        MATCH_WILD
+    } else {
+        MATCH_DEFAULT
+    });
+    if arms
+        .iter()
+        .any(|arm| matches!(&arm.pat, Pat::Variants(v) if v.len() > 1))
+    {
+        names.push(MATCH_GROUPED);
+    }
+    if arms
+        .iter()
+        .any(|arm| matches!(arm.body.last(), Some(Stmt::Return { .. })))
+    {
+        names.push(MATCH_ARM_RETURN);
+    }
+    let calls = |arm: &Arm| {
+        let mut found = arm.body.iter().any(|s| matches!(s, Stmt::Call { .. }));
+        walk_stmts(&arm.body, &mut |e| found |= matches!(e, Expr::Call { .. }));
+        found
+    };
+    if arms.iter().any(calls) {
+        names.push(MATCH_ARM_CALL);
+    }
+    if arms
+        .iter()
+        .any(|arm| arm.body.iter().any(|s| matches!(s, Stmt::Set { .. } | Stmt::Assign { .. })))
+    {
+        names.push(MATCH_ARM_SET);
+    }
+    if in_for {
+        names.push(MATCH_IN_FOR);
+    }
+    if nested {
+        names.push(MATCH_NESTED);
+    }
+    names
+}
+
 /// The counted name of a struct literal.
 pub const STRUCT_LIT: &str = "struct literal";
 
 /// The most structs a method program declares, and the most scalars a struct holds once nested structs are flattened.
 pub const MAX_STRUCTS: usize = 3;
 pub const MAX_FLAT: usize = 8;
+/// The most enums an enum program declares, and the most variants of one.
+pub const MAX_ENUMS: usize = 2;
+pub const MAX_VARIANTS: usize = 5;
 
 impl Expr {
     pub fn u32(value: u32) -> Expr {
@@ -658,6 +860,8 @@ impl Expr {
                 *ty
             }
             Expr::Read { ty, .. } | Expr::Call { ty, .. } | Expr::StructLit { ty, .. } => *ty,
+            Expr::Variant { e, .. } => Ty::Enum(*e),
+            Expr::EnumAs { to, .. } => *to,
             Expr::Gid | Expr::Len(_) => Ty::U32,
             Expr::Bin { op, ty, .. } => op.result_ty(*ty),
             Expr::Cast { to, .. } => *to,
@@ -726,10 +930,15 @@ impl Expr {
     /// `visit_exprs`, which the reducer's node numbering relies on).
     pub fn for_each_child(&self, f: &mut dyn FnMut(&Expr)) {
         match self {
-            Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) => {}
+            Expr::Lit(..)
+            | Expr::Var(..)
+            | Expr::Gid
+            | Expr::Len(_)
+            | Expr::Variant { .. } => {}
             Expr::Input { index, .. } => f(index),
             Expr::Un { e, .. }
             | Expr::Cast { e, .. }
+            | Expr::EnumAs { e, .. }
             | Expr::Splat { e, .. }
             | Expr::Comp { e, .. }
             | Expr::Swizzle { e, .. }
@@ -749,10 +958,15 @@ impl Expr {
     /// [`Expr::for_each_child`] with mutable access.
     pub fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Expr)) {
         match self {
-            Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) => {}
+            Expr::Lit(..)
+            | Expr::Var(..)
+            | Expr::Gid
+            | Expr::Len(_)
+            | Expr::Variant { .. } => {}
             Expr::Input { index, .. } => f(index),
             Expr::Un { e, .. }
             | Expr::Cast { e, .. }
+            | Expr::EnumAs { e, .. }
             | Expr::Splat { e, .. }
             | Expr::Comp { e, .. }
             | Expr::Swizzle { e, .. }
@@ -872,6 +1086,12 @@ pub enum Stmt {
         recv: Option<Place>,
         args: Vec<Expr>,
     },
+    /// `match scrut { E0::V0 | E0::V2 => { .. } E0::V1 => { .. } _ => { .. } }` on an enum: the scrutinee is evaluated
+    /// once, the first arm whose pattern names the value runs. Without `_` every variant is named once and the last arm
+    /// is the `default` of the Slang `switch`. (Format 9.)
+    Match { scrut: Expr, arms: Vec<Arm> },
+    /// `return value;` in a helper, the last statement of its block. (Format 9.)
+    Return { value: Expr },
 }
 
 /// The largest loop trip count the generator writes.
@@ -929,6 +1149,7 @@ impl Program {
                 Stmt::Call { f, .. } => is_method_or_assoc(methods, *f),
                 Stmt::If { then, els, .. } => block(methods, then) || block(methods, els),
                 Stmt::For { body, .. } => block(methods, body),
+                Stmt::Match { arms, .. } => arms.iter().any(|arm| block(methods, &arm.body)),
                 _ => false,
             })
         }
@@ -945,6 +1166,19 @@ impl Program {
         found
     }
 
+    /// Whether the kernel or a function holds a statement `match` (an enum program without one tests nothing new).
+    pub fn has_match(&self) -> bool {
+        fn block(stmts: &[Stmt]) -> bool {
+            stmts.iter().any(|stmt| match stmt {
+                Stmt::Match { .. } => true,
+                Stmt::If { then, els, .. } => block(then) || block(els),
+                Stmt::For { body, .. } => block(body),
+                _ => false,
+            })
+        }
+        block(&self.body) || self.methods.fns.iter().any(|def| block(&def.body))
+    }
+
     /// Whether any expression reads an input buffer (a program that reads none is a constant, not a test).
     pub fn reads_input(&self) -> bool {
         fn block(stmts: &[Stmt]) -> bool {
@@ -952,10 +1186,14 @@ impl Program {
                 Stmt::Let { init, .. } => init.reads_input(),
                 Stmt::Assign { value, .. }
                 | Stmt::AssignComp { value, .. }
-                | Stmt::Set { value, .. } => value.reads_input(),
+                | Stmt::Set { value, .. }
+                | Stmt::Return { value } => value.reads_input(),
                 Stmt::Call { args, .. } => args.iter().any(Expr::reads_input),
                 Stmt::If { cond, then, els } => cond.reads_input() || block(then) || block(els),
                 Stmt::For { body, .. } => block(body),
+                Stmt::Match { scrut, arms } => {
+                    scrut.reads_input() || arms.iter().any(|arm| block(&arm.body))
+                }
             })
         }
         block(&self.body) || self.result.reads_input()
@@ -973,16 +1211,18 @@ impl Program {
             if input.ty == Ty::Bool {
                 return Err(format!("input {k} is a bool buffer"));
             }
-            if input.ty.is_aggregate() || input.ty.is_struct() {
-                return Err(format!("input {k} is a vector, matrix or struct buffer"));
+            if input.ty.is_aggregate() || input.ty.is_struct() || input.ty.is_enum() {
+                return Err(format!("input {k} is a vector, matrix, struct or enum buffer"));
             }
             if input.data.len() != self.count as usize {
                 return Err(format!("input {k} has {} elements", input.data.len()));
             }
         }
-        if self.result.ty().is_aggregate() || self.result.ty().is_struct() {
+        if self.result.ty().is_aggregate() || self.result.ty().is_struct() || self.result.ty().is_enum()
+        {
             return Err(
-                "the result is a vector, a matrix or a struct (the output buffer is scalar)".into(),
+                "the result is a vector, a matrix, a struct or an enum (the output buffer is scalar)"
+                    .into(),
             );
         }
         self.methods.check_tables()?;
@@ -1014,6 +1254,31 @@ impl Methods {
         if self.structs.len() > MAX_STRUCTS {
             return Err(format!("{} structs", self.structs.len()));
         }
+        if self.enums.len() > MAX_ENUMS {
+            return Err(format!("{} enums", self.enums.len()));
+        }
+        for (k, def) in self.enums.iter().enumerate() {
+            if !matches!(def.repr, Ty::U32 | Ty::I32) {
+                return Err(format!("E{k} has the repr {}", def.repr.name()));
+            }
+            if !(2..=MAX_VARIANTS).contains(&def.variants.len()) {
+                return Err(format!("E{k} has {} variants", def.variants.len()));
+            }
+            let mut seen = BTreeSet::new();
+            for (v, &(bits, explicit)) in def.variants.iter().enumerate() {
+                let value = def.value(v as u8);
+                if !explicit {
+                    // A variant without `= value` counts up from the one before (the first is 0).
+                    let expected = if v == 0 { 0 } else { def.value(v as u8 - 1) + 1 };
+                    if value != expected {
+                        return Err(format!("E{k}::V{v} is {value}, counting up gives {expected}"));
+                    }
+                }
+                if !seen.insert(bits) {
+                    return Err(format!("E{k} has the value {value} twice"));
+                }
+            }
+        }
         for (j, def) in self.structs.iter().enumerate() {
             if def.fields.is_empty() || def.fields.len() > 3 {
                 return Err(format!("struct S{j} has {} fields", def.fields.len()));
@@ -1043,20 +1308,30 @@ impl Methods {
                 match ty {
                     Ty::U32 | Ty::I32 | Ty::Bool => {}
                     Ty::Struct(j) if usize::from(*j) < self.structs.len() => {}
+                    Ty::Enum(e) if usize::from(*e) < self.enums.len() => {}
                     other => return Err(format!("m{k} has a parameter of {}", other.name())),
                 }
+            }
+            if let Some(Ty::Enum(e)) = def.ret
+                && usize::from(e) >= self.enums.len()
+            {
+                return Err(format!("m{k} returns an unknown enum"));
             }
             match (def.recv, def.owner, def.ret) {
                 (Recv::None, Some(owner), ret) if ret != Some(Ty::Struct(owner)) => {
                     return Err(format!("associated m{k} does not return its struct"));
                 }
-                (Recv::None, None, Some(Ty::U32 | Ty::I32 | Ty::Bool)) => {}
+                (Recv::None, None, Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_))) => {}
                 (Recv::None, None, _) => return Err(format!("helper m{k} has no scalar result")),
-                (Recv::Shared | Recv::Value, _, Some(Ty::U32 | Ty::I32 | Ty::Bool)) => {}
+                (
+                    Recv::Shared | Recv::Value,
+                    _,
+                    Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_)),
+                ) => {}
                 (Recv::Shared | Recv::Value, _, _) => {
                     return Err(format!("method m{k} has no scalar result"));
                 }
-                (Recv::Mut, _, None | Some(Ty::U32 | Ty::I32 | Ty::Bool)) => {}
+                (Recv::Mut, _, None | Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_))) => {}
                 (Recv::Mut, _, _) => return Err(format!("method m{k} returns a struct")),
                 _ => {}
             }
@@ -1076,6 +1351,16 @@ struct Check<'a> {
     seen: BTreeSet<u32>,
     /// The index of the function being checked (`None` in the kernel). A function sees no buffer, no `i`.
     in_fn: Option<usize>,
+}
+
+/// A `return` is the last statement of its block (the statements after one would be dead code).
+fn returns_last(stmts: &[Stmt]) -> Result<(), String> {
+    match stmts.split_last() {
+        Some((_, rest)) if rest.iter().any(|s| matches!(s, Stmt::Return { .. })) => {
+            Err("a `return` that is not the last statement of its block".into())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The roots of the `&mut self` calls inside `expr` (a call's receiver, and the calls in its arguments).
@@ -1201,6 +1486,7 @@ impl Check<'_> {
         for &(var, ty) in &def.params {
             self.declare(var, ty, false)?;
         }
+        returns_last(&def.body)?;
         for stmt in &def.body {
             self.stmt(stmt)?;
         }
@@ -1246,11 +1532,65 @@ impl Check<'_> {
 
     fn block(&mut self, stmts: &[Stmt]) -> Result<(), String> {
         let mark = self.scope.len();
+        returns_last(stmts)?;
         for stmt in stmts {
             self.stmt(stmt)?;
         }
         self.scope.truncate(mark);
         Ok(())
+    }
+
+    /// A statement `match` on an enum: the scrutinee is a local, a parameter, a call or a variant path (E0515), the
+    /// patterns name each variant at most once (E0521), `_` is last and stands for at least one variant, and without
+    /// `_` every variant is named, so Rust accepts the match and the last arm is the `default` of the Slang `switch`.
+    fn match_stmt(&mut self, scrut: &Expr, arms: &[Arm]) -> Result<(), String> {
+        self.expr(scrut)?;
+        let Ty::Enum(e) = scrut.ty() else {
+            return Err(format!("a match on {}", scrut.ty().name()));
+        };
+        if !matches!(
+            scrut,
+            Expr::Var(..) | Expr::Call { .. } | Expr::Variant { .. }
+        ) {
+            return Err("a match scrutinee is a local, a call or a variant".into());
+        }
+        let Some(def) = self.methods.enums.get(usize::from(e)) else {
+            return Err(format!("a match on unknown E{e}"));
+        };
+        let mut named = BTreeSet::new();
+        let mut wild = false;
+        let mut named_arms = 0;
+        for arm in arms {
+            if wild {
+                return Err("an arm after `_`".into());
+            }
+            match &arm.pat {
+                Pat::Wild => wild = true,
+                Pat::Variants(variants) => {
+                    named_arms += 1;
+                    if variants.is_empty() {
+                        return Err("an arm with no variant".into());
+                    }
+                    for &v in variants {
+                        if usize::from(v) >= def.variants.len() {
+                            return Err(format!("E{e} has no variant V{v}"));
+                        }
+                        if !named.insert(v) {
+                            return Err(format!("E{e}::V{v} is named twice"));
+                        }
+                    }
+                }
+            }
+            self.block(&arm.body)?;
+        }
+        if named_arms == 0 {
+            return Err("a match with no variant arm".into());
+        }
+        match (wild, named.len() == def.variants.len()) {
+            (false, false) => Err("a match without `_` that does not name every variant".into()),
+            (true, true) => Err("a `_` arm that no variant reaches".into()),
+            _ => Ok(()),
+        }
     }
 
     fn stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
@@ -1359,6 +1699,21 @@ impl Check<'_> {
                 recv,
                 args,
             } => self.call(*f, *owner, recv, args).map(|_| ()),
+            Stmt::Match { scrut, arms } => self.match_stmt(scrut, arms),
+            Stmt::Return { value } => {
+                self.expr(value)?;
+                let helper = self.in_fn.map(|k| &self.methods.fns[k]);
+                match helper {
+                    Some(def)
+                        if def.recv == Recv::None
+                            && def.owner.is_none()
+                            && def.ret == Some(value.ty()) =>
+                    {
+                        Ok(())
+                    }
+                    _ => Err("a `return` outside a helper, or of the wrong type".into()),
+                }
+            }
         }
     }
 
@@ -1372,8 +1727,24 @@ impl Check<'_> {
             Expr::Lit(Ty::F32, bits) if *bits == (-0.0f32).to_bits() => {
                 Err("negative zero literal".into())
             }
-            Expr::Lit(ty, _) if ty.is_aggregate() || ty.is_struct() => {
-                Err("a vector, matrix or struct literal".into())
+            Expr::Lit(ty, _) if ty.is_aggregate() || ty.is_struct() || ty.is_enum() => {
+                Err("a vector, matrix, struct or enum literal".into())
+            }
+            Expr::Variant { e, v } => match self.methods.enums.get(usize::from(*e)) {
+                Some(def) if usize::from(*v) < def.variants.len() => Ok(()),
+                _ => Err(format!("E{e}::V{v} does not exist")),
+            },
+            Expr::EnumAs { to, e } => {
+                self.expr(e)?;
+                match e.ty() {
+                    Ty::Enum(k)
+                        if self.methods.enums.get(usize::from(k)).map(|def| def.repr)
+                            == Some(*to) =>
+                    {
+                        Ok(())
+                    }
+                    other => Err(format!("{} as {}", other.name(), to.name())),
+                }
             }
             Expr::Gid if self.in_fn.is_some() => Err("`i` inside a function".into()),
             Expr::Lit(..) | Expr::Gid => Ok(()),
@@ -1394,7 +1765,11 @@ impl Check<'_> {
             }
             Expr::Input { buf, ty, index } => {
                 self.expr(index)?;
-                if ty.is_aggregate() || ty.is_struct() || self.inputs.get(*buf) != Some(ty) {
+                if ty.is_aggregate()
+                    || ty.is_struct()
+                    || ty.is_enum()
+                    || self.inputs.get(*buf) != Some(ty)
+                {
                     return Err(format!("input {buf} read at the wrong type"));
                 }
                 if index.ty() != Ty::U32 {
@@ -1418,8 +1793,8 @@ impl Check<'_> {
                         Err("negated literal not folded".into())
                     }
                     UnOp::Not if *ty == Ty::F32 => Err("`!` on f32".into()),
-                    UnOp::Not if ty.is_aggregate() || ty.is_struct() => {
-                        Err("`!` on a vector, matrix or struct".into())
+                    UnOp::Not if ty.is_aggregate() || ty.is_struct() || ty.is_enum() => {
+                        Err("`!` on a vector, matrix, struct or enum".into())
                     }
                     UnOp::Neg if ty.is_struct() => Err("negation of a struct".into()),
                     _ => Ok(()),
@@ -1436,6 +1811,14 @@ impl Check<'_> {
                 }
                 if ty.is_struct() {
                     return Err(format!("`{}` on a struct", op.symbol()));
+                }
+                if ty.is_enum() {
+                    // `==` and `!=` only: the enum derives `PartialEq` and nothing else.
+                    return if matches!(op, BinOp::Eq | BinOp::Ne) && r.ty() == *ty {
+                        Ok(())
+                    } else {
+                        Err(format!("`{}` on an enum", op.symbol()))
+                    };
                 }
                 let (need_int, right) = if op.is_shift() {
                     (true, Ty::U32)
@@ -1465,7 +1848,9 @@ impl Check<'_> {
             }
             Expr::Cast { to, e } => {
                 self.expr(e)?;
-                let castable = |ty: Ty| ty != Ty::Bool && !ty.is_aggregate() && !ty.is_struct();
+                let castable = |ty: Ty| {
+                    ty != Ty::Bool && !ty.is_aggregate() && !ty.is_struct() && !ty.is_enum()
+                };
                 if !castable(*to) || !castable(e.ty()) || e.ty() == *to {
                     return Err("cast outside u32, i32 and f32".into());
                 }
@@ -1634,7 +2019,8 @@ pub fn walk_stmts(stmts: &[Stmt], f: &mut dyn FnMut(&Expr)) {
             Stmt::Let { init, .. } => walk_expr(init, f),
             Stmt::Assign { value, .. }
             | Stmt::AssignComp { value, .. }
-            | Stmt::Set { value, .. } => walk_expr(value, f),
+            | Stmt::Set { value, .. }
+            | Stmt::Return { value } => walk_expr(value, f),
             Stmt::Call { args, .. } => args.iter().for_each(|arg| walk_expr(arg, f)),
             Stmt::If { cond, then, els } => {
                 walk_expr(cond, f);
@@ -1642,6 +2028,12 @@ pub fn walk_stmts(stmts: &[Stmt], f: &mut dyn FnMut(&Expr)) {
                 walk_stmts(els, f);
             }
             Stmt::For { body, .. } => walk_stmts(body, f),
+            Stmt::Match { scrut, arms } => {
+                walk_expr(scrut, f);
+                for arm in arms {
+                    walk_stmts(&arm.body, f);
+                }
+            }
         }
     }
 }
@@ -1711,6 +2103,8 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
                 Some(call_name(def.recv, def.owner).to_owned())
             }
             Expr::StructLit { .. } => Some(STRUCT_LIT.to_owned()),
+            Expr::EnumAs { to, .. } => Some(enum_as_name(*to)),
+            Expr::Variant { .. } => None,
             other => other.aggregate_name(),
         };
         if let Some(name) = name {
@@ -1729,9 +2123,20 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
         if let Some(shape) = shape {
             *counts.entry(shape.to_owned()).or_default() += 1;
         }
+        if let Expr::Call { args, .. } = e {
+            for shape in enum_call_shapes(methods, args) {
+                *counts.entry(shape.to_owned()).or_default() += 1;
+            }
+        }
         e.for_each_child(&mut |child| expr(methods, child, counts));
     }
-    fn block(methods: &Methods, stmts: &[Stmt], counts: &mut BTreeMap<String, usize>) {
+    fn block(
+        methods: &Methods,
+        stmts: &[Stmt],
+        in_for: bool,
+        nested: bool,
+        counts: &mut BTreeMap<String, usize>,
+    ) {
         for stmt in stmts {
             match stmt {
                 Stmt::Let { init, .. } => expr(methods, init, counts),
@@ -1760,26 +2165,45 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
                     *counts
                         .entry(call_name(def.recv, def.owner).to_owned())
                         .or_default() += 1;
+                    for shape in enum_call_shapes(methods, args) {
+                        *counts.entry(shape.to_owned()).or_default() += 1;
+                    }
                     args.iter().for_each(|arg| expr(methods, arg, counts));
                 }
                 Stmt::If { cond, then, els } => {
                     expr(methods, cond, counts);
-                    block(methods, then, counts);
-                    block(methods, els, counts);
+                    block(methods, then, in_for, nested, counts);
+                    block(methods, els, in_for, nested, counts);
                 }
                 Stmt::For { body, .. } => {
                     *counts.entry("for".to_owned()).or_default() += 1;
-                    block(methods, body, counts);
+                    block(methods, body, true, nested, counts);
+                }
+                Stmt::Match { scrut, arms } => {
+                    for name in match_names(arms, in_for, nested) {
+                        *counts.entry(name.to_owned()).or_default() += 1;
+                    }
+                    if let Some(shape) = match_shape(methods, scrut, arms) {
+                        *counts.entry(shape.to_owned()).or_default() += 1;
+                    }
+                    expr(methods, scrut, counts);
+                    for arm in arms {
+                        block(methods, &arm.body, in_for, true, counts);
+                    }
+                }
+                Stmt::Return { value } => {
+                    *counts.entry("return".to_owned()).or_default() += 1;
+                    expr(methods, value, counts);
                 }
             }
         }
     }
     let mut counts = BTreeMap::new();
     let methods = &program.methods;
-    block(methods, &program.body, &mut counts);
+    block(methods, &program.body, false, false, &mut counts);
     expr(methods, &program.result, &mut counts);
     for def in &methods.fns {
-        block(methods, &def.body, &mut counts);
+        block(methods, &def.body, false, false, &mut counts);
         if let Some(tail) = &def.tail {
             expr(methods, tail, &mut counts);
         }

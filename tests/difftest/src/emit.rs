@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 
-use crate::ast::{COMPONENT_LETTERS, Expr, FnDef, Place, Program, Recv, Root, Stmt, Ty, UnOp};
+use crate::ast::{COMPONENT_LETTERS, Expr, FnDef, Pat, Place, Program, Recv, Root, Stmt, Ty, UnOp};
 use crate::generator::DIFFTEST_FORMAT;
 use crate::shapes::{PIXEL_KERNEL, ShapePlan};
 
@@ -115,7 +115,9 @@ fn literal(ty: Ty, bits: u32) -> String {
                 format!("{value}i32")
             }
         }
-        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) => unreachable!("{} has no literal", ty.name()),
+        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) => {
+            unreachable!("{} has no literal", ty.name())
+        }
     }
 }
 
@@ -147,7 +149,12 @@ fn is_atom(expr: &Expr) -> bool {
     match expr {
         Expr::Lit(Ty::I32, bits) => (*bits as i32) >= 0,
         Expr::Lit(Ty::F32, bits) => bits >> 31 == 0,
-        Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Input { .. } => true,
+        Expr::Lit(..)
+        | Expr::Var(..)
+        | Expr::Gid
+        | Expr::Len(_)
+        | Expr::Input { .. }
+        | Expr::Variant { .. } => true,
         // A constructor is a call and a component, swizzle, `dot` or `transpose` a postfix: both bind tighter than any
         // operator, so they are operands as they stand.
         Expr::Make { .. }
@@ -161,6 +168,7 @@ fn is_atom(expr: &Expr) -> bool {
         Expr::Un { .. }
         | Expr::Bin { .. }
         | Expr::Cast { .. }
+        | Expr::EnumAs { .. }
         | Expr::AggBin { .. }
         | Expr::AggNeg { .. } => false,
     }
@@ -191,6 +199,8 @@ pub fn emit_expr(expr: &Expr) -> String {
         }
         Expr::Bin { op, l, r, .. } => format!("{} {} {}", operand(l), op.symbol(), operand(r)),
         Expr::Cast { to, e } => format!("{} as {}", operand(e), to.name()),
+        Expr::EnumAs { to, e } => format!("{} as {}", operand(e), to.name()),
+        Expr::Variant { e, v } => format!("E{e}::V{v}"),
         Expr::Make { ty, rows, args } => {
             let constructor = match (ty, rows) {
                 (Ty::Mat(_), true) => "from_rows",
@@ -293,6 +303,32 @@ fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
             emit_block(body, level + 1, out);
             let _ = writeln!(out, "{pad}}}");
         }
+        Stmt::Return { value } => {
+            let _ = writeln!(out, "{pad}return {};", emit_expr(value));
+        }
+        Stmt::Match { scrut, arms } => {
+            let _ = writeln!(out, "{pad}match {} {{", emit_expr(scrut));
+            let ty = scrut.ty();
+            for arm in arms {
+                let pattern = match &arm.pat {
+                    Pat::Wild => "_".to_owned(),
+                    Pat::Variants(variants) => {
+                        let Ty::Enum(e) = ty else {
+                            unreachable!("a match scrutinee is an enum")
+                        };
+                        variants
+                            .iter()
+                            .map(|v| format!("E{e}::V{v}"))
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    }
+                };
+                let _ = writeln!(out, "{pad}{INDENT}{pattern} => {{");
+                emit_block(&arm.body, level + 2, out);
+                let _ = writeln!(out, "{pad}{INDENT}}}");
+            }
+            let _ = writeln!(out, "{pad}}}");
+        }
     }
 }
 
@@ -350,9 +386,27 @@ fn signature(def: &FnDef) -> String {
     format!("({}){ret}", params.join(", "))
 }
 
+/// `#[allow(unreachable_code)]` on a function with a `return` (a `return` that ends an arm can leave the tail dead in
+/// rustc's flow analysis). The crate-level `allow` line cannot change: it is part of every older format's text.
+fn emit_allow(def: &FnDef, pad: &str, out: &mut String) {
+    fn has_return(stmts: &[Stmt]) -> bool {
+        stmts.iter().any(|stmt| match stmt {
+            Stmt::Return { .. } => true,
+            Stmt::If { then, els, .. } => has_return(then) || has_return(els),
+            Stmt::For { body, .. } => has_return(body),
+            Stmt::Match { arms, .. } => arms.iter().any(|arm| has_return(&arm.body)),
+            _ => false,
+        })
+    }
+    if has_return(&def.body) {
+        let _ = writeln!(out, "{pad}#[allow(unreachable_code)]");
+    }
+}
+
 /// One function at `level`: its signature, its body and its tail.
 fn emit_fn(k: usize, def: &FnDef, level: usize, out: &mut String) {
     let pad = INDENT.repeat(level);
+    emit_allow(def, &pad, out);
     let _ = writeln!(out, "{pad}pub fn m{k}{} {{", signature(def));
     emit_block(&def.body, level + 1, out);
     if let Some(tail) = &def.tail {
@@ -365,6 +419,22 @@ fn emit_fn(k: usize, def: &FnDef, level: usize, out: &mut String) {
 /// depth. Nothing for any other program.
 fn emit_methods(program: &Program, out: &mut String) {
     let methods = &program.methods;
+    for (j, def) in methods.enums.iter().enumerate() {
+        let _ = writeln!(out, "{INDENT}#[derive(PartialEq, Eq)]");
+        if def.repr == Ty::I32 {
+            let _ = writeln!(out, "{INDENT}#[repr(i32)]");
+        }
+        let _ = writeln!(out, "{INDENT}pub enum E{j} {{");
+        for (v, &(_, explicit)) in def.variants.iter().enumerate() {
+            if explicit {
+                let value = def.value(v as u8);
+                let _ = writeln!(out, "{INDENT}{INDENT}V{v} = {value},");
+            } else {
+                let _ = writeln!(out, "{INDENT}{INDENT}V{v},");
+            }
+        }
+        let _ = writeln!(out, "{INDENT}}}\n");
+    }
     for (j, def) in methods.structs.iter().enumerate() {
         let _ = writeln!(out, "{INDENT}pub struct S{j} {{");
         for (k, ty) in def.fields.iter().enumerate() {
@@ -393,6 +463,7 @@ fn emit_methods(program: &Program, out: &mut String) {
     }
     for (k, def) in methods.fns.iter().enumerate() {
         if def.owner.is_none() {
+            emit_allow(def, INDENT, out);
             let _ = writeln!(out, "{INDENT}fn m{k}{} {{", signature(def));
             emit_block(&def.body, 2, out);
             if let Some(tail) = &def.tail {

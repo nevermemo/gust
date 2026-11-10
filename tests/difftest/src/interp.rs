@@ -15,9 +15,11 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::agg::{self, Agg, Scalar};
 use crate::ast::{
-    ASSIGN_COMP, BinOp, Expr, Pat, Place, Program, Recv, Root, SHAPE_EXPR_CALL, SHAPE_STMT_CALL,
-    STRUCT_LIT, Stmt, Ty, UnOp, bin_shape, call_name, call_shape, enum_as_name, enum_call_shapes,
-    match_names, match_shape, set_name, set_shape,
+    ASSIGN_COMP, Arm, BinOp, Elem, Expr, MATCH_ARM_RETURN_RUN, Pat, Place, Program, Recv, Root,
+    SHAPE_EXPR_CALL, SHAPE_STMT_CALL, STRUCT_LIT, Stmt, TUPLE_READ, Ty, UnOp, bin_shape,
+    call_arg_names, call_name, call_shape, destruct_names, enum_as_name, enum_call_shapes,
+    match_names, match_shape, set_name, set_shape, tuple_field_names, tuple_lit_names,
+    tuple_set_names, value_match_names,
 };
 use crate::float::{self, Fl};
 
@@ -283,6 +285,9 @@ pub(crate) fn env_mutant() -> Option<Mutant> {
     match std::env::var("DIFFTEST_MUTANT").as_deref() {
         Ok("default-first-arm") => Some(Mutant::DefaultTakesFirstArm),
         Ok("scrutinee-twice") => Some(Mutant::ScrutineeTwice),
+        Ok("tuple-right-to-left") => Some(Mutant::TupleRightToLeft),
+        Ok("value-scrutinee-twice") => Some(Mutant::ValueScrutineeTwice),
+        Ok("group-first-only") => Some(Mutant::GroupFirstOnly),
         _ => None,
     }
 }
@@ -295,6 +300,12 @@ pub enum Mutant {
     DefaultTakesFirstArm,
     /// The scrutinee is evaluated again for every arm tried (read twice).
     ScrutineeTwice,
+    /// The elements of a tuple literal run right to left (their values are still placed left to right). (m9.d1c)
+    TupleRightToLeft,
+    /// The scrutinee of a value `match` is evaluated again for every arm after the first. (m9.d1c)
+    ValueScrutineeTwice,
+    /// An integer pattern group (`1 | 2 | 3`) matches only its first literal. (m9.d1c)
+    GroupFirstOnly,
 }
 
 /// What `run_covered` counts while it runs.
@@ -544,7 +555,50 @@ impl Machine<'_> {
             | Expr::Transpose { .. }
             | Expr::AggBin { .. }
             | Expr::AggNeg { .. } => self.eval_aggregate(expr),
-            Expr::Read { place, .. } => Ok(self.place_get(place)),
+            Expr::Read { place, .. } => {
+                if place.root_ty.is_tuple() {
+                    self.count_name(TUPLE_READ);
+                }
+                Ok(self.place_get(place))
+            }
+            Expr::Tuple { elems, .. } => {
+                if self.coverage.is_some() {
+                    for name in tuple_lit_names(&self.program.methods, elems) {
+                        self.count_name(name);
+                    }
+                }
+                // The elements run left to right, each completely before the next (Rust Reference, "Tuple
+                // expressions" and "Evaluation order of operands").
+                let mut values = vec![None; elems.len()];
+                let order: Vec<usize> = if self.mutant == Some(Mutant::TupleRightToLeft) {
+                    (0..elems.len()).rev().collect()
+                } else {
+                    (0..elems.len()).collect()
+                };
+                for k in order {
+                    values[k] = Some(self.expr(&elems[k])?);
+                }
+                let mut parts = Vec::new();
+                for value in values.into_iter().flatten() {
+                    match value {
+                        Val::A(agg) => parts.extend_from_slice(agg.lanes()),
+                        scalar => parts.push(scalar.scalar()),
+                    }
+                }
+                Ok(Val::A(Agg::new(&parts)))
+            }
+            Expr::TupleField { e, index } => {
+                if self.coverage.is_some() {
+                    for name in tuple_field_names(&self.program.methods, e) {
+                        self.count_name(name);
+                    }
+                }
+                let Ty::Tuple(t) = e.ty() else {
+                    unreachable!("Program::check requires a tuple under `.k`")
+                };
+                let agg = self.expr(e)?.agg();
+                Ok(self.tuple_element(t, *index, &agg))
+            }
             Expr::Variant { e, v } => Ok(Val::I(
                 self.program.methods.enums[usize::from(*e)].variants[usize::from(*v)].0,
             )),
@@ -618,6 +672,16 @@ impl Machine<'_> {
         }
     }
 
+    /// Element `k` of a tuple value `agg` of type `t`: a scalar, or a struct as its flat components.
+    fn tuple_element(&self, t: crate::ast::TupleTy, k: u8, agg: &Agg) -> Val {
+        let methods = &self.program.methods;
+        let offset = methods.tuple_offset(t, k);
+        match t.elems()[usize::from(k)] {
+            Elem::Struct(j) => Val::A(Agg::new(&agg.c[offset..offset + methods.flat_len(j)])),
+            _ => agg.c[offset].into(),
+        }
+    }
+
     /// Counts the enum-argument shapes of a call.
     fn count_enum_args(&mut self, args: &[Expr]) {
         if self.coverage.is_some() {
@@ -646,7 +710,7 @@ impl Machine<'_> {
         let methods = &self.program.methods;
         let (ty, offset) = methods.walk(place.root_ty, &place.path);
         let Val::A(agg) = root else {
-            unreachable!("a field of a scalar")
+            unreachable!("a field of a scalar: {place:?} holds {root:?}")
         };
         match ty {
             Ty::Struct(j) => Val::A(Agg::new(&agg.c[offset..offset + methods.flat_len(j)])),
@@ -695,6 +759,11 @@ impl Machine<'_> {
         {
             self.count_name(shape);
         }
+        if self.coverage.is_some() {
+            for name in call_arg_names(args) {
+                self.count_name(name);
+            }
+        }
         let receiver = recv.as_ref().map(|place| self.place_get(place));
         let mut values = Vec::with_capacity(args.len());
         for arg in args {
@@ -736,6 +805,68 @@ impl Machine<'_> {
         Ok(value)
     }
 
+    /// A value `match` (`tail`: the value of an arm of another one): the scrutinee once, the first arm that names it,
+    /// then that arm's block and its value. `None` if the arm returned from the function (`self.returned` is set).
+    fn value_match(
+        &mut self,
+        scrut: &Expr,
+        arms: &[Arm],
+        tail: bool,
+    ) -> Result<Option<Val>, Violation> {
+        if self.coverage.is_some() {
+            for name in value_match_names(&self.program.methods, scrut, arms, tail) {
+                self.count_name(name);
+            }
+        }
+        let bits = self.expr(scrut)?.int();
+        let variant = match scrut.ty() {
+            Ty::Enum(e) => self.program.methods.enums[usize::from(e)]
+                .variants
+                .iter()
+                .position(|v| v.0 == bits)
+                .expect("an enum value is a discriminant") as u8,
+            _ => 0,
+        };
+        let mut taken = None;
+        for (k, arm) in arms.iter().enumerate() {
+            if self.mutant == Some(Mutant::ValueScrutineeTwice) && k > 0 {
+                self.expr(scrut)?;
+            }
+            let hit = match &arm.pat {
+                Pat::Variants(vs) => vs.contains(&variant),
+                Pat::Lits(lits) if self.mutant == Some(Mutant::GroupFirstOnly) => lits[0].0 == bits,
+                Pat::Lits(lits) => lits.iter().any(|&(lit, _)| lit == bits),
+                Pat::Wild => true,
+            };
+            if hit {
+                taken = Some(arm);
+                break;
+            }
+        }
+        let arm = taken.expect("a value match is exhaustive");
+        self.arm_depth += 1;
+        let done = self.arm_value(&arm.body);
+        self.arm_depth -= 1;
+        done
+    }
+
+    /// The block of a value arm: its statements, then its value (`None` after a `return`).
+    fn arm_value(&mut self, body: &[Stmt]) -> Result<Option<Val>, Violation> {
+        let (last, rest) = body.split_last().expect("a value arm is not empty");
+        self.block(rest)?;
+        if self.returned.is_some() {
+            return Ok(None);
+        }
+        match last {
+            Stmt::Yield { value } => Ok(Some(self.expr(value)?)),
+            Stmt::TailMatch { scrut, arms } => self.value_match(scrut, arms, true),
+            other => {
+                self.block(std::slice::from_ref(other))?;
+                Ok(None)
+            }
+        }
+    }
+
     fn block(&mut self, stmts: &[Stmt]) -> Result<(), Violation> {
         for stmt in stmts {
             match stmt {
@@ -746,6 +877,35 @@ impl Machine<'_> {
                 Stmt::Assign { var, value } => {
                     let value = self.expr(value)?;
                     self.vars[*var as usize] = value;
+                }
+                Stmt::LetTuple {
+                    vars,
+                    ty,
+                    init,
+                    annotate,
+                } => {
+                    if self.coverage.is_some() {
+                        for name in destruct_names(&self.program.methods, *annotate, init) {
+                            self.count_name(name);
+                        }
+                    }
+                    let Ty::Tuple(t) = ty else {
+                        unreachable!("Program::check requires a tuple type")
+                    };
+                    let agg = self.expr(init)?.agg();
+                    for (k, &(var, _)) in vars.iter().enumerate() {
+                        self.vars[var as usize] = self.tuple_element(*t, k as u8, &agg);
+                    }
+                }
+                Stmt::LetMatch {
+                    var, scrut, arms, ..
+                } => {
+                    if let Some(value) = self.value_match(scrut, arms, false)? {
+                        self.vars[*var as usize] = value;
+                    }
+                }
+                Stmt::Yield { .. } | Stmt::TailMatch { .. } => {
+                    unreachable!("a `Yield` or `TailMatch` only ends a value arm (Program::check)")
                 }
                 Stmt::AssignComp { var, index, value } => {
                     if let Some(counting) = &mut self.coverage {
@@ -770,6 +930,11 @@ impl Machine<'_> {
                     {
                         self.count_name(&shape);
                     }
+                    if self.coverage.is_some() {
+                        for name in tuple_set_names(&self.program.methods, place, *op, value) {
+                            self.count_name(name);
+                        }
+                    }
                     // Rust evaluates the assigned value first. For `place op= value` on primitives the right operand
                     // also comes before the place is read (Reference, "Compound assignment expressions"), so the
                     // place holds whatever the value's calls left in it.
@@ -792,6 +957,9 @@ impl Machine<'_> {
                 }
                 Stmt::Return { value } => {
                     self.count_name("return");
+                    if self.arm_depth > 0 {
+                        self.count_name(MATCH_ARM_RETURN_RUN);
+                    }
                     let value = self.expr(value)?;
                     self.returned = Some(value);
                 }
@@ -823,6 +991,7 @@ impl Machine<'_> {
                         }
                         let hit = match &arm.pat {
                             Pat::Variants(vs) => vs.contains(&variant),
+                            Pat::Lits(_) => unreachable!("an integer pattern in a statement match"),
                             Pat::Wild => true,
                         };
                         if hit {
@@ -889,15 +1058,23 @@ fn variable_slots(program: &Program) -> usize {
         for stmt in stmts {
             match stmt {
                 Stmt::Let { var, .. }
+                | Stmt::LetMatch { var, .. }
                 | Stmt::Assign { var, .. }
                 | Stmt::AssignComp { var, .. }
                 | Stmt::For { var, .. } => {
                     *max = (*max).max(*var as usize + 1);
                 }
+                Stmt::LetTuple { vars, .. } => {
+                    for &(var, _) in vars {
+                        *max = (*max).max(var as usize + 1);
+                    }
+                }
                 Stmt::If { .. }
                 | Stmt::Set { .. }
                 | Stmt::Call { .. }
                 | Stmt::Match { .. }
+                | Stmt::TailMatch { .. }
+                | Stmt::Yield { .. }
                 | Stmt::Return { .. } => {}
             }
             match stmt {
@@ -906,7 +1083,9 @@ fn variable_slots(program: &Program) -> usize {
                     block(els, max);
                 }
                 Stmt::For { body, .. } => block(body, max),
-                Stmt::Match { arms, .. } => arms.iter().for_each(|arm| block(&arm.body, max)),
+                Stmt::Match { arms, .. }
+                | Stmt::LetMatch { arms, .. }
+                | Stmt::TailMatch { arms, .. } => arms.iter().for_each(|arm| block(&arm.body, max)),
                 _ => {}
             }
         }
@@ -979,7 +1158,9 @@ fn count_ifs(stmts: &[Stmt]) -> u64 {
         .map(|stmt| match stmt {
             Stmt::If { then, els, .. } => 1 + count_ifs(then) + count_ifs(els),
             Stmt::For { body, .. } => count_ifs(body),
-            Stmt::Match { arms, .. } => arms.iter().map(|arm| count_ifs(&arm.body)).sum(),
+            Stmt::Match { arms, .. }
+            | Stmt::LetMatch { arms, .. }
+            | Stmt::TailMatch { arms, .. } => arms.iter().map(|arm| count_ifs(&arm.body)).sum(),
             _ => 0,
         })
         .sum()
@@ -1169,7 +1350,11 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
             Expr::Lit(_, bits) => Ok(Some(Const::I(*bits))),
             Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Variant { .. } => Ok(None),
             // A field, a call or a struct literal is open; its operands are folded as nodes of their own.
-            Expr::Read { .. } | Expr::Call { .. } | Expr::StructLit { .. } => Ok(None),
+            Expr::Read { .. }
+            | Expr::Call { .. }
+            | Expr::StructLit { .. }
+            | Expr::Tuple { .. }
+            | Expr::TupleField { .. } => Ok(None),
             Expr::Input { index, .. } => fold(index).map(|_| None),
             Expr::Un {
                 op: UnOp::Neg,
@@ -1355,6 +1540,55 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
             found = fold(e).err();
         }
     });
+    // Format 10 (m9.d1c): the right-hand side of a compound assignment is the operand of an implicit shift, division or
+    // remainder, so a closed constant outside the domain there (`self.f <<= 34u32` in a method nobody calls) is a
+    // static violation too: naga rejects the module although the interpreter never runs the statement. Only the value
+    // space applies it: the older spaces decode as they did (the same gap exists there, seen in no pinned seed).
+    if found.is_none()
+        && crate::generator::space_of_attempt(program.attempt) == crate::generator::Space::Value
+    {
+        fn sets(
+            stmts: &[Stmt],
+            fold: fn(&Expr) -> Result<Option<Const>, Violation>,
+        ) -> Option<Violation> {
+            for stmt in stmts {
+                let violation = match stmt {
+                    Stmt::Set {
+                        op: Some(op),
+                        value,
+                        ..
+                    } => match (op, fold(value)) {
+                        (BinOp::Shl | BinOp::Shr, Ok(Some(Const::I(amount)))) if amount >= 32 => {
+                            Some(Violation::ShiftAmount)
+                        }
+                        (BinOp::Div | BinOp::Rem, Ok(Some(Const::I(0)))) => {
+                            Some(Violation::DivisionByZero)
+                        }
+                        _ => None,
+                    },
+                    Stmt::If { then, els, .. } => sets(then, fold).or_else(|| sets(els, fold)),
+                    Stmt::For { body, .. } => sets(body, fold),
+                    Stmt::Match { arms, .. }
+                    | Stmt::LetMatch { arms, .. }
+                    | Stmt::TailMatch { arms, .. } => {
+                        arms.iter().find_map(|arm| sets(&arm.body, fold))
+                    }
+                    _ => None,
+                };
+                if violation.is_some() {
+                    return violation;
+                }
+            }
+            None
+        }
+        found = sets(&program.body, fold).or_else(|| {
+            program
+                .methods
+                .fns
+                .iter()
+                .find_map(|def| sets(&def.body, fold))
+        });
+    }
     found
 }
 
@@ -2371,6 +2605,10 @@ mod tests {
                 assert_eq!(plain, covered);
                 let written = crate::ast::operator_counts(&program);
                 for name in coverage.operators.keys() {
+                    // A `return` that runs inside a `match` arm is counted when it runs only.
+                    if name == crate::ast::MATCH_ARM_RETURN_RUN {
+                        continue;
+                    }
                     assert!(
                         written.contains_key(name),
                         "{name} executed but not written"

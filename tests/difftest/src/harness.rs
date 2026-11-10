@@ -195,6 +195,9 @@ fn constant_ifs(stmts: &[Stmt]) -> u64 {
                 u64::from(matches!(cond, Expr::Lit(..))) + constant_ifs(then) + constant_ifs(els)
             }
             Stmt::For { body, .. } => constant_ifs(body),
+            Stmt::Match { arms, .. }
+            | Stmt::LetMatch { arms, .. }
+            | Stmt::TailMatch { arms, .. } => arms.iter().map(|arm| constant_ifs(&arm.body)).sum(),
             _ => 0,
         })
         .sum()

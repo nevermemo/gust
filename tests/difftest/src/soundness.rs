@@ -110,7 +110,14 @@ fn unroll(program: &Program) -> Expr {
                 }
                 Stmt::If { .. } => panic!("the soundness programs have no branches"),
                 Stmt::AssignComp { .. } => panic!("the soundness programs have no vectors"),
-                Stmt::Set { .. } | Stmt::Call { .. } | Stmt::Match { .. } | Stmt::Return { .. } => {
+                Stmt::Set { .. }
+                | Stmt::Call { .. }
+                | Stmt::Match { .. }
+                | Stmt::LetTuple { .. }
+                | Stmt::LetMatch { .. }
+                | Stmt::Yield { .. }
+                | Stmt::TailMatch { .. }
+                | Stmt::Return { .. } => {
                     panic!("the soundness programs have no methods")
                 }
             }

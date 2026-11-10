@@ -12,8 +12,9 @@
 use std::collections::BTreeMap;
 
 use crate::ast::{
-    Arm, BinOp, EnumDef, Expr, FnDef, InputBuf, Lane, MAX_ENUMS, MAX_FLAT, MAX_TRIPS, MAX_VARIANTS,
-    Methods, Pat, Place, Program, Recv, Root, Stmt, StructDef, Ty, WIDTHS, chain_terms,
+    Arm, BinOp, Elem, EnumDef, Expr, FnDef, InputBuf, Lane, MAX_ENUMS, MAX_FLAT, MAX_TRIPS,
+    MAX_TUPLE_FLAT, MAX_VARIANTS, Methods, Pat, Place, Program, Recv, Root, Stmt, StructDef,
+    TupleTy, Ty, WIDTHS, chain_terms,
 };
 use crate::interp;
 use crate::prng::{Prng, byte_stream};
@@ -46,7 +47,14 @@ use crate::prng::{Prng, byte_stream};
 /// `return`), biased toward the order-sensitive shapes. The method space also changed (the biased shift amount is
 /// `call & 31`, and same-root `&=` and `>>=` are reachable), so its format-8 programs and pin are re-taken; the float and
 /// vector spaces are unchanged (a seed's first seven float and first five vector programs are those of format 8).
-pub const DIFFTEST_FORMAT: u32 = 9;
+/// 10: the value form of `match`, integer patterns and tuples (slice m9.d1c): a seed's batch is six float, five vector,
+/// one method, two enum and two value programs. A value program (`Space::Value`, attempts from `VALUE_ATTEMPT_BASE`) is
+/// an enum program that also writes `let v: T = match scrut { .. };` (on an enum or on an integer with literal patterns,
+/// grouped with `|`, and a final `_`; arms that are expressions, blocks, nested value matches or, in a helper, a
+/// `return`) and tuples of two to four elements (locals, parameters and results, `t.0`, element assignment, `f().1`,
+/// `let (a, b) = f(..)`), biased toward the order-sensitive shapes. The four older spaces decode as in format 9 (a
+/// seed's first six float, five vector, one method and two enum programs are format 9's); the batch cut is new.
+pub const DIFFTEST_FORMAT: u32 = 10;
 
 /// Which programs the generator writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +74,9 @@ pub enum Space {
     /// The method space plus enums and the statement `match` (slice m9.d1b, format 9). Selected by an attempt number of
     /// `ENUM_ATTEMPT_BASE` or more.
     Enum,
+    /// The enum space plus the value `match`, integer patterns and tuples (slice m9.d1c, format 10). Selected by an
+    /// attempt number of `VALUE_ATTEMPT_BASE` or more.
+    Value,
 }
 
 /// The first attempt number of the vector space. A program is a pure function of `(seed, attempt)`, and the attempt
@@ -76,22 +87,29 @@ pub const VECTOR_ATTEMPT_BASE: u64 = 1_000_000;
 pub const METHOD_ATTEMPT_BASE: u64 = 2_000_000;
 /// In-domain programs of a seed's batch that are scalar (the float space), then vector, then method
 /// (`PROGRAMS_PER_SEED` in all).
-pub const SCALAR_PROGRAMS_PER_SEED: usize = 7;
+pub const SCALAR_PROGRAMS_PER_SEED: usize = 6;
 pub const VECTOR_PROGRAMS_PER_SEED: usize = 5;
 pub const METHOD_PROGRAMS_PER_SEED: usize = 1;
-pub const ENUM_PROGRAMS_PER_SEED: usize = PROGRAMS_PER_SEED
+pub const ENUM_PROGRAMS_PER_SEED: usize = 2;
+pub const VALUE_PROGRAMS_PER_SEED: usize = PROGRAMS_PER_SEED
     - SCALAR_PROGRAMS_PER_SEED
     - VECTOR_PROGRAMS_PER_SEED
-    - METHOD_PROGRAMS_PER_SEED;
+    - METHOD_PROGRAMS_PER_SEED
+    - ENUM_PROGRAMS_PER_SEED;
+/// The first attempt number of the value space (above every enum attempt a seed can make).
+pub const VALUE_ATTEMPT_BASE: u64 = 4_000_000;
 /// The first attempt number of the enum space (above every method attempt a seed can make).
 pub const ENUM_ATTEMPT_BASE: u64 = 3_000_000;
 /// Where the vector programs of a batch end and the method programs begin, where those end and the enum programs begin.
 pub const VECTOR_END: usize = SCALAR_PROGRAMS_PER_SEED + VECTOR_PROGRAMS_PER_SEED;
 pub const METHOD_END: usize = VECTOR_END + METHOD_PROGRAMS_PER_SEED;
+pub const ENUM_END: usize = METHOD_END + ENUM_PROGRAMS_PER_SEED;
 
 /// The space whose decoder reads the program of this attempt number.
 pub fn space_of_attempt(attempt: u64) -> Space {
-    if attempt >= ENUM_ATTEMPT_BASE {
+    if attempt >= VALUE_ATTEMPT_BASE {
+        Space::Value
+    } else if attempt >= ENUM_ATTEMPT_BASE {
         Space::Enum
     } else if attempt >= METHOD_ATTEMPT_BASE {
         Space::Method
@@ -183,6 +201,14 @@ struct Gen<'a> {
     cur_ret: Option<Ty>,
     /// The function being drawn must return an enum (the tables must hold at least one such function).
     force_enum_ret: bool,
+    /// The value space (implies `enums`): tuples, the value `match` and integer patterns. Every draw they add sits
+    /// behind this flag.
+    values: bool,
+    /// Lets that drawing an expression hoisted (a struct literal cannot be a tuple element, E0810): the statement that
+    /// is being drawn gets them in front of it.
+    pre: Vec<Stmt>,
+    /// The helpers that hold a `return` in an arm of a `match` (calls prefer them in the value space).
+    arm_return_fns: Vec<usize>,
 }
 
 /// A data value as a literal; i32::MIN is written as the expression -2147483647 - 1 (the emitter never writes the
@@ -224,6 +250,9 @@ impl Gen<'_> {
 
     /// The type of a local: a scalar, or in the vector space often a vector or a matrix.
     fn pick_ty(&mut self) -> Ty {
+        if self.values && self.b.chance(24) {
+            return self.tuple_ty();
+        }
         if self.enums && self.b.chance(28) {
             return self.enum_ty();
         }
@@ -273,7 +302,7 @@ impl Gen<'_> {
             return literal;
         }
         match ty {
-            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) => {
+            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) | Ty::Tuple(_) => {
                 unreachable!("a vector, matrix, struct or enum has no literal")
             }
             Ty::F32 => self.float_literal(),
@@ -435,6 +464,9 @@ impl Gen<'_> {
         if ty.is_enum() {
             return self.enum_expr(ty, depth);
         }
+        if ty.is_tuple() {
+            return self.tuple_expr(ty, depth);
+        }
         let leaf_chance = if depth == 0 {
             100
         } else {
@@ -449,6 +481,13 @@ impl Gen<'_> {
             && let Some(call) = self.value_call(ty, d)
         {
             return call;
+        }
+        // An element of a call's tuple result (`f().1`).
+        if self.values
+            && self.b.chance(14)
+            && let Some(field) = self.tuple_field_call(ty, d, None)
+        {
+            return field;
         }
         // The order-sensitive pairs: a read and a `&mut self` call on one root, a call right of `&&`/`||`.
         if self.methods
@@ -1012,7 +1051,7 @@ impl Gen<'_> {
             let can_assign = self
                 .scope
                 .iter()
-                .any(|(_, ty, mutable)| *mutable && !ty.is_struct());
+                .any(|(_, ty, mutable)| *mutable && !ty.is_struct() && !ty.is_tuple());
             let nest = if depth < 2 { 1 } else { 0 };
             let mut weights = vec![40, if can_assign { 24 } else { 0 }, 18 * nest, 14 * nest];
             // 4: an assignment to a field or a struct place, 5: a call as a statement, 6: a struct local.
@@ -1035,8 +1074,28 @@ impl Gen<'_> {
             if self.enums {
                 weights.push(26 * nest);
             }
+            // 8: a value `match`, 9: a destructuring, 10: an assignment to a tuple element (the value space).
+            let tuple_targets = if self.values {
+                self.tuple_set_targets()
+            } else {
+                Vec::new()
+            };
+            if self.values {
+                // A helper writes more value matches: they are where its arms `return`.
+                weights.push(match (depth < 3, self.cur_ret.is_some()) {
+                    (false, _) => 0,
+                    (true, true) => 55,
+                    (true, false) => 24,
+                });
+                weights.push(22);
+                weights.push(if tuple_targets.is_empty() { 0 } else { 50 });
+            }
+            let (pre_mark, at) = (self.pre.len(), stmts.len());
             let kind = self.b.weighted(&weights);
             match kind {
+                8 => stmts.push(self.let_match(depth)),
+                9 => stmts.push(self.let_tuple()),
+                10 => stmts.push(self.tuple_set_stmt(&tuple_targets)),
                 7 => stmts.push(self.match_stmt(depth)),
                 4 => stmts.push(self.set_stmt(&targets)),
                 5 => stmts.extend(self.statement_call(&statement_calls)),
@@ -1058,7 +1117,8 @@ impl Gen<'_> {
                     // A vector or matrix initialiser is shallower: its products multiply the bounds of its operands.
                     let init = self.expr(ty, if ty.is_aggregate() { 3 } else { MAX_DEPTH - 1 });
                     let var = self.fresh();
-                    let mutable = self.b.chance(55);
+                    // A tuple is mutable more often (the value space writes its elements).
+                    let mutable = self.b.chance(if ty.is_tuple() { 80 } else { 55 });
                     self.scope.push((var, ty, mutable));
                     stmts.push(Stmt::Let {
                         var,
@@ -1114,6 +1174,7 @@ impl Gen<'_> {
                     stmts.push(Stmt::For { var, trips, body });
                 }
             }
+            self.splice_pre(pre_mark, at, &mut stmts);
         }
         self.scope.truncate(mark);
         stmts
@@ -1123,7 +1184,7 @@ impl Gen<'_> {
         let mutable: Vec<(u32, Ty)> = self
             .scope
             .iter()
-            .filter(|(_, ty, mutable)| *mutable && !ty.is_struct())
+            .filter(|(_, ty, mutable)| *mutable && !ty.is_struct() && !ty.is_tuple())
             .map(|&(id, ty, _)| (id, ty))
             .collect();
         let (var, ty) = mutable[self.b.below(mutable.len() as u32) as usize];
@@ -1274,14 +1335,17 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         count: 1,
         next_var: 0,
         scope: Vec::new(),
-        methods: matches!(space, Space::Method | Space::Enum),
+        methods: matches!(space, Space::Method | Space::Enum | Space::Value),
         table: Methods::default(),
         cur_fn: None,
         this: None,
         forbid: Vec::new(),
-        enums: space == Space::Enum,
+        enums: matches!(space, Space::Enum | Space::Value),
         cur_ret: None,
         force_enum_ret: false,
+        values: space == Space::Value,
+        pre: Vec::new(),
+        arm_return_fns: Vec::new(),
     };
     let count = match g.b.below(6) {
         k @ 0..=4 => COUNTS[k as usize],
@@ -1316,6 +1380,7 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
     if g.methods {
         g.gen_tables();
         for _ in 0..1 + g.b.below(2) {
+            let (pre_mark, at) = (g.pre.len(), body.len());
             let (j, init) = g.struct_init();
             let var = g.fresh();
             let mutable = g.b.chance(80);
@@ -1326,6 +1391,7 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
                 mutable,
                 init,
             });
+            g.splice_pre(pre_mark, at, &mut body);
         }
     }
     body.extend(g.block(0, 2, 7));
@@ -1335,19 +1401,116 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         for stmt in &body {
             if let Stmt::Let {
                 var, ty, mutable, ..
+            }
+            | Stmt::LetMatch {
+                var, ty, mutable, ..
             } = stmt
                 && !g.scope.iter().any(|(id, ..)| id == var)
             {
                 g.scope.push((*var, *ty, *mutable));
             }
+            if let Stmt::LetTuple {
+                vars,
+                ty: Ty::Tuple(t),
+                ..
+            } = stmt
+            {
+                for (&(var, mutable), elem) in vars.iter().zip(t.elems()) {
+                    if !g.scope.iter().any(|(id, ..)| *id == var) {
+                        g.scope.push((var, elem.ty(), mutable));
+                    }
+                }
+            }
         }
     }
     let mut result = g.expr(ty, MAX_DEPTH);
+    // The value space joins a call of a helper that returns from inside an arm to the result (nit R1 of the m9.d1b
+    // re-check: such a `return` must run in many programs, not in a handful).
+    let mut arm_call = None;
+    if g.values && g.b.chance(75) {
+        // A return type that has a scalar to fold: an integer, an enum (its discriminant), or an element of a tuple.
+        let usable = |ret: Option<Ty>| match ret {
+            Some(Ty::U32 | Ty::I32 | Ty::Enum(_)) => true,
+            Some(Ty::Tuple(t)) => t.elems().iter().any(|e| !matches!(e, Elem::Struct(_))),
+            _ => false,
+        };
+        let fns: Vec<usize> = g
+            .arm_return_fns
+            .iter()
+            .copied()
+            .filter(|&k| usable(g.table.fns[k].ret))
+            .collect();
+        if !fns.is_empty() {
+            let f = fns[g.b.below(fns.len() as u32) as usize];
+            let ret = g.table.fns[f].ret.expect("a return type");
+            if let Some((recv, args)) = g.call_parts(f, 3) {
+                let owner = if g.table.fns[f].recv == Recv::None {
+                    g.table.fns[f].owner
+                } else {
+                    None
+                };
+                let call = Expr::Call {
+                    f,
+                    owner,
+                    recv,
+                    args,
+                    ty: ret,
+                };
+                let as_repr = |g: &Gen, e: u8, value: Expr| Expr::EnumAs {
+                    to: g.table.enums[usize::from(e)].repr,
+                    e: Box::new(value),
+                };
+                arm_call = Some(match ret {
+                    Ty::Enum(e) => as_repr(&g, e, call),
+                    Ty::Tuple(t) => {
+                        let ks: Vec<u8> = (0..t.n)
+                            .filter(|&k| !matches!(t.elems()[usize::from(k)], Elem::Struct(_)))
+                            .collect();
+                        let index = ks[g.b.below(ks.len() as u32) as usize];
+                        let field = Expr::TupleField {
+                            e: Box::new(call),
+                            index,
+                        };
+                        match t.elems()[usize::from(index)] {
+                            Elem::Enum(e) => as_repr(&g, e, field),
+                            _ => field,
+                        }
+                    }
+                    _ => call,
+                });
+            }
+        }
+    }
+    // Lets that the result hoisted come after the body and before the result.
+    body.append(&mut g.pre);
     // Fold the final value of up to two top-level locals into the result, so that the computed values are live.
     let live: Vec<(u32, Ty)> = body
         .iter()
+        .flat_map(|stmt| match stmt {
+            Stmt::Let { var, ty, .. } if !ty.is_struct() && !ty.is_tuple() => vec![(*var, *ty)],
+            Stmt::LetMatch { var, ty, .. } => vec![(*var, *ty)],
+            Stmt::LetTuple {
+                vars,
+                ty: Ty::Tuple(t),
+                ..
+            } => vars
+                .iter()
+                .zip(t.elems())
+                .filter(|(_, elem)| !matches!(elem, Elem::Struct(_)))
+                .map(|(&(var, _), elem)| (var, elem.ty()))
+                .collect(),
+            _ => Vec::new(),
+        })
+        .collect();
+    // ... and one element of up to two tuple locals (the value space).
+    let tuple_locals: Vec<(u32, TupleTy)> = body
+        .iter()
         .filter_map(|stmt| match stmt {
-            Stmt::Let { var, ty, .. } if !ty.is_struct() => Some((*var, *ty)),
+            Stmt::Let {
+                var,
+                ty: Ty::Tuple(t),
+                ..
+            } => Some((*var, *t)),
             _ => None,
         })
         .collect();
@@ -1381,6 +1544,35 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
             let read = Expr::Read {
                 place,
                 ty: fields[usize::from(k)],
+            };
+            result = fold_in(result, read);
+        }
+    }
+    if let Some(call) = arm_call {
+        result = fold_in(result, call);
+    }
+    if g.values {
+        for _ in 0..2 {
+            if tuple_locals.is_empty() || !g.b.chance(85) {
+                continue;
+            }
+            let (var, t) = tuple_locals[g.b.below(tuple_locals.len() as u32) as usize];
+            let scalars: Vec<u8> = (0..t.n)
+                .filter(|&k| !matches!(t.elems()[usize::from(k)], Elem::Struct(_)))
+                .collect();
+            if scalars.is_empty() {
+                continue;
+            }
+            let k = scalars[g.b.below(scalars.len() as u32) as usize];
+            let elem_ty = t.elems()[usize::from(k)].ty();
+            let place = Place::var(var, Ty::Tuple(t)).field(k);
+            let read = Expr::Read { place, ty: elem_ty };
+            let read = match elem_ty {
+                Ty::Enum(e) => Expr::EnumAs {
+                    to: g.table.enums[usize::from(e)].repr,
+                    e: Box::new(read),
+                },
+                _ => read,
             };
             result = fold_in(result, read);
         }
@@ -1481,6 +1673,9 @@ pub struct Batch {
     /// Of `attempts`, the attempts of the enum part, and of `discarded`, the discards of the enum part.
     pub enum_attempts: u64,
     pub enum_discarded: BTreeMap<&'static str, u32>,
+    /// Of `attempts`, the attempts of the value part, and of `discarded`, the discards of the value part.
+    pub value_attempts: u64,
+    pub value_discarded: BTreeMap<&'static str, u32>,
 }
 
 impl Batch {
@@ -1513,6 +1708,7 @@ pub fn generate_batch(seed: u64) -> Result<Batch, String> {
     fill(&mut batch, Space::Vector, VECTOR_PROGRAMS_PER_SEED)?;
     fill(&mut batch, Space::Method, METHOD_PROGRAMS_PER_SEED)?;
     fill(&mut batch, Space::Enum, ENUM_PROGRAMS_PER_SEED)?;
+    fill(&mut batch, Space::Value, VALUE_PROGRAMS_PER_SEED)?;
     Ok(batch)
 }
 
@@ -1535,6 +1731,8 @@ fn empty_batch(seed: u64) -> Batch {
         method_discarded: BTreeMap::new(),
         enum_attempts: 0,
         enum_discarded: BTreeMap::new(),
+        value_attempts: 0,
+        value_discarded: BTreeMap::new(),
     }
 }
 
@@ -1544,6 +1742,7 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
         Space::Vector => VECTOR_ATTEMPT_BASE,
         Space::Method => METHOD_ATTEMPT_BASE,
         Space::Enum => ENUM_ATTEMPT_BASE,
+        Space::Value => VALUE_ATTEMPT_BASE,
         _ => 0,
     };
     let target = batch.programs.len() + want;
@@ -1552,6 +1751,7 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
         batch.vector_attempts += u64::from(space == Space::Vector);
         batch.method_attempts += u64::from(space == Space::Method);
         batch.enum_attempts += u64::from(space == Space::Enum);
+        batch.value_attempts += u64::from(space == Space::Value);
         let program = generate_attempt_in(space, batch.seed, attempt);
         // A vector program that came out scalar tests nothing new, nor does a method program that calls nothing, nor
         // an enum program without a `match`.
@@ -1562,6 +1762,10 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
         } else if space == Space::Enum && !program.has_match() {
             Some("no-match")
         } else if space == Space::Enum && !program.has_call() {
+            Some("no-call")
+        } else if space == Space::Value && !program.has_value_form() {
+            Some("no-value")
+        } else if space == Space::Value && !program.has_call() {
             Some("no-call")
         } else {
             discard_reason(&program)
@@ -1577,6 +1781,9 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
                 }
                 if space == Space::Enum {
                     *batch.enum_discarded.entry(reason).or_default() += 1;
+                }
+                if space == Space::Value {
+                    *batch.value_discarded.entry(reason).or_default() += 1;
                 }
             }
             None => batch.programs.push(program),
@@ -1619,6 +1826,16 @@ impl Gen<'_> {
         if let Some((ty @ Ty::Struct(j), recv)) = self.this {
             work.push((Place::this(ty), j, recv == Recv::Mut));
         }
+        // The struct elements of tuple locals and parameters (the value space).
+        for &(var, ty, mutable) in &self.scope {
+            if let Ty::Tuple(t) = ty {
+                for (k, elem) in t.elems().iter().enumerate() {
+                    if let Elem::Struct(j) = elem {
+                        work.push((Place::var(var, ty).field(k as u8), *j, mutable));
+                    }
+                }
+            }
+        }
         let mut out = Vec::new();
         while let Some((place, j, writable)) = work.pop() {
             for (k, field) in self.table.structs[usize::from(j)].fields.iter().enumerate() {
@@ -1638,6 +1855,16 @@ impl Gen<'_> {
             for (k, field) in self.table.structs[usize::from(j)].fields.iter().enumerate() {
                 if *field == ty {
                     out.push((place.field(k as u8), writable));
+                }
+            }
+        }
+        // The scalar elements of tuple locals and parameters.
+        for &(var, vty, mutable) in &self.scope {
+            if let Ty::Tuple(t) = vty {
+                for (k, elem) in t.elems().iter().enumerate() {
+                    if !matches!(elem, Elem::Struct(_)) && elem.ty() == ty {
+                        out.push((Place::var(var, vty).field(k as u8), mutable));
+                    }
                 }
             }
         }
@@ -1807,8 +2034,18 @@ impl Gen<'_> {
         let mut args = Vec::new();
         let mut complete = true;
         let mut enum_root: Option<Root> = None;
-        for (_, ty) in &def.params {
+        for (slot, (_, ty)) in def.params.iter().enumerate() {
             match ty {
+                // A comparison before the last argument: the shape that made the macro emit `__gust_keep` (m9.f1).
+                Ty::Bool if self.values && slot + 1 < def.params.len() && self.b.chance(45) => {
+                    let operand = self.int_ty();
+                    args.push(Expr::bin(
+                        BinOp::Lt,
+                        self.expr(operand, depth.min(2)),
+                        self.expr(operand, depth.min(2)),
+                    ));
+                }
+                Ty::Tuple(_) => args.push(self.tuple_expr(*ty, depth)),
                 // An enum argument is often built from a call, and two of them from calls on one root: the arguments
                 // run left to right, so the first call's effect on the root is what the second one sees.
                 Ty::Enum(_) => args.push(self.enum_arg(*ty, depth, &mut enum_root)),
@@ -1854,6 +2091,17 @@ impl Gen<'_> {
         } else {
             candidates
         };
+        // The value space prefers the helpers that return from inside an arm: a `return` in an arm that runs.
+        let returning: Vec<usize> = candidates
+            .iter()
+            .copied()
+            .filter(|k| self.arm_return_fns.contains(k))
+            .collect();
+        let candidates = if self.values && !returning.is_empty() && self.b.chance(50) {
+            returning
+        } else {
+            candidates
+        };
         let f = candidates[self.b.below(candidates.len() as u32) as usize];
         let owner = {
             let def = &self.table.fns[f];
@@ -1878,6 +2126,13 @@ impl Gen<'_> {
     fn root_call(&mut self, ty: Ty, root: Root, depth: u32) -> Option<Expr> {
         if depth == 0 || self.forbid.contains(&root) {
             return None;
+        }
+        // `c.pair().1`: an element of a `&mut self` method's tuple result.
+        if self.values
+            && self.b.chance(30)
+            && let Some(field) = self.tuple_field_call(ty, depth, Some(root))
+        {
+            return Some(field);
         }
         let places = self.struct_places();
         let on_root = |owner: Option<u8>| {
@@ -2133,6 +2388,8 @@ impl Gen<'_> {
                 self.enum_ty()
             } else if self.b.chance(18) {
                 Ty::Struct(self.b.below(structs) as u8)
+            } else if self.values && self.b.chance(14) {
+                self.tuple_ty()
             } else if self.enums && self.b.chance(30) {
                 self.enum_ty()
             } else {
@@ -2148,6 +2405,7 @@ impl Gen<'_> {
             4 => owner.map(Ty::Struct),
             _ if self.force_enum_ret => Some(self.enum_ty()),
             2 if self.b.chance(40) => None,
+            _ if self.values && self.b.chance(28) => Some(self.tuple_ty()),
             _ if self.enums && self.b.chance(30) => Some(self.enum_ty()),
             _ => Some([Ty::U32, Ty::I32, Ty::Bool][self.b.weighted(&[40, 40, 20])]),
         };
@@ -2162,10 +2420,26 @@ impl Gen<'_> {
             // A `&mut self` method writes the receiver at least once.
             let targets = self.set_targets();
             if !targets.is_empty() {
+                let pre_mark = self.pre.len();
                 body.push(self.set_stmt(&targets));
+                self.splice_pre(pre_mark, 0, &mut body);
             }
         }
+        // A helper of the value space often opens with a value `match` whose arms (all but the last) `return`.
+        if self.values
+            && let Some(ret) = self.cur_ret
+            && !ret.is_struct()
+            && self.b.chance(70)
+        {
+            let pre_mark = self.pre.len();
+            let at = body.len();
+            let forced = self.returning_match(ret);
+            body.push(forced);
+            self.splice_pre(pre_mark, at, &mut body);
+        }
         body.extend(self.block(1, 0, 3));
+        let pre_mark = self.pre.len();
+        let at = body.len();
         let tail = ret.map(|ty| match ty {
             Ty::Struct(j) => {
                 // A struct literal is no tail (E0810): bind it first.
@@ -2183,6 +2457,11 @@ impl Gen<'_> {
             }
             scalar => self.expr(scalar, 4),
         });
+        // Lets that the tail hoisted come before it (and before the `let` of a struct tail).
+        self.splice_pre(pre_mark, at, &mut body);
+        if self.values && arm_returns(&body, false) {
+            self.arm_return_fns.push(k);
+        }
         self.table.fns.push(FnDef {
             owner,
             recv,
@@ -2358,6 +2637,8 @@ impl Gen<'_> {
         if !self.enums {
             return;
         }
+        // The value space returns from inside an arm twice as often (m9.d1b re-check, nit R1).
+        let percent = if self.values { percent * 2 } else { percent };
         if let Some(ret) = self.cur_ret
             && self.b.chance(percent)
         {
@@ -2395,6 +2676,7 @@ impl Gen<'_> {
             Some(scrut) => scrut,
             None => self.enum_leaf(ty),
         };
+        let scrut = self.enum_scrutinee(e, scrut);
         let mut order: Vec<u8> = (0..n as u8).collect();
         for k in (1..order.len()).rev() {
             let other = self.b.below(k as u32 + 1) as usize;
@@ -2441,6 +2723,676 @@ impl Gen<'_> {
         }
         Stmt::Match { scrut, arms }
     }
+}
+
+/// The value space (format 10, slice m9.d1c): tuples, the value form of `match` and integer patterns. Every draw sits
+/// behind `Gen::values`, so the older spaces decode as before.
+impl Gen<'_> {
+    /// A tuple type of two to four elements (scalars, a struct of scalar fields, an enum), at most `MAX_TUPLE_FLAT`
+    /// scalars once the structs are flattened.
+    fn tuple_ty(&mut self) -> Ty {
+        let n = 2 + self.b.weighted(&[50, 35, 15]);
+        let scalar_structs: Vec<u8> = (0..self.table.structs.len() as u8)
+            .filter(|&j| {
+                self.table.structs[usize::from(j)]
+                    .fields
+                    .iter()
+                    .all(|f| !f.is_struct())
+            })
+            .collect();
+        let enums = self.table.enums.len() as u32;
+        let mut elems = Vec::new();
+        for _ in 0..n {
+            let weights = [
+                30,
+                26,
+                12,
+                if scalar_structs.is_empty() { 0 } else { 18 },
+                if enums == 0 { 0 } else { 14 },
+            ];
+            elems.push(match self.b.weighted(&weights) {
+                0 => Elem::U32,
+                1 => Elem::I32,
+                2 => Elem::Bool,
+                3 => {
+                    Elem::Struct(scalar_structs[self.b.below(scalar_structs.len() as u32) as usize])
+                }
+                _ => Elem::Enum(self.b.below(enums) as u8),
+            });
+        }
+        while self.table.ty_len(Ty::Tuple(TupleTy::new(&elems))) > MAX_TUPLE_FLAT {
+            let last = elems
+                .iter()
+                .rposition(|e| matches!(e, Elem::Struct(_)))
+                .expect("only structs make a tuple too long");
+            elems[last] = Elem::U32;
+        }
+        Ty::Tuple(TupleTy::new(&elems))
+    }
+
+    /// A value of tuple type `ty`: a literal, a local, or the result of a call.
+    fn tuple_expr(&mut self, ty: Ty, depth: u32) -> Expr {
+        let Ty::Tuple(t) = ty else {
+            unreachable!("a tuple type")
+        };
+        let vars = self.vars(ty);
+        let calls = depth > 0 && (0..self.callable()).any(|k| self.table.fns[k].ret == Some(ty));
+        let weights = [
+            60,
+            if vars.is_empty() { 0 } else { 18 },
+            if calls { 26 } else { 0 },
+        ];
+        match self.b.weighted(&weights) {
+            1 => Expr::Var(vars[self.b.below(vars.len() as u32) as usize], ty),
+            2 => match self.value_call(ty, depth - 1) {
+                Some(call) => call,
+                None => self.tuple_literal(t, depth),
+            },
+            _ => self.tuple_literal(t, depth),
+        }
+    }
+
+    /// `(a, b, c)`. Often the elements share one root: a `&mut self` call and a read or a copy of the same root, so that
+    /// the order the elements run in is what the value shows.
+    fn tuple_literal(&mut self, t: TupleTy, depth: u32) -> Expr {
+        let root = if depth >= 1 && self.b.chance(65) {
+            self.pick_writable_root()
+        } else {
+            None
+        };
+        let n = usize::from(t.n);
+        let mut elems = Vec::new();
+        for (k, elem) in t.elems().iter().enumerate() {
+            elems.push(self.tuple_elem(*elem, depth.saturating_sub(1), root, k + 1 == n));
+        }
+        Expr::Tuple {
+            ty: Ty::Tuple(t),
+            elems,
+        }
+    }
+
+    fn tuple_elem(&mut self, elem: Elem, depth: u32, root: Option<Root>, last: bool) -> Expr {
+        let ty = elem.ty();
+        match elem {
+            Elem::Struct(j) => {
+                if let Some(root) = root
+                    && self.b.chance(55)
+                    && let Some(copy) = self.struct_copy_on(j, root)
+                {
+                    return copy;
+                }
+                match self.struct_expr(j, depth, false) {
+                    Some(value) => value,
+                    None => self.hoist_struct(j),
+                }
+            }
+            Elem::Enum(_) => {
+                if let Some(root) = root
+                    && self.b.chance(60)
+                    && let Some(call) = self.root_call(ty, root, depth)
+                {
+                    return call;
+                }
+                self.enum_expr(ty, depth)
+            }
+            Elem::Bool if !last && self.b.chance(40) => {
+                let operand = self.int_ty();
+                Expr::bin(
+                    BinOp::Lt,
+                    self.expr(operand, depth.min(2)),
+                    self.expr(operand, depth.min(2)),
+                )
+            }
+            _ => {
+                if let Some(root) = root {
+                    if self.b.chance(50)
+                        && let Some(call) = self.root_call(ty, root, depth)
+                    {
+                        return call;
+                    }
+                    if self.b.chance(30) {
+                        let reads: Vec<Place> = self
+                            .scalar_places(ty)
+                            .into_iter()
+                            .filter(|(place, _)| place.root == root)
+                            .map(|(place, _)| place)
+                            .collect();
+                        if !reads.is_empty() {
+                            let place = reads[self.b.below(reads.len() as u32) as usize].clone();
+                            return Expr::Read { place, ty };
+                        }
+                    }
+                }
+                self.expr(ty, depth)
+            }
+        }
+    }
+
+    /// A copy of a struct-`j` place on `root` (the struct as it is when the element runs).
+    fn struct_copy_on(&mut self, j: u8, root: Root) -> Option<Expr> {
+        let bare_self_ok = matches!(self.this, Some((_, Recv::Value)));
+        let places: Vec<Place> = self
+            .struct_places()
+            .into_iter()
+            .filter(|(place, pj, _)| {
+                *pj == j
+                    && place.root == root
+                    && !(place.root == Root::SelfV && place.path.is_empty() && !bare_self_ok)
+            })
+            .map(|(place, ..)| place)
+            .collect();
+        if places.is_empty() {
+            return None;
+        }
+        let place = places[self.b.below(places.len() as u32) as usize].clone();
+        Some(place_value(&place, Ty::Struct(j)))
+    }
+
+    /// A struct value that is a variable: a struct literal cannot be a tuple element (E0810), so it is bound by a `let`
+    /// before the statement being drawn (`Gen::pre`).
+    fn hoist_struct(&mut self, j: u8) -> Expr {
+        let ty = Ty::Struct(j);
+        let init = self
+            .struct_expr(j, 3, true)
+            .expect("a literal of a scalar-field struct is always possible");
+        let var = self.fresh();
+        let mutable = self.b.chance(50);
+        self.scope.push((var, ty, mutable));
+        self.pre.push(Stmt::Let {
+            var,
+            ty,
+            mutable,
+            init,
+        });
+        Expr::Var(var, ty)
+    }
+
+    /// Moves the lets that drawing since `mark` hoisted to `at` in `stmts` (before the statement that needs them).
+    fn splice_pre(&mut self, mark: usize, at: usize, stmts: &mut Vec<Stmt>) {
+        if self.pre.len() > mark {
+            let hoisted = self.pre.split_off(mark);
+            stmts.splice(at..at, hoisted);
+        }
+    }
+
+    /// `f().k` for a function returning a tuple with an element of type `ty`; with `root`, a `&mut self` method on a
+    /// writable place of that root (the call runs before the element is read, whatever follows).
+    fn tuple_field_call(&mut self, ty: Ty, depth: u32, root: Option<Root>) -> Option<Expr> {
+        if depth == 0 || root.is_some_and(|root| self.forbid.contains(&root)) {
+            return None;
+        }
+        let places = self.struct_places();
+        let on_root = |owner: Option<u8>, root: Root| {
+            places
+                .iter()
+                .filter(|(place, j, writable)| *writable && place.root == root && Some(*j) == owner)
+                .map(|(place, ..)| place.clone())
+                .collect::<Vec<Place>>()
+        };
+        let matching = |t: TupleTy| -> Vec<u8> {
+            (0..t.n)
+                .filter(|&k| t.elems()[usize::from(k)].ty() == ty)
+                .collect()
+        };
+        let candidates: Vec<usize> = (0..self.callable())
+            .filter(|&k| {
+                let def = &self.table.fns[k];
+                let Some(Ty::Tuple(t)) = def.ret else {
+                    return false;
+                };
+                !matching(t).is_empty()
+                    && match root {
+                        Some(root) => def.recv == Recv::Mut && !on_root(def.owner, root).is_empty(),
+                        None => true,
+                    }
+            })
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let f = candidates[self.b.below(candidates.len() as u32) as usize];
+        let def = self.table.fns[f].clone();
+        let Some(Ty::Tuple(t)) = def.ret else {
+            unreachable!("a tuple result")
+        };
+        let forced = root.map(|root| {
+            let receivers = on_root(def.owner, root);
+            receivers[self.b.below(receivers.len() as u32) as usize].clone()
+        });
+        let (recv, args) = self.call_parts_on(f, depth, forced)?;
+        let indexes = matching(t);
+        let index = indexes[self.b.below(indexes.len() as u32) as usize];
+        let owner = if def.recv == Recv::None {
+            def.owner
+        } else {
+            None
+        };
+        Some(Expr::TupleField {
+            e: Box::new(Expr::Call {
+                f,
+                owner,
+                recv,
+                args,
+                ty: Ty::Tuple(t),
+            }),
+            index,
+        })
+    }
+
+    /// The element places of tuple locals that may be assigned: `u32` and `i32` elements of a `let mut` tuple.
+    fn tuple_set_targets(&self) -> Vec<(Place, Ty)> {
+        let mut out = Vec::new();
+        for &(var, ty, mutable) in &self.scope {
+            let Ty::Tuple(t) = ty else { continue };
+            if !mutable {
+                continue;
+            }
+            for (k, elem) in t.elems().iter().enumerate() {
+                if matches!(elem, Elem::U32 | Elem::I32) {
+                    out.push((Place::var(var, ty).field(k as u8), elem.ty()));
+                }
+            }
+        }
+        out
+    }
+
+    /// `t.a = t.b + c.bump();` or `t.a += c.bump();`: the value runs first, then the place is read (for `op=`).
+    fn tuple_set_stmt(&mut self, targets: &[(Place, Ty)]) -> Stmt {
+        let (place, ty) = targets[self.b.below(targets.len() as u32) as usize].clone();
+        let op = self.b.chance(55).then(|| {
+            [
+                BinOp::Add,
+                BinOp::Add,
+                BinOp::Sub,
+                BinOp::BitXor,
+                BinOp::BitOr,
+                BinOp::BitAnd,
+            ][self.b.below(6) as usize]
+        });
+        // A `&mut self` call on a writable root, tried on up to three roots.
+        let mut call = None;
+        for _ in 0..3 {
+            if call.is_some() {
+                break;
+            }
+            call = self
+                .pick_writable_root()
+                .and_then(|root| self.root_call(ty, root, 3));
+        }
+        let value = match call {
+            Some(call) if op.is_none() && self.b.chance(85) => {
+                // Another element of the same tuple (or the target itself) read before the call runs.
+                let Ty::Tuple(t) = place.root_ty else {
+                    unreachable!("a tuple place")
+                };
+                let same: Vec<u8> = (0..t.n)
+                    .filter(|&k| t.elems()[usize::from(k)].ty() == ty)
+                    .collect();
+                let k = same[self.b.below(same.len() as u32) as usize];
+                let read = Expr::Read {
+                    place: Place {
+                        root: place.root,
+                        root_ty: place.root_ty,
+                        path: vec![k],
+                    },
+                    ty,
+                };
+                let joint = [BinOp::Add, BinOp::Sub, BinOp::BitXor][self.b.below(3) as usize];
+                if self.b.chance(50) {
+                    Expr::bin(joint, read, call)
+                } else {
+                    Expr::bin(joint, call, read)
+                }
+            }
+            Some(call) => call,
+            None => self.expr(ty, 3),
+        };
+        Stmt::Set {
+            place,
+            ty,
+            op,
+            value,
+        }
+    }
+
+    /// `let (a, mut b): (T, U) = init;`. Often the source is a call of a function that returns a tuple, a `&mut self`
+    /// method first, so that the root it changed is read afterwards.
+    fn let_tuple(&mut self) -> Stmt {
+        let rets: Vec<usize> = (0..self.callable())
+            .filter(|&k| matches!(self.table.fns[k].ret, Some(Ty::Tuple(_))))
+            .collect();
+        let mut init = None;
+        if !rets.is_empty() && self.b.chance(60) {
+            let muts: Vec<usize> = rets
+                .iter()
+                .copied()
+                .filter(|&k| self.table.fns[k].recv == Recv::Mut)
+                .collect();
+            let pool = if !muts.is_empty() && self.b.chance(65) {
+                muts
+            } else {
+                rets
+            };
+            let f = pool[self.b.below(pool.len() as u32) as usize];
+            let def = self.table.fns[f].clone();
+            if let Some((recv, args)) = self.call_parts(f, 3) {
+                init = Some(Expr::Call {
+                    f,
+                    owner: if def.recv == Recv::None {
+                        def.owner
+                    } else {
+                        None
+                    },
+                    recv,
+                    args,
+                    ty: def.ret.expect("a tuple result"),
+                });
+            }
+        }
+        let init = match init {
+            Some(init) => init,
+            None => {
+                let ty = self.tuple_ty();
+                self.tuple_expr(ty, 3)
+            }
+        };
+        let ty = init.ty();
+        let Ty::Tuple(t) = ty else {
+            unreachable!("a tuple initializer")
+        };
+        let annotate = t.elems().iter().any(|e| matches!(e, Elem::Enum(_))) || self.b.chance(50);
+        let mut vars = Vec::new();
+        for elem in t.elems() {
+            let var = self.fresh();
+            let mutable = self.b.chance(40);
+            self.scope.push((var, elem.ty(), mutable));
+            vars.push((var, mutable));
+        }
+        Stmt::LetTuple {
+            vars,
+            ty,
+            annotate,
+            init,
+        }
+    }
+
+    /// The type of a value `match`: mostly an integer, sometimes `bool` or an enum.
+    fn match_result_ty(&mut self) -> Ty {
+        if self.b.chance(22) {
+            self.enum_ty()
+        } else {
+            [Ty::U32, Ty::I32, Ty::Bool][self.b.weighted(&[45, 35, 20])]
+        }
+    }
+
+    /// `let v: T = match scrut { p0 => return .., p1 => return .., _ => value };` in a helper that returns `ret`: every
+    /// arm but the last returns, so that a `return` in an arm runs for some element (nit R1 of the m9.d1c brief).
+    fn returning_match(&mut self, ret: Ty) -> Stmt {
+        let ty = self.match_result_ty();
+        let (scrut, mut arms) = self.value_match_parts(ty, 1);
+        let last = arms.len() - 1;
+        for arm in &mut arms[..last] {
+            let (mark, scope_mark) = (self.pre.len(), self.scope.len());
+            let value = self.expr(ret, 3);
+            let mut body = vec![Stmt::Return { value }];
+            self.splice_pre(mark, 0, &mut body);
+            // A local that the arm hoisted leaves the scope with the arm.
+            self.scope.truncate(scope_mark);
+            arm.body = body;
+        }
+        let var = self.fresh();
+        self.scope.push((var, ty, false));
+        Stmt::LetMatch {
+            var,
+            ty,
+            mutable: false,
+            scrut,
+            arms,
+        }
+    }
+
+    /// `let v: T = match scrut { .. };`
+    fn let_match(&mut self, depth: u32) -> Stmt {
+        let ty = self.match_result_ty();
+        let (scrut, arms) = self.value_match_parts(ty, depth);
+        let var = self.fresh();
+        let mutable = self.b.chance(40);
+        self.scope.push((var, ty, mutable));
+        Stmt::LetMatch {
+            var,
+            ty,
+            mutable,
+            scrut,
+            arms,
+        }
+    }
+
+    /// An enum scrutinee is a variable, a call or a variant path (E0515): any other expression (an element of a tuple)
+    /// becomes the first variant.
+    fn enum_scrutinee(&mut self, e: u8, scrut: Expr) -> Expr {
+        if matches!(
+            scrut,
+            Expr::Var(..) | Expr::Call { .. } | Expr::Variant { .. }
+        ) {
+            scrut
+        } else {
+            Expr::Variant { e, v: 0 }
+        }
+    }
+
+    /// The scrutinee and the arms of a value `match` of type `ty`: on an enum (a third) or on an integer.
+    fn value_match_parts(&mut self, ty: Ty, depth: u32) -> (Expr, Vec<Arm>) {
+        let mut bias_root = None;
+        let (scrut, pats) = if self.b.chance(35) {
+            let e = self.b.below(self.table.enums.len() as u32) as u8;
+            let enum_ty = Ty::Enum(e);
+            let n = self.table.enums[usize::from(e)].variants.len();
+            let mut scrut = None;
+            match self.b.weighted(&[30, 45, 18, 7]) {
+                1 => {
+                    if let Some(root) = self.pick_writable_root()
+                        && let Some(call) = self.root_call(enum_ty, root, 3)
+                    {
+                        bias_root = Some(root);
+                        scrut = Some(call);
+                    }
+                }
+                2 => scrut = self.value_call(enum_ty, 2),
+                3 => {
+                    let v = self.b.below(n as u32) as u8;
+                    scrut = Some(Expr::Variant { e, v });
+                }
+                _ => {}
+            }
+            let scrut = match scrut {
+                Some(scrut) => scrut,
+                None => self.enum_leaf(enum_ty),
+            };
+            let scrut = self.enum_scrutinee(e, scrut);
+            (scrut, self.enum_patterns(e))
+        } else {
+            let int = self.int_ty();
+            let mut scrut = None;
+            match self.b.weighted(&[38, 38, 12, 12]) {
+                0 => {
+                    if let Some(root) = self.pick_writable_root()
+                        && let Some(call) = self.root_call(int, root, 3)
+                    {
+                        bias_root = Some(root);
+                        scrut = Some(Expr::bin(BinOp::BitAnd, call, Expr::Lit(int, 7)));
+                    }
+                }
+                2 => {
+                    let vars = self.vars(int);
+                    if !vars.is_empty() {
+                        scrut = Some(Expr::Var(
+                            vars[self.b.below(vars.len() as u32) as usize],
+                            int,
+                        ));
+                    }
+                }
+                3 => {
+                    let operand = self.expr(int, 3);
+                    scrut = Some(Expr::bin(BinOp::BitAnd, operand, Expr::Lit(int, 7)));
+                }
+                _ => {}
+            }
+            let scrut = match scrut {
+                Some(scrut) => scrut,
+                None => {
+                    let operand = self.expr(int, 3);
+                    let k = [3, 4, 5, 8][self.b.below(4) as usize];
+                    Expr::bin(BinOp::Rem, operand, Expr::Lit(int, k))
+                }
+            };
+            let pats = self.int_patterns(int);
+            (scrut, pats)
+        };
+        let mut arms = Vec::new();
+        for pat in pats {
+            let body = self.value_arm(ty, depth, bias_root);
+            arms.push(Arm { pat, body });
+        }
+        (scrut, arms)
+    }
+
+    /// The patterns of an enum value `match`: the variants shuffled and cut into groups, `_` replacing the last group
+    /// 45 % of the time.
+    fn enum_patterns(&mut self, e: u8) -> Vec<Pat> {
+        let n = self.table.enums[usize::from(e)].variants.len();
+        let mut order: Vec<u8> = (0..n as u8).collect();
+        for k in (1..order.len()).rev() {
+            let other = self.b.below(k as u32 + 1) as usize;
+            order.swap(k, other);
+        }
+        let mut groups: Vec<Vec<u8>> = vec![vec![order[0]]];
+        for &v in &order[1..] {
+            if self.b.chance(40) {
+                groups.last_mut().expect("a group").push(v);
+            } else {
+                groups.push(vec![v]);
+            }
+        }
+        let wild = self.b.chance(45);
+        if wild {
+            if groups.len() == 1 {
+                let last = groups[0].pop().expect("two variants at least");
+                groups.push(vec![last]);
+            }
+            groups.pop();
+        }
+        let mut pats: Vec<Pat> = groups.into_iter().map(Pat::Variants).collect();
+        if wild {
+            pats.push(Pat::Wild);
+        }
+        pats
+    }
+
+    /// The patterns of an integer value `match`: one to four distinct small literals (an `i32` also negative ones, a
+    /// rare wide one), joined by `|` in groups 40 % of the time, written with or without the suffix, then `_`.
+    fn int_patterns(&mut self, int: Ty) -> Vec<Pat> {
+        let mut pool: Vec<u32> = (0..8).collect();
+        if int == Ty::I32 {
+            pool.extend([-1i32 as u32, -2i32 as u32, -3i32 as u32]);
+        }
+        for k in (1..pool.len()).rev() {
+            let other = self.b.below(k as u32 + 1) as usize;
+            pool.swap(k, other);
+        }
+        let count = 1 + self.b.below(4) as usize;
+        pool.truncate(count);
+        if self.b.chance(12) {
+            let wide = if int == Ty::I32 {
+                i32::MAX as u32
+            } else {
+                u32::MAX
+            };
+            if !pool.contains(&wide) {
+                pool[0] = wide;
+            }
+        }
+        let mut groups: Vec<Vec<u32>> = vec![vec![pool[0]]];
+        for &v in &pool[1..] {
+            if self.b.chance(40) {
+                groups.last_mut().expect("a group").push(v);
+            } else {
+                groups.push(vec![v]);
+            }
+        }
+        let mut pats = Vec::new();
+        for group in groups {
+            let lits = group
+                .into_iter()
+                .map(|bits| (bits, self.b.chance(40)))
+                .collect();
+            pats.push(Pat::Lits(lits));
+        }
+        pats.push(Pat::Wild);
+        pats
+    }
+
+    /// The block of one arm of a value `match` of type `ty`: statements, then its value: an expression, a nested value
+    /// `match`, or (in a helper) a `return`. An arm after a scrutinee that mutated `bias_root` often writes it first.
+    fn value_arm(&mut self, ty: Ty, depth: u32, bias_root: Option<Root>) -> Vec<Stmt> {
+        let scope_mark = self.scope.len();
+        let pre_mark = self.pre.len();
+        let kind = self.b.weighted(&[
+            38,
+            22,
+            if depth < 2 { 12 } else { 0 },
+            if self.cur_ret.is_some() { 45 } else { 0 },
+        ]);
+        let mut body = match kind {
+            0 => Vec::new(),
+            1 => self.block(depth + 1, 1, 2),
+            _ => self.block(depth + 1, 0, 1),
+        };
+        if let Some(root) = bias_root
+            && self.b.chance(70)
+        {
+            let targets: Vec<(Place, Ty)> = self
+                .set_targets()
+                .into_iter()
+                .filter(|(place, _)| place.root == root)
+                .collect();
+            if !targets.is_empty() {
+                body.insert(0, self.set_stmt(&targets));
+            }
+        }
+        let last = match kind {
+            2 => {
+                let (scrut, arms) = self.value_match_parts(ty, depth + 1);
+                Stmt::TailMatch { scrut, arms }
+            }
+            3 => {
+                let ret = self.cur_ret.expect("a return type");
+                Stmt::Return {
+                    value: self.expr(ret, 3),
+                }
+            }
+            _ => Stmt::Yield {
+                value: self.expr(ty, 3),
+            },
+        };
+        let at = body.len();
+        body.push(last);
+        self.splice_pre(pre_mark, at, &mut body);
+        self.scope.truncate(scope_mark);
+        body
+    }
+}
+
+/// Whether a `return` sits inside an arm of a `match` in `stmts`.
+fn arm_returns(stmts: &[Stmt], in_arm: bool) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        Stmt::Return { .. } => in_arm,
+        Stmt::If { then, els, .. } => arm_returns(then, in_arm) || arm_returns(els, in_arm),
+        Stmt::For { body, .. } => arm_returns(body, in_arm),
+        Stmt::Match { arms, .. } | Stmt::LetMatch { arms, .. } | Stmt::TailMatch { arms, .. } => {
+            arms.iter().any(|arm| arm_returns(&arm.body, true))
+        }
+        _ => false,
+    })
 }
 
 #[cfg(test)]

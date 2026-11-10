@@ -113,6 +113,15 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   gives a value anywhere else, a function's tail included, is `GUST-E0419`; ranges, bindings and constants as patterns stay `GUST-E0521`. The scrutinee
   is read once and the operands of an arm are evaluated in the order of Rust (measured), so nothing is refused for order.
   On an RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin.
+- Tuples (M9, slice t). A tuple value `(a, b)` and type `(u32, f32)` of two to eight elements (scalars, vectors, matrices,
+  structs, enums, or a tuple of tuples) is a local, a parameter, the result of a helper or a method and a method argument;
+  `t.0`, `t.0 = e`, `f().1`, `let (x, y) = f();` and `let (x, y): (u32, f32) = f();` are accepted. It lowers to Slang's
+  `Tuple<uint, float>`, `makeTuple(a, b)` and `._0`; `Tuple` and `makeTuple` join the renamed names. Refused: a tuple in a
+  struct field, a buffer, a uniform or workgroup memory, or a resource as an element (`GUST-E0212`); more than eight elements, one element, an array,
+  reference, `Option` or `Result` element, a comparison of a visible tuple (not supported yet), `Some((..))` and `.8` (`GUST-E0213`); a tuple
+  struct (`GUST-E0104`); a nested pattern, `_` or `..` in a destructuring (`GUST-E0319`, whose text now allows the tuple
+  pattern); a tuple as a `match` scrutinee (`GUST-E0515`). The elements are evaluated in the order of Rust (measured), so
+  nothing is refused for order. On an RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin.
 - Fixed (m9.f1): a method call with a `<` comparison argument before another argument, such as `s.m(a < b, c)`, failed in slangc with an undefined `__gust_keep`, because the scan that defines that helper did not visit method calls.
 
 ### Changed, and may break code written for 0.1.0

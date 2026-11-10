@@ -1196,6 +1196,68 @@ fn emit_statement(
 ) -> syn::Result<()> {
     let padding = "    ".repeat(indent);
     match statement {
+        syn::Stmt::Local(local) if tuple_pattern(&local.pat).is_some() => {
+            let (tuple, annotation) = tuple_pattern(&local.pat).expect("guarded by the match arm");
+            // The validator looks through parentheses around the annotation (`((u32, f32))`), so does the emission.
+            fn unparenthesized(ty: &syn::Type) -> &syn::Type {
+                match ty {
+                    syn::Type::Paren(inner) => unparenthesized(&inner.elem),
+                    syn::Type::Group(inner) => unparenthesized(&inner.elem),
+                    other => other,
+                }
+            }
+            let annotation = annotation.map(unparenthesized);
+            let initial = local.init.as_ref().ok_or_else(|| {
+                diagnostics::error(
+                    Code::LetNeedsInitializer,
+                    local,
+                    "Slang let bindings require an initializer",
+                )
+            })?;
+            // One temporary holds the whole value (evaluated once, in Rust's order), then one local per element.
+            let temporary = format!("__gust_tuple_{index}");
+            let element_types: Vec<Option<String>> = match annotation {
+                Some(syn::Type::Tuple(types)) if types.elems.len() == tuple.elems.len() => types
+                    .elems
+                    .iter()
+                    .map(|ty| emit_type(ty).map(Some))
+                    .collect::<syn::Result<_>>()?,
+                Some(other) => {
+                    return Err(diagnostics::error(
+                        Code::TupleShape,
+                        other,
+                        "a tuple destructuring is annotated with a tuple type of the same length",
+                    ));
+                }
+                None => vec![None; tuple.elems.len()],
+            };
+            let declaration = annotation
+                .map(emit_type)
+                .transpose()?
+                .unwrap_or_else(|| "var".to_owned());
+            writeln!(
+                output,
+                "{padding}{declaration} {temporary} = {};",
+                emit_expression(&initial.expr)?
+            )
+            .unwrap();
+            for (position, (element, ty)) in tuple.elems.iter().zip(&element_types).enumerate() {
+                let syn::Pat::Ident(name) = element else {
+                    return Err(diagnostics::error(
+                        Code::LetNeedsIdentifier,
+                        element,
+                        "a tuple destructuring binds plain identifiers",
+                    ));
+                };
+                writeln!(
+                    output,
+                    "{padding}{} {} = {temporary}._{position};",
+                    ty.as_deref().unwrap_or("var"),
+                    emit_ident(&name.ident)
+                )
+                .unwrap();
+            }
+        }
         syn::Stmt::Local(local) => {
             let (pattern, annotation) = local_binding(&local.pat)?;
             let initial = local.init.as_ref().ok_or_else(|| {
@@ -1411,6 +1473,18 @@ pub fn local_binding(pattern: &syn::Pat) -> syn::Result<(&syn::PatIdent, Option<
             pattern,
             "GPU let bindings require a single identifier, optionally with a type",
         )),
+    }
+}
+
+/// A tuple destructuring in a `let`: `(a, b)`, with the annotation of `(a, b): (A, B)` when there is one.
+pub(crate) fn tuple_pattern(pattern: &syn::Pat) -> Option<(&syn::PatTuple, Option<&syn::Type>)> {
+    match pattern {
+        syn::Pat::Tuple(tuple) => Some((tuple, None)),
+        syn::Pat::Type(typed) => match typed.pat.as_ref() {
+            syn::Pat::Tuple(tuple) => Some((tuple, Some(&typed.ty))),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -1741,9 +1815,13 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             emit_expression(&field.base)?,
             match &field.member {
                 syn::Member::Named(ident) => emit_ident(ident),
-                member @ syn::Member::Unnamed(_) => member.to_token_stream().to_string(),
+                // A tuple element: Slang's `Tuple` names its elements `_0`, `_1`, ...
+                syn::Member::Unnamed(index) => format!("_{}", index.index),
             }
         ),
+        syn::Expr::Tuple(tuple) if !tuple.elems.is_empty() => {
+            format!("makeTuple({})", emit_list(tuple.elems.iter())?.join(", "))
+        }
         syn::Expr::Group(group) => emit_expression(&group.expr)?,
         syn::Expr::Index(index) => format!(
             "{}[{}]",
@@ -2454,8 +2532,17 @@ fn emit_literal(literal: &syn::Lit) -> syn::Result<String> {
 }
 
 fn emit_type(ty: &syn::Type) -> syn::Result<String> {
-    if matches!(ty, syn::Type::Tuple(tuple) if tuple.elems.is_empty()) {
-        return Ok("void".to_owned());
+    if let syn::Type::Tuple(tuple) = ty {
+        if tuple.elems.is_empty() {
+            return Ok("void".to_owned());
+        }
+        // `(A, B)` is Slang's `Tuple<A, B>` (spike M9.s0, P3).
+        let elements = tuple
+            .elems
+            .iter()
+            .map(emit_type)
+            .collect::<syn::Result<Vec<_>>>()?;
+        return Ok(format!("Tuple<{}>", elements.join(", ")));
     }
     let syn::Type::Path(path) = ty else {
         return Err(diagnostics::error(
@@ -2620,7 +2707,7 @@ mod tests {
         use crate::diagnostics::testing::assert_code;
 
         let ty = |ty: syn::Type| emit_type(&ty).unwrap_err();
-        assert_code(&ty(syn::parse_quote!((u32, u32))), Code::TypeNeedsPath);
+        assert_code(&ty(syn::parse_quote!([u32; 2])), Code::TypeNeedsPath);
         assert_code(
             &ty(syn::parse_quote!(Result<'a>)),
             Code::ResultPayloadMissing,

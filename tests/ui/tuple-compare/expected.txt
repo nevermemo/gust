@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: tuple-compare/src/main.rs
+line: 12
+message: [GUST-E0213] comparisons on tuples are not supported yet: compare the elements (`a.0 == b.0 && a.1 == b.1`)

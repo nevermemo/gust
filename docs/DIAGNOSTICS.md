@@ -168,8 +168,9 @@ Decision: D02.
 
 A GPU struct is laid out field by field, so each field needs a name.
 Reached through `#[gpu]`.
-Rejected: `struct Pair(f32, f32);` and `struct Marker;`.
+Rejected: `struct Pair(f32, f32);` and `struct Marker;`. A tuple struct is not a tuple: use a tuple value `(f32, f32)` for a pair that lives in the body (slice m9.t), or a struct with named fields.
 Write instead: `struct Pair { first: f32, second: f32 }`.
+Fixture: `tests/ui/tuple-struct` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D17.
 
 ### GUST-E0105 empty struct
@@ -418,6 +419,25 @@ Write instead: a `u32` (or `i32`) field or element holding `mode as u32`, and a 
 Fixture: `tests/ui/enum-in-field` and `tests/ui/enum-in-buffer` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D157 (M9 plan 2.2, slice m9.e1).
 
+### GUST-E0212 tuple in a struct field, a buffer, a uniform or workgroup memory; a resource in a tuple
+
+A tuple is a value of the invocation and is never stored: it has no `GpuPod` layout. It lives in locals, parameters and results of helpers and methods; store its elements in the fields of a struct with named fields. A tuple element must be a value type: a buffer, uniform, workgroup array, texture, sampler or invocation id is a resource of the kernel, and a helper takes values only (D154, GUST-E0111), so a tuple may not carry one in (review m9.t M2). In a tuple literal, a workgroup array parameter and the invocation id are not refused yet (review m9.t re-check R1); neither gives a wrong value.
+Reached through `#[gpu]`.
+Rejected: `struct S { p: (u32, f32) }`, `StructuredBuffer<(u32, u32)>`, `RWStructuredBuffer<(u32, u32)>`, a uniform or `Workgroup<[(u32, u32); N]>` parameter, `fn f(t: (StructuredBuffer<u32>, u32))`, `let t = (input, id.x);` with `input` a buffer parameter.
+Write instead: a struct with a named field per element, or one buffer per element; pass the buffer to the kernel body, not through a tuple.
+Fixture: `tests/ui/tuple-field`, `tests/ui/tuple-buffer` and `tests/ui/tuple-resource-element` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D158 (M9 plan 2.3, slice m9.t).
+
+### GUST-E0213 tuple shape and use
+
+A tuple has two to eight elements; each element is a scalar, vector, matrix, struct, enum or tuple of the module (a tuple of tuples is accepted). Every shape this code refuses: a tuple with fewer than two or more than eight elements (a pattern, a type or a literal); an element of an array, reference, `Option` or `Result` type; a comparison with `==`, `!=`, `<`, `<=`, `>` or `>=` of a tuple the macro can see (a tuple literal, a local or parameter declared or initialized as a tuple, a call of a helper or method that returns one), which is a scope choice of slice m9.t: comparisons on tuples are not supported yet (slangc lowers them with Rust's meaning, see SEMANTICS section 10, and a later slice may admit them); a tuple as the payload of `Some(..)`, `Ok(..)` or `Err(..)`; an annotation of a destructuring that is not a tuple type of the same length; and `.8` or higher on a tuple. The tuple returns are known by method name, so a helper or method that returns a tuple and is named like a method the macro knows (`len`, `min`, `dot`) can make a comparison with its name an error it need not be (an over-refusal, never a miss).
+Reached through `#[gpu]`.
+Rejected: `(u32, u32, u32, u32, u32, u32, u32, u32, u32)`, `(v,)`, `([u32; 2], u32)`, `(&u32, u32)`, `(Option<u32>, u32)`, `if t == u { .. }`, `Some((a, b))`, `let (a, b): (u32, u32, u32) = f();`.
+Write instead: a struct with named fields for more than eight values, a separate local for an optional element, and a comparison of the elements (`t.0 == u.0 && t.1 == u.1`).
+Limitation: an enum bound by a destructuring without an annotation is not tracked by name as an enum, so only the cast check (GUST-E0122) does not see it; `match` on it still works (the first arm names the enum). An annotated `let (m, w): (Mode, u32) = ..;` restores the check.
+Fixture: `tests/ui/tuple-nine`, `tests/ui/tuple-one`, `tests/ui/tuple-element-array` and `tests/ui/tuple-compare` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D158 (M9 plan 2.3, slice m9.t).
+
 ## E03xx: expressions and calls
 
 ### GUST-E0301 CPU-only name
@@ -589,11 +609,12 @@ Decision: D02.
 
 ### GUST-E0319 `let` pattern must be one identifier
 
-A `let` binds one name, optionally typed.
+A `let` binds one name, optionally typed, or destructures a tuple into two to eight plain names (`let (a, b) = f();`, `let (a, b): (u32, f32) = f();`, a `mut` name is fine). A nested pattern, `_` and `..` inside the tuple pattern are refused, and so is every other pattern.
 Reached through `#[gpu]`.
-Rejected: `let (a, b) = pair;`, `let Pair { first, .. } = p;`.
-Write instead: `let a = pair.first;`.
-Decision: D02.
+Rejected: `let Pair { first, .. } = p;`, `let ((a, b), c) = t;`, `let (a, _) = t;`, `let (a, ..) = t;`, `let [a, b] = arr;`.
+Write instead: `let a = pair.first;`, or bind each element to a name (`let (a, b, c) = t;`).
+Fixture: `tests/ui/tuple-nested-pattern`, `tests/ui/tuple-wild-pattern` and `tests/ui/tuple-rest-pattern` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D02, D158 (slice m9.t: the tuple destructuring).
 
 ### GUST-E0320 let-else
 
@@ -999,9 +1020,10 @@ Decision: D14.
 
 Only a known `Result<T, T>` local, parameter or same-module helper call can be matched in a `Result` match, and only a local, a parameter, a call or a variant of a known enum in an enum `match` (a larger expression is bound to a local first); an integer `match` takes any `u32` or `i32` expression.
 Reached through `#[gpu]`.
-Rejected: a match on an `Option`, `match a + b { E::A => { .. } .. }` (an enum pattern on a larger expression) and a `match` of `_` alone on something that is not an enum.
-Write instead: bind the value to a `Result<T, T>` local first, or use `if let` for `Option`.
-Decision: D14.
+Rejected: a match on an `Option`, `match a + b { E::A => { .. } .. }` (an enum pattern on a larger expression), a `match` of `_` alone on something that is not an enum, and a `match` on a tuple (there are no tuple patterns).
+Write instead: bind the value to a `Result<T, T>` local first, or use `if let` for `Option`; destructure a tuple (`let (a, b) = t;`) and match on a part.
+Fixture: `tests/ui/tuple-scrutinee` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D14, D158 (slice m9.t: the tuple scrutinee).
 
 ### GUST-E0516 match arm attribute
 
@@ -1770,7 +1792,8 @@ generics of the typed call, and the `__gust_r_` prefix of renamed identifiers, s
 unrawed name, so `r#__gust_r_new` is rejected too.
 Reached through `#[gpu]`.
 Rejected: `fn __gust_not(x: u32) -> u32`, a parameter named `__gpu_len_out`, a local named `__GustCount`.
-Write instead: any other name.
+Write instead: any other name. The names bound by a tuple destructuring (`let (__gust_r_new, z) = ..;`) are checked too.
+Fixture: `tests/ui/tuple-reserved-binding` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D02.
 
 ### Renamed identifiers (not a diagnostic)

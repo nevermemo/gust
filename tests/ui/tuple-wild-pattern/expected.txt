@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: tuple-wild-pattern/src/main.rs
+line: 9
+message: [GUST-E0319] a tuple destructuring binds one plain identifier per element: no nested pattern, `_` or `..`; bind the element to a name and ignore it

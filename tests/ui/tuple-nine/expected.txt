@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: tuple-nine/src/main.rs
+line: 5
+message: [GUST-E0213] a tuple type has 2 to 8 elements, this one has 9: group the values in a struct with named fields

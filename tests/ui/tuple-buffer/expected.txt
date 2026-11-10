@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: tuple-buffer/src/main.rs
+line: 7
+message: [GUST-E0212] a tuple is not the element of a buffer, a uniform or workgroup memory: Rust gives a tuple no layout, so it has no `GpuPod` description; use a struct with named fields

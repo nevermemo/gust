@@ -1329,3 +1329,62 @@ over-refusal; bind the result to a local first (`let s = subgroup_add(v);` then 
 **Edge cases.** The integer arithmetic inside an arm has the wrapping contract of section 3 (D39). Tests:
 `crates/gust-wgpu/tests/m9_match_value.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations) and the macro tests
 of the value form in `crates/gust-macros/src/tests/regression.rs` and `subgroup.rs`.
+
+
+## 10. Tuples (M9, D158)
+
+A tuple is a value of the invocation: two to eight elements, each a scalar, a vector, a matrix, a struct or an enum of
+the module, or a tuple. It is accepted as a local, a parameter, the result of a helper or a method, and an argument of
+a helper or a method (`&self` and `&mut self`). It is never stored: a struct field, a buffer, a uniform and workgroup
+memory refuse it (`GUST-E0212`). An element is a value type: a buffer, uniform, workgroup array, texture, sampler or
+invocation id type as an element (in a type or a parameter) is `GUST-E0212` too, because a helper takes values only
+(D154) and a tuple would carry the resource in. In a tuple literal, a buffer, uniform, texture or sampler parameter is
+refused the same way; a workgroup array parameter (`(scratch, 0u32)`) and the invocation id (`(id, 1u32)`) are not yet
+(review m9.t re-check R1): the first copies the array into the tuple, the second is a `UVec3` value, and neither gives
+a wrong value.
+
+**Forms.** A literal `(a, b)`; the type `(u32, f32)`; the element `t.0` (and `t.1.0` on a tuple of tuples), also as a
+place (`t.0 = e;`, `t.1 += e;`) and on a call result (`f().1`); the destructuring `let (x, y) = f(..);` and
+`let (x, y): (u32, f32) = f(..);`, with plain names only (`mut` is allowed). Unsuffixed integer literals in a literal
+are `GUST-E0326`, as in a `let` (Slang would type them `int`).
+
+**Lowering.** `(A, B)` is `Tuple<A, B>`, `(a, b)` is `makeTuple(a, b)` and `t.0` is `t._0` (spike M9.s0, P3: Slang
+infers the types, so the macro needs none). A destructuring is one temporary, then one local per element:
+`var __gust_tuple_<n> = f(..); var x = __gust_tuple_<n>._0; var y = __gust_tuple_<n>._1;`; with an annotation the
+temporary and the locals carry the types.
+
+**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V; the GPU test `m9_tuples` runs the cases against
+hand-written values). The elements of a literal run left to right, each completely before the next, and a struct element
+is copied at its place in the order: `(c.n, c.tick())` reads `c.n` before `tick` runs, `(c.tick(), c.n)` after it,
+`(c, c.tick())` copies `c` before the call and `(c.tick(), c)` after it. A destructuring of a literal of two calls runs
+them in order, a tuple argument built from calls runs its elements in order before the method, and
+`c.pair().1 + c.tick()` and `c.tick() + c.pair().1` give Rust's values. An element place against a `&mut self` call
+runs the value first, as Rust does for a primitive place: `t.0 += g.tick()`, `t.1 = t.0 + g.tick()`,
+`t.0.n += t.0.tick()`, `t.0.n /= t.0.tick()` and `c.n + c.tick_pair().1` are run on the GPU and the twin against
+hand-written values. Nothing is refused for order.
+
+**Refused on purpose.** A tuple in a struct field, a buffer, a uniform or workgroup memory (`GUST-E0212`). More than
+eight elements, one element, an element that is an array, a reference, an `Option` or a `Result`, `Some((..))`, `Ok((..))`
+and `Err((..))`, a comparison of a tuple the macro can see (`==`, `!=` and the orderings: a scope choice of this
+slice, not a limit of Slang), and `.8` on a tuple (`GUST-E0213`). A tuple struct (`GUST-E0104`). A nested pattern, `_` and `..` in a
+destructuring (`GUST-E0319`). A tuple as a `match` scrutinee (`GUST-E0515`: there are no tuple patterns). The macro
+sees no types: a comparison of a tuple behind a name it cannot follow (a tuple from an indexed element, say) is not
+caught by the macro; slangc either compiles it with Rust's meaning or refuses it (a struct element). Review m9.t
+measured slangc 2026.21: it lowers `==`, `!=` and `<`, `<=`, `>`, `>=` on a `Tuple` lexicographically with Rust's
+`PartialEq` and `PartialOrd` semantics, NaN included (`<=` gives `a0 <= b0` when the first elements differ or are
+unordered, else `a1 <= b1`); only a struct element fails (E39999). That is the basis for admitting tuple comparisons
+in a later slice, with GPU cases. A helper or method whose name is also a method name the macro knows (`len`, `min`)
+and that returns a tuple can make `input.len() == n` an `GUST-E0213` by name (it over-refuses, never misses).
+
+**Uniformity (D154).** A barrier inside an element is `GUST-E0327` (a barrier is a statement of its own) and a subgroup
+operation inside an element is `GUST-E0747` (a tuple literal is not an approved position for an operation); bind the
+result to a local first.
+
+**Known limitation.** An enum bound by an unannotated destructuring is not tracked by name as an enum, so the cast
+check (`GUST-E0122`) does not see `m as u32`; a `match m { Mode::Low => .. }` still works (the macro takes the enum the
+first arm names), and `GUST-E0211` is type-based. No accepted program computes a wrong value: the cast of a
+`repr(u32)` enum has the bits of Rust's `as`. Annotating the `let` (`let (m, w): (Mode, u32) = f();`) restores the check.
+
+**Edge cases.** The arithmetic inside an element has the wrapping contract of section 3 (D39). Tests:
+`crates/gust-wgpu/tests/m9_tuples.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations) and the macro tests in
+`crates/gust-macros/src/tests/regression.rs`.

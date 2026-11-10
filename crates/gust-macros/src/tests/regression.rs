@@ -7286,3 +7286,100 @@ fn a_tuple_name_that_slang_reserves_is_renamed() {
         "{source}"
     );
 }
+
+#[test]
+fn a_destructured_name_takes_the_reserved_prefix_check() {
+    // Review m9.t M1: `__gust_r_new` would capture the local `new`, which the collision renaming gives that name.
+    assert_rejected(
+        &with_kernel(
+            "",
+            "let new = id.x + 9u32; { let (__gust_r_new, z) = (5u32, 6u32); out[id.x] = new + z; }",
+        ),
+        Code::ReservedPrefix,
+    );
+    // Without the reserved name, the same shape is accepted and the renamed local stays what it was.
+    let source = translate(&with_kernel(
+        "",
+        "let new = id.x + 9u32; { let (w, z) = (5u32, 6u32); out[id.x] = new + z + w; }",
+    ))
+    .unwrap();
+    assert!(source.contains("__gust_r_new"), "{source}");
+}
+
+#[test]
+fn a_tuple_element_must_be_a_value_type() {
+    // Review m9.t M2: a resource in a tuple would let a helper reach a buffer (E0111, D154).
+    let cases: [(&str, &str); 6] = [
+        (
+            "fn read(t: (StructuredBuffer<u32>, u32)) -> u32 { t.0[t.1] }",
+            "out[id.x] = read((input, id.x));",
+        ),
+        (
+            "fn write(mut t: (RWStructuredBuffer<u32>, u32)) { t.0[t.1] = 7u32; }",
+            "write((out, id.x));",
+        ),
+        ("", "let t = (input, id.x); out[id.x] = t.1;"),
+        (
+            "",
+            "let t: (Storage<u32>, u32) = (input, id.x); out[id.x] = t.1;",
+        ),
+        (
+            "fn f(t: (Texture2D<f32>, u32)) -> u32 { t.1 }",
+            "out[id.x] = 1u32;",
+        ),
+        (
+            "fn f(t: (Sampler, u32)) -> u32 { t.1 }",
+            "out[id.x] = 1u32;",
+        ),
+    ];
+    for (items, body) in cases {
+        assert_rejected(
+            &format!(
+                "mod m {{ {items} #[kernel] pub fn run(id: SV_DispatchThreadID, input: StructuredBuffer<uint>, mut out: RWStructuredBuffer<uint>) {{ {body} }} }}"
+            ),
+            Code::TupleInResource,
+        );
+    }
+}
+
+#[test]
+fn an_unannotated_destructuring_loses_only_the_enum_cast_check() {
+    // Review m9.t S2: `match` on an enum bound by an unannotated destructuring works (the first arm names the enum).
+    let items = "#[derive(PartialEq, Eq)] pub enum Mode { Low = 1, High } \
+                 fn pick(v: u32) -> (Mode, u32) { if v == 0u32 { (Mode::Low, v) } else { (Mode::High, v) } }";
+    let source = translate(&with_kernel(
+        items,
+        "let (m, w) = pick(id.x); let mut r = w; match m { Mode::Low => { r += 1u32; } _ => { r += 2u32; } } out[id.x] = r;",
+    ))
+    .unwrap();
+    assert!(source.contains("__gust_tuple_"), "{source}");
+    // The cast check (E0122) is the one thing lost: the cast of an untracked enum is accepted.
+    translate(&with_kernel(
+        items,
+        "let (m, w) = pick(id.x); out[id.x] = (m as u32) + w;",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn a_parenthesized_annotation_of_a_destructuring_is_accepted() {
+    // Review m9.t N1: the emission looks through the parentheses the validator looks through.
+    let source = translate(&with_kernel(
+        PAIR_FN,
+        "let (a, b): ((u32, f32)) = pair(id.x); out[id.x] = a + b as u32;",
+    ))
+    .unwrap();
+    assert!(source.contains("uint a = __gust_tuple_0._0;"), "{source}");
+}
+
+#[test]
+fn a_destructuring_takes_no_match_initializer() {
+    // Review m9.t N6.
+    assert_rejected(
+        &with_kernel(
+            "",
+            "let (a, b): (u32, u32) = match id.x { 0 => (1u32, 2u32), _ => (3u32, 4u32) }; out[id.x] = a + b;",
+        ),
+        Code::ValueMatchForm,
+    );
+}

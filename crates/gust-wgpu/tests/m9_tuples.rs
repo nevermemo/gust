@@ -39,6 +39,13 @@ use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 //   order_h = `c.pair().1 + c.tick()` with c.n = 11: pair is (11, 12), so .1 = 12, then tick gives 12: 24; c.n = 12
 //   order_i = `c.tick() + c.pair().1`: tick gives 13, then pair is (13, 14): 13 + 14 = 27; c.n = 13
 //   order_n = 13
+// Element places against `&mut self` calls: Rust evaluates the value of `place op= value` before a primitive place.
+// With g.n = v, tg = (1, 10), th = (Trace { n: v }, 0), tj = (Trace { n: v + 3 }, 0), pc.n = v:
+//   place_a    = `tg.0 += g.tick()`: tick gives v + 1, so tg.0 = 1 + (v + 1) = v + 2        : 2, 3, 4, 5, 6
+//   place_b    = `tg.1 = tg.0 + g.tick()`: tick gives v + 2: (v + 2) + (v + 2) = 2v + 4     : 4, 6, 8, 10, 12
+//   place_add  = `th.0.n += th.0.tick()`: tick makes n = v + 1 and gives v + 1: n = 2v + 2    : 2, 4, 6, 8, 10
+//   place_div  = `tj.0.n /= tj.0.tick()`: tick makes n = v + 4 and gives v + 4: n = 1        : 1, 1, 1, 1, 1
+//   place_pair = `pc.n + pc.tick_pair().1`: pc.n is read (v), then tick_pair is (v + 1, v + 11): 2v + 11 : 11, 13, 15, 17, 19
 const RET_A: [u32; 5] = [1, 3, 5, 7, 9];
 const RET_B: [f32; 5] = [0.0, 0.5, 1.0, 1.5, 2.0];
 const SECOND: [f32; 5] = [0.5, 1.0, 1.5, 2.0, 2.5];
@@ -68,6 +75,11 @@ const ORDER_G_N: u32 = 11;
 const ORDER_H: u32 = 24;
 const ORDER_I: u32 = 27;
 const ORDER_N: u32 = 13;
+const PLACE_A: [u32; 5] = [2, 3, 4, 5, 6];
+const PLACE_B: [u32; 5] = [4, 6, 8, 10, 12];
+const PLACE_ADD: [u32; 5] = [2, 4, 6, 8, 10];
+const PLACE_DIV: [u32; 5] = [1, 1, 1, 1, 1];
+const PLACE_PAIR: [u32; 5] = [11, 13, 15, 17, 19];
 
 #[test]
 fn tuples_execute_on_gpu_and_on_the_cpu_twin() {
@@ -109,6 +121,11 @@ fn tuples_execute_on_gpu_and_on_the_cpu_twin() {
                 order_h: u32::MAX,
                 order_i: u32::MAX,
                 order_n: u32::MAX,
+                place_a: u32::MAX,
+                place_b: u32::MAX,
+                place_add: u32::MAX,
+                place_div: u32::MAX,
+                place_pair: u32::MAX,
             };
             count
         ];
@@ -158,6 +175,11 @@ fn tuples_execute_on_gpu_and_on_the_cpu_twin() {
                 assert_eq!(row.order_h, ORDER_H, "order_h {note}");
                 assert_eq!(row.order_i, ORDER_I, "order_i {note}");
                 assert_eq!(row.order_n, ORDER_N, "order_n {note}");
+                assert_eq!(row.place_a, PLACE_A[k], "place_a {note}");
+                assert_eq!(row.place_b, PLACE_B[k], "place_b {note}");
+                assert_eq!(row.place_add, PLACE_ADD[k], "place_add {note}");
+                assert_eq!(row.place_div, PLACE_DIV[k], "place_div {note}");
+                assert_eq!(row.place_pair, PLACE_PAIR[k], "place_pair {note}");
             }
         }
     }
@@ -168,4 +190,6 @@ fn the_tuples_fixture_compiles_to_wgsl_with_its_tuple_values() {
     let descriptor = &tuples::run::DESCRIPTOR;
     let wgsl = gust::slang::compile_wgsl(descriptor).unwrap();
     assert!(wgsl.contains("compute"), "{wgsl}");
+    // The tuple elements are members `_0` and `_1` of a generated struct (`makeTuple(a, b)` and `t._0` in the Slang).
+    assert!(wgsl.contains("_0") && wgsl.contains("_1"), "{wgsl}");
 }

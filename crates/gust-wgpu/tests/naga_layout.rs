@@ -803,7 +803,7 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
     problems
 }
 
-/// The compute and fragment entries the twenty-three goldens hold in all (pinned per golden in [`goldens`]).
+/// The compute and fragment entries the twenty-four goldens hold in all (pinned per golden in [`goldens`]).
 const GOLDEN_ENTRIES: usize = 101;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`

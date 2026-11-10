@@ -2369,6 +2369,14 @@ impl RestrictedVisitor {
                 }
             }
         }
+        // The names and the attributes go through the per-binding checks of a plain `let` (GUST-E0901 on a reserved
+        // prefix, which would let `__gust_r_new` capture a renamed local; review m9.t M1).
+        for attribute in &local.attrs {
+            self.visit_attribute(attribute);
+        }
+        for element in &tuple.elems {
+            self.visit_pat(element);
+        }
         if let Some(ty) = annotation {
             let same_length = matches!(
                 strip_type_parens(ty),
@@ -2404,6 +2412,14 @@ impl RestrictedVisitor {
             self.visit_type(ty);
         }
         if let Some(initial) = &local.init {
+            if matches!(strip_parens(&initial.expr), syn::Expr::Match(_)) {
+                self.reject(
+                    Code::ValueMatchForm,
+                    &initial.expr,
+                    "a tuple destructuring takes no `match` initializer: bind the `match` to a typed tuple `let` first, then destructure it",
+                );
+                return;
+            }
             self.visit_expr(&initial.expr);
         }
         for (element, ty) in tuple.elems.iter().zip(element_types) {
@@ -3656,8 +3672,9 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_binary(&mut self, binary: &'ast syn::ExprBinary) {
-        // Slang's `==` on a `Tuple` exists only when every element is a scalar, and its ordering not at all: a
-        // comparison of a visible tuple is refused (a tuple behind an unseen name is a Slang compile error).
+        // Comparing tuples is a scope choice of slice m9.t, not a limit of Slang (review m9.t S1: slangc lowers `==` and
+        // the orderings of a `Tuple` with Rust's semantics, NaN included): a comparison of a visible tuple is refused
+        // until a later slice admits it with GPU cases. A tuple behind an unseen name is judged by slangc.
         if matches!(
             binary.op,
             syn::BinOp::Eq(_)
@@ -3671,7 +3688,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             self.reject(
                 Code::TupleShape,
                 binary,
-                "a tuple is not compared: Slang defines `==` on tuples of scalars only, and Rust's ordering of tuples has no Slang form; compare the elements (`a.0 == b.0 && a.1 == b.1`)",
+                "comparisons on tuples are not supported yet: compare the elements (`a.0 == b.0 && a.1 == b.1`)",
             );
             return;
         }
@@ -3950,6 +3967,16 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             return;
         }
         for element in &ty.elems {
+            if crate::slang::parameter_flavor(strip_type_parens(element))
+                != crate::slang::ParameterFlavor::Value
+            {
+                self.reject(
+                    Code::TupleInResource,
+                    element,
+                    "a tuple element must be a value type: a buffer, uniform, workgroup array, texture, sampler or invocation id is a resource of the kernel, not a value to carry in a tuple",
+                );
+                return;
+            }
             if let Some(problem) = tuple_element_problem(element) {
                 self.reject(Code::TupleShape, element, problem);
                 return;
@@ -3971,6 +3998,25 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                     "a tuple has 2 to {MAX_TUPLE_ELEMENTS} elements, this one has {}: group the values in a struct with named fields",
                     tuple.elems.len()
                 ),
+            );
+            return;
+        }
+        // A resource parameter by name is no value either (the values of a buffer element are read through it).
+        if let Some(resource) = tuple.elems.iter().find(|element| {
+            matches!(strip_parens(element), syn::Expr::Path(path)
+            if path.qself.is_none()
+                && path.path.get_ident().is_some_and(|name| {
+                    let name = name.unraw().to_string();
+                    self.resources.contains(&name)
+                        || self.uniforms.contains(&name)
+                        || self.textures.contains_key(&name)
+                        || self.samplers.contains(&name)
+                }))
+        }) {
+            self.reject(
+                Code::TupleInResource,
+                resource,
+                "a tuple element must be a value type: a buffer, uniform, texture or sampler parameter is a resource of the kernel, not a value to carry in a tuple",
             );
             return;
         }

@@ -1183,6 +1183,15 @@ fn emit_statement(
     match statement {
         syn::Stmt::Local(local) if tuple_pattern(&local.pat).is_some() => {
             let (tuple, annotation) = tuple_pattern(&local.pat).expect("guarded by the match arm");
+            // The validator looks through parentheses around the annotation (`((u32, f32))`), so does the emission.
+            fn unparenthesized(ty: &syn::Type) -> &syn::Type {
+                match ty {
+                    syn::Type::Paren(inner) => unparenthesized(&inner.elem),
+                    syn::Type::Group(inner) => unparenthesized(&inner.elem),
+                    other => other,
+                }
+            }
+            let annotation = annotation.map(unparenthesized);
             let initial = local.init.as_ref().ok_or_else(|| {
                 diagnostics::error(
                     Code::LetNeedsInitializer,

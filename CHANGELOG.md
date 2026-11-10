@@ -117,8 +117,8 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   structs, enums, or a tuple of tuples) is a local, a parameter, the result of a helper or a method and a method argument;
   `t.0`, `t.0 = e`, `f().1`, `let (x, y) = f();` and `let (x, y): (u32, f32) = f();` are accepted. It lowers to Slang's
   `Tuple<uint, float>`, `makeTuple(a, b)` and `._0`; `Tuple` and `makeTuple` join the renamed names. Refused: a tuple in a
-  struct field, a buffer, a uniform or workgroup memory (`GUST-E0212`); more than eight elements, one element, an array,
-  reference, `Option` or `Result` element, a comparison of a visible tuple, `Some((..))` and `.8` (`GUST-E0213`); a tuple
+  struct field, a buffer, a uniform or workgroup memory, or a resource as an element (`GUST-E0212`); more than eight elements, one element, an array,
+  reference, `Option` or `Result` element, a comparison of a visible tuple (not supported yet), `Some((..))` and `.8` (`GUST-E0213`); a tuple
   struct (`GUST-E0104`); a nested pattern, `_` or `..` in a destructuring (`GUST-E0319`, whose text now allows the tuple
   pattern); a tuple as a `match` scrutinee (`GUST-E0515`). The elements are evaluated in the order of Rust (measured), so
   nothing is refused for order. On an RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin.

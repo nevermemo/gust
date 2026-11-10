@@ -1698,6 +1698,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tuple-reserved-binding"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "tuple-resource-element"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "tuple-rest-pattern"
 version = "0.0.0"
 dependencies = [

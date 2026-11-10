@@ -1,4 +1,4 @@
-// A tuple is not compared, GUST-E0213: Slang defines `==` on tuples of scalars only. expected.txt pins the code and the
+// Comparing tuples is not supported yet, GUST-E0213 (a scope choice of slice m9.t). expected.txt pins the code and the
 // line of the comparison.
 
 #[gust::gpu]

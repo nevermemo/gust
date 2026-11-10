@@ -34,6 +34,12 @@ mod tuples {
             (self.n, self.n + 1u32)
         }
 
+        // A tuple result of a `&mut self` method.
+        pub fn tick_pair(&mut self) -> (u32, u32) {
+            self.n += 1u32;
+            (self.n, self.n + 10u32)
+        }
+
         // A tuple argument of a `&mut self` method.
         pub fn shift(&mut self, t: (u32, u32)) -> u32 {
             self.n += t.0;
@@ -72,6 +78,11 @@ mod tuples {
         pub order_h: u32,
         pub order_i: u32,
         pub order_n: u32,
+        pub place_a: u32,
+        pub place_b: u32,
+        pub place_add: u32,
+        pub place_div: u32,
+        pub place_pair: u32,
     }
 
     fn classify(v: u32) -> (u32, f32) {
@@ -207,6 +218,21 @@ mod tuples {
             let o8 = c.pair().1 + c.tick();
             let o9 = c.tick() + c.pair().1;
 
+            // Element places against `&mut self` calls (review m9.t S3): the value is evaluated before a primitive
+            // place, in Rust's order.
+            let mut g = Trace { n: v };
+            let mut tg = (1u32, 10u32);
+            tg.0 += g.tick();
+            tg.1 = tg.0 + g.tick();
+            let th0 = Trace { n: v };
+            let mut th = (th0, 0u32);
+            th.0.n += th.0.tick();
+            let tj0 = Trace { n: v + 3u32 };
+            let mut tj = (tj0, 0u32);
+            tj.0.n /= tj.0.tick();
+            let mut pc = Trace { n: v };
+            let place_pair = pc.n + pc.tick_pair().1;
+
             results[i] = Results {
                 ret_a: a,
                 ret_b: b,
@@ -237,6 +263,11 @@ mod tuples {
                 order_h: o8,
                 order_i: o9,
                 order_n: c.n,
+                place_a: tg.0,
+                place_b: tg.1,
+                place_add: th.0.n,
+                place_div: tj.0.n,
+                place_pair,
             };
         }
     }

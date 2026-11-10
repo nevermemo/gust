@@ -23,6 +23,17 @@ struct Trace
         (this.n += uint(1));
         return this.n;
     }
+
+    Mode mode_of(uint v)
+    {
+        return mode_from(v);
+    }
+
+    [mutating] uint add_mode(Mode m)
+    {
+        (this.n += uint(m));
+        return this.n;
+    }
 };
 
 struct Results
@@ -40,6 +51,9 @@ struct Results
     uint arg_order;
     uint built;
     uint built_trace;
+    uint less;
+    uint method_code;
+    uint method_sum;
 };
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint> input;
@@ -228,21 +242,36 @@ void gpu_enums_run(uint3 id : SV_DispatchThreadID)
         Trace __gust_struct_20;
         __gust_struct_20.n = uint(0);
         Trace w = __gust_struct_20;
-        var built = take(mode_from(w.mark(uint(1))), mode_from(w.mark(uint(2))));
-        Results __gust_struct_22;
-        __gust_struct_22.code = uint(m);
-        __gust_struct_22.grade = classify(m);
-        __gust_struct_22.bumped = uint(bump_mode(m));
-        __gust_struct_22.eq = eq;
-        __gust_struct_22.ne = ne;
-        __gust_struct_22.sign = int(s);
-        __gust_struct_22.weight = weight(s);
-        __gust_struct_22.scrut = scrut;
-        __gust_struct_22.eq_order = eq_order;
-        __gust_struct_22.ne_order = ne_order;
-        __gust_struct_22.arg_order = arg_order;
-        __gust_struct_22.built = built;
-        __gust_struct_22.built_trace = w.n;
-        results[i] = __gust_struct_22;
+        var built = take(mode_from(w.mark(uint(2))), mode_from(w.mark(uint(3))));
+        var less = uint(0);
+        if ((s < Sign::Mid))
+        {
+            less = uint(1);
+        }
+        Trace __gust_struct_24;
+        __gust_struct_24.n = uint(0);
+        Trace q = __gust_struct_24;
+        var via = q.mode_of(v);
+        var method_code = uint(via);
+        var first = q.add_mode(Mode::Low);
+        var method_sum = (first + q.add_mode(via));
+        Results __gust_struct_29;
+        __gust_struct_29.code = uint(m);
+        __gust_struct_29.grade = classify(m);
+        __gust_struct_29.bumped = uint(bump_mode(m));
+        __gust_struct_29.eq = eq;
+        __gust_struct_29.ne = ne;
+        __gust_struct_29.sign = int(s);
+        __gust_struct_29.weight = weight(s);
+        __gust_struct_29.scrut = scrut;
+        __gust_struct_29.eq_order = eq_order;
+        __gust_struct_29.ne_order = ne_order;
+        __gust_struct_29.arg_order = arg_order;
+        __gust_struct_29.built = built;
+        __gust_struct_29.built_trace = w.n;
+        __gust_struct_29.less = less;
+        __gust_struct_29.method_code = method_code;
+        __gust_struct_29.method_sum = method_sum;
+        results[i] = __gust_struct_29;
     }
 }

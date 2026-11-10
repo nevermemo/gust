@@ -322,6 +322,7 @@ A `#[gpu]` module accepts a field-less `enum` whose variants become the values o
 Reached through `#[gpu]`.
 Rejected: a variant with data (`A(u32)`, `A { x: u32 }`); a discriminant that is not an integer literal (`A = 1 + 2`, `A = 1.5`) or is negative without `#[repr(i32)]`; a missing `PartialEq` derive; a generic enum or one with no variants; a repr other than `u32` or `i32` (`#[repr(u8)]`, `#[repr(u32, C)]`); `Clone` or `Copy` derived by hand; an attribute on a variant other than documentation and lints; `m as i32`, `m as f32` or `Mode::A as i32` on a `repr(u32)` enum, and `s as u32` on a `repr(i32)` one.
 Write instead: the shape above; for a value with data, use a struct and an integer tag, and convert at the cast.
+Name collisions (not checked by the macro, loud in slangc, and the same for a struct): an enum named like a Slang modifier that the emitter does not rename, or like a function of the module, gives a slangc error at the declaration or a use, not a silent change; rename the enum. Names that every identifier shares (`class`, `new` ..) are renamed by the emitter and are no clash.
 Fixture: `tests/ui/enum-data-variant`, `tests/ui/enum-discriminant`, `tests/ui/enum-no-partialeq` and `tests/ui/enum-cast-type` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D157 (M9 plan 2.2, slice m9.e1).
 
@@ -836,7 +837,7 @@ Decision: D42 (M7 plan 4.2 rule 2, slice m7.g1).
 
 ### GUST-E0417 `break` or `continue` in an arm of an enum `match`
 
-A statement `match` on an enum is a Slang `switch`, and in Slang a `break` ends the `switch`, not the loop around it, so a `break` (and, by the same rule, a `continue`) written in an arm and aimed at an enclosing `for` loop would mean something else on the GPU than in Rust. The rule covers an unlabelled `break` or `continue` whose innermost enclosing construct is an arm, however deep the `if`s inside it; a `for` loop inside the arm is its own target, and a jump after the `match` is the loop's.
+A statement `match` on an enum is a Slang `switch`, and in Slang a `break` ends the `switch`, not the loop around it, so a `break` written in an arm and aimed at an enclosing `for` loop would mean something else on the GPU than in Rust. A `continue` is refused for symmetry with `break`, not because it would go wrong: measured, Slang's `continue` inside a `switch` does continue the loop around it (the refusal is conservative, and can be lifted by a later slice). The rule covers an unlabelled `break` or `continue` whose innermost enclosing construct is an arm, however deep the `if`s inside it; a `for` loop inside the arm is its own target, and a jump after the `match` is the loop's.
 Reached through `#[gpu]`.
 Rejected: `for k in 0u32..4u32 { match m { Mode::A => { break; } _ => { } } }`, the same with `continue;`, and a `break` in an arm of a `match` nested in an arm.
 Write instead: set a flag in the arm and test it after the `match`, `if done { break; }`, or move the `match` into a helper that returns.
@@ -971,7 +972,7 @@ Decision: D14.
 
 ### GUST-E0513 Result match as a value
 
-A `match` on a `Result` is a statement, not an expression with a value.
+A `match` on a `Result` or on an enum is a statement, not an expression with a value. For an enum `match` this also fires when an arm ends in a value (an expression without `;`, such as `Mode::A => { c.reset() }`): end the arm's last statement with `;`.
 Reached through `#[gpu]`.
 Rejected: `let x = match r { Ok(v) => { v } Err(e) => { e } };`.
 Write instead: assign inside the arms to a `let mut` local, and end the match with `;`.
@@ -987,15 +988,15 @@ Decision: D14.
 
 ### GUST-E0515 match scrutinee
 
-Only a known `Result<T, T>` local, parameter or same-module helper call can be matched.
+Only a known `Result<T, T>` local, parameter or same-module helper call can be matched in a `Result` match, and only a local, a parameter, a call or a variant of a known enum in an enum `match` (a larger expression is bound to a local first).
 Reached through `#[gpu]`.
-Rejected: `match 1u32 { .. }`, a match on an `Option`.
+Rejected: `match 1u32 { .. }`, a match on an `Option`, `match a + b { E::A => { .. } .. }` and a `match` of `_` alone on something that is not an enum.
 Write instead: bind the value to a `Result<T, T>` local first, or use `if let` for `Option`.
 Decision: D14.
 
 ### GUST-E0516 match arm attribute
 
-A match arm carries no attributes.
+A match arm carries no attributes, in a `Result` match or in an enum `match`.
 Reached through `#[gpu]`.
 Rejected: `#[allow(unused)] Ok(x) => { .. }`.
 Write instead: remove the attribute.
@@ -1011,7 +1012,7 @@ Decision: D14.
 
 ### GUST-E0518 match arm block
 
-Each arm body is a block.
+Each arm body is a block, in a `Result` match and in an enum `match`.
 Reached through `#[gpu]`.
 Rejected: `Ok(x) => x`.
 Write instead: `Ok(x) => { .. }`.
@@ -1035,9 +1036,9 @@ Decision: D14.
 
 ### GUST-E0521 match pattern
 
-Arm patterns are `Ok(identifier)` and `Err(identifier)`.
+In a `Result` match the arm patterns are `Ok(identifier)` and `Err(identifier)`; in an enum `match` they are `E::A`, `E::A | E::B` and `_` (the enum's own variants, each named once, none after `_`). A pattern of another shape is refused with this code in both.
 Reached through `#[gpu]`.
-Rejected: `_ => { .. }`, `Ok((x, y)) => { .. }`.
+Rejected: `_ => { .. }` in a `Result` match, `Ok((x, y)) => { .. }`, and in an enum `match` a variant of another enum, a variant named twice or after `_`, a binding or a literal.
 Write instead: `Ok(x) => { .. }` and `Err(e) => { .. }`.
 Decision: D14.
 

@@ -798,16 +798,15 @@ fn emit_discriminant(expression: &syn::Expr) -> syn::Result<String> {
 
 /// `switch (scrutinee) { case E::A: case E::B: { .. break; } default: { .. break; } }` for a statement `match` on an
 /// enum (slice m9.e1, D157). The scrutinee is one expression in the `switch`, so it is evaluated once. An arm that ends
-/// in `return` gets no `break` (slangc warns about unreachable code). A `match` in the tail of a function with a result
-/// and without a `_` arm makes its last arm the `default`: rustc proved the arms exhaustive, and WGSL needs the function
-/// to return in every case of a `switch` (measured: slangc error 41009 otherwise).
+/// in `return` gets no `break` (slangc warns about unreachable code). An enum `match`
+/// without a `_` arm makes its last arm the `default` (in any position: rustc proved the arms exhaustive, and WGSL needs
+/// the function to return in every case of a `switch`; measured: slangc error 41009 otherwise).
 fn emit_enum_match(
     output: &mut String,
     table: &mut LineTable,
     expression: &syn::ExprMatch,
     indent: usize,
     index: usize,
-    is_tail: bool,
 ) -> syn::Result<()> {
     let padding = "    ".repeat(indent);
     let inner = "    ".repeat(indent + 1);
@@ -825,7 +824,7 @@ fn emit_enum_match(
     writeln!(output, "{padding}{{").unwrap();
     for (position, arm) in expression.arms.iter().enumerate() {
         let last = position + 1 == expression.arms.len();
-        if matches!(arm.pat, syn::Pat::Wild(_)) || (is_tail && !has_wildcard && last) {
+        if matches!(arm.pat, syn::Pat::Wild(_)) || (!has_wildcard && last) {
             writeln!(output, "{inner}default:").unwrap();
         } else {
             let mut alternatives = Vec::new();
@@ -1055,14 +1054,7 @@ fn emit_statement(
                 index,
             )?,
             syn::Expr::Match(expression) if crate::validate::is_enum_match(expression) => {
-                emit_enum_match(
-                    output,
-                    table,
-                    expression,
-                    indent,
-                    index,
-                    is_tail && semicolon.is_none(),
-                )?
+                emit_enum_match(output, table, expression, indent, index)?
             }
             syn::Expr::Match(expression) => {
                 emit_result_match(output, table, expression, indent, index)?

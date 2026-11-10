@@ -568,6 +568,8 @@ pub(crate) fn validate_module_in(
             _ => None,
         })
         .collect();
+    // Before the item loop: a `Workgroup<[Mode; 4]>` parameter would otherwise stop at the workgroup shape check (E0210).
+    check_enum_layout(stage, items, &methods.enums)?;
 
     for item in items {
         match item {
@@ -614,7 +616,6 @@ pub(crate) fn validate_module_in(
             }
         }
     }
-    check_enum_layout(stage, items, &methods.enums)?;
     let structs: HashMap<String, &syn::ItemStruct> = items
         .iter()
         .filter_map(|item| match item {
@@ -1985,6 +1986,12 @@ pub(crate) fn is_enum_match(expression: &syn::ExprMatch) -> bool {
         .arms
         .iter()
         .any(|arm| first_variant_path(&arm.pat).is_some())
+        // A `match` of `_` arms alone is no `Result` match either (that needs `Ok`/`Err`): it is the enum form.
+        || (!expression.arms.is_empty()
+            && expression
+                .arms
+                .iter()
+                .all(|arm| matches!(arm.pat, syn::Pat::Wild(_))))
 }
 
 /// The tail expression of a block when it is a value (no `;`, not a statement-like expression): the value form of a
@@ -2263,7 +2270,7 @@ impl RestrictedVisitor {
                 self.reject(
                     Code::MatchAsValue,
                     tail,
-                    "the arms of a statement `match` end in a statement; a tail expression makes the `match` a value, which is not supported yet",
+                    "the arms of a statement `match` end in a statement; a tail expression makes the `match` a value, which is not supported yet: end the arm's last statement with `;`",
                 );
                 return;
             }
@@ -2589,11 +2596,16 @@ impl RestrictedVisitor {
                 &format!("`{name}` outside a loop has no meaning"),
             );
         } else if self.switch_depths.last() == Some(&self.loop_depth) {
+            let reason = if name == "break" {
+                "would end the Slang `switch`, not the loop around it"
+            } else {
+                "is refused for symmetry with `break` (Slang's `continue` inside a `switch` does continue the loop)"
+            };
             self.reject(
                 Code::JumpInMatchArm,
                 node,
                 &format!(
-                    "`{name}` in an arm of an enum `match` would end the Slang `switch`, not the loop around it; set a flag the loop tests, or move the `match` into a helper that returns"
+                    "`{name}` in an arm of an enum `match` {reason}; set a flag the loop tests, or move the `match` into a helper that returns"
                 ),
             );
         }
@@ -3521,7 +3533,11 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
         self.visit_pat_ident(name);
         self.visit_expr(&binding.expr);
+        // The bound name is not an enum value inside the block (it may shadow one), and the outer meaning returns after.
+        let outer = self.enum_values.clone();
+        self.enum_values.remove(&text);
         self.visit_block(&expression.then_branch);
+        self.enum_values = outer;
         if let Some((_, alternative)) = &expression.else_branch {
             self.visit_expr(alternative);
         }
@@ -3531,7 +3547,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         self.reject(
             Code::MatchAsValue,
             expression,
-            "Result match is supported only as a statement, not as a value",
+            "a `match` (on a `Result` or on an enum) is supported only as a statement, not as a value",
         );
     }
 
@@ -3659,8 +3675,20 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         self.visit_expr(start);
         self.visit_expr(end);
         self.loop_depth += 1;
+        let outer = self.enum_values.clone();
+        if let Some(variable) = variable {
+            self.enum_values.remove(&variable.ident.unraw().to_string());
+        }
         self.visit_block(&expression.body);
+        self.enum_values = outer;
         self.loop_depth -= 1;
+    }
+
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        // An enum local lives to the end of its block: a `let` inside it that shadows an outer name is forgotten after.
+        let outer = self.enum_values.clone();
+        visit::visit_block(self, block);
+        self.enum_values = outer;
     }
 
     fn visit_expr_while(&mut self, expression: &'ast syn::ExprWhile) {

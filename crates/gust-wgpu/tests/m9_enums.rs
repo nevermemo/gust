@@ -23,8 +23,13 @@ use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 //   ne_order  = the same with 3 and 4 and `!=`                                                                     : 34
 //   arg_order = take(mode_from(u.tick()), mode_from(u.tick())): the first tick is 1 (Low, 3), the second 2 (Mid, 4),
 //               and take is 3 * 100 + 4                                                                            : 304
-//   built     = take(mode_from(w.mark(1)), mode_from(w.mark(2))): the same arguments through `mark`                : 304
-//   built_trace = w.n after those two calls                                                                        : 12
+//   built     = take(mode_from(w.mark(2)), mode_from(w.mark(3))): Mid (4) then High (5), 4 * 100 + 5; swapped it is 504  : 405
+//   built_trace = w.n after those two calls (the digits 2 then 3)                                                  : 23
+// `Sign` derives `PartialOrd` and orders by discriminant (-2, -1, 5):
+//   less      = 1 when sign_from(v) < Sign::Mid, that is for Neg only                                              : 1, 0, 0, 1, 0
+// The method cases: q.mode_of(v) is mode_from(v); add_mode adds the mode's discriminant to q.n.
+//   method_code = mode_of(v) as u32, the same as code                                                              : 0, 3, 4, 5, 10
+//   method_sum  = add_mode(Low) gives 3, then add_mode(mode) gives 3 + code, and the sum is 6 + code               : 6, 9, 10, 11, 16
 const CODE: [u32; 5] = [0, 3, 4, 5, 10];
 const GRADE: [u32; 5] = [10, 20, 20, 30, 30];
 const BUMPED: [u32; 5] = [3, 5, 5, 0, 0];
@@ -36,8 +41,10 @@ const SCRUT: u32 = 2;
 const EQ_ORDER: u32 = 12;
 const NE_ORDER: u32 = 34;
 const ARG_ORDER: u32 = 304;
-const BUILT: u32 = 304;
-const BUILT_TRACE: u32 = 12;
+const BUILT: u32 = 405;
+const BUILT_TRACE: u32 = 23;
+const LESS: [u32; 5] = [1, 0, 0, 1, 0];
+const METHOD_SUM: [u32; 5] = [6, 9, 10, 11, 16];
 
 #[test]
 fn enums_and_matches_execute_on_gpu_and_on_the_cpu_twin() {
@@ -63,6 +70,9 @@ fn enums_and_matches_execute_on_gpu_and_on_the_cpu_twin() {
                 arg_order: u32::MAX,
                 built: u32::MAX,
                 built_trace: u32::MAX,
+                less: u32::MAX,
+                method_code: u32::MAX,
+                method_sum: u32::MAX,
             };
             count
         ];
@@ -95,6 +105,9 @@ fn enums_and_matches_execute_on_gpu_and_on_the_cpu_twin() {
                 assert_eq!(got[i].arg_order, ARG_ORDER, "arg_order {note}");
                 assert_eq!(got[i].built, BUILT, "built {note}");
                 assert_eq!(got[i].built_trace, BUILT_TRACE, "built_trace {note}");
+                assert_eq!(got[i].less, LESS[i % 5], "less {note}");
+                assert_eq!(got[i].method_code, CODE[i % 5], "method_code {note}");
+                assert_eq!(got[i].method_sum, METHOD_SUM[i % 5], "method_sum {note}");
             }
         }
     }
@@ -105,7 +118,16 @@ fn the_enum_fixture_compiles_to_wgsl_with_its_switches() {
     let descriptor = &enums::run::DESCRIPTOR;
     let wgsl = gust::slang::compile_wgsl(descriptor).unwrap();
     assert!(wgsl.contains("compute"), "{wgsl}");
-    // The three enum matches (`classify`, `bump_mode`, `weight`) and the one in the kernel are `switch` statements;
-    // Slang inlines the helpers, so at least the kernel's is present.
-    assert!(wgsl.contains("switch"), "{wgsl}");
+    // Measured shape: `classify`, `bump_mode`, `weight` and the kernel's `match` are four `switch` statements, each
+    // ending in `default`; the discriminants (0, 3, 4 and the signed -2, -1) are the case values.
+    assert_eq!(wgsl.matches("switch(").count(), 4, "{wgsl}");
+    assert_eq!(wgsl.matches("default :").count(), 4, "{wgsl}");
+    for label in [
+        "case u32(0):",
+        "case u32(3), u32(4):",
+        "case i32(-2):",
+        "case i32(-1):",
+    ] {
+        assert!(wgsl.contains(label), "{label}\n{wgsl}");
+    }
 }

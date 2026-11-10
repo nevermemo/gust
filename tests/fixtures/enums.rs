@@ -11,8 +11,9 @@ mod enums {
         Max = 10,
     }
 
-    // A signed repr, a negative discriminant and a variant name (`Mid`) that another enum has too.
-    #[derive(PartialEq, Eq)]
+    // A signed repr, a negative discriminant and a variant name (`Mid`) that another enum has too. `PartialOrd` orders
+    // the variants by discriminant, which is how Slang compares them: `s < Sign::Mid` is true for `Neg` only.
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
     #[repr(i32)]
     pub enum Sign {
         Neg = -2,
@@ -35,6 +36,17 @@ mod enums {
             self.n += 1u32;
             self.n
         }
+
+        // A method that returns an enum, and one that takes an enum.
+        #[allow(clippy::unused_self)]
+        pub fn mode_of(&self, v: u32) -> Mode {
+            mode_from(v)
+        }
+
+        pub fn add_mode(&mut self, m: Mode) -> u32 {
+            self.n += m as u32;
+            self.n
+        }
     }
 
     // One output buffer: the portable limit is eight storage buffers per shader stage.
@@ -52,6 +64,9 @@ mod enums {
         pub arg_order: u32,
         pub built: u32,
         pub built_trace: u32,
+        pub less: u32,
+        pub method_code: u32,
+        pub method_sum: u32,
     }
 
     // An enum returned from a helper.
@@ -189,7 +204,21 @@ mod enums {
             let mut u = Trace { n: 0u32 };
             let arg_order = take(mode_from(u.tick()), mode_from(u.tick()));
             let mut w = Trace { n: 0u32 };
-            let built = take(mode_from(w.mark(1u32)), mode_from(w.mark(2u32)));
+            // Distinct tags (2 then 3) make the result depend on the order: the swap would give 504.
+            let built = take(mode_from(w.mark(2u32)), mode_from(w.mark(3u32)));
+
+            // `<` on a `PartialOrd` enum compares the discriminants.
+            let mut less = 0u32;
+            if s < Sign::Mid {
+                less = 1u32;
+            }
+
+            // An enum from a method, and an enum passed to a method.
+            let mut q = Trace { n: 0u32 };
+            let via = q.mode_of(v);
+            let method_code = via as u32;
+            let first = q.add_mode(Mode::Low);
+            let method_sum = first + q.add_mode(via);
 
             results[i] = Results {
                 code: m as u32,
@@ -205,6 +234,9 @@ mod enums {
                 arg_order,
                 built,
                 built_trace: w.n,
+                less,
+                method_code,
+                method_sum,
             };
         }
     }

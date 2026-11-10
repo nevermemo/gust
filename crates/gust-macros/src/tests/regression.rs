@@ -1045,7 +1045,7 @@ fn emitter_only_rejections_are_coded() {
             Code::SelfParameter,
         ),
         (
-            "mod bad { fn f(a: [u32; 2]) -> uint { 1u32 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+            "mod bad { struct P { a: [u32; 2] } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
             Code::TypeNeedsPath,
         ),
         (
@@ -1098,7 +1098,6 @@ fn casts_to_unproven_targets_are_rejected() {
         "f64",
         "u64",
         "i64",
-        "usize",
         "isize",
         "u8",
         "u16",
@@ -1145,10 +1144,6 @@ fn non_32_bit_primitive_types_are_rejected_before_slang() {
         (
             "mod bad { fn helper(x: u64) -> uint { 1u32 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
             "u64",
-        ),
-        (
-            "mod bad { fn helper(x: uint) -> usize { 1 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
-            "usize",
         ),
         (
             "mod bad { struct Wide { value: f64 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
@@ -7521,4 +7516,179 @@ fn a_destructuring_takes_no_match_initializer() {
         ),
         Code::ValueMatchForm,
     );
+}
+
+// ---- Arrays as values (slice m9.r1, D159) ----
+
+#[test]
+fn arrays_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/arrays.rs")).unwrap();
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "arrays.slang",
+        &include_str!("../../../../tests/fixtures/arrays.slang").replace("\r\n", "\n"),
+    );
+}
+
+const LOCAL4: &str = "let a: [u32; 4] = [1u32, 2u32, 3u32, 4u32];";
+
+#[test]
+fn an_array_length_is_a_literal_above_zero_gust_e0216() {
+    let cases = [
+        "let a: [u32; 0] = [0u32; 0]; out[id.x] = 1u32;",
+        "let a: [u32; 4 + 1] = [0u32; 5]; out[id.x] = 1u32;",
+        "let a: [u32; 4] = [0u32; 2 + 2]; out[id.x] = 1u32;",
+        "let a: [u32; 2] = []; out[id.x] = 1u32;",
+    ];
+    for body in cases {
+        assert_rejected(&with_kernel("", body), Code::ArrayLength);
+    }
+    assert_rejected(
+        &with_kernel("fn f(a: [u32; N]) -> u32 { 1u32 }", "out[id.x] = 1u32;"),
+        Code::ArrayLength,
+    );
+}
+
+#[test]
+fn an_array_of_arrays_or_of_a_non_value_is_gust_e0217() {
+    for body in [
+        "let a: [[u32; 2]; 2] = [[1u32, 2u32], [3u32, 4u32]]; out[id.x] = 1u32;",
+        "let a: [u32; 2] = [[1u32, 2u32]; 2]; out[id.x] = 1u32;",
+        "let a: [(u32, u32); 2] = [(1u32, 2u32), (3u32, 4u32)]; out[id.x] = 1u32;",
+    ] {
+        assert_rejected(&with_kernel("", body), Code::ArrayElement);
+    }
+}
+
+#[test]
+fn usize_is_accepted_in_an_index_only_gust_e0334() {
+    let cases = [
+        "let n: usize = 3; out[id.x] = id.x;",
+        "let a: [u32; 4] = [0u32; 4]; let n = id.x as usize; out[id.x] = a[n];",
+        "let a: [u32; 4] = [0u32; 4]; out[id.x] = a.len();",
+        "let a: [u32; 4] = [0u32; 4]; out[id.x] = (id.x as usize) as u32;",
+    ];
+    for body in cases {
+        assert_rejected(&with_kernel("", body), Code::UsizeOutsideIndex);
+    }
+    assert_rejected(
+        &with_kernel(
+            "fn f(n: usize) -> u32 { 1u32 }",
+            "out[id.x] = f(id.x as usize);",
+        ),
+        Code::UsizeOutsideIndex,
+    );
+}
+
+#[test]
+fn a_slice_a_for_over_an_array_and_an_array_in_a_field_keep_their_codes() {
+    assert_rejected(
+        &with_kernel("fn f(a: &[u32]) -> u32 { 1u32 }", "out[id.x] = id.x;"),
+        Code::HelperResourceParameter,
+    );
+    assert_rejected(
+        &with_kernel("", &format!("{LOCAL4} for x in a {{ out[id.x] = x; }}")),
+        Code::ForIterable,
+    );
+    assert_rejected(
+        &with_kernel("pub struct P { pub a: [u32; 4] }", "out[id.x] = id.x;"),
+        Code::TypeNeedsPath,
+    );
+    assert_rejected(
+        &with_kernel(
+            "",
+            "let t: ([u32; 2], u32) = ([1u32, 2u32], 3u32); out[id.x] = t.1;",
+        ),
+        Code::TupleShape,
+    );
+}
+
+#[test]
+fn a_barrier_in_a_literal_or_an_index_is_refused() {
+    assert_rejected(
+        &with_kernel(
+            "",
+            "let a: [u32; 2] = [workgroup_barrier(), 1u32]; out[id.x] = a[1];",
+        ),
+        Code::BarrierForm,
+    );
+    assert_rejected(
+        &with_kernel(
+            "",
+            &format!("{LOCAL4} out[id.x] = a[workgroup_barrier() as usize];"),
+        ),
+        Code::BarrierForm,
+    );
+}
+
+#[test]
+fn a_place_whose_index_a_mutating_value_changes_is_gust_e0421() {
+    let counter = "pub struct C { pub n: u32 } impl C { fn bump(&mut self) -> u32 { self.n += 1u32; self.n } fn get(&self) -> u32 { self.n } }";
+    for body in [
+        "let mut s = C { n: 0u32 }; let mut a: [u32; 4] = [0u32; 4]; a[s.n as usize] = s.bump(); out[id.x] = a[1];",
+        "let mut s = C { n: 0u32 }; let mut a: [u32; 4] = [0u32; 4]; a[s.n as usize] += s.bump(); out[id.x] = a[1];",
+        "let mut s = C { n: 0u32 }; let mut a: [u32; 4] = [0u32; 4]; a[s.get() as usize] = s.bump(); out[id.x] = a[1];",
+        "let mut s = C { n: 0u32 }; let mut a: [u32; 4] = [0u32; 4]; a[s.get() as usize] += s.bump(); out[id.x] = a[1];",
+    ] {
+        assert_rejected(&with_kernel(counter, body), Code::ForBoundSideEffect);
+    }
+    // A plain index with a mutating value, and the two-statement form, are accepted.
+    for body in [
+        "let mut s = C { n: 0u32 }; let k: u32 = 2u32; let mut a: [u32; 4] = [0u32; 4]; a[k as usize] = s.bump(); out[id.x] = a[2];",
+        "let mut s = C { n: 0u32 }; let mut a: [u32; 4] = [0u32; 4]; let v = s.bump(); a[s.n as usize] = v; out[id.x] = a[1];",
+    ] {
+        translate(&with_kernel(counter, body)).unwrap();
+    }
+}
+
+#[test]
+fn an_array_literal_or_repeat_without_a_lowering_is_gust_e0811() {
+    for body in [
+        "let a = [1u32, 2u32]; out[id.x] = a[0];",
+        "let a = [1u32; 2]; out[id.x] = a[0];",
+        "let a: [u32; 2] = [1u32, 2u32]; let b: [u32; 2] = [3u32, 4u32]; if a == b { out[id.x] = 1u32; }",
+    ] {
+        assert_rejected(&with_kernel("", body), Code::UnsupportedExpression);
+    }
+    assert_rejected(
+        &with_kernel(
+            "fn f(a: [u32; 2]) -> u32 { a[0] }",
+            "out[id.x] = f([1u32; 2]);",
+        ),
+        Code::UnsupportedExpression,
+    );
+}
+
+#[test]
+fn an_array_name_takes_the_reserved_prefix_check() {
+    assert_rejected(
+        &with_kernel(
+            "",
+            "let __gust_rep_0: [u32; 2] = [1u32, 2u32]; out[id.x] = __gust_rep_0[0];",
+        ),
+        Code::ReservedPrefix,
+    );
+}
+
+#[test]
+fn arrays_lower_to_slang_arrays_and_a_repeat_to_one_temporary() {
+    let short = translate(&with_kernel(
+        "",
+        "let a: [u32; 3] = [id.x; 3]; out[id.x] = a[1] + a.len() as u32;",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(short.contains("uint __gust_rep_0 = id.x;"), "{short}");
+    assert!(
+        short.contains("uint[3] a = { __gust_rep_0, __gust_rep_0, __gust_rep_0 };"),
+        "{short}"
+    );
+    assert!(!short.contains("usize"), "{short}");
+    let long = translate(&with_kernel(
+        "",
+        "let mut a: [u32; 17] = [1u32; 17]; a = [id.x; 17]; out[id.x] = a[16];",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(long.contains("for (var __gust_fill_"), "{long}");
 }

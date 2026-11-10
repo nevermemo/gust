@@ -122,6 +122,15 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   struct (`GUST-E0104`); a nested pattern, `_` or `..` in a destructuring (`GUST-E0319`, whose text now allows the tuple
   pattern); a tuple as a `match` scrutinee (`GUST-E0515`). The elements are evaluated in the order of Rust (measured), so
   nothing is refused for order. On an RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin.
+- Arrays as values (M9, slice r1). `[T; N]` with a literal `N` above zero and a scalar, vector, matrix, struct or enum
+  element is a typed local, a parameter, the result of a helper or a method, and an argument; literals `[a, b]`, repeats
+  `[e; N]` (one temporary, then `{ t, t, .. }` up to 16 elements and a fill loop above), `a[i as usize]` and `a[2]`,
+  `a[i] = e`, `a[i] += e` and `a.len()` are accepted. `usize` is accepted as the cast of an index only (`GUST-E0334`; it
+  was `GUST-E0201` and `GUST-E0202`). Refused: a zero or non-literal length (`GUST-E0216`), a nested array or a tuple,
+  `Option`, `Result` or reference element (`GUST-E0217`), a slice (`GUST-E0111`), `for x in a` (`GUST-E0409`), an array in a
+  struct field, buffer, uniform or workgroup memory (`GUST-E0813`), an array in a tuple (`GUST-E0213`), and an assignment
+  to an element whose index a `&mut self` call in the value changes (`GUST-E0421`: Rust runs the value first, Slang the
+  index). On an RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin.
 - Fixed (m9.f1): a method call with a `<` comparison argument before another argument, such as `s.m(a < b, c)`, failed in slangc with an undefined `__gust_keep`, because the scan that defines that helper did not visit method calls.
 
 ### Changed, and may break code written for 0.1.0

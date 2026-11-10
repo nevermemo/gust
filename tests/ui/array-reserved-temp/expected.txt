@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: array-reserved-temp/src/main.rs
+line: 7
+message: [GUST-E0901] the __gust_, __gpu_ and __Gust prefixes are reserved for generated shader symbols

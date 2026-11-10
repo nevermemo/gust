@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: array-zero-len/src/main.rs
+line: 5
+message: [GUST-E0216] an array length is an integer literal greater than zero (`[f32; 4]`): not `0`, a constant or an expression

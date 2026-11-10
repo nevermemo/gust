@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: array-usize-local/src/main.rs
+line: 8
+message: [GUST-E0334] `usize` is the type of an array index in Rust and has no GPU type: it appears only as `i as usize` inside the brackets of an index (`a[i as usize]`); keep the value in a `u32`

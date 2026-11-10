@@ -127,7 +127,7 @@ const UNSUPPORTED: Verdict = EmitterRefused(Code::UnsupportedExpression);
 /// (kind, an expression of that kind, the kernel parameters, a body that holds it, the verdict).
 #[rustfmt::skip]
 const EXPRESSIONS: &[(&str, &str, &str, &str, Verdict)] = &[
-    ("Array", "[1.0f32, 2.0f32]", PARAMETERS, "let t = [1.0f32, 2.0f32]; out[id.x] = t[0u32];", Accepted),
+    ("Array", "[1.0f32, 2.0f32]", PARAMETERS, "let t: [f32; 2] = [1.0f32, 2.0f32]; out[id.x] = t[0];", Accepted),
     ("Assign", "out[id.x] = 1.0f32", PARAMETERS, "out[id.x] = 1.0f32;", Accepted),
     ("Binary", "a[id.x] * 2.0f32", PARAMETERS, "out[id.x] = a[id.x] * 2.0f32;", Accepted),
     ("Block", "{ out[id.x] = 1.0f32; }", PARAMETERS, "{ out[id.x] = 1.0f32; }", Accepted),
@@ -165,7 +165,7 @@ const EXPRESSIONS: &[(&str, &str, &str, &str, Verdict)] = &[
     ("Loop", "loop { }", PARAMETERS, "loop { } out[id.x] = 1.0f32;", Refused(Code::LoopNotSupported)),
     ("Macro", "foo!()", PARAMETERS, "let t = foo!(); out[id.x] = 1.0f32;", Refused(Code::MacroInModule)),
     ("RawAddr", "&raw const id", PARAMETERS, "let t = &raw const id; out[id.x] = 1.0f32;", UNSUPPORTED),
-    ("Repeat", "[0.0f32; 4]", PARAMETERS, "let t = [0.0f32; 4]; out[id.x] = t[0u32];", UNSUPPORTED),
+    ("Repeat", "[0.0f32; 4]", PARAMETERS, "let t: [f32; 4] = [0.0f32; 4]; out[id.x] = t[0];", Accepted),
     ("Try", "id.x?", PARAMETERS, "let t = id.x?; out[id.x] = 1.0f32;", Refused(Code::TryOperator)),
     ("TryBlock", "try { 1u32 }", PARAMETERS, "let t = try { 1u32 }; out[id.x] = 1.0f32;", UNSUPPORTED),
     ("Unsafe", "unsafe { 1u32 }", PARAMETERS, "let t = unsafe { 1u32 }; out[id.x] = 1.0f32;",

@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: array-usize-cast/src/main.rs
+line: 8
+message: [GUST-E0334] `as usize` is accepted inside the brackets of an array index only (`a[i as usize]`): the dialect has no `usize` value, so keep the number in a `u32`

@@ -87,6 +87,7 @@ macro_rules! fixture_functions {
     };
 }
 
+fixture!(f_arrays, arrays, "../../../tests/fixtures/arrays.rs");
 fixture!(f_atomics, atomics, "../../../tests/fixtures/atomics.rs");
 fixture!(f_compact, compact, "../../../tests/fixtures/compact.rs");
 fixture!(
@@ -145,8 +146,14 @@ struct Golden {
     kernels: &'static [KernelDescriptor],
 }
 
-fn goldens() -> [Golden; 24] {
+fn goldens() -> [Golden; 25] {
     [
+        Golden {
+            file: "arrays.slang",
+            text: include_str!("../../../tests/fixtures/arrays.slang"),
+            entries: 1,
+            kernels: f_arrays::KERNELS,
+        },
         Golden {
             file: "atomics.slang",
             text: include_str!("../../../tests/fixtures/atomics.slang"),
@@ -803,8 +810,8 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
     problems
 }
 
-/// The compute and fragment entries the twenty-four goldens hold in all (pinned per golden in [`goldens`]).
-const GOLDEN_ENTRIES: usize = 101;
+/// The compute and fragment entries the twenty-five goldens hold in all (pinned per golden in [`goldens`]).
+const GOLDEN_ENTRIES: usize = 102;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`
 /// (`atomics.slang` has one entry for the ten kernels of the module) and of `numeric.rs` (one of two).

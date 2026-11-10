@@ -333,16 +333,17 @@ Decision: D157 (M9 plan 2.2, slice m9.e1).
 
 GPU code uses the four-byte scalars only.
 Reached through `#[gpu]`.
-Rejected: `i8`, `i16`, `i64`, `i128`, `isize`, `u8`, `u16`, `u64`, `u128`, `usize`,
+Rejected: `i8`, `i16`, `i64`, `i128`, `isize`, `u8`, `u16`, `u64`, `u128`,
 `f16`, `f64`, `f128`, `char`, `str`.
 Write instead: `f32`/`float`, `i32`/`int`, `u32`/`uint`, `bool`.
+`usize` is GUST-E0334 since slice m9.r1: it is accepted as the cast of an index only.
 Decision: D06.
 
 ### GUST-E0202 unsupported cast target
 
 `as` casts are proven only between the 32-bit scalars.
 Reached through `#[gpu]`.
-Rejected: `x as f64`, `x as usize`, `x as bool`, `x as Pair`.
+Rejected: `x as f64`, `x as bool`, `x as Pair`. (`x as usize` is GUST-E0334 outside an index.)
 Write instead: cast to `f32`/`float`, `i32`/`int` or `u32`/`uint`.
 Decision: D22 (numeric semantics).
 
@@ -438,6 +439,24 @@ Limitation: an enum bound by a destructuring without an annotation is not tracke
 Fixture: `tests/ui/tuple-nine`, `tests/ui/tuple-one`, `tests/ui/tuple-element-array` and `tests/ui/tuple-compare` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D158 (M9 plan 2.3, slice m9.t).
 
+### GUST-E0216 array length
+
+An array type `[T; N]` and a repeat `[e; N]` take `N` as an integer literal above zero, so the size is known when the macro runs. An array literal has at least one element.
+Reached through `#[gpu]`.
+Rejected: `[u32; 0]`, `[u32; N]` with a `const`, `[u32; 2 + 2]`, `[e; 0]`, `[e; M]`, `[]`.
+Write instead: a literal length, `[u32; 4]`.
+Fixture: `tests/ui/array-zero-len` and `tests/ui/array-const-len` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D159 (M9 plan 2.4, slice m9.r1).
+
+### GUST-E0217 array element type
+
+An array holds a scalar, a vector, a matrix, or a struct or enum of the module. A nested array, a tuple, an `Option`, a `Result`, a reference and a resource are refused as elements (nested arrays stay out of this slice).
+Reached through `#[gpu]`.
+Rejected: `[[u32; 2]; 2]`, `[(u32, u32); 2]`, `[Option<u32>; 2]`, `[&u32; 2]`, `[[1u32, 2u32]; 2]`.
+Write instead: a struct with a field per column, or one array per row.
+Fixture: `tests/ui/array-nested` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D159 (M9 plan 2.4, slice m9.r1).
+
 ## E03xx: expressions and calls
 
 ### GUST-E0301 CPU-only name
@@ -503,7 +522,8 @@ Decision: D02, D14.
 
 `.len()` works on a storage parameter named directly.
 Reached through `#[gpu]`.
-Rejected: `id.len()`, `buffers.out.len()`.
+Rejected: `id.len()`, `buffers.out.len()`, and `x.len()` where the name `x` is an array in one scope and something else in another of the same function.
+An array local or parameter has `.len()` too (slice m9.r1): it emits the declared length, and it stands in an index or under a direct `as u32`/`as i32` cast (GUST-E0334 otherwise).
 Write instead: `out.len()` where `out` is a buffer parameter.
 Decision: D02.
 
@@ -719,6 +739,15 @@ Write instead: copy the element to a local, call the method on the local and sto
 Fixture: `tests/ui/method-mut-on-storage` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, X1 of spike M9.s0, slice m9.a1).
 
+### GUST-E0334 `usize` outside an index
+
+`usize` has no GPU width, and the macro has no types to tell where it would be 32 bits. It is accepted in one position, as the cast of an index: `a[i as usize]`, `a[(i + 1u32) as usize]`, and `x[a.len() - 1]`; the emitter drops the cast. Every other `usize` is refused: a local, parameter, field or return type, a cast that is not the whole index, and `a.len()` outside an index (a `.len()` directly cast to `u32`, `i32` or `f32` is accepted too).
+Reached through `#[gpu]`.
+Rejected: `let n: usize = 3;`, `fn f(n: usize)`, `let n = i as usize; a[n]`, `a.len()` as a value of a `u32` place, `(i as usize) as u32`.
+Write instead: keep the index a `u32` and cast it where it is used, `a[i as usize]`; write `a.len() as u32` for the length.
+Fixture: `tests/ui/array-usize-local`, `tests/ui/array-usize-param` and `tests/ui/array-usize-cast` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D159 (M9 plan 2.4, slice m9.r1).
+
 ## E04xx: control flow and loops
 
 A GPU thread must always terminate and must never wait on another workgroup, so the
@@ -792,7 +821,7 @@ Decision: D18.
 
 Only an exclusive integer range is iterable.
 Reached through `#[gpu]`.
-Rejected: `for v in input`, `for v in input.iter()`.
+Rejected: `for v in input`, `for v in input.iter()`, `for x in a` for an array `a` (iterate the indexes, `for i in 0u32..4u32 { let x = a[i as usize]; .. }`).
 Write instead: `for i in 0u32..input.len() { let v = input[i]; .. }`.
 Decision: D18.
 
@@ -888,6 +917,7 @@ Decision: D157 (M9 plan 2.2, slice m9.e2).
 A call of a `&mut self` method is refused where the GPU would evaluate it in another order than Rust (a method that only reads, a `self` method and a helper have no effect to reorder). Three places:
 - the start or the end of a `for` range: the emitted Slang loop evaluates the end bound before the start bound (spike M9.s0 P9, measured on the WGSL and the SPIR-V target), where Rust evaluates the start first (`for i in c.n..c.next()`);
 - anywhere in the place (the assignee) of `=` or of a compound assignment: Rust evaluates the assigned value before the place, Slang evaluates a call inside the place first (`out[c.next()] = c.next()` writes another element, `out[d.bump()] = d.n` stores the new value; review m9.a2);
+- the place of `=` or a compound assignment is an array element whose index names a root that a `&mut self` call in the value changes (`a[s.n as usize] = s.bump()`, `a[s.get() as usize] += s.bump()`): Rust evaluates the value first and Slang the index first (slice m9.r1, measured on the WGSL target, spike P9 order);
 - the value of `*=` in a module that names `Mat2`, `Mat3` or `Mat4`: it is lowered to `place = __gust_mul(place, value)`, which reads the place before the call and loses the method's write.
 - the value of `/=`, `%=` or `^=` on an indexed place: these three lower to `inout` helpers (`__gust_div_assign`, `__gust_rem_assign`, `__gust_xor_assign`) and Slang computes the index before the call, so `out[c.n] /= c.next()` changes another element than Rust (a place with no index, `e.n /= e.bump()`, has no address to compute early; no other operator lowers through a helper).
 
@@ -895,7 +925,7 @@ Forms that already match Rust stay accepted: `out[c.n] = c.next()`, `out[c.n] +=
 Reached through `#[gpu]`.
 Rejected: `for i in 0u32..c.next() { .. }`, `for i in c.n..c.next() { .. }`, `out[c.next()] = v;`, `out[c.next()] += v;`, `out[c.n] /= c.next();` (also `%=`, `^=`), `c.n *= c.bump();` (with a matrix in the module), when `next` and `bump` take `&mut self`.
 Write instead: call the method before the statement and use the value, `let n = c.next(); for i in 0u32..n { .. }` or `let k = c.next(); out[k] = v;`.
-Fixture: `tests/ui/for-bound-mutating` and `tests/ui/method-mutating-in-assignee` (`cargo xtask check-ui`, `code: none` plus the message).
+Fixture: `tests/ui/for-bound-mutating`, `tests/ui/method-mutating-in-assignee` and `tests/ui/array-order-place` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, spike M9.s0 P9, slice m9.a2).
 
 ## E05xx: Option and Result

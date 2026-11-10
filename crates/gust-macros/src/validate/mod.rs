@@ -1736,6 +1736,7 @@ fn validate_function(
         visitor.owner_fields = owner.fields.clone();
     }
     visitor.atomic_buffers = atomic_buffer_names(function);
+    visitor.array_lens = crate::slang::array_lengths(&function.sig.inputs, &function.block);
     for argument in &function.sig.inputs {
         if let syn::FnArg::Typed(argument) = argument
             && let syn::Pat::Ident(name) = argument.pat.as_ref()
@@ -2069,6 +2070,35 @@ fn tuple_element_problem(element: &syn::Type) -> Option<&'static str> {
     }
 }
 
+/// Why `element` cannot be the element type of an array (GUST-E0217): `None` for a scalar, vector, matrix or struct or
+/// enum of the module (slice m9.r1).
+fn array_element_problem(element: &syn::Type) -> Option<&'static str> {
+    match strip_type_parens(element) {
+        syn::Type::Array(_) => Some(
+            "an array element cannot be an array: nested arrays are not supported, use one flat array and index `i * N + j`",
+        ),
+        syn::Type::Path(path) => {
+            let last = path.path.segments.last()?.ident.to_string();
+            if matches!(last.as_str(), "Option" | "Result") {
+                Some(
+                    "an array element cannot be an `Option` or a `Result`: keep the optional value in its own local",
+                )
+            } else if crate::slang::parameter_flavor(&syn::Type::Path(path.clone()))
+                != crate::slang::ParameterFlavor::Value
+            {
+                Some(
+                    "an array element must be a value type: a buffer, uniform, workgroup array, texture, sampler or invocation id is a resource of the kernel",
+                )
+            } else {
+                None
+            }
+        }
+        _ => Some(
+            "an array element is a scalar, vector, matrix, struct or enum type of the module (no tuple, reference or other type)",
+        ),
+    }
+}
+
 /// `ty` without the parentheses and invisible groups around it.
 fn strip_type_parens(ty: &syn::Type) -> &syn::Type {
     match ty {
@@ -2270,6 +2300,14 @@ struct RestrictedVisitor {
     /// The parameters and locals that hold a tuple, by name (slice m9.t; scoped like `enum_values`): a `match` on one
     /// and a comparison of one have no lowering.
     tuple_values: HashSet<String>,
+    /// The names of the function that hold an array and its length, `None` for a name bound otherwise or with another
+    /// length (slice m9.r1; `crate::slang::array_lengths`, which the emitter reads as well).
+    array_lens: HashMap<String, Option<u32>>,
+    /// How many `[..]` index operands enclose the node being visited, counting only the operators that carry a `usize`
+    /// value on (see `visit_expr`): `as usize` and an array `.len()` stand there and nowhere else (GUST-E0334).
+    index_depth: usize,
+    /// The `a.len()` calls of arrays that are the operand of a cast to a 32-bit scalar (`a.len() as u32`), by address.
+    len_casts: HashSet<usize>,
     error: Option<syn::Error>,
 }
 
@@ -2300,6 +2338,9 @@ impl RestrictedVisitor {
             body_tail_match: None,
             enum_values: HashMap::new(),
             tuple_values: HashSet::new(),
+            array_lens: HashMap::new(),
+            index_depth: 0,
+            len_casts: HashSet::new(),
             error: None,
         }
     }
@@ -2979,6 +3020,83 @@ impl RestrictedVisitor {
         false
     }
 
+    /// GUST-E0421 for an indexed place of a local whose index reads something the value of the assignment changes
+    /// (slice m9.r1): Rust evaluates the value of `a[s.n as usize] = s.bump()` first and the index after it, and Slang
+    /// computes the index before the value (measured on slangc 2026.21 for `=` and `op=`, on a local array), so the
+    /// element written would differ. The roots are the receivers of the `&mut self` calls in the value; the index
+    /// "reads" a root when it names it. A storage place keeps the check it had in m9.a2.
+    fn reject_stale_index(&mut self, place: &syn::Expr, value: &syn::Expr) -> bool {
+        struct Roots<'m> {
+            methods: &'m MethodTable,
+            roots: Vec<(String, String)>,
+        }
+        impl<'a> Visit<'a> for Roots<'_> {
+            fn visit_expr_method_call(&mut self, call: &'a syn::ExprMethodCall) {
+                if self
+                    .methods
+                    .by_name
+                    .get(&call.method.unraw().to_string())
+                    .is_some_and(|facts| facts.ref_mut)
+                    && let Some(root) = RestrictedVisitor::place_root(&call.receiver)
+                {
+                    self.roots.push((root, call.method.unraw().to_string()));
+                }
+                visit::visit_expr_method_call(self, call);
+            }
+        }
+        struct Names(HashSet<String>);
+        impl<'a> Visit<'a> for Names {
+            fn visit_expr_path(&mut self, path: &'a syn::ExprPath) {
+                if let Some(name) = path.path.get_ident() {
+                    self.0.insert(name.unraw().to_string());
+                }
+            }
+        }
+        struct Indexes<'a>(Vec<&'a syn::Expr>);
+        impl<'a> Visit<'a> for Indexes<'a> {
+            fn visit_expr_index(&mut self, index: &'a syn::ExprIndex) {
+                self.0.push(&index.index);
+                visit::visit_expr_index(self, index);
+            }
+        }
+        let Some(place_root) = Self::place_root(place) else {
+            return false;
+        };
+        if self.resources.contains(&place_root)
+            || self.uniforms.contains(&place_root)
+            || self.derived_ids.contains(&place_root)
+            || self.invocations.contains(&place_root)
+        {
+            return false;
+        }
+        let mut roots = Roots {
+            methods: &self.methods,
+            roots: Vec::new(),
+        };
+        roots.visit_expr(value);
+        if roots.roots.is_empty() {
+            return false;
+        }
+        let roots = roots.roots;
+        let mut indexes = Indexes(Vec::new());
+        indexes.visit_expr(place);
+        for index in indexes.0 {
+            let mut names = Names(HashSet::new());
+            names.visit_expr(index);
+            if let Some((root, method)) = roots.iter().find(|(root, _)| names.0.contains(root)) {
+                self.reject(
+                    Code::ForBoundSideEffect,
+                    index,
+                    &format!(
+                        "the index of the assigned place reads `{root}`, and the value calls `.{method}(..)` on it with `&mut self`: Rust evaluates the value first and the index after it, Slang computes the index first, so another element than Rust's would be written; call the method first (`let v = {root}.{method}(..); a[i] = v;`)"
+                    ),
+                );
+                return true;
+            }
+        }
+        false
+    }
+
     fn check_module_method_call(&mut self, call: &syn::ExprMethodCall, facts: MethodFacts) {
         let method = call.method.to_string();
         let root = Self::place_root(&call.receiver);
@@ -3376,6 +3494,14 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
         if let Some(ident) = ty.path.get_ident() {
             let name = ident.to_string();
+            if name == "usize" {
+                self.reject(
+                    Code::UsizeOutsideIndex,
+                    ty,
+                    "`usize` is the type of an array index in Rust and has no GPU type: it appears only as `i as usize` inside the brackets of an index (`a[i as usize]`); keep the value in a `u32`",
+                );
+                return;
+            }
             if UNSUPPORTED_PRIMITIVES.contains(&name.as_str()) {
                 self.reject(
                     Code::UnsupportedPrimitive,
@@ -3405,6 +3531,35 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_cast(&mut self, cast: &'ast syn::ExprCast) {
+        // `i as usize` is the index of an array (slice m9.r1) and nothing else: the dialect has no `usize` value.
+        if matches!(strip_type_parens(&cast.ty), syn::Type::Path(path)
+            if path.qself.is_none() && path.path.is_ident("usize"))
+        {
+            if self.index_depth == 0 {
+                self.reject(
+                    Code::UsizeOutsideIndex,
+                    cast,
+                    "`as usize` is accepted inside the brackets of an array index only (`a[i as usize]`): the dialect has no `usize` value, so keep the number in a `u32`",
+                );
+                return;
+            }
+            if self.enum_of(&cast.expr).is_some() {
+                self.reject(
+                    Code::EnumShape,
+                    cast,
+                    "an enum casts to its repr type only: write `e as u32 as usize` in an index",
+                );
+                return;
+            }
+            self.visit_expr(&cast.expr);
+            return;
+        }
+        // `a.len() as u32`: the one place the `usize` length of an array may stand outside an index.
+        if let syn::Expr::MethodCall(call) = strip_parens(&cast.expr)
+            && call.method == "len"
+        {
+            self.len_casts.insert(std::ptr::from_ref(call) as usize);
+        }
         if let Some(enum_name) = self.enum_of(&cast.expr) {
             let repr = self.methods.enums[&enum_name].repr_name();
             let target = match cast.ty.as_ref() {
@@ -3661,11 +3816,120 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             );
             return;
         }
-        visit::visit_expr_index(self, index);
+        // The index operand is where `as usize` and an array `.len()` stand (Rust indexes an array with a `usize`; the
+        // dialect has no `usize` value elsewhere, GUST-E0334). The base is visited outside it.
+        for attribute in &index.attrs {
+            self.visit_attribute(attribute);
+        }
+        self.visit_expr(&index.expr);
+        self.index_depth += 1;
+        self.visit_expr(&index.index);
+        self.index_depth -= 1;
+    }
+
+    /// Only the operators that carry a `usize` value on keep the index operand open: a call, a method call (but the
+    /// `.len()` of an array), a field or a block starts a new value, so `a[f(x as usize)]` is E0334.
+    fn visit_expr(&mut self, expression: &'ast syn::Expr) {
+        if self.index_depth > 0
+            && !matches!(
+                expression,
+                syn::Expr::Paren(_)
+                    | syn::Expr::Group(_)
+                    | syn::Expr::Binary(_)
+                    | syn::Expr::Unary(_)
+                    | syn::Expr::Cast(_)
+                    | syn::Expr::Lit(_)
+                    | syn::Expr::Path(_)
+                    | syn::Expr::Index(_)
+            )
+            && !matches!(expression, syn::Expr::MethodCall(call) if call.method == "len")
+        {
+            let outer = std::mem::replace(&mut self.index_depth, 0);
+            visit::visit_expr(self, expression);
+            self.index_depth = outer;
+            return;
+        }
+        visit::visit_expr(self, expression);
+    }
+
+    fn visit_type_array(&mut self, ty: &'ast syn::TypeArray) {
+        if crate::slang::array_length_literal(&ty.len).is_none() {
+            self.reject(
+                Code::ArrayLength,
+                &ty.len,
+                "an array length is an integer literal greater than zero (`[f32; 4]`): not `0`, a constant or an expression",
+            );
+            return;
+        }
+        if let Some(problem) = array_element_problem(&ty.elem) {
+            self.reject(Code::ArrayElement, &ty.elem, problem);
+            return;
+        }
+        visit::visit_type_array(self, ty);
+    }
+
+    fn visit_type_slice(&mut self, ty: &'ast syn::TypeSlice) {
+        self.reject(
+            Code::HelperResourceParameter,
+            ty,
+            "slices are not supported: pass a fixed-size array `[T; N]` by value, or the values it holds",
+        );
+    }
+
+    fn visit_expr_array(&mut self, array: &'ast syn::ExprArray) {
+        if array.elems.is_empty() {
+            self.reject(
+                Code::ArrayLength,
+                array,
+                "an array has at least one element: `[]` has the length zero",
+            );
+            return;
+        }
+        if let Some(nested) = array.elems.iter().find(|element| {
+            matches!(
+                strip_parens(element),
+                syn::Expr::Array(_) | syn::Expr::Repeat(_)
+            )
+        }) {
+            self.reject(
+                Code::ArrayElement,
+                nested,
+                "an array element cannot be an array: nested arrays are not supported, use one flat array and index `i * N + j`",
+            );
+            return;
+        }
+        visit::visit_expr_array(self, array);
+    }
+
+    fn visit_expr_repeat(&mut self, repeat: &'ast syn::ExprRepeat) {
+        if crate::slang::array_length_literal(&repeat.len).is_none() {
+            self.reject(
+                Code::ArrayLength,
+                &repeat.len,
+                "the length of `[e; N]` is an integer literal greater than zero: not `0`, a constant or an expression",
+            );
+            return;
+        }
+        if matches!(
+            strip_parens(&repeat.expr),
+            syn::Expr::Array(_) | syn::Expr::Repeat(_)
+        ) {
+            self.reject(
+                Code::ArrayElement,
+                &repeat.expr,
+                "an array element cannot be an array: nested arrays are not supported, use one flat array and index `i * N + j`",
+            );
+            return;
+        }
+        // The length is not an expression of the kernel: only the repeated operand is visited.
+        self.visit_expr(&repeat.expr);
     }
 
     fn visit_expr_assign(&mut self, assign: &'ast syn::ExprAssign) {
         if self.reject_mutating_in_place(&assign.left) {
+            return;
+        }
+        if self.reject_stale_index(&assign.left, &assign.right) {
             return;
         }
         visit::visit_expr_assign(self, assign);
@@ -3709,6 +3973,9 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 | syn::BinOp::ShrAssign(_)
         );
         if is_assign_op && self.reject_mutating_in_place(&binary.left) {
+            return;
+        }
+        if is_assign_op && self.reject_stale_index(&binary.left, &binary.right) {
             return;
         }
         // `/=`, `%=` and `^=` lower to the `inout` helpers `__gust_div_assign`, `__gust_rem_assign` and
@@ -3892,6 +4159,35 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             syn::Expr::Path(path) => path.path.get_ident().map(ToString::to_string),
             _ => None,
         };
+        // The `.len()` of an array is its `N` (slice m9.r1): a `usize` in Rust, so it stands inside an index or directly
+        // under a cast to a 32-bit scalar.
+        if method == "len"
+            && let Some(name) = &receiver
+            && let Some(length) = self.array_lens.get(name.trim_start_matches("r#"))
+        {
+            if length.is_none() {
+                self.reject(
+                    Code::LenReceiver,
+                    call,
+                    &format!(
+                        "`{name}` is bound more than once in this function, as an array of another length or as something else, so `.len()` cannot say which length it means: give each array its own name"
+                    ),
+                );
+            } else if self.index_depth == 0
+                && !self
+                    .len_casts
+                    .contains(&(std::ptr::from_ref(call) as usize))
+            {
+                self.reject(
+                    Code::UsizeOutsideIndex,
+                    call,
+                    &format!(
+                        "`{name}.len()` is a `usize` in Rust, which the dialect has no value for: use it inside an index (`a[a.len() - 1]`) or cast it (`{name}.len() as u32`)"
+                    ),
+                );
+            }
+            return;
+        }
         let valid = receiver.as_ref().is_some_and(|name| {
             if method == "len" {
                 self.resources.contains(name)

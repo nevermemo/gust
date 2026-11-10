@@ -148,6 +148,8 @@ pub(super) const LEDGER: &[Entry] = &[
         Inspected("BodyScan: the argument of an atomic, which is `Why::Atomic`"),
     ),
     expression("Return", Excluded(Why::Return)),
+    // `[e; N]`: a repeat of one operand, evaluated once (slice m9.r1).
+    expression("Repeat", Neutral),
     expression("Struct", Neutral),
     // A tuple value `(a, b)` of two to eight elements (slice m9.t).
     expression("Tuple", Neutral),
@@ -288,6 +290,7 @@ pub(super) fn expression_kind(expression: &syn::Expr) -> Option<&'static str> {
         syn::Expr::Path(_) => "Path",
         syn::Expr::Range(_) => "Range",
         syn::Expr::Reference(_) => "Reference",
+        syn::Expr::Repeat(_) => "Repeat",
         syn::Expr::Return(_) => "Return",
         syn::Expr::Struct(_) => "Struct",
         syn::Expr::Tuple(_) => "Tuple",

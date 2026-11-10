@@ -12,6 +12,7 @@ use crate::runsrc::plan_seed;
 fn program(count: u32, data: &[u32], body: Vec<Stmt>, result: Expr) -> Program {
     Program {
         seed: 1,
+        methods: Default::default(),
         attempt: 0,
         count,
         inputs: vec![InputBuf {
@@ -409,7 +410,8 @@ fn a_vector_program_reduces_to_a_smaller_valid_program_at_a_fixed_point() {
     let start = (1..=4)
         .flat_map(|s| {
             let batch = crate::generator::generate_batch(s).unwrap();
-            batch.programs[crate::generator::SCALAR_PROGRAMS_PER_SEED..].to_vec()
+            batch.programs[crate::generator::SCALAR_PROGRAMS_PER_SEED..crate::generator::VECTOR_END]
+                .to_vec()
         })
         .max_by_key(|p| size(p).1)
         .unwrap();

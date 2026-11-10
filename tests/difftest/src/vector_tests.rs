@@ -43,6 +43,7 @@ fn mul(l: Expr, r: Expr) -> Expr {
 fn program(data: &[f32], body: Vec<Stmt>, result: Expr) -> Program {
     Program {
         seed: 0,
+        methods: Default::default(),
         attempt: VECTOR_ATTEMPT_BASE,
         count: data.len() as u32,
         inputs: vec![InputBuf {
@@ -585,7 +586,9 @@ fn the_vector_programs_of_a_batch_are_in_the_domain_and_seeds_1_to_8_use_twenty_
     let mut names = std::collections::BTreeSet::new();
     for seed in 1..=8 {
         let batch = generate_batch(seed).unwrap();
-        for p in &batch.programs[crate::generator::SCALAR_PROGRAMS_PER_SEED..] {
+        for p in &batch.programs
+            [crate::generator::SCALAR_PROGRAMS_PER_SEED..crate::generator::VECTOR_END]
+        {
             p.check().unwrap();
             assert_eq!(discard_reason(p), None, "seed {seed} attempt {}", p.attempt);
             assert!(!p.out_ty().is_aggregate());
@@ -648,8 +651,8 @@ const REACH_SEEDS: u64 = 72;
 fn the_generator_writes_every_binary_row_negation_and_swizzle_shape_within_the_first_seeds() {
     let mut written = std::collections::BTreeSet::new();
     for seed in 1..=REACH_SEEDS {
-        for p in
-            &generate_batch(seed).unwrap().programs[crate::generator::SCALAR_PROGRAMS_PER_SEED..]
+        for p in &generate_batch(seed).unwrap().programs
+            [crate::generator::SCALAR_PROGRAMS_PER_SEED..crate::generator::VECTOR_END]
         {
             written.extend(operator_counts(p).into_keys());
         }

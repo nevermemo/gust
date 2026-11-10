@@ -48,6 +48,9 @@ pub enum Ty {
     Vec(Lane, u8),
     /// `Mat2`/`Mat4`: square, `f32`, column-major.
     Mat(u8),
+    /// A struct of the module (format 8, slice m9.d1a): `S0`, `S1`, `S2`, an index into `Methods::structs`. Never a
+    /// buffer element, a vector lane or a result type.
+    Struct(u8),
 }
 
 impl Ty {
@@ -66,7 +69,12 @@ impl Ty {
             Ty::Vec(Lane::U32, 4) => "UVec4",
             Ty::Mat(2) => "Mat2",
             Ty::Mat(4) => "Mat4",
-            Ty::Vec(..) | Ty::Mat(_) => panic!("a width outside the program space: {self:?}"),
+            Ty::Struct(0) => "S0",
+            Ty::Struct(1) => "S1",
+            Ty::Struct(2) => "S2",
+            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) => {
+                panic!("a width or struct outside the program space: {self:?}")
+            }
         }
     }
 
@@ -77,8 +85,23 @@ impl Ty {
             Ty::I32 => "int",
             Ty::Bool => "bool",
             Ty::F32 => "float",
-            Ty::Vec(..) | Ty::Mat(_) => panic!("{} is not a buffer element type", self.name()),
+            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) => {
+                panic!("{} is not a buffer element type", self.name())
+            }
         }
+    }
+
+    /// The spelling of a struct field, a parameter or a return type: the dialect name of a scalar, `S<k>` of a struct.
+    pub fn decl_name(self) -> &'static str {
+        match self {
+            Ty::Struct(_) => self.name(),
+            other => other.dialect_name(),
+        }
+    }
+
+    /// A struct of the module.
+    pub fn is_struct(self) -> bool {
+        matches!(self, Ty::Struct(_))
     }
 
     pub fn is_int(self) -> bool {
@@ -301,7 +324,252 @@ pub enum Expr {
     },
     /// `-e` on a float vector, a signed integer vector or a matrix.
     AggNeg { e: Box<Expr> },
+    /// A read of a field place (`v3.f1`, `self.f0`, `v3.f2.f0`) or, with an empty path from `self`, the receiver by
+    /// value. `ty` is the type of the place. (Format 8.)
+    Read { place: Place, ty: Ty },
+    /// A call of `Methods::fns[f]`: `recv.m(args)` (a method), `S::m(args)` (an associated function) or `m(args)` (a
+    /// helper). `ty` is the return type, which a value call always has. (Format 8.)
+    Call {
+        f: usize,
+        /// The struct of an associated function (`S0::m3(..)`), copied from the table so the text needs no table.
+        owner: Option<u8>,
+        recv: Option<Place>,
+        args: Vec<Expr>,
+        ty: Ty,
+    },
+    /// `S0 { f1: b, f0: a }`: every field once, in written order, evaluated in that order. `order[w]` is the
+    /// declaration index of the `w`th written field (a permutation; the identity is declaration order). (Format 8.)
+    StructLit {
+        ty: Ty,
+        fields: Vec<Expr>,
+        order: Vec<u8>,
+    },
 }
+
+/// A module struct: its fields in order, each a `u32`, an `i32` (not `bool`: a GPU struct is a `GpuPod` type) or an
+/// earlier struct.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StructDef {
+    pub fields: Vec<Ty>,
+}
+
+/// How a function receives its receiver.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recv {
+    /// A helper or an associated function (no receiver).
+    None,
+    /// `&self`.
+    Shared,
+    /// `&mut self` (`[mutating]` in Slang).
+    Mut,
+    /// `self` by value (never `mut self`: E0116).
+    Value,
+}
+
+/// A helper, a method or an associated function. Parameters are immutable value parameters (a scalar or a struct). The
+/// body is a block of the kernel's statements; `tail` is the value (absent for a unit `&mut self` method).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FnDef {
+    /// The struct whose `impl` holds the function (a method or an associated function); `None` for a helper.
+    pub owner: Option<u8>,
+    pub recv: Recv,
+    pub params: Vec<(u32, Ty)>,
+    pub ret: Option<Ty>,
+    pub body: Vec<Stmt>,
+    pub tail: Option<Expr>,
+}
+
+/// The struct and function tables of a method program (format 8). Function `k` calls only functions below `k`, so the
+/// call graph is acyclic by construction; every name is unique (`S<k>`, `f<k>` fields, `m<k>` functions).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Methods {
+    pub structs: Vec<StructDef>,
+    pub fns: Vec<FnDef>,
+}
+
+impl Methods {
+    pub fn is_empty(&self) -> bool {
+        self.structs.is_empty() && self.fns.is_empty()
+    }
+
+    /// The number of scalar components of a value of struct `j`, nested structs flattened.
+    pub fn flat_len(&self, j: u8) -> usize {
+        self.structs[usize::from(j)]
+            .fields
+            .iter()
+            .map(|ty| self.ty_len(*ty))
+            .sum()
+    }
+
+    /// The flat length of a scalar (1) or of a struct.
+    pub fn ty_len(&self, ty: Ty) -> usize {
+        match ty {
+            Ty::Struct(j) => self.flat_len(j),
+            _ => 1,
+        }
+    }
+
+    /// The offset of field `k` of struct `j` in the flat representation.
+    pub fn field_offset(&self, j: u8, k: u8) -> usize {
+        self.structs[usize::from(j)].fields[..usize::from(k)]
+            .iter()
+            .map(|ty| self.ty_len(*ty))
+            .sum()
+    }
+
+    /// The type reached from a value of type `ty` by following `path`, and its offset in the flat representation.
+    pub fn walk(&self, mut ty: Ty, path: &[u8]) -> (Ty, usize) {
+        let mut offset = 0;
+        for &k in path {
+            let Ty::Struct(j) = ty else {
+                panic!("a field of {}", ty.name())
+            };
+            offset += self.field_offset(j, k);
+            ty = self.structs[usize::from(j)].fields[usize::from(k)];
+        }
+        (ty, offset)
+    }
+}
+
+/// The root of a place: a local variable, or the receiver `self`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Root {
+    Var(u32),
+    SelfV,
+}
+
+/// A local (or `self`) followed by a path of field indices: `v3`, `v3.f1`, `self.f2.f0`. A place has no side effects
+/// and no index, so its evaluation order is not observable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Place {
+    pub root: Root,
+    /// The type of the root (a struct, or a scalar local with an empty path), so that a place is self-describing.
+    pub root_ty: Ty,
+    pub path: Vec<u8>,
+}
+
+impl Place {
+    pub fn var(var: u32, ty: Ty) -> Place {
+        Place {
+            root: Root::Var(var),
+            root_ty: ty,
+            path: Vec::new(),
+        }
+    }
+
+    pub fn this(ty: Ty) -> Place {
+        Place {
+            root: Root::SelfV,
+            root_ty: ty,
+            path: Vec::new(),
+        }
+    }
+
+    pub fn field(&self, k: u8) -> Place {
+        let mut path = self.path.clone();
+        path.push(k);
+        Place {
+            root: self.root,
+            root_ty: self.root_ty,
+            path,
+        }
+    }
+}
+
+/// The counted name of a call (`call mut`, ...), the same string in `operator_counts` and in the interpreter's coverage.
+pub fn call_name(recv: Recv, owner: Option<u8>) -> &'static str {
+    match (recv, owner) {
+        (Recv::Mut, _) => "call &mut self",
+        (Recv::Shared, _) => "call &self",
+        (Recv::Value, _) => "call self",
+        (Recv::None, Some(_)) => "call assoc",
+        (Recv::None, None) => "call helper",
+    }
+}
+
+/// The counted name of a `Stmt::Set`: `set =`, `set +=`, ...
+pub fn set_name(op: Option<BinOp>) -> String {
+    match op {
+        None => "set =".to_owned(),
+        Some(op) => format!("set {}=", op.symbol()),
+    }
+}
+
+/// Names of the order-sensitive shapes (round r1 of m9.d1a). The generator biases toward them, `operator_counts` counts
+/// them statically and the interpreter counts them when it runs the node, under the same names.
+pub const SHAPE_STMT_CALL: &str = "shape stmt &mut self call";
+pub const SHAPE_EXPR_CALL: &str = "shape expr &mut self call";
+pub const SHAPE_LOGIC_CALL: &str = "shape &mut self call right of &&/||";
+pub const SHAPE_READ_AND_CALL: &str = "shape read and &mut self call on one root";
+pub const SHAPE_VALUE_CALL_INNER: &str =
+    "shape by-value call with &mut self call on its root in its arguments";
+
+/// Whether `e` is a `&mut self` call, and on which root.
+fn mut_call_root(methods: &Methods, e: &Expr) -> Option<Root> {
+    match e {
+        Expr::Call {
+            f,
+            recv: Some(place),
+            ..
+        } if methods.fns[*f].recv == Recv::Mut => Some(place.root),
+        _ => None,
+    }
+}
+
+/// Whether `e` or a node below it is a `&mut self` call on `root`.
+fn contains_mut_call_on(methods: &Methods, e: &Expr, root: Root) -> bool {
+    let mut found = false;
+    walk_expr(e, &mut |n| found |= mut_call_root(methods, n) == Some(root));
+    found
+}
+
+/// `shape same-root set <op>=`: an assignment to a place whose value contains a `&mut self` call on the place's root.
+pub fn set_shape(
+    methods: &Methods,
+    place: &Place,
+    op: Option<BinOp>,
+    value: &Expr,
+) -> Option<String> {
+    contains_mut_call_on(methods, value, place.root)
+        .then(|| format!("shape same-root {}", set_name(op)))
+}
+
+/// The shape of a binary: a `&mut self` call as the right operand of `&&`/`||`, or a read of a place and a `&mut self`
+/// call on its root as the two operands.
+pub fn bin_shape(methods: &Methods, op: BinOp, l: &Expr, r: &Expr) -> Option<&'static str> {
+    if matches!(op, BinOp::And | BinOp::Or) && mut_call_root(methods, r).is_some() {
+        return Some(SHAPE_LOGIC_CALL);
+    }
+    let read_root = |e: &Expr| match e {
+        Expr::Read { place, .. } => Some(place.root),
+        _ => None,
+    };
+    let same = |a: Option<Root>, b: Option<Root>| a.is_some() && a == b;
+    (same(read_root(l), mut_call_root(methods, r)) || same(mut_call_root(methods, l), read_root(r)))
+        .then_some(SHAPE_READ_AND_CALL)
+}
+
+/// The shape of a call: a by-value call whose arguments contain a `&mut self` call on the receiver's root.
+pub fn call_shape(
+    methods: &Methods,
+    f: usize,
+    recv: &Option<Place>,
+    args: &[Expr],
+) -> Option<&'static str> {
+    let place = recv.as_ref()?;
+    (methods.fns[f].recv == Recv::Value
+        && args
+            .iter()
+            .any(|arg| contains_mut_call_on(methods, arg, place.root)))
+    .then_some(SHAPE_VALUE_CALL_INNER)
+}
+
+/// The counted name of a struct literal.
+pub const STRUCT_LIT: &str = "struct literal";
+
+/// The most structs a method program declares, and the most scalars a struct holds once nested structs are flattened.
+pub const MAX_STRUCTS: usize = 3;
+pub const MAX_FLAT: usize = 8;
 
 impl Expr {
     pub fn u32(value: u32) -> Expr {
@@ -389,6 +657,7 @@ impl Expr {
             Expr::Lit(ty, _) | Expr::Var(_, ty) | Expr::Input { ty, .. } | Expr::Un { ty, .. } => {
                 *ty
             }
+            Expr::Read { ty, .. } | Expr::Call { ty, .. } | Expr::StructLit { ty, .. } => *ty,
             Expr::Gid | Expr::Len(_) => Ty::U32,
             Expr::Bin { op, ty, .. } => op.result_ty(*ty),
             Expr::Cast { to, .. } => *to,
@@ -471,6 +740,9 @@ impl Expr {
                 f(r);
             }
             Expr::Make { args, .. } => args.iter().for_each(f),
+            Expr::Read { .. } => {}
+            Expr::Call { args, .. } => args.iter().for_each(f),
+            Expr::StructLit { fields, .. } => fields.iter().for_each(f),
         }
     }
 
@@ -491,6 +763,9 @@ impl Expr {
                 f(r);
             }
             Expr::Make { args, .. } => args.iter_mut().for_each(f),
+            Expr::Read { .. } => {}
+            Expr::Call { args, .. } => args.iter_mut().for_each(f),
+            Expr::StructLit { fields, .. } => fields.iter_mut().for_each(f),
         }
     }
 
@@ -581,6 +856,22 @@ pub enum Stmt {
         trips: u32,
         body: Vec<Stmt>,
     },
+    /// `place = value;` (`op` None) or `place op= value;` on a field place or a local, `ty` the type of the place
+    /// (an integer type when `op` is set; `bool` has no compound assignment here). Rust evaluates `value` first, then
+    /// (for `op=` on primitives) reads the place. (Format 8.)
+    Set {
+        place: Place,
+        ty: Ty,
+        op: Option<BinOp>,
+        value: Expr,
+    },
+    /// `recv.m(args);` or `m(args);` with the value, if any, dropped. (Format 8.)
+    Call {
+        f: usize,
+        owner: Option<u8>,
+        recv: Option<Place>,
+        args: Vec<Expr>,
+    },
 }
 
 /// The largest loop trip count the generator writes.
@@ -602,6 +893,8 @@ pub struct Program {
     pub inputs: Vec<InputBuf>,
     pub body: Vec<Stmt>,
     pub result: Expr,
+    /// The structs and functions of a method program (format 8); empty for every other space.
+    pub methods: Methods,
 }
 
 impl Program {
@@ -628,12 +921,39 @@ impl Program {
         found
     }
 
+    /// Whether the kernel itself calls a method or an associated function, in an expression or as a statement (a
+    /// method program whose kernel calls nothing, or only free helpers, tests nothing new).
+    pub fn has_call(&self) -> bool {
+        fn block(methods: &Methods, stmts: &[Stmt]) -> bool {
+            stmts.iter().any(|stmt| match stmt {
+                Stmt::Call { f, .. } => is_method_or_assoc(methods, *f),
+                Stmt::If { then, els, .. } => block(methods, then) || block(methods, els),
+                Stmt::For { body, .. } => block(methods, body),
+                _ => false,
+            })
+        }
+        fn is_method_or_assoc(methods: &Methods, f: usize) -> bool {
+            methods.fns[f].recv != Recv::None || methods.fns[f].owner.is_some()
+        }
+        let methods = &self.methods;
+        let mut found = block(methods, &self.body);
+        let mut look = |e: &Expr| {
+            found |= matches!(e, Expr::Call { f, .. } if is_method_or_assoc(methods, *f));
+        };
+        walk_stmts(&self.body, &mut look);
+        walk_expr(&self.result, &mut look);
+        found
+    }
+
     /// Whether any expression reads an input buffer (a program that reads none is a constant, not a test).
     pub fn reads_input(&self) -> bool {
         fn block(stmts: &[Stmt]) -> bool {
             stmts.iter().any(|stmt| match stmt {
                 Stmt::Let { init, .. } => init.reads_input(),
-                Stmt::Assign { value, .. } | Stmt::AssignComp { value, .. } => value.reads_input(),
+                Stmt::Assign { value, .. }
+                | Stmt::AssignComp { value, .. }
+                | Stmt::Set { value, .. } => value.reads_input(),
+                Stmt::Call { args, .. } => args.iter().any(Expr::reads_input),
                 Stmt::If { cond, then, els } => cond.reads_input() || block(then) || block(els),
                 Stmt::For { body, .. } => block(body),
             })
@@ -653,21 +973,32 @@ impl Program {
             if input.ty == Ty::Bool {
                 return Err(format!("input {k} is a bool buffer"));
             }
-            if input.ty.is_aggregate() {
-                return Err(format!("input {k} is a vector or matrix buffer"));
+            if input.ty.is_aggregate() || input.ty.is_struct() {
+                return Err(format!("input {k} is a vector, matrix or struct buffer"));
             }
             if input.data.len() != self.count as usize {
                 return Err(format!("input {k} has {} elements", input.data.len()));
             }
         }
-        if self.result.ty().is_aggregate() {
-            return Err("the result is a vector or a matrix (the output buffer is scalar)".into());
+        if self.result.ty().is_aggregate() || self.result.ty().is_struct() {
+            return Err(
+                "the result is a vector, a matrix or a struct (the output buffer is scalar)".into(),
+            );
         }
+        self.methods.check_tables()?;
         let mut cx = Check {
             inputs: self.inputs.iter().map(|input| input.ty).collect(),
+            methods: &self.methods,
             scope: Vec::new(),
             seen: BTreeSet::new(),
+            in_fn: None,
         };
+        // Functions first (their variables are numbered in the program's one id space), each in a scope of its own.
+        for (k, def) in self.methods.fns.iter().enumerate() {
+            cx.function(k, def)?;
+        }
+        cx.in_fn = None;
+        cx.scope.clear();
         // The body and the result share the guarded block's scope.
         for stmt in &self.body {
             cx.stmt(stmt)?;
@@ -676,14 +1007,227 @@ impl Program {
     }
 }
 
-struct Check {
+impl Methods {
+    /// The structural rules of the tables: struct fields refer to earlier structs, sizes are bounded, every function has
+    /// a consistent receiver and return type, and calls only go downwards (checked with the bodies).
+    pub fn check_tables(&self) -> Result<(), String> {
+        if self.structs.len() > MAX_STRUCTS {
+            return Err(format!("{} structs", self.structs.len()));
+        }
+        for (j, def) in self.structs.iter().enumerate() {
+            if def.fields.is_empty() || def.fields.len() > 3 {
+                return Err(format!("struct S{j} has {} fields", def.fields.len()));
+            }
+            for ty in &def.fields {
+                match ty {
+                    // A GPU struct is a `GpuPod` type: its fields are `u32`, `i32` (no `bool`) or an earlier struct.
+                    Ty::U32 | Ty::I32 => {}
+                    Ty::Struct(inner) if usize::from(*inner) < j => {}
+                    other => return Err(format!("S{j} has a field of {}", other.name())),
+                }
+            }
+            if self.flat_len(j as u8) > MAX_FLAT {
+                return Err(format!("S{j} is {} scalars", self.flat_len(j as u8)));
+            }
+        }
+        for (k, def) in self.fns.iter().enumerate() {
+            if let Some(owner) = def.owner
+                && usize::from(owner) >= self.structs.len()
+            {
+                return Err(format!("m{k} is a function of an unknown struct"));
+            }
+            if def.recv != Recv::None && def.owner.is_none() {
+                return Err(format!("m{k} has a receiver and no struct"));
+            }
+            for (_, ty) in &def.params {
+                match ty {
+                    Ty::U32 | Ty::I32 | Ty::Bool => {}
+                    Ty::Struct(j) if usize::from(*j) < self.structs.len() => {}
+                    other => return Err(format!("m{k} has a parameter of {}", other.name())),
+                }
+            }
+            match (def.recv, def.owner, def.ret) {
+                (Recv::None, Some(owner), ret) if ret != Some(Ty::Struct(owner)) => {
+                    return Err(format!("associated m{k} does not return its struct"));
+                }
+                (Recv::None, None, Some(Ty::U32 | Ty::I32 | Ty::Bool)) => {}
+                (Recv::None, None, _) => return Err(format!("helper m{k} has no scalar result")),
+                (Recv::Shared | Recv::Value, _, Some(Ty::U32 | Ty::I32 | Ty::Bool)) => {}
+                (Recv::Shared | Recv::Value, _, _) => {
+                    return Err(format!("method m{k} has no scalar result"));
+                }
+                (Recv::Mut, _, None | Some(Ty::U32 | Ty::I32 | Ty::Bool)) => {}
+                (Recv::Mut, _, _) => return Err(format!("method m{k} returns a struct")),
+                _ => {}
+            }
+            if def.ret.is_some() != def.tail.is_some() {
+                return Err(format!("m{k}: the tail and the result type disagree"));
+            }
+        }
+        Ok(())
+    }
+}
+
+struct Check<'a> {
     inputs: Vec<Ty>,
+    methods: &'a Methods,
     /// (variable, type, mutable), innermost last.
     scope: Vec<(u32, Ty, bool)>,
     seen: BTreeSet<u32>,
+    /// The index of the function being checked (`None` in the kernel). A function sees no buffer, no `i`.
+    in_fn: Option<usize>,
 }
 
-impl Check {
+/// The roots of the `&mut self` calls inside `expr` (a call's receiver, and the calls in its arguments).
+fn mutating_roots(methods: &Methods, expr: &Expr, out: &mut Vec<Root>) {
+    if let Expr::Call {
+        f,
+        recv: Some(place),
+        ..
+    } = expr
+        && methods.fns[*f].recv == Recv::Mut
+    {
+        out.push(place.root);
+    }
+    expr.for_each_child(&mut |child| mutating_roots(methods, child, out));
+}
+
+impl Check<'_> {
+    /// The type of a place, or why it is not one.
+    fn place_ty(&self, place: &Place) -> Result<Ty, String> {
+        let root = match place.root {
+            Root::Var(var) => match self.lookup(var) {
+                Some((ty, _)) => ty,
+                None => return Err(format!("place rooted at unknown v{var}")),
+            },
+            Root::SelfV => match self.in_fn.and_then(|k| self.methods.fns[k].owner) {
+                Some(owner) if self.self_recv() != Recv::None => Ty::Struct(owner),
+                _ => return Err("`self` outside a method".into()),
+            },
+        };
+        if root != place.root_ty {
+            return Err("a place with the wrong root type".into());
+        }
+        let mut ty = root;
+        for &k in &place.path {
+            let Ty::Struct(j) = ty else {
+                return Err(format!("a field of {}", ty.name()));
+            };
+            ty = *self.methods.structs[usize::from(j)]
+                .fields
+                .get(usize::from(k))
+                .ok_or_else(|| format!("S{j} has no field {k}"))?;
+        }
+        Ok(ty)
+    }
+
+    fn self_recv(&self) -> Recv {
+        self.in_fn.map_or(Recv::None, |k| self.methods.fns[k].recv)
+    }
+
+    /// Whether the place may be written: a `let mut` local, or `self` of a `&mut self` method.
+    fn writable(&self, place: &Place) -> bool {
+        match place.root {
+            Root::Var(var) => self.lookup(var).is_some_and(|(_, mutable)| mutable),
+            Root::SelfV => self.self_recv() == Recv::Mut,
+        }
+    }
+
+    /// A call's shape: the callee exists below the caller, the arguments match, the receiver is a place of the
+    /// owner's type that may be borrowed as the callee needs, and no `&mut self` call on the receiver's root sits in
+    /// the arguments of a call that borrows it (rustc's E0499 and E0502).
+    fn call(
+        &mut self,
+        f: usize,
+        owner: Option<u8>,
+        recv: &Option<Place>,
+        args: &[Expr],
+    ) -> Result<Option<Ty>, String> {
+        let methods = self.methods;
+        let Some(def) = methods.fns.get(f) else {
+            return Err(format!("call of unknown m{f}"));
+        };
+        if def.recv == Recv::None && owner != def.owner {
+            return Err(format!("m{f} is called with the wrong path"));
+        }
+        if self.in_fn.is_some_and(|caller| f >= caller) {
+            return Err(format!(
+                "m{f} is called from a function that is not above it"
+            ));
+        }
+        if args.len() != def.params.len() {
+            return Err(format!("m{f} takes {} arguments", def.params.len()));
+        }
+        for (arg, (_, ty)) in args.iter().zip(&def.params) {
+            self.expr(arg)?;
+            if arg.ty() != *ty {
+                return Err(format!("argument of m{f} has the wrong type"));
+            }
+        }
+        match (def.recv, recv) {
+            (Recv::None, None) => {}
+            (Recv::None, Some(_)) | (_, None) => {
+                return Err(format!("m{f}: receiver and signature disagree"));
+            }
+            (kind, Some(place)) => {
+                if self.place_ty(place)? != Ty::Struct(def.owner.unwrap_or(u8::MAX)) {
+                    return Err(format!("receiver of m{f} has the wrong type"));
+                }
+                if kind == Recv::Mut && !self.writable(place) {
+                    return Err(format!(
+                        "`&mut self` call m{f} on a place that is not writable"
+                    ));
+                }
+                if kind != Recv::Value {
+                    let mut roots = Vec::new();
+                    for arg in args {
+                        mutating_roots(methods, arg, &mut roots);
+                    }
+                    if roots.contains(&place.root) {
+                        return Err(format!(
+                            "an argument of m{f} calls a `&mut self` method on its receiver's root"
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(def.ret)
+    }
+
+    /// One function in a scope of its own: its parameters, its body and its tail.
+    fn function(&mut self, k: usize, def: &FnDef) -> Result<(), String> {
+        self.in_fn = Some(k);
+        self.scope.clear();
+        for &(var, ty) in &def.params {
+            self.declare(var, ty, false)?;
+        }
+        for stmt in &def.body {
+            self.stmt(stmt)?;
+        }
+        match (&def.tail, def.ret) {
+            (Some(tail), Some(ty)) => {
+                self.expr(tail)?;
+                if tail.ty() != ty {
+                    return Err(format!("the tail of m{k} has the wrong type"));
+                }
+            }
+            (None, None) => {}
+            _ => return Err(format!("m{k}: the tail and the result type disagree")),
+        }
+        // A bare `self` as a value is only a `self` method's: in `&mut self` it binds the reference (E0116) and in
+        // `&self` it has the type `&Self`.
+        if def.recv != Recv::Value {
+            let mut bare = false;
+            walk_fn_exprs(def, &mut |e| {
+                bare |= matches!(e, Expr::Read { place, .. } if place.root == Root::SelfV && place.path.is_empty());
+            });
+            if bare {
+                return Err(format!("m{k} uses `self` as a value"));
+            }
+        }
+        Ok(())
+    }
+
     fn declare(&mut self, var: u32, ty: Ty, mutable: bool) -> Result<(), String> {
         if !self.seen.insert(var) {
             return Err(format!("variable v{var} declared twice"));
@@ -771,6 +1315,50 @@ impl Check {
                 self.scope.truncate(mark);
                 Ok(())
             }
+            Stmt::Set {
+                place,
+                ty,
+                op,
+                value,
+            } => {
+                self.expr(value)?;
+                if self.place_ty(place)? != *ty {
+                    return Err("assignment to a place of another type".into());
+                }
+                if !self.writable(place) {
+                    return Err("assignment to a place that is not writable".into());
+                }
+                match op {
+                    None if value.ty() == *ty => Ok(()),
+                    None => Err("assignment of the wrong type".into()),
+                    Some(op) => {
+                        let right = if op.is_shift() { Ty::U32 } else { *ty };
+                        let allowed = matches!(
+                            op,
+                            BinOp::Add
+                                | BinOp::Sub
+                                | BinOp::Mul
+                                | BinOp::Div
+                                | BinOp::Rem
+                                | BinOp::BitAnd
+                                | BinOp::BitOr
+                                | BinOp::BitXor
+                                | BinOp::Shl
+                                | BinOp::Shr
+                        );
+                        if !allowed || !ty.is_int() || value.ty() != right {
+                            return Err(format!("compound `{}=` on {}", op.symbol(), ty.name()));
+                        }
+                        Ok(())
+                    }
+                }
+            }
+            Stmt::Call {
+                f,
+                owner,
+                recv,
+                args,
+            } => self.call(*f, *owner, recv, args).map(|_| ()),
         }
     }
 
@@ -784,13 +1372,19 @@ impl Check {
             Expr::Lit(Ty::F32, bits) if *bits == (-0.0f32).to_bits() => {
                 Err("negative zero literal".into())
             }
-            Expr::Lit(ty, _) if ty.is_aggregate() => Err("a vector or matrix literal".into()),
+            Expr::Lit(ty, _) if ty.is_aggregate() || ty.is_struct() => {
+                Err("a vector, matrix or struct literal".into())
+            }
+            Expr::Gid if self.in_fn.is_some() => Err("`i` inside a function".into()),
             Expr::Lit(..) | Expr::Gid => Ok(()),
             Expr::Var(var, ty) => match self.lookup(*var) {
                 Some((declared, _)) if declared == *ty => Ok(()),
                 Some(_) => Err(format!("v{var} used at the wrong type")),
                 None => Err(format!("v{var} used out of scope")),
             },
+            Expr::Len(_) | Expr::Input { .. } if self.in_fn.is_some() => {
+                Err("a buffer inside a function".into())
+            }
             Expr::Len(buf) => {
                 if *buf < self.inputs.len() {
                     Ok(())
@@ -800,7 +1394,7 @@ impl Check {
             }
             Expr::Input { buf, ty, index } => {
                 self.expr(index)?;
-                if ty.is_aggregate() || self.inputs.get(*buf) != Some(ty) {
+                if ty.is_aggregate() || ty.is_struct() || self.inputs.get(*buf) != Some(ty) {
                     return Err(format!("input {buf} read at the wrong type"));
                 }
                 if index.ty() != Ty::U32 {
@@ -824,7 +1418,10 @@ impl Check {
                         Err("negated literal not folded".into())
                     }
                     UnOp::Not if *ty == Ty::F32 => Err("`!` on f32".into()),
-                    UnOp::Not if ty.is_aggregate() => Err("`!` on a vector or matrix".into()),
+                    UnOp::Not if ty.is_aggregate() || ty.is_struct() => {
+                        Err("`!` on a vector, matrix or struct".into())
+                    }
+                    UnOp::Neg if ty.is_struct() => Err("negation of a struct".into()),
                     _ => Ok(()),
                 }
             }
@@ -836,6 +1433,9 @@ impl Check {
                 }
                 if ty.is_aggregate() {
                     return Err(format!("`{}` on {} is an `AggBin`", op.symbol(), ty.name()));
+                }
+                if ty.is_struct() {
+                    return Err(format!("`{}` on a struct", op.symbol()));
                 }
                 let (need_int, right) = if op.is_shift() {
                     (true, Ty::U32)
@@ -865,7 +1465,7 @@ impl Check {
             }
             Expr::Cast { to, e } => {
                 self.expr(e)?;
-                let castable = |ty: Ty| ty != Ty::Bool && !ty.is_aggregate();
+                let castable = |ty: Ty| ty != Ty::Bool && !ty.is_aggregate() && !ty.is_struct();
                 if !castable(*to) || !castable(e.ty()) || e.ty() == *to {
                     return Err("cast outside u32, i32 and f32".into());
                 }
@@ -967,33 +1567,102 @@ impl Check {
                     other => Err(format!("negation of {}", other.name())),
                 }
             }
+            Expr::Read { place, ty } => {
+                if self.place_ty(place)? != *ty {
+                    return Err("a field read at the wrong type".into());
+                }
+                match place.root {
+                    Root::Var(_) if place.path.is_empty() => {
+                        Err("a bare local is a `Var`, not a `Read`".into())
+                    }
+                    Root::SelfV if place.path.is_empty() && self.self_recv() != Recv::Value => {
+                        Err("`self` as a value outside a `self` method".into())
+                    }
+                    _ => Ok(()),
+                }
+            }
+            Expr::Call {
+                f,
+                owner,
+                recv,
+                args,
+                ty,
+            } => match self.call(*f, *owner, recv, args)? {
+                Some(ret) if ret == *ty => Ok(()),
+                _ => Err(format!("a call of m{f} has the wrong type")),
+            },
+            Expr::StructLit { ty, fields, order } => {
+                let Ty::Struct(j) = ty else {
+                    return Err("a struct literal of a non-struct".into());
+                };
+                let Some(def) = self.methods.structs.get(usize::from(*j)) else {
+                    return Err(format!("a literal of unknown S{j}"));
+                };
+                if fields.len() != def.fields.len() {
+                    return Err(format!("S{j} literal has {} fields", fields.len()));
+                }
+                let mut seen = order.clone();
+                seen.sort_unstable();
+                if order.len() != fields.len()
+                    || seen.iter().enumerate().any(|(k, &d)| usize::from(d) != k)
+                {
+                    return Err(format!("S{j} literal order is not a permutation"));
+                }
+                for (field, &d) in fields.iter().zip(order) {
+                    let want = &def.fields[usize::from(d)];
+                    self.expr(field)?;
+                    if field.ty() != *want {
+                        return Err(format!("a field of the S{j} literal has the wrong type"));
+                    }
+                }
+                Ok(())
+            }
         }
     }
 }
 
-/// Calls `f` on every expression node of `program` (pre-order): the body's statements, both branches of every `if`,
-/// loop bodies and the result, dead code included.
-pub fn visit_exprs(program: &Program, f: &mut dyn FnMut(&Expr)) {
-    fn expr(e: &Expr, f: &mut dyn FnMut(&Expr)) {
-        f(e);
-        e.for_each_child(&mut |child| expr(child, f));
-    }
-    fn block(stmts: &[Stmt], f: &mut dyn FnMut(&Expr)) {
-        for stmt in stmts {
-            match stmt {
-                Stmt::Let { init, .. } => expr(init, f),
-                Stmt::Assign { value, .. } | Stmt::AssignComp { value, .. } => expr(value, f),
-                Stmt::If { cond, then, els } => {
-                    expr(cond, f);
-                    block(then, f);
-                    block(els, f);
-                }
-                Stmt::For { body, .. } => block(body, f),
+/// Calls `f` on `e` and every node below it (pre-order).
+pub fn walk_expr(e: &Expr, f: &mut dyn FnMut(&Expr)) {
+    f(e);
+    e.for_each_child(&mut |child| walk_expr(child, f));
+}
+
+/// Calls `f` on every expression node of a statement list (pre-order): both branches of every `if`, loop bodies.
+pub fn walk_stmts(stmts: &[Stmt], f: &mut dyn FnMut(&Expr)) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Let { init, .. } => walk_expr(init, f),
+            Stmt::Assign { value, .. }
+            | Stmt::AssignComp { value, .. }
+            | Stmt::Set { value, .. } => walk_expr(value, f),
+            Stmt::Call { args, .. } => args.iter().for_each(|arg| walk_expr(arg, f)),
+            Stmt::If { cond, then, els } => {
+                walk_expr(cond, f);
+                walk_stmts(then, f);
+                walk_stmts(els, f);
             }
+            Stmt::For { body, .. } => walk_stmts(body, f),
         }
     }
-    block(&program.body, f);
-    expr(&program.result, f);
+}
+
+/// [`walk_stmts`] over a function: its body, then its tail.
+pub fn walk_fn_exprs(def: &FnDef, f: &mut dyn FnMut(&Expr)) {
+    walk_stmts(&def.body, f);
+    if let Some(tail) = &def.tail {
+        walk_expr(tail, f);
+    }
+}
+
+/// Calls `f` on every expression node of `program` (pre-order): the body's statements, both branches of every `if`,
+/// loop bodies and the result, dead code included, then the body and tail of every function in table order. (The
+/// reducer's node numbering is this order.)
+pub fn visit_exprs(program: &Program, f: &mut dyn FnMut(&Expr)) {
+    walk_stmts(&program.body, f);
+    walk_expr(&program.result, f);
+    for def in &program.methods.fns {
+        walk_fn_exprs(def, f);
+    }
 }
 
 /// The number of terms of the maximal `+`/`-` chain that starts at `expr` (1 if `expr` is not an `f32` addition or
@@ -1022,9 +1691,14 @@ pub const ASSIGN_COMP: &str = "assign comp";
 
 /// How many times each operator is used in `program` (for coverage counts in tests and reports).
 pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
-    fn expr(e: &Expr, counts: &mut BTreeMap<String, usize>) {
+    fn expr(methods: &Methods, e: &Expr, counts: &mut BTreeMap<String, usize>) {
         let name = match e {
-            Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Input { .. } => None,
+            Expr::Lit(..)
+            | Expr::Var(..)
+            | Expr::Gid
+            | Expr::Len(_)
+            | Expr::Input { .. }
+            | Expr::Read { .. } => None,
             Expr::Un { op, ty, .. } => Some(match op {
                 UnOp::Neg if *ty == Ty::F32 => "-f32".to_owned(),
                 UnOp::Neg => "-".to_owned(),
@@ -1032,37 +1706,84 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
             }),
             Expr::Bin { op, ty, .. } => Some(format!("{} {}", op.symbol(), ty.name())),
             Expr::Cast { to, .. } => Some(format!("as {}", to.name())),
+            Expr::Call { f, .. } => {
+                let def = &methods.fns[*f];
+                Some(call_name(def.recv, def.owner).to_owned())
+            }
+            Expr::StructLit { .. } => Some(STRUCT_LIT.to_owned()),
             other => other.aggregate_name(),
         };
         if let Some(name) = name {
             *counts.entry(name).or_default() += 1;
         }
-        e.for_each_child(&mut |child| expr(child, counts));
+        let shape = match e {
+            Expr::Bin { op, l, r, .. } => bin_shape(methods, *op, l, r),
+            Expr::Call { f, recv, args, .. } => {
+                if methods.fns[*f].recv == Recv::Mut {
+                    *counts.entry(SHAPE_EXPR_CALL.to_owned()).or_default() += 1;
+                }
+                call_shape(methods, *f, recv, args)
+            }
+            _ => None,
+        };
+        if let Some(shape) = shape {
+            *counts.entry(shape.to_owned()).or_default() += 1;
+        }
+        e.for_each_child(&mut |child| expr(methods, child, counts));
     }
-    fn block(stmts: &[Stmt], counts: &mut BTreeMap<String, usize>) {
+    fn block(methods: &Methods, stmts: &[Stmt], counts: &mut BTreeMap<String, usize>) {
         for stmt in stmts {
             match stmt {
-                Stmt::Let { init, .. } => expr(init, counts),
-                Stmt::Assign { value, .. } => expr(value, counts),
+                Stmt::Let { init, .. } => expr(methods, init, counts),
+                Stmt::Assign { value, .. } => expr(methods, value, counts),
                 Stmt::AssignComp { value, .. } => {
                     *counts.entry(ASSIGN_COMP.to_owned()).or_default() += 1;
-                    expr(value, counts);
+                    expr(methods, value, counts);
+                }
+                Stmt::Set {
+                    place, op, value, ..
+                } => {
+                    *counts.entry(set_name(*op)).or_default() += 1;
+                    if let Some(shape) = set_shape(methods, place, *op, value) {
+                        *counts.entry(shape).or_default() += 1;
+                    }
+                    expr(methods, value, counts);
+                }
+                Stmt::Call { f, recv, args, .. } => {
+                    let def = &methods.fns[*f];
+                    if def.recv == Recv::Mut {
+                        *counts.entry(SHAPE_STMT_CALL.to_owned()).or_default() += 1;
+                    }
+                    if let Some(shape) = call_shape(methods, *f, recv, args) {
+                        *counts.entry(shape.to_owned()).or_default() += 1;
+                    }
+                    *counts
+                        .entry(call_name(def.recv, def.owner).to_owned())
+                        .or_default() += 1;
+                    args.iter().for_each(|arg| expr(methods, arg, counts));
                 }
                 Stmt::If { cond, then, els } => {
-                    expr(cond, counts);
-                    block(then, counts);
-                    block(els, counts);
+                    expr(methods, cond, counts);
+                    block(methods, then, counts);
+                    block(methods, els, counts);
                 }
                 Stmt::For { body, .. } => {
                     *counts.entry("for".to_owned()).or_default() += 1;
-                    block(body, counts);
+                    block(methods, body, counts);
                 }
             }
         }
     }
     let mut counts = BTreeMap::new();
-    block(&program.body, &mut counts);
-    expr(&program.result, &mut counts);
+    let methods = &program.methods;
+    block(methods, &program.body, &mut counts);
+    expr(methods, &program.result, &mut counts);
+    for def in &methods.fns {
+        block(methods, &def.body, &mut counts);
+        if let Some(tail) = &def.tail {
+            expr(methods, tail, &mut counts);
+        }
+    }
     counts
 }
 

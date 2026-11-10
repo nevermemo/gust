@@ -12,7 +12,7 @@ use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 
-use crate::ast::{COMPONENT_LETTERS, Expr, Program, Stmt, Ty, UnOp};
+use crate::ast::{COMPONENT_LETTERS, Expr, FnDef, Place, Program, Recv, Root, Stmt, Ty, UnOp};
 use crate::generator::DIFFTEST_FORMAT;
 use crate::shapes::{PIXEL_KERNEL, ShapePlan};
 
@@ -115,7 +115,30 @@ fn literal(ty: Ty, bits: u32) -> String {
                 format!("{value}i32")
             }
         }
-        Ty::Vec(..) | Ty::Mat(_) => unreachable!("{} has no literal", ty.name()),
+        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) => unreachable!("{} has no literal", ty.name()),
+    }
+}
+
+/// The text of a place: `v3`, `v3.f1`, `self.f0.f2`.
+fn place_text(place: &Place) -> String {
+    let mut text = match place.root {
+        Root::Var(var) => format!("v{var}"),
+        Root::SelfV => "self".to_owned(),
+    };
+    for k in &place.path {
+        text.push_str(&format!(".f{k}"));
+    }
+    text
+}
+
+/// The text of a call of function `f`: `v3.m2(a, b)`, `S1::m4(a)` or `m5(a)`.
+fn call_text(f: usize, owner: Option<u8>, recv: &Option<Place>, args: &[Expr]) -> String {
+    let args: Vec<String> = args.iter().map(emit_expr).collect();
+    let args = args.join(", ");
+    match (recv, owner) {
+        (Some(place), _) => format!("{}.m{f}({args})", place_text(place)),
+        (None, Some(owner)) => format!("S{owner}::m{f}({args})"),
+        (None, None) => format!("m{f}({args})"),
     }
 }
 
@@ -133,6 +156,8 @@ fn is_atom(expr: &Expr) -> bool {
         | Expr::Swizzle { .. }
         | Expr::Dot { .. }
         | Expr::Transpose { .. } => true,
+        // A field path or a call is a postfix, a struct literal a braced atom (it never sits under an operator).
+        Expr::Read { .. } | Expr::Call { .. } | Expr::StructLit { .. } => true,
         Expr::Un { .. }
         | Expr::Bin { .. }
         | Expr::Cast { .. }
@@ -190,6 +215,22 @@ pub fn emit_expr(expr: &Expr) -> String {
         Expr::Transpose { e } => format!("{}.transpose()", operand(e)),
         Expr::AggBin { op, l, r, .. } => format!("{} {} {}", operand(l), op.symbol(), operand(r)),
         Expr::AggNeg { e } => format!("-{}", operand(e)),
+        Expr::Read { place, .. } => place_text(place),
+        Expr::Call {
+            f,
+            owner,
+            recv,
+            args,
+            ..
+        } => call_text(*f, *owner, recv, args),
+        Expr::StructLit { ty, fields, order } => {
+            let fields: Vec<String> = fields
+                .iter()
+                .zip(order)
+                .map(|(field, k)| format!("f{k}: {}", emit_expr(field)))
+                .collect();
+            format!("{} {{ {} }}", ty.name(), fields.join(", "))
+        }
     }
 }
 
@@ -216,6 +257,25 @@ fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
         Stmt::AssignComp { var, index, value } => {
             let letter = COMPONENT_LETTERS[usize::from(*index)];
             let _ = writeln!(out, "{pad}v{var}.{letter} = {};", emit_expr(value));
+        }
+        Stmt::Set {
+            place, op, value, ..
+        } => {
+            let symbol = op.map_or(String::new(), |op| op.symbol().to_owned());
+            let _ = writeln!(
+                out,
+                "{pad}{} {symbol}= {};",
+                place_text(place),
+                emit_expr(value)
+            );
+        }
+        Stmt::Call {
+            f,
+            owner,
+            recv,
+            args,
+        } => {
+            let _ = writeln!(out, "{pad}{};", call_text(*f, *owner, recv, args));
         }
         Stmt::If { cond, then, els } => {
             let _ = writeln!(out, "{pad}if {} {{", emit_expr(cond));
@@ -262,6 +322,7 @@ pub fn emit_module_in(program: &Program, pixel: bool) -> String {
     );
     let _ = writeln!(out, "#[gust::gpu]");
     let _ = writeln!(out, "pub mod {} {{", module_name(program));
+    emit_methods(program, &mut out);
     emit_kernel(program, "workgroup_size(64, 1, 1)", "k", &mut out);
     if pixel {
         out.push('\n');
@@ -269,6 +330,77 @@ pub fn emit_module_in(program: &Program, pixel: bool) -> String {
     }
     let _ = writeln!(out, "}}");
     out
+}
+
+/// A function's signature after `fn name`: the parameters (with the receiver) and the result type.
+fn signature(def: &FnDef) -> String {
+    let mut params: Vec<String> = Vec::new();
+    match def.recv {
+        Recv::None => {}
+        Recv::Shared => params.push("&self".to_owned()),
+        Recv::Mut => params.push("&mut self".to_owned()),
+        Recv::Value => params.push("self".to_owned()),
+    }
+    for (var, ty) in &def.params {
+        params.push(format!("v{var}: {}", ty.decl_name()));
+    }
+    let ret = def
+        .ret
+        .map_or(String::new(), |ty| format!(" -> {}", ty.decl_name()));
+    format!("({}){ret}", params.join(", "))
+}
+
+/// One function at `level`: its signature, its body and its tail.
+fn emit_fn(k: usize, def: &FnDef, level: usize, out: &mut String) {
+    let pad = INDENT.repeat(level);
+    let _ = writeln!(out, "{pad}pub fn m{k}{} {{", signature(def));
+    emit_block(&def.body, level + 1, out);
+    if let Some(tail) = &def.tail {
+        let _ = writeln!(out, "{pad}{INDENT}{}", emit_expr(tail));
+    }
+    let _ = writeln!(out, "{pad}}}");
+}
+
+/// The structs, the `impl` block of each struct that has functions, and the helpers of a method program, at module
+/// depth. Nothing for any other program.
+fn emit_methods(program: &Program, out: &mut String) {
+    let methods = &program.methods;
+    for (j, def) in methods.structs.iter().enumerate() {
+        let _ = writeln!(out, "{INDENT}pub struct S{j} {{");
+        for (k, ty) in def.fields.iter().enumerate() {
+            let _ = writeln!(out, "{INDENT}{INDENT}pub f{k}: {},", ty.decl_name());
+        }
+        let _ = writeln!(out, "{INDENT}}}\n");
+    }
+    for j in 0..methods.structs.len() {
+        let owned: Vec<(usize, &FnDef)> = methods
+            .fns
+            .iter()
+            .enumerate()
+            .filter(|(_, def)| def.owner == Some(j as u8))
+            .collect();
+        if owned.is_empty() {
+            continue;
+        }
+        let _ = writeln!(out, "{INDENT}impl S{j} {{");
+        for (n, (k, def)) in owned.iter().enumerate() {
+            if n > 0 {
+                out.push('\n');
+            }
+            emit_fn(*k, def, 2, out);
+        }
+        let _ = writeln!(out, "{INDENT}}}\n");
+    }
+    for (k, def) in methods.fns.iter().enumerate() {
+        if def.owner.is_none() {
+            let _ = writeln!(out, "{INDENT}fn m{k}{} {{", signature(def));
+            emit_block(&def.body, 2, out);
+            if let Some(tail) = &def.tail {
+                let _ = writeln!(out, "{INDENT}{INDENT}{}", emit_expr(tail));
+            }
+            let _ = writeln!(out, "{INDENT}}}\n");
+        }
+    }
 }
 
 /// One kernel of a module, at module depth.
@@ -579,6 +711,7 @@ mod tests {
     fn tiny_program() -> Program {
         Program {
             seed: 9,
+            methods: Default::default(),
             attempt: 4,
             count: 3,
             inputs: vec![
@@ -704,6 +837,11 @@ pub mod s9_a4 {
             let batch = generate_batch(seed).unwrap();
             for program in &batch.programs {
                 program.check().unwrap();
+                // The reparser reads the scalar and vector subsets; a method program is checked by the CPU twin
+                // against the interpreter instead (the independent reading of its parenthesisation).
+                if !program.methods.is_empty() {
+                    continue;
+                }
                 let text = emit_module(program);
                 assert_eq!(
                     reparse(&text, &program.inputs),

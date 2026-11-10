@@ -2,9 +2,11 @@
 
 Status: slices m5.c1a (the integer core), m5.c1a2 (floats v1, the exact-interval subset of R1-4), m5.c1b (the batch
 runner `difftest-run`), m5.c1c (the shrinker), m6.d (vectors and matrices, DIFFTEST_FORMAT 6) and m8.x1 (the result
-file carries the build's capabilities, DIFFTEST_FORMAT 7; the program space is the one of format 6). The crate generates
+file carries the build's capabilities, DIFFTEST_FORMAT 7; the program space is the one of format 6) and m9.d1a (module
+structs with methods, DIFFTEST_FORMAT 8). The crate generates
 integer, boolean and `f32` kernels from a seed, and (since format 6) kernels that compute with the `gust::math` vectors
-and matrices as locals and intermediates (buffers and results stay scalar), evaluates them with an independent
+and matrices as locals and intermediates (buffers and results stay scalar), and (since format 8) integer kernels that call
+methods of module structs, evaluates them with an independent
 interpreter that tracks the defined domain (and, for floats, an interval of every value a conforming WGSL implementation
 may hold), writes them as a `#[gust::gpu]` crate, and `difftest-run` builds a batch of them, runs every program on the
 interpreter, the CPU twin and the GPU, and reports what disagreed. The crate itself is std only and has no GPU code: the
@@ -95,6 +97,134 @@ buffer), so the result file, the classifier and the shrinker see scalars.
 - The reducer has no aggregate pass: pass 2 (`observed`) replaces scalar subexpressions only and skips vector
   and matrix values, so a shrunk vector program keeps its constructors and operators. The statement,
   trip-count, element-count, literal and byte-stream passes apply to it as to any program.
+
+## Methods (format 8, slice m9.d1a)
+
+Why: the Opus reviews of m9.a2 found by hand three evaluation-order bugs where the GPU and the CPU twin silently
+disagree (a `&mut self` call in an assignment's place, in the value of an `inout` assignment helper with an indexed
+place, and `let c = self;`). A mismatch in this space is a compiler bug (D163), not a D39 note; only out-of-bounds
+behaviour is D39. D163's numbering is amended: format 8 is the methods slice, and each later phase-1 lowering (enums,
+tuples, arrays, closures) extends the space in its own small slice and bumps the format again.
+
+**Program space** (`Space::Method`, selected by attempt numbers from `METHOD_ATTEMPT_BASE` = 2 000 000; integers and
+`bool` only: no `f32`, no vectors). The tables come first and the kernel after them:
+
+- One to three module structs `S0`..`S2` of one to three fields each (`u32`, `i32`, or an earlier struct, at most 8
+  scalars flattened; never `bool`, because a GPU struct is a `GpuPod` type and `bool` is not one), and three to six
+  functions `m0`..`m5` with zero to two parameters (a scalar, or a struct passed by value): helpers (`fn m2(..)`),
+  `&self`, `&mut self` (two in five return nothing) and by-value `self` methods in `impl S<j>` blocks, and associated functions
+  (`S0::m3(..)`) that return their struct. Function `k` calls only functions below `k`, so the call graph is acyclic by
+  construction, and every name is unique (`S<k>`, fields `f<k>`, functions `m<k>`, variables `v<n>`), so no built-in or
+  field name can clash with a method.
+- The kernel starts with one or two struct locals (`let mut v0: S0 = S0 { .. }`), and its statements add struct locals
+  (a copy of a local, a field or a call result is a copy: Rust copies on `let`), `place = value` and `place op= value`
+  (`+ - * / % & | ^ << >>`) on scalar fields, whole-struct assignment, and `recv.m(args);` of a `&mut self` method as a statement.
+  A call is an expression wherever the integer space has one: both operands of a binary operator, an argument, the value
+  of an assignment, an `if` condition, a loop body, and the result (`out[i] = c.next() ^ c.n`). Method bodies draw from
+  the same statements and expressions, with the fields of `self` (and of struct parameters) as places. The final value of
+  scalar fields of the top-level struct locals is folded into the result, so the state the calls left is observed.
+- Written to be order-sensitive (round r1): a share of the generator's choices put a `&mut self` call on the same root as
+  the place or read around it. A value of `place op= ..` is, 60 % of the time, a `&mut self` call on the place's own root
+  (`c.n ^= c.bump(3)`; for `/=` and `%=` the call is written `call | 1`, so the divisor is not zero); a binary has a
+  read of a field of `R` and a `&mut self` call on `R` as its two operands, in either order; a `bool` is a comparison
+  reading `R` and a `&mut self` call on `R` as the right operand of `&&`/`||`; and a by-value call on `R` gets a `&mut
+  self` call on `R` among its arguments (75 % of its scalar arguments). The first function is often a `&mut self`
+  method returning `bool`, and a by-value method has a `u32` first parameter, so those pairs exist. A struct literal
+  lists its fields in a permuted order a quarter of the time (`S1 { f1: c.bump(10), f0: c.bump(1) }`; Rust evaluates
+  them as written, and the interpreter and the emitter keep the written order).
+- Shifts: `<<=` and `>>=` take a `u32` amount (any place type, as in Rust); an amount of 32 or more is the `shift-amount`
+  discard, as in the integer space. Every operator of `place op= value` that Rust has for integers is generated.
+- What the generator never writes, each a refusal found in DIAGNOSTICS or by the first compile of the sample below:
+  a `&mut self` call rooted in anything but a `let mut` local (or a field of one) or `self` of a `&mut self` method
+  (E0333; parameters and immutable locals are never mutating receivers); `mut self` and a bare `self` as a value
+  outside a by-value `self` method (E0116); a `&mut self` call on the root of the receiver inside the arguments of a
+  `&self` or `&mut self` call on it (rustc's E0499 and E0502; a by-value receiver is exempt, it is copied first); a
+  struct literal anywhere but a `let` initializer or the right side of an assignment (E0810; an associated function
+  binds its literal to a local before the tail, and a struct argument is a local, a field or a call); a `bool` field; a
+  buffer, `i` or `len()` inside a function. Not generated yet: an indexed place with a computed index (`out[c.n] =
+  c.next()` needs local arrays; it is the nearest accepted neighbour of the m9.a2 call-in-the-place bug and of E0421's
+  `out[c.n] += c.next()`, and is a carry of the arrays difftest slice) and so the E0421 forms, and a `&mut self` call in a
+  `for` bound. Everything else `ast::Check` accepts is generated.
+- A test compiles the method space of seeds 1 to 12 (the 16 method-space programs of each seed, 192 in all; the 36 of them
+  that a batch keeps are among them, the batch programs of the other seeds are only compiled by a `check-difftest` run)
+  through `#[gust::gpu]` and rustc (`method_programs_compile_through_the_macro_without_a_gust_diagnostic`), and fails on
+  any `[GUST-E` diagnostic or rustc error. Its first run found E0810 and the `bool` field; the generator now avoids both.
+
+**The interpreter's order rules** (`interp.rs`, written from the Rust Reference, not from the emitted Slang; a struct is
+a flat vector of its scalar components, a call keeps a stack of receivers):
+
+- `place = value`: the value first, then the store. `place op= value` on primitives: the value first, then the place is
+  read, then `op`, then the store (so `c.n += c.bump(2)` adds the new `c.n` to the result of the call).
+- A binary operator: left, then right (`&&` and `||` skip the right side). A call: the receiver is read first (a by-value
+  `self` is a copy taken now, so `c.plus(c.bump(1))` sees the old `c.n`), then the arguments left to right, then the
+  body on its own `self`; `&mut self` writes the final `self` back to the receiver's place on return.
+- `let d = c;` copies; a struct literal evaluates its fields in the order written (the components are then laid out in
+  declaration order); a call as a statement drops its value, if it has one.
+- `&self` and `&mut self` calls assert (debug builds) that their arguments left the receiver unchanged: the copy-in and
+  copy-out model of a `&mut self` call equals Rust's reference only because the generator and `ast::Check` keep it so.
+- Hand vectors for each rule are in `method_tests.rs` (`c.n + c.bump(1)` is 11 where the other order gives 12; `c.n ^=
+  c.bump(3)` is 0 where an `inout` helper that copied the place in first gives 13; `/=` and `%=` likewise; a write-back
+  through `v1.f1.bump(1)` to a nested field leaves `v1.f0` and the source local alone; a literal written `f1, f0` is
+  evaluated in that order).
+
+**Batch and counts.** `PROGRAMS_PER_SEED` stays 16, because `xtask/src/difftest.rs` and its test pin 16: a seed's batch is
+the first 8 programs of the float space, the first 5 of the vector space (both byte for byte the programs that
+format 7 kept) and 3 of the method space. Raising the method share needs `xtask/src/tests/difftest.rs`. The method part
+has its own counters (`Batch.method_attempts`, `Batch.method_discarded`, `difftest-gen stats` prints them) and one
+new discard reason and class, `no-call` (a method program whose kernel calls no method and no associated function; a
+kernel that calls only free helpers is discarded too). Seeds 1 to 64: 192 method programs from 1404 attempts (14 %
+kept); method discards: `overflow` 408, `no-call` 357, `static` 292, `division-by-zero` 64, `no-input-read` 35,
+`shift-amount` 30, `index` 26. The 192 programs write 320 `&mut self` calls (188 as statements, 132 inside
+expressions), 156 `&self`, 70 `self`, 144 associated and 233 helper calls, 783 struct literals, 368 `=` and 432 `op=`
+assignments to places (`+=` 84, `^=` 63, `%=` 47, `&=` 36, `>>=` 38, `-=` 33, `/=` 33, `|=` 33, `*=` 34, `<<=` 31).
+These are static counts, the function bodies included.
+
+**Order-sensitive shapes** (`difftest-gen stats`, names `shape ...` in `ast::operator_counts` and in the interpreter's
+coverage; "static" counts the nodes in the 192 batch programs of seeds 1 to 64, function bodies included, so dead
+functions count; "executed" is what `run_covered` evaluated, summed over the elements of those programs):
+
+| Shape | Static | Executed |
+| --- | --- | --- |
+| same-root `=` (`c.n = ..c.bump()..`) | 12 | 1284 |
+| same-root `+=` | 7 | 443 |
+| same-root `^=` | 9 | 1165 |
+| same-root `/=` | 1 | 1 |
+| same-root `%=` | 5 | 478 |
+| same-root `-=`, `*=`, `&=`, `<<=`, `>>=` | 2, 3, 1, 5, 1 | 257, 321, 0, 836, 0 |
+| read of `R` and `&mut self` call on `R` as the two operands of a binary | 16 | 5973 |
+| by-value call on `R` with a `&mut self` call on `R` in its arguments | 5 | 3997 |
+| `&mut self` call as the right operand of `&&`/`||` | 11 | 5683 |
+| `&mut self` call as a statement / inside an expression | 188 / 132 | 70221 / 37764 |
+
+The batch keeps only 3 method programs of 16 per seed, so the rarest shapes are thin there (same-root `/=` runs once).
+`the_order_sensitive_shapes_are_reachable_within_the_first_64_seeds` requires, over the 16 method-space programs of each of
+seeds 1 to 64 (1024 programs), each of same-root `=`, `+=`, `^=`, `/=`, `%=`, the read-and-call binary, the by-value call
+with an inner call, the call right of `&&`/`||`, both call positions, and the `&=`, `/=`, `%=` assignments.
+
+**GPU evidence (2026-11-10, RTX 5090, Vulkan, NVIDIA 610.88; round r1, the order-sensitive generator, on the
+tree merged with m9.e1).** `check-difftest --seeds 1-4` executed 64 of 64 programs (12 method programs) with 0
+mismatches. `check-difftest --seeds 1-64` (evidence, not a gate) executed 1024 of 1024 programs (the 192 method programs
+above among them, with the shape counts of the table) with 0 mismatches in 1295 s, and the dev+subgroups batch wrote the
+same 2048 record files. Discards of that run: 4947 in all (`domain` 3778, `comparison-overlap` 120, `unboundable` 283,
+`float-construct-not-in-v1` 19, `no-input-read` 187, `no-aggregate` 203, `no-call` 357). No method program was refused by
+the macro: `tests/roundtrip.rs` compiles the method space of seeds 1 to 12 and asserts that no `[GUST-E` diagnostic
+appears. The format-8 hashes in `corpus.rs` and `seeds.txt` were taken from the code's own output (a first run with zero
+placeholders printed them): they detect drift, they are not hand checks; the correctness evidence is `method_tests`
+and the runs. Hand mutations of the interpreter, each failing the named test and then reverted: the place read before
+the value in a compound `Set`; a by-value receiver read after the arguments; the place read before the call for `^=`
+and `/=` (the order of an `inout` helper that copies the place in first); a struct literal laid out in written
+order instead of declaration order. A first attempt at the place-before-value mutation did not apply (its script pattern
+matched nothing, so all tests passed) and proved nothing; it was redone.
+
+**Shrinking.** The reducer treats the function bodies like the kernel's: its statement and trip passes number the
+statements of the kernel and then of every function body, expression nodes are numbered in the order of `visit_exprs`
+(kernel body, result, then each function), and a seventh pass removes a function that nothing calls and renumbers the
+later ones. A shrunk method program keeps its structs.
+
+**Not covered.** `reparse.rs` (the independent re-reading of the emitted text) does not read method programs; for them
+the check that the parenthesisation and order of the text is the AST's is the CPU twin against the interpreter, which
+runs on every program (and `--cpu-only` runs it without a GPU). The interpreter and the twin share the Rust order rules
+only through the Reference, not through code.
 
 ## The domain filter
 
@@ -202,10 +332,11 @@ against an adversarial CPU model, not against hardware.
 A program is a pure function of `(seed, attempt)`: `prng.rs` (xorshift64* seeded through SplitMix64) writes 4096 bytes,
 and `generator.rs` decodes them into the AST; bytes past the end read as zero, which selects the first option of every
 choice, so a truncated stream is still a valid, smaller program (the last pass of the shrinker relies on that).
-`generate_batch` walks attempts 0, 1, 2, ... and keeps the in-domain programs until it has ten (the float space), then
-walks attempts 1 000 000, 1 000 001, ... of the vector space until it has six more (16 in all; `Batch.vector_attempts`
-and `Batch.vector_discarded` count the second walk apart, and `difftest-gen stats SEEDS` prints them). Before format 6
-it kept sixteen programs of the float space.
+`generate_batch` walks attempts 0, 1, 2, ... and keeps the in-domain programs until it has eight (the float space), then
+walks attempts 1 000 000, 1 000 001, ... of the vector space until it has five more, then attempts 2 000 000, ... of the
+method space until it has three more (16 in all; `Batch.vector_attempts`, `Batch.vector_discarded`,
+`Batch.method_attempts` and `Batch.method_discarded` count the second and third walks apart, and `difftest-gen stats
+SEEDS` prints them). Before format 8 it kept ten float and six vector programs, before format 6 sixteen float programs.
 
 `seeds.txt` pins seeds 1 to 8 (R1-13: 8 seeds, 16 programs each, 128 programs): per line `seed programs discarded
 reason=count... hash=`, where the hash is FNV-1a 64 of the emitted `src/lib.rs` followed by the input data of every
@@ -293,6 +424,15 @@ CPU-only guard that each of the 72 is reachable: seeds 1 to 72 write all of them
 `no-aggregate` 246). It writes 71 of the 72 forms (not `- Mat4 Mat4`) and executes every operator in its text but
 `/ UVec4 UVec4`. So the matrix `+`, `-`, `m * s` and `s * m`, the integer vector-by-vector forms and the other
 swizzles have 64-seed GPU evidence once, not on every run.
+
+Format 7 (slice m8.x1) changed the stamp and the result files only. Format 8 (slice m9.d1a): the batch is 8 float, 5
+vector and 3 method programs (see Methods). The float and vector decodings are unchanged, so every seed keeps the
+first eight float and the first five vector programs of format 7 (`a_batch_is_eight_float_programs_then_five_vector_then_three_method_programs`
+compares them with `generate_batch_in`); the ninth and tenth float programs and the sixth vector program are gone,
+and three method programs come last. In `seeds.txt` the stamp, every hash and the discard counts change. The corpus of
+seeds 1 to 8 has 128 programs (24 of them method programs) and 648 discards at format 8 (587 at format 6 and 7), 185 of
+them in the method space (209 method attempts: `overflow` 80, `static` 51, `no-call` 27, `division-by-zero` 8,
+`no-input-read` 7, `index` 6, `shift-amount` 5, `min-over-minus-one` 1).
 
 ## The emitter
 
@@ -812,6 +952,12 @@ harness.
   stale-lock message, the template manifest, the report's discard counts by reason and class, executed-operator coverage.
 - `interp` (coverage): executed against written operators, the right operand of `&&` counted only when it runs, a
   covered run equals a plain run.
+- `method_tests` (format 8): the evaluation order of the interpreter on hand-built programs (a left operand read before
+  a mutating call on its right, the value of `=` and `op=` before the place, a by-value receiver copied before the
+  arguments, copy-on-`let`, write-back through a `&mut self` call made via `self`), the counted names, the emitted
+  text, and for the generated method space of seeds 1 to 12: well typed, in the domain, the kernel calls something,
+  calls only go to lower functions, every name is unique; every kind of call and assignment is reachable. The
+  `roundtrip` test `method_programs_compile_through_the_macro_without_a_gust_diagnostic` compiles 192 of them.
 - `interp`: hand-computed vectors for each domain condition, the normal cases around them, short-circuiting, index ==
   `len()`, loops and branches; the `static` check on dead code, nested constants, results and loops.
 - `float`: the ULP function, the range rule, the widening of a single addition, of a 9-term chain (8 ULPs of the term

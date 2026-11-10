@@ -81,12 +81,22 @@ fn run(args: &[String]) -> Result<(), String> {
                 add("programs".into(), batch.programs.len() as u64);
                 add("attempts".into(), batch.attempts);
                 add("vector-attempts".into(), batch.vector_attempts);
+                add("method-attempts".into(), batch.method_attempts);
                 for (reason, n) in &batch.discarded {
                     add(format!("discard {reason}"), u64::from(*n));
                 }
                 for (reason, n) in &batch.vector_discarded {
                     add(format!("vector-discard {reason}"), u64::from(*n));
                 }
+                for (reason, n) in &batch.method_discarded {
+                    add(format!("method-discard {reason}"), u64::from(*n));
+                }
+                let methods = batch
+                    .programs
+                    .iter()
+                    .filter(|p| !p.methods.is_empty())
+                    .count();
+                add("method-programs".into(), methods as u64);
                 let aggregate = batch.programs.iter().filter(|p| p.has_aggregate()).count();
                 add("programs-with-an-aggregate".into(), aggregate as u64);
                 for program in &batch.programs {
@@ -94,8 +104,26 @@ fn run(args: &[String]) -> Result<(), String> {
                         if name.contains("Vec")
                             || name.contains("Mat")
                             || name == difftest::ast::ASSIGN_COMP
+                            || name.starts_with("call ")
+                            || name.starts_with("set ")
+                            || name.starts_with("shape ")
+                            || name == difftest::ast::STRUCT_LIT
                         {
                             add(format!("operator {name}"), n as u64);
+                        }
+                    }
+                    // What the interpreter executes of the method constructs and the order-sensitive shapes (per
+                    // element, summed over the elements of the program).
+                    if !program.methods.is_empty()
+                        && let Ok((_, coverage)) = difftest::interp::run_covered(program)
+                    {
+                        for (name, n) in &coverage.operators {
+                            if name.starts_with("shape ")
+                                || name.starts_with("call ")
+                                || name.starts_with("set ")
+                            {
+                                add(format!("executed {name}"), *n);
+                            }
                         }
                     }
                 }

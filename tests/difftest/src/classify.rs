@@ -15,16 +15,17 @@ use crate::runsrc::Planned;
 /// The four discard classes of R1-4 and the generator's two extra reasons, in report order. The `domain` class is the
 /// integer labels (`overflow`, `division-by-zero`, `min-over-minus-one`, `shift-amount`, `index`) plus `float-domain`
 /// plus `static`.
-pub const CLASSES: [&str; 6] = [
+pub const CLASSES: [&str; 7] = [
     "domain",
     "comparison-overlap",
     "unboundable",
     "float-construct-not-in-v1",
     "no-input-read",
     "no-aggregate",
+    "no-call",
 ];
 
-/// The class of a discard reason (a `Violation::label`, `static`, `no-input-read` or `no-aggregate`).
+/// The class of a discard reason (a `Violation::label`, `static`, `no-input-read`, `no-aggregate` or `no-call`).
 pub fn discard_class(reason: &str) -> &'static str {
     match reason {
         "overflow" | "division-by-zero" | "min-over-minus-one" | "shift-amount" | "index"
@@ -34,6 +35,7 @@ pub fn discard_class(reason: &str) -> &'static str {
         "float-construct-not-in-v1" => "float-construct-not-in-v1",
         "no-input-read" => "no-input-read",
         "no-aggregate" => "no-aggregate",
+        "no-call" => "no-call",
         // A label this table does not know is a new violation: it must be classified here on purpose.
         other => panic!("discard reason {other:?} has no class"),
     }
@@ -51,7 +53,7 @@ pub fn element_text(ty: Ty, bits: u32) -> String {
         Ty::F32 => format!("{:?} (0x{bits:08x})", f32::from_bits(bits)),
         Ty::I32 => format!("{}", bits as i32),
         Ty::Bool | Ty::U32 => format!("{bits}"),
-        Ty::Vec(..) | Ty::Mat(_) => unreachable!("the output buffer is scalar"),
+        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) => unreachable!("the output buffer is scalar"),
     }
 }
 
@@ -567,6 +569,7 @@ mod tests {
         };
         Program {
             seed: 7,
+            methods: Default::default(),
             attempt: 3,
             count,
             inputs: vec![InputBuf {
@@ -620,7 +623,7 @@ mod tests {
             let class = discard_class(violation.label());
             assert!(CLASSES.contains(&class), "{violation:?}");
         }
-        for reason in ["static", "no-input-read", "no-aggregate"] {
+        for reason in ["static", "no-input-read", "no-aggregate", "no-call"] {
             assert!(CLASSES.contains(&discard_class(reason)));
         }
     }
@@ -646,6 +649,7 @@ mod tests {
         );
         assert_eq!(discard_class("no-input-read"), "no-input-read");
         assert_eq!(discard_class("no-aggregate"), "no-aggregate");
+        assert_eq!(discard_class("no-call"), "no-call");
     }
 
     #[test]

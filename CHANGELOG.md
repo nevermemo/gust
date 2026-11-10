@@ -113,6 +113,7 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   gives a value anywhere else, a function's tail included, is `GUST-E0419`; ranges, bindings and constants as patterns stay `GUST-E0521`. The scrutinee
   is read once and the operands of an arm are evaluated in the order of Rust (measured), so nothing is refused for order.
   On an RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin.
+- Fixed (m9.f1): a method call with a `<` comparison argument before another argument, such as `s.m(a < b, c)`, failed in slangc with an undefined `__gust_keep`, because the scan that defines that helper did not visit method calls.
 
 ### Changed, and may break code written for 0.1.0
 

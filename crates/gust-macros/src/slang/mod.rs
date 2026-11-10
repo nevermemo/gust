@@ -1798,12 +1798,15 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         // Every other method call is a method of the module: the validator refuses a name that is neither a dialect method
         // nor one (GUST-E0305, E0325), and a method cannot take a dialect name (GUST-E0328). Slang resolves the receiver's
         // type, so the call is the member call as written (D156).
-        syn::Expr::MethodCall(call) => format!(
-            "{}.{}({})",
-            emit_expression(&call.receiver)?,
-            emit_ident(&call.method),
-            emit_list(call.args.iter())?.join(", ")
-        ),
+        syn::Expr::MethodCall(call) => {
+            debug_assert!(is_module_method_call(call), "KeepUsage scans this call");
+            format!(
+                "{}.{}({})",
+                emit_expression(&call.receiver)?,
+                emit_ident(&call.method),
+                emit_list(call.args.iter())?.join(", ")
+            )
+        }
         syn::Expr::Paren(paren) => format!("({})", emit_expression(&paren.expr)?),
         syn::Expr::Path(path) if path.path.is_ident("None") => "none".to_owned(),
         // The receiver of a method is `this` in Slang (slice m9.a1).
@@ -2047,8 +2050,26 @@ fn emit_list<'a>(
         .collect()
 }
 
+/// Whether a method call is the member call of a method of the module, the last `MethodCall` arm of
+/// `emit_expression`: the call that no earlier arm (math, wrapping, `global_id`, `len`, texture, the `Option` and
+/// `Result` queries, `unwrap_or`) lowers on its own. Those arms never call `emit_list`; this one does, so
+/// [`KeepUsage`] scans exactly these calls. Keep it in step with the order of the arms (the emitter's last arm
+/// asserts it).
+fn is_module_method_call(call: &syn::ExprMethodCall) -> bool {
+    let name = call.method.to_string();
+    !(is_math_method(call)
+        || crate::validate::wrapping_arity(&name).is_some_and(|arity| arity == call.args.len())
+        || matches!(
+            name.as_str(),
+            "global_id" | "len" | "is_some" | "is_none" | "is_ok" | "is_err"
+        )
+        || texture::is_texture_method(call)
+        || (name == "unwrap_or" && call.args.len() == 1))
+}
+
 /// Whether the module has a list with an element that goes through `__gust_keep`, so the helper is emitted only
-/// when needed. It visits the same lists `emit_expression` builds with `emit_list`.
+/// when needed. It visits the same lists `emit_expression` builds with `emit_list`: arrays, `^`, calls (the
+/// constructors and atomics aside) and the method calls of [`is_module_method_call`].
 struct KeepUsage(bool);
 
 impl<'ast> Visit<'ast> for KeepUsage {
@@ -2071,6 +2092,13 @@ impl<'ast> Visit<'ast> for KeepUsage {
             self.0 |= list_needs_keep(call.args.iter());
         }
         syn::visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
+        if is_module_method_call(call) {
+            self.0 |= list_needs_keep(call.args.iter());
+        }
+        syn::visit::visit_expr_method_call(self, call);
     }
 }
 

@@ -649,6 +649,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "match-pattern-range"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "match-value-barrier"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "match-value-untyped"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "method-impl-foreign"
 version = "0.0.0"
 dependencies = [

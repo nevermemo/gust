@@ -853,6 +853,15 @@ Write instead: test the condition inside the arm with an `if`.
 Fixture: `tests/ui/match-guard` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D157 (M9 plan 2.2, slice m9.e1).
 
+### GUST-E0419 value `match` outside a typed `let`
+
+A `match` that gives a value is a Slang `switch` whose arms assign a local, and Slang needs the local declared with its type before the `switch`. So the value form is accepted in one place only, the initializer of a `let` with a type (`let x: T = match e { .. };`). The same `match` as the initializer of an untyped `let`, as an argument, an operand, the value of an assignment, a `return`, a `for` bound or a condition is refused with this code. A `match` on a `Result` in these places keeps GUST-E0513. Each arm gives a value: an expression, or a block whose last line is an expression without `;` (or a `return`), anything else is GUST-E0518.
+Reached through `#[gpu]`.
+Rejected: `let x = match v { 0 => 1u32, _ => 2u32 };`, `out[i] = match v { .. };`, `f(match v { .. })`, `1u32 + match v { .. }`.
+Write instead: `let x: u32 = match v { 0 => 1u32, _ => 2u32 };` and use `x`.
+Fixture: `tests/ui/match-value-untyped` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D157 (M9 plan 2.2, slice m9.e2).
+
 ### GUST-E0421 `&mut self` call whose evaluation order differs from Rust's
 
 A call of a `&mut self` method is refused where the GPU would evaluate it in another order than Rust (a method that only reads, a `self` method and a helper have no effect to reorder). Three places:
@@ -972,7 +981,7 @@ Decision: D14.
 
 ### GUST-E0513 Result match as a value
 
-A `match` on a `Result` or on an enum is a statement, not an expression with a value. For an enum `match` this also fires when an arm ends in a value (an expression without `;`, such as `Mode::A => { c.reset() }`): end the arm's last statement with `;`.
+A `match` on a `Result` is a statement, not an expression with a value (an enum or integer `match` that gives a value is GUST-E0419 outside a typed `let`). For the statement form of an enum or integer `match` this also fires when an arm ends in a value (an expression without `;`, such as `Mode::A => { c.reset() }`): end the arm's last statement with `;`.
 Reached through `#[gpu]`.
 Rejected: `let x = match r { Ok(v) => { v } Err(e) => { e } };`.
 Write instead: assign inside the arms to a `let mut` local, and end the match with `;`.
@@ -988,9 +997,9 @@ Decision: D14.
 
 ### GUST-E0515 match scrutinee
 
-Only a known `Result<T, T>` local, parameter or same-module helper call can be matched in a `Result` match, and only a local, a parameter, a call or a variant of a known enum in an enum `match` (a larger expression is bound to a local first).
+Only a known `Result<T, T>` local, parameter or same-module helper call can be matched in a `Result` match, and only a local, a parameter, a call or a variant of a known enum in an enum `match` (a larger expression is bound to a local first); an integer `match` takes any `u32` or `i32` expression.
 Reached through `#[gpu]`.
-Rejected: `match 1u32 { .. }`, a match on an `Option`, `match a + b { E::A => { .. } .. }` and a `match` of `_` alone on something that is not an enum.
+Rejected: a match on an `Option`, `match a + b { E::A => { .. } .. }` (an enum pattern on a larger expression) and a `match` of `_` alone on something that is not an enum.
 Write instead: bind the value to a `Result<T, T>` local first, or use `if let` for `Option`.
 Decision: D14.
 
@@ -1012,7 +1021,7 @@ Decision: D14.
 
 ### GUST-E0518 match arm block
 
-Each arm body is a block, in a `Result` match and in an enum `match`.
+Each arm body is a block, in a `Result` match and in a statement `match` on an enum or an integer; in a value `match` an arm is an expression or a block that ends in an expression.
 Reached through `#[gpu]`.
 Rejected: `Ok(x) => x`.
 Write instead: `Ok(x) => { .. }`.
@@ -1036,9 +1045,10 @@ Decision: D14.
 
 ### GUST-E0521 match pattern
 
-In a `Result` match the arm patterns are `Ok(identifier)` and `Err(identifier)`; in an enum `match` they are `E::A`, `E::A | E::B` and `_` (the enum's own variants, each named once, none after `_`). A pattern of another shape is refused with this code in both.
+In a `Result` match the arm patterns are `Ok(identifier)` and `Err(identifier)`; in an enum `match` they are `E::A`, `E::A | E::B` and `_` (the enum's own variants, each named once, none after `_`); in an integer `match` on a `u32` or `i32` they are integer literals (`0`, `1 | 2`, `3u32`, `-1i32`, within 32 bits, each value once) and a final `_`, which is required. A pattern of another shape is refused with this code: a range, a binding, a constant (`u32::MAX`), a `bool`, float or character literal, a literal of another integer type, a value out of range, a repeated or unreachable arm, a missing `_` in an integer `match`, and a mix of variants and literals.
 Reached through `#[gpu]`.
-Rejected: `_ => { .. }` in a `Result` match, `Ok((x, y)) => { .. }`, and in an enum `match` a variant of another enum, a variant named twice or after `_`, a binding or a literal.
+Rejected: `_ => { .. }` in a `Result` match, `Ok((x, y)) => { .. }`, in an enum `match` a variant of another enum, a variant named twice or after `_`, a binding or a literal, and in an integer `match` `0u32..=3u32`, `n`, `u32::MAX` or no `_`.
+Fixture: `tests/ui/match-pattern-range` (`cargo xtask check-ui`, `code: none` plus the message).
 Write instead: `Ok(x) => { .. }` and `Err(e) => { .. }`.
 Decision: D14.
 

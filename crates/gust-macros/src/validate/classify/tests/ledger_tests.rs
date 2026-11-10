@@ -307,12 +307,14 @@ const ACCEPTED_PATTERNS: &[(&str, &str)] = &[
     ("Wild", "for _ in 0u32..4u32 { } out[id.x] = 1.0f32;"),
 ];
 
-/// (kind, a body with a `match` whose arms are of that kind): the patterns of an enum `match` arm (m9.e1). The ledger
+/// (kind, a body with a `match` whose arms are of that kind): the patterns of an enum or integer `match` arm (m9.e1, m9.e2;
+/// the value form `let t: f32 = match ..;` is probed in `a_value_match_is_a_let_initializer_the_ledger_lists`). The ledger
 /// lists them, and the `let`, `for` and `if let` positions below still refuse them.
 #[rustfmt::skip]
 const ARM_ONLY_PATTERNS: &[(&str, &str)] = &[
     ("Path", "match Mode::A { Mode::A => { out[id.x] = 1.0f32; } _ => { out[id.x] = 2.0f32; } }"),
     ("Or", "match Mode::A { Mode::A | Mode::B => { out[id.x] = 1.0f32; } }"),
+    ("Lit", "match id.x { 0u32 | 1u32 => { out[id.x] = 1.0f32; } _ => { out[id.x] = 2.0f32; } }"),
 ];
 
 /// (kind, a pattern of that kind): the kinds the validator refuses. Each is tried in every position where the
@@ -456,6 +458,41 @@ fn the_ledger_lists_exactly_the_pattern_kinds_the_validator_and_the_emitter_acce
         }
     }
     assert!(kinds::lookup(Class::Pattern, "Verbatim").is_none());
+}
+
+/// The value form of `match` (m9.e2) adds no `syn` kind: it is the `Match` expression the ledger lists, as the
+/// initializer of a typed `Local`. The validator takes it there and nowhere else, and the classifier's definite-write
+/// walk reads its arms like the statement form's.
+#[test]
+fn a_value_match_is_a_let_initializer_the_ledger_lists() {
+    assert!(kinds::lookup(Class::Expression, "Match").is_some());
+    assert!(kinds::lookup(Class::Statement, "Local").is_some());
+    for body in [
+        "let t: f32 = match id.x { 0u32 => 1.0f32, 1u32 | 2u32 => { 3.0f32 } _ => 2.0f32 }; out[id.x] = t;",
+        "let t: f32 = match Mode::A { Mode::A => 1.0f32, _ => { let u = 2.0f32; match id.x { 0 => u, _ => 4.0f32 } } }; out[id.x] = t;",
+        // Writes in the arms are definite when every arm writes, as for a statement `match`.
+        "let _t: u32 = match id.x { 0u32 => { out[id.x] = 1.0f32; 1u32 } _ => { out[id.x] = 2.0f32; 2u32 } };",
+    ] {
+        let source = probe_module(PARAMETERS, body);
+        assert_eq!(verdict(&source), Accepted, "{source}");
+    }
+    for (body, code) in [
+        (
+            "let t = match id.x { 0u32 => 1.0f32, _ => 2.0f32 }; out[id.x] = t;",
+            Code::ValueMatchForm,
+        ),
+        (
+            "out[id.x] = match id.x { 0u32 => 1.0f32, _ => 2.0f32 };",
+            Code::ValueMatchForm,
+        ),
+        (
+            "let t: f32 = helper(match id.x { 0u32 => 1.0f32, _ => 2.0f32 }); out[id.x] = t;",
+            Code::ValueMatchForm,
+        ),
+    ] {
+        let source = probe_module(PARAMETERS, body);
+        assert_eq!(verdict(&source), Refused(code), "{source}");
+    }
 }
 
 /// The quoted names between `anchor` and the first `end` after it in `source`.

@@ -161,6 +161,7 @@ fn golden_text(stem: &str) -> &'static str {
         "methods" => include_str!("../../../tests/fixtures/methods.slang"),
         "methods_mut" => include_str!("../../../tests/fixtures/methods_mut.slang"),
         "enums" => include_str!("../../../tests/fixtures/enums.slang"),
+        "match_value" => include_str!("../../../tests/fixtures/match_value.slang"),
         other => panic!("the test does not know the golden {other}"),
     }
 }
@@ -218,7 +219,8 @@ fn the_pinned_golden_spirv_names_are_the_ones_the_goldens_produce() {
             "subgroup",
             "methods",
             "methods_mut",
-            "enums"
+            "enums",
+            "match_value"
         ]
     );
     for (_, stems, expected) in GOLDEN_SPIRV_SETS {
@@ -256,9 +258,9 @@ fn every_golden_of_m7_is_in_a_set_and_the_file_names_are_unique() {
     names.sort_unstable();
     names.dedup();
     assert_eq!(names.len(), count, "two sets expect the same file name");
-    // 2 (vectors, products) + 1 + 5 + 3 + 2 + 10 + 30 + 11 + 5 + 8 (textures) + 3 (pixel) + 2 (variant) + 12 (subgroup) + 1 (methods) + 1 (methods_mut) + 1 (enums): one file per compute or fragment entry of the
+    // 2 (vectors, products) + 1 + 5 + 3 + 2 + 10 + 30 + 11 + 5 + 8 (textures) + 3 (pixel) + 2 (variant) + 12 (subgroup) + 1 (methods) + 1 (methods_mut) + 1 (enums) + 1 (match_value): one file per compute or fragment entry of the
     // goldens.
-    assert_eq!(count, 97);
+    assert_eq!(count, 98);
 }
 
 // ---- `check-feature dispatch` and the parallel-map additions to `map` (m7.x1) ----

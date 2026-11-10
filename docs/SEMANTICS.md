@@ -514,6 +514,23 @@ The ledger test also runs controls inside the domain (integer cases, and float c
 so they say nothing about rounding). They must agree between the GPU and plain Rust in both overflow modes; a
 disagreement there fails the test, because it would mean the domain is wrong.
 
+**`match` on an enum or an integer (M9, D157).** A `match` is a Slang `switch`. Two forms. The statement form
+(`match e { 0 => { .. } 1 | 2 => { .. } _ => { .. } }`, arms are blocks) and the value form, accepted only as the
+initializer of a typed `let` (`let x: T = match e { 0 => 1u32, _ => { let t = e + 1u32; t * 2u32 } };`, an arm is an
+expression, or a block that ends in an expression or a `return`; `GUST-E0419` elsewhere). The value form lowers to
+`T x;` followed by a `switch` whose arms assign `x` and `break`; when the `match` names a variable of the same name as
+`x`, the arms assign a temporary `__gust_match_<n>_<k>` that `x` takes after the `switch`. With no `_` the last arm is
+the `default`, so every path assigns `x` (an enum is closed; an integer `match` must end in `_`). Integer patterns are
+literals of `u32` or `i32` (`0`, `1 | 2`, `3u32`, `-1i32`, `3000000000` on a `u32`); ranges, bindings, constants and a
+guard are refused. The scrutinee is read once, before the arms, as in Rust. Order of evaluation, measured on the Slang
+2026.21 WGSL and SPIR-V targets (probe p2): an arm's operands are evaluated left to right as in Rust, so
+`match c.n { 5 => c.n + c.bump(), .. }` reads `c.n` for the left operand before `bump` runs, and a `&mut self` method
+called in the scrutinee and again in an arm runs once in each place, in that order. Nothing is refused for order. A
+barrier or subgroup operation in an arm is refused like one under an `if` (`GUST-E0414`, `GUST-E0747`): an arm runs for
+some invocations only. The edge cases that follow D39 are unchanged: the integer arithmetic inside an arm has the
+usual wrapping contract of this section. Tests: `crates/gust-wgpu/tests/m9_match_value.rs` runs `match_value` against
+hand-written tables on the GPU and on the CPU twin (1, 63, 64, 65 and 257 invocations).
+
 ## 4. Floats
 
 D22 gives each float operation a documented error bound, because GPU `f32` is not strictly IEEE. The GPU column

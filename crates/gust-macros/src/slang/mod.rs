@@ -443,15 +443,10 @@ pub(crate) fn emit_kernel_in(
     // WGSL reads `name < .. >` as a template list, and slangc drops the parentheses around a comparison that is an
     // argument, so `f(a < b, c > d)` reaches WGSL with the same text and fails to parse. An identity call keeps
     // the `<` away from the list: the comparison sits inside its own parentheses.
-    let mut keep = KeepUsage(false);
-    keep.visit_item_mod(module);
-    if keep.0 {
-        writeln!(
-            output,
-            "bool {KEEP_HELPER}(bool value) {{ return value; }}\n"
-        )
-        .unwrap();
-    }
+    // Nothing in the source is scanned for it: `emit_list` records that it wrote a `__gust_keep(` call, and the
+    // definition is inserted here, once the whole kernel is emitted, exactly when one was written.
+    KEEP_USED.with(|used| used.set(false));
+    let keep_at = output.len();
 
     // The subgroup operations that need a helper (M8, D140): overloads by operand type for the bitwise reductions, the
     // inclusive scans and the count. Only the kernel is scanned: a helper function holds none (GUST-E0745).
@@ -700,9 +695,29 @@ pub(crate) fn emit_kernel_in(
     emit_statements(&mut output, &mut table, &kernel.block.stmts, 1, false)?;
     output.push_str(&stage.epilogue(&facts));
     writeln!(output, "}}").unwrap();
+    let mut records = table.records;
+    if KEEP_USED.with(std::cell::Cell::get) {
+        // The definition goes where it always went, before every struct, function and kernel that may call it. It is
+        // written after them, so the records of every line from there on move down by the lines it adds. The text
+        // is inserted, never searched for, so its own `__gust_keep(` cannot make the check true.
+        let helper = format!("bool {KEEP_HELPER}(bool value) {{ return value; }}\n\n");
+        let at_line = output.as_bytes()[..keep_at]
+            .iter()
+            .filter(|byte| **byte == b'\n')
+            .count() as u32
+            + 1;
+        let added = helper.matches('\n').count() as u32;
+        output.insert_str(keep_at, &helper);
+        for record in &mut records {
+            if record.slang_start >= at_line {
+                record.slang_start += added;
+                record.slang_end += added;
+            }
+        }
+    }
     Ok(EmittedKernel {
         source: output,
-        lines: table.records,
+        lines: records,
     })
 }
 
@@ -1798,15 +1813,12 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         // Every other method call is a method of the module: the validator refuses a name that is neither a dialect method
         // nor one (GUST-E0305, E0325), and a method cannot take a dialect name (GUST-E0328). Slang resolves the receiver's
         // type, so the call is the member call as written (D156).
-        syn::Expr::MethodCall(call) => {
-            debug_assert!(is_module_method_call(call), "KeepUsage scans this call");
-            format!(
-                "{}.{}({})",
-                emit_expression(&call.receiver)?,
-                emit_ident(&call.method),
-                emit_list(call.args.iter())?.join(", ")
-            )
-        }
+        syn::Expr::MethodCall(call) => format!(
+            "{}.{}({})",
+            emit_expression(&call.receiver)?,
+            emit_ident(&call.method),
+            emit_list(call.args.iter())?.join(", ")
+        ),
         syn::Expr::Paren(paren) => format!("({})", emit_expression(&paren.expr)?),
         syn::Expr::Path(path) if path.path.is_ident("None") => "none".to_owned(),
         // The receiver of a method is `this` in Slang (slice m9.a1).
@@ -2024,12 +2036,11 @@ fn needs_keep(expression: &syn::Expr, index: usize, len: usize) -> bool {
     index + 1 < len && is_less_than(expression)
 }
 
-/// Whether any element of a list goes through `__gust_keep`.
-fn list_needs_keep<'a>(elements: impl ExactSizeIterator<Item = &'a syn::Expr>) -> bool {
-    let len = elements.len();
-    elements
-        .enumerate()
-        .any(|(index, element)| needs_keep(element, index, len))
+thread_local! {
+    /// Whether the kernel being emitted wrapped an element in `__gust_keep` (set by [`emit_list`], the one place that
+    /// writes the call). `emit_kernel` defines the helper exactly when this is set, so no scan of the source has to
+    /// agree with the emitter about which lists wrap.
+    static KEEP_USED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Emit the elements of a comma-separated list, wrapping those that need `__gust_keep`.
@@ -2042,64 +2053,13 @@ fn emit_list<'a>(
         .map(|(index, element)| {
             let text = emit_expression(element)?;
             Ok(if needs_keep(element, index, len) {
+                KEEP_USED.with(|used| used.set(true));
                 format!("{KEEP_HELPER}({text})")
             } else {
                 text
             })
         })
         .collect()
-}
-
-/// Whether a method call is the member call of a method of the module, the last `MethodCall` arm of
-/// `emit_expression`: the call that no earlier arm (math, wrapping, `global_id`, `len`, texture, the `Option` and
-/// `Result` queries, `unwrap_or`) lowers on its own. Those arms never call `emit_list`; this one does, so
-/// [`KeepUsage`] scans exactly these calls. Keep it in step with the order of the arms (the emitter's last arm
-/// asserts it).
-fn is_module_method_call(call: &syn::ExprMethodCall) -> bool {
-    let name = call.method.to_string();
-    !(is_math_method(call)
-        || crate::validate::wrapping_arity(&name).is_some_and(|arity| arity == call.args.len())
-        || matches!(
-            name.as_str(),
-            "global_id" | "len" | "is_some" | "is_none" | "is_ok" | "is_err"
-        )
-        || texture::is_texture_method(call)
-        || (name == "unwrap_or" && call.args.len() == 1))
-}
-
-/// Whether the module has a list with an element that goes through `__gust_keep`, so the helper is emitted only
-/// when needed. It visits the same lists `emit_expression` builds with `emit_list`: arrays, `^`, calls (the
-/// constructors and atomics aside) and the method calls of [`is_module_method_call`].
-struct KeepUsage(bool);
-
-impl<'ast> Visit<'ast> for KeepUsage {
-    fn visit_expr_array(&mut self, array: &'ast syn::ExprArray) {
-        self.0 |= list_needs_keep(array.elems.iter());
-        syn::visit::visit_expr_array(self, array);
-    }
-
-    fn visit_expr_binary(&mut self, expression: &'ast syn::ExprBinary) {
-        if matches!(expression.op, syn::BinOp::BitXor(_)) {
-            self.0 |=
-                list_needs_keep([expression.left.as_ref(), expression.right.as_ref()].into_iter());
-        }
-        syn::visit::visit_expr_binary(self, expression);
-    }
-
-    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
-        // `Some`, `Ok`, `Err` take one argument and the atomic calls emit their own argument lists.
-        if !is_some_constructor(call) && !is_result_constructor(call) && !is_atomic_call(call) {
-            self.0 |= list_needs_keep(call.args.iter());
-        }
-        syn::visit::visit_expr_call(self, call);
-    }
-
-    fn visit_expr_method_call(&mut self, call: &'ast syn::ExprMethodCall) {
-        if is_module_method_call(call) {
-            self.0 |= list_needs_keep(call.args.iter());
-        }
-        syn::visit::visit_expr_method_call(self, call);
-    }
 }
 
 struct NotUsage(bool);

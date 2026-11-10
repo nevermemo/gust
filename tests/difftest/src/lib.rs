@@ -18,6 +18,8 @@ pub mod generator;
 pub mod harness;
 pub mod interp;
 pub mod json;
+#[cfg(test)]
+mod method_tests;
 pub mod prng;
 pub mod reduce;
 #[cfg(test)]

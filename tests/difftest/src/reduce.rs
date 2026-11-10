@@ -2,7 +2,7 @@
 //! The predicate is `FnMut(&Program) -> Option<u32>`: `Some(failing element)` if the candidate still fails the same
 //! way (the identity rule is the caller's, `shrink.rs`). A candidate is type-valid (`Program::check`), passes the
 //! interpreter (`discard_reason`) and is strictly smaller by `size` (so the search terminates); results are cached by
-//! hash of text plus inputs. The six passes run in order, each to a fixed point, until a round changes nothing.
+//! hash of text plus inputs. The seven passes run in order, each to a fixed point, until a round changes nothing.
 
 use crate::ast::{Expr, Program, Stmt, Ty, visit_exprs};
 use crate::corpus::{fnv1a64, fnv1a64_update};
@@ -10,6 +10,7 @@ use crate::emit::emit_module;
 use crate::generator::{BYTES_PER_PROGRAM, decode, discard_reason};
 use crate::interp::observed_values;
 use crate::prng::byte_stream;
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -67,6 +68,12 @@ pub fn size(p: &Program) -> Size {
             _ => sum,
         })
     }
+    let trip_total_all = trip_total(&p.body)
+        + p.methods
+            .fns
+            .iter()
+            .map(|def| trip_total(&def.body))
+            .sum::<u64>();
     let (mut nodes, mut magnitude) = (0, 0u64);
     visit_exprs(p, &mut |e| {
         nodes += 1;
@@ -74,8 +81,17 @@ pub fn size(p: &Program) -> Size {
             magnitude = magnitude.saturating_add(magnitude_of(*ty, *bits));
         }
     });
-    let statements = p.body.iter().map(weight).sum();
-    (statements, nodes, trip_total(&p.body), p.count, magnitude)
+    (total_weight(p), nodes, trip_total_all, p.count, magnitude)
+}
+
+/// The statements of the kernel and of every function body, nested ones included.
+fn total_weight(p: &Program) -> usize {
+    p.body.iter().map(weight).sum::<usize>()
+        + p.methods
+            .fns
+            .iter()
+            .map(|def| def.body.iter().map(weight).sum::<usize>())
+            .sum::<usize>()
 }
 
 fn magnitude_of(ty: Ty, bits: u32) -> u64 {
@@ -139,11 +155,114 @@ fn edit(
     out
 }
 
+/// `p` with `f` applied over the statements of the kernel and then of every function body (one pre-order numbering).
 fn with_body(p: &Program, f: &mut dyn FnMut(usize, &Stmt) -> Option<Vec<Stmt>>) -> Program {
+    let mut at = 0;
+    let body = edit(&p.body, &mut at, f);
+    let mut methods = p.methods.clone();
+    for def in &mut methods.fns {
+        def.body = edit(&def.body, &mut at, f);
+    }
     Program {
-        body: edit(&p.body, &mut 0, f),
+        body,
+        methods,
         ..p.clone()
     }
+}
+
+/// Calls `f` on the root expression of every statement (and its argument expressions), in the order of `visit_exprs`.
+fn roots_mut(stmts: &mut [Stmt], f: &mut dyn FnMut(&mut Expr)) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Let { init: e, .. }
+            | Stmt::Assign { value: e, .. }
+            | Stmt::AssignComp { value: e, .. }
+            | Stmt::Set { value: e, .. } => f(e),
+            Stmt::Call { args, .. } => args.iter_mut().for_each(&mut *f),
+            Stmt::If { cond, then, els } => {
+                f(cond);
+                roots_mut(then, f);
+                roots_mut(els, f);
+            }
+            Stmt::For { body, .. } => roots_mut(body, f),
+        }
+    }
+}
+
+/// Every root expression of the program: the kernel body, the result, then each function's body and tail.
+fn all_roots_mut(p: &mut Program, f: &mut dyn FnMut(&mut Expr)) {
+    roots_mut(&mut p.body, f);
+    f(&mut p.result);
+    for def in &mut p.methods.fns {
+        roots_mut(&mut def.body, f);
+        if let Some(tail) = &mut def.tail {
+            f(tail);
+        }
+    }
+}
+
+/// Calls `f` on the function index of every `Stmt::Call`.
+fn stmt_calls_mut(stmts: &mut [Stmt], f: &mut dyn FnMut(&mut usize)) {
+    for stmt in stmts {
+        match stmt {
+            Stmt::Call { f: index, .. } => f(index),
+            Stmt::If { then, els, .. } => {
+                stmt_calls_mut(then, f);
+                stmt_calls_mut(els, f);
+            }
+            Stmt::For { body, .. } => stmt_calls_mut(body, f),
+            _ => {}
+        }
+    }
+}
+
+fn expr_calls_mut(e: &mut Expr, f: &mut dyn FnMut(&mut usize)) {
+    if let Expr::Call { f: index, .. } = e {
+        f(index);
+    }
+    e.for_each_child_mut(&mut |child| expr_calls_mut(child, f));
+}
+
+/// Every function index that a call names, in the kernel and in the other functions.
+fn called_fns(p: &Program) -> BTreeSet<usize> {
+    let mut copy = p.clone();
+    let mut used = BTreeSet::new();
+    all_roots_mut(&mut copy, &mut |e| {
+        expr_calls_mut(e, &mut |index| {
+            used.insert(*index);
+        });
+    });
+    let mut collect = |index: &mut usize| {
+        used.insert(*index);
+    };
+    stmt_calls_mut(&mut copy.body, &mut collect);
+    for def in &mut copy.methods.fns {
+        stmt_calls_mut(&mut def.body, &mut collect);
+    }
+    used
+}
+
+/// Pass 7: a function that nothing calls goes (the later ones are renumbered).
+fn prune_functions(p: &Program, _: u32) -> Vec<Program> {
+    let used = called_fns(p);
+    (0..p.methods.fns.len())
+        .filter(|k| !used.contains(k))
+        .map(|k| {
+            let mut candidate = p.clone();
+            candidate.methods.fns.remove(k);
+            let mut shift = |index: &mut usize| {
+                if *index > k {
+                    *index -= 1;
+                }
+            };
+            all_roots_mut(&mut candidate, &mut |e| expr_calls_mut(e, &mut shift));
+            stmt_calls_mut(&mut candidate.body, &mut shift);
+            for def in &mut candidate.methods.fns {
+                stmt_calls_mut(&mut def.body, &mut shift);
+            }
+            candidate
+        })
+        .collect()
 }
 
 /// Applies `f` to the expression node at pre-order index `target` (the order of `visit_exprs`).
@@ -155,29 +274,13 @@ fn at_node(p: &mut Program, target: usize, f: &mut dyn FnMut(&mut Expr)) {
         }
         e.for_each_child_mut(&mut |child| go(child, n, target, f));
     }
-    fn block(stmts: &mut [Stmt], n: &mut usize, target: usize, f: &mut dyn FnMut(&mut Expr)) {
-        for stmt in stmts {
-            match stmt {
-                Stmt::Let { init: e, .. }
-                | Stmt::Assign { value: e, .. }
-                | Stmt::AssignComp { value: e, .. } => go(e, n, target, f),
-                Stmt::If { cond, then, els } => {
-                    go(cond, n, target, f);
-                    block(then, n, target, f);
-                    block(els, n, target, f);
-                }
-                Stmt::For { body, .. } => block(body, n, target, f),
-            }
-        }
-    }
     let mut n = 0;
-    block(&mut p.body, &mut n, target, f);
-    go(&mut p.result, &mut n, target, f);
+    all_roots_mut(p, &mut |e| go(e, &mut n, target, f));
 }
 
 /// Pass 1: remove chunks of statements (ddmin: halves down to single ones), then unwrap an `if` or a `for`.
 fn statements(p: &Program, _: u32) -> Vec<Program> {
-    let total: usize = p.body.iter().map(weight).sum();
+    let total = total_weight(p);
     let mut out = Vec::new();
     let mut chunk = total.div_ceil(2);
     while chunk >= 1 {
@@ -229,7 +332,7 @@ fn observed(p: &Program, element: u32) -> Vec<Program> {
 
 /// Pass 3: each loop's trip count to 1, or to half.
 fn trips(p: &Program, _: u32) -> Vec<Program> {
-    let total: usize = p.body.iter().map(weight).sum();
+    let total = total_weight(p);
     let mut out = Vec::new();
     for target in 0..total {
         for half in [false, true] {
@@ -327,13 +430,14 @@ pub fn reduce(
     limits: Limits,
     mut fails: impl FnMut(&Program) -> Option<u32>,
 ) -> Reduction {
-    let passes: [fn(&Program, u32) -> Vec<Program>; 6] = [
+    let passes: [fn(&Program, u32) -> Vec<Program>; 7] = [
         statements,
         observed,
         trips,
         element_count,
         literals,
         truncated_stream,
+        prune_functions,
     ];
     let (started, mut cache) = (limits.origin.unwrap_or_else(Instant::now), HashMap::new());
     let mut now = Reduction {

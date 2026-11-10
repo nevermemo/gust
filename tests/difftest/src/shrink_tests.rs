@@ -25,6 +25,7 @@ fn program(out: Ty) -> Program {
     };
     Program {
         seed: 1,
+        methods: Default::default(),
         attempt: 0,
         count: 4,
         inputs: vec![InputBuf {

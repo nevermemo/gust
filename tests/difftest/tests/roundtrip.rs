@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use difftest::emit::{lock_for, package_name, write_crate};
-use difftest::generator::generate_batch;
+use difftest::generator::{Space, generate_batch, generate_batch_in};
 use difftest::runsrc::{kernel_source_in, plan_seed, write_run_crate, write_run_crate_in};
 use difftest::shapes::{Shape, ShapePlan, module_ranges, refusals, set_aside};
 
@@ -67,6 +67,30 @@ fn generated_crates_pass_cargo_check_with_the_template_lockfile() {
     // `--locked` would have refused a lockfile that needed an update; the crate used the template as written.
     let lock = std::fs::read_to_string(dir.join("Cargo.lock")).unwrap();
     assert_eq!(lock, lock_for("difftest-case-ok").unwrap());
+}
+
+#[test]
+fn method_programs_compile_through_the_macro_without_a_gust_diagnostic() {
+    // Format 8 (m9.d1a): the generator never writes a form the macro refuses (E0421, E0116, E0333, E0120, E0328, ...).
+    // The method space of seeds 1 to 12 (16 programs each, 192 in all) goes through `#[gust::gpu]` and rustc; a refused
+    // form fails the check with a `[GUST-E` diagnostic, and a borrow conflict with rustc's own error.
+    let dir = work_dir().join("roundtrip-methods");
+    let mut programs = Vec::new();
+    for seed in 1..=12 {
+        programs.extend(generate_batch_in(Space::Method, seed).unwrap().programs);
+    }
+    assert_eq!(programs.len(), 192);
+    assert!(programs.iter().all(|p| !p.methods.is_empty()));
+    write_crate(
+        &dir,
+        &package_name("methods").unwrap(),
+        &programs,
+        &repo_root(),
+    )
+    .unwrap();
+    let (ok, output) = cargo_check(&dir);
+    assert!(!output.contains("[GUST-E"), "{}", tail(&output));
+    assert!(ok, "cargo check failed:\n{}", tail(&output));
 }
 
 #[test]

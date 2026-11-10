@@ -110,6 +110,9 @@ fn unroll(program: &Program) -> Expr {
                 }
                 Stmt::If { .. } => panic!("the soundness programs have no branches"),
                 Stmt::AssignComp { .. } => panic!("the soundness programs have no vectors"),
+                Stmt::Set { .. } | Stmt::Call { .. } => {
+                    panic!("the soundness programs have no methods")
+                }
             }
         }
     }
@@ -489,6 +492,7 @@ fn random_program(rng: &mut Prng, seed: u64) -> Program {
     let result = b.expr(3);
     Program {
         seed,
+        methods: Default::default(),
         attempt: 0,
         count: COUNT as u32,
         inputs,
@@ -546,6 +550,7 @@ fn polynomial(values: &[f32]) -> Program {
     };
     Program {
         seed: 0,
+        methods: Default::default(),
         attempt: 0,
         count: values.len() as u32,
         inputs: vec![InputBuf {
@@ -676,6 +681,7 @@ fn a_nine_term_loop_chain_covers_every_grouping_the_models_try() {
     ];
     let program = Program {
         seed: 0,
+        methods: Default::default(),
         attempt: 0,
         count: 5,
         inputs: vec![InputBuf {
@@ -712,6 +718,7 @@ fn three_term_chain(a: f32, b: f32, c: f32) -> Program {
     let read = |buf| Expr::input(buf, Ty::F32, Expr::Gid);
     Program {
         seed: 0,
+        methods: Default::default(),
         attempt: 0,
         count: 1,
         inputs: vec![input(a), input(b), input(c)],

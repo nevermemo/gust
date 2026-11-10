@@ -14,7 +14,10 @@
 use std::collections::{BTreeMap, HashMap};
 
 use crate::agg::{self, Agg, Scalar};
-use crate::ast::{ASSIGN_COMP, BinOp, Expr, Program, Stmt, Ty, UnOp};
+use crate::ast::{
+    ASSIGN_COMP, BinOp, Expr, Place, Program, Recv, Root, STRUCT_LIT, Stmt, Ty, UnOp, call_name,
+    set_name,
+};
 use crate::float::{self, Fl};
 
 /// A way to leave the defined domain: the integer conditions of D38 and the float conditions of R1-4.
@@ -256,6 +259,8 @@ struct Machine<'a> {
     program: &'a Program,
     element: u32,
     vars: Vec<Val>,
+    /// The receivers of the calls in progress (a struct as its flat components), innermost last: what `self` is.
+    self_stack: Vec<Val>,
     /// Executed-operator counts, kept only by `run_covered`.
     coverage: Option<Box<Counting>>,
     /// The first value of every expression node (by address), kept only by `observed_values`.
@@ -504,6 +509,23 @@ impl Machine<'_> {
             | Expr::Transpose { .. }
             | Expr::AggBin { .. }
             | Expr::AggNeg { .. } => self.eval_aggregate(expr),
+            Expr::Read { place, .. } => Ok(self.place_get(place)),
+            Expr::Call { f, recv, args, .. } => {
+                let value = self.call(*f, recv, args)?;
+                Ok(value.expect("a value call has a tail"))
+            }
+            Expr::StructLit { fields, .. } => {
+                self.count_name(STRUCT_LIT);
+                // The fields in the order written, as Rust evaluates them; a nested struct contributes its components.
+                let mut parts = Vec::new();
+                for field in fields {
+                    match self.expr(field)? {
+                        Val::A(agg) => parts.extend_from_slice(agg.lanes()),
+                        scalar => parts.push(scalar.scalar()),
+                    }
+                }
+                Ok(Val::A(Agg::new(&parts)))
+            }
             Expr::Bin { op, ty, l, r } => {
                 self.count(KIND_BINARY, op.symbol(), ty.name());
                 let left = self.expr(l)?.int();
@@ -542,6 +564,91 @@ impl Machine<'_> {
         }
     }
 
+    /// Counts a construct by its name (calls, `set`, struct literals); only `run_covered` pays for it.
+    fn count_name(&mut self, name: &str) {
+        if let Some(counting) = &mut self.coverage {
+            *counting.named.entry(name.to_owned()).or_default() += 1;
+        }
+    }
+
+    /// The value of a place: a scalar, or a struct as its flat components.
+    fn place_get(&self, place: &Place) -> Val {
+        let root = match place.root {
+            Root::Var(var) => self.vars[var as usize],
+            Root::SelfV => *self.self_stack.last().expect("`self` outside a call"),
+        };
+        if place.path.is_empty() {
+            return root;
+        }
+        let methods = &self.program.methods;
+        let (ty, offset) = methods.walk(place.root_ty, &place.path);
+        let Val::A(agg) = root else {
+            unreachable!("a field of a scalar")
+        };
+        match ty {
+            Ty::Struct(j) => Val::A(Agg::new(&agg.c[offset..offset + methods.flat_len(j)])),
+            _ => agg.c[offset].into(),
+        }
+    }
+
+    /// Stores `value` into a place (the root is rewritten whole, as Rust writes the field in place).
+    fn place_set(&mut self, place: &Place, value: Val) {
+        if place.path.is_empty() {
+            match place.root {
+                Root::Var(var) => self.vars[var as usize] = value,
+                Root::SelfV => *self.self_stack.last_mut().expect("`self` outside a call") = value,
+            }
+            return;
+        }
+        let methods = &self.program.methods;
+        let (_, offset) = methods.walk(place.root_ty, &place.path);
+        let root = match place.root {
+            Root::Var(var) => &mut self.vars[var as usize],
+            Root::SelfV => self.self_stack.last_mut().expect("`self` outside a call"),
+        };
+        let Val::A(agg) = root else {
+            unreachable!("a field of a scalar")
+        };
+        match value {
+            Val::A(part) => agg.c[offset..offset + part.n].copy_from_slice(part.lanes()),
+            scalar => agg.c[offset] = scalar.scalar(),
+        }
+    }
+
+    /// A call, in Rust's order: the receiver is read first (a by-value `self` is copied now; for `&self` and `&mut
+    /// self` the arguments cannot change it, `ast::Check` refuses a `&mut self` call on its root inside them), then
+    /// the arguments left to right, then the body. `&mut self` writes the final receiver back to its place.
+    fn call(
+        &mut self,
+        f: usize,
+        recv: &Option<Place>,
+        args: &[Expr],
+    ) -> Result<Option<Val>, Violation> {
+        let program = self.program;
+        let def = &program.methods.fns[f];
+        self.count_name(call_name(def.recv, def.owner));
+        let receiver = recv.as_ref().map(|place| self.place_get(place));
+        let mut values = Vec::with_capacity(args.len());
+        for arg in args {
+            values.push(self.expr(arg)?);
+        }
+        for ((var, _), value) in def.params.iter().zip(values) {
+            self.vars[*var as usize] = value;
+        }
+        if let Some(receiver) = receiver {
+            self.self_stack.push(receiver);
+        }
+        self.block(&def.body)?;
+        let value = def.tail.as_ref().map(|tail| self.expr(tail)).transpose()?;
+        if let Some(place) = recv {
+            let last = self.self_stack.pop().expect("a receiver was pushed");
+            if def.recv == Recv::Mut {
+                self.place_set(place, last);
+            }
+        }
+        Ok(value)
+    }
+
     fn block(&mut self, stmts: &[Stmt]) -> Result<(), Violation> {
         for stmt in stmts {
             match stmt {
@@ -563,6 +670,29 @@ impl Machine<'_> {
                     };
                     agg.c[usize::from(*index)] = value;
                     self.vars[*var as usize] = Val::A(agg);
+                }
+                Stmt::Set {
+                    place,
+                    ty,
+                    op,
+                    value,
+                } => {
+                    self.count_name(&set_name(*op));
+                    // Rust evaluates the assigned value first. For `place op= value` on primitives the right operand
+                    // also comes before the place is read (Reference, "Compound assignment expressions"), so the
+                    // place holds whatever the value's calls left in it.
+                    let value = self.expr(value)?;
+                    let stored = match op {
+                        None => value,
+                        Some(op) => {
+                            let current = self.place_get(place).int();
+                            Val::I(binary(*op, *ty, current, value.int())?)
+                        }
+                    };
+                    self.place_set(place, stored);
+                }
+                Stmt::Call { f, recv, args, .. } => {
+                    self.call(*f, recv, args)?;
                 }
                 Stmt::If { cond, then, els } => {
                     let taken = self.expr(cond)?.int() != 0;
@@ -607,7 +737,7 @@ fn variable_slots(program: &Program) -> usize {
                 | Stmt::For { var, .. } => {
                     *max = (*max).max(*var as usize + 1);
                 }
-                Stmt::If { .. } => {}
+                Stmt::If { .. } | Stmt::Set { .. } | Stmt::Call { .. } => {}
             }
             match stmt {
                 Stmt::If { then, els, .. } => {
@@ -620,6 +750,12 @@ fn variable_slots(program: &Program) -> usize {
         }
     }
     block(&program.body, &mut max);
+    for def in &program.methods.fns {
+        block(&def.body, &mut max);
+        for (var, _) in &def.params {
+            max = max.max(*var as usize + 1);
+        }
+    }
     crate::ast::visit_exprs(program, &mut |e| {
         if let Expr::Var(var, _) = e {
             max = max.max(*var as usize + 1);
@@ -686,6 +822,7 @@ fn run_machine(program: &Program, covered: bool) -> Result<(Run, Option<Coverage
         program,
         element: 0,
         vars: vec![Val::I(0); variable_slots(program)],
+        self_stack: Vec::new(),
         coverage: covered.then(Box::default),
         observed: None,
     };
@@ -693,6 +830,7 @@ fn run_machine(program: &Program, covered: bool) -> Result<(Run, Option<Coverage
     let mut intervals = Vec::new();
     for element in 0..program.count {
         machine.element = element;
+        machine.self_stack.clear();
         let result = machine
             .block(&program.body)
             .and_then(|()| machine.expr(&program.result))
@@ -713,7 +851,13 @@ fn run_machine(program: &Program, covered: bool) -> Result<(Run, Option<Coverage
     }
     let coverage = machine.coverage.map(|counting| {
         let mut coverage = Coverage {
-            if_statements: count_ifs(&program.body),
+            if_statements: count_ifs(&program.body)
+                + program
+                    .methods
+                    .fns
+                    .iter()
+                    .map(|def| count_ifs(&def.body))
+                    .sum::<u64>(),
             rhs_evaluated: counting.rhs_evaluated,
             rhs_skipped: counting.rhs_skipped,
             ..Coverage::default()
@@ -744,6 +888,7 @@ pub fn observed_values(program: &Program, element: u32) -> HashMap<usize, u32> {
         program,
         element,
         vars: vec![Val::I(0); variable_slots(program)],
+        self_stack: Vec::new(),
         coverage: None,
         observed: Some(HashMap::new()),
     };
@@ -843,6 +988,8 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
             Expr::Lit(Ty::F32, bits) => float_constant(f32::from_bits(*bits)),
             Expr::Lit(_, bits) => Ok(Some(Const::I(*bits))),
             Expr::Var(..) | Expr::Gid | Expr::Len(_) => Ok(None),
+            // A field, a call or a struct literal is open; its operands are folded as nodes of their own.
+            Expr::Read { .. } | Expr::Call { .. } | Expr::StructLit { .. } => Ok(None),
             Expr::Input { index, .. } => fold(index).map(|_| None),
             Expr::Un {
                 op: UnOp::Neg,
@@ -1053,6 +1200,7 @@ mod tests {
     fn program(data: &[u32], body: Vec<Stmt>, result: Expr) -> Program {
         Program {
             seed: 0,
+            methods: Default::default(),
             attempt: 0,
             count: data.len() as u32,
             inputs: vec![InputBuf {
@@ -1588,6 +1736,7 @@ mod tests {
     fn float_program(data: &[f32], body: Vec<Stmt>, result: Expr) -> Program {
         Program {
             seed: 0,
+            methods: Default::default(),
             attempt: 0,
             count: data.len() as u32,
             inputs: vec![InputBuf {

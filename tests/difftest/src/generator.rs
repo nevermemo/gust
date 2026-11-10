@@ -11,7 +11,10 @@
 
 use std::collections::BTreeMap;
 
-use crate::ast::{BinOp, Expr, InputBuf, Lane, MAX_TRIPS, Program, Stmt, Ty, WIDTHS, chain_terms};
+use crate::ast::{
+    BinOp, Expr, FnDef, InputBuf, Lane, MAX_FLAT, MAX_TRIPS, Methods, Place, Program, Recv, Root,
+    Stmt, StructDef, Ty, WIDTHS, chain_terms,
+};
 use crate::interp;
 use crate::prng::{Prng, byte_stream};
 
@@ -31,7 +34,12 @@ use crate::prng::{Prng, byte_stream};
 /// decoding change (m8.x1): the result file of every program carries the `capabilities` of its build, a field the reader
 /// (`classify::parse_result`) requires, and the reader refuses a file whose `format` is not this number; the emitted text
 /// differs from format 6 by its stamp only, so `seeds.txt` changes by its stamp and its hashes.
-pub const DIFFTEST_FORMAT: u32 = 7;
+/// 8: the method programs (slice m9.d1a): a seed's batch is eight float, five vector and three method programs, and a
+/// method program (`Space::Method`, attempts from `METHOD_ATTEMPT_BASE`) has module structs, an `impl` with `&self`,
+/// `&mut self` and by-value `self` methods and associated functions, and helpers that call them; the decoding of the
+/// float and vector spaces is unchanged (a seed's first eight float and first five vector programs are those of
+/// format 7), the batch cut is new.
+pub const DIFFTEST_FORMAT: u32 = 8;
 
 /// Which programs the generator writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -45,19 +53,31 @@ pub enum Space {
     /// `UVec2`/`UVec4`, `Mat2`/`Mat4` as locals and intermediates, read back through components, `dot`, and
     /// `Mat * Vec`. The vector part of a batch; selected by an attempt number of `VECTOR_ATTEMPT_BASE` or more.
     Vector,
+    /// Integers and booleans with module structs and their methods (slice m9.d1a, format 8): no floats, no vectors.
+    /// Selected by an attempt number of `METHOD_ATTEMPT_BASE` or more.
+    Method,
 }
 
 /// The first attempt number of the vector space. A program is a pure function of `(seed, attempt)`, and the attempt
 /// number alone says which space decodes it, so the reducer and the shrinker re-decode a vector program without being
 /// told. The scalar part of a batch never gets near it (`MAX_ATTEMPTS` is 100 000).
 pub const VECTOR_ATTEMPT_BASE: u64 = 1_000_000;
-/// In-domain programs of a seed's batch that are scalar (the float space), then vector (`PROGRAMS_PER_SEED` in all).
-pub const SCALAR_PROGRAMS_PER_SEED: usize = 10;
-pub const VECTOR_PROGRAMS_PER_SEED: usize = PROGRAMS_PER_SEED - SCALAR_PROGRAMS_PER_SEED;
+/// The first attempt number of the method space (above every vector attempt a seed can make).
+pub const METHOD_ATTEMPT_BASE: u64 = 2_000_000;
+/// In-domain programs of a seed's batch that are scalar (the float space), then vector, then method
+/// (`PROGRAMS_PER_SEED` in all).
+pub const SCALAR_PROGRAMS_PER_SEED: usize = 8;
+pub const VECTOR_PROGRAMS_PER_SEED: usize = 5;
+pub const METHOD_PROGRAMS_PER_SEED: usize =
+    PROGRAMS_PER_SEED - SCALAR_PROGRAMS_PER_SEED - VECTOR_PROGRAMS_PER_SEED;
+/// Where the vector programs of a batch end and the method programs begin.
+pub const VECTOR_END: usize = SCALAR_PROGRAMS_PER_SEED + VECTOR_PROGRAMS_PER_SEED;
 
 /// The space whose decoder reads the program of this attempt number.
 pub fn space_of_attempt(attempt: u64) -> Space {
-    if attempt >= VECTOR_ATTEMPT_BASE {
+    if attempt >= METHOD_ATTEMPT_BASE {
+        Space::Method
+    } else if attempt >= VECTOR_ATTEMPT_BASE {
         Space::Vector
     } else {
         Space::Float
@@ -129,6 +149,16 @@ struct Gen<'a> {
     next_var: u32,
     /// (variable, type, mutable), innermost last.
     scope: Vec<(u32, Ty, bool)>,
+    /// The method space: structs and functions (the tables are complete before the kernel is drawn; while function `k`
+    /// is drawn they hold the functions below `k`).
+    methods: bool,
+    table: Methods,
+    /// The function being drawn (`None` in the kernel): it may call the functions below it only.
+    cur_fn: Option<usize>,
+    /// The receiver of the function being drawn: the struct type and how `self` is held.
+    this: Option<(Ty, Recv)>,
+    /// Roots of the receivers of the calls whose arguments are being drawn: no `&mut self` call on them there.
+    forbid: Vec<Root>,
 }
 
 /// A data value as a literal; i32::MIN is written as the expression -2147483647 - 1 (the emitter never writes the
@@ -216,7 +246,9 @@ impl Gen<'_> {
             return literal;
         }
         match ty {
-            Ty::Vec(..) | Ty::Mat(_) => unreachable!("a vector or matrix has no literal"),
+            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) => {
+                unreachable!("a vector, matrix or struct has no literal")
+            }
             Ty::F32 => self.float_literal(),
             Ty::Bool => Expr::bool(self.b.below(2) == 1),
             Ty::U32 => Expr::u32(match self.b.weighted(&[55, 12, 8, 8, 12, 5]) {
@@ -272,14 +304,29 @@ impl Gen<'_> {
         let vars = self.vars(ty);
         let inputs = self.inputs_of(ty);
         // 0 literal, 1 variable, 2 input read, 3 gid, 4 len.
-        let weights = [
+        // A function sees no buffer and no element index.
+        let kernel = self.cur_fn.is_none();
+        let mut weights = vec![
             18,
             if vars.is_empty() { 0 } else { 55 },
-            if inputs.is_empty() { 0 } else { 40 },
-            if ty == Ty::U32 { 5 } else { 0 },
-            if ty == Ty::U32 { 3 } else { 0 },
+            if inputs.is_empty() || !kernel { 0 } else { 40 },
+            if ty == Ty::U32 && kernel { 5 } else { 0 },
+            if ty == Ty::U32 && kernel { 3 } else { 0 },
         ];
+        // 5: a field of a struct local or of `self` (the method space only).
+        let fields = if self.methods {
+            self.scalar_places(ty)
+        } else {
+            Vec::new()
+        };
+        if self.methods {
+            weights.push(if fields.is_empty() { 0 } else { 45 });
+        }
         match self.b.weighted(&weights) {
+            5 => {
+                let (place, _) = fields[self.b.below(fields.len() as u32) as usize].clone();
+                Expr::Read { place, ty }
+            }
             1 => Expr::Var(vars[self.b.below(vars.len() as u32) as usize], ty),
             2 => {
                 let buf = inputs[self.b.below(inputs.len() as u32) as usize];
@@ -364,6 +411,12 @@ impl Gen<'_> {
             return self.leaf(ty);
         }
         let d = depth - 1;
+        if self.methods
+            && self.b.chance(24)
+            && let Some(call) = self.value_call(ty, d)
+        {
+            return call;
+        }
         if ty == Ty::Bool {
             return self.bool_expr(d);
         }
@@ -393,7 +446,7 @@ impl Gen<'_> {
                 let r = self.divisor(ty, d);
                 // `-1` as a divisor is only interesting if the dividend can be `i32::MIN`, which only the
                 // edge-valued input buffers hold; so the dividend is often a plain read of such a buffer.
-                if r == Expr::Lit(Ty::I32, u32::MAX) && self.b.chance(60) {
+                if r == Expr::Lit(Ty::I32, u32::MAX) && self.cur_fn.is_none() && self.b.chance(60) {
                     let buffers = self.inputs_of(Ty::I32);
                     if !buffers.is_empty() {
                         let buf = buffers[self.b.below(buffers.len() as u32) as usize];
@@ -830,7 +883,8 @@ impl Gen<'_> {
     /// m5.c1b): it compares an input element with a value of the data, tests the element index, or writes the general
     /// boolean expression of format 2 (replaced by an index condition if it came out as a bare literal).
     fn condition(&mut self) -> Expr {
-        if !self.floats {
+        // The method space splits the elements in the kernel the way the float space does; a function has no element.
+        if !self.floats && !(self.methods && self.cur_fn.is_none()) {
             return self.expr(Ty::Bool, 4);
         }
         match self.b.weighted(&[35, 25, 40]) {
@@ -898,12 +952,45 @@ impl Gen<'_> {
         let count = min + self.b.below(max - min + 1);
         let mut stmts = Vec::new();
         for _ in 0..count {
-            let can_assign = self.scope.iter().any(|(_, _, mutable)| *mutable);
+            let can_assign = self
+                .scope
+                .iter()
+                .any(|(_, ty, mutable)| *mutable && !ty.is_struct());
             let nest = if depth < 2 { 1 } else { 0 };
-            let kind =
-                self.b
-                    .weighted(&[40, if can_assign { 24 } else { 0 }, 18 * nest, 14 * nest]);
+            let mut weights = vec![40, if can_assign { 24 } else { 0 }, 18 * nest, 14 * nest];
+            // 4: an assignment to a field or a struct place, 5: a call as a statement, 6: a struct local.
+            let targets = if self.methods {
+                self.set_targets()
+            } else {
+                Vec::new()
+            };
+            let statement_calls = if self.methods {
+                self.statement_calls()
+            } else {
+                Vec::new()
+            };
+            if self.methods {
+                weights.push(if targets.is_empty() { 0 } else { 30 });
+                weights.push(if statement_calls.is_empty() { 0 } else { 22 });
+                weights.push(10);
+            }
+            let kind = self.b.weighted(&weights);
             match kind {
+                4 => stmts.push(self.set_stmt(&targets)),
+                5 => stmts.extend(self.statement_call(&statement_calls)),
+                6 => {
+                    let (j, init) = self.struct_init();
+                    let ty = Ty::Struct(j);
+                    let var = self.fresh();
+                    let mutable = self.b.chance(65);
+                    self.scope.push((var, ty, mutable));
+                    stmts.push(Stmt::Let {
+                        var,
+                        ty,
+                        mutable,
+                        init,
+                    });
+                }
                 0 => {
                     let ty = self.pick_ty();
                     // A vector or matrix initialiser is shallower: its products multiply the bounds of its operands.
@@ -973,7 +1060,7 @@ impl Gen<'_> {
         let mutable: Vec<(u32, Ty)> = self
             .scope
             .iter()
-            .filter(|(_, _, mutable)| *mutable)
+            .filter(|(_, ty, mutable)| *mutable && !ty.is_struct())
             .map(|&(id, ty, _)| (id, ty))
             .collect();
         let (var, ty) = mutable[self.b.below(mutable.len() as u32) as usize];
@@ -1117,13 +1204,18 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
             data: bytes,
             pos: 0,
         },
-        floats: space != Space::Integer,
+        floats: matches!(space, Space::Float | Space::Vector),
         vectors: space == Space::Vector,
         inputs: Vec::new(),
         data: Vec::new(),
         count: 1,
         next_var: 0,
         scope: Vec::new(),
+        methods: space == Space::Method,
+        table: Methods::default(),
+        cur_fn: None,
+        this: None,
+        forbid: Vec::new(),
     };
     let count = match g.b.below(6) {
         k @ 0..=4 => COUNTS[k as usize],
@@ -1153,17 +1245,80 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         g.data.push(data.clone());
         inputs.push(InputBuf { ty, data });
     }
-    let body = g.block(0, 2, 7);
+    // The method space draws its structs and functions first; the kernel starts with one or two struct locals.
+    let mut body = Vec::new();
+    if g.methods {
+        g.gen_tables();
+        for _ in 0..1 + g.b.below(2) {
+            let (j, init) = g.struct_init();
+            let var = g.fresh();
+            let mutable = g.b.chance(80);
+            g.scope.push((var, Ty::Struct(j), mutable));
+            body.push(Stmt::Let {
+                var,
+                ty: Ty::Struct(j),
+                mutable,
+                init,
+            });
+        }
+    }
+    body.extend(g.block(0, 2, 7));
     let ty = g.scalar_ty();
+    if g.methods {
+        // The result may call on the top-level locals (`out[i] = c.next()`).
+        for stmt in &body {
+            if let Stmt::Let {
+                var, ty, mutable, ..
+            } = stmt
+                && !g.scope.iter().any(|(id, ..)| id == var)
+            {
+                g.scope.push((*var, *ty, *mutable));
+            }
+        }
+    }
     let mut result = g.expr(ty, MAX_DEPTH);
     // Fold the final value of up to two top-level locals into the result, so that the computed values are live.
     let live: Vec<(u32, Ty)> = body
         .iter()
         .filter_map(|stmt| match stmt {
-            Stmt::Let { var, ty, .. } => Some((*var, *ty)),
+            Stmt::Let { var, ty, .. } if !ty.is_struct() => Some((*var, *ty)),
             _ => None,
         })
         .collect();
+    // ... and a scalar field of up to two struct locals (the method space), so that the state the calls left is live.
+    if g.methods {
+        let structs: Vec<(u32, u8)> = body
+            .iter()
+            .filter_map(|stmt| match stmt {
+                Stmt::Let {
+                    var,
+                    ty: Ty::Struct(j),
+                    ..
+                } => Some((*var, *j)),
+                _ => None,
+            })
+            .collect();
+        let mut folded = Vec::new();
+        for _ in 0..2 {
+            if structs.is_empty() || !g.b.chance(85) {
+                continue;
+            }
+            let (var, j) = structs[g.b.below(structs.len() as u32) as usize];
+            let fields = g.table.structs[usize::from(j)].fields.clone();
+            let k = g.b.below(fields.len() as u32) as u8;
+            // A field is folded once: `x ^ x` is zero and would hide the state.
+            if fields[usize::from(k)].is_struct() || folded.contains(&(var, k)) {
+                continue;
+            }
+            folded.push((var, k));
+            let place = Place::var(var, Ty::Struct(j)).field(k);
+            let read = Expr::Read {
+                place,
+                ty: fields[usize::from(k)],
+            };
+            result = fold_in(result, read);
+        }
+    }
     let (folds, fold_chance) = if g.vectors { (3, 85) } else { (2, 60) };
     for _ in 0..folds {
         if live.is_empty() || !g.b.chance(fold_chance) {
@@ -1197,6 +1352,7 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         inputs,
         body,
         result,
+        methods: g.table,
     }
 }
 
@@ -1248,6 +1404,9 @@ pub struct Batch {
     /// Of `attempts`, the attempts of the vector part, and of `discarded`, the discards of the vector part.
     pub vector_attempts: u64,
     pub vector_discarded: BTreeMap<&'static str, u32>,
+    /// Of `attempts`, the attempts of the method part, and of `discarded`, the discards of the method part.
+    pub method_attempts: u64,
+    pub method_discarded: BTreeMap<&'static str, u32>,
 }
 
 impl Batch {
@@ -1272,11 +1431,13 @@ pub fn discard_reason(program: &Program) -> Option<&'static str> {
 
 /// Generates the `PROGRAMS_PER_SEED` in-domain programs of `seed`: the first `SCALAR_PROGRAMS_PER_SEED` of the float
 /// space (attempts `0..`, the programs of DIFFTEST_FORMAT 5), then `VECTOR_PROGRAMS_PER_SEED` of the vector space
-/// (attempts `VECTOR_ATTEMPT_BASE..`).
+/// (attempts `VECTOR_ATTEMPT_BASE..`), then `METHOD_PROGRAMS_PER_SEED` of the method space (attempts
+/// `METHOD_ATTEMPT_BASE..`).
 pub fn generate_batch(seed: u64) -> Result<Batch, String> {
     let mut batch = empty_batch(seed);
     fill(&mut batch, Space::Float, SCALAR_PROGRAMS_PER_SEED)?;
     fill(&mut batch, Space::Vector, VECTOR_PROGRAMS_PER_SEED)?;
+    fill(&mut batch, Space::Method, METHOD_PROGRAMS_PER_SEED)?;
     Ok(batch)
 }
 
@@ -1295,24 +1456,29 @@ fn empty_batch(seed: u64) -> Batch {
         discarded: BTreeMap::new(),
         vector_attempts: 0,
         vector_discarded: BTreeMap::new(),
+        method_attempts: 0,
+        method_discarded: BTreeMap::new(),
     }
 }
 
 /// Adds `want` more in-domain programs of `space` to `batch`, from the first attempt number of the space.
 fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
-    let first = if space == Space::Vector {
-        VECTOR_ATTEMPT_BASE
-    } else {
-        0
+    let first = match space {
+        Space::Vector => VECTOR_ATTEMPT_BASE,
+        Space::Method => METHOD_ATTEMPT_BASE,
+        _ => 0,
     };
     let target = batch.programs.len() + want;
     for attempt in first..first + MAX_ATTEMPTS {
         batch.attempts += 1;
         batch.vector_attempts += u64::from(space == Space::Vector);
+        batch.method_attempts += u64::from(space == Space::Method);
         let program = generate_attempt_in(space, batch.seed, attempt);
-        // A vector program that came out scalar tests nothing new.
+        // A vector program that came out scalar tests nothing new, nor does a method program that calls nothing.
         let reason = if space == Space::Vector && !program.has_aggregate() {
             Some("no-aggregate")
+        } else if space == Space::Method && !program.has_call() {
+            Some("no-call")
         } else {
             discard_reason(&program)
         };
@@ -1321,6 +1487,9 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
                 *batch.discarded.entry(reason).or_default() += 1;
                 if space == Space::Vector {
                     *batch.vector_discarded.entry(reason).or_default() += 1;
+                }
+                if space == Space::Method {
+                    *batch.method_discarded.entry(reason).or_default() += 1;
                 }
             }
             None => batch.programs.push(program),
@@ -1334,6 +1503,400 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
         batch.seed,
         batch.programs.len()
     ))
+}
+
+/// A copy of a struct place as an expression (a bare local is a `Var`, a field path or `self` a `Read`).
+fn place_value(place: &Place, ty: Ty) -> Expr {
+    match place.root {
+        Root::Var(var) if place.path.is_empty() => Expr::Var(var, ty),
+        _ => Expr::Read {
+            place: place.clone(),
+            ty,
+        },
+    }
+}
+
+/// The method space (format 8): the structs and functions of a program, and the calls and assignments that use them.
+/// Every rule of `ast::Check` about receivers, borrows and the call graph is kept here by construction, so that no
+/// refused form is drawn (a unit test compiles a sample of seeds through the macro).
+impl Gen<'_> {
+    /// Every struct-typed place in reach (a local, a parameter, `self`, and the struct fields nested in them), with
+    /// the struct and whether the place may be written.
+    fn struct_places(&self) -> Vec<(Place, u8, bool)> {
+        let mut work = Vec::new();
+        for &(var, ty, mutable) in &self.scope {
+            if let Ty::Struct(j) = ty {
+                work.push((Place::var(var, ty), j, mutable));
+            }
+        }
+        if let Some((ty @ Ty::Struct(j), recv)) = self.this {
+            work.push((Place::this(ty), j, recv == Recv::Mut));
+        }
+        let mut out = Vec::new();
+        while let Some((place, j, writable)) = work.pop() {
+            for (k, field) in self.table.structs[usize::from(j)].fields.iter().enumerate() {
+                if let Ty::Struct(inner) = field {
+                    work.push((place.field(k as u8), *inner, writable));
+                }
+            }
+            out.push((place, j, writable));
+        }
+        out
+    }
+
+    /// The scalar fields of type `ty` of the struct places in reach, with whether they may be written.
+    fn scalar_places(&self, ty: Ty) -> Vec<(Place, bool)> {
+        let mut out = Vec::new();
+        for (place, j, writable) in self.struct_places() {
+            for (k, field) in self.table.structs[usize::from(j)].fields.iter().enumerate() {
+                if *field == ty {
+                    out.push((place.field(k as u8), writable));
+                }
+            }
+        }
+        out
+    }
+
+    /// The functions a call may name here: those below the one being drawn (the kernel may name all).
+    fn callable(&self) -> usize {
+        self.cur_fn.unwrap_or(self.table.fns.len())
+    }
+
+    /// The places an assignment may write: scalar fields, and (never `*self`) whole struct places.
+    fn set_targets(&self) -> Vec<(Place, Ty)> {
+        let mut out = Vec::new();
+        for (place, j, writable) in self.struct_places() {
+            if !writable {
+                continue;
+            }
+            for (k, field) in self.table.structs[usize::from(j)].fields.iter().enumerate() {
+                if !field.is_struct() {
+                    out.push((place.field(k as u8), *field));
+                }
+            }
+            if !(place.root == Root::SelfV && place.path.is_empty()) {
+                out.push((place, Ty::Struct(j)));
+            }
+        }
+        out
+    }
+
+    fn set_stmt(&mut self, targets: &[(Place, Ty)]) -> Stmt {
+        let (place, ty) = targets[self.b.below(targets.len() as u32) as usize].clone();
+        let (op, value) = match ty {
+            // A whole-struct assignment; if no value of the struct is in reach, the place is assigned to itself.
+            Ty::Struct(j) => (
+                None,
+                self.struct_expr(j, 3, true)
+                    .unwrap_or_else(|| place_value(&place, ty)),
+            ),
+            Ty::Bool => (None, self.expr(Ty::Bool, 3)),
+            _ if self.b.chance(55) => {
+                let op = [
+                    BinOp::Add,
+                    BinOp::Add,
+                    BinOp::Sub,
+                    BinOp::BitXor,
+                    BinOp::BitOr,
+                    BinOp::Mul,
+                ][self.b.below(6) as usize];
+                (Some(op), self.expr(ty, 3))
+            }
+            _ => (None, self.expr(ty, 3)),
+        };
+        Stmt::Set {
+            place,
+            ty,
+            op,
+            value,
+        }
+    }
+
+    /// The `&mut self` methods that can be called as a statement here.
+    fn statement_calls(&self) -> Vec<usize> {
+        let places = self.struct_places();
+        (0..self.callable())
+            .filter(|&k| {
+                let def = &self.table.fns[k];
+                def.recv == Recv::Mut
+                    && places
+                        .iter()
+                        .any(|(_, j, writable)| *writable && Some(*j) == def.owner)
+            })
+            .collect()
+    }
+
+    /// A `&mut self` call as a statement; `None` when an argument of struct type has no value in reach.
+    fn statement_call(&mut self, calls: &[usize]) -> Option<Stmt> {
+        let f = calls[self.b.below(calls.len() as u32) as usize];
+        let (recv, args) = self.call_parts(f, 3)?;
+        Some(Stmt::Call {
+            f,
+            owner: None,
+            recv,
+            args,
+        })
+    }
+
+    /// The receiver and the arguments of a call of function `f`, or `None` when no receiver is in reach. A `&mut
+    /// self` call needs a writable receiver whose root no enclosing call is borrowing; while the arguments of a
+    /// call that borrows its receiver (`&self`, `&mut self`) are drawn, no `&mut self` call on that root is drawn.
+    fn call_parts(&mut self, f: usize, depth: u32) -> Option<(Option<Place>, Vec<Expr>)> {
+        let def = self.table.fns[f].clone();
+        let recv = if def.recv == Recv::None {
+            None
+        } else {
+            let places: Vec<Place> = self
+                .struct_places()
+                .into_iter()
+                .filter(|(place, j, writable)| {
+                    Some(*j) == def.owner
+                        && (def.recv != Recv::Mut
+                            || (*writable && !self.forbid.contains(&place.root)))
+                })
+                .map(|(place, ..)| place)
+                .collect();
+            if places.is_empty() {
+                return None;
+            }
+            Some(places[self.b.below(places.len() as u32) as usize].clone())
+        };
+        let pushed = recv
+            .as_ref()
+            .filter(|_| def.recv != Recv::Value)
+            .map(|place| place.root);
+        if let Some(root) = pushed {
+            self.forbid.push(root);
+        }
+        let mut args = Vec::new();
+        let mut complete = true;
+        for (_, ty) in &def.params {
+            match ty {
+                // A struct literal is only a `let` initializer or the right side of an assignment (E0810): an
+                // argument is a local, a field, or the value of a call.
+                Ty::Struct(j) => match self.struct_expr(*j, depth, false) {
+                    Some(arg) => args.push(arg),
+                    None => complete = false,
+                },
+                scalar => args.push(self.expr(*scalar, depth)),
+            }
+        }
+        if pushed.is_some() {
+            self.forbid.pop();
+        }
+        complete.then_some((recv, args))
+    }
+
+    /// A call whose value has type `ty` (a scalar, or a struct for an associated function), if one is in reach.
+    fn value_call(&mut self, ty: Ty, depth: u32) -> Option<Expr> {
+        let candidates: Vec<usize> = (0..self.callable())
+            .filter(|&k| self.table.fns[k].ret == Some(ty))
+            .collect();
+        if candidates.is_empty() {
+            return None;
+        }
+        let f = candidates[self.b.below(candidates.len() as u32) as usize];
+        let owner = {
+            let def = &self.table.fns[f];
+            if def.recv == Recv::None {
+                def.owner
+            } else {
+                None
+            }
+        };
+        let (recv, args) = self.call_parts(f, depth)?;
+        Some(Expr::Call {
+            f,
+            owner,
+            recv,
+            args,
+            ty,
+        })
+    }
+
+    /// The type and the initializer of a new struct local: struct `S0` (scalar fields only, so a literal is always
+    /// possible) when the random struct has no value in reach.
+    fn struct_init(&mut self) -> (u8, Expr) {
+        let j = self.b.below(self.table.structs.len() as u32) as u8;
+        if let Some(init) = self.struct_expr(j, 3, true) {
+            return (j, init);
+        }
+        let init = self
+            .struct_expr(0, 3, true)
+            .expect("a literal of S0 is always possible");
+        (0, init)
+    }
+
+    /// A value of struct `j`: a literal (only where `top` says a literal is allowed: a `let` initializer or the right
+    /// side of an assignment), a call of an associated function, or a copy of a struct place. `None` when the kind
+    /// drawn, and every other, has no value in reach.
+    fn struct_expr(&mut self, j: u8, depth: u32, top: bool) -> Option<Expr> {
+        let ty = Ty::Struct(j);
+        let bare_self_ok = matches!(self.this, Some((_, Recv::Value)));
+        let places: Vec<Place> = self
+            .struct_places()
+            .into_iter()
+            .filter(|(place, pj, _)| {
+                *pj == j && !(place.root == Root::SelfV && place.path.is_empty() && !bare_self_ok)
+            })
+            .map(|(place, ..)| place)
+            .collect();
+        let assoc = (0..self.callable()).any(|k| self.table.fns[k].ret == Some(ty));
+        let weights = [
+            if top { 50 } else { 0 },
+            if assoc && depth > 0 { 30 } else { 0 },
+            if places.is_empty() { 0 } else { 25 },
+        ];
+        if weights.iter().sum::<u32>() == 0 {
+            return None;
+        }
+        let first = self.b.weighted(&weights);
+        // The kind drawn first, then the others in a fixed order if it has no value in reach.
+        for kind in [first, 0, 1, 2] {
+            if weights[kind] == 0 {
+                continue;
+            }
+            match kind {
+                0 => {
+                    let fields = self.table.structs[usize::from(j)].fields.clone();
+                    let mut values = Vec::new();
+                    for field in fields {
+                        let value = match field {
+                            Ty::Struct(inner) => {
+                                self.struct_expr(inner, depth.saturating_sub(1), false)
+                            }
+                            scalar => Some(self.expr(scalar, depth.min(2))),
+                        };
+                        match value {
+                            Some(value) => values.push(value),
+                            None => break,
+                        }
+                    }
+                    if values.len() == self.table.structs[usize::from(j)].fields.len() {
+                        return Some(Expr::StructLit { ty, fields: values });
+                    }
+                }
+                1 => {
+                    if let Some(call) = self.value_call(ty, depth - 1) {
+                        return Some(call);
+                    }
+                }
+                _ => {
+                    let place = places[self.b.below(places.len() as u32) as usize].clone();
+                    return Some(place_value(&place, ty));
+                }
+            }
+        }
+        None
+    }
+
+    /// The structs (one to three, each of one to three fields, scalars or earlier structs) and three to six functions
+    /// (helpers, `&self`, `&mut self` and by-value `self` methods, associated functions), each calling only the
+    /// functions below it.
+    fn gen_tables(&mut self) {
+        let structs = 1 + self.b.below(3) as usize;
+        for j in 0..structs {
+            let count = 1 + self.b.below(3);
+            let mut fields = Vec::new();
+            for _ in 0..count {
+                // No `bool` field: a GPU struct is a `GpuPod` type, and `bool` is not one.
+                fields.push(
+                    match self.b.weighted(&[50, 50, if j > 0 { 25 } else { 0 }]) {
+                        0 => Ty::U32,
+                        1 => Ty::I32,
+                        _ => Ty::Struct(self.b.below(j as u32) as u8),
+                    },
+                );
+            }
+            self.table.structs.push(StructDef { fields });
+            if self.table.flat_len(j as u8) > MAX_FLAT {
+                self.table.structs[j].fields = vec![Ty::U32, Ty::I32];
+            }
+        }
+        for k in 0..3 + self.b.below(4) as usize {
+            self.gen_fn(k);
+        }
+    }
+
+    fn gen_fn(&mut self, k: usize) {
+        let structs = self.table.structs.len() as u32;
+        let kind = self.b.weighted(&[20, 20, 28, 12, 20]);
+        let recv = [Recv::None, Recv::Shared, Recv::Mut, Recv::Value, Recv::None][kind];
+        // An associated function builds its struct from a literal, which needs every field to be a scalar.
+        let scalar_structs: Vec<u8> = (0..structs as u8)
+            .filter(|&j| {
+                self.table.structs[usize::from(j)]
+                    .fields
+                    .iter()
+                    .all(|f| !f.is_struct())
+            })
+            .collect();
+        let owner = (kind != 0).then(|| {
+            if kind == 4 {
+                scalar_structs[self.b.below(scalar_structs.len() as u32) as usize]
+            } else {
+                self.b.below(structs) as u8
+            }
+        });
+        self.cur_fn = Some(k);
+        self.scope.clear();
+        self.this = owner
+            .filter(|_| recv != Recv::None)
+            .map(|o| (Ty::Struct(o), recv));
+        let mut params = Vec::new();
+        for _ in 0..self.b.below(3) {
+            let ty = if self.b.chance(18) {
+                Ty::Struct(self.b.below(structs) as u8)
+            } else {
+                [Ty::U32, Ty::I32, Ty::Bool][self.b.weighted(&[40, 40, 20])]
+            };
+            let var = self.fresh();
+            self.scope.push((var, ty, false));
+            params.push((var, ty));
+        }
+        let ret = match kind {
+            4 => owner.map(Ty::Struct),
+            2 if self.b.chance(40) => None,
+            _ => Some([Ty::U32, Ty::I32, Ty::Bool][self.b.weighted(&[40, 40, 20])]),
+        };
+        let mut body = Vec::new();
+        if recv == Recv::Mut {
+            // A `&mut self` method writes the receiver at least once.
+            let targets = self.set_targets();
+            if !targets.is_empty() {
+                body.push(self.set_stmt(&targets));
+            }
+        }
+        body.extend(self.block(1, 0, 3));
+        let tail = ret.map(|ty| match ty {
+            Ty::Struct(j) => {
+                // A struct literal is no tail (E0810): bind it first.
+                let init = self
+                    .struct_expr(j, 3, true)
+                    .expect("a literal of a scalar-field struct is always possible");
+                let var = self.fresh();
+                body.push(Stmt::Let {
+                    var,
+                    ty,
+                    mutable: false,
+                    init,
+                });
+                Expr::Var(var, ty)
+            }
+            scalar => self.expr(scalar, 4),
+        });
+        self.table.fns.push(FnDef {
+            owner,
+            recv,
+            params,
+            ret,
+            body,
+            tail,
+        });
+        self.cur_fn = None;
+        self.this = None;
+        self.scope.clear();
+    }
 }
 
 #[cfg(test)]

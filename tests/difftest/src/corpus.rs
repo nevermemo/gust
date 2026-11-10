@@ -81,7 +81,8 @@ pub fn corpus_text(first: u64, last: u64) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::generator::{
-        PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space, VECTOR_ATTEMPT_BASE, generate_batch_in,
+        METHOD_ATTEMPT_BASE, PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space,
+        VECTOR_ATTEMPT_BASE, VECTOR_END, generate_batch_in,
     };
 
     #[test]
@@ -149,13 +150,42 @@ mod tests {
         }
     }
 
-    /// A batch is the first ten programs of the float space and six of the vector space, so the scalar decoding of
-    /// every seed is byte for byte what format 5 wrote, and the vector programs are new.
+    /// Format 8 (m9.d1a): the method space of seeds 1 to 4 (its 16 programs each, as `generate_batch_in` keeps them)
+    /// decodes to these programs. A change to the method decoder, the emitter's text of structs and calls, or the
+    /// interpreter's acceptance of method programs moves a hash: it is a deliberate format change (bump
+    /// `DIFFTEST_FORMAT`, re-pin) or a bug.
     #[test]
-    fn a_batch_is_ten_float_programs_then_six_vector_programs() {
+    fn the_method_space_holds_the_format_8_programs_of_the_first_seeds() {
+        let hashes: Vec<(u64, u64)> = (1..=4)
+            .map(|seed| {
+                let batch = generate_batch_in(Space::Method, seed).unwrap();
+                assert!(
+                    batch
+                        .programs
+                        .iter()
+                        .all(|p| p.attempt >= METHOD_ATTEMPT_BASE)
+                );
+                (seed, batch_hash_as_format(&batch.programs, 8))
+            })
+            .collect();
+        let format_8: Vec<(u64, u64)> = vec![
+            (1, 9399191592041678771),
+            (2, 321197981684126563),
+            (3, 10001615087994862084),
+            (4, 12731958091386362279),
+        ];
+        assert_eq!(hashes, format_8);
+    }
+
+    /// A batch is the first eight programs of the float space, five of the vector space and three of the method space
+    /// (format 8): the scalar decoding of every seed is byte for byte what format 5 wrote, and so is the vector
+    /// decoding of format 6; only the cut of the batch is new.
+    #[test]
+    fn a_batch_is_eight_float_programs_then_five_vector_then_three_method_programs() {
         for seed in 1..=8 {
             let batch = generate_batch(seed).unwrap();
             let float = generate_batch_in(Space::Float, seed).unwrap();
+            let vector = generate_batch_in(Space::Vector, seed).unwrap();
             assert_eq!(batch.programs.len(), PROGRAMS_PER_SEED);
             for k in 0..SCALAR_PROGRAMS_PER_SEED {
                 assert_eq!(
@@ -163,14 +193,32 @@ mod tests {
                     "seed {seed} program {k}"
                 );
                 assert!(!batch.programs[k].has_aggregate());
+                assert!(batch.programs[k].methods.is_empty());
             }
-            for program in &batch.programs[SCALAR_PROGRAMS_PER_SEED..] {
+            for k in SCALAR_PROGRAMS_PER_SEED..VECTOR_END {
+                let program = &batch.programs[k];
                 assert!(program.attempt >= VECTOR_ATTEMPT_BASE, "seed {seed}");
+                assert!(program.attempt < METHOD_ATTEMPT_BASE, "seed {seed}");
                 assert!(
                     program.has_aggregate(),
                     "seed {seed} attempt {}",
                     program.attempt
                 );
+                assert!(program.methods.is_empty());
+                assert_eq!(
+                    program,
+                    &vector.programs[k - SCALAR_PROGRAMS_PER_SEED],
+                    "seed {seed} program {k}"
+                );
+            }
+            for program in &batch.programs[VECTOR_END..] {
+                assert!(program.attempt >= METHOD_ATTEMPT_BASE, "seed {seed}");
+                assert!(
+                    program.has_call() && !program.methods.is_empty(),
+                    "seed {seed} attempt {}",
+                    program.attempt
+                );
+                assert!(!program.has_float() && !program.has_aggregate());
             }
         }
     }

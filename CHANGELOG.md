@@ -130,7 +130,10 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   `Option`, `Result` or reference element (`GUST-E0217`), a slice (`GUST-E0111`), `for x in a` (`GUST-E0409`), an array in a
   struct field, buffer, uniform or workgroup memory (`GUST-E0813`), an array in a tuple (`GUST-E0213`), and an assignment
   to an element whose index a `&mut self` call in the value changes (`GUST-E0421`: Rust runs the value first, Slang the
-  index). On an RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin.
+  index). The same `GUST-E0421` rule now covers a storage or workgroup element (`out[c.n] = c.next()`, `out[c.n] += c.next()`,
+  `wg[w.n] = w.bump()`), which earlier slices accepted: that form gave another element than the CPU twin on the GPU with
+  the pinned Slang (2026.21 reads the index first; 2026.20 called first), so this refuses a form that main accepted. On an
+  RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin.
 - Fixed (m9.f1): a method call with a `<` comparison argument before another argument, such as `s.m(a < b, c)`, failed in slangc with an undefined `__gust_keep`, because the scan that defines that helper did not visit method calls.
 
 ### Changed, and may break code written for 0.1.0

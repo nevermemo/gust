@@ -523,7 +523,7 @@ Decision: D02, D14.
 `.len()` works on a storage parameter named directly.
 Reached through `#[gpu]`.
 Rejected: `id.len()`, `buffers.out.len()`, and `x.len()` where the name `x` is an array in one scope and something else in another of the same function.
-An array local or parameter has `.len()` too (slice m9.r1): it emits the declared length, and it stands in an index or under a direct `as u32`/`as i32` cast (GUST-E0334 otherwise).
+An array local or parameter has `.len()` too (slice m9.r1): it emits the declared length, and it stands in an index or under a direct `as u32`/`as i32` cast (GUST-E0334 otherwise). The array needs a written type (`let g: [f32; 4] = ..;`) for the macro to know its length.
 Write instead: `out.len()` where `out` is a buffer parameter.
 Decision: D02.
 
@@ -741,7 +741,7 @@ Decision: D154 (M9 plan 2.1, X1 of spike M9.s0, slice m9.a1).
 
 ### GUST-E0334 `usize` outside an index
 
-`usize` has no GPU width, and the macro has no types to tell where it would be 32 bits. It is accepted in one position, as the cast of an index: `a[i as usize]`, `a[(i + 1u32) as usize]`, and `x[a.len() - 1]`; the emitter drops the cast. Every other `usize` is refused: a local, parameter, field or return type, a cast that is not the whole index, and `a.len()` outside an index (a `.len()` directly cast to `u32`, `i32` or `f32` is accepted too).
+`usize` has no GPU width, and the macro has no types to tell where it would be 32 bits. It is accepted in one position, as the cast of an index: `a[i as usize]`, `a[(i + 1u32) as usize]`, and `x[a.len() - 1]`; the emitter lowers the cast like `as u32` (`a[uint(i)]`, so a `bool` or a signed source indexes as in Rust). Every other `usize` is refused: a local, parameter, field or return type, a cast that is not the whole index, and `a.len()` outside an index (a `.len()` directly cast to `u32`, `i32` or `f32` is accepted too).
 Reached through `#[gpu]`.
 Rejected: `let n: usize = 3;`, `fn f(n: usize)`, `let n = i as usize; a[n]`, `a.len()` as a value of a `u32` place, `(i as usize) as u32`.
 Write instead: keep the index a `u32` and cast it where it is used, `a[i as usize]`; write `a.len() as u32` for the length.
@@ -914,18 +914,18 @@ Decision: D157 (M9 plan 2.2, slice m9.e2).
 
 ### GUST-E0421 `&mut self` call whose evaluation order differs from Rust's
 
-A call of a `&mut self` method is refused where the GPU would evaluate it in another order than Rust (a method that only reads, a `self` method and a helper have no effect to reorder). Three places:
+A call of a `&mut self` method is refused where the GPU would evaluate it in another order than Rust (a method that only reads, a `self` method and a helper have no effect to reorder). These places:
 - the start or the end of a `for` range: the emitted Slang loop evaluates the end bound before the start bound (spike M9.s0 P9, measured on the WGSL and the SPIR-V target), where Rust evaluates the start first (`for i in c.n..c.next()`);
 - anywhere in the place (the assignee) of `=` or of a compound assignment: Rust evaluates the assigned value before the place, Slang evaluates a call inside the place first (`out[c.next()] = c.next()` writes another element, `out[d.bump()] = d.n` stores the new value; review m9.a2);
-- the place of `=` or a compound assignment is an array element whose index names a root that a `&mut self` call in the value changes (`a[s.n as usize] = s.bump()`, `a[s.get() as usize] += s.bump()`): Rust evaluates the value first and Slang the index first (slice m9.r1, measured on the WGSL target, spike P9 order);
+- an indexed place whose index reads a root that a `&mut self` call in the assigned value changes, for `=` and every compound assignment: `a[s.n as usize] = s.bump()` on an array local, `out[c.n] = c.next()` and `out[c.n] += c.next()` on a storage buffer, `wg[w.n] = w.bump()` on workgroup memory. Rust evaluates the value first and the index after it; slangc 2026.21 evaluates the index first (2026.20 called first, so the order of Slang changed between the two versions, and GUST refuses the form instead of relying on either; slice m9.r1, fix round 1). Before this the storage forms were accepted and gave another element than the CPU twin on the GPU with the pinned Slang;
 - the value of `*=` in a module that names `Mat2`, `Mat3` or `Mat4`: it is lowered to `place = __gust_mul(place, value)`, which reads the place before the call and loses the method's write.
 - the value of `/=`, `%=` or `^=` on an indexed place: these three lower to `inout` helpers (`__gust_div_assign`, `__gust_rem_assign`, `__gust_xor_assign`) and Slang computes the index before the call, so `out[c.n] /= c.next()` changes another element than Rust (a place with no index, `e.n /= e.bump()`, has no address to compute early; no other operator lowers through a helper).
 
-Forms that already match Rust stay accepted: `out[c.n] = c.next()`, `out[c.n] += c.next()`, `c.n += c.bump()`, `e.n /= e.bump()`, a struct literal that holds a call, and `*=` with a call in a module without a matrix.
+Forms that already match Rust stay accepted: `c.n += c.bump()`, `e.n /= e.bump()` (a place with no index has no address to compute early), a struct literal that holds a call, an index that names no mutated root (`a[k as usize] = s.bump()`), and `*=` with a call in a module without a matrix.
 Reached through `#[gpu]`.
 Rejected: `for i in 0u32..c.next() { .. }`, `for i in c.n..c.next() { .. }`, `out[c.next()] = v;`, `out[c.next()] += v;`, `out[c.n] /= c.next();` (also `%=`, `^=`), `c.n *= c.bump();` (with a matrix in the module), when `next` and `bump` take `&mut self`.
 Write instead: call the method before the statement and use the value, `let n = c.next(); for i in 0u32..n { .. }` or `let k = c.next(); out[k] = v;`.
-Fixture: `tests/ui/for-bound-mutating`, `tests/ui/method-mutating-in-assignee` and `tests/ui/array-order-place` (`cargo xtask check-ui`, `code: none` plus the message).
+Fixture: `tests/ui/for-bound-mutating`, `tests/ui/method-mutating-in-assignee`, `tests/ui/array-order-place` and `tests/ui/array-order-storage` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, spike M9.s0 P9, slice m9.a2).
 
 ## E05xx: Option and Result

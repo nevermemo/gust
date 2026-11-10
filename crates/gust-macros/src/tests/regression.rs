@@ -6376,6 +6376,10 @@ fn a_mutating_call_in_an_assignee_or_a_matrix_mul_assign_value_is_gust_e0421() {
         "let mut c = C { n: 1u32 }; out[c.n] /= c.next();",
         "let mut c = C { n: 1u32 }; out[c.n] %= c.next();",
         "let mut c = C { n: 1u32 }; out[c.n] ^= c.next();",
+        // Fix round 1 of m9.r1: slangc 2026.21 reads the index of a storage place first (2026.20 called first), so a
+        // value that changes the root of the index is refused for `=` and the primitive compound operators too.
+        "let mut c = C { n: 5u32 }; out[c.n] = c.next();",
+        "let mut c = C { n: 5u32 }; out[c.n] += c.next();",
         // The value of `*=` in a module that names a matrix (the `__gust_mul` path).
         "let m = Mat4::IDENTITY; let mut c = C { n: 5u32 }; c.n *= c.bump();",
     ] {
@@ -6383,7 +6387,6 @@ fn a_mutating_call_in_an_assignee_or_a_matrix_mul_assign_value_is_gust_e0421() {
     }
     // What already matches Rust stays accepted.
     for body in [
-        "let mut c = C { n: 5u32 }; out[c.n] = c.next();",
         "let mut c = C { n: 5u32 }; c.n += c.bump();",
         "let mut e = C { n: 5u32 }; e.n /= e.bump();",
         // Without a matrix in the module `*=` is the plain operator.
@@ -6392,6 +6395,20 @@ fn a_mutating_call_in_an_assignee_or_a_matrix_mul_assign_value_is_gust_e0421() {
         let source = with_kernel(ORDER_ITEMS, body);
         translate(&source).unwrap_or_else(|error| panic!("{body}: {error}"));
     }
+}
+
+#[test]
+fn a_workgroup_element_whose_index_the_value_changes_is_gust_e0421() {
+    let source = "mod m {
+        pub struct W { pub n: u32 }
+        impl W { pub fn bump(&mut self) -> u32 { self.n = self.n + 1u32; self.n } }
+        #[kernel(workgroup_size(64, 1, 1), cpu = \"unsupported\")]
+        pub fn run(id: SV_DispatchThreadID, mut wg: Workgroup<[uint; 4]>) {
+            let mut w = W { n: 0u32 };
+            wg[w.n] = w.bump();
+        }
+    }";
+    assert_rejected(source, Code::ForBoundSideEffect);
 }
 
 #[test]
@@ -7691,4 +7708,118 @@ fn arrays_lower_to_slang_arrays_and_a_repeat_to_one_temporary() {
     .unwrap()
     .replace("\r\n", "\n");
     assert!(long.contains("for (var __gust_fill_"), "{long}");
+}
+
+#[test]
+fn an_index_cast_is_lowered_like_a_cast_to_u32_and_a_parenthesized_literal_is_emitted_bare() {
+    // Fix round 1 of m9.r1 (S1): `x as usize` in an index is `uint(x)`, so a signed or `bool` source indexes as in Rust.
+    let source = translate(&with_kernel(
+        "",
+        "let t: [u32; 4] = [1u32, 2u32, 3u32, 4u32]; let x: i32 = 3i32; let b = id.x > 2u32; \
+         out[id.x] = t[(x as usize) % 4] + t[b as usize];",
+    ))
+    .unwrap();
+    assert!(source.contains("t[((uint(x)) % 4)]"), "{source}");
+    assert!(source.contains("t[uint(b)]"), "{source}");
+    // N1: the parentheses around a literal are not emitted (`({ .. })` is not an initializer list to slangc).
+    let source = translate(&with_kernel(
+        "fn f(a: [u32; 2]) -> [u32; 2] { ([a[1], a[0]]) }",
+        "let a: [u32; 2] = ([1u32, 2u32]); let b = f(([a[0], a[1]])); out[id.x] = b[0];",
+    ))
+    .unwrap();
+    assert!(
+        source.contains("uint[2] a = { uint(1), uint(2) };"),
+        "{source}"
+    );
+    assert!(
+        !source.contains("= ({") && !source.contains("return ({") && !source.contains("(({"),
+        "{source}"
+    );
+}
+
+#[test]
+fn arrays_are_not_ordered_and_a_match_gives_no_array_and_the_len_message_names_the_annotation() {
+    // N2: the ordering operators on arrays, like `==`.
+    for operator in ["<", "<=", ">", ">="] {
+        assert_rejected(
+            &with_kernel(
+                "",
+                &format!(
+                    "let a: [u32; 2] = [1u32, 2u32]; let b: [u32; 2] = [3u32, 4u32]; if a {operator} b {{ out[id.x] = 1u32; }}"
+                ),
+            ),
+            Code::UnsupportedExpression,
+        );
+    }
+    // N3: a `match` that gives an array.
+    assert_rejected(
+        &with_kernel(
+            "",
+            "let a: [u32; 2] = match id.x { 0 => [1u32, 2u32], _ => [3u32, 4u32] }; out[id.x] = a[0];",
+        ),
+        Code::UnsupportedExpression,
+    );
+    // N5: `.len()` of an array without a written type.
+    let error = translate(&with_kernel(
+        "fn mk() -> [u32; 4] { [1u32, 2u32, 3u32, 4u32] }",
+        "let g = mk(); out[id.x] = g.len() as u32;",
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("written type"), "{error}");
+}
+
+#[test]
+fn every_compound_operator_on_an_indexed_place_is_refused_when_the_value_changes_the_index() {
+    // Order audit: Slang 2026.21 reads the index first for every primitive operator, Rust evaluates the value first.
+    for operator in [
+        "=", "+=", "-=", "*=", "&=", "|=", "<<=", ">>=", "/=", "%=", "^=",
+    ] {
+        let body = format!("let mut c = C {{ n: 5u32 }}; out[c.n] {operator} c.next();");
+        assert_rejected(&with_kernel(ORDER_ITEMS, &body), Code::ForBoundSideEffect);
+    }
+}
+
+#[test]
+fn a_field_of_an_indexed_element_is_a_place_with_an_index_too() {
+    let items = "pub struct El { pub x: f32, pub y: f32 } \
+        pub struct C { pub n: u32 } \
+        impl C { fn next(&mut self) -> u32 { self.n = self.n + 1u32; self.n } }";
+    for statement in [
+        "els[c.n].x = c.next() as f32;",
+        "els[c.n].y += c.next() as f32;",
+    ] {
+        let source = format!(
+            "mod m {{ {items} #[kernel] pub fn run(id: SV_DispatchThreadID, mut els: RWStructuredBuffer<El>) {{ let mut c = C {{ n: 5u32 }}; {statement} }} }}"
+        );
+        assert_rejected(&source, Code::ForBoundSideEffect);
+    }
+}
+#[test]
+fn an_atomic_operation_never_stands_in_an_order_sensitive_value() {
+    // Order audit: `out[atomic_add(..) as usize] = atomic_add(..)` would run its atomics in Slang's order (index first)
+    // and not in Rust's, but an atomic operation is refused as a value altogether (GUST-E0606), so the form never
+    // reaches the order rules. The statement form is the one that is accepted.
+    let kernel = |body: &str| {
+        format!(
+            "mod m {{ #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>, mut ctr: RWStructuredBuffer<uint>) {{ {body} }} }}"
+        )
+    };
+    for body in [
+        "out[atomic_add(&mut ctr[0], 1u32) as usize] = atomic_add(&mut ctr[0], 10u32);",
+        "let i = atomic_add(&mut ctr[0], 1u32); out[i as usize] = id.x;",
+    ] {
+        assert_rejected(&kernel(body), Code::AtomicAsValue);
+    }
+    // Reading the atomic cell in the index is refused too (GUST-E0607).
+    for body in [
+        "out[ctr[0] as usize] = atomic_add(&mut ctr[0], 1u32);",
+        "out[ctr[0] as usize] += atomic_add(&mut ctr[0], 1u32);",
+    ] {
+        assert_rejected(&kernel(body), Code::AtomicDirectAccess);
+    }
+    translate(&kernel(
+        "atomic_add(&mut ctr[0], 1u32); out[id.x as usize] = id.x;",
+    ))
+    .unwrap();
 }

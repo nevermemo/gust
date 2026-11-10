@@ -110,12 +110,13 @@ const ACCEPTED_METHODS: &str = "the accepted methods are `.global_id()` and `.le
 `.wrapping_add(b)`, `.wrapping_sub(b)`, `.wrapping_mul(b)` and `.wrapping_neg()`, and the vector and matrix methods \
 (swizzles such as `.xy()`, `.dot(v)`, `.mul_vec4(v)`, `.mul_mat4(m)`, `.transpose()`)";
 
-/// Rust primitives outside the four-byte scalar subset. They are not shadowed by
+/// Rust primitives outside the four-byte scalar subset (`usize` is not here: `visit_type_path` gives it GUST-E0334
+/// first). They are not shadowed by
 /// the prelude, so rustc accepts them, and `emit_type` would pass the Rust
 /// spelling through to Slang unchanged.
 const UNSUPPORTED_PRIMITIVES: &[&str] = &[
-    "i8", "i16", "i64", "i128", "isize", "u8", "u16", "u64", "u128", "usize", "f16", "f64", "f128",
-    "char", "str",
+    "i8", "i16", "i64", "i128", "isize", "u8", "u16", "u64", "u128", "f16", "f64", "f128", "char",
+    "str",
 ];
 
 /// The `Option<T>` shape this dialect lowers to Slang `Optional<T>`: a single
@@ -3024,7 +3025,9 @@ impl RestrictedVisitor {
     /// (slice m9.r1): Rust evaluates the value of `a[s.n as usize] = s.bump()` first and the index after it, and Slang
     /// computes the index before the value (measured on slangc 2026.21 for `=` and `op=`, on a local array), so the
     /// element written would differ. The roots are the receivers of the `&mut self` calls in the value; the index
-    /// "reads" a root when it names it. A storage place keeps the check it had in m9.a2.
+    /// "reads" a root when it names it. Every indexed place is covered, a storage or workgroup element included (fix
+    /// round 1 of m9.r1): slangc 2026.21 reads the index of `out[c.n] = c.next()` first, where 2026.20 called first,
+    /// so a rule that relied on its order would not be robust.
     fn reject_stale_index(&mut self, place: &syn::Expr, value: &syn::Expr) -> bool {
         struct Roots<'m> {
             methods: &'m MethodTable,
@@ -3059,14 +3062,7 @@ impl RestrictedVisitor {
                 visit::visit_expr_index(self, index);
             }
         }
-        let Some(place_root) = Self::place_root(place) else {
-            return false;
-        };
-        if self.resources.contains(&place_root)
-            || self.uniforms.contains(&place_root)
-            || self.derived_ids.contains(&place_root)
-            || self.invocations.contains(&place_root)
-        {
+        if Self::place_root(place).is_none() {
             return false;
         }
         let mut roots = Roots {
@@ -3958,7 +3954,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         }
         // The place of an assignment or compound assignment, and the value of `*=` in a module that names a matrix
         // (lowered to `place = __gust_mul(place, value)`), evaluate a `&mut self` call in another order than Rust
-        // (GUST-E0421, review m9.a2 M1). Reads that already match, `out[c.n] = c.next()` and `c.n += c.bump()`, stay.
+        // (GUST-E0421, review m9.a2 M1). A field place with no index, `c.n += c.bump()`, matches Rust and stays (an indexed place does not: see `reject_stale_index`).
         let is_assign_op = matches!(
             binary.op,
             syn::BinOp::AddAssign(_)
@@ -4200,7 +4196,7 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 self.reject(
                     Code::LenReceiver,
                     call,
-                    "`.len()` requires a direct storage parameter receiver",
+                    "`.len()` requires a direct storage parameter receiver, or an array local or parameter with a written type (`let g: [f32; 4] = ..;`)",
                 );
             } else {
                 self.reject(

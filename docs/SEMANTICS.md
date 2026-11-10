@@ -1405,7 +1405,7 @@ typed `let`, the whole right side of an assignment statement, or a returned or t
 `GUST-E0811`). `usize` is accepted in one place, the cast of an index (`GUST-E0334` elsewhere, including a `usize`
 local or parameter and `.len()` outside an index or a direct `as u32`).
 
-**Lowering.** `[T; N]` is `T[N]`; `[a, b]` is `{ a, b }`; `a[i as usize]` is `a[i]` (the cast is dropped). A repeat
+**Lowering.** `[T; N]` is `T[N]`; `[a, b]` is `{ a, b }`; `a[i as usize]` is `a[uint(i)]` (the cast is lowered like `as u32`, so a `bool` or signed source indexes as in Rust). A repeat
 evaluates its operand once into a temporary, `T __gust_rep_<k> = e;`, and then `{ t, t, .. }` for `N <= 16`; above 16 it
 declares the array and fills it with a loop (`__gust_fill_<k>`). A repeat that is returned with `N > 16` is `GUST-E0811`
 (bind it to a local first). The names with the `__gust_` prefix are reserved (`GUST-E0901`).
@@ -1417,12 +1417,22 @@ indexes that call, an index on a call result (`make3(s.bump())[1]`), a method on
 counter, an element assigned from its neighbours, and a repeat (`[s.bump(); 4]` runs `bump` once). Refused with
 `GUST-E0421`: an assignment or compound assignment to an element whose index reads a root that a `&mut self` call in the
 value changes (`a[s.n as usize] = s.bump()`, `a[s.get() as usize] += s.bump()`); Rust runs the value first, Slang the
-index first. Write `let v = s.bump(); a[s.n as usize] = v;`. Finding (not changed by this slice): the same index-first order holds
-for a storage place such as `out[c.n] = c.next()`, which slice a2 accepts.
+index first. Write `let v = s.bump(); a[s.n as usize] = v;`. The rule covers every indexed place, a storage buffer
+and workgroup memory included (`out[c.n] = c.next()`, `out[c.n] += c.next()`, `wg[w.n] = w.bump()`; fix round 1): slangc
+2026.21 reads the index of those first, where 2026.20 called first, so the order of Slang for an indexed place changed
+between two versions and GUST refuses the form rather than rely on it. Before this round slice a2 accepted the storage
+forms, which gave another element than the CPU twin on the GPU with the pinned Slang.
 
 **Out of bounds (D39).** An index outside `0..N` panics in Rust; on the GPU the access is clamped or undefined by target,
-so such a program is outside the defined domain of section 3. Nothing checks it; keep the index in range. A constant
-index past the end is not diagnosed either.
+so such a program is outside the defined domain of section 3 (KM-11 is the observation for a buffer index; no row is
+measured for a function-scope array, whose clamping or undefined access the target decides, so nothing is pinned
+there). Nothing checks it at run time; keep the index in range. A constant index past the end is not diagnosed by the
+macro; rustc rejects it when the body is compiled (the `unconditional_panic` lint), and `cargo check` does not.
+
+**Index casts and width (D39).** `x as usize` in an index is `uint(x)`, a 32-bit unsigned value. A `bool` source and a
+non-negative signed source index as in Rust. A negative source differs in the 32/64-bit width class: Rust's
+`-1i32 as usize` is 2^64 - 1 and the GPU's `uint(-1)` is 2^32 - 1, both out of range, so the program is outside the
+defined domain (not tested on the GPU).
 
 **Refused on purpose.** A nested array or an element that is a tuple, `Option`, `Result`, reference or resource
 (`GUST-E0217`); a slice type (`GUST-E0111`); `for x in a` (`GUST-E0409`); an array in a struct field, a buffer, a uniform

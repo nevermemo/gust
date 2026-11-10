@@ -1061,6 +1061,13 @@ fn emit_value_match(
 ) -> syn::Result<()> {
     let padding = "    ".repeat(indent);
     let declared = emit_ident(name);
+    if matches!(unparenthesized_type(ty), syn::Type::Array(_)) {
+        return Err(diagnostics::error(
+            Code::UnsupportedExpression,
+            expression,
+            "a `match` does not give an array value (arrays are built by a literal or a repeat, or returned by a helper): use `if`/`else` statements that assign the elements, or a helper that returns the array",
+        ));
+    }
     let ty = emit_type(ty)?;
     let target = if mentions_ident(expression.to_token_stream(), &name.unraw().to_string()) {
         format!("__gust_match_{indent}_{index}")
@@ -1929,19 +1936,29 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             ));
         }
         syn::Expr::Binary(binary)
-            if matches!(binary.op, syn::BinOp::Eq(_) | syn::BinOp::Ne(_))
-                && (array_length_of(unparenthesized_expr(&binary.left)).is_some()
-                    || array_length_of(unparenthesized_expr(&binary.right)).is_some()) =>
+            if matches!(
+                binary.op,
+                syn::BinOp::Eq(_)
+                    | syn::BinOp::Ne(_)
+                    | syn::BinOp::Lt(_)
+                    | syn::BinOp::Le(_)
+                    | syn::BinOp::Gt(_)
+                    | syn::BinOp::Ge(_)
+            ) && (array_length_of(unparenthesized_expr(&binary.left)).is_some()
+                || array_length_of(unparenthesized_expr(&binary.right)).is_some()) =>
         {
             return Err(diagnostics::error(
                 Code::UnsupportedExpression,
                 binary,
-                "arrays are not compared with `==` or `!=`: compare the elements",
+                "arrays are not compared with `==`, `!=`, `<`, `<=`, `>` or `>=`: compare the elements",
             ));
         }
-        // `i as usize` in an index is the index: Slang indexes with the integer itself (the validator took the cast only
-        // in an index, GUST-E0334).
-        syn::Expr::Cast(cast) if is_usize_type(&cast.ty) => emit_expression(&cast.expr)?,
+        // `i as usize` in an index is lowered like `i as u32` (fix round 1 of m9.r1): the index gets the 32-bit
+        // unsigned value of the source, so a `bool` source and a signed `%` index as in Rust, and the remaining
+        // difference is the 32/64-bit width class of D39. The validator took the cast only in an index (GUST-E0334).
+        syn::Expr::Cast(cast) if is_usize_type(&cast.ty) => {
+            format!("uint({})", emit_expression(&cast.expr)?)
+        }
         syn::Expr::Binary(binary) if matches!(binary.op, syn::BinOp::BitXor(_)) => format!(
             "__gust_xor({})",
             emit_list([binary.left.as_ref(), binary.right.as_ref()].into_iter())?.join(", ")
@@ -2935,7 +2952,13 @@ fn emit_value_expression(expression: &syn::Expr) -> syn::Result<String> {
             syn::Expr::Array(_)
         ));
     });
-    let text = emit_expression(expression);
+    // A parenthesized literal is emitted without the parentheses: `({ .. })` is not an initializer list to slangc.
+    let inner = unparenthesized_expr(expression);
+    let text = emit_expression(if matches!(inner, syn::Expr::Array(_)) {
+        inner
+    } else {
+        expression
+    });
     ARRAY_LITERAL_OK.with(|flag| flag.set(false));
     text
 }

@@ -74,6 +74,11 @@ mod arrays {
         pub order_b: u32,
         pub order_pure: u32,
         pub order_pure_compound: u32,
+        pub order_i_mid: u32,
+        pub idx_signed: u32,
+        pub idx_bool: u32,
+        pub ops_local: u32,
+        pub ops_param: u32,
     }
 
     fn dbl4(x: [f32; 4]) -> [f32; 4] {
@@ -106,6 +111,17 @@ mod arrays {
 
     fn make3(v: u32) -> [u32; 3] {
         [v, v + 1u32, v + 2u32]
+    }
+
+    // Compound assignment on an element of a parameter: `-=` and `<<=` are plain operators, `/=`, `%=` and `^=` with a
+    // divisor that is not a literal go through the `inout` helpers. The result weighs the five elements apart.
+    fn ops(mut x: [u32; 5], d: u32) -> u32 {
+        x[0] -= d;
+        x[1] <<= 1u32;
+        x[2] /= d;
+        x[3] %= d;
+        x[4] ^= d;
+        x[0] * 1000000u32 + x[1] * 100000u32 + x[2] * 100u32 + x[3] * 10u32 + x[4]
     }
 
     fn pair_code(a: [u32; 2]) -> u32 {
@@ -225,6 +241,20 @@ mod arrays {
             let first = e7[2];
             e7[k7 as usize] += s7.bump();
 
+            // An index from a signed source and from a `bool`, lowered like `as u32`; the value is not negative.
+            let sv: i32 = v as i32 + 1i32;
+            let idx_signed = tbl[(sv as usize) % 4];
+            let idx_bool = tbl[(v > 2u32) as usize];
+
+            // Compound assignment on elements of a local, and of a parameter.
+            let mut e: [u32; 5] = [50u32, 3u32, 100u32, 77u32, 9u32];
+            let dd = v + 1u32;
+            e[0] -= dd;
+            e[1] <<= 1u32;
+            e[2] /= dd;
+            e[3] %= dd;
+            e[4] ^= dd;
+
             results[i] = Results {
                 lit_sum: a[0] + a[1] + a[2] + a[3],
                 rep_ends: r[3] + r[0],
@@ -257,6 +287,11 @@ mod arrays {
                 order_b: e6[1] * 10u32 + e6[0],
                 order_pure: first * 100u32 + e7[0],
                 order_pure_compound: e7[2],
+                order_i_mid: cs[1].n,
+                idx_signed,
+                idx_bool,
+                ops_local: e[0] * 1000000u32 + e[1] * 100000u32 + e[2] * 100u32 + e[3] * 10u32 + e[4],
+                ops_param: ops([50u32, 3u32, 100u32, 77u32, 9u32], dd),
             };
         }
     }

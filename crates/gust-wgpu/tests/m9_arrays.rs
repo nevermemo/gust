@@ -42,6 +42,17 @@ use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 //   order_b = the value first, then the index (two statements): val = 1, `e6[s6.n] = val` writes e6[1] = 1: 1 * 10 + e6[0] = 10
 //   order_pure = `e7[k7] = s7.bump()` with s7.n = 4 (k7 = 2): e7[2] = 5, first = 5; 5 * 100 + e7[0] = 500
 //   order_pure_compound = `e7[k7] += s7.bump()`: bump gives 6, e7[2] = 5 + 6 = 11
+//   order_i_mid = cs[1].n after `cs[s5.bump()].bump()`: the write-back reached the element, 200 + 1 = 201
+// Index casts (fix round 1), with tbl = [10, 20, 30, 40]:
+//   idx_signed = `tbl[(sv as usize) % 4]` with sv = v + 1 (an `i32`): index 1, 2, 3, 0, 1 : 20, 30, 40, 10, 20
+//   idx_bool   = `tbl[(v > 2) as usize]`: index 0, 0, 0, 1, 1                              : 10, 10, 10, 20, 20
+// Compound operators on the elements of `[50, 3, 100, 77, 9]` with d = v + 1: `-= d`, `<<= 1`, `/= d`, `%= d`, `^= d`,
+// weighed as e0 * 1000000 + e1 * 100000 + e2 * 100 + e3 * 10 + e4 (the same on a local and on a parameter):
+//   v = 0 (d = 1): [49, 6, 100, 0, 8]   : 49610008
+//   v = 1 (d = 2): [48, 6, 50, 1, 11]   : 48605021
+//   v = 2 (d = 3): [47, 6, 33, 2, 10]   : 47603330
+//   v = 3 (d = 4): [46, 6, 25, 1, 13]   : 46602523
+//   v = 4 (d = 5): [45, 6, 20, 2, 12]   : 45602032
 const LIT_SUM: [u32; 5] = [6, 10, 14, 18, 22];
 const REP_ENDS: [u32; 5] = [2, 4, 6, 8, 10];
 const BUMP_ONCE: [u32; 5] = [4, 8, 12, 16, 20];
@@ -73,6 +84,10 @@ const ORDER_J: u32 = 143;
 const ORDER_B: u32 = 10;
 const ORDER_PURE: u32 = 500;
 const ORDER_PURE_COMPOUND: u32 = 11;
+const ORDER_I_MID: u32 = 201;
+const IDX_SIGNED: [u32; 5] = [20, 30, 40, 10, 20];
+const IDX_BOOL: [u32; 5] = [10, 10, 10, 20, 20];
+const OPS: [u32; 5] = [49610008, 48605021, 47603330, 46602523, 45602032];
 
 #[test]
 fn arrays_execute_on_gpu_and_on_the_cpu_twin() {
@@ -116,6 +131,11 @@ fn arrays_execute_on_gpu_and_on_the_cpu_twin() {
                 order_b: u32::MAX,
                 order_pure: u32::MAX,
                 order_pure_compound: u32::MAX,
+                order_i_mid: u32::MAX,
+                idx_signed: u32::MAX,
+                idx_bool: u32::MAX,
+                ops_local: u32::MAX,
+                ops_param: u32::MAX,
             };
             count
         ];
@@ -170,6 +190,11 @@ fn arrays_execute_on_gpu_and_on_the_cpu_twin() {
                     row.order_pure_compound, ORDER_PURE_COMPOUND,
                     "order_pure_compound {note}"
                 );
+                assert_eq!(row.order_i_mid, ORDER_I_MID, "order_i_mid {note}");
+                assert_eq!(row.idx_signed, IDX_SIGNED[k], "idx_signed {note}");
+                assert_eq!(row.idx_bool, IDX_BOOL[k], "idx_bool {note}");
+                assert_eq!(row.ops_local, OPS[k], "ops_local {note}");
+                assert_eq!(row.ops_param, OPS[k], "ops_param {note}");
             }
         }
     }

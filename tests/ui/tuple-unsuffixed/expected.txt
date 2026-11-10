@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: tuple-unsuffixed/src/main.rs
+line: 9
+message: [GUST-E0326] an integer literal without a suffix in a tuple gives the element no type of its own: Slang types it `int` while rustc infers the type from the later uses, so the two can differ; add a suffix (`1u32`, `-1i32`)

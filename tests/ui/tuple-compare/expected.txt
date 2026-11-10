@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: tuple-compare/src/main.rs
+line: 12
+message: [GUST-E0213] a tuple is not compared: Slang defines `==` on tuples of scalars only, and Rust's ordering of tuples has no Slang form; compare the elements (`a.0 == b.0 && a.1 == b.1`)

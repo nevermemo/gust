@@ -1329,3 +1329,47 @@ over-refusal; bind the result to a local first (`let s = subgroup_add(v);` then 
 **Edge cases.** The integer arithmetic inside an arm has the wrapping contract of section 3 (D39). Tests:
 `crates/gust-wgpu/tests/m9_match_value.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations) and the macro tests
 of the value form in `crates/gust-macros/src/tests/regression.rs` and `subgroup.rs`.
+
+
+## 10. Tuples (M9, D158)
+
+A tuple is a value of the invocation: two to eight elements, each a scalar, a vector, a matrix, a struct or an enum of
+the module, or a tuple. It is accepted as a local, a parameter, the result of a helper or a method, and an argument of
+a helper or a method (`&self` and `&mut self`). It is never stored: a struct field, a buffer, a uniform and workgroup
+memory refuse it (`GUST-E0212`).
+
+**Forms.** A literal `(a, b)`; the type `(u32, f32)`; the element `t.0` (and `t.1.0` on a tuple of tuples), also as a
+place (`t.0 = e;`, `t.1 += e;`) and on a call result (`f().1`); the destructuring `let (x, y) = f(..);` and
+`let (x, y): (u32, f32) = f(..);`, with plain names only (`mut` is allowed). Unsuffixed integer literals in a literal
+are `GUST-E0326`, as in a `let` (Slang would type them `int`).
+
+**Lowering.** `(A, B)` is `Tuple<A, B>`, `(a, b)` is `makeTuple(a, b)` and `t.0` is `t._0` (spike M9.s0, P3: Slang
+infers the types, so the macro needs none). A destructuring is one temporary, then one local per element:
+`var __gust_tuple_<n> = f(..); var x = __gust_tuple_<n>._0; var y = __gust_tuple_<n>._1;`; with an annotation the
+temporary and the locals carry the types.
+
+**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V; the GPU test `m9_tuples` runs the cases against
+hand-written values). The elements of a literal run left to right, each completely before the next, and a struct element
+is copied at its place in the order: `(c.n, c.tick())` reads `c.n` before `tick` runs, `(c.tick(), c.n)` after it,
+`(c, c.tick())` copies `c` before the call and `(c.tick(), c)` after it. A destructuring of a literal of two calls runs
+them in order, a tuple argument built from calls runs its elements in order before the method, and
+`c.pair().1 + c.tick()` and `c.tick() + c.pair().1` give Rust's values. Nothing is refused for order.
+
+**Refused on purpose.** A tuple in a struct field, a buffer, a uniform or workgroup memory (`GUST-E0212`). More than
+eight elements, one element, an element that is an array, a reference, an `Option` or a `Result`, `Some((..))`, `Ok((..))`
+and `Err((..))`, a comparison of a tuple the macro can see (`==`, `!=` and the orderings: Slang has `==` on tuples of
+scalars only), and `.8` on a tuple (`GUST-E0213`). A tuple struct (`GUST-E0104`). A nested pattern, `_` and `..` in a
+destructuring (`GUST-E0319`). A tuple as a `match` scrutinee (`GUST-E0515`: there are no tuple patterns). The macro
+sees no types: a comparison of a tuple behind a name it cannot follow (a tuple from an indexed element, say) is not
+caught by the macro and slangc refuses it.
+
+**Uniformity (D154).** A barrier inside an element is `GUST-E0327` (a barrier is a statement of its own) and a subgroup
+operation inside an element is `GUST-E0747` (a tuple literal is not an approved position for an operation); bind the
+result to a local first.
+
+**Known limitation.** An enum bound by an unannotated destructuring is not known to the macro as an enum, so a `match`
+on it is refused until the `let` is annotated (`let (m, w): (Mode, u32) = f();`).
+
+**Edge cases.** The arithmetic inside an element has the wrapping contract of section 3 (D39). Tests:
+`crates/gust-wgpu/tests/m9_tuples.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations) and the macro tests in
+`crates/gust-macros/src/tests/regression.rs`.

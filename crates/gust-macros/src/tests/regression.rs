@@ -1007,7 +1007,7 @@ fn expression_and_binding_rejections_carry_their_codes() {
         ("let f = |a: u32| a;", Code::Closure),
         ("let y = x.await;", Code::Await),
         ("let y = &x;", Code::Reference),
-        ("let (a, b) = x;", Code::LetNeedsIdentifier),
+        ("let [a, b] = x;", Code::LetNeedsIdentifier),
         ("let v = x else { return; };", Code::LetElse),
         ("for i in 0u32..4u32 { break 3u32; }", Code::BreakWithValue),
         ("let r = Ok(1u32, 2u32);", Code::OkErrArguments),
@@ -1045,11 +1045,7 @@ fn emitter_only_rejections_are_coded() {
             Code::SelfParameter,
         ),
         (
-            "mod bad { #[kernel] fn run(id: SV_DispatchThreadID) { let t = (1u32, 2u32); } }",
-            Code::UnsupportedExpression,
-        ),
-        (
-            "mod bad { fn f(a: (u32, u32)) -> uint { 1u32 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+            "mod bad { fn f(a: [u32; 2]) -> uint { 1u32 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
             Code::TypeNeedsPath,
         ),
         (
@@ -7081,4 +7077,212 @@ fn two_mutating_calls_in_one_arm_and_in_two_struct_fields_run_in_the_order_of_ru
     let first = source.find("__gust_struct_0.a = c.next()").expect(&source);
     let second = source.find("__gust_struct_0.b = c.next()").expect(&source);
     assert!(first < second, "{source}");
+}
+
+// ---- Tuples (slice m9.t, M9 plan 2.3, D158) ----
+
+#[test]
+fn tuples_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/tuples.rs")).unwrap();
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "tuples.slang",
+        &include_str!("../../../../tests/fixtures/tuples.slang").replace("\r\n", "\n"),
+    );
+}
+
+const PAIR_FN: &str = "fn pair(v: u32) -> (u32, f32) { (v + 1u32, 0.5f32) }";
+
+#[test]
+fn a_tuple_is_a_slang_tuple_and_a_destructuring_is_one_temporary_then_one_local_per_element() {
+    let source = translate(&with_kernel(
+        PAIR_FN,
+        "let (a, b) = pair(id.x); let (c, d): (u32, f32) = pair(a); let mut t = pair(c); t.0 = t.0 + 1u32; \
+         out[id.x] = a + c + t.0 + (b + d + t.1) as u32;",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(
+        source.contains("Tuple<uint, float> pair(uint v)"),
+        "{source}"
+    );
+    assert!(source.contains("return makeTuple("), "{source}");
+    // An unannotated destructuring: `var` for the temporary and the locals, `._k` for the elements.
+    assert!(
+        source.contains("var __gust_tuple_0 = pair(id.x);\n    var a = __gust_tuple_0._0;\n    var b = __gust_tuple_0._1;\n"),
+        "{source}"
+    );
+    // An annotated one: the types are written.
+    assert!(
+        source.contains(
+            "Tuple<uint, float> __gust_tuple_1 = pair(a);\n    uint c = __gust_tuple_1._0;\n    float d = __gust_tuple_1._1;\n"
+        ),
+        "{source}"
+    );
+    // An element is a place.
+    assert!(source.contains("t._0 = (t._0 + uint(1));"), "{source}");
+}
+
+#[test]
+fn a_tuple_of_tuples_and_a_tuple_argument_and_a_method_result_are_accepted() {
+    let source = translate(&with_kernel(
+        "pub struct C { pub n: u32 } \
+         impl C { \
+           pub fn pair(&self) -> (u32, u32) { (self.n, self.n + 1u32) } \
+           pub fn shift(&mut self, t: (u32, u32)) -> u32 { self.n += t.0; self.n + t.1 } \
+         } \
+         fn nest(v: u32) -> ((u32, u32), u32) { ((v, v + 1u32), v + 2u32) }",
+        "let mut c = C { n: 1u32 }; let (inner, z) = nest(id.x); let q = nest(z); \
+         out[id.x] = c.shift((inner.0, inner.1)) + c.pair().1 + q.0.1;",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(
+        source.contains("Tuple<Tuple<uint, uint>, uint> nest(uint v)"),
+        "{source}"
+    );
+    assert!(source.contains("makeTuple(makeTuple("), "{source}");
+    assert!(source.contains("c.shift(makeTuple("), "{source}");
+    assert!(source.contains("Tuple<uint, uint> pair()"), "{source}");
+    assert!(source.contains("c.pair()._1"), "{source}");
+    assert!(source.contains("q._0._1"), "{source}");
+}
+
+#[test]
+fn a_comparison_operand_that_would_need_keep_is_wrapped_in_a_tuple_literal() {
+    // `a < b` followed by another element could parse as the start of a generic argument list in Slang.
+    let source = translate(&with_kernel(
+        "",
+        "let a = id.x; let b = id.x + 1u32; let t = (a < b, a); out[id.x] = t.1;",
+    ))
+    .unwrap();
+    assert!(source.contains("makeTuple(__gust_keep("), "{source}");
+}
+
+#[test]
+fn the_tuple_refusals_carry_their_codes() {
+    let cases: [(&str, &str, Code); 17] = [
+        // A struct field (E0212); the buffer case is below.
+        (
+            "pub struct S { pub p: (u32, f32) }",
+            "out[id.x] = 1u32;",
+            Code::TupleInResource,
+        ),
+        // Shape (E0213).
+        (
+            "fn f() -> (u32, u32, u32, u32, u32, u32, u32, u32, u32) { (1u32, 1u32, 1u32, 1u32, 1u32, 1u32, 1u32, 1u32, 1u32) }",
+            "out[id.x] = 1u32;",
+            Code::TupleShape,
+        ),
+        ("", "let t = (id.x,); out[id.x] = t.0;", Code::TupleShape),
+        (
+            "fn f(v: u32) -> ([u32; 2], u32) { ([v, v], v) }",
+            "out[id.x] = 1u32;",
+            Code::TupleShape,
+        ),
+        (
+            "fn f(v: u32) -> (Option<u32>, u32) { (Some(v), v) }",
+            "out[id.x] = 1u32;",
+            Code::TupleShape,
+        ),
+        (
+            "",
+            "let t = (id.x, id.x); out[id.x] = t.8;",
+            Code::TupleShape,
+        ),
+        (
+            "",
+            "let t = (id.x, id.x); let u = (id.x, id.x); let mut r = 0u32; if t == u { r = 1u32; } out[id.x] = r;",
+            Code::TupleShape,
+        ),
+        (
+            PAIR_FN,
+            "let mut r = 0u32; if pair(id.x) != pair(1u32) { r = 1u32; } out[id.x] = r;",
+            Code::TupleShape,
+        ),
+        (
+            "",
+            "let t = Some((id.x, id.x)); out[id.x] = 1u32;",
+            Code::TupleShape,
+        ),
+        (
+            "",
+            "let (a, b): (u32, u32, u32) = (id.x, id.x); out[id.x] = a + b;",
+            Code::TupleShape,
+        ),
+        // Patterns (E0319).
+        (
+            "",
+            "let ((a, b), c) = ((id.x, id.x), id.x); out[id.x] = a + b + c;",
+            Code::LetNeedsIdentifier,
+        ),
+        (
+            "",
+            "let (a, _) = (id.x, id.x); out[id.x] = a;",
+            Code::LetNeedsIdentifier,
+        ),
+        (
+            "",
+            "let (a, ..) = (id.x, id.x, id.x); out[id.x] = a;",
+            Code::LetNeedsIdentifier,
+        ),
+        // A tuple is not a `match` scrutinee (E0515).
+        (
+            "",
+            "let t = (id.x, id.x); match t { (0, _) => { out[id.x] = 1u32; } _ => { out[id.x] = 2u32; } }",
+            Code::MatchScrutinee,
+        ),
+        // An unsuffixed integer element (E0326).
+        (
+            "",
+            "let t = (1, id.x); out[id.x] = t.1;",
+            Code::UnsuffixedLiteralLet,
+        ),
+        // A tuple struct (E0104).
+        (
+            "pub struct P(u32, f32);",
+            "out[id.x] = 1u32;",
+            Code::StructNeedsNamedFields,
+        ),
+        // A barrier or a subgroup call is not an element: the existing codes.
+        (
+            "",
+            "let t = (workgroup_barrier(), 1u32); out[id.x] = t.1;",
+            Code::BarrierForm,
+        ),
+    ];
+    for (items, body, code) in cases {
+        assert_rejected(&with_kernel(items, body), code);
+    }
+}
+
+#[test]
+fn a_buffer_or_workgroup_memory_of_tuples_is_gust_e0212() {
+    for parameter in [
+        "input: StructuredBuffer<(u32, u32)>",
+        "mut input: RWStructuredBuffer<(u32, u32)>",
+    ] {
+        assert_rejected(
+            &format!(
+                "mod m {{ #[kernel] pub fn run(id: SV_DispatchThreadID, {parameter}, mut out: RWStructuredBuffer<uint>) {{ out[id.x] = 1u32; }} }}"
+            ),
+            Code::TupleInResource,
+        );
+    }
+}
+
+#[test]
+fn a_tuple_name_that_slang_reserves_is_renamed() {
+    // `Tuple` and `makeTuple` are the names the lowering emits (collision class 2).
+    let source = translate(&with_kernel(
+        "pub struct Tuple { pub n: u32 }",
+        "let makeTuple = Tuple { n: id.x }; let t = (makeTuple.n, id.x); out[id.x] = t.1;",
+    ))
+    .unwrap();
+    assert!(source.contains("struct __gust_r_Tuple"), "{source}");
+    assert!(source.contains("__gust_r_makeTuple"), "{source}");
+    assert!(
+        source.contains("makeTuple(__gust_r_makeTuple.n, "),
+        "{source}"
+    );
 }

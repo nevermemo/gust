@@ -135,6 +135,8 @@ pub const COLLISIONS: &[Collision] = &[
     // Struct position (S6.3b).
     emitted("StructuredBuffer"),
     hard("This", &[Field]),
+    // The generic type behind a tuple `(A, B)` (slice m9.t).
+    emitted("Tuple"),
     // Also denied to users by E0901 (`__Gust`), so it is unreachable and has no capture template; listed because the
     // plan names it.
     emitted("__GustResult"),
@@ -169,6 +171,8 @@ pub const COLLISIONS: &[Collision] = &[
     // M6 emits `int2` and `int4` for `IVec2` and `IVec4` (R1-A.4: `ok` in all four S6.3 positions today).
     emitted("int2"),
     emitted("int4"),
+    // The constructor of a tuple value `(a, b)` (slice m9.t).
+    emitted("makeTuple"),
     // Slang's generic `matrix<T, R, C>`, in case the M6 lowering needs it.
     emitted("matrix"),
     // M6 (`Mat4 * Vec4` helpers).
@@ -319,6 +323,12 @@ pub fn capture_source(entry: &str, spelled: &str) -> Option<String> {
             "StructuredBuffer<float> rb;\n",
             "ob[gid.x] = uint(rb[gid.x]);",
         ),
+        // A user struct named `Tuple` hides Slang's generic one; a user local named `makeTuple` hides its constructor.
+        "Tuple" => in_struct(
+            "",
+            "Tuple<uint, float> t = makeTuple(1u, 2.0); ob[gid.x] = t._0;",
+        ),
+        "makeTuple" => local("Tuple<uint, float> t = makeTuple(1u, 2.0); ob[gid.x] = t._0;"),
         "bool" => local("bool b = bool(ob[gid.x]); ob[gid.x] = b ? 1u : 0u;"),
         "int" => local("int i = int(ob[gid.x]); ob[gid.x] = uint(i);"),
         "uint" => local("ob[gid.x] = uint(2.0);"),

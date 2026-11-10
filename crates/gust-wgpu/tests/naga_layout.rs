@@ -9,7 +9,7 @@
 //!
 //! The WGSL set (the test names its size and fails on drift):
 //!
-//! - 22 of the 23 Slang goldens of `tests/fixtures/*.slang`; `par_for.slang` (slice m7.p) is filtered out, because the
+//! - 23 of the 24 Slang goldens of `tests/fixtures/*.slang`; `par_for.slang` (slice m7.p) is filtered out, because the
 //!   module of a `par_for!` kernel stands inside the block of its call, so no descriptor can be named from here (its
 //!   ten kernels run in `tests/par_for.rs`). The test
 //!   `the_goldens_are_the_fixtures_directory` pins the file list against the directory, and the fixture `.rs` list
@@ -127,6 +127,7 @@ fixture!(
     "../../../tests/fixtures/semantics.rs"
 );
 fixture!(f_textures, textures, "../../../tests/fixtures/textures.rs");
+fixture!(f_tuples, tuples, "../../../tests/fixtures/tuples.rs");
 fixture!(f_uniforms, uniforms, "../../../tests/fixtures/uniforms.rs");
 fixture!(f_vectors, vectors, "../../../tests/fixtures/vectors.rs");
 fixture!(
@@ -144,7 +145,7 @@ struct Golden {
     kernels: &'static [KernelDescriptor],
 }
 
-fn goldens() -> [Golden; 23] {
+fn goldens() -> [Golden; 24] {
     [
         Golden {
             file: "atomics.slang",
@@ -265,6 +266,12 @@ fn goldens() -> [Golden; 23] {
             text: include_str!("../../../tests/fixtures/textures.slang"),
             entries: 8,
             kernels: f_textures::KERNELS,
+        },
+        Golden {
+            file: "tuples.slang",
+            text: include_str!("../../../tests/fixtures/tuples.slang"),
+            entries: 1,
+            kernels: f_tuples::KERNELS,
         },
         Golden {
             file: "uniforms.slang",
@@ -797,7 +804,7 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
 }
 
 /// The compute and fragment entries the twenty-three goldens hold in all (pinned per golden in [`goldens`]).
-const GOLDEN_ENTRIES: usize = 100;
+const GOLDEN_ENTRIES: usize = 101;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`
 /// (`atomics.slang` has one entry for the ten kernels of the module) and of `numeric.rs` (one of two).

@@ -136,6 +136,11 @@ codes! {
     WorkgroupShape = 210 => "GUST-E0210";
     /// An enum as a struct field, a buffer or uniform element, or the payload of an `Option` or `Result`.
     EnumInResource = 211 => "GUST-E0211";
+    /// A tuple as a struct field, a buffer or uniform element, or workgroup memory.
+    TupleInResource = 212 => "GUST-E0212";
+    /// A tuple outside the shape the dialect lowers: not 2 to 8 elements, an element that is not a scalar, vector,
+    /// matrix, struct, enum or tuple, a comparison of tuples, or a tuple as an `Option` or `Result` payload.
+    TupleShape = 213 => "GUST-E0213";
 
     // E03xx: expressions and calls.
     /// A CPU-only library or type name.

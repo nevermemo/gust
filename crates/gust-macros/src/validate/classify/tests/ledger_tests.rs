@@ -154,6 +154,7 @@ const EXPRESSIONS: &[(&str, &str, &str, &str, Verdict)] = &[
     ("Reference", "&mut counter[0]", ATOMIC, "atomic_add(&mut counter[0], 1u32); out[id.x] = 1.0f32;", Accepted),
     ("Return", "return", PARAMETERS, "out[id.x] = 1.0f32; return;", Accepted),
     ("Struct", "P { x: 1.0f32 }", PARAMETERS, "let p = P { x: 1.0f32 }; out[id.x] = p.x;", Accepted),
+    ("Tuple", "(1.0f32, 2.0f32)", PARAMETERS, "let t = (1.0f32, 2.0f32); out[id.x] = t.0;", Accepted),
     ("Unary", "-a[id.x]", PARAMETERS, "out[id.x] = -a[id.x];", Accepted),
     // ---- refused today ----
     ("Async", "async { }", PARAMETERS, "let t = async { }; out[id.x] = 1.0f32;", UNSUPPORTED),
@@ -167,7 +168,6 @@ const EXPRESSIONS: &[(&str, &str, &str, &str, Verdict)] = &[
     ("Repeat", "[0.0f32; 4]", PARAMETERS, "let t = [0.0f32; 4]; out[id.x] = t[0u32];", UNSUPPORTED),
     ("Try", "id.x?", PARAMETERS, "let t = id.x?; out[id.x] = 1.0f32;", Refused(Code::TryOperator)),
     ("TryBlock", "try { 1u32 }", PARAMETERS, "let t = try { 1u32 }; out[id.x] = 1.0f32;", UNSUPPORTED),
-    ("Tuple", "(1.0f32, 2.0f32)", PARAMETERS, "let t = (1.0f32, 2.0f32); out[id.x] = 1.0f32;", UNSUPPORTED),
     ("Unsafe", "unsafe { 1u32 }", PARAMETERS, "let t = unsafe { 1u32 }; out[id.x] = 1.0f32;",
      Refused(Code::UnsafeBlock)),
     ("While", "while true { }", PARAMETERS, "while true { } out[id.x] = 1.0f32;", Refused(Code::WhileNotSupported)),
@@ -317,6 +317,13 @@ const ARM_ONLY_PATTERNS: &[(&str, &str)] = &[
     ("Lit", "match id.x { 0u32 | 1u32 => { out[id.x] = 1.0f32; } _ => { out[id.x] = 2.0f32; } }"),
 ];
 
+/// (kind, a body with a `let` whose pattern is of that kind): the pattern of a tuple destructuring (m9.t). The ledger lists
+/// it, and the `for` and `if let` positions below still refuse it.
+#[rustfmt::skip]
+const LET_ONLY_PATTERNS: &[(&str, &str)] = &[
+    ("Tuple", "let (s, t) = (1.0f32, 2.0f32); out[id.x] = s + t;"),
+];
+
 /// (kind, a pattern of that kind): the kinds the validator refuses. Each is tried in every position where the
 /// validator takes a pattern (below), so a kind that one position starts to accept is noticed there. The kinds of
 /// [`ARM_ONLY_PATTERNS`] are in the list for the positions that still refuse them.
@@ -418,6 +425,15 @@ fn the_ledger_lists_exactly_the_pattern_kinds_the_validator_and_the_emitter_acce
         );
     }
 
+    for &(kind, body) in LET_ONLY_PATTERNS {
+        let source = probe_module(PARAMETERS, body);
+        assert_eq!(
+            verdict(&source),
+            Accepted,
+            "a `let` pattern of kind `{kind}`; {FIX}\n{source}"
+        );
+    }
+
     for &(kind, pattern) in REFUSED_PATTERNS {
         // A match arm takes every pattern (a top-level `|` and `..` included).
         let arm: syn::Expr = parse_str(&format!("match x {{ {pattern} => () }}"))
@@ -427,7 +443,8 @@ fn the_ledger_lists_exactly_the_pattern_kinds_the_validator_and_the_emitter_acce
         };
         let parsed = arm.arms[0].pat.clone();
         assert_eq!(variant_of(&format!("{parsed:?}")), kind, "`{pattern}`");
-        let arm_only = ARM_ONLY_PATTERNS.iter().any(|probe| probe.0 == kind);
+        let let_only = LET_ONLY_PATTERNS.iter().any(|probe| probe.0 == kind);
+        let arm_only = let_only || ARM_ONLY_PATTERNS.iter().any(|probe| probe.0 == kind);
         if arm_only {
             assert_eq!(kinds::pattern_kind(&parsed), Some(kind), "{kind}: {FIX}");
             assert!(
@@ -443,6 +460,10 @@ fn the_ledger_lists_exactly_the_pattern_kinds_the_validator_and_the_emitter_acce
         }
         for (position, template, code) in PATTERN_POSITIONS {
             let source = probe_module(PARAMETERS, &template.replace("{}", pattern));
+            if let_only && position == "let" {
+                // Accepted there; the probe is `LET_ONLY_PATTERNS`.
+                continue;
+            }
             if UNPARSEABLE_PATTERNS.contains(&(kind, position)) {
                 assert!(
                     parse_str::<syn::ItemMod>(&source).is_err(),
@@ -609,10 +630,8 @@ fn classification_without_validator(body: &str) -> Classification {
 fn a_kind_the_ledger_does_not_list_makes_the_kernel_grid_only() {
     for (what, body) in [
         ("a closure", "let f = |v: f32| v; out[id.x] = 1.0f32;"),
-        ("a tuple", "let t = (1.0f32, 2.0f32); out[id.x] = 1.0f32;"),
         ("an unlisted method", "out[id.x] = a[id.x].abs();"),
         ("a macro statement", "foo!(); out[id.x] = 1.0f32;"),
-        ("a tuple pattern", "let (s, t) = id.x; out[id.x] = 1.0f32;"),
         ("a loop", "loop { } out[id.x] = 1.0f32;"),
     ] {
         let classification = classification_without_validator(body);

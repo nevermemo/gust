@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: tuple-field/src/main.rs
+line: 7
+message: [GUST-E0212] a tuple is not a field of a struct: Rust gives a tuple no layout, so it has no `GpuPod` description; keep the tuple in a local, a parameter or a result and store its elements as fields of their own

@@ -149,6 +149,8 @@ pub(super) const LEDGER: &[Entry] = &[
     ),
     expression("Return", Excluded(Why::Return)),
     expression("Struct", Neutral),
+    // A tuple value `(a, b)` of two to eight elements (slice m9.t).
+    expression("Tuple", Neutral),
     expression("Unary", Neutral),
     // ---- statements ----
     entry(
@@ -166,6 +168,8 @@ pub(super) const LEDGER: &[Entry] = &[
     entry(Class::Pattern, "Type", Neutral),
     entry(Class::Pattern, "TupleStruct", Neutral),
     entry(Class::Pattern, "Wild", Neutral),
+    // The destructuring of a `let`: `let (a, b) = f();` (m9.t). A `for` or `if let` takes none.
+    entry(Class::Pattern, "Tuple", Neutral),
     // The arm patterns of a `match` that lowers to a `switch`: `E::A`, and `E::A | E::B` (m9.e1), and an integer literal,
     // `0` or `-1i32` (m9.e2). A `let`, `for` or `if let` takes none of them.
     entry(Class::Pattern, "Path", Neutral),
@@ -286,6 +290,7 @@ pub(super) fn expression_kind(expression: &syn::Expr) -> Option<&'static str> {
         syn::Expr::Reference(_) => "Reference",
         syn::Expr::Return(_) => "Return",
         syn::Expr::Struct(_) => "Struct",
+        syn::Expr::Tuple(_) => "Tuple",
         syn::Expr::Unary(_) => "Unary",
         _ => return None,
     })
@@ -307,6 +312,7 @@ pub(super) fn pattern_kind(pattern: &syn::Pat) -> Option<&'static str> {
         syn::Pat::Type(_) => "Type",
         syn::Pat::TupleStruct(_) => "TupleStruct",
         syn::Pat::Wild(_) => "Wild",
+        syn::Pat::Tuple(_) => "Tuple",
         syn::Pat::Path(_) => "Path",
         syn::Pat::Or(_) => "Or",
         syn::Pat::Lit(_) => "Lit",

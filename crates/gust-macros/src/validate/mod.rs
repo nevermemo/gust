@@ -570,6 +570,7 @@ pub(crate) fn validate_module_in(
         .collect();
     // Before the item loop: a `Workgroup<[Mode; 4]>` parameter would otherwise stop at the workgroup shape check (E0210).
     check_enum_layout(stage, items, &methods.enums)?;
+    check_tuple_layout(stage, items)?;
 
     for item in items {
         match item {
@@ -768,6 +769,9 @@ struct MethodTable {
     enums: HashMap<String, EnumFacts>,
     /// The helper functions whose result type is an enum of the module, by name, with the enum's name.
     enum_returns: HashMap<String, String>,
+    /// The helpers and methods whose result type is a tuple, by name (slice m9.t). A method is known by its name alone,
+    /// so a name that some impl gives a tuple result counts for every call of that name.
+    tuple_returns: HashSet<String>,
 }
 
 /// What the validator knows of a field-less enum of the module (slice m9.e1, D157).
@@ -880,11 +884,17 @@ fn method_table(items: &[syn::Item]) -> MethodTable {
     for item in items {
         if let syn::Item::Fn(function) = item
             && let syn::ReturnType::Type(_, ty) = &function.sig.output
-            && let Some(name) = enum_type_name(ty, &table.enums)
         {
-            table
-                .enum_returns
-                .insert(function.sig.ident.to_string(), name);
+            if let Some(name) = enum_type_name(ty, &table.enums) {
+                table
+                    .enum_returns
+                    .insert(function.sig.ident.to_string(), name);
+            }
+            if is_tuple_type(ty) {
+                table
+                    .tuple_returns
+                    .insert(function.sig.ident.unraw().to_string());
+            }
         }
     }
     for item in items {
@@ -901,6 +911,11 @@ fn method_table(items: &[syn::Item]) -> MethodTable {
             table
                 .members
                 .insert(format!("{owner}::{name}"), receiver.is_some());
+            if let syn::ReturnType::Type(_, ty) = &method.sig.output
+                && is_tuple_type(ty)
+            {
+                table.tuple_returns.insert(name.clone());
+            }
             if let Some(receiver) = receiver {
                 let facts = table.by_name.entry(name).or_default();
                 if receiver_is_ref_mut(receiver) {
@@ -1519,6 +1534,71 @@ fn check_enum_layout(
     Ok(())
 }
 
+/// GUST-E0212: a tuple is a value of the invocation, never a stored one. Rust gives a tuple no layout (the order and
+/// the padding of its elements are unspecified), so no `GpuPod` can describe one: a struct field, a buffer or uniform
+/// element and a `Workgroup` element naming a tuple anywhere inside the type are refused. A struct without named fields
+/// is left to GUST-E0104.
+fn check_tuple_layout(stage: &dyn StageProfile, items: &[syn::Item]) -> syn::Result<()> {
+    use crate::slang::{ParameterFlavor, parameter_flavor_in};
+
+    /// Whether a type holds a tuple with elements anywhere inside it.
+    struct Mention(bool);
+    impl<'ast> Visit<'ast> for Mention {
+        fn visit_type_tuple(&mut self, ty: &'ast syn::TypeTuple) {
+            self.0 |= !ty.elems.is_empty();
+            visit::visit_type_tuple(self, ty);
+        }
+    }
+    let mentions = |ty: &syn::Type| {
+        let mut scan = Mention(false);
+        scan.visit_type(ty);
+        scan.0
+    };
+    for item in items {
+        match item {
+            syn::Item::Struct(item) if matches!(item.fields, syn::Fields::Named(_)) => {
+                for field in &item.fields {
+                    if mentions(&field.ty) {
+                        return Err(diagnostics::error(
+                            Code::TupleInResource,
+                            &field.ty,
+                            "a tuple is not a field of a struct: Rust gives a tuple no layout, so it has no `GpuPod` description; keep the tuple in a local, a parameter or a result and store its elements as fields of their own",
+                        ));
+                    }
+                }
+            }
+            syn::Item::Fn(function)
+                if function
+                    .attrs
+                    .iter()
+                    .any(|attribute| attribute.path().is_ident("kernel")) =>
+            {
+                for argument in &function.sig.inputs {
+                    let syn::FnArg::Typed(argument) = argument else {
+                        continue;
+                    };
+                    if matches!(
+                        parameter_flavor_in(stage, &argument.ty),
+                        ParameterFlavor::StorageRead
+                            | ParameterFlavor::StorageReadWrite
+                            | ParameterFlavor::Uniform
+                            | ParameterFlavor::Workgroup
+                    ) && mentions(&argument.ty)
+                    {
+                        return Err(diagnostics::error(
+                            Code::TupleInResource,
+                            &argument.ty,
+                            "a tuple is not the element of a buffer, a uniform or workgroup memory: Rust gives a tuple no layout, so it has no `GpuPod` description; use a struct with named fields",
+                        ));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn validate_function(
     stage: &dyn StageProfile,
     function: &syn::ItemFn,
@@ -1666,6 +1746,9 @@ fn validate_function(
                     visitor
                         .enum_values
                         .insert(name.ident.unraw().to_string(), enum_name);
+                }
+                if is_tuple_type(&argument.ty) {
+                    visitor.tuple_values.insert(name.ident.unraw().to_string());
                 }
             }
             match parameter_flavor_in(stage, &argument.ty) {
@@ -1952,6 +2035,49 @@ struct TextureFacts {
     filterable: bool,
 }
 
+/// Whether `ty` is a tuple type with at least one element (`()` is the unit type, which is no tuple here).
+fn is_tuple_type(ty: &syn::Type) -> bool {
+    match ty {
+        syn::Type::Tuple(tuple) => !tuple.elems.is_empty(),
+        syn::Type::Paren(inner) => is_tuple_type(&inner.elem),
+        syn::Type::Group(inner) => is_tuple_type(&inner.elem),
+        _ => false,
+    }
+}
+
+/// The most elements a tuple has in the dialect (GUST-E0213). Slang has no such limit (spike M9.s0, P3: a 9-tuple
+/// compiles and validates); the bound is the dialect's own, to keep the surface that is tested small.
+const MAX_TUPLE_ELEMENTS: usize = 8;
+
+/// Why `element` cannot be an element type of a tuple, or `None`. An element is a path type other than `Option` and
+/// `Result` (scalars, vectors, matrices, module structs and enums) or a tuple; arrays, references and the rest are
+/// refused (GUST-E0213).
+fn tuple_element_problem(element: &syn::Type) -> Option<&'static str> {
+    match element {
+        syn::Type::Paren(inner) => tuple_element_problem(&inner.elem),
+        syn::Type::Group(inner) => tuple_element_problem(&inner.elem),
+        syn::Type::Tuple(_) => None,
+        syn::Type::Path(path) => {
+            let last = path.path.segments.last()?.ident.to_string();
+            matches!(last.as_str(), "Option" | "Result").then_some(
+                "a tuple element cannot be an `Option` or a `Result`: keep the optional value in its own local",
+            )
+        }
+        _ => Some(
+            "a tuple element is a scalar, vector, matrix, struct, enum or tuple type (no array, reference or other type)",
+        ),
+    }
+}
+
+/// `ty` without the parentheses and invisible groups around it.
+fn strip_type_parens(ty: &syn::Type) -> &syn::Type {
+    match ty {
+        syn::Type::Paren(inner) => strip_type_parens(&inner.elem),
+        syn::Type::Group(inner) => strip_type_parens(&inner.elem),
+        other => other,
+    }
+}
+
 /// `expression` without the parentheses and invisible groups around it.
 fn strip_parens(expression: &syn::Expr) -> &syn::Expr {
     match expression {
@@ -2141,6 +2267,9 @@ struct RestrictedVisitor {
     body_tail_match: Option<usize>,
     /// The parameters and locals whose type is an enum of the module, with the enum's name (by name, as `value_params`).
     enum_values: HashMap<String, String>,
+    /// The parameters and locals that hold a tuple, by name (slice m9.t; scoped like `enum_values`): a `match` on one
+    /// and a comparison of one have no lowering.
+    tuple_values: HashSet<String>,
     error: Option<syn::Error>,
 }
 
@@ -2170,7 +2299,143 @@ impl RestrictedVisitor {
             switch_depths: Vec::new(),
             body_tail_match: None,
             enum_values: HashMap::new(),
+            tuple_values: HashSet::new(),
             error: None,
+        }
+    }
+
+    /// Whether `expression` is a tuple, when the macro can tell without types: a tuple expression, a parameter or local
+    /// that holds one, or a call of a helper or method that returns one (a method by its name alone).
+    fn is_tuple_expr(&self, expression: &syn::Expr) -> bool {
+        match strip_parens(expression) {
+            syn::Expr::Tuple(tuple) => !tuple.elems.is_empty(),
+            syn::Expr::Path(path) if path.qself.is_none() => path
+                .path
+                .get_ident()
+                .is_some_and(|name| self.tuple_values.contains(&name.unraw().to_string())),
+            syn::Expr::Call(call) => matches!(
+                call.func.as_ref(),
+                syn::Expr::Path(path) if path.qself.is_none()
+                    && path.path.segments.last().is_some_and(|last| {
+                        self.methods.tuple_returns.contains(&last.ident.unraw().to_string())
+                    })
+            ),
+            syn::Expr::MethodCall(call) => self
+                .methods
+                .tuple_returns
+                .contains(&call.method.unraw().to_string()),
+            _ => false,
+        }
+    }
+
+    /// `let (a, b) = value;` and `let (a, b): (A, B) = value;` (slice m9.t): 2 to 8 plain identifiers, nothing nested.
+    fn visit_tuple_local<'ast>(
+        &mut self,
+        local: &'ast syn::Local,
+        tuple: &'ast syn::PatTuple,
+        annotation: Option<&'ast syn::Type>,
+    ) {
+        use syn::visit::Visit;
+        if tuple.elems.len() < 2 || tuple.elems.len() > MAX_TUPLE_ELEMENTS {
+            self.reject(
+                Code::TupleShape,
+                tuple,
+                &format!(
+                    "a tuple pattern has 2 to {MAX_TUPLE_ELEMENTS} elements, this one has {}",
+                    tuple.elems.len()
+                ),
+            );
+            return;
+        }
+        for element in &tuple.elems {
+            match element {
+                syn::Pat::Ident(ident) if ident.by_ref.is_some() || ident.subpat.is_some() => {
+                    self.reject(
+                        Code::BindingMode,
+                        element,
+                        "a tuple element binds by value: no `ref` and no `@`",
+                    );
+                    return;
+                }
+                syn::Pat::Ident(_) => {}
+                _ => {
+                    self.reject(
+                        Code::LetNeedsIdentifier,
+                        element,
+                        "a tuple destructuring binds one plain identifier per element: no nested pattern, `_` or `..`; \
+                         bind the element to a name and ignore it",
+                    );
+                    return;
+                }
+            }
+        }
+        if let Some(ty) = annotation {
+            let same_length = matches!(
+                strip_type_parens(ty),
+                syn::Type::Tuple(types) if types.elems.len() == tuple.elems.len()
+            );
+            if !same_length {
+                self.reject(
+                    Code::TupleShape,
+                    ty,
+                    "a tuple destructuring is annotated with a tuple type of the same length",
+                );
+                return;
+            }
+        }
+        if local
+            .init
+            .as_ref()
+            .is_some_and(|initial| initial.diverge.is_some())
+        {
+            self.reject(
+                Code::LetElse,
+                local,
+                "let-else requires control-flow lowering and is not supported yet",
+            );
+            return;
+        }
+        let element_types: Vec<Option<&syn::Type>> = match annotation.map(strip_type_parens) {
+            Some(syn::Type::Tuple(types)) => types.elems.iter().map(Some).collect(),
+            _ => vec![None; tuple.elems.len()],
+        };
+        // The initializer is evaluated before the names exist (`let (a, b) = f(a);` reads the outer `a`).
+        if let Some(ty) = annotation {
+            self.visit_type(ty);
+        }
+        if let Some(initial) = &local.init {
+            self.visit_expr(&initial.expr);
+        }
+        for (element, ty) in tuple.elems.iter().zip(element_types) {
+            let syn::Pat::Ident(ident) = element else {
+                continue;
+            };
+            let name = ident.ident.to_string();
+            if self.is_parameter_name(&name) {
+                self.reject(
+                    Code::ShadowedParameter,
+                    element,
+                    "GPU locals cannot shadow resource or dispatch-thread parameters",
+                );
+                return;
+            }
+            let key = ident.ident.unraw().to_string();
+            self.value_params.remove(&key);
+            self.result_values.remove(&ident.ident.to_string());
+            // What is not visible stays unknown: an enum held in a tuple is not tracked (documented limitation).
+            match ty.and_then(|ty| enum_type_name(ty, &self.methods.enums)) {
+                Some(enum_name) => {
+                    self.enum_values.insert(key.clone(), enum_name);
+                }
+                None => {
+                    self.enum_values.remove(&key);
+                }
+            }
+            if ty.is_some_and(is_tuple_type) {
+                self.tuple_values.insert(key);
+            } else {
+                self.tuple_values.remove(&key);
+            }
         }
     }
 
@@ -2235,7 +2500,23 @@ impl RestrictedVisitor {
     /// Judges a `match` that lowers to a Slang `switch` (slice m9.e1, D157, and e2 for integers and the value form) and
     /// visits its parts: on an enum (`E::A | E::B`, `_`) or on an integer (`0`, `1 | 2`, `-1i32`, `_`), as a statement or
     /// as the initializer of a typed `let`.
+    /// Refuses a `match` on a tuple (GUST-E0515; tuple patterns are not part of the dialect). Returns whether it did.
+    fn reject_tuple_scrutinee(&mut self, expression: &syn::ExprMatch) -> bool {
+        if !self.is_tuple_expr(&expression.expr) {
+            return false;
+        }
+        self.reject(
+            Code::MatchScrutinee,
+            &expression.expr,
+            "a tuple is not a `match` scrutinee (there are no tuple patterns): destructure it with `let (a, b) = t;` and match on a part",
+        );
+        true
+    }
+
     fn check_switch_match(&mut self, expression: &syn::ExprMatch, form: MatchForm) {
+        if self.reject_tuple_scrutinee(expression) {
+            return;
+        }
         let integer = expression
             .arms
             .iter()
@@ -2442,6 +2723,7 @@ impl RestrictedVisitor {
     /// The statements of a block whose last statement is its value; the block is a scope of its own.
     fn visit_value_block(&mut self, block: &syn::Block) {
         let outer = self.enum_values.clone();
+        let outer_tuples = self.tuple_values.clone();
         let (head, tail) = match block.stmts.split_last() {
             Some((syn::Stmt::Expr(tail, None), head)) => (head, Some(tail)),
             Some((syn::Stmt::Expr(syn::Expr::Return(_), Some(_)), _)) => {
@@ -2463,6 +2745,7 @@ impl RestrictedVisitor {
             self.visit_value_arm(tail);
         }
         self.enum_values = outer;
+        self.tuple_values = outer_tuples;
     }
 
     /// Whether `name` is a kernel parameter: a local cannot shadow one.
@@ -3184,6 +3467,14 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                     );
                     return;
                 }
+                if self.is_tuple_expr(&call.args[0]) {
+                    self.reject(
+                        Code::TupleShape,
+                        &call.args[0],
+                        "a tuple is not the payload of a `Some`: keep the optional value in a struct with named fields",
+                    );
+                    return;
+                }
                 // The callee is the prelude constructor, not a bare path value.
                 self.visit_expr(&call.args[0]);
                 return;
@@ -3194,6 +3485,14 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                         Code::OkErrArguments,
                         call,
                         "`Ok` and `Err` take exactly one argument",
+                    );
+                    return;
+                }
+                if self.is_tuple_expr(&call.args[0]) {
+                    self.reject(
+                        Code::TupleShape,
+                        &call.args[0],
+                        "a tuple is not the payload of an `Ok` or `Err`: return a struct with named fields",
                     );
                     return;
                 }
@@ -3357,6 +3656,25 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_binary(&mut self, binary: &'ast syn::ExprBinary) {
+        // Slang's `==` on a `Tuple` exists only when every element is a scalar, and its ordering not at all: a
+        // comparison of a visible tuple is refused (a tuple behind an unseen name is a Slang compile error).
+        if matches!(
+            binary.op,
+            syn::BinOp::Eq(_)
+                | syn::BinOp::Ne(_)
+                | syn::BinOp::Lt(_)
+                | syn::BinOp::Le(_)
+                | syn::BinOp::Gt(_)
+                | syn::BinOp::Ge(_)
+        ) && (self.is_tuple_expr(&binary.left) || self.is_tuple_expr(&binary.right))
+        {
+            self.reject(
+                Code::TupleShape,
+                binary,
+                "a tuple is not compared: Slang defines `==` on tuples of scalars only, and Rust's ordering of tuples has no Slang form; compare the elements (`a.0 == b.0 && a.1 == b.1`)",
+            );
+            return;
+        }
         // The place of an assignment or compound assignment, and the value of `*=` in a module that names a matrix
         // (lowered to `place = __gust_mul(place, value)`), evaluate a `&mut self` call in another order than Rust
         // (GUST-E0421, review m9.a2 M1). Reads that already match, `out[c.n] = c.next()` and `c.n += c.bump()`, stay.
@@ -3597,7 +3915,75 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             }
             return;
         }
+        // `t.0` .. `t.7`: a tuple has at most eight elements (a tuple struct is refused as GUST-E0104, so an unnamed
+        // field is a tuple element).
+        if let syn::Member::Unnamed(index) = &field.member
+            && index.index as usize >= MAX_TUPLE_ELEMENTS
+        {
+            self.reject(
+                Code::TupleShape,
+                field,
+                &format!(
+                    "a tuple has at most {MAX_TUPLE_ELEMENTS} elements, so `.{}` names none",
+                    index.index
+                ),
+            );
+            return;
+        }
         visit::visit_expr_field(self, field);
+    }
+
+    fn visit_type_tuple(&mut self, ty: &'ast syn::TypeTuple) {
+        // `()` is the unit type: the result of a function without a value.
+        if ty.elems.is_empty() {
+            return;
+        }
+        if ty.elems.len() < 2 || ty.elems.len() > MAX_TUPLE_ELEMENTS {
+            self.reject(
+                Code::TupleShape,
+                ty,
+                &format!(
+                    "a tuple type has 2 to {MAX_TUPLE_ELEMENTS} elements, this one has {}: group the values in a struct with named fields",
+                    ty.elems.len()
+                ),
+            );
+            return;
+        }
+        for element in &ty.elems {
+            if let Some(problem) = tuple_element_problem(element) {
+                self.reject(Code::TupleShape, element, problem);
+                return;
+            }
+        }
+        visit::visit_type_tuple(self, ty);
+    }
+
+    fn visit_expr_tuple(&mut self, tuple: &'ast syn::ExprTuple) {
+        if tuple.elems.is_empty() {
+            visit::visit_expr_tuple(self, tuple);
+            return;
+        }
+        if tuple.elems.len() < 2 || tuple.elems.len() > MAX_TUPLE_ELEMENTS {
+            self.reject(
+                Code::TupleShape,
+                tuple,
+                &format!(
+                    "a tuple has 2 to {MAX_TUPLE_ELEMENTS} elements, this one has {}: group the values in a struct with named fields",
+                    tuple.elems.len()
+                ),
+            );
+            return;
+        }
+        // Slang types `makeTuple(1, x)` with an `int` element where rustc may infer `u32` from the use of the tuple.
+        if let Some(literal) = tuple.elems.iter().find_map(unsuffixed_literal_only) {
+            self.reject(
+                Code::UnsuffixedLiteralLet,
+                literal,
+                "an integer literal without a suffix in a tuple gives the element no type of its own: Slang types it `int` while rustc infers the type from the later uses, so the two can differ; add a suffix (`1u32`, `-1i32`)",
+            );
+            return;
+        }
+        visit::visit_expr_tuple(self, tuple);
     }
 
     fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
@@ -3720,9 +4106,12 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         self.visit_expr(&binding.expr);
         // The bound name is not an enum value inside the block (it may shadow one), and the outer meaning returns after.
         let outer = self.enum_values.clone();
+        let outer_tuples = self.tuple_values.clone();
         self.enum_values.remove(&text);
+        self.tuple_values.remove(&text);
         self.visit_block(&expression.then_branch);
         self.enum_values = outer;
+        self.tuple_values = outer_tuples;
         if let Some((_, alternative)) = &expression.else_branch {
             self.visit_expr(alternative);
         }
@@ -3731,6 +4120,9 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     fn visit_expr_match(&mut self, expression: &'ast syn::ExprMatch) {
         // Reached for a `match` anywhere but a statement or the initializer of a `let` (`visit_local`): an argument, an
         // operand, an assigned value, a `return`, a bound.
+        if self.reject_tuple_scrutinee(expression) {
+            return;
+        }
         if is_switch_match(expression) {
             self.reject(
                 Code::ValueMatchForm,
@@ -3871,19 +4263,25 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         self.visit_expr(end);
         self.loop_depth += 1;
         let outer = self.enum_values.clone();
+        let outer_tuples = self.tuple_values.clone();
         if let Some(variable) = variable {
             self.enum_values.remove(&variable.ident.unraw().to_string());
+            self.tuple_values
+                .remove(&variable.ident.unraw().to_string());
         }
         self.visit_block(&expression.body);
         self.enum_values = outer;
+        self.tuple_values = outer_tuples;
         self.loop_depth -= 1;
     }
 
     fn visit_block(&mut self, block: &'ast syn::Block) {
         // An enum local lives to the end of its block: a `let` inside it that shadows an outer name is forgotten after.
         let outer = self.enum_values.clone();
+        let outer_tuples = self.tuple_values.clone();
         visit::visit_block(self, block);
         self.enum_values = outer;
+        self.tuple_values = outer_tuples;
     }
 
     fn visit_expr_while(&mut self, expression: &'ast syn::ExprWhile) {
@@ -3924,6 +4322,9 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 self.check_switch_match(expression, MatchForm::Statement);
             }
             syn::Stmt::Expr(syn::Expr::Match(expression), semicolon) => {
+                if self.reject_tuple_scrutinee(expression) {
+                    return;
+                }
                 let (ok_name, _, err_name, _) = match result_match_arms(expression) {
                     Ok(arms) => arms,
                     Err(error) => {
@@ -4063,6 +4464,10 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_local(&mut self, local: &'ast syn::Local) {
+        if let Some((tuple, annotation)) = crate::slang::tuple_pattern(&local.pat) {
+            self.visit_tuple_local(local, tuple, annotation);
+            return;
+        }
         if let Ok((pattern, _)) = crate::slang::local_binding(&local.pat) {
             let name = pattern.ident.to_string();
             if self.is_parameter_name(&name) {
@@ -4149,11 +4554,22 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             let key = binding.ident.unraw().to_string();
             match held {
                 Some(enum_name) => {
-                    self.enum_values.insert(key, enum_name);
+                    self.enum_values.insert(key.clone(), enum_name);
                 }
                 None => {
                     self.enum_values.remove(&key);
                 }
+            }
+            // The tuple a local holds (by name, like the enum): an annotation or a visible tuple initializer.
+            let tuple_held = matches!(&local.pat, syn::Pat::Type(typed) if is_tuple_type(&typed.ty))
+                || local
+                    .init
+                    .as_ref()
+                    .is_some_and(|initial| self.is_tuple_expr(&initial.expr));
+            if tuple_held {
+                self.tuple_values.insert(key);
+            } else {
+                self.tuple_values.remove(&key);
             }
         }
         let (pattern, annotated_result) = match &local.pat {

@@ -796,17 +796,21 @@ fn emit_discriminant(expression: &syn::Expr) -> syn::Result<String> {
     }
 }
 
-/// `switch (scrutinee) { case E::A: case E::B: { .. break; } default: { .. break; } }` for a statement `match` on an
-/// enum (slice m9.e1, D157). The scrutinee is one expression in the `switch`, so it is evaluated once. An arm that ends
-/// in `return` gets no `break` (slangc warns about unreachable code). An enum `match`
-/// without a `_` arm makes its last arm the `default` (in any position: rustc proved the arms exhaustive, and WGSL needs
-/// the function to return in every case of a `switch`; measured: slangc error 41009 otherwise).
-fn emit_enum_match(
+/// `switch (scrutinee) { case E::A: case E::B: { .. break; } default: { .. break; } }` for a `match` on an enum or on an
+/// integer (slices m9.e1 and m9.e2, D157). The scrutinee is one expression in the `switch`, so it is evaluated once.
+/// An arm that ends in `return` gets no `break` (slangc warns about unreachable code). An enum `match` without a `_`
+/// arm makes its last arm the `default` (in any position: rustc proved the arms exhaustive, and WGSL needs the function
+/// to return in every case of a `switch`; measured: slangc error 41009 otherwise). An integer `match` always has `_`.
+///
+/// With `target` (the value form, `let x: T = match e { .. };`) every arm assigns its value to `target`, which the
+/// caller declared before the `switch`; the `default` makes that assignment total.
+fn emit_switch(
     output: &mut String,
     table: &mut LineTable,
     expression: &syn::ExprMatch,
     indent: usize,
     index: usize,
+    target: Option<&str>,
 ) -> syn::Result<()> {
     let padding = "    ".repeat(indent);
     let inner = "    ".repeat(indent + 1);
@@ -830,36 +834,206 @@ fn emit_enum_match(
             let mut alternatives = Vec::new();
             flatten_alternatives(&arm.pat, &mut alternatives);
             for pattern in alternatives {
-                let syn::Pat::Path(path) = pattern else {
-                    return Err(diagnostics::error(
-                        Code::MatchPattern,
-                        pattern,
-                        "an enum `match` arm is `E::A`, `E::A | E::B` or `_`",
-                    ));
+                let label = match pattern {
+                    syn::Pat::Path(path) => emit_variant_path(&path.path),
+                    syn::Pat::Lit(literal) => emit_case_literal(literal)?,
+                    other => {
+                        return Err(diagnostics::error(
+                            Code::MatchPattern,
+                            other,
+                            "a `match` arm is `E::A`, an integer literal, `A | B` or `_`",
+                        ));
+                    }
                 };
-                writeln!(output, "{inner}case {}:", emit_variant_path(&path.path)).unwrap();
+                writeln!(output, "{inner}case {label}:").unwrap();
             }
         }
-        let syn::Expr::Block(body) = arm.body.as_ref() else {
-            return Err(diagnostics::error(
-                Code::MatchArmBlock,
-                &arm.body,
-                "each arm of a statement `match` is a block",
-            ));
-        };
         writeln!(output, "{inner}{{").unwrap();
-        emit_statements(output, table, &body.block.stmts, indent + 2, false)?;
-        let returns = matches!(
-            body.block.stmts.last(),
-            Some(syn::Stmt::Expr(syn::Expr::Return(_), _))
-        );
-        if !returns {
+        let diverges = if let Some(target) = target {
+            emit_value_arm(output, table, &arm.body, indent + 2, target)?
+        } else {
+            let syn::Expr::Block(body) = arm.body.as_ref() else {
+                return Err(diagnostics::error(
+                    Code::MatchArmBlock,
+                    &arm.body,
+                    "each arm of a statement `match` is a block",
+                ));
+            };
+            emit_statements(output, table, &body.block.stmts, indent + 2, false)?;
+            matches!(
+                body.block.stmts.last(),
+                Some(syn::Stmt::Expr(syn::Expr::Return(_), _))
+            )
+        };
+        if !diverges {
             writeln!(output, "{}break;", "    ".repeat(indent + 2)).unwrap();
         }
         writeln!(output, "{inner}}}").unwrap();
     }
     writeln!(output, "{padding}}}").unwrap();
     Ok(())
+}
+
+/// `T x;` and the `switch` that assigns it, for `let x: T = match e { .. };` (slice m9.e2). WGSL zero-initialises a `var`
+/// declared without a value, and every path of the `switch` assigns it (measured: slangc 2026.21, WGSL and SPIR-V).
+/// When the name of the local occurs in the `match` (the `match` reads an outer local of that name, or an arm declares
+/// one), the switch assigns a temporary and the local is declared from it after, so the `match` never reads the new
+/// local. A shadow in the same Slang scope as the outer local still fails in slangc (E30200, as for every `let`); the
+/// shadowing `let` belongs in a block of its own (SEMANTICS.md, section 9).
+fn emit_value_match(
+    output: &mut String,
+    table: &mut LineTable,
+    name: &syn::Ident,
+    ty: &syn::Type,
+    expression: &syn::ExprMatch,
+    indent: usize,
+    index: usize,
+) -> syn::Result<()> {
+    let padding = "    ".repeat(indent);
+    let declared = emit_ident(name);
+    let ty = emit_type(ty)?;
+    let target = if mentions_ident(expression.to_token_stream(), &name.unraw().to_string()) {
+        format!("__gust_match_{indent}_{index}")
+    } else {
+        declared.clone()
+    };
+    writeln!(output, "{padding}{ty} {target};").unwrap();
+    emit_switch(output, table, expression, indent, index, Some(&target))?;
+    if target != declared {
+        writeln!(output, "{padding}{ty} {declared} = {target};").unwrap();
+    }
+    Ok(())
+}
+
+/// Whether the identifier `name` occurs anywhere in `tokens`.
+fn mentions_ident(tokens: proc_macro2::TokenStream, name: &str) -> bool {
+    tokens.into_iter().any(|tree| match tree {
+        proc_macro2::TokenTree::Ident(ident) => ident.unraw() == name,
+        proc_macro2::TokenTree::Group(group) => mentions_ident(group.stream(), name),
+        _ => false,
+    })
+}
+
+/// The body of an arm of a value `match` at `indent`: assigns its value to `target`. Returns whether the arm ends in a
+/// `return`, so that it needs no `break`.
+fn emit_value_arm(
+    output: &mut String,
+    table: &mut LineTable,
+    body: &syn::Expr,
+    indent: usize,
+    target: &str,
+) -> syn::Result<bool> {
+    match body {
+        syn::Expr::Paren(inner) => emit_value_arm(output, table, &inner.expr, indent, target),
+        syn::Expr::Group(inner) => emit_value_arm(output, table, &inner.expr, indent, target),
+        syn::Expr::Block(block) if block.label.is_none() => {
+            emit_value_block(output, table, &block.block, indent, target)
+        }
+        other => emit_value_tail(output, table, other, indent, 0, target),
+    }
+}
+
+/// The statements of a block, then its value (the last statement, an expression without `;`) assigned to `target`.
+fn emit_value_block(
+    output: &mut String,
+    table: &mut LineTable,
+    block: &syn::Block,
+    indent: usize,
+    target: &str,
+) -> syn::Result<bool> {
+    match block.stmts.split_last() {
+        Some((syn::Stmt::Expr(tail, None), head)) if !matches!(tail, syn::Expr::Return(_)) => {
+            emit_statements(output, table, head, indent, false)?;
+            let record = table.begin(output, tail.span());
+            let diverges = emit_value_tail(output, table, tail, indent, head.len(), target)?;
+            table.finish_written(output, record);
+            Ok(diverges)
+        }
+        _ => {
+            emit_statements(output, table, &block.stmts, indent, false)?;
+            Ok(matches!(
+                block.stmts.last(),
+                Some(syn::Stmt::Expr(syn::Expr::Return(_), _))
+            ))
+        }
+    }
+}
+
+/// One value assigned to `target`: a nested value `match` is a `switch` of its own that assigns the same target, a
+/// struct literal is built in a temporary first (as for a `let`), anything else is `target = value;`.
+fn emit_value_tail(
+    output: &mut String,
+    table: &mut LineTable,
+    value: &syn::Expr,
+    indent: usize,
+    index: usize,
+    target: &str,
+) -> syn::Result<bool> {
+    let padding = "    ".repeat(indent);
+    match value {
+        syn::Expr::Paren(inner) => {
+            emit_value_tail(output, table, &inner.expr, indent, index, target)
+        }
+        syn::Expr::Group(inner) => {
+            emit_value_tail(output, table, &inner.expr, indent, index, target)
+        }
+        syn::Expr::Match(inner) if crate::validate::is_switch_match(inner) => {
+            emit_switch(output, table, inner, indent, index, Some(target))?;
+            Ok(false)
+        }
+        syn::Expr::Block(block) if block.label.is_none() => {
+            writeln!(output, "{padding}{{").unwrap();
+            let diverges = emit_value_block(output, table, &block.block, indent + 1, target)?;
+            writeln!(output, "{padding}}}").unwrap();
+            Ok(diverges)
+        }
+        syn::Expr::Return(_) => {
+            writeln!(output, "{padding}{};", emit_expression(value)?).unwrap();
+            Ok(true)
+        }
+        syn::Expr::Struct(literal) => {
+            let temporary = emit_struct_value(output, literal, indent, index)?;
+            writeln!(output, "{padding}{target} = {temporary};").unwrap();
+            Ok(false)
+        }
+        other => {
+            writeln!(output, "{padding}{target} = {};", emit_expression(other)?).unwrap();
+            Ok(false)
+        }
+    }
+}
+
+/// The label of an integer pattern: `0`, `uint(3000000000)`, `int(-2)`. The text follows `integer_literal`'s rules for
+/// the type of the literal; a negative value is written as `int(-n)`, which slangc accepts as a case label (measured).
+fn emit_case_literal(literal: &syn::ExprLit) -> syn::Result<String> {
+    let syn::Lit::Int(value) = &literal.lit else {
+        return Err(diagnostics::error(
+            Code::MatchPattern,
+            literal,
+            "only integer literals are patterns",
+        ));
+    };
+    let number: i128 = value.base10_parse().map_err(|_| {
+        diagnostics::error(
+            Code::MatchPattern,
+            literal,
+            "this integer literal does not parse",
+        )
+    })?;
+    Ok(match value.suffix() {
+        "u32" => format!("uint({number})"),
+        "i32" => format!("int({number})"),
+        "" if number < 0 => format!("int({number})"),
+        "" if number > i128::from(i32::MAX) => format!("uint({number})"),
+        "" => number.to_string(),
+        _ => {
+            return Err(diagnostics::error(
+                Code::UnsupportedLiteral,
+                literal,
+                "GPU literals support 32-bit numbers (i32, u32) only",
+            ));
+        }
+    })
 }
 
 /// The alternatives of an arm pattern: `A | B` flattened, parentheses looked through.
@@ -1016,6 +1190,33 @@ fn emit_statement(
                     "Slang let bindings require an initializer",
                 )
             })?;
+            // The value form (slice m9.e2): `T x;` and a `switch` that assigns it.
+            let mut value = initial.expr.as_ref();
+            while let syn::Expr::Paren(syn::ExprParen { expr, .. })
+            | syn::Expr::Group(syn::ExprGroup { expr, .. }) = value
+            {
+                value = expr;
+            }
+            if let syn::Expr::Match(expression) = value
+                && crate::validate::is_switch_match(expression)
+            {
+                let ty = annotation.ok_or_else(|| {
+                    diagnostics::error(
+                        Code::ValueMatchForm,
+                        expression,
+                        "a `match` that gives a value needs a typed `let`",
+                    )
+                })?;
+                return emit_value_match(
+                    output,
+                    table,
+                    &pattern.ident,
+                    ty,
+                    expression,
+                    indent,
+                    index,
+                );
+            }
             // Finish the initializer before introducing its binding: an inner
             // `let p = Pair { first: p.second, ... }` reads the outer `p`.
             if let syn::Expr::Struct(value) = initial.expr.as_ref() {
@@ -1053,8 +1254,8 @@ fn emit_statement(
                 is_tail && semicolon.is_none(),
                 index,
             )?,
-            syn::Expr::Match(expression) if crate::validate::is_enum_match(expression) => {
-                emit_enum_match(output, table, expression, indent, index)?
+            syn::Expr::Match(expression) if crate::validate::is_switch_match(expression) => {
+                emit_switch(output, table, expression, indent, index, None)?
             }
             syn::Expr::Match(expression) => {
                 emit_result_match(output, table, expression, indent, index)?

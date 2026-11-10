@@ -1762,6 +1762,11 @@ fn validate_function(
             }
         }
     }
+    if !matches!(function.sig.output, syn::ReturnType::Default)
+        && let Some(syn::Stmt::Expr(syn::Expr::Match(tail), None)) = function.block.stmts.last()
+    {
+        visitor.body_tail_match = Some(std::ptr::from_ref(tail) as usize);
+    }
     visitor.visit_item_fn(function);
     visitor.finish()?;
     check_workgroup_rules(stage, function, is_kernel)
@@ -1979,19 +1984,64 @@ fn first_variant_path(pattern: &syn::Pat) -> Option<&syn::Path> {
     })
 }
 
-/// Whether `expression` is a `match` with a path pattern in some arm: the enum form (slice m9.e1). A `Result` match
-/// has `Ok(..)`/`Err(..)` arms and never a path.
-pub(crate) fn is_enum_match(expression: &syn::ExprMatch) -> bool {
+/// Whether some alternative of an arm pattern is a literal (or a range, which is refused with the literals' message).
+fn has_literal_alternative(pattern: &syn::Pat) -> bool {
+    let mut alternatives = Vec::new();
+    flatten_or(pattern, &mut alternatives);
+    alternatives
+        .into_iter()
+        .any(|pattern| matches!(pattern, syn::Pat::Lit(_) | syn::Pat::Range(_)))
+}
+
+/// Whether `expression` is a `match` that lowers to a Slang `switch`: a path pattern (an enum, slice m9.e1), a literal
+/// or range pattern (an integer, slice m9.e2) in some arm, or only `_` arms. A `Result` match has `Ok(..)`/`Err(..)`
+/// arms and neither.
+pub(crate) fn is_switch_match(expression: &syn::ExprMatch) -> bool {
     expression
         .arms
         .iter()
-        .any(|arm| first_variant_path(&arm.pat).is_some())
+        .any(|arm| first_variant_path(&arm.pat).is_some() || has_literal_alternative(&arm.pat))
         // A `match` of `_` arms alone is no `Result` match either (that needs `Ok`/`Err`): it is the enum form.
         || (!expression.arms.is_empty()
             && expression
                 .arms
                 .iter()
                 .all(|arm| matches!(arm.pat, syn::Pat::Wild(_))))
+}
+
+/// The `match` that `expression` is, through parentheses, when it lowers to a `switch`.
+fn switch_match_of(expression: &syn::Expr) -> Option<&syn::ExprMatch> {
+    match strip_parens(expression) {
+        syn::Expr::Match(expression) if is_switch_match(expression) => Some(expression),
+        _ => None,
+    }
+}
+
+/// The value and the suffix of an integer-literal pattern, or why it is refused.
+fn integer_pattern(literal: &syn::ExprLit) -> Result<(i128, String), &'static str> {
+    let syn::Lit::Int(value) = &literal.lit else {
+        return Err(
+            "only integer literals (`0`, `1u32`, `-1i32`) are patterns of an integer `match`: a `bool` is tested with `if`, and floats, characters and strings have no lowering",
+        );
+    };
+    let suffix = value.suffix().to_owned();
+    if !matches!(suffix.as_str(), "" | "u32" | "i32") {
+        return Err(
+            "an integer pattern is unsuffixed or `u32`/`i32`: the dialect has no other integer type",
+        );
+    }
+    let number: i128 = value
+        .base10_parse()
+        .map_err(|_| "this integer literal does not parse")?;
+    let (low, high) = match suffix.as_str() {
+        "u32" => (0, i128::from(u32::MAX)),
+        "i32" => (i128::from(i32::MIN), i128::from(i32::MAX)),
+        _ => (i128::from(i32::MIN), i128::from(u32::MAX)),
+    };
+    if number < low || number > high {
+        return Err("this integer literal is outside the range of a 32-bit integer");
+    }
+    Ok((number, suffix))
 }
 
 /// The tail expression of a block when it is a value (no `;`, not a statement-like expression): the value form of a
@@ -2027,6 +2077,23 @@ fn is_compound_assignment(expression: &syn::Expr) -> bool {
             | syn::BinOp::BitAndAssign(_) | syn::BinOp::BitOrAssign(_) | syn::BinOp::ShlAssign(_)
             | syn::BinOp::ShrAssign(_))
     )
+}
+
+/// How a `match` that lowers to a `switch` is used (slice m9.e2).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MatchForm {
+    /// `match e { .. }` as a statement: every arm is a block that ends in a statement.
+    Statement,
+    /// `let x: T = match e { .. };`, and an arm or a block tail inside one: every arm gives a value.
+    Value,
+}
+
+/// What a `switch`-`match` is on.
+enum SwitchOn {
+    /// An enum of the module, by name.
+    Enum(String),
+    /// A `u32` or `i32`: literal patterns.
+    Integer,
 }
 
 struct RestrictedVisitor {
@@ -2069,6 +2136,9 @@ struct RestrictedVisitor {
     /// The `loop_depth` at the start of each enclosing enum `match` arm, innermost last: a `break` or `continue` at that
     /// depth would bind to the Slang `switch`, not to the Rust loop (GUST-E0417).
     switch_depths: Vec<usize>,
+    /// The `match` that ends the body of a function with a result type, by address (m9.e2 review S1): when its arms
+    /// give values it is a value in tail position, GUST-E0419.
+    body_tail_match: Option<usize>,
     /// The parameters and locals whose type is an enum of the module, with the enum's name (by name, as `value_params`).
     enum_values: HashMap<String, String>,
     error: Option<syn::Error>,
@@ -2098,6 +2168,7 @@ impl RestrictedVisitor {
             owner_fields: HashSet::new(),
             value_params: HashSet::new(),
             switch_depths: Vec::new(),
+            body_tail_match: None,
             enum_values: HashMap::new(),
             error: None,
         }
@@ -2161,34 +2232,63 @@ impl RestrictedVisitor {
         !self.methods.enums.is_empty() && scan(tokens.to_token_stream(), &self.methods.enums)
     }
 
-    /// Judges a statement `match` on an enum (slice m9.e1, D157) and visits its parts; it lowers to a Slang `switch`.
-    fn check_enum_match(&mut self, expression: &syn::ExprMatch) {
-        let scrutinee_ok = matches!(
-            strip_parens(&expression.expr),
-            syn::Expr::Path(_) | syn::Expr::Call(_) | syn::Expr::MethodCall(_)
-        );
-        // A method call's enum is not tracked; the first arm names it.
-        let named_by_arm = expression
+    /// Judges a `match` that lowers to a Slang `switch` (slice m9.e1, D157, and e2 for integers and the value form) and
+    /// visits its parts: on an enum (`E::A | E::B`, `_`) or on an integer (`0`, `1 | 2`, `-1i32`, `_`), as a statement or
+    /// as the initializer of a typed `let`.
+    fn check_switch_match(&mut self, expression: &syn::ExprMatch, form: MatchForm) {
+        let integer = expression
             .arms
             .iter()
-            .find_map(|arm| first_variant_path(&arm.pat))
-            .and_then(|path| {
+            .any(|arm| has_literal_alternative(&arm.pat));
+        let on = if integer {
+            // An integer scrutinee is any expression: `switch (e)` evaluates it once, and the patterns decide the form.
+            SwitchOn::Integer
+        } else {
+            let scrutinee_ok = matches!(
+                strip_parens(&expression.expr),
+                syn::Expr::Path(_) | syn::Expr::Call(_) | syn::Expr::MethodCall(_)
+            );
+            // A method call's enum is not tracked; the first arm names it.
+            let first_path = expression
+                .arms
+                .iter()
+                .find_map(|arm| first_variant_path(&arm.pat));
+            let named_by_arm = first_path.and_then(|path| {
                 let owner = path.segments.first()?.ident.unraw().to_string();
                 self.methods.enums.contains_key(&owner).then_some(owner)
             });
-        let Some(enum_name) = scrutinee_ok
-            .then(|| self.enum_of(&expression.expr).or(named_by_arm))
-            .flatten()
-        else {
-            self.reject(
-                Code::MatchScrutinee,
-                &expression.expr,
-                "a `match` on an enum takes a local, a parameter, a call or a variant as its scrutinee: bind a larger expression to a local first (`let m = ..; match m { .. }`)",
-            );
-            return;
+            let Some(enum_name) = scrutinee_ok
+                .then(|| self.enum_of(&expression.expr).or(named_by_arm))
+                .flatten()
+            else {
+                // A path that names no enum of the module (`u32::MAX`, `Other::A`) is a constant used as a pattern.
+                let constant = first_path.filter(|path| {
+                    path.segments.first().is_none_or(|first| {
+                        !self
+                            .methods
+                            .enums
+                            .contains_key(&first.ident.unraw().to_string())
+                    })
+                });
+                if let Some(path) = constant {
+                    self.reject(
+                        Code::MatchPattern,
+                        path,
+                        "a constant is not a pattern: an integer `match` takes literals (`0`, `1u32`, `-1i32`) and `_`, an enum `match` takes `E::A` of an enum of the module",
+                    );
+                    return;
+                }
+                self.reject(
+                    Code::MatchScrutinee,
+                    &expression.expr,
+                    "a `match` on an enum takes a local, a parameter, a call or a variant as its scrutinee: bind a larger expression to a local first (`let m = ..; match m { .. }`); a `match` on a `u32` or `i32` takes any expression but needs an integer literal arm (`0`, `1 | 2`) before its `_`",
+                );
+                return;
+            };
+            SwitchOn::Enum(enum_name)
         };
-        let variants = self.methods.enums[&enum_name].variants.clone();
         let mut seen: HashSet<String> = HashSet::new();
+        let mut seen_numbers: HashSet<i128> = HashSet::new();
         let mut wildcard = false;
         for arm in &expression.arms {
             if let Some(attribute) = arm.attrs.first() {
@@ -2203,7 +2303,7 @@ impl RestrictedVisitor {
                 self.reject(
                     Code::EnumMatchGuard,
                     guard,
-                    "a `match` arm on an enum takes no `if` guard: the Slang `switch` has no guard, and a guard would make the arm's coverage depend on a run-time value; test the condition inside the arm",
+                    "a `match` arm takes no `if` guard: the Slang `switch` has no guard, and a guard would make the arm's coverage depend on a run-time value; test the condition inside the arm",
                 );
                 return;
             }
@@ -2211,17 +2311,17 @@ impl RestrictedVisitor {
             flatten_or(&arm.pat, &mut alternatives);
             let lone = alternatives.len() == 1;
             for pattern in alternatives {
-                match pattern {
-                    syn::Pat::Wild(_) if lone => {
+                match (pattern, &on) {
+                    (syn::Pat::Wild(_), _) if lone => {
                         if wildcard {
                             self.reject(Code::MatchPattern, pattern, "a `match` has one `_` arm");
                             return;
                         }
                         wildcard = true;
                     }
-                    syn::Pat::Path(path) if path.qself.is_none() => {
+                    (syn::Pat::Path(path), SwitchOn::Enum(enum_name)) if path.qself.is_none() => {
                         match self.variant_path(&path.path) {
-                            Some((owner, variant)) if owner == enum_name => {
+                            Some((owner, variant)) if &owner == enum_name => {
                                 if !seen.insert(variant.clone()) || wildcard {
                                     self.reject(
                                         Code::MatchPattern,
@@ -2241,7 +2341,31 @@ impl RestrictedVisitor {
                             }
                         }
                     }
-                    _ => {
+                    (syn::Pat::Lit(literal), SwitchOn::Integer) => match integer_pattern(literal) {
+                        Ok((number, _)) => {
+                            if !seen_numbers.insert(number) || wildcard {
+                                self.reject(
+                                    Code::MatchPattern,
+                                    pattern,
+                                    &format!("`{number}` is matched twice, or after `_`: the second arm can never run"),
+                                );
+                                return;
+                            }
+                        }
+                        Err(reason) => {
+                            self.reject(Code::MatchPattern, pattern, reason);
+                            return;
+                        }
+                    },
+                    (syn::Pat::Range(_), _) => {
+                        self.reject(
+                            Code::MatchPattern,
+                            pattern,
+                            "a range is not a pattern of a `match` here: list the integer literals (`0 | 1 | 2`) or test the range with `if`",
+                        );
+                        return;
+                    }
+                    (_, SwitchOn::Enum(_)) => {
                         self.reject(
                             Code::MatchPattern,
                             pattern,
@@ -2249,35 +2373,96 @@ impl RestrictedVisitor {
                         );
                         return;
                     }
+                    (_, SwitchOn::Integer) => {
+                        self.reject(
+                            Code::MatchPattern,
+                            pattern,
+                            "an integer `match` arm is a literal (`0`, `1 | 2`, `-1i32`) or `_`: bindings, constants, enum variants (an enum `match` does not mix with literals), tuples and ranges have no lowering (an `_` joined by `|` is refused as well)",
+                        );
+                        return;
+                    }
                 }
             }
-            if !matches!(arm.body.as_ref(), syn::Expr::Block(_)) {
+            if form == MatchForm::Statement && !matches!(arm.body.as_ref(), syn::Expr::Block(_)) {
                 self.reject(
                     Code::MatchArmBlock,
                     &arm.body,
-                    "each arm of a statement `match` is a block: `E::A => { .. }`",
+                    "each arm of a statement `match` is a block: `E::A => { .. }`; an arm that gives a value belongs to `let x: T = match e { .. };` with a typed `let`",
                 );
                 return;
             }
         }
-        let _ = variants;
+        if matches!(on, SwitchOn::Integer) && !wildcard {
+            self.reject(
+                Code::MatchPattern,
+                expression,
+                "an integer `match` ends in a `_` arm: no list of literals covers every `u32` or `i32`",
+            );
+            return;
+        }
         self.visit_expr(&expression.expr);
         for arm in &expression.arms {
-            let syn::Expr::Block(body) = arm.body.as_ref() else {
-                continue;
-            };
-            if let Some(tail) = value_tail(&body.block) {
+            self.switch_depths.push(self.loop_depth);
+            match form {
+                MatchForm::Statement => {
+                    let syn::Expr::Block(body) = arm.body.as_ref() else {
+                        unreachable!("a statement `match` arm was checked to be a block")
+                    };
+                    if let Some(tail) = value_tail(&body.block) {
+                        self.switch_depths.pop();
+                        self.reject(
+                            Code::MatchAsValue,
+                            tail,
+                            "the arms of a statement `match` end in a statement; a tail expression makes the `match` a value, which is `let x: T = match e { .. };` with a typed `let`: bind it there, or end the arm's last statement with `;`",
+                        );
+                        return;
+                    }
+                    self.visit_block(&body.block);
+                }
+                MatchForm::Value => self.visit_value_arm(&arm.body),
+            }
+            self.switch_depths.pop();
+        }
+    }
+
+    /// An arm of a value `match`: an expression, a block that ends in an expression (or in a `return`), or a nested
+    /// value `match`. The value is assigned to the `let` it initializes.
+    fn visit_value_arm(&mut self, body: &syn::Expr) {
+        match strip_parens(body) {
+            syn::Expr::Block(block) if block.label.is_none() => {
+                self.visit_value_block(&block.block);
+            }
+            syn::Expr::Match(inner) if is_switch_match(inner) => {
+                self.check_switch_match(inner, MatchForm::Value);
+            }
+            other => self.visit_expr(other),
+        }
+    }
+
+    /// The statements of a block whose last statement is its value; the block is a scope of its own.
+    fn visit_value_block(&mut self, block: &syn::Block) {
+        let outer = self.enum_values.clone();
+        let (head, tail) = match block.stmts.split_last() {
+            Some((syn::Stmt::Expr(tail, None), head)) => (head, Some(tail)),
+            Some((syn::Stmt::Expr(syn::Expr::Return(_), Some(_)), _)) => {
+                (block.stmts.as_slice(), None)
+            }
+            _ => {
                 self.reject(
-                    Code::MatchAsValue,
-                    tail,
-                    "the arms of a statement `match` end in a statement; a tail expression makes the `match` a value, which is not supported yet: end the arm's last statement with `;`",
+                    Code::MatchArmBlock,
+                    block,
+                    "each arm of a value `match` gives a value: an expression, or a block whose last line is an expression without `;` (or a `return`)",
                 );
                 return;
             }
-            self.switch_depths.push(self.loop_depth);
-            self.visit_block(&body.block);
-            self.switch_depths.pop();
+        };
+        for statement in head {
+            self.visit_stmt(statement);
         }
+        if let Some(tail) = tail {
+            self.visit_value_arm(tail);
+        }
+        self.enum_values = outer;
     }
 
     /// Whether `name` is a kernel parameter: a local cannot shadow one.
@@ -3544,10 +3729,20 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_match(&mut self, expression: &'ast syn::ExprMatch) {
+        // Reached for a `match` anywhere but a statement or the initializer of a `let` (`visit_local`): an argument, an
+        // operand, an assigned value, a `return`, a bound.
+        if is_switch_match(expression) {
+            self.reject(
+                Code::ValueMatchForm,
+                expression,
+                "a `match` that gives a value is accepted only as the initializer of a typed `let`: `let x: u32 = match e { E::A => 1u32, _ => 2u32 };`; bind it to a typed local first, then use the local",
+            );
+            return;
+        }
         self.reject(
             Code::MatchAsValue,
             expression,
-            "a `match` (on a `Result` or on an enum) is supported only as a statement, not as a value",
+            "a `match` on a `Result` is supported only as a statement, not as a value",
         );
     }
 
@@ -3711,8 +3906,22 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_stmt(&mut self, statement: &'ast syn::Stmt) {
         match statement {
-            syn::Stmt::Expr(syn::Expr::Match(expression), _) if is_enum_match(expression) => {
-                self.check_enum_match(expression);
+            syn::Stmt::Expr(syn::Expr::Match(expression), None)
+                if is_switch_match(expression)
+                    && self.body_tail_match == Some(std::ptr::from_ref(expression) as usize)
+                    && expression.arms.iter().any(|arm| match arm.body.as_ref() {
+                        syn::Expr::Block(body) => value_tail(&body.block).is_some(),
+                        _ => true,
+                    }) =>
+            {
+                self.reject(
+                    Code::ValueMatchForm,
+                    expression,
+                    "a `match` that gives a value is accepted only as the initializer of a typed `let`, not as the tail of a function: `let x: u32 = match e { E::A => 1u32, _ => 2u32 }; x`; bind it to a typed local first, then return the local",
+                );
+            }
+            syn::Stmt::Expr(syn::Expr::Match(expression), _) if is_switch_match(expression) => {
+                self.check_switch_match(expression, MatchForm::Statement);
             }
             syn::Stmt::Expr(syn::Expr::Match(expression), semicolon) => {
                 let (ok_name, _, err_name, _) = match result_match_arms(expression) {
@@ -3903,7 +4112,28 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             );
             return;
         }
-        visit::visit_local(self, local);
+        if let Some(value_match) = local
+            .init
+            .as_ref()
+            .and_then(|initial| switch_match_of(&initial.expr))
+        {
+            // The value form (slice m9.e2): the initializer of a typed `let`, and of nothing else.
+            if !matches!(local.pat, syn::Pat::Type(_)) {
+                self.reject(
+                    Code::ValueMatchForm,
+                    value_match,
+                    "a `match` that gives a value needs a typed `let`, because the Slang local is declared before its `switch` assigns it: `let x: u32 = match e { E::A => 1u32, _ => 2u32 };`",
+                );
+                if let Ok((binding, _)) = crate::slang::local_binding(&local.pat) {
+                    self.enum_values.remove(&binding.ident.unraw().to_string());
+                }
+                return;
+            }
+            self.visit_pat(&local.pat);
+            self.check_switch_match(value_match, MatchForm::Value);
+        } else {
+            visit::visit_local(self, local);
+        }
         // The enum a local holds (by name; a rebinding to anything else forgets it).
         if let Ok((binding, _)) = crate::slang::local_binding(&local.pat) {
             let annotated = match &local.pat {

@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: match-pattern-repeat/src/main.rs
+line: 10
+message: [GUST-E0521] `1` is matched twice, or after `_`

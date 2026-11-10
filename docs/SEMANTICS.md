@@ -1282,3 +1282,50 @@ Everything else on this page stays **spec-allowed**, **unspecified**, **measured
 section 4 remain derived and measured on the examples listed under "Derived kernels" (polynomial, signal-pipeline,
 particle-step, typed-pipeline, staged-graph, component-pool) and on the gust-algo float sums above only. Those bounds
 are spec-allowed arithmetic checked by one GPU run, not a proof of the GPU's rounding; the floats are not **proven**.
+
+
+## 9. `match` on an enum or an integer (M9, D157)
+
+A `match` is a Slang `switch`. This section states what is accepted, what each form lowers to, the order of evaluation,
+and what is refused on purpose.
+
+**Two forms.** The statement form (`match e { 0 => { .. } 1 | 2 => { .. } _ => { .. } }`) has a block for each arm. The
+value form is accepted in one place only, the initializer of a `let` with a type:
+`let x: T = match e { 0 => 1u32, _ => { let t = e + 1u32; t * 2u32 } };`. An arm is an expression, or a block that ends in
+an expression or in a `return`, or a nested value `match`; the result may be a struct. A `match` that gives a value in
+any other position is `GUST-E0419`: an untyped `let`, an argument, an operand, the value of an assignment, a `return`, a
+bound, a condition, and the tail of a function with a result type (`fn f(v: u32) -> u32 { match v { 0 => 1u32, _ => 2u32 } }`;
+write `let r: u32 = match v { .. }; r`). A tail `match` whose arms `return`, or whose arms are unit blocks, is the
+statement form and stays accepted.
+
+**Lowering.** The value form becomes `T x;` followed by a `switch` whose arms assign `x` and `break`. With no `_` the
+last arm is the `default`, so every path assigns `x` (an enum is closed; an integer `match` must end in `_`, because no
+list of 32-bit literals is exhaustive). When the `match` names the let's own name, the arms assign a temporary
+`__gust_match_<n>_<k>` that `x` takes after the `switch`.
+
+**Shadowing.** The temporary keeps the `match` from reading the new local, but a `let` that shadows a name of the same
+Slang scope is not supported for any `let`: slangc refuses the second declaration (E30200, "conflicting declaration"),
+and the macro has no GUST code for it. The value form does not change that. Put the shadowing `let` in a block of its own
+(`if cond { let k: u32 = match k { .. }; .. }`), as the `match_value` fixture does.
+
+**Patterns.** An integer `match` takes literals of `u32` or `i32` (`0`, `1 | 2`, `3u32`, `-1i32`, `3000000000` on a
+`u32`), each value once, and a final `_`. Ranges, bindings, constants (`u32::MAX`), a `bool`, float or character literal,
+another integer type, and a guard are refused (`GUST-E0521`, `GUST-E0418`). An enum `match` takes `E::A` of an enum of the
+module and does not mix with literals.
+
+**Order of evaluation** (measured on Slang 2026.21, WGSL and SPIR-V; the GPU test `m9_match_value` runs the cases
+against hand-written values). The scrutinee is read once, before the arms. The operands of an arm are evaluated left to
+right as in Rust: `match c.n { 5 => c.n + c.tick(), .. }` reads `c.n` before `tick` runs, `c.tick() + c.n` after it, two
+calls in one arm run in order, and a struct-literal arm assigns its fields in the order written. A `&mut self` method
+called in the scrutinee and again in an arm runs once in each place, in that order, and only the arm taken runs its call.
+Nothing is refused for order; the place of an assignment inside an arm keeps `GUST-E0421`.
+
+**Uniformity (D154).** An arm runs for some invocations only. A barrier in an arm is `GUST-E0414`, a subgroup operation
+in an arm is `GUST-E0747` (without `requires(subgroups)` `GUST-E0745`), and one reached through a helper is refused at
+the helper like any helper that holds one. A subgroup operation in the scrutinee is also `GUST-E0747`, although every
+invocation evaluates the scrutinee: a `match` is not an approved position for an operation. This is a deliberate
+over-refusal; bind the result to a local first (`let s = subgroup_add(v);` then `match s { .. }`).
+
+**Edge cases.** The integer arithmetic inside an arm has the wrapping contract of section 3 (D39). Tests:
+`crates/gust-wgpu/tests/m9_match_value.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations) and the macro tests
+of the value form in `crates/gust-macros/src/tests/regression.rs` and `subgroup.rs`.

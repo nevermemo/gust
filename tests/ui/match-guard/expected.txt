@@ -3,4 +3,4 @@
 code: none
 file: match-guard/src/main.rs
 line: 22
-message: [GUST-E0418] a `match` arm on an enum takes no `if` guard
+message: [GUST-E0418] a `match` arm takes no `if` guard

@@ -1666,6 +1666,59 @@ fn assert_table_is_well_formed(emitted: &EmittedKernel, rust_lines: usize) {
     }
 }
 
+/// The `__gust_keep` definition is inserted after the kernel is emitted (m9.f1, r1), so the line table must move with
+/// it: every record still names the Slang line of its own statement.
+#[test]
+fn line_table_follows_the_inserted_keep_helper() {
+    let source = concat!(
+        "mod demo {\n",                                                               // 1
+        "    fn both(x: bool, y: bool) -> uint {\n",                                  // 2
+        "        if x { if y { return 1u32; } }\n",                                   // 3
+        "        0u32\n",                                                             // 4
+        "    }\n",                                                                    // 5
+        "    #[kernel]\n",                                                            // 6
+        "    fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {\n", // 7
+        "        let a = out[0];\n",                                                  // 8
+        "        out[1] = both(a < 3u32, a > 1u32);\n",                               // 9
+        "    }\n",                                                                    // 10
+        "}\n",
+    );
+    let emitted = translate_with_lines(source).unwrap();
+    assert_eq!(
+        emitted
+            .source
+            .matches("bool __gust_keep(bool value)")
+            .count(),
+        1,
+        "{}",
+        emitted.source
+    );
+    assert_table_is_well_formed(&emitted, 11);
+    let by_rust_line = |line: u32| {
+        let record = emitted
+            .lines
+            .iter()
+            .find(|record| record.rust_line == line)
+            .unwrap_or_else(|| panic!("no record for line {line}\n{}", emitted.source));
+        slang_line(&emitted.source, record.slang_start)
+    };
+    assert!(
+        by_rust_line(2).starts_with("uint both("),
+        "{}",
+        emitted.source
+    );
+    assert!(
+        by_rust_line(8).starts_with("var a = "),
+        "{}",
+        emitted.source
+    );
+    assert!(
+        by_rust_line(9).contains("both(__gust_keep("),
+        "{}",
+        emitted.source
+    );
+}
+
 #[test]
 fn line_table_records_statements_helpers_and_structs_at_their_rust_lines() {
     let source = concat!(
@@ -3481,6 +3534,92 @@ fn keep_is_not_added_where_the_list_cannot_misparse() {
     ] {
         assert!(source.contains(plain), "missing {plain}\n{source}");
     }
+}
+
+/// Every list kind that wraps an element defines the helper on its own (m9.f1: the scan missed method calls, so a
+/// module whose only wrapped list was a method call failed in slangc with an undefined `__gust_keep`). Each module
+/// here has exactly one wrapped list, so the helper's definition must come from that list alone. The macro crate has
+/// no slangc (the compile tests live in `gust-compute-wgpu`, which depends on it), so this test is textual: slangc
+/// compiles the method-only module (`keep_methods`) and the all-kinds module (`keep_calls`) in
+/// `crates/gust-wgpu/tests/m9_methods_mut.rs`. Arrays are not in the dialect before m9 r1, and constructor and
+/// subgroup operands are not `bool`, so those lists have no case here.
+#[test]
+fn keep_helper_is_defined_for_each_list_kind() {
+    let module = |extra: &str, body: &str| {
+        translate(&format!(
+            "mod m {{
+                pub struct S {{ pub n: uint }}
+                impl S {{
+                    pub fn get(&self, x: bool, y: bool) -> uint {{ if x {{ if y {{ return 1u32; }} }} self.n }}
+                    pub fn put(&mut self, x: bool, y: bool) {{ if x {{ if y {{ self.n = 1u32; }} }} }}
+                    pub fn make(x: bool, y: bool) -> uint {{ if x {{ if y {{ return 1u32; }} }} 0u32 }}
+                    {extra}
+                }}
+                fn plain(x: bool, y: bool) -> uint {{ if x {{ if y {{ return 1u32; }} }} 0u32 }}
+                #[kernel] fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>) {{
+                    let a: uint = out[0];
+                    let mut s = S {{ n: a }};
+                    {body}
+                }}
+            }}"
+        ))
+        .unwrap()
+    };
+    for (kind, body, wrapped) in [
+        (
+            "method call, &self",
+            "out[1] = s.get(a < 3u32, a > 1u32);",
+            "s.get(__gust_keep(",
+        ),
+        (
+            "method call, &mut self",
+            "s.put(a < 3u32, a > 1u32); out[1] = s.n;",
+            "s.put(__gust_keep(",
+        ),
+        (
+            "associated function",
+            "out[1] = S::make(a < 3u32, a > 1u32);",
+            "make(__gust_keep(",
+        ),
+        (
+            "Self:: call in a method",
+            "out[1] = s.again(a);",
+            "make(__gust_keep(",
+        ),
+        (
+            "function call",
+            "out[1] = plain(a < 3u32, a > 1u32);",
+            "plain(__gust_keep(",
+        ),
+        (
+            "xor operands",
+            "if (a < 3u32) ^ (a > 1u32) { out[1] = a; }",
+            "__gust_xor(__gust_keep(",
+        ),
+    ] {
+        let extra = "pub fn again(&self, a: uint) -> uint { Self::make(a < 3u32, a > 1u32) }";
+        let source = module(if kind.starts_with("Self") { extra } else { "" }, body);
+        assert_eq!(
+            source.matches("bool __gust_keep(bool value)").count(),
+            1,
+            "{kind}: no helper definition\n{source}"
+        );
+        assert!(
+            source.contains(wrapped),
+            "{kind}: missing {wrapped}\n{source}"
+        );
+        // The helper is defined before its first use.
+        assert!(
+            source.find("bool __gust_keep(bool") < source.find("(__gust_keep("),
+            "{kind}: {source}"
+        );
+    }
+    // A `<` in the last argument defines nothing.
+    let none = module(
+        "",
+        "out[1] = s.get(a > 1u32, a < 3u32); s.put(a > 1u32, a <= 3u32); out[2] = S::make(a > 1u32, a < 3u32);",
+    );
+    assert!(!none.contains("__gust_keep"), "{none}");
 }
 
 /// `__gust_keep` is emitted only in a module that has a list with a wrapped element, like the other `__gust_*`

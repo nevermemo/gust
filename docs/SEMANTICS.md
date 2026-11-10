@@ -1337,8 +1337,11 @@ A tuple is a value of the invocation: two to eight elements, each a scalar, a ve
 the module, or a tuple. It is accepted as a local, a parameter, the result of a helper or a method, and an argument of
 a helper or a method (`&self` and `&mut self`). It is never stored: a struct field, a buffer, a uniform and workgroup
 memory refuse it (`GUST-E0212`). An element is a value type: a buffer, uniform, workgroup array, texture, sampler or
-invocation id as an element (in a type, a literal or a parameter) is `GUST-E0212` too, because a helper takes values only
-(D154) and a tuple would carry the resource in.
+invocation id type as an element (in a type or a parameter) is `GUST-E0212` too, because a helper takes values only
+(D154) and a tuple would carry the resource in. In a tuple literal, a buffer, uniform, texture or sampler parameter is
+refused the same way; a workgroup array parameter (`(scratch, 0u32)`) and the invocation id (`(id, 1u32)`) are not yet
+(review m9.t re-check R1): the first copies the array into the tuple, the second is a `UVec3` value, and neither gives
+a wrong value.
 
 **Forms.** A literal `(a, b)`; the type `(u32, f32)`; the element `t.0` (and `t.1.0` on a tuple of tuples), also as a
 place (`t.0 = e;`, `t.1 += e;`) and on a call result (`f().1`); the destructuring `let (x, y) = f(..);` and

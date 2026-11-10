@@ -122,6 +122,7 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   struct (`GUST-E0104`); a nested pattern, `_` or `..` in a destructuring (`GUST-E0319`, whose text now allows the tuple
   pattern); a tuple as a `match` scrutinee (`GUST-E0515`). The elements are evaluated in the order of Rust (measured), so
   nothing is refused for order. On an RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin.
+- Fixed (m9.f1): a method call with a `<` comparison argument before another argument, such as `s.m(a < b, c)`, failed in slangc with an undefined `__gust_keep`, because the scan that defines that helper did not visit method calls.
 
 ### Changed, and may break code written for 0.1.0
 

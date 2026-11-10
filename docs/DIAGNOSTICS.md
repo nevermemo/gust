@@ -421,7 +421,7 @@ Decision: D157 (M9 plan 2.2, slice m9.e1).
 
 ### GUST-E0212 tuple in a struct field, a buffer, a uniform or workgroup memory; a resource in a tuple
 
-A tuple is a value of the invocation and is never stored: it has no `GpuPod` layout. It lives in locals, parameters and results of helpers and methods; store its elements in the fields of a struct with named fields. A tuple element must be a value type: a buffer, uniform, workgroup array, texture, sampler or invocation id is a resource of the kernel, and a helper takes values only (D154, GUST-E0111), so a tuple may not carry one in (review m9.t M2).
+A tuple is a value of the invocation and is never stored: it has no `GpuPod` layout. It lives in locals, parameters and results of helpers and methods; store its elements in the fields of a struct with named fields. A tuple element must be a value type: a buffer, uniform, workgroup array, texture, sampler or invocation id is a resource of the kernel, and a helper takes values only (D154, GUST-E0111), so a tuple may not carry one in (review m9.t M2). In a tuple literal, a workgroup array parameter and the invocation id are not refused yet (review m9.t re-check R1); neither gives a wrong value.
 Reached through `#[gpu]`.
 Rejected: `struct S { p: (u32, f32) }`, `StructuredBuffer<(u32, u32)>`, `RWStructuredBuffer<(u32, u32)>`, a uniform or `Workgroup<[(u32, u32); N]>` parameter, `fn f(t: (StructuredBuffer<u32>, u32))`, `let t = (input, id.x);` with `input` a buffer parameter.
 Write instead: a struct with a named field per element, or one buffer per element; pass the buffer to the kernel body, not through a tuple.

@@ -12,8 +12,8 @@
 use std::collections::BTreeMap;
 
 use crate::ast::{
-    BinOp, Expr, FnDef, InputBuf, Lane, MAX_FLAT, MAX_TRIPS, Methods, Place, Program, Recv, Root,
-    Stmt, StructDef, Ty, WIDTHS, chain_terms,
+    Arm, BinOp, EnumDef, Expr, FnDef, InputBuf, Lane, MAX_ENUMS, MAX_FLAT, MAX_TRIPS, MAX_VARIANTS,
+    Methods, Pat, Place, Program, Recv, Root, Stmt, StructDef, Ty, WIDTHS, chain_terms,
 };
 use crate::interp;
 use crate::prng::{Prng, byte_stream};
@@ -39,7 +39,14 @@ use crate::prng::{Prng, byte_stream};
 /// `&mut self` and by-value `self` methods and associated functions, and helpers that call them; the decoding of the
 /// float and vector spaces is unchanged (a seed's first eight float and first five vector programs are those of
 /// format 7), the batch cut is new.
-pub const DIFFTEST_FORMAT: u32 = 8;
+/// 9: enums and the statement `match` (slice m9.d1b, D166): a seed's batch is seven float, five vector, one method and
+/// three enum programs; an enum program (`Space::Enum`, attempts from `ENUM_ATTEMPT_BASE`) is a method program with
+/// field-less enums (`u32` or `i32` repr, literal discriminants), enum locals, parameters and returns, `==`/`!=` and `as`
+/// on them, statement `match` (grouped arms, `_` or the `default` rule, nested, in a `for`, arms that assign, call or
+/// `return`), biased toward the order-sensitive shapes. The method space also changed (the biased shift amount is
+/// `call & 31`, and same-root `&=` and `>>=` are reachable), so its format-8 programs and pin are re-taken; the float and
+/// vector spaces are unchanged (a seed's first seven float and first five vector programs are those of format 8).
+pub const DIFFTEST_FORMAT: u32 = 9;
 
 /// Which programs the generator writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +63,9 @@ pub enum Space {
     /// Integers and booleans with module structs and their methods (slice m9.d1a, format 8): no floats, no vectors.
     /// Selected by an attempt number of `METHOD_ATTEMPT_BASE` or more.
     Method,
+    /// The method space plus enums and the statement `match` (slice m9.d1b, format 9). Selected by an attempt number of
+    /// `ENUM_ATTEMPT_BASE` or more.
+    Enum,
 }
 
 /// The first attempt number of the vector space. A program is a pure function of `(seed, attempt)`, and the attempt
@@ -66,16 +76,24 @@ pub const VECTOR_ATTEMPT_BASE: u64 = 1_000_000;
 pub const METHOD_ATTEMPT_BASE: u64 = 2_000_000;
 /// In-domain programs of a seed's batch that are scalar (the float space), then vector, then method
 /// (`PROGRAMS_PER_SEED` in all).
-pub const SCALAR_PROGRAMS_PER_SEED: usize = 8;
+pub const SCALAR_PROGRAMS_PER_SEED: usize = 7;
 pub const VECTOR_PROGRAMS_PER_SEED: usize = 5;
-pub const METHOD_PROGRAMS_PER_SEED: usize =
-    PROGRAMS_PER_SEED - SCALAR_PROGRAMS_PER_SEED - VECTOR_PROGRAMS_PER_SEED;
-/// Where the vector programs of a batch end and the method programs begin.
+pub const METHOD_PROGRAMS_PER_SEED: usize = 1;
+pub const ENUM_PROGRAMS_PER_SEED: usize = PROGRAMS_PER_SEED
+    - SCALAR_PROGRAMS_PER_SEED
+    - VECTOR_PROGRAMS_PER_SEED
+    - METHOD_PROGRAMS_PER_SEED;
+/// The first attempt number of the enum space (above every method attempt a seed can make).
+pub const ENUM_ATTEMPT_BASE: u64 = 3_000_000;
+/// Where the vector programs of a batch end and the method programs begin, where those end and the enum programs begin.
 pub const VECTOR_END: usize = SCALAR_PROGRAMS_PER_SEED + VECTOR_PROGRAMS_PER_SEED;
+pub const METHOD_END: usize = VECTOR_END + METHOD_PROGRAMS_PER_SEED;
 
 /// The space whose decoder reads the program of this attempt number.
 pub fn space_of_attempt(attempt: u64) -> Space {
-    if attempt >= METHOD_ATTEMPT_BASE {
+    if attempt >= ENUM_ATTEMPT_BASE {
+        Space::Enum
+    } else if attempt >= METHOD_ATTEMPT_BASE {
         Space::Method
     } else if attempt >= VECTOR_ATTEMPT_BASE {
         Space::Vector
@@ -159,6 +177,12 @@ struct Gen<'a> {
     this: Option<(Ty, Recv)>,
     /// Roots of the receivers of the calls whose arguments are being drawn: no `&mut self` call on them there.
     forbid: Vec<Root>,
+    /// The enum space (implies `methods`): enums, `match` and `return`. Every draw they add sits behind this flag.
+    enums: bool,
+    /// While a helper function is drawn: its result type, so that an arm or a `then` block may end in `return`.
+    cur_ret: Option<Ty>,
+    /// The function being drawn must return an enum (the tables must hold at least one such function).
+    force_enum_ret: bool,
 }
 
 /// A data value as a literal; i32::MIN is written as the expression -2147483647 - 1 (the emitter never writes the
@@ -200,6 +224,9 @@ impl Gen<'_> {
 
     /// The type of a local: a scalar, or in the vector space often a vector or a matrix.
     fn pick_ty(&mut self) -> Ty {
+        if self.enums && self.b.chance(28) {
+            return self.enum_ty();
+        }
         if self.vectors {
             return match self.b.weighted(&[18, 18, 8, 16, 40]) {
                 0 => Ty::U32,
@@ -246,8 +273,8 @@ impl Gen<'_> {
             return literal;
         }
         match ty {
-            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) => {
-                unreachable!("a vector, matrix or struct has no literal")
+            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) => {
+                unreachable!("a vector, matrix, struct or enum has no literal")
             }
             Ty::F32 => self.float_literal(),
             Ty::Bool => Expr::bool(self.b.below(2) == 1),
@@ -300,6 +327,9 @@ impl Gen<'_> {
     fn leaf(&mut self, ty: Ty) -> Expr {
         if ty.is_aggregate() {
             return self.agg_leaf(ty);
+        }
+        if ty.is_enum() {
+            return self.enum_leaf(ty);
         }
         let vars = self.vars(ty);
         let inputs = self.inputs_of(ty);
@@ -402,6 +432,9 @@ impl Gen<'_> {
         if ty.is_aggregate() {
             return self.agg_expr(ty, depth);
         }
+        if ty.is_enum() {
+            return self.enum_expr(ty, depth);
+        }
         let leaf_chance = if depth == 0 {
             100
         } else {
@@ -423,6 +456,20 @@ impl Gen<'_> {
             && let Some(pair) = self.root_binary(ty, d)
         {
             return pair;
+        }
+        // An enum read back as its repr type (`e as u32`).
+        if self.enums && ty.is_int() && self.b.chance(9) {
+            let reprs: Vec<u8> = (0..self.table.enums.len() as u8)
+                .filter(|&k| self.table.enums[usize::from(k)].repr == ty)
+                .collect();
+            if !reprs.is_empty() {
+                let k = reprs[self.b.below(reprs.len() as u32) as usize];
+                let inner = self.enum_expr(Ty::Enum(k), d);
+                return Expr::EnumAs {
+                    to: ty,
+                    e: Box::new(inner),
+                };
+            }
         }
         if ty == Ty::Bool {
             return self.bool_expr(d);
@@ -905,6 +952,9 @@ impl Gen<'_> {
     }
 
     fn bool_expr(&mut self, d: u32) -> Expr {
+        if self.enums && self.b.chance(40) {
+            return self.enum_compare(d);
+        }
         let mut weights = vec![55, 20, 10, 5];
         if self.floats {
             weights = vec![50, 20, 10, 8, 18];
@@ -981,8 +1031,13 @@ impl Gen<'_> {
                 weights.push(if statement_calls.is_empty() { 0 } else { 22 });
                 weights.push(10);
             }
+            // 7: a statement `match` (the enum space).
+            if self.enums {
+                weights.push(26 * nest);
+            }
             let kind = self.b.weighted(&weights);
             match kind {
+                7 => stmts.push(self.match_stmt(depth)),
                 4 => stmts.push(self.set_stmt(&targets)),
                 5 => stmts.extend(self.statement_call(&statement_calls)),
                 6 => {
@@ -1015,7 +1070,8 @@ impl Gen<'_> {
                 1 => stmts.push(self.assign()),
                 2 => {
                     let cond = self.condition();
-                    let then = self.block(depth + 1, 1, 3);
+                    let mut then = self.block(depth + 1, 1, 3);
+                    self.maybe_return(&mut then, 25);
                     let els = self.block(depth + 1, 0, 2);
                     stmts.push(Stmt::If { cond, then, els });
                 }
@@ -1074,7 +1130,7 @@ impl Gen<'_> {
         if ty.is_aggregate() {
             return self.assign_agg(var, ty);
         }
-        let value = if self.b.chance(45) {
+        let value = if !ty.is_enum() && self.b.chance(45) {
             // The accumulating form: the target is one operand.
             let current = Expr::Var(var, ty);
             let rhs = self.expr(ty, 3);
@@ -1218,11 +1274,14 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         count: 1,
         next_var: 0,
         scope: Vec::new(),
-        methods: space == Space::Method,
+        methods: matches!(space, Space::Method | Space::Enum),
         table: Methods::default(),
         cur_fn: None,
         this: None,
         forbid: Vec::new(),
+        enums: space == Space::Enum,
+        cur_ret: None,
+        force_enum_ret: false,
     };
     let count = match g.b.below(6) {
         k @ 0..=4 => COUNTS[k as usize],
@@ -1348,6 +1407,11 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
                 let product = Expr::agg_bin(BinOp::Mul, Expr::Var(var, var_ty), column);
                 Expr::comp(product, g.b.below(u32::from(n)) as u8)
             }
+            // An enum local joins the result as its repr value.
+            Ty::Enum(k) => Expr::EnumAs {
+                to: g.table.enums[usize::from(k)].repr,
+                e: Box::new(Expr::Var(var, var_ty)),
+            },
             _ => Expr::Var(var, var_ty),
         };
         result = fold_in(result, local);
@@ -1414,6 +1478,9 @@ pub struct Batch {
     /// Of `attempts`, the attempts of the method part, and of `discarded`, the discards of the method part.
     pub method_attempts: u64,
     pub method_discarded: BTreeMap<&'static str, u32>,
+    /// Of `attempts`, the attempts of the enum part, and of `discarded`, the discards of the enum part.
+    pub enum_attempts: u64,
+    pub enum_discarded: BTreeMap<&'static str, u32>,
 }
 
 impl Batch {
@@ -1445,6 +1512,7 @@ pub fn generate_batch(seed: u64) -> Result<Batch, String> {
     fill(&mut batch, Space::Float, SCALAR_PROGRAMS_PER_SEED)?;
     fill(&mut batch, Space::Vector, VECTOR_PROGRAMS_PER_SEED)?;
     fill(&mut batch, Space::Method, METHOD_PROGRAMS_PER_SEED)?;
+    fill(&mut batch, Space::Enum, ENUM_PROGRAMS_PER_SEED)?;
     Ok(batch)
 }
 
@@ -1465,6 +1533,8 @@ fn empty_batch(seed: u64) -> Batch {
         vector_discarded: BTreeMap::new(),
         method_attempts: 0,
         method_discarded: BTreeMap::new(),
+        enum_attempts: 0,
+        enum_discarded: BTreeMap::new(),
     }
 }
 
@@ -1473,6 +1543,7 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
     let first = match space {
         Space::Vector => VECTOR_ATTEMPT_BASE,
         Space::Method => METHOD_ATTEMPT_BASE,
+        Space::Enum => ENUM_ATTEMPT_BASE,
         _ => 0,
     };
     let target = batch.programs.len() + want;
@@ -1480,11 +1551,17 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
         batch.attempts += 1;
         batch.vector_attempts += u64::from(space == Space::Vector);
         batch.method_attempts += u64::from(space == Space::Method);
+        batch.enum_attempts += u64::from(space == Space::Enum);
         let program = generate_attempt_in(space, batch.seed, attempt);
-        // A vector program that came out scalar tests nothing new, nor does a method program that calls nothing.
+        // A vector program that came out scalar tests nothing new, nor does a method program that calls nothing, nor
+        // an enum program without a `match`.
         let reason = if space == Space::Vector && !program.has_aggregate() {
             Some("no-aggregate")
         } else if space == Space::Method && !program.has_call() {
+            Some("no-call")
+        } else if space == Space::Enum && !program.has_match() {
+            Some("no-match")
+        } else if space == Space::Enum && !program.has_call() {
             Some("no-call")
         } else {
             discard_reason(&program)
@@ -1497,6 +1574,9 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
                 }
                 if space == Space::Method {
                     *batch.method_discarded.entry(reason).or_default() += 1;
+                }
+                if space == Space::Enum {
+                    *batch.enum_discarded.entry(reason).or_default() += 1;
                 }
             }
             None => batch.programs.push(program),
@@ -1599,7 +1679,7 @@ impl Gen<'_> {
             ),
             _ => {
                 debug_assert!(ty.is_int(), "a struct field is a u32 or an i32");
-                let op = self.b.chance(55).then(|| {
+                let op = self.b.chance(70).then(|| {
                     [
                         BinOp::Add,
                         BinOp::Add,
@@ -1613,7 +1693,11 @@ impl Gen<'_> {
                         BinOp::BitAnd,
                         BinOp::Shl,
                         BinOp::Shr,
-                    ][self.b.below(12) as usize]
+                        // `&=`, `>>=` and `%=` again: the same-root forms of each are reached with the call as the value.
+                        BinOp::BitAnd,
+                        BinOp::Shr,
+                        BinOp::Rem,
+                    ][self.b.below(15) as usize]
                 });
                 // A shift takes a `u32` amount whatever the place's type.
                 let value_ty = if op.is_some_and(|op| op.is_shift()) {
@@ -1623,7 +1707,7 @@ impl Gen<'_> {
                 };
                 // A share of the values call a `&mut self` method on the place's own root: the order rules of
                 // `place op= value` (the place is read after the value) are only observable then.
-                let biased = if self.b.chance(60) {
+                let biased = if self.b.chance(75) {
                     self.root_call(value_ty, place.root, 3)
                 } else {
                     None
@@ -1631,6 +1715,10 @@ impl Gen<'_> {
                 let value = match (biased, op) {
                     (Some(call), Some(BinOp::Div | BinOp::Rem)) => {
                         Expr::bin(BinOp::BitOr, call, Expr::Lit(value_ty, 1))
+                    }
+                    // A shift amount is written `call & 31`, so the call's value stays below the width.
+                    (Some(call), Some(BinOp::Shl | BinOp::Shr)) => {
+                        Expr::bin(BinOp::BitAnd, call, Expr::u32(31))
                     }
                     (Some(call), _) => call,
                     (None, Some(BinOp::Div | BinOp::Rem)) => self.divisor(ty, 3),
@@ -1718,8 +1806,12 @@ impl Gen<'_> {
         }
         let mut args = Vec::new();
         let mut complete = true;
+        let mut enum_root: Option<Root> = None;
         for (_, ty) in &def.params {
             match ty {
+                // An enum argument is often built from a call, and two of them from calls on one root: the arguments
+                // run left to right, so the first call's effect on the root is what the second one sees.
+                Ty::Enum(_) => args.push(self.enum_arg(*ty, depth, &mut enum_root)),
                 // A struct literal is only a `let` initializer or the right side of an assignment (E0810): an
                 // argument is a local, a field, or the value of a call.
                 Ty::Struct(j) => match self.struct_expr(*j, depth, false) {
@@ -1974,9 +2066,22 @@ impl Gen<'_> {
                 self.table.structs[j].fields = vec![Ty::U32, Ty::I32];
             }
         }
-        for k in 0..3 + self.b.below(4) as usize {
+        if self.enums {
+            self.gen_enums();
+        }
+        let total = 3 + self.b.below(4) as usize;
+        for k in 0..total {
+            // The enum space needs a function that returns an enum: the last one is forced to if none is yet.
+            self.force_enum_ret = self.enums
+                && k + 1 == total
+                && !self
+                    .table
+                    .fns
+                    .iter()
+                    .any(|def| matches!(def.ret, Some(Ty::Enum(_))));
             self.gen_fn(k);
         }
+        self.force_enum_ret = false;
     }
 
     fn gen_fn(&mut self, k: usize) {
@@ -1985,8 +2090,11 @@ impl Gen<'_> {
         let first_bool = k == 0 && self.b.chance(35);
         let kind = if first_bool {
             2
+        } else if self.force_enum_ret {
+            // Not an associated function: it returns its struct.
+            [0, 1, 2, 3][self.b.weighted(&[10, 15, 55, 20])]
         } else {
-            self.b.weighted(&[20, 20, 28, 12, 20])
+            self.b.weighted(&[18, 18, 26, 18, 20])
         };
         let recv = [Recv::None, Recv::Shared, Recv::Mut, Recv::Value, Recv::None][kind];
         // An associated function builds its struct from a literal, which needs every field to be a scalar.
@@ -2012,24 +2120,42 @@ impl Gen<'_> {
             .map(|o| (Ty::Struct(o), recv));
         let mut params = Vec::new();
         // A by-value method takes at least one parameter, mostly a `u32`: the slot of a `&mut self` call's value.
-        let count = self.b.below(3).max(u32::from(kind == 3));
+        let count = if self.enums {
+            1 + self.b.below(3)
+        } else {
+            self.b.below(3).max(u32::from(kind == 3))
+        };
+        let mut prev_enum = false;
         for slot in 0..count {
             let ty = if kind == 3 && slot == 0 && self.b.chance(70) {
                 Ty::U32
+            } else if self.enums && prev_enum && self.b.chance(60) {
+                self.enum_ty()
             } else if self.b.chance(18) {
                 Ty::Struct(self.b.below(structs) as u8)
+            } else if self.enums && self.b.chance(30) {
+                self.enum_ty()
             } else {
                 [Ty::U32, Ty::I32, Ty::Bool][self.b.weighted(&[40, 40, 20])]
             };
             let var = self.fresh();
+            prev_enum = ty.is_enum();
             self.scope.push((var, ty, false));
             params.push((var, ty));
         }
         let ret = match kind {
             _ if first_bool => Some(Ty::Bool),
             4 => owner.map(Ty::Struct),
+            _ if self.force_enum_ret => Some(self.enum_ty()),
             2 if self.b.chance(40) => None,
+            _ if self.enums && self.b.chance(30) => Some(self.enum_ty()),
             _ => Some([Ty::U32, Ty::I32, Ty::Bool][self.b.weighted(&[40, 40, 20])]),
+        };
+        // A helper (no receiver, no owner) may end a block in `return`.
+        self.cur_ret = if self.enums && recv == Recv::None && owner.is_none() {
+            ret
+        } else {
+            None
         };
         let mut body = Vec::new();
         if recv == Recv::Mut {
@@ -2066,8 +2192,254 @@ impl Gen<'_> {
             tail,
         });
         self.cur_fn = None;
+        self.cur_ret = None;
         self.this = None;
         self.scope.clear();
+    }
+}
+
+/// The enum space (format 9, slice m9.d1b): the enum tables, enum values and the statement `match`.
+impl Gen<'_> {
+    /// One to two enums of two to five variants, a `u32` or `i32` repr, literal discriminants: an explicit value from a
+    /// list of boundaries, or the count-up of the macro (the previous value plus one). Values are distinct.
+    fn gen_enums(&mut self) {
+        const UNSIGNED: [u32; 13] = [
+            0,
+            1,
+            2,
+            3,
+            5,
+            7,
+            10,
+            100,
+            255,
+            65535,
+            0x7FFF_FFFF,
+            0x8000_0000,
+            0xFFFF_FFF0,
+        ];
+        const SIGNED: [i32; 13] = [
+            -100,
+            -7,
+            -2,
+            -1,
+            0,
+            1,
+            2,
+            5,
+            10,
+            255,
+            65535,
+            i32::MAX - 3,
+            i32::MIN + 5,
+        ];
+        let count = 1 + self.b.below(MAX_ENUMS as u32) as usize;
+        for _ in 0..count {
+            let repr = if self.b.chance(50) { Ty::U32 } else { Ty::I32 };
+            let n = 2 + self.b.below(MAX_VARIANTS as u32 - 1) as usize;
+            let mut variants: Vec<(u32, bool)> = Vec::new();
+            for _ in 0..n {
+                let up = match variants.last() {
+                    None => Some(0u32),
+                    Some(&(p, _)) if repr == Ty::I32 => (p as i32).checked_add(1).map(|v| v as u32),
+                    Some(&(p, _)) => p.checked_add(1),
+                };
+                let taken = |v: u32, variants: &[(u32, bool)]| variants.iter().any(|x| x.0 == v);
+                if !self.b.chance(45)
+                    && let Some(v) = up
+                    && !taken(v, &variants)
+                {
+                    variants.push((v, false));
+                    continue;
+                }
+                let start = self.b.below(13) as usize;
+                let value = (0..13)
+                    .map(|k| {
+                        let pick = (start + k) % 13;
+                        if repr == Ty::I32 {
+                            SIGNED[pick] as u32
+                        } else {
+                            UNSIGNED[pick]
+                        }
+                    })
+                    .find(|&v| !taken(v, &variants))
+                    .expect("thirteen values, at most four taken");
+                variants.push((value, true));
+            }
+            self.table.enums.push(EnumDef { repr, variants });
+        }
+    }
+
+    fn enum_ty(&mut self) -> Ty {
+        Ty::Enum(self.b.below(self.table.enums.len() as u32) as u8)
+    }
+
+    /// A variable of the enum type or one of its variants.
+    fn enum_leaf(&mut self, ty: Ty) -> Expr {
+        let Ty::Enum(e) = ty else {
+            unreachable!("an enum type")
+        };
+        let vars = self.vars(ty);
+        if !vars.is_empty() && self.b.chance(60) {
+            return Expr::Var(vars[self.b.below(vars.len() as u32) as usize], ty);
+        }
+        let v = self
+            .b
+            .below(self.table.enums[usize::from(e)].variants.len() as u32) as u8;
+        Expr::Variant { e, v }
+    }
+
+    /// An enum value comes from a variant path, a variable (a local or a parameter) or the result of a call, never from
+    /// an integer.
+    fn enum_expr(&mut self, ty: Ty, depth: u32) -> Expr {
+        if self.methods
+            && depth > 0
+            && self.b.chance(35)
+            && let Some(call) = self.value_call(ty, depth - 1)
+        {
+            return call;
+        }
+        self.enum_leaf(ty)
+    }
+
+    /// A root with a writable struct place that no enclosing call is borrowing.
+    fn pick_writable_root(&mut self) -> Option<Root> {
+        let mut roots: Vec<Root> = Vec::new();
+        for (place, _, writable) in self.struct_places() {
+            if writable && !self.forbid.contains(&place.root) && !roots.contains(&place.root) {
+                roots.push(place.root);
+            }
+        }
+        if roots.is_empty() {
+            return None;
+        }
+        Some(roots[self.b.below(roots.len() as u32) as usize])
+    }
+
+    /// An enum argument: often a `&mut self` call on a root shared with the other enum arguments of the call.
+    fn enum_arg(&mut self, ty: Ty, depth: u32, shared: &mut Option<Root>) -> Expr {
+        if depth >= 2 && self.b.chance(85) {
+            let root = match *shared {
+                Some(root) => Some(root),
+                None => self.pick_writable_root(),
+            };
+            if let Some(root) = root
+                && let Some(call) = self.root_call(ty, root, depth - 1)
+            {
+                *shared = Some(root);
+                return call;
+            }
+        }
+        self.enum_expr(ty, depth)
+    }
+
+    /// `==` or `!=` of two enum values; often two `&mut self` calls on one root (the left one runs first).
+    fn enum_compare(&mut self, d: u32) -> Expr {
+        let ty = self.enum_ty();
+        let op = if self.b.chance(50) {
+            BinOp::Eq
+        } else {
+            BinOp::Ne
+        };
+        if self.b.chance(75)
+            && let Some(root) = self.pick_writable_root()
+            && let Some(l) = self.root_call(ty, root, 2)
+            && let Some(r) = self.root_call(ty, root, 2)
+        {
+            return Expr::bin(op, l, r);
+        }
+        let l = self.enum_expr(ty, d);
+        let r = self.enum_expr(ty, d);
+        Expr::bin(op, l, r)
+    }
+
+    /// A block ending in `return value` of the function's result type, in a helper, `percent` of the time.
+    fn maybe_return(&mut self, body: &mut Vec<Stmt>, percent: u32) {
+        if !self.enums {
+            return;
+        }
+        if let Some(ret) = self.cur_ret
+            && self.b.chance(percent)
+        {
+            let value = self.expr(ret, 3);
+            body.push(Stmt::Return { value });
+        }
+    }
+
+    /// A statement `match` on an enum: the variants are shuffled and cut into groups (grouped arms); `_` replaces the
+    /// last group 45 % of the time, otherwise every variant is named and the last arm is the `default` of the Slang
+    /// `switch`. The scrutinee is a variable, a call (often a `&mut self` call on a root that an arm uses), or a path.
+    fn match_stmt(&mut self, depth: u32) -> Stmt {
+        let e = self.b.below(self.table.enums.len() as u32) as u8;
+        let ty = Ty::Enum(e);
+        let n = self.table.enums[usize::from(e)].variants.len();
+        let mut bias_root = None;
+        let mut scrut = None;
+        match self.b.weighted(&[30, 45, 18, 7]) {
+            1 => {
+                if let Some(root) = self.pick_writable_root()
+                    && let Some(call) = self.root_call(ty, root, 3)
+                {
+                    bias_root = Some(root);
+                    scrut = Some(call);
+                }
+            }
+            2 => scrut = self.value_call(ty, 2),
+            3 => {
+                let v = self.b.below(n as u32) as u8;
+                scrut = Some(Expr::Variant { e, v });
+            }
+            _ => {}
+        }
+        let scrut = match scrut {
+            Some(scrut) => scrut,
+            None => self.enum_leaf(ty),
+        };
+        let mut order: Vec<u8> = (0..n as u8).collect();
+        for k in (1..order.len()).rev() {
+            let other = self.b.below(k as u32 + 1) as usize;
+            order.swap(k, other);
+        }
+        let mut groups: Vec<Vec<u8>> = vec![vec![order[0]]];
+        for &v in &order[1..] {
+            if self.b.chance(40) {
+                groups.last_mut().expect("a group").push(v);
+            } else {
+                groups.push(vec![v]);
+            }
+        }
+        let wild = self.b.chance(45);
+        if wild {
+            if groups.len() == 1 {
+                let last = groups[0].pop().expect("two variants at least");
+                groups.push(vec![last]);
+            }
+            groups.pop();
+        }
+        let mut pats: Vec<Pat> = groups.into_iter().map(Pat::Variants).collect();
+        if wild {
+            pats.push(Pat::Wild);
+        }
+        let mut arms = Vec::new();
+        for pat in pats {
+            let mut body = self.block(depth + 1, 0, 2);
+            // An arm that uses the root the scrutinee's call mutated: the call's effect is what the arm sees.
+            if let Some(root) = bias_root
+                && self.b.chance(70)
+            {
+                let targets: Vec<(Place, Ty)> = self
+                    .set_targets()
+                    .into_iter()
+                    .filter(|(place, _)| place.root == root)
+                    .collect();
+                if !targets.is_empty() {
+                    body.insert(0, self.set_stmt(&targets));
+                }
+            }
+            self.maybe_return(&mut body, 30);
+            arms.push(Arm { pat, body });
+        }
+        Stmt::Match { scrut, arms }
     }
 }
 
@@ -2424,7 +2796,7 @@ mod tests {
         let mut loop_accumulators = 0;
         let mut float_outputs = 0;
         let mut float_to_int = 0;
-        for seed in 1..=8 {
+        for seed in 1..=16 {
             for program in generate_batch(seed).unwrap().programs {
                 for (key, count) in operator_counts(&program) {
                     *total.entry(key).or_default() += count;

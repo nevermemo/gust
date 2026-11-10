@@ -82,6 +82,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 add("attempts".into(), batch.attempts);
                 add("vector-attempts".into(), batch.vector_attempts);
                 add("method-attempts".into(), batch.method_attempts);
+                add("enum-attempts".into(), batch.enum_attempts);
                 for (reason, n) in &batch.discarded {
                     add(format!("discard {reason}"), u64::from(*n));
                 }
@@ -91,6 +92,15 @@ fn run(args: &[String]) -> Result<(), String> {
                 for (reason, n) in &batch.method_discarded {
                     add(format!("method-discard {reason}"), u64::from(*n));
                 }
+                for (reason, n) in &batch.enum_discarded {
+                    add(format!("enum-discard {reason}"), u64::from(*n));
+                }
+                let enums = batch
+                    .programs
+                    .iter()
+                    .filter(|p| !p.methods.enums.is_empty())
+                    .count();
+                add("enum-programs".into(), enums as u64);
                 let methods = batch
                     .programs
                     .iter()
@@ -107,6 +117,9 @@ fn run(args: &[String]) -> Result<(), String> {
                             || name.starts_with("call ")
                             || name.starts_with("set ")
                             || name.starts_with("shape ")
+                            || name.starts_with("match")
+                            || name.starts_with("enum ")
+                            || name == "return"
                             || name == difftest::ast::STRUCT_LIT
                         {
                             add(format!("operator {name}"), n as u64);
@@ -119,6 +132,9 @@ fn run(args: &[String]) -> Result<(), String> {
                     {
                         for (name, n) in &coverage.operators {
                             if name.starts_with("shape ")
+                                || name.starts_with("match")
+                                || name.starts_with("enum ")
+                                || name == "return"
                                 || name.starts_with("call ")
                                 || name.starts_with("set ")
                             {

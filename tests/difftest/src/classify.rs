@@ -15,7 +15,7 @@ use crate::runsrc::Planned;
 /// The four discard classes of R1-4 and the generator's two extra reasons, in report order. The `domain` class is the
 /// integer labels (`overflow`, `division-by-zero`, `min-over-minus-one`, `shift-amount`, `index`) plus `float-domain`
 /// plus `static`.
-pub const CLASSES: [&str; 7] = [
+pub const CLASSES: [&str; 8] = [
     "domain",
     "comparison-overlap",
     "unboundable",
@@ -23,6 +23,7 @@ pub const CLASSES: [&str; 7] = [
     "no-input-read",
     "no-aggregate",
     "no-call",
+    "no-match",
 ];
 
 /// The class of a discard reason (a `Violation::label`, `static`, `no-input-read`, `no-aggregate` or `no-call`).
@@ -36,6 +37,7 @@ pub fn discard_class(reason: &str) -> &'static str {
         "no-input-read" => "no-input-read",
         "no-aggregate" => "no-aggregate",
         "no-call" => "no-call",
+        "no-match" => "no-match",
         // A label this table does not know is a new violation: it must be classified here on purpose.
         other => panic!("discard reason {other:?} has no class"),
     }
@@ -53,7 +55,9 @@ pub fn element_text(ty: Ty, bits: u32) -> String {
         Ty::F32 => format!("{:?} (0x{bits:08x})", f32::from_bits(bits)),
         Ty::I32 => format!("{}", bits as i32),
         Ty::Bool | Ty::U32 => format!("{bits}"),
-        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) => unreachable!("the output buffer is scalar"),
+        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) => {
+            unreachable!("the output buffer is scalar")
+        }
     }
 }
 
@@ -623,7 +627,13 @@ mod tests {
             let class = discard_class(violation.label());
             assert!(CLASSES.contains(&class), "{violation:?}");
         }
-        for reason in ["static", "no-input-read", "no-aggregate", "no-call"] {
+        for reason in [
+            "static",
+            "no-input-read",
+            "no-aggregate",
+            "no-call",
+            "no-match",
+        ] {
             assert!(CLASSES.contains(&discard_class(reason)));
         }
     }
@@ -650,6 +660,7 @@ mod tests {
         assert_eq!(discard_class("no-input-read"), "no-input-read");
         assert_eq!(discard_class("no-aggregate"), "no-aggregate");
         assert_eq!(discard_class("no-call"), "no-call");
+        assert_eq!(discard_class("no-match"), "no-match");
     }
 
     #[test]

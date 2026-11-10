@@ -15,8 +15,9 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::agg::{self, Agg, Scalar};
 use crate::ast::{
-    ASSIGN_COMP, BinOp, Expr, Place, Program, Recv, Root, SHAPE_EXPR_CALL, SHAPE_STMT_CALL,
-    STRUCT_LIT, Stmt, Ty, UnOp, bin_shape, call_name, call_shape, set_name, set_shape,
+    ASSIGN_COMP, BinOp, Expr, Pat, Place, Program, Recv, Root, SHAPE_EXPR_CALL, SHAPE_STMT_CALL,
+    STRUCT_LIT, Stmt, Ty, UnOp, bin_shape, call_name, call_shape, enum_as_name, enum_call_shapes,
+    match_names, match_shape, set_name, set_shape,
 };
 use crate::float::{self, Fl};
 
@@ -265,6 +266,35 @@ struct Machine<'a> {
     coverage: Option<Box<Counting>>,
     /// The first value of every expression node (by address), kept only by `observed_values`.
     observed: Option<HashMap<usize, u32>>,
+    /// Set by `return` in a helper: the value the function ends with; every enclosing block stops while it is set.
+    returned: Option<Val>,
+    /// `for` bodies and `match` arms the running function is inside (reset per call), for the counted names.
+    for_depth: u32,
+    arm_depth: u32,
+    /// Test hook for the mutation checks (slice m9.d1b); `None` is the Rust semantics.
+    mutant: Option<Mutant>,
+}
+
+/// The mutant that the test run asks for through `DIFFTEST_MUTANT` (`default-first-arm` or `scrutinee-twice`). Only the
+/// hand-vector tests apply it (`enum_tests::value_of`); `run` stays the reference, so an `xfail-` run fails exactly the
+/// vector that catches the mutant. Not compiled outside the tests.
+#[cfg(test)]
+pub(crate) fn env_mutant() -> Option<Mutant> {
+    match std::env::var("DIFFTEST_MUTANT").as_deref() {
+        Ok("default-first-arm") => Some(Mutant::DefaultTakesFirstArm),
+        Ok("scrutinee-twice") => Some(Mutant::ScrutineeTwice),
+        _ => None,
+    }
+}
+
+/// A deliberately wrong `match` evaluation, used only by the `xfail-` mutation tests to show the vectors catch it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mutant {
+    /// In a `match` without `_`, the variants of the last arm (the Slang `default`) go to the first arm instead (a
+    /// mis-applied `default` rule).
+    DefaultTakesFirstArm,
+    /// The scrutinee is evaluated again for every arm tried (read twice).
+    ScrutineeTwice,
 }
 
 /// What `run_covered` counts while it runs.
@@ -515,10 +545,19 @@ impl Machine<'_> {
             | Expr::AggBin { .. }
             | Expr::AggNeg { .. } => self.eval_aggregate(expr),
             Expr::Read { place, .. } => Ok(self.place_get(place)),
+            Expr::Variant { e, v } => Ok(Val::I(
+                self.program.methods.enums[usize::from(*e)].variants[usize::from(*v)].0,
+            )),
+            Expr::EnumAs { to, e } => {
+                self.count_name(&enum_as_name(*to));
+                // The discriminant bits are already the repr value (an `i32` repr holds its two's complement).
+                Ok(Val::I(self.expr(e)?.int()))
+            }
             Expr::Call { f, recv, args, .. } => {
                 if self.program.methods.fns[*f].recv == Recv::Mut {
                     self.count_name(SHAPE_EXPR_CALL);
                 }
+                self.count_enum_args(args);
                 let value = self.call(*f, recv, args)?;
                 Ok(value.expect("a value call has a tail"))
             }
@@ -575,6 +614,15 @@ impl Machine<'_> {
                     }
                     _ => Ok(value),
                 }
+            }
+        }
+    }
+
+    /// Counts the enum-argument shapes of a call.
+    fn count_enum_args(&mut self, args: &[Expr]) {
+        if self.coverage.is_some() {
+            for shape in enum_call_shapes(&self.program.methods, args) {
+                self.count_name(shape);
             }
         }
     }
@@ -670,8 +718,15 @@ impl Machine<'_> {
         if let Some(receiver) = receiver {
             self.self_stack.push(receiver);
         }
-        self.block(&def.body)?;
-        let value = def.tail.as_ref().map(|tail| self.expr(tail)).transpose()?;
+        let depths = (self.for_depth, self.arm_depth);
+        (self.for_depth, self.arm_depth) = (0, 0);
+        let ran = self.block(&def.body);
+        (self.for_depth, self.arm_depth) = depths;
+        ran?;
+        let value = match self.returned.take() {
+            Some(value) => Some(value),
+            None => def.tail.as_ref().map(|tail| self.expr(tail)).transpose()?,
+        };
         if let Some(place) = recv {
             let last = self.self_stack.pop().expect("a receiver was pushed");
             if def.recv == Recv::Mut {
@@ -732,7 +787,58 @@ impl Machine<'_> {
                     if self.program.methods.fns[*f].recv == Recv::Mut {
                         self.count_name(SHAPE_STMT_CALL);
                     }
+                    self.count_enum_args(args);
                     self.call(*f, recv, args)?;
+                }
+                Stmt::Return { value } => {
+                    self.count_name("return");
+                    let value = self.expr(value)?;
+                    self.returned = Some(value);
+                }
+                Stmt::Match { scrut, arms } => {
+                    if self.coverage.is_some() {
+                        let (in_for, nested) = (self.for_depth > 0, self.arm_depth > 0);
+                        for name in match_names(arms, in_for, nested) {
+                            self.count_name(name);
+                        }
+                        if let Some(shape) = match_shape(&self.program.methods, scrut, arms) {
+                            self.count_name(shape);
+                        }
+                    }
+                    // The scrutinee is evaluated once, then the first arm naming the variant (`_` names the rest).
+                    let bits = self.expr(scrut)?.int();
+                    let Ty::Enum(e) = scrut.ty() else {
+                        unreachable!("Program::check requires an enum scrutinee")
+                    };
+                    let variant = self.program.methods.enums[usize::from(e)]
+                        .variants
+                        .iter()
+                        .position(|v| v.0 == bits)
+                        .expect("an enum value is a discriminant")
+                        as u8;
+                    let mut taken = None;
+                    for (k, arm) in arms.iter().enumerate() {
+                        if self.mutant == Some(Mutant::ScrutineeTwice) && k > 0 {
+                            self.expr(scrut)?;
+                        }
+                        let hit = match &arm.pat {
+                            Pat::Variants(vs) => vs.contains(&variant),
+                            Pat::Wild => true,
+                        };
+                        if hit {
+                            let no_wild = arms.iter().all(|a| a.pat != Pat::Wild);
+                            let wrong = self.mutant == Some(Mutant::DefaultTakesFirstArm)
+                                && no_wild
+                                && k + 1 == arms.len();
+                            taken = Some(if wrong { &arms[0] } else { arm });
+                            break;
+                        }
+                    }
+                    let arm = taken.expect("a match is exhaustive");
+                    self.arm_depth += 1;
+                    let done = self.block(&arm.body);
+                    self.arm_depth -= 1;
+                    done?;
                 }
                 Stmt::If { cond, then, els } => {
                     let taken = self.expr(cond)?.int() != 0;
@@ -755,11 +861,22 @@ impl Machine<'_> {
                 }
                 Stmt::For { var, trips, body } => {
                     self.count(KIND_FOR, "for", "");
+                    self.for_depth += 1;
                     for k in 0..*trips {
                         self.vars[*var as usize] = Val::I(k);
-                        self.block(body)?;
+                        if let Err(violation) = self.block(body) {
+                            self.for_depth -= 1;
+                            return Err(violation);
+                        }
+                        if self.returned.is_some() {
+                            break;
+                        }
                     }
+                    self.for_depth -= 1;
                 }
+            }
+            if self.returned.is_some() {
+                break;
             }
         }
         Ok(())
@@ -777,7 +894,11 @@ fn variable_slots(program: &Program) -> usize {
                 | Stmt::For { var, .. } => {
                     *max = (*max).max(*var as usize + 1);
                 }
-                Stmt::If { .. } | Stmt::Set { .. } | Stmt::Call { .. } => {}
+                Stmt::If { .. }
+                | Stmt::Set { .. }
+                | Stmt::Call { .. }
+                | Stmt::Match { .. }
+                | Stmt::Return { .. } => {}
             }
             match stmt {
                 Stmt::If { then, els, .. } => {
@@ -785,6 +906,7 @@ fn variable_slots(program: &Program) -> usize {
                     block(els, max);
                 }
                 Stmt::For { body, .. } => block(body, max),
+                Stmt::Match { arms, .. } => arms.iter().for_each(|arm| block(&arm.body, max)),
                 _ => {}
             }
         }
@@ -818,7 +940,7 @@ pub struct Run {
 /// interval of every element, or the first domain violation (lowest element, first violating evaluation in Rust's
 /// order). An `f32` output element whose interval is wider than `2^-10` of its magnitude is `Unboundable`.
 pub fn run_full(program: &Program) -> Result<Run, Failure> {
-    run_machine(program, false).map(|(run, _)| run)
+    run_machine(program, false, None).map(|(run, _)| run)
 }
 
 /// What a run executed, summed over all elements of the program: the evaluations of each operator (the names of
@@ -841,9 +963,14 @@ pub struct Coverage {
     pub rhs_skipped: u64,
 }
 
+/// `run_full` with a deliberately wrong `match` evaluation (the mutation checks of slice m9.d1b).
+pub fn run_mutant(program: &Program, mutant: Mutant) -> Result<Run, Failure> {
+    run_machine(program, false, Some(mutant)).map(|(run, _)| run)
+}
+
 /// `run_full` that also counts what was executed.
 pub fn run_covered(program: &Program) -> Result<(Run, Coverage), Failure> {
-    run_machine(program, true).map(|(run, coverage)| (run, coverage.unwrap_or_default()))
+    run_machine(program, true, None).map(|(run, coverage)| (run, coverage.unwrap_or_default()))
 }
 
 fn count_ifs(stmts: &[Stmt]) -> u64 {
@@ -852,12 +979,17 @@ fn count_ifs(stmts: &[Stmt]) -> u64 {
         .map(|stmt| match stmt {
             Stmt::If { then, els, .. } => 1 + count_ifs(then) + count_ifs(els),
             Stmt::For { body, .. } => count_ifs(body),
+            Stmt::Match { arms, .. } => arms.iter().map(|arm| count_ifs(&arm.body)).sum(),
             _ => 0,
         })
         .sum()
 }
 
-fn run_machine(program: &Program, covered: bool) -> Result<(Run, Option<Coverage>), Failure> {
+fn run_machine(
+    program: &Program,
+    covered: bool,
+    mutant: Option<Mutant>,
+) -> Result<(Run, Option<Coverage>), Failure> {
     let mut machine = Machine {
         program,
         element: 0,
@@ -865,6 +997,10 @@ fn run_machine(program: &Program, covered: bool) -> Result<(Run, Option<Coverage
         self_stack: Vec::new(),
         coverage: covered.then(Box::default),
         observed: None,
+        returned: None,
+        for_depth: 0,
+        arm_depth: 0,
+        mutant,
     };
     let mut values = Vec::with_capacity(program.count as usize);
     let mut intervals = Vec::new();
@@ -931,6 +1067,10 @@ pub fn observed_values(program: &Program, element: u32) -> HashMap<usize, u32> {
         self_stack: Vec::new(),
         coverage: None,
         observed: Some(HashMap::new()),
+        returned: None,
+        for_depth: 0,
+        arm_depth: 0,
+        mutant: None,
     };
     let _ = machine
         .block(&program.body)
@@ -1027,7 +1167,7 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
         match e {
             Expr::Lit(Ty::F32, bits) => float_constant(f32::from_bits(*bits)),
             Expr::Lit(_, bits) => Ok(Some(Const::I(*bits))),
-            Expr::Var(..) | Expr::Gid | Expr::Len(_) => Ok(None),
+            Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Variant { .. } => Ok(None),
             // A field, a call or a struct literal is open; its operands are folded as nodes of their own.
             Expr::Read { .. } | Expr::Call { .. } | Expr::StructLit { .. } => Ok(None),
             Expr::Input { index, .. } => fold(index).map(|_| None),
@@ -1167,6 +1307,7 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
                     b.lanes(),
                 )?)))
             }
+            Expr::EnumAs { e, .. } => fold(e).map(|_| None),
             Expr::Cast { to, e } => {
                 let from = e.ty();
                 let Some(value) = fold(e)? else {

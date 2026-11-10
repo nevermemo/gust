@@ -81,8 +81,8 @@ pub fn corpus_text(first: u64, last: u64) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::generator::{
-        METHOD_ATTEMPT_BASE, PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space,
-        VECTOR_ATTEMPT_BASE, VECTOR_END, generate_batch_in,
+        ENUM_ATTEMPT_BASE, METHOD_ATTEMPT_BASE, METHOD_END, PROGRAMS_PER_SEED,
+        SCALAR_PROGRAMS_PER_SEED, Space, VECTOR_ATTEMPT_BASE, VECTOR_END, generate_batch_in,
     };
 
     #[test]
@@ -150,38 +150,43 @@ mod tests {
         }
     }
 
-    /// Format 8 (m9.d1a): the method space of seeds 1 to 4 (its 16 programs each, as `generate_batch_in` keeps them)
-    /// decodes to these programs. A change to the method decoder, the emitter's text of structs and calls, or the
-    /// interpreter's acceptance of method programs moves a hash: it is a deliberate format change (bump
-    /// `DIFFTEST_FORMAT`, re-pin) or a bug.
+    /// Format 9 (m9.d1b): the method space and the enum space of seeds 1 to 4 (16 programs each, as `generate_batch_in`
+    /// keeps them) decode to these programs. The method space changed in format 9 (the biased shift amount is written
+    /// `call and 31`, same-root `and=` and `shr=` are reachable), so its format-8 pin is re-taken here. A change to a
+    /// decoder, the emitter's text, or the interpreter's acceptance moves a hash: it is a deliberate format change
+    /// (bump `DIFFTEST_FORMAT`, re-pin) or a bug.
     #[test]
-    fn the_method_space_holds_the_format_8_programs_of_the_first_seeds() {
-        let hashes: Vec<(u64, u64)> = (1..=4)
-            .map(|seed| {
-                let batch = generate_batch_in(Space::Method, seed).unwrap();
-                assert!(
-                    batch
-                        .programs
-                        .iter()
-                        .all(|p| p.attempt >= METHOD_ATTEMPT_BASE)
-                );
-                (seed, batch_hash_as_format(&batch.programs, 8))
-            })
-            .collect();
-        let format_8: Vec<(u64, u64)> = vec![
-            (1, 10082785665550326619),
-            (2, 13079749558919935634),
-            (3, 2619298992016647513),
-            (4, 5929037020446526974),
+    fn the_method_and_enum_spaces_hold_the_format_9_programs_of_the_first_seeds() {
+        let hashes = |space: Space, base: u64| -> Vec<(u64, u64)> {
+            (1..=4)
+                .map(|seed| {
+                    let batch = generate_batch_in(space, seed).unwrap();
+                    assert!(batch.programs.iter().all(|p| p.attempt >= base));
+                    (seed, batch_hash_as_format(&batch.programs, 9))
+                })
+                .collect()
+        };
+        let method: Vec<(u64, u64)> = vec![
+            (1, 4688680707108088843),
+            (2, 12364637530606668533),
+            (3, 1814103977557610224),
+            (4, 8884440047440317631),
         ];
-        assert_eq!(hashes, format_8);
+        let enums: Vec<(u64, u64)> = vec![
+            (1, 17115249202000948236),
+            (2, 8452528715074681578),
+            (3, 12513220889235945946),
+            (4, 9138584645308773336),
+        ];
+        assert_eq!(hashes(Space::Method, METHOD_ATTEMPT_BASE), method, "method");
+        assert_eq!(hashes(Space::Enum, ENUM_ATTEMPT_BASE), enums, "enum");
     }
 
-    /// A batch is the first eight programs of the float space, five of the vector space and three of the method space
-    /// (format 8): the scalar decoding of every seed is byte for byte what format 5 wrote, and so is the vector
-    /// decoding of format 6; only the cut of the batch is new.
+    /// A batch is the first seven programs of the float space, five of the vector space, one of the method space and
+    /// three of the enum space (format 9): the scalar decoding of every seed is byte for byte what format 5 wrote, and
+    /// so is the vector decoding of format 6; only the cut of the batch is new.
     #[test]
-    fn a_batch_is_eight_float_programs_then_five_vector_then_three_method_programs() {
+    fn a_batch_is_seven_float_programs_then_five_vector_one_method_and_three_enum_programs() {
         for seed in 1..=8 {
             let batch = generate_batch(seed).unwrap();
             let float = generate_batch_in(Space::Float, seed).unwrap();
@@ -219,6 +224,14 @@ mod tests {
                     program.attempt
                 );
                 assert!(!program.has_float() && !program.has_aggregate());
+            }
+            for program in &batch.programs[VECTOR_END..METHOD_END] {
+                assert!(program.attempt < ENUM_ATTEMPT_BASE, "seed {seed}");
+                assert!(program.methods.enums.is_empty() && !program.has_match());
+            }
+            for program in &batch.programs[METHOD_END..] {
+                assert!(program.attempt >= ENUM_ATTEMPT_BASE, "seed {seed}");
+                assert!(program.has_match() && !program.methods.enums.is_empty());
             }
         }
     }

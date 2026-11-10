@@ -43,6 +43,7 @@ fn gpu() -> Identity {
         kind: "gpu-vs-interpreter",
         kinds: vec!["gpu-vs-interpreter"],
         out_ty: Ty::U32,
+        build: None,
     }
 }
 
@@ -59,6 +60,7 @@ fn the_identity_is_the_first_mismatch_that_names_an_element() {
         kind: "gpu-vs-interpreter",
         kinds: vec!["gpu-vs-interpreter", "twin-vs-interpreter"],
         out_ty: Ty::U32,
+        build: None,
     };
     assert_eq!(identity_of(&p, &found), Some((both, 7)));
     assert_eq!(identity_of(&p, &found[..1]), None);
@@ -429,5 +431,39 @@ fn a_candidate_is_not_started_when_the_budget_is_spent_and_that_ends_the_search_
         calls
             .iter()
             .all(|c| c.get("result").and_then(Json::as_str) == Some("reproduces"))
+    );
+}
+
+fn build_failure(message: &str) -> Mismatch {
+    Mismatch {
+        message: message.into(),
+        ..mismatch("gpu-error", None)
+    }
+}
+
+const E30015: &str = "dispatch: Reflection(Compiler(CompilationFailed { target: Wgsl, diagnostics: \"error[E30015]: undefined identifier\r\n --> src/lib.rs:2:3\r\n | v16 = __gust_keep(x)\r\n | ^^^ undefined identifier '__gust_keep'.\" }))";
+
+#[test]
+fn a_slangc_build_failure_is_a_failure_with_an_identity_that_a_candidate_must_repeat() {
+    let p = program(Ty::U32);
+    assert_eq!(
+        build_signature(E30015).as_deref(),
+        Some("E30015 '__gust_keep'")
+    );
+    assert_eq!(build_signature("the GPU adapter was lost"), None);
+    let found = [build_failure(E30015)];
+    let (identity, element) = identity_of(&p, &found).unwrap();
+    assert_eq!((identity.kind, element), ("gpu-error", 0));
+    assert_eq!(reproduces(&identity, &p, Ok(&found)), Some(0));
+    // Another compile error, no error at all, or another party's disagreement is another failure.
+    let other = [build_failure(&E30015.replace("E30015", "E30000"))];
+    assert_eq!(reproduces(&identity, &p, Ok(&other)), None);
+    assert_eq!(reproduces(&identity, &p, Ok(&[])), None);
+    let wrong = [mismatch("gpu-vs-interpreter", Some(1))];
+    assert_eq!(reproduces(&identity, &p, Ok(&wrong)), None);
+    // A GPU error that is not a compilation failure still has no identity.
+    assert_eq!(
+        identity_of(&p, &[build_failure("the GPU adapter was lost")]),
+        None
     );
 }

@@ -94,6 +94,30 @@ fn method_programs_compile_through_the_macro_without_a_gust_diagnostic() {
 }
 
 #[test]
+fn enum_programs_compile_through_the_macro_without_a_gust_diagnostic() {
+    // Format 9 (m9.d1b): the generator never writes an enum or `match` form the macro refuses (E0211, E0122, E0515,
+    // E0521, E0518, E0418, E0417, ...). The enum space of seeds 1 to 12 (16 programs each, 192 in all) goes through
+    // `#[gust::gpu]` and rustc.
+    let dir = work_dir().join("roundtrip-enums");
+    let mut programs = Vec::new();
+    for seed in 1..=12 {
+        programs.extend(generate_batch_in(Space::Enum, seed).unwrap().programs);
+    }
+    assert_eq!(programs.len(), 192);
+    assert!(programs.iter().all(|p| !p.methods.enums.is_empty()));
+    write_crate(
+        &dir,
+        &package_name("enums").unwrap(),
+        &programs,
+        &repo_root(),
+    )
+    .unwrap();
+    let (ok, output) = cargo_check(&dir);
+    assert!(!output.contains("[GUST-E"), "{}", tail(&output));
+    assert!(ok, "cargo check failed:\n{}", tail(&output));
+}
+
+#[test]
 fn run_crates_pass_cargo_check_with_their_test_module() {
     // The crate that `difftest-run` builds: the 128 kernels of seeds 1 to 8 plus the generated test module (the twin
     // dispatches, the GPU path, the result files) must type-check against the repository's `gust` and `gust-wgpu`.

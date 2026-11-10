@@ -567,6 +567,27 @@ pub(crate) struct Report {
     pub(crate) capabilities_in_any_result: Option<Vec<String>>,
     /// Absent in a report from before `--shapes`.
     pub(crate) shapes: Option<ShapesRecord>,
+    /// The order-sensitive shapes and the `match` constructs of the program text and of the run, from `coverage.operators`
+    /// (empty in a report without coverage).
+    pub(crate) shape_rows: Vec<ShapeRow>,
+}
+
+/// One row of `coverage.operators` that names a shape or a `match` construct (slice m9.d1b).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ShapeRow {
+    pub(crate) name: String,
+    pub(crate) programs_in_text: u64,
+    pub(crate) occurrences_in_text: u64,
+    pub(crate) programs_executing: u64,
+    pub(crate) evaluations: u64,
+}
+
+/// Whether a counted operator name is a shape or a `match` construct.
+fn is_shape_row(name: &str) -> bool {
+    name.starts_with("shape ")
+        || name.starts_with("match")
+        || name.starts_with("enum ")
+        || name == "return"
 }
 
 fn field<'a>(json: &'a Json, key: &str) -> Result<&'a Json, String> {
@@ -697,6 +718,7 @@ pub(crate) fn parse_report(source: &str) -> Result<Report, String> {
             })
             .transpose()
     };
+    let shape_rows = parse_shape_rows(&json)?;
     let capabilities_in_every_result = names("capabilities_in_every_result")?;
     let capabilities_in_any_result = names("capabilities_in_any_result")?;
     Ok(Report {
@@ -717,7 +739,40 @@ pub(crate) fn parse_report(source: &str) -> Result<Report, String> {
         profile,
         capabilities_in_every_result,
         capabilities_in_any_result,
+        shape_rows,
     })
+}
+
+/// The shape and `match` rows of `coverage.operators`; none when the report has no coverage.
+fn parse_shape_rows(json: &Json) -> Result<Vec<ShapeRow>, String> {
+    let Some(coverage) = json.get("coverage") else {
+        return Ok(Vec::new());
+    };
+    let Some(operators) = coverage.get("operators").and_then(Json::as_array) else {
+        return Ok(Vec::new());
+    };
+    let mut rows = Vec::new();
+    for entry in operators {
+        let name = text(entry, "operator")?;
+        if !is_shape_row(&name) {
+            continue;
+        }
+        let optional = |key: &str| -> Result<u64, String> {
+            if entry.get(key).is_some() {
+                uint(entry, key)
+            } else {
+                Ok(0)
+            }
+        };
+        rows.push(ShapeRow {
+            programs_in_text: optional("programs_in_text")?,
+            occurrences_in_text: optional("occurrences_in_text")?,
+            programs_executing: optional("programs_executing")?,
+            evaluations: optional("evaluations")?,
+            name,
+        });
+    }
+    Ok(rows)
 }
 
 fn parse_shapes_record(section: &Json) -> Result<ShapesRecord, String> {
@@ -920,15 +975,33 @@ pub(crate) fn report_problems(report: &Report, options: &Options) -> Vec<String>
         } else {
             format!(", shape {}", mismatch.shape)
         };
+        // A build failure is named with the commands that reproduce and shrink it.
+        let reproduce = if mismatch.kind == "gpu-error" {
+            format!(
+                " [reproduce: difftest-gen show {} {}; shrink: difftest-run --shrink {}:{}]",
+                mismatch.seed, mismatch.index, mismatch.seed, mismatch.index
+            )
+        } else {
+            String::new()
+        };
         problems.push(format!(
-            "seed {} program {} (index {}, attempt {}{shape}): {}: {} element(s) differ: {}",
+            "seed {} program {} (index {}, attempt {}{shape}): {}: {} element(s) differ: {}{}",
             mismatch.seed,
             mismatch.program,
             mismatch.index,
             mismatch.attempt,
             mismatch.kind,
             mismatch.elements_differing,
-            first_line(&mismatch.message)
+            // A build failure is one line that the reader needs whole; the other messages are cut.
+            first_line(
+                &mismatch.message,
+                if mismatch.kind == "gpu-error" {
+                    3000
+                } else {
+                    300
+                }
+            ),
+            reproduce
         ));
     }
     match (options.mode, &report.adapter) {
@@ -947,10 +1020,10 @@ pub(crate) fn report_problems(report: &Report, options: &Options) -> Vec<String>
     problems
 }
 
-/// The first line of `message`, cut to 300 characters.
-fn first_line(message: &str) -> String {
+/// The first line of `message`, cut to `limit` characters.
+fn first_line(message: &str, limit: usize) -> String {
     let line = message.lines().next().unwrap_or_default();
-    match line.char_indices().nth(300) {
+    match line.char_indices().nth(limit) {
         Some((cut, _)) => format!("{}...", &line[..cut]),
         None => line.to_owned(),
     }
@@ -1053,6 +1126,19 @@ fn report_summary(report: &Report, options: &Options) -> Vec<String> {
             line.push_str(&format!("\n    grid-only {count} x {reason}"));
         }
         lines.push(line);
+    }
+    if !report.shape_rows.is_empty() {
+        lines.push("  shapes and match constructs (programs in text, occurrences in text, programs executing, evaluations):".to_owned());
+        for row in &report.shape_rows {
+            lines.push(format!(
+                "    {}: {} programs, {} in text, {} executing, {} evaluations",
+                row.name,
+                row.programs_in_text,
+                row.occurrences_in_text,
+                row.programs_executing,
+                row.evaluations
+            ));
+        }
     }
     lines.push(format!(
         "  harness timing: cargo build {:.1} s, cargo run {:.1} s",
@@ -1314,3 +1400,55 @@ fn run_short_circuit(root: &Path, target: &Path) -> Result<Vec<String>, String> 
 #[cfg(test)]
 #[path = "tests/difftest.rs"]
 mod difftest_tests;
+
+/// Tests of the shape rows of the summary (slice m9.d1b, round r1; the shared test file is another lane's).
+#[cfg(test)]
+mod shape_row_tests {
+    use super::*;
+
+    #[test]
+    fn shape_rows_keep_zero_counts_and_skip_the_operators_that_are_not_shapes() {
+        let json = crate::json::parse(
+            r#"{"coverage":{"operators":[
+                {"operator":"+ u32 u32","programs_in_text":3,"programs_executing":3,"evaluations":9},
+                {"operator":"match","programs_in_text":2,"occurrences_in_text":5,"programs_executing":1,"evaluations":40},
+                {"operator":"shape enum arguments built from calls on one root"},
+                {"operator":"return","programs_in_text":0,"occurrences_in_text":0,"programs_executing":0,"evaluations":0},
+                {"operator":"enum as u32","programs_in_text":1}
+            ]}}"#,
+        )
+        .unwrap();
+        let rows = parse_shape_rows(&json).unwrap();
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "match",
+                "shape enum arguments built from calls on one root",
+                "return",
+                "enum as u32"
+            ]
+        );
+        assert_eq!(
+            rows[0],
+            ShapeRow {
+                name: "match".into(),
+                programs_in_text: 2,
+                occurrences_in_text: 5,
+                programs_executing: 1,
+                evaluations: 40
+            }
+        );
+        // A row with no counts at all is a row of zeros, not an error.
+        assert_eq!(rows[1].programs_in_text + rows[1].evaluations, 0);
+    }
+
+    #[test]
+    fn a_report_without_coverage_has_no_shape_rows() {
+        assert!(
+            parse_shape_rows(&crate::json::parse("{}").unwrap())
+                .unwrap()
+                .is_empty()
+        );
+    }
+}

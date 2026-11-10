@@ -975,15 +975,33 @@ pub(crate) fn report_problems(report: &Report, options: &Options) -> Vec<String>
         } else {
             format!(", shape {}", mismatch.shape)
         };
+        // A build failure is named with the commands that reproduce and shrink it.
+        let reproduce = if mismatch.kind == "gpu-error" {
+            format!(
+                " [reproduce: difftest-gen show {} {}; shrink: difftest-run --shrink {}:{}]",
+                mismatch.seed, mismatch.index, mismatch.seed, mismatch.index
+            )
+        } else {
+            String::new()
+        };
         problems.push(format!(
-            "seed {} program {} (index {}, attempt {}{shape}): {}: {} element(s) differ: {}",
+            "seed {} program {} (index {}, attempt {}{shape}): {}: {} element(s) differ: {}{}",
             mismatch.seed,
             mismatch.program,
             mismatch.index,
             mismatch.attempt,
             mismatch.kind,
             mismatch.elements_differing,
-            first_line(&mismatch.message)
+            // A build failure is one line that the reader needs whole; the other messages are cut.
+            first_line(
+                &mismatch.message,
+                if mismatch.kind == "gpu-error" {
+                    3000
+                } else {
+                    300
+                }
+            ),
+            reproduce
         ));
     }
     match (options.mode, &report.adapter) {
@@ -1002,10 +1020,10 @@ pub(crate) fn report_problems(report: &Report, options: &Options) -> Vec<String>
     problems
 }
 
-/// The first line of `message`, cut to 300 characters.
-fn first_line(message: &str) -> String {
+/// The first line of `message`, cut to `limit` characters.
+fn first_line(message: &str, limit: usize) -> String {
     let line = message.lines().next().unwrap_or_default();
-    match line.char_indices().nth(300) {
+    match line.char_indices().nth(limit) {
         Some((cut, _)) => format!("{}...", &line[..cut]),
         None => line.to_owned(),
     }
@@ -1382,3 +1400,55 @@ fn run_short_circuit(root: &Path, target: &Path) -> Result<Vec<String>, String> 
 #[cfg(test)]
 #[path = "tests/difftest.rs"]
 mod difftest_tests;
+
+/// Tests of the shape rows of the summary (slice m9.d1b, round r1; the shared test file is another lane's).
+#[cfg(test)]
+mod shape_row_tests {
+    use super::*;
+
+    #[test]
+    fn shape_rows_keep_zero_counts_and_skip_the_operators_that_are_not_shapes() {
+        let json = crate::json::parse(
+            r#"{"coverage":{"operators":[
+                {"operator":"+ u32 u32","programs_in_text":3,"programs_executing":3,"evaluations":9},
+                {"operator":"match","programs_in_text":2,"occurrences_in_text":5,"programs_executing":1,"evaluations":40},
+                {"operator":"shape enum arguments built from calls on one root"},
+                {"operator":"return","programs_in_text":0,"occurrences_in_text":0,"programs_executing":0,"evaluations":0},
+                {"operator":"enum as u32","programs_in_text":1}
+            ]}}"#,
+        )
+        .unwrap();
+        let rows = parse_shape_rows(&json).unwrap();
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "match",
+                "shape enum arguments built from calls on one root",
+                "return",
+                "enum as u32"
+            ]
+        );
+        assert_eq!(
+            rows[0],
+            ShapeRow {
+                name: "match".into(),
+                programs_in_text: 2,
+                occurrences_in_text: 5,
+                programs_executing: 1,
+                evaluations: 40
+            }
+        );
+        // A row with no counts at all is a row of zeros, not an error.
+        assert_eq!(rows[1].programs_in_text + rows[1].evaluations, 0);
+    }
+
+    #[test]
+    fn a_report_without_coverage_has_no_shape_rows() {
+        assert!(
+            parse_shape_rows(&crate::json::parse("{}").unwrap())
+                .unwrap()
+                .is_empty()
+        );
+    }
+}

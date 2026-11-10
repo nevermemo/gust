@@ -65,7 +65,9 @@ pub fn size(p: &Program) -> Size {
         stmts.iter().fold(0, |sum, stmt| match stmt {
             Stmt::If { then, els, .. } => sum + trip_total(then) + trip_total(els),
             Stmt::For { trips, body, .. } => sum + u64::from(*trips) + trip_total(body),
-            Stmt::Match { arms, .. } => sum + arms.iter().map(|arm| trip_total(&arm.body)).sum::<u64>(),
+            Stmt::Match { arms, .. } => {
+                sum + arms.iter().map(|arm| trip_total(&arm.body)).sum::<u64>()
+            }
             _ => sum,
         })
     }
@@ -233,7 +235,9 @@ fn stmt_calls_mut(stmts: &mut [Stmt], f: &mut dyn FnMut(&mut usize)) {
                 stmt_calls_mut(els, f);
             }
             Stmt::For { body, .. } => stmt_calls_mut(body, f),
-            Stmt::Match { arms, .. } => arms.iter_mut().for_each(|arm| stmt_calls_mut(&mut arm.body, f)),
+            Stmt::Match { arms, .. } => arms
+                .iter_mut()
+                .for_each(|arm| stmt_calls_mut(&mut arm.body, f)),
             _ => {}
         }
     }

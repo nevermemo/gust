@@ -275,27 +275,24 @@ struct Machine<'a> {
     mutant: Option<Mutant>,
 }
 
-/// The mutant that the test run asks for through `DIFFTEST_MUTANT` (`first-arm-default` or `scrutinee-twice`): the gate
-/// runs the enum tests with each one set and expects a failure (an `xfail-` run). Not compiled outside the tests.
+/// The mutant that the test run asks for through `DIFFTEST_MUTANT` (`default-first-arm` or `scrutinee-twice`). Only the
+/// hand-vector tests apply it (`enum_tests::value_of`); `run` stays the reference, so an `xfail-` run fails exactly the
+/// vector that catches the mutant. Not compiled outside the tests.
 #[cfg(test)]
-fn env_mutant() -> Option<Mutant> {
+pub(crate) fn env_mutant() -> Option<Mutant> {
     match std::env::var("DIFFTEST_MUTANT").as_deref() {
-        Ok("first-arm-default") => Some(Mutant::FirstArmIsDefault),
+        Ok("default-first-arm") => Some(Mutant::DefaultTakesFirstArm),
         Ok("scrutinee-twice") => Some(Mutant::ScrutineeTwice),
         _ => None,
     }
 }
 
-#[cfg(not(test))]
-fn env_mutant() -> Option<Mutant> {
-    None
-}
-
 /// A deliberately wrong `match` evaluation, used only by the `xfail-` mutation tests to show the vectors catch it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mutant {
-    /// The first arm acts as the default of the `match` (a mis-applied `default` rule).
-    FirstArmIsDefault,
+    /// In a `match` without `_`, the variants of the last arm (the Slang `default`) go to the first arm instead (a
+    /// mis-applied `default` rule).
+    DefaultTakesFirstArm,
     /// The scrutinee is evaluated again for every arm tried (read twice).
     ScrutineeTwice,
 }
@@ -817,7 +814,8 @@ impl Machine<'_> {
                         .variants
                         .iter()
                         .position(|v| v.0 == bits)
-                        .expect("an enum value is a discriminant") as u8;
+                        .expect("an enum value is a discriminant")
+                        as u8;
                     let mut taken = None;
                     for (k, arm) in arms.iter().enumerate() {
                         if self.mutant == Some(Mutant::ScrutineeTwice) && k > 0 {
@@ -827,8 +825,12 @@ impl Machine<'_> {
                             Pat::Variants(vs) => vs.contains(&variant),
                             Pat::Wild => true,
                         };
-                        if hit || (k == 0 && self.mutant == Some(Mutant::FirstArmIsDefault)) {
-                            taken = Some(arm);
+                        if hit {
+                            let no_wild = arms.iter().all(|a| a.pat != Pat::Wild);
+                            let wrong = self.mutant == Some(Mutant::DefaultTakesFirstArm)
+                                && no_wild
+                                && k + 1 == arms.len();
+                            taken = Some(if wrong { &arms[0] } else { arm });
                             break;
                         }
                     }
@@ -988,7 +990,6 @@ fn run_machine(
     covered: bool,
     mutant: Option<Mutant>,
 ) -> Result<(Run, Option<Coverage>), Failure> {
-    let mutant = mutant.or_else(env_mutant);
     let mut machine = Machine {
         program,
         element: 0,

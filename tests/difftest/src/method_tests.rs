@@ -8,8 +8,8 @@ use crate::ast::{
 };
 use crate::emit::emit_module;
 use crate::generator::{
-    METHOD_ATTEMPT_BASE, PROGRAMS_PER_SEED, Space, generate_batch, generate_batch_in,
-    space_of_attempt,
+    METHOD_ATTEMPT_BASE, METHOD_PROGRAMS_PER_SEED, PROGRAMS_PER_SEED, Space, generate_batch,
+    generate_batch_in, space_of_attempt,
 };
 use crate::interp::{run, static_violation};
 
@@ -380,8 +380,10 @@ fn the_method_space_is_selected_by_its_attempt_numbers_only() {
         let batch = generate_batch(seed).unwrap();
         assert_eq!(batch.programs.len(), PROGRAMS_PER_SEED);
         assert!(
-            batch.method_attempts >= 2
-                && batch.method_attempts == 2 + batch.method_discarded.values().sum::<u32>() as u64,
+            batch.method_attempts >= METHOD_PROGRAMS_PER_SEED as u64
+                && batch.method_attempts
+                    == METHOD_PROGRAMS_PER_SEED as u64
+                        + batch.method_discarded.values().sum::<u32>() as u64,
             "seed {seed}: {} attempts, {:?}",
             batch.method_attempts,
             batch.method_discarded

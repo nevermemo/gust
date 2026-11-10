@@ -18,7 +18,7 @@ use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use crate::ast::{Expr, Program, Stmt, operator_counts};
+use crate::ast::{Expr, KNOWN_SHAPE_NAMES, Program, Stmt, operator_counts};
 use crate::classify::{
     CLASSES, Mismatch, PixelRaw, Raw, classify, discard_class, float_comparison, read_results,
 };
@@ -231,7 +231,15 @@ pub fn coverage_json(programs: &[&Program]) -> Result<Json, String> {
         total.rhs_skipped += coverage.rhs_skipped;
         constant_conditions += constant_ifs(&program.body);
     }
-    let mut names: Vec<&String> = syntactic.keys().chain(executed_programs.keys()).collect();
+    let known: Vec<String> = KNOWN_SHAPE_NAMES
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    let mut names: Vec<&String> = syntactic
+        .keys()
+        .chain(executed_programs.keys())
+        .chain(known.iter())
+        .collect();
     names.sort();
     names.dedup();
     let mut operators = Vec::new();
@@ -239,7 +247,7 @@ pub fn coverage_json(programs: &[&Program]) -> Result<Json, String> {
     for name in names {
         let in_text = syntactic.get(name).copied().unwrap_or(0);
         let executed = executed_programs.get(name).copied().unwrap_or(0);
-        if executed == 0 {
+        if executed == 0 && in_text > 0 {
             never.push(Json::str(name));
         }
         operators.push(Json::obj(vec![

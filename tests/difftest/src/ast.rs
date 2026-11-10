@@ -640,10 +640,37 @@ pub const MATCH_IN_FOR: &str = "match in a for body";
 pub const MATCH_ARM_RETURN: &str = "match arm ends in return";
 pub const MATCH_ARM_CALL: &str = "match arm calls";
 pub const MATCH_ARM_SET: &str = "match arm assigns";
-pub const SHAPE_MATCH_SCRUTINEE: &str = "shape match scrutinee &mut self call on a root an arm uses";
+pub const SHAPE_MATCH_SCRUTINEE: &str =
+    "shape match scrutinee &mut self call on a root an arm uses";
 pub const SHAPE_ENUM_EQ: &str = "shape enum ==/!= of two calls on one root";
-pub const SHAPE_ENUM_ARG: &str = "shape enum argument built from a call";
+pub const SHAPE_ENUM_ARG: &str = "shape enum argument built from a &mut self call";
 pub const SHAPE_ENUM_ARGS_ROOT: &str = "shape enum arguments built from calls on one root";
+
+/// Every shape and `match` construct name that `check-difftest` prints a row for, so a name that is never written still
+/// shows as a row of zeros (`coverage_json` adds these to the operator rows).
+pub const KNOWN_SHAPE_NAMES: [&str; 21] = [
+    SHAPE_STMT_CALL,
+    SHAPE_EXPR_CALL,
+    SHAPE_LOGIC_CALL,
+    SHAPE_READ_AND_CALL,
+    SHAPE_VALUE_CALL_INNER,
+    SHAPE_MATCH_SCRUTINEE,
+    SHAPE_ENUM_EQ,
+    SHAPE_ENUM_ARG,
+    SHAPE_ENUM_ARGS_ROOT,
+    MATCH,
+    MATCH_WILD,
+    MATCH_DEFAULT,
+    MATCH_GROUPED,
+    MATCH_NESTED,
+    MATCH_IN_FOR,
+    MATCH_ARM_RETURN,
+    MATCH_ARM_CALL,
+    MATCH_ARM_SET,
+    "return",
+    "enum as u32",
+    "enum as i32",
+];
 
 /// The counted name of an enum value read as its repr type.
 pub fn enum_as_name(to: Ty) -> String {
@@ -690,23 +717,23 @@ pub fn match_shape(methods: &Methods, scrut: &Expr, arms: &[Arm]) -> Option<&'st
         .then_some(SHAPE_MATCH_SCRUTINEE)
 }
 
-/// The shapes of a call with enum arguments: an argument that is a call, and two arguments that are calls (or hold
-/// calls) mutating one root.
+/// The shapes of a call with enum arguments: an argument that is a `&mut self` call (a pure helper call does not count:
+/// nothing depends on its order), and two arguments that are calls (or hold calls) mutating one root.
 pub fn enum_call_shapes(methods: &Methods, args: &[Expr]) -> Vec<&'static str> {
     let mut shapes = Vec::new();
     let built: Vec<&Expr> = args
         .iter()
         .filter(|arg| arg.ty().is_enum() && matches!(arg, Expr::Call { .. }))
         .collect();
-    if !built.is_empty() {
-        shapes.push(SHAPE_ENUM_ARG);
-    }
     let mut per_arg: Vec<Vec<Root>> = Vec::new();
     for arg in &built {
         let mut roots = Vec::new();
         mutating_roots(methods, arg, &mut roots);
         roots.dedup();
         per_arg.push(roots);
+    }
+    if per_arg.iter().any(|roots| !roots.is_empty()) {
+        shapes.push(SHAPE_ENUM_ARG);
     }
     let shared = per_arg.iter().enumerate().any(|(k, roots)| {
         roots
@@ -748,10 +775,11 @@ pub fn match_names(arms: &[Arm], in_for: bool, nested: bool) -> Vec<&'static str
     if arms.iter().any(calls) {
         names.push(MATCH_ARM_CALL);
     }
-    if arms
-        .iter()
-        .any(|arm| arm.body.iter().any(|s| matches!(s, Stmt::Set { .. } | Stmt::Assign { .. })))
-    {
+    if arms.iter().any(|arm| {
+        arm.body
+            .iter()
+            .any(|s| matches!(s, Stmt::Set { .. } | Stmt::Assign { .. }))
+    }) {
         names.push(MATCH_ARM_SET);
     }
     if in_for {
@@ -930,11 +958,7 @@ impl Expr {
     /// `visit_exprs`, which the reducer's node numbering relies on).
     pub fn for_each_child(&self, f: &mut dyn FnMut(&Expr)) {
         match self {
-            Expr::Lit(..)
-            | Expr::Var(..)
-            | Expr::Gid
-            | Expr::Len(_)
-            | Expr::Variant { .. } => {}
+            Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Variant { .. } => {}
             Expr::Input { index, .. } => f(index),
             Expr::Un { e, .. }
             | Expr::Cast { e, .. }
@@ -958,11 +982,7 @@ impl Expr {
     /// [`Expr::for_each_child`] with mutable access.
     pub fn for_each_child_mut(&mut self, f: &mut dyn FnMut(&mut Expr)) {
         match self {
-            Expr::Lit(..)
-            | Expr::Var(..)
-            | Expr::Gid
-            | Expr::Len(_)
-            | Expr::Variant { .. } => {}
+            Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Variant { .. } => {}
             Expr::Input { index, .. } => f(index),
             Expr::Un { e, .. }
             | Expr::Cast { e, .. }
@@ -1089,9 +1109,14 @@ pub enum Stmt {
     /// `match scrut { E0::V0 | E0::V2 => { .. } E0::V1 => { .. } _ => { .. } }` on an enum: the scrutinee is evaluated
     /// once, the first arm whose pattern names the value runs. Without `_` every variant is named once and the last arm
     /// is the `default` of the Slang `switch`. (Format 9.)
-    Match { scrut: Expr, arms: Vec<Arm> },
+    Match {
+        scrut: Expr,
+        arms: Vec<Arm>,
+    },
     /// `return value;` in a helper, the last statement of its block. (Format 9.)
-    Return { value: Expr },
+    Return {
+        value: Expr,
+    },
 }
 
 /// The largest loop trip count the generator writes.
@@ -1212,13 +1237,17 @@ impl Program {
                 return Err(format!("input {k} is a bool buffer"));
             }
             if input.ty.is_aggregate() || input.ty.is_struct() || input.ty.is_enum() {
-                return Err(format!("input {k} is a vector, matrix, struct or enum buffer"));
+                return Err(format!(
+                    "input {k} is a vector, matrix, struct or enum buffer"
+                ));
             }
             if input.data.len() != self.count as usize {
                 return Err(format!("input {k} has {} elements", input.data.len()));
             }
         }
-        if self.result.ty().is_aggregate() || self.result.ty().is_struct() || self.result.ty().is_enum()
+        if self.result.ty().is_aggregate()
+            || self.result.ty().is_struct()
+            || self.result.ty().is_enum()
         {
             return Err(
                 "the result is a vector, a matrix, a struct or an enum (the output buffer is scalar)"
@@ -1269,9 +1298,15 @@ impl Methods {
                 let value = def.value(v as u8);
                 if !explicit {
                     // A variant without `= value` counts up from the one before (the first is 0).
-                    let expected = if v == 0 { 0 } else { def.value(v as u8 - 1) + 1 };
+                    let expected = if v == 0 {
+                        0
+                    } else {
+                        def.value(v as u8 - 1) + 1
+                    };
                     if value != expected {
-                        return Err(format!("E{k}::V{v} is {value}, counting up gives {expected}"));
+                        return Err(format!(
+                            "E{k}::V{v} is {value}, counting up gives {expected}"
+                        ));
                     }
                 }
                 if !seen.insert(bits) {

@@ -229,8 +229,9 @@ only through the Reference, not through code.
 ## Enums and `match` (format 9, slice m9.d1b)
 
 D166. A mismatch in this space is a compiler bug (D163), an order or `switch` difference included; only out-of-bounds
-behaviour is D39. `DIFFTEST_FORMAT` is 9. A batch is seven float, four vector, two method and three enum programs
-(`PROGRAMS_PER_SEED` stays 16); the float and vector prefixes are byte for byte those of format 8.
+behaviour is D39. `DIFFTEST_FORMAT` is 9. A batch is seven float, five vector, one method and three enum programs
+(`PROGRAMS_PER_SEED` stays 16, which the report, `xtask` and its tests fix); the float prefix is the first seven float
+programs and the vector prefix the five vector programs of format 8, byte for byte.
 
 **Program space** (`Space::Enum`, attempts from `ENUM_ATTEMPT_BASE` = 3 000 000; the method space plus enums). One or two
 module enums of two to five variants, `u32` or `i32` repr (`#[repr(i32)]` written, `#[derive(PartialEq, Eq)]`), literal
@@ -243,53 +244,103 @@ replaces the last group 45 % of the time, otherwise every variant is named once 
 (the `default` rule); arms are blocks that assign, call methods, `return` (helpers only), hold a nested `match`, and a
 `match` may sit in a `for` body. No guard, no `break` or `continue`. A helper with a `return` carries a per-function
 `#[allow(unreachable_code)]` (the crate-level `allow` line is part of every older format's text and cannot change).
-An enum program without a `match` is discarded as `no-match` (a new class, with `no-call`).
+An enum program without a `match` is discarded as `no-match` (a new class, with `no-call`). Not generated: an early
+`return` from a `&mut self` method arm (which must still write `self` back), a `return` outside a helper, a guard, an
+integer pattern, the value form of `match` (m9.e2).
 
 **Interpreter** (from the Rust Reference, not from the emitted Slang): the scrutinee is evaluated once, then the first
 arm that names the value runs (`_` names the rest); `==` evaluates the left operand first; arguments left to right;
 `return` stops the function and is carried out of `for` and `match`; `as` is the discriminant bits (an `i32` repr keeps
-its sign). The enum nodes are open in the static fold.
+its sign). The enum nodes are open in the static fold. The interpreter has no notion of a `default`: it is only the
+emitter's label on the last arm, so the GPU-against-interpreter comparison is what checks the emitter's default rule.
 
 **Order-sensitive shapes** (biased and counted statically and when executed, under the same names):
 `shape match scrutinee &mut self call on a root an arm uses`, `shape enum ==/!= of two calls on one root`,
-`shape enum argument built from a call`, `shape enum arguments built from calls on one root`. The constructs are
-counted as `match`, `match with _`, `match without _ (the default rule)`, `match grouped arm`, `match nested in an arm`,
-`match in a for body`, `match arm ends in return` / `calls` / `assigns`, `return`, `enum as u32` / `enum as i32`.
+`shape enum argument built from a &mut self call` (a pure helper call does not count: nothing depends on its order) and
+`shape enum arguments built from calls on one root` (two arguments whose `&mut self` calls share a root, so the order of
+the arguments is observable). The constructs are counted as `match`, `match with _`, `match without _ (the default
+rule)`, `match grouped arm`, `match nested in an arm`, `match in a for body`, `match arm ends in return` / `calls` /
+`assigns`, `return`, `enum as u32` / `enum as i32`. `check-difftest` prints a row for each of these names, with zeros for
+a name the batch never writes.
 
 **Reachability, seeds 1 to 64** (`difftest-gen stats 1-64`, the gated batch: 192 enum programs, 3 per seed; written /
-executed per element summed): match 462 / 207 516; with `_` 241 / 136 553; default rule 221 / 70 963; grouped arm 266 /
-84 216; nested 38 / 6 124; in a `for` 14 / 30 662; arm ends in return 39 / 16 850; return 71 / 4 460; scrutinee shape 21 /
-2 699; enum `==` shape 6 / 642; enum argument from a call 79 / 33 680; `enum as u32` 231 / 94 767, `as i32` 122 / 31 383.
-The shape `enum arguments built from calls on one root` is not written in the 3 enum programs per seed of the gated
-batch within seeds 1 to 64; the test `enum_tests` reaches it (written and executed) over the whole enum space of seeds
-1 to 64 (16 per seed), as it does every construct above. Enum attempts for 64 seeds: 1 170 for 192 programs (discards:
-`no-match` 217, `no-call` 240, `overflow` 268, `static` 168, `division-by-zero` 29, `index` 21, `no-input-read` 23,
-`shift-amount` 10, `min-over-minus-one` 2).
+executed per element summed): match 407 / 155 233; with `_` 212 / 92 789; default rule 195 / 62 444; grouped arm 237 /
+104 692; nested 25 / 8 462; in a `for` 22 / 11 614; arm ends in return 28 / 1 209; return 39 / 4 800; arm calls 115 /
+31 090; arm assigns 177 / 63 822; scrutinee shape 17 / 13 627; enum `==` shape 13 / 5 018; enum argument from a `&mut self`
+call 40 / 3 852; enum arguments on one root 8 / 760; `enum as u32` 207 / 47 094, `as i32` 128 / 34 373. The test
+`the_order_sensitive_enum_shapes_are_written_and_executed_in_the_64_seed_batch` requires the four order-sensitive shapes
+in the batch itself (the enum space alone is not enough). Enum attempts for 64 seeds: 1 122 for 192 programs (discards:
+`no-match` 173, `no-call` 242, `overflow` 261, `static` 148, `division-by-zero` 33, `index` 38, `no-input-read` 18,
+`shift-amount` 17).
 
-**Wide run, seeds 1 to 64 on the RTX 5090** (1 024 programs, 192 of them enum programs): 1 mismatch, in both the `dev`
-and the `dev+subgroups` batch. Seed 31, program 13 (`s31_a3000001`) does not compile: the kernel has a method call
-`v15.m2(a[i] < (-15i32), v16)`, a `<` comparison that is not the last argument of a method call, and the macro emits
-`__gust_keep(..)` for it (`emit_list`) while its `KeepUsage` visitor looks at calls, arrays and `^` but not at method
-calls, so the helper is never defined (slangc E30015, `undefined identifier '__gust_keep'`). Read from the macro source,
-not yet confirmed by a hand-written minimal module. This is a macro bug (D163), not a generator or interpreter
-difference. The shrinker reports "does not fail (1 mismatches without an element)" for a build failure, so it did not
-shrink the program. The fix is outside this slice (`gust-macros`).
+**Coverage of the older spaces, seeds 1 to 64 of the batch** (`difftest-gen stats 1-64`; the cut of format 8, the first
+cut of format 9 as committed in 2ac5f82, and the cut now):
+
+| | format 8 (8/5/3/0) | 2ac5f82 (7/4/2/3) | now (7/5/1/3) |
+| --- | --- | --- | --- |
+| float programs | 512 | 448 | 448 |
+| vector programs | 320 | 256 | 320 |
+| method programs / enum programs | 192 / 0 | 128 / 192 | 64 / 192 |
+| vector forms written, of 72 | 71 | 67 | 71 |
+| same-root `%=`, sites / evaluations | 5 / 478 (m9.d1a r1) | 2 / 64 | 7 / 4 251 |
+| same-root `&=`, `>>=` evaluations | reached (m9.d1a r1) | 2 177, 2 731 | 201, 352 |
+| by-value call with a `&mut self` call in its arguments, sites / evaluations | not recorded | 8 / 3 914 | 7 / 354 |
+
+The float space gives up one program per seed against format 8 (the enum programs take the room), and the method space
+two. The enum programs are method programs with enums, so the method shapes (`&mut self` calls on one root, `&&`/`||`
+right operands, same-root sets) still run in 4 programs of 16 and are counted above. The vector test
+`the_gated_batch_of_64_seeds_writes_the_vector_forms_that_it_wrote_when_measured` guards the batch itself (71 of 72
+forms); the older vector test guards the generator over its own space.
+
+**Wide run, seeds 1 to 64 on the RTX 5090: to be re-run after m9.f1.** The run of 2ac5f82 (1 024 programs, 192 of them
+enum programs) had 1 mismatch, in both the `dev` and the `dev+subgroups` batch. Seed 31, program 13 (`s31_a3000001`) did
+not compile: the kernel has a method call `v15.m2(a[i] < (-15i32), v16)`, a `<` comparison that is not the last argument
+of a method call, and the macro emits `__gust_keep(..)` for it (`emit_list`) while its `KeepUsage` visitor looks at
+calls, arrays and `^` but not at method calls, so the helper is never defined (slangc E30015, undefined identifier
+`__gust_keep`). This is a macro bug (D163), not a generator or interpreter difference, and the format-8 method space
+could already write it. Slice m9.f1 fixes it. The run must be repeated on the merged tree and this paragraph replaced by
+its result. The programs changed with round r1 of this slice, so seed 31 no longer decodes to that program; the same bug
+now fails the gated batch of seeds 1 to 4 instead (G5, seed 4 program 14, `s4_a3000027`, in `dev` and `dev+subgroups`:
+63 of 64 programs agree). `difftest-run --shrink 4:14` shrank it with the build-failure identity (60 candidates, 26
+accepted, stopped by the candidate budget; classification `gpu-error`, `build_failure` `E30015 '__gust_keep'`) to a module
+whose kernel holds `let mut v33: E1 = v27.m2(v27.m1(0u32 < v26.f1, E0::V0), 0u32, 0u32);`, a `<` comparison as the first
+of two arguments of a method call, which confirms the cause. Not minimal: the reducer stopped on its budget.
+
+**Build failures are shrinkable.** A `gpu-error` whose message is a slangc compilation failure has an identity: the
+error code and the first quoted name (`E30015 '__gust_keep'`, `shrink::build_signature`). `difftest-run --shrink` keeps
+a candidate when it fails to compile with the same signature (from element 0; no dispatch is needed to decide it), and
+the record carries `build_failure`. A message that is no compilation failure still has no identity, and the message for
+a program that does not fail now says why. `check-difftest` prints the whole slangc line of a `gpu-error` (3 000
+characters, not 300) with the `difftest-gen show` and `difftest-run --shrink` commands for the program. There is still no
+GPU-free slangc sweep: `roundtrip` runs `cargo check` only, which never calls slangc. That sweep is a candidate for a CI
+step of its own.
 
 **Leftovers of the m9.d1a re-check** (they change the method space, whose pin is re-taken as format 9): a biased shift
-amount is written `call & 31`; same-root `&=` and `>>=` are reachable (and required by `method_tests`); `coverage_json`
-carries `occurrences_in_text`; `check-difftest` prints the shape and `match` rows; expected-failure mutation runs are
-named `xfail-<name>` in the rc file, one mutant per run.
+amount is written `call & 31`; same-root `&=`, `>>=` and `%=` are reachable (`&=` and `>>=` are required by
+`method_tests`); `coverage_json` carries `occurrences_in_text`; `check-difftest` prints the shape and `match` rows;
+expected-failure mutation runs are named `xfail-<name>` in the rc file, one mutant per run. The format-9 hashes were
+copied from the code's own output, so they are drift detectors and not independent evidence. Format 8 can no longer be
+regenerated: the brief asked for the pins of formats 1 to 8 to keep passing, and the replacement of the format-8 method
+pin (the shift amount and the set-statement draws changed the method stream) was accepted by the coordinator.
 
 **Mutation checks.** The interpreter has two test-only mutants, selected by `DIFFTEST_MUTANT` (compiled in test builds
-only): `first-arm-default` (the first arm acts as the default of the `match`) and `scrutinee-twice` (the scrutinee is
-evaluated again for every arm tried). `cargo test --lib enum_tests` with either set must fail (the vectors
-`the_scrutinee_is_evaluated_once_...` and `grouped_wild_and_default_arms_...`); in-process the test
-`the_vectors_catch_a_match_...` runs both through `run_mutant`.
+only): `default-first-arm` (in a `match` without `_`, the variants of the last arm, the Slang `default`, go to the first
+arm instead) and `scrutinee-twice` (the scrutinee is evaluated again for every arm tried). Only the hand-vector tests
+apply the variable (`enum_tests::value_of`); `run`, the reference, ignores it, so a mutant that no vector catches would
+not fail the run. The gate `rxfail-<mutant>` runs `cargo test --lib enum_tests` with one mutant set and passes only when
+exactly the named test fails and no other: `default-first-arm` fails
+`grouped_wild_and_default_arms_take_the_variants_they_name` alone, `scrutinee-twice` fails
+`the_scrutinee_is_evaluated_once_and_the_first_naming_arm_runs` alone, and a control run without the variable fails
+nothing. In process, `the_mutants_change_exactly_the_vectors_that_are_meant_to_catch_them` states the same values.
 
 **Tests.** `enum_tests`: hand vectors (scrutinee once, grouped / `_` / default arms, `==` left to right, enum argument
-order, `return` in an arm in a `for`, `as` and a negative `i32` repr), the emitted text, the batch cut, the reachability
-over seeds 1 to 64 of the enum space, the mutants. `roundtrip`: `enum_programs_compile_through_the_macro_without_a_gust_diagnostic`
-compiles 192 enum programs. `corpus`: the method and enum spaces of seeds 1 to 4 are pinned as format 9.
+order, a `return` in an arm in a `for` where an early exit gives 1 and a loop that keeps running gives 3, `as` and a
+negative `i32` repr), the emitted text, the batch cut, the reachability over seeds 1 to 64 of the enum space and of the
+batch, the mutants. `roundtrip`: `enum_programs_compile_through_the_macro_without_a_gust_diagnostic` compiles 192 enum
+programs. `corpus`: the method and enum spaces of seeds 1 to 4 are pinned as format 9. `shrink_tests`: the build-failure
+identity. `harness` gates (CI's difftest job): `cargo fmt --manifest-path tests/difftest/Cargo.toml -- --check`, `cargo
+clippy --locked --manifest-path tests/difftest/Cargo.toml --all-targets -- -D warnings` and `cargo test --locked
+--manifest-path tests/difftest/Cargo.toml`.
 
 ## The domain filter
 

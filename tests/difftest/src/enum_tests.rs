@@ -13,7 +13,7 @@ use crate::generator::{
     ENUM_ATTEMPT_BASE, ENUM_PROGRAMS_PER_SEED, METHOD_ATTEMPT_BASE, METHOD_END, PROGRAMS_PER_SEED,
     Space, VECTOR_END, generate_batch, generate_batch_in, space_of_attempt,
 };
-use crate::interp::{Mutant, run, run_covered, run_mutant, static_violation};
+use crate::interp::{Mutant, env_mutant, run, run_covered, run_mutant, static_violation};
 
 const S0: Ty = Ty::Struct(0);
 const E0: Ty = Ty::Enum(0);
@@ -144,24 +144,42 @@ fn methods() -> Methods {
                 recv: Recv::None,
                 params: vec![(23, E0)],
                 ret: Some(Ty::U32),
-                body: vec![Stmt::For {
-                    var: 31,
-                    trips: 3,
-                    body: vec![Stmt::Match {
-                        scrut: Expr::Var(23, E0),
-                        arms: vec![
-                            Arm {
-                                pat: Pat::Variants(vec![1]),
-                                body: vec![Stmt::Return { value: u(7) }],
+                // `let mut k = 0; for _ in 0..3 { k += 1; match e { V1 => return k, _ => {} } } k + 100`:
+                // an early exit gives 1, a loop that keeps running after the `return` gives 3.
+                body: vec![
+                    Stmt::Let {
+                        var: 32,
+                        ty: Ty::U32,
+                        mutable: true,
+                        init: u(0),
+                    },
+                    Stmt::For {
+                        var: 31,
+                        trips: 3,
+                        body: vec![
+                            Stmt::Assign {
+                                var: 32,
+                                value: Expr::bin(BinOp::Add, Expr::Var(32, Ty::U32), u(1)),
                             },
-                            Arm {
-                                pat: Pat::Wild,
-                                body: Vec::new(),
+                            Stmt::Match {
+                                scrut: Expr::Var(23, E0),
+                                arms: vec![
+                                    Arm {
+                                        pat: Pat::Variants(vec![1]),
+                                        body: vec![Stmt::Return {
+                                            value: Expr::Var(32, Ty::U32),
+                                        }],
+                                    },
+                                    Arm {
+                                        pat: Pat::Wild,
+                                        body: Vec::new(),
+                                    },
+                                ],
                             },
                         ],
-                    }],
-                }],
-                tail: Some(u(9)),
+                    },
+                ],
+                tail: Some(Expr::bin(BinOp::Add, Expr::Var(32, Ty::U32), u(100))),
             },
         ],
         enums: enums(),
@@ -201,8 +219,14 @@ fn program(mut body: Vec<Stmt>, result: Expr) -> Program {
     program
 }
 
+/// The value of the program's first element. The hand vectors apply the mutant that `DIFFTEST_MUTANT` selects (the
+/// `xfail-` runs); `run` is the reference and ignores it.
 fn value_of(program: &Program) -> u32 {
-    run(program).unwrap_or_else(|f| panic!("{f:?}"))[0]
+    let values = match env_mutant() {
+        Some(mutant) => run_mutant(program, mutant).map(|run| run.values),
+        None => run(program),
+    };
+    values.unwrap_or_else(|f| panic!("{f:?}"))[0]
 }
 
 /// `match pick(c.tick()) { V0 => c.n += 1000, V1 => c.n += 100, _ => c.n += 10 }; out = c.n`.
@@ -342,9 +366,9 @@ fn enum_arguments_are_evaluated_left_to_right() {
 #[test]
 fn a_return_in_an_arm_inside_a_for_ends_the_function() {
     let first = |k: u8| program(Vec::new(), call(4, None, vec![variant(0, k)], Ty::U32));
-    assert_eq!(value_of(&first(1)), 7);
-    assert_eq!(value_of(&first(0)), 9);
-    assert_eq!(value_of(&first(3)), 9);
+    assert_eq!(value_of(&first(1)), 1);
+    assert_eq!(value_of(&first(0)), 103);
+    assert_eq!(value_of(&first(3)), 103);
 }
 
 #[test]
@@ -363,28 +387,24 @@ fn enum_as(to: Ty, e: u8, v: u8) -> Expr {
 }
 
 #[test]
-fn the_vectors_catch_a_match_that_reads_its_scrutinee_twice_or_takes_the_first_arm_as_the_default() {
-    // The mutation checks: each wrong evaluation must change a vector above (the gate runs the same mutants over the
-    // whole suite as `xfail-` runs and expects a failure).
-    let right = value_of(&scrutinee_program());
-    assert_eq!(
-        run_mutant(&scrutinee_program(), Mutant::ScrutineeTwice).unwrap().values[0],
-        107
-    );
-    assert_ne!(
-        run_mutant(&scrutinee_program(), Mutant::FirstArmIsDefault).unwrap().values[0],
-        right
-    );
+fn the_mutants_change_exactly_the_vectors_that_are_meant_to_catch_them() {
+    // The reference (`run`) against each mutant, on the hand programs: the `xfail-` runs of the gate set the same
+    // mutant for `value_of` and expect exactly the vector named here to fail.
+    let reference = |p: &Program| run(p).unwrap()[0];
+    let mutated = |p: &Program, m| run_mutant(p, m).unwrap().values[0];
+    let scrutinee = scrutinee_program();
+    assert_eq!(reference(&scrutinee), 106);
+    assert_eq!(mutated(&scrutinee, Mutant::ScrutineeTwice), 107);
+    assert_eq!(mutated(&scrutinee, Mutant::DefaultTakesFirstArm), 106);
+    // Without `_` the last arm takes V1, V2 and V3; the mutant gives them to the first arm.
     let default_form = arms_program(3, default_arms());
-    assert_ne!(
-        run_mutant(&default_form, Mutant::FirstArmIsDefault).unwrap().values[0],
-        value_of(&default_form)
-    );
+    assert_eq!(reference(&default_form), 2);
+    assert_eq!(mutated(&default_form, Mutant::DefaultTakesFirstArm), 1);
+    assert_eq!(mutated(&default_form, Mutant::ScrutineeTwice), 2);
+    // With `_` the mutant does nothing.
     let wild_form = arms_program(3, wild_arms());
-    assert_ne!(
-        run_mutant(&wild_form, Mutant::FirstArmIsDefault).unwrap().values[0],
-        value_of(&wild_form)
-    );
+    assert_eq!(reference(&wild_form), 3);
+    assert_eq!(mutated(&wild_form, Mutant::DefaultTakesFirstArm), 3);
 }
 
 #[test]
@@ -417,7 +437,7 @@ fn the_emitted_text_of_the_hand_program_has_the_enum_forms() {
 }
 
 #[test]
-fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_seven_four_two_three() {
+fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_seven_five_one_three() {
     assert_eq!(space_of_attempt(METHOD_ATTEMPT_BASE), Space::Method);
     assert_eq!(space_of_attempt(ENUM_ATTEMPT_BASE - 1), Space::Method);
     assert_eq!(space_of_attempt(ENUM_ATTEMPT_BASE), Space::Enum);
@@ -473,7 +493,10 @@ fn every_enum_program_is_well_typed_in_the_domain_and_matches_on_an_enum() {
             }
         }
     }
-    assert!(unsigned > 0 && signed > 0, "{unsigned} u32 and {signed} i32 enums");
+    assert!(
+        unsigned > 0 && signed > 0,
+        "{unsigned} u32 and {signed} i32 enums"
+    );
 }
 
 /// The constructs and shapes the generator is biased toward: each must be written, and executed, within seeds 1 to 64
@@ -519,21 +542,56 @@ fn the_match_constructs_and_order_sensitive_shapes_are_reachable_within_the_firs
         );
     }
     assert!(
-        written.keys().any(|name| name.starts_with("== E") || name.starts_with("!= E")),
+        written
+            .keys()
+            .any(|name| name.starts_with("== E") || name.starts_with("!= E")),
         "no enum comparison is written: {written:?}"
     );
 }
 
 #[test]
-fn enum_programs_with_a_default_rule_or_a_scrutinee_that_a_call_mutates_do_not_agree_with_a_wrong_interpreter() {
+fn enum_programs_with_a_default_rule_or_a_scrutinee_that_a_call_mutates_do_not_agree_with_a_wrong_interpreter()
+ {
     // The mutants must change some generated program too (the vectors above are hand-built; the corpus must also reach
     // them): over seeds 1 to 64 each mutant differs from the right run in at least one program.
-    for mutant in [Mutant::FirstArmIsDefault, Mutant::ScrutineeTwice] {
+    for mutant in [Mutant::DefaultTakesFirstArm, Mutant::ScrutineeTwice] {
         let differs = enum_programs(1..=64).iter().any(|p| {
             let right = run(p).ok();
             let wrong = run_mutant(p, mutant).ok().map(|r| r.values);
             right != wrong
         });
         assert!(differs, "{mutant:?} changes no program of seeds 1-64");
+    }
+}
+
+/// The order-sensitive shapes the GPU batch itself holds: the enum programs of the 64-seed batch (three per seed) must
+/// write and execute each of them, not only the enum space as a whole.
+#[test]
+fn the_order_sensitive_enum_shapes_are_written_and_executed_in_the_64_seed_batch() {
+    let mut written = BTreeMap::<String, usize>::new();
+    let mut executed = BTreeMap::<String, u64>::new();
+    for seed in 1..=64 {
+        let batch = generate_batch(seed).unwrap();
+        for p in &batch.programs[METHOD_END..] {
+            for (name, n) in operator_counts(p) {
+                *written.entry(name).or_default() += n;
+            }
+            let (_, coverage) = run_covered(p).unwrap();
+            for (name, n) in coverage.operators {
+                *executed.entry(name).or_default() += n;
+            }
+        }
+    }
+    for wanted in [
+        ast::SHAPE_MATCH_SCRUTINEE,
+        ast::SHAPE_ENUM_EQ,
+        ast::SHAPE_ENUM_ARG,
+        ast::SHAPE_ENUM_ARGS_ROOT,
+    ] {
+        assert!(
+            written.get(wanted).copied().unwrap_or(0) > 0
+                && executed.get(wanted).copied().unwrap_or(0) > 0,
+            "`{wanted}` is not written and executed by the enum programs of the 64-seed batch: {written:?}"
+        );
     }
 }

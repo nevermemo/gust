@@ -639,9 +639,10 @@ fn the_float_space_alone_still_writes_no_vectors() {
     }
 }
 
-/// Seeds `1..=REACH_SEEDS` write every form of [`crate::ast::writable_aggregate_forms`]. Measured 2026-11-02:
-/// seeds 1 to 68 still miss `- Mat4 Mat4`, 72 do not over the first five vector programs of a seed, as the batch of format 8 held them (format 9 keeps four per batch)
-/// (the bound is a round number just above the first one that works). Seeds 1 to 8, the gated batch, miss about half of the forms (see DIFFTEST.md, Coverage).
+/// Seeds `1..=REACH_SEEDS` write every form of [`crate::ast::writable_aggregate_forms`]. Measured 2026-11-02: seeds 1
+/// to 68 still miss `- Mat4 Mat4`, 72 do not, over the first five vector programs of a seed, which is what a batch holds
+/// again (five, as in format 8). The bound is a round number just above the first one that works. Seeds 1 to 8, the
+/// gated batch, miss about half of the forms (see DIFFTEST.md, Coverage).
 const REACH_SEEDS: u64 = 72;
 
 /// The coverage the GPU batch of seeds 1 to 8 does not have: CPU only, over the generator alone. If a row of
@@ -663,5 +664,29 @@ fn the_generator_writes_every_binary_row_negation_and_swizzle_shape_within_the_f
         missing.is_empty(),
         "seeds 1 to {REACH_SEEDS} never write {} of the forms: {missing:?}",
         missing.len()
+    );
+}
+
+/// How many of the [`crate::ast::writable_aggregate_forms`] the programs of the 64-seed batch itself write (the batch
+/// holds five vector programs per seed, as in format 8). Measured in slice m9.d1b, round r1: see DIFFTEST.md,
+/// "Coverage of the older spaces". The test above guards the generator over its own space; this one guards the batch
+/// that the GPU runs.
+const BATCH_FORMS_AT_64_SEEDS: usize = 71;
+
+#[test]
+fn the_gated_batch_of_64_seeds_writes_the_vector_forms_that_it_wrote_when_measured() {
+    let mut written = std::collections::BTreeSet::new();
+    for seed in 1..=64 {
+        for p in &crate::generator::generate_batch(seed).unwrap().programs {
+            written.extend(operator_counts(p).into_keys());
+        }
+    }
+    let forms = crate::ast::writable_aggregate_forms();
+    let hit = forms.intersection(&written).count();
+    eprintln!("BATCH-FORMS {hit} of {}", forms.len());
+    assert!(
+        hit >= BATCH_FORMS_AT_64_SEEDS,
+        "the 64-seed batch writes {hit} of {} vector forms",
+        forms.len()
     );
 }

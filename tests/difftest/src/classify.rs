@@ -627,7 +627,13 @@ mod tests {
             let class = discard_class(violation.label());
             assert!(CLASSES.contains(&class), "{violation:?}");
         }
-        for reason in ["static", "no-input-read", "no-aggregate", "no-call", "no-match"] {
+        for reason in [
+            "static",
+            "no-input-read",
+            "no-aggregate",
+            "no-call",
+            "no-match",
+        ] {
             assert!(CLASSES.contains(&discard_class(reason)));
         }
     }

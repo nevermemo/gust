@@ -167,26 +167,26 @@ mod tests {
                 .collect()
         };
         let method: Vec<(u64, u64)> = vec![
-            (1, 8271750818795004505),
-            (2, 4963565648933412841),
-            (3, 8825634452325685430),
-            (4, 3135180594641603355),
+            (1, 4688680707108088843),
+            (2, 12364637530606668533),
+            (3, 1814103977557610224),
+            (4, 8884440047440317631),
         ];
         let enums: Vec<(u64, u64)> = vec![
-            (1, 209826953260719459),
-            (2, 15445519870826666536),
-            (3, 12830113901571594649),
-            (4, 2066576883367066658),
+            (1, 17115249202000948236),
+            (2, 8452528715074681578),
+            (3, 12513220889235945946),
+            (4, 9138584645308773336),
         ];
         assert_eq!(hashes(Space::Method, METHOD_ATTEMPT_BASE), method, "method");
         assert_eq!(hashes(Space::Enum, ENUM_ATTEMPT_BASE), enums, "enum");
     }
 
-    /// A batch is the first seven programs of the float space, four of the vector space, two of the method space and
+    /// A batch is the first seven programs of the float space, five of the vector space, one of the method space and
     /// three of the enum space (format 9): the scalar decoding of every seed is byte for byte what format 5 wrote, and
     /// so is the vector decoding of format 6; only the cut of the batch is new.
     #[test]
-    fn a_batch_is_seven_float_programs_then_four_vector_two_method_and_three_enum_programs() {
+    fn a_batch_is_seven_float_programs_then_five_vector_one_method_and_three_enum_programs() {
         for seed in 1..=8 {
             let batch = generate_batch(seed).unwrap();
             let float = generate_batch_in(Space::Float, seed).unwrap();

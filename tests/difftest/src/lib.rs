@@ -12,9 +12,9 @@ pub mod agg;
 pub mod ast;
 pub mod classify;
 pub mod corpus;
+pub mod emit;
 #[cfg(test)]
 mod enum_tests;
-pub mod emit;
 pub mod float;
 pub mod generator;
 pub mod harness;

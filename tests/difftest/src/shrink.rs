@@ -32,13 +32,47 @@ pub struct Identity {
     /// Every kind among the mismatches that name an element, sorted.
     pub kinds: Vec<&'static str>,
     pub out_ty: Ty,
+    /// A slangc build failure of the GPU party (no element names it): see [`build_signature`]. Then `kind` is
+    /// `gpu-error` and a candidate reproduces when it fails to compile in the same way.
+    pub build: Option<String>,
 }
 
-/// The identity of a failing program, and the element it first fails at: its first mismatch that names an element.
+/// The signature of a slangc compilation failure in the message of a `gpu-error`: its first error code and the first
+/// quoted name after it (`E30015 '__gust_keep'`), so a candidate that fails to compile for another reason does not
+/// count as the same failure. `None` for any other message.
+pub fn build_signature(message: &str) -> Option<String> {
+    if !message.contains("CompilationFailed") {
+        return None;
+    }
+    let start = message.find("error[E")? + "error[".len();
+    let rest = &message[start..];
+    let code = &rest[..rest.find(']')?];
+    let quoted = rest.split('\'').nth(1).filter(|name| name.len() < 80);
+    Some(match quoted {
+        Some(name) => format!("{code} '{name}'"),
+        None => code.to_owned(),
+    })
+}
+
+/// The identity of a failing program, and the element it first fails at: its first mismatch that names an element, or,
+/// when none does, a slangc build failure (shrunk from element 0).
 pub fn identity_of(program: &Program, found: &[Mismatch]) -> Option<(Identity, u32)> {
-    let (first, element) = found
+    let Some((first, element)) = found
         .iter()
-        .find_map(|m| Some((m, u32::try_from(m.first_element?).ok()?)))?;
+        .find_map(|m| Some((m, u32::try_from(m.first_element?).ok()?)))
+    else {
+        let signature = found
+            .iter()
+            .filter(|m| m.kind == "gpu-error")
+            .find_map(|m| build_signature(&m.message))?;
+        let identity = Identity {
+            kind: "gpu-error",
+            kinds: vec!["gpu-error"],
+            out_ty: program.out_ty(),
+            build: Some(signature),
+        };
+        return Some((identity, 0));
+    };
     let mut kinds: Vec<&'static str> = found
         .iter()
         .filter(|m| m.first_element.is_some())
@@ -50,6 +84,7 @@ pub fn identity_of(program: &Program, found: &[Mismatch]) -> Option<(Identity, u
         kind: first.kind,
         kinds,
         out_ty: program.out_ty(),
+        build: None,
     };
     Some((identity, element))
 }
@@ -63,6 +98,13 @@ pub fn reproduces(
     run: Result<&[Mismatch], &str>,
 ) -> Option<u32> {
     let found = run.ok()?;
+    if let Some(signature) = &identity.build {
+        let same = program.out_ty() == identity.out_ty
+            && found.len() == 1
+            && found[0].kind == "gpu-error"
+            && build_signature(&found[0].message).as_ref() == Some(signature);
+        return same.then_some(0);
+    }
     if program.out_ty() != identity.out_ty || found.iter().any(|m| m.first_element.is_none()) {
         return None;
     }
@@ -172,7 +214,7 @@ pub fn shrink_with(
     let original_found = classify(plan, &original_raw, cpu_only);
     let Some((identity, failing)) = identity_of(&plan.program, &original_found) else {
         return Ok(Shrunk::NoFailure(format!(
-            "seed {} program {} does not fail ({} mismatches without an element)",
+            "seed {} program {} does not fail: none of its {} mismatches names an element or is a slangc build failure",
             plan.program.seed,
             plan.index,
             original_found.len()
@@ -260,6 +302,10 @@ fn record(
         ("index", Json::uint(plan.index as u64)),
         ("attempt", Json::uint(plan.program.attempt)),
         ("classification", Json::str(identity.kind)),
+        (
+            "build_failure",
+            identity.build.as_deref().map_or(Json::Null, Json::str),
+        ),
         ("output_buffer", Json::str("out")),
         ("output_type", Json::str(identity.out_ty.name())),
         ("failing_element", Json::uint(u64::from(reduction.failing))),

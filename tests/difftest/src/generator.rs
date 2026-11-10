@@ -39,13 +39,13 @@ use crate::prng::{Prng, byte_stream};
 /// `&mut self` and by-value `self` methods and associated functions, and helpers that call them; the decoding of the
 /// float and vector spaces is unchanged (a seed's first eight float and first five vector programs are those of
 /// format 7), the batch cut is new.
-/// 9: enums and the statement `match` (slice m9.d1b, D166): a seed's batch is seven float, four vector, two method and
+/// 9: enums and the statement `match` (slice m9.d1b, D166): a seed's batch is seven float, five vector, one method and
 /// three enum programs; an enum program (`Space::Enum`, attempts from `ENUM_ATTEMPT_BASE`) is a method program with
 /// field-less enums (`u32` or `i32` repr, literal discriminants), enum locals, parameters and returns, `==`/`!=` and `as`
 /// on them, statement `match` (grouped arms, `_` or the `default` rule, nested, in a `for`, arms that assign, call or
 /// `return`), biased toward the order-sensitive shapes. The method space also changed (the biased shift amount is
 /// `call & 31`, and same-root `&=` and `>>=` are reachable), so its format-8 programs and pin are re-taken; the float and
-/// vector spaces are unchanged (a seed's first seven float and first four vector programs are those of format 8).
+/// vector spaces are unchanged (a seed's first seven float and first five vector programs are those of format 8).
 pub const DIFFTEST_FORMAT: u32 = 9;
 
 /// Which programs the generator writes.
@@ -77,8 +77,8 @@ pub const METHOD_ATTEMPT_BASE: u64 = 2_000_000;
 /// In-domain programs of a seed's batch that are scalar (the float space), then vector, then method
 /// (`PROGRAMS_PER_SEED` in all).
 pub const SCALAR_PROGRAMS_PER_SEED: usize = 7;
-pub const VECTOR_PROGRAMS_PER_SEED: usize = 4;
-pub const METHOD_PROGRAMS_PER_SEED: usize = 2;
+pub const VECTOR_PROGRAMS_PER_SEED: usize = 5;
+pub const METHOD_PROGRAMS_PER_SEED: usize = 1;
 pub const ENUM_PROGRAMS_PER_SEED: usize = PROGRAMS_PER_SEED
     - SCALAR_PROGRAMS_PER_SEED
     - VECTOR_PROGRAMS_PER_SEED
@@ -952,7 +952,7 @@ impl Gen<'_> {
     }
 
     fn bool_expr(&mut self, d: u32) -> Expr {
-        if self.enums && self.b.chance(20) {
+        if self.enums && self.b.chance(40) {
             return self.enum_compare(d);
         }
         let mut weights = vec![55, 20, 10, 5];
@@ -1679,7 +1679,7 @@ impl Gen<'_> {
             ),
             _ => {
                 debug_assert!(ty.is_int(), "a struct field is a u32 or an i32");
-                let op = self.b.chance(55).then(|| {
+                let op = self.b.chance(70).then(|| {
                     [
                         BinOp::Add,
                         BinOp::Add,
@@ -1693,10 +1693,11 @@ impl Gen<'_> {
                         BinOp::BitAnd,
                         BinOp::Shl,
                         BinOp::Shr,
-                        // `&=` and `>>=` again: the same-root forms of both are reached with the call as the value.
+                        // `&=`, `>>=` and `%=` again: the same-root forms of each are reached with the call as the value.
                         BinOp::BitAnd,
                         BinOp::Shr,
-                    ][self.b.below(14) as usize]
+                        BinOp::Rem,
+                    ][self.b.below(15) as usize]
                 });
                 // A shift takes a `u32` amount whatever the place's type.
                 let value_ty = if op.is_some_and(|op| op.is_shift()) {
@@ -1706,7 +1707,7 @@ impl Gen<'_> {
                 };
                 // A share of the values call a `&mut self` method on the place's own root: the order rules of
                 // `place op= value` (the place is read after the value) are only observable then.
-                let biased = if self.b.chance(60) {
+                let biased = if self.b.chance(75) {
                     self.root_call(value_ty, place.root, 3)
                 } else {
                     None
@@ -2091,9 +2092,9 @@ impl Gen<'_> {
             2
         } else if self.force_enum_ret {
             // Not an associated function: it returns its struct.
-            [0, 1, 2, 3][self.b.below(4) as usize]
+            [0, 1, 2, 3][self.b.weighted(&[10, 15, 55, 20])]
         } else {
-            self.b.weighted(&[20, 20, 28, 12, 20])
+            self.b.weighted(&[18, 18, 26, 18, 20])
         };
         let recv = [Recv::None, Recv::Shared, Recv::Mut, Recv::Value, Recv::None][kind];
         // An associated function builds its struct from a literal, which needs every field to be a scalar.
@@ -2119,10 +2120,17 @@ impl Gen<'_> {
             .map(|o| (Ty::Struct(o), recv));
         let mut params = Vec::new();
         // A by-value method takes at least one parameter, mostly a `u32`: the slot of a `&mut self` call's value.
-        let count = self.b.below(3).max(u32::from(kind == 3));
+        let count = if self.enums {
+            1 + self.b.below(3)
+        } else {
+            self.b.below(3).max(u32::from(kind == 3))
+        };
+        let mut prev_enum = false;
         for slot in 0..count {
             let ty = if kind == 3 && slot == 0 && self.b.chance(70) {
                 Ty::U32
+            } else if self.enums && prev_enum && self.b.chance(60) {
+                self.enum_ty()
             } else if self.b.chance(18) {
                 Ty::Struct(self.b.below(structs) as u8)
             } else if self.enums && self.b.chance(30) {
@@ -2131,6 +2139,7 @@ impl Gen<'_> {
                 [Ty::U32, Ty::I32, Ty::Bool][self.b.weighted(&[40, 40, 20])]
             };
             let var = self.fresh();
+            prev_enum = ty.is_enum();
             self.scope.push((var, ty, false));
             params.push((var, ty));
         }
@@ -2195,7 +2204,19 @@ impl Gen<'_> {
     /// list of boundaries, or the count-up of the macro (the previous value plus one). Values are distinct.
     fn gen_enums(&mut self) {
         const UNSIGNED: [u32; 13] = [
-            0, 1, 2, 3, 5, 7, 10, 100, 255, 65535, 0x7FFF_FFFF, 0x8000_0000, 0xFFFF_FFF0,
+            0,
+            1,
+            2,
+            3,
+            5,
+            7,
+            10,
+            100,
+            255,
+            65535,
+            0x7FFF_FFFF,
+            0x8000_0000,
+            0xFFFF_FFF0,
         ];
         const SIGNED: [i32; 13] = [
             -100,
@@ -2262,7 +2283,9 @@ impl Gen<'_> {
         if !vars.is_empty() && self.b.chance(60) {
             return Expr::Var(vars[self.b.below(vars.len() as u32) as usize], ty);
         }
-        let v = self.b.below(self.table.enums[usize::from(e)].variants.len() as u32) as u8;
+        let v = self
+            .b
+            .below(self.table.enums[usize::from(e)].variants.len() as u32) as u8;
         Expr::Variant { e, v }
     }
 
@@ -2295,7 +2318,7 @@ impl Gen<'_> {
 
     /// An enum argument: often a `&mut self` call on a root shared with the other enum arguments of the call.
     fn enum_arg(&mut self, ty: Ty, depth: u32, shared: &mut Option<Root>) -> Expr {
-        if depth >= 2 && self.b.chance(65) {
+        if depth >= 2 && self.b.chance(85) {
             let root = match *shared {
                 Some(root) => Some(root),
                 None => self.pick_writable_root(),
@@ -2318,7 +2341,7 @@ impl Gen<'_> {
         } else {
             BinOp::Ne
         };
-        if self.b.chance(50)
+        if self.b.chance(75)
             && let Some(root) = self.pick_writable_root()
             && let Some(l) = self.root_call(ty, root, 2)
             && let Some(r) = self.root_call(ty, root, 2)

@@ -877,7 +877,9 @@ fn emit_switch(
 /// `T x;` and the `switch` that assigns it, for `let x: T = match e { .. };` (slice m9.e2). WGSL zero-initialises a `var`
 /// declared without a value, and every path of the `switch` assigns it (measured: slangc 2026.21, WGSL and SPIR-V).
 /// When the name of the local occurs in the `match` (the `match` reads an outer local of that name, or an arm declares
-/// one), the switch assigns a temporary and the local is declared from it after, so the two never meet.
+/// one), the switch assigns a temporary and the local is declared from it after, so the `match` never reads the new
+/// local. A shadow in the same Slang scope as the outer local still fails in slangc (E30200, as for every `let`); the
+/// shadowing `let` belongs in a block of its own (SEMANTICS.md, section 9).
 fn emit_value_match(
     output: &mut String,
     table: &mut LineTable,

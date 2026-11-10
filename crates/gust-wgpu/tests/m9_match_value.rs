@@ -31,6 +31,8 @@ use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 //   same / same_n = `match d.tick()` (1) and the arm ticks again (2): 2 * 100 = 200, n = 2
 //   taken / taken_n = only the taken arm calls `mark`: Off mark(1) -> 101, n 1; Low mark(2) -> 102, n 2; others
 //                mark(3) -> 103, n 3                                         : taken 101, 102, 103, 103, 103
+//   two = `g.tick() * 10 + g.tick()` with g.n = 0: the left call first (1), then the right (2): 1 * 10 + 2 = 12
+//   duo_a / duo_b = `Duo { a: h.tick(), b: h.tick() }` with h.n = 0: the fields in the order written, a = 1, b = 2
 const ENUM_VALUE: [u32; 5] = [2, 31, 41, 8, 8];
 const RANK: [u32; 5] = [110, 111, 112, 113, 114];
 const BUCKET: [u32; 5] = [101, 201, 201, 301, 401];
@@ -51,6 +53,9 @@ const SAME: u32 = 200;
 const SAME_N: u32 = 2;
 const TAKEN: [u32; 5] = [101, 102, 103, 103, 103];
 const TAKEN_N: [u32; 5] = [1, 2, 3, 3, 3];
+const TWO: u32 = 12;
+const DUO_A: u32 = 1;
+const DUO_B: u32 = 2;
 
 #[test]
 fn value_matches_execute_on_gpu_and_on_the_cpu_twin() {
@@ -83,6 +88,9 @@ fn value_matches_execute_on_gpu_and_on_the_cpu_twin() {
                 same_n: u32::MAX,
                 taken: u32::MAX,
                 taken_n: u32::MAX,
+                two: u32::MAX,
+                duo_a: u32::MAX,
+                duo_b: u32::MAX,
             };
             count
         ];
@@ -123,6 +131,9 @@ fn value_matches_execute_on_gpu_and_on_the_cpu_twin() {
                 assert_eq!(row.same_n, SAME_N, "same_n {note}");
                 assert_eq!(row.taken, TAKEN[k], "taken {note}");
                 assert_eq!(row.taken_n, TAKEN_N[k], "taken_n {note}");
+                assert_eq!(row.two, TWO, "two {note}");
+                assert_eq!(row.duo_a, DUO_A, "duo_a {note}");
+                assert_eq!(row.duo_b, DUO_B, "duo_b {note}");
             }
         }
     }
@@ -134,9 +145,9 @@ fn the_match_value_fixture_compiles_to_wgsl_with_its_switches() {
     let wgsl = gust::slang::compile_wgsl(descriptor).unwrap();
     assert!(wgsl.contains("compute"), "{wgsl}");
     // Counted from the fixture: one `switch` in each of enum_value, rank, bucket, wide, sgn, stmt_int, early, four in
-    // nested (the outer, an arm, a `let` in an arm, the tail of an arm), seven in the kernel (p, shadow, scrut,
-    // arm_after, arm_before, same, taken).
-    assert_eq!(wgsl.matches("switch(").count(), 18, "{wgsl}");
+    // nested (the outer, an arm, a `let` in an arm, the tail of an arm), nine in the kernel (p, shadow, scrut,
+    // arm_after, arm_before, same, taken, two, duo).
+    assert_eq!(wgsl.matches("switch(").count(), 20, "{wgsl}");
     for label in [
         "case u32(3000000000):",
         "case u32(4000000000):",

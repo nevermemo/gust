@@ -855,11 +855,11 @@ Decision: D157 (M9 plan 2.2, slice m9.e1).
 
 ### GUST-E0419 value `match` outside a typed `let`
 
-A `match` that gives a value is a Slang `switch` whose arms assign a local, and Slang needs the local declared with its type before the `switch`. So the value form is accepted in one place only, the initializer of a `let` with a type (`let x: T = match e { .. };`). The same `match` as the initializer of an untyped `let`, as an argument, an operand, the value of an assignment, a `return`, a `for` bound or a condition is refused with this code. A `match` on a `Result` in these places keeps GUST-E0513. Each arm gives a value: an expression, or a block whose last line is an expression without `;` (or a `return`), anything else is GUST-E0518.
+A `match` that gives a value is a Slang `switch` whose arms assign a local, and Slang needs the local declared with its type before the `switch`. So the value form is accepted in one place only, the initializer of a `let` with a type (`let x: T = match e { .. };`). The same `match` as the initializer of an untyped `let`, as an argument, an operand, the value of an assignment, a `return`, a `for` bound, a condition or the tail of a function with a result type (`fn f(v: u32) -> u32 { match v { 0 => 1u32, _ => 2u32 } }`) is refused with this code; a tail `match` whose arms `return` or are unit blocks is the statement form and stays accepted. A `match` on a `Result` in these places keeps GUST-E0513. Each arm gives a value: an expression, or a block whose last line is an expression without `;` (or a `return`), anything else is GUST-E0518.
 Reached through `#[gpu]`.
-Rejected: `let x = match v { 0 => 1u32, _ => 2u32 };`, `out[i] = match v { .. };`, `f(match v { .. })`, `1u32 + match v { .. }`.
+Rejected: `let x = match v { 0 => 1u32, _ => 2u32 };`, `out[i] = match v { .. };`, `f(match v { .. })`, `1u32 + match v { .. }`, and `match v { .. }` as the tail of a function that gives a `u32`.
 Write instead: `let x: u32 = match v { 0 => 1u32, _ => 2u32 };` and use `x`.
-Fixture: `tests/ui/match-value-untyped` (`cargo xtask check-ui`, `code: none` plus the message).
+Fixtures: `tests/ui/match-value-untyped`, `tests/ui/match-value-position` and `tests/ui/match-value-tail` (`cargo xtask check-ui`, `code: none` plus the message); the control case is `tests/ui/match-value-ok`.
 Decision: D157 (M9 plan 2.2, slice m9.e2).
 
 ### GUST-E0421 `&mut self` call whose evaluation order differs from Rust's
@@ -1048,7 +1048,7 @@ Decision: D14.
 In a `Result` match the arm patterns are `Ok(identifier)` and `Err(identifier)`; in an enum `match` they are `E::A`, `E::A | E::B` and `_` (the enum's own variants, each named once, none after `_`); in an integer `match` on a `u32` or `i32` they are integer literals (`0`, `1 | 2`, `3u32`, `-1i32`, within 32 bits, each value once) and a final `_`, which is required. A pattern of another shape is refused with this code: a range, a binding, a constant (`u32::MAX`), a `bool`, float or character literal, a literal of another integer type, a value out of range, a repeated or unreachable arm, a missing `_` in an integer `match`, and a mix of variants and literals.
 Reached through `#[gpu]`.
 Rejected: `_ => { .. }` in a `Result` match, `Ok((x, y)) => { .. }`, in an enum `match` a variant of another enum, a variant named twice or after `_`, a binding or a literal, and in an integer `match` `0u32..=3u32`, `n`, `u32::MAX` or no `_`.
-Fixture: `tests/ui/match-pattern-range` (`cargo xtask check-ui`, `code: none` plus the message).
+Fixtures: `tests/ui/match-pattern-range`, `tests/ui/match-pattern-binding`, `tests/ui/match-pattern-const` and `tests/ui/match-pattern-repeat` (`cargo xtask check-ui`, `code: none` plus the message).
 Write instead: `Ok(x) => { .. }` and `Err(e) => { .. }`.
 Decision: D14.
 
@@ -1537,6 +1537,7 @@ Decision: D143.
 A subgroup operation combines the invocations of a subgroup, so it is a rendezvous like `workgroup_barrier()` (M8, D140): the macro is the only uniformity authority (the GPU compiler does not check it), and it approves a call only as the whole value of a `let`, an assignment or a compound assignment, or as an operand of arithmetic, a comparison, a cast or a unary operator there (and as the argument of another operation), at the top level of the kernel body or of a top-level `for a..b` loop with two literal bounds. Refused: under an `if` (a condition or either arm), under `&&` or `||` (short-circuit), in an index, as a method receiver, as a statement of its own, in a loop whose bounds are not literals, in a loop inside a loop, and as the value of an `if`. A call under a condition that differs per invocation would combine only the active invocations, and what that gives is a documented row, not a guarantee (D39, `docs/SEMANTICS.md`).
 Reached through `#[gpu]`.
 Rejected: `if p { let r = subgroup_add(x); }`, `let r = p && subgroup_all(p);`, `data[subgroup_add(x)]`, `for s in 0u32..x { .. subgroup_add(s) .. }`.
+A `match` is not an approved position either: an operation in an arm of a statement or value `match` is refused with this code, and so is one in its scrutinee (`let x: u32 = match subgroup_add(v) { .. };`), although every invocation evaluates the scrutinee. That over-refusal is deliberate (M9, slice m9.e2): bind the result to a local first, `let s = subgroup_add(v);` then `match s { .. }`.
 Fixtures: `tests/ui/subgroup-in-if` and `tests/ui/subgroup-under-and` (`cargo xtask check-ui`).
 Write instead: compute the operation unconditionally at the top level of the body, and use its result under the condition.
 Decision: D140.

@@ -110,7 +110,7 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   for an enum, `u32` or `i32` scrutinee; an arm is an expression, or a block that ends in an expression or a `return`, and
   the result may be a struct. An integer `match` (statement or value) takes literal patterns (`0`, `1 | 2`, `3u32`,
   `-1i32`, within 32 bits) and needs a final `_`. It lowers to `T x;` and a `switch` whose arms assign `x`. A `match` that
-  gives a value anywhere else is `GUST-E0419`; ranges, bindings and constants as patterns stay `GUST-E0521`. The scrutinee
+  gives a value anywhere else, a function's tail included, is `GUST-E0419`; ranges, bindings and constants as patterns stay `GUST-E0521`. The scrutinee
   is read once and the operands of an arm are evaluated in the order of Rust (measured), so nothing is refused for order.
   On an RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin.
 

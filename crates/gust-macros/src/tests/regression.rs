@@ -6982,3 +6982,103 @@ fn the_evaluation_order_of_the_value_form_is_the_order_of_the_statements() {
         Code::ForBoundSideEffect,
     );
 }
+
+// ---- Review r1 of m9.e2 ----
+
+#[test]
+fn a_match_that_gives_a_value_as_the_tail_of_a_function_is_gust_e0419() {
+    // S1: the commonest Rust form is the same refusal as the other value positions, with the typed `let` named.
+    for items in [
+        // An integer match with expression arms, an enum match with expression arms, block arms that end in values.
+        "fn f(v: u32) -> u32 { match v { 0 => 1u32, _ => 2u32 } }",
+        "fn f(m: Mode) -> u32 { match m { Mode::A => 1u32, _ => 2u32 } }",
+        "fn f(m: Mode) -> u32 { match m { Mode::A => { 1u32 } Mode::B | Mode::C => { let t = 3u32; t } } }",
+        "fn f(v: u32) -> u32 { match v { 0 => { 1u32 } _ => { 2u32 } } }",
+        // One arm gives a value, the other returns.
+        "fn f(v: u32) -> u32 { match v { 0 => { return 7u32; } _ => 2u32 } }",
+    ] {
+        let error = translate(&with_mode(items, "out[id.x] = f(id.x);")).expect_err(items);
+        assert_code_for(&error, Code::ValueMatchForm, items);
+        assert!(error.to_string().contains("typed `let`"), "{error}");
+    }
+    // The e1 statement form stays: a tail `match` whose arms return, or are unit blocks, in a helper and a kernel.
+    translate(&with_mode(
+        "fn f(m: Mode) -> u32 { match m { Mode::A => { return 1u32; } _ => { return 2u32; } } }",
+        "out[id.x] = f(Mode::A);",
+    ))
+    .unwrap();
+    translate(&with_mode(
+        "fn f(v: u32) -> u32 { match v { 0 => { return 1u32; } _ => { return 2u32; } } }",
+        "out[id.x] = f(id.x);",
+    ))
+    .unwrap();
+    translate(&with_mode(
+        "",
+        "match Mode::A { Mode::A => { out[id.x] = 1u32; } _ => { out[id.x] = 2u32; } }",
+    ))
+    .unwrap();
+    // The typed `let` form with the local returned is the way.
+    translate(&with_mode(
+        "fn f(v: u32) -> u32 { let r: u32 = match v { 0 => 1u32, _ => 2u32 }; r }",
+        "out[id.x] = f(id.x);",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn every_value_position_the_docs_list_is_gust_e0419() {
+    for body in [
+        // A condition, a struct field, an index, a method argument, a unary operand, a cast, a comparison.
+        "if (match id.x { 0 => 1u32, _ => 2u32 }) == 1u32 { out[0u32] = 1u32; }",
+        "let p = P { a: match id.x { 0 => 1u32, _ => 2u32 }, b: 0u32 }; out[id.x] = p.a;",
+        "out[match id.x { 0 => 1u32, _ => 2u32 }] = 1u32;",
+        "let x: u32 = 5u32.wrapping_add(match id.x { 0 => 1u32, _ => 2u32 }); out[id.x] = x;",
+        "let x: i32 = -(match id.x { 0 => 1i32, _ => 2i32 }); out[id.x] = x as u32;",
+        "let x: f32 = (match id.x { 0 => 1u32, _ => 2u32 }) as f32; out[id.x] = x as u32;",
+        "let x: bool = (match id.x { 0 => 1u32, _ => 2u32 }) == 2u32; out[id.x] = x as u32;",
+        // As the value of a compound assignment and as the right side of a typed `let` inside another expression.
+        "let mut y = 0u32; y += match id.x { 0 => 1u32, _ => 2u32 }; out[id.x] = y;",
+        "let t: (u32, u32) = (match id.x { 0 => 1u32, _ => 2u32 }, 1u32); out[id.x] = t.0;",
+    ] {
+        let source = with_kernel("pub struct P { pub a: u32, pub b: u32 }", body);
+        let error = translate(&source).expect_err(body);
+        assert!(
+            error.to_string().contains("[GUST-E0419]"),
+            "{body}: {error}"
+        );
+    }
+}
+
+#[test]
+fn a_literal_free_integer_match_names_the_integer_rule_in_gust_e0515() {
+    // N3: `match v { _ => .. }` on a `u32` is not an enum match.
+    let error = translate(&with_mode(
+        "",
+        "match id.x + 1u32 { _ => { out[id.x] = 1u32; } }",
+    ))
+    .expect_err("an _-only match");
+    assert_code_for(&error, Code::MatchScrutinee, "an _-only match");
+    assert!(error.to_string().contains("`u32` or `i32`"), "{error}");
+}
+
+#[test]
+fn two_mutating_calls_in_one_arm_and_in_two_struct_fields_run_in_the_order_of_rust() {
+    // N4: Slang evaluates binary operands left to right, and the struct literal is assigned field by field in order.
+    let source = translate(&with_kernel(
+        &format!("{ORDER_ITEMS} pub struct Q {{ pub a: u32, pub b: u32 }}"),
+        "let mut c = C { n: 0u32 }; \
+         let a: u32 = match id.x { 0 => c.next() * 10u32 + c.next(), _ => 0u32 }; \
+         let q: Q = match id.x { 0 => Q { a: c.next(), b: c.next() }, _ => Q { a: 0u32, b: 0u32 } }; \
+         out[id.x] = a + q.a + q.b;",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    assert!(
+        source.contains("((c.next() * uint(10)) + c.next())")
+            || source.contains("c.next() * uint(10)"),
+        "{source}"
+    );
+    let first = source.find("__gust_struct_0.a = c.next()").expect(&source);
+    let second = source.find("__gust_struct_0.b = c.next()").expect(&source);
+    assert!(first < second, "{source}");
+}

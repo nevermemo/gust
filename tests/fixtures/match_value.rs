@@ -17,6 +17,12 @@ mod match_value {
         pub b: f32,
     }
 
+    // Two u32 fields, both given by calls in one arm.
+    pub struct Duo {
+        pub a: u32,
+        pub b: u32,
+    }
+
     // Records the order of its method calls: `mark` appends a digit to `n`, `tick` counts.
     pub struct Trace {
         pub n: u32,
@@ -56,6 +62,9 @@ mod match_value {
         pub same_n: u32,
         pub taken: u32,
         pub taken_n: u32,
+        pub two: u32,
+        pub duo_a: u32,
+        pub duo_b: u32,
     }
 
     fn mode_from(v: u32) -> Mode {
@@ -257,6 +266,23 @@ mod match_value {
                 _ => e.mark(3u32) + 100u32,
             };
 
+            // Two calls in one arm: the left operand first.
+            let mut g = Trace { n: 0u32 };
+            let two: u32 = match g.n {
+                0 => g.tick() * 10u32 + g.tick(),
+                _ => 0u32,
+            };
+
+            // Two calls in two fields of a struct literal: the fields in the order written.
+            let mut h = Trace { n: 0u32 };
+            let duo: Duo = match h.n {
+                0 => Duo {
+                    a: h.tick(),
+                    b: h.tick(),
+                },
+                _ => Duo { a: 0u32, b: 0u32 },
+            };
+
             results[i] = Results {
                 enum_value: enum_value(m),
                 rank: rank(mode_from(v)),
@@ -278,6 +304,9 @@ mod match_value {
                 same_n: d.n,
                 taken,
                 taken_n: e.n,
+                two,
+                duo_a: duo.a,
+                duo_b: duo.b,
             };
         }
     }

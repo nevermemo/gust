@@ -1762,6 +1762,11 @@ fn validate_function(
             }
         }
     }
+    if !matches!(function.sig.output, syn::ReturnType::Default)
+        && let Some(syn::Stmt::Expr(syn::Expr::Match(tail), None)) = function.block.stmts.last()
+    {
+        visitor.body_tail_match = Some(std::ptr::from_ref(tail) as usize);
+    }
     visitor.visit_item_fn(function);
     visitor.finish()?;
     check_workgroup_rules(stage, function, is_kernel)
@@ -2131,6 +2136,9 @@ struct RestrictedVisitor {
     /// The `loop_depth` at the start of each enclosing enum `match` arm, innermost last: a `break` or `continue` at that
     /// depth would bind to the Slang `switch`, not to the Rust loop (GUST-E0417).
     switch_depths: Vec<usize>,
+    /// The `match` that ends the body of a function with a result type, by address (m9.e2 review S1): when its arms
+    /// give values it is a value in tail position, GUST-E0419.
+    body_tail_match: Option<usize>,
     /// The parameters and locals whose type is an enum of the module, with the enum's name (by name, as `value_params`).
     enum_values: HashMap<String, String>,
     error: Option<syn::Error>,
@@ -2160,6 +2168,7 @@ impl RestrictedVisitor {
             owner_fields: HashSet::new(),
             value_params: HashSet::new(),
             switch_depths: Vec::new(),
+            body_tail_match: None,
             enum_values: HashMap::new(),
             error: None,
         }
@@ -2272,7 +2281,7 @@ impl RestrictedVisitor {
                 self.reject(
                     Code::MatchScrutinee,
                     &expression.expr,
-                    "a `match` on an enum takes a local, a parameter, a call or a variant as its scrutinee: bind a larger expression to a local first (`let m = ..; match m { .. }`)",
+                    "a `match` on an enum takes a local, a parameter, a call or a variant as its scrutinee: bind a larger expression to a local first (`let m = ..; match m { .. }`); a `match` on a `u32` or `i32` takes any expression but needs an integer literal arm (`0`, `1 | 2`) before its `_`",
                 );
                 return;
             };
@@ -3897,6 +3906,20 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
 
     fn visit_stmt(&mut self, statement: &'ast syn::Stmt) {
         match statement {
+            syn::Stmt::Expr(syn::Expr::Match(expression), None)
+                if is_switch_match(expression)
+                    && self.body_tail_match == Some(std::ptr::from_ref(expression) as usize)
+                    && expression.arms.iter().any(|arm| match arm.body.as_ref() {
+                        syn::Expr::Block(body) => value_tail(&body.block).is_some(),
+                        _ => true,
+                    }) =>
+            {
+                self.reject(
+                    Code::ValueMatchForm,
+                    expression,
+                    "a `match` that gives a value is accepted only as the initializer of a typed `let`, not as the tail of a function: `let x: u32 = match e { E::A => 1u32, _ => 2u32 }; x`; bind it to a typed local first, then return the local",
+                );
+            }
             syn::Stmt::Expr(syn::Expr::Match(expression), _) if is_switch_match(expression) => {
                 self.check_switch_match(expression, MatchForm::Statement);
             }

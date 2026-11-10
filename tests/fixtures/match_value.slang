@@ -8,6 +8,12 @@ struct Pair
     float b;
 };
 
+struct Duo
+{
+    uint a;
+    uint b;
+};
+
 struct Trace
 {
     uint n;
@@ -47,6 +53,9 @@ struct Results
     uint same_n;
     uint taken;
     uint taken_n;
+    uint two;
+    uint duo_a;
+    uint duo_b;
 };
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint> input;
@@ -518,27 +527,72 @@ void gpu_match_value_run(uint3 id : SV_DispatchThreadID)
                 break;
             }
         }
-        Results __gust_struct_15;
-        __gust_struct_15.enum_value = enum_value(m);
-        __gust_struct_15.rank = rank(mode_from(v));
-        __gust_struct_15.bucket = bucket(v);
-        __gust_struct_15.wide = wide(v);
-        __gust_struct_15.sgn = sgn(((int(v)) - int(2)));
-        __gust_struct_15.stmt_int = stmt_int(v);
-        __gust_struct_15.nested = nested(mode_from(v), (((v + uint(1))) % uint(2)));
-        __gust_struct_15.pair_a = (p.a + uint(1));
-        __gust_struct_15.pair_b = p.b;
-        __gust_struct_15.early = early(v);
-        __gust_struct_15.shadow = shadow;
-        __gust_struct_15.scrut = scrut;
-        __gust_struct_15.scrut_n = t.n;
-        __gust_struct_15.arm_after = arm_after;
-        __gust_struct_15.arm_before = arm_before;
-        __gust_struct_15.arm_n = c.n;
-        __gust_struct_15.same = same;
-        __gust_struct_15.same_n = d.n;
-        __gust_struct_15.taken = taken;
-        __gust_struct_15.taken_n = e.n;
-        results[i] = __gust_struct_15;
+        Trace __gust_struct_15;
+        __gust_struct_15.n = uint(0);
+        Trace g = __gust_struct_15;
+        uint two;
+        // @gust construct: match #16
+        switch (g.n)
+        {
+            case 0:
+            {
+                two = ((g.tick() * uint(10)) + g.tick());
+                break;
+            }
+            default:
+            {
+                two = uint(0);
+                break;
+            }
+        }
+        Trace __gust_struct_17;
+        __gust_struct_17.n = uint(0);
+        Trace h = __gust_struct_17;
+        Duo duo;
+        // @gust construct: match #18
+        switch (h.n)
+        {
+            case 0:
+            {
+                Duo __gust_struct_0;
+                __gust_struct_0.a = h.tick();
+                __gust_struct_0.b = h.tick();
+                duo = __gust_struct_0;
+                break;
+            }
+            default:
+            {
+                Duo __gust_struct_0;
+                __gust_struct_0.a = uint(0);
+                __gust_struct_0.b = uint(0);
+                duo = __gust_struct_0;
+                break;
+            }
+        }
+        Results __gust_struct_19;
+        __gust_struct_19.enum_value = enum_value(m);
+        __gust_struct_19.rank = rank(mode_from(v));
+        __gust_struct_19.bucket = bucket(v);
+        __gust_struct_19.wide = wide(v);
+        __gust_struct_19.sgn = sgn(((int(v)) - int(2)));
+        __gust_struct_19.stmt_int = stmt_int(v);
+        __gust_struct_19.nested = nested(mode_from(v), (((v + uint(1))) % uint(2)));
+        __gust_struct_19.pair_a = (p.a + uint(1));
+        __gust_struct_19.pair_b = p.b;
+        __gust_struct_19.early = early(v);
+        __gust_struct_19.shadow = shadow;
+        __gust_struct_19.scrut = scrut;
+        __gust_struct_19.scrut_n = t.n;
+        __gust_struct_19.arm_after = arm_after;
+        __gust_struct_19.arm_before = arm_before;
+        __gust_struct_19.arm_n = c.n;
+        __gust_struct_19.same = same;
+        __gust_struct_19.same_n = d.n;
+        __gust_struct_19.taken = taken;
+        __gust_struct_19.taken_n = e.n;
+        __gust_struct_19.two = two;
+        __gust_struct_19.duo_a = duo.a;
+        __gust_struct_19.duo_b = duo.b;
+        results[i] = __gust_struct_19;
     }
 }

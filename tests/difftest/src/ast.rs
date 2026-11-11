@@ -523,6 +523,22 @@ pub enum Expr {
     Repeat { ty: Ty, e: Box<Expr> },
     /// `a.len()` of an array place, a `u32`; the dialect accepts it only inside an index or under `as u32`. (Format 11.)
     ArrLen { place: Place },
+    /// `cl3(a, b)`: a call of the closure bound by `Stmt::LetClosure` with `var` 3. The arguments run left to right,
+    /// each completely, then the body runs once; `ty` is the closure's result type. (Format 12.)
+    ClosureCall { var: u32, args: Vec<Expr>, ty: Ty },
+}
+
+/// A non-capturing closure (format 12): `let cl3 = |v4: u32, mut v5: [u32; 3]| -> u32 { body; tail };`. Every
+/// parameter is typed, the result type is written and the body is a block; the binding is immutable. `params` holds
+/// the variable, its type and whether it is `mut`. The body sees only its parameters (no capture, E0329), calls
+/// helpers and methods but no closure (E0332), and holds no `return`, buffer, `i` or `self`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClosureDef {
+    pub var: u32,
+    pub params: Vec<(u32, Ty, bool)>,
+    pub ret: Ty,
+    pub body: Vec<Stmt>,
+    pub tail: Expr,
 }
 
 /// A field-less enum of the module (format 9): its repr and its variants `V0`, `V1`, ... A variant's value is a 32-bit
@@ -804,6 +820,7 @@ pub fn bin_shape(methods: &Methods, op: BinOp, l: &Expr, r: &Expr) -> Option<&'s
     (same(read_root(l), mut_call_root(methods, r)) || same(mut_call_root(methods, l), read_root(r)))
         .then_some(SHAPE_READ_AND_CALL)
         .or_else(|| array_index_shape(methods, l, r))
+        .or_else(|| closure_twice_shape(methods, l, r))
 }
 
 /// The shape of a call: a by-value call whose arguments contain a `&mut self` call on the receiver's root.
@@ -841,7 +858,7 @@ pub const SHAPE_ENUM_ARGS_ROOT: &str = "shape enum arguments built from calls on
 
 /// Every shape and `match` construct name that `check-difftest` prints a row for, so a name that is never written still
 /// shows as a row of zeros (`coverage_json` adds these to the operator rows).
-pub const KNOWN_SHAPE_NAMES: [&str; 44] = [
+pub const KNOWN_SHAPE_NAMES: [&str; 62] = [
     SHAPE_STMT_CALL,
     SHAPE_EXPR_CALL,
     SHAPE_LOGIC_CALL,
@@ -886,6 +903,24 @@ pub const KNOWN_SHAPE_NAMES: [&str; 44] = [
     SHAPE_LT_ARG,
     SHAPE_LT_METHOD_ARG,
     SHAPE_VMATCH_SCRUTINEE,
+    CLOSURE_LET,
+    CLOSURE_CALL,
+    CLOSURE_IN_KERNEL,
+    CLOSURE_IN_HELPER,
+    CLOSURE_IN_METHOD,
+    CLOSURE_BODY_HELPER,
+    CLOSURE_BODY_METHOD,
+    CLOSURE_MUT_ARRAY,
+    CLOSURE_MUT_STRUCT,
+    CLOSURE_ARRAY_RESULT,
+    SHAPE_CLOSURE_ARGS_ROOT,
+    SHAPE_CLOSURE_ARRAY_LIT,
+    SHAPE_CLOSURE_SET_OP,
+    SHAPE_CLOSURE_SET_INDEX,
+    SHAPE_CLOSURE_STORE,
+    SHAPE_CLOSURE_TWICE,
+    SHAPE_CLOSURE_MUT_PARAM,
+    SHAPE_CLOSURE_METHOD_PARAM,
 ];
 
 /// Names of the constructs of format 10 (slice m9.d1c), counted statically by `operator_counts` and when executed by
@@ -1107,6 +1142,7 @@ pub fn array_expr_names(methods: &Methods, e: &Expr) -> Vec<&'static str> {
             {
                 names.push(SHAPE_ARRAY_LIT_ROOT);
             }
+            names.extend(closure_array_lit_shape(methods, elems));
             names
         }
         Expr::Repeat { e: inner, .. } => {
@@ -1179,7 +1215,306 @@ pub fn array_store_names(methods: &Methods, result: &Expr) -> Vec<&'static str> 
     if !roots.is_empty() {
         names.push(SHAPE_ARRAY_STORE_CALL);
     }
+    names.extend(closure_store_names(methods, result));
     names
+}
+
+/// Names of the closure constructs and shapes (format 12, slice m9.d1e), counted statically by `operator_counts` and when
+/// executed by the interpreter, under the same names.
+pub const CLOSURE_LET: &str = "closure let";
+pub const CLOSURE_CALL: &str = "closure call";
+pub const CLOSURE_IN_KERNEL: &str = "closure bound in the kernel";
+pub const CLOSURE_IN_HELPER: &str = "closure bound in a helper";
+pub const CLOSURE_IN_METHOD: &str = "closure bound in a method";
+pub const CLOSURE_BODY_HELPER: &str = "closure body calls a helper";
+pub const CLOSURE_BODY_METHOD: &str = "closure body calls a method";
+pub const CLOSURE_MUT_ARRAY: &str = "closure takes a mut array";
+pub const CLOSURE_MUT_STRUCT: &str = "closure takes a mut struct";
+pub const CLOSURE_ARRAY_RESULT: &str = "closure returns an array";
+pub const SHAPE_CLOSURE_ARGS_ROOT: &str = "shape closure arguments built from calls on one root";
+pub const SHAPE_CLOSURE_ARRAY_LIT: &str =
+    "shape closure call in an array literal beside a call on its root";
+pub const SHAPE_CLOSURE_SET_OP: &str =
+    "shape closure call in a compound set value on the place's root";
+pub const SHAPE_CLOSURE_SET_INDEX: &str =
+    "shape closure call in an indexed set value on the array's root";
+pub const SHAPE_CLOSURE_STORE: &str = "shape closure call in the output store's value";
+pub const SHAPE_CLOSURE_TWICE: &str =
+    "shape closure called twice with a side effect in an argument";
+pub const SHAPE_CLOSURE_MUT_PARAM: &str =
+    "shape closure mutates its parameter, caller variable passed";
+pub const SHAPE_CLOSURE_METHOD_PARAM: &str =
+    "shape closure in a method calls a method on its parameter";
+
+/// The roots of the `&mut self` calls in the arguments of the closure calls inside `e` (each call's arguments run
+/// before its body, left to right).
+fn closure_arg_roots(methods: &Methods, e: &Expr) -> Vec<Root> {
+    let mut roots = Vec::new();
+    walk_expr(e, &mut |n| {
+        if let Expr::ClosureCall { args, .. } = n {
+            for arg in args {
+                mutating_roots(methods, arg, &mut roots);
+            }
+        }
+    });
+    roots
+}
+
+/// Each closure call inside `e` with the roots its arguments call `&mut self` on.
+fn closure_calls_with_roots(methods: &Methods, e: &Expr) -> Vec<(u32, Vec<Root>)> {
+    let mut calls = Vec::new();
+    walk_expr(e, &mut |n| {
+        if let Expr::ClosureCall { var, args, .. } = n {
+            let mut roots = Vec::new();
+            for arg in args {
+                mutating_roots(methods, arg, &mut roots);
+            }
+            calls.push((*var, roots));
+        }
+    });
+    calls
+}
+
+/// The names a closure call counts under: itself, and the shape when two of its arguments call `&mut self` on one root
+/// (the left argument must run first).
+pub fn closure_call_names(methods: &Methods, args: &[Expr]) -> Vec<&'static str> {
+    let mut names = vec![CLOSURE_CALL];
+    let mut roots = Vec::new();
+    for arg in args {
+        mutating_roots(methods, arg, &mut roots);
+    }
+    if roots
+        .iter()
+        .enumerate()
+        .any(|(k, root)| roots[..k].contains(root))
+    {
+        names.push(SHAPE_CLOSURE_ARGS_ROOT);
+    }
+    names
+}
+
+/// `shape closure call in an array literal beside a call on its root`: an element of the literal holds a closure call
+/// whose arguments call `&mut self` on a root that another element calls `&mut self` on (the elements run left to right).
+pub fn closure_array_lit_shape(methods: &Methods, elems: &[Expr]) -> Option<&'static str> {
+    elems
+        .iter()
+        .enumerate()
+        .any(|(k, element)| {
+            closure_arg_roots(methods, element).iter().any(|root| {
+                elems.iter().enumerate().any(|(l, other)| {
+                    let mut others = Vec::new();
+                    mutating_roots(methods, other, &mut others);
+                    l != k && others.contains(root)
+                })
+            })
+        })
+        .then_some(SHAPE_CLOSURE_ARRAY_LIT)
+}
+
+/// `shape closure called twice with a side effect in an argument`: both operands of a binary call one closure with
+/// arguments that call `&mut self` on one root (the left operand must run first).
+pub fn closure_twice_shape(methods: &Methods, l: &Expr, r: &Expr) -> Option<&'static str> {
+    let (left, right) = (
+        closure_calls_with_roots(methods, l),
+        closure_calls_with_roots(methods, r),
+    );
+    left.iter()
+        .any(|(var, roots)| {
+            right
+                .iter()
+                .any(|(v, rs)| v == var && roots.iter().any(|root| rs.contains(root)))
+        })
+        .then_some(SHAPE_CLOSURE_TWICE)
+}
+
+/// The closure shapes an assignment counts under: a compound set, or a set of an element, whose value calls a closure
+/// with an argument that calls `&mut self` on the place's root.
+pub fn closure_set_names(
+    methods: &Methods,
+    place: &Place,
+    op: Option<BinOp>,
+    value: &Expr,
+) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    if closure_arg_roots(methods, value).contains(&place.root) {
+        if op.is_some() {
+            names.push(SHAPE_CLOSURE_SET_OP);
+        }
+        if place.index.is_some() {
+            names.push(SHAPE_CLOSURE_SET_INDEX);
+        }
+    }
+    names
+}
+
+/// The closure shape of the final store: the result calls a closure with an argument that calls `&mut self`.
+pub fn closure_store_names(methods: &Methods, result: &Expr) -> Vec<&'static str> {
+    if closure_arg_roots(methods, result).is_empty() {
+        Vec::new()
+    } else {
+        vec![SHAPE_CLOSURE_STORE]
+    }
+}
+
+/// Whether a statement list writes the variable `var`: assigns to a place rooted at it, or calls `&mut self` on it.
+pub fn writes_var(methods: &Methods, stmts: &[Stmt], var: u32) -> bool {
+    let mut found = false;
+    walk_all_stmts(stmts, &mut |s| match s {
+        Stmt::Set { place, .. } => found |= place.root == Root::Var(var),
+        Stmt::Assign { var: v, .. } | Stmt::AssignComp { var: v, .. } => found |= *v == var,
+        Stmt::Call {
+            f, recv: Some(p), ..
+        } => {
+            found |= methods.fns[*f].recv == Recv::Mut && p.root == Root::Var(var);
+        }
+        _ => {}
+    });
+    walk_stmts(stmts, &mut |e| {
+        if let Expr::Call {
+            f, recv: Some(p), ..
+        } = e
+        {
+            found |= methods.fns[*f].recv == Recv::Mut && p.root == Root::Var(var);
+        }
+    });
+    found
+}
+
+/// The closure-site constructs of a program, counted statically (the interpreter counts the same names when a `let`
+/// runs and a call runs): where each closure is bound, what its signature holds, what its body calls, and the two
+/// shapes that need the closure's definition.
+fn closure_site_counts(program: &Program, counts: &mut BTreeMap<String, usize>) {
+    let methods = &program.methods;
+    let mut defs: BTreeMap<u32, ClosureDef> = BTreeMap::new();
+    let mut sites: Vec<(&[Stmt], Option<usize>)> = vec![(program.body.as_slice(), None)];
+    for (k, def) in methods.fns.iter().enumerate() {
+        sites.push((def.body.as_slice(), Some(k)));
+    }
+    for &(stmts, site) in &sites {
+        walk_all_stmts(stmts, &mut |s| {
+            if let Stmt::LetClosure { def } = s {
+                defs.insert(def.var, (**def).clone());
+                for name in closure_let_names(methods, def, site) {
+                    *counts.entry(name.to_owned()).or_default() += 1;
+                }
+            }
+        });
+    }
+    let mut call = |e: &Expr, in_method: bool| {
+        if let Expr::ClosureCall { var, args, .. } = e
+            && let Some(def) = defs.get(var)
+        {
+            for name in closure_mut_param_names(methods, def, args, in_method) {
+                *counts.entry(name.to_owned()).or_default() += 1;
+            }
+        }
+    };
+    walk_stmts(&program.body, &mut |e| call(e, false));
+    call(&program.result, false);
+    for def in &methods.fns {
+        let in_method = def.owner.is_some();
+        walk_fn_exprs(def, &mut |e| call(e, in_method));
+    }
+}
+
+/// The names a closure binding counts under, `site` the function that holds it (`None`: the kernel).
+pub fn closure_let_names(
+    methods: &Methods,
+    def: &ClosureDef,
+    site: Option<usize>,
+) -> Vec<&'static str> {
+    let mut names = vec![CLOSURE_LET];
+    names.push(match site {
+        None => CLOSURE_IN_KERNEL,
+        Some(k) if methods.fns[k].owner.is_some() => CLOSURE_IN_METHOD,
+        Some(_) => CLOSURE_IN_HELPER,
+    });
+    if def.params.iter().any(|p| p.1.is_array() && p.2) {
+        names.push(CLOSURE_MUT_ARRAY);
+    }
+    if def.params.iter().any(|p| p.1.is_struct() && p.2) {
+        names.push(CLOSURE_MUT_STRUCT);
+    }
+    if def.ret.is_array() {
+        names.push(CLOSURE_ARRAY_RESULT);
+    }
+    let (mut helper, mut method) = (false, false);
+    let mut see = |e: &Expr| {
+        if let Expr::Call { f, .. } = e {
+            if methods.fns[*f].recv == Recv::None && methods.fns[*f].owner.is_none() {
+                helper = true;
+            } else {
+                method = true;
+            }
+        }
+    };
+    walk_stmts(&def.body, &mut see);
+    walk_expr(&def.tail, &mut see);
+    walk_all_stmts(&def.body, &mut |s| {
+        if let Stmt::Call { f, .. } = s {
+            if methods.fns[*f].recv == Recv::None && methods.fns[*f].owner.is_none() {
+                helper = true;
+            } else {
+                method = true;
+            }
+        }
+    });
+    if helper {
+        names.push(CLOSURE_BODY_HELPER);
+    }
+    if method {
+        names.push(CLOSURE_BODY_METHOD);
+    }
+    names
+}
+
+/// The two closure shapes that need the definition, at a call (static form): an aggregate parameter whose argument is a
+/// variable and whose body writes it; and, in a method, a body that calls a method on a struct parameter.
+pub fn closure_mut_param_names(
+    methods: &Methods,
+    def: &ClosureDef,
+    args: &[Expr],
+    in_method: bool,
+) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    let mutates = def.params.iter().zip(args).any(|(p, arg)| {
+        (p.1.is_array() || p.1.is_struct())
+            && matches!(arg, Expr::Var(..))
+            && writes_var(methods, &def.body, p.0)
+    });
+    if mutates {
+        names.push(SHAPE_CLOSURE_MUT_PARAM);
+    }
+    if in_method && closure_calls_on_param(methods, def) {
+        names.push(SHAPE_CLOSURE_METHOD_PARAM);
+    }
+    names
+}
+
+/// Whether a closure body calls a method on one of its struct parameters.
+pub fn closure_calls_on_param(_methods: &Methods, def: &ClosureDef) -> bool {
+    let is_param = |place: &Place| {
+        def.params
+            .iter()
+            .any(|p| p.1.is_struct() && place.root == Root::Var(p.0))
+    };
+    let mut found = false;
+    walk_stmts(&def.body, &mut |e| {
+        if let Expr::Call { recv: Some(p), .. } = e {
+            found |= is_param(p);
+        }
+    });
+    walk_expr(&def.tail, &mut |e| {
+        if let Expr::Call { recv: Some(p), .. } = e {
+            found |= is_param(p);
+        }
+    });
+    walk_all_stmts(&def.body, &mut |s| {
+        if let Stmt::Call { recv: Some(p), .. } = s {
+            found |= is_param(p);
+        }
+    });
+    found
 }
 
 /// The names a destructuring counts under: itself, the annotation, and the shape of a `&mut self` call as its source.
@@ -1443,6 +1778,7 @@ impl Expr {
             }
             Expr::Read { ty, .. }
             | Expr::Call { ty, .. }
+            | Expr::ClosureCall { ty, .. }
             | Expr::StructLit { ty, .. }
             | Expr::Tuple { ty, .. }
             | Expr::ArrayLit { ty, .. }
@@ -1550,6 +1886,7 @@ impl Expr {
                 args.iter().for_each(f);
             }
             Expr::StructLit { fields, .. } => fields.iter().for_each(f),
+            Expr::ClosureCall { args, .. } => args.iter().for_each(f),
             Expr::Tuple { elems, .. } | Expr::ArrayLit { elems, .. } => elems.iter().for_each(f),
             Expr::Repeat { e, .. } => f(e),
         }
@@ -1586,6 +1923,7 @@ impl Expr {
                 args.iter_mut().for_each(f);
             }
             Expr::StructLit { fields, .. } => fields.iter_mut().for_each(f),
+            Expr::ClosureCall { args, .. } => args.iter_mut().for_each(f),
             Expr::Tuple { elems, .. } | Expr::ArrayLit { elems, .. } => {
                 elems.iter_mut().for_each(f)
             }
@@ -1733,6 +2071,10 @@ pub enum Stmt {
         scrut: Expr,
         arms: Vec<Arm>,
     },
+    /// `let cl3 = |p: T, ..| -> R { .. };`: bind a non-capturing closure for the rest of the block. (Format 12.)
+    LetClosure {
+        def: Box<ClosureDef>,
+    },
 }
 
 /// The largest loop trip count the generator writes.
@@ -1835,6 +2177,24 @@ impl Program {
         block(&self.body) || self.methods.fns.iter().any(|def| block(&def.body))
     }
 
+    /// Whether the program binds a closure and calls one (a closure program without both tests nothing new).
+    pub fn has_closure(&self) -> bool {
+        let mut bound = false;
+        walk_all_stmts(&self.body, &mut |s| {
+            bound |= matches!(s, Stmt::LetClosure { .. });
+        });
+        for def in &self.methods.fns {
+            walk_all_stmts(&def.body, &mut |s| {
+                bound |= matches!(s, Stmt::LetClosure { .. });
+            });
+        }
+        let mut called = false;
+        visit_exprs(self, &mut |e| {
+            called |= matches!(e, Expr::ClosureCall { .. })
+        });
+        bound && called
+    }
+
     /// Whether any expression or statement is an array form (an array program without one tests nothing new).
     pub fn has_array(&self) -> bool {
         let mut found = self.store.is_some();
@@ -1888,6 +2248,7 @@ impl Program {
                 | Stmt::TailMatch { scrut, arms } => {
                     scrut.reads_input() || arms.iter().any(|arm| block(&arm.body))
                 }
+                Stmt::LetClosure { .. } => false,
             })
         }
         block(&self.body) || self.result.reads_input()
@@ -1931,6 +2292,9 @@ impl Program {
             scope: Vec::new(),
             seen: BTreeSet::new(),
             in_fn: None,
+            in_closure: false,
+            closures: Vec::new(),
+            closure_params: Vec::new(),
         };
         // Functions first (their variables are numbered in the program's one id space), each in a scope of its own.
         for (k, def) in self.methods.fns.iter().enumerate() {
@@ -1938,6 +2302,7 @@ impl Program {
         }
         cx.in_fn = None;
         cx.scope.clear();
+        cx.closures.clear();
         // The body and the result share the guarded block's scope.
         for stmt in &self.body {
             cx.stmt(stmt)?;
@@ -2151,6 +2516,13 @@ struct Check<'a> {
     seen: BTreeSet<u32>,
     /// The index of the function being checked (`None` in the kernel). A function sees no buffer, no `i`.
     in_fn: Option<usize>,
+    /// Inside a closure body (format 12): no `i`, buffer, `self`, `return` or closure.
+    in_closure: bool,
+    /// The closures bound in the open blocks: (variable, parameter types, result type).
+    closures: Vec<(u32, Vec<Ty>, Ty)>,
+    /// The struct parameters of closures: a parameter is a read-only value to Slang, so it is no `&mut self` receiver
+    /// (E0333), `mut` or not.
+    closure_params: Vec<u32>,
 }
 
 /// A `return` is the last statement of its block (the statements after one would be dead code).
@@ -2185,6 +2557,9 @@ impl Check<'_> {
                 Some((ty, _)) => ty,
                 None => return Err(format!("place rooted at unknown v{var}")),
             },
+            Root::SelfV if self.in_closure => {
+                return Err("a closure captures `self` (E0329)".into());
+            }
             Root::SelfV => match self.in_fn.and_then(|k| self.methods.fns[k].owner) {
                 Some(owner) if self.self_recv() != Recv::None => Ty::Struct(owner),
                 _ => return Err("`self` outside a method".into()),
@@ -2283,6 +2658,13 @@ impl Check<'_> {
                 if self.place_ty(place)? != Ty::Struct(def.owner.unwrap_or(u8::MAX)) {
                     return Err(format!("receiver of m{f} has the wrong type"));
                 }
+                if kind == Recv::Mut
+                    && matches!(place.root, Root::Var(v) if self.closure_params.contains(&v))
+                {
+                    return Err(format!(
+                        "`&mut self` call m{f} on a closure parameter (E0333)"
+                    ));
+                }
                 if kind == Recv::Mut && !self.writable(place) {
                     return Err(format!(
                         "`&mut self` call m{f} on a place that is not writable"
@@ -2308,6 +2690,7 @@ impl Check<'_> {
     fn function(&mut self, k: usize, def: &FnDef) -> Result<(), String> {
         self.in_fn = Some(k);
         self.scope.clear();
+        self.closures.clear();
         for &(var, ty) in &def.params {
             self.declare(var, ty, ty.is_array())?;
         }
@@ -2339,6 +2722,54 @@ impl Check<'_> {
         Ok(())
     }
 
+    /// A closure binding: the parameters are the only names its body sees (no capture), the body calls no closure and
+    /// holds no `return`, `i`, buffer or `self`, and the tail has the written result type. The closure is bound after
+    /// its body is checked (no recursion), for the rest of the block.
+    fn let_closure(&mut self, def: &ClosureDef) -> Result<(), String> {
+        if self.in_closure {
+            return Err("a closure inside a closure (E0332)".into());
+        }
+        if !self.seen.insert(def.var) {
+            return Err(format!("closure cl{} declared twice", def.var));
+        }
+        for ty in def.params.iter().map(|p| p.1).chain([def.ret]) {
+            if ty.is_aggregate() || ty.is_tuple() {
+                return Err(format!("a closure signature with {} (E0331)", ty.name()));
+            }
+        }
+        let saved_scope = std::mem::take(&mut self.scope);
+        let saved_closures = std::mem::take(&mut self.closures);
+        self.in_closure = true;
+        let outcome = self.closure_body(def);
+        self.in_closure = false;
+        self.scope = saved_scope;
+        self.closures = saved_closures;
+        outcome?;
+        self.closures
+            .push((def.var, def.params.iter().map(|p| p.1).collect(), def.ret));
+        Ok(())
+    }
+
+    fn closure_body(&mut self, def: &ClosureDef) -> Result<(), String> {
+        for &(var, ty, mutable) in &def.params {
+            if ty.is_array() && !mutable {
+                return Err("an array closure parameter that is not `mut`".into());
+            }
+            self.declare(var, ty, mutable)?;
+            if ty.is_struct() {
+                self.closure_params.push(var);
+            }
+        }
+        for stmt in &def.body {
+            self.stmt(stmt)?;
+        }
+        self.expr(&def.tail)?;
+        if def.tail.ty() != def.ret {
+            return Err(format!("the tail of cl{} has the wrong type", def.var));
+        }
+        Ok(())
+    }
+
     fn declare(&mut self, var: u32, ty: Ty, mutable: bool) -> Result<(), String> {
         if !self.seen.insert(var) {
             return Err(format!("variable v{var} declared twice"));
@@ -2357,11 +2788,13 @@ impl Check<'_> {
 
     fn block(&mut self, stmts: &[Stmt]) -> Result<(), String> {
         let mark = self.scope.len();
+        let closure_mark = self.closures.len();
         returns_last(stmts)?;
         for stmt in stmts {
             self.stmt(stmt)?;
         }
         self.scope.truncate(mark);
+        self.closures.truncate(closure_mark);
         Ok(())
     }
 
@@ -2636,6 +3069,8 @@ impl Check<'_> {
                 }
                 Ok(())
             }
+            Stmt::LetClosure { def } => self.let_closure(def),
+            Stmt::Return { .. } if self.in_closure => Err("a `return` in a closure body".into()),
             Stmt::Return { value } => {
                 self.expr(value)?;
                 let helper = self.in_fn.map(|k| &self.methods.fns[k]);
@@ -2682,15 +3117,17 @@ impl Check<'_> {
                     other => Err(format!("{} as {}", other.name(), to.name())),
                 }
             }
-            Expr::Gid if self.in_fn.is_some() => Err("`i` inside a function".into()),
+            Expr::Gid if self.in_fn.is_some() || self.in_closure => {
+                Err("`i` inside a function or a closure".into())
+            }
             Expr::Lit(..) | Expr::Gid => Ok(()),
             Expr::Var(var, ty) => match self.lookup(*var) {
                 Some((declared, _)) if declared == *ty => Ok(()),
                 Some(_) => Err(format!("v{var} used at the wrong type")),
                 None => Err(format!("v{var} used out of scope")),
             },
-            Expr::Len(_) | Expr::Input { .. } if self.in_fn.is_some() => {
-                Err("a buffer inside a function".into())
+            Expr::Len(_) | Expr::Input { .. } if self.in_fn.is_some() || self.in_closure => {
+                Err("a buffer inside a function or a closure".into())
             }
             Expr::Len(buf) => {
                 if *buf < self.inputs.len() {
@@ -2913,6 +3350,26 @@ impl Check<'_> {
                 Some(ret) if ret == *ty => Ok(()),
                 _ => Err(format!("a call of m{f} has the wrong type")),
             },
+            Expr::ClosureCall { var, args, ty } => {
+                let Some((_, params, ret)) = self.closures.iter().rev().find(|c| c.0 == *var)
+                else {
+                    return Err(format!("a call of unbound closure cl{var}"));
+                };
+                let (params, ret) = (params.clone(), *ret);
+                if ret != *ty {
+                    return Err(format!("a call of cl{var} has the wrong type"));
+                }
+                if args.len() != params.len() {
+                    return Err(format!("cl{var} takes {} arguments", params.len()));
+                }
+                for (arg, want) in args.iter().zip(&params) {
+                    self.expr(arg)?;
+                    if arg.ty() != *want {
+                        return Err(format!("an argument of cl{var} has the wrong type"));
+                    }
+                }
+                Ok(())
+            }
             Expr::Tuple { ty, elems } => {
                 let Ty::Tuple(t) = ty else {
                     return Err("a tuple literal of a non-tuple".into());
@@ -3044,6 +3501,10 @@ pub fn walk_stmts(stmts: &[Stmt], f: &mut dyn FnMut(&Expr)) {
                 walk_stmts(els, f);
             }
             Stmt::For { body, .. } => walk_stmts(body, f),
+            Stmt::LetClosure { def } => {
+                walk_stmts(&def.body, f);
+                walk_expr(&def.tail, f);
+            }
             Stmt::Match { scrut, arms }
             | Stmt::LetMatch { scrut, arms, .. }
             | Stmt::TailMatch { scrut, arms } => {
@@ -3052,6 +3513,29 @@ pub fn walk_stmts(stmts: &[Stmt], f: &mut dyn FnMut(&Expr)) {
                     walk_stmts(&arm.body, f);
                 }
             }
+        }
+    }
+}
+
+/// Calls `f` on every statement of a statement list (pre-order), closure bodies and match arms included.
+pub fn walk_all_stmts(stmts: &[Stmt], f: &mut dyn FnMut(&Stmt)) {
+    for stmt in stmts {
+        f(stmt);
+        match stmt {
+            Stmt::If { then, els, .. } => {
+                walk_all_stmts(then, f);
+                walk_all_stmts(els, f);
+            }
+            Stmt::For { body, .. } => walk_all_stmts(body, f),
+            Stmt::LetClosure { def } => walk_all_stmts(&def.body, f),
+            Stmt::Match { arms, .. }
+            | Stmt::LetMatch { arms, .. }
+            | Stmt::TailMatch { arms, .. } => {
+                for arm in arms {
+                    walk_all_stmts(&arm.body, f);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -3162,6 +3646,11 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
         for name in array_expr_names(methods, e) {
             *counts.entry(name.to_owned()).or_default() += 1;
         }
+        if let Expr::ClosureCall { args, .. } = e {
+            for name in closure_call_names(methods, args) {
+                *counts.entry(name.to_owned()).or_default() += 1;
+            }
+        }
         if let Expr::Call { recv, args, .. } = e {
             for name in array_call_names(recv)
                 .into_iter()
@@ -3222,6 +3711,9 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
                         *counts.entry(shape).or_default() += 1;
                     }
                     for name in array_set_names(methods, place, *op, value) {
+                        *counts.entry(name.to_owned()).or_default() += 1;
+                    }
+                    for name in closure_set_names(methods, place, *op, value) {
                         *counts.entry(name.to_owned()).or_default() += 1;
                     }
                     if let Some(index) = place.index.as_deref() {
@@ -3285,6 +3777,10 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
                     *counts.entry("return".to_owned()).or_default() += 1;
                     expr(methods, value, counts);
                 }
+                Stmt::LetClosure { def } => {
+                    block(methods, &def.body, in_for, nested, counts);
+                    expr(methods, &def.tail, counts);
+                }
             }
         }
     }
@@ -3304,6 +3800,7 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
             expr(methods, tail, &mut counts);
         }
     }
+    closure_site_counts(program, &mut counts);
     counts
 }
 

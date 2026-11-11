@@ -12,7 +12,10 @@ use crate::ast::{
     StructDef, Ty, operator_counts,
 };
 use crate::emit::emit_module;
-use crate::generator::{ARRAY_ATTEMPT_BASE, Space, VALUE_END, generate_batch, generate_batch_in};
+use crate::generator::{
+    ARRAY_ATTEMPT_BASE, ARRAY_END, ARRAY_PROGRAMS_PER_SEED, Space, VALUE_END, generate_batch,
+    generate_batch_in,
+};
 use crate::interp::{Mutant, env_mutant, run, run_covered, run_mutant};
 
 const S0: Ty = Ty::Struct(0);
@@ -392,7 +395,7 @@ fn the_array_programs_of_the_64_seed_batch_write_and_run_every_form_and_order_sh
     let mut with_form: BTreeMap<String, usize> = BTreeMap::new();
     let mut programs = 0;
     for seed in 1..=64 {
-        for p in &generate_batch(seed).unwrap().programs[VALUE_END..] {
+        for p in &generate_batch(seed).unwrap().programs[VALUE_END..ARRAY_END] {
             assert!(p.attempt >= ARRAY_ATTEMPT_BASE && p.has_array());
             programs += 1;
             for (name, n) in operator_counts(p) {
@@ -444,11 +447,11 @@ fn the_array_programs_of_the_64_seed_batch_write_and_run_every_form_and_order_sh
 fn a_batch_ends_with_its_array_programs() {
     for seed in 1..=4 {
         let batch = generate_batch(seed).unwrap();
-        for p in &batch.programs[VALUE_END..] {
+        for p in &batch.programs[VALUE_END..ARRAY_END] {
             assert!(p.has_array() && p.attempt >= ARRAY_ATTEMPT_BASE);
         }
         let space = generate_batch_in(Space::Array, seed).unwrap();
-        assert_eq!(&space.programs[..2], &batch.programs[VALUE_END..]);
+        assert_eq!(&space.programs[..2], &batch.programs[VALUE_END..ARRAY_END]);
     }
 }
 
@@ -521,9 +524,24 @@ fn note_uniform(var: u32, init: &Expr, wide: &mut Vec<u32>, narrow: &mut Vec<u32
 /// 2). Scans the top-level statements of the array space of seeds 1 to 64.
 #[test]
 fn no_generated_program_gives_the_driver_hole_an_identity_operand_or_a_call_at_a_dynamic_index() {
+    let (guarded, _, _, free_calls) = scan_driver_hole(Space::Array);
+    assert!(
+        guarded > 5,
+        "{guarded} guarded dynamic compound sets in seeds 1-64"
+    );
+    assert!(
+        free_calls > 0,
+        "no dynamic element call on a distinct-element array of length 1, 3 or 5"
+    );
+}
+
+/// The scan of the test above over the top-level statements of `space` (seeds 1 to 64): (guarded dynamic compound
+/// sets, literal-index `|= &= %=`, guarded element calls, dynamic element calls on non-narrow arrays). It asserts
+/// the rules and returns the counts.
+pub(crate) fn scan_driver_hole(space: Space) -> (usize, usize, usize, usize) {
     let (mut guarded, mut literal_ops, mut calls, mut free_calls) = (0, 0, 0, 0);
     for seed in 1..=64 {
-        for p in generate_batch_in(Space::Array, seed).unwrap().programs {
+        for p in generate_batch_in(space, seed).unwrap().programs {
             let (mut wide, mut narrow): (Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new());
             let mut arrays: Vec<u32> = Vec::new();
             for stmt in &p.body {
@@ -595,14 +613,7 @@ fn no_generated_program_gives_the_driver_hole_an_identity_operand_or_a_call_at_a
     eprintln!(
         "GUARD-SCAN dynamic compound sets {guarded}, literal-index |= &= %= {literal_ops}, guarded element calls {calls}, dynamic element calls on non-narrow arrays {free_calls}"
     );
-    assert!(
-        guarded > 5,
-        "{guarded} guarded dynamic compound sets in seeds 1-64"
-    );
-    assert!(
-        free_calls > 0,
-        "no dynamic element call on a distinct-element array of length 1, 3 or 5"
-    );
+    (guarded, literal_ops, calls, free_calls)
 }
 
 /// Fix round 1 (S2): the order mutants change generated programs, not only the hand vectors, so a GPU lowering that
@@ -624,7 +635,8 @@ fn the_order_mutants_change_generated_programs_and_the_order_shapes_keep_their_m
                 .unwrap()
                 .programs
                 .into_iter()
-                .skip(VALUE_END),
+                .skip(VALUE_END)
+                .take(ARRAY_PROGRAMS_PER_SEED),
         );
     }
     assert_eq!((space.len(), batch.len()), (1024, 128));

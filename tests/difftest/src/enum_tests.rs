@@ -10,9 +10,9 @@ use crate::ast::{
 };
 use crate::emit::emit_module;
 use crate::generator::{
-    ENUM_ATTEMPT_BASE, ENUM_END, ENUM_PROGRAMS_PER_SEED, METHOD_ATTEMPT_BASE, METHOD_END,
-    PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space, VALUE_ATTEMPT_BASE, VALUE_END, VECTOR_END,
-    generate_batch, generate_batch_in, space_of_attempt,
+    ARRAY_END, ENUM_ATTEMPT_BASE, ENUM_END, ENUM_PROGRAMS_PER_SEED, METHOD_ATTEMPT_BASE,
+    METHOD_END, PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space, VALUE_ATTEMPT_BASE, VALUE_END,
+    VECTOR_END, generate_batch, generate_batch_in, space_of_attempt,
 };
 use crate::interp::{Mutant, env_mutant, run, run_covered, run_mutant, static_violation};
 
@@ -439,7 +439,7 @@ fn the_emitted_text_of_the_hand_program_has_the_enum_forms() {
 }
 
 #[test]
-fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_five_four_one_two_two_two()
+fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_three_four_one_two_two_two_two()
  {
     assert_eq!(space_of_attempt(METHOD_ATTEMPT_BASE), Space::Method);
     assert_eq!(space_of_attempt(ENUM_ATTEMPT_BASE - 1), Space::Method);
@@ -462,8 +462,10 @@ fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_five_f
                 Space::Enum
             } else if k < VALUE_END {
                 Space::Value
-            } else {
+            } else if k < ARRAY_END {
                 Space::Array
+            } else {
+                Space::Closure
             };
             assert_eq!(space, expected, "seed {seed} program {k}");
         }

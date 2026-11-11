@@ -247,6 +247,10 @@ fn roots_mut(stmts: &mut [Stmt], f: &mut dyn FnMut(&mut Expr)) {
                 roots_mut(els, f);
             }
             Stmt::For { body, .. } => roots_mut(body, f),
+            Stmt::LetClosure { def } => {
+                roots_mut(&mut def.body, f);
+                f(&mut def.tail);
+            }
             Stmt::Return { value } => f(value),
             Stmt::Match { scrut, arms }
             | Stmt::LetMatch { scrut, arms, .. }
@@ -282,6 +286,7 @@ fn stmt_calls_mut(stmts: &mut [Stmt], f: &mut dyn FnMut(&mut usize)) {
                 stmt_calls_mut(els, f);
             }
             Stmt::For { body, .. } => stmt_calls_mut(body, f),
+            Stmt::LetClosure { def } => stmt_calls_mut(&mut def.body, f),
             Stmt::Match { arms, .. }
             | Stmt::LetMatch { arms, .. }
             | Stmt::TailMatch { arms, .. } => arms

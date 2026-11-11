@@ -13,6 +13,8 @@ pub mod agg;
 mod array_tests;
 pub mod ast;
 pub mod classify;
+#[cfg(test)]
+mod closure_tests;
 pub mod corpus;
 pub mod emit;
 #[cfg(test)]

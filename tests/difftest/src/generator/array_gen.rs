@@ -171,6 +171,15 @@ impl Gen<'_> {
         match e {
             Elem::U32 | Elem::I32 => {
                 let ty = e.ty();
+                // A closure call whose arguments call the bias root: `[f(c.bump()), c.bump()]` (the closure space).
+                if let Some(root) = bias
+                    && self.closures
+                    && !self.cls.is_empty()
+                    && self.b.chance(40)
+                    && let Some(call) = self.closure_call(ty, 2, Some(root))
+                {
+                    return call;
+                }
                 if let Some(root) = bias
                     && self.b.chance(90)
                     && let Some(call) = self
@@ -301,7 +310,7 @@ impl Gen<'_> {
 
     /// A call of a `&mut self` method of struct element `j` returning `ty`, on element `index` of array local
     /// `var`: the call whose effect on the array a surrounding place or read can see.
-    fn elem_call(
+    pub(super) fn elem_call(
         &mut self,
         var: u32,
         aty: ArrTy,
@@ -491,7 +500,13 @@ impl Gen<'_> {
             // read after the value, so the order shows.
             let biased = if self.b.chance(85) && matches!(aty.e, Elem::Struct(_)) {
                 let at = self.b.chance(80).then(|| same_index.clone());
-                self.elem_call(var, aty, value_ty, 3, at)
+                // The closure space: the call is a closure's, with arguments that call the array's own elements.
+                let via = if self.closures && !self.cls.is_empty() && self.b.chance(35) {
+                    self.closure_call_with(value_ty, 3, &super::ArgBias::Elem(var, aty, at.clone()))
+                } else {
+                    None
+                };
+                via.or_else(|| self.elem_call(var, aty, value_ty, 3, at))
             } else if self.b.chance(40) {
                 self.bias_root()
                     .and_then(|root| self.root_call(value_ty, root, 3))
@@ -611,13 +626,18 @@ impl Gen<'_> {
         }
         for _ in 0..2 + self.b.below(5) {
             let (pre_mark, at) = (self.pre.len(), body.len());
-            let kind = self.b.weighted(&[38, 18, 8, 8, 24, 12]);
+            let mut weights = vec![38, 18, 8, 8, 24, 12];
+            if self.closures {
+                weights.push(26);
+            }
+            let kind = self.b.weighted(&weights);
             let stmt = match kind {
                 0 => self.array_set_stmt(&arrays),
                 1 => self.elem_call_stmt(&arrays),
                 2 => self.array_copy_stmt(&mut arrays),
                 3 => self.array_assign_stmt(&arrays),
                 4 => self.array_call_stmt(&mut arrays),
+                6 => self.closure_array_stmt(&mut arrays),
                 _ => self.array_set_stmt(&arrays),
             };
             let drew = stmt.is_some();

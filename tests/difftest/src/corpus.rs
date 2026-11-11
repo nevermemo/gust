@@ -81,9 +81,9 @@ pub fn corpus_text(first: u64, last: u64) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::generator::{
-        ARRAY_ATTEMPT_BASE, ENUM_ATTEMPT_BASE, ENUM_END, METHOD_ATTEMPT_BASE, METHOD_END,
-        PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space, VALUE_ATTEMPT_BASE, VALUE_END,
-        VECTOR_ATTEMPT_BASE, VECTOR_END, generate_batch_in,
+        ARRAY_ATTEMPT_BASE, ARRAY_END, CLOSURE_ATTEMPT_BASE, ENUM_ATTEMPT_BASE, ENUM_END,
+        METHOD_ATTEMPT_BASE, METHOD_END, PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space,
+        VALUE_ATTEMPT_BASE, VALUE_END, VECTOR_ATTEMPT_BASE, VECTOR_END, generate_batch_in,
     };
 
     #[test]
@@ -222,7 +222,7 @@ mod tests {
                         .iter()
                         .all(|p| p.attempt >= ARRAY_ATTEMPT_BASE)
                 );
-                (seed, batch_hash(&batch.programs))
+                (seed, batch_hash_as_format(&batch.programs, 11))
             })
             .collect();
         let pinned: Vec<(u64, u64)> = vec![
@@ -234,11 +234,38 @@ mod tests {
         assert_eq!(hashes, pinned, "array");
     }
 
+    /// Format 12 (m9.d1e): the closure space of seeds 1 to 4 (16 programs each, as `generate_batch_in` keeps them)
+    /// decodes to these programs. The older spaces are untouched: their pins above still hold, each read with its own
+    /// stamp.
+    #[test]
+    fn the_closure_space_holds_the_format_12_programs_of_the_first_seeds() {
+        let hashes: Vec<(u64, u64)> = (1..=4)
+            .map(|seed| {
+                let batch = generate_batch_in(Space::Closure, seed).unwrap();
+                assert!(
+                    batch
+                        .programs
+                        .iter()
+                        .all(|p| p.attempt >= CLOSURE_ATTEMPT_BASE && p.has_closure())
+                );
+                (seed, batch_hash(&batch.programs))
+            })
+            .collect();
+        let pinned: Vec<(u64, u64)> = vec![
+            (1, 12241926679976752482),
+            (2, 11107039089136461779),
+            (3, 12782383001583604423),
+            (4, 16495067024626273188),
+        ];
+        assert_eq!(hashes, pinned, "closure");
+    }
+
     /// A batch is the first five programs of the float space, four of the vector space, one of the method space, two of
     /// the enum space, two of the value space and two of the array space (format 11): the scalar decoding of every seed is what
     /// format 5 wrote, and so is the vector decoding of format 6; only the cut of the batch is new.
     #[test]
-    fn a_batch_is_five_float_four_vector_one_method_two_enum_two_value_and_two_array_programs() {
+    fn a_batch_is_three_float_four_vector_one_method_two_enum_two_value_two_array_and_two_closure_programs()
+     {
         for seed in 1..=8 {
             let batch = generate_batch(seed).unwrap();
             let float = generate_batch_in(Space::Float, seed).unwrap();
@@ -290,7 +317,7 @@ mod tests {
                 assert!(program.attempt >= VALUE_ATTEMPT_BASE, "seed {seed}");
                 assert!(program.has_value_form() && !program.methods.enums.is_empty());
             }
-            for program in &batch.programs[VALUE_END..] {
+            for program in &batch.programs[VALUE_END..ARRAY_END] {
                 assert!(program.attempt >= ARRAY_ATTEMPT_BASE, "seed {seed}");
                 assert!(
                     program.has_array(),

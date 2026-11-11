@@ -4,7 +4,8 @@ Status: slices m5.c1a (the integer core), m5.c1a2 (floats v1, the exact-interval
 runner `difftest-run`), m5.c1c (the shrinker), m6.d (vectors and matrices, DIFFTEST_FORMAT 6) and m8.x1 (the result
 file carries the build's capabilities, DIFFTEST_FORMAT 7; the program space is the one of format 6) and m9.d1a (module
 structs with methods, DIFFTEST_FORMAT 8) and m9.d1b (enums and statement `match`, DIFFTEST_FORMAT 9) and m9.d1c (the
-value-form `match`, integer patterns and tuples, DIFFTEST_FORMAT 10). The crate generates integer, boolean and `f32`
+value-form `match`, integer patterns and tuples, DIFFTEST_FORMAT 10) and m9.d1d (arrays, DIFFTEST_FORMAT 11) and
+m9.d1e (non-capturing closures, DIFFTEST_FORMAT 12). The crate generates integer, boolean and `f32`
 kernels from a seed, and (since format 6) kernels that compute with the `gust::math` vectors and matrices as locals and
 intermediates (buffers and results stay scalar), and (since format 8) integer kernels that call methods of module
 structs, evaluates them with an independent
@@ -467,7 +468,7 @@ a slice run labels each batch of gates with a `# round N ...` line.
 
 ## Arrays (format 11, slice m9.d1d)
 
-`DIFFTEST_FORMAT` is 11. A batch is five float, four vector, one method, two enum, two value and two array programs (16
+`DIFFTEST_FORMAT` was 11 in this slice (it is 12 since m9.d1e, "Closures" below). A batch was five float, four vector, one method, two enum, two value and two array programs (16
 in all). The array space (`Space::Array`, attempts from 5 000 000) is the enum space (structs, enums, methods, `match`;
 no tuples, no value `match`, no floats) plus arrays. Older spaces decode as before (the format 3 float pin and the format
 9 and 10 pins still hold, read with their own stamp); the cut moves one float, one vector and one value-or-enum slot, so
@@ -614,6 +615,109 @@ on argument and `let`), the mutants, the emitted text, the reachability and orde
 `tests/array_known_driver.rs`. `roundtrip`: `array_programs_compile_through_the_macro_without_a_gust_diagnostic` compiles
 192 array programs. `corpus`: the array space of seeds 1 to 4 is pinned as format 11. `xtask`: `is_shape_row` takes the
 `array ` rows.
+
+## Closures (format 12, slice m9.d1e)
+
+`DIFFTEST_FORMAT` is 12. A batch is three float, four vector, one method, two enum, two value, two array and two closure
+programs (16 in all). The closure space (`Space::Closure`, attempts from 6 000 000) is the array space (structs, enums,
+methods, `match`, arrays and the final store; no floats, tuples or value `match`) plus the non-capturing closures of
+m9.c (D166). Older spaces decode as before: the array space of seeds 1 to 64 still makes 986 attempts for its 128
+programs, and every older pin (format 3, 9, 10 and 11) holds, read with its own stamp. The cut takes two float slots
+for the closure space (five float programs became three; the array and closure spaces each own two). Mismatches are
+compiler bugs (D163); an order difference is never a D39 note.
+
+**Program space.** `let cl<N> = |v1: T, mut v2: [u32; 3], ..| -> R { .. };` is a statement (`Stmt::LetClosure`) of
+the kernel, helper and method bodies, also inside `if` and `for`; the call `cl<N>(a, b)` (`Expr::ClosureCall`) stands
+wherever a helper call is accepted (operands, array literal elements, indexed and compound set values, struct
+fields, the output store). Every parameter is typed, the result type is written, the body is a block (the value is its
+tail) and the binding is immutable. Parameter types: `u32`, `i32`, `bool`, enums, module structs (`mut` half of the time,
+also written) and `[u32|i32; 2..4]` arrays (always `mut`, as helper parameters); result types: scalar, enum, struct (bound
+by a `let`, then the tail) or the array parameter returned. A body calls helpers and methods below the function that
+holds the closure, including `&mut self` methods on a `let mut` local of its own, but never a closure, and holds no
+barrier, atomic, subgroup operation, resource, `i`, `self` or `return`. The name is `cl<N>`, `N` the program-wide
+variable id, so it differs from every helper `m<k>`, variable `v<n>`, `i`, `id`, field, type and `__gust_` name
+(`generated_closures_have_distinct_names_and_pass_the_checker`). Not generated, by construction: a capture (the body is
+drawn with the scope reduced to its parameters), `move`, a closure as a value, an untyped or unit closure, a nested
+closure, a closure call in a `for` bound (E0421). `ast::Check` refuses each of them too
+(`the_checker_refuses_the_forms_the_generator_never_writes`), and it refuses a `&mut self` call on a closure parameter:
+Slang passes a parameter as a read-only value, so even a `mut` parameter is no `&mut self` receiver (GUST-E0333; the macro
+reports it, and rustc then reports a cascade of E0382 moves on the unexpanded module, which first looked like a second
+problem). The generator keeps struct parameters out of the `&mut self` receiver roots (`forbid`) and calls `&self` and
+by-value methods on them; their fields may still be written. All 192 closure programs of seeds 1 to 12 compile through
+`#[gust::gpu]` and rustc with no `[GUST-E` diagnostic (`closure_programs_compile_through_the_macro_without_a_gust_diagnostic`).
+
+**Interpreter rules** (Rust Reference, not the emitted Slang). The arguments of a call are evaluated left to right,
+each fully, before the body; parameters are bound by value (an array or struct argument is copied, so a callee that
+writes its `mut` parameter does not change the caller's variable); the body runs once for every call; the value of the
+call is the value of the body's block. A closure has no captured state and no recursion, so its parameter slots are
+reused for every call.
+
+**Reachability** (programs that write it / written occurrences / evaluations executed; `CLOSURE-space` and `CLOSURE-batch`
+lines of `the_closure_programs_of_the_64_seed_runs_write_and_run_every_form_and_order_shape`; the closure space of seeds
+1 to 64 is 1 024 programs, the batch part is its first two programs per seed, 128). Forms, space: closure binding 1 024 /
+7 553 / 4 518 906, call 1 024 / 4 650 / 1 963 192, bound in the kernel 1 024 / 2 369 / 812 123, in a helper 495 / 899 /
+1 124 231, in a method 1 020 / 4 285 / 2 582 552, body calls a helper 217 / 330 / 246 349, body calls a method 442 / 639 /
+517 240, `mut` array parameter 597 / 904 / 565 783, `mut` struct parameter 784 / 1 445 / 814 934, array result 146 / 153 /
+76 300. Forms, batch: binding 128 / 938 / 388 687, call 128 / 542 / 174 431, kernel 128 / 296 / 137 254, helper 59 / 115 /
+78 773, method 128 / 527 / 172 660, body calls a helper 24 / 37 / 7 533, a method 54 / 75 / 26 907, `mut` array 79 / 120 /
+150 461, `mut` struct 91 / 165 / 29 042, array result 17 / 18 / 1 490. Discards of the closure space over seeds 1 to 64
+(`difftest-gen stats 1-64`): 1 563 attempts for 128 programs (`overflow` 443, `static` 496, `no-call` 253, `no-closure`
+114, `division-by-zero` 61, `shift-amount` 29, `index` 27, `no-input-read` 10, `min-over-minus-one` 2); seeds 1 to 4: 110
+attempts for 8 programs.
+
+**Order shapes** (static programs / executed evaluations; space, then batch; minima pinned in `SPACE_MINIMA` and
+`BATCH_MINIMA`; each is causal: it counts only where the value shown to the order is a `&mut self` call on a root that the
+other operand reads or calls, or, for the parameter shape, where the callee really changed its copy):
+
+| shape | space | batch |
+| --- | --- | --- |
+| `f(c.bump(), c.bump())`: arguments built from calls on one root | 32 / 23 224 | 3 / 322 |
+| closure call in an array literal beside a call on its root | 30 / 12 082 | 5 / 516 |
+| closure call in a compound set value on the place's root | 35 / 18 839 | 4 / 450 |
+| closure call in an indexed set value on the array's root | 7 / 4 706 | 2 / 387 |
+| closure call in the output store's value | 33 / 9 577 | 2 / 129 |
+| closure called twice with a side effect in an argument | 25 / 1 375 | 4 / 76 |
+| closure mutates its parameter, caller variable passed (observed after the call) | 60 / 30 669 | 8 / 308 |
+| closure in a method calls a method on its parameter | 16 / 2 619 | 4 / 2 |
+
+The batch counts are thin (two to eight programs of 128), like the array shapes before them; the last row is the thinnest
+in evaluations. The bias: calls take arguments that are `&mut self` calls on one root (78 % each), closures with two
+integer parameters are preferred for those, the integer parameters enter the result as `(p & 255) * (2k + 1)` so that the
+argument order shows in the value, a call of a closure with a `mut` struct or array parameter is often given a caller
+variable and followed in the same expression by a read of that variable (`f(v) + v.f0`), and closures in helpers and
+methods are drawn often and take struct parameters on which `&self` methods are called.
+
+**Mutation checks.** Three test-only mutants (`DIFFTEST_MUTANT`), each failing exactly one hand vector of `closure_tests`
+(gates `xfail-<mutant>`): `closure-args-right-to-left` fails `closure_arguments_run_left_to_right`; `closure-param-by-ref`
+(a struct or array argument that is a variable receives the callee's final parameter) fails
+`a_closure_parameter_is_a_copy`; `closure-memo` (the result of the first call of a closure is reused) fails
+`a_closure_body_runs_once_per_call`. Generated programs observe them (`the_closure_mutants_change_generated_programs`;
+a mutated run that breaks an interpreter assertion counts as a change): the right-to-left mutant changes 8 of the 1 024
+space programs and **1 of the 128 batch programs**, the by-reference mutant 17 and **1**, the memo mutant 335 and 32. So a
+GPU run of the batch observes the memo rule well and the other two rules by a single program each; the observability is
+low for the same reason as in the array space (many arguments or results do not reach the output).
+
+**D168 (NVIDIA hole) in the closure space.** The guard of format 11 stays on every array a closure touches.
+(1) A closure writes an array parameter only at a literal index or a literal modulo `.len()` (the indices a helper's array
+parameter gets) and declares no array local, so no closure fills an array in the hole form or writes back a dynamic
+element. (2) An array a closure returns, and one bound from a closure call (`let c = cl(a)`), is a call result: it goes
+through `note_uniform` into both uniformity sets exactly like a helper's, so the kernel's compound sets on it take the
+non-identity operand or a literal index, and `&mut self` calls on its elements a literal index.
+`no_closure_fills_or_writes_back_an_array_in_the_driver_hole_form` checks (2) with the scan of the array space on the
+closure space (277 guarded dynamic compound sets) and (1) on 6 486 closures (737 array writes inside closures, all at
+literal indices).
+
+**Not generated.** Capturing and higher-order closures (a closure as an argument, result or struct field), closures that
+call closures, closure calls in a `for` bound, unit closures, `move` closures, arrays in struct fields and storage buffers
+(m9.r2a). A `&mut self` call on a closure parameter is not generated (E0333, above).
+
+**GPU results (RTX 5090, driver 610.88):** the 4-seed run (64 programs, 8 of them closure programs) and the 64-seed wide run (1 024 programs, 128 closure programs, dev and dev+subgroups, 2 048 exported records byte for byte equal) executed every program with 0 mismatches; the grid,pixel shapes run on seeds 1 and 2 (32 programs, 29 pixel, 3 grid-only) had 0 mismatches. The executed shape counts of the wide run are the batch column of the table above, with these static / executing programs: arguments on one root 3 / 2, array literal 5 / 5, compound set 4 / 3, indexed set 2 / 2, output store 2 / 2, called twice 4 / 2, mutated parameter 8 / 3, method parameter 4 / 1. No mismatch was seen, so nothing was shrunk or classified on the Radeon 890M.
+
+**Tests.** `closure_tests`: hand vectors (arguments left to right, parameters by value for a struct and an array, the body
+once per call), the mutants, the emitted text, the checker's refusals, the batch cut, names, the 64-seed reachability
+and order-shape minima, the mutant observability counts, the D168 scans. `reduce_tests`: a closure program reduces to a
+fixed point with every candidate type-valid. `roundtrip`: 192 closure programs through the macro. `corpus`: the closure space
+of seeds 1 to 4 is pinned as format 12 and `seeds.txt` is regenerated. `xtask`: `is_shape_row` takes the `closure ` rows.
 
 ## The domain filter
 

@@ -117,6 +117,7 @@ fn unroll(program: &Program) -> Expr {
                 | Stmt::LetMatch { .. }
                 | Stmt::Yield { .. }
                 | Stmt::TailMatch { .. }
+                | Stmt::LetClosure { .. }
                 | Stmt::Return { .. } => {
                     panic!("the soundness programs have no methods")
                 }

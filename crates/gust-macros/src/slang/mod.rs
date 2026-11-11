@@ -83,6 +83,180 @@ impl Drop for SelfScope {
     }
 }
 
+/// `let f = |..| ..;` (slice m9.c): the binding and its closure. The pattern may carry `mut` or a type, which the
+/// validator refuses (GUST-E0330); a `let` with another pattern or with an `else` is no closure binding.
+pub(crate) fn closure_binding(local: &syn::Local) -> Option<(&syn::PatIdent, &syn::ExprClosure)> {
+    let pattern = match &local.pat {
+        syn::Pat::Ident(pattern) => pattern,
+        syn::Pat::Type(typed) => match typed.pat.as_ref() {
+            syn::Pat::Ident(pattern) => pattern,
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let initial = local.init.as_ref()?;
+    if initial.diverge.is_some() {
+        return None;
+    }
+    match initial.expr.as_ref() {
+        syn::Expr::Closure(closure) => Some((pattern, closure)),
+        _ => None,
+    }
+}
+
+/// A closure binding of a function body: the `let`, its pattern and its closure.
+pub(crate) type ClosureSite<'a> = (&'a syn::Local, &'a syn::PatIdent, &'a syn::ExprClosure);
+
+/// The closure bindings of `block` in source order, without looking inside a closure (a nested closure is
+/// GUST-E0332, and a closure body is validated and emitted as a function of its own).
+pub(crate) fn closure_sites(block: &syn::Block) -> Vec<ClosureSite<'_>> {
+    struct Sites<'a>(Vec<ClosureSite<'a>>);
+    impl<'ast> Visit<'ast> for Sites<'ast> {
+        fn visit_local(&mut self, local: &'ast syn::Local) {
+            if let Some((pattern, closure)) = closure_binding(local) {
+                self.0.push((local, pattern, closure));
+                return;
+            }
+            syn::visit::visit_local(self, local);
+        }
+        fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
+    }
+    let mut sites = Sites(Vec::new());
+    sites.visit_block(block);
+    sites.0
+}
+
+/// The closure as a plain function called `name`, when it has the accepted shape (every parameter `name: Type`, an
+/// explicit result type, a block body): `fn name(x: f32) -> f32 { .. }` with the tokens, and so the spans, of the
+/// closure. The validator judges the body as the body of a helper, and the emitter hoists it as one (slice m9.c).
+pub(crate) fn closure_function(
+    name: &syn::Ident,
+    closure: &syn::ExprClosure,
+) -> Option<syn::ItemFn> {
+    let mut inputs = syn::punctuated::Punctuated::<syn::FnArg, syn::Token![,]>::new();
+    for input in &closure.inputs {
+        let syn::Pat::Type(typed) = input else {
+            return None;
+        };
+        if !matches!(typed.pat.as_ref(), syn::Pat::Ident(_)) {
+            return None;
+        }
+        inputs.push(syn::FnArg::Typed(typed.clone()));
+    }
+    let output = match &closure.output {
+        output @ syn::ReturnType::Type(..) => output.clone(),
+        syn::ReturnType::Default => return None,
+    };
+    let syn::Expr::Block(body) = closure.body.as_ref() else {
+        return None;
+    };
+    let block = &body.block;
+    Some(syn::parse_quote! { fn #name(#inputs) #output #block })
+}
+
+thread_local! {
+    /// The Slang name of every closure of the module being emitted, by the address of its `syn::ExprClosure`:
+    /// `__gust_cl_<owner>_<n>`, `n` counting the closures of the module in source order (slice m9.c). The number is
+    /// unique, so a helper `S_m` and a method `S::m` cannot give two closures one name.
+    static CLOSURE_NAMES: std::cell::RefCell<std::collections::HashMap<usize, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// The closures callable from the function being emitted: the name of the binding and the Slang name.
+    static CLOSURE_SCOPE: std::cell::RefCell<std::collections::HashMap<String, String>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The address that identifies a closure in [`CLOSURE_NAMES`].
+fn closure_key(closure: &syn::ExprClosure) -> usize {
+    std::ptr::from_ref(closure) as usize
+}
+
+/// The Slang names of the closures of `items`, numbered in source order over the functions, then the methods of each
+/// `impl` block as they come (the order of the items).
+fn closure_names(items: &[syn::Item]) -> std::collections::HashMap<usize, String> {
+    let mut names = std::collections::HashMap::new();
+    let mut number = 0_usize;
+    let mut take = |owner: &str, block: &syn::Block| {
+        for (_, _, closure) in closure_sites(block) {
+            names.insert(closure_key(closure), format!("__gust_cl_{owner}_{number}"));
+            number += 1;
+        }
+    };
+    for item in items {
+        match item {
+            syn::Item::Fn(function) => {
+                take(&function.sig.ident.unraw().to_string(), &function.block)
+            }
+            syn::Item::Impl(block) => {
+                let owner = crate::validate::impl_self_name(block).unwrap_or_default();
+                for inner in &block.items {
+                    if let syn::ImplItem::Fn(method) = inner {
+                        take(
+                            &format!("{owner}_{}", method.sig.ident.unraw()),
+                            &method.block,
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
+/// Sets [`CLOSURE_NAMES`] for a scope and restores the previous map when dropped.
+struct ClosureNamesScope(std::collections::HashMap<usize, String>);
+
+impl ClosureNamesScope {
+    fn enter(next: std::collections::HashMap<usize, String>) -> Self {
+        Self(CLOSURE_NAMES.with(|cell| cell.replace(next)))
+    }
+}
+
+impl Drop for ClosureNamesScope {
+    fn drop(&mut self) {
+        CLOSURE_NAMES.with(|cell| *cell.borrow_mut() = std::mem::take(&mut self.0));
+    }
+}
+
+/// Makes the closures bound in `block` callable by their binding names, for a scope.
+struct ClosureScope(std::collections::HashMap<String, String>);
+
+impl ClosureScope {
+    fn enter(block: &syn::Block) -> Self {
+        let scope = CLOSURE_NAMES.with(|names| {
+            let names = names.borrow();
+            closure_sites(block)
+                .into_iter()
+                .filter_map(|(_, pattern, closure)| {
+                    Some((
+                        pattern.ident.unraw().to_string(),
+                        names.get(&closure_key(closure))?.clone(),
+                    ))
+                })
+                .collect::<std::collections::HashMap<_, _>>()
+        });
+        Self(CLOSURE_SCOPE.with(|cell| cell.replace(scope)))
+    }
+}
+
+impl Drop for ClosureScope {
+    fn drop(&mut self) {
+        CLOSURE_SCOPE.with(|cell| *cell.borrow_mut() = std::mem::take(&mut self.0));
+    }
+}
+
+/// The Slang name `call` calls, when it calls a closure of the function being emitted.
+fn closure_call_target(call: &syn::ExprCall) -> Option<String> {
+    let syn::Expr::Path(path) = call.func.as_ref() else {
+        return None;
+    };
+    if path.qself.is_some() {
+        return None;
+    }
+    let name = path.path.get_ident()?.unraw().to_string();
+    CLOSURE_SCOPE.with(|cell| cell.borrow().get(&name).cloned())
+}
+
 /// The length of an array type or repeat expression: an integer literal greater than zero, unsuffixed or `usize`
 /// (slice m9.r1, GUST-E0216 for anything else).
 pub(crate) fn array_length_literal(len: &syn::Expr) -> Option<u32> {
@@ -177,6 +351,8 @@ pub(crate) fn array_lengths(
         fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
             self.bind(&pattern.ident, None);
         }
+        // A closure body is a function of its own (slice m9.c): its names are scanned with its own parameters.
+        fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
     }
     let mut scan = Scan::default();
     for input in inputs {
@@ -670,6 +846,8 @@ pub(crate) fn emit_kernel_in(
     let _scope = LoweringScope::enter(lowering);
     // The array fields of the module's structs, for `s.items.len()` in the kernel, the helpers and the methods.
     let _fields = FieldScope::enter(array_field_lengths(items));
+    // The Slang names of the module's closures (slice m9.c).
+    let _closure_names = ClosureNamesScope::enter(closure_names(items));
     let mut output = String::new();
     let mut table = LineTable::default();
     writeln!(
@@ -817,7 +995,15 @@ pub(crate) fn emit_kernel_in(
     }
     for item in items {
         if let syn::Item::Struct(item) = item {
-            emit_struct(&mut output, &mut table, item, &methods_of(items, item))?;
+            let methods = methods_of(items, item);
+            // The closures of the methods are free functions before the struct (slice m9.c); `Self` in them is the struct.
+            {
+                let _self_scope = SelfScope::enter(&item.ident.unraw().to_string());
+                for method in &methods {
+                    emit_hoisted_closures(&mut output, &mut table, &method.block)?;
+                }
+            }
+            emit_struct(&mut output, &mut table, item, &methods)?;
         }
     }
 
@@ -933,8 +1119,10 @@ pub(crate) fn emit_kernel_in(
         {
             continue;
         }
+        emit_hoisted_closures(&mut output, &mut table, &function.block)?;
         emit_helper(&mut output, &mut table, function)?;
     }
+    emit_hoisted_closures(&mut output, &mut table, &kernel.block)?;
 
     let invocation = invocation.ok_or_else(|| {
         diagnostics::error(
@@ -978,6 +1166,7 @@ pub(crate) fn emit_kernel_in(
     output.push_str(&stage.prologue(&facts));
     output.push_str(&texture::dimension_prologue(&textures, kernel));
     let _arrays = ArrayScope::enter(array_lengths(&kernel.sig.inputs, &kernel.block));
+    let _closures = ClosureScope::enter(&kernel.block);
     emit_statements(&mut output, &mut table, &kernel.block.stmts, 1, false)?;
     output.push_str(&stage.epilogue(&facts));
     writeln!(output, "}}").unwrap();
@@ -1405,6 +1594,31 @@ fn emit_struct(
     Ok(())
 }
 
+/// The functions the closures bound in `block` hoist to (slice m9.c, D160): `__gust_cl_<owner>_<n>(float x, ..)`, one
+/// per closure in source order, by-value parameters, emitted before the function that holds the closure.
+fn emit_hoisted_closures(
+    output: &mut String,
+    table: &mut LineTable,
+    block: &syn::Block,
+) -> syn::Result<()> {
+    for (_, _, closure) in closure_sites(block) {
+        let name = CLOSURE_NAMES
+            .with(|cell| cell.borrow().get(&closure_key(closure)).cloned())
+            .expect("every closure of the module is numbered");
+        let ident = syn::Ident::new(&name, closure.span());
+        let function = closure_function(&ident, closure).ok_or_else(|| {
+            diagnostics::error(
+                Code::ClosureSignature,
+                closure,
+                "a closure is `|x: T| -> R { .. }`: typed parameters, a result type and a block body",
+            )
+        })?;
+        emit_function(output, table, 0, &function.sig, &function.block)?;
+        writeln!(output).unwrap();
+    }
+    Ok(())
+}
+
 fn emit_helper(
     output: &mut String,
     table: &mut LineTable,
@@ -1428,6 +1642,8 @@ fn emit_function(
     let padding = "    ".repeat(depth);
     let record = table.begin(output, signature.ident.span());
     let _arrays = ArrayScope::enter(array_lengths(&signature.inputs, block));
+    // The closures bound in the body are called by their binding names (slice m9.c).
+    let _closures = ClosureScope::enter(block);
     let return_type = match &signature.output {
         syn::ReturnType::Default => "void".to_owned(),
         syn::ReturnType::Type(_, ty) => emit_value_type(ty)?,
@@ -1482,6 +1698,10 @@ fn emit_statements(
     return_tail: bool,
 ) -> syn::Result<()> {
     for (index, statement) in statements.iter().enumerate() {
+        // A closure binding emits nothing: its body was hoisted before the owner, and a call names the hoisted function.
+        if matches!(statement, syn::Stmt::Local(local) if closure_binding(local).is_some()) {
+            continue;
+        }
         let is_tail = return_tail && index + 1 == statements.len();
         // One record per statement, opened before and closed after the text it
         // lowers to, so nested statements land inside their parent's range.
@@ -2236,6 +2456,12 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
                 emit_arguments(call.args.iter())?.join(", ")
             )
         }
+        // A closure of the function being emitted (slice m9.c): the hoisted function, arguments left to right as for a helper.
+        syn::Expr::Call(call) if closure_call_target(call).is_some() => format!(
+            "{}({})",
+            closure_call_target(call).expect("guarded by the match arm"),
+            emit_arguments(call.args.iter())?.join(", ")
+        ),
         syn::Expr::Call(call) => format!(
             "{}({})",
             emit_expression(&call.func)?,

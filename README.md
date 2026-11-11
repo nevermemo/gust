@@ -1143,6 +1143,11 @@ The direct syntax translator currently supports:
 - implicit helper returns (including tail `if`/`else` and blocks), 32-bit numeric
   suffixes/radix literals, Rust expression grouping, and boolean/integer `!` and `^`;
 - struct literals as a `let` initializer or the right side of an assignment (D07);
+- non-capturing closures (M9, m9.c, D160): `let f = |x: f32, y: f32| -> f32 { .. };` with every parameter typed, an
+  explicit result type and a block body, bound immutably and called as `f(a, b)` after its `let`, in a kernel, a helper or
+  a method. A closure captures nothing (it uses its parameters, its own locals, the helpers and the methods of the
+  module), is not a value (it is not passed, returned or stored) and holds no closure; each one becomes a hoisted Slang
+  function. GUST-E0329 to E0332 in [DIAGNOSTICS](docs/DIAGNOSTICS.md); see [SEMANTICS](docs/SEMANTICS.md) section 12;
 - `Option<T>` and `Result<T, T>` as local and helper values, including `if let` and
   a statement-only `match` with `Ok(x)`/`Err(e)` block arms (D14);
 - the vector and matrix types of `gust::math` (`Vec2` to `Vec4`, `IVec2` to `IVec4`, `UVec2` to `UVec4`, `Mat2` to
@@ -1195,7 +1200,7 @@ The direct syntax translator currently supports:
   GUST-E0748 and E0749; see "Routing kernels to the CPU or the GPU at build time".
 
 The validator intentionally rejects allocation, standard-library access, macros,
-closures, async/await, references (other than an atomic's `&mut buffer[index]`
+closures that capture, escape or carry a different form (`move`, untyped, nested, passed or returned), async/await, references (other than an atomic's `&mut buffer[index]`
 receiver), `while`/`loop`/inclusive ranges, general `match` and `?`,
 `unwrap`/`expect`, unsafe code, arbitrary method calls, and external function calls
 inside GPU modules. These restrictions describe the implemented translator, not

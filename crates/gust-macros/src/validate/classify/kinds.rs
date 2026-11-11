@@ -121,6 +121,9 @@ pub(super) const LEDGER: &[Entry] = &[
         Inspected("BodyScan: atomics and barriers; this ledger's callee entries"),
     ),
     expression("Cast", Neutral),
+    // `let f = |x: T| -> R { .. };` (slice m9.c): a non-capturing closure is a pure function of its parameters (no
+    // resource, no barrier, no atomic: the helper rule judges its body), and its body is walked like the kernel's own.
+    expression("Closure", Neutral),
     expression("Continue", Neutral),
     expression("Field", Neutral),
     expression(
@@ -227,6 +230,8 @@ pub(super) const LEDGER: &[Entry] = &[
     callee("Some", Neutral),
     callee("Ok", Neutral),
     callee("Err", Neutral),
+    // A call of a closure bound earlier in the body (slice m9.c): a pure function, like a helper.
+    callee("closure", Neutral),
     callee(
         "workgroup_barrier",
         Inspected("BodyScan: a barrier is `Why::Barrier`"),
@@ -276,6 +281,7 @@ pub(super) fn expression_kind(expression: &syn::Expr) -> Option<&'static str> {
         syn::Expr::Break(_) => "Break",
         syn::Expr::Call(_) => "Call",
         syn::Expr::Cast(_) => "Cast",
+        syn::Expr::Closure(_) => "Closure",
         syn::Expr::Continue(_) => "Continue",
         syn::Expr::Field(_) => "Field",
         syn::Expr::ForLoop(_) => "ForLoop",
@@ -382,6 +388,7 @@ pub(super) fn is_associated_call(call: &syn::ExprCall, helpers: &HashSet<String>
 pub(super) fn scan(block: &syn::Block, helpers: &HashSet<String>) -> Vec<(Why, TokenStream)> {
     let mut scan = KindScan {
         helpers,
+        closures: HashSet::new(),
         findings: Vec::new(),
     };
     scan.visit_block(block);
@@ -390,6 +397,8 @@ pub(super) fn scan(block: &syn::Block, helpers: &HashSet<String>) -> Vec<(Why, T
 
 struct KindScan<'a> {
     helpers: &'a HashSet<String>,
+    /// The names of the closures bound so far (`let f = |..| ..;`); the validator keeps them unique per function.
+    closures: HashSet<String>,
     findings: Vec<(Why, TokenStream)>,
 }
 
@@ -422,6 +431,11 @@ impl<'ast> Visit<'ast> for KindScan<'_> {
     }
 
     fn visit_stmt(&mut self, statement: &'ast syn::Stmt) {
+        if let syn::Stmt::Local(local) = statement
+            && let Some((pattern, _)) = crate::slang::closure_binding(local)
+        {
+            self.closures.insert(pattern.ident.unraw().to_string());
+        }
         if self.check(Class::Statement, statement_kind(statement), statement) {
             visit::visit_stmt(self, statement);
         }
@@ -448,7 +462,14 @@ impl<'ast> Visit<'ast> for KindScan<'_> {
             }
             return;
         }
-        let kind = callee_kind(call, self.helpers);
+        let closure = matches!(call.func.as_ref(), syn::Expr::Path(path)
+            if path.qself.is_none()
+                && path.path.get_ident().is_some_and(|name| self.closures.contains(&name.unraw().to_string())));
+        let kind = if closure {
+            Some("closure".to_owned())
+        } else {
+            callee_kind(call, self.helpers)
+        };
         if self.check(Class::Callee, kind.as_deref(), call) {
             visit::visit_expr_call(self, call);
         }

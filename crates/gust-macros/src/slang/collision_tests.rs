@@ -563,3 +563,56 @@ fn descriptor_names_are_the_emitted_names() {
     assert!(!text.contains("name : \"class\""), "{text}");
     assert!(!text.contains("name : \"r#"), "{text}");
 }
+
+#[test]
+fn hoisted_closure_names_are_unique_and_a_closure_named_like_a_slang_symbol_is_not_emitted() {
+    // Slice m9.c: `__gust_cl_<owner>_<n>`, `n` counting the closures of the module, so a helper `S_m` and a method
+    // `S::m` (both owner strings `S_m`) get different names; `__gust_` is reserved (GUST-E0901), so a user symbol never
+    // takes the prefix; the closure's own name (`class`, `float`, a Slang keyword) is never emitted.
+    let text = emit(
+        "mod m {
+            pub struct S { pub v: f32 }
+            impl S { pub fn m(&self) -> f32 { let f = |a: f32| -> f32 { a }; f(self.v) } }
+            pub fn S_m(x: f32) -> f32 { let f = |a: f32| -> f32 { a + 1.0f32 }; f(x) }
+            #[kernel]
+            pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) {
+                let r#class = |a: f32| -> f32 { a * 2.0f32 };
+                let r#float = |a: f32| -> f32 { a * 3.0f32 };
+                let s = S { v: 1.0f32 };
+                out[id.x] = r#class(1.0f32) + r#float(s.m()) + S_m(1.0f32);
+            }
+        }",
+    )
+    .unwrap();
+    let mut definitions: Vec<&str> = text
+        .lines()
+        .filter(|line| line.contains("__gust_cl_") && line.ends_with(')'))
+        .collect();
+    assert_eq!(definitions.len(), 4, "{text}");
+    definitions.sort_unstable();
+    definitions.dedup();
+    assert_eq!(definitions.len(), 4, "{text}");
+    // `class` is a Slang keyword and `float` a type: neither is a function the text defines or calls.
+    assert!(
+        !text.contains("class("),
+        "the closure `class` was emitted\n{text}"
+    );
+    assert!(!text.contains("float r#"), "{text}");
+    for call in ["__gust_cl_run_2(", "__gust_cl_run_3("] {
+        assert!(text.contains(call), "no call {call}\n{text}");
+    }
+    // The prefix stays the generator's: a user closure cannot be named inside it.
+    assert_code(
+        &emit(
+            "mod m {
+                #[kernel]
+                pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) {
+                    let __gust_cl_run_0 = |a: f32| -> f32 { a };
+                    out[id.x] = __gust_cl_run_0(1.0f32);
+                }
+            }",
+        )
+        .unwrap_err(),
+        Code::ReservedPrefix,
+    );
+}

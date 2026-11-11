@@ -1468,3 +1468,50 @@ measured; KM-11 measured the runtime-sized buffer level). Array validation runs 
 `Option<[u32; 33]>` reports `GUST-E0216` before the `Option` refusal. Kernels with a stored array do not yet build through
 the precompiled and native path (`cargo gust build`): cargo-gust's layout fill rejects the `array` kind, a follow-up. Tests:
 `crates/gust-wgpu/tests/m9_arrays_storage.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257) and the `naga_layout` table.
+
+## 12. Closures (M9, D154, D160)
+
+A closure is a local function that captures nothing: `let f = |x: f32, y: f32| -> f32 { .. };`. Every parameter is
+`name: Type`, the result type follows `->` and is not `()`, the body is a block (`GUST-E0331` otherwise), and the
+`let` is immutable and has no annotation (`GUST-E0330`). It is called as `f(a, b)` after its binding, in the body of a
+kernel, a helper or a method. It is not a value: it is not passed, returned, stored, rebound or named without a call
+(`GUST-E0330`), and a closure inside a closure is `GUST-E0332`. The parameter types are the types of a helper
+(scalars, vectors, matrices, structs and enums of the module, tuples and arrays); the GPU test runs one closure for each.
+
+**What a closure may use.** Its parameters, the locals it declares itself, the helper functions and methods of the
+module, the paths of the module (`Vec2::new`, `Mode::A`, `Mat4::IDENTITY`) and struct literals. It may not use any
+other name of the surrounding function (`GUST-E0329`): a local, a parameter, a buffer, the invocation id, workgroup
+memory, a loop variable, `self`, or an earlier closure (spike X4: a closure that calls a closure is the same error, and
+the message says so). `move` is `GUST-E0329` too. The check is syntactic and exact: a module holds functions, structs,
+enums and `impl` blocks only, so a single free identifier in the body is always a name of the surrounding function. The
+twenty bodies of the capture table (ten that capture, ten that do not) are the test
+`the_capture_table_of_twenty_closure_bodies`. A closure is judged as a helper (D154): no barrier, subgroup operation,
+atomic, `Workgroup` parameter or resource parameter, with the helper rule's codes and messages that say "closure". A
+call cycle through a closure body is the recursion of the function that holds it (`GUST-E0120`).
+
+**Lowering (D160).** A closure is hoisted to a free Slang function `__gust_cl_<owner>_<n>`, with its parameters by value,
+placed before the function that holds it (a method's closures before the struct), and the `let` emits no line. `<owner>`
+is the function (`<Struct>_<method>` for a method) and `<n>` counts the closures of the module in source order, so a
+name never repeats (the plan numbered per owner; a global count is what keeps a helper `S_m` and a method `S::m` apart).
+`f(a, b)` becomes `__gust_cl_run_2(a, b)`. Slang lambdas are not used. A closure in a method is a free function, which is
+why `self` is a capture: pass `self.x` as an argument. The prefix `__gust_` is reserved (`GUST-E0901` for a closure with
+a name in it). A closure name is unique in its function and differs from every helper, method, dialect name and other
+binding (`GUST-E0328`); the same name in two functions is fine, and a Slang keyword is fine because the closure's own
+name is never emitted.
+
+**Order of evaluation.** Measured with rustc and with slangc 2026.21 (the pinned one), on the WGSL and the SPIR-V target:
+the arguments of a call of a hoisted function with by-value parameters run left to right, as in Rust. `pair(c.tick(),
+c.tick())`, `pair(c.n, c.tick())`, `pair(c.tick(), c.n)` and the nested `pair(pair(c.tick(), c.tick()), c.tick())` give
+what Rust gives (the GPU test `m9_closures` pins 1002, 1, 1001 and 1002003). A closure cannot mutate anything outside
+itself, because it captures nothing and its parameters are copies, so a closure call has no effect to reorder and the
+`GUST-E0421` places need no arm for it: `out[f(c.n)] = f(c.bump())` is refused through the `&mut self` call of its
+argument, exactly like `out[c.n] = c.bump()`. The one added case is the bound of a `for` range: a closure call there is
+`GUST-E0421`, kept conservative (`for-bound-closure`). A closure in the index and another in the value of one
+assignment (`scratch[slot(i)] = odd(i)`) run and agree with the CPU twin.
+
+**Edge cases.** The arithmetic inside a closure has the contract of section 3 (D39), the same as in a helper. Closure
+parameters and results are the types of a helper, so the limits of those types apply (no `Option` of a buffer, no
+resource). Tests: `crates/gust-wgpu/tests/m9_closures.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations, the
+values written by hand), the macro tests in `crates/gust-macros/src/tests/regression.rs`, the fixture
+`tests/fixtures/closures.rs` and its golden, and the UI fixtures `closure-*`, `x4-closure-calls-closure` and
+`for-bound-closure`.

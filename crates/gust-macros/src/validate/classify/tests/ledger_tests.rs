@@ -134,6 +134,7 @@ const EXPRESSIONS: &[(&str, &str, &str, &str, Verdict)] = &[
     ("Break", "break", PARAMETERS, "for i in 0u32..4u32 { break; } out[id.x] = 1.0f32;", Accepted),
     ("Call", "helper(1.0f32)", PARAMETERS, "out[id.x] = helper(1.0f32);", Accepted),
     ("Cast", "id.x as f32", PARAMETERS, "out[id.x] = id.x as f32;", Accepted),
+    ("Closure", "|v: f32| -> f32 { v }", PARAMETERS, "let f = |v: f32| -> f32 { v }; out[id.x] = f(1.0f32);", Accepted),
     ("Continue", "continue", PARAMETERS, "for i in 0u32..4u32 { continue; } out[id.x] = 1.0f32;", Accepted),
     ("Field", "id.x", PARAMETERS, "out[id.x] = 1.0f32;", Accepted),
     ("ForLoop", "for i in 0u32..4u32 { }", PARAMETERS, "for i in 0u32..4u32 { } out[id.x] = 1.0f32;", Accepted),
@@ -159,7 +160,6 @@ const EXPRESSIONS: &[(&str, &str, &str, &str, Verdict)] = &[
     // ---- refused today ----
     ("Async", "async { }", PARAMETERS, "let t = async { }; out[id.x] = 1.0f32;", UNSUPPORTED),
     ("Await", "id.x.await", PARAMETERS, "let t = id.x.await; out[id.x] = 1.0f32;", Refused(Code::Await)),
-    ("Closure", "|v: f32| v", PARAMETERS, "let f = |v: f32| v; out[id.x] = 1.0f32;", Refused(Code::Closure)),
     ("Const", "const { 1u32 }", PARAMETERS, "let t = const { 1u32 }; out[id.x] = 1.0f32;", Refused(Code::ConstBlock)),
     ("Infer", "_", PARAMETERS, "let t = _; out[id.x] = 1.0f32;", UNSUPPORTED),
     ("Loop", "loop { }", PARAMETERS, "loop { } out[id.x] = 1.0f32;", Refused(Code::LoopNotSupported)),
@@ -629,7 +629,6 @@ fn classification_without_validator(body: &str) -> Classification {
 #[test]
 fn a_kind_the_ledger_does_not_list_makes_the_kernel_grid_only() {
     for (what, body) in [
-        ("a closure", "let f = |v: f32| v; out[id.x] = 1.0f32;"),
         ("an unlisted method", "out[id.x] = a[id.x].abs();"),
         ("a macro statement", "foo!(); out[id.x] = 1.0f32;"),
         ("a loop", "loop { } out[id.x] = 1.0f32;"),
@@ -663,6 +662,7 @@ fn a_kind_the_ledger_does_not_list_makes_the_kernel_grid_only() {
 #[rustfmt::skip]
 const CALLEES: &[(&str, &str, &str, &str)] = &[
     ("helper", "#[kernel]", PARAMETERS, "out[id.x] = helper(1.0f32);"),
+    ("closure", "#[kernel]", PARAMETERS, "let f = |v: f32| -> f32 { v }; out[id.x] = f(1.0f32);"),
     ("Some", "#[kernel]", PARAMETERS,
      "if let Some(v) = Some(1.0f32) { out[id.x] = v; } else { out[id.x] = 2.0f32; }"),
     ("Ok", "#[kernel]", PARAMETERS,
@@ -749,10 +749,12 @@ fn the_ledger_lists_exactly_the_callee_forms_the_validator_accepts() {
         let module = module(&source);
         let helpers = crate::validate::helper_names(&module);
         let calls = calls_of(kernel_of(&module));
+        // A closure call is told from its `let` by the scan (`KindScan`), not by `callee_kind`, which has no scope.
         assert!(
-            calls
-                .iter()
-                .any(|call| kinds::callee_kind(call, &helpers).as_deref() == Some(kind)),
+            kind == "closure"
+                || calls
+                    .iter()
+                    .any(|call| kinds::callee_kind(call, &helpers).as_deref() == Some(kind)),
             "no call of the probe for `{kind}` is classified as `{kind}`: {FIX}\n{source}"
         );
         // The classifier takes the form as listed: it is never `Unrecognised`.

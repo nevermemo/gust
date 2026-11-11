@@ -607,11 +607,11 @@ Decision: D02.
 
 ### GUST-E0314 closure
 
-Closures capture an environment the translator does not model.
+A closure form with no lowering. A closure that is written as `let f = |x: T| -> R { .. };` and captures nothing is accepted (slice m9.c, D160); the forms that are not are `async`, `static` and `const` closures, a `for<..>` binder and an attribute on the closure. The other refusals have codes of their own: `move` and captured names GUST-E0329, a closure used as a value GUST-E0330, a missing type GUST-E0331, a closure in a closure GUST-E0332.
 Reached through `#[gpu]`.
-Rejected: `|x| x + 1u32`.
-Write instead: a helper function in the module.
-Decision: D02.
+Rejected: `let f = async |x: u32| -> u32 { x };`, `let f = static || -> u32 { 1u32 };`.
+Write instead: a plain closure with typed parameters and a result type, or a helper function in the module.
+Decision: D02, D160.
 
 ### GUST-E0315 await
 
@@ -750,6 +750,48 @@ Rejected: `impl S { fn len(&self) -> u32 { .. } }`, `fn xy(&self) -> f32`, `fn i
 Write instead: another name, `length`, `radius_value`, `get_v`.
 Fixture: `tests/ui/method-name-clash` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, slice m9.a1).
+
+A closure binding follows the same rule (slice m9.c): the name of a closure (`let f = |x: f32| -> f32 { .. };`) must not be a helper, a method, a name of the dialect (`Some`, `Ok`, `Err`, `None`, the barrier, the subgroup and atomic operations) or any other binding of its function (a parameter, a local, a loop variable, a pattern binding or another closure), so that a call `f(..)` has one meaning. Two closures of the same name in two different functions are fine. A Slang keyword is no clash: the closure is hoisted under a generated name and its own name is never emitted.
+Rejected (closure): `let helper = |x: f32| -> f32 { x };` next to `fn helper`, `let x = 1.0f32; let x = |a: f32| -> f32 { a };`, two closures `f` in one function.
+Write instead (closure): a name that only this closure has.
+Fixture (closure): none of its own; `closure_names_are_unique_per_function` in `tests/regression.rs`.
+
+### GUST-E0329 closure captures
+
+A closure takes everything it uses as a parameter; it captures nothing. Rust would let the closure read the locals, parameters and buffers of the surrounding function (or `self`, or an earlier closure), but a captured value would be a hidden extra input of the hoisted Slang function, and GUST lowers a closure to a free function that is called with its arguments and nothing else (D160). The check is syntactic and exact: a single identifier in the body of the closure that no parameter, `let`, `for` variable, `if let` or `match` arm of the body binds, and that is neither a helper of the module nor `Some`, `Ok`, `Err`, `None` or a barrier, subgroup or atomic operation, is a capture. Paths of two segments (`Vec2::new`, `Mode::A`, `Mat4::IDENTITY`), the paths of struct literals and types, and the method names after a dot are items, not captures. One error is given per closure; it names every captured name, and says when one of them is an earlier closure (a closure cannot call a closure).
+A `move` closure is the same error: `move` only decides how Rust captures.
+Reached through `#[gpu]`.
+Rejected: `let a = 2.0f32; let f = |x: f32| -> f32 { x * a };`, a closure that reads `out`, `id`, a `Workgroup` binding, an outer loop variable or `self`, `let quad = |x: f32| -> f32 { double(double(x)) };` with `double` a closure (spike X4), `let f = move |x: f32| -> f32 { x };`.
+Write instead: pass the value as a parameter, `let f = |x: f32, a: f32| -> f32 { x * a };` and `f(1.0f32, a)`, or write a helper function in the module.
+Fixtures: `tests/ui/x4-closure-calls-closure` and `tests/ui/closure-move` (`cargo xtask check-ui`, `code: none` plus the message); the twenty bodies of the capture table are `the_capture_table_of_twenty_closure_bodies` in `tests/regression.rs`.
+Decision: D154, D160 (M9 plan 2.5, spike M9.s0 X4, slice m9.c).
+
+### GUST-E0330 closure used as a value
+
+A closure is called by its name and nothing else: `f(a, b)` after its `let`. It is not a value, so it is not passed, returned, stored, rebound or mutated: the closure expression has to be the whole initializer of an immutable `let` with no type annotation, and the name stands only in call position. This keeps the lowering to one hoisted function per closure and one direct call per use.
+Reached through `#[gpu]`.
+Rejected: `let mut f = |x: f32| -> f32 { x };`, `let f: fn(f32) -> f32 = |x: f32| -> f32 { x };`, `g(f)` or `apply(|x: f32| -> f32 { x })`, `return f;`, `let h = f;`, a closure expression anywhere but the initializer of a `let` (a call argument, a field, an element, a tail), `f` named without a call.
+Write instead: call it, `f(1.0f32)`, or write a helper function when the function has to be passed.
+Fixture: `tests/ui/closure-value` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D160 (M9 plan 2.5, slice m9.c).
+
+### GUST-E0331 closure signature
+
+The macro sees no types, so a closure states them all: every parameter is `name: Type`, the result type follows `->`, and the body is a block. A closure with a unit result is refused too, because a closure cannot change anything outside itself and gives its caller a value or nothing worth calling.
+Reached through `#[gpu]`.
+Rejected: `|x| x + 1u32`, `|x: f32| x * 2.0f32`, `|x: f32| -> f32 x`, `|(a, b): (f32, f32)| -> f32 { a }` (a pattern parameter), `|x: f32| -> () { }`.
+Write instead: `let f = |x: f32| -> f32 { x * 2.0f32 };`.
+Fixture: `tests/ui/closure-untyped` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D160 (M9 plan 2.5, slice m9.c).
+
+### GUST-E0332 closure inside a closure
+
+Each closure is a function of its own, hoisted next to the function that holds it. A closure that holds another would need a function inside a function in the Slang, so the inner closure is refused: bind both in the surrounding function and pass the value of the first to the second as an argument (not the closure itself, GUST-E0330).
+Reached through `#[gpu]`.
+Rejected: `let f = |x: f32| -> f32 { let g = |y: f32| -> f32 { y }; g(x) };`.
+Write instead: two `let` bindings in the surrounding function, `let g = |y: f32| -> f32 { y }; let f = |x: f32| -> f32 { x };` and `f(g(1.0f32))`.
+Fixture: `tests/ui/closure-nested` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D160 (M9 plan 2.5, slice m9.c).
 
 ### GUST-E0333 mutating method on a shared place
 
@@ -936,7 +978,7 @@ Decision: D157 (M9 plan 2.2, slice m9.e2).
 ### GUST-E0421 `&mut self` call whose evaluation order differs from Rust's
 
 A call of a `&mut self` method is refused where the GPU would evaluate it in another order than Rust (a method that only reads, a `self` method and a helper have no effect to reorder). These places:
-- the start or the end of a `for` range: the emitted Slang loop evaluates the end bound before the start bound (spike M9.s0 P9, measured on the WGSL and the SPIR-V target), where Rust evaluates the start first (`for i in c.n..c.next()`);
+- the start or the end of a `for` range: the emitted Slang loop evaluates the end bound before the start bound (spike M9.s0 P9, measured on the WGSL and the SPIR-V target), where Rust evaluates the start first (`for i in c.n..c.next()`); a call of a closure in a bound is refused too (slice m9.c: a closure cannot change anything, but the bound is evaluated once by the loop and the rule is kept conservative; `for i in 0u32..f(n)`, fixture `tests/ui/for-bound-closure`);
 - anywhere in the place (the assignee) of `=` or of a compound assignment: Rust evaluates the assigned value before the place, Slang evaluates a call inside the place first (`out[c.next()] = c.next()` writes another element, `out[d.bump()] = d.n` stores the new value; review m9.a2);
 - an indexed place whose index reads a root that a `&mut self` call in the assigned value changes, for `=` and every compound assignment: `a[s.n as usize] = s.bump()` on an array local, `out[c.n] = c.next()` and `out[c.n] += c.next()` on a storage buffer, `wg[w.n] = w.bump()` on workgroup memory. Rust evaluates the value first and the index after it; slangc 2026.21 evaluates the index first (2026.20 called first, so the order of Slang changed between the two versions, and GUST refuses the form instead of relying on either; slice m9.r1, fix round 1). Before this the storage forms were accepted and gave another element than the CPU twin on the GPU with the pinned Slang;
 - the value of `*=` in a module that names `Mat2`, `Mat3` or `Mat4`: it is lowered to `place = __gust_mul(place, value)`, which reads the place before the call and loses the method's write.

@@ -16,9 +16,9 @@
 //!   with it. Each golden is split at its `// ==== kernel <name> ====` markers where it has them, and each
 //!   `[shader("compute")]` or `[shader("fragment")]` entry of each section is compiled to WGSL with the `slangc` command
 //!   line (the stage of its shape) through
-//!   `gust::slang::compile_source_as`: 96 entries. The descriptor of an entry comes from the fixture's Rust source,
+//!   `gust::slang::compile_source_as`: 97 entries. The descriptor of an entry comes from the fixture's Rust source,
 //!   included below the way the other test files include it;
-//! - every fixture kernel, 106 in all (the 96 above and the 10 that no golden holds: `atomics.slang` keeps only the
+//! - every fixture kernel, 107 in all (the 97 above and the 10 that no golden holds: `atomics.slang` keeps only the
 //!   first of the ten kernels of `atomics.rs`, and `numeric.slang` only the first of the two of `numeric.rs`),
 //!   compiled from its descriptor's own Slang through the native reflection helper, `gust::reflect::compile_reflected`.
 //!   That is the route `HeadlessDevice` takes at run time, so these are the bytes a device is handed when it compiles
@@ -94,6 +94,7 @@ fixture!(
     "../../../tests/fixtures/arrays_storage.rs"
 );
 fixture!(f_atomics, atomics, "../../../tests/fixtures/atomics.rs");
+fixture!(f_closures, closures, "../../../tests/fixtures/closures.rs");
 fixture!(f_compact, compact, "../../../tests/fixtures/compact.rs");
 fixture!(
     f_coretests,
@@ -151,7 +152,7 @@ struct Golden {
     kernels: &'static [KernelDescriptor],
 }
 
-fn goldens() -> [Golden; 26] {
+fn goldens() -> [Golden; 27] {
     [
         Golden {
             file: "arrays.slang",
@@ -170,6 +171,12 @@ fn goldens() -> [Golden; 26] {
             text: include_str!("../../../tests/fixtures/atomics.slang"),
             entries: 1,
             kernels: f_atomics::KERNELS,
+        },
+        Golden {
+            file: "closures.slang",
+            text: include_str!("../../../tests/fixtures/closures.slang"),
+            entries: 1,
+            kernels: f_closures::KERNELS,
         },
         Golden {
             file: "compact.slang",
@@ -856,8 +863,8 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
     problems
 }
 
-/// The compute and fragment entries the twenty-six goldens hold in all (pinned per golden in [`goldens`]).
-const GOLDEN_ENTRIES: usize = 106;
+/// The compute and fragment entries the twenty-seven goldens hold in all (pinned per golden in [`goldens`]).
+const GOLDEN_ENTRIES: usize = 107;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`
 /// (`atomics.slang` has one entry for the ten kernels of the module) and of `numeric.rs` (one of two).

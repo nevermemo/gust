@@ -182,7 +182,7 @@ codes! {
     UnsafeBlock = 312 => "GUST-E0312";
     /// A macro invocation inside the module.
     MacroInModule = 313 => "GUST-E0313";
-    /// A closure.
+    /// A closure form with no lowering: `async`, `static`, `const`, a `for<..>` binder or an attribute.
     Closure = 314 => "GUST-E0314";
     /// `.await`.
     Await = 315 => "GUST-E0315";
@@ -210,6 +210,17 @@ codes! {
     BarrierForm = 327 => "GUST-E0327";
     /// A method named like a dialect method, a Slang member keyword or a field of its struct.
     MethodNameClash = 328 => "GUST-E0328";
+    /// A closure that uses a name of its surroundings: a local, a parameter, `self`, a buffer, the invocation id, a
+    /// workgroup binding, a loop variable or an earlier closure (and `move`, which only makes the capture explicit).
+    ClosureCapture = 329 => "GUST-E0329";
+    /// A closure used as anything but a called `let f = |..| ..;` binding: `let mut f`, a type annotation, a value
+    /// (`f` outside call position, an argument, a parameter, a result, a field) or a closure expression elsewhere.
+    ClosureValue = 330 => "GUST-E0330";
+    /// A closure parameter without a type, a pattern parameter, a missing or unit result type, or a body that is not a
+    /// block.
+    ClosureSignature = 331 => "GUST-E0331";
+    /// A closure written inside another closure.
+    NestedClosure = 332 => "GUST-E0332";
     /// A `&mut self` or by-value `self` method called on a storage, uniform, workgroup or texture place.
     MutatingMethodOnSharedPlace = 333 => "GUST-E0333";
     /// `usize` as a type, a local, a parameter, a cast target or a `.len()` value anywhere but the operand of an array

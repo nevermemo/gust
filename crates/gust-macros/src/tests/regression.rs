@@ -1004,7 +1004,8 @@ fn expression_and_binding_rejections_carry_their_codes() {
         ("let y = id.global_id::<u32>();", Code::BuiltinTypeArguments),
         ("let y = x.abs();", Code::UnsupportedMethod),
         ("let y = out.global_id();", Code::GlobalIdReceiver),
-        ("let f = |a: u32| a;", Code::Closure),
+        ("let f = async |a: u32| -> u32 { a };", Code::Closure),
+        ("let f = |a: u32| a;", Code::ClosureSignature),
         ("let y = x.await;", Code::Await),
         ("let y = &x;", Code::Reference),
         ("let [a, b] = x;", Code::LetNeedsIdentifier),
@@ -5840,6 +5841,16 @@ fn methods_mut_golden() {
     );
 }
 
+#[test]
+fn closures_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/closures.rs")).unwrap();
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "closures.slang",
+        &include_str!("../../../../tests/fixtures/closures.slang").replace("\r\n", "\n"),
+    );
+}
+
 const COUNTER_MODULE: &str = "mod m {
     pub struct Counter { pub n: uint }
     impl Counter {
@@ -8378,4 +8389,381 @@ fn comparing_scalars_named_like_components_is_not_an_array_comparison_in_a_soa_m
         ),
         Code::UnsupportedExpression,
     );
+}
+
+// ---- Non-capturing closures (slice m9.c, D154, D160) ----
+
+/// The module the capture table runs in: a helper `helper`, a struct `P`, an enum `Mode` and a method `P::twice`.
+fn closure_module(kernel_attr: &str, parameters: &str, body: &str) -> String {
+    format!(
+        "mod m {{ pub struct P {{ pub x: f32, pub y: f32 }} \
+         #[derive(PartialEq, Eq)] pub enum Mode {{ A, B }} \
+         impl P {{ pub fn twice(&self, k: f32) -> f32 {{ self.x * k }} }} \
+         pub fn helper(x: f32) -> f32 {{ x + 1.0f32 }} \
+         {kernel_attr} pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>{parameters}) {{ {body} }} }}"
+    )
+}
+
+/// The twenty bodies of the capture table (plan 2.5): ten capture something, ten do not. The scan is syntactic and exact
+/// because a module holds functions, structs, enums and `impl`s only: a free single identifier is a local, a parameter,
+/// `self` or an earlier closure; everything else is a path of two segments, a helper, or a name of the dialect.
+#[test]
+fn the_capture_table_of_twenty_closure_bodies() {
+    const WORKGROUP: &str = "#[kernel(workgroup_size(64, 1, 1), cpu = \"unsupported\")]";
+    // (label, attribute, extra parameters, kernel body, captures)
+    let table: [(&str, &str, &str, &str, bool); 18] = [
+        (
+            "outer let",
+            "#[kernel]",
+            "",
+            "let a = 2.0f32; let f = |x: f32| -> f32 { x * a }; out[id.x] = f(1.0f32);",
+            true,
+        ),
+        (
+            "an earlier closure (X4)",
+            "#[kernel]",
+            "",
+            "let double = |x: f32| -> f32 { x * 2.0f32 }; let quad = |x: f32| -> f32 { double(double(x)) }; out[id.x] = quad(1.0f32);",
+            true,
+        ),
+        (
+            "a kernel buffer",
+            "#[kernel]",
+            "",
+            "let f = |x: f32| -> f32 { out[0u32] + x }; out[id.x] = f(1.0f32);",
+            true,
+        ),
+        (
+            "the invocation id",
+            "#[kernel]",
+            "",
+            "let f = |x: f32| -> f32 { x + id.x as f32 }; out[id.x] = f(1.0f32);",
+            true,
+        ),
+        (
+            "a workgroup binding",
+            WORKGROUP,
+            ", mut wg: Workgroup<[f32; 4]>",
+            "let f = |x: f32| -> f32 { x + wg[0u32] }; out[id.x] = f(1.0f32);",
+            true,
+        ),
+        (
+            "an outer loop variable",
+            "#[kernel]",
+            "",
+            "for i in 0u32..4u32 { let f = |x: f32| -> f32 { x + i as f32 }; out[id.x] = f(1.0f32); }",
+            true,
+        ),
+        (
+            "a field shorthand",
+            "#[kernel]",
+            "",
+            "let x = 1.0f32; let f = |y: f32| -> P { P { x, y } }; out[id.x] = f(2.0f32).y;",
+            true,
+        ),
+        (
+            "a use before the body's own let and after an inner block",
+            "#[kernel]",
+            "",
+            "let n = 3.0f32; let f = |x: f32| -> f32 { { let n = 1.0f32; } let m = n + x; let n = 1.0f32; m + n }; out[id.x] = f(1.0f32);",
+            true,
+        ),
+        (
+            "an outer local as method receiver",
+            "#[kernel]",
+            "",
+            "let p = P { x: 1.0f32, y: 2.0f32 }; let f = |k: f32| -> f32 { p.twice(k) }; out[id.x] = f(1.0f32);",
+            true,
+        ),
+        (
+            "a rebinding over the parameter",
+            "#[kernel]",
+            "",
+            "let f = |x: f32| -> f32 { let x = x * 2.0f32; x }; out[id.x] = f(1.0f32);",
+            false,
+        ),
+        (
+            "a parameter named like a helper",
+            "#[kernel]",
+            "",
+            "let f = |helper: f32| -> f32 { helper * 2.0f32 }; out[id.x] = f(1.0f32);",
+            false,
+        ),
+        (
+            "a constructor and a method",
+            "#[kernel]",
+            "",
+            "let f = |x: f32| -> f32 { Vec2::new(x, 1.0f32).dot(Vec2::splat(3.0f32)) }; out[id.x] = f(1.0f32);",
+            false,
+        ),
+        (
+            "Some and unwrap_or",
+            "#[kernel]",
+            "",
+            "let f = |x: f32| -> f32 { Some(x).unwrap_or(0.0f32) }; out[id.x] = f(1.0f32);",
+            false,
+        ),
+        (
+            "a struct literal with a field named like the parameter",
+            "#[kernel]",
+            "",
+            "let f = |x: f32| -> f32 { let p = P { x: x, y: 1.0f32 }; p.y }; out[id.x] = f(1.0f32);",
+            false,
+        ),
+        (
+            "an enum variant",
+            "#[kernel]",
+            "",
+            "let f = |x: f32| -> f32 { if Mode::A == Mode::B { 0.0f32 } else { x } }; out[id.x] = f(1.0f32);",
+            false,
+        ),
+        (
+            "a helper and a method",
+            "#[kernel]",
+            "",
+            "let f = |x: f32| -> f32 { let p = P { x: x, y: 1.0f32 }; helper(p.twice(x)) }; out[id.x] = f(1.0f32);",
+            false,
+        ),
+        (
+            "a loop variable and an if let inside",
+            "#[kernel]",
+            "",
+            "let f = |x: f32| -> f32 { let mut s = 0.0f32; for i in 0u32..3u32 { s += i as f32; } if let Some(v) = Some(x) { s += v; } s }; out[id.x] = f(1.0f32);",
+            false,
+        ),
+        (
+            "an associated constant and splat",
+            "#[kernel]",
+            "",
+            "let f = |x: f32| -> f32 { Mat4::IDENTITY.x_axis.x + Vec2::splat(x).y }; out[id.x] = f(1.0f32);",
+            false,
+        ),
+    ];
+    for (label, attribute, parameters, body, captures) in table {
+        let source = closure_module(attribute, parameters, body);
+        if captures {
+            let error = translate(&source).expect_err(label);
+            assert_code_for(&error, Code::ClosureCapture, label);
+        } else {
+            translate(&source).unwrap_or_else(|error| panic!("{label}: {error}"));
+        }
+    }
+    // The twentieth body: `self` in a method closure is a capture; a method closure that takes it as a parameter is not.
+    let method = |body: &str| {
+        format!(
+            "mod m {{ pub struct P {{ pub x: f32 }} impl P {{ pub fn go(&self, k: f32) -> f32 {{ {body} }} }} \
+             #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) {{ \
+             let p = P {{ x: 1.0f32 }}; out[id.x] = p.go(2.0f32); }} }}"
+        )
+    };
+    assert_rejected(
+        &method("let f = |a: f32| -> f32 { a * self.x }; f(k)"),
+        Code::ClosureCapture,
+    );
+    translate(&method(
+        "let f = |a: f32, b: f32| -> f32 { a * b }; f(self.x, k)",
+    ))
+    .unwrap();
+}
+
+/// A kernel body `body` in a module with a helper `helper`, a struct `P` with the `&mut self` method `bump` and a counter.
+fn closure_kernel(body: &str) -> String {
+    format!(
+        "mod m {{ pub struct C {{ pub n: u32 }} \
+         impl C {{ pub fn bump(&mut self) -> u32 {{ self.n += 1u32; self.n }} }} \
+         pub fn helper(x: f32) -> f32 {{ x + 1.0f32 }} \
+         #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>, mut idx: RWStructuredBuffer<u32>) {{ {body} }} }}"
+    )
+}
+
+#[test]
+fn a_closure_is_accepted_in_a_kernel_a_helper_and_a_method() {
+    translate(&closure_kernel(
+        "let f = |x: f32, y: f32| -> f32 { x * y + helper(x) }; out[id.x] = f(2.0f32, 3.0f32);",
+    ))
+    .unwrap();
+    translate(
+        "mod m { pub fn h(x: f32) -> f32 { let f = |a: f32| -> f32 { a * 2.0f32 }; f(x) + f(1.0f32) } \
+         #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) { out[id.x] = h(1.0f32); } }",
+    )
+    .unwrap();
+    translate(
+        "mod m { pub struct S { pub v: f32 } impl S { pub fn go(&self, k: f32) -> f32 { \
+         let f = |a: f32, b: f32| -> f32 { a * b }; f(self.v, k) } } \
+         #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) { \
+         let s = S { v: 2.0f32 }; out[id.x] = s.go(3.0f32); } }",
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_closure_calls_a_helper_and_a_method() {
+    translate(
+        "mod m { pub struct S { pub v: f32 } impl S { pub fn get(&self, k: f32) -> f32 { self.v * k } } \
+         pub fn helper(x: f32) -> f32 { x + 1.0f32 } \
+         #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) { \
+         let f = |s: S, k: f32| -> f32 { helper(s.get(k)) }; let s = S { v: 2.0f32 }; out[id.x] = f(s, 3.0f32); } }",
+    )
+    .unwrap();
+}
+
+#[test]
+fn each_closure_refusal_carries_its_code() {
+    let mut misses = Vec::new();
+    let table = [
+        (
+            "let a = 1.0f32; let f = |x: f32| -> f32 { x + a }; out[id.x] = f(1.0f32);",
+            Code::ClosureCapture,
+        ),
+        (
+            "let f = move |x: f32| -> f32 { x }; out[id.x] = f(1.0f32);",
+            Code::ClosureCapture,
+        ),
+        (
+            "let f = |x: f32| -> f32 { x * 2.0f32 }; let g = |x: f32| -> f32 { f(x) }; out[id.x] = g(1.0f32);",
+            Code::ClosureCapture,
+        ),
+        (
+            "let mut f = |x: f32| -> f32 { x }; out[id.x] = f(1.0f32);",
+            Code::ClosureValue,
+        ),
+        (
+            "let f: f32 = |x: f32| -> f32 { x }; out[id.x] = 1.0f32;",
+            Code::ClosureValue,
+        ),
+        (
+            "let f = |x: f32| -> f32 { x }; let g = f; out[id.x] = 1.0f32;",
+            Code::ClosureValue,
+        ),
+        (
+            "let f = |x: f32| -> f32 { x }; out[id.x] = helper(f);",
+            Code::ClosureValue,
+        ),
+        (
+            "out[id.x] = (|x: f32| -> f32 { x })(1.0f32);",
+            Code::UnknownCall,
+        ),
+        (
+            "out[id.x] = helper(|x: f32| -> f32 { x });",
+            Code::ClosureValue,
+        ),
+        (
+            "let f = |x| -> f32 { x }; out[id.x] = f(1.0f32);",
+            Code::ClosureSignature,
+        ),
+        (
+            "let f = |x: f32| x; out[id.x] = f(1.0f32);",
+            Code::ClosureSignature,
+        ),
+        (
+            "let f = |x: f32| -> () { }; out[id.x] = 1.0f32;",
+            Code::ClosureSignature,
+        ),
+        (
+            "let f = |x: f32| -> f32 { let g = |y: f32| -> f32 { y }; g(x) }; out[id.x] = f(1.0f32);",
+            Code::NestedClosure,
+        ),
+        (
+            "let f = async |x: f32| -> f32 { x }; out[id.x] = 1.0f32;",
+            Code::Closure,
+        ),
+        (
+            "let f = static |x: f32| -> f32 { x }; out[id.x] = 1.0f32;",
+            Code::Closure,
+        ),
+        (
+            "let __gust_cl = |x: f32| -> f32 { x }; out[id.x] = __gust_cl(1.0f32);",
+            Code::ReservedPrefix,
+        ),
+        (
+            "let helper = |x: f32| -> f32 { x }; out[id.x] = helper(1.0f32);",
+            Code::MethodNameClash,
+        ),
+        (
+            "let bump = |x: f32| -> f32 { x }; out[id.x] = bump(1.0f32);",
+            Code::MethodNameClash,
+        ),
+        (
+            "let f = |x: f32| -> f32 { x }; let f = |x: f32| -> f32 { x }; out[id.x] = f(1.0f32);",
+            Code::MethodNameClash,
+        ),
+        (
+            "let x = 1.0f32; let x = |a: f32| -> f32 { a }; out[id.x] = x(1.0f32);",
+            Code::MethodNameClash,
+        ),
+        (
+            "let f = |x: f32| -> f32 { workgroup_barrier(); x }; out[id.x] = f(1.0f32);",
+            Code::BarrierPosition,
+        ),
+        (
+            "let f = |x: f32| -> f32 { subgroup_exclusive_add(x) }; out[id.x] = f(1.0f32);",
+            Code::SubgroupNotAllowed,
+        ),
+        (
+            "let f = |b: RWStructuredBuffer<f32>| -> f32 { 1.0f32 }; out[id.x] = 1.0f32;",
+            Code::HelperResourceParameter,
+        ),
+        // the order case of a `for` bound: a closure call there is refused like a `&mut self` call (E0421)
+        (
+            "let f = |x: u32| -> u32 { x + 1u32 }; for i in 0u32..f(3u32) { idx[i] = i; } out[id.x] = 1.0f32;",
+            Code::ForBoundSideEffect,
+        ),
+        // a closure call in the place and a `&mut self` call in the value is E0421 through the argument of the closure
+        (
+            "let mut c = C { n: 0u32 }; let f = |x: u32| -> u32 { x }; idx[f(c.n)] = f(c.bump()); out[id.x] = 1.0f32;",
+            Code::ForBoundSideEffect,
+        ),
+    ];
+    for &(body, code) in &table {
+        let source = closure_kernel(body);
+        match translate(&source) {
+            Ok(_) => misses.push(format!("{body}: accepted, expected {code:?}")),
+            Err(error) => {
+                let got = crate::diagnostics::testing::codes_of_result::<()>(&Err(error.clone()));
+                if got.first() != Some(&code) {
+                    misses.push(format!("{body}: {got:?} ({error}), expected {code:?}"));
+                }
+            }
+        }
+    }
+    assert!(misses.is_empty(), "{}", misses.join("\n"));
+    for (body, code) in table {
+        let error = translate(&closure_kernel(body)).expect_err(body);
+        assert_code_for(&error, code, body);
+    }
+    // A closure that reaches a helper that reaches the closure's owner is the recursion of the owner (E0120).
+    assert_rejected(
+        "mod m { pub fn h(x: f32) -> f32 { let f = |y: f32| -> f32 { h(y) }; f(x) } \
+         #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) { out[id.x] = h(1.0f32); } }",
+        Code::RecursiveCall,
+    );
+}
+
+#[test]
+fn closure_names_are_unique_per_function_and_a_slang_keyword_is_fine() {
+    // Two closures of one name in two functions; a closure named like a Slang keyword is never emitted under that name.
+    let source = translate(
+        "mod m { pub fn h(x: f32) -> f32 { let f = |a: f32| -> f32 { a * 2.0f32 }; f(x) } \
+         #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<f32>) { \
+         let f = |a: f32| -> f32 { a + 1.0f32 }; let struct_ = |a: f32| -> f32 { a }; let sample = |a: f32| -> f32 { a }; \
+         out[id.x] = f(h(1.0f32)) + struct_(1.0f32) + sample(2.0f32); } }",
+    )
+    .unwrap();
+    assert!(source.matches("__gust_cl_").count() >= 4, "{source}");
+}
+
+#[test]
+fn closures_with_option_and_result_values_are_decided_by_the_helper_rule() {
+    // The result type of a closure registers like the result type of a helper (slice m9.c): an `Option<u32>` result
+    // works with `if let` at the call site, and a `Result<u32, u32>` result with `match`.
+    translate(&closure_kernel(
+        "let pick = |x: u32| -> Option<u32> { if x > 2u32 { Some(x) } else { None } }; \
+         if let Some(v) = pick(id.x) { idx[id.x] = v; } out[id.x] = 1.0f32;",
+    ))
+    .unwrap_or_else(|error| panic!("Option result: {error}"));
+    translate(&closure_kernel(
+        "let check = |x: u32| -> Result<u32, u32> { if x > 2u32 { Ok(x) } else { Err(x) } }; \
+         match check(id.x) { Ok(v) => { idx[id.x] = v; } Err(e) => { idx[id.x] = e + 1u32; } }; out[id.x] = 1.0f32;",
+    ))
+    .unwrap_or_else(|error| panic!("Result result: {error}"));
 }

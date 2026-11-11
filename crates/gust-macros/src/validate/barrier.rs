@@ -341,6 +341,7 @@ pub(crate) fn check(
     is_kernel: bool,
     is_barrier_kernel: bool,
     subgroups_allowed: bool,
+    closure: bool,
 ) -> syn::Result<()> {
     let mut approved = HashSet::new();
     let mut approved_subgroups = HashSet::new();
@@ -370,6 +371,7 @@ pub(crate) fn check(
             ""
         },
         is_kernel,
+        closure,
         forbid_return: is_barrier_kernel,
         loops: Vec::new(),
         error: None,
@@ -388,6 +390,8 @@ struct Pass {
     /// case, and this is appended to the messages about a jump.
     subgroup_note: &'static str,
     is_kernel: bool,
+    /// Whether the function is the body of a closure (slice m9.c): judged as a helper, and the messages say so.
+    closure: bool,
     forbid_return: bool,
     /// For each enclosing `for` loop, whether it holds a barrier.
     loops: Vec<bool>,
@@ -439,6 +443,9 @@ impl<'ast> Visit<'ast> for Pass {
                 "`workgroup_barrier()` is allowed only as a statement of the kernel body, or of a top-level \
                  `for a..b` loop with two literal bounds: every invocation of the workgroup has to reach it the \
                  same number of times"
+            } else if self.closure {
+                "`workgroup_barrier()` is allowed only in a kernel: a closure may be called under a condition, so \
+                 not every invocation would reach the barrier; call the barrier from the kernel body"
             } else {
                 "`workgroup_barrier()` is allowed only in a kernel: a helper or a method may be called under a condition, so \
                  not every invocation would reach the barrier; call the barrier from the kernel body"
@@ -454,9 +461,10 @@ impl<'ast> Visit<'ast> for Pass {
                          `requires(subgroups)` when it has no portable body"
                     )
                 } else {
+                    let noun = if self.closure { "closure" } else { "helper" };
                     format!(
                         "`{name}` is a subgroup operation, which only the body of a kernel with \
-                         `requires(subgroups)` may call: a helper may be called under a condition, so not every \
+                         `requires(subgroups)` may call: a {noun} may be called under a condition, so not every \
                          invocation of the subgroup would reach it; call it from the kernel body"
                     )
                 };
@@ -479,6 +487,10 @@ impl<'ast> Visit<'ast> for Pass {
         }
         visit::visit_expr_call(self, call);
     }
+
+    // A closure body is a function of its own, validated as a helper where it is bound (slice m9.c): a `return`, a
+    // `break` or a barrier in it does not belong to the kernel's control flow.
+    fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
 
     fn visit_expr_return(&mut self, expression: &'ast syn::ExprReturn) {
         if self.forbid_return {
@@ -551,7 +563,7 @@ mod tests {
     }
 
     fn message(function: &syn::ItemFn, barrier_kernel: bool) -> Option<String> {
-        check(function, true, barrier_kernel, false)
+        check(function, true, barrier_kernel, false, false)
             .err()
             .map(|error| error.to_string())
     }

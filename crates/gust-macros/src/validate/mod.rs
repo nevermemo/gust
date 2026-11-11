@@ -596,6 +596,7 @@ pub(crate) fn validate_module_in(
                     &result_helpers,
                     &methods,
                     None,
+                    false,
                 )?
             }
             syn::Item::Struct(item) => validate_struct(item)?,
@@ -1148,6 +1149,7 @@ fn validate_method(
         context.result_helpers,
         context.methods,
         Some(owner),
+        false,
     )?;
     // In Rust `let c = self;` in a `&mut self` method binds the reference, and a write through `c` reaches the receiver; in Slang
     // it copies `this`, and the write is lost (review m9.a2 M2). A `self` or `&self` method copies in both languages.
@@ -1763,9 +1765,12 @@ fn validate_function(
     result_helpers: &HashSet<String>,
     methods: &MethodTable,
     owner: Option<&Owner<'_>>,
+    closure: bool,
 ) -> syn::Result<()> {
     use crate::slang::{ParameterFlavor, parameter_flavor_in};
 
+    // The word the messages use for a function that is not a kernel: a closure is judged as a helper (slice m9.c).
+    let noun = if closure { "closure" } else { "helper" };
     // What the profile makes of each parameter (a receiver is none; `validate_function` rejects it later).
     let flavor_of = |argument: &syn::FnArg| match argument {
         syn::FnArg::Typed(argument) => Some(parameter_flavor_in(stage, &argument.ty)),
@@ -1795,8 +1800,10 @@ fn validate_function(
         return Err(diagnostics::error(
             Code::WorkgroupParameterOnHelper,
             argument,
-            "`Workgroup<[T; N]>` memory belongs to a kernel: a helper cannot take it as a parameter; declare the \
-             array on the kernel and pass the helper the values it needs",
+            format!(
+                "`Workgroup<[T; N]>` memory belongs to a kernel: a {noun} cannot take it as a parameter; declare the \
+                 array on the kernel and pass the {noun} the values it needs"
+            ),
         ));
     }
     let invocations = function
@@ -1839,7 +1846,12 @@ fn validate_function(
         return Err(diagnostics::error(
             Code::HelperResourceParameter,
             &function.sig,
-            "GPU helper functions currently accept value parameters only; access resources in the kernel",
+            if closure {
+                "a closure takes value parameters only (a buffer, uniform, texture or sampler is a name of the kernel, \
+                 which a closure cannot capture); pass the values it needs"
+            } else {
+                "GPU helper functions currently accept value parameters only; access resources in the kernel"
+            },
         ));
     }
     if is_kernel {
@@ -2010,7 +2022,16 @@ fn validate_function(
     }
     visitor.visit_item_fn(function);
     visitor.finish()?;
-    check_workgroup_rules(stage, function, is_kernel)
+    // The closures bound in the body, once nothing else in it was found (slice m9.c).
+    validate_closures(
+        stage,
+        function,
+        function_names,
+        result_helpers,
+        methods,
+        owner,
+    )?;
+    check_workgroup_rules(stage, function, is_kernel, closure)
 }
 
 /// The workgroup rules of a function the generic validation accepted (see `barrier`): the barrier positions (E0414),
@@ -2020,6 +2041,7 @@ fn check_workgroup_rules(
     stage: &dyn StageProfile,
     function: &syn::ItemFn,
     is_kernel: bool,
+    closure: bool,
 ) -> syn::Result<()> {
     use crate::slang::{ParameterFlavor, parameter_flavor_in};
 
@@ -2037,6 +2059,7 @@ fn check_workgroup_rules(
         is_kernel,
         barrier_kernel,
         barrier::requires_subgroups(function),
+        closure,
     )?;
     // Full subgroups only (E0751): the invocation count is a multiple of 64, which every subgroup size of the
     // certified adapters (4, 8, 32, 64) divides. `Error::SubgroupSize` is the run-time check of the same rule.
@@ -2096,6 +2119,464 @@ fn check_workgroup_rules(
         ));
     }
     Ok(())
+}
+
+/// Names the dialect gives a meaning to as a callee or a value: a closure cannot take one (GUST-E0328), and a body that
+/// uses one has not captured anything (slice m9.c).
+fn is_dialect_callee(name: &str) -> bool {
+    matches!(
+        name,
+        "Some"
+            | "Ok"
+            | "Err"
+            | "None"
+            | "workgroup_barrier"
+            | "atomic_add"
+            | "atomic_min"
+            | "atomic_max"
+            | "atomic_exchange"
+            | "atomic_compare_exchange"
+    ) || barrier::subgroup_arity(name).is_some()
+}
+
+/// The identifiers a closure body uses that nothing inside it binds (slice m9.c): its captures, in first-use order.
+///
+/// A walk with a stack of scopes. The parameters bind in the outermost one; a `let` binds after its initializer, a
+/// `for` variable, an `if let` and a `match` arm bind inside their body, and a block ends its scope. A single identifier
+/// in expression position (a callee, a receiver, a field shorthand `P { x }`) that is not bound is free, and free is a
+/// capture unless it is a helper of the module or a name of the dialect (`Some`, `None`, the barrier, the subgroup and
+/// atomic operations, which are judged by their own rules). A module holds functions, structs, enums and `impl`s only, so
+/// every other free identifier names a local, a parameter, `self` or a closure of the surrounding function. Paths of two
+/// segments (`Vec2::new`, `E::A`, `S::f`, `Mat4::IDENTITY`) and the paths of struct literals and types are items.
+struct CaptureScan<'a> {
+    scopes: Vec<HashSet<String>>,
+    helpers: &'a HashSet<String>,
+    free: Vec<String>,
+}
+
+impl CaptureScan<'_> {
+    fn bind(&mut self, pattern: &syn::Pat) {
+        struct Names(Vec<String>);
+        impl<'p> Visit<'p> for Names {
+            fn visit_pat_ident(&mut self, pattern: &'p syn::PatIdent) {
+                self.0.push(pattern.ident.unraw().to_string());
+                visit::visit_pat_ident(self, pattern);
+            }
+        }
+        let mut names = Names(Vec::new());
+        names.visit_pat(pattern);
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.extend(names.0);
+        }
+    }
+
+    fn mention(&mut self, name: String) {
+        if self.scopes.iter().any(|scope| scope.contains(&name))
+            || is_dialect_callee(&name)
+            || self.helpers.contains(&name)
+            || self.free.contains(&name)
+        {
+            return;
+        }
+        self.free.push(name);
+    }
+}
+
+impl<'ast> Visit<'ast> for CaptureScan<'_> {
+    fn visit_type(&mut self, _: &'ast syn::Type) {}
+
+    fn visit_expr_macro(&mut self, _: &'ast syn::ExprMacro) {}
+
+    fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
+
+    fn visit_block(&mut self, block: &'ast syn::Block) {
+        self.scopes.push(HashSet::new());
+        visit::visit_block(self, block);
+        self.scopes.pop();
+    }
+
+    fn visit_local(&mut self, local: &'ast syn::Local) {
+        if let Some(initial) = &local.init {
+            self.visit_expr(&initial.expr);
+            if let Some((_, diverge)) = &initial.diverge {
+                self.visit_expr(diverge);
+            }
+        }
+        self.bind(&local.pat);
+    }
+
+    fn visit_expr_for_loop(&mut self, expression: &'ast syn::ExprForLoop) {
+        self.visit_expr(&expression.expr);
+        self.scopes.push(HashSet::new());
+        self.bind(&expression.pat);
+        self.visit_block(&expression.body);
+        self.scopes.pop();
+    }
+
+    fn visit_expr_if(&mut self, expression: &'ast syn::ExprIf) {
+        let syn::Expr::Let(binding) = expression.cond.as_ref() else {
+            visit::visit_expr_if(self, expression);
+            return;
+        };
+        self.visit_expr(&binding.expr);
+        self.scopes.push(HashSet::new());
+        self.bind(&binding.pat);
+        self.visit_block(&expression.then_branch);
+        self.scopes.pop();
+        if let Some((_, alternative)) = &expression.else_branch {
+            self.visit_expr(alternative);
+        }
+    }
+
+    fn visit_expr_match(&mut self, expression: &'ast syn::ExprMatch) {
+        self.visit_expr(&expression.expr);
+        for arm in &expression.arms {
+            self.scopes.push(HashSet::new());
+            self.bind(&arm.pat);
+            if let Some((_, guard)) = &arm.guard {
+                self.visit_expr(guard);
+            }
+            self.visit_expr(&arm.body);
+            self.scopes.pop();
+        }
+    }
+
+    fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        match call.func.as_ref() {
+            syn::Expr::Path(path) if path.qself.is_none() => {
+                if let Some(name) = path.path.get_ident() {
+                    self.mention(name.unraw().to_string());
+                }
+            }
+            other => self.visit_expr(other),
+        }
+        for argument in &call.args {
+            self.visit_expr(argument);
+        }
+    }
+
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        if path.qself.is_none()
+            && let Some(name) = path.path.get_ident()
+        {
+            self.mention(name.unraw().to_string());
+        }
+    }
+}
+
+/// The captures of `closure`: the identifiers its body uses that it does not bind (see [`CaptureScan`]).
+fn closure_captures(closure: &syn::ExprClosure, helpers: &HashSet<String>) -> Vec<String> {
+    let mut scan = CaptureScan {
+        scopes: vec![HashSet::new()],
+        helpers,
+        free: Vec::new(),
+    };
+    for input in &closure.inputs {
+        scan.bind(input);
+    }
+    scan.visit_expr(&closure.body);
+    scan.free
+}
+
+/// The closures bound in the body of `function` (slice m9.c). Each is judged on its own and reported once, at its `let`:
+/// the form (GUST-E0314, `move` E0329), the binding (E0330), the signature (E0331), a closure inside it (E0332), the
+/// name (E0901, E0328), the captures (E0329); then the body is validated as the body of a helper whose parameters are
+/// the closure's (D154: the helper rule covers a closure body, so no closure holds a barrier, a subgroup operation,
+/// workgroup memory, an atomic or a resource, and the call graph treats its calls as calls of the function that holds it).
+fn validate_closures(
+    stage: &dyn StageProfile,
+    function: &syn::ItemFn,
+    function_names: &HashSet<String>,
+    result_helpers: &HashSet<String>,
+    methods: &MethodTable,
+    owner: Option<&Owner<'_>>,
+) -> syn::Result<()> {
+    let sites = crate::slang::closure_sites(&function.block);
+    if sites.is_empty() {
+        return Ok(());
+    }
+    // How many times each name is bound in the function (parameters, locals, loop variables, patterns, the bindings and
+    // the parameters of the closures): a closure name that is bound twice shadows or is shadowed, and the validator
+    // would have to track which meaning a call has.
+    struct Bindings(HashMap<String, usize>);
+    impl<'ast> Visit<'ast> for Bindings {
+        fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+            *self.0.entry(pattern.ident.unraw().to_string()).or_default() += 1;
+            visit::visit_pat_ident(self, pattern);
+        }
+    }
+    let mut bindings = Bindings(HashMap::new());
+    bindings.visit_item_fn(function);
+    let closure_names: HashSet<String> = sites
+        .iter()
+        .map(|(_, pattern, _)| pattern.ident.unraw().to_string())
+        .collect();
+    // The owner of a closure body has no fields to clash with: the hoisted function is a free function.
+    let no_fields = HashSet::new();
+    let free_owner = owner.map(|owner| Owner {
+        name: owner.name,
+        fields: &no_fields,
+    });
+
+    let mut errors: Option<syn::Error> = None;
+    for (local, pattern, closure) in sites {
+        let result = validate_closure(
+            stage,
+            local,
+            pattern,
+            closure,
+            &bindings.0,
+            &closure_names,
+            function_names,
+            result_helpers,
+            methods,
+            free_owner.as_ref(),
+        );
+        if let Err(error) = result {
+            match &mut errors {
+                Some(existing) => existing.combine(error),
+                None => errors = Some(error),
+            }
+        }
+    }
+    errors.map_or(Ok(()), Err)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_closure(
+    stage: &dyn StageProfile,
+    local: &syn::Local,
+    pattern: &syn::PatIdent,
+    closure: &syn::ExprClosure,
+    bindings: &HashMap<String, usize>,
+    closure_names: &HashSet<String>,
+    function_names: &HashSet<String>,
+    result_helpers: &HashSet<String>,
+    methods: &MethodTable,
+    owner: Option<&Owner<'_>>,
+) -> syn::Result<()> {
+    let name = pattern.ident.unraw().to_string();
+    // The form: what has no lowering at all.
+    if closure.asyncness.is_some()
+        || closure.constness.is_some()
+        || closure.movability.is_some()
+        || closure.lifetimes.is_some()
+        || !closure.attrs.is_empty()
+    {
+        return Err(diagnostics::error(
+            Code::Closure,
+            local,
+            "this closure form has no lowering: write `let f = |x: f32| -> f32 { .. };` without `async`, `static`, \
+             `const`, a `for<..>` binder or an attribute",
+        ));
+    }
+    if closure.capture.is_some() {
+        return Err(diagnostics::error(
+            Code::ClosureCapture,
+            local,
+            format!(
+                "`move` makes the closure `{name}` own what it captures; a closure here captures nothing, so it takes \
+                 everything it uses as a parameter: remove `move`"
+            ),
+        ));
+    }
+    // The binding: immutable, no annotation, a plain name.
+    if pattern.mutability.is_some() {
+        return Err(diagnostics::error(
+            Code::ClosureValue,
+            local,
+            format!(
+                "a closure binding is immutable: write `let {name} = |..| ..;`, not `let mut {name}`"
+            ),
+        ));
+    }
+    if matches!(local.pat, syn::Pat::Type(_))
+        || pattern.by_ref.is_some()
+        || pattern.subpat.is_some()
+    {
+        return Err(diagnostics::error(
+            Code::ClosureValue,
+            local,
+            format!(
+                "the closure `{name}` takes no type annotation on its binding: its parameters and result carry the types"
+            ),
+        ));
+    }
+    // The signature: typed parameters, an explicit non-unit result, a block body.
+    for input in &closure.inputs {
+        let typed = matches!(input, syn::Pat::Type(typed)
+            if matches!(typed.pat.as_ref(), syn::Pat::Ident(parameter)
+                if parameter.by_ref.is_none() && parameter.subpat.is_none()));
+        if !typed {
+            return Err(diagnostics::error(
+                Code::ClosureSignature,
+                input,
+                "every parameter of a closure is `name: Type` (`|x: f32, y: f32| -> f32 { .. }`): the macro sees no types, \
+                 so none is inferred",
+            ));
+        }
+    }
+    match &closure.output {
+        syn::ReturnType::Default => {
+            return Err(diagnostics::error(
+                Code::ClosureSignature,
+                closure,
+                format!(
+                    "the closure `{name}` needs an explicit result type: `|x: f32| -> f32 {{ .. }}`"
+                ),
+            ));
+        }
+        syn::ReturnType::Type(_, ty) if matches!(strip_type_parens(ty), syn::Type::Tuple(tuple) if tuple.elems.is_empty()) =>
+        {
+            return Err(diagnostics::error(
+                Code::ClosureSignature,
+                ty,
+                "a closure gives a value, and a closure cannot change anything outside itself: a unit result has no use",
+            ));
+        }
+        syn::ReturnType::Type(..) => {}
+    }
+    if !matches!(closure.body.as_ref(), syn::Expr::Block(body) if body.label.is_none()) {
+        return Err(diagnostics::error(
+            Code::ClosureSignature,
+            &closure.body,
+            "the body of a closure is a block: `|x: f32| -> f32 { x * 2.0f32 }`",
+        ));
+    }
+    // A closure inside the body.
+    struct Nested<'a>(Option<&'a syn::ExprClosure>);
+    impl<'a> Visit<'a> for Nested<'a> {
+        fn visit_expr_closure(&mut self, inner: &'a syn::ExprClosure) {
+            self.0.get_or_insert(inner);
+        }
+    }
+    let mut nested = Nested(None);
+    nested.visit_expr(&closure.body);
+    if let Some(inner) = nested.0 {
+        return Err(diagnostics::error(
+            Code::NestedClosure,
+            inner,
+            format!(
+                "a closure inside the closure `{name}`: each closure is a function of its own, and a closure cannot hold \
+                 another; bind both in the surrounding function"
+            ),
+        ));
+    }
+    // The name.
+    let raw = pattern.ident.unraw().to_string();
+    if raw.starts_with("__gust_") || raw.starts_with("__gpu_") || raw.starts_with("__Gust") {
+        return Err(diagnostics::error(
+            Code::ReservedPrefix,
+            &pattern.ident,
+            "the __gust_, __gpu_ and __Gust prefixes are reserved for generated shader symbols",
+        ));
+    }
+    let clash = if function_names.contains(&name) || methods.by_name.contains_key(&name) {
+        Some("a helper function or a method of the module")
+    } else if is_dialect_callee(&name) {
+        Some("a name the dialect gives a meaning to")
+    } else if bindings.get(&name).copied().unwrap_or(0) > 1 {
+        Some(
+            if closure_names.iter().filter(|other| **other == name).count() > 0 {
+                "another binding of the function (a parameter, a local, a loop variable, a pattern or another closure)"
+            } else {
+                "another binding of the function"
+            },
+        )
+    } else {
+        None
+    };
+    if let Some(what) = clash {
+        return Err(diagnostics::error(
+            Code::MethodNameClash,
+            &pattern.ident,
+            format!(
+                "the closure `{name}` is named like {what}: a closure name is unique in its function, so that a call \
+                 `{name}(..)` has one meaning; rename the closure"
+            ),
+        ));
+    }
+    // The captures.
+    let captures = closure_captures(closure, function_names);
+    if !captures.is_empty() {
+        let earlier: Vec<&String> = captures
+            .iter()
+            .filter(|capture| closure_names.contains(*capture))
+            .collect();
+        let listed = captures
+            .iter()
+            .map(|capture| format!("`{capture}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let note = if earlier.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " ({} {} a closure, and a closure cannot call a closure)",
+                earlier
+                    .iter()
+                    .map(|capture| format!("`{capture}`"))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                if earlier.len() == 1 { "is" } else { "are" }
+            )
+        };
+        return Err(diagnostics::error(
+            Code::ClosureCapture,
+            local,
+            format!(
+                "the closure `{name}` uses {listed}, which belong to the surrounding function{note}: a closure captures \
+                 nothing, so pass every value it needs as a parameter"
+            ),
+        ));
+    }
+    // The body, as the body of a helper (D154).
+    let function = crate::slang::closure_function(&pattern.ident, closure)
+        .expect("the form, the signature and the body were checked above");
+    validate_function(
+        stage,
+        &function,
+        function_names,
+        result_helpers,
+        methods,
+        owner,
+        true,
+    )
+}
+
+/// The first call of a closure of `closures` inside `expression` (a `for` bound), in source order (slice m9.c).
+fn first_closure_call<'a>(
+    closures: &HashSet<String>,
+    expression: &'a syn::Expr,
+) -> Option<&'a syn::ExprCall> {
+    struct Scan<'m, 'a> {
+        closures: &'m HashSet<String>,
+        found: Option<&'a syn::ExprCall>,
+    }
+    impl<'a> Visit<'a> for Scan<'_, 'a> {
+        fn visit_expr_call(&mut self, call: &'a syn::ExprCall) {
+            if self.found.is_some() {
+                return;
+            }
+            if let syn::Expr::Path(path) = call.func.as_ref()
+                && path.qself.is_none()
+                && path
+                    .path
+                    .get_ident()
+                    .is_some_and(|name| self.closures.contains(&name.unraw().to_string()))
+            {
+                self.found = Some(call);
+                return;
+            }
+            visit::visit_expr_call(self, call);
+        }
+    }
+    let mut scan = Scan {
+        closures,
+        found: None,
+    };
+    scan.visit_expr(expression);
+    scan.found
 }
 
 /// The first call of a `&mut self` method of the module inside `expression` (a `for` bound), in source order. The macro
@@ -2465,6 +2946,10 @@ struct RestrictedVisitor {
     index_depth: usize,
     /// The `a.len()` calls of arrays that are the operand of a cast to a 32-bit scalar (`a.len() as u32`), by address.
     len_casts: HashSet<usize>,
+    /// The closures bound by a `let` in scope (slice m9.c), by binding name: `f(..)` calls one, anything else that names
+    /// one is GUST-E0330. The names are unique in a function and apart from every other binding (GUST-E0328), so the
+    /// set needs no shadowing rules; it is restored at the end of a block.
+    closures: HashSet<String>,
     error: Option<syn::Error>,
 }
 
@@ -2498,6 +2983,7 @@ impl RestrictedVisitor {
             array_lens: HashMap::new(),
             index_depth: 0,
             len_casts: HashSet::new(),
+            closures: HashSet::new(),
             error: None,
         }
     }
@@ -3763,6 +4249,19 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        // `f(a, b)` where `f` is a closure bound by an earlier `let` (slice m9.c): the arguments are ordinary expressions,
+        // evaluated left to right like a helper's. A closure that is named like a dialect callee or a helper is refused
+        // by the closure pass (GUST-E0328), so the name decides here.
+        if let syn::Expr::Path(path) = call.func.as_ref()
+            && path.qself.is_none()
+            && let Some(ident) = path.path.get_ident()
+            && self.closures.contains(&ident.unraw().to_string())
+        {
+            for argument in &call.args {
+                self.visit_expr(argument);
+            }
+            return;
+        }
         if let syn::Expr::Path(path) = call.func.as_ref() {
             let contains_banned_name = path
                 .path
@@ -4547,6 +5046,21 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             );
             return;
         }
+        // A closure is called and is nothing else (slice m9.c); a call reaches `visit_expr_call`, not this function.
+        if path.qself.is_none()
+            && let Some(name) = path.path.get_ident().map(|name| name.unraw().to_string())
+            && self.closures.contains(&name)
+        {
+            self.reject(
+                Code::ClosureValue,
+                path,
+                &format!(
+                    "`{name}` is a closure: it can only be called, `{name}(a, b)`; it cannot be passed, returned, stored, \
+                     copied or compared"
+                ),
+            );
+            return;
+        }
         // `E::V` names a variant of an enum of the module (slice m9.e1).
         if path.qself.is_none() && self.variant_path(&path.path).is_some() {
             return;
@@ -4704,10 +5218,13 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_closure(&mut self, expression: &'ast syn::ExprClosure) {
+        // Reached for a closure that is not the initializer of a plain `let` (that one is `visit_local`'s): an argument,
+        // a result, a field, an operand, a parenthesized initializer (slice m9.c).
         self.reject(
-            Code::Closure,
+            Code::ClosureValue,
             expression,
-            "closures are not supported in the Rust-to-Slang subset",
+            "a closure is accepted only as the initializer of a `let` (`let f = |x: f32| -> f32 { x * 2.0f32 };`) \
+             and is then called as `f(a)`: it cannot be passed, returned, stored or written where a value is expected",
         );
     }
 
@@ -4778,6 +5295,18 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 );
                 return;
             }
+            if let Some(call) = first_closure_call(&self.closures, bound) {
+                self.reject(
+                    Code::ForBoundSideEffect,
+                    call,
+                    &format!(
+                        "the bound of a `for` range calls the closure `{}`: the Slang loop evaluates its end bound before its start bound, and the dialect keeps the bounds of a loop to plain values; compute the value before the loop (`let n = {}(..); for i in 0u32..n {{ .. }}`)",
+                        call.func.to_token_stream(),
+                        call.func.to_token_stream()
+                    ),
+                );
+                return;
+            }
         }
         self.visit_expr(start);
         self.visit_expr(end);
@@ -4799,9 +5328,11 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         // An enum local lives to the end of its block: a `let` inside it that shadows an outer name is forgotten after.
         let outer = self.enum_values.clone();
         let outer_tuples = self.tuple_values.clone();
+        let outer_closures = self.closures.clone();
         visit::visit_block(self, block);
         self.enum_values = outer;
         self.tuple_values = outer_tuples;
+        self.closures = outer_closures;
     }
 
     fn visit_expr_while(&mut self, expression: &'ast syn::ExprWhile) {
@@ -5020,6 +5551,27 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 local,
                 "let-else requires control-flow lowering and is not supported yet",
             );
+            return;
+        }
+        // `let f = |x: T| -> R { .. };` (slice m9.c): the name is bound and the body is not visited here. The closure
+        // pass of `validate_function` judges the form, the names, the captures and the body as the body of a helper,
+        // once this visit found nothing else.
+        if let Some((pattern, closure)) = crate::slang::closure_binding(local) {
+            let key = pattern.ident.unraw().to_string();
+            if let syn::ReturnType::Type(_, ty) = &closure.output {
+                if let Some(name) = enum_type_name(ty, &self.methods.enums) {
+                    self.methods.enum_returns.insert(key.clone(), name);
+                }
+                if is_tuple_type(ty) {
+                    self.methods.tuple_returns.insert(key.clone());
+                }
+                if matches!(ty.as_ref(), syn::Type::Path(path) if result_payload(path).is_some()) {
+                    self.result_helpers.insert(key.clone());
+                }
+            }
+            self.enum_values.remove(&key);
+            self.tuple_values.remove(&key);
+            self.closures.insert(key);
             return;
         }
         if matches!(local.pat, syn::Pat::Ident(_))

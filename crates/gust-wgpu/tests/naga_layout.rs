@@ -552,10 +552,17 @@ impl Comparison<'_> {
                 }
                 self.compare_type(&format!("{path}[]"), element, *base);
             }
-            // An array of matrices is spelled by slangc as a struct of one member, the array (`data_<n>`).
-            (TypeLayoutKind::Array { .. }, TypeInner::Struct { members, .. })
-                if members.len() == 1
+            // An array of matrices or structs is spelled by slangc as a struct of one member, the array (`data_<n>`).
+            (TypeLayoutKind::Array { element, .. }, TypeInner::Struct { members, .. })
+                if matches!(
+                    element.kind,
+                    TypeLayoutKind::Matrix { .. } | TypeLayoutKind::Struct(_)
+                ) && members.len() == 1
                     && members[0].offset == 0
+                    && members[0]
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| name.starts_with("data"))
                     && matches!(
                         self.module.types[members[0].ty].inner,
                         TypeInner::Array { .. }
@@ -903,6 +910,15 @@ struct Job {
     source: Source,
 }
 
+/// Whether a layout is an array or holds one in a field, at any depth (the kernels whose reflection the helper cross-checks).
+fn holds_array(layout: &TypeLayout) -> bool {
+    match &layout.kind {
+        TypeLayoutKind::Array { .. } => true,
+        TypeLayoutKind::Struct(fields) => fields.iter().any(|field| holds_array(&field.ty)),
+        _ => false,
+    }
+}
+
 impl Job {
     fn compile(&self) -> Result<String, String> {
         match &self.source {
@@ -920,10 +936,15 @@ impl Job {
             }
             Source::Helper(kernel) => reflect::compile_reflected(kernel, Target::Wgsl)
                 .and_then(|compiled| {
-                    // D17 (plan 3.3): the helper's own reflection of a kernel with a texture, a sampler or a fragment entry agrees with the
+                    // D17 (plan 3.3): the helper's own reflection of a kernel with a texture, a sampler, a fragment entry or an array (fix round 1 of m9.r2a, S3) agrees with the
                     // descriptor the macro wrote (class and dimension of a sampled texture, exact format of a storage
                     // one, the sampler's slot).
                     if kernel.shape == Shape::Pixel
+                        || kernel.parameters.iter().any(|parameter| {
+                            parameter
+                                .resource_layout
+                                .is_some_and(|layout| holds_array(&layout.element))
+                        })
                         || kernel.parameters.iter().any(|parameter| {
                             matches!(parameter.kind, ParameterKind::Texture | ParameterKind::Sampler)
                         })

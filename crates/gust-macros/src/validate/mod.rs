@@ -1716,7 +1716,7 @@ fn check_array_layout(stage: &dyn StageProfile, items: &[syn::Item]) -> syn::Res
             return Err(diagnostics::error(
                 Code::ArrayInUniform,
                 array,
-                "an array is not part of a uniform: a constant buffer rounds the stride of an array up to 16 (std140), which no Rust array matches, and arrays are storage-buffer types in this release; put the array in a storage buffer (`StructuredBuffer<[T; N]>`), or pass its elements as fields",
+                "an array is not part of a uniform: a constant buffer lays an array out with std140 rules, which no `GpuPod` array promises, and arrays are storage-buffer types in this release; put the array in a storage buffer (`StructuredBuffer<[T; N]>`), or pass its elements as fields",
             ));
         }
     }
@@ -1738,7 +1738,7 @@ fn check_array_layout(stage: &dyn StageProfile, items: &[syn::Item]) -> syn::Res
                     Code::ArrayInUniform,
                     array,
                     format!(
-                        "`{}` is reached from a uniform parameter, and an array is not part of a uniform: a constant buffer rounds the stride of an array up to 16 (std140), which no Rust array matches; keep the array in a struct that only storage buffers use, or give the uniform one field per element",
+                        "`{}` is reached from a uniform parameter, and an array is not part of a uniform: a constant buffer lays an array out with std140 rules, which no `GpuPod` array promises; keep the array in a struct that only storage buffers use, or give the uniform one field per element",
                         item.ident
                     ),
                 ));
@@ -4323,6 +4323,19 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
             )
         {
             let name = call.receiver.to_token_stream().to_string();
+            // The emitter writes the constant `N` and drops the receiver, so a receiver that runs code (a call or a
+            // method call, anywhere in its index or base) would run on the CPU twin and not on the GPU: refuse it
+            // (fix round 1 of m9.r2a, M1). E0306 because the receiver is not one the length can be read from.
+            if receiver.is_none() && len_receiver_runs_code(&call.receiver) {
+                self.reject(
+                    Code::LenReceiver,
+                    call,
+                    &format!(
+                        "`{name}.len()` is the constant length of the array, so the call inside `{name}` would not run on the GPU: bind the element to a local first (`let e = ..; e.len()`)"
+                    ),
+                );
+                return;
+            }
             if receiver.is_none() {
                 self.visit_expr(&call.receiver);
             }
@@ -5096,6 +5109,26 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 }
 
+/// Whether evaluating `expr` can run code (a call, a method call, or any form this check does not know): the receiver
+/// of an array `.len()` that does so is refused, because the emitter replaces `.len()` by a constant (M1, fix round 1 of
+/// m9.r2a). Names, literals, fields, indexes and plain arithmetic do not.
+fn len_receiver_runs_code(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Path(_) | syn::Expr::Lit(_) => false,
+        syn::Expr::Paren(inner) => len_receiver_runs_code(&inner.expr),
+        syn::Expr::Group(inner) => len_receiver_runs_code(&inner.expr),
+        syn::Expr::Field(field) => len_receiver_runs_code(&field.base),
+        syn::Expr::Index(index) => {
+            len_receiver_runs_code(&index.expr) || len_receiver_runs_code(&index.index)
+        }
+        syn::Expr::Cast(cast) => len_receiver_runs_code(&cast.expr),
+        syn::Expr::Unary(unary) => len_receiver_runs_code(&unary.expr),
+        syn::Expr::Binary(binary) => {
+            len_receiver_runs_code(&binary.left) || len_receiver_runs_code(&binary.right)
+        }
+        _ => true,
+    }
+}
 #[cfg(test)]
 mod tests {
     use crate::diagnostics::testing::{assert_code, assert_codes, codes_of_result};

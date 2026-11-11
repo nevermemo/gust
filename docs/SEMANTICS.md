@@ -1449,7 +1449,7 @@ in `crates/gust-macros/src/tests/regression.rs`.
 **Arrays in structs and storage (m9.r2a, D159).** A struct field `a: [T; N]` lowers to `T a[N];` and a buffer element
 `RWStructuredBuffer<[T; N]>` to `RWStructuredBuffer<T[N]>`. `N` is in the `GpuPod` set (1 to 32 and the powers of two from
 64 to 4096; another length is `GUST-E0216`) and `T` is a scalar, a 2- or 4-wide vector, `Mat2`, `Mat4` or a struct of the
-module (`Vec3`, `IVec3`, `UVec3` and `Mat3` are `GUST-E0214`; a nested array or non-value is `GUST-E0217`). The places
+module (`Vec3`, `UVec3` and `Mat3` are `GUST-E0214`; a nested array or non-value is `GUST-E0217`). The places
 `els[i].a[j]`, `cells[i][j]`, `els[i].a`, `cells[i]`, `s.a = t`, `let t: [T; N] = els[i].a;`, a literal for a field in a
 struct literal and `.len()` of a field or an element (its constant `N`) follow the rules above; `[e; N]` is not a struct
 field value (`GUST-E0811`). A struct with an array field must not leave implicit padding (`GUST-E0208`, the size of a
@@ -1460,7 +1460,11 @@ The `GUST-E0421` rule covers every indexed place, field arrays of storage elemen
 (`rows[c.n].a[1] = c.next()`): Slang 2026.21 reads the index first. The order cases that match Rust and are accepted are
 pinned by the GPU test: `m.ring[1] += m.bump()` (call first), `m.ring[1] = m.ring[1] + m.bump()` (left operand first),
 `m.ring = [m.bump(), ..]`, `[m.ring[0], m.bump(), m.ring[1], m.bump()]` and `f(m.ring[1], m.bump())`.
-Limitations: `==` and `!=` on array fields are not diagnosed by GUST and fail in `slangc`; an out-of-range dynamic index
-on a stored array is not checked (the CPU twin panics, the GPU clamps or reads garbage by the target's rules, the same as
-a buffer index). Tests: `crates/gust-wgpu/tests/m9_arrays_storage.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257) and the
-`naga_layout` table.
+Limitations: `==`, `!=` and the orderings on array fields and buffer elements are refused (`GUST-E0811`), as on local
+arrays. `.len()` of a field or element whose receiver contains a call is refused (`GUST-E0306`): the emitter writes the
+constant and would drop the call. An out-of-range dynamic index on a stored array is not checked: the CPU twin panics, and
+on the GPU the access clamps, reads zero or drops the store by the target's rules (a constant-sized inner array is not
+measured; KM-11 measured the runtime-sized buffer level). Array validation runs before struct validation, so a field
+`Option<[u32; 33]>` reports `GUST-E0216` before the `Option` refusal. Kernels with a stored array do not yet build through
+the precompiled and native path (`cargo gust build`): cargo-gust's layout fill rejects the `array` kind, a follow-up. Tests:
+`crates/gust-wgpu/tests/m9_arrays_storage.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257) and the `naga_layout` table.

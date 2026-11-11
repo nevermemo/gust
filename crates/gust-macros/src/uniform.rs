@@ -96,6 +96,20 @@ fn struct_name(ty: &syn::Type, structs: &HashMap<String, &syn::ItemStruct>) -> O
     structs.contains_key(&name).then_some(name)
 }
 
+/// [`struct_name`] looking through arrays (`[L; N]`, nested too): the struct a resource element or a field holds a run
+/// of. A struct used as `Uniform<L>` and as `[L; N]` in storage is one struct in two layouts (fix round 1 of m9.r2a, S2).
+fn reached_struct_name(
+    ty: &syn::Type,
+    structs: &HashMap<String, &syn::ItemStruct>,
+) -> Option<String> {
+    match ty {
+        syn::Type::Array(array) => reached_struct_name(&array.elem, structs),
+        syn::Type::Paren(inner) => reached_struct_name(&inner.elem, structs),
+        syn::Type::Group(inner) => reached_struct_name(&inner.elem, structs),
+        _ => struct_name(ty, structs),
+    }
+}
+
 /// `roots` and every module struct reachable from them through fields.
 fn close_over_fields(
     roots: impl IntoIterator<Item = String>,
@@ -115,7 +129,7 @@ fn close_over_fields(
                 fields
                     .named
                     .iter()
-                    .filter_map(|field| struct_name(&field.ty, structs)),
+                    .filter_map(|field| reached_struct_name(&field.ty, structs)),
             );
         }
     }
@@ -137,7 +151,7 @@ pub(crate) fn reach(stage: &dyn StageProfile, items: &[syn::Item]) -> syn::Resul
         resources
             .iter()
             .filter(|resource| (resource.flavor == ParameterFlavor::Uniform) == uniform)
-            .filter_map(|resource| struct_name(resource.element, &structs))
+            .filter_map(|resource| reached_struct_name(resource.element, &structs))
             .collect::<Vec<_>>()
     };
     Ok(Reach {

@@ -441,7 +441,7 @@ Decision: D158 (M9 plan 2.3, slice m9.t).
 
 ### GUST-E0214 stored array of a three-wide element
 
-A stored array (a struct field or the element of a buffer) takes a scalar, a 2- or 4-wide vector, `Mat2`, `Mat4` or a struct of the module. `Vec3`, `IVec3`, `UVec3` and `Mat3` are refused as its element: their stride (16, or 48 for `Mat3`) differs from their size (12, or 36), so the array would not be the tight run of elements a `GpuPod` array promises (D17, the `ELEMENT_OK` rule of `[T; N]`). A local array of a 3-wide type is a value and stays accepted.
+A stored array (a struct field or the element of a buffer) takes a scalar, a 2- or 4-wide vector, `Mat2`, `Mat4` or a struct of the module. `Vec3`, `UVec3` and `Mat3` are refused as its element: their stride (16, or 48 for `Mat3`) differs from their size (12, or 36), so the array would not be the tight run of elements a `GpuPod` array promises (D17, the `ELEMENT_OK` rule of `[T; N]`). A local array of a 3-wide type is a value and stays accepted.
 Reached through `#[gpu]`.
 Rejected: `struct S { c: [Vec3; 4] }`, `RWStructuredBuffer<[Mat3; 2]>`.
 Write instead: `Vec4` with an unused lane, or one array per component.
@@ -460,9 +460,9 @@ Decision: D159 (M9 plan 2.4, slice m9.r2a).
 ### GUST-E0216 array length
 
 An array type `[T; N]` and a repeat `[e; N]` take `N` as an integer literal above zero, so the size is known when the macro runs. An array literal has at least one element.
-A stored array (a struct field or the element of a buffer) has a length the `GpuPod` impls cover: 1 to 32 and 64, 128, 256, 512, 1024, 2048 and 4096; any other length is refused there (slice m9.r2a).
+A stored array (a struct field or the element of a buffer) has a length the `GpuPod` impls cover: 1 to 32 and 64, 128, 256, 512, 1024, 2048 and 4096; any other length is refused there (slice m9.r2a). Array validation runs before struct validation, so a field `Option<[u32; 33]>` reports this code before the `Option` refusal.
 Reached through `#[gpu]`.
-Rejected: `[u32; 0]`, `[u32; N]` with a `const`, `[u32; 2 + 2]`, `[e; 0]`, `[e; M]`, `[]`., and as a stored array `struct S { a: [u32; 33] }`, `RWStructuredBuffer<[u32; 100]>`.
+Rejected: `[u32; 0]`, `[u32; N]` with a `const`, `[u32; 2 + 2]`, `[e; 0]`, `[e; M]`, `[]`; and as a stored array `struct S { a: [u32; 33] }`, `RWStructuredBuffer<[u32; 100]>`.
 Write instead: a literal length, `[u32; 4]`, and for a stored array a length of the set.
 Fixture: `tests/ui/array-zero-len`, `tests/ui/array-const-len`, `tests/ui/array-field-len` and `tests/ui/array-buffer-len` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D159 (M9 plan 2.4, slice m9.r1).
@@ -1780,7 +1780,7 @@ Decision: D02.
 
 An expression form the emitter has no lowering for.
 Reached through `#[gpu]`.
-Rejected: a tuple expression `(1u32, 2u32)`, an array repeat `[0u32; 4]`, a block used as a value `{ 1u32 }`, the dereference `*x` (`*self` included: no value of the dialect is a reference, so write `self.field` or use a local copy).
+Rejected: a tuple expression `(1u32, 2u32)`, an array repeat `[0u32; 4]`, `==`, `!=` and the orderings on arrays (locals, parameters, array fields and buffer elements; compare the elements), a block used as a value `{ 1u32 }`, the dereference `*x` (`*self` included: no value of the dialect is a reference, so write `self.field` or use a local copy).
 Write instead: the supported expression forms listed in the validator codes above.
 Decision: D02.
 

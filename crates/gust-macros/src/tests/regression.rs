@@ -8232,7 +8232,7 @@ fn an_atomic_on_an_element_of_an_array_buffer_is_refused() {
 }
 
 #[test]
-fn comparing_array_fields_reaches_slangc_and_a_local_array_is_not_confused_with_a_buffer() {
+fn a_buffer_parameter_named_like_an_array_local_keeps_both_meanings() {
     // A buffer parameter named like an array local keeps both meanings: `cells.len()` is the buffer, `a.len()` the array.
     let source = translate(&with_buffers(
         "",
@@ -8257,4 +8257,93 @@ fn arrays_storage_golden() {
         "arrays_storage.slang",
         &include_str!("../../../../tests/fixtures/arrays_storage.slang").replace("\r\n", "\n"),
     );
+}
+
+const CTR: &str = "pub struct Ctr { pub n: u32 } \
+    impl Ctr { fn next(&mut self) -> u32 { self.n += 1u32; self.n } \
+    fn take_bag(&mut self) -> Bag { self.n += 1u32; let b = Bag { items: [0u32, 0u32, 0u32, 0u32], gains: [0.0f32, 0.0f32], count: 0u32, total: 0u32 }; b } }";
+
+#[test]
+fn a_len_receiver_that_runs_code_is_refused_gust_e0306() {
+    // M1 of fix round 1: the emitter writes the constant and drops the receiver, so a call in it would run on the CPU
+    // twin and not on the GPU.
+    for expression in [
+        "bags[c.next() as usize].items.len() as u32",
+        "cells[c.next() as usize].len() as u32",
+        "c.take_bag().items.len() as u32",
+        "bags[(c.next() + 1u32) as usize].items.len() as u32",
+    ] {
+        assert_rejected(
+            &with_buffers(
+                &format!("{BAG} {CTR}"),
+                "mut bags: RWStructuredBuffer<Bag>, mut cells: RWStructuredBuffer<[u32; 4]>, mut o: RWStructuredBuffer<uint>",
+                &format!("let mut c = Ctr {{ n: 0u32 }}; o[id.x] = c.n + {expression};"),
+            ),
+            Code::LenReceiver,
+        );
+    }
+    // Pure index arithmetic keeps the constant and stays accepted.
+    let source = translate(&with_buffers(
+        &format!("{BAG} {CTR}"),
+        "mut bags: RWStructuredBuffer<Bag>, mut cells: RWStructuredBuffer<[u32; 4]>, mut o: RWStructuredBuffer<uint>",
+        "let i = id.x; o[i] = bags[i + 1u32].items.len() as u32 + cells[(i * 2u32) as usize].len() as u32;",
+    ))
+    .unwrap();
+    assert!(source.contains("(uint(4) + uint(4))"), "{source}");
+}
+
+#[test]
+fn comparing_arrays_in_fields_and_elements_is_gust_e0811() {
+    // S1 of fix round 1: refused before slangc, as for a local array.
+    for condition in [
+        "bags[i].items == bags[j].items",
+        "bags[i].items != bags[j].items",
+        "bags[i].items < bags[j].items",
+        "cells[i] == cells[j]",
+        "cells[i] >= cells[j]",
+    ] {
+        assert_rejected(
+            &with_buffers(
+                BAG,
+                "mut bags: RWStructuredBuffer<Bag>, mut cells: RWStructuredBuffer<[u32; 4]>, mut o: RWStructuredBuffer<uint>",
+                &format!("let i = id.x; let j = id.x + 1u32; if {condition} {{ o[i] = 1u32; }}"),
+            ),
+            Code::UnsupportedExpression,
+        );
+    }
+}
+
+#[test]
+fn a_struct_used_as_a_uniform_and_in_a_stored_array_is_gust_e0207() {
+    // S2 of fix round 1: the reach looks through `[L; N]`.
+    for (items, parameters) in [
+        (
+            "pub struct L { pub a: Vec4 }",
+            "u: Uniform<L>, mut cells: RWStructuredBuffer<[L; 2]>",
+        ),
+        (
+            "pub struct L { pub a: Vec4 } pub struct H { pub ls: [L; 2] }",
+            "u: Uniform<L>, mut hs: RWStructuredBuffer<H>",
+        ),
+        (
+            "pub struct L { pub a: Vec4 } pub struct H { pub ls: [L; 2] }",
+            "u: Uniform<L>, mut hs: RWStructuredBuffer<[H; 2]>",
+        ),
+    ] {
+        assert_rejected(
+            &with_buffers(
+                items,
+                &format!("{parameters}, mut o: RWStructuredBuffer<uint>"),
+                "o[id.x] = 1u32;",
+            ),
+            Code::UniformAndStorageStruct,
+        );
+    }
+    // Separate structs for the two uses are fine.
+    translate(&with_buffers(
+        "pub struct L { pub a: Vec4 } pub struct M { pub a: Vec4 }",
+        "u: Uniform<L>, mut cells: RWStructuredBuffer<[M; 2]>, mut o: RWStructuredBuffer<uint>",
+        "o[id.x] = 1u32;",
+    ))
+    .unwrap();
 }

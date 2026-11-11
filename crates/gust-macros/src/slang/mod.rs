@@ -348,15 +348,6 @@ fn array_place_length_of(place: &syn::Expr) -> Option<u32> {
     })
 }
 
-/// The length of the array a name holds, when every binding of the name in the function agrees.
-fn array_length_of(expression: &syn::Expr) -> Option<u32> {
-    let syn::Expr::Path(path) = expression else {
-        return None;
-    };
-    let name = path.path.get_ident()?.unraw().to_string();
-    ARRAY_LENGTHS.with(|cell| cell.borrow().get(&name).copied().flatten())
-}
-
 /// How often each identifier occurs in the tokens of a module, after raw stripping (`r#Mat4` counts as `Mat4`).
 fn count_identifiers(
     stream: proc_macro2::TokenStream,
@@ -2082,8 +2073,8 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
                     | syn::BinOp::Le(_)
                     | syn::BinOp::Gt(_)
                     | syn::BinOp::Ge(_)
-            ) && (array_length_of(unparenthesized_expr(&binary.left)).is_some()
-                || array_length_of(unparenthesized_expr(&binary.right)).is_some()) =>
+            ) && (array_place_length_of(unparenthesized_expr(&binary.left)).is_some()
+                || array_place_length_of(unparenthesized_expr(&binary.right)).is_some()) =>
         {
             return Err(diagnostics::error(
                 Code::UnsupportedExpression,

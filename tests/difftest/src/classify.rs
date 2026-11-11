@@ -15,7 +15,7 @@ use crate::runsrc::Planned;
 /// The four discard classes of R1-4 and the generator's two extra reasons, in report order. The `domain` class is the
 /// integer labels (`overflow`, `division-by-zero`, `min-over-minus-one`, `shift-amount`, `index`) plus `float-domain`
 /// plus `static`.
-pub const CLASSES: [&str; 8] = [
+pub const CLASSES: [&str; 9] = [
     "domain",
     "comparison-overlap",
     "unboundable",
@@ -24,6 +24,7 @@ pub const CLASSES: [&str; 8] = [
     "no-aggregate",
     "no-call",
     "no-match",
+    "no-value",
 ];
 
 /// The class of a discard reason (a `Violation::label`, `static`, `no-input-read`, `no-aggregate` or `no-call`).
@@ -38,6 +39,7 @@ pub fn discard_class(reason: &str) -> &'static str {
         "no-aggregate" => "no-aggregate",
         "no-call" => "no-call",
         "no-match" => "no-match",
+        "no-value" => "no-value",
         // A label this table does not know is a new violation: it must be classified here on purpose.
         other => panic!("discard reason {other:?} has no class"),
     }
@@ -55,7 +57,7 @@ pub fn element_text(ty: Ty, bits: u32) -> String {
         Ty::F32 => format!("{:?} (0x{bits:08x})", f32::from_bits(bits)),
         Ty::I32 => format!("{}", bits as i32),
         Ty::Bool | Ty::U32 => format!("{bits}"),
-        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) => {
+        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) | Ty::Tuple(_) => {
             unreachable!("the output buffer is scalar")
         }
     }
@@ -633,6 +635,7 @@ mod tests {
             "no-aggregate",
             "no-call",
             "no-match",
+            "no-value",
         ] {
             assert!(CLASSES.contains(&discard_class(reason)));
         }

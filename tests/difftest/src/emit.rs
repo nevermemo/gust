@@ -12,7 +12,9 @@ use std::fmt::Write as _;
 use std::io;
 use std::path::Path;
 
-use crate::ast::{COMPONENT_LETTERS, Expr, FnDef, Pat, Place, Program, Recv, Root, Stmt, Ty, UnOp};
+use crate::ast::{
+    Arm, COMPONENT_LETTERS, Expr, FnDef, Pat, Place, Program, Recv, Root, Stmt, Ty, UnOp,
+};
 use crate::generator::DIFFTEST_FORMAT;
 use crate::shapes::{PIXEL_KERNEL, ShapePlan};
 
@@ -115,7 +117,7 @@ fn literal(ty: Ty, bits: u32) -> String {
                 format!("{value}i32")
             }
         }
-        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) => {
+        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) | Ty::Tuple(_) => {
             unreachable!("{} has no literal", ty.name())
         }
     }
@@ -127,8 +129,13 @@ fn place_text(place: &Place) -> String {
         Root::Var(var) => format!("v{var}"),
         Root::SelfV => "self".to_owned(),
     };
-    for k in &place.path {
-        text.push_str(&format!(".f{k}"));
+    for (n, k) in place.path.iter().enumerate() {
+        // The first step out of a tuple is its element (`.0`); every other step is a struct field (`.f0`).
+        if n == 0 && place.root_ty.is_tuple() {
+            text.push_str(&format!(".{k}"));
+        } else {
+            text.push_str(&format!(".f{k}"));
+        }
     }
     text
 }
@@ -165,6 +172,8 @@ fn is_atom(expr: &Expr) -> bool {
         | Expr::Transpose { .. } => true,
         // A field path or a call is a postfix, a struct literal a braced atom (it never sits under an operator).
         Expr::Read { .. } | Expr::Call { .. } | Expr::StructLit { .. } => true,
+        // A tuple literal is parenthesised, `f().1` a postfix.
+        Expr::Tuple { .. } | Expr::TupleField { .. } => true,
         Expr::Un { .. }
         | Expr::Bin { .. }
         | Expr::Cast { .. }
@@ -233,6 +242,11 @@ pub fn emit_expr(expr: &Expr) -> String {
             args,
             ..
         } => call_text(*f, *owner, recv, args),
+        Expr::Tuple { elems, .. } => {
+            let elems: Vec<String> = elems.iter().map(emit_expr).collect();
+            format!("({})", elems.join(", "))
+        }
+        Expr::TupleField { e, index } => format!("{}.{index}", operand(e)),
         Expr::StructLit { ty, fields, order } => {
             let fields: Vec<String> = fields
                 .iter()
@@ -257,9 +271,46 @@ fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
             let _ = writeln!(
                 out,
                 "{pad}{keyword} v{var}: {} = {};",
-                ty.name(),
+                ty.text(),
                 emit_expr(init)
             );
+        }
+        Stmt::LetTuple {
+            vars,
+            ty,
+            annotate,
+            init,
+        } => {
+            let names: Vec<String> = vars
+                .iter()
+                .map(|&(var, mutable)| format!("{}v{var}", if mutable { "mut " } else { "" }))
+                .collect();
+            let annotation = if *annotate {
+                format!(": {}", ty.text())
+            } else {
+                String::new()
+            };
+            let _ = writeln!(
+                out,
+                "{pad}let ({}){annotation} = {};",
+                names.join(", "),
+                emit_expr(init)
+            );
+        }
+        Stmt::LetMatch {
+            var,
+            ty,
+            mutable,
+            scrut,
+            arms,
+        } => {
+            let keyword = if *mutable { "let mut" } else { "let" };
+            let head = format!("{keyword} v{var}: {} = ", ty.text());
+            emit_value_match(scrut, arms, level, &head, ";", out);
+        }
+        Stmt::TailMatch { scrut, arms } => emit_value_match(scrut, arms, level, "", "", out),
+        Stmt::Yield { value } => {
+            let _ = writeln!(out, "{pad}{}", emit_expr(value));
         }
         Stmt::Assign { var, value } => {
             let _ = writeln!(out, "{pad}v{var} = {};", emit_expr(value));
@@ -308,21 +359,8 @@ fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
         }
         Stmt::Match { scrut, arms } => {
             let _ = writeln!(out, "{pad}match {} {{", emit_expr(scrut));
-            let ty = scrut.ty();
             for arm in arms {
-                let pattern = match &arm.pat {
-                    Pat::Wild => "_".to_owned(),
-                    Pat::Variants(variants) => {
-                        let Ty::Enum(e) = ty else {
-                            unreachable!("a match scrutinee is an enum")
-                        };
-                        variants
-                            .iter()
-                            .map(|v| format!("E{e}::V{v}"))
-                            .collect::<Vec<_>>()
-                            .join(" | ")
-                    }
-                };
+                let pattern = pattern_text(&arm.pat, scrut.ty());
                 let _ = writeln!(out, "{pad}{INDENT}{pattern} => {{");
                 emit_block(&arm.body, level + 2, out);
                 let _ = writeln!(out, "{pad}{INDENT}}}");
@@ -330,6 +368,65 @@ fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
             let _ = writeln!(out, "{pad}}}");
         }
     }
+}
+
+/// The text of a pattern against a scrutinee of type `ty`.
+fn pattern_text(pat: &Pat, ty: Ty) -> String {
+    match pat {
+        Pat::Wild => "_".to_owned(),
+        Pat::Variants(variants) => {
+            let Ty::Enum(e) = ty else {
+                unreachable!("a variant pattern needs an enum scrutinee")
+            };
+            variants
+                .iter()
+                .map(|v| format!("E{e}::V{v}"))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        }
+        Pat::Lits(lits) => lits
+            .iter()
+            .map(|&(bits, suffixed)| match (ty, suffixed) {
+                (Ty::I32, true) => literal(Ty::I32, bits),
+                (Ty::I32, false) => (bits as i32).to_string(),
+                (_, true) => literal(Ty::U32, bits),
+                (_, false) => bits.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join(" | "),
+    }
+}
+
+/// A value `match`: `head` (`let v3: u32 = `, or nothing for an arm's value) `match scrut { arms }` `tail` (`;`).
+/// An arm that is one `Yield` is written `pat => value,` and one that is a nested value `match` is written inline.
+fn emit_value_match(
+    scrut: &Expr,
+    arms: &[Arm],
+    level: usize,
+    head: &str,
+    tail: &str,
+    out: &mut String,
+) {
+    let pad = INDENT.repeat(level);
+    let _ = writeln!(out, "{pad}{head}match {} {{", emit_expr(scrut));
+    let inner = INDENT.repeat(level + 1);
+    for arm in arms {
+        let pattern = pattern_text(&arm.pat, scrut.ty());
+        match arm.body.as_slice() {
+            [Stmt::Yield { value }] => {
+                let _ = writeln!(out, "{inner}{pattern} => {},", emit_expr(value));
+            }
+            [Stmt::TailMatch { scrut, arms }] => {
+                emit_value_match(scrut, arms, level + 1, &format!("{pattern} => "), ",", out);
+            }
+            body => {
+                let _ = writeln!(out, "{inner}{pattern} => {{");
+                emit_block(body, level + 2, out);
+                let _ = writeln!(out, "{inner}}}");
+            }
+        }
+    }
+    let _ = writeln!(out, "{pad}}}{tail}");
 }
 
 fn emit_block(stmts: &[Stmt], level: usize, out: &mut String) {
@@ -378,11 +475,11 @@ fn signature(def: &FnDef) -> String {
         Recv::Value => params.push("self".to_owned()),
     }
     for (var, ty) in &def.params {
-        params.push(format!("v{var}: {}", ty.decl_name()));
+        params.push(format!("v{var}: {}", ty.decl_text()));
     }
     let ret = def
         .ret
-        .map_or(String::new(), |ty| format!(" -> {}", ty.decl_name()));
+        .map_or(String::new(), |ty| format!(" -> {}", ty.decl_text()));
     format!("({}){ret}", params.join(", "))
 }
 
@@ -394,7 +491,9 @@ fn emit_allow(def: &FnDef, pad: &str, out: &mut String) {
             Stmt::Return { .. } => true,
             Stmt::If { then, els, .. } => has_return(then) || has_return(els),
             Stmt::For { body, .. } => has_return(body),
-            Stmt::Match { arms, .. } => arms.iter().any(|arm| has_return(&arm.body)),
+            Stmt::Match { arms, .. }
+            | Stmt::LetMatch { arms, .. }
+            | Stmt::TailMatch { arms, .. } => arms.iter().any(|arm| has_return(&arm.body)),
             _ => false,
         })
     }

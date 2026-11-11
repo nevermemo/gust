@@ -81,8 +81,9 @@ pub fn corpus_text(first: u64, last: u64) -> Result<String, String> {
 mod tests {
     use super::*;
     use crate::generator::{
-        ENUM_ATTEMPT_BASE, METHOD_ATTEMPT_BASE, METHOD_END, PROGRAMS_PER_SEED,
-        SCALAR_PROGRAMS_PER_SEED, Space, VECTOR_ATTEMPT_BASE, VECTOR_END, generate_batch_in,
+        ENUM_ATTEMPT_BASE, ENUM_END, METHOD_ATTEMPT_BASE, METHOD_END, PROGRAMS_PER_SEED,
+        SCALAR_PROGRAMS_PER_SEED, Space, VALUE_ATTEMPT_BASE, VECTOR_ATTEMPT_BASE, VECTOR_END,
+        generate_batch_in,
     };
 
     #[test]
@@ -182,11 +183,37 @@ mod tests {
         assert_eq!(hashes(Space::Enum, ENUM_ATTEMPT_BASE), enums, "enum");
     }
 
-    /// A batch is the first seven programs of the float space, five of the vector space, one of the method space and
-    /// three of the enum space (format 9): the scalar decoding of every seed is byte for byte what format 5 wrote, and
-    /// so is the vector decoding of format 6; only the cut of the batch is new.
+    /// Format 10 (m9.d1c): the value space of seeds 1 to 4 (16 programs each, as `generate_batch_in` keeps them) decodes
+    /// to these programs. The float, vector, method and enum spaces are not in this pin: their format 3 and format 9
+    /// pins above still hold (the value forms sit behind a flag that only the value space sets).
     #[test]
-    fn a_batch_is_seven_float_programs_then_five_vector_one_method_and_three_enum_programs() {
+    fn the_value_space_holds_the_format_10_programs_of_the_first_seeds() {
+        let hashes: Vec<(u64, u64)> = (1..=4)
+            .map(|seed| {
+                let batch = generate_batch_in(Space::Value, seed).unwrap();
+                assert!(
+                    batch
+                        .programs
+                        .iter()
+                        .all(|p| p.attempt >= VALUE_ATTEMPT_BASE)
+                );
+                (seed, batch_hash(&batch.programs))
+            })
+            .collect();
+        let pinned: Vec<(u64, u64)> = vec![
+            (1, 4556502341734226730),
+            (2, 13035520527677460174),
+            (3, 5938680198507040942),
+            (4, 762944537114388028),
+        ];
+        assert_eq!(hashes, pinned, "value");
+    }
+
+    /// A batch is the first six programs of the float space, five of the vector space, one of the method space, two of
+    /// the enum space and two of the value space (format 10): the scalar decoding of every seed is byte for byte what
+    /// format 5 wrote, and so is the vector decoding of format 6; only the cut of the batch is new.
+    #[test]
+    fn a_batch_is_six_float_programs_then_five_vector_one_method_two_enum_and_two_value_programs() {
         for seed in 1..=8 {
             let batch = generate_batch(seed).unwrap();
             let float = generate_batch_in(Space::Float, seed).unwrap();
@@ -229,9 +256,14 @@ mod tests {
                 assert!(program.attempt < ENUM_ATTEMPT_BASE, "seed {seed}");
                 assert!(program.methods.enums.is_empty() && !program.has_match());
             }
-            for program in &batch.programs[METHOD_END..] {
+            for program in &batch.programs[METHOD_END..ENUM_END] {
                 assert!(program.attempt >= ENUM_ATTEMPT_BASE, "seed {seed}");
+                assert!(program.attempt < VALUE_ATTEMPT_BASE, "seed {seed}");
                 assert!(program.has_match() && !program.methods.enums.is_empty());
+            }
+            for program in &batch.programs[ENUM_END..] {
+                assert!(program.attempt >= VALUE_ATTEMPT_BASE, "seed {seed}");
+                assert!(program.has_value_form() && !program.methods.enums.is_empty());
             }
         }
     }

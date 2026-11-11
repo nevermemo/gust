@@ -10,8 +10,9 @@ use crate::ast::{
 };
 use crate::emit::emit_module;
 use crate::generator::{
-    ENUM_ATTEMPT_BASE, ENUM_PROGRAMS_PER_SEED, METHOD_ATTEMPT_BASE, METHOD_END, PROGRAMS_PER_SEED,
-    Space, VECTOR_END, generate_batch, generate_batch_in, space_of_attempt,
+    ENUM_ATTEMPT_BASE, ENUM_END, ENUM_PROGRAMS_PER_SEED, METHOD_ATTEMPT_BASE, METHOD_END,
+    PROGRAMS_PER_SEED, SCALAR_PROGRAMS_PER_SEED, Space, VALUE_ATTEMPT_BASE, VECTOR_END,
+    generate_batch, generate_batch_in, space_of_attempt,
 };
 use crate::interp::{Mutant, env_mutant, run, run_covered, run_mutant, static_violation};
 
@@ -437,29 +438,33 @@ fn the_emitted_text_of_the_hand_program_has_the_enum_forms() {
 }
 
 #[test]
-fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_seven_five_one_three() {
+fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_six_five_one_two_two() {
     assert_eq!(space_of_attempt(METHOD_ATTEMPT_BASE), Space::Method);
     assert_eq!(space_of_attempt(ENUM_ATTEMPT_BASE - 1), Space::Method);
     assert_eq!(space_of_attempt(ENUM_ATTEMPT_BASE), Space::Enum);
-    assert_eq!(ENUM_PROGRAMS_PER_SEED, 3);
+    assert_eq!(space_of_attempt(VALUE_ATTEMPT_BASE - 1), Space::Enum);
+    assert_eq!(space_of_attempt(VALUE_ATTEMPT_BASE), Space::Value);
+    assert_eq!(ENUM_PROGRAMS_PER_SEED, 2);
     for seed in 1..=3 {
         let batch = generate_batch(seed).unwrap();
         assert_eq!(batch.programs.len(), PROGRAMS_PER_SEED);
         for (k, program) in batch.programs.iter().enumerate() {
             let space = space_of_attempt(program.attempt);
-            let expected = if k < 7 {
+            let expected = if k < SCALAR_PROGRAMS_PER_SEED {
                 Space::Float
             } else if k < VECTOR_END {
                 Space::Vector
             } else if k < METHOD_END {
                 Space::Method
-            } else {
+            } else if k < ENUM_END {
                 Space::Enum
+            } else {
+                Space::Value
             };
             assert_eq!(space, expected, "seed {seed} program {k}");
         }
         assert!(
-            batch.enum_attempts == 3 + batch.enum_discarded.values().sum::<u32>() as u64,
+            batch.enum_attempts == 2 + batch.enum_discarded.values().sum::<u32>() as u64,
             "seed {seed}: {} attempts, {:?}",
             batch.enum_attempts,
             batch.enum_discarded
@@ -564,7 +569,7 @@ fn enum_programs_with_a_default_rule_or_a_scrutinee_that_a_call_mutates_do_not_a
     }
 }
 
-/// The order-sensitive shapes the GPU batch itself holds: the enum programs of the 64-seed batch (three per seed) must
+/// The order-sensitive shapes the GPU batch itself holds: the enum programs of the 64-seed batch (two per seed) must
 /// write and execute each of them, not only the enum space as a whole.
 #[test]
 fn the_order_sensitive_enum_shapes_are_written_and_executed_in_the_64_seed_batch() {
@@ -572,7 +577,7 @@ fn the_order_sensitive_enum_shapes_are_written_and_executed_in_the_64_seed_batch
     let mut executed = BTreeMap::<String, u64>::new();
     for seed in 1..=64 {
         let batch = generate_batch(seed).unwrap();
-        for p in &batch.programs[METHOD_END..] {
+        for p in &batch.programs[METHOD_END..ENUM_END] {
             for (name, n) in operator_counts(p) {
                 *written.entry(name).or_default() += n;
             }

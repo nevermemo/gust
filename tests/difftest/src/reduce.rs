@@ -65,7 +65,9 @@ pub fn size(p: &Program) -> Size {
         stmts.iter().fold(0, |sum, stmt| match stmt {
             Stmt::If { then, els, .. } => sum + trip_total(then) + trip_total(els),
             Stmt::For { trips, body, .. } => sum + u64::from(*trips) + trip_total(body),
-            Stmt::Match { arms, .. } => {
+            Stmt::Match { arms, .. }
+            | Stmt::LetMatch { arms, .. }
+            | Stmt::TailMatch { arms, .. } => {
                 sum + arms.iter().map(|arm| trip_total(&arm.body)).sum::<u64>()
             }
             _ => sum,
@@ -122,10 +124,11 @@ fn weight(stmt: &Stmt) -> usize {
     1 + match stmt {
         Stmt::If { then, els, .. } => then.iter().chain(els).map(weight).sum(),
         Stmt::For { body, .. } => body.iter().map(weight).sum(),
-        Stmt::Match { arms, .. } => arms
-            .iter()
-            .map(|arm| arm.body.iter().map(weight).sum::<usize>())
-            .sum(),
+        Stmt::Match { arms, .. } | Stmt::LetMatch { arms, .. } | Stmt::TailMatch { arms, .. } => {
+            arms.iter()
+                .map(|arm| arm.body.iter().map(weight).sum::<usize>())
+                .sum()
+        }
         _ => 0,
     }
 }
@@ -166,10 +169,40 @@ fn edit(
                     })
                     .collect(),
             },
+            Stmt::LetMatch {
+                var,
+                ty,
+                mutable,
+                scrut,
+                arms,
+            } => Stmt::LetMatch {
+                var: *var,
+                ty: *ty,
+                mutable: *mutable,
+                scrut: scrut.clone(),
+                arms: edit_arms(arms, at, f),
+            },
+            Stmt::TailMatch { scrut, arms } => Stmt::TailMatch {
+                scrut: scrut.clone(),
+                arms: edit_arms(arms, at, f),
+            },
             other => other.clone(),
         });
     }
     out
+}
+
+fn edit_arms(
+    arms: &[Arm],
+    at: &mut usize,
+    f: &mut dyn FnMut(usize, &Stmt) -> Option<Vec<Stmt>>,
+) -> Vec<Arm> {
+    arms.iter()
+        .map(|arm| Arm {
+            pat: arm.pat.clone(),
+            body: edit(&arm.body, at, f),
+        })
+        .collect()
 }
 
 /// `p` with `f` applied over the statements of the kernel and then of every function body (one pre-order numbering).
@@ -194,7 +227,9 @@ fn roots_mut(stmts: &mut [Stmt], f: &mut dyn FnMut(&mut Expr)) {
             Stmt::Let { init: e, .. }
             | Stmt::Assign { value: e, .. }
             | Stmt::AssignComp { value: e, .. }
-            | Stmt::Set { value: e, .. } => f(e),
+            | Stmt::Set { value: e, .. }
+            | Stmt::LetTuple { init: e, .. }
+            | Stmt::Yield { value: e } => f(e),
             Stmt::Call { args, .. } => args.iter_mut().for_each(&mut *f),
             Stmt::If { cond, then, els } => {
                 f(cond);
@@ -203,7 +238,9 @@ fn roots_mut(stmts: &mut [Stmt], f: &mut dyn FnMut(&mut Expr)) {
             }
             Stmt::For { body, .. } => roots_mut(body, f),
             Stmt::Return { value } => f(value),
-            Stmt::Match { scrut, arms } => {
+            Stmt::Match { scrut, arms }
+            | Stmt::LetMatch { scrut, arms, .. }
+            | Stmt::TailMatch { scrut, arms } => {
                 f(scrut);
                 for arm in arms {
                     roots_mut(&mut arm.body, f);
@@ -235,7 +272,9 @@ fn stmt_calls_mut(stmts: &mut [Stmt], f: &mut dyn FnMut(&mut usize)) {
                 stmt_calls_mut(els, f);
             }
             Stmt::For { body, .. } => stmt_calls_mut(body, f),
-            Stmt::Match { arms, .. } => arms
+            Stmt::Match { arms, .. }
+            | Stmt::LetMatch { arms, .. }
+            | Stmt::TailMatch { arms, .. } => arms
                 .iter_mut()
                 .for_each(|arm| stmt_calls_mut(&mut arm.body, f)),
             _ => {}

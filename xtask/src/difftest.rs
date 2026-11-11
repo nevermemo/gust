@@ -582,11 +582,12 @@ pub(crate) struct ShapeRow {
     pub(crate) evaluations: u64,
 }
 
-/// Whether a counted operator name is a shape or a `match` construct.
+/// Whether a counted operator name is a shape, a `match` construct or (format 10) a tuple construct.
 fn is_shape_row(name: &str) -> bool {
     name.starts_with("shape ")
         || name.starts_with("match")
         || name.starts_with("enum ")
+        || name.starts_with("tuple ")
         || name == "return"
 }
 
@@ -1441,6 +1442,46 @@ mod shape_row_tests {
         );
         // A row with no counts at all is a row of zeros, not an error.
         assert_eq!(rows[1].programs_in_text + rows[1].evaluations, 0);
+    }
+
+    /// Format 10 (m9.d1c): the value `match`, integer pattern and tuple names are rows too, in report order, and the
+    /// operators of the same programs (`<< u32`, `== E0`, `!u32`) are not.
+    #[test]
+    fn the_value_match_and_tuple_names_of_format_10_are_shape_rows() {
+        let json = crate::json::parse(
+            r#"{"coverage":{"operators":[
+                {"operator":"< u32","programs_in_text":9,"programs_executing":9,"evaluations":90},
+                {"operator":"match value (typed let)","programs_in_text":4,"occurrences_in_text":7,"programs_executing":3,"evaluations":300},
+                {"operator":"match integer group arm","programs_in_text":2,"occurrences_in_text":2,"programs_executing":2,"evaluations":60},
+                {"operator":"tuple destructuring annotated","programs_in_text":3,"occurrences_in_text":4,"programs_executing":3,"evaluations":120},
+                {"operator":"tuple element set","programs_in_text":1,"occurrences_in_text":1,"programs_executing":0,"evaluations":0},
+                {"operator":"== E0","programs_in_text":1},
+                {"operator":"shape < before the last tuple element or argument","programs_in_text":5,"occurrences_in_text":8,"programs_executing":5,"evaluations":40}
+            ]}}"#,
+        )
+        .unwrap();
+        let rows = parse_shape_rows(&json).unwrap();
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "match value (typed let)",
+                "match integer group arm",
+                "tuple destructuring annotated",
+                "tuple element set",
+                "shape < before the last tuple element or argument"
+            ]
+        );
+        // A construct that is written but never executed keeps its zero.
+        assert_eq!(
+            (
+                rows[3].programs_in_text,
+                rows[3].programs_executing,
+                rows[3].evaluations
+            ),
+            (1, 0, 0)
+        );
+        assert_eq!(rows[4].evaluations, 40);
     }
 
     #[test]

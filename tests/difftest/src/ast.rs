@@ -55,10 +55,98 @@ pub enum Ty {
     /// lives in a local, a parameter or a result of a function; it is never a field, a buffer element, a vector lane
     /// or a result type, and it comes only from a variant path, a variable or a call.
     Enum(u8),
+    /// A tuple of two to four elements (format 10, slice m9.d1c). It lives in a local, a parameter or a result; it is
+    /// never a field, a buffer element or a result type of the kernel. The type describes itself (no table), so `Ty`
+    /// stays `Copy` and the emitter needs no context to spell it.
+    Tuple(TupleTy),
+}
+
+/// An element type of a tuple: a scalar, a module struct or a module enum (format 10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Elem {
+    U32,
+    I32,
+    Bool,
+    Struct(u8),
+    Enum(u8),
+}
+
+impl Elem {
+    pub fn ty(self) -> Ty {
+        match self {
+            Elem::U32 => Ty::U32,
+            Elem::I32 => Ty::I32,
+            Elem::Bool => Ty::Bool,
+            Elem::Struct(j) => Ty::Struct(j),
+            Elem::Enum(e) => Ty::Enum(e),
+        }
+    }
+
+    /// The element kind of a type, if a tuple may hold it.
+    pub fn of(ty: Ty) -> Option<Elem> {
+        Some(match ty {
+            Ty::U32 => Elem::U32,
+            Ty::I32 => Elem::I32,
+            Ty::Bool => Elem::Bool,
+            Ty::Struct(j) => Elem::Struct(j),
+            Ty::Enum(e) => Elem::Enum(e),
+            _ => return None,
+        })
+    }
+}
+
+/// The most elements of a generated tuple, and the most scalar components its flat value holds (an `Agg`).
+pub const MAX_TUPLE: usize = 4;
+pub const MAX_TUPLE_FLAT: usize = 16;
+
+/// A tuple type: `n` elements in `e[..n]` (the rest is padding, `Elem::U32`, so derived equality is type equality).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct TupleTy {
+    pub n: u8,
+    pub e: [Elem; MAX_TUPLE],
+}
+
+impl TupleTy {
+    pub fn new(elems: &[Elem]) -> TupleTy {
+        assert!(
+            (2..=MAX_TUPLE).contains(&elems.len()),
+            "{} elements",
+            elems.len()
+        );
+        let mut e = [Elem::U32; MAX_TUPLE];
+        e[..elems.len()].copy_from_slice(elems);
+        TupleTy {
+            n: elems.len() as u8,
+            e,
+        }
+    }
+
+    pub fn elems(&self) -> &[Elem] {
+        &self.e[..usize::from(self.n)]
+    }
+
+    /// The Rust spelling: `(u32, S0, E1)`.
+    pub fn text(&self) -> String {
+        let parts: Vec<String> = self.elems().iter().map(|e| e.ty().text()).collect();
+        format!("({})", parts.join(", "))
+    }
 }
 
 impl Ty {
-    /// The Rust spelling.
+    /// The Rust spelling of any type, a tuple included (`name` is a `&'static str` and cannot spell one).
+    pub fn text(self) -> String {
+        match self {
+            Ty::Tuple(t) => t.text(),
+            other => other.name().to_owned(),
+        }
+    }
+
+    /// A tuple.
+    pub fn is_tuple(self) -> bool {
+        matches!(self, Ty::Tuple(_))
+    }
+
+    /// The Rust spelling of a scalar, vector, matrix, struct or enum; a tuple has `text`.
     pub fn name(self) -> &'static str {
         match self {
             Ty::U32 => "u32",
@@ -78,6 +166,7 @@ impl Ty {
             Ty::Struct(2) => "S2",
             Ty::Enum(0) => "E0",
             Ty::Enum(1) => "E1",
+            Ty::Tuple(_) => "(tuple)",
             Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) => {
                 panic!("a width, struct or enum outside the program space: {self:?}")
             }
@@ -91,18 +180,26 @@ impl Ty {
             Ty::I32 => "int",
             Ty::Bool => "bool",
             Ty::F32 => "float",
-            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) => {
+            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) | Ty::Tuple(_) => {
                 panic!("{} is not a buffer element type", self.name())
             }
         }
     }
 
     /// The spelling of a struct field, a parameter or a return type: the dialect name of a scalar, `S<k>` of a struct,
-    /// `E<k>` of an enum.
+    /// `E<k>` of an enum. (A tuple is spelled by `text`.)
     pub fn decl_name(self) -> &'static str {
         match self {
             Ty::Struct(_) | Ty::Enum(_) => self.name(),
             other => other.dialect_name(),
+        }
+    }
+
+    /// `decl_name` for any type, a tuple included.
+    pub fn decl_text(self) -> String {
+        match self {
+            Ty::Tuple(t) => t.text(),
+            other => other.decl_name().to_owned(),
         }
     }
 
@@ -361,6 +458,11 @@ pub enum Expr {
     /// `x as u32`: an enum value as its repr type (`to` is `u32` or `i32`, the enum's repr; Rust allows no other
     /// target here, E0122). (Format 9.)
     EnumAs { to: Ty, e: Box<Expr> },
+    /// `(a, b, c)`: a tuple literal of type `ty`; the elements are evaluated left to right, each completely before the
+    /// next. (Format 10.)
+    Tuple { ty: Ty, elems: Vec<Expr> },
+    /// `f().1`: one element of a tuple that is no place (a call result). A `t.1` on a local is a `Read`. (Format 10.)
+    TupleField { e: Box<Expr>, index: u8 },
 }
 
 /// A field-less enum of the module (format 9): its repr and its variants `V0`, `V1`, ... A variant's value is a 32-bit
@@ -384,14 +486,17 @@ impl EnumDef {
     }
 }
 
-/// A pattern of a `match` arm: one or more variants (`E0::V1 | E0::V3`), or `_`.
+/// A pattern of a `match` arm: one or more variants (`E0::V1 | E0::V3`), one or more integer literals (`0 | 3u32`;
+/// format 10: the 32-bit pattern and whether the suffix is written), or `_`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Pat {
     Variants(Vec<u8>),
+    Lits(Vec<(u32, bool)>),
     Wild,
 }
 
-/// One arm of a statement `match`: the pattern and the block it runs.
+/// One arm of a `match`: the pattern and the block it runs. In the value form (`Stmt::LetMatch`, `Stmt::TailMatch`)
+/// the block ends in the arm's value: a `Stmt::Yield`, a `Stmt::Return` or a `Stmt::TailMatch`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Arm {
     pub pat: Pat,
@@ -459,8 +564,17 @@ impl Methods {
     pub fn ty_len(&self, ty: Ty) -> usize {
         match ty {
             Ty::Struct(j) => self.flat_len(j),
+            Ty::Tuple(t) => t.elems().iter().map(|e| self.ty_len(e.ty())).sum(),
             _ => 1,
         }
+    }
+
+    /// The offset of element `k` of tuple type `t` in the flat representation.
+    pub fn tuple_offset(&self, t: TupleTy, k: u8) -> usize {
+        t.elems()[..usize::from(k)]
+            .iter()
+            .map(|e| self.ty_len(e.ty()))
+            .sum()
     }
 
     /// The offset of field `k` of struct `j` in the flat representation.
@@ -475,11 +589,17 @@ impl Methods {
     pub fn walk(&self, mut ty: Ty, path: &[u8]) -> (Ty, usize) {
         let mut offset = 0;
         for &k in path {
-            let Ty::Struct(j) = ty else {
-                panic!("a field of {}", ty.name())
-            };
-            offset += self.field_offset(j, k);
-            ty = self.structs[usize::from(j)].fields[usize::from(k)];
+            match ty {
+                Ty::Struct(j) => {
+                    offset += self.field_offset(j, k);
+                    ty = self.structs[usize::from(j)].fields[usize::from(k)];
+                }
+                Ty::Tuple(t) => {
+                    offset += self.tuple_offset(t, k);
+                    ty = t.elems()[usize::from(k)].ty();
+                }
+                other => panic!("a field of {}", other.name()),
+            }
         }
         (ty, offset)
     }
@@ -558,7 +678,8 @@ pub const SHAPE_READ_AND_CALL: &str = "shape read and &mut self call on one root
 pub const SHAPE_VALUE_CALL_INNER: &str =
     "shape by-value call with &mut self call on its root in its arguments";
 
-/// Whether `e` is a `&mut self` call, and on which root.
+/// Whether `e` is a `&mut self` call, and on which root. An element of such a call's tuple result (`c.pair().1`) is one
+/// too: the call runs before the element is read.
 fn mut_call_root(methods: &Methods, e: &Expr) -> Option<Root> {
     match e {
         Expr::Call {
@@ -566,6 +687,7 @@ fn mut_call_root(methods: &Methods, e: &Expr) -> Option<Root> {
             recv: Some(place),
             ..
         } if methods.fns[*f].recv == Recv::Mut => Some(place.root),
+        Expr::TupleField { e, .. } => mut_call_root(methods, e),
         _ => None,
     }
 }
@@ -648,7 +770,7 @@ pub const SHAPE_ENUM_ARGS_ROOT: &str = "shape enum arguments built from calls on
 
 /// Every shape and `match` construct name that `check-difftest` prints a row for, so a name that is never written still
 /// shows as a row of zeros (`coverage_json` adds these to the operator rows).
-pub const KNOWN_SHAPE_NAMES: [&str; 21] = [
+pub const KNOWN_SHAPE_NAMES: [&str; 44] = [
     SHAPE_STMT_CALL,
     SHAPE_EXPR_CALL,
     SHAPE_LOGIC_CALL,
@@ -670,11 +792,238 @@ pub const KNOWN_SHAPE_NAMES: [&str; 21] = [
     "return",
     "enum as u32",
     "enum as i32",
+    MATCH_VALUE,
+    MATCH_VALUE_NESTED,
+    MATCH_VALUE_BLOCK,
+    MATCH_VALUE_RETURN,
+    MATCH_INT,
+    MATCH_INT_GROUP,
+    MATCH_ARM_RETURN_RUN,
+    TUPLE_LIT,
+    TUPLE_FIELD,
+    TUPLE_READ,
+    TUPLE_SET,
+    TUPLE_SET_OP,
+    TUPLE_DESTRUCT,
+    TUPLE_DESTRUCT_TYPED,
+    TUPLE_ARG,
+    SHAPE_TUPLE_LIT_ROOT,
+    SHAPE_TUPLE_SET_CALL,
+    SHAPE_TUPLE_FIELD_CALL,
+    SHAPE_DESTRUCT_CALL,
+    SHAPE_LT_ELEMENT,
+    SHAPE_LT_ARG,
+    SHAPE_LT_METHOD_ARG,
+    SHAPE_VMATCH_SCRUTINEE,
 ];
+
+/// Names of the constructs of format 10 (slice m9.d1c), counted statically by `operator_counts` and when executed by
+/// the interpreter, under the same names. The `shape` ones are the order-sensitive forms the generator is biased toward.
+pub const MATCH_VALUE: &str = "match value (typed let)";
+pub const MATCH_VALUE_NESTED: &str = "match value arm is a nested value match";
+pub const MATCH_VALUE_BLOCK: &str = "match value arm block with statements";
+pub const MATCH_VALUE_RETURN: &str = "match value arm ends in return";
+pub const MATCH_INT: &str = "match integer patterns";
+pub const MATCH_INT_GROUP: &str = "match integer group arm";
+/// Counted only when executed: a `return` ran inside an arm of a `match` (the nit of the m9.d1b re-check, R1).
+pub const MATCH_ARM_RETURN_RUN: &str = "match arm return executed";
+pub const TUPLE_LIT: &str = "tuple literal";
+pub const TUPLE_FIELD: &str = "tuple field of a call";
+pub const TUPLE_READ: &str = "tuple element read";
+pub const TUPLE_SET: &str = "tuple element set";
+pub const TUPLE_SET_OP: &str = "tuple element compound set";
+pub const TUPLE_DESTRUCT: &str = "tuple destructuring";
+pub const TUPLE_DESTRUCT_TYPED: &str = "tuple destructuring annotated";
+pub const TUPLE_ARG: &str = "tuple argument";
+pub const SHAPE_TUPLE_LIT_ROOT: &str =
+    "shape tuple literal with a &mut self call and another element using its root";
+pub const SHAPE_TUPLE_SET_CALL: &str =
+    "shape compound set of a tuple element field with a &mut self call on that element";
+pub const SHAPE_TUPLE_FIELD_CALL: &str = "shape f().k of a &mut self call";
+pub const SHAPE_DESTRUCT_CALL: &str = "shape destructuring of a &mut self call";
+pub const SHAPE_LT_ELEMENT: &str = "shape < before the last tuple element";
+pub const SHAPE_LT_ARG: &str = "shape < before the last argument of a function";
+pub const SHAPE_LT_METHOD_ARG: &str = "shape < before the last argument of a method";
+pub const SHAPE_VMATCH_SCRUTINEE: &str =
+    "shape value match scrutinee &mut self call on a root an arm uses";
 
 /// The counted name of an enum value read as its repr type.
 pub fn enum_as_name(to: Ty) -> String {
     format!("enum as {}", to.name())
+}
+
+/// Whether a place steps through a tuple (its root is a tuple local or parameter).
+pub fn place_in_tuple(place: &Place) -> bool {
+    place.root_ty.is_tuple()
+}
+
+/// Whether `e` reads or calls on `root` anywhere: a variable, a field read, a receiver.
+fn uses_root(e: &Expr, root: Root) -> bool {
+    let mut found = false;
+    walk_expr(e, &mut |n| {
+        found |= match n {
+            Expr::Var(v, _) => root == Root::Var(*v),
+            Expr::Read { place, .. } => place.root == root,
+            Expr::Call {
+                recv: Some(place), ..
+            } => place.root == root,
+            _ => false,
+        };
+    });
+    found
+}
+
+/// `shape tuple literal with a &mut self call and another element using its root`: the elements run left to right, so
+/// what an element sees of the root depends on the calls of the elements before it.
+pub fn tuple_lit_shape(methods: &Methods, elems: &[Expr]) -> Option<&'static str> {
+    let shared = elems.iter().enumerate().any(|(k, element)| {
+        let mut roots = Vec::new();
+        mutating_roots(methods, element, &mut roots);
+        roots.iter().any(|&root| {
+            elems
+                .iter()
+                .enumerate()
+                .any(|(l, other)| l != k && uses_root(other, root))
+        })
+    });
+    shared.then_some(SHAPE_TUPLE_LIT_ROOT)
+}
+
+/// `shape < before the last ...`: a `<` comparison that is not the last element of a tuple literal or the last argument
+/// of a call (the shape that made the macro emit `__gust_keep`, fixed by m9.f1). The name is `name` (the three rows are
+/// split so that dropping the method case, the one m9.f1 hit, cannot leave the row green).
+pub fn lt_before_last(items: &[Expr], name: &'static str) -> Option<&'static str> {
+    (items.len() > 1
+        && items[..items.len() - 1]
+            .iter()
+            .any(|item| matches!(item, Expr::Bin { op: BinOp::Lt, .. })))
+    .then_some(name)
+}
+
+/// The names a tuple literal counts under: itself, and the shapes it is.
+pub fn tuple_lit_names(methods: &Methods, elems: &[Expr]) -> Vec<&'static str> {
+    let mut names = vec![TUPLE_LIT];
+    names.extend(tuple_lit_shape(methods, elems));
+    names.extend(lt_before_last(elems, SHAPE_LT_ELEMENT));
+    names
+}
+
+/// The names the arguments of a call count under: a tuple argument, and a `<` before the last argument (`method`: the
+/// callee has a receiver).
+pub fn call_arg_names(method: bool, args: &[Expr]) -> Vec<&'static str> {
+    let mut names = Vec::new();
+    if args.iter().any(|arg| arg.ty().is_tuple()) {
+        names.push(TUPLE_ARG);
+    }
+    names.extend(lt_before_last(
+        args,
+        if method {
+            SHAPE_LT_METHOD_ARG
+        } else {
+            SHAPE_LT_ARG
+        },
+    ));
+    names
+}
+
+/// The names `f().k` counts under: itself, and the shape when `f` is a `&mut self` call.
+pub fn tuple_field_names(methods: &Methods, e: &Expr) -> Vec<&'static str> {
+    let mut names = vec![TUPLE_FIELD];
+    if mut_call_root(methods, e).is_some() {
+        names.push(SHAPE_TUPLE_FIELD_CALL);
+    }
+    names
+}
+
+/// The names an assignment counts under besides `set_name`: only for a place inside a tuple.
+pub fn tuple_set_names(
+    methods: &Methods,
+    place: &Place,
+    op: Option<BinOp>,
+    value: &Expr,
+) -> Vec<&'static str> {
+    if !place.root_ty.is_tuple() {
+        return Vec::new();
+    }
+    let mut names = vec![if op.is_some() {
+        TUPLE_SET_OP
+    } else {
+        TUPLE_SET
+    }];
+    // The one assignment to a tuple place whose evaluation order shows: `t.k.f op= t.k.m()`, a compound set of a field
+    // of a struct element whose value calls a `&mut self` method on that same element (the call changes the place).
+    if op.is_some()
+        && let Some((_, parent)) = place.path.split_last()
+        && !parent.is_empty()
+    {
+        let mut same = false;
+        walk_expr(value, &mut |n| {
+            if let Expr::Call {
+                f,
+                recv: Some(recv),
+                ..
+            } = n
+                && methods.fns[*f].recv == Recv::Mut
+                && recv.root == place.root
+                && recv.path == parent
+            {
+                same = true;
+            }
+        });
+        if same {
+            names.push(SHAPE_TUPLE_SET_CALL);
+        }
+    }
+    names
+}
+
+/// The names a destructuring counts under: itself, the annotation, and the shape of a `&mut self` call as its source.
+pub fn destruct_names(methods: &Methods, annotate: bool, init: &Expr) -> Vec<&'static str> {
+    let mut names = vec![TUPLE_DESTRUCT];
+    if annotate {
+        names.push(TUPLE_DESTRUCT_TYPED);
+    }
+    if mut_call_root(methods, init).is_some() {
+        names.push(SHAPE_DESTRUCT_CALL);
+    }
+    names
+}
+
+/// The names a value `match` counts under (`tail`: it is the value of an arm of another one): itself, an integer
+/// scrutinee, a grouped integer arm, an arm with statements, an arm that returns, and the scrutinee shape.
+pub fn value_match_names(
+    methods: &Methods,
+    scrut: &Expr,
+    arms: &[Arm],
+    tail: bool,
+) -> Vec<&'static str> {
+    let mut names = vec![if tail {
+        MATCH_VALUE_NESTED
+    } else {
+        MATCH_VALUE
+    }];
+    if !scrut.ty().is_enum() {
+        names.push(MATCH_INT);
+    }
+    if arms
+        .iter()
+        .any(|arm| matches!(&arm.pat, Pat::Lits(lits) if lits.len() > 1))
+    {
+        names.push(MATCH_INT_GROUP);
+    }
+    if arms.iter().any(|arm| arm.body.len() > 1) {
+        names.push(MATCH_VALUE_BLOCK);
+    }
+    if arms
+        .iter()
+        .any(|arm| matches!(arm.body.last(), Some(Stmt::Return { .. })))
+    {
+        names.push(MATCH_VALUE_RETURN);
+    }
+    if match_shape(methods, scrut, arms).is_some() {
+        names.push(SHAPE_VMATCH_SCRUTINEE);
+    }
+    names
 }
 
 /// Whether a statement list refers to `root` anywhere: a variable, a field read, a place written, a receiver.
@@ -887,7 +1236,14 @@ impl Expr {
             Expr::Lit(ty, _) | Expr::Var(_, ty) | Expr::Input { ty, .. } | Expr::Un { ty, .. } => {
                 *ty
             }
-            Expr::Read { ty, .. } | Expr::Call { ty, .. } | Expr::StructLit { ty, .. } => *ty,
+            Expr::Read { ty, .. }
+            | Expr::Call { ty, .. }
+            | Expr::StructLit { ty, .. }
+            | Expr::Tuple { ty, .. } => *ty,
+            Expr::TupleField { e, index } => match e.ty() {
+                Ty::Tuple(t) => t.elems()[usize::from(*index)].ty(),
+                other => panic!("a tuple field of {}", other.name()),
+            },
             Expr::Variant { e, .. } => Ty::Enum(*e),
             Expr::EnumAs { to, .. } => *to,
             Expr::Gid | Expr::Len(_) => Ty::U32,
@@ -967,7 +1323,8 @@ impl Expr {
             | Expr::Comp { e, .. }
             | Expr::Swizzle { e, .. }
             | Expr::Transpose { e }
-            | Expr::AggNeg { e } => f(e),
+            | Expr::AggNeg { e }
+            | Expr::TupleField { e, .. } => f(e),
             Expr::Bin { l, r, .. } | Expr::Dot { l, r } | Expr::AggBin { l, r, .. } => {
                 f(l);
                 f(r);
@@ -976,6 +1333,7 @@ impl Expr {
             Expr::Read { .. } => {}
             Expr::Call { args, .. } => args.iter().for_each(f),
             Expr::StructLit { fields, .. } => fields.iter().for_each(f),
+            Expr::Tuple { elems, .. } => elems.iter().for_each(f),
         }
     }
 
@@ -991,7 +1349,8 @@ impl Expr {
             | Expr::Comp { e, .. }
             | Expr::Swizzle { e, .. }
             | Expr::Transpose { e }
-            | Expr::AggNeg { e } => f(e),
+            | Expr::AggNeg { e }
+            | Expr::TupleField { e, .. } => f(e),
             Expr::Bin { l, r, .. } | Expr::Dot { l, r } | Expr::AggBin { l, r, .. } => {
                 f(l);
                 f(r);
@@ -1000,6 +1359,7 @@ impl Expr {
             Expr::Read { .. } => {}
             Expr::Call { args, .. } => args.iter_mut().for_each(f),
             Expr::StructLit { fields, .. } => fields.iter_mut().for_each(f),
+            Expr::Tuple { elems, .. } => elems.iter_mut().for_each(f),
         }
     }
 
@@ -1117,6 +1477,32 @@ pub enum Stmt {
     Return {
         value: Expr,
     },
+    /// `let (a, mut b): (u32, S0) = init;`: destructure a tuple into plain names (`vars`: the variable and whether it is
+    /// `mut`), the annotation written when `annotate` (always when an element is an enum). `ty` is the tuple type. (Format 10.)
+    LetTuple {
+        vars: Vec<(u32, bool)>,
+        ty: Ty,
+        annotate: bool,
+        init: Expr,
+    },
+    /// `let v: ty = match scrut { pat => value, .. };`: the value form of `match`, only as a typed `let` initializer. Each
+    /// arm body is a block of statements ending in a `Yield`, a `Return` (helpers) or a `TailMatch`. (Format 10.)
+    LetMatch {
+        var: u32,
+        ty: Ty,
+        mutable: bool,
+        scrut: Expr,
+        arms: Vec<Arm>,
+    },
+    /// The value of an arm of a value `match`: the last statement of the arm's block, written as the bare expression. (Format 10.)
+    Yield {
+        value: Expr,
+    },
+    /// A nested value `match` as the value of an arm: the last statement of the arm's block. (Format 10.)
+    TailMatch {
+        scrut: Expr,
+        arms: Vec<Arm>,
+    },
 }
 
 /// The largest loop trip count the generator writes.
@@ -1174,7 +1560,9 @@ impl Program {
                 Stmt::Call { f, .. } => is_method_or_assoc(methods, *f),
                 Stmt::If { then, els, .. } => block(methods, then) || block(methods, els),
                 Stmt::For { body, .. } => block(methods, body),
-                Stmt::Match { arms, .. } => arms.iter().any(|arm| block(methods, &arm.body)),
+                Stmt::Match { arms, .. }
+                | Stmt::LetMatch { arms, .. }
+                | Stmt::TailMatch { arms, .. } => arms.iter().any(|arm| block(methods, &arm.body)),
                 _ => false,
             })
         }
@@ -1204,19 +1592,40 @@ impl Program {
         block(&self.body) || self.methods.fns.iter().any(|def| block(&def.body))
     }
 
+    /// Whether the program holds a value `match` or a tuple (a value program without either tests nothing new).
+    pub fn has_value_form(&self) -> bool {
+        fn block(stmts: &[Stmt]) -> bool {
+            stmts.iter().any(|stmt| match stmt {
+                Stmt::LetMatch { .. } | Stmt::LetTuple { .. } => true,
+                Stmt::If { then, els, .. } => block(then) || block(els),
+                Stmt::For { body, .. } => block(body),
+                Stmt::Match { arms, .. } => arms.iter().any(|arm| block(&arm.body)),
+                _ => false,
+            })
+        }
+        let mut tuple = false;
+        visit_exprs(self, &mut |e| {
+            tuple |= matches!(e, Expr::Tuple { .. } | Expr::TupleField { .. }) || e.ty().is_tuple();
+        });
+        tuple || block(&self.body) || self.methods.fns.iter().any(|def| block(&def.body))
+    }
+
     /// Whether any expression reads an input buffer (a program that reads none is a constant, not a test).
     pub fn reads_input(&self) -> bool {
         fn block(stmts: &[Stmt]) -> bool {
             stmts.iter().any(|stmt| match stmt {
-                Stmt::Let { init, .. } => init.reads_input(),
+                Stmt::Let { init, .. } | Stmt::LetTuple { init, .. } => init.reads_input(),
                 Stmt::Assign { value, .. }
                 | Stmt::AssignComp { value, .. }
                 | Stmt::Set { value, .. }
+                | Stmt::Yield { value }
                 | Stmt::Return { value } => value.reads_input(),
                 Stmt::Call { args, .. } => args.iter().any(Expr::reads_input),
                 Stmt::If { cond, then, els } => cond.reads_input() || block(then) || block(els),
                 Stmt::For { body, .. } => block(body),
-                Stmt::Match { scrut, arms } => {
+                Stmt::Match { scrut, arms }
+                | Stmt::LetMatch { scrut, arms, .. }
+                | Stmt::TailMatch { scrut, arms } => {
                     scrut.reads_input() || arms.iter().any(|arm| block(&arm.body))
                 }
             })
@@ -1277,6 +1686,28 @@ impl Program {
 }
 
 impl Methods {
+    /// A tuple type of a parameter, a result or a local: 2 to 4 elements that exist, at most `MAX_TUPLE_FLAT` scalars.
+    pub fn check_tuple(&self, t: TupleTy) -> Result<(), String> {
+        if !(2..=MAX_TUPLE).contains(&usize::from(t.n)) {
+            return Err(format!("a tuple of {} elements", t.n));
+        }
+        for e in t.elems() {
+            match e {
+                Elem::Struct(j) if usize::from(*j) >= self.structs.len() => {
+                    return Err(format!("a tuple element of unknown S{j}"));
+                }
+                Elem::Enum(k) if usize::from(*k) >= self.enums.len() => {
+                    return Err(format!("a tuple element of unknown E{k}"));
+                }
+                _ => {}
+            }
+        }
+        if self.ty_len(Ty::Tuple(t)) > MAX_TUPLE_FLAT {
+            return Err("a tuple of more than 16 scalars".into());
+        }
+        Ok(())
+    }
+
     /// The structural rules of the tables: struct fields refer to earlier structs, sizes are bounded, every function has
     /// a consistent receiver and return type, and calls only go downwards (checked with the bodies).
     pub fn check_tables(&self) -> Result<(), String> {
@@ -1344,6 +1775,7 @@ impl Methods {
                     Ty::U32 | Ty::I32 | Ty::Bool => {}
                     Ty::Struct(j) if usize::from(*j) < self.structs.len() => {}
                     Ty::Enum(e) if usize::from(*e) < self.enums.len() => {}
+                    Ty::Tuple(t) => self.check_tuple(*t)?,
                     other => return Err(format!("m{k} has a parameter of {}", other.name())),
                 }
             }
@@ -1352,21 +1784,32 @@ impl Methods {
             {
                 return Err(format!("m{k} returns an unknown enum"));
             }
+            if let Some(Ty::Tuple(t)) = def.ret {
+                self.check_tuple(t)?;
+            }
             match (def.recv, def.owner, def.ret) {
                 (Recv::None, Some(owner), ret) if ret != Some(Ty::Struct(owner)) => {
                     return Err(format!("associated m{k} does not return its struct"));
                 }
-                (Recv::None, None, Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_))) => {}
+                (
+                    Recv::None,
+                    None,
+                    Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_) | Ty::Tuple(_)),
+                ) => {}
                 (Recv::None, None, _) => return Err(format!("helper m{k} has no scalar result")),
                 (
                     Recv::Shared | Recv::Value,
                     _,
-                    Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_)),
+                    Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_) | Ty::Tuple(_)),
                 ) => {}
                 (Recv::Shared | Recv::Value, _, _) => {
                     return Err(format!("method m{k} has no scalar result"));
                 }
-                (Recv::Mut, _, None | Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_))) => {}
+                (
+                    Recv::Mut,
+                    _,
+                    None | Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_) | Ty::Tuple(_)),
+                ) => {}
                 (Recv::Mut, _, _) => return Err(format!("method m{k} returns a struct")),
                 _ => {}
             }
@@ -1430,13 +1873,14 @@ impl Check<'_> {
         }
         let mut ty = root;
         for &k in &place.path {
-            let Ty::Struct(j) = ty else {
-                return Err(format!("a field of {}", ty.name()));
+            ty = match ty {
+                Ty::Struct(j) => *self.methods.structs[usize::from(j)]
+                    .fields
+                    .get(usize::from(k))
+                    .ok_or_else(|| format!("S{j} has no field {k}"))?,
+                Ty::Tuple(t) if k < t.n => t.elems()[usize::from(k)].ty(),
+                other => return Err(format!("a field of {}", other.name())),
             };
-            ty = *self.methods.structs[usize::from(j)]
-                .fields
-                .get(usize::from(k))
-                .ok_or_else(|| format!("S{j} has no field {k}"))?;
         }
         Ok(ty)
     }
@@ -1578,10 +2022,12 @@ impl Check<'_> {
     /// A statement `match` on an enum: the scrutinee is a local, a parameter, a call or a variant path (E0515), the
     /// patterns name each variant at most once (E0521), `_` is last and stands for at least one variant, and without
     /// `_` every variant is named, so Rust accepts the match and the last arm is the `default` of the Slang `switch`.
-    fn match_stmt(&mut self, scrut: &Expr, arms: &[Arm]) -> Result<(), String> {
+    fn match_stmt(&mut self, scrut: &Expr, arms: &[Arm], value: Option<Ty>) -> Result<(), String> {
         self.expr(scrut)?;
-        let Ty::Enum(e) = scrut.ty() else {
-            return Err(format!("a match on {}", scrut.ty().name()));
+        let e = match scrut.ty() {
+            Ty::Enum(e) => e,
+            Ty::U32 | Ty::I32 if value.is_some() => return self.int_match(scrut.ty(), arms, value),
+            other => return Err(format!("a match on {}", other.name())),
         };
         if !matches!(
             scrut,
@@ -1601,6 +2047,7 @@ impl Check<'_> {
             }
             match &arm.pat {
                 Pat::Wild => wild = true,
+                Pat::Lits(_) => return Err("an integer pattern in an enum match".into()),
                 Pat::Variants(variants) => {
                     named_arms += 1;
                     if variants.is_empty() {
@@ -1616,7 +2063,7 @@ impl Check<'_> {
                     }
                 }
             }
-            self.block(&arm.body)?;
+            self.arm_body(&arm.body, value)?;
         }
         if named_arms == 0 {
             return Err("a match with no variant arm".into());
@@ -1626,6 +2073,75 @@ impl Check<'_> {
             (true, true) => Err("a `_` arm that no variant reaches".into()),
             _ => Ok(()),
         }
+    }
+
+    /// The body of a `match` arm: a block, and in the value form (`value` the type of the `let`) a block that ends in
+    /// the value of the arm: a `Yield` of that type, a `Return` (helpers) or a nested value `match`.
+    fn arm_body(&mut self, body: &[Stmt], value: Option<Ty>) -> Result<(), String> {
+        let Some(ty) = value else {
+            return self.block(body);
+        };
+        let mark = self.scope.len();
+        returns_last(body)?;
+        let Some((last, rest)) = body.split_last() else {
+            return Err("an empty value arm".into());
+        };
+        for stmt in rest {
+            self.stmt(stmt)?;
+        }
+        match last {
+            Stmt::Yield { value } => {
+                self.expr(value)?;
+                if value.ty() != ty {
+                    return Err(format!(
+                        "a value arm yields {} for {}",
+                        value.ty().name(),
+                        ty.name()
+                    ));
+                }
+            }
+            Stmt::Return { .. } => self.stmt(last)?,
+            Stmt::TailMatch { scrut, arms } => self.match_stmt(scrut, arms, Some(ty))?,
+            _ => return Err("a value arm that does not end in its value".into()),
+        }
+        self.scope.truncate(mark);
+        Ok(())
+    }
+
+    /// A value `match` on an integer: distinct `u32`/`i32` literal patterns (E0521 for a value twice), the literals of
+    /// one arm joined by `|`, and a final `_` (an integer `match` is not exhaustive without it).
+    fn int_match(&mut self, scrut_ty: Ty, arms: &[Arm], value: Option<Ty>) -> Result<(), String> {
+        let mut seen = BTreeSet::new();
+        let mut wild = false;
+        let mut literal_arms = 0;
+        for arm in arms {
+            if wild {
+                return Err("an arm after `_`".into());
+            }
+            match &arm.pat {
+                Pat::Wild => wild = true,
+                Pat::Variants(_) => return Err("a variant pattern in an integer match".into()),
+                Pat::Lits(lits) => {
+                    literal_arms += 1;
+                    if lits.is_empty() {
+                        return Err("an arm with no literal".into());
+                    }
+                    for &(bits, _) in lits {
+                        if scrut_ty == Ty::I32 && bits == i32::MIN as u32 {
+                            return Err("an i32::MIN pattern".into());
+                        }
+                        if !seen.insert(bits) {
+                            return Err(format!("the pattern {bits} is written twice"));
+                        }
+                    }
+                }
+            }
+            self.arm_body(&arm.body, value)?;
+        }
+        if literal_arms == 0 || !wild {
+            return Err("an integer match needs a literal arm and a final `_`".into());
+        }
+        Ok(())
     }
 
     fn stmt(&mut self, stmt: &Stmt) -> Result<(), String> {
@@ -1734,7 +2250,45 @@ impl Check<'_> {
                 recv,
                 args,
             } => self.call(*f, *owner, recv, args).map(|_| ()),
-            Stmt::Match { scrut, arms } => self.match_stmt(scrut, arms),
+            Stmt::Match { scrut, arms } => self.match_stmt(scrut, arms, None),
+            Stmt::Yield { .. } | Stmt::TailMatch { .. } => {
+                Err("a `Yield` or `TailMatch` that does not end a value arm".into())
+            }
+            Stmt::LetMatch {
+                var,
+                ty,
+                mutable,
+                scrut,
+                arms,
+            } => {
+                if !matches!(ty, Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_)) {
+                    return Err(format!("a value match of type {}", ty.name()));
+                }
+                self.match_stmt(scrut, arms, Some(*ty))?;
+                self.declare(*var, *ty, *mutable)
+            }
+            Stmt::LetTuple {
+                vars,
+                ty,
+                annotate,
+                init,
+            } => {
+                self.expr(init)?;
+                let Ty::Tuple(t) = ty else {
+                    return Err("a destructuring of a non-tuple".into());
+                };
+                self.methods.check_tuple(*t)?;
+                if init.ty() != *ty || vars.len() != usize::from(t.n) {
+                    return Err("a destructuring that does not fit its tuple".into());
+                }
+                if !annotate && t.elems().iter().any(|e| matches!(e, Elem::Enum(_))) {
+                    return Err("an unannotated destructuring of an enum".into());
+                }
+                for (&(var, mutable), elem) in vars.iter().zip(t.elems()) {
+                    self.declare(var, elem.ty(), mutable)?;
+                }
+                Ok(())
+            }
             Stmt::Return { value } => {
                 self.expr(value)?;
                 let helper = self.in_fn.map(|k| &self.methods.fns[k]);
@@ -2011,6 +2565,33 @@ impl Check<'_> {
                 Some(ret) if ret == *ty => Ok(()),
                 _ => Err(format!("a call of m{f} has the wrong type")),
             },
+            Expr::Tuple { ty, elems } => {
+                let Ty::Tuple(t) = ty else {
+                    return Err("a tuple literal of a non-tuple".into());
+                };
+                self.methods.check_tuple(*t)?;
+                if elems.len() != usize::from(t.n) {
+                    return Err("a tuple literal of the wrong length".into());
+                }
+                for (elem, want) in elems.iter().zip(t.elems()) {
+                    // E0810: a struct literal is only a `let` initializer or the right side of an assignment.
+                    if matches!(elem, Expr::StructLit { .. }) {
+                        return Err("a struct literal as a tuple element".into());
+                    }
+                    self.expr(elem)?;
+                    if elem.ty() != want.ty() {
+                        return Err("a tuple element of the wrong type".into());
+                    }
+                }
+                Ok(())
+            }
+            Expr::TupleField { e, index } => {
+                self.expr(e)?;
+                match e.ty() {
+                    Ty::Tuple(t) if *index < t.n && matches!(**e, Expr::Call { .. }) => Ok(()),
+                    other => Err(format!("element {index} of {} (not a call)", other.name())),
+                }
+            }
             Expr::StructLit { ty, fields, order } => {
                 let Ty::Struct(j) = ty else {
                     return Err("a struct literal of a non-struct".into());
@@ -2051,10 +2632,11 @@ pub fn walk_expr(e: &Expr, f: &mut dyn FnMut(&Expr)) {
 pub fn walk_stmts(stmts: &[Stmt], f: &mut dyn FnMut(&Expr)) {
     for stmt in stmts {
         match stmt {
-            Stmt::Let { init, .. } => walk_expr(init, f),
+            Stmt::Let { init, .. } | Stmt::LetTuple { init, .. } => walk_expr(init, f),
             Stmt::Assign { value, .. }
             | Stmt::AssignComp { value, .. }
             | Stmt::Set { value, .. }
+            | Stmt::Yield { value }
             | Stmt::Return { value } => walk_expr(value, f),
             Stmt::Call { args, .. } => args.iter().for_each(|arg| walk_expr(arg, f)),
             Stmt::If { cond, then, els } => {
@@ -2063,7 +2645,9 @@ pub fn walk_stmts(stmts: &[Stmt], f: &mut dyn FnMut(&Expr)) {
                 walk_stmts(els, f);
             }
             Stmt::For { body, .. } => walk_stmts(body, f),
-            Stmt::Match { scrut, arms } => {
+            Stmt::Match { scrut, arms }
+            | Stmt::LetMatch { scrut, arms, .. }
+            | Stmt::TailMatch { scrut, arms } => {
                 walk_expr(scrut, f);
                 for arm in arms {
                     walk_stmts(&arm.body, f);
@@ -2120,12 +2704,9 @@ pub const ASSIGN_COMP: &str = "assign comp";
 pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
     fn expr(methods: &Methods, e: &Expr, counts: &mut BTreeMap<String, usize>) {
         let name = match e {
-            Expr::Lit(..)
-            | Expr::Var(..)
-            | Expr::Gid
-            | Expr::Len(_)
-            | Expr::Input { .. }
-            | Expr::Read { .. } => None,
+            Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Input { .. } => None,
+            Expr::Read { place, .. } => place.root_ty.is_tuple().then(|| TUPLE_READ.to_owned()),
+            Expr::Tuple { .. } | Expr::TupleField { .. } => None,
             Expr::Un { op, ty, .. } => Some(match op {
                 UnOp::Neg if *ty == Ty::F32 => "-f32".to_owned(),
                 UnOp::Neg => "-".to_owned(),
@@ -2158,10 +2739,26 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
         if let Some(shape) = shape {
             *counts.entry(shape.to_owned()).or_default() += 1;
         }
-        if let Expr::Call { args, .. } = e {
+        if let Expr::Call { f, args, .. } = e {
             for shape in enum_call_shapes(methods, args) {
                 *counts.entry(shape.to_owned()).or_default() += 1;
             }
+            for name in call_arg_names(methods.fns[*f].recv != Recv::None, args) {
+                *counts.entry(name.to_owned()).or_default() += 1;
+            }
+        }
+        match e {
+            Expr::Tuple { elems, .. } => {
+                for name in tuple_lit_names(methods, elems) {
+                    *counts.entry(name.to_owned()).or_default() += 1;
+                }
+            }
+            Expr::TupleField { e: inner, .. } => {
+                for name in tuple_field_names(methods, inner) {
+                    *counts.entry(name.to_owned()).or_default() += 1;
+                }
+            }
+            _ => {}
         }
         e.for_each_child(&mut |child| expr(methods, child, counts));
     }
@@ -2175,6 +2772,23 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
         for stmt in stmts {
             match stmt {
                 Stmt::Let { init, .. } => expr(methods, init, counts),
+                Stmt::LetTuple { annotate, init, .. } => {
+                    for name in destruct_names(methods, *annotate, init) {
+                        *counts.entry(name.to_owned()).or_default() += 1;
+                    }
+                    expr(methods, init, counts);
+                }
+                Stmt::Yield { value } => expr(methods, value, counts),
+                Stmt::LetMatch { scrut, arms, .. } | Stmt::TailMatch { scrut, arms } => {
+                    let tail = matches!(stmt, Stmt::TailMatch { .. });
+                    for name in value_match_names(methods, scrut, arms, tail) {
+                        *counts.entry(name.to_owned()).or_default() += 1;
+                    }
+                    expr(methods, scrut, counts);
+                    for arm in arms {
+                        block(methods, &arm.body, in_for, true, counts);
+                    }
+                }
                 Stmt::Assign { value, .. } => expr(methods, value, counts),
                 Stmt::AssignComp { value, .. } => {
                     *counts.entry(ASSIGN_COMP.to_owned()).or_default() += 1;
@@ -2186,6 +2800,9 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
                     *counts.entry(set_name(*op)).or_default() += 1;
                     if let Some(shape) = set_shape(methods, place, *op, value) {
                         *counts.entry(shape).or_default() += 1;
+                    }
+                    for name in tuple_set_names(methods, place, *op, value) {
+                        *counts.entry(name.to_owned()).or_default() += 1;
                     }
                     expr(methods, value, counts);
                 }
@@ -2202,6 +2819,9 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
                         .or_default() += 1;
                     for shape in enum_call_shapes(methods, args) {
                         *counts.entry(shape.to_owned()).or_default() += 1;
+                    }
+                    for name in call_arg_names(def.recv != Recv::None, args) {
+                        *counts.entry(name.to_owned()).or_default() += 1;
                     }
                     args.iter().for_each(|arg| expr(methods, arg, counts));
                 }

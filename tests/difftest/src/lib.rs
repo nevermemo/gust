@@ -32,6 +32,8 @@ pub mod shrink;
 #[cfg(test)]
 mod soundness;
 #[cfg(test)]
+mod value_tests;
+#[cfg(test)]
 mod vector_tests;
 
 pub use generator::DIFFTEST_FORMAT;

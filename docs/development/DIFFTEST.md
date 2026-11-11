@@ -3,10 +3,11 @@
 Status: slices m5.c1a (the integer core), m5.c1a2 (floats v1, the exact-interval subset of R1-4), m5.c1b (the batch
 runner `difftest-run`), m5.c1c (the shrinker), m6.d (vectors and matrices, DIFFTEST_FORMAT 6) and m8.x1 (the result
 file carries the build's capabilities, DIFFTEST_FORMAT 7; the program space is the one of format 6) and m9.d1a (module
-structs with methods, DIFFTEST_FORMAT 8) and m9.d1b (enums and statement `match`, DIFFTEST_FORMAT 9). The crate generates
-integer, boolean and `f32` kernels from a seed, and (since format 6) kernels that compute with the `gust::math` vectors
-and matrices as locals and intermediates (buffers and results stay scalar), and (since format 8) integer kernels that call
-methods of module structs, evaluates them with an independent
+structs with methods, DIFFTEST_FORMAT 8) and m9.d1b (enums and statement `match`, DIFFTEST_FORMAT 9) and m9.d1c (the
+value-form `match`, integer patterns and tuples, DIFFTEST_FORMAT 10). The crate generates integer, boolean and `f32`
+kernels from a seed, and (since format 6) kernels that compute with the `gust::math` vectors and matrices as locals and
+intermediates (buffers and results stay scalar), and (since format 8) integer kernels that call methods of module
+structs, evaluates them with an independent
 interpreter that tracks the defined domain (and, for floats, an interval of every value a conforming WGSL implementation
 may hold), writes them as a `#[gust::gpu]` crate, and `difftest-run` builds a batch of them, runs every program on the
 interpreter, the CPU twin and the GPU, and reports what disagreed. The crate itself is std only and has no GPU code: the
@@ -341,6 +342,127 @@ programs. `corpus`: the method and enum spaces of seeds 1 to 4 are pinned as for
 identity. `harness` gates (CI's difftest job): `cargo fmt --manifest-path tests/difftest/Cargo.toml -- --check`, `cargo
 clippy --locked --manifest-path tests/difftest/Cargo.toml --all-targets -- -D warnings` and `cargo test --locked
 --manifest-path tests/difftest/Cargo.toml`.
+
+## Value `match`, integer patterns and tuples (format 10, slice m9.d1c)
+
+`DIFFTEST_FORMAT` is 10. A batch is six float, five vector, one method, two enum and two value programs (16 in all, as
+before). The float, vector, method and enum spaces decode exactly as in format 9 (every new draw sits behind a flag that
+only the value space sets; the format 3 float pin and the format 9 method and enum pins still pass), so the only changes
+to older programs in a batch are the cut: one float program fewer, one enum program fewer. Mismatches are compiler bugs
+(D163); an order difference is never a D39 note.
+
+**Program space** (`Space::Value`, attempts from `VALUE_ATTEMPT_BASE` = 4 000 000; the enum space plus the value forms).
+- The value `match` is written only as a typed `let` initialiser (E0419). It matches on an enum (variable, call or variant
+  path, E0515) or on an integer with literal patterns: `u32` or `i32` literals, `|` groups, each value once, a final `_`
+  (E0521), no `i32::MIN` pattern. Arms are an expression, a block that ends in an expression, a nested value `match`, or
+  (in helpers) a block that ends in `return`. A helper that returns from an arm carries the per-function
+  `#[allow(unreachable_code)]`.
+- Tuples of two to four elements (scalars, a module struct, an enum) as locals, helper and method parameters, results of
+  helpers and methods, and method arguments. Reads `t.0`, assignment and compound assignment of an element, `f().1` on a
+  call result, and destructuring `let (a, b) = f(..)` with and without the type annotation. A struct element is a
+  variable (a struct literal is no tuple element, E0810): the generator binds it with a `let` before the statement, and
+  only structs with scalar fields appear. An unannotated destructuring never has an enum element (it would not be tracked).
+- Never generated: tuple comparison (E0213), a tuple in a field or a buffer (E0212), a tuple `match` scrutinee (E0515),
+  `_` or nested destructuring patterns (E0319), a 1-element tuple or one of more than eight, an unsuffixed integer literal
+  in a tuple literal (E0326), a value `match` outside a typed `let`, a name with a reserved prefix.
+- A value program without a value form is discarded as `no-value` (a new class beside `no-call`).
+
+**Interpreter** (from the Rust Reference, not from the emitted Slang): a tuple literal evaluates its elements left to
+right, each completely before the next; `place = value` evaluates the value first, `place op= value` evaluates the value,
+then reads the place, then applies the operator; a call reads its receiver first, then its arguments, left to right; the
+scrutinee of a `match` is evaluated once, then the first arm that names it runs (`1 | 2 | 3` names each literal; `_` the
+rest); `return` in an arm stops the function and is carried out of `for` and `match`; a tuple and a struct inside it are
+copied, not shared. A tuple or a struct is a flat aggregate of at most 16 lanes.
+
+**Order-sensitive shapes** (biased, pinned reachable, counted statically and when executed, under the same names):
+`shape tuple literal with a &mut self call and another element using its root`, `shape compound set of a tuple element
+field with a &mut self call on that element` (`t.k.f op= t.k.m()`, see below), `shape f().k of a &mut self call`, `shape
+destructuring of a &mut self call` (the call is the source of the destructuring; the generator makes no claim that the
+root is read afterwards, and the count does not check it), `shape value match scrutinee &mut self call on a root an arm
+uses` and three rows for the `__gust_keep` shape of the m9.f1 macro bug, kept as a regression: `shape < before the last
+tuple element`, `shape < before the last argument of a function` and `shape < before the last argument of a method` (the
+method row is the one m9.f1 hit; a `<` is in a non-last position 45 % of the time in the value space).
+
+**The tuple-place assignment whose order shows** (fix round 1 of the Opus review). `t.0 = t.1 + c.bump()` and `t.1 +=
+c.bump()` assign a scalar element, and a call can change only a struct, so value first and place first give the same
+result: those forms are counted as `tuple element set` only. The observable form is a compound set of a field of a
+struct element whose value calls a `&mut self` method on that element, `t.k.f op= t.k.m()`: Rust runs the call, then
+reads the place, so `v1.0.n += v1.0.tick()` with `n = 5` gives 12 (place first would give 11). The value space writes it
+on purpose: a top-level `let mut t: (S, u32 or i32)` for a struct with a `&mut self` method that returns a field type and
+assigns that field, then the set as the last statement of the kernel body (80 % of the programs that have such a struct; about 7 of the 128 value programs of seeds 1 to 64, a mild skew of the
+value space toward this ending), and the result reads
+the field (the result type is then an integer, because a `bool` result would hide the value). The shape is the name
+above; the hand vector `a_compound_set_of_an_element_field_reads_the_place_after_its_value_ran` expects 12, and the
+mutant `compound-place-first` (the place is read before the value runs) fails exactly that test. The interpreter's
+"value first" rule holds for primitive operands only (`u32`/`i32`; a `debug_assert` says so): a vector or matrix
+`AddAssign` reads the place first, so a slice that adds those operands must give `Stmt::Set` the type-dependent order.
+The constructs are
+counted as `match value (typed let)` / `arm block with statements` / `arm ends in return` / `arm is a nested value match`,
+`match integer patterns` / `integer group arm`, `match arm return executed` (dynamic only: a `return` inside a `match` arm
+that ran), `tuple literal` / `argument` / `field of a call` / `element read` / `element set` / `element compound set` /
+`destructuring` / `destructuring annotated`. `check-difftest` prints a row for each name that starts with `match`, `shape`,
+`tuple`, `enum` and `return`, with zeros for a name the batch never writes.
+
+**Nit R1 of the m9.d1b re-check** (`return` inside a `match` arm ran in 4 of 24 programs): a helper of the value space
+opens with a value `match` whose arms but the last `return` 70 % of the time, an arm of a helper returns 45 % of the
+time, value-match statements are more likely in helpers, and the kernel's result folds in a call of such a helper 75 % of
+the time. Executed arm returns: 32 of the first 128 programs of the value space before this change was finished, and
+`a_return_in_a_match_arm_runs_in_at_least_a_fifth_of_the_value_programs` pins at least 26 of the 128 programs of seeds 1
+to 8 (the batch itself is measured below).
+
+**Reachability, seeds 1 to 64 of the batch** (`difftest-gen stats 1-64`; the 128 value programs of 1 024; written /
+executed per element summed): match value 509 / 679 825; arm with statements 364 / 484 199; arm ends in return 165 /
+262 124; nested value match 67 / 11 626; integer patterns 342 / 530 654; integer group arm 189 / 420 145; match arm
+return executed (dynamic) 93 695; tuple literal 1 229 / 1 444 447; argument 382 / 192 351; field of a call 166 / 51 088;
+element read 649 / 1 188 305; element set 22 / 10 789; element compound set 59 / 28 791; destructuring 415 / 724 146,
+annotated 288 / 682 053; shapes: literal with a `&mut self` call and another element on its root 20 / 5 310; compound
+set of an element field with a `&mut self` call on that element 14 / 2 688 (it runs in 6 of the 128 programs, and the
+place-first mutant changes 3 of them); `f().k` 29 / 6 302; destructuring of a `&mut self` call 4 / 184; value match
+scrutinee 15 / 978; `<` before the last tuple element 70 / 32 002, before the last argument of a function 17 / 34 053,
+of a method 26 / 11 099. Value attempts for 64 seeds: 727 for 128 programs (discards: `no-call` 131, `overflow` 232,
+`static` 161, `division-by-zero` 39, `index` 15, `no-input-read` 11, `shift-amount` 9, `min-over-minus-one` 1). The tests
+`the_value_forms_and_order_sensitive_shapes_are_reachable_within_the_first_64_seeds` (the value space) and
+`the_new_shapes_are_written_and_executed_in_the_64_seed_batch` (the 128 value programs of the batch itself) require each
+name, and `the_order_sensitive_tuple_field_set_runs_in_the_batch_and_its_mutant_changes_a_batch_program` pins at least 6
+batch programs that run the compound field set and at least 3 that the place-first mutant changes.
+
+**A gap the first wide run found, and its fix.** The first run of `check-difftest --seeds 1-64` on this slice failed at
+seed 30 program 15: a statement `self.f1 <<= 34u32` that is reachable from the kernel's call graph but never executes.
+The interpreter never ran it, and the domain filter (`static_violation`) folded only expression nodes, so the operand of
+a compound set was never checked and naga rejected the module (a shift by 34). The bug is in the filter, not in the
+compiler; the shrinker could not reduce the case because the failure is a validation error before any run (it keeps only
+element mismatches and slangc build failures; carrying "the same validation message" as an identity is left to the next
+difftest slice). `static_violation` now also folds the operand of a compound `<<=`, `>>=`, `/=` and `%=`, in every space
+(the first fix gated it to the value space; fix round 1 removed the gate). A method that nothing calls is not the
+trigger: it never reaches WGSL (seed 42 program 11 of the method space holds `self.f1 <<= 32u32;` in such a method and
+passes); the filter is stricter than it needs to be there, which only costs a discard. No older pin moved: the format 3,
+8 and 9 pins hold, so the rule discarded no attempt of a pinned seed in those spaces. The value-space pins of seeds 1 to 4
+and the `seeds.txt` rows moved twice in this slice, after the filter fix and after fix round 1, because the new rule or
+the new generator draws discarded an attempt and a later attempt took its place. The test
+`a_closed_constant_outside_the_domain_in_a_compound_set_is_a_static_violation` pins the rule. After the first fix
+`check-difftest --seeds 1-64` on the RTX 5090 executed 1 024 of 1 024 programs (128 value programs) with 0 mismatches in
+1 384 s (discards 4 886 in all). After fix round 1 the same run executed 1 024 of 1 024 programs with 0 mismatches in 1 509 s (discards 4 885 in all), and the compound field set ran in 6 programs on the GPU (2 688 evaluations).
+
+**Mutation checks.** Four test-only mutants (`DIFFTEST_MUTANT`, test builds only): `tuple-right-to-left` (the elements of
+a tuple literal run right to left), `value-scrutinee-twice` (the scrutinee of a value `match` is evaluated again for every
+arm after the first), `group-first-only` (an integer pattern group matches its first literal only) and
+`compound-place-first` (`place op= value` reads the place before the value runs). The gate
+`xfail-<mutant>` runs `cargo test --lib` with one mutant set and passes only when exactly the named test fails:
+`tuple-right-to-left` fails `a_tuple_literal_runs_its_elements_left_to_right`, `value-scrutinee-twice` fails
+`the_scrutinee_of_a_value_match_is_evaluated_once`, `group-first-only` fails
+`an_integer_pattern_group_names_every_literal_of_it` and `compound-place-first` fails
+`a_compound_set_of_an_element_field_reads_the_place_after_its_value_ran`; each of the four leaves the other 229 of the 230
+tests green (rerun on the final tree, round 18 of the rc file). `the_mutants_also_change_some_generated_value_program`
+requires each mutant to differ from the right run in a generated program of seeds 1 to 64, so the corpus reaches the same
+rules as the hand vectors.
+
+**Tests.** `value_tests`: hand vectors (tuple order, element place order, destructuring and `f().1`, scrutinee once,
+integer groups and signed patterns, `return` in an arm, nested value `match` and an enum value `match`, a struct element
+as a copy, the compound set of an element field), the emitted text, the batch cut, the property test over 12 seeds, the reachability tests, the mutants.
+`roundtrip`: `value_programs_compile_through_the_macro_without_a_gust_diagnostic` compiles 192 value programs.
+`corpus`: the value space of seeds 1 to 4 is pinned as format 10. `xtask`: `shape_row_tests` (the parser of the summary
+rows existed since m9.d1b round r1; it now also covers the `match value`, `match integer` and `tuple` rows). The rc file of
+a slice run labels each batch of gates with a `# round N ...` line.
 
 ## The domain filter
 

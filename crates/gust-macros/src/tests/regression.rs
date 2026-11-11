@@ -8347,3 +8347,35 @@ fn a_struct_used_as_a_uniform_and_in_a_stored_array_is_gust_e0207() {
     ))
     .unwrap();
 }
+
+#[test]
+fn comparing_scalars_named_like_components_is_not_an_array_comparison_in_a_soa_module() {
+    // R1 of fix round 2: a struct with array fields `x` and `y` must not make `id.x < n` or `v.x == 0.0` an array
+    // comparison; only a comparison of two arrays is E0811.
+    let items = "pub struct Soa { pub x: [f32; 4], pub y: [f32; 4] }";
+    for condition in [
+        "id.x < n",
+        "v.x == 0.0f32",
+        "id.x < v.x",
+        "a.x == b.x",
+        "a.xy != b.xy",
+    ] {
+        translate(&with_buffers(
+            items,
+            "mut s: RWStructuredBuffer<Soa>, mut o: RWStructuredBuffer<uint>",
+            &format!(
+                "let n = 4u32; let v = Vec4::new(0.0f32, 1.0f32, 2.0f32, 3.0f32); let a = Vec2::new(0.0f32, 1.0f32); let b = Vec2::new(0.0f32, 1.0f32); if {condition} {{ o[id.x] = 1u32; }}"
+            ),
+        ))
+        .unwrap_or_else(|error| panic!("{condition}: {error}"));
+    }
+    // The shapes of S1 stay refused (the test above covers fields and elements); this one in a module with the field `items`.
+    assert_rejected(
+        &with_buffers(
+            "pub struct Bag { pub items: [u32; 4] }",
+            "mut s: RWStructuredBuffer<Bag>, mut o: RWStructuredBuffer<uint>",
+            "let i = id.x; let j = id.x + 1u32; if s[i].items == s[j].items { o[i] = 1u32; }",
+        ),
+        Code::UnsupportedExpression,
+    );
+}

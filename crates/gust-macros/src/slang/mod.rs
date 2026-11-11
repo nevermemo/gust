@@ -348,6 +348,22 @@ fn array_place_length_of(place: &syn::Expr) -> Option<u32> {
     })
 }
 
+/// Whether a comparison operand is an array (fix round 2 of m9.r2a, R1). A field access named like a vector component or
+/// swizzle (`x`, `y`, `xy`, `rgb`, ..) is never judged an array by its name: `id.x` and `v.x` are scalars or vectors even
+/// when a struct of the module has an array field called `x`. Known edge: `a.x == b.x` with two array fields named like
+/// components is not refused here and reaches slangc.
+fn comparison_array_operand(operand: &syn::Expr) -> bool {
+    if let syn::Expr::Field(field) = operand
+        && let syn::Member::Named(name) = &field.member
+    {
+        let name = name.unraw().to_string();
+        if !name.is_empty() && name.len() <= 4 && name.chars().all(|c| "xyzwrgba".contains(c)) {
+            return false;
+        }
+    }
+    array_place_length_of(operand).is_some()
+}
+
 /// How often each identifier occurs in the tokens of a module, after raw stripping (`r#Mat4` counts as `Mat4`).
 fn count_identifiers(
     stream: proc_macro2::TokenStream,
@@ -2073,8 +2089,8 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
                     | syn::BinOp::Le(_)
                     | syn::BinOp::Gt(_)
                     | syn::BinOp::Ge(_)
-            ) && (array_place_length_of(unparenthesized_expr(&binary.left)).is_some()
-                || array_place_length_of(unparenthesized_expr(&binary.right)).is_some()) =>
+            ) && comparison_array_operand(unparenthesized_expr(&binary.left))
+                && comparison_array_operand(unparenthesized_expr(&binary.right)) =>
         {
             return Err(diagnostics::error(
                 Code::UnsupportedExpression,

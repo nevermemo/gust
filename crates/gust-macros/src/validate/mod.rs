@@ -4322,7 +4322,11 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
                 &self.methods.array_fields,
             )
         {
-            let name = call.receiver.to_token_stream().to_string();
+            let name = call
+                .receiver
+                .to_token_stream()
+                .to_string()
+                .replace(" [", "[");
             // The emitter writes the constant `N` and drops the receiver, so a receiver that runs code (a call or a
             // method call, anywhere in its index or base) would run on the CPU twin and not on the GPU: refuse it
             // (fix round 1 of m9.r2a, M1). E0306 because the receiver is not one the length can be read from.

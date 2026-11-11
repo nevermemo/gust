@@ -3,4 +3,4 @@
 code: none
 file: array-len-call/src/main.rs
 line: 24
-message: [GUST-E0306] `cells [c.next()].len()` is the constant length of the array, so the call inside `cells [c.next()]` would not run on the GPU: bind the element to a local first (`let e = ..; e.len()`)
+message: [GUST-E0306] `cells[c.next()].len()` is the constant length of the array, so the call inside `cells[c.next()]` would not run on the GPU: bind the element to a local first (`let e = ..; e.len()`)

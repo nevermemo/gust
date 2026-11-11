@@ -541,9 +541,11 @@ Decision: D02, D14.
 
 `.len()` works on a storage parameter named directly.
 Reached through `#[gpu]`.
-Rejected: `id.len()`, `buffers.out.len()`, and `x.len()` where the name `x` is an array in one scope and something else in another of the same function.
+Rejected: `id.len()`, `buffers.out.len()`, and `x.len()` where the name `x` is an array in one scope and something else in another of the same function; a receiver that contains a call or method call (`bags[c.next()].items.len()`, `cells[c.next()].len()`, `c.take_bag().items.len()`: the emitter writes the constant `N` and would drop the call on the GPU while the CPU twin runs it; bind the element to a local first), and a field name that two structs give two lengths or that one struct gives no array.
 An array local or parameter has `.len()` too (slice m9.r1): it emits the declared length, and it stands in an index or under a direct `as u32`/`as i32` cast (GUST-E0334 otherwise). The array needs a written type (`let g: [f32; 4] = ..;`) for the macro to know its length.
-Write instead: `out.len()` where `out` is a buffer parameter.
+On an array field or a buffer element (slice m9.r2a) `.len()` is the constant length: `s.items.len()`, `els[i].items.len()` and `cells[i].len()` (the buffer of arrays `cells`), judged by the field name alone because the macro sees no types. Pure index arithmetic in the receiver (`bags[i + 1u32].items.len()`) is accepted. Edge: a user method called `len` on a struct field is this code when another struct has an array field of that name.
+Write instead: `out.len()` where `out` is a buffer parameter, or bind the element first (`let e = cells[c.next()]; e.len()`).
+Fixture: `tests/ui/array-len-call` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D02.
 
 ### GUST-E0307 `.global_id()` receiver
@@ -1781,6 +1783,7 @@ Decision: D02.
 An expression form the emitter has no lowering for.
 Reached through `#[gpu]`.
 Rejected: a tuple expression `(1u32, 2u32)`, an array repeat `[0u32; 4]`, `==`, `!=` and the orderings on arrays (locals, parameters, array fields and buffer elements; compare the elements), a block used as a value `{ 1u32 }`, the dereference `*x` (`*self` included: no value of the dialect is a reference, so write `self.field` or use a local copy).
+Known edge of the array comparison (slice m9.r2a): both operands must look like arrays to the macro, and a field named like a vector component (`x`, `y`, `xy`, ..) never does, so `id.x < n` is fine in a module with an array field `x`; `a.x == b.x` with two real array fields of such names is not refused and reaches slangc.
 Write instead: the supported expression forms listed in the validator codes above.
 Decision: D02.
 

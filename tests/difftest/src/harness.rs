@@ -746,6 +746,36 @@ pub fn execute_plan(
     execute_plan_within(options, package, name, plan, env, None)
 }
 
+/// Removes the record directory the macro wrote for `package` under `export_dir` (`<export>/<package>/`). Nothing to
+/// do without an export directory or when the build wrote nothing; any other failure is reported with the path.
+fn discard_records(export_dir: Option<&Path>, package: &str) -> Result<(), String> {
+    let Some(export) = export_dir else {
+        return Ok(());
+    };
+    let records = export.join(package);
+    match std::fs::remove_dir_all(&records) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("{}: {e}", records.display())),
+    }
+}
+
+/// Prepares the rebuild after programs were set aside: discards the records of the first build, then rewrites the
+/// run crate. Order matters: the `.kernel.json` of a kernel carries Rust source lines, which shift for every module
+/// after a removed `k_px`, so the rebuild would meet the stale record and refuse it as GUST-E0712. The export
+/// directory is new for each run (xtask `fresh_record_dirs`), so the delete only touches this run.
+fn prepare_rebuild(
+    options: &Options,
+    dir: &Path,
+    package: &str,
+    plan: &[Planned],
+    shapes: &ShapePlan,
+) -> Result<(), String> {
+    discard_records(options.export_dir.as_deref(), package)?;
+    write_run_crate_in(dir, package, plan, &options.repo_root, shapes)
+        .map_err(|e| format!("{}: {e}", dir.display()))
+}
+
 /// [`execute_plan`] with a deadline for each of the two cargo steps (the build and the test run).
 pub fn execute_plan_within(
     options: &Options,
@@ -807,8 +837,7 @@ pub fn execute_shapes(
                 return Err(error);
             };
             shapes.grid_only = refused;
-            write_run_crate_in(&dir, package, plan, &options.repo_root, &shapes)
-                .map_err(|e| format!("{}: {e}", dir.display()))?;
+            prepare_rebuild(options, &dir, package, plan, &shapes)?;
             let seconds = first.elapsed().as_secs_f64();
             seconds
                 + build().map_err(|e| {
@@ -1090,6 +1119,64 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn discard_records_removes_the_package_records_and_tolerates_absence() {
+        let root = scratch("discard");
+        let records = root.join("some-pkg");
+        std::fs::create_dir_all(&records).unwrap();
+        std::fs::write(records.join("x.kernel.json"), "{}").unwrap();
+        std::fs::write(records.join("x.slang"), "").unwrap();
+        let other = root.join("other-pkg");
+        std::fs::create_dir_all(&other).unwrap();
+        std::fs::write(other.join("y.kernel.json"), "{}").unwrap();
+        discard_records(Some(&root), "some-pkg").unwrap();
+        assert!(!records.exists());
+        assert!(
+            other.join("y.kernel.json").exists(),
+            "only the package's own records go"
+        );
+        // Nothing there any more, a missing export directory, and no export directory at all.
+        discard_records(Some(&root), "some-pkg").unwrap();
+        discard_records(Some(&root.join("missing")), "some-pkg").unwrap();
+        discard_records(None, "some-pkg").unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn the_rebuild_discards_the_records_before_it_rewrites_the_crate() {
+        let plan = plan_seed(1).unwrap();
+        let root = scratch("rebuild");
+        let dir = root.join("crate");
+        let export = root.join("export");
+        let options = Options {
+            seeds: vec![1],
+            cpu_only: true,
+            shapes: vec![Shape::Grid],
+            target_dir: root.clone(),
+            repo_root: PathBuf::from("/r"),
+            profile: "dev".to_owned(),
+            export_dir: Some(export.clone()),
+        };
+        let shapes = ShapePlan::new(&options.shapes);
+        let lib = dir.join("src").join("lib.rs");
+
+        // Success: the stale record is gone and the crate is written.
+        let records = export.join("pkg-a");
+        std::fs::create_dir_all(&records).unwrap();
+        std::fs::write(records.join("x.kernel.json"), "{}").unwrap();
+        prepare_rebuild(&options, &dir, "pkg-a", &plan[..2], &shapes).unwrap();
+        assert!(!records.exists());
+        assert!(lib.exists());
+
+        // Order: when the discard fails (the record "directory" is a file), the crate is not rewritten.
+        std::fs::write(&lib, "stale").unwrap();
+        std::fs::write(export.join("pkg-b"), "not a directory").unwrap();
+        let error = prepare_rebuild(&options, &dir, "pkg-b", &plan[..2], &shapes).unwrap_err();
+        assert!(error.contains("pkg-b"), "{error}");
+        assert_eq!(std::fs::read_to_string(&lib).unwrap(), "stale");
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

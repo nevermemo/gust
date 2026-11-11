@@ -1388,3 +1388,60 @@ first arm names), and `GUST-E0211` is type-based. No accepted program computes a
 **Edge cases.** The arithmetic inside an element has the wrapping contract of section 3 (D39). Tests:
 `crates/gust-wgpu/tests/m9_tuples.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations) and the macro tests in
 `crates/gust-macros/src/tests/regression.rs`.
+
+## 11. Arrays as values (M9, D159)
+
+A fixed-size array `[T; N]` is a value of the invocation: `N` is an integer literal above zero (`GUST-E0216`) and `T` is
+a scalar, a vector, a matrix, or a struct or enum of the module (an enum element is accepted and runs; the GPU test
+`m9_arrays` has `[Mode; 2]`). It is accepted as a typed local, a parameter, the result of a helper or a method and an
+argument of either. It copies on assignment and when passed, as Rust does for `Copy` elements (`bump_all` changes its own
+copy). An array local needs its annotation (`let a: [u32; 4] = ..;`): `let a = [1u32, 2u32];` is `GUST-E0811`, because
+slangc cannot infer the array type of an initializer list.
+
+**Forms.** A literal `[a, b, c]` and a repeat `[e; N]`; indexing `a[i as usize]` and `a[2]`; `a[i] = e;`, `a[i] += e;`,
+`a[i].f = e;` and `a[i].m()`; `a.len()`, which is the constant `N`. A literal is accepted as the initializer of a typed
+`let`, the right side of an assignment, a returned or tail value and an argument; a repeat as the whole initializer of a
+typed `let`, the whole right side of an assignment statement, or a returned or tail value (anywhere else
+`GUST-E0811`). `usize` is accepted in one place, the cast of an index (`GUST-E0334` elsewhere, including a `usize`
+local or parameter and `.len()` outside an index or a direct `as u32`).
+
+**Lowering.** `[T; N]` is `T[N]`; `[a, b]` is `{ a, b }`; `a[i as usize]` is `a[uint(i)]` (the cast is lowered like `as u32`, so a `bool` or signed source indexes as in Rust). A repeat
+evaluates its operand once into a temporary, `T __gust_rep_<k> = e;`, and then `{ t, t, .. }` for `N <= 16`; above 16 it
+declares the array and fills it with a loop (`__gust_fill_<k>`). A repeat that is returned with `N > 16` is `GUST-E0811`
+(bind it to a local first). The names with the `__gust_` prefix are reserved (`GUST-E0901`).
+
+**Order of evaluation** (Rust measured with rustc, Slang 2026.21 read on the WGSL target; the GPU test `m9_arrays` runs
+every accepted case against hand-written values). Accepted because they match: the elements of a literal left to right
+(`[s.bump(), s.bump(), s.bump()]` is `[1, 2, 3]`), an array argument built from calls, two reads of one table with
+indexes that call, an index on a call result (`make3(s.bump())[1]`), a method on an element whose index calls another
+counter, an element assigned from its neighbours, and a repeat (`[s.bump(); 4]` runs `bump` once). Refused with
+`GUST-E0421`: an assignment or compound assignment to an element whose index reads a root that a `&mut self` call in the
+value changes (`a[s.n as usize] = s.bump()`, `a[s.get() as usize] += s.bump()`); Rust runs the value first, Slang the
+index first. Write `let v = s.bump(); a[s.n as usize] = v;`. The rule covers every indexed place, a storage buffer
+and workgroup memory included (`out[c.n] = c.next()`, `out[c.n] += c.next()`, `wg[w.n] = w.bump()`; fix round 1): slangc
+2026.21 reads the index of those first, where 2026.20 called first, so the order of Slang for an indexed place changed
+between two versions and GUST refuses the form rather than rely on it. Before this round slice a2 accepted the storage
+forms, which gave another element than the CPU twin on the GPU with the pinned Slang.
+
+**Out of bounds (D39).** An index outside `0..N` panics in Rust; on the GPU the access is clamped or undefined by target,
+so such a program is outside the defined domain of section 3 (KM-11 is the observation for a buffer index; no row is
+measured for a function-scope array, whose clamping or undefined access the target decides, so nothing is pinned
+there). Nothing checks it at run time; keep the index in range. A constant index past the end is not diagnosed by the
+macro; rustc rejects it when the body is compiled (the `unconditional_panic` lint), and `cargo check` does not.
+
+**Index casts and width (D39).** `x as usize` in an index is `uint(x)`, a 32-bit unsigned value. A `bool` source and a
+non-negative signed source index as in Rust. A negative source differs in the 32/64-bit width class: Rust's
+`-1i32 as usize` is 2^64 - 1 and the GPU's `uint(-1)` is 2^32 - 1. Used directly as an index both are out of range,
+but arithmetic on the cast value can bring them back into range with different results: `(x as usize) % 7` with
+`x = -1` reads index 1 in Rust and index 3 on the GPU. A float source converts like `as u32`: Rust saturates (a
+negative or NaN source gives 0), while the GPU's result for an out-of-range float depends on the target. Keep index
+sources non-negative and in range; these cases are not tested on the GPU.
+
+**Refused on purpose.** A nested array or an element that is a tuple, `Option`, `Result`, reference or resource
+(`GUST-E0217`); a slice type (`GUST-E0111`); `for x in a` (`GUST-E0409`); an array in a struct field, a buffer, a uniform
+or workgroup memory (`GUST-E0813`, as before this slice; a later slice admits them); an array as a tuple element
+(`GUST-E0213`); `==` and `!=` on arrays (`GUST-E0811`); a barrier inside a literal or an index (`GUST-E0327`) and a
+subgroup operation there (`GUST-E0747`).
+
+Tests: `crates/gust-wgpu/tests/m9_arrays.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations) and the macro tests
+in `crates/gust-macros/src/tests/regression.rs`.

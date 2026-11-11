@@ -141,6 +141,12 @@ codes! {
     /// A tuple outside the shape the dialect lowers: not 2 to 8 elements, an element that is not a scalar, vector,
     /// matrix, struct, enum or tuple, a comparison of tuples, or a tuple as an `Option` or `Result` payload.
     TupleShape = 213 => "GUST-E0213";
+    /// An array length that is not an integer literal greater than zero (`[T; 0]`, `[T; N]` with a name or an
+    /// expression for `N`, `[]`).
+    ArrayLength = 216 => "GUST-E0216";
+    /// An array element that is itself an array (`[[T; N]; M]`), or not a scalar, vector, matrix, struct or enum of the
+    /// module (a tuple, `Option`, `Result`, reference or resource).
+    ArrayElement = 217 => "GUST-E0217";
 
     // E03xx: expressions and calls.
     /// A CPU-only library or type name.
@@ -199,6 +205,9 @@ codes! {
     MethodNameClash = 328 => "GUST-E0328";
     /// A `&mut self` or by-value `self` method called on a storage, uniform, workgroup or texture place.
     MutatingMethodOnSharedPlace = 333 => "GUST-E0333";
+    /// `usize` as a type, a local, a parameter, a cast target or a `.len()` value anywhere but the operand of an array
+    /// index.
+    UsizeOutsideIndex = 334 => "GUST-E0334";
 
     // E04xx: control flow and loops.
     /// A `loop` expression.

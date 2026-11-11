@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: array-subgroup/src/main.rs
+line: 13
+message: [GUST-E0747] `subgroup_add` is allowed only as the whole value of a `let` or an assignment, or as an operand of arithmetic or a comparison there (not under `&&` or `||`), at the top level of the kernel body or of a top-level `for a..b` loop with two literal bounds: every invocation of the subgroup has to reach it, and the value of an `if`, an index or a method call may not

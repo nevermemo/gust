@@ -83,6 +83,160 @@ impl Drop for SelfScope {
     }
 }
 
+/// The length of an array type or repeat expression: an integer literal greater than zero, unsuffixed or `usize`
+/// (slice m9.r1, GUST-E0216 for anything else).
+pub(crate) fn array_length_literal(len: &syn::Expr) -> Option<u32> {
+    let mut len = len;
+    while let syn::Expr::Paren(syn::ExprParen { expr, .. })
+    | syn::Expr::Group(syn::ExprGroup { expr, .. }) = len
+    {
+        len = expr;
+    }
+    let syn::Expr::Lit(syn::ExprLit {
+        lit: syn::Lit::Int(value),
+        ..
+    }) = len
+    else {
+        return None;
+    };
+    if !matches!(value.suffix(), "" | "usize") {
+        return None;
+    }
+    value
+        .base10_parse::<u32>()
+        .ok()
+        .filter(|length| *length > 0)
+}
+
+/// `ty` without the parentheses and invisible groups around it.
+fn unparenthesized_type(ty: &syn::Type) -> &syn::Type {
+    match ty {
+        syn::Type::Paren(inner) => unparenthesized_type(&inner.elem),
+        syn::Type::Group(inner) => unparenthesized_type(&inner.elem),
+        other => other,
+    }
+}
+
+/// The names of a function that hold an array, with its length: `Some(n)` for a name every binding of which is
+/// `[T; n]` (a parameter or a typed `let`), `None` for a name that is also bound some other way or with another length.
+/// The macro sees no types, so `a.len()` is told from a storage `out.len()` by this table, and `N` is read from it
+/// (slice m9.r1). The validator and the emitter both ask it, so they agree about every name.
+pub(crate) fn array_lengths(
+    inputs: &syn::punctuated::Punctuated<syn::FnArg, syn::Token![,]>,
+    block: &syn::Block,
+) -> std::collections::HashMap<String, Option<u32>> {
+    #[derive(Default)]
+    struct Scan {
+        arrays: std::collections::HashMap<String, Option<u32>>,
+        others: std::collections::HashSet<String>,
+    }
+    impl Scan {
+        fn bind(&mut self, name: &syn::Ident, length: Option<u32>) {
+            let key = name.unraw().to_string();
+            let Some(length) = length else {
+                self.others.insert(key);
+                return;
+            };
+            match self.arrays.get(&key).copied() {
+                None => {
+                    self.arrays.insert(key, Some(length));
+                }
+                Some(Some(known)) if known == length => {}
+                Some(_) => {
+                    self.arrays.insert(key, None);
+                }
+            }
+        }
+        fn array_binding(pattern: &syn::Pat) -> Option<(&syn::Ident, u32)> {
+            let syn::Pat::Type(typed) = pattern else {
+                return None;
+            };
+            let syn::Pat::Ident(name) = typed.pat.as_ref() else {
+                return None;
+            };
+            let syn::Type::Array(array) = unparenthesized_type(&typed.ty) else {
+                return None;
+            };
+            Some((&name.ident, array_length_literal(&array.len)?))
+        }
+    }
+    impl<'ast> Visit<'ast> for Scan {
+        fn visit_local(&mut self, local: &'ast syn::Local) {
+            if let Some((name, length)) = Self::array_binding(&local.pat) {
+                self.bind(name, Some(length));
+                if let Some(initial) = &local.init {
+                    self.visit_expr(&initial.expr);
+                    if let Some((_, diverge)) = &initial.diverge {
+                        self.visit_expr(diverge);
+                    }
+                }
+                return;
+            }
+            syn::visit::visit_local(self, local);
+        }
+        fn visit_pat_ident(&mut self, pattern: &'ast syn::PatIdent) {
+            self.bind(&pattern.ident, None);
+        }
+    }
+    let mut scan = Scan::default();
+    for input in inputs {
+        if let syn::FnArg::Typed(argument) = input {
+            let as_pattern = syn::Pat::Type(syn::PatType {
+                attrs: Vec::new(),
+                pat: argument.pat.clone(),
+                colon_token: argument.colon_token,
+                ty: argument.ty.clone(),
+            });
+            if let Some((name, length)) = Scan::array_binding(&as_pattern) {
+                scan.bind(name, Some(length));
+            } else {
+                scan.visit_pat(&argument.pat);
+            }
+        }
+    }
+    scan.visit_block(block);
+    let Scan { mut arrays, others } = scan;
+    for name in others {
+        if let Some(entry) = arrays.get_mut(&name) {
+            *entry = None;
+        }
+    }
+    arrays
+}
+
+thread_local! {
+    /// The array names of the function being emitted and their lengths (see [`array_lengths`]), for `a.len()`.
+    static ARRAY_LENGTHS: std::cell::RefCell<std::collections::HashMap<String, Option<u32>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// Whether the next array literal to be emitted stands in a position that has a lowering (see
+    /// [`emit_value_expression`]). The literal's own arm consumes it, so it cannot reach another expression.
+    static ARRAY_LITERAL_OK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Sets [`ARRAY_LENGTHS`] for the body of one function and restores the previous table when dropped.
+struct ArrayScope(std::collections::HashMap<String, Option<u32>>);
+
+impl ArrayScope {
+    fn enter(next: std::collections::HashMap<String, Option<u32>>) -> Self {
+        Self(ARRAY_LENGTHS.with(|cell| cell.replace(next)))
+    }
+}
+
+impl Drop for ArrayScope {
+    fn drop(&mut self) {
+        ARRAY_LENGTHS.with(|cell| *cell.borrow_mut() = std::mem::take(&mut self.0));
+    }
+}
+
+/// The length of the array a name holds, when every binding of the name in the function agrees.
+fn array_length_of(expression: &syn::Expr) -> Option<u32> {
+    let syn::Expr::Path(path) = expression else {
+        return None;
+    };
+    let name = path.path.get_ident()?.unraw().to_string();
+    ARRAY_LENGTHS.with(|cell| cell.borrow().get(&name).copied().flatten())
+}
+
 /// How often each identifier occurs in the tokens of a module, after raw stripping (`r#Mat4` counts as `Mat4`).
 fn count_identifiers(
     stream: proc_macro2::TokenStream,
@@ -692,6 +846,7 @@ pub(crate) fn emit_kernel_in(
     writeln!(output, "{{").unwrap();
     output.push_str(&stage.prologue(&facts));
     output.push_str(&texture::dimension_prologue(&textures, kernel));
+    let _arrays = ArrayScope::enter(array_lengths(&kernel.sig.inputs, &kernel.block));
     emit_statements(&mut output, &mut table, &kernel.block.stmts, 1, false)?;
     output.push_str(&stage.epilogue(&facts));
     writeln!(output, "}}").unwrap();
@@ -906,6 +1061,13 @@ fn emit_value_match(
 ) -> syn::Result<()> {
     let padding = "    ".repeat(indent);
     let declared = emit_ident(name);
+    if matches!(unparenthesized_type(ty), syn::Type::Array(_)) {
+        return Err(diagnostics::error(
+            Code::UnsupportedExpression,
+            expression,
+            "a `match` does not give an array value (arrays are built by a literal or a repeat, or returned by a helper): use `if`/`else` statements that assign the elements, or a helper that returns the array",
+        ));
+    }
     let ty = emit_type(ty)?;
     let target = if mentions_ident(expression.to_token_stream(), &name.unraw().to_string()) {
         format!("__gust_match_{indent}_{index}")
@@ -1122,9 +1284,10 @@ fn emit_function(
 ) -> syn::Result<()> {
     let padding = "    ".repeat(depth);
     let record = table.begin(output, signature.ident.span());
+    let _arrays = ArrayScope::enter(array_lengths(&signature.inputs, block));
     let return_type = match &signature.output {
         syn::ReturnType::Default => "void".to_owned(),
-        syn::ReturnType::Type(_, ty) => emit_type(ty)?,
+        syn::ReturnType::Type(_, ty) => emit_value_type(ty)?,
     };
     let qualifier = match signature.inputs.first() {
         _ if depth == 0 => "",
@@ -1152,7 +1315,7 @@ fn emit_function(
         }
         first = false;
         let (name, ty) = typed_argument(argument)?;
-        write!(output, "{} {}", emit_type(ty)?, emit_ident(name)).unwrap();
+        write!(output, "{} {}", emit_value_type(ty)?, emit_ident(name)).unwrap();
     }
     writeln!(output, ")").unwrap();
     writeln!(output, "{padding}{{").unwrap();
@@ -1274,6 +1437,52 @@ fn emit_statement(
             {
                 value = expr;
             }
+            // Arrays (slice m9.r1). Slang cannot infer the type of `{ .. }`, so the `let` is typed.
+            let array_annotation = annotation
+                .map(unparenthesized_type)
+                .filter(|ty| matches!(ty, syn::Type::Array(_)));
+            if matches!(value, syn::Expr::Array(_) | syn::Expr::Repeat(_)) {
+                let Some(array_type) = array_annotation else {
+                    return Err(diagnostics::error(
+                        Code::UnsupportedExpression,
+                        value,
+                        "an array literal or repeat initializes a typed `let`, because Slang cannot infer the type of `{ .. }`: write `let a: [T; N] = ..;`",
+                    ));
+                };
+                if let syn::Expr::Repeat(repeat) = value {
+                    return emit_repeat(
+                        output,
+                        indent,
+                        index,
+                        repeat,
+                        &RepeatTarget::Let {
+                            array_type,
+                            name: &pattern.ident,
+                        },
+                    );
+                }
+            }
+            if let (Some(array_type), false) = (
+                array_annotation,
+                matches!(value, syn::Expr::Match(_) | syn::Expr::Struct(_)),
+            ) {
+                // An initializer that names the binding reads the previous one (`let a: [u32; 2] = [a[1], a[0]];`),
+                // which Slang would resolve to the new local: build the value in a temporary first.
+                let declaration = emit_value_type(array_type)?;
+                let name = emit_ident(&pattern.ident);
+                let text = emit_value_expression(&initial.expr)?;
+                if mentions_ident(
+                    initial.expr.to_token_stream(),
+                    &pattern.ident.unraw().to_string(),
+                ) {
+                    let temporary = format!("__gust_arr_{index}");
+                    writeln!(output, "{padding}{declaration} {temporary} = {text};").unwrap();
+                    writeln!(output, "{padding}{declaration} {name} = {temporary};").unwrap();
+                } else {
+                    writeln!(output, "{padding}{declaration} {name} = {text};").unwrap();
+                }
+                return Ok(());
+            }
             if let syn::Expr::Match(expression) = value
                 && crate::validate::is_switch_match(expression)
             {
@@ -1355,6 +1564,38 @@ fn emit_statement(
                 )?;
                 writeln!(output, "{padding}}}").unwrap();
             }
+            // `a = [e; N];` (slice m9.r1): the operand is evaluated once, before the place is written.
+            syn::Expr::Assign(assign)
+                if matches!(unparenthesized_expr(&assign.right), syn::Expr::Repeat(_)) =>
+            {
+                let syn::Expr::Repeat(repeat) = unparenthesized_expr(&assign.right) else {
+                    unreachable!("guarded by the match arm");
+                };
+                emit_repeat(
+                    output,
+                    indent,
+                    index,
+                    repeat,
+                    &RepeatTarget::Assign {
+                        place: emit_expression(&assign.left)?,
+                    },
+                )?;
+            }
+            // `return [e; N];` and a repeat as the tail value of a function.
+            syn::Expr::Return(ret)
+                if ret.expr.as_deref().is_some_and(|value| {
+                    matches!(unparenthesized_expr(value), syn::Expr::Repeat(_))
+                }) =>
+            {
+                let Some(syn::Expr::Repeat(repeat)) = ret.expr.as_deref().map(unparenthesized_expr)
+                else {
+                    unreachable!("guarded by the match arm");
+                };
+                emit_repeat(output, indent, index, repeat, &RepeatTarget::Return)?;
+            }
+            syn::Expr::Repeat(repeat) if is_tail && semicolon.is_none() => {
+                emit_repeat(output, indent, index, repeat, &RepeatTarget::Return)?;
+            }
             syn::Expr::Assign(assign) if matches!(assign.right.as_ref(), syn::Expr::Struct(_)) => {
                 // Rust evaluates the complete RHS before evaluating/writing the
                 // destination. Direct field writes break swaps and aliasing.
@@ -1375,7 +1616,13 @@ fn emit_statement(
                 } else {
                     ""
                 };
-                writeln!(output, "{padding}{prefix}{};", emit_expression(expression)?).unwrap();
+                // A tail value may be an array literal (the returned array); a statement may not.
+                let text = if prefix.is_empty() {
+                    emit_expression(expression)?
+                } else {
+                    emit_value_expression(expression)?
+                };
+                writeln!(output, "{padding}{prefix}{text};").unwrap();
             }
         },
         syn::Stmt::Item(item) => {
@@ -1664,12 +1911,54 @@ fn emit_for(
 
 fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
     Ok(match expression {
-        syn::Expr::Array(array) => format!("{{ {} }}", emit_list(array.elems.iter())?.join(", ")),
+        syn::Expr::Array(array) => {
+            // Slang takes `{ .. }` where the type is known: a typed `let`, an assignment, a call argument or a returned
+            // value (`emit_value_expression` says so); anywhere else it is no array.
+            if !ARRAY_LITERAL_OK.with(|flag| flag.replace(false)) {
+                return Err(diagnostics::error(
+                    Code::UnsupportedExpression,
+                    array,
+                    "an array literal is the initializer of a typed `let`, the right side of an assignment, a call argument or a returned value: bind it to a typed local first",
+                ));
+            }
+            format!("{{ {} }}", emit_list(array.elems.iter())?.join(", "))
+        }
         syn::Expr::Assign(assign) => format!(
             "{} = {}",
             emit_expression(&assign.left)?,
-            emit_expression(&assign.right)?
+            emit_value_expression(&assign.right)?
         ),
+        syn::Expr::Repeat(repeat) => {
+            return Err(diagnostics::error(
+                Code::UnsupportedExpression,
+                repeat,
+                "`[e; N]` is the whole initializer of a typed `let`, the right side of an assignment statement or a returned value, so that `e` is evaluated once before the array is built: bind it first (`let a: [T; N] = [e; N];`)",
+            ));
+        }
+        syn::Expr::Binary(binary)
+            if matches!(
+                binary.op,
+                syn::BinOp::Eq(_)
+                    | syn::BinOp::Ne(_)
+                    | syn::BinOp::Lt(_)
+                    | syn::BinOp::Le(_)
+                    | syn::BinOp::Gt(_)
+                    | syn::BinOp::Ge(_)
+            ) && (array_length_of(unparenthesized_expr(&binary.left)).is_some()
+                || array_length_of(unparenthesized_expr(&binary.right)).is_some()) =>
+        {
+            return Err(diagnostics::error(
+                Code::UnsupportedExpression,
+                binary,
+                "arrays are not compared with `==`, `!=`, `<`, `<=`, `>` or `>=`: compare the elements",
+            ));
+        }
+        // `i as usize` in an index is lowered like `i as u32` (fix round 1 of m9.r1): the index gets the 32-bit
+        // unsigned value of the source, so a `bool` source and a signed `%` index as in Rust, and the remaining
+        // difference is the 32/64-bit width class of D39. The validator took the cast only in an index (GUST-E0334).
+        syn::Expr::Cast(cast) if is_usize_type(&cast.ty) => {
+            format!("uint({})", emit_expression(&cast.expr)?)
+        }
         syn::Expr::Binary(binary) if matches!(binary.op, syn::BinOp::BitXor(_)) => format!(
             "__gust_xor({})",
             emit_list([binary.left.as_ref(), binary.right.as_ref()].into_iter())?.join(", ")
@@ -1799,13 +2088,13 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             format!(
                 "{owner}.{}({})",
                 collisions::emit_name(&member),
-                emit_list(call.args.iter())?.join(", ")
+                emit_arguments(call.args.iter())?.join(", ")
             )
         }
         syn::Expr::Call(call) => format!(
             "{}({})",
             emit_expression(&call.func)?,
-            emit_list(call.args.iter())?.join(", ")
+            emit_arguments(call.args.iter())?.join(", ")
         ),
         syn::Expr::Cast(cast) => {
             format!("{}({})", emit_type(&cast.ty)?, emit_expression(&cast.expr)?)
@@ -1861,6 +2150,11 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             emit_expression(&call.receiver)?
         }
         syn::Expr::MethodCall(call) if call.method == "len" => {
+            // The length of an array is its `N` (slice m9.r1); the length of a storage parameter is a constant of the
+            // dispatch.
+            if let Some(length) = array_length_of(unparenthesized_expr(&call.receiver)) {
+                return Ok(length.to_string());
+            }
             let receiver = emit_expression(&call.receiver)?;
             format!("__gpu_len_{receiver}")
         }
@@ -1895,7 +2189,7 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
             "{}.{}({})",
             emit_expression(&call.receiver)?,
             emit_ident(&call.method),
-            emit_list(call.args.iter())?.join(", ")
+            emit_arguments(call.args.iter())?.join(", ")
         ),
         syn::Expr::Paren(paren) => format!("({})", emit_expression(&paren.expr)?),
         syn::Expr::Path(path) if path.path.is_ident("None") => "none".to_owned(),
@@ -1929,7 +2223,7 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         }
         syn::Expr::Path(path) => path.path.to_token_stream().to_string().replace(" :: ", "."),
         syn::Expr::Return(expression) => match &expression.expr {
-            Some(value) => format!("return {}", emit_expression(value)?),
+            Some(value) => format!("return {}", emit_value_expression(value)?),
             None => "return".to_owned(),
         },
         syn::Expr::Struct(value) => {
@@ -2125,11 +2419,29 @@ thread_local! {
 fn emit_list<'a>(
     elements: impl ExactSizeIterator<Item = &'a syn::Expr>,
 ) -> syn::Result<Vec<String>> {
+    emit_list_of(elements, false)
+}
+
+/// [`emit_list`] for the arguments of a call, where an array literal has a lowering (`f({ a, b })`, slice m9.r1).
+fn emit_arguments<'a>(
+    elements: impl ExactSizeIterator<Item = &'a syn::Expr>,
+) -> syn::Result<Vec<String>> {
+    emit_list_of(elements, true)
+}
+
+fn emit_list_of<'a>(
+    elements: impl ExactSizeIterator<Item = &'a syn::Expr>,
+    arrays: bool,
+) -> syn::Result<Vec<String>> {
     let len = elements.len();
     elements
         .enumerate()
         .map(|(index, element)| {
-            let text = emit_expression(element)?;
+            let text = if arrays {
+                emit_value_expression(element)?
+            } else {
+                emit_expression(element)?
+            };
             Ok(if needs_keep(element, index, len) {
                 KEEP_USED.with(|used| used.set(true));
                 format!("{KEEP_HELPER}({text})")
@@ -2596,6 +2908,159 @@ fn emit_type(ty: &syn::Type) -> syn::Result<String> {
         return Ok(format!("{name}<{payload}>"));
     }
     Ok(format!("{name}<{}>", parameters.join(", ")))
+}
+
+/// `expression` without the parentheses and invisible groups around it.
+fn unparenthesized_expr(expression: &syn::Expr) -> &syn::Expr {
+    match expression {
+        syn::Expr::Paren(inner) => unparenthesized_expr(&inner.expr),
+        syn::Expr::Group(inner) => unparenthesized_expr(&inner.expr),
+        other => other,
+    }
+}
+
+/// Whether `ty` is the path `usize`.
+fn is_usize_type(ty: &syn::Type) -> bool {
+    matches!(unparenthesized_type(ty), syn::Type::Path(path)
+        if path.qself.is_none() && path.path.is_ident("usize"))
+}
+
+/// The Slang type of a local, a parameter or a result (slice m9.r1): [`emit_type`], and `T[N]` for `[T; N]`. A struct
+/// field, a buffer or uniform element and the payload of an `Option` or `Result` still go through [`emit_type`], which
+/// has no array arm, so an array there is refused exactly as before (GUST-E0813).
+fn emit_value_type(ty: &syn::Type) -> syn::Result<String> {
+    let syn::Type::Array(array) = unparenthesized_type(ty) else {
+        return emit_type(ty);
+    };
+    let length = array_length_literal(&array.len).ok_or_else(|| {
+        diagnostics::error(
+            Code::ArrayLength,
+            &array.len,
+            "an array length is an integer literal greater than zero",
+        )
+    })?;
+    // A nested array has no arm in `emit_type` either (the validator refused it, GUST-E0217).
+    Ok(format!("{}[{length}]", emit_type(&array.elem)?))
+}
+
+/// [`emit_expression`] for a position where an array literal has a lowering: the flag lives only for the one expression
+/// when it is a literal, so it cannot let a literal nested somewhere else through.
+fn emit_value_expression(expression: &syn::Expr) -> syn::Result<String> {
+    ARRAY_LITERAL_OK.with(|flag| {
+        flag.set(matches!(
+            unparenthesized_expr(expression),
+            syn::Expr::Array(_)
+        ));
+    });
+    // A parenthesized literal is emitted without the parentheses: `({ .. })` is not an initializer list to slangc.
+    let inner = unparenthesized_expr(expression);
+    let text = emit_expression(if matches!(inner, syn::Expr::Array(_)) {
+        inner
+    } else {
+        expression
+    });
+    ARRAY_LITERAL_OK.with(|flag| flag.set(false));
+    text
+}
+
+/// What a `[e; N]` is assigned to.
+enum RepeatTarget<'a> {
+    /// `let name: [T; N] = [e; N];`
+    Let {
+        array_type: &'a syn::Type,
+        name: &'a syn::Ident,
+    },
+    /// `place = [e; N];`
+    Assign { place: String },
+    /// A returned value.
+    Return,
+}
+
+/// The longest repeat written as one initializer list; a longer one is filled by a loop.
+const REPEAT_LIST_LIMIT: u32 = 16;
+
+/// `[e; N]` (slice m9.r1): `e` is evaluated once, into `__gust_rep_<k>`, before the array is built, as Rust does
+/// (`[s.bump(); 4]` calls `bump` once). Up to [`REPEAT_LIST_LIMIT`] elements the array is `{ t, t, .. }`, above it a
+/// declaration and a `for` that fills it.
+fn emit_repeat(
+    output: &mut String,
+    indent: usize,
+    index: usize,
+    repeat: &syn::ExprRepeat,
+    target: &RepeatTarget<'_>,
+) -> syn::Result<()> {
+    let padding = "    ".repeat(indent);
+    let length = array_length_literal(&repeat.len).ok_or_else(|| {
+        diagnostics::error(
+            Code::ArrayLength,
+            &repeat.len,
+            "an array length is an integer literal greater than zero",
+        )
+    })?;
+    let temporary = format!("__gust_rep_{index}");
+    let counter = format!("__gust_fill_{index}");
+    // The element type is written when the `let` names it; `var` otherwise (Slang converts on the assignment).
+    let element_type = match target {
+        RepeatTarget::Let { array_type, .. } => match unparenthesized_type(array_type) {
+            syn::Type::Array(array) => emit_type(&array.elem)?,
+            _ => "var".to_owned(),
+        },
+        _ => "var".to_owned(),
+    };
+    writeln!(
+        output,
+        "{padding}{element_type} {temporary} = {};",
+        emit_expression(&repeat.expr)?
+    )
+    .unwrap();
+    let list = || {
+        format!(
+            "{{ {} }}",
+            vec![temporary.as_str(); length as usize].join(", ")
+        )
+    };
+    let fill = |output: &mut String, place: &str| {
+        writeln!(
+            output,
+            "{padding}for (var {counter} = 0; {counter} < {length}; {counter}++)"
+        )
+        .unwrap();
+        writeln!(output, "{padding}{{").unwrap();
+        writeln!(output, "{padding}    {place}[{counter}] = {temporary};").unwrap();
+        writeln!(output, "{padding}}}").unwrap();
+    };
+    match target {
+        RepeatTarget::Let { array_type, name } => {
+            let declaration = emit_value_type(array_type)?;
+            let name = emit_ident(name);
+            if length <= REPEAT_LIST_LIMIT {
+                writeln!(output, "{padding}{declaration} {name} = {};", list()).unwrap();
+            } else {
+                writeln!(output, "{padding}{declaration} {name};").unwrap();
+                fill(output, &name);
+            }
+        }
+        RepeatTarget::Assign { place } => {
+            if length <= REPEAT_LIST_LIMIT {
+                writeln!(output, "{padding}{place} = {};", list()).unwrap();
+            } else {
+                fill(output, place);
+            }
+        }
+        RepeatTarget::Return => {
+            if length > REPEAT_LIST_LIMIT {
+                return Err(diagnostics::error(
+                    Code::UnsupportedExpression,
+                    repeat,
+                    format!(
+                        "a returned `[e; N]` has at most {REPEAT_LIST_LIMIT} elements: build a longer one in a typed local (`let a: [T; N] = [e; N]; a`)"
+                    ),
+                ));
+            }
+            writeln!(output, "{padding}return {};", list()).unwrap();
+        }
+    }
+    Ok(())
 }
 
 fn typed_argument(argument: &syn::FnArg) -> syn::Result<(&syn::Ident, &syn::Type)> {

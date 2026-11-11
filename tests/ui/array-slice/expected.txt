@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: array-slice/src/main.rs
+line: 5
+message: [GUST-E0111] slices are not supported: pass a fixed-size array `[T; N]` by value, or the values it holds

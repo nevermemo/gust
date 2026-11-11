@@ -121,14 +121,64 @@ impl Gen<'_> {
         }
     }
 
+    /// The fields of struct `j` that a `&mut self` method of `j` sets in its top-level statements (so a read of one
+    /// after a call to such a method can see the write).
+    fn written_fields(&self, j: u8) -> Vec<u8> {
+        let mut out = Vec::new();
+        for def in &self.table.fns {
+            if def.recv != Recv::Mut || def.owner != Some(j) {
+                continue;
+            }
+            for stmt in &def.body {
+                if let Stmt::Set { place, .. } = stmt
+                    && place.root == Root::SelfV
+                    && place.index.is_none()
+                    && let [k] = place.path[..]
+                    && !out.contains(&k)
+                {
+                    out.push(k);
+                }
+            }
+        }
+        out
+    }
+
+    /// A read of a scalar field of type `ty` on a struct place rooted at `root`: after a `&mut self` call on the same
+    /// root it sees the call's writes, before it does not, so an array literal mixing calls and reads shows the order.
+    fn root_field_read(&mut self, ty: Ty, root: Root) -> Option<Expr> {
+        let places = self.struct_places();
+        let mut reads: Vec<Place> = Vec::new();
+        for (place, j, _) in places {
+            if place.root != root {
+                continue;
+            }
+            let written = self.written_fields(j);
+            for (k, field) in self.table.structs[usize::from(j)].fields.iter().enumerate() {
+                if *field == ty && written.contains(&(k as u8)) {
+                    reads.push(place.field(k as u8));
+                }
+            }
+        }
+        if reads.is_empty() {
+            return None;
+        }
+        let place = reads[self.b.below(reads.len() as u32) as usize].clone();
+        Some(Expr::Read { place, ty })
+    }
+
     /// One element of an array literal or repeat.
     fn array_elem_value(&mut self, e: Elem, bias: Option<Root>) -> Expr {
         match e {
             Elem::U32 | Elem::I32 => {
                 let ty = e.ty();
                 if let Some(root) = bias
-                    && self.b.chance(80)
-                    && let Some(call) = self.root_call(ty, root, 2)
+                    && self.b.chance(90)
+                    && let Some(call) = self
+                        .b
+                        .chance(25)
+                        .then(|| self.root_field_read(ty, root))
+                        .flatten()
+                        .or_else(|| self.root_call(ty, root, 2))
                 {
                     return call;
                 }
@@ -200,7 +250,7 @@ impl Gen<'_> {
             .filter(|(_, t, _)| *t == ty)
             .map(|(v, ..)| *v)
             .collect();
-        if !locals.is_empty() && self.b.chance(55) {
+        if !locals.is_empty() && self.b.chance(75) {
             return Expr::Var(locals[self.b.below(locals.len() as u32) as usize], ty);
         }
         let elems = (0..aty.n)
@@ -220,7 +270,7 @@ impl Gen<'_> {
         for &(var, ty) in params {
             let Ty::Array(aty) = ty else { continue };
             let elem = aty.e.ty();
-            if self.b.chance(70) {
+            if self.b.chance(85) {
                 let index = self.fn_array_index(var, aty);
                 let place = Self::elem_place(var, aty, index, &[]);
                 // A shift, a division or an overflow would discard programs for nothing: xor, or and add of a mask.
@@ -251,7 +301,14 @@ impl Gen<'_> {
 
     /// A call of a `&mut self` method of struct element `j` returning `ty`, on element `index` of array local
     /// `var`: the call whose effect on the array a surrounding place or read can see.
-    fn elem_call(&mut self, var: u32, aty: ArrTy, ty: Ty, depth: u32) -> Option<Expr> {
+    fn elem_call(
+        &mut self,
+        var: u32,
+        aty: ArrTy,
+        ty: Ty,
+        depth: u32,
+        at: Option<Expr>,
+    ) -> Option<Expr> {
         let Elem::Struct(j) = aty.e else { return None };
         let root = Root::Var(var);
         if depth == 0 || self.forbid.contains(&root) {
@@ -267,7 +324,10 @@ impl Gen<'_> {
             return None;
         }
         let f = candidates[self.b.below(candidates.len() as u32) as usize];
-        let index = self.array_index(aty.n);
+        let index = match at {
+            Some(at) if !self.driver_hole_array(var, aty) => at,
+            _ => self.call_index(var, aty),
+        };
         let recv = Self::elem_place(var, aty, index, &[]);
         let (recv, args) = self.call_parts_on(f, depth, Some(recv))?;
         Some(Expr::Call {
@@ -277,6 +337,42 @@ impl Gen<'_> {
             args,
             ty,
         })
+    }
+
+    /// Whether array local `var` is in the known driver hole (plans/m9/arrbug.md, D168): it may hold one value in
+    /// every element and its length is not 2 or 4.
+    fn driver_hole_array(&self, var: u32, aty: ArrTy) -> bool {
+        !matches!(aty.n, 2 | 4) && self.uniform.contains(&var)
+    }
+
+    /// `operand` for `place op= operand` made provably not the identity of `op` at run time, for an array in the
+    /// driver hole. `+= -= ^= |=` take `v | 1` (never 0), `<<= >>=` take `(v & 31) | 1` (1 to 31), `*= /=` take
+    /// `v | 2` (never 0 or 1), `&=` takes `v & 0xFFFF_FFFE` (never all ones), `%=` is left alone (its divisor is
+    /// already `| 1`, and `x % d` is not the identity for any `d`). An operator the arm does not name is untouched.
+    fn non_identity(op: BinOp, v: Expr, ty: Ty) -> Expr {
+        match op {
+            BinOp::Add | BinOp::Sub | BinOp::BitXor | BinOp::BitOr => {
+                Expr::bin(BinOp::BitOr, v, Expr::Lit(ty, 1))
+            }
+            BinOp::Shl | BinOp::Shr => Expr::bin(
+                BinOp::BitOr,
+                Expr::bin(BinOp::BitAnd, v, Expr::u32(31)),
+                Expr::u32(1),
+            ),
+            BinOp::Mul | BinOp::Div => Expr::bin(BinOp::BitOr, v, Expr::Lit(ty, 2)),
+            BinOp::BitAnd => Expr::bin(BinOp::BitAnd, v, Expr::Lit(ty, 0xFFFF_FFFE)),
+            _ => v,
+        }
+    }
+
+    /// An element index for a `&mut self` call on element of array `var`: a literal in the driver hole (the call's
+    /// write-back of `self` is a copy store), else any index.
+    fn call_index(&mut self, var: u32, aty: ArrTy) -> Expr {
+        if self.driver_hole_array(var, aty) {
+            Expr::u32(self.b.below(u32::from(aty.n)))
+        } else {
+            self.array_index(aty.n)
+        }
     }
 
     /// Whether `e` holds a `&mut self` call.
@@ -320,7 +416,7 @@ impl Gen<'_> {
             .copied()
             .filter(|(_, aty)| matches!(aty.e, Elem::Struct(_)))
             .collect();
-        let pool: &[(u32, ArrTy)] = if !structs.is_empty() && self.b.chance(55) {
+        let pool: &[(u32, ArrTy)] = if !structs.is_empty() && self.b.chance(70) {
             &structs
         } else {
             arrays
@@ -346,6 +442,7 @@ impl Gen<'_> {
             _ => return None,
         };
         let index = self.array_index(aty.n);
+        let same_index = index.clone();
         let place = Self::elem_place(var, aty, index, &path);
         let (op, value) = if ty == Ty::Bool {
             (None, self.expr(Ty::Bool, 3))
@@ -374,7 +471,8 @@ impl Gen<'_> {
             // The value often calls `&mut self` on the array's own elements, or on one struct root: the place is
             // read after the value, so the order shows.
             let biased = if self.b.chance(85) && matches!(aty.e, Elem::Struct(_)) {
-                self.elem_call(var, aty, value_ty, 3)
+                let at = self.b.chance(60).then(|| same_index.clone());
+                self.elem_call(var, aty, value_ty, 3, at)
             } else if self.b.chance(40) {
                 self.bias_root()
                     .and_then(|root| self.root_call(value_ty, root, 3))
@@ -408,18 +506,13 @@ impl Gen<'_> {
         } else {
             place
         };
-        // Known driver hole (plans/m9/arrbug.md, NVIDIA 610.88): a compound set at a dynamic index into a local array
-        // of length other than 2 or 4 that may hold one value in every element can lose element 0 when the operand is
-        // an identity the driver folds. The index is then a literal (a constant index is not affected). Removed when a
-        // driver fixes it.
-        let place = if op.is_some()
-            && !matches!(aty.n, 2 | 4)
-            && self.uniform.contains(&var)
-            && !matches!(place.index.as_deref(), Some(Expr::Lit(..)))
-        {
-            Self::elem_place(var, aty, Expr::u32(self.b.below(u32::from(aty.n))), &path)
-        } else {
-            place
+        // Known driver hole (plans/m9/arrbug.md, D168, NVIDIA 610.88): a compound set at a dynamic index into a local
+        // array of length other than 2 or 4 that may hold one value in every element can lose element 0 when the
+        // operand is an identity the driver folds. The index stays dynamic; the operand is made provably not the
+        // identity of its operator (`non_identity`). Removed when a driver fixes it.
+        let value = match op {
+            Some(o) if self.driver_hole_array(var, aty) => Self::non_identity(o, value, ty),
+            _ => value,
         };
         Some(Stmt::Set {
             place,
@@ -451,7 +544,7 @@ impl Gen<'_> {
             return None;
         }
         let f = candidates[self.b.below(candidates.len() as u32) as usize];
-        let index = self.array_index(aty.n);
+        let index = self.call_index(var, aty);
         let recv = Self::elem_place(var, aty, index, &[]);
         let (recv, args) = self.call_parts_on(f, 3, Some(recv))?;
         Some(Stmt::Call {
@@ -468,7 +561,7 @@ impl Gen<'_> {
         let mut arrays: Vec<(u32, ArrTy)> = Vec::new();
         for _ in 0..1 + self.b.below(2) {
             let aty = self.array_local_ty();
-            let bias = if self.b.chance(60) {
+            let bias = if self.b.chance(75) {
                 self.bias_root()
             } else {
                 None
@@ -489,7 +582,7 @@ impl Gen<'_> {
         }
         for _ in 0..2 + self.b.below(5) {
             let (pre_mark, at) = (self.pre.len(), body.len());
-            let kind = self.b.weighted(&[38, 18, 10, 8, 14, 12]);
+            let kind = self.b.weighted(&[38, 18, 8, 8, 24, 12]);
             let stmt = match kind {
                 0 => self.array_set_stmt(&arrays),
                 1 => self.elem_call_stmt(&arrays),
@@ -576,7 +669,11 @@ impl Gen<'_> {
         self.uniform.retain(|v| *v != var);
         let same = match init {
             Expr::Repeat { .. } => true,
-            Expr::ArrayLit { elems, .. } => elems.windows(2).all(|w| w[0] == w[1]),
+            // Equal elements, or any element that is not a plain literal: `[x, x + 0, x]` may fold to one value.
+            Expr::ArrayLit { elems, .. } => {
+                elems.windows(2).all(|w| w[0] == w[1])
+                    || elems.iter().any(|e| !matches!(e, Expr::Lit(..)))
+            }
             Expr::Var(src, _) => self.uniform.contains(src),
             // A call result is unknown.
             _ => true,
@@ -706,10 +803,7 @@ impl Gen<'_> {
             },
         };
         // A non-zero start so that `/=`, `%=` and `-=` have something to work on; small enough for `+=` and `*=`.
-        let init = match result.ty() {
-            Ty::I32 => self.b.below(32) + 1,
-            _ => self.b.below(32) + 1,
-        };
+        let init = self.b.below(32) + 1;
         Some(Store { index, op, init })
     }
 }

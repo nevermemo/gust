@@ -226,19 +226,19 @@ mod tests {
             })
             .collect();
         let pinned: Vec<(u64, u64)> = vec![
-            (1, 8282193391876690740),
-            (2, 12607148641532664531),
-            (3, 12029915923684634583),
-            (4, 2768855108894403006),
+            (1, 12523462535275967369),
+            (2, 778325128683636630),
+            (3, 17702055140760177661),
+            (4, 659261408824330027),
         ];
         assert_eq!(hashes, pinned, "array");
     }
 
-    /// A batch is the first six programs of the float space, five of the vector space, one of the method space, two of
-    /// the enum space and two of the value space (format 10): the scalar decoding of every seed is byte for byte what
+    /// A batch is the first five programs of the float space, four of the vector space, one of the method space, two of
+    /// the enum space, two of the value space and two of the array space (format 11): the scalar decoding of every seed is what
     /// format 5 wrote, and so is the vector decoding of format 6; only the cut of the batch is new.
     #[test]
-    fn a_batch_is_six_float_programs_then_five_vector_one_method_two_enum_and_two_value_programs() {
+    fn a_batch_is_five_float_four_vector_one_method_two_enum_two_value_and_two_array_programs() {
         for seed in 1..=8 {
             let batch = generate_batch(seed).unwrap();
             let float = generate_batch_in(Space::Float, seed).unwrap();

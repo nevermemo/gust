@@ -685,7 +685,8 @@ fn the_gated_batch_of_64_seeds_writes_the_vector_forms_that_it_wrote_when_measur
     }
     let forms = crate::ast::writable_aggregate_forms();
     let hit = forms.intersection(&written).count();
-    eprintln!("BATCH-FORMS {hit} of {}", forms.len());
+    let missing: Vec<&String> = forms.difference(&written).collect();
+    eprintln!("BATCH-FORMS {hit} of {}; missing {missing:?}", forms.len());
     assert!(
         hit >= BATCH_FORMS_AT_64_SEEDS,
         "the 64-seed batch writes {hit} of {} vector forms",

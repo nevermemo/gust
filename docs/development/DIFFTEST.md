@@ -290,8 +290,9 @@ cut of format 9 as committed in 2ac5f82, and the cut now):
 The float space gives up one program per seed against format 8 (the enum programs take the room), and the method space
 two. The enum programs are method programs with enums, so the method shapes (`&mut self` calls on one root, `&&`/`||`
 right operands, same-root sets) still run in 4 programs of 16 and are counted above. The vector test
-`the_gated_batch_of_64_seeds_writes_the_vector_forms_that_it_wrote_when_measured` guards the batch itself (71 of 72
-forms); the older vector test guards the generator over its own space.
+`the_gated_batch_of_64_seeds_writes_the_vector_forms_that_it_wrote_when_measured` guards the batch itself (67 of 72
+forms from format 11, 71 before; the Arrays section names the four that left); the older vector test guards the
+generator over its own space.
 
 **Wide run, seeds 1 to 64 on the RTX 5090, tree 2c768a1 (round r1 of this slice plus m9.f1): 0 mismatches.**
 `cargo xtask check-difftest --seeds 1-64` executed 1 024 of 1 024 programs (192 of them enum programs, 3 per seed) in
@@ -491,27 +492,67 @@ flat lanes, so `let`, assignment and argument passing copy; an indexed place is 
 primitive `op=`, with a bounds check (`Violation::Index`). Accepted programs make index-versus-value order unobservable
 (E0421), so that rule and the output store's are pinned by hand ASTs written past the checker (`array_tests`).
 
-**Reachability** (the 128 array programs of the 64-seed batch, `ARRAY-FORMS` of
-`the_array_programs_of_the_64_seed_batch_write_and_run_every_form_and_order_shape`; programs / occurrences):
-literal 116 / 347, repeat 48 / 59, element read 126 / 932, `.len()` 66 / 104, element set 76 / 133, compound set 111 / 281,
-copy 24 / 31, argument 60 / 169, element method call 14 / 19, output store 77 / 77. Order shapes, written and executed:
-literal of calls on one root 7 programs (2 296 evaluations), repeat of a call 4 (260), reads indexed by calls on one root 3
-(131), set with a call on the array in the value 2 (66), output store with a call in the value 6 (196). **The order shapes
-are thin** (two to seven programs of 128); the generator biases toward them but each needs a struct root with a
-`&mut self` method of the right type.
+**Reachability** (the 128 array programs of the 64-seed batch, the `ARRAY-FORMS` lines of
+`the_array_programs_of_the_64_seed_batch_write_and_run_every_form_and_order_shape` and `difftest-run`'s coverage table;
+programs / occurrences in text / evaluations executed): literal 120 / 348 / 105 929, repeat 49 / 53 / 25 357, element read
+127 / 952 / 251 936, `.len()` 71 / 108 / 50 007, element set 70 / 112 / 37 292, compound set 117 / 313 / 110 605, copy
+14 / 15 / 3 632, argument 61 / 179 / 61 991, element method call 13 / 25 / 15 820, output store 66 / 66 / 17 899. Discards of
+the array space over seeds 1 to 64 (`difftest-gen stats 1-64`): 1 066 attempts for 128 programs; `overflow` 396, `static`
+228, `no-call` 202, `division-by-zero` 49, `index` 30, `shift-amount` 21, `no-input-read` 12 (seeds 1 to 4: 82 attempts,
+`overflow` 32, `static` 18, `no-call` 13, `division-by-zero` 6, `index` 2, `no-input-read` 2, `shift-amount` 1).
+
+**Order shapes** (static programs / executed evaluations over the batch; these are **thin**, one to nine programs of 128,
+and they are minima pinned in `SHAPE_MINIMA`): literal of calls on one root 4 / 386, repeat of a call 1 / 63, reads indexed
+by calls on one root 5 / 254, set with a call on the array in the value 4 / 7 380, output store with a call in the value
+9 / 832. The generator biases toward them: a struct array is drawn for a set 70 % of the time, the value of a set on a
+struct element calls the same array (60 % at the same index, so that `ps[k].f op= ps[k].bump()` shows place-after-value),
+a literal with a bias root mixes calls on that root with reads of a field that one of its methods writes, and helper calls
+with array arguments are drawn more often.
+
+**Generated programs observe the order mutants**
+(`the_order_mutants_change_generated_programs_and_the_order_shapes_keep_their_minima`). Over the 1 024 programs of the
+array space of seeds 1 to 64 the mutant changes at least: `ArrayLitRightToLeft` 4, `RepeatPerElement` 4, `ArrayArgByRef`
+7, `CompoundPlaceFirst` (place read before the value) 9 programs; in the 128-program batch each changes at least 1 (the
+test asserts it). The observability is low because the generated methods often return values that do not depend on their
+writes: a GPU lowering that ran one of these orders wrong would be caught by about one batch program each, not by many.
+`IndexBeforeValue` is not asked of generated programs: an accepted program cannot show it (E0421 refuses the only case
+where an index could see the value), so only the hand vectors, written past the checker, pin that rule.
 
 **Known driver hole (guard).** On the RTX 5090 (NVIDIA driver 610.88, Vulkan and D3D12 alike) a local array of length 3, 5
-or 17 whose elements all hold one runtime value, then an element at a dynamic index loaded and written back with a value
-the driver can prove unchanged (`- 0`, `+ 0`, `^ 0`, a copy), reads element 0 as 0 wherever the index is not 0. GUST's
-Slang, slangc's WGSL and naga's SPIR-V are correct; a 20-instruction `spirv-val`-clean module reproduces it and the
-Radeon 890M computes the interpreter's values. Details: `plans/m9/arrbug.md` (kept outside the repository). The
-wide run hit it once (seed 40, attempt 5 000 008, shrunk to `let mut v17: [i32; 3] = [-3 - a[0]; 3]; v17[(i % 3) as usize]
--= v8.f1;` with `v8.f1 == 0`). The generator therefore writes **no compound set at a dynamic index into a local array that
-may hold one value in every element** (filled by a repeat or an equal-element literal, a copy of one, or a call result) and
-has a length other than 2 or 4; the index is then a literal. Repeats, dynamic-index sets and identity operands are still
-generated separately. The program form stays covered on the host by `tests/array_known_driver.rs` (the shrunk program on the
-interpreter and the CPU twin) and the scan test `no_generated_program_writes_a_compound_set_...`. Remove the guard
-(`Gen::uniform` in `generator/array_gen.rs`) when a driver fixes it.
+or 17 whose elements all hold one runtime value, then an element at a dynamic index loaded, combined with an operand the
+driver can prove is the identity (`- 0`, `+ 0`, `^ 0`, a copy) and written back, reads element 0 as 0 wherever the index
+is not 0. GUST's Slang, slangc's WGSL and naga's SPIR-V are correct; a 20-instruction `spirv-val`-clean module reproduces
+it, and the Radeon 890M computes the interpreter's values. This is a driver shader-compiler defect (decision D168 records
+it; the reproduction module and the investigation are kept with the project's run notes, not in this repository). The
+first wide run hit it once (seed 40, attempt 5 000 008, shrunk to `let mut v17: [i32; 3] = [-3 - a[0]; 3];
+v17[(i % 3) as usize] -= v8.f1;` with `v8.f1 == 0`).
+
+The guard keeps the dynamic index and makes the operand provably not the identity of its operator, for every compound
+set into a local array that **may hold one value in every element** and whose length is not 2 or 4. Such an array is one
+that a repeat filled, whose literal has equal elements or any element that is not a plain literal (`[x, x + 0, x]` may fold
+to one value), a copy of such an array, or a call result. Per operator the operand `v` becomes: `+= -= ^= |=`: `v | 1`
+(never 0); `<<= >>=`: `(v & 31) | 1` (a shift amount of 1 to 31, never 0); `*= /=`: `v | 2` (never 0 or 1, so also never a
+division by zero); `&=`: `v & 0xFFFF_FFFE` (never all ones); `%=`: unchanged (its divisor is already `| 1`, and `x % d` is
+not `x` for any `d` the generator draws; this is argued, not measured on the GPU). Wrapping needs no rule of its own: an
+overflow is a discard in the interpreter, not a wrapped value. Plain `=` sets are not guarded (a set of the same value is
+not a compound set; the trigger map did not hit them). The same arrays also get a **literal index** for every
+`&mut self` method call on a struct element, because a method that leaves `self` unchanged writes the element back as a
+copy, the other trigger form (`call_index` in `generator/array_gen.rs`). There is no sentinel: no test fails when a driver
+fixes the hole, so nobody will be told to remove the guard; a GPU sentinel run from the shrunk program would do that and
+is not part of this slice.
+
+What the guard does and does not give: dynamic-index compound sets into these arrays still reach the GPU, with operands
+that are not the identity, and the call-in-the-value order shape on arrays of length 3 and 5 still runs. The identity
+operand on a dynamic index into such an array is **not** exercised on the GPU while the guard stands. The host-only vector
+`tests/array_known_driver.rs` (the shrunk seed 40 program on the interpreter and the CPU twin) pins the interpreter's
+reading of that form; **it is not GPU coverage and cannot find a GUST lowering bug**, because no Slang or WGSL runs.
+`no_generated_program_gives_the_driver_hole_an_identity_operand_or_a_call_at_a_dynamic_index` scans seeds 1 to 64 with the
+same uniformity rule and checks both halves. Remove the guard (`Gen::uniform`, `driver_hole_array`, `non_identity` and
+`call_index` in `generator/array_gen.rs`) when a driver fixes it.
+
+**GPU results (RTX 5090, driver 610.88, tree of fix round 1).** Seeds 1 to 4: 64 of 64 programs, 0 mismatches. Seeds 1 to 64:
+1 024 of 1 024 programs in `dev` and again in `dev+subgroups`, 0 mismatches, the short-circuit GPU test passing
+(1 497 s). The first wide run of the slice (before the guard) had the one mismatch described above.
 
 **Not generated.** Arrays of vectors, matrices and enums (the checker, interpreter and emitter accept them; the generator
 would need interval tracking through lanes and a discriminant check), `make(x)[1]` (an index of a call result needs an
@@ -519,22 +560,37 @@ would need interval tracking through lanes and a discriminant check), `make(x)[1
 set is not implemented because it is not reachable: `Stmt::Set` is primitive-only, so no program can compound-set a vector
 or matrix element. Arrays in struct fields and storage buffers belong to m9.r2a.
 
+**The four vector forms that left the batch.** The format 11 cut gives one vector slot to arrays, so the 64-seed batch
+writes 67 of the 72 vector forms (71 in formats 8 to 10, which lacked only `- Mat4 Mat4`). Now missing from the batch:
+`* f32 Mat2`, `- Mat2 Mat2`, `- UVec2 UVec2`, `- UVec4 UVec4` (and still `- Mat4 Mat4`); the `BATCH-FORMS` line of the
+guard test prints the list. The vector space itself still writes all 72
+(`the_generator_writes_every_binary_row_negation_and_swizzle_shape_within_the_first_seeds`), and the older GPU evidence for
+the four stands (the format 8 to 10 wide runs). No periodic wider run is scheduled, so a regression in one of the four
+would appear only when a later slice draws it again; that is the accepted cost of the array slots.
+
 **Pixel shape.** `out[idx] op= result` is a compound use of an output, which the pixel classifier refuses (GUST-E0728):
 a store program is `grid`-only, and `difftest-run --shapes grid,pixel` sets it aside through its refusal rebuild. The two
 pixel roundtrip tests build the plan without store programs.
 
-**N6.** A `gpu-error` whose message holds `Validation Error` now has a shrink identity: `shrink::validation_signature`
-(whitespace collapsed, digit runs masked, first 160 characters), carried in `Identity.build`; a candidate reproduces only
-with the same signature.
+**N6.** A `gpu-error` whose message holds `Validation Error` has a shrink identity: `shrink::validation_signature`, carried
+in `Identity.build`. The signature is the lines from `Validation Error` on, without the `In Device::...` line (its label
+names the module) and `Caused by:`, digit runs masked, joined with ` | `, the last 400 characters if longer, so the
+innermost cause (the last line) always counts. A candidate reproduces only with the same signature; the test checks that two
+failures differing only in the last line do not match. The test message is synthetic, written in wgpu's layout, not a
+recorded one.
 
-**Mutation checks.** Four test-only mutants (`DIFFTEST_MUTANT`): `array-lit-right-to-left`, `repeat-per-element`,
-`index-before-value` (assignments and the output store) and `array-arg-by-ref`. The gate `xfail-<mutant>` runs
-`cargo test --lib` with one mutant set and passes only when exactly the named test fails: MUTANT_RESULTS.
+**Mutation checks.** Four test-only mutants (`DIFFTEST_MUTANT`), each failing exactly one hand vector of `array_tests`
+(`cargo test --lib`, 243 tests, 242 pass and 1 fails; gates `xfail-<mutant>`):
+`array-lit-right-to-left` fails `an_array_literal_runs_its_elements_left_to_right`; `repeat-per-element` fails
+`a_repeat_evaluates_its_element_once`; `index-before-value` (assignments and the output store) fails
+`an_indexed_set_a_compound_set_and_the_output_store_evaluate_the_value_before_the_index`; `array-arg-by-ref` fails
+`an_array_argument_is_a_copy`. The counts above show that the first, second and fourth also change generated programs.
 
 **Tests.** `array_tests`: hand vectors (literal order, repeat once, value before index for `=`, `op=` and the store, copy
-on argument and `let`), the mutants, the emitted text, the reachability test, the guard scan. `tests/array_known_driver.rs`.
-`roundtrip`: `array_programs_compile_through_the_macro_without_a_gust_diagnostic` compiles 192 array programs.
-`corpus`: the array space of seeds 1 to 4 is pinned as format 11. `xtask`: `is_shape_row` takes the `array ` rows.
+on argument and `let`), the mutants, the emitted text, the reachability and order-shape tests, the guard scan.
+`tests/array_known_driver.rs`. `roundtrip`: `array_programs_compile_through_the_macro_without_a_gust_diagnostic` compiles
+192 array programs. `corpus`: the array space of seeds 1 to 4 is pinned as format 11. `xtask`: `is_shape_row` takes the
+`array ` rows.
 
 ## The domain filter
 

@@ -56,31 +56,44 @@ pub fn build_signature(message: &str) -> Option<String> {
 }
 
 /// The signature of a wgpu or naga validation failure in the message of a `gpu-error` (the party built the module and
-/// the device refused it): the text from `Validation Error` on, whitespace collapsed, every run of digits masked (ids
-/// of expressions, handles and `v<n>` names change as the shrinker removes statements), the first 160 characters.
-/// `None` for any other message. (m9.d1d, N6)
+/// the device refused it): the lines from `Validation Error` on, without the `In Device::...` line (its label names the
+/// module and moves) and the `Caused by:` line, each with every run of digits masked (ids of expressions, handles and
+/// `v<n>` names change as the shrinker removes statements), joined by ` | `. The innermost cause is the last line, so a
+/// message longer than 400 characters keeps its end. `None` for any other message. (m9.d1d, N6; S3 of fix round 1)
 pub fn validation_signature(message: &str) -> Option<String> {
     let start = message.find("Validation Error")?;
-    let mut masked = String::new();
-    let mut in_digits = false;
-    for word in message[start..].split_whitespace() {
-        if !masked.is_empty() {
-            masked.push(' ');
-        }
-        for c in word.chars() {
-            if c.is_ascii_digit() {
-                if !in_digits {
-                    masked.push('#');
+    let mask = |line: &str| {
+        let mut masked = String::new();
+        for word in line.split_whitespace() {
+            if !masked.is_empty() {
+                masked.push(' ');
+            }
+            let mut in_digits = false;
+            for c in word.chars() {
+                if c.is_ascii_digit() {
+                    if !in_digits {
+                        masked.push('#');
+                    }
+                    in_digits = true;
+                } else {
+                    in_digits = false;
+                    masked.push(c);
                 }
-                in_digits = true;
-            } else {
-                in_digits = false;
-                masked.push(c);
             }
         }
-        in_digits = false;
-    }
-    Some(masked.chars().take(160).collect())
+        masked
+    };
+    let lines: Vec<String> = message[start..]
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty() && *line != "Caused by:" && !line.starts_with("In Device::")
+        })
+        .map(mask)
+        .collect();
+    let joined = lines.join(" | ");
+    let skip = joined.chars().count().saturating_sub(400);
+    Some(joined.chars().skip(skip).collect())
 }
 
 /// The signature of a failure that names no element: a slangc build failure or a validation failure.

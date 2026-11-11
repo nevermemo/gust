@@ -439,7 +439,8 @@ fn the_emitted_text_of_the_hand_program_has_the_enum_forms() {
 }
 
 #[test]
-fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_six_five_one_two_two() {
+fn the_enum_space_is_selected_by_its_attempt_numbers_and_the_batch_cut_is_five_four_one_two_two_two()
+ {
     assert_eq!(space_of_attempt(METHOD_ATTEMPT_BASE), Space::Method);
     assert_eq!(space_of_attempt(ENUM_ATTEMPT_BASE - 1), Space::Method);
     assert_eq!(space_of_attempt(ENUM_ATTEMPT_BASE), Space::Enum);

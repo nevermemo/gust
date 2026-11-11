@@ -88,6 +88,11 @@ macro_rules! fixture_functions {
 }
 
 fixture!(f_arrays, arrays, "../../../tests/fixtures/arrays.rs");
+fixture!(
+    f_arrays_storage,
+    arrays_storage,
+    "../../../tests/fixtures/arrays_storage.rs"
+);
 fixture!(f_atomics, atomics, "../../../tests/fixtures/atomics.rs");
 fixture!(f_compact, compact, "../../../tests/fixtures/compact.rs");
 fixture!(
@@ -146,13 +151,19 @@ struct Golden {
     kernels: &'static [KernelDescriptor],
 }
 
-fn goldens() -> [Golden; 25] {
+fn goldens() -> [Golden; 26] {
     [
         Golden {
             file: "arrays.slang",
             text: include_str!("../../../tests/fixtures/arrays.slang"),
             entries: 1,
             kernels: f_arrays::KERNELS,
+        },
+        Golden {
+            file: "arrays_storage.slang",
+            text: include_str!("../../../tests/fixtures/arrays_storage.slang"),
+            entries: 4,
+            kernels: f_arrays_storage::KERNELS,
         },
         Golden {
             file: "atomics.slang",
@@ -478,7 +489,7 @@ impl Comparison<'_> {
                     self.problem(path, "column stride", *column_stride, wgsl_stride);
                 }
             }
-            // In the uniform address space slangc spells a matrix as a struct of one array of column vectors
+            // In the uniform address space, and as the element of a stored array, slangc spells a matrix as a struct of one array of column vectors
             // (`struct Matrix_0 { data_0 : array<vec4<f32>, 4> }`), the layout WGSL's own matrix type has there.
             (
                 TypeLayoutKind::Matrix {
@@ -488,7 +499,7 @@ impl Comparison<'_> {
                     column_stride,
                 },
                 TypeInner::Struct { members, .. },
-            ) if self.uniform => {
+            ) if self.uniform || path.ends_with("[]") => {
                 // A `let` chain in an `if`, not an `if let` match guard: the guard form needs a newer Rust than the
                 // workspace's `rust-version`.
                 let columns = match members.as_slice() {
@@ -523,6 +534,41 @@ impl Comparison<'_> {
                         format!("{members:?}"),
                     ),
                 }
+            }
+            // A stored array (slice m9.r2a, D159): `array<T, N>` with the element stride of the descriptor.
+            (
+                TypeLayoutKind::Array { element, count },
+                TypeInner::Array {
+                    base,
+                    size: ArraySize::Constant(length),
+                    stride,
+                },
+            ) => {
+                if length.get() != *count {
+                    self.problem(path, "array length", *count, length.get());
+                }
+                if *stride != element.stride {
+                    self.problem(path, "array stride", element.stride, *stride);
+                }
+                self.compare_type(&format!("{path}[]"), element, *base);
+            }
+            // An array of matrices or structs is spelled by slangc as a struct of one member, the array (`data_<n>`).
+            (TypeLayoutKind::Array { element, .. }, TypeInner::Struct { members, .. })
+                if matches!(
+                    element.kind,
+                    TypeLayoutKind::Matrix { .. } | TypeLayoutKind::Struct(_)
+                ) && members.len() == 1
+                    && members[0].offset == 0
+                    && members[0]
+                        .name
+                        .as_deref()
+                        .is_some_and(|name| name.starts_with("data"))
+                    && matches!(
+                        self.module.types[members[0].ty].inner,
+                        TypeInner::Array { .. }
+                    ) =>
+            {
+                self.compare_type(path, want, members[0].ty);
             }
             (TypeLayoutKind::Struct(fields), TypeInner::Struct { members, .. }) => {
                 if fields.len() != members.len() {
@@ -810,8 +856,8 @@ fn compare_kernel(kernel: &KernelDescriptor, module: &Module) -> Vec<String> {
     problems
 }
 
-/// The compute and fragment entries the twenty-five goldens hold in all (pinned per golden in [`goldens`]).
-const GOLDEN_ENTRIES: usize = 102;
+/// The compute and fragment entries the twenty-six goldens hold in all (pinned per golden in [`goldens`]).
+const GOLDEN_ENTRIES: usize = 106;
 
 /// The fixture kernels that no golden holds: the macro's golden test keeps only the first kernel of `atomics.rs`
 /// (`atomics.slang` has one entry for the ten kernels of the module) and of `numeric.rs` (one of two).
@@ -864,6 +910,15 @@ struct Job {
     source: Source,
 }
 
+/// Whether a layout is an array or holds one in a field, at any depth (the kernels whose reflection the helper cross-checks).
+fn holds_array(layout: &TypeLayout) -> bool {
+    match &layout.kind {
+        TypeLayoutKind::Array { .. } => true,
+        TypeLayoutKind::Struct(fields) => fields.iter().any(|field| holds_array(&field.ty)),
+        _ => false,
+    }
+}
+
 impl Job {
     fn compile(&self) -> Result<String, String> {
         match &self.source {
@@ -881,10 +936,15 @@ impl Job {
             }
             Source::Helper(kernel) => reflect::compile_reflected(kernel, Target::Wgsl)
                 .and_then(|compiled| {
-                    // D17 (plan 3.3): the helper's own reflection of a kernel with a texture, a sampler or a fragment entry agrees with the
+                    // D17 (plan 3.3): the helper's own reflection of a kernel with a texture, a sampler, a fragment entry or an array (fix round 1 of m9.r2a, S3) agrees with the
                     // descriptor the macro wrote (class and dimension of a sampled texture, exact format of a storage
                     // one, the sampler's slot).
                     if kernel.shape == Shape::Pixel
+                        || kernel.parameters.iter().any(|parameter| {
+                            parameter
+                                .resource_layout
+                                .is_some_and(|layout| holds_array(&layout.element))
+                        })
                         || kernel.parameters.iter().any(|parameter| {
                             matches!(parameter.kind, ParameterKind::Texture | ParameterKind::Sampler)
                         })

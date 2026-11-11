@@ -25,7 +25,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "array-buffer-len"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "array-const-len"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "array-field-len"
 version = "0.0.0"
 dependencies = [
  "gust-compute",
@@ -46,6 +60,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "array-len-call"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "array-nested"
 version = "0.0.0"
 dependencies = [
@@ -54,6 +75,13 @@ dependencies = [
 
 [[package]]
 name = "array-ok"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "array-order-field"
 version = "0.0.0"
 dependencies = [
  "gust-compute",
@@ -95,6 +123,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "array-uniform"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "array-usize-cast"
 version = "0.0.0"
 dependencies = [
@@ -110,6 +145,13 @@ dependencies = [
 
 [[package]]
 name = "array-usize-param"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "array-vec3-field"
 version = "0.0.0"
 dependencies = [
  "gust-compute",

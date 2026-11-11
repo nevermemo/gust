@@ -1045,7 +1045,7 @@ fn emitter_only_rejections_are_coded() {
             Code::SelfParameter,
         ),
         (
-            "mod bad { struct P { a: [u32; 2] } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
+            "mod bad { struct P { a: *const u32 } #[kernel] fn run(id: SV_DispatchThreadID) {} }",
             Code::TypeNeedsPath,
         ),
         (
@@ -7607,10 +7607,13 @@ fn a_slice_a_for_over_an_array_and_an_array_in_a_field_keep_their_codes() {
         &with_kernel("", &format!("{LOCAL4} for x in a {{ out[id.x] = x; }}")),
         Code::ForIterable,
     );
-    assert_rejected(
-        &with_kernel("pub struct P { pub a: [u32; 4] }", "out[id.x] = id.x;"),
-        Code::TypeNeedsPath,
-    );
+    // Slice m9.r2a: an array field is `T a[N];` now (D159); it was GUST-E0813 in r1.
+    let source = translate(&with_kernel(
+        "pub struct P { pub a: [u32; 4] }",
+        "out[id.x] = id.x;",
+    ))
+    .unwrap();
+    assert!(source.contains("    uint a[4];"), "{source}");
     assert_rejected(
         &with_kernel(
             "",
@@ -7822,4 +7825,557 @@ fn an_atomic_operation_never_stands_in_an_order_sensitive_value() {
         "atomic_add(&mut ctr[0], 1u32); out[id.x as usize] = id.x;",
     ))
     .unwrap();
+}
+
+// ---- Arrays in structs and storage (slice m9.r2a, D159) ----
+
+/// A module with a kernel `run` whose parameters are `parameters` (after the invocation id).
+fn with_buffers(items: &str, parameters: &str, body: &str) -> String {
+    format!(
+        "mod m {{ {items} #[kernel] pub fn run(id: SV_DispatchThreadID, {parameters}) {{ {body} }} }}"
+    )
+}
+
+const BAG: &str =
+    "pub struct Bag { pub items: [u32; 4], pub gains: [f32; 2], pub count: u32, pub total: u32 }";
+
+#[test]
+fn an_array_field_and_a_buffer_of_arrays_lower_to_slang() {
+    let source = translate(&with_buffers(
+        "pub struct Poly { pub tip: [Vec2; 3], pub n: u32, pub pad: u32 } pub struct Pt { pub x: u32, pub y: f32 } \
+         pub struct Rack { pub pts: [Pt; 2], pub v: [Vec4; 2], pub m: [Mat2; 2] }",
+        "mut cells: RWStructuredBuffer<[u32; 4]>, rows: StructuredBuffer<[f32; 8]>, mut polys: RWStructuredBuffer<Poly>, mut racks: RWStructuredBuffer<Rack>",
+        "cells[id.x][1] = 7u32;",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    for expected in [
+        "    float2 tip[3];\n    uint n;\n    uint pad;\n",
+        "    Pt pts[2];\n    float4 v[2];\n    float2x2 m[2];\n",
+        "RWStructuredBuffer<uint[4]> cells;",
+        "StructuredBuffer<float[8]> rows;",
+        "cells[id.x][1] = uint(7);",
+    ] {
+        assert!(source.contains(expected), "{expected}\n{source}");
+    }
+}
+
+#[test]
+fn every_array_place_of_a_struct_and_a_buffer_lowers_like_a_local_array() {
+    let source = translate(&with_buffers(
+        &format!("{BAG} fn sum4(x: [u32; 4]) -> u32 {{ x[0] + x[1] + x[2] + x[3] }}"),
+        "mut bags: RWStructuredBuffer<Bag>, mut cells: RWStructuredBuffer<[u32; 4]>",
+        "let i = id.x; \
+         bags[i].items[1] = bags[i].items[1] + 100u32; \
+         bags[i].items[3] += 5u32; \
+         let t: [u32; 4] = bags[i].items; \
+         bags[i].items = [t[3], t[2], t[1], t[0]]; \
+         bags[i].gains[0] += bags[i].gains[1]; \
+         bags[i].count = bags[i].items.len() as u32 + cells[i].len() as u32; \
+         bags[i].total = sum4(bags[i].items); \
+         cells[i] = t; \
+         cells[i][bags[i].items.len() - 1] += 1u32;",
+    ))
+    .unwrap()
+    .replace("\r\n", "\n");
+    for expected in [
+        "bags[i].items[1] = (bags[i].items[1] + uint(100));",
+        "(bags[i].items[3] += uint(5));",
+        "uint[4] t = bags[i].items;",
+        "bags[i].items = { t[3], t[2], t[1], t[0] };",
+        "(bags[i].gains[0] += bags[i].gains[1]);",
+        "bags[i].count = (uint(4) + uint(4));",
+        "bags[i].total = sum4(bags[i].items);",
+        "cells[i] = t;",
+        "(cells[i][(4 - 1)] += uint(1));",
+    ] {
+        assert!(source.contains(expected), "{expected}\n{source}");
+    }
+}
+
+#[test]
+fn a_struct_literal_takes_an_array_literal_for_an_array_field_and_refuses_a_repeat() {
+    let items = format!(
+        "{BAG} fn mk(v: u32) -> Bag {{ let b = Bag {{ items: [v, v + 1u32, v + 2u32, v + 3u32], gains: [1.5f32, 2.5f32], count: 0u32, total: 0u32 }}; b }}"
+    );
+    let source = translate(&with_buffers(
+        &items,
+        "mut bags: RWStructuredBuffer<Bag>",
+        "bags[id.x] = mk(id.x);",
+    ))
+    .unwrap();
+    assert!(
+        source.contains(".items = { v, (v + uint(1)), (v + uint(2)), (v + uint(3)) };"),
+        "{source}"
+    );
+    assert_rejected(
+        &with_buffers(
+            &format!(
+                "{BAG} fn mk(v: u32) -> Bag {{ let b = Bag {{ items: [v; 4], gains: [1.5f32, 2.5f32], count: 0u32, total: 0u32 }}; b }}"
+            ),
+            "mut bags: RWStructuredBuffer<Bag>",
+            "bags[id.x] = mk(id.x);",
+        ),
+        Code::UnsupportedExpression,
+    );
+}
+
+#[test]
+fn a_stored_array_has_a_length_the_gpupod_impls_cover_gust_e0216() {
+    // Accepted: 1 to 32 and the powers of two from 64 to 4096.
+    for length in [1, 2, 31, 32, 64, 128, 4096] {
+        translate(
+            &with_buffers(
+                &format!("pub struct S {{ pub a: [u32; {length}] }}"),
+                "mut b: RWStructuredBuffer<S>, mut c: RWStructuredBuffer<[f32; {length}]>",
+                "b[id.x].a[0] = 1u32;",
+            )
+            .replace("{length}", &length.to_string()),
+        )
+        .unwrap();
+    }
+    // Refused, on a field and on a buffer element. A local array keeps any length above zero.
+    for length in [33, 63, 65, 100, 4097, 8192] {
+        assert_rejected(
+            &with_buffers(
+                &format!("pub struct S {{ pub a: [u32; {length}] }}"),
+                "mut b: RWStructuredBuffer<S>",
+                "b[id.x].n = 1u32;",
+            ),
+            Code::ArrayLength,
+        );
+        assert_rejected(
+            &with_buffers(
+                "",
+                &format!("mut b: RWStructuredBuffer<[u32; {length}]>"),
+                "b[id.x][0] = 1u32;",
+            ),
+            Code::ArrayLength,
+        );
+    }
+    let error = translate(&with_buffers(
+        "pub struct S { pub a: [u32; 33] }",
+        "mut b: RWStructuredBuffer<S>",
+        "b[id.x].a[0] = 1u32;",
+    ))
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains("1 to 32 and 64, 128, 256, 512, 1024, 2048 and 4096"),
+        "{error}"
+    );
+    translate(&with_kernel(
+        "",
+        "let a: [u32; 33] = [id.x; 33]; out[id.x] = a[32];",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn a_stored_array_of_a_three_wide_element_is_gust_e0214() {
+    for element in ["Vec3", "UVec3", "Mat3"] {
+        assert_rejected(
+            &with_buffers(
+                &format!("pub struct S {{ pub a: [{element}; 4] }}"),
+                "mut b: RWStructuredBuffer<S>",
+                "b[id.x].n = 1u32;",
+            ),
+            Code::ArrayStride,
+        );
+        assert_rejected(
+            &with_buffers(
+                "",
+                &format!(
+                    "mut b: StructuredBuffer<[{element}; 4]>, mut o: RWStructuredBuffer<uint>"
+                ),
+                "o[id.x] = 1u32;",
+            ),
+            Code::ArrayStride,
+        );
+    }
+    // A local array of a 3-wide type is a value and stays fine; so are the 4-wide and 2-wide elements stored.
+    translate(&with_kernel(
+        "",
+        "let a: [Vec3; 2] = [Vec3::new(1.0f32, 2.0f32, 3.0f32), Vec3::new(1.0f32, 2.0f32, 3.0f32)]; out[id.x] = a[1].x as u32;",
+    ))
+    .unwrap();
+    for element in [
+        "u32", "i32", "f32", "Vec2", "Vec4", "IVec2", "IVec4", "UVec2", "UVec4", "Mat2", "Mat4",
+    ] {
+        translate(&with_buffers(
+            &format!("pub struct S {{ pub a: [{element}; 4], pub n: u32, pub p: u32, pub q: u32, pub r: u32 }}"),
+            "mut b: RWStructuredBuffer<[f32; 2]>",
+            "b[id.x][0] = 1.0f32;",
+        ))
+        .unwrap_or_else(|error| panic!("{element}: {error}"));
+    }
+}
+
+#[test]
+fn a_stored_array_of_arrays_or_of_a_non_value_is_gust_e0217() {
+    for field in [
+        "[[u32; 2]; 2]",
+        "[(u32, u32); 2]",
+        "[Option<u32>; 2]",
+        "[&u32; 2]",
+    ] {
+        let code = if field.starts_with("[(") {
+            Code::TupleInResource
+        } else {
+            Code::ArrayElement
+        };
+        assert_rejected(
+            &with_buffers(
+                &format!("pub struct S {{ pub a: {field} }}"),
+                "mut b: RWStructuredBuffer<S>",
+                "b[id.x].n = 1u32;",
+            ),
+            code,
+        );
+    }
+    assert_rejected(
+        &with_buffers(
+            "",
+            "mut b: RWStructuredBuffer<[[u32; 2]; 2]>",
+            "b[id.x][0][0] = 1u32;",
+        ),
+        Code::ArrayElement,
+    );
+}
+
+#[test]
+fn an_array_in_a_uniform_is_gust_e0215() {
+    // The element is an array, a struct with an array field, and a struct that holds one through another.
+    for (items, parameters) in [
+        ("", "u: Uniform<[f32; 4]>"),
+        ("pub struct P { pub a: [f32; 4] }", "u: Uniform<P>"),
+        ("pub struct P { pub a: [f32; 4] }", "u: ConstantBuffer<P>"),
+        (
+            "pub struct I { pub a: [f32; 4] } pub struct P { pub i: I, pub k: f32, pub k2: f32, pub k3: f32, pub k4: f32 }",
+            "u: Uniform<P>",
+        ),
+        ("pub struct P { pub a: [Vec3; 4] }", "u: Uniform<P>"),
+        ("pub struct P { pub a: [f32; 100] }", "u: Uniform<P>"),
+    ] {
+        assert_rejected(
+            &with_buffers(
+                items,
+                &format!("{parameters}, mut o: RWStructuredBuffer<uint>"),
+                "o[id.x] = 1u32;",
+            ),
+            Code::ArrayInUniform,
+        );
+    }
+    // The same struct is fine as a storage element.
+    translate(&with_buffers(
+        "pub struct P { pub a: [f32; 4] }",
+        "mut o: RWStructuredBuffer<P>",
+        "o[id.x].a[0] = 1.0f32;",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn len_of_an_array_field_and_of_a_buffer_element_is_its_length() {
+    let source = translate(&with_buffers(
+        &format!("{BAG} impl Bag {{ fn size(&self) -> u32 {{ self.items.len() as u32 }} }}"),
+        "mut bags: RWStructuredBuffer<Bag>, mut cells: RWStructuredBuffer<[u32; 6]>",
+        "let b = bags[id.x]; bags[id.x].count = b.items.len() as u32 + cells[id.x].len() as u32 + cells.len() as u32 + b.size();",
+    ))
+    .unwrap();
+    // `cells.len()` stays the length of the buffer (a constant of the dispatch).
+    assert!(
+        source.contains("= (((uint(4) + uint(6)) + uint(__gpu_len_cells)) + b.size());"),
+        "{source}"
+    );
+    assert!(source.contains("return uint(4);"), "{source}");
+}
+
+#[test]
+fn len_of_a_field_name_that_two_structs_give_two_lengths_is_ambiguous() {
+    for items in [
+        "pub struct A { pub a: [u32; 4] } pub struct B { pub a: [u32; 8] }",
+        "pub struct A { pub a: [u32; 4] } pub struct B { pub a: u32 }",
+    ] {
+        assert_rejected(
+            &with_buffers(
+                items,
+                "mut b: RWStructuredBuffer<A>",
+                "out[id.x] = b[id.x].a.len() as u32;",
+            ),
+            Code::LenReceiver,
+        );
+    }
+    // Two structs that agree are fine; a name no struct gives an array is the old message.
+    translate(&with_buffers(
+        "pub struct A { pub a: [u32; 4] } pub struct B { pub a: [f32; 4] }",
+        "mut b: RWStructuredBuffer<A>, mut o: RWStructuredBuffer<uint>",
+        "o[id.x] = b[id.x].a.len() as u32;",
+    ))
+    .unwrap();
+    assert_rejected(
+        &with_buffers(
+            "pub struct A { pub n: u32 }",
+            "mut b: RWStructuredBuffer<A>, mut o: RWStructuredBuffer<uint>",
+            "o[id.x] = b[id.x].n.len() as u32;",
+        ),
+        Code::LenReceiver,
+    );
+}
+
+/// A counter with an array field, whose `bump` changes the array it indexes.
+const RING: &str = "pub struct M { pub n: u32, pub ring: [u32; 4] } \
+    impl M { fn bump(&mut self) -> u32 { self.n += 1u32; self.ring[1] += 10u32; self.ring[1] } \
+    fn next(&mut self) -> u32 { self.n += 1u32; self.n } } \
+    pub struct El { pub a: [u32; 4], pub z: u32 }";
+
+#[test]
+fn an_array_place_whose_index_a_mutating_value_changes_is_gust_e0421() {
+    // Slang 2026.21 reads the index first (run/m9r2a-probe/p3.wgsl), Rust last: a field array of a storage element, a
+    // buffer of arrays, and a field array of a local.
+    for body in [
+        "let mut c = M { n: 1u32, ring: [0u32; 4] }; els[c.n as usize].a[2] = c.next();",
+        "let mut c = M { n: 1u32, ring: [0u32; 4] }; els[c.n as usize].a[2] += c.next();",
+        "let mut c = M { n: 1u32, ring: [0u32; 4] }; cells[c.n as usize][1] = c.next();",
+        "let mut c = M { n: 1u32, ring: [0u32; 4] }; c.ring[c.n as usize] += c.bump();",
+        "let mut c = M { n: 1u32, ring: [0u32; 4] }; c.ring[c.n as usize] = c.bump();",
+        "let mut c = M { n: 1u32, ring: [0u32; 4] }; els[id.x].a[c.n as usize] = c.next();",
+    ] {
+        assert_rejected(
+            &with_buffers(
+                RING,
+                "mut els: RWStructuredBuffer<El>, mut cells: RWStructuredBuffer<[u32; 4]>",
+                body,
+            ),
+            Code::ForBoundSideEffect,
+        );
+    }
+}
+
+#[test]
+fn the_array_place_orders_that_match_rust_are_accepted() {
+    // Measured with rustc and the pinned slangc (run/m9r2a-probe/ord.rs, p4/p5): each is the same in both.
+    for body in [
+        "let mut m = M { n: 0u32, ring: [1u32, 2u32, 3u32, 4u32] }; m.ring[1] += m.bump(); out[id.x] = m.ring[1];",
+        "let mut m = M { n: 0u32, ring: [1u32, 2u32, 3u32, 4u32] }; m.ring[1] = m.ring[1] + m.bump(); out[id.x] = m.ring[1];",
+        "let mut m = M { n: 0u32, ring: [1u32, 2u32, 3u32, 4u32] }; m.ring = [m.bump(), m.bump(), m.bump(), m.bump()]; out[id.x] = m.ring[1];",
+        "let mut m = M { n: 0u32, ring: [1u32, 2u32, 3u32, 4u32] }; let t: [u32; 4] = [m.ring[0], m.bump(), m.ring[1], m.bump()]; out[id.x] = t[2];",
+        "let mut m = M { n: 0u32, ring: [1u32, 2u32, 3u32, 4u32] }; let k = id.x; els[k as usize].a[2] = m.next(); out[id.x] = m.n;",
+    ] {
+        translate(&with_buffers(
+            RING,
+            "mut els: RWStructuredBuffer<El>, mut out: RWStructuredBuffer<uint>",
+            body,
+        ))
+        .unwrap_or_else(|error| panic!("{body}: {error}"));
+    }
+}
+
+#[test]
+fn a_method_cannot_mutate_an_array_field_of_a_storage_element() {
+    // The receiver rule (E0333) reaches `els[i].ring.bump()`-like receivers through the root.
+    assert_rejected(
+        &with_buffers(RING, "mut ms: RWStructuredBuffer<M>", "ms[id.x].bump();"),
+        Code::MutatingMethodOnSharedPlace,
+    );
+}
+
+#[test]
+fn an_array_field_must_not_leave_implicit_padding_gust_e0208() {
+    for fields in [
+        "pub n: u32, pub a: [Vec2; 2]",
+        "pub a: [u32; 3], pub v: Vec2",
+        "pub a: [Vec2; 2], pub n: u32",
+    ] {
+        assert_rejected(
+            &with_buffers(
+                &format!("pub struct S {{ {fields} }}"),
+                "mut b: RWStructuredBuffer<S>",
+                "b[id.x].n = 1u32;",
+            ),
+            Code::ImplicitPadding,
+        );
+    }
+    // Filled to the alignment, the same fields are fine.
+    translate(&with_buffers(
+        "pub struct S { pub n: u32, pub p: u32, pub a: [Vec2; 2], pub a3: [u32; 3], pub tail: u32 }",
+        "mut b: RWStructuredBuffer<S>",
+        "b[id.x].n = 1u32;",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn workgroup_memory_keeps_refusing_array_and_struct_elements_gust_e0210() {
+    for element in ["[f32; 4]", "Holder"] {
+        assert_rejected(
+            &with_buffers(
+                "pub struct Holder { pub a: [f32; 4] }",
+                &format!("mut scratch: Workgroup<[{element}; 8]>, mut o: RWStructuredBuffer<uint>"),
+                "o[id.x] = 1u32;",
+            ),
+            Code::WorkgroupShape,
+        );
+    }
+}
+
+#[test]
+fn an_atomic_on_an_element_of_an_array_buffer_is_refused() {
+    assert_rejected(
+        &with_buffers(
+            "",
+            "mut cells: RWStructuredBuffer<[u32; 4]>",
+            "atomic_add(&mut cells[id.x][0], 1u32);",
+        ),
+        Code::AtomicReceiverNotBuffer,
+    );
+}
+
+#[test]
+fn a_buffer_parameter_named_like_an_array_local_keeps_both_meanings() {
+    // A buffer parameter named like an array local keeps both meanings: `cells.len()` is the buffer, `a.len()` the array.
+    let source = translate(&with_buffers(
+        "",
+        "mut cells: RWStructuredBuffer<[u32; 4]>, mut o: RWStructuredBuffer<uint>",
+        "let a: [u32; 3] = [1u32, 2u32, 3u32]; o[id.x] = a.len() as u32 + cells[id.x].len() as u32 + cells.len() as u32;",
+    ))
+    .unwrap();
+    assert!(
+        source.contains("((uint(3) + uint(4)) + uint(__gpu_len_cells))"),
+        "{source}"
+    );
+}
+
+#[test]
+fn arrays_storage_golden() {
+    let source =
+        translate_every_kernel(include_str!("../../../../tests/fixtures/arrays_storage.rs"))
+            .unwrap();
+    assert_eq!(source.matches("// ==== kernel ").count(), 4);
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "arrays_storage.slang",
+        &include_str!("../../../../tests/fixtures/arrays_storage.slang").replace("\r\n", "\n"),
+    );
+}
+
+const CTR: &str = "pub struct Ctr { pub n: u32 } \
+    impl Ctr { fn next(&mut self) -> u32 { self.n += 1u32; self.n } \
+    fn take_bag(&mut self) -> Bag { self.n += 1u32; let b = Bag { items: [0u32, 0u32, 0u32, 0u32], gains: [0.0f32, 0.0f32], count: 0u32, total: 0u32 }; b } }";
+
+#[test]
+fn a_len_receiver_that_runs_code_is_refused_gust_e0306() {
+    // M1 of fix round 1: the emitter writes the constant and drops the receiver, so a call in it would run on the CPU
+    // twin and not on the GPU.
+    for expression in [
+        "bags[c.next() as usize].items.len() as u32",
+        "cells[c.next() as usize].len() as u32",
+        "c.take_bag().items.len() as u32",
+        "bags[(c.next() + 1u32) as usize].items.len() as u32",
+    ] {
+        assert_rejected(
+            &with_buffers(
+                &format!("{BAG} {CTR}"),
+                "mut bags: RWStructuredBuffer<Bag>, mut cells: RWStructuredBuffer<[u32; 4]>, mut o: RWStructuredBuffer<uint>",
+                &format!("let mut c = Ctr {{ n: 0u32 }}; o[id.x] = c.n + {expression};"),
+            ),
+            Code::LenReceiver,
+        );
+    }
+    // Pure index arithmetic keeps the constant and stays accepted.
+    let source = translate(&with_buffers(
+        &format!("{BAG} {CTR}"),
+        "mut bags: RWStructuredBuffer<Bag>, mut cells: RWStructuredBuffer<[u32; 4]>, mut o: RWStructuredBuffer<uint>",
+        "let i = id.x; o[i] = bags[i + 1u32].items.len() as u32 + cells[(i * 2u32) as usize].len() as u32;",
+    ))
+    .unwrap();
+    assert!(source.contains("(uint(4) + uint(4))"), "{source}");
+}
+
+#[test]
+fn comparing_arrays_in_fields_and_elements_is_gust_e0811() {
+    // S1 of fix round 1: refused before slangc, as for a local array.
+    for condition in [
+        "bags[i].items == bags[j].items",
+        "bags[i].items != bags[j].items",
+        "bags[i].items < bags[j].items",
+        "cells[i] == cells[j]",
+        "cells[i] >= cells[j]",
+    ] {
+        assert_rejected(
+            &with_buffers(
+                BAG,
+                "mut bags: RWStructuredBuffer<Bag>, mut cells: RWStructuredBuffer<[u32; 4]>, mut o: RWStructuredBuffer<uint>",
+                &format!("let i = id.x; let j = id.x + 1u32; if {condition} {{ o[i] = 1u32; }}"),
+            ),
+            Code::UnsupportedExpression,
+        );
+    }
+}
+
+#[test]
+fn a_struct_used_as_a_uniform_and_in_a_stored_array_is_gust_e0207() {
+    // S2 of fix round 1: the reach looks through `[L; N]`.
+    for (items, parameters) in [
+        (
+            "pub struct L { pub a: Vec4 }",
+            "u: Uniform<L>, mut cells: RWStructuredBuffer<[L; 2]>",
+        ),
+        (
+            "pub struct L { pub a: Vec4 } pub struct H { pub ls: [L; 2] }",
+            "u: Uniform<L>, mut hs: RWStructuredBuffer<H>",
+        ),
+        (
+            "pub struct L { pub a: Vec4 } pub struct H { pub ls: [L; 2] }",
+            "u: Uniform<L>, mut hs: RWStructuredBuffer<[H; 2]>",
+        ),
+    ] {
+        assert_rejected(
+            &with_buffers(
+                items,
+                &format!("{parameters}, mut o: RWStructuredBuffer<uint>"),
+                "o[id.x] = 1u32;",
+            ),
+            Code::UniformAndStorageStruct,
+        );
+    }
+    // Separate structs for the two uses are fine.
+    translate(&with_buffers(
+        "pub struct L { pub a: Vec4 } pub struct M { pub a: Vec4 }",
+        "u: Uniform<L>, mut cells: RWStructuredBuffer<[M; 2]>, mut o: RWStructuredBuffer<uint>",
+        "o[id.x] = 1u32;",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn comparing_scalars_named_like_components_is_not_an_array_comparison_in_a_soa_module() {
+    // R1 of fix round 2: a struct with array fields `x` and `y` must not make `id.x < n` or `v.x == 0.0` an array
+    // comparison; only a comparison of two arrays is E0811.
+    let items = "pub struct Soa { pub x: [f32; 4], pub y: [f32; 4] }";
+    for condition in [
+        "id.x < n",
+        "v.x == 0.0f32",
+        "id.x < v.x",
+        "a.x == b.x",
+        "a.xy != b.xy",
+    ] {
+        translate(&with_buffers(
+            items,
+            "mut s: RWStructuredBuffer<Soa>, mut o: RWStructuredBuffer<uint>",
+            &format!(
+                "let n = 4u32; let v = Vec4::new(0.0f32, 1.0f32, 2.0f32, 3.0f32); let a = Vec2::new(0.0f32, 1.0f32); let b = Vec2::new(0.0f32, 1.0f32); if {condition} {{ o[id.x] = 1u32; }}"
+            ),
+        ))
+        .unwrap_or_else(|error| panic!("{condition}: {error}"));
+    }
+    // The shapes of S1 stay refused (the test above covers fields and elements); this one in a module with the field `items`.
+    assert_rejected(
+        &with_buffers(
+            "pub struct Bag { pub items: [u32; 4] }",
+            "mut s: RWStructuredBuffer<Bag>, mut o: RWStructuredBuffer<uint>",
+            "let i = id.x; let j = id.x + 1u32; if s[i].items == s[j].items { o[i] = 1u32; }",
+        ),
+        Code::UnsupportedExpression,
+    );
 }

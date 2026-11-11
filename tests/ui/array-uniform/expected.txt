@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: array-uniform/src/main.rs
+line: 6
+message: [GUST-E0215] `Params` is reached from a uniform parameter, and an array is not part of a uniform: a constant buffer lays an array out with std140 rules, which no `GpuPod` array promises; keep the array in a struct that only storage buffers use, or give the uniform one field per element

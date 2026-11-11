@@ -3,4 +3,4 @@
 code: none
 file: array-in-field/src/main.rs
 line: 6
-message: [GUST-E0813] Slang types must be named paths
+message: [GUST-E0217] an array element cannot be an array: nested arrays are not supported, use one flat array and index `i * N + j`

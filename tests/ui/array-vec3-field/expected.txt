@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: array-vec3-field/src/main.rs
+line: 6
+message: [GUST-E0214] `Vec3` cannot be the element of an array that is a struct field: its stride in a buffer differs from its size in Rust, so no Rust array matches the buffer; use the 4-wide type, or one array per component

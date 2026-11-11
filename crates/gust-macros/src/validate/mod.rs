@@ -572,6 +572,7 @@ pub(crate) fn validate_module_in(
     // Before the item loop: a `Workgroup<[Mode; 4]>` parameter would otherwise stop at the workgroup shape check (E0210).
     check_enum_layout(stage, items, &methods.enums)?;
     check_tuple_layout(stage, items)?;
+    check_array_layout(stage, items)?;
 
     for item in items {
         match item {
@@ -646,6 +647,16 @@ fn field_layout(
     structs: &HashMap<String, &syn::ItemStruct>,
     depth: usize,
 ) -> Option<(u32, u32)> {
+    // `[T; N]` is `N` elements of `T` end to end with the alignment of `T` (a Rust array has no padding between
+    // elements, and `GpuPod for [T; N]` admits only elements whose stride is their size; slice m9.r2a).
+    if let syn::Type::Array(array) = strip_type_parens(ty) {
+        let length = crate::slang::array_length_literal(&array.len)?;
+        if depth > 16 {
+            return None;
+        }
+        let (size, alignment) = field_layout(&array.elem, structs, depth + 1)?;
+        return Some((size.checked_mul(length)?, alignment));
+    }
     let syn::Type::Path(path) = ty else {
         return None;
     };
@@ -773,6 +784,9 @@ struct MethodTable {
     /// The helpers and methods whose result type is a tuple, by name (slice m9.t). A method is known by its name alone,
     /// so a name that some impl gives a tuple result counts for every call of that name.
     tuple_returns: HashSet<String>,
+    /// The array fields of the module's structs by field name (slice m9.r2a, see `slang::array_field_lengths`): the
+    /// length, or `None` when two structs disagree about the name. For `s.items.len()`.
+    array_fields: HashMap<String, Option<u32>>,
 }
 
 /// What the validator knows of a field-less enum of the module (slice m9.e1, D157).
@@ -865,6 +879,7 @@ fn method_table(items: &[syn::Item]) -> MethodTable {
         matrix: items
             .iter()
             .any(|item| names_matrix(item.to_token_stream())),
+        array_fields: crate::slang::array_field_lengths(items),
         ..MethodTable::default()
     };
     for item in items {
@@ -1595,6 +1610,147 @@ fn check_tuple_layout(stage: &dyn StageProfile, items: &[syn::Item]) -> syn::Res
                 }
             }
             _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// The lengths a stored array may have: the ones `gust::GpuPod` is implemented for (D159).
+const STORED_ARRAY_LENGTHS: &str = "1 to 32 and 64, 128, 256, 512, 1024, 2048 and 4096";
+
+/// Whether `[T; length]` has a `GpuPod` impl (D159): 1 to 32, and the powers of two from 64 to 4096.
+fn stored_array_length_ok(length: u32) -> bool {
+    (1..=32).contains(&length) || ((64..=4096).contains(&length) && length.is_power_of_two())
+}
+
+/// The outermost array type inside `ty`, if there is one.
+fn first_array(ty: &syn::Type) -> Option<&syn::TypeArray> {
+    struct First<'ast>(Option<&'ast syn::TypeArray>);
+    impl<'ast> Visit<'ast> for First<'ast> {
+        fn visit_type_array(&mut self, ty: &'ast syn::TypeArray) {
+            self.0.get_or_insert(ty);
+        }
+    }
+    let mut scan = First(None);
+    scan.visit_type(ty);
+    scan.0
+}
+
+/// GUST-E0214, GUST-E0216 and GUST-E0217 for an array that is stored: a struct field or the element of a buffer. A
+/// stored array has the layout of `GpuPod for [T; N]` (D159), so `N` is one of [`STORED_ARRAY_LENGTHS`] and the element
+/// is one whose std430 stride is its Rust size. `place` says where the array stands, for the message.
+fn check_stored_array(array: &syn::TypeArray, place: &str) -> syn::Result<()> {
+    let Some(length) = crate::slang::array_length_literal(&array.len) else {
+        return Err(diagnostics::error(
+            Code::ArrayLength,
+            &array.len,
+            "an array length is an integer literal greater than zero (`[f32; 4]`): not `0`, a constant or an expression",
+        ));
+    };
+    if !stored_array_length_ok(length) {
+        return Err(diagnostics::error(
+            Code::ArrayLength,
+            &array.len,
+            format!(
+                "an array that is {place} has one of the lengths {STORED_ARRAY_LENGTHS}, the ones `GpuPod` is implemented for, and `{length}` is none of them: use one of those lengths, or keep the longer array in a buffer of its own elements (a local array may have any length above zero)"
+            ),
+        ));
+    }
+    if let syn::Type::Path(path) = strip_type_parens(&array.elem)
+        && let Some(ident) = path.path.get_ident()
+        && let Some(math) = math_types::math_type(&ident.unraw().to_string())
+        && !math.buffer
+    {
+        return Err(diagnostics::error(
+            Code::ArrayStride,
+            &array.elem,
+            format!(
+                "`{}` cannot be the element of an array that is {place}: its stride in a buffer differs from its size in Rust, so no Rust array matches the buffer; use the 4-wide type, or one array per component",
+                math.name
+            ),
+        ));
+    }
+    if let Some(problem) = array_element_problem(&array.elem) {
+        return Err(diagnostics::error(Code::ArrayElement, &array.elem, problem));
+    }
+    Ok(())
+}
+
+/// Arrays that are stored (slice m9.r2a, D159): a struct field, a buffer element, and never a uniform. GUST-E0215 for a
+/// uniform element that is or holds an array and for a field array of a struct a uniform reaches (std140 would round
+/// the stride of the array up to 16; the scope choice of D159, not a limit of Slang); GUST-E0216, GUST-E0217 and
+/// GUST-E0214 through [`check_stored_array`] for the rest. `Workgroup<[T; N]>` is its own shape (GUST-E0210), so it is
+/// left alone: a nested array or a struct element stays refused there.
+fn check_array_layout(stage: &dyn StageProfile, items: &[syn::Item]) -> syn::Result<()> {
+    use crate::slang::{ParameterFlavor, parameter_flavor_in};
+
+    let kernels = items.iter().filter_map(|item| match item {
+        syn::Item::Fn(function) => Some(function),
+        _ => None,
+    });
+    let mut resources: Vec<(ParameterFlavor, &syn::Type)> = Vec::new();
+    for function in kernels {
+        if crate::expand::kernel_attribute_in(stage, function)?.is_none() {
+            continue;
+        }
+        for argument in &function.sig.inputs {
+            let syn::FnArg::Typed(argument) = argument else {
+                continue;
+            };
+            let flavor = parameter_flavor_in(stage, &argument.ty);
+            if matches!(
+                flavor,
+                ParameterFlavor::StorageRead
+                    | ParameterFlavor::StorageReadWrite
+                    | ParameterFlavor::Uniform
+            ) && let Ok(element) = crate::slang::wrapper_element_type(&argument.ty)
+            {
+                resources.push((flavor, element));
+            }
+        }
+    }
+    for &(flavor, element) in &resources {
+        if flavor == ParameterFlavor::Uniform
+            && let Some(array) = first_array(element)
+        {
+            return Err(diagnostics::error(
+                Code::ArrayInUniform,
+                array,
+                "an array is not part of a uniform: a constant buffer lays an array out with std140 rules, which no `GpuPod` array promises, and arrays are storage-buffer types in this release; put the array in a storage buffer (`StructuredBuffer<[T; N]>`), or pass its elements as fields",
+            ));
+        }
+    }
+    let uniform_structs = crate::uniform::reach(stage, items)?.uniform;
+    for item in items {
+        let syn::Item::Struct(item) = item else {
+            continue;
+        };
+        if !matches!(item.fields, syn::Fields::Named(_)) {
+            continue;
+        }
+        let uniform = uniform_structs.contains(&item.ident.unraw().to_string());
+        for field in &item.fields {
+            let Some(array) = first_array(&field.ty) else {
+                continue;
+            };
+            if uniform {
+                return Err(diagnostics::error(
+                    Code::ArrayInUniform,
+                    array,
+                    format!(
+                        "`{}` is reached from a uniform parameter, and an array is not part of a uniform: a constant buffer lays an array out with std140 rules, which no `GpuPod` array promises; keep the array in a struct that only storage buffers use, or give the uniform one field per element",
+                        item.ident
+                    ),
+                ));
+            }
+            check_stored_array(array, "a struct field")?;
+        }
+    }
+    for &(flavor, element) in &resources {
+        if flavor != ParameterFlavor::Uniform
+            && let Some(array) = first_array(element)
+        {
+            check_stored_array(array, "the element of a buffer")?;
         }
     }
     Ok(())
@@ -4157,16 +4313,42 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         };
         // The `.len()` of an array is its `N` (slice m9.r1): a `usize` in Rust, so it stands inside an index or directly
         // under a cast to a 32-bit scalar.
+        // Slice m9.r2a: the receiver may also be an array field (`s.items`, `els[i].items`, judged by the field name) or
+        // an element of a buffer of arrays (`out[i]`).
         if method == "len"
-            && let Some(name) = &receiver
-            && let Some(length) = self.array_lens.get(name.trim_start_matches("r#"))
+            && let Some(length) = crate::slang::array_place_length(
+                &call.receiver,
+                &self.array_lens,
+                &self.methods.array_fields,
+            )
         {
+            let name = call
+                .receiver
+                .to_token_stream()
+                .to_string()
+                .replace(" [", "[");
+            // The emitter writes the constant `N` and drops the receiver, so a receiver that runs code (a call or a
+            // method call, anywhere in its index or base) would run on the CPU twin and not on the GPU: refuse it
+            // (fix round 1 of m9.r2a, M1). E0306 because the receiver is not one the length can be read from.
+            if receiver.is_none() && len_receiver_runs_code(&call.receiver) {
+                self.reject(
+                    Code::LenReceiver,
+                    call,
+                    &format!(
+                        "`{name}.len()` is the constant length of the array, so the call inside `{name}` would not run on the GPU: bind the element to a local first (`let e = ..; e.len()`)"
+                    ),
+                );
+                return;
+            }
+            if receiver.is_none() {
+                self.visit_expr(&call.receiver);
+            }
             if length.is_none() {
                 self.reject(
                     Code::LenReceiver,
                     call,
                     &format!(
-                        "`{name}` is bound more than once in this function, as an array of another length or as something else, so `.len()` cannot say which length it means: give each array its own name"
+                        "`{name}` is bound more than once in this function with another length or as something else (for a field: two structs give the field name another length, or one gives it no array), so `.len()` cannot say which length it means: give each array its own name"
                     ),
                 );
             } else if self.index_depth == 0
@@ -4931,6 +5113,26 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 }
 
+/// Whether evaluating `expr` can run code (a call, a method call, or any form this check does not know): the receiver
+/// of an array `.len()` that does so is refused, because the emitter replaces `.len()` by a constant (M1, fix round 1 of
+/// m9.r2a). Names, literals, fields, indexes and plain arithmetic do not.
+fn len_receiver_runs_code(expr: &syn::Expr) -> bool {
+    match expr {
+        syn::Expr::Path(_) | syn::Expr::Lit(_) => false,
+        syn::Expr::Paren(inner) => len_receiver_runs_code(&inner.expr),
+        syn::Expr::Group(inner) => len_receiver_runs_code(&inner.expr),
+        syn::Expr::Field(field) => len_receiver_runs_code(&field.base),
+        syn::Expr::Index(index) => {
+            len_receiver_runs_code(&index.expr) || len_receiver_runs_code(&index.index)
+        }
+        syn::Expr::Cast(cast) => len_receiver_runs_code(&cast.expr),
+        syn::Expr::Unary(unary) => len_receiver_runs_code(&unary.expr),
+        syn::Expr::Binary(binary) => {
+            len_receiver_runs_code(&binary.left) || len_receiver_runs_code(&binary.right)
+        }
+        _ => true,
+    }
+}
 #[cfg(test)]
 mod tests {
     use crate::diagnostics::testing::{assert_code, assert_codes, codes_of_result};

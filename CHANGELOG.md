@@ -134,6 +134,12 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   `wg[w.n] = w.bump()`), which earlier slices accepted: that form gave another element than the CPU twin on the GPU with
   the pinned Slang (2026.21 reads the index first; 2026.20 called first), so this refuses a form that main accepted. On an
   RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin.
+- Arrays in structs and storage (M9, slice r2a, macro half). A struct field `[T; N]` and a buffer element `[T; N]`
+  (`RWStructuredBuffer<[T; N]>`, `StructuredBuffer<[T; N]>`) are accepted, `N` in 1..=32 or 64..=4096 by powers of two and
+  `T` a scalar, a 2- or 4-wide vector, `Mat2`, `Mat4` or a struct of the module. New: `GUST-E0214` (a `Vec3`,
+  `UVec3` or `Mat3` element) and `GUST-E0215` (an array in a uniform); `GUST-E0216` also names the stored length set.
+  `.len()` of a field or an element is its constant (a receiver with a call is `GUST-E0306`); `==` on them is `GUST-E0811`. Kernels with a stored array do not yet build through the precompiled path (`cargo gust build`; the fill rejects the `array` kind). A field of array type was `GUST-E0813` before. The `GUST-E0421` rule
+  already covered every indexed place; field arrays of storage elements are covered by tests and a fixture.
 - Fixed (m9.f1): a method call with a `<` comparison argument before another argument, such as `s.m(a < b, c)`, failed in slangc with an undefined `__gust_keep`, because the scan that defines that helper did not visit method calls.
 
 ### Changed, and may break code written for 0.1.0

@@ -16,10 +16,10 @@ use std::collections::{BTreeMap, HashMap};
 use crate::agg::{self, Agg, Scalar};
 use crate::ast::{
     ASSIGN_COMP, Arm, BinOp, Elem, Expr, MATCH_ARM_RETURN_RUN, Pat, Place, Program, Recv, Root,
-    SHAPE_EXPR_CALL, SHAPE_STMT_CALL, STRUCT_LIT, Stmt, TUPLE_READ, Ty, UnOp, bin_shape,
-    call_arg_names, call_name, call_shape, destruct_names, enum_as_name, enum_call_shapes,
-    match_names, match_shape, set_name, set_shape, tuple_field_names, tuple_lit_names,
-    tuple_set_names, value_match_names,
+    SHAPE_EXPR_CALL, SHAPE_STMT_CALL, STRUCT_LIT, Stmt, TUPLE_READ, Ty, UnOp, array_call_names,
+    array_expr_names, array_set_names, array_store_names, bin_shape, call_arg_names, call_name,
+    call_shape, destruct_names, enum_as_name, enum_call_shapes, match_names, match_shape, set_name,
+    set_shape, tuple_field_names, tuple_lit_names, tuple_set_names, value_match_names,
 };
 use crate::float::{self, Fl};
 
@@ -258,6 +258,17 @@ fn float_to_int(to: Ty, reference: f32, fl: &Fl) -> Result<u32, Violation> {
     Ok(f64::from(reference).trunc() as i64 as u32)
 }
 
+/// A place resolved: its index evaluated, so that reading and writing it again does not evaluate the index again.
+#[derive(Clone, Copy, Debug)]
+struct Loc {
+    root: Root,
+    /// The offset of the part in the root's flat components.
+    offset: usize,
+    ty: Ty,
+    /// The place is the whole root.
+    whole: bool,
+}
+
 struct Machine<'a> {
     program: &'a Program,
     element: u32,
@@ -289,6 +300,10 @@ pub(crate) fn env_mutant() -> Option<Mutant> {
         Ok("value-scrutinee-twice") => Some(Mutant::ValueScrutineeTwice),
         Ok("group-first-only") => Some(Mutant::GroupFirstOnly),
         Ok("compound-place-first") => Some(Mutant::CompoundPlaceFirst),
+        Ok("array-lit-right-to-left") => Some(Mutant::ArrayLitRightToLeft),
+        Ok("repeat-per-element") => Some(Mutant::RepeatPerElement),
+        Ok("index-before-value") => Some(Mutant::IndexBeforeValue),
+        Ok("array-arg-by-ref") => Some(Mutant::ArrayArgByRef),
         _ => None,
     }
 }
@@ -310,6 +325,16 @@ pub enum Mutant {
     /// `place op= value` reads the place before it runs the value (the order of an operator-overloaded `AddAssign`, and
     /// of Slang for an indexed place), not after. (m9.d1c fix round 1)
     CompoundPlaceFirst,
+    /// The elements of an array literal run right to left (their values are still placed left to right). (m9.d1d)
+    ArrayLitRightToLeft,
+    /// A repeat `[e; N]` evaluates `e` once per element instead of once. (m9.d1d)
+    RepeatPerElement,
+    /// `place = value` and `place op= value` locate the place (evaluate its index) before the value, and the output
+    /// store evaluates its index before the result. (m9.d1d)
+    IndexBeforeValue,
+    /// An array argument passed by reference: what the callee leaves in the parameter is written back to the caller's
+    /// variable. (m9.d1d)
+    ArrayArgByRef,
 }
 
 /// What `run_covered` counts while it runs.
@@ -563,7 +588,73 @@ impl Machine<'_> {
                 if place.root_ty.is_tuple() {
                     self.count_name(TUPLE_READ);
                 }
-                Ok(self.place_get(place))
+                if self.coverage.is_some() {
+                    for name in array_expr_names(&self.program.methods, expr) {
+                        self.count_name(name);
+                    }
+                }
+                let loc = self.locate(place)?;
+                Ok(self.loc_get(&loc))
+            }
+            Expr::ArrayLit { elems, .. } => {
+                if self.coverage.is_some() {
+                    for name in array_expr_names(&self.program.methods, expr) {
+                        self.count_name(name);
+                    }
+                }
+                // The elements run left to right, each completely before the next (Rust Reference, "Array
+                // expressions" and "Evaluation order of operands").
+                let mut values = vec![None; elems.len()];
+                let order: Vec<usize> = if self.mutant == Some(Mutant::ArrayLitRightToLeft) {
+                    (0..elems.len()).rev().collect()
+                } else {
+                    (0..elems.len()).collect()
+                };
+                for k in order {
+                    values[k] = Some(self.expr(&elems[k])?);
+                }
+                let mut parts = Vec::new();
+                for value in values.into_iter().flatten() {
+                    match value {
+                        Val::A(agg) => parts.extend_from_slice(agg.lanes()),
+                        scalar => parts.push(scalar.scalar()),
+                    }
+                }
+                Ok(Val::A(Agg::new(&parts)))
+            }
+            Expr::Repeat { ty, e } => {
+                if self.coverage.is_some() {
+                    for name in array_expr_names(&self.program.methods, expr) {
+                        self.count_name(name);
+                    }
+                }
+                let Ty::Array(a) = ty else {
+                    unreachable!("Program::check requires an array type")
+                };
+                // The element is evaluated once and copied (Reference, "Array expressions": `[expr; N]`).
+                let mut parts = Vec::new();
+                let mut value = self.expr(e)?;
+                for k in 0..a.n {
+                    if self.mutant == Some(Mutant::RepeatPerElement) && k > 0 {
+                        value = self.expr(e)?;
+                    }
+                    match value {
+                        Val::A(agg) => parts.extend_from_slice(agg.lanes()),
+                        scalar => parts.push(scalar.scalar()),
+                    }
+                }
+                Ok(Val::A(Agg::new(&parts)))
+            }
+            Expr::ArrLen { place } => {
+                if self.coverage.is_some() {
+                    for name in array_expr_names(&self.program.methods, expr) {
+                        self.count_name(name);
+                    }
+                }
+                let Ty::Array(a) = place.root_ty else {
+                    unreachable!("Program::check requires an array under `.len()`")
+                };
+                Ok(Val::I(u32::from(a.n)))
             }
             Expr::Tuple { elems, .. } => {
                 if self.coverage.is_some() {
@@ -702,47 +793,82 @@ impl Machine<'_> {
         }
     }
 
-    /// The value of a place: a scalar, or a struct as its flat components.
-    fn place_get(&self, place: &Place) -> Val {
-        let root = match place.root {
+    /// Resolves a place: evaluates its index, once, and checks it against the array's length (a `Violation::Index`
+    /// otherwise: Rust would panic), and returns where the value lives. A place without an index evaluates nothing.
+    fn locate(&mut self, place: &Place) -> Result<Loc, Violation> {
+        let program = self.program;
+        let methods = &program.methods;
+        let mut base = 0;
+        let mut ty = place.root_ty;
+        if let Some(index) = place.index.as_deref() {
+            let Ty::Array(a) = place.root_ty else {
+                unreachable!("Program::check requires an array under an index")
+            };
+            let bits = self.expr(index)?.int();
+            let in_range = if index.ty() == Ty::I32 {
+                (bits as i32) >= 0 && (bits as usize) < usize::from(a.n)
+            } else {
+                (bits as usize) < usize::from(a.n)
+            };
+            if !in_range {
+                return Err(Violation::Index);
+            }
+            base = bits as usize * methods.ty_len(a.e.ty());
+            ty = a.e.ty();
+        }
+        let (ty, offset) = methods.walk(ty, &place.path);
+        Ok(Loc {
+            root: place.root,
+            offset: base + offset,
+            ty,
+            whole: place.index.is_none() && place.path.is_empty(),
+        })
+    }
+
+    fn root_val(&self, root: Root) -> Val {
+        match root {
             Root::Var(var) => self.vars[var as usize],
             Root::SelfV => *self.self_stack.last().expect("`self` outside a call"),
-        };
-        if place.path.is_empty() {
-            return root;
-        }
-        let methods = &self.program.methods;
-        let (ty, offset) = methods.walk(place.root_ty, &place.path);
-        let Val::A(agg) = root else {
-            unreachable!("a field of a scalar: {place:?} holds {root:?}")
-        };
-        match ty {
-            Ty::Struct(j) => Val::A(Agg::new(&agg.c[offset..offset + methods.flat_len(j)])),
-            _ => agg.c[offset].into(),
         }
     }
 
-    /// Stores `value` into a place (the root is rewritten whole, as Rust writes the field in place).
-    fn place_set(&mut self, place: &Place, value: Val) {
-        if place.path.is_empty() {
-            match place.root {
+    /// The value at a resolved place: a scalar, or a struct, a vector, a matrix or an array as its flat components.
+    fn loc_get(&self, loc: &Loc) -> Val {
+        let root = self.root_val(loc.root);
+        if loc.whole {
+            return root;
+        }
+        let Val::A(agg) = root else {
+            unreachable!("a part of a scalar: {loc:?} holds {root:?}")
+        };
+        match loc.ty {
+            Ty::U32 | Ty::I32 | Ty::Bool | Ty::F32 | Ty::Enum(_) => agg.c[loc.offset].into(),
+            other => {
+                let len = self.program.methods.ty_len(other);
+                Val::A(Agg::new(&agg.c[loc.offset..loc.offset + len]))
+            }
+        }
+    }
+
+    /// Stores `value` at a resolved place (the root is rewritten whole, as Rust writes the part in place).
+    fn loc_set(&mut self, loc: &Loc, value: Val) {
+        if loc.whole {
+            match loc.root {
                 Root::Var(var) => self.vars[var as usize] = value,
                 Root::SelfV => *self.self_stack.last_mut().expect("`self` outside a call") = value,
             }
             return;
         }
-        let methods = &self.program.methods;
-        let (_, offset) = methods.walk(place.root_ty, &place.path);
-        let root = match place.root {
+        let root = match loc.root {
             Root::Var(var) => &mut self.vars[var as usize],
             Root::SelfV => self.self_stack.last_mut().expect("`self` outside a call"),
         };
         let Val::A(agg) = root else {
-            unreachable!("a field of a scalar")
+            unreachable!("a part of a scalar")
         };
         match value {
-            Val::A(part) => agg.c[offset..offset + part.n].copy_from_slice(part.lanes()),
-            scalar => agg.c[offset] = scalar.scalar(),
+            Val::A(part) => agg.c[loc.offset..loc.offset + part.n].copy_from_slice(part.lanes()),
+            scalar => agg.c[loc.offset] = scalar.scalar(),
         }
     }
 
@@ -768,7 +894,16 @@ impl Machine<'_> {
                 self.count_name(name);
             }
         }
-        let receiver = recv.as_ref().map(|place| self.place_get(place));
+        if self.coverage.is_some() {
+            for name in array_call_names(recv)
+                .into_iter()
+                .chain(crate::ast::array_arg_names(args))
+            {
+                self.count_name(name);
+            }
+        }
+        let loc = recv.as_ref().map(|place| self.locate(place)).transpose()?;
+        let receiver = loc.as_ref().map(|loc| self.loc_get(loc));
         let mut values = Vec::with_capacity(args.len());
         for arg in args {
             values.push(self.expr(arg)?);
@@ -777,11 +912,11 @@ impl Machine<'_> {
         // copy-out model of this interpreter would differ from Rust's references (the generator and `ast::Check`
         // keep it so).
         if def.recv != Recv::Value
-            && let (Some(place), Some(before)) = (recv.as_ref(), receiver.as_ref())
+            && let (Some(loc), Some(before)) = (loc.as_ref(), receiver.as_ref())
         {
             debug_assert_eq!(
                 format!("{before:?}"),
-                format!("{:?}", self.place_get(place)),
+                format!("{:?}", self.loc_get(loc)),
                 "the arguments of a borrowing call changed its receiver"
             );
         }
@@ -800,10 +935,18 @@ impl Machine<'_> {
             Some(value) => Some(value),
             None => def.tail.as_ref().map(|tail| self.expr(tail)).transpose()?,
         };
-        if let Some(place) = recv {
+        if self.mutant == Some(Mutant::ArrayArgByRef) {
+            // The wrong model: an array argument that is a variable is the callee's parameter itself.
+            for (arg, (var, _)) in args.iter().zip(&def.params) {
+                if let Expr::Var(outer, Ty::Array(_)) = arg {
+                    self.vars[*outer as usize] = self.vars[*var as usize];
+                }
+            }
+        }
+        if let Some(loc) = loc.as_ref() {
             let last = self.self_stack.pop().expect("a receiver was pushed");
             if def.recv == Recv::Mut {
-                self.place_set(place, last);
+                self.loc_set(loc, last);
             }
         }
         Ok(value)
@@ -875,10 +1018,20 @@ impl Machine<'_> {
         for stmt in stmts {
             match stmt {
                 Stmt::Let { var, init, .. } => {
+                    if self.coverage.is_some() {
+                        for name in crate::ast::array_value_names(init) {
+                            self.count_name(name);
+                        }
+                    }
                     let value = self.expr(init)?;
                     self.vars[*var as usize] = value;
                 }
                 Stmt::Assign { var, value } => {
+                    if self.coverage.is_some() {
+                        for name in crate::ast::array_value_names(value) {
+                            self.count_name(name);
+                        }
+                    }
                     let value = self.expr(value)?;
                     self.vars[*var as usize] = value;
                 }
@@ -946,17 +1099,36 @@ impl Machine<'_> {
                     // generator writes a compound set on `u32`/`i32` only; a slice that adds other operand types must
                     // give this arm the type-dependent order.
                     debug_assert!(op.is_none() || ty.is_int(), "a compound set on a primitive");
-                    let early = (self.mutant == Some(Mutant::CompoundPlaceFirst) && op.is_some())
-                        .then(|| self.place_get(place).int());
+                    if self.coverage.is_some() {
+                        for name in array_set_names(&self.program.methods, place, *op, value) {
+                            self.count_name(name);
+                        }
+                    }
+                    // The place is located (its index evaluated, once) after the value, as Rust does; the mutants
+                    // `index-before-value` and `compound-place-first` locate it first.
+                    let place_first =
+                        self.mutant == Some(Mutant::CompoundPlaceFirst) && op.is_some();
+                    let mut loc = None;
+                    if place_first || self.mutant == Some(Mutant::IndexBeforeValue) {
+                        loc = Some(self.locate(place)?);
+                    }
+                    let early = match (place_first, loc.as_ref()) {
+                        (true, Some(loc)) => Some(self.loc_get(loc).int()),
+                        _ => None,
+                    };
                     let value = self.expr(value)?;
+                    let loc = match loc {
+                        Some(loc) => loc,
+                        None => self.locate(place)?,
+                    };
                     let stored = match op {
                         None => value,
                         Some(op) => {
-                            let current = early.unwrap_or_else(|| self.place_get(place).int());
+                            let current = early.unwrap_or_else(|| self.loc_get(&loc).int());
                             Val::I(binary(*op, *ty, current, value.int())?)
                         }
                     };
-                    self.place_set(place, stored);
+                    self.loc_set(&loc, stored);
                 }
                 Stmt::Call { f, recv, args, .. } => {
                     if self.program.methods.fns[*f].recv == Recv::Mut {
@@ -1176,6 +1348,54 @@ fn count_ifs(stmts: &[Stmt]) -> u64 {
         .sum()
 }
 
+/// What one element gives: the output bits, the float interval if any, and the output slot of an array store.
+type ElementRun = (u32, Option<(f64, f64)>, Option<usize>);
+
+/// One element: the body, the result, and for an array program the slot of the final store. Rust's order for
+/// `out[idx] op= result` on a primitive is the result first, then the index; the mutant `index-before-value` evaluates
+/// the index first. The slot must be the element's own (the generator keeps it so; the GPU writes of different
+/// invocations must not overlap), or the run is outside the checked domain.
+fn run_element(machine: &mut Machine, program: &Program) -> Result<ElementRun, Violation> {
+    machine.block(&program.body)?;
+    let early = match &program.store {
+        Some(store) if machine.mutant == Some(Mutant::IndexBeforeValue) => {
+            Some(machine.expr(&store.index)?.int())
+        }
+        _ => None,
+    };
+    let value = machine.expr(&program.result)?;
+    let (bits, interval) = match value {
+        Val::I(bits) => (bits, None),
+        Val::F(reference, fl) => {
+            let (lo, hi) = fl.interval();
+            if hi - lo > float::MAX_RELATIVE_WIDTH * lo.abs().max(hi.abs()) {
+                return Err(Violation::Unboundable);
+            }
+            (reference.to_bits(), Some((lo, hi)))
+        }
+        Val::A(_) => unreachable!("Program::check rejects an aggregate result"),
+    };
+    let slot = match &program.store {
+        Some(store) => {
+            if machine.coverage.is_some() {
+                for name in array_store_names(&program.methods, &program.result) {
+                    machine.count_name(name);
+                }
+            }
+            let idx = match early {
+                Some(idx) => idx,
+                None => machine.expr(&store.index)?.int(),
+            };
+            if idx != machine.element {
+                return Err(Violation::Index);
+            }
+            Some(idx as usize)
+        }
+        None => None,
+    };
+    Ok((bits, interval, slot))
+}
+
 fn run_machine(
     program: &Program,
     covered: bool,
@@ -1193,28 +1413,31 @@ fn run_machine(
         arm_depth: 0,
         mutant,
     };
-    let mut values = Vec::with_capacity(program.count as usize);
+    // An array program's output starts as the store's `init`, and element `i` stores into `out[idx]`.
+    let init = program.store.as_ref().map_or(0, |store| store.init);
+    let mut values = if program.store.is_some() {
+        vec![init; program.count as usize]
+    } else {
+        Vec::with_capacity(program.count as usize)
+    };
     let mut intervals = Vec::new();
     for element in 0..program.count {
         machine.element = element;
         machine.self_stack.clear();
-        let result = machine
-            .block(&program.body)
-            .and_then(|()| machine.expr(&program.result))
-            .and_then(|value| match value {
-                Val::I(bits) => Ok((bits, None)),
-                Val::F(reference, fl) => {
-                    let (lo, hi) = fl.interval();
-                    if hi - lo > float::MAX_RELATIVE_WIDTH * lo.abs().max(hi.abs()) {
-                        return Err(Violation::Unboundable);
-                    }
-                    Ok((reference.to_bits(), Some((lo, hi))))
-                }
-                Val::A(_) => unreachable!("Program::check rejects an aggregate result"),
-            })
+        let (bits, interval, slot) = run_element(&mut machine, program)
             .map_err(|violation| Failure { element, violation })?;
-        values.push(result.0);
-        intervals.extend(result.1);
+        match slot {
+            Some(slot) => {
+                let stored = match program.store.as_ref().and_then(|store| store.op) {
+                    None => bits,
+                    Some(op) => binary(op, program.result.ty(), values[slot], bits)
+                        .map_err(|violation| Failure { element, violation })?,
+                };
+                values[slot] = stored;
+            }
+            None => values.push(bits),
+        }
+        intervals.extend(interval);
     }
     let coverage = machine.coverage.map(|counting| {
         let mut coverage = Coverage {
@@ -1364,7 +1587,10 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
             | Expr::Call { .. }
             | Expr::StructLit { .. }
             | Expr::Tuple { .. }
-            | Expr::TupleField { .. } => Ok(None),
+            | Expr::TupleField { .. }
+            | Expr::ArrayLit { .. }
+            | Expr::Repeat { .. }
+            | Expr::ArrLen { .. } => Ok(None),
             Expr::Input { index, .. } => fold(index).map(|_| None),
             Expr::Un {
                 op: UnOp::Neg,
@@ -1624,6 +1850,7 @@ mod tests {
         Program {
             seed: 0,
             methods: Default::default(),
+            store: None,
             attempt: 0,
             count: data.len() as u32,
             inputs: vec![InputBuf {
@@ -2160,6 +2387,7 @@ mod tests {
         Program {
             seed: 0,
             methods: Default::default(),
+            store: None,
             attempt: 0,
             count: data.len() as u32,
             inputs: vec![InputBuf {

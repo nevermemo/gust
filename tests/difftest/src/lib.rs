@@ -9,6 +9,8 @@
 //! cargo (`difftest-run --shrink`). See `docs/development/DIFFTEST.md`.
 
 pub mod agg;
+#[cfg(test)]
+mod array_tests;
 pub mod ast;
 pub mod classify;
 pub mod corpus;

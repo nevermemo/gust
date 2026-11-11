@@ -117,21 +117,24 @@ fn literal(ty: Ty, bits: u32) -> String {
                 format!("{value}i32")
             }
         }
-        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) | Ty::Tuple(_) => {
+        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) | Ty::Tuple(_) | Ty::Array(_) => {
             unreachable!("{} has no literal", ty.name())
         }
     }
 }
 
-/// The text of a place: `v3`, `v3.f1`, `self.f0.f2`.
+/// The text of a place: `v3`, `v3.f1`, `self.f0.f2`, `v3[(i + 1) as usize]`, `v3[k as usize].f1`.
 fn place_text(place: &Place) -> String {
     let mut text = match place.root {
         Root::Var(var) => format!("v{var}"),
         Root::SelfV => "self".to_owned(),
     };
+    if let Some(index) = place.index.as_deref() {
+        text.push_str(&format!("[{} as usize]", operand(index)));
+    }
     for (n, k) in place.path.iter().enumerate() {
         // The first step out of a tuple is its element (`.0`); every other step is a struct field (`.f0`).
-        if n == 0 && place.root_ty.is_tuple() {
+        if n == 0 && place.index.is_none() && place.root_ty.is_tuple() {
             text.push_str(&format!(".{k}"));
         } else {
             text.push_str(&format!(".f{k}"));
@@ -174,6 +177,8 @@ fn is_atom(expr: &Expr) -> bool {
         Expr::Read { .. } | Expr::Call { .. } | Expr::StructLit { .. } => true,
         // A tuple literal is parenthesised, `f().1` a postfix.
         Expr::Tuple { .. } | Expr::TupleField { .. } => true,
+        // An element is a postfix, `(a.len() as u32)` parenthesised, a literal or a repeat bracketed.
+        Expr::ArrayLit { .. } | Expr::Repeat { .. } | Expr::ArrLen { .. } => true,
         Expr::Un { .. }
         | Expr::Bin { .. }
         | Expr::Cast { .. }
@@ -247,6 +252,17 @@ pub fn emit_expr(expr: &Expr) -> String {
             format!("({})", elems.join(", "))
         }
         Expr::TupleField { e, index } => format!("{}.{index}", operand(e)),
+        Expr::ArrayLit { elems, .. } => {
+            let elems: Vec<String> = elems.iter().map(emit_expr).collect();
+            format!("[{}]", elems.join(", "))
+        }
+        Expr::Repeat { ty, e } => {
+            let Ty::Array(a) = ty else {
+                unreachable!("a repeat of an array type")
+            };
+            format!("[{}; {}]", emit_expr(e), a.n)
+        }
+        Expr::ArrLen { place } => format!("({}.len() as u32)", place_text(place)),
         Expr::StructLit { ty, fields, order } => {
             let fields: Vec<String> = fields
                 .iter()
@@ -475,7 +491,9 @@ fn signature(def: &FnDef) -> String {
         Recv::Value => params.push("self".to_owned()),
     }
     for (var, ty) in &def.params {
-        params.push(format!("v{var}: {}", ty.decl_text()));
+        // An array parameter is `mut`: a function writes its own copy (the argument is passed by value).
+        let keyword = if ty.is_array() { "mut " } else { "" };
+        params.push(format!("{keyword}v{var}: {}", ty.decl_text()));
     }
     let ret = def
         .ret
@@ -596,12 +614,20 @@ fn emit_kernel(program: &Program, option: &str, name: &str, out: &mut String) {
     let _ = writeln!(out, "{INDENT}{INDENT}if i < out.len() {{");
     emit_block(&program.body, 3, out);
     let pad = INDENT.repeat(3);
-    if program.result.ty() == Ty::Bool {
+    if program.result.ty() == Ty::Bool && program.store.is_none() {
         let _ = writeln!(out, "{pad}if {} {{", emit_expr(&program.result));
         let _ = writeln!(out, "{pad}{INDENT}out[i] = 1u32;");
         let _ = writeln!(out, "{pad}}} else {{");
         let _ = writeln!(out, "{pad}{INDENT}out[i] = 0u32;");
         let _ = writeln!(out, "{pad}}}");
+    } else if let Some(store) = &program.store {
+        let symbol = store.op.map_or(String::new(), |op| op.symbol().to_owned());
+        let _ = writeln!(
+            out,
+            "{pad}out[{}] {symbol}= {};",
+            emit_expr(&store.index),
+            emit_expr(&program.result)
+        );
     } else {
         let _ = writeln!(out, "{pad}out[i] = {};", emit_expr(&program.result));
     }
@@ -882,6 +908,7 @@ mod tests {
         Program {
             seed: 9,
             methods: Default::default(),
+            store: None,
             attempt: 4,
             count: 3,
             inputs: vec![
@@ -1009,7 +1036,7 @@ pub mod s9_a4 {
                 program.check().unwrap();
                 // The reparser reads the scalar and vector subsets; a method program is checked by the CPU twin
                 // against the interpreter instead (the independent reading of its parenthesisation).
-                if !program.methods.is_empty() {
+                if !program.methods.is_empty() || program.has_array() {
                     continue;
                 }
                 let text = emit_module(program);

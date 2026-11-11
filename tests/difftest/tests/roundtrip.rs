@@ -118,6 +118,30 @@ fn enum_programs_compile_through_the_macro_without_a_gust_diagnostic() {
 }
 
 #[test]
+fn array_programs_compile_through_the_macro_without_a_gust_diagnostic() {
+    // Format 11 (m9.d1d): the generator never writes an array form the macro refuses (E0421 on an index, E0810 on a
+    // struct literal element, a repeat outside its top positions, ...). The array space of seeds 1 to 12 (16 programs
+    // each, 192 in all) goes through `#[gust::gpu]` and rustc.
+    let dir = work_dir().join("roundtrip-arrays");
+    let mut programs = Vec::new();
+    for seed in 1..=12 {
+        programs.extend(generate_batch_in(Space::Array, seed).unwrap().programs);
+    }
+    assert_eq!(programs.len(), 192);
+    assert!(programs.iter().all(|p| p.has_array()));
+    write_crate(
+        &dir,
+        &package_name("arrays").unwrap(),
+        &programs,
+        &repo_root(),
+    )
+    .unwrap();
+    let (ok, output) = cargo_check(&dir);
+    assert!(!output.contains("[GUST-E"), "{}", tail(&output));
+    assert!(ok, "cargo check failed:\n{}", tail(&output));
+}
+
+#[test]
 fn value_programs_compile_through_the_macro_without_a_gust_diagnostic() {
     // Format 10 (m9.d1c): the generator never writes a tuple or value-`match` form the macro refuses (E0212, E0213,
     // E0319, E0326, E0419, E0515, E0521, E0810, ...). The value space of seeds 1 to 12 (16 programs each, 192 in all)
@@ -211,12 +235,16 @@ fn run_crates_with_a_pixel_kernel_per_module_pass_cargo_check_with_their_test_mo
     for seed in 1..=8 {
         plan.extend(plan_seed(seed).unwrap());
     }
-    assert_eq!(plan.len(), 128);
+    // An array program with an output store (`out[idx] op= result`) is `grid`-only: the pixel classifier refuses a
+    // compound use of an output (GUST-E0728). The harness sets such a module aside on its first build; this test builds
+    // the modules that take a `k_px`.
+    plan.retain(|planned| planned.program.store.is_none());
+    assert!(plan.len() >= 100, "{}", plan.len());
     let package = package_name("run-roundtrip-pixel").unwrap();
     let shapes = ShapePlan::new(&[Shape::Grid, Shape::Pixel]);
     write_run_crate_in(&dir, &package, &plan, &repo_root(), &shapes).unwrap();
     let source = std::fs::read_to_string(dir.join("src").join("lib.rs")).unwrap();
-    assert_eq!(source.matches("fn k_px(").count(), 128);
+    assert_eq!(source.matches("fn k_px(").count(), plan.len());
     let (ok, output) = cargo_check_with(&dir, &["--tests"]);
     assert!(ok, "cargo check --tests failed:\n{}", tail(&output));
     let lock = std::fs::read_to_string(dir.join("Cargo.lock")).unwrap();
@@ -230,7 +258,9 @@ fn a_return_in_one_pixel_kernel_is_one_refusal_that_the_harness_parses() {
     // the attribute's line, `set_aside` maps it to that module (not the first, not the last), and the crate without that
     // `k_px` builds, which is what the harness's one rebuild does.
     let dir = work_dir().join("roundtrip-run-pixel-mutant");
-    let plan = plan_seed(1).unwrap();
+    let mut plan = plan_seed(1).unwrap();
+    // The modules with an output store take no `k_px` (GUST-E0728): they would add refusals to the one under test.
+    plan.retain(|planned| planned.program.store.is_none());
     let package = package_name("run-roundtrip-pixel-mutant").unwrap();
     let mut shapes = ShapePlan::new(&[Shape::Grid, Shape::Pixel]);
     write_run_crate_in(&dir, &package, &plan, &repo_root(), &shapes).unwrap();

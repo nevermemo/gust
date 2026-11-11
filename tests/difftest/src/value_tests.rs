@@ -11,8 +11,8 @@ use crate::ast::{
 };
 use crate::emit::emit_module;
 use crate::generator::{
-    ENUM_END, PROGRAMS_PER_SEED, Space, VALUE_ATTEMPT_BASE, VALUE_PROGRAMS_PER_SEED,
-    generate_batch, generate_batch_in,
+    ARRAY_ATTEMPT_BASE, ENUM_END, PROGRAMS_PER_SEED, Space, VALUE_ATTEMPT_BASE, VALUE_END,
+    VALUE_PROGRAMS_PER_SEED, generate_batch, generate_batch_in,
 };
 use crate::interp::{Mutant, env_mutant, run, run_covered, run_mutant, static_violation};
 
@@ -195,6 +195,7 @@ fn program(mut body: Vec<Stmt>, result: Expr) -> Program {
     let program = Program {
         seed: 0,
         methods: methods(),
+        store: None,
         attempt: VALUE_ATTEMPT_BASE,
         count: 1,
         inputs: vec![InputBuf {
@@ -658,8 +659,8 @@ fn the_value_space_is_the_last_two_programs_of_the_batch() {
         assert_eq!(batch.programs.len(), PROGRAMS_PER_SEED);
         for (k, p) in batch.programs.iter().enumerate() {
             assert_eq!(
-                p.attempt >= VALUE_ATTEMPT_BASE,
-                k >= ENUM_END,
+                (VALUE_ATTEMPT_BASE..ARRAY_ATTEMPT_BASE).contains(&p.attempt),
+                (ENUM_END..VALUE_END).contains(&k),
                 "seed {seed} program {k}"
             );
         }
@@ -791,7 +792,8 @@ fn the_new_shapes_are_written_and_executed_in_the_64_seed_batch() {
                 .unwrap()
                 .programs
                 .into_iter()
-                .skip(ENUM_END),
+                .skip(ENUM_END)
+                .take(VALUE_PROGRAMS_PER_SEED),
         );
     }
     assert_eq!(programs.len(), 64 * VALUE_PROGRAMS_PER_SEED);
@@ -869,7 +871,8 @@ fn the_order_sensitive_tuple_field_set_runs_in_the_batch_and_its_mutant_changes_
                 .unwrap()
                 .programs
                 .into_iter()
-                .skip(ENUM_END),
+                .skip(ENUM_END)
+                .take(VALUE_PROGRAMS_PER_SEED),
         );
     }
     let running = programs

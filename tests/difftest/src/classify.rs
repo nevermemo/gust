@@ -57,7 +57,7 @@ pub fn element_text(ty: Ty, bits: u32) -> String {
         Ty::F32 => format!("{:?} (0x{bits:08x})", f32::from_bits(bits)),
         Ty::I32 => format!("{}", bits as i32),
         Ty::Bool | Ty::U32 => format!("{bits}"),
-        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) | Ty::Tuple(_) => {
+        Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) | Ty::Tuple(_) | Ty::Array(_) => {
             unreachable!("the output buffer is scalar")
         }
     }
@@ -576,6 +576,7 @@ mod tests {
         Program {
             seed: 7,
             methods: Default::default(),
+            store: None,
             attempt: 3,
             count,
             inputs: vec![InputBuf {

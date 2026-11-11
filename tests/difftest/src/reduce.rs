@@ -227,10 +227,20 @@ fn roots_mut(stmts: &mut [Stmt], f: &mut dyn FnMut(&mut Expr)) {
             Stmt::Let { init: e, .. }
             | Stmt::Assign { value: e, .. }
             | Stmt::AssignComp { value: e, .. }
-            | Stmt::Set { value: e, .. }
             | Stmt::LetTuple { init: e, .. }
             | Stmt::Yield { value: e } => f(e),
-            Stmt::Call { args, .. } => args.iter_mut().for_each(&mut *f),
+            Stmt::Set { place, value, .. } => {
+                if let Some(index) = place.index.as_deref_mut() {
+                    f(index);
+                }
+                f(value);
+            }
+            Stmt::Call { recv, args, .. } => {
+                if let Some(index) = recv.as_mut().and_then(|p| p.index.as_deref_mut()) {
+                    f(index);
+                }
+                args.iter_mut().for_each(&mut *f);
+            }
             Stmt::If { cond, then, els } => {
                 f(cond);
                 roots_mut(then, f);

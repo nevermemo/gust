@@ -142,10 +142,10 @@ tuples, arrays, closures) extends the space in its own small slice and bumps the
   `&self` or `&mut self` call on it (rustc's E0499 and E0502; a by-value receiver is exempt, it is copied first); a
   struct literal anywhere but a `let` initializer or the right side of an assignment (E0810; an associated function
   binds its literal to a local before the tail, and a struct argument is a local, a field or a call); a `bool` field; a
-  buffer, `i` or `len()` inside a function. Not generated yet: an indexed place with a computed index (`out[c.n] =
-  c.next()` needs local arrays; it is the nearest accepted neighbour of the m9.a2 call-in-the-place bug and of E0421's
-  `out[c.n] += c.next()`, and is a carry of the arrays difftest slice) and so the E0421 forms, and a `&mut self` call in a
-  `for` bound. Everything else `ast::Check` accepts is generated.
+  buffer, `i` or `len()` inside a function. Indexed places with a computed index (`out[c.n] = c.next()`, the nearest
+  accepted neighbour of the m9.a2 call-in-the-place bug and of E0421's `out[c.n] += c.next()`) are the arrays slice's
+  (format 11, "Arrays" below): there the index names no variable the value calls `&mut self` on. Not generated: a
+  `&mut self` call in a `for` bound. Everything else `ast::Check` accepts is generated.
 - A test compiles the method space of seeds 1 to 12 (the 16 method-space programs of each seed, 192 in all; the 36 of them
   that a batch keeps are among them, the batch programs of the other seeds are only compiled by a `check-difftest` run)
   through `#[gust::gpu]` and rustc (`method_programs_compile_through_the_macro_without_a_gust_diagnostic`), and fails on
@@ -463,6 +463,78 @@ as a copy, the compound set of an element field), the emitted text, the batch cu
 `corpus`: the value space of seeds 1 to 4 is pinned as format 10. `xtask`: `shape_row_tests` (the parser of the summary
 rows existed since m9.d1b round r1; it now also covers the `match value`, `match integer` and `tuple` rows). The rc file of
 a slice run labels each batch of gates with a `# round N ...` line.
+
+## Arrays (format 11, slice m9.d1d)
+
+`DIFFTEST_FORMAT` is 11. A batch is five float, four vector, one method, two enum, two value and two array programs (16
+in all). The array space (`Space::Array`, attempts from 5 000 000) is the enum space (structs, enums, methods, `match`;
+no tuples, no value `match`, no floats) plus arrays. Older spaces decode as before (the format 3 float pin and the format
+9 and 10 pins still hold, read with their own stamp); the cut moves one float, one vector and one value-or-enum slot, so
+the 64-seed batch now writes 67 of the 72 vector forms (71 in formats 8 to 10). Mismatches are compiler bugs (D163);
+an order difference is never a D39 note.
+
+**Program space.** `Ty::Array(ArrTy { n, e })`, `n` 2 to 5, flat length at most 16, elements `u32`, `i32`, `bool` or a
+struct of the module. Typed array locals; literals whose elements call `&mut self` methods; repeats `[e; N]` in the
+top positions only (whole `let` initializer or assignment value, scalar elements); reads `a[i as usize]` and `a[k]`,
+`.len()` inside an index; element `=` and every `op=`, also on a scalar field of a struct element; `ps[k].m()` and
+`ps[k].f op= ps[j].bump()`; whole-array copies `let b = a` (scalar elements); `mut` array parameters, array results and
+array arguments of helpers (`u32` and `i32` elements); and the final store `out[idx] op= result` (`idx` equal to `i` by
+construction; the interpreter reports `Violation::Index` otherwise). Struct elements are fresh one-shot values (a call, or
+a variable bound just before and never read again): a struct is not `Copy` in the Rust twin, and a struct literal cannot be
+an element (E0810), so struct arrays are never copied, passed or repeated. E0421 holds by construction: no `&mut self`
+call in an assignee place or receiver index, a name in an index never the root of a `&mut self` call in the value, and
+`/= %= ^=` on an indexed place or on the store only with a value that has no such call. Reads may call in their index
+(`a[c.f() % N] ^ k ^ a[c.g() % N]`).
+
+**Interpreter rules** (Rust Reference). Literal elements left to right; a repeat evaluates its element once; arrays are
+flat lanes, so `let`, assignment and argument passing copy; an indexed place is located once, after the value for `=` and
+primitive `op=`, with a bounds check (`Violation::Index`). Accepted programs make index-versus-value order unobservable
+(E0421), so that rule and the output store's are pinned by hand ASTs written past the checker (`array_tests`).
+
+**Reachability** (the 128 array programs of the 64-seed batch, `ARRAY-FORMS` of
+`the_array_programs_of_the_64_seed_batch_write_and_run_every_form_and_order_shape`; programs / occurrences):
+literal 116 / 347, repeat 48 / 59, element read 126 / 932, `.len()` 66 / 104, element set 76 / 133, compound set 111 / 281,
+copy 24 / 31, argument 60 / 169, element method call 14 / 19, output store 77 / 77. Order shapes, written and executed:
+literal of calls on one root 7 programs (2 296 evaluations), repeat of a call 4 (260), reads indexed by calls on one root 3
+(131), set with a call on the array in the value 2 (66), output store with a call in the value 6 (196). **The order shapes
+are thin** (two to seven programs of 128); the generator biases toward them but each needs a struct root with a
+`&mut self` method of the right type.
+
+**Known driver hole (guard).** On the RTX 5090 (NVIDIA driver 610.88, Vulkan and D3D12 alike) a local array of length 3, 5
+or 17 whose elements all hold one runtime value, then an element at a dynamic index loaded and written back with a value
+the driver can prove unchanged (`- 0`, `+ 0`, `^ 0`, a copy), reads element 0 as 0 wherever the index is not 0. GUST's
+Slang, slangc's WGSL and naga's SPIR-V are correct; a 20-instruction `spirv-val`-clean module reproduces it and the
+Radeon 890M computes the interpreter's values. Details: `plans/m9/arrbug.md` (kept outside the repository). The
+wide run hit it once (seed 40, attempt 5 000 008, shrunk to `let mut v17: [i32; 3] = [-3 - a[0]; 3]; v17[(i % 3) as usize]
+-= v8.f1;` with `v8.f1 == 0`). The generator therefore writes **no compound set at a dynamic index into a local array that
+may hold one value in every element** (filled by a repeat or an equal-element literal, a copy of one, or a call result) and
+has a length other than 2 or 4; the index is then a literal. Repeats, dynamic-index sets and identity operands are still
+generated separately. The program form stays covered on the host by `tests/array_known_driver.rs` (the shrunk program on the
+interpreter and the CPU twin) and the scan test `no_generated_program_writes_a_compound_set_...`. Remove the guard
+(`Gen::uniform` in `generator/array_gen.rs`) when a driver fixes it.
+
+**Not generated.** Arrays of vectors, matrices and enums (the checker, interpreter and emitter accept them; the generator
+would need interval tracking through lanes and a discriminant check), `make(x)[1]` (an index of a call result needs an
+`Expr` index-of-call), workgroup arrays (the space has no workgroup memory). The `Vec*`/`Mat*` place-first rule of a compound
+set is not implemented because it is not reachable: `Stmt::Set` is primitive-only, so no program can compound-set a vector
+or matrix element. Arrays in struct fields and storage buffers belong to m9.r2a.
+
+**Pixel shape.** `out[idx] op= result` is a compound use of an output, which the pixel classifier refuses (GUST-E0728):
+a store program is `grid`-only, and `difftest-run --shapes grid,pixel` sets it aside through its refusal rebuild. The two
+pixel roundtrip tests build the plan without store programs.
+
+**N6.** A `gpu-error` whose message holds `Validation Error` now has a shrink identity: `shrink::validation_signature`
+(whitespace collapsed, digit runs masked, first 160 characters), carried in `Identity.build`; a candidate reproduces only
+with the same signature.
+
+**Mutation checks.** Four test-only mutants (`DIFFTEST_MUTANT`): `array-lit-right-to-left`, `repeat-per-element`,
+`index-before-value` (assignments and the output store) and `array-arg-by-ref`. The gate `xfail-<mutant>` runs
+`cargo test --lib` with one mutant set and passes only when exactly the named test fails: MUTANT_RESULTS.
+
+**Tests.** `array_tests`: hand vectors (literal order, repeat once, value before index for `=`, `op=` and the store, copy
+on argument and `let`), the mutants, the emitted text, the reachability test, the guard scan. `tests/array_known_driver.rs`.
+`roundtrip`: `array_programs_compile_through_the_macro_without_a_gust_diagnostic` compiles 192 array programs.
+`corpus`: the array space of seeds 1 to 4 is pinned as format 11. `xtask`: `is_shape_row` takes the `array ` rows.
 
 ## The domain filter
 

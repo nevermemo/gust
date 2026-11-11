@@ -190,6 +190,21 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   and tests are gates. Wide run after m9.f1: seeds 1 to 64, 1 024 programs (192 enum programs), 0 mismatches in
   `dev` and `dev+subgroups` on the RTX 5090. Lavapipe failed twice on an Ubuntu snapshot outage (502/503 on the
   Mesa install), green on rerun. 27 main gates green on the merge, ending 19:59Z (pin 435/42).
+- m9.r1, arrays as values (merge `6d8ec45`; Opus review MERGE AFTER FIXES 1/3/5, re-check MERGE 0/0/2).
+  Typed `[T; N]` locals, parameters, results and arguments; literals, single-evaluation repeats, `a[i as usize]`
+  (lowered to `uint(i)`), element and compound element assignment, `.len()`; E0216, E0217, E0334. The review
+  confirmed a silent wrong-value bug on main since m9.a2: Slang 2026.21 reads an indexed place's index before
+  the assigned value, Rust the value first, so `out[c.n] = c.next()` stored at the old index. E0421 now refuses
+  every indexed place (storage, workgroup, field of an index, every operator) whose index the value can change.
+  The earlier claim that it matched Rust came from the `slangc` on PATH (13.1), not the pin. An order audit of
+  every other claim (plans in the coordinator's work area) found them sound and GPU-pinned. 27 main gates green
+  on the merge, ending 01:52Z on 2026-11-11 (pin 437/43).
+- m9.d1c, the difftest learns value `match`, integer patterns and tuples (merge `c0d5d27`; format 10; Opus
+  review MERGE AFTER FIXES 0/4/6, re-check 1/0/4 docs only, fixed in the lane). The tuple element-set shape now
+  writes an order the GPU can show (a compound set of a tuple element's field with a `&mut self` call on that
+  element), with a mutation that fails the batch pin; the static filter's compound-set rule covers every space.
+  Wide run seeds 1 to 64: 1 024 programs, 0 mismatches. 30 main gates (27 plus the harness crate's fmt, clippy
+  and tests) green on the merge, ending 03:29Z on 2026-11-11 (pin 437/43).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

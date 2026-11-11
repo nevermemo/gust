@@ -522,8 +522,9 @@ test module; do not mix that mechanical move with behavior changes.
 - m9.r2a must carry a GPU round-trip of an array in a buffer (r2b's evidence is host-side and reflection only).
 - m9.e1 re-check nits: an enum local named like the binding of an `Ok(m)` arm in a `Result` match gets a false
   E0122; a malformed enum that is also a field reports E0211 before its E0122.
-- The arrays difftest slice: generate `out[c.n] = c.next()` (an indexed place whose index is not a call), the
-  nearest accepted neighbour of m9.a2's first order bug; it needs local arrays (m9.d1a review S3).
+- The arrays difftest slice (m9.d1d) generates the accepted neighbours of E0421: since m9.r1, `out[c.n] = c.next()`
+  is refused (Slang 2026.21 reads the index first), so the slice writes indexed stores whose index the value cannot
+  change, with a mutant that evaluates the index first (m9.d1a review S3, m9.d1c review point 6).
 - m9.e2 re-check nits: a value `match` in the tail of a nested block or `if` is still E0518 rather than E0419; a
   `return 1u32` arm in a tail `match` gets E0419's "gives a value" wording.
 - m9.f1 re-check nits: no test has two kernels where only one wraps a list in `__gust_keep`; seed 31 (where the
@@ -537,6 +538,21 @@ test module; do not mix that mechanical move with behavior changes.
   4; DIFFTEST.md says a build-failure shrink needs no GPU dispatch, but the measured shrink took 514 s for 60
   candidates; a GPU-free slangc sweep is a candidate CI step; the summary parser in `xtask/src/difftest.rs` has
   no unit test; the rc file's iteration lines are unlabelled.
+- m9.r1 follow-ups: in the GPU test, `ops_local` and `ops_param` weigh their last two elements `e[3] * 10 + e[4]`,
+  so some wrong pairs of `%=` and `^=` results alias (use `* 100`; re-check R-N2); the OOB ledger has no KM row for
+  a function-scope array (KM-11 covers buffers; a row needs `mismatch.rs`); a plain-`=` hoist of the value into a
+  temporary would let E0421 accept `out[c.n] = c.next()` in Rust's order (not compound: `Vec*`/`Mat*` `op=` reads
+  the place first).
+- m9.d1c follow-ups: a constant over-wide shift (`x << 34u32`) passes gust-macros and fails in naga, and SEMANTICS
+  says shifts mask, which is false for constants (review S3: refuse or mask constant shift amounts in the macro);
+  the shrinker has no identity class for a wgpu/naga validation failure (N6, carried by m9.d1d); the mutant batch
+  pin counts any compound set, not only the tuple element shape; builders overwrote failing logs (keep
+  `.failN.log`).
+- Order audit follow-ups: `&&` and `||` short circuit has no named compiler test (the difftest covers it); the
+  storage-place order shape belongs to m9.d1d.
+- m9.r2a review S4: kernels with a stored array do not build through the precompiled path; `cargo gust build`'s
+  fill rejects the `array` layout kind and `layout_at` returns no layout for an array. Add the array kind to the
+  record and fill (cargo-gust) with a precompiled test.
 
 ## Deferred language/runtime breadth
 

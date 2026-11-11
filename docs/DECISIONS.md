@@ -1,6 +1,6 @@
 # Decisions and boundaries
 
-Append-only log. Next id: **D167**. Add a row for every owner decision or durable
+Append-only log. Next id: **D168**. Add a row for every owner decision or durable
 technical decision, with its date and source; supersede an old row with a new one
 instead of editing it. D01–D18 were recorded 2026-09-07 from the owner's GUST handoff,
 earlier reflection deferral, and independent inspection. Chat research is design
@@ -167,6 +167,7 @@ input, not proof of code state.
 | D164 | (M9 plan Revision 1.2, adopted 2026-11-09, owner-delegated) M9 codes follow the D31 families (E012x, E021x, E032x-E033x, E041x-E042x), not E07xx. | M9's matters are shape, type and expression matters. |
 | D165 | The routed device handle (M9 slice m9.h1, 2026-11-09, coordinator decision, owner-delegated; spike m9.h outcome A; realises D136/D137's handle). `gust::routed::RoutedDevice<G>` dispatches statically on `<K as Routed>::Side` (`OnGpu` or `OnCpu`, sealed), which the macro emits once per kernel from the resolved target; `G` is a `GpuBackend` (implemented by gust-wgpu's `HeadlessDevice`) or `NoGpu`. A `RoutedBuffer` mirrors a host and a device copy with a validity rule (a write makes its side the only valid one; a call that changes side copies the whole buffer first). Errors are a `#[non_exhaustive]` `Error { NoGpu, ForeignBuffer, Cpu, Gpu }`; `NoGpu` is returned before any copy or write. Additive: `Run`, `Call` and explicit devices are unchanged, so no 0.2.0 break (no B5). Not on wasm32. Named `RoutedDevice` to avoid confusion with the `Device` trait. | Opus review 1/5/8 and re-check 0/0/5; storage buffers only, synchronous, no transfer insertion (D35) and no measured cost yet (NEXT_TASKS, M9) |
 | D166 | (Amends D163's numbering; M9, 2026-11-09, coordinator decision, owner-delegated.) The difftest grows one lowering at a time: each phase-1 lowering (methods, enums, tuples, arrays, closures) gets its own difftest slice right after it merges, and each bumps the format (format 8 = methods, slice m9.d1a; the next lowering is format 9, and so on); interfaces and generics follow in later formats. D163's coverage, oracle and bug rules are unchanged. Slice r2 is likewise split into r2h (helper), r2b (runtime) and r2a (macro). | The methods reviews found evaluation-order bugs by hand that the difftest exists to find; waiting for every lowering before closures would leave each lowering untested for weeks. Smaller slices also run in parallel lanes. |
+| D167 | (M9, 2026-11-11, coordinator decision, owner-delegated.) An evaluation-order claim about generated Slang counts only when it is measured with the pinned slangc called by its explicit path, or pinned by a GPU test; the `slangc` on PATH may be another version. A Slang pin bump reruns the order probes and the GPU order tests before it merges. | m9.a2's claim that `out[c.n] = c.next()` ran in Rust's order came from slangc 13.1 on PATH; 2026.21 reads the index first, a silent wrong value on main until m9.r1 refused the form. Slang's order changed between 2026.20 and 2026.21. |
 
 ## Notes
 

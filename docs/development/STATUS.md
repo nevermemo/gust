@@ -213,9 +213,27 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   agree for every admitted type (the helper is cross-checked on the fixture). GPU round-trip on the RTX 5090 and
   the twin; stored arrays do not yet build through the precompiled path. 30 main gates green on the merge, ending
   07:24Z on 2026-11-11 (pin 439/44).
-- The arrays difftest (m9.d1d, in progress) found an NVIDIA shader-compiler defect (D168): a uniformly filled local
-  array with an identity write-back at a dynamic index reads element 0 as 0 on the RTX 5090 (driver 610.88) through
-  Vulkan and D3D12; the Radeon 890M is correct; GUST's Slang, slangc's WGSL and naga's SPIR-V are correct.
+- m9.d1d, the arrays difftest, format 11 (merge `c4a35ba`; Opus review MERGE AFTER FIXES 1/4/6, re-check 1
+  MERGE AFTER FIXES 0/3/3, re-check 2 MERGE 0/0/4). It generates m9.r1's arrays as values (literals, repeats,
+  reads, `.len()`, sets and compound sets, copies, array arguments and results, element method calls, the indexed
+  output store). Its first wide run found an NVIDIA shader-compiler defect (D168): a uniformly filled local array
+  with an identity write-back at a dynamic index reads element 0 as 0 on the RTX 5090 (driver 610.88) through Vulkan
+  and D3D12; the Radeon 890M is correct; GUST's Slang, slangc's WGSL and naga's SPIR-V are correct. The generator
+  avoids the trigger per operator (a non-identity operand for `+ - ^ * / << >>`, a literal index for `|= &= %=` and
+  for element calls on uniformly filled arrays); DIFFTEST.md documents the hole. Four order and copy mutations each
+  fail their named test; N6 gives validation failures a shrink identity. Wide run seeds 1-64: 1024 programs, 0
+  mismatches in dev and dev+subgroups. Lavapipe then showed a latent harness bug it exposed: with `--shapes
+  grid,pixel` the rebuild after setting aside refused `k_px` kernels reused the export directory, so the first
+  build's shifted `.kernel.json` records were refused as GUST-E0712; the harness now discards them first (merge `bb83d74`; Opus re-check MERGE 0/0/4). The main gates run the grid shape only, so lanes touching the difftest
+  also run `check-difftest --seeds 1-2 --shapes grid,pixel` before merging.
+- m9.c, non-capturing closures (merge `ab19167`; Opus review MERGE AFTER FIXES 1/3/5, re-check MERGE 0/0/3).
+  `let f = |x: T, ..| -> R { .. };` called as `f(a, b)` lowers to a hoisted free Slang function
+  `__gust_cl_<owner>_<n>` (D160); captures, `move`, closures as values, untyped, unit and nested closures are refused
+  (E0329 to E0332). The review found a missed capture: a local named like a helper, read as a value in a closure
+  body, reached slangc (loud, no wrong value); the scan now exempts helper and dialect names only as callees, and a
+  22-row capture table pins it. Argument order matches Rust on slangc 2026.21 and is pinned on the GPU, with
+  by-value array and struct parameters. 30 main gates green on the two merges, ending 13:53Z on 2026-11-11
+  (pin 441/45).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

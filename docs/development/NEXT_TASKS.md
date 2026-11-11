@@ -560,6 +560,21 @@ test module; do not mix that mechanical move with behavior changes.
   driver update that fixes it is noticed; a run on the RTX 3070 (another NVIDIA architecture) to scope it; the
   NVIDIA report is the owner's call (a draft can be prepared); the difftest's guard is removed when a fixed driver
   is measured.
+- m9.d1d re-check 2 nits: make the place-first order count causal (a mutant only on indexed places) and require at
+  least 1 batch program; print and pin value differences apart from `Violation` counts in `ARRAY-MUTANT`; cite
+  m9.r1's GPU test `bump_once` (`m9_arrays.rs`) in DIFFTEST.md as the GPU coverage of repeat-once (the batch observes
+  it 0 times); the key shape `SHAPE_ARRAY_SET_CALL` fell to 1 batch program, and struct-field `|=` sets on arrays of
+  length 3 or 5 always take a literal index (the wide uniformity set is not needed for fresh struct variables); a
+  periodic array-space-only wide run.
+- m9.c re-check nits: a helper named as a value in a closure body is E0329 with capture text (and the same form
+  outside closures predates m9.c and reaches slangc: give it a code); the capture table's "type-only" row also uses
+  the name as a struct literal (rename or split it); E0120's message has no note when the recursion closes through
+  a closure body (N3).
+- Difftest set-aside fix nits: `prepare_rebuild`'s doc should name the run crate's validated package name
+  (`lock_for`) as the delete's guard, not xtask's fresh export directory; document the discard on
+  `execute_shapes` and `Options.export_dir`; `--shrink` with `--export-dir` reuses one record directory for every
+  candidate (reject the pair or discard per candidate). GUST-E0712's message says "same Slang text" when only
+  the `.kernel.json` record differs (gust-macros `collision_message`).
 
 ## Deferred language/runtime breadth
 

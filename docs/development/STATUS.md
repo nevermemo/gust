@@ -205,6 +205,17 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   element), with a mutation that fails the batch pin; the static filter's compound-set rule covers every space.
   Wide run seeds 1 to 64: 1 024 programs, 0 mismatches. 30 main gates (27 plus the harness crate's fmt, clippy
   and tests) green on the merge, ending 03:29Z on 2026-11-11 (pin 437/43).
+- m9.r2a, arrays in struct fields and storage buffers, the macro half (merge `f8fef97`; Opus review MERGE AFTER
+  FIXES 1/4/7, re-check 0/1/2, re-check 2 MERGE 0/0/2). `[T; N]` fields lower to `T a[N];` and `Storage<[T; N]>`
+  elements to `RWStructuredBuffer<T[N]>`, N in the 39 `GpuPod` lengths (E0216); E0214 for Vec3/UVec3/Mat3 elements,
+  E0215 for arrays in uniforms. The review found a `.len()` of a field or element receiver that dropped the
+  receiver's side effects on the GPU (now E0306 when the receiver runs code). The helper, the Layouter and Rust
+  agree for every admitted type (the helper is cross-checked on the fixture). GPU round-trip on the RTX 5090 and
+  the twin; stored arrays do not yet build through the precompiled path. 30 main gates green on the merge, ending
+  07:24Z on 2026-11-11 (pin 439/44).
+- The arrays difftest (m9.d1d, in progress) found an NVIDIA shader-compiler defect (D168): a uniformly filled local
+  array with an identity write-back at a dynamic index reads element 0 as 0 on the RTX 5090 (driver 610.88) through
+  Vulkan and D3D12; the Radeon 890M is correct; GUST's Slang, slangc's WGSL and naga's SPIR-V are correct.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

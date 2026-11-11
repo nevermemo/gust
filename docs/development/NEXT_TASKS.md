@@ -553,6 +553,13 @@ test module; do not mix that mechanical move with behavior changes.
 - m9.r2a review S4: kernels with a stored array do not build through the precompiled path; `cargo gust build`'s
   fill rejects the `array` layout kind and `layout_at` returns no layout for an array. Add the array kind to the
   record and fill (cargo-gust) with a precompiled test.
+- m9.r2a re-check 2 nits: the component-name exemption of the E0811 array comparison takes any 1 to 4 letters of
+  `xyzwrgba` (`math_types::is_swizzle` is narrower); with `&&`, a comparison where only one side resolves to an
+  array reaches slangc (loud) and DIAGNOSTICS does not say so.
+- The NVIDIA array defect (D168): an expected-failure GPU sentinel built from the investigation's `m7.spv`, so a
+  driver update that fixes it is noticed; a run on the RTX 3070 (another NVIDIA architecture) to scope it; the
+  NVIDIA report is the owner's call (a draft can be prepared); the difftest's guard is removed when a fixed driver
+  is measured.
 
 ## Deferred language/runtime breadth
 

@@ -1099,6 +1099,14 @@ only (slice mx.t4); they have no software pin yet, so a lavapipe run compares th
 NOTE where they differ, and nothing fails except the KM-13 bound. Both are unspecified, measured observations of
 one driver version each, not requirements, and the Rust and twin columns are unchanged.
 
+**Known driver defect (D168), not a ledger row.** On the RTX 5090 with NVIDIA driver 610.88, through Vulkan and
+D3D12 alike, a function-scope array (N = 3, 5 or 17 measured; not 2 or 4) whose elements all hold one run-time
+value reads element 0 as 0 after an element at a dynamic index is loaded and written back with a value the driver
+can prove unchanged (`a[k] -= 0`, `a[k] ^= 0`, `a[k] = a[k]`), wherever `k` was not 0. The generated Slang, WGSL
+and SPIR-V are correct and the AMD Radeon 890M computes Rust's values, so GUST does not refuse or rewrite the form.
+Programs that write a real change, or whose elements differ, are not affected. A stored array in a struct field is
+affected the same way; arrays in storage buffers were not measured.
+
 ## 8. What is proven
 
 A statement here has the **proven** label of section 2: one test asserts the same result on the GPU, on the CPU twin

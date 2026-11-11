@@ -453,11 +453,12 @@ fn a_batch_ends_with_its_array_programs() {
 }
 
 /// Whether `value` is the operand `Gen::non_identity` makes for `op` (an operand that is never the identity of `op`).
+/// `|= &= %=` have no such operand: the generator gives them a literal index in the hole.
 fn is_non_identity_operand(op: BinOp, value: &Expr) -> bool {
     let lit = |e: &Expr, want: u32| matches!(e, Expr::Lit(_, n) if *n == want);
     match (op, value) {
         (
-            BinOp::Add | BinOp::Sub | BinOp::BitXor | BinOp::BitOr,
+            BinOp::Add | BinOp::Sub | BinOp::BitXor,
             Expr::Bin {
                 op: BinOp::BitOr,
                 r,
@@ -481,46 +482,51 @@ fn is_non_identity_operand(op: BinOp, value: &Expr) -> bool {
                 ..
             },
         ) => lit(r, 2),
-        (
-            BinOp::BitAnd,
-            Expr::Bin {
-                op: BinOp::BitAnd,
-                r,
-                ..
-            },
-        ) => lit(r, 0xFFFF_FFFE),
-        (BinOp::Rem, _) => true,
         _ => false,
     }
 }
 
-/// The guard for the NVIDIA hole (plans/m9/arrbug.md, D168), by the rule of `Gen::note_uniform` (mirrored here): in a
-/// local array of length other than 2 or 4 that may hold one value in every element (a repeat, equal elements or any
-/// non-literal element, a copy of one, a call result), every compound set at a dynamic index has an operand that is
-/// never the identity of its operator, and every `&mut self` call statement on a struct element has a literal index.
-/// Scans the top-level statements of the array space of seeds 1 to 64.
+/// The two uniformity sets of `Gen::note_uniform`, mirrored: `wide` (a repeat, equal elements or any non-literal element,
+/// a copy of a wide array, a call result) for scalar compound sets, `narrow` (a repeat, equal elements, a copy of a narrow
+/// array, a call result) for element method calls.
+fn note_uniform(var: u32, init: &Expr, wide: &mut Vec<u32>, narrow: &mut Vec<u32>) {
+    wide.retain(|v| *v != var);
+    narrow.retain(|v| *v != var);
+    let (n, w) = match init {
+        Expr::Repeat { .. } => (true, true),
+        Expr::ArrayLit { elems, .. } => {
+            let equal = elems.windows(2).all(|w| w[0] == w[1]);
+            (
+                equal,
+                equal || elems.iter().any(|e| !matches!(e, Expr::Lit(..))),
+            )
+        }
+        Expr::Var(src, _) => (narrow.contains(src), wide.contains(src)),
+        _ => (true, true),
+    };
+    if n {
+        narrow.push(var);
+    }
+    if w {
+        wide.push(var);
+    }
+}
+
+/// The guard for the NVIDIA hole (plans/m9/arrbug.md, D168), by the rules of `Gen::note_uniform` (mirrored here). In a
+/// local array of length other than 2 or 4 that may hold one value in every element (the wide set): a compound set at a
+/// dynamic index is `+= -= ^= *= /= <<= >>=` with an operand that is never the identity of its operator; `|= &= %=` have
+/// a literal index. A `&mut self` call statement on a struct element of an array of the narrow set has a literal index,
+/// and a struct array of the wide set but not the narrow one (distinct non-literal elements) keeps a dynamic index on
+/// element calls: the scan must see that at least once, so the narrow rule is not secretly the wide one (R2 of fix round
+/// 2). Scans the top-level statements of the array space of seeds 1 to 64.
 #[test]
 fn no_generated_program_gives_the_driver_hole_an_identity_operand_or_a_call_at_a_dynamic_index() {
-    let (mut guarded, mut calls) = (0, 0);
+    let (mut guarded, mut literal_ops, mut calls, mut free_calls) = (0, 0, 0, 0);
     for seed in 1..=64 {
         for p in generate_batch_in(Space::Array, seed).unwrap().programs {
-            let mut uniform: Vec<u32> = Vec::new();
+            let (mut wide, mut narrow): (Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new());
             let mut arrays: Vec<u32> = Vec::new();
             for stmt in &p.body {
-                let note = |var: u32, init: &Expr, uniform: &mut Vec<u32>| {
-                    uniform.retain(|v| *v != var);
-                    let same = match init {
-                        Expr::ArrayLit { elems, .. } => {
-                            elems.windows(2).all(|w| w[0] == w[1])
-                                || elems.iter().any(|e| !matches!(e, Expr::Lit(..)))
-                        }
-                        Expr::Var(src, _) => uniform.contains(src),
-                        _ => true,
-                    };
-                    if same {
-                        uniform.push(var);
-                    }
-                };
                 match stmt {
                     Stmt::Let {
                         var,
@@ -529,10 +535,10 @@ fn no_generated_program_gives_the_driver_hole_an_identity_operand_or_a_call_at_a
                         ..
                     } => {
                         arrays.push(*var);
-                        note(*var, init, &mut uniform);
+                        note_uniform(*var, init, &mut wide, &mut narrow);
                     }
                     Stmt::Assign { var, value } if arrays.contains(var) => {
-                        note(*var, value, &mut uniform)
+                        note_uniform(*var, value, &mut wide, &mut narrow)
                     }
                     Stmt::Set {
                         place,
@@ -542,16 +548,24 @@ fn no_generated_program_gives_the_driver_hole_an_identity_operand_or_a_call_at_a
                     } => {
                         if let (crate::ast::Root::Var(v), Ty::Array(aty), Some(index)) =
                             (place.root, place.root_ty, place.index.as_deref())
-                            && uniform.contains(&v)
+                            && wide.contains(&v)
                             && !matches!(aty.n, 2 | 4)
-                            && !matches!(index, Expr::Lit(..))
                         {
-                            guarded += 1;
-                            assert!(
-                                is_non_identity_operand(*op, value),
-                                "seed {seed} attempt {}: {op:?} {value:?}",
-                                p.attempt
-                            );
+                            if matches!(op, BinOp::BitOr | BinOp::BitAnd | BinOp::Rem) {
+                                literal_ops += 1;
+                                assert!(
+                                    matches!(index, Expr::Lit(..)),
+                                    "seed {seed} attempt {}: {op:?} at a dynamic index",
+                                    p.attempt
+                                );
+                            } else if !matches!(index, Expr::Lit(..)) {
+                                guarded += 1;
+                                assert!(
+                                    is_non_identity_operand(*op, value),
+                                    "seed {seed} attempt {}: {op:?} {value:?}",
+                                    p.attempt
+                                );
+                            }
                         }
                     }
                     Stmt::Call {
@@ -559,15 +573,18 @@ fn no_generated_program_gives_the_driver_hole_an_identity_operand_or_a_call_at_a
                     } => {
                         if let (crate::ast::Root::Var(v), Ty::Array(aty), Some(index)) =
                             (place.root, place.root_ty, place.index.as_deref())
-                            && uniform.contains(&v)
                             && !matches!(aty.n, 2 | 4)
                         {
-                            calls += 1;
-                            assert!(
-                                matches!(index, Expr::Lit(..)),
-                                "seed {seed} attempt {}",
-                                p.attempt
-                            );
+                            if narrow.contains(&v) {
+                                calls += 1;
+                                assert!(
+                                    matches!(index, Expr::Lit(..)),
+                                    "seed {seed} attempt {}",
+                                    p.attempt
+                                );
+                            } else if !matches!(index, Expr::Lit(..)) {
+                                free_calls += 1;
+                            }
                         }
                     }
                     _ => {}
@@ -575,10 +592,16 @@ fn no_generated_program_gives_the_driver_hole_an_identity_operand_or_a_call_at_a
             }
         }
     }
-    eprintln!("GUARD-SCAN guarded dynamic compound sets {guarded}, guarded element calls {calls}");
+    eprintln!(
+        "GUARD-SCAN dynamic compound sets {guarded}, literal-index |= &= %= {literal_ops}, guarded element calls {calls}, dynamic element calls on non-narrow arrays {free_calls}"
+    );
     assert!(
         guarded > 5,
         "{guarded} guarded dynamic compound sets in seeds 1-64"
+    );
+    assert!(
+        free_calls > 0,
+        "no dynamic element call on a distinct-element array of length 1, 3 or 5"
     );
 }
 
@@ -605,14 +628,40 @@ fn the_order_mutants_change_generated_programs_and_the_order_shapes_keep_their_m
         );
     }
     assert_eq!((space.len(), batch.len()), (1024, 128));
+    // A mutant run that ends in a `Violation` counts as a change (a different outcome from the right run). For the
+    // place-first mutant the program must also execute `SHAPE_ARRAY_SET_CALL` (an element set with a call on the same
+    // array in the value): the enum and method programs of the space have same-root sets that the mutant changes too,
+    // and those do not show the array rule (R3 of fix round 2).
     let changes = |p: &crate::ast::Program, mutant| {
-        run(p).ok() != run_mutant(p, mutant).ok().map(|r| r.values)
+        let differs = run(p).ok() != run_mutant(p, mutant).ok().map(|r| r.values);
+        differs
+            && (mutant != Mutant::CompoundPlaceFirst
+                || run_covered(p).is_ok_and(|(_, coverage)| {
+                    coverage
+                        .operators
+                        .get(crate::ast::SHAPE_ARRAY_SET_CALL)
+                        .copied()
+                        .unwrap_or(0)
+                        > 0
+                }))
     };
-    for (mutant, minimum) in [
-        (Mutant::ArrayLitRightToLeft, MIN_CHANGED_LIT),
-        (Mutant::RepeatPerElement, MIN_CHANGED_REPEAT),
-        (Mutant::ArrayArgByRef, MIN_CHANGED_ARG),
-        (Mutant::CompoundPlaceFirst, MIN_CHANGED_PLACE_FIRST),
+    for (mutant, minimum, in_batch_floor) in [
+        (
+            Mutant::ArrayLitRightToLeft,
+            MIN_CHANGED_LIT,
+            BATCH_CHANGED_LIT,
+        ),
+        (
+            Mutant::RepeatPerElement,
+            MIN_CHANGED_REPEAT,
+            BATCH_CHANGED_REPEAT,
+        ),
+        (Mutant::ArrayArgByRef, MIN_CHANGED_ARG, BATCH_CHANGED_ARG),
+        (
+            Mutant::CompoundPlaceFirst,
+            MIN_CHANGED_PLACE_FIRST,
+            BATCH_CHANGED_PLACE_FIRST,
+        ),
     ] {
         let in_space = space.iter().filter(|p| changes(p, mutant)).count();
         let in_batch = batch.iter().filter(|p| changes(p, mutant)).count();
@@ -624,8 +673,8 @@ fn the_order_mutants_change_generated_programs_and_the_order_shapes_keep_their_m
             "{mutant:?} changes {in_space} space programs"
         );
         assert!(
-            in_batch >= 1,
-            "{mutant:?} changes no program of the 64-seed batch"
+            in_batch >= in_batch_floor,
+            "{mutant:?} changes {in_batch} programs of the 64-seed batch"
         );
     }
     let (mut written, mut executed): (BTreeMap<&str, usize>, BTreeMap<&str, u64>) =
@@ -654,15 +703,21 @@ fn the_order_mutants_change_generated_programs_and_the_order_shapes_keep_their_m
     }
 }
 
-const MIN_CHANGED_LIT: usize = 4;
-const MIN_CHANGED_REPEAT: usize = 4;
-const MIN_CHANGED_ARG: usize = 7;
-const MIN_CHANGED_PLACE_FIRST: usize = 9;
+const MIN_CHANGED_LIT: usize = 5;
+const MIN_CHANGED_REPEAT: usize = 5;
+const MIN_CHANGED_ARG: usize = 10;
+const MIN_CHANGED_PLACE_FIRST: usize = 13;
+/// The same mutants over the 128 programs of the batch (a regression pin of what was measured: `RepeatPerElement` is 0 there,
+/// so a GPU run of the batch does not observe that rule by itself).
+const BATCH_CHANGED_LIT: usize = 1;
+const BATCH_CHANGED_REPEAT: usize = 0;
+const BATCH_CHANGED_ARG: usize = 2;
+const BATCH_CHANGED_PLACE_FIRST: usize = 1;
 /// (shape row, minimum programs that write it, minimum evaluations) over the 64-seed batch.
 const SHAPE_MINIMA: &[(&str, (usize, u64))] = &[
-    (crate::ast::SHAPE_ARRAY_LIT_ROOT, (4, 386)),
-    (crate::ast::SHAPE_ARRAY_REPEAT_CALL, (1, 63)),
+    (crate::ast::SHAPE_ARRAY_LIT_ROOT, (3, 363)),
+    (crate::ast::SHAPE_ARRAY_REPEAT_CALL, (2, 2194)),
     (crate::ast::SHAPE_ARRAY_INDEX_CALLS, (5, 254)),
-    (crate::ast::SHAPE_ARRAY_SET_CALL, (4, 7380)),
-    (crate::ast::SHAPE_ARRAY_STORE_CALL, (9, 832)),
+    (crate::ast::SHAPE_ARRAY_SET_CALL, (1, 63)),
+    (crate::ast::SHAPE_ARRAY_STORE_CALL, (7, 514)),
 ];

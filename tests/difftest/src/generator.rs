@@ -228,6 +228,9 @@ struct Gen<'a> {
     /// result): a compound set at a dynamic index into one is the NVIDIA trigger of plans/m9/arrbug.md, which the
     /// generator does not write while that driver bug stands (DIFFTEST.md, "Known driver hole").
     uniform: Vec<u32>,
+    /// The narrow form: array locals that hold a repeat, an equal-element literal, a copy of one or a call result. A
+    /// `&mut self` call on an element of one gets a literal index (the copy-store form of the same hole).
+    equal: Vec<u32>,
     /// The final store of the program being drawn (the array space).
     store: Option<crate::ast::Store>,
 }
@@ -1385,6 +1388,7 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         arm_return_fns: Vec::new(),
         arrays: space == Space::Array,
         uniform: Vec::new(),
+        equal: Vec::new(),
         store: None,
     };
     let count = match g.b.below(6) {

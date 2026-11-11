@@ -175,7 +175,7 @@ impl Gen<'_> {
                     && self.b.chance(90)
                     && let Some(call) = self
                         .b
-                        .chance(25)
+                        .chance(45)
                         .then(|| self.root_field_read(ty, root))
                         .flatten()
                         .or_else(|| self.root_call(ty, root, 2))
@@ -325,7 +325,7 @@ impl Gen<'_> {
         }
         let f = candidates[self.b.below(candidates.len() as u32) as usize];
         let index = match at {
-            Some(at) if !self.driver_hole_array(var, aty) => at,
+            Some(at) if !self.driver_hole_calls(var, aty) => at,
             _ => self.call_index(var, aty),
         };
         let recv = Self::elem_place(var, aty, index, &[]);
@@ -346,29 +346,35 @@ impl Gen<'_> {
     }
 
     /// `operand` for `place op= operand` made provably not the identity of `op` at run time, for an array in the
-    /// driver hole. `+= -= ^= |=` take `v | 1` (never 0), `<<= >>=` take `(v & 31) | 1` (1 to 31), `*= /=` take
-    /// `v | 2` (never 0 or 1), `&=` takes `v & 0xFFFF_FFFE` (never all ones), `%=` is left alone (its divisor is
-    /// already `| 1`, and `x % d` is not the identity for any `d`). An operator the arm does not name is untouched.
+    /// driver hole. `+= -= ^=` take `v | 1` (never 0: a non-zero addend or an odd mask changes every value), `<<= >>=`
+    /// take `(v & 31) | 1` (1 to 31) and `*= /=` take `v | 2` (never 0 or 1); these leave an element unchanged only for
+    /// special values (0, or -1 under an `i32` `>>`) that the driver cannot prove for a runtime element. `|= &= %=` are
+    /// not rewritten: an element with known bits or range can be provably unchanged by them (`(c | 1) | 1`,
+    /// `(c & 0xFE) & !1`, `(c & 7) % 9`), so `array_set_stmt` gives them a literal index instead.
     fn non_identity(op: BinOp, v: Expr, ty: Ty) -> Expr {
         match op {
-            BinOp::Add | BinOp::Sub | BinOp::BitXor | BinOp::BitOr => {
-                Expr::bin(BinOp::BitOr, v, Expr::Lit(ty, 1))
-            }
+            BinOp::Add | BinOp::Sub | BinOp::BitXor => Expr::bin(BinOp::BitOr, v, Expr::Lit(ty, 1)),
             BinOp::Shl | BinOp::Shr => Expr::bin(
                 BinOp::BitOr,
                 Expr::bin(BinOp::BitAnd, v, Expr::u32(31)),
                 Expr::u32(1),
             ),
             BinOp::Mul | BinOp::Div => Expr::bin(BinOp::BitOr, v, Expr::Lit(ty, 2)),
-            BinOp::BitAnd => Expr::bin(BinOp::BitAnd, v, Expr::Lit(ty, 0xFFFF_FFFE)),
             _ => v,
         }
     }
 
-    /// An element index for a `&mut self` call on element of array `var`: a literal in the driver hole (the call's
+    /// Whether array local `var` is in the narrow form of the hole, for element method calls: it holds a repeat, an
+    /// equal-element literal, a copy of one or a call result, and its length is not 2 or 4 (a fresh distinct element
+    /// is neither one value nor a provably unchanged write-back).
+    fn driver_hole_calls(&self, var: u32, aty: ArrTy) -> bool {
+        !matches!(aty.n, 2 | 4) && self.equal.contains(&var)
+    }
+
+    /// An element index for a `&mut self` call on element of array `var`: a literal in the narrow hole (the call's
     /// write-back of `self` is a copy store), else any index.
     fn call_index(&mut self, var: u32, aty: ArrTy) -> Expr {
-        if self.driver_hole_array(var, aty) {
+        if self.driver_hole_calls(var, aty) {
             Expr::u32(self.b.below(u32::from(aty.n)))
         } else {
             self.array_index(aty.n)
@@ -416,7 +422,7 @@ impl Gen<'_> {
             .copied()
             .filter(|(_, aty)| matches!(aty.e, Elem::Struct(_)))
             .collect();
-        let pool: &[(u32, ArrTy)] = if !structs.is_empty() && self.b.chance(70) {
+        let pool: &[(u32, ArrTy)] = if !structs.is_empty() && self.b.chance(85) {
             &structs
         } else {
             arrays
@@ -436,7 +442,20 @@ impl Gen<'_> {
                 if fields.is_empty() {
                     return None;
                 }
-                let (k, f) = fields[self.b.below(fields.len() as u32) as usize];
+                // Often a field that one of the struct's `&mut self` methods writes: the value's call on the same
+                // element then changes what the place reads, so the order shows.
+                let written = self.written_fields(j);
+                let prefer: Vec<(u8, Ty)> = fields
+                    .iter()
+                    .copied()
+                    .filter(|(k, f)| written.contains(k) && matches!(f, Ty::U32 | Ty::I32))
+                    .collect();
+                let pool = if !prefer.is_empty() && self.b.chance(70) {
+                    &prefer
+                } else {
+                    &fields
+                };
+                let (k, f) = pool[self.b.below(pool.len() as u32) as usize];
                 (vec![k], f)
             }
             _ => return None,
@@ -471,7 +490,7 @@ impl Gen<'_> {
             // The value often calls `&mut self` on the array's own elements, or on one struct root: the place is
             // read after the value, so the order shows.
             let biased = if self.b.chance(85) && matches!(aty.e, Elem::Struct(_)) {
-                let at = self.b.chance(60).then(|| same_index.clone());
+                let at = self.b.chance(80).then(|| same_index.clone());
                 self.elem_call(var, aty, value_ty, 3, at)
             } else if self.b.chance(40) {
                 self.bias_root()
@@ -508,11 +527,21 @@ impl Gen<'_> {
         };
         // Known driver hole (plans/m9/arrbug.md, D168, NVIDIA 610.88): a compound set at a dynamic index into a local
         // array of length other than 2 or 4 that may hold one value in every element can lose element 0 when the
-        // operand is an identity the driver folds. The index stays dynamic; the operand is made provably not the
-        // identity of its operator (`non_identity`). Removed when a driver fixes it.
-        let value = match op {
-            Some(o) if self.driver_hole_array(var, aty) => Self::non_identity(o, value, ty),
-            _ => value,
+        // operand is an identity the driver folds. For `+= -= ^= *= /= <<= >>=` the index stays dynamic and the operand
+        // is made not the identity of its operator (`non_identity`). For `|= &= %=` it is not: an element with known
+        // bits or range (`c | 1`, `c & 0xFE`, `c & 7`) can be provably unchanged by `| 1`, `& !1` or `% 9`, so the index
+        // is a literal. Removed when a driver fixes it.
+        let (place, value) = match op {
+            Some(BinOp::BitOr | BinOp::BitAnd | BinOp::Rem) if self.driver_hole_array(var, aty) => {
+                (
+                    Self::elem_place(var, aty, Expr::u32(self.b.below(u32::from(aty.n))), &path),
+                    value,
+                )
+            }
+            Some(o) if self.driver_hole_array(var, aty) => {
+                (place, Self::non_identity(o, value, ty))
+            }
+            _ => (place, value),
         };
         Some(Stmt::Set {
             place,
@@ -667,18 +696,26 @@ impl Gen<'_> {
     /// Records whether array local `var`, initialised or assigned `init`, may hold one value in every element.
     fn note_uniform(&mut self, var: u32, init: &Expr) {
         self.uniform.retain(|v| *v != var);
-        let same = match init {
-            Expr::Repeat { .. } => true,
-            // Equal elements, or any element that is not a plain literal: `[x, x + 0, x]` may fold to one value.
+        self.equal.retain(|v| *v != var);
+        let (narrow, wide) = match init {
+            Expr::Repeat { .. } => (true, true),
+            // Equal elements: the narrow form. Any element that is not a plain literal widens it for scalar compound
+            // sets only (`[x, x + 0, x]` may fold to one value).
             Expr::ArrayLit { elems, .. } => {
-                elems.windows(2).all(|w| w[0] == w[1])
-                    || elems.iter().any(|e| !matches!(e, Expr::Lit(..)))
+                let equal = elems.windows(2).all(|w| w[0] == w[1]);
+                (
+                    equal,
+                    equal || elems.iter().any(|e| !matches!(e, Expr::Lit(..))),
+                )
             }
-            Expr::Var(src, _) => self.uniform.contains(src),
+            Expr::Var(src, _) => (self.equal.contains(src), self.uniform.contains(src)),
             // A call result is unknown.
-            _ => true,
+            _ => (true, true),
         };
-        if same {
+        if narrow {
+            self.equal.push(var);
+        }
+        if wide {
             self.uniform.push(var);
         }
     }
@@ -735,6 +772,7 @@ impl Gen<'_> {
         let (recv, args) = self.call_parts_on(f, 3, None)?;
         let var = self.fresh();
         self.uniform.push(var);
+        self.equal.push(var);
         self.scope.push((var, ret, false));
         arrays.push((var, aty));
         Some(Stmt::Let {

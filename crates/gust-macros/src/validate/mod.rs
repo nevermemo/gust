@@ -2144,8 +2144,9 @@ fn is_dialect_callee(name: &str) -> bool {
 /// A walk with a stack of scopes. The parameters bind in the outermost one; a `let` binds after its initializer, a
 /// `for` variable, an `if let` and a `match` arm bind inside their body, and a block ends its scope. A single identifier
 /// in expression position (a callee, a receiver, a field shorthand `P { x }`) that is not bound is free, and free is a
-/// capture unless it is a helper of the module or a name of the dialect (`Some`, `None`, the barrier, the subgroup and
-/// atomic operations, which are judged by their own rules). A module holds functions, structs, enums and `impl`s only, so
+/// capture, except as the callee of a call, where a helper of the module and a name of the dialect (`Some`, `Ok`, `Err`, the
+/// barrier, the subgroup and atomic operations, judged by their own rules) are not captures, and `None` as a value. A
+/// local that shadows a helper name is a capture when it is used as a value. A module holds functions, structs, enums and `impl`s only, so
 /// every other free identifier names a local, a parameter, `self` or a closure of the surrounding function. Paths of two
 /// segments (`Vec2::new`, `E::A`, `S::f`, `Mat4::IDENTITY`) and the paths of struct literals and types are items.
 struct CaptureScan<'a> {
@@ -2170,10 +2171,19 @@ impl CaptureScan<'_> {
         }
     }
 
-    fn mention(&mut self, name: String) {
-        if self.scopes.iter().any(|scope| scope.contains(&name))
-            || is_dialect_callee(&name)
-            || self.helpers.contains(&name)
+    /// A use of the single identifier `name`: a callee when it is the function of a call. A helper and a name of the dialect
+    /// are exempt only as callees (a local may shadow a helper name, and then the value use is a capture); `None` is the one
+    /// dialect name that is a value, and no `let` can bind it.
+    fn mention(&mut self, name: String, callee: bool) {
+        let exempt = if callee {
+            is_dialect_callee(&name)
+                || self.helpers.contains(&name)
+                || self.helpers.contains(&format!("r#{name}"))
+        } else {
+            name == "None"
+        };
+        if exempt
+            || self.scopes.iter().any(|scope| scope.contains(&name))
             || self.free.contains(&name)
         {
             return;
@@ -2245,7 +2255,7 @@ impl<'ast> Visit<'ast> for CaptureScan<'_> {
         match call.func.as_ref() {
             syn::Expr::Path(path) if path.qself.is_none() => {
                 if let Some(name) = path.path.get_ident() {
-                    self.mention(name.unraw().to_string());
+                    self.mention(name.unraw().to_string(), true);
                 }
             }
             other => self.visit_expr(other),
@@ -2259,7 +2269,7 @@ impl<'ast> Visit<'ast> for CaptureScan<'_> {
         if path.qself.is_none()
             && let Some(name) = path.path.get_ident()
         {
-            self.mention(name.unraw().to_string());
+            self.mention(name.unraw().to_string(), false);
         }
     }
 }
@@ -2477,11 +2487,7 @@ fn validate_closure(
         Some("a name the dialect gives a meaning to")
     } else if bindings.get(&name).copied().unwrap_or(0) > 1 {
         Some(
-            if closure_names.iter().filter(|other| **other == name).count() > 0 {
-                "another binding of the function (a parameter, a local, a loop variable, a pattern or another closure)"
-            } else {
-                "another binding of the function"
-            },
+            "another binding of the function (a parameter, a local, a loop variable, a pattern or another closure)",
         )
     } else {
         None
@@ -4249,6 +4255,14 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
     }
 
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+        if matches!(strip_parens(&call.func), syn::Expr::Closure(_)) {
+            self.reject(
+                Code::ClosureValue,
+                call,
+                "a closure is accepted only as the initializer of a `let` and is then called as `f(a)`: bind it first (`let f = |x: f32| -> f32 { x };` and `f(1.0f32)`); it cannot be called where it is written",
+            );
+            return;
+        }
         // `f(a, b)` where `f` is a closure bound by an earlier `let` (slice m9.c): the arguments are ordinary expressions,
         // evaluated left to right like a helper's. A closure that is named like a dialect callee or a helper is refused
         // by the closure pass (GUST-E0328), so the name decides here.

@@ -122,7 +122,7 @@ pub(super) const LEDGER: &[Entry] = &[
     ),
     expression("Cast", Neutral),
     // `let f = |x: T| -> R { .. };` (slice m9.c): a non-capturing closure is a pure function of its parameters (no
-    // resource, no barrier, no atomic: the helper rule judges its body), and its body is walked like the kernel's own.
+    // resource, no barrier, no atomic: the helper rule judges its body), and its body is not walked here: the helper rule judges it (D94, D154), as for a helper.
     expression("Closure", Neutral),
     expression("Continue", Neutral),
     expression("Field", Neutral),
@@ -424,6 +424,9 @@ impl KindScan<'_> {
 }
 
 impl<'ast> Visit<'ast> for KindScan<'_> {
+    // A closure body is judged as a helper body (D94, D154), not as the kernel's own.
+    fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
+
     fn visit_expr(&mut self, expression: &'ast syn::Expr) {
         if self.check(Class::Expression, expression_kind(expression), expression) {
             visit::visit_expr(self, expression);

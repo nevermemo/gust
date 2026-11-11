@@ -33,6 +33,10 @@ mod closures {
         pub order_tick_then_read: u32,
         pub order_nested: u32,
         pub placed: u32,
+        pub array_written: u32,
+        pub array_after: u32,
+        pub struct_written: u32,
+        pub struct_after: u32,
     }
 
     impl Counter {
@@ -129,6 +133,19 @@ mod closures {
             let slot = |a: u32| -> u32 { a };
             let odd = |a: u32| -> u32 { a * 2u32 + 1u32 };
             scratch[slot(i)] = odd(i);
+            // A parameter is a copy: a closure that assigns to its own parameter leaves the caller's array and struct alone.
+            let bump_array = |mut a: [u32; 3]| -> u32 {
+                a[0] = 9u32;
+                a[0]
+            };
+            let bump_struct = |mut c: Counter| -> u32 {
+                c.n = 77u32;
+                c.n
+            };
+            let caller_array: [u32; 3] = [x, 1u32, 2u32];
+            let array_written = bump_array(caller_array);
+            let caller_counter = Counter { n: x, step: 1u32 };
+            let struct_written = bump_struct(caller_counter);
             results[i] = Results {
                 added,
                 poly: poly(x),
@@ -150,6 +167,10 @@ mod closures {
                 order_tick_then_read,
                 order_nested,
                 placed: scratch[i],
+                array_written,
+                array_after: caller_array[0],
+                struct_written,
+                struct_after: caller_counter.n,
             };
         }
     }

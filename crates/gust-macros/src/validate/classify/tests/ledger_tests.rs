@@ -750,13 +750,20 @@ fn the_ledger_lists_exactly_the_callee_forms_the_validator_accepts() {
         let helpers = crate::validate::helper_names(&module);
         let calls = calls_of(kernel_of(&module));
         // A closure call is told from its `let` by the scan (`KindScan`), not by `callee_kind`, which has no scope.
-        assert!(
-            kind == "closure"
-                || calls
+        if kind == "closure" {
+            // The scan knows the name from the `let`; a call it did not classify as `closure` would be `Unrecognised`.
+            assert!(
+                kinds::scan(&kernel_of(&module).block, &helpers).is_empty(),
+                "the call of the closure probe is not classified as `closure`: {FIX}\n{source}"
+            );
+        } else {
+            assert!(
+                calls
                     .iter()
                     .any(|call| kinds::callee_kind(call, &helpers).as_deref() == Some(kind)),
-            "no call of the probe for `{kind}` is classified as `{kind}`: {FIX}\n{source}"
-        );
+                "no call of the probe for `{kind}` is classified as `{kind}`: {FIX}\n{source}"
+            );
+        }
         // The classifier takes the form as listed: it is never `Unrecognised`.
         let classification = classification_of_module(&module);
         assert!(
@@ -993,4 +1000,23 @@ fn a_call_of_an_associated_function_is_one_listed_neutral_kind_and_keeps_pixel()
         "{:?}",
         classification.exclusions
     );
+}
+
+/// A closure body is judged as a helper body (D94, D154), not as the kernel's own: a `return` inside it does not
+/// exclude the kernel from `pixel`, and a closure parameter named like the invocation or the output buffer is its own.
+#[test]
+fn a_closure_body_is_not_walked_as_kernel_code_so_its_return_keeps_pixel() {
+    let body =
+        "let f = |v: f32| -> f32 { if v > 1.0f32 { return 1.0f32; } v }; out[id.x] = f(2.0f32);";
+    let source = probe_module(PARAMETERS, body);
+    let first = module(&source);
+    let classification = classification_of_module(&first);
+    assert!(
+        classification.allows(Shape::Pixel),
+        "{:?}\n{source}",
+        classification.exclusions
+    );
+    let named = "let f = |out: f32| -> f32 { out * 2.0f32 }; out[id.x] = f(2.0f32);";
+    let second = module(&probe_module(PARAMETERS, named));
+    assert!(classification_of_module(&second).allows(Shape::Pixel));
 }

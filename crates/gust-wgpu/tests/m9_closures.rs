@@ -29,6 +29,9 @@ use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 //   order_tick_then_read = pair(tick, n)                 = 1 * 1000 + 1        = 1001
 //   order_nested         = pair(pair(tick, tick), tick)  = 1002 * 1000 + 3     = 1002003
 // placed = 2 * i + 1 (a closure in the index and one in the value of `scratch[slot(i)] = odd(i)`; i is the element).
+// A parameter is a copy (hand-written): a closure `|mut a: [u32; 3]| { a[0] = 9; a[0] }` called with the caller's `[x, 1, 2]`
+// gives 9 and leaves the caller's a[0] = x (array_written 9, array_after x); the same for a `Counter` with `c.n = 77`
+// (struct_written 77, struct_after x).
 const ADDED: [u32; 5] = [1, 3, 5, 7, 9];
 const POLY: [u32; 5] = [1, 13, 41, 85, 145];
 const SCALED: [u32; 5] = [0, 6, 12, 18, 24];
@@ -81,6 +84,10 @@ fn closures_execute_on_gpu_and_on_the_cpu_twin() {
                 order_tick_then_read: u32::MAX,
                 order_nested: u32::MAX,
                 placed: u32::MAX,
+                array_written: u32::MAX,
+                array_after: u32::MAX,
+                struct_written: u32::MAX,
+                struct_after: u32::MAX,
             };
             count
         ];
@@ -145,6 +152,10 @@ fn closures_execute_on_gpu_and_on_the_cpu_twin() {
                 );
                 assert_eq!(got[i].order_nested, ORDER_NESTED, "order_nested {note}");
                 assert_eq!(got[i].placed, 2 * i as u32 + 1, "placed {note}");
+                assert_eq!(got[i].array_written, 9, "array_written {note}");
+                assert_eq!(got[i].array_after, input[i], "array_after {note}");
+                assert_eq!(got[i].struct_written, 77, "struct_written {note}");
+                assert_eq!(got[i].struct_after, input[i], "struct_after {note}");
             }
         }
     }
@@ -158,7 +169,7 @@ fn the_closure_fixture_compiles_to_wgsl_with_its_hoisted_functions() {
     // Slang renames the hoisted free function `__gust_cl_<owner>_<n>` in WGSL (measured on slangc 2026.21): one
     // function per closure, whose parameters are the closure's, called directly. The owner of a method closure is
     // `<Struct>_<method>`, and `n` counts the closures of the module in source order.
-    for owner in ["Counter_scaled_0", "poly_1", "run_2", "run_16"] {
+    for owner in ["Counter_scaled_0", "poly_1", "run_2", "run_16", "run_18"] {
         assert!(
             wgsl.contains(&format!("gust_cl_{owner}")),
             "no hoisted function for {owner} in the WGSL\n{wgsl}"

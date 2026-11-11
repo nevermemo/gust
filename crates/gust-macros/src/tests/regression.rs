@@ -8404,14 +8404,14 @@ fn closure_module(kernel_attr: &str, parameters: &str, body: &str) -> String {
     )
 }
 
-/// The twenty bodies of the capture table (plan 2.5): ten capture something, ten do not. The scan is syntactic and exact
+/// The capture table (plan 2.5, 22 rows and two method bodies): 11 rows capture something, 11 do not. The scan is syntactic and exact
 /// because a module holds functions, structs, enums and `impl`s only: a free single identifier is a local, a parameter,
 /// `self` or an earlier closure; everything else is a path of two segments, a helper, or a name of the dialect.
 #[test]
-fn the_capture_table_of_twenty_closure_bodies() {
+fn the_capture_table_of_closure_bodies() {
     const WORKGROUP: &str = "#[kernel(workgroup_size(64, 1, 1), cpu = \"unsupported\")]";
     // (label, attribute, extra parameters, kernel body, captures)
-    let table: [(&str, &str, &str, &str, bool); 18] = [
+    let table: [(&str, &str, &str, &str, bool); 22] = [
         (
             "outer let",
             "#[kernel]",
@@ -8538,6 +8538,34 @@ fn the_capture_table_of_twenty_closure_bodies() {
             "let f = |x: f32| -> f32 { Mat4::IDENTITY.x_axis.x + Vec2::splat(x).y }; out[id.x] = f(1.0f32);",
             false,
         ),
+        (
+            "a local named like a helper, used as a value",
+            "#[kernel]",
+            "",
+            "let helper = 2.0f32; let f = |x: f32| -> f32 { x * helper }; out[id.x] = f(1.0f32);",
+            true,
+        ),
+        (
+            "a local named like an atomic operation, used as a value",
+            "#[kernel]",
+            "",
+            "let atomic_add = 2.0f32; let f = |x: f32| -> f32 { x * atomic_add }; out[id.x] = f(1.0f32);",
+            true,
+        ),
+        (
+            "a match arm binding inside the body",
+            "#[kernel]",
+            "",
+            "let f = |x: f32| -> f32 { let mut r = 0.0f32; let q: Result<f32, f32> = Ok(x); match q { Ok(v) => { r = v; } Err(e) => { r = e; } }; r }; out[id.x] = f(1.0f32);",
+            false,
+        ),
+        (
+            "a name used only in type position, with a local of that name outside",
+            "#[kernel]",
+            "",
+            "let P = 1.0f32; let f = |x: f32| -> f32 { let q: P = P { x: x, y: 1.0f32 }; q.y }; out[id.x] = f(P);",
+            false,
+        ),
     ];
     for (label, attribute, parameters, body, captures) in table {
         let source = closure_module(attribute, parameters, body);
@@ -8548,7 +8576,7 @@ fn the_capture_table_of_twenty_closure_bodies() {
             translate(&source).unwrap_or_else(|error| panic!("{label}: {error}"));
         }
     }
-    // The twentieth body: `self` in a method closure is a capture; a method closure that takes it as a parameter is not.
+    // The method bodies: `self` in a method closure is a capture; a method closure that takes it as a parameter is not.
     let method = |body: &str| {
         format!(
             "mod m {{ pub struct P {{ pub x: f32 }} impl P {{ pub fn go(&self, k: f32) -> f32 {{ {body} }} }} \
@@ -8641,7 +8669,7 @@ fn each_closure_refusal_carries_its_code() {
         ),
         (
             "out[id.x] = (|x: f32| -> f32 { x })(1.0f32);",
-            Code::UnknownCall,
+            Code::ClosureValue,
         ),
         (
             "out[id.x] = helper(|x: f32| -> f32 { x });",

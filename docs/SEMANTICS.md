@@ -1483,9 +1483,9 @@ module, the paths of the module (`Vec2::new`, `Mode::A`, `Mat4::IDENTITY`) and s
 other name of the surrounding function (`GUST-E0329`): a local, a parameter, a buffer, the invocation id, workgroup
 memory, a loop variable, `self`, or an earlier closure (spike X4: a closure that calls a closure is the same error, and
 the message says so). `move` is `GUST-E0329` too. The check is syntactic and exact: a module holds functions, structs,
-enums and `impl` blocks only, so a single free identifier in the body is always a name of the surrounding function. The
-twenty bodies of the capture table (ten that capture, ten that do not) are the test
-`the_capture_table_of_twenty_closure_bodies`. A closure is judged as a helper (D154): no barrier, subgroup operation,
+enums and `impl` blocks only, so a single free identifier in the body is a name of the surrounding function, except as the callee of a call (a helper, `Some`, the
+barrier, subgroup and atomic names): a local that shadows a helper name and is used as a value is a capture. The 22 rows
+(11 that capture, 11 that do not) and two method bodies of the capture table are the test `the_capture_table_of_closure_bodies`. A closure is judged as a helper (D154): no barrier, subgroup operation,
 atomic, `Workgroup` parameter or resource parameter, with the helper rule's codes and messages that say "closure". A
 call cycle through a closure body is the recursion of the function that holds it (`GUST-E0120`).
 

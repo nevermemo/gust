@@ -101,6 +101,10 @@ struct Results
     uint order_tick_then_read;
     uint order_nested;
     uint placed;
+    uint array_written;
+    uint array_after;
+    uint struct_written;
+    uint struct_after;
 };
 
 [[vk::binding(0, 0)]] StructuredBuffer<uint> input;
@@ -211,6 +215,18 @@ uint __gust_cl_run_16(uint a)
     return (__gust_mul(a, uint(2)) + uint(1));
 }
 
+uint __gust_cl_run_17(uint[3] a)
+{
+    a[0] = uint(9);
+    return a[0];
+}
+
+uint __gust_cl_run_18(Counter c)
+{
+    c.n = uint(77);
+    return c.n;
+}
+
 // @rust kernel: closures::run
 [shader("compute")]
 [numthreads(64, 1, 1)]
@@ -283,27 +299,38 @@ void gpu_closures_run(uint3 id : SV_DispatchThreadID)
         Counter c4 = __gust_struct_40;
         var order_nested = __gust_cl_run_14(__gust_cl_run_14(c4.tick(), c4.tick()), c4.tick());
         scratch[__gust_cl_run_15(i)] = __gust_cl_run_16(i);
-        Results __gust_struct_45;
-        __gust_struct_45.added = added;
-        __gust_struct_45.poly = poly(x);
-        __gust_struct_45.scaled = scaled;
-        __gust_struct_45.via_helper = via_helper;
-        __gust_struct_45.via_method = via_method;
-        __gust_struct_45.looped = looped;
-        __gust_struct_45.float_kind = float_kind;
-        __gust_struct_45.int_kind = int_kind;
-        __gust_struct_45.bool_kind = bool_kind;
-        __gust_struct_45.vector_kind = vector_kind;
-        __gust_struct_45.matrix_kind = matrix_kind;
-        __gust_struct_45.struct_kind = struct_kind;
-        __gust_struct_45.enum_kind = enum_kind;
-        __gust_struct_45.tuple_kind = tuple_kind;
-        __gust_struct_45.array_kind = array_kind;
-        __gust_struct_45.order_two_ticks = order_two_ticks;
-        __gust_struct_45.order_read_then_tick = order_read_then_tick;
-        __gust_struct_45.order_tick_then_read = order_tick_then_read;
-        __gust_struct_45.order_nested = order_nested;
-        __gust_struct_45.placed = scratch[i];
-        results[i] = __gust_struct_45;
+        uint[3] caller_array = { x, uint(1), uint(2) };
+        var array_written = __gust_cl_run_17(caller_array);
+        Counter __gust_struct_49;
+        __gust_struct_49.n = x;
+        __gust_struct_49.step = uint(1);
+        Counter caller_counter = __gust_struct_49;
+        var struct_written = __gust_cl_run_18(caller_counter);
+        Results __gust_struct_51;
+        __gust_struct_51.added = added;
+        __gust_struct_51.poly = poly(x);
+        __gust_struct_51.scaled = scaled;
+        __gust_struct_51.via_helper = via_helper;
+        __gust_struct_51.via_method = via_method;
+        __gust_struct_51.looped = looped;
+        __gust_struct_51.float_kind = float_kind;
+        __gust_struct_51.int_kind = int_kind;
+        __gust_struct_51.bool_kind = bool_kind;
+        __gust_struct_51.vector_kind = vector_kind;
+        __gust_struct_51.matrix_kind = matrix_kind;
+        __gust_struct_51.struct_kind = struct_kind;
+        __gust_struct_51.enum_kind = enum_kind;
+        __gust_struct_51.tuple_kind = tuple_kind;
+        __gust_struct_51.array_kind = array_kind;
+        __gust_struct_51.order_two_ticks = order_two_ticks;
+        __gust_struct_51.order_read_then_tick = order_read_then_tick;
+        __gust_struct_51.order_tick_then_read = order_tick_then_read;
+        __gust_struct_51.order_nested = order_nested;
+        __gust_struct_51.placed = scratch[i];
+        __gust_struct_51.array_written = array_written;
+        __gust_struct_51.array_after = caller_array[0];
+        __gust_struct_51.struct_written = struct_written;
+        __gust_struct_51.struct_after = caller_counter.n;
+        results[i] = __gust_struct_51;
     }
 }

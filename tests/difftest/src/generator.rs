@@ -17,6 +17,7 @@ use crate::ast::{
     TupleTy, Ty, WIDTHS, chain_terms,
 };
 use crate::interp;
+mod array_gen;
 use crate::prng::{Prng, byte_stream};
 
 /// Bump when a change alters what any seed decodes to, or the emitted text. 2: the program space gained `f32`
@@ -54,7 +55,7 @@ use crate::prng::{Prng, byte_stream};
 /// `return`) and tuples of two to four elements (locals, parameters and results, `t.0`, element assignment, `f().1`,
 /// `let (a, b) = f(..)`), biased toward the order-sensitive shapes. The four older spaces decode as in format 9 (a
 /// seed's first six float, five vector, one method and two enum programs are format 9's); the batch cut is new.
-pub const DIFFTEST_FORMAT: u32 = 10;
+pub const DIFFTEST_FORMAT: u32 = 11;
 
 /// Which programs the generator writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,6 +78,11 @@ pub enum Space {
     /// The enum space plus the value `match`, integer patterns and tuples (slice m9.d1c, format 10). Selected by an
     /// attempt number of `VALUE_ATTEMPT_BASE` or more.
     Value,
+    /// The enum space plus fixed-size arrays (slice m9.d1d, format 11): typed array locals, literals and repeats,
+    /// indexed reads and element sets, array parameters and results, method calls on elements and an indexed store into
+    /// the output buffer. No floats, no tuples, no value `match`. Selected by an attempt number of
+    /// `ARRAY_ATTEMPT_BASE` or more.
+    Array,
 }
 
 /// The first attempt number of the vector space. A program is a pure function of `(seed, attempt)`, and the attempt
@@ -87,15 +93,19 @@ pub const VECTOR_ATTEMPT_BASE: u64 = 1_000_000;
 pub const METHOD_ATTEMPT_BASE: u64 = 2_000_000;
 /// In-domain programs of a seed's batch that are scalar (the float space), then vector, then method
 /// (`PROGRAMS_PER_SEED` in all).
-pub const SCALAR_PROGRAMS_PER_SEED: usize = 6;
-pub const VECTOR_PROGRAMS_PER_SEED: usize = 5;
+pub const SCALAR_PROGRAMS_PER_SEED: usize = 5;
+pub const VECTOR_PROGRAMS_PER_SEED: usize = 4;
 pub const METHOD_PROGRAMS_PER_SEED: usize = 1;
 pub const ENUM_PROGRAMS_PER_SEED: usize = 2;
+pub const ARRAY_PROGRAMS_PER_SEED: usize = 2;
 pub const VALUE_PROGRAMS_PER_SEED: usize = PROGRAMS_PER_SEED
     - SCALAR_PROGRAMS_PER_SEED
     - VECTOR_PROGRAMS_PER_SEED
     - METHOD_PROGRAMS_PER_SEED
-    - ENUM_PROGRAMS_PER_SEED;
+    - ENUM_PROGRAMS_PER_SEED
+    - ARRAY_PROGRAMS_PER_SEED;
+/// The first attempt number of the array space (above every value attempt a seed can make).
+pub const ARRAY_ATTEMPT_BASE: u64 = 5_000_000;
 /// The first attempt number of the value space (above every enum attempt a seed can make).
 pub const VALUE_ATTEMPT_BASE: u64 = 4_000_000;
 /// The first attempt number of the enum space (above every method attempt a seed can make).
@@ -104,10 +114,13 @@ pub const ENUM_ATTEMPT_BASE: u64 = 3_000_000;
 pub const VECTOR_END: usize = SCALAR_PROGRAMS_PER_SEED + VECTOR_PROGRAMS_PER_SEED;
 pub const METHOD_END: usize = VECTOR_END + METHOD_PROGRAMS_PER_SEED;
 pub const ENUM_END: usize = METHOD_END + ENUM_PROGRAMS_PER_SEED;
+pub const VALUE_END: usize = ENUM_END + VALUE_PROGRAMS_PER_SEED;
 
 /// The space whose decoder reads the program of this attempt number.
 pub fn space_of_attempt(attempt: u64) -> Space {
-    if attempt >= VALUE_ATTEMPT_BASE {
+    if attempt >= ARRAY_ATTEMPT_BASE {
+        Space::Array
+    } else if attempt >= VALUE_ATTEMPT_BASE {
         Space::Value
     } else if attempt >= ENUM_ATTEMPT_BASE {
         Space::Enum
@@ -209,6 +222,17 @@ struct Gen<'a> {
     pre: Vec<Stmt>,
     /// The helpers that hold a `return` in an arm of a `match` (calls prefer them in the value space).
     arm_return_fns: Vec<usize>,
+    /// The array space (implies `enums`, not `values`): arrays, `store` and the array helpers.
+    arrays: bool,
+    /// Array locals that may hold one value in every element (a repeat, an equal-element literal, a copy or a call
+    /// result): a compound set at a dynamic index into one is the NVIDIA trigger of plans/m9/arrbug.md, which the
+    /// generator does not write while that driver bug stands (DIFFTEST.md, "Known driver hole").
+    uniform: Vec<u32>,
+    /// The narrow form: array locals that hold a repeat, an equal-element literal, a copy of one or a call result. A
+    /// `&mut self` call on an element of one gets a literal index (the copy-store form of the same hole).
+    equal: Vec<u32>,
+    /// The final store of the program being drawn (the array space).
+    store: Option<crate::ast::Store>,
 }
 
 /// A data value as a literal; i32::MIN is written as the expression -2147483647 - 1 (the emitter never writes the
@@ -302,7 +326,12 @@ impl Gen<'_> {
             return literal;
         }
         match ty {
-            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) | Ty::Tuple(_) => {
+            Ty::Vec(..)
+            | Ty::Mat(_)
+            | Ty::Struct(_)
+            | Ty::Enum(_)
+            | Ty::Tuple(_)
+            | Ty::Array(_) => {
                 unreachable!("a vector, matrix, struct or enum has no literal")
             }
             Ty::F32 => self.float_literal(),
@@ -1343,17 +1372,24 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         count: 1,
         next_var: 0,
         scope: Vec::new(),
-        methods: matches!(space, Space::Method | Space::Enum | Space::Value),
+        methods: matches!(
+            space,
+            Space::Method | Space::Enum | Space::Value | Space::Array
+        ),
         table: Methods::default(),
         cur_fn: None,
         this: None,
         forbid: Vec::new(),
-        enums: matches!(space, Space::Enum | Space::Value),
+        enums: matches!(space, Space::Enum | Space::Value | Space::Array),
         cur_ret: None,
         force_enum_ret: false,
         values: space == Space::Value,
         pre: Vec::new(),
         arm_return_fns: Vec::new(),
+        arrays: space == Space::Array,
+        uniform: Vec::new(),
+        equal: Vec::new(),
+        store: None,
     };
     let count = match g.b.below(6) {
         k @ 0..=4 => COUNTS[k as usize],
@@ -1429,8 +1465,18 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
             g.splice_pre(pre_mark, at, &mut body);
         }
     }
+    // The array space ends the kernel with its array statements, whose element reads join the result.
+    let mut array_folds = Vec::new();
+    if g.arrays {
+        g.restore_scope(&body);
+        array_folds = g.array_section(&mut body);
+    }
     // A boolean result would hide the field (`x != 0`): the forced set gets an integer result.
     let mut ty = g.scalar_ty();
+    // A `bool` element reaches the output only through a `bool` result: often one.
+    if array_folds.iter().any(|e| e.ty() == Ty::Bool) && g.b.chance(60) {
+        ty = Ty::Bool;
+    }
     if forced_set && ty == Ty::Bool {
         ty = Ty::U32;
     }
@@ -1525,7 +1571,9 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
     let live: Vec<(u32, Ty)> = body
         .iter()
         .flat_map(|stmt| match stmt {
-            Stmt::Let { var, ty, .. } if !ty.is_struct() && !ty.is_tuple() => vec![(*var, *ty)],
+            Stmt::Let { var, ty, .. } if !ty.is_struct() && !ty.is_tuple() && !ty.is_array() => {
+                vec![(*var, *ty)]
+            }
             Stmt::LetMatch { var, ty, .. } => vec![(*var, *ty)],
             Stmt::LetTuple {
                 vars,
@@ -1642,6 +1690,19 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
             }
         }
     }
+    for read in array_folds {
+        result = fold_in(result, read);
+    }
+    // ... and often a call on one struct root, so that the final store has a `&mut self` call in its value.
+    if g.arrays
+        && matches!(result.ty(), Ty::U32 | Ty::I32)
+        && g.b.chance(50)
+        && let Some(root) = g.bias_root()
+        && let Some(call) = g.root_call(result.ty(), root, 3)
+    {
+        result = fold_in(result, call);
+    }
+    g.store = g.array_store(&result);
     let (folds, fold_chance) = if g.vectors { (3, 85) } else { (2, 60) };
     for _ in 0..folds {
         if live.is_empty() || !g.b.chance(fold_chance) {
@@ -1681,6 +1742,7 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         body,
         result,
         methods: g.table,
+        store: g.store.take(),
     }
 }
 
@@ -1741,6 +1803,9 @@ pub struct Batch {
     /// Of `attempts`, the attempts of the value part, and of `discarded`, the discards of the value part.
     pub value_attempts: u64,
     pub value_discarded: BTreeMap<&'static str, u32>,
+    /// Of `attempts`, the attempts of the array part, and of `discarded`, the discards of the array part.
+    pub array_attempts: u64,
+    pub array_discarded: BTreeMap<&'static str, u32>,
 }
 
 impl Batch {
@@ -1774,6 +1839,7 @@ pub fn generate_batch(seed: u64) -> Result<Batch, String> {
     fill(&mut batch, Space::Method, METHOD_PROGRAMS_PER_SEED)?;
     fill(&mut batch, Space::Enum, ENUM_PROGRAMS_PER_SEED)?;
     fill(&mut batch, Space::Value, VALUE_PROGRAMS_PER_SEED)?;
+    fill(&mut batch, Space::Array, ARRAY_PROGRAMS_PER_SEED)?;
     Ok(batch)
 }
 
@@ -1798,6 +1864,8 @@ fn empty_batch(seed: u64) -> Batch {
         enum_discarded: BTreeMap::new(),
         value_attempts: 0,
         value_discarded: BTreeMap::new(),
+        array_attempts: 0,
+        array_discarded: BTreeMap::new(),
     }
 }
 
@@ -1808,6 +1876,7 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
         Space::Method => METHOD_ATTEMPT_BASE,
         Space::Enum => ENUM_ATTEMPT_BASE,
         Space::Value => VALUE_ATTEMPT_BASE,
+        Space::Array => ARRAY_ATTEMPT_BASE,
         _ => 0,
     };
     let target = batch.programs.len() + want;
@@ -1817,6 +1886,7 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
         batch.method_attempts += u64::from(space == Space::Method);
         batch.enum_attempts += u64::from(space == Space::Enum);
         batch.value_attempts += u64::from(space == Space::Value);
+        batch.array_attempts += u64::from(space == Space::Array);
         let program = generate_attempt_in(space, batch.seed, attempt);
         // A vector program that came out scalar tests nothing new, nor does a method program that calls nothing, nor
         // an enum program without a `match`.
@@ -1830,7 +1900,9 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
             Some("no-call")
         } else if space == Space::Value && !program.has_value_form() {
             Some("no-value")
-        } else if space == Space::Value && !program.has_call() {
+        } else if space == Space::Array && !program.has_array() {
+            Some("no-array")
+        } else if matches!(space, Space::Value | Space::Array) && !program.has_call() {
             Some("no-call")
         } else {
             discard_reason(&program)
@@ -1846,6 +1918,9 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
                 }
                 if space == Space::Enum {
                     *batch.enum_discarded.entry(reason).or_default() += 1;
+                }
+                if space == Space::Array {
+                    *batch.array_discarded.entry(reason).or_default() += 1;
                 }
                 if space == Space::Value {
                     *batch.value_discarded.entry(reason).or_default() += 1;
@@ -2111,6 +2186,7 @@ impl Gen<'_> {
                     ));
                 }
                 Ty::Tuple(_) => args.push(self.tuple_expr(*ty, depth)),
+                Ty::Array(a) => args.push(self.array_arg(*a, depth)),
                 // An enum argument is often built from a call, and two of them from calls on one root: the arguments
                 // run left to right, so the first call's effect on the root is what the second one sees.
                 Ty::Enum(_) => args.push(self.enum_arg(*ty, depth, &mut enum_root)),
@@ -2453,6 +2529,8 @@ impl Gen<'_> {
                 self.enum_ty()
             } else if self.b.chance(18) {
                 Ty::Struct(self.b.below(structs) as u8)
+            } else if self.arrays && self.b.chance(18) {
+                self.array_param_ty()
             } else if self.values && self.b.chance(14) {
                 self.tuple_ty()
             } else if self.enums && self.b.chance(30) {
@@ -2468,6 +2546,10 @@ impl Gen<'_> {
         let ret = match kind {
             _ if first_bool => Some(Ty::Bool),
             4 => owner.map(Ty::Struct),
+            // A helper that takes an array often returns it (modified): the array in, the array out.
+            0 if self.arrays && params.iter().any(|(_, ty)| ty.is_array()) && self.b.chance(50) => {
+                params.iter().map(|(_, ty)| *ty).find(|ty| ty.is_array())
+            }
             _ if self.force_enum_ret => Some(self.enum_ty()),
             2 if self.b.chance(40) => None,
             _ if self.values && self.b.chance(28) => Some(self.tuple_ty()),
@@ -2475,7 +2557,11 @@ impl Gen<'_> {
             _ => Some([Ty::U32, Ty::I32, Ty::Bool][self.b.weighted(&[40, 40, 20])]),
         };
         // A helper (no receiver, no owner) may end a block in `return`.
-        self.cur_ret = if self.enums && recv == Recv::None && owner.is_none() {
+        self.cur_ret = if self.enums
+            && recv == Recv::None
+            && owner.is_none()
+            && !ret.is_some_and(Ty::is_array)
+        {
             ret
         } else {
             None
@@ -2503,6 +2589,11 @@ impl Gen<'_> {
             self.splice_pre(pre_mark, at, &mut body);
         }
         body.extend(self.block(1, 0, 3));
+        let array_reads = if self.arrays {
+            self.array_param_uses(&params, &mut body)
+        } else {
+            Vec::new()
+        };
         let pre_mark = self.pre.len();
         let at = body.len();
         let tail = ret.map(|ty| match ty {
@@ -2520,7 +2611,24 @@ impl Gen<'_> {
                 });
                 Expr::Var(var, ty)
             }
-            scalar => self.expr(scalar, 4),
+            Ty::Array(_) => {
+                let (var, _) = *params
+                    .iter()
+                    .find(|(_, p)| *p == ty)
+                    .expect("an array result has its array parameter");
+                Expr::Var(var, ty)
+            }
+            scalar => {
+                let mut value = self.expr(scalar, 4);
+                for read in array_reads
+                    .clone()
+                    .into_iter()
+                    .filter(|_| matches!(scalar, Ty::U32 | Ty::I32 | Ty::Bool))
+                {
+                    value = fold_in(value, read);
+                }
+                value
+            }
         });
         // Lets that the tail hoisted come before it (and before the `let` of a struct tail).
         self.splice_pre(pre_mark, at, &mut body);
@@ -2994,9 +3102,25 @@ impl Gen<'_> {
     /// before the statement being drawn (`Gen::pre`).
     fn hoist_struct(&mut self, j: u8) -> Expr {
         let ty = Ty::Struct(j);
-        let init = self
-            .struct_expr(j, 3, true)
-            .expect("a literal of a scalar-field struct is always possible");
+        let init = match self.struct_expr(j, 3, true) {
+            Some(init) => init,
+            // A nested struct field with no value in reach: hoist that one too, then a literal of variables.
+            None => {
+                let fields = self.table.structs[usize::from(j)].fields.clone();
+                let values: Vec<Expr> = fields
+                    .into_iter()
+                    .map(|field| match field {
+                        Ty::Struct(inner) => self.hoist_struct(inner),
+                        scalar => self.expr(scalar, 2),
+                    })
+                    .collect();
+                Expr::StructLit {
+                    ty,
+                    order: (0..values.len() as u8).collect(),
+                    fields: values,
+                }
+            }
+        };
         let var = self.fresh();
         let mutable = self.b.chance(50);
         self.scope.push((var, ty, mutable));
@@ -3226,6 +3350,7 @@ impl Gen<'_> {
                         root: place.root,
                         root_ty: place.root_ty,
                         path: vec![k],
+                        index: None,
                     },
                     ty,
                 };
@@ -3921,7 +4046,7 @@ mod tests {
         assert!(text.contains("(v2 % v2)"), "{text}");
         assert_eq!(discard_reason(&program), None);
         assert!(
-            generate_batch(4)
+            generate_batch_in(Space::Float, 4)
                 .unwrap()
                 .programs
                 .iter()

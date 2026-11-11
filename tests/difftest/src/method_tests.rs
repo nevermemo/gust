@@ -126,6 +126,7 @@ fn program(mut body: Vec<Stmt>, result: Expr) -> Program {
     let program = Program {
         seed: 0,
         methods: methods(),
+        store: None,
         attempt: METHOD_ATTEMPT_BASE,
         count: 1,
         inputs: vec![InputBuf {

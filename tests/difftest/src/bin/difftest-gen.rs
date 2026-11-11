@@ -84,6 +84,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 add("method-attempts".into(), batch.method_attempts);
                 add("enum-attempts".into(), batch.enum_attempts);
                 add("value-attempts".into(), batch.value_attempts);
+                add("array-attempts".into(), batch.array_attempts);
                 for (reason, n) in &batch.discarded {
                     add(format!("discard {reason}"), u64::from(*n));
                 }
@@ -99,6 +100,11 @@ fn run(args: &[String]) -> Result<(), String> {
                 for (reason, n) in &batch.value_discarded {
                     add(format!("value-discard {reason}"), u64::from(*n));
                 }
+                for (reason, n) in &batch.array_discarded {
+                    add(format!("array-discard {reason}"), u64::from(*n));
+                }
+                let arrays = batch.programs.iter().filter(|p| p.has_array()).count();
+                add("array-programs".into(), arrays as u64);
                 let values = batch.programs.iter().filter(|p| p.has_value_form()).count();
                 add("value-programs".into(), values as u64);
                 let enums = batch

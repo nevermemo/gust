@@ -500,6 +500,7 @@ fn random_program(rng: &mut Prng, seed: u64) -> Program {
     Program {
         seed,
         methods: Default::default(),
+        store: None,
         attempt: 0,
         count: COUNT as u32,
         inputs,
@@ -558,6 +559,7 @@ fn polynomial(values: &[f32]) -> Program {
     Program {
         seed: 0,
         methods: Default::default(),
+        store: None,
         attempt: 0,
         count: values.len() as u32,
         inputs: vec![InputBuf {
@@ -689,6 +691,7 @@ fn a_nine_term_loop_chain_covers_every_grouping_the_models_try() {
     let program = Program {
         seed: 0,
         methods: Default::default(),
+        store: None,
         attempt: 0,
         count: 5,
         inputs: vec![InputBuf {
@@ -726,6 +729,7 @@ fn three_term_chain(a: f32, b: f32, c: f32) -> Program {
     Program {
         seed: 0,
         methods: Default::default(),
+        store: None,
         attempt: 0,
         count: 1,
         inputs: vec![input(a), input(b), input(c)],

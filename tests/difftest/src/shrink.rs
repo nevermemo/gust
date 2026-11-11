@@ -32,7 +32,8 @@ pub struct Identity {
     /// Every kind among the mismatches that name an element, sorted.
     pub kinds: Vec<&'static str>,
     pub out_ty: Ty,
-    /// A slangc build failure of the GPU party (no element names it): see [`build_signature`]. Then `kind` is
+    /// A slangc build failure or a validation failure of the GPU party (no element names it): see [`build_signature`]
+    /// and [`validation_signature`]. Then `kind` is
     /// `gpu-error` and a candidate reproduces when it fails to compile in the same way.
     pub build: Option<String>,
 }
@@ -54,6 +55,52 @@ pub fn build_signature(message: &str) -> Option<String> {
     })
 }
 
+/// The signature of a wgpu or naga validation failure in the message of a `gpu-error` (the party built the module and
+/// the device refused it): the lines from `Validation Error` on, without the `In Device::...` line (its label names the
+/// module and moves) and the `Caused by:` line, each with every run of digits masked (ids of expressions, handles and
+/// `v<n>` names change as the shrinker removes statements), joined by ` | `. The innermost cause is the last line, so a
+/// message longer than 400 characters keeps its end. `None` for any other message. (m9.d1d, N6; S3 of fix round 1)
+pub fn validation_signature(message: &str) -> Option<String> {
+    let start = message.find("Validation Error")?;
+    let mask = |line: &str| {
+        let mut masked = String::new();
+        for word in line.split_whitespace() {
+            if !masked.is_empty() {
+                masked.push(' ');
+            }
+            let mut in_digits = false;
+            for c in word.chars() {
+                if c.is_ascii_digit() {
+                    if !in_digits {
+                        masked.push('#');
+                    }
+                    in_digits = true;
+                } else {
+                    in_digits = false;
+                    masked.push(c);
+                }
+            }
+        }
+        masked
+    };
+    let lines: Vec<String> = message[start..]
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            !line.is_empty() && *line != "Caused by:" && !line.starts_with("In Device::")
+        })
+        .map(mask)
+        .collect();
+    let joined = lines.join(" | ");
+    let skip = joined.chars().count().saturating_sub(400);
+    Some(joined.chars().skip(skip).collect())
+}
+
+/// The signature of a failure that names no element: a slangc build failure or a validation failure.
+fn failure_signature(message: &str) -> Option<String> {
+    build_signature(message).or_else(|| validation_signature(message))
+}
+
 /// The identity of a failing program, and the element it first fails at: its first mismatch that names an element, or,
 /// when none does, a slangc build failure (shrunk from element 0).
 pub fn identity_of(program: &Program, found: &[Mismatch]) -> Option<(Identity, u32)> {
@@ -64,7 +111,7 @@ pub fn identity_of(program: &Program, found: &[Mismatch]) -> Option<(Identity, u
         let signature = found
             .iter()
             .filter(|m| m.kind == "gpu-error")
-            .find_map(|m| build_signature(&m.message))?;
+            .find_map(|m| failure_signature(&m.message))?;
         let identity = Identity {
             kind: "gpu-error",
             kinds: vec!["gpu-error"],
@@ -102,7 +149,7 @@ pub fn reproduces(
         let same = program.out_ty() == identity.out_ty
             && found.len() == 1
             && found[0].kind == "gpu-error"
-            && build_signature(&found[0].message).as_ref() == Some(signature);
+            && failure_signature(&found[0].message).as_ref() == Some(signature);
         return same.then_some(0);
     }
     if program.out_ty() != identity.out_ty || found.iter().any(|m| m.first_element.is_none()) {

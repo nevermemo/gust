@@ -582,12 +582,14 @@ pub(crate) struct ShapeRow {
     pub(crate) evaluations: u64,
 }
 
-/// Whether a counted operator name is a shape, a `match` construct or (format 10) a tuple construct.
+/// Whether a counted operator name is a shape, a `match` construct, (format 10) a tuple construct or (format 11) an
+/// array construct (`array element read`; the order shapes start with `shape array`).
 fn is_shape_row(name: &str) -> bool {
     name.starts_with("shape ")
         || name.starts_with("match")
         || name.starts_with("enum ")
         || name.starts_with("tuple ")
+        || name.starts_with("array ")
         || name == "return"
 }
 
@@ -1484,6 +1486,31 @@ mod shape_row_tests {
         assert_eq!(rows[4].evaluations, 40);
     }
 
+    /// Format 11 (m9.d1d): the array constructs (`array element read`, `array literal`) are shape rows, and so are the
+    /// order shapes (`shape array ...`); a plain operator is not.
+    #[test]
+    fn the_array_names_of_format_11_are_shape_rows() {
+        let json = crate::json::parse(
+            r#"{"coverage":{"operators":[
+                {"operator":"^ u32","programs_in_text":9,"programs_executing":9,"evaluations":90},
+                {"operator":"array element read","programs_in_text":6,"occurrences_in_text":9,"programs_executing":6,"evaluations":900},
+                {"operator":"array copy","programs_in_text":1,"occurrences_in_text":1,"programs_executing":0,"evaluations":0},
+                {"operator":"shape array literal of &mut self calls on one root","programs_in_text":2,"occurrences_in_text":2,"programs_executing":2,"evaluations":40}
+            ]}}"#,
+        )
+        .unwrap();
+        let rows = parse_shape_rows(&json).unwrap();
+        let names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "array element read",
+                "array copy",
+                "shape array literal of &mut self calls on one root"
+            ]
+        );
+        assert_eq!((rows[1].programs_in_text, rows[1].evaluations), (1, 0));
+    }
     #[test]
     fn a_report_without_coverage_has_no_shape_rows() {
         assert!(

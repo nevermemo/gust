@@ -26,6 +26,7 @@ fn program(out: Ty) -> Program {
     Program {
         seed: 1,
         methods: Default::default(),
+        store: None,
         attempt: 0,
         count: 4,
         inputs: vec![InputBuf {
@@ -464,6 +465,68 @@ fn a_slangc_build_failure_is_a_failure_with_an_identity_that_a_candidate_must_re
     // A GPU error that is not a compilation failure still has no identity.
     assert_eq!(
         identity_of(&p, &[build_failure("the GPU adapter was lost")]),
+        None
+    );
+}
+
+/// The shape of a wgpu shader validation failure, written for this test (a synthetic message in wgpu's layout, not a
+/// recorded one; digits stand for the ids that move as statements are removed).
+const VALIDATION: &str = "dispatch: Validation Error\n\nCaused by:\n  In Device::create_shader_module, label = 'difftest'\n    Shader validation error:\n      Entry point main at Compute is invalid\n      Expression [37] is invalid\n      Type resolution failed: the array v16[3] is not indexable by 4";
+
+#[test]
+fn a_validation_failure_is_a_failure_with_an_identity_that_a_candidate_must_repeat() {
+    let p = program(Ty::U32);
+    let signature = validation_signature(VALIDATION).unwrap();
+    assert!(
+        signature.starts_with("Validation Error | Shader validation error:"),
+        "{signature}"
+    );
+    assert!(
+        signature.ends_with("not indexable by #"),
+        "the reason line is kept: {signature}"
+    );
+    assert!(!signature.contains("difftest"), "{signature}");
+    assert!(
+        !signature.contains("37") && !signature.contains("16"),
+        "{signature}"
+    );
+    assert_eq!(validation_signature("the GPU adapter was lost"), None);
+    // A slangc failure keeps its own signature.
+    assert_eq!(validation_signature(E30015), None);
+    let found = [build_failure(VALIDATION)];
+    let (identity, element) = identity_of(&p, &found).unwrap();
+    assert_eq!((identity.kind, element), ("gpu-error", 0));
+    assert_eq!(identity.build.as_deref(), Some(signature.as_str()));
+    assert_eq!(reproduces(&identity, &p, Ok(&found)), Some(0));
+    // Other ids, names and labels in the same message are the same failure; another message is not.
+    let moved = [build_failure(
+        &VALIDATION
+            .replace("[37]", "[5]")
+            .replace("v16", "v3")
+            .replace(
+                "'difftest'",
+                "'a much longer label Slang-generated WGSL for another module'",
+            ),
+    )];
+    assert_eq!(reproduces(&identity, &p, Ok(&moved)), Some(0));
+    let other = [build_failure(
+        &VALIDATION.replace("Entry point main", "Entry point other"),
+    )];
+    assert_eq!(reproduces(&identity, &p, Ok(&other)), None);
+    // Two failures that differ only in the last line (the reason) are different failures.
+    let reason = [build_failure(
+        &VALIDATION.replace("is not indexable by 4", "has no member f2"),
+    )];
+    assert_eq!(reproduces(&identity, &p, Ok(&reason)), None);
+    // A long message keeps its end: a long prefix does not hide the reason.
+    let long = format!(
+        "dispatch: Validation Error\n{}\n      Type resolution failed: reason A",
+        "      Entry point main is invalid\n".repeat(30)
+    );
+    let long_b = long.replace("reason A", "reason B");
+    assert_ne!(validation_signature(&long), validation_signature(&long_b));
+    assert_eq!(
+        reproduces(&identity, &p, Ok(&[build_failure(E30015)])),
         None
     );
 }

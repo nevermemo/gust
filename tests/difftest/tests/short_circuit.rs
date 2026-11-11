@@ -60,6 +60,7 @@ fn program(seed: u64, or: bool) -> Program {
     Program {
         seed,
         methods: Default::default(),
+        store: None,
         attempt: if or { 2 } else { 1 },
         count: COUNT,
         inputs: vec![input()],

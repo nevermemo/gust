@@ -59,9 +59,14 @@ pub enum Ty {
     /// never a field, a buffer element or a result type of the kernel. The type describes itself (no table), so `Ty`
     /// stays `Copy` and the emitter needs no context to spell it.
     Tuple(TupleTy),
+    /// A fixed-size array `[T; N]` (format 11, slice m9.d1d). It lives in a local, a parameter or a result; it is never a
+    /// field, a buffer element, a tuple element or the result of the kernel. Like a tuple it describes itself.
+    Array(ArrTy),
 }
 
-/// An element type of a tuple: a scalar, a module struct or a module enum (format 10).
+/// An element type of a tuple or an array: a scalar, a module struct or a module enum (format 10), and (arrays only,
+/// format 11) a vector or a matrix. The generator draws no vector or matrix element (see DIFFTEST.md); the interpreter,
+/// the emitter and the checker handle them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Elem {
     U32,
@@ -69,6 +74,8 @@ pub enum Elem {
     Bool,
     Struct(u8),
     Enum(u8),
+    Vec(Lane, u8),
+    Mat(u8),
 }
 
 impl Elem {
@@ -79,6 +86,8 @@ impl Elem {
             Elem::Bool => Ty::Bool,
             Elem::Struct(j) => Ty::Struct(j),
             Elem::Enum(e) => Ty::Enum(e),
+            Elem::Vec(lane, n) => Ty::Vec(lane, n),
+            Elem::Mat(n) => Ty::Mat(n),
         }
     }
 
@@ -92,6 +101,38 @@ impl Elem {
             Ty::Enum(e) => Elem::Enum(e),
             _ => return None,
         })
+    }
+
+    /// The element kind of a type, if an array may hold it (a tuple's kinds, and vectors and matrices).
+    pub fn of_array(ty: Ty) -> Option<Elem> {
+        match ty {
+            Ty::Vec(lane, n) => Some(Elem::Vec(lane, n)),
+            Ty::Mat(n) => Some(Elem::Mat(n)),
+            other => Elem::of(other),
+        }
+    }
+}
+
+/// The most elements of a generated array, and the most scalar components its flat value holds (an `Agg`).
+pub const MAX_ARRAY: usize = 5;
+pub const MAX_ARRAY_FLAT: usize = 16;
+
+/// An array type: `n` elements of `e`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ArrTy {
+    pub n: u8,
+    pub e: Elem,
+}
+
+impl ArrTy {
+    pub fn new(e: Elem, n: u8) -> ArrTy {
+        assert!(n >= 1, "an array of no elements");
+        ArrTy { n, e }
+    }
+
+    /// The Rust spelling: `[u32; 3]`.
+    pub fn text(&self) -> String {
+        format!("[{}; {}]", self.e.ty().text(), self.n)
     }
 }
 
@@ -137,6 +178,7 @@ impl Ty {
     pub fn text(self) -> String {
         match self {
             Ty::Tuple(t) => t.text(),
+            Ty::Array(a) => a.text(),
             other => other.name().to_owned(),
         }
     }
@@ -144,6 +186,11 @@ impl Ty {
     /// A tuple.
     pub fn is_tuple(self) -> bool {
         matches!(self, Ty::Tuple(_))
+    }
+
+    /// An array.
+    pub fn is_array(self) -> bool {
+        matches!(self, Ty::Array(_))
     }
 
     /// The Rust spelling of a scalar, vector, matrix, struct or enum; a tuple has `text`.
@@ -167,6 +214,7 @@ impl Ty {
             Ty::Enum(0) => "E0",
             Ty::Enum(1) => "E1",
             Ty::Tuple(_) => "(tuple)",
+            Ty::Array(_) => "(array)",
             Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) => {
                 panic!("a width, struct or enum outside the program space: {self:?}")
             }
@@ -180,7 +228,12 @@ impl Ty {
             Ty::I32 => "int",
             Ty::Bool => "bool",
             Ty::F32 => "float",
-            Ty::Vec(..) | Ty::Mat(_) | Ty::Struct(_) | Ty::Enum(_) | Ty::Tuple(_) => {
+            Ty::Vec(..)
+            | Ty::Mat(_)
+            | Ty::Struct(_)
+            | Ty::Enum(_)
+            | Ty::Tuple(_)
+            | Ty::Array(_) => {
                 panic!("{} is not a buffer element type", self.name())
             }
         }
@@ -199,6 +252,7 @@ impl Ty {
     pub fn decl_text(self) -> String {
         match self {
             Ty::Tuple(t) => t.text(),
+            Ty::Array(a) => format!("[{}; {}]", a.e.ty().decl_text(), a.n),
             other => other.decl_name().to_owned(),
         }
     }
@@ -463,6 +517,12 @@ pub enum Expr {
     Tuple { ty: Ty, elems: Vec<Expr> },
     /// `f().1`: one element of a tuple that is no place (a call result). A `t.1` on a local is a `Read`. (Format 10.)
     TupleField { e: Box<Expr>, index: u8 },
+    /// `[a, b, c]`: an array literal of type `ty`; the elements are evaluated left to right. (Format 11.)
+    ArrayLit { ty: Ty, elems: Vec<Expr> },
+    /// `[e; N]`: `e` is evaluated once and copied `N` times. (Format 11.)
+    Repeat { ty: Ty, e: Box<Expr> },
+    /// `a.len()` of an array place, a `u32`; the dialect accepts it only inside an index or under `as u32`. (Format 11.)
+    ArrLen { place: Place },
 }
 
 /// A field-less enum of the module (format 9): its repr and its variants `V0`, `V1`, ... A variant's value is a 32-bit
@@ -562,9 +622,13 @@ impl Methods {
 
     /// The flat length of a scalar (1) or of a struct.
     pub fn ty_len(&self, ty: Ty) -> usize {
+        if let Ty::Array(a) = ty {
+            return usize::from(a.n) * self.ty_len(a.e.ty());
+        }
         match ty {
             Ty::Struct(j) => self.flat_len(j),
             Ty::Tuple(t) => t.elems().iter().map(|e| self.ty_len(e.ty())).sum(),
+            Ty::Vec(..) | Ty::Mat(_) => ty.lanes(),
             _ => 1,
         }
     }
@@ -612,14 +676,17 @@ pub enum Root {
     SelfV,
 }
 
-/// A local (or `self`) followed by a path of field indices: `v3`, `v3.f1`, `self.f2.f0`. A place has no side effects
-/// and no index, so its evaluation order is not observable.
+/// A local (or `self`) followed by an optional index and a path of field indices: `v3`, `v3.f1`, `self.f2.f0`,
+/// `v3[k]`, `v3[k].f1` (format 11: the index applies to an array root, the path follows it). A place with an index
+/// holds an expression, which may have side effects: the interpreter locates it once.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Place {
     pub root: Root,
-    /// The type of the root (a struct, or a scalar local with an empty path), so that a place is self-describing.
+    /// The type of the root (a struct, an array, or a scalar local with an empty path), so that a place is self-describing.
     pub root_ty: Ty,
     pub path: Vec<u8>,
+    /// `root[index as usize]` when the root is an array: `index` is the `u32` (or `i32`) expression before the cast.
+    pub index: Option<Box<Expr>>,
 }
 
 impl Place {
@@ -628,6 +695,7 @@ impl Place {
             root: Root::Var(var),
             root_ty: ty,
             path: Vec::new(),
+            index: None,
         }
     }
 
@@ -636,6 +704,7 @@ impl Place {
             root: Root::SelfV,
             root_ty: ty,
             path: Vec::new(),
+            index: None,
         }
     }
 
@@ -646,6 +715,7 @@ impl Place {
             root: self.root,
             root_ty: self.root_ty,
             path,
+            index: self.index.clone(),
         }
     }
 }
@@ -733,6 +803,7 @@ pub fn bin_shape(methods: &Methods, op: BinOp, l: &Expr, r: &Expr) -> Option<&'s
     let same = |a: Option<Root>, b: Option<Root>| a.is_some() && a == b;
     (same(read_root(l), mut_call_root(methods, r)) || same(mut_call_root(methods, l), read_root(r)))
         .then_some(SHAPE_READ_AND_CALL)
+        .or_else(|| array_index_shape(methods, l, r))
 }
 
 /// The shape of a call: a by-value call whose arguments contain a `&mut self` call on the receiver's root.
@@ -973,6 +1044,140 @@ pub fn tuple_set_names(
         if same {
             names.push(SHAPE_TUPLE_SET_CALL);
         }
+    }
+    names
+}
+
+/// Names of the constructs of the array space (format 11, slice m9.d1d), counted statically by `operator_counts` and when
+/// executed by the interpreter, under the same names.
+pub const ARRAY_LIT: &str = "array literal";
+pub const ARRAY_REPEAT: &str = "array repeat";
+pub const ARRAY_READ: &str = "array element read";
+pub const ARRAY_LEN: &str = "array len";
+pub const ARRAY_SET: &str = "array element set";
+pub const ARRAY_SET_OP: &str = "array element compound set";
+pub const ARRAY_COPY: &str = "array copy";
+pub const ARRAY_ARG: &str = "array argument";
+pub const ARRAY_ELEM_CALL: &str = "array element method call";
+pub const ARRAY_STORE: &str = "array output store";
+pub const SHAPE_ARRAY_LIT_ROOT: &str = "shape array literal of &mut self calls on one root";
+pub const SHAPE_ARRAY_REPEAT_CALL: &str = "shape array repeat of a &mut self call";
+pub const SHAPE_ARRAY_INDEX_CALLS: &str =
+    "shape array reads indexed by &mut self calls on one root";
+pub const SHAPE_ARRAY_SET_CALL: &str =
+    "shape array element set with a &mut self call on the array in the value";
+pub const SHAPE_ARRAY_STORE_CALL: &str =
+    "shape array output store with a &mut self call in the value";
+
+/// The roots of the `&mut self` calls inside the index of an indexed read in `e`.
+fn index_call_roots(methods: &Methods, e: &Expr) -> Vec<Root> {
+    let mut roots = Vec::new();
+    walk_expr(e, &mut |n| {
+        if let Expr::Read { place, .. } = n
+            && let Some(index) = place.index.as_deref()
+        {
+            mutating_roots(methods, index, &mut roots);
+        }
+    });
+    roots
+}
+
+/// `a[f()] .. a[g()]`: the two operands of a binary both read an element through an index that calls `&mut self` on
+/// one root; the left index must run first.
+fn array_index_shape(methods: &Methods, l: &Expr, r: &Expr) -> Option<&'static str> {
+    let (left, right) = (index_call_roots(methods, l), index_call_roots(methods, r));
+    left.iter()
+        .any(|root| right.contains(root))
+        .then_some(SHAPE_ARRAY_INDEX_CALLS)
+}
+
+/// The names an expression node counts under besides its operator: the array constructs.
+pub fn array_expr_names(methods: &Methods, e: &Expr) -> Vec<&'static str> {
+    match e {
+        Expr::ArrayLit { elems, .. } => {
+            let mut names = vec![ARRAY_LIT];
+            let mut roots = Vec::new();
+            for elem in elems {
+                mutating_roots(methods, elem, &mut roots);
+            }
+            if roots
+                .iter()
+                .enumerate()
+                .any(|(k, root)| roots[..k].contains(root))
+            {
+                names.push(SHAPE_ARRAY_LIT_ROOT);
+            }
+            names
+        }
+        Expr::Repeat { e: inner, .. } => {
+            let mut names = vec![ARRAY_REPEAT];
+            let mut roots = Vec::new();
+            mutating_roots(methods, inner, &mut roots);
+            if !roots.is_empty() {
+                names.push(SHAPE_ARRAY_REPEAT_CALL);
+            }
+            names
+        }
+        Expr::Read { place, .. } if place.index.is_some() => vec![ARRAY_READ],
+        Expr::ArrLen { .. } => vec![ARRAY_LEN],
+        _ => Vec::new(),
+    }
+}
+
+/// The names an assignment to an element of an array counts under besides `set_name`.
+pub fn array_set_names(
+    methods: &Methods,
+    place: &Place,
+    op: Option<BinOp>,
+    value: &Expr,
+) -> Vec<&'static str> {
+    if place.index.is_none() {
+        return Vec::new();
+    }
+    let mut names = vec![if op.is_some() {
+        ARRAY_SET_OP
+    } else {
+        ARRAY_SET
+    }];
+    if contains_mut_call_on(methods, value, place.root) {
+        names.push(SHAPE_ARRAY_SET_CALL);
+    }
+    names
+}
+
+/// The names a call counts under when its receiver is an element of an array.
+pub fn array_call_names(recv: &Option<Place>) -> Vec<&'static str> {
+    match recv {
+        Some(place) if place.index.is_some() => vec![ARRAY_ELEM_CALL],
+        _ => Vec::new(),
+    }
+}
+
+/// The names the arguments of a call and the initializer of a binding count under: an array copied by value.
+pub fn array_value_names(e: &Expr) -> Vec<&'static str> {
+    if e.ty().is_array() && matches!(e, Expr::Var(..)) {
+        vec![ARRAY_COPY]
+    } else {
+        Vec::new()
+    }
+}
+
+/// The names a call's arguments count under: an array passed by value.
+pub fn array_arg_names(args: &[Expr]) -> Vec<&'static str> {
+    if args.iter().any(|arg| arg.ty().is_array()) {
+        vec![ARRAY_ARG]
+    } else {
+        Vec::new()
+    }
+}
+
+/// The names the final store counts under: itself, and the shape when the result calls `&mut self`.
+pub fn array_store_names(methods: &Methods, result: &Expr) -> Vec<&'static str> {
+    let mut names = vec![ARRAY_STORE];
+    let mut roots = Vec::new();
+    mutating_roots(methods, result, &mut roots);
+    if !roots.is_empty() {
+        names.push(SHAPE_ARRAY_STORE_CALL);
     }
     names
 }
@@ -1239,7 +1444,10 @@ impl Expr {
             Expr::Read { ty, .. }
             | Expr::Call { ty, .. }
             | Expr::StructLit { ty, .. }
-            | Expr::Tuple { ty, .. } => *ty,
+            | Expr::Tuple { ty, .. }
+            | Expr::ArrayLit { ty, .. }
+            | Expr::Repeat { ty, .. } => *ty,
+            Expr::ArrLen { .. } => Ty::U32,
             Expr::TupleField { e, index } => match e.ty() {
                 Ty::Tuple(t) => t.elems()[usize::from(*index)].ty(),
                 other => panic!("a tuple field of {}", other.name()),
@@ -1330,10 +1538,20 @@ impl Expr {
                 f(r);
             }
             Expr::Make { args, .. } => args.iter().for_each(f),
-            Expr::Read { .. } => {}
-            Expr::Call { args, .. } => args.iter().for_each(f),
+            Expr::Read { place, .. } | Expr::ArrLen { place } => {
+                if let Some(i) = &place.index {
+                    f(i);
+                }
+            }
+            Expr::Call { recv, args, .. } => {
+                if let Some(i) = recv.as_ref().and_then(|p| p.index.as_deref()) {
+                    f(i);
+                }
+                args.iter().for_each(f);
+            }
             Expr::StructLit { fields, .. } => fields.iter().for_each(f),
-            Expr::Tuple { elems, .. } => elems.iter().for_each(f),
+            Expr::Tuple { elems, .. } | Expr::ArrayLit { elems, .. } => elems.iter().for_each(f),
+            Expr::Repeat { e, .. } => f(e),
         }
     }
 
@@ -1356,10 +1574,22 @@ impl Expr {
                 f(r);
             }
             Expr::Make { args, .. } => args.iter_mut().for_each(f),
-            Expr::Read { .. } => {}
-            Expr::Call { args, .. } => args.iter_mut().for_each(f),
+            Expr::Read { place, .. } | Expr::ArrLen { place } => {
+                if let Some(i) = place.index.as_deref_mut() {
+                    f(i);
+                }
+            }
+            Expr::Call { recv, args, .. } => {
+                if let Some(i) = recv.as_mut().and_then(|p| p.index.as_deref_mut()) {
+                    f(i);
+                }
+                args.iter_mut().for_each(f);
+            }
             Expr::StructLit { fields, .. } => fields.iter_mut().for_each(f),
-            Expr::Tuple { elems, .. } => elems.iter_mut().for_each(f),
+            Expr::Tuple { elems, .. } | Expr::ArrayLit { elems, .. } => {
+                elems.iter_mut().for_each(f)
+            }
+            Expr::Repeat { e, .. } => f(e),
         }
     }
 
@@ -1515,6 +1745,16 @@ pub struct InputBuf {
     pub data: Vec<u32>,
 }
 
+/// The final store of an array program: `out[index as usize] op= result;` (`op` None: `=`), over an output buffer whose
+/// elements all start as `init`. The index is `u32` and equals `i` by construction (the validator accepts only an index
+/// that names no root the result calls `&mut self` on, E0421), so the stores of different invocations do not overlap.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Store {
+    pub index: Expr,
+    pub op: Option<BinOp>,
+    pub init: u32,
+}
+
 /// A generated kernel: `if i < out.len() { <body>; out[i] = <result>; }` over `count` elements.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
@@ -1526,6 +1766,9 @@ pub struct Program {
     pub result: Expr,
     /// The structs and functions of a method program (format 8); empty for every other space.
     pub methods: Methods,
+    /// The final store of an array program (format 11): `out[index] op= result` in place of `out[i] = result`, over an
+    /// output buffer that starts as `init` in every element. `None` is `out[i] = result`.
+    pub store: Option<Store>,
 }
 
 impl Program {
@@ -1592,6 +1835,16 @@ impl Program {
         block(&self.body) || self.methods.fns.iter().any(|def| block(&def.body))
     }
 
+    /// Whether any expression or statement is an array form (an array program without one tests nothing new).
+    pub fn has_array(&self) -> bool {
+        let mut found = self.store.is_some();
+        visit_exprs(self, &mut |e| {
+            found |= e.ty().is_array()
+                || matches!(e, Expr::Read { place, .. } | Expr::ArrLen { place } if place.index.is_some());
+        });
+        found
+    }
+
     /// Whether the program holds a value `match` or a tuple (a value program without either tests nothing new).
     pub fn has_value_form(&self) -> bool {
         fn block(stmts: &[Stmt]) -> bool {
@@ -1617,10 +1870,17 @@ impl Program {
                 Stmt::Let { init, .. } | Stmt::LetTuple { init, .. } => init.reads_input(),
                 Stmt::Assign { value, .. }
                 | Stmt::AssignComp { value, .. }
-                | Stmt::Set { value, .. }
                 | Stmt::Yield { value }
                 | Stmt::Return { value } => value.reads_input(),
-                Stmt::Call { args, .. } => args.iter().any(Expr::reads_input),
+                Stmt::Set { place, value, .. } => {
+                    place.index.as_deref().is_some_and(Expr::reads_input) || value.reads_input()
+                }
+                Stmt::Call { recv, args, .. } => {
+                    recv.as_ref()
+                        .and_then(|p| p.index.as_deref())
+                        .is_some_and(Expr::reads_input)
+                        || args.iter().any(Expr::reads_input)
+                }
                 Stmt::If { cond, then, els } => cond.reads_input() || block(then) || block(els),
                 Stmt::For { body, .. } => block(body),
                 Stmt::Match { scrut, arms }
@@ -1657,6 +1917,7 @@ impl Program {
         if self.result.ty().is_aggregate()
             || self.result.ty().is_struct()
             || self.result.ty().is_enum()
+            || self.result.ty().is_array()
         {
             return Err(
                 "the result is a vector, a matrix, a struct or an enum (the output buffer is scalar)"
@@ -1681,7 +1942,60 @@ impl Program {
         for stmt in &self.body {
             cx.stmt(stmt)?;
         }
-        cx.expr(&self.result)
+        cx.expr(&self.result)?;
+        if let Some(store) = &self.store {
+            if self.result.ty() == Ty::Bool {
+                return Err("an output store of a bool result".into());
+            }
+            cx.expr(&store.index)?;
+            if store.index.ty() != Ty::U32 {
+                return Err("the output store index is not u32".into());
+            }
+            if let Some(op) = store.op {
+                let allowed = matches!(
+                    op,
+                    BinOp::Add
+                        | BinOp::Sub
+                        | BinOp::Mul
+                        | BinOp::Div
+                        | BinOp::Rem
+                        | BinOp::BitAnd
+                        | BinOp::BitOr
+                        | BinOp::BitXor
+                );
+                if !allowed || !matches!(self.result.ty(), Ty::U32 | Ty::I32) {
+                    return Err(format!(
+                        "compound `{}=` on the output of {}",
+                        op.symbol(),
+                        self.result.ty().name()
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Methods {
+    /// An array type of a parameter, a result or a local: 1 to `MAX_ARRAY` elements of an element that exists, at most
+    /// `MAX_ARRAY_FLAT` scalars in all.
+    pub fn check_array(&self, a: ArrTy) -> Result<(), String> {
+        if !(1..=MAX_ARRAY).contains(&usize::from(a.n)) {
+            return Err(format!("an array of {} elements", a.n));
+        }
+        match a.e {
+            Elem::Struct(j) if usize::from(j) >= self.structs.len() => {
+                return Err(format!("an array element of unknown S{j}"));
+            }
+            Elem::Enum(k) if usize::from(k) >= self.enums.len() => {
+                return Err(format!("an array element of unknown E{k}"));
+            }
+            _ => {}
+        }
+        if self.ty_len(Ty::Array(a)) > MAX_ARRAY_FLAT {
+            return Err("an array of more than 16 scalars".into());
+        }
+        Ok(())
     }
 }
 
@@ -1776,6 +2090,7 @@ impl Methods {
                     Ty::Struct(j) if usize::from(*j) < self.structs.len() => {}
                     Ty::Enum(e) if usize::from(*e) < self.enums.len() => {}
                     Ty::Tuple(t) => self.check_tuple(*t)?,
+                    Ty::Array(a) => self.check_array(*a)?,
                     other => return Err(format!("m{k} has a parameter of {}", other.name())),
                 }
             }
@@ -1783,6 +2098,12 @@ impl Methods {
                 && usize::from(e) >= self.enums.len()
             {
                 return Err(format!("m{k} returns an unknown enum"));
+            }
+            if let Some(Ty::Array(a)) = def.ret {
+                self.check_array(a)?;
+                if def.recv != Recv::None || def.owner.is_some() {
+                    return Err(format!("m{k}: only a helper returns an array"));
+                }
             }
             if let Some(Ty::Tuple(t)) = def.ret {
                 self.check_tuple(t)?;
@@ -1794,13 +2115,13 @@ impl Methods {
                 (
                     Recv::None,
                     None,
-                    Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_) | Ty::Tuple(_)),
+                    Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_) | Ty::Tuple(_) | Ty::Array(_)),
                 ) => {}
                 (Recv::None, None, _) => return Err(format!("helper m{k} has no scalar result")),
                 (
                     Recv::Shared | Recv::Value,
                     _,
-                    Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_) | Ty::Tuple(_)),
+                    Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_) | Ty::Tuple(_) | Ty::Array(_)),
                 ) => {}
                 (Recv::Shared | Recv::Value, _, _) => {
                     return Err(format!("method m{k} has no scalar result"));
@@ -1808,7 +2129,8 @@ impl Methods {
                 (
                     Recv::Mut,
                     _,
-                    None | Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_) | Ty::Tuple(_)),
+                    None
+                    | Some(Ty::U32 | Ty::I32 | Ty::Bool | Ty::Enum(_) | Ty::Tuple(_) | Ty::Array(_)),
                 ) => {}
                 (Recv::Mut, _, _) => return Err(format!("method m{k} returns a struct")),
                 _ => {}
@@ -1872,6 +2194,12 @@ impl Check<'_> {
             return Err("a place with the wrong root type".into());
         }
         let mut ty = root;
+        if place.index.is_some() {
+            ty = match ty {
+                Ty::Array(a) => a.e.ty(),
+                other => return Err(format!("an index into {}", other.name())),
+            };
+        }
         for &k in &place.path {
             ty = match ty {
                 Ty::Struct(j) => *self.methods.structs[usize::from(j)]
@@ -1883,6 +2211,23 @@ impl Check<'_> {
             };
         }
         Ok(ty)
+    }
+
+    /// The index of an indexed place: an integer expression with no `&mut self` call (E0421), checked as an expression.
+    fn place_index(&mut self, place: &Place, write: bool) -> Result<(), String> {
+        let Some(index) = place.index.as_deref() else {
+            return Ok(());
+        };
+        self.expr(index)?;
+        if !matches!(index.ty(), Ty::U32 | Ty::I32) {
+            return Err("an array index that is not an integer".into());
+        }
+        let mut roots = Vec::new();
+        mutating_roots(self.methods, index, &mut roots);
+        if write && !roots.is_empty() {
+            return Err("a `&mut self` call inside an index (E0421)".into());
+        }
+        Ok(())
     }
 
     fn self_recv(&self) -> Recv {
@@ -1934,6 +2279,7 @@ impl Check<'_> {
                 return Err(format!("m{f}: receiver and signature disagree"));
             }
             (kind, Some(place)) => {
+                self.place_index(place, true)?;
                 if self.place_ty(place)? != Ty::Struct(def.owner.unwrap_or(u8::MAX)) {
                     return Err(format!("receiver of m{f} has the wrong type"));
                 }
@@ -1963,7 +2309,7 @@ impl Check<'_> {
         self.in_fn = Some(k);
         self.scope.clear();
         for &(var, ty) in &def.params {
-            self.declare(var, ty, false)?;
+            self.declare(var, ty, ty.is_array())?;
         }
         returns_last(&def.body)?;
         for stmt in &def.body {
@@ -2213,6 +2559,7 @@ impl Check<'_> {
                 value,
             } => {
                 self.expr(value)?;
+                self.place_index(place, true)?;
                 if self.place_ty(place)? != *ty {
                     return Err("assignment to a place of another type".into());
                 }
@@ -2542,11 +2889,12 @@ impl Check<'_> {
                 }
             }
             Expr::Read { place, ty } => {
+                self.place_index(place, false)?;
                 if self.place_ty(place)? != *ty {
                     return Err("a field read at the wrong type".into());
                 }
                 match place.root {
-                    Root::Var(_) if place.path.is_empty() => {
+                    Root::Var(_) if place.path.is_empty() && place.index.is_none() => {
                         Err("a bare local is a `Var`, not a `Read`".into())
                     }
                     Root::SelfV if place.path.is_empty() && self.self_recv() != Recv::Value => {
@@ -2582,6 +2930,47 @@ impl Check<'_> {
                     if elem.ty() != want.ty() {
                         return Err("a tuple element of the wrong type".into());
                     }
+                }
+                Ok(())
+            }
+            Expr::ArrayLit { ty, elems } => {
+                let Ty::Array(a) = ty else {
+                    return Err("an array literal of a non-array".into());
+                };
+                self.methods.check_array(*a)?;
+                if elems.len() != usize::from(a.n) {
+                    return Err("an array literal of the wrong length".into());
+                }
+                for elem in elems {
+                    // E0810: a struct literal is only a `let` initializer or the right side of an assignment.
+                    if matches!(elem, Expr::StructLit { .. }) {
+                        return Err("a struct literal as an array element".into());
+                    }
+                    self.expr(elem)?;
+                    if elem.ty() != a.e.ty() {
+                        return Err("an array element of the wrong type".into());
+                    }
+                }
+                Ok(())
+            }
+            Expr::Repeat { ty, e } => {
+                let Ty::Array(a) = ty else {
+                    return Err("a repeat of a non-array".into());
+                };
+                self.methods.check_array(*a)?;
+                if matches!(**e, Expr::StructLit { .. }) {
+                    return Err("a struct literal as a repeated element".into());
+                }
+                self.expr(e)?;
+                if e.ty() != a.e.ty() {
+                    return Err("a repeated element of the wrong type".into());
+                }
+                Ok(())
+            }
+            Expr::ArrLen { place } => {
+                self.place_index(place, false)?;
+                if place.index.is_some() || !matches!(self.place_ty(place)?, Ty::Array(_)) {
+                    return Err("`.len()` of a non-array".into());
                 }
                 Ok(())
             }
@@ -2635,10 +3024,20 @@ pub fn walk_stmts(stmts: &[Stmt], f: &mut dyn FnMut(&Expr)) {
             Stmt::Let { init, .. } | Stmt::LetTuple { init, .. } => walk_expr(init, f),
             Stmt::Assign { value, .. }
             | Stmt::AssignComp { value, .. }
-            | Stmt::Set { value, .. }
             | Stmt::Yield { value }
             | Stmt::Return { value } => walk_expr(value, f),
-            Stmt::Call { args, .. } => args.iter().for_each(|arg| walk_expr(arg, f)),
+            Stmt::Set { place, value, .. } => {
+                if let Some(index) = place.index.as_deref() {
+                    walk_expr(index, f);
+                }
+                walk_expr(value, f);
+            }
+            Stmt::Call { recv, args, .. } => {
+                if let Some(index) = recv.as_ref().and_then(|p| p.index.as_deref()) {
+                    walk_expr(index, f);
+                }
+                args.iter().for_each(|arg| walk_expr(arg, f));
+            }
             Stmt::If { cond, then, els } => {
                 walk_expr(cond, f);
                 walk_stmts(then, f);
@@ -2760,6 +3159,17 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
             }
             _ => {}
         }
+        for name in array_expr_names(methods, e) {
+            *counts.entry(name.to_owned()).or_default() += 1;
+        }
+        if let Expr::Call { recv, args, .. } = e {
+            for name in array_call_names(recv)
+                .into_iter()
+                .chain(array_arg_names(args))
+            {
+                *counts.entry(name.to_owned()).or_default() += 1;
+            }
+        }
         e.for_each_child(&mut |child| expr(methods, child, counts));
     }
     fn block(
@@ -2771,7 +3181,12 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
     ) {
         for stmt in stmts {
             match stmt {
-                Stmt::Let { init, .. } => expr(methods, init, counts),
+                Stmt::Let { init, .. } => {
+                    for name in array_value_names(init) {
+                        *counts.entry(name.to_owned()).or_default() += 1;
+                    }
+                    expr(methods, init, counts);
+                }
                 Stmt::LetTuple { annotate, init, .. } => {
                     for name in destruct_names(methods, *annotate, init) {
                         *counts.entry(name.to_owned()).or_default() += 1;
@@ -2789,7 +3204,12 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
                         block(methods, &arm.body, in_for, true, counts);
                     }
                 }
-                Stmt::Assign { value, .. } => expr(methods, value, counts),
+                Stmt::Assign { value, .. } => {
+                    for name in array_value_names(value) {
+                        *counts.entry(name.to_owned()).or_default() += 1;
+                    }
+                    expr(methods, value, counts);
+                }
                 Stmt::AssignComp { value, .. } => {
                     *counts.entry(ASSIGN_COMP.to_owned()).or_default() += 1;
                     expr(methods, value, counts);
@@ -2800,6 +3220,12 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
                     *counts.entry(set_name(*op)).or_default() += 1;
                     if let Some(shape) = set_shape(methods, place, *op, value) {
                         *counts.entry(shape).or_default() += 1;
+                    }
+                    for name in array_set_names(methods, place, *op, value) {
+                        *counts.entry(name.to_owned()).or_default() += 1;
+                    }
+                    if let Some(index) = place.index.as_deref() {
+                        expr(methods, index, counts);
                     }
                     for name in tuple_set_names(methods, place, *op, value) {
                         *counts.entry(name.to_owned()).or_default() += 1;
@@ -2822,6 +3248,15 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
                     }
                     for name in call_arg_names(def.recv != Recv::None, args) {
                         *counts.entry(name.to_owned()).or_default() += 1;
+                    }
+                    for name in array_call_names(recv)
+                        .into_iter()
+                        .chain(array_arg_names(args))
+                    {
+                        *counts.entry(name.to_owned()).or_default() += 1;
+                    }
+                    if let Some(index) = recv.as_ref().and_then(|p| p.index.as_deref()) {
+                        expr(methods, index, counts);
                     }
                     args.iter().for_each(|arg| expr(methods, arg, counts));
                 }
@@ -2857,6 +3292,12 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
     let methods = &program.methods;
     block(methods, &program.body, false, false, &mut counts);
     expr(methods, &program.result, &mut counts);
+    if let Some(store) = &program.store {
+        expr(methods, &store.index, &mut counts);
+        for name in array_store_names(methods, &program.result) {
+            *counts.entry(name.to_owned()).or_default() += 1;
+        }
+    }
     for def in &methods.fns {
         block(methods, &def.body, false, false, &mut counts);
         if let Some(tail) = &def.tail {

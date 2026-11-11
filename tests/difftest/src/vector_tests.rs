@@ -44,6 +44,7 @@ fn program(data: &[f32], body: Vec<Stmt>, result: Expr) -> Program {
     Program {
         seed: 0,
         methods: Default::default(),
+        store: None,
         attempt: VECTOR_ATTEMPT_BASE,
         count: data.len() as u32,
         inputs: vec![InputBuf {
@@ -668,10 +669,11 @@ fn the_generator_writes_every_binary_row_negation_and_swizzle_shape_within_the_f
 }
 
 /// How many of the [`crate::ast::writable_aggregate_forms`] the programs of the 64-seed batch itself write (the batch
-/// holds five vector programs per seed, as in format 8). Measured in slice m9.d1b, round r1: see DIFFTEST.md,
+/// holds four vector programs per seed since format 11 (five in format 8 to 10, which wrote 71 of 72). Measured in
+/// slice m9.d1d: 67. See DIFFTEST.md,
 /// "Coverage of the older spaces". The test above guards the generator over its own space; this one guards the batch
 /// that the GPU runs.
-const BATCH_FORMS_AT_64_SEEDS: usize = 71;
+const BATCH_FORMS_AT_64_SEEDS: usize = 67;
 
 #[test]
 fn the_gated_batch_of_64_seeds_writes_the_vector_forms_that_it_wrote_when_measured() {
@@ -683,7 +685,8 @@ fn the_gated_batch_of_64_seeds_writes_the_vector_forms_that_it_wrote_when_measur
     }
     let forms = crate::ast::writable_aggregate_forms();
     let hit = forms.intersection(&written).count();
-    eprintln!("BATCH-FORMS {hit} of {}", forms.len());
+    let missing: Vec<&String> = forms.difference(&written).collect();
+    eprintln!("BATCH-FORMS {hit} of {}; missing {missing:?}", forms.len());
     assert!(
         hit >= BATCH_FORMS_AT_64_SEEDS,
         "the 64-seed batch writes {hit} of {} vector forms",

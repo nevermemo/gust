@@ -13,6 +13,7 @@ fn program(count: u32, data: &[u32], body: Vec<Stmt>, result: Expr) -> Program {
     Program {
         seed: 1,
         methods: Default::default(),
+        store: None,
         attempt: 0,
         count,
         inputs: vec![InputBuf {

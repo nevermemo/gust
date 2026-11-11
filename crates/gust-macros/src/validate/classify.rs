@@ -720,6 +720,9 @@ struct BodyScan {
 }
 
 impl<'ast> Visit<'ast> for BodyScan {
+    // A closure body is judged as a helper body (D94, D154), not as the kernel's own.
+    fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
+
     fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
         if is_barrier_call(call) {
             self.barriers.push(call.to_token_stream());
@@ -839,6 +842,9 @@ impl<'a> OutputScan<'a> {
 }
 
 impl<'ast> Visit<'ast> for OutputScan<'_> {
+    // A closure body is judged as a helper body (D94, D154), not as the kernel's own.
+    fn visit_expr_closure(&mut self, _: &'ast syn::ExprClosure) {}
+
     fn visit_expr_assign(&mut self, assignment: &'ast syn::ExprAssign) {
         match self.target(&assignment.left) {
             Target::Element(index) => {

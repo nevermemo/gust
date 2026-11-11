@@ -140,6 +140,16 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   `UVec3` or `Mat3` element) and `GUST-E0215` (an array in a uniform); `GUST-E0216` also names the stored length set.
   `.len()` of a field or an element is its constant (a receiver with a call is `GUST-E0306`); `==` on them is `GUST-E0811`. Kernels with a stored array do not yet build through the precompiled path (`cargo gust build`; the fill rejects the `array` kind). A field of array type was `GUST-E0813` before. The `GUST-E0421` rule
   already covered every indexed place; field arrays of storage elements are covered by tests and a fixture.
+- Non-capturing closures (M9, slice c, D160). `let f = |x: f32, y: f32| -> f32 { .. };` with typed parameters, an
+  explicit result type and a block body, bound immutably and called as `f(a, b)` in a kernel, a helper or a method. Each
+  closure is hoisted to a Slang function `__gust_cl_<owner>_<n>` with its parameters by value. A closure captures nothing
+  and is not a value. New: `GUST-E0329` (a capture, or `move`; an earlier closure is a capture), `GUST-E0330` (a closure
+  used as a value, `let mut f`, an annotation), `GUST-E0331` (a missing type), `GUST-E0332` (a closure in a closure);
+  `GUST-E0314` now names only the forms with no lowering (`async`, `static`, `const`, `for<..>`, attributes);
+  `GUST-E0328` also covers the name of a closure; `GUST-E0421` also covers a closure call in a `for` bound. A closure
+  body is judged as a helper (no barrier, subgroup, atomic, `Workgroup` or resource). A closure was `GUST-E0314` before.
+  On the RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin, including the order of the
+  arguments of a closure call.
 - Fixed (m9.f1): a method call with a `<` comparison argument before another argument, such as `s.m(a < b, c)`, failed in slangc with an undefined `__gust_keep`, because the scan that defines that helper did not visit method calls.
 
 ### Changed, and may break code written for 0.1.0

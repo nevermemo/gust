@@ -1819,7 +1819,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 204] = [
+const PINNED_FIXTURES: [&str; 212] = [
     "array-barrier",
     "array-buffer-len",
     "array-const-len",
@@ -1848,6 +1848,12 @@ const PINNED_FIXTURES: [&str; 204] = [
     "barrier-kernel-no-cpu-strategy",
     "barrier-ok",
     "break-in-barrier-loop",
+    "closure-barrier",
+    "closure-move",
+    "closure-nested",
+    "closure-reserved-name",
+    "closure-untyped",
+    "closure-value",
     "continue-in-barrier-loop",
     "enum-cast-type",
     "enum-data-variant",
@@ -1856,6 +1862,7 @@ const PINNED_FIXTURES: [&str; 204] = [
     "enum-in-field",
     "enum-no-partialeq",
     "enum-ok",
+    "for-bound-closure",
     "for-bound-mutating",
     "gpupod-missing",
     "gpupod-present",
@@ -2024,6 +2031,7 @@ const PINNED_FIXTURES: [&str; 204] = [
     "wrapping-div-rejected",
     "wrapping-ok",
     "x2-return-in-match-arm",
+    "x4-closure-calls-closure",
 ];
 
 #[test]

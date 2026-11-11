@@ -1,0 +1,8 @@
+[package]
+name = "for-bound-closure"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+gust = { package = "gust-compute", path = "../../../crates/gust" }

@@ -433,6 +433,53 @@ fn struct_copy_program() -> Program {
     )
 }
 
+/// `let mut v1 = (v0, 1); v1.0.n += v1.0.tick(); out = v1.0.n` with `v0.n = 5`: Rust runs the call first (n becomes 6 and
+/// the call is 6), then reads the place (6), so the result is 12; reading the place first would give 11.
+fn element_field_compound_program() -> Program {
+    let t = Ty::Tuple(TupleTy::new(&[Elem::Struct(0), Elem::U32]));
+    let element = Place::var(1, t).field(0);
+    program(
+        vec![
+            Stmt::Let {
+                var: 1,
+                ty: t,
+                mutable: true,
+                init: Expr::Tuple {
+                    ty: t,
+                    elems: vec![Expr::Var(0, S0), u(1)],
+                },
+            },
+            Stmt::Set {
+                place: element.field(0),
+                ty: Ty::U32,
+                op: Some(BinOp::Add),
+                value: call(0, Some(element.clone()), Vec::new(), Ty::U32),
+            },
+        ],
+        n_of(&element),
+    )
+}
+
+#[test]
+fn a_compound_set_of_an_element_field_reads_the_place_after_its_value_ran() {
+    assert_eq!(value_of(&element_field_compound_program()), 12);
+}
+
+/// The tuple-place shape that is order-sensitive is counted when the value calls a `&mut self` method on the element
+/// that holds the place, and not for another root or a plain set.
+#[test]
+fn the_element_field_compound_shape_is_counted_for_that_form_only() {
+    let p = element_field_compound_program();
+    let (_, coverage) = run_covered(&p).unwrap();
+    assert_eq!(
+        coverage.operators.get(ast::SHAPE_TUPLE_SET_CALL).copied(),
+        Some(1)
+    );
+    // `element_place_program` assigns scalar elements with calls on another root: not this shape.
+    let (_, coverage) = run_covered(&element_place_program()).unwrap();
+    assert_eq!(coverage.operators.get(ast::SHAPE_TUPLE_SET_CALL), None);
+}
+
 /// A hand program with a method nobody calls whose body is `self.n <op>= <amount>`.
 fn dead_compound_set(op: BinOp, amount: u32) -> Program {
     let mut p = tuple_order_program();
@@ -457,8 +504,7 @@ fn dead_compound_set(op: BinOp, amount: u32) -> Program {
 /// interpreter never ran it, so only a static check can discard it, and naga rejects the module. The value space now
 /// folds the operand of a compound `<<=`, `>>=`, `/=` and `%=` like that of the binary operators.
 #[test]
-fn a_closed_constant_outside_the_domain_in_a_compound_set_is_a_static_violation_in_the_value_space()
-{
+fn a_closed_constant_outside_the_domain_in_a_compound_set_is_a_static_violation() {
     use crate::interp::Violation;
     for (op, amount, violation) in [
         (BinOp::Shl, 34, Some(Violation::ShiftAmount)),
@@ -471,10 +517,11 @@ fn a_closed_constant_outside_the_domain_in_a_compound_set_is_a_static_violation_
         let p = dead_compound_set(op, amount);
         assert_eq!(static_violation(&p), violation, "{op:?} {amount}");
     }
-    // The older spaces decode as they did: the same program in the enum space is not refused here.
+    // Every space applies it (round 0 gated it to the value space; a never-executed reachable `<<= 34` fails in naga
+    // in the older spaces too).
     let mut older = dead_compound_set(BinOp::Shl, 34);
     older.attempt = crate::generator::ENUM_ATTEMPT_BASE;
-    assert_eq!(static_violation(&older), None);
+    assert_eq!(static_violation(&older), Some(Violation::ShiftAmount));
 }
 
 #[test]
@@ -535,7 +582,7 @@ fn a_struct_element_of_a_tuple_is_a_copy() {
 fn the_mutants_change_exactly_the_vectors_that_are_meant_to_catch_them() {
     // The reference (`run`) against each mutant, on the hand programs: the `xfail-` runs of the gate set the same
     // mutant for `value_of` and expect exactly the vector named here to fail.
-    let programs: [(&str, Program); 9] = [
+    let programs: [(&str, Program); 10] = [
         ("tuple order", tuple_order_program()),
         ("element place", element_place_program()),
         ("destructuring", destructuring_program()),
@@ -545,11 +592,13 @@ fn the_mutants_change_exactly_the_vectors_that_are_meant_to_catch_them() {
         ("arm return", arm_return_program()),
         ("nested and enum", nested_and_enum_program()),
         ("struct copy", struct_copy_program()),
+        ("element field compound", element_field_compound_program()),
     ];
-    let expected: [(Mutant, &str, u32); 3] = [
+    let expected: [(Mutant, &str, u32); 4] = [
         (Mutant::TupleRightToLeft, "tuple order", 706),
         (Mutant::ValueScrutineeTwice, "value scrutinee", 7),
         (Mutant::GroupFirstOnly, "group", 3),
+        (Mutant::CompoundPlaceFirst, "element field compound", 11),
     ];
     for (mutant, changed, value) in expected {
         for (name, p) in &programs {
@@ -695,12 +744,14 @@ const NEW_FORMS: [&str; 15] = [
 ];
 
 /// The order-sensitive shapes the value forms add.
-const NEW_SHAPES: [&str; 6] = [
+const NEW_SHAPES: [&str; 8] = [
     ast::SHAPE_TUPLE_LIT_ROOT,
     ast::SHAPE_TUPLE_SET_CALL,
     ast::SHAPE_TUPLE_FIELD_CALL,
     ast::SHAPE_DESTRUCT_CALL,
     ast::SHAPE_LT_ELEMENT,
+    ast::SHAPE_LT_ARG,
+    ast::SHAPE_LT_METHOD_ARG,
     ast::SHAPE_VMATCH_SCRUTINEE,
 ];
 
@@ -795,6 +846,7 @@ fn the_mutants_also_change_some_generated_value_program() {
         Mutant::TupleRightToLeft,
         Mutant::ValueScrutineeTwice,
         Mutant::GroupFirstOnly,
+        Mutant::CompoundPlaceFirst,
     ] {
         let differs = programs.iter().any(|p| {
             let right = run(p).ok();
@@ -804,3 +856,54 @@ fn the_mutants_also_change_some_generated_value_program() {
         assert!(differs, "{mutant:?} changes no program of seeds 1-64");
     }
 }
+
+/// Fix round 1 (S1): the one tuple-place assignment whose order shows, `t.k.f op= t.k.m()`, runs in the value programs
+/// of the 64-seed batch (not only the value space), and the mutant that reads the place first changes at least one of
+/// them, so a lowering that reads the place early would be caught by the GPU run.
+#[test]
+fn the_order_sensitive_tuple_field_set_runs_in_the_batch_and_its_mutant_changes_a_batch_program() {
+    let mut programs = Vec::new();
+    for seed in 1..=64 {
+        programs.extend(
+            generate_batch(seed)
+                .unwrap()
+                .programs
+                .into_iter()
+                .skip(ENUM_END),
+        );
+    }
+    let running = programs
+        .iter()
+        .filter(|p| {
+            let (_, coverage) = run_covered(p).unwrap();
+            coverage
+                .operators
+                .get(ast::SHAPE_TUPLE_SET_CALL)
+                .copied()
+                .unwrap_or(0)
+                > 0
+        })
+        .count();
+    assert!(
+        running >= MIN_FIELD_SET_PROGRAMS,
+        "the tuple field compound set runs in {running} of {} batch programs",
+        programs.len()
+    );
+    let changed = programs
+        .iter()
+        .filter(|p| {
+            run(p).ok()
+                != run_mutant(p, Mutant::CompoundPlaceFirst)
+                    .ok()
+                    .map(|r| r.values)
+        })
+        .count();
+    assert!(
+        changed >= MIN_FIELD_SET_CHANGED,
+        "the place-first mutant changes {changed} batch programs"
+    );
+}
+
+/// The minima of the test above (measured on seeds 1 to 64: see DIFFTEST.md).
+const MIN_FIELD_SET_PROGRAMS: usize = 6;
+const MIN_FIELD_SET_CHANGED: usize = 3;

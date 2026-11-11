@@ -288,6 +288,7 @@ pub(crate) fn env_mutant() -> Option<Mutant> {
         Ok("tuple-right-to-left") => Some(Mutant::TupleRightToLeft),
         Ok("value-scrutinee-twice") => Some(Mutant::ValueScrutineeTwice),
         Ok("group-first-only") => Some(Mutant::GroupFirstOnly),
+        Ok("compound-place-first") => Some(Mutant::CompoundPlaceFirst),
         _ => None,
     }
 }
@@ -306,6 +307,9 @@ pub enum Mutant {
     ValueScrutineeTwice,
     /// An integer pattern group (`1 | 2 | 3`) matches only its first literal. (m9.d1c)
     GroupFirstOnly,
+    /// `place op= value` reads the place before it runs the value (the order of an operator-overloaded `AddAssign`, and
+    /// of Slang for an indexed place), not after. (m9.d1c fix round 1)
+    CompoundPlaceFirst,
 }
 
 /// What `run_covered` counts while it runs.
@@ -760,7 +764,7 @@ impl Machine<'_> {
             self.count_name(shape);
         }
         if self.coverage.is_some() {
-            for name in call_arg_names(args) {
+            for name in call_arg_names(def.recv != Recv::None, args) {
                 self.count_name(name);
             }
         }
@@ -938,11 +942,17 @@ impl Machine<'_> {
                     // Rust evaluates the assigned value first. For `place op= value` on primitives the right operand
                     // also comes before the place is read (Reference, "Compound assignment expressions"), so the
                     // place holds whatever the value's calls left in it.
+                    // That is true of primitive operands only: for a `Vec*`/`Mat*` `AddAssign` the place comes first. The
+                    // generator writes a compound set on `u32`/`i32` only; a slice that adds other operand types must
+                    // give this arm the type-dependent order.
+                    debug_assert!(op.is_none() || ty.is_int(), "a compound set on a primitive");
+                    let early = (self.mutant == Some(Mutant::CompoundPlaceFirst) && op.is_some())
+                        .then(|| self.place_get(place).int());
                     let value = self.expr(value)?;
                     let stored = match op {
                         None => value,
                         Some(op) => {
-                            let current = self.place_get(place).int();
+                            let current = early.unwrap_or_else(|| self.place_get(place).int());
                             Val::I(binary(*op, *ty, current, value.int())?)
                         }
                     };
@@ -1541,12 +1551,10 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
         }
     });
     // Format 10 (m9.d1c): the right-hand side of a compound assignment is the operand of an implicit shift, division or
-    // remainder, so a closed constant outside the domain there (`self.f <<= 34u32` in a method nobody calls) is a
-    // static violation too: naga rejects the module although the interpreter never runs the statement. Only the value
-    // space applies it: the older spaces decode as they did (the same gap exists there, seen in no pinned seed).
-    if found.is_none()
-        && crate::generator::space_of_attempt(program.attempt) == crate::generator::Space::Value
-    {
+    // remainder, so a closed constant outside the domain there (`self.f <<= 34u32` in code that is reachable from the
+    // kernel but never executes) is a static violation too: naga rejects the module although the interpreter never runs
+    // the statement. Every space applies it (fix round 1; round 0 gated it to the value space).
+    if found.is_none() {
         fn sets(
             stmts: &[Stmt],
             fold: fn(&Expr) -> Result<Option<Const>, Violation>,

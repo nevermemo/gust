@@ -1088,14 +1088,19 @@ impl Gen<'_> {
                     (true, false) => 24,
                 });
                 weights.push(22);
-                weights.push(if tuple_targets.is_empty() { 0 } else { 50 });
+                let field_sets = self.tuple_field_set_candidates();
+                weights.push(match (tuple_targets.is_empty(), field_sets.is_empty()) {
+                    (true, true) => 0,
+                    (_, false) => 120,
+                    (false, true) => 50,
+                });
             }
             let (pre_mark, at) = (self.pre.len(), stmts.len());
             let kind = self.b.weighted(&weights);
             match kind {
                 8 => stmts.push(self.let_match(depth)),
                 9 => stmts.push(self.let_tuple()),
-                10 => stmts.push(self.tuple_set_stmt(&tuple_targets)),
+                10 => stmts.extend(self.tuple_set_stmt(&tuple_targets)),
                 7 => stmts.push(self.match_stmt(depth)),
                 4 => stmts.push(self.set_stmt(&targets)),
                 5 => stmts.extend(self.statement_call(&statement_calls)),
@@ -1113,7 +1118,10 @@ impl Gen<'_> {
                     });
                 }
                 0 => {
-                    let ty = self.pick_ty();
+                    let ty = match self.values && self.b.chance(12) {
+                        true => self.field_set_tuple_ty().unwrap_or_else(|| self.pick_ty()),
+                        false => self.pick_ty(),
+                    };
                     // A vector or matrix initialiser is shallower: its products multiply the bounds of its operands.
                     let init = self.expr(ty, if ty.is_aggregate() { 3 } else { MAX_DEPTH - 1 });
                     let var = self.fresh();
@@ -1395,7 +1403,37 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         }
     }
     body.extend(g.block(0, 2, 7));
-    let ty = g.scalar_ty();
+    // The value space ends the kernel body, often, with `t.k.f op= t.k.m()` on a top-level tuple local (fix round 1),
+    // and the result reads the field: the order-sensitive set then decides the output of the program.
+    let mut forced_set = false;
+    if g.values && g.b.chance(80) {
+        if g.tuple_field_set_candidates().is_empty()
+            && let Some(ty) = g.field_set_tuple_ty()
+        {
+            let (pre_mark, at) = (g.pre.len(), body.len());
+            let init = g.expr(ty, 3);
+            let var = g.fresh();
+            g.scope.push((var, ty, true));
+            body.push(Stmt::Let {
+                var,
+                ty,
+                mutable: true,
+                init,
+            });
+            g.splice_pre(pre_mark, at, &mut body);
+        }
+        let (pre_mark, at) = (g.pre.len(), body.len());
+        if let Some(stmt) = g.tuple_field_set_stmt() {
+            forced_set = true;
+            body.push(stmt);
+            g.splice_pre(pre_mark, at, &mut body);
+        }
+    }
+    // A boolean result would hide the field (`x != 0`): the forced set gets an integer result.
+    let mut ty = g.scalar_ty();
+    if forced_set && ty == Ty::Bool {
+        ty = Ty::U32;
+    }
     if g.methods {
         // The result may call on the top-level locals (`out[i] = c.next()`).
         for stmt in &body {
@@ -1575,6 +1613,33 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
                 _ => read,
             };
             result = fold_in(result, read);
+        }
+    }
+    // The field that a top-level `t.k.f op= t.k.m()` set (fix round 1): read in the result, so that the order of the
+    // place read and the call decides the output. A field is folded once.
+    if g.values {
+        let mut folded: Vec<Place> = Vec::new();
+        for stmt in &body {
+            if let Stmt::Set {
+                place,
+                ty,
+                op: Some(op),
+                value,
+            } = stmt
+                && crate::ast::tuple_set_names(&g.table, place, Some(*op), value)
+                    .contains(&crate::ast::SHAPE_TUPLE_SET_CALL)
+                && tuple_locals
+                    .iter()
+                    .any(|(var, _)| place.root == Root::Var(*var))
+                && !folded.contains(place)
+            {
+                folded.push(place.clone());
+                let read = Expr::Read {
+                    place: place.clone(),
+                    ty: *ty,
+                };
+                result = fold_in(result, read);
+            }
         }
     }
     let (folds, fold_chance) = if g.vectors { (3, 85) } else { (2, 60) };
@@ -2728,6 +2793,43 @@ impl Gen<'_> {
 /// The value space (format 10, slice m9.d1c): tuples, the value form of `match` and integer patterns. Every draw sits
 /// behind `Gen::values`, so the older spaces decode as before.
 impl Gen<'_> {
+    /// A tuple `(S, u32)` or `(S, i32)` whose struct `S` has a `&mut self` method returning one of its scalar field
+    /// types: the local that lets `tuple_field_set_stmt` write `t.0.f op= t.0.m()` (fix round 1).
+    fn field_set_tuple_ty(&mut self) -> Option<Ty> {
+        let mut options = Vec::new();
+        for (j, def) in self.table.structs.iter().enumerate() {
+            if def.fields.iter().any(|f| f.is_struct()) {
+                continue;
+            }
+            let fits = (0..self.callable()).any(|m| {
+                let f = &self.table.fns[m];
+                f.recv == Recv::Mut
+                    && f.owner == Some(j as u8)
+                    && matches!(f.ret, Some(Ty::U32 | Ty::I32))
+                    && f.ret.is_some_and(|r| {
+                        def.fields
+                            .iter()
+                            .enumerate()
+                            .any(|(k, field)| *field == r && writes_self_field(&f.body, k as u8))
+                    })
+            });
+            if fits {
+                options.push(j as u8);
+            }
+        }
+        if options.is_empty() {
+            return None;
+        }
+        let j = options[self.b.below(options.len() as u32) as usize];
+        let other = if self.b.chance(50) {
+            Elem::U32
+        } else {
+            Elem::I32
+        };
+        let ty = Ty::Tuple(TupleTy::new(&[Elem::Struct(j), other]));
+        (self.table.ty_len(ty) <= MAX_TUPLE_FLAT).then_some(ty)
+    }
+
     /// A tuple type of two to four elements (scalars, a struct of scalar fields, an enum), at most `MAX_TUPLE_FLAT`
     /// scalars once the structs are flattened.
     fn tuple_ty(&mut self) -> Ty {
@@ -2747,7 +2849,7 @@ impl Gen<'_> {
                 30,
                 26,
                 12,
-                if scalar_structs.is_empty() { 0 } else { 18 },
+                if scalar_structs.is_empty() { 0 } else { 30 },
                 if enums == 0 { 0 } else { 14 },
             ];
             elems.push(match self.b.weighted(&weights) {
@@ -2996,8 +3098,98 @@ impl Gen<'_> {
         out
     }
 
+    /// The scalar fields of the struct elements of mutable tuple locals, each with a `&mut self` method of that struct
+    /// returning the field's type: `(tuple var, tuple type, element, field, field type)`. A compound set of such a
+    /// field whose value calls the method on the same element, `t.k.f *= t.k.m()`, is the one tuple-place assignment
+    /// where the order of the place read and the value is observable (m9.d1c fix round 1).
+    fn tuple_field_set_candidates(&self) -> Vec<(u32, Ty, u8, u8, Ty)> {
+        let mut out = Vec::new();
+        for &(var, ty, mutable) in &self.scope {
+            let Ty::Tuple(t) = ty else { continue };
+            if !mutable || self.forbid.contains(&Root::Var(var)) {
+                continue;
+            }
+            for (k, elem) in t.elems().iter().enumerate() {
+                let Elem::Struct(j) = elem else { continue };
+                for (f, field) in self.table.structs[usize::from(*j)]
+                    .fields
+                    .iter()
+                    .enumerate()
+                {
+                    let scalar = matches!(field, Ty::U32 | Ty::I32);
+                    let method = (0..self.callable()).any(|m| {
+                        let def = &self.table.fns[m];
+                        def.recv == Recv::Mut
+                            && def.owner == Some(*j)
+                            && def.ret == Some(*field)
+                            && writes_self_field(&def.body, f as u8)
+                    });
+                    if scalar && method {
+                        out.push((var, ty, k as u8, f as u8, *field));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// `t.k.f op= t.k.m();` for a `&mut self` method `m` of the struct at element `k` returning `f`'s type: Rust runs
+    /// the call first, so the place is read after the call changed it.
+    fn tuple_field_set_stmt(&mut self) -> Option<Stmt> {
+        let candidates = self.tuple_field_set_candidates();
+        if candidates.is_empty() {
+            return None;
+        }
+        let (var, ty, k, f, field) = candidates[self.b.below(candidates.len() as u32) as usize];
+        let Ty::Tuple(t) = ty else {
+            unreachable!("a tuple local")
+        };
+        let Elem::Struct(j) = t.elems()[usize::from(k)] else {
+            unreachable!("a struct element")
+        };
+        let methods: Vec<usize> = (0..self.callable())
+            .filter(|&m| {
+                let def = &self.table.fns[m];
+                def.recv == Recv::Mut
+                    && def.owner == Some(j)
+                    && def.ret == Some(field)
+                    && writes_self_field(&def.body, f)
+            })
+            .collect();
+        let m = methods[self.b.below(methods.len() as u32) as usize];
+        let element = Place::var(var, ty).field(k);
+        let (recv, args) = self.call_parts_on(m, 3, Some(element.clone()))?;
+        let op = [
+            BinOp::Add,
+            BinOp::Sub,
+            BinOp::BitXor,
+            BinOp::BitOr,
+            BinOp::Mul,
+        ][self.b.below(5) as usize];
+        Some(Stmt::Set {
+            place: element.field(f),
+            ty: field,
+            op: Some(op),
+            value: Expr::Call {
+                f: m,
+                owner: None,
+                recv,
+                args,
+                ty: field,
+            },
+        })
+    }
+
     /// `t.a = t.b + c.bump();` or `t.a += c.bump();`: the value runs first, then the place is read (for `op=`).
-    fn tuple_set_stmt(&mut self, targets: &[(Place, Ty)]) -> Stmt {
+    fn tuple_set_stmt(&mut self, targets: &[(Place, Ty)]) -> Option<Stmt> {
+        if (targets.is_empty() || self.b.chance(85))
+            && let Some(stmt) = self.tuple_field_set_stmt()
+        {
+            return Some(stmt);
+        }
+        if targets.is_empty() {
+            return None;
+        }
         let (place, ty) = targets[self.b.below(targets.len() as u32) as usize].clone();
         let op = self.b.chance(55).then(|| {
             [
@@ -3047,12 +3239,12 @@ impl Gen<'_> {
             Some(call) => call,
             None => self.expr(ty, 3),
         };
-        Stmt::Set {
+        Some(Stmt::Set {
             place,
             ty,
             op,
             value,
-        }
+        })
     }
 
     /// `let (a, mut b): (T, U) = init;`. Often the source is a call of a function that returns a tuple, a `&mut self`
@@ -3395,6 +3587,20 @@ fn arm_returns(stmts: &[Stmt], in_arm: bool) -> bool {
     })
 }
 
+/// Whether a method body assigns the field `field` of `self` anywhere (so that a call of it changes that place).
+fn writes_self_field(stmts: &[Stmt], field: u8) -> bool {
+    stmts.iter().any(|stmt| match stmt {
+        Stmt::Set { place, .. } => place.root == Root::SelfV && place.path.first() == Some(&field),
+        Stmt::If { then, els, .. } => {
+            writes_self_field(then, field) || writes_self_field(els, field)
+        }
+        Stmt::For { body, .. } => writes_self_field(body, field),
+        Stmt::Match { arms, .. } | Stmt::LetMatch { arms, .. } | Stmt::TailMatch { arms, .. } => {
+            arms.iter().any(|arm| writes_self_field(&arm.body, field))
+        }
+        _ => false,
+    })
+}
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;

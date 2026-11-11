@@ -770,7 +770,7 @@ pub const SHAPE_ENUM_ARGS_ROOT: &str = "shape enum arguments built from calls on
 
 /// Every shape and `match` construct name that `check-difftest` prints a row for, so a name that is never written still
 /// shows as a row of zeros (`coverage_json` adds these to the operator rows).
-pub const KNOWN_SHAPE_NAMES: [&str; 42] = [
+pub const KNOWN_SHAPE_NAMES: [&str; 44] = [
     SHAPE_STMT_CALL,
     SHAPE_EXPR_CALL,
     SHAPE_LOGIC_CALL,
@@ -812,6 +812,8 @@ pub const KNOWN_SHAPE_NAMES: [&str; 42] = [
     SHAPE_TUPLE_FIELD_CALL,
     SHAPE_DESTRUCT_CALL,
     SHAPE_LT_ELEMENT,
+    SHAPE_LT_ARG,
+    SHAPE_LT_METHOD_ARG,
     SHAPE_VMATCH_SCRUTINEE,
 ];
 
@@ -835,10 +837,13 @@ pub const TUPLE_DESTRUCT_TYPED: &str = "tuple destructuring annotated";
 pub const TUPLE_ARG: &str = "tuple argument";
 pub const SHAPE_TUPLE_LIT_ROOT: &str =
     "shape tuple literal with a &mut self call and another element using its root";
-pub const SHAPE_TUPLE_SET_CALL: &str = "shape tuple element set with a &mut self call in the value";
+pub const SHAPE_TUPLE_SET_CALL: &str =
+    "shape compound set of a tuple element field with a &mut self call on that element";
 pub const SHAPE_TUPLE_FIELD_CALL: &str = "shape f().k of a &mut self call";
 pub const SHAPE_DESTRUCT_CALL: &str = "shape destructuring of a &mut self call";
-pub const SHAPE_LT_ELEMENT: &str = "shape < before the last tuple element or argument";
+pub const SHAPE_LT_ELEMENT: &str = "shape < before the last tuple element";
+pub const SHAPE_LT_ARG: &str = "shape < before the last argument of a function";
+pub const SHAPE_LT_METHOD_ARG: &str = "shape < before the last argument of a method";
 pub const SHAPE_VMATCH_SCRUTINEE: &str =
     "shape value match scrutinee &mut self call on a root an arm uses";
 
@@ -884,31 +889,40 @@ pub fn tuple_lit_shape(methods: &Methods, elems: &[Expr]) -> Option<&'static str
     shared.then_some(SHAPE_TUPLE_LIT_ROOT)
 }
 
-/// `shape < before the last tuple element or argument`: a `<` comparison that is not the last element of a tuple literal
-/// or the last argument of a call (the shape that made the macro emit `__gust_keep`, fixed by m9.f1).
-pub fn lt_before_last(items: &[Expr]) -> Option<&'static str> {
+/// `shape < before the last ...`: a `<` comparison that is not the last element of a tuple literal or the last argument
+/// of a call (the shape that made the macro emit `__gust_keep`, fixed by m9.f1). The name is `name` (the three rows are
+/// split so that dropping the method case, the one m9.f1 hit, cannot leave the row green).
+pub fn lt_before_last(items: &[Expr], name: &'static str) -> Option<&'static str> {
     (items.len() > 1
         && items[..items.len() - 1]
             .iter()
             .any(|item| matches!(item, Expr::Bin { op: BinOp::Lt, .. })))
-    .then_some(SHAPE_LT_ELEMENT)
+    .then_some(name)
 }
 
 /// The names a tuple literal counts under: itself, and the shapes it is.
 pub fn tuple_lit_names(methods: &Methods, elems: &[Expr]) -> Vec<&'static str> {
     let mut names = vec![TUPLE_LIT];
     names.extend(tuple_lit_shape(methods, elems));
-    names.extend(lt_before_last(elems));
+    names.extend(lt_before_last(elems, SHAPE_LT_ELEMENT));
     names
 }
 
-/// The names the arguments of a call count under: a tuple argument, and a `<` before the last argument.
-pub fn call_arg_names(args: &[Expr]) -> Vec<&'static str> {
+/// The names the arguments of a call count under: a tuple argument, and a `<` before the last argument (`method`: the
+/// callee has a receiver).
+pub fn call_arg_names(method: bool, args: &[Expr]) -> Vec<&'static str> {
     let mut names = Vec::new();
     if args.iter().any(|arg| arg.ty().is_tuple()) {
         names.push(TUPLE_ARG);
     }
-    names.extend(lt_before_last(args));
+    names.extend(lt_before_last(
+        args,
+        if method {
+            SHAPE_LT_METHOD_ARG
+        } else {
+            SHAPE_LT_ARG
+        },
+    ));
     names
 }
 
@@ -936,10 +950,29 @@ pub fn tuple_set_names(
     } else {
         TUPLE_SET
     }];
-    let mut roots = Vec::new();
-    mutating_roots(methods, value, &mut roots);
-    if !roots.is_empty() {
-        names.push(SHAPE_TUPLE_SET_CALL);
+    // The one assignment to a tuple place whose evaluation order shows: `t.k.f op= t.k.m()`, a compound set of a field
+    // of a struct element whose value calls a `&mut self` method on that same element (the call changes the place).
+    if op.is_some()
+        && let Some((_, parent)) = place.path.split_last()
+        && !parent.is_empty()
+    {
+        let mut same = false;
+        walk_expr(value, &mut |n| {
+            if let Expr::Call {
+                f,
+                recv: Some(recv),
+                ..
+            } = n
+                && methods.fns[*f].recv == Recv::Mut
+                && recv.root == place.root
+                && recv.path == parent
+            {
+                same = true;
+            }
+        });
+        if same {
+            names.push(SHAPE_TUPLE_SET_CALL);
+        }
     }
     names
 }
@@ -2706,11 +2739,11 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
         if let Some(shape) = shape {
             *counts.entry(shape.to_owned()).or_default() += 1;
         }
-        if let Expr::Call { args, .. } = e {
+        if let Expr::Call { f, args, .. } = e {
             for shape in enum_call_shapes(methods, args) {
                 *counts.entry(shape.to_owned()).or_default() += 1;
             }
-            for name in call_arg_names(args) {
+            for name in call_arg_names(methods.fns[*f].recv != Recv::None, args) {
                 *counts.entry(name.to_owned()).or_default() += 1;
             }
         }
@@ -2787,7 +2820,7 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
                     for shape in enum_call_shapes(methods, args) {
                         *counts.entry(shape.to_owned()).or_default() += 1;
                     }
-                    for name in call_arg_names(args) {
+                    for name in call_arg_names(def.recv != Recv::None, args) {
                         *counts.entry(name.to_owned()).or_default() += 1;
                     }
                     args.iter().for_each(|arg| expr(methods, arg, counts));

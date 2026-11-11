@@ -146,7 +146,7 @@ fn seed_53_program() -> Program {
     let x = || Expr::Var(1, Ty::U32);
     let program = Program {
         seed: 53,
-        attempt: 5_000_015,
+        attempt: 6_000_001,
         count: COUNT,
         methods: Methods {
             structs: Vec::new(),

@@ -549,8 +549,8 @@ and uniform arrays only; the seed 53 mismatch (closure space, attempt 6 000 001,
 wider envelope.
 
 *Other routes.* D3D12 on the same GPU depends on the HLSL compiler and its flags: with release flags Auto and DXC are right
-and FXC wrong; with the debug flags wgpu adds when `InstanceFlags::DEBUG` is set (skip optimisation) the compilers are wrong
-(D168's "D3D12 alike" held only for its debug-flag runs). The difftest runs Vulkan. slangc's own SPIR-V, passed to Vulkan
+and FXC wrong; with the debug flags wgpu adds when `InstanceFlags::DEBUG` is set (skip optimisation) Auto and DXC were still right on every variant of the second investigation
+and FXC wrong on several; only D168's own reproduction failed through all three (so D168's "D3D12 alike" held for that one program). The difftest runs Vulkan. slangc's own SPIR-V, passed to Vulkan
 on the same GPU, is right, while slangc's WGSL through naga's SPIR-V is wrong; a runtime that took slangc's SPIR-V would
 avoid the defect. That is recorded by the coordinator and is not part of this slice.
 
@@ -596,9 +596,9 @@ element calls at a literal index and 546 plain sets at a dynamic index (none a s
 **Effect of D169 on format 11 and on the pins.** The guard changes the array space, so the array pin of
 `corpus::tests::the_array_space_holds_the_programs_of_the_first_seeds_with_the_widened_guard` moved from format 11's
 `(1, 17866143740336553378) (2, 16719969045829137986) (3, 13468092371448034076) (4, 4894026718084840015)` to
-`(1, 4623533607603803085) (2, 12657800841464584760) (3, 16336804947945770575) (4, 7162040925401680788)`. The older spaces
+`(1, 4623533607603803085) (2, 12657800841464584760) (3, 16336804947945770575) (4, 7162040925401680788)`. Two other draws changed the format-11 array space with it: the repeat chance with a bias root is `(true, false) => 40` (`array_gen.rs`, a changed draw), and a `^=` on an indexed place whose value holds a `&mut self` call becomes `|=`. The older spaces
 (format 3, 9 and 10 pins) are unchanged. The format-12 closure pin moved from
-`(1, 16380561398231883991) (2, 1555899843030428023) (3, 17055776649504420456) (4, 6199642395575606840)` to
+`(1, 12241926679976752482) (2, 11107039089136461779) (3, 12782383001583604423) (4, 16495067024626273188)` to
 `(1, 10042002379242349144) (2, 6698736558324710702) (3, 14225375692781081802) (4, 2186207238784607583)`, and `seeds.txt` was
 regenerated. `DIFFTEST_FORMAT` stays 12 (the format is unreleased).
 
@@ -698,7 +698,7 @@ lines of `the_closure_programs_of_the_64_seed_runs_write_and_run_every_form_and_
 **Order shapes** (programs that write the shape / executed evaluations; space, then batch; minima pinned in
 `SPACE_MINIMA` and `BATCH_MINIMA` and printed by the `CLOSURE-` lines). A shape counts only where the order is observable:
 the value shown to the order is a `&mut self` call on a root that the other operand reads or calls, and for the parameter
-shapes only where the callee really changed what the caller then reads. Without that, a closure that ignores its arguments
+shapes only where the body writes the parameter and the caller then reads the field `k` or `v[0]` (the count checks the write and the read, not that the value changed; the twice shape still counts the symmetric quarter of calls). Without that, a closure that ignores its arguments
 or a `mut` parameter that is never written would count as an order shape and no mutant would change it.
 
 | shape | space | batch |

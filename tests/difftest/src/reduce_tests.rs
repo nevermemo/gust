@@ -431,3 +431,33 @@ fn a_vector_program_reduces_to_a_smaller_valid_program_at_a_fixed_point() {
     );
     assert!(found.program.check().is_ok() && discard_reason(&found.program).is_none());
 }
+
+/// Format 12: a closure program reduces like the others. The statement and expression passes walk a closure's body
+/// and tail with the shared traversal (the node numbers of `visit_exprs` and of the edit agree), a `LetClosure` is a
+/// leaf of the statement passes, and every candidate is type-valid (no capture, no closure left without its binding),
+/// inside the domain and strictly smaller; the search reaches a fixed point.
+#[test]
+fn a_closure_program_reduces_to_a_smaller_valid_program_at_a_fixed_point() {
+    let start = (1..=4)
+        .flat_map(|s| {
+            crate::generator::generate_batch_in(crate::generator::Space::Closure, s)
+                .unwrap()
+                .programs
+        })
+        .max_by_key(|p| size(p).1)
+        .unwrap();
+    assert!(start.has_closure());
+    let before = size(&start);
+    let found = reduce(&start, 0, bounded(), |candidate| {
+        assert!(candidate.check().is_ok(), "{:?}", candidate.check());
+        assert!(discard_reason(candidate).is_none());
+        Some(0)
+    });
+    assert_eq!(found.stop, Stop::FixedPoint);
+    assert!(
+        size(&found.program) < before,
+        "{:?} is not below {before:?}",
+        size(&found.program)
+    );
+    assert!(found.program.check().is_ok() && discard_reason(&found.program).is_none());
+}

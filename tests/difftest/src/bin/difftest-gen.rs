@@ -85,6 +85,7 @@ fn run(args: &[String]) -> Result<(), String> {
                 add("enum-attempts".into(), batch.enum_attempts);
                 add("value-attempts".into(), batch.value_attempts);
                 add("array-attempts".into(), batch.array_attempts);
+                add("closure-attempts".into(), batch.closure_attempts);
                 for (reason, n) in &batch.discarded {
                     add(format!("discard {reason}"), u64::from(*n));
                 }
@@ -103,6 +104,11 @@ fn run(args: &[String]) -> Result<(), String> {
                 for (reason, n) in &batch.array_discarded {
                     add(format!("array-discard {reason}"), u64::from(*n));
                 }
+                for (reason, n) in &batch.closure_discarded {
+                    add(format!("closure-discard {reason}"), u64::from(*n));
+                }
+                let closures = batch.programs.iter().filter(|p| p.has_closure()).count();
+                add("closure-programs".into(), closures as u64);
                 let arrays = batch.programs.iter().filter(|p| p.has_array()).count();
                 add("array-programs".into(), arrays as u64);
                 let values = batch.programs.iter().filter(|p| p.has_value_form()).count();
@@ -131,6 +137,7 @@ fn run(args: &[String]) -> Result<(), String> {
                             || name.starts_with("shape ")
                             || name.starts_with("match")
                             || name.starts_with("tuple ")
+                            || name.starts_with("closure ")
                             || name.starts_with("enum ")
                             || name == "return"
                             || name == difftest::ast::STRUCT_LIT

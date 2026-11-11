@@ -18,7 +18,9 @@ use crate::ast::{
 };
 use crate::interp;
 mod array_gen;
+mod closure_gen;
 use crate::prng::{Prng, byte_stream};
+use closure_gen::{ArgBias, Cl};
 
 /// Bump when a change alters what any seed decodes to, or the emitted text. 2: the program space gained `f32`
 /// (m5.c1a2, R1-4). 3: the condition and literal biases of the float space (m5.c1b): an `if` condition is never a bare
@@ -55,7 +57,18 @@ use crate::prng::{Prng, byte_stream};
 /// `return`) and tuples of two to four elements (locals, parameters and results, `t.0`, element assignment, `f().1`,
 /// `let (a, b) = f(..)`), biased toward the order-sensitive shapes. The four older spaces decode as in format 9 (a
 /// seed's first six float, five vector, one method and two enum programs are format 9's); the batch cut is new.
-pub const DIFFTEST_FORMAT: u32 = 11;
+/// 11: arrays (slice m9.d1d): a seed's batch is five float, four vector, one method, two enum, two value and two array
+/// programs; the array space (`Space::Array`, attempts from `ARRAY_ATTEMPT_BASE`) is the enum space plus fixed-size
+/// arrays, with the NVIDIA hole guard (D168).
+/// 12: non-capturing closures (slice m9.d1e, D166): a seed's batch is three float, four vector, one method, two enum,
+/// two value, two array and two closure programs. A closure program (`Space::Closure`, attempts from
+/// `CLOSURE_ATTEMPT_BASE`) is an array program that also binds `let clN = |p: T, ..| -> R { .. };` (typed parameters,
+/// written result, block body, immutable binding) in the kernel, helper and method bodies and calls it as `clN(a, b)`
+/// wherever a helper call is accepted, biased toward the order-sensitive shapes. A closure body sees its parameters
+/// and nothing else, calls helpers and methods but no closure, and holds no barrier, atomic, subgroup operation,
+/// resource, `i` or `return`; no capture, `move`, closure value, untyped, unit or nested closure is generated. The
+/// older spaces decode as in format 11 (their pins are read with their own stamp); the batch cut is new.
+pub const DIFFTEST_FORMAT: u32 = 12;
 
 /// Which programs the generator writes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,6 +96,10 @@ pub enum Space {
     /// the output buffer. No floats, no tuples, no value `match`. Selected by an attempt number of
     /// `ARRAY_ATTEMPT_BASE` or more.
     Array,
+    /// The array space plus non-capturing closures (slice m9.d1e, format 12): `let f = |x: T, ..| -> R { .. };` in the
+    /// kernel, helper and method bodies, called in every position a helper call is accepted. Selected by an attempt
+    /// number of `CLOSURE_ATTEMPT_BASE` or more.
+    Closure,
 }
 
 /// The first attempt number of the vector space. A program is a pure function of `(seed, attempt)`, and the attempt
@@ -93,19 +110,23 @@ pub const VECTOR_ATTEMPT_BASE: u64 = 1_000_000;
 pub const METHOD_ATTEMPT_BASE: u64 = 2_000_000;
 /// In-domain programs of a seed's batch that are scalar (the float space), then vector, then method
 /// (`PROGRAMS_PER_SEED` in all).
-pub const SCALAR_PROGRAMS_PER_SEED: usize = 5;
+pub const SCALAR_PROGRAMS_PER_SEED: usize = 3;
 pub const VECTOR_PROGRAMS_PER_SEED: usize = 4;
 pub const METHOD_PROGRAMS_PER_SEED: usize = 1;
 pub const ENUM_PROGRAMS_PER_SEED: usize = 2;
 pub const ARRAY_PROGRAMS_PER_SEED: usize = 2;
+pub const CLOSURE_PROGRAMS_PER_SEED: usize = 2;
 pub const VALUE_PROGRAMS_PER_SEED: usize = PROGRAMS_PER_SEED
     - SCALAR_PROGRAMS_PER_SEED
     - VECTOR_PROGRAMS_PER_SEED
     - METHOD_PROGRAMS_PER_SEED
     - ENUM_PROGRAMS_PER_SEED
-    - ARRAY_PROGRAMS_PER_SEED;
+    - ARRAY_PROGRAMS_PER_SEED
+    - CLOSURE_PROGRAMS_PER_SEED;
 /// The first attempt number of the array space (above every value attempt a seed can make).
 pub const ARRAY_ATTEMPT_BASE: u64 = 5_000_000;
+/// The first attempt number of the closure space (above every array attempt a seed can make).
+pub const CLOSURE_ATTEMPT_BASE: u64 = 6_000_000;
 /// The first attempt number of the value space (above every enum attempt a seed can make).
 pub const VALUE_ATTEMPT_BASE: u64 = 4_000_000;
 /// The first attempt number of the enum space (above every method attempt a seed can make).
@@ -115,10 +136,13 @@ pub const VECTOR_END: usize = SCALAR_PROGRAMS_PER_SEED + VECTOR_PROGRAMS_PER_SEE
 pub const METHOD_END: usize = VECTOR_END + METHOD_PROGRAMS_PER_SEED;
 pub const ENUM_END: usize = METHOD_END + ENUM_PROGRAMS_PER_SEED;
 pub const VALUE_END: usize = ENUM_END + VALUE_PROGRAMS_PER_SEED;
+pub const ARRAY_END: usize = VALUE_END + ARRAY_PROGRAMS_PER_SEED;
 
 /// The space whose decoder reads the program of this attempt number.
 pub fn space_of_attempt(attempt: u64) -> Space {
-    if attempt >= ARRAY_ATTEMPT_BASE {
+    if attempt >= CLOSURE_ATTEMPT_BASE {
+        Space::Closure
+    } else if attempt >= ARRAY_ATTEMPT_BASE {
         Space::Array
     } else if attempt >= VALUE_ATTEMPT_BASE {
         Space::Value
@@ -224,15 +248,17 @@ struct Gen<'a> {
     arm_return_fns: Vec<usize>,
     /// The array space (implies `enums`, not `values`): arrays, `store` and the array helpers.
     arrays: bool,
-    /// Array locals that may hold one value in every element (a repeat, an equal-element literal, a copy or a call
-    /// result): a compound set at a dynamic index into one is the NVIDIA trigger of plans/m9/arrbug.md, which the
-    /// generator does not write while that driver bug stands (DIFFTEST.md, "Known driver hole").
-    uniform: Vec<u32>,
-    /// The narrow form: array locals that hold a repeat, an equal-element literal, a copy of one or a call result. A
-    /// `&mut self` call on an element of one gets a literal index (the copy-store form of the same hole).
-    equal: Vec<u32>,
     /// The final store of the program being drawn (the array space).
     store: Option<crate::ast::Store>,
+    /// The closure space (implies `arrays`): non-capturing closures and their calls. Every draw they add sits behind
+    /// this flag.
+    closures: bool,
+    /// A closure body is being drawn: no `i`, no buffer, no `self`, no `return`, no closure.
+    in_closure: bool,
+    /// The probe writer closures (closure, struct local, field, field type) of the kernel (see `closure_probe_lets`).
+    probe_writers: Vec<(u32, u32, u8, Ty)>,
+    /// The closures bound in the open blocks.
+    cls: Vec<Cl>,
 }
 
 /// A data value as a literal; i32::MIN is written as the expression -2147483647 - 1 (the emitter never writes the
@@ -370,6 +396,15 @@ impl Gen<'_> {
             0 => Expr::Gid,
             1 => {
                 let inner = self.expr(Ty::U32, 1);
+                // The closure space has `&mut self` calls everywhere (the counter methods), and this index may stand in an
+                // assigned place (E0421): it keeps the draw but drops a call that mutates.
+                let mut roots = Vec::new();
+                crate::ast::mutating_roots(&self.table, &inner, &mut roots);
+                let inner = if self.closures && !roots.is_empty() {
+                    Expr::Gid
+                } else {
+                    inner
+                };
                 Expr::bin(BinOp::Rem, inner, Expr::Len(buf))
             }
             2 => Expr::bin(
@@ -393,7 +428,7 @@ impl Gen<'_> {
         let inputs = self.inputs_of(ty);
         // 0 literal, 1 variable, 2 input read, 3 gid, 4 len.
         // A function sees no buffer and no element index.
-        let kernel = self.cur_fn.is_none();
+        let kernel = self.cur_fn.is_none() && !self.in_closure;
         let mut weights = vec![
             18,
             if vars.is_empty() { 0 } else { 55 },
@@ -511,6 +546,20 @@ impl Gen<'_> {
         {
             return call;
         }
+        // A closure call (the closure space): `f(c.bump(), c.bump())`, `f(c.bump()) ^ f(c.bump())`.
+        if self.closures && !self.cls.is_empty() && self.b.chance(26) {
+            let roll = self.b.below(100);
+            let special = if roll < 22 {
+                self.closure_twice(ty, d)
+            } else if roll < 55 {
+                self.closure_observed_call(ty, d)
+            } else {
+                None
+            };
+            if let Some(call) = special.or_else(|| self.closure_call(ty, d, None)) {
+                return call;
+            }
+        }
         // An element of a call's tuple result (`f().1`).
         if self.values
             && self.b.chance(14)
@@ -568,7 +617,11 @@ impl Gen<'_> {
                 let r = self.divisor(ty, d);
                 // `-1` as a divisor is only interesting if the dividend can be `i32::MIN`, which only the
                 // edge-valued input buffers hold; so the dividend is often a plain read of such a buffer.
-                if r == Expr::Lit(Ty::I32, u32::MAX) && self.cur_fn.is_none() && self.b.chance(60) {
+                if r == Expr::Lit(Ty::I32, u32::MAX)
+                    && self.cur_fn.is_none()
+                    && !self.in_closure
+                    && self.b.chance(60)
+                {
                     let buffers = self.inputs_of(Ty::I32);
                     if !buffers.is_empty() {
                         let buf = buffers[self.b.below(buffers.len() as u32) as usize];
@@ -1006,7 +1059,7 @@ impl Gen<'_> {
     /// boolean expression of format 2 (replaced by an index condition if it came out as a bare literal).
     fn condition(&mut self) -> Expr {
         // The method space splits the elements in the kernel the way the float space does; a function has no element.
-        if !self.floats && !(self.methods && self.cur_fn.is_none()) {
+        if !self.floats && !(self.methods && self.cur_fn.is_none() && !self.in_closure) {
             return self.expr(Ty::Bool, 4);
         }
         match self.b.weighted(&[35, 25, 40]) {
@@ -1074,6 +1127,7 @@ impl Gen<'_> {
 
     fn block(&mut self, depth: u32, min: u32, max: u32) -> Vec<Stmt> {
         let mark = self.scope.len();
+        let cl_mark = self.cls.len();
         let count = min + self.b.below(max - min + 1);
         let mut stmts = Vec::new();
         for _ in 0..count {
@@ -1124,9 +1178,15 @@ impl Gen<'_> {
                     (false, true) => 50,
                 });
             }
+            // 11: a closure binding (the closure space; none inside a closure body).
+            let closure_kind = weights.len();
+            if self.closures {
+                weights.push(if self.in_closure { 0 } else { 16 });
+            }
             let (pre_mark, at) = (self.pre.len(), stmts.len());
             let kind = self.b.weighted(&weights);
             match kind {
+                k if self.closures && k == closure_kind => stmts.push(self.closure_let(depth)),
                 8 => stmts.push(self.let_match(depth)),
                 9 => stmts.push(self.let_tuple()),
                 10 => stmts.extend(self.tuple_set_stmt(&tuple_targets)),
@@ -1214,6 +1274,7 @@ impl Gen<'_> {
             self.splice_pre(pre_mark, at, &mut stmts);
         }
         self.scope.truncate(mark);
+        self.cls.truncate(cl_mark);
         stmts
     }
 
@@ -1374,22 +1435,27 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         scope: Vec::new(),
         methods: matches!(
             space,
-            Space::Method | Space::Enum | Space::Value | Space::Array
+            Space::Method | Space::Enum | Space::Value | Space::Array | Space::Closure
         ),
         table: Methods::default(),
         cur_fn: None,
         this: None,
         forbid: Vec::new(),
-        enums: matches!(space, Space::Enum | Space::Value | Space::Array),
+        enums: matches!(
+            space,
+            Space::Enum | Space::Value | Space::Array | Space::Closure
+        ),
         cur_ret: None,
         force_enum_ret: false,
         values: space == Space::Value,
         pre: Vec::new(),
         arm_return_fns: Vec::new(),
-        arrays: space == Space::Array,
-        uniform: Vec::new(),
-        equal: Vec::new(),
+        arrays: matches!(space, Space::Array | Space::Closure),
         store: None,
+        closures: space == Space::Closure,
+        in_closure: false,
+        probe_writers: Vec::new(),
+        cls: Vec::new(),
     };
     let count = match g.b.below(6) {
         k @ 0..=4 => COUNTS[k as usize],
@@ -1438,6 +1504,16 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
             g.splice_pre(pre_mark, at, &mut body);
         }
     }
+    // The closure space binds one or two closures in the kernel before its ordinary block.
+    if g.closures {
+        for _ in 0..1 + g.b.below(2) {
+            let (pre_mark, at) = (g.pre.len(), body.len());
+            let stmt = g.closure_let(1);
+            body.push(stmt);
+            g.splice_pre(pre_mark, at, &mut body);
+        }
+        g.closure_probe_lets(&mut body);
+    }
     body.extend(g.block(0, 2, 7));
     // The value space ends the kernel body, often, with `t.k.f op= t.k.m()` on a top-level tuple local (fix round 1),
     // and the result reads the field: the order-sensitive set then decides the output of the program.
@@ -1469,6 +1545,7 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
     let mut array_folds = Vec::new();
     if g.arrays {
         g.restore_scope(&body);
+        g.restore_closures(&body);
         array_folds = g.array_section(&mut body);
     }
     // A boolean result would hide the field (`x != 0`): the forced set gets an integer result.
@@ -1478,6 +1555,10 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         ty = Ty::Bool;
     }
     if forced_set && ty == Ty::Bool {
+        ty = Ty::U32;
+    }
+    // The closure space wants an integer result: the probe calls join it with a `^` that every path evaluates.
+    if g.closures && ty == Ty::Bool && g.b.chance(70) {
         ty = Ty::U32;
     }
     if g.methods {
@@ -1702,6 +1783,20 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
     {
         result = fold_in(result, call);
     }
+    if g.closures && matches!(result.ty(), Ty::U32 | Ty::I32) {
+        for probe in g.closure_probe_calls() {
+            result = fold_in(result, probe);
+        }
+    }
+    // ... and, in the closure space, a call of a closure whose arguments call it: the store's value then holds the call.
+    if g.closures
+        && matches!(result.ty(), Ty::U32 | Ty::I32)
+        && g.b.chance(45)
+        && let Some(root) = g.bias_root()
+        && let Some(call) = g.closure_call(result.ty(), 3, Some(root))
+    {
+        result = fold_in(result, call);
+    }
     g.store = g.array_store(&result);
     let (folds, fold_chance) = if g.vectors { (3, 85) } else { (2, 60) };
     for _ in 0..folds {
@@ -1806,6 +1901,9 @@ pub struct Batch {
     /// Of `attempts`, the attempts of the array part, and of `discarded`, the discards of the array part.
     pub array_attempts: u64,
     pub array_discarded: BTreeMap<&'static str, u32>,
+    /// Of `attempts`, the attempts of the closure part, and of `discarded`, the discards of the closure part.
+    pub closure_attempts: u64,
+    pub closure_discarded: BTreeMap<&'static str, u32>,
 }
 
 impl Batch {
@@ -1840,6 +1938,7 @@ pub fn generate_batch(seed: u64) -> Result<Batch, String> {
     fill(&mut batch, Space::Enum, ENUM_PROGRAMS_PER_SEED)?;
     fill(&mut batch, Space::Value, VALUE_PROGRAMS_PER_SEED)?;
     fill(&mut batch, Space::Array, ARRAY_PROGRAMS_PER_SEED)?;
+    fill(&mut batch, Space::Closure, CLOSURE_PROGRAMS_PER_SEED)?;
     Ok(batch)
 }
 
@@ -1866,6 +1965,8 @@ fn empty_batch(seed: u64) -> Batch {
         value_discarded: BTreeMap::new(),
         array_attempts: 0,
         array_discarded: BTreeMap::new(),
+        closure_attempts: 0,
+        closure_discarded: BTreeMap::new(),
     }
 }
 
@@ -1877,6 +1978,7 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
         Space::Enum => ENUM_ATTEMPT_BASE,
         Space::Value => VALUE_ATTEMPT_BASE,
         Space::Array => ARRAY_ATTEMPT_BASE,
+        Space::Closure => CLOSURE_ATTEMPT_BASE,
         _ => 0,
     };
     let target = batch.programs.len() + want;
@@ -1887,6 +1989,7 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
         batch.enum_attempts += u64::from(space == Space::Enum);
         batch.value_attempts += u64::from(space == Space::Value);
         batch.array_attempts += u64::from(space == Space::Array);
+        batch.closure_attempts += u64::from(space == Space::Closure);
         let program = generate_attempt_in(space, batch.seed, attempt);
         // A vector program that came out scalar tests nothing new, nor does a method program that calls nothing, nor
         // an enum program without a `match`.
@@ -1900,9 +2003,13 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
             Some("no-call")
         } else if space == Space::Value && !program.has_value_form() {
             Some("no-value")
-        } else if space == Space::Array && !program.has_array() {
+        } else if space == Space::Closure && !program.has_closure() {
+            Some("no-closure")
+        } else if matches!(space, Space::Array | Space::Closure) && !program.has_array() {
             Some("no-array")
-        } else if matches!(space, Space::Value | Space::Array) && !program.has_call() {
+        } else if matches!(space, Space::Value | Space::Array | Space::Closure)
+            && !program.has_call()
+        {
             Some("no-call")
         } else {
             discard_reason(&program)
@@ -1921,6 +2028,9 @@ fn fill(batch: &mut Batch, space: Space, want: usize) -> Result<(), String> {
                 }
                 if space == Space::Array {
                     *batch.array_discarded.entry(reason).or_default() += 1;
+                }
+                if space == Space::Closure {
+                    *batch.closure_discarded.entry(reason).or_default() += 1;
                 }
                 if space == Space::Value {
                     *batch.value_discarded.entry(reason).or_default() += 1;
@@ -2075,7 +2185,14 @@ impl Gen<'_> {
                 // A share of the values call a `&mut self` method on the place's own root: the order rules of
                 // `place op= value` (the place is read after the value) are only observable then.
                 let biased = if self.b.chance(75) {
-                    self.root_call(value_ty, place.root, 3)
+                    // A closure call whose arguments call the place's root: the order of the place read and of the
+                    // arguments decides the stored value.
+                    let via = if self.closures && !self.cls.is_empty() && self.b.chance(40) {
+                        self.closure_call(value_ty, 3, Some(place.root))
+                    } else {
+                        None
+                    };
+                    via.or_else(|| self.root_call(value_ty, place.root, 3))
                 } else {
                     None
                 };
@@ -2264,7 +2381,7 @@ impl Gen<'_> {
 
     /// A `&mut self` call of a method returning `ty` on a writable place of root `root`, if one is in reach and no
     /// enclosing call is borrowing that root: the call whose effect on `root` a surrounding read or place can see.
-    fn root_call(&mut self, ty: Ty, root: Root, depth: u32) -> Option<Expr> {
+    pub(super) fn root_call(&mut self, ty: Ty, root: Root, depth: u32) -> Option<Expr> {
         if depth == 0 || self.forbid.contains(&root) {
             return None;
         }
@@ -2368,6 +2485,14 @@ impl Gen<'_> {
     /// drawn, and every other, has no value in reach.
     fn struct_expr(&mut self, j: u8, depth: u32, top: bool) -> Option<Expr> {
         let ty = Ty::Struct(j);
+        if self.closures
+            && depth > 0
+            && !self.cls.is_empty()
+            && self.b.chance(22)
+            && let Some(call) = self.closure_call(ty, depth - 1, None)
+        {
+            return Some(call);
+        }
         let bare_self_ok = matches!(self.this, Some((_, Recv::Value)));
         let places: Vec<Place> = self
             .struct_places()
@@ -2478,6 +2603,9 @@ impl Gen<'_> {
             self.gen_fn(k);
         }
         self.force_enum_ret = false;
+        if self.closures {
+            self.counter_methods();
+        }
     }
 
     fn gen_fn(&mut self, k: usize) {
@@ -2511,6 +2639,7 @@ impl Gen<'_> {
         });
         self.cur_fn = Some(k);
         self.scope.clear();
+        self.cls.clear();
         self.this = owner
             .filter(|_| recv != Recv::None)
             .map(|o| (Ty::Struct(o), recv));
@@ -2588,6 +2717,13 @@ impl Gen<'_> {
             body.push(forced);
             self.splice_pre(pre_mark, at, &mut body);
         }
+        // A function of the closure space often binds a closure first: the body and the tail then call it.
+        if self.closures && self.b.chance(70) {
+            let pre_mark = self.pre.len();
+            let stmt = self.closure_let(1);
+            body.push(stmt);
+            self.splice_pre(pre_mark, 0, &mut body);
+        }
         body.extend(self.block(1, 0, 3));
         let array_reads = if self.arrays {
             self.array_param_uses(&params, &mut body)
@@ -2627,6 +2763,14 @@ impl Gen<'_> {
                 {
                     value = fold_in(value, read);
                 }
+                if self.closures
+                    && !self.cls.is_empty()
+                    && matches!(scalar, Ty::U32 | Ty::I32 | Ty::Bool)
+                    && self.b.chance(85)
+                    && let Some(call) = self.closure_call(scalar, 3, None)
+                {
+                    value = fold_in(value, call);
+                }
                 value
             }
         });
@@ -2647,6 +2791,7 @@ impl Gen<'_> {
         self.cur_ret = None;
         self.this = None;
         self.scope.clear();
+        self.cls.clear();
     }
 }
 
@@ -2744,6 +2889,14 @@ impl Gen<'_> {
     /// An enum value comes from a variant path, a variable (a local or a parameter) or the result of a call, never from
     /// an integer.
     fn enum_expr(&mut self, ty: Ty, depth: u32) -> Expr {
+        if self.closures
+            && depth > 0
+            && !self.cls.is_empty()
+            && self.b.chance(25)
+            && let Some(call) = self.closure_call(ty, depth - 1, None)
+        {
+            return call;
+        }
         if self.methods
             && depth > 0
             && self.b.chance(35)

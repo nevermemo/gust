@@ -15,11 +15,13 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::agg::{self, Agg, Scalar};
 use crate::ast::{
-    ASSIGN_COMP, Arm, BinOp, Elem, Expr, MATCH_ARM_RETURN_RUN, Pat, Place, Program, Recv, Root,
-    SHAPE_EXPR_CALL, SHAPE_STMT_CALL, STRUCT_LIT, Stmt, TUPLE_READ, Ty, UnOp, array_call_names,
-    array_expr_names, array_set_names, array_store_names, bin_shape, call_arg_names, call_name,
-    call_shape, destruct_names, enum_as_name, enum_call_shapes, match_names, match_shape, set_name,
-    set_shape, tuple_field_names, tuple_lit_names, tuple_set_names, value_match_names,
+    ASSIGN_COMP, Arm, BinOp, CLOSURE_BODY_HELPER, CLOSURE_BODY_METHOD, CLOSURE_PARAM_METHOD,
+    ClosureDef, Elem, Expr, MATCH_ARM_RETURN_RUN, Pat, Place, Program, Recv, Root, SHAPE_EXPR_CALL,
+    SHAPE_STMT_CALL, STRUCT_LIT, Stmt, TUPLE_READ, Ty, UnOp, array_call_names, array_expr_names,
+    array_set_names, array_store_names, bin_shape, call_arg_names, call_name, call_shape,
+    closure_call_names, closure_let_names, closure_set_names, destruct_names, enum_as_name,
+    enum_call_shapes, match_names, match_shape, set_name, set_shape, tuple_field_names,
+    tuple_lit_names, tuple_set_names, value_match_names,
 };
 use crate::float::{self, Fl};
 
@@ -284,6 +286,12 @@ struct Machine<'a> {
     /// `for` bodies and `match` arms the running function is inside (reset per call), for the counted names.
     for_depth: u32,
     arm_depth: u32,
+    /// Every closure of the program by variable (ids are program-wide unique), with the function that binds it.
+    closures: BTreeMap<u32, (&'a ClosureDef, Option<usize>)>,
+    /// The closure whose body is running, and whether it is bound in a method (for the counted names).
+    closure_ctx: Option<(&'a ClosureDef, bool)>,
+    /// The result of the first call of each closure in this element, for the `closure-memo` mutant.
+    memo: HashMap<u32, Val>,
     /// Test hook for the mutation checks (slice m9.d1b); `None` is the Rust semantics.
     mutant: Option<Mutant>,
 }
@@ -304,6 +312,9 @@ pub(crate) fn env_mutant() -> Option<Mutant> {
         Ok("repeat-per-element") => Some(Mutant::RepeatPerElement),
         Ok("index-before-value") => Some(Mutant::IndexBeforeValue),
         Ok("array-arg-by-ref") => Some(Mutant::ArrayArgByRef),
+        Ok("closure-args-right-to-left") => Some(Mutant::ClosureArgsRightToLeft),
+        Ok("closure-param-by-ref") => Some(Mutant::ClosureParamByRef),
+        Ok("closure-memo") => Some(Mutant::ClosureMemo),
         _ => None,
     }
 }
@@ -335,6 +346,13 @@ pub enum Mutant {
     /// An array argument passed by reference: what the callee leaves in the parameter is written back to the caller's
     /// variable. (m9.d1d)
     ArrayArgByRef,
+    /// The arguments of a closure call run right to left (their values are still placed left to right). (m9.d1e)
+    ClosureArgsRightToLeft,
+    /// An array or struct argument of a closure call that is a variable is the closure's parameter itself: what the body
+    /// leaves in it is written back to the caller's variable. (m9.d1e)
+    ClosureParamByRef,
+    /// A closure body is evaluated by the first call of the element only; later calls reuse the result. (m9.d1e)
+    ClosureMemo,
 }
 
 /// What `run_covered` counts while it runs.
@@ -710,6 +728,7 @@ impl Machine<'_> {
                 let value = self.call(*f, recv, args)?;
                 Ok(value.expect("a value call has a tail"))
             }
+            Expr::ClosureCall { var, args, .. } => self.closure_call(*var, args),
             Expr::StructLit { fields, order, .. } => {
                 self.count_name(STRUCT_LIT);
                 // The fields in the order written, as Rust evaluates them; a nested struct contributes its
@@ -902,6 +921,23 @@ impl Machine<'_> {
                 self.count_name(name);
             }
         }
+        if self.coverage.is_some()
+            && let Some((closure, _)) = self.closure_ctx
+        {
+            self.count_name(if def.recv == Recv::None && def.owner.is_none() {
+                CLOSURE_BODY_HELPER
+            } else {
+                CLOSURE_BODY_METHOD
+            });
+            if recv.as_ref().is_some_and(|place| {
+                closure
+                    .params
+                    .iter()
+                    .any(|p| p.1.is_struct() && place.root == Root::Var(p.0))
+            }) {
+                self.count_name(CLOSURE_PARAM_METHOD);
+            }
+        }
         let loc = recv.as_ref().map(|place| self.locate(place)).transpose()?;
         let receiver = loc.as_ref().map(|loc| self.loc_get(loc));
         let mut values = Vec::with_capacity(args.len());
@@ -926,6 +962,7 @@ impl Machine<'_> {
         if let Some(receiver) = receiver {
             self.self_stack.push(receiver);
         }
+        let ctx = self.closure_ctx.take();
         let depths = (self.for_depth, self.arm_depth);
         (self.for_depth, self.arm_depth) = (0, 0);
         let ran = self.block(&def.body);
@@ -935,6 +972,7 @@ impl Machine<'_> {
             Some(value) => Some(value),
             None => def.tail.as_ref().map(|tail| self.expr(tail)).transpose()?,
         };
+        self.closure_ctx = ctx;
         if self.mutant == Some(Mutant::ArrayArgByRef) {
             // The wrong model: an array argument that is a variable is the callee's parameter itself.
             for (arg, (var, _)) in args.iter().zip(&def.params) {
@@ -948,6 +986,57 @@ impl Machine<'_> {
             if def.recv == Recv::Mut {
                 self.loc_set(loc, last);
             }
+        }
+        Ok(value)
+    }
+
+    /// A closure call, in Rust's order: the arguments left to right, each completely, then the parameters are bound by
+    /// value (an array or a struct is copied: the slot of the parameter is its own), then the body runs once and the
+    /// block's value is the result. A closure holds no capture, so the caller's variables are untouched by the body.
+    fn closure_call(&mut self, var: u32, args: &[Expr]) -> Result<Val, Violation> {
+        let program = self.program;
+        let &(def, site) = self.closures.get(&var).expect("a call of a bound closure");
+        if self.coverage.is_some() {
+            for name in closure_call_names(&program.methods, var, args) {
+                self.count_name(name);
+            }
+        }
+        let mut values = vec![None; args.len()];
+        let order: Vec<usize> = if self.mutant == Some(Mutant::ClosureArgsRightToLeft) {
+            (0..args.len()).rev().collect()
+        } else {
+            (0..args.len()).collect()
+        };
+        for k in order {
+            values[k] = Some(self.expr(&args[k])?);
+        }
+        for (&(param, ..), value) in def.params.iter().zip(values.into_iter().flatten()) {
+            self.vars[param as usize] = value;
+        }
+        if self.mutant == Some(Mutant::ClosureMemo)
+            && let Some(&memo) = self.memo.get(&var)
+        {
+            return Ok(memo);
+        }
+        let in_method = site.is_some_and(|k| program.methods.fns[k].owner.is_some());
+        let saved = self.closure_ctx.replace((def, in_method));
+        let depths = (self.for_depth, self.arm_depth);
+        (self.for_depth, self.arm_depth) = (0, 0);
+        let ran = self.block(&def.body).and_then(|()| self.expr(&def.tail));
+        (self.for_depth, self.arm_depth) = depths;
+        self.closure_ctx = saved;
+        let value = ran?;
+        if self.mutant == Some(Mutant::ClosureParamByRef) {
+            for (arg, p) in args.iter().zip(&def.params) {
+                if let Expr::Var(outer, ty) = arg
+                    && (ty.is_array() || ty.is_struct())
+                {
+                    self.vars[*outer as usize] = self.vars[p.0 as usize];
+                }
+            }
+        }
+        if self.mutant == Some(Mutant::ClosureMemo) {
+            self.memo.insert(var, value);
         }
         Ok(value)
     }
@@ -1103,6 +1192,9 @@ impl Machine<'_> {
                         for name in array_set_names(&self.program.methods, place, *op, value) {
                             self.count_name(name);
                         }
+                        for name in closure_set_names(&self.program.methods, place, *op, value) {
+                            self.count_name(name);
+                        }
                     }
                     // The place is located (its index evaluated, once) after the value, as Rust does; the mutants
                     // `index-before-value` and `compound-place-first` locate it first.
@@ -1136,6 +1228,14 @@ impl Machine<'_> {
                     }
                     self.count_enum_args(args);
                     self.call(*f, recv, args)?;
+                }
+                Stmt::LetClosure { def } => {
+                    if self.coverage.is_some() {
+                        let site = self.closures.get(&def.var).and_then(|c| c.1);
+                        for name in closure_let_names(&self.program.methods, def, site) {
+                            self.count_name(name);
+                        }
+                    }
                 }
                 Stmt::Return { value } => {
                     self.count_name("return");
@@ -1234,6 +1334,43 @@ impl Machine<'_> {
     }
 }
 
+/// Every closure of the program by its variable, with the function that binds it (`None`: the kernel).
+fn closure_table(program: &Program) -> BTreeMap<u32, (&ClosureDef, Option<usize>)> {
+    crate::ast::register_closures(program);
+    fn collect<'a>(
+        stmts: &'a [Stmt],
+        site: Option<usize>,
+        table: &mut BTreeMap<u32, (&'a ClosureDef, Option<usize>)>,
+    ) {
+        for stmt in stmts {
+            match stmt {
+                Stmt::LetClosure { def } => {
+                    table.insert(def.var, (&**def, site));
+                }
+                Stmt::If { then, els, .. } => {
+                    collect(then, site, table);
+                    collect(els, site, table);
+                }
+                Stmt::For { body, .. } => collect(body, site, table),
+                Stmt::Match { arms, .. }
+                | Stmt::LetMatch { arms, .. }
+                | Stmt::TailMatch { arms, .. } => {
+                    for arm in arms {
+                        collect(&arm.body, site, table);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut table = BTreeMap::new();
+    collect(&program.body, None, &mut table);
+    for (k, def) in program.methods.fns.iter().enumerate() {
+        collect(&def.body, Some(k), &mut table);
+    }
+    table
+}
+
 fn variable_slots(program: &Program) -> usize {
     let mut max = 0;
     fn block(stmts: &[Stmt], max: &mut usize) {
@@ -1250,6 +1387,12 @@ fn variable_slots(program: &Program) -> usize {
                     for &(var, _) in vars {
                         *max = (*max).max(var as usize + 1);
                     }
+                }
+                Stmt::LetClosure { def } => {
+                    for &(var, ..) in &def.params {
+                        *max = (*max).max(var as usize + 1);
+                    }
+                    block(&def.body, max);
                 }
                 Stmt::If { .. }
                 | Stmt::Set { .. }
@@ -1340,6 +1483,7 @@ fn count_ifs(stmts: &[Stmt]) -> u64 {
         .map(|stmt| match stmt {
             Stmt::If { then, els, .. } => 1 + count_ifs(then) + count_ifs(els),
             Stmt::For { body, .. } => count_ifs(body),
+            Stmt::LetClosure { def } => count_ifs(&def.body),
             Stmt::Match { arms, .. }
             | Stmt::LetMatch { arms, .. }
             | Stmt::TailMatch { arms, .. } => arms.iter().map(|arm| count_ifs(&arm.body)).sum(),
@@ -1412,6 +1556,9 @@ fn run_machine(
         for_depth: 0,
         arm_depth: 0,
         mutant,
+        closures: closure_table(program),
+        closure_ctx: None,
+        memo: HashMap::new(),
     };
     // An array program's output starts as the store's `init`, and element `i` stores into `out[idx]`.
     let init = program.store.as_ref().map_or(0, |store| store.init);
@@ -1424,6 +1571,7 @@ fn run_machine(
     for element in 0..program.count {
         machine.element = element;
         machine.self_stack.clear();
+        machine.memo.clear();
         let (bits, interval, slot) = run_element(&mut machine, program)
             .map_err(|violation| Failure { element, violation })?;
         match slot {
@@ -1485,6 +1633,9 @@ pub fn observed_values(program: &Program, element: u32) -> HashMap<usize, u32> {
         for_depth: 0,
         arm_depth: 0,
         mutant: None,
+        closures: closure_table(program),
+        closure_ctx: None,
+        memo: HashMap::new(),
     };
     let _ = machine
         .block(&program.body)
@@ -1585,6 +1736,7 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
             // A field, a call or a struct literal is open; its operands are folded as nodes of their own.
             Expr::Read { .. }
             | Expr::Call { .. }
+            | Expr::ClosureCall { .. }
             | Expr::StructLit { .. }
             | Expr::Tuple { .. }
             | Expr::TupleField { .. }
@@ -1802,6 +1954,7 @@ pub fn static_violation(program: &Program) -> Option<Violation> {
                     },
                     Stmt::If { then, els, .. } => sets(then, fold).or_else(|| sets(els, fold)),
                     Stmt::For { body, .. } => sets(body, fold),
+                    Stmt::LetClosure { def } => sets(&def.body, fold),
                     Stmt::Match { arms, .. }
                     | Stmt::LetMatch { arms, .. }
                     | Stmt::TailMatch { arms, .. } => {

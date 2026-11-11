@@ -174,7 +174,10 @@ fn is_atom(expr: &Expr) -> bool {
         | Expr::Dot { .. }
         | Expr::Transpose { .. } => true,
         // A field path or a call is a postfix, a struct literal a braced atom (it never sits under an operator).
-        Expr::Read { .. } | Expr::Call { .. } | Expr::StructLit { .. } => true,
+        Expr::Read { .. }
+        | Expr::Call { .. }
+        | Expr::ClosureCall { .. }
+        | Expr::StructLit { .. } => true,
         // A tuple literal is parenthesised, `f().1` a postfix.
         Expr::Tuple { .. } | Expr::TupleField { .. } => true,
         // An element is a postfix, `(a.len() as u32)` parenthesised, a literal or a repeat bracketed.
@@ -247,6 +250,10 @@ pub fn emit_expr(expr: &Expr) -> String {
             args,
             ..
         } => call_text(*f, *owner, recv, args),
+        Expr::ClosureCall { var, args, .. } => {
+            let args: Vec<String> = args.iter().map(emit_expr).collect();
+            format!("cl{var}({})", args.join(", "))
+        }
         Expr::Tuple { elems, .. } => {
             let elems: Vec<String> = elems.iter().map(emit_expr).collect();
             format!("({})", elems.join(", "))
@@ -372,6 +379,25 @@ fn emit_stmt(stmt: &Stmt, level: usize, out: &mut String) {
         }
         Stmt::Return { value } => {
             let _ = writeln!(out, "{pad}return {};", emit_expr(value));
+        }
+        Stmt::LetClosure { def } => {
+            let params: Vec<String> = def
+                .params
+                .iter()
+                .map(|&(var, ty, mutable)| {
+                    format!("{}v{var}: {}", if mutable { "mut " } else { "" }, ty.text())
+                })
+                .collect();
+            let _ = writeln!(
+                out,
+                "{pad}let cl{} = |{}| -> {} {{",
+                def.var,
+                params.join(", "),
+                def.ret.text()
+            );
+            emit_block(&def.body, level + 1, out);
+            let _ = writeln!(out, "{pad}{INDENT}{}", emit_expr(&def.tail));
+            let _ = writeln!(out, "{pad}}};");
         }
         Stmt::Match { scrut, arms } => {
             let _ = writeln!(out, "{pad}match {} {{", emit_expr(scrut));

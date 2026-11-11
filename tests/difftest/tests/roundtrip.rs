@@ -142,6 +142,31 @@ fn array_programs_compile_through_the_macro_without_a_gust_diagnostic() {
 }
 
 #[test]
+fn closure_programs_compile_through_the_macro_without_a_gust_diagnostic() {
+    // Format 12 (m9.d1e): the generator never writes a closure form the macro refuses (E0328 name, E0329 capture,
+    // E0330 closure as a value, E0331 untyped or unit signature, E0332 nested closure, E0421 call in a `for` bound,
+    // E0810 struct literal as a tail or argument, ...). The closure space of seeds 1 to 12 (16 programs each, 192 in
+    // all) goes through `#[gust::gpu]` and rustc.
+    let dir = work_dir().join("roundtrip-closures");
+    let mut programs = Vec::new();
+    for seed in 1..=12 {
+        programs.extend(generate_batch_in(Space::Closure, seed).unwrap().programs);
+    }
+    assert_eq!(programs.len(), 192);
+    assert!(programs.iter().all(|p| p.has_closure()));
+    write_crate(
+        &dir,
+        &package_name("closures").unwrap(),
+        &programs,
+        &repo_root(),
+    )
+    .unwrap();
+    let (ok, output) = cargo_check(&dir);
+    assert!(!output.contains("[GUST-E"), "{}", tail(&output));
+    assert!(ok, "cargo check failed:\n{}", tail(&output));
+}
+
+#[test]
 fn value_programs_compile_through_the_macro_without_a_gust_diagnostic() {
     // Format 10 (m9.d1c): the generator never writes a tuple or value-`match` form the macro refuses (E0212, E0213,
     // E0319, E0326, E0419, E0515, E0521, E0810, ...). The value space of seeds 1 to 12 (16 programs each, 192 in all)

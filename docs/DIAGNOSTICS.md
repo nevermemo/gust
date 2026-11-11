@@ -439,13 +439,32 @@ Limitation: an enum bound by a destructuring without an annotation is not tracke
 Fixture: `tests/ui/tuple-nine`, `tests/ui/tuple-one`, `tests/ui/tuple-element-array` and `tests/ui/tuple-compare` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D158 (M9 plan 2.3, slice m9.t).
 
+### GUST-E0214 stored array of a three-wide element
+
+A stored array (a struct field or the element of a buffer) takes a scalar, a 2- or 4-wide vector, `Mat2`, `Mat4` or a struct of the module. `Vec3`, `IVec3`, `UVec3` and `Mat3` are refused as its element: their stride (16, or 48 for `Mat3`) differs from their size (12, or 36), so the array would not be the tight run of elements a `GpuPod` array promises (D17, the `ELEMENT_OK` rule of `[T; N]`). A local array of a 3-wide type is a value and stays accepted.
+Reached through `#[gpu]`.
+Rejected: `struct S { c: [Vec3; 4] }`, `RWStructuredBuffer<[Mat3; 2]>`.
+Write instead: `Vec4` with an unused lane, or one array per component.
+Fixture: `tests/ui/array-vec3-field` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D159 (M9 plan 2.4, slice m9.r2a).
+
+### GUST-E0215 array in a uniform
+
+A uniform does not hold an array: the std140 stride of an array element is rounded up to 16 bytes, which no `GpuPod` array promises, and D159 keeps uniform arrays out of scope. The rule covers `Uniform<[T; N]>`, a uniform struct with an array field, and a struct that such a uniform reaches through another struct field.
+Reached through `#[gpu]`.
+Rejected: `Uniform<[f32; 4]>`, `Uniform<P>` with `struct P { w: [f32; 4] }`, `ConstantBuffer<P>`.
+Write instead: separate scalar fields, or a storage buffer (`StructuredBuffer<P>`), which takes the array.
+Fixture: `tests/ui/array-uniform` (`cargo xtask check-ui`, `code: none` plus the message).
+Decision: D159 (M9 plan 2.4, slice m9.r2a).
+
 ### GUST-E0216 array length
 
 An array type `[T; N]` and a repeat `[e; N]` take `N` as an integer literal above zero, so the size is known when the macro runs. An array literal has at least one element.
+A stored array (a struct field or the element of a buffer) has a length the `GpuPod` impls cover: 1 to 32 and 64, 128, 256, 512, 1024, 2048 and 4096; any other length is refused there (slice m9.r2a).
 Reached through `#[gpu]`.
-Rejected: `[u32; 0]`, `[u32; N]` with a `const`, `[u32; 2 + 2]`, `[e; 0]`, `[e; M]`, `[]`.
-Write instead: a literal length, `[u32; 4]`.
-Fixture: `tests/ui/array-zero-len` and `tests/ui/array-const-len` (`cargo xtask check-ui`, `code: none` plus the message).
+Rejected: `[u32; 0]`, `[u32; N]` with a `const`, `[u32; 2 + 2]`, `[e; 0]`, `[e; M]`, `[]`., and as a stored array `struct S { a: [u32; 33] }`, `RWStructuredBuffer<[u32; 100]>`.
+Write instead: a literal length, `[u32; 4]`, and for a stored array a length of the set.
+Fixture: `tests/ui/array-zero-len`, `tests/ui/array-const-len`, `tests/ui/array-field-len` and `tests/ui/array-buffer-len` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D159 (M9 plan 2.4, slice m9.r1).
 
 ### GUST-E0217 array element type
@@ -454,7 +473,7 @@ An array holds a scalar, a vector, a matrix, or a struct or enum of the module. 
 Reached through `#[gpu]`.
 Rejected: `[[u32; 2]; 2]`, `[(u32, u32); 2]`, `[Option<u32>; 2]`, `[&u32; 2]`, `[[1u32, 2u32]; 2]`.
 Write instead: a struct with a field per column, or one array per row.
-Fixture: `tests/ui/array-nested` (`cargo xtask check-ui`, `code: none` plus the message).
+Fixture: `tests/ui/array-nested` and `tests/ui/array-in-field` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D159 (M9 plan 2.4, slice m9.r1).
 
 ## E03xx: expressions and calls
@@ -925,7 +944,7 @@ Forms that already match Rust stay accepted: `c.n += c.bump()`, `e.n /= e.bump()
 Reached through `#[gpu]`.
 Rejected: `for i in 0u32..c.next() { .. }`, `for i in c.n..c.next() { .. }`, `out[c.next()] = v;`, `out[c.next()] += v;`, `out[c.n] /= c.next();` (also `%=`, `^=`), `c.n *= c.bump();` (with a matrix in the module), when `next` and `bump` take `&mut self`.
 Write instead: call the method before the statement and use the value, `let n = c.next(); for i in 0u32..n { .. }` or `let k = c.next(); out[k] = v;`.
-Fixture: `tests/ui/for-bound-mutating`, `tests/ui/method-mutating-in-assignee`, `tests/ui/array-order-place` and `tests/ui/array-order-storage` (`cargo xtask check-ui`, `code: none` plus the message).
+Fixture: `tests/ui/for-bound-mutating`, `tests/ui/method-mutating-in-assignee`, `tests/ui/array-order-place` and `tests/ui/array-order-storage` and `tests/ui/array-order-field` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, spike M9.s0 P9, slice m9.a2).
 
 ## E05xx: Option and Result

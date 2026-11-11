@@ -1439,9 +1439,28 @@ sources non-negative and in range; these cases are not tested on the GPU.
 
 **Refused on purpose.** A nested array or an element that is a tuple, `Option`, `Result`, reference or resource
 (`GUST-E0217`); a slice type (`GUST-E0111`); `for x in a` (`GUST-E0409`); an array in a struct field, a buffer, a uniform
-or workgroup memory (`GUST-E0813`, as before this slice; a later slice admits them); an array as a tuple element
+or workgroup memory (`GUST-E0813` in this slice; m9.r2a admits struct fields and storage, below); an array as a tuple element
 (`GUST-E0213`); `==` and `!=` on arrays (`GUST-E0811`); a barrier inside a literal or an index (`GUST-E0327`) and a
 subgroup operation there (`GUST-E0747`).
 
 Tests: `crates/gust-wgpu/tests/m9_arrays.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257 invocations) and the macro tests
 in `crates/gust-macros/src/tests/regression.rs`.
+
+**Arrays in structs and storage (m9.r2a, D159).** A struct field `a: [T; N]` lowers to `T a[N];` and a buffer element
+`RWStructuredBuffer<[T; N]>` to `RWStructuredBuffer<T[N]>`. `N` is in the `GpuPod` set (1 to 32 and the powers of two from
+64 to 4096; another length is `GUST-E0216`) and `T` is a scalar, a 2- or 4-wide vector, `Mat2`, `Mat4` or a struct of the
+module (`Vec3`, `IVec3`, `UVec3` and `Mat3` are `GUST-E0214`; a nested array or non-value is `GUST-E0217`). The places
+`els[i].a[j]`, `cells[i][j]`, `els[i].a`, `cells[i]`, `s.a = t`, `let t: [T; N] = els[i].a;`, a literal for a field in a
+struct literal and `.len()` of a field or an element (its constant `N`) follow the rules above; `[e; N]` is not a struct
+field value (`GUST-E0811`). A struct with an array field must not leave implicit padding (`GUST-E0208`, the size of a
+field is `N` times the element). An array in a uniform (a direct element or a field of a struct a uniform reaches) is
+`GUST-E0215`; `Workgroup<[[T; N]; M]>` and `Workgroup<[S; M]>` stay `GUST-E0210`, and an atomic on an array element stays
+refused. `.len()` of a field name that two structs give two lengths (or an array and a non-array) is `GUST-E0306`.
+The `GUST-E0421` rule covers every indexed place, field arrays of storage elements and of locals included
+(`rows[c.n].a[1] = c.next()`): Slang 2026.21 reads the index first. The order cases that match Rust and are accepted are
+pinned by the GPU test: `m.ring[1] += m.bump()` (call first), `m.ring[1] = m.ring[1] + m.bump()` (left operand first),
+`m.ring = [m.bump(), ..]`, `[m.ring[0], m.bump(), m.ring[1], m.bump()]` and `f(m.ring[1], m.bump())`.
+Limitations: `==` and `!=` on array fields are not diagnosed by GUST and fail in `slangc`; an out-of-range dynamic index
+on a stored array is not checked (the CPU twin panics, the GPU clamps or reads garbage by the target's rules, the same as
+a buffer index). Tests: `crates/gust-wgpu/tests/m9_arrays_storage.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257) and the
+`naga_layout` table.

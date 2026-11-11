@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: array-buffer-len/src/main.rs
+line: 6
+message: [GUST-E0216] an array that is the element of a buffer has one of the lengths 1 to 32 and 64, 128, 256, 512, 1024, 2048 and 4096, the ones `GpuPod` is implemented for, and `100` is none of them: use one of those lengths, or keep the longer array in a buffer of its own elements (a local array may have any length above zero)

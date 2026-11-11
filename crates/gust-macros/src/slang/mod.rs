@@ -201,12 +201,109 @@ pub(crate) fn array_lengths(
             *entry = None;
         }
     }
+    // A storage parameter whose element is an array, `out: RWStructuredBuffer<[T; N]>`: `out[i].len()` is `N`. The
+    // key `out[]` cannot be an identifier, so it never meets the length of the buffer itself (`out.len()`) or an array
+    // local of the same name (slice m9.r2a).
+    for input in inputs {
+        let syn::FnArg::Typed(argument) = input else {
+            continue;
+        };
+        let syn::Pat::Ident(name) = argument.pat.as_ref() else {
+            continue;
+        };
+        if matches!(
+            parameter_flavor(&argument.ty),
+            ParameterFlavor::StorageRead | ParameterFlavor::StorageReadWrite
+        ) && let Ok(element) = wrapper_element_type(&argument.ty)
+            && let syn::Type::Array(array) = unparenthesized_type(element)
+            && let Some(length) = array_length_literal(&array.len)
+        {
+            arrays.insert(format!("{}[]", name.ident.unraw()), Some(length));
+        }
+    }
     arrays
+}
+
+/// The array fields of the module's structs with their length, by field name: `Some(n)` when every field of the name
+/// is `[T; n]` in every struct that has one, `None` when two structs give the name another length or some field of the
+/// name is no array. A name no struct gives an array to is absent. The macro sees no types, so `s.items.len()` is
+/// judged by the field name alone, as a method call is judged by its name (slice m9.r2a). The validator and the emitter
+/// both ask it.
+pub(crate) fn array_field_lengths(
+    items: &[syn::Item],
+) -> std::collections::HashMap<String, Option<u32>> {
+    let mut lengths: std::collections::HashMap<String, Option<u32>> =
+        std::collections::HashMap::new();
+    let mut with_array: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for item in items {
+        let syn::Item::Struct(item) = item else {
+            continue;
+        };
+        let syn::Fields::Named(fields) = &item.fields else {
+            continue;
+        };
+        for field in &fields.named {
+            let Some(name) = &field.ident else {
+                continue;
+            };
+            let length = match unparenthesized_type(&field.ty) {
+                syn::Type::Array(array) => array_length_literal(&array.len),
+                _ => None,
+            };
+            let key = name.unraw().to_string();
+            if matches!(unparenthesized_type(&field.ty), syn::Type::Array(_)) {
+                with_array.insert(key.clone());
+            }
+            match (lengths.get(&key).copied(), length) {
+                (None, length) => {
+                    lengths.insert(key, length);
+                }
+                (Some(Some(known)), Some(length)) if known == length => {}
+                (Some(_), _) => {
+                    lengths.insert(key, None);
+                }
+            }
+        }
+    }
+    lengths.retain(|name, _| with_array.contains(name));
+    lengths
+}
+
+/// What the tables know of the array a place holds, for `place.len()` (slice m9.r2a): the outer `None` says the place
+/// is no array the tables can name, `Some(None)` that the name is ambiguous (two bindings or two structs disagree).
+/// A name is a local or parameter array (`a`), a field is judged by its name (`s.items`, `self.items`,
+/// `els[i].items`), and an element of a storage parameter whose element is an array is `out[i]` (`out[]` in `locals`).
+pub(crate) fn array_place_length(
+    place: &syn::Expr,
+    locals: &std::collections::HashMap<String, Option<u32>>,
+    fields: &std::collections::HashMap<String, Option<u32>>,
+) -> Option<Option<u32>> {
+    match unparenthesized_expr(place) {
+        syn::Expr::Path(path) if path.qself.is_none() => {
+            let name = path.path.get_ident()?.unraw().to_string();
+            locals.get(&name).copied()
+        }
+        syn::Expr::Field(field) => match &field.member {
+            syn::Member::Named(name) => fields.get(&name.unraw().to_string()).copied(),
+            syn::Member::Unnamed(_) => None,
+        },
+        syn::Expr::Index(index) => {
+            let syn::Expr::Path(path) = unparenthesized_expr(&index.expr) else {
+                return None;
+            };
+            let name = path.path.get_ident()?.unraw().to_string();
+            locals.get(&format!("{name}[]")).copied()
+        }
+        _ => None,
+    }
 }
 
 thread_local! {
     /// The array names of the function being emitted and their lengths (see [`array_lengths`]), for `a.len()`.
     static ARRAY_LENGTHS: std::cell::RefCell<std::collections::HashMap<String, Option<u32>>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    /// The array fields of the module being emitted and their lengths (see [`array_field_lengths`]), for `s.a.len()`.
+    static ARRAY_FIELDS: std::cell::RefCell<std::collections::HashMap<String, Option<u32>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     /// Whether the next array literal to be emitted stands in a position that has a lowering (see
     /// [`emit_value_expression`]). The literal's own arm consumes it, so it cannot reach another expression.
@@ -226,6 +323,29 @@ impl Drop for ArrayScope {
     fn drop(&mut self) {
         ARRAY_LENGTHS.with(|cell| *cell.borrow_mut() = std::mem::take(&mut self.0));
     }
+}
+
+/// Sets [`ARRAY_FIELDS`] for the emission of one module and restores the previous table when dropped.
+struct FieldScope(std::collections::HashMap<String, Option<u32>>);
+
+impl FieldScope {
+    fn enter(next: std::collections::HashMap<String, Option<u32>>) -> Self {
+        Self(ARRAY_FIELDS.with(|cell| cell.replace(next)))
+    }
+}
+
+impl Drop for FieldScope {
+    fn drop(&mut self) {
+        ARRAY_FIELDS.with(|cell| *cell.borrow_mut() = std::mem::take(&mut self.0));
+    }
+}
+
+/// The length `place.len()` is, when the tables of the function and of the module name the array `place` holds.
+fn array_place_length_of(place: &syn::Expr) -> Option<u32> {
+    ARRAY_LENGTHS.with(|locals| {
+        ARRAY_FIELDS
+            .with(|fields| array_place_length(place, &locals.borrow(), &fields.borrow()).flatten())
+    })
 }
 
 /// The length of the array a name holds, when every binding of the name in the function agrees.
@@ -541,6 +661,8 @@ pub(crate) fn emit_kernel_in(
     let (_, items) = module.content.as_ref().expect("validated inline module");
     let lowering = module_lowering(module);
     let _scope = LoweringScope::enter(lowering);
+    // The array fields of the module's structs, for `s.items.len()` in the kernel, the helpers and the methods.
+    let _fields = FieldScope::enter(array_field_lengths(items));
     let mut output = String::new();
     let mut table = LineTable::default();
     writeln!(
@@ -731,7 +853,9 @@ pub(crate) fn emit_kernel_in(
                 let element_type = if atomic.0.contains(&name) {
                     format!("Atomic<{}>", emit_type(element)?)
                 } else {
-                    emit_type(element)?
+                    // A buffer of arrays is `StructuredBuffer<T[N]>` (slice m9.r2a); the validator checked the length
+                    // and the element before this point.
+                    emit_value_type(element)?
                 };
                 writeln!(
                     output,
@@ -1249,6 +1373,18 @@ fn emit_struct(
     };
     for field in &fields.named {
         let name = emit_ident(field.ident.as_ref().expect("named field"));
+        // A stored array is `T name[N];` in Slang (slice m9.r2a); the validator checked the length and the element.
+        if let syn::Type::Array(array) = unparenthesized_type(&field.ty) {
+            let length = array_length_literal(&array.len).ok_or_else(|| {
+                diagnostics::error(
+                    Code::ArrayLength,
+                    &array.len,
+                    "an array length is an integer literal greater than zero",
+                )
+            })?;
+            writeln!(output, "    {} {name}[{length}];", emit_type(&array.elem)?).unwrap();
+            continue;
+        }
         writeln!(output, "    {} {name};", emit_type(&field.ty)?).unwrap();
     }
     // `Self` in the body of a method is this struct (slice m9.a2).
@@ -1689,7 +1825,9 @@ fn emit_struct_assign(
         writeln!(
             output,
             "{padding}{target}.{name} = {};",
-            emit_expression(&field.expr)?
+            // An array literal is a field value with a lowering (`tmp.items = { .. }`, slice m9.r2a); any other
+            // expression goes through `emit_expression` as before.
+            emit_value_expression(&field.expr)?
         )
         .unwrap();
     }
@@ -2151,8 +2289,9 @@ fn emit_expression(expression: &syn::Expr) -> syn::Result<String> {
         }
         syn::Expr::MethodCall(call) if call.method == "len" => {
             // The length of an array is its `N` (slice m9.r1); the length of a storage parameter is a constant of the
-            // dispatch.
-            if let Some(length) = array_length_of(unparenthesized_expr(&call.receiver)) {
+            // dispatch. An array field (`s.items.len()`) and an array element of a buffer (`out[i].len()`) are judged by
+            // the tables of the module and of the kernel (slice m9.r2a).
+            if let Some(length) = array_place_length_of(&call.receiver) {
                 return Ok(length.to_string());
             }
             let receiver = emit_expression(&call.receiver)?;

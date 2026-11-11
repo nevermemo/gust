@@ -1208,8 +1208,8 @@ Booleans are expression values, not host-shareable `GpuPod` fields. A buffer ele
 4-wide vector, a 2x2 or 4x4 matrix or a struct of these. `StorageV2` describes the padding that natural alignment
 implies, but a `GpuPod` type is the padding-free subset, so a struct with implicit padding is E0208 and no
 uninitialised byte is uploaded. A uniform is a `Std140V1` struct whose padding is written as fields (E0209) and holds
-no `Mat2` (E0205). 3-wide vectors and `Mat3` are not buffer elements (E0204), and neither are arrays: `[T; N]`
-does not implement `GpuPod`, so rustc refuses one (no test pins this). Since m7.lv (D116) the macro also writes these
+no `Mat2` (E0205). 3-wide vectors and `Mat3` are not buffer elements (E0204). An array `[T; N]` is a buffer element or a struct field (storage only; see E0214, E0215 and E0216 in docs/DIAGNOSTICS.md); `GpuPod` is implemented for
+`[T; N]` with the lengths of that set. Since m7.lv (D116) the macro also writes these
 layouts into the export record, `storage_v2` for an element that holds a vector or a matrix and `std140_v1` for a
 uniform, and `cargo gust build` and `check` compare each with the reflection (a layout the macro cannot describe, an
 alias or a type from outside the module, is filled from the reflection and listed in `export_unchecked` instead);

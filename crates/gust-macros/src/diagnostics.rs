@@ -141,8 +141,15 @@ codes! {
     /// A tuple outside the shape the dialect lowers: not 2 to 8 elements, an element that is not a scalar, vector,
     /// matrix, struct, enum or tuple, a comparison of tuples, or a tuple as an `Option` or `Result` payload.
     TupleShape = 213 => "GUST-E0213";
+    /// A stored array (a struct field or a buffer element) whose element is a 3-wide vector or a `Mat3`: its std430
+    /// stride (16 or 48) differs from its Rust size, so no Rust array matches the buffer.
+    ArrayStride = 214 => "GUST-E0214";
+    /// An array in a uniform: a uniform element that is or holds an array, or a field array of a struct a uniform
+    /// reaches (std140 rounds the stride of an array up to 16).
+    ArrayInUniform = 215 => "GUST-E0215";
     /// An array length that is not an integer literal greater than zero (`[T; 0]`, `[T; N]` with a name or an
-    /// expression for `N`, `[]`).
+    /// expression for `N`, `[]`), or the length of a stored array (a struct field or a buffer element) that has no
+    /// `GpuPod` impl.
     ArrayLength = 216 => "GUST-E0216";
     /// An array element that is itself an array (`[[T; N]; M]`), or not a scalar, vector, matrix, struct or enum of the
     /// module (a tuple, `Option`, `Result`, reference or resource).

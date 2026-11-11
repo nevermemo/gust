@@ -24,6 +24,10 @@ pub(super) struct Cl {
     pub params: Vec<Ty>,
     /// Whether each parameter is `mut` (a struct or array the body may write).
     pub muts: Vec<bool>,
+    /// Whether the body writes each aggregate parameter (the post-call read of a caller variable can show a difference).
+    pub writes: Vec<bool>,
+    /// Whether each integer parameter enters an integer result with a weight of its own (the order of two arguments shows).
+    pub weighted: Vec<bool>,
     pub ret: Ty,
 }
 
@@ -140,21 +144,69 @@ impl Gen<'_> {
         self.this = saved_this;
         self.cur_ret = saved_ret;
         let var = self.fresh();
-        self.cls.push(Cl {
+        self.bind_closure(ClosureDef {
             var,
-            params: params.iter().map(|p| p.1).collect(),
-            muts: params.iter().map(|p| p.2).collect(),
+            params,
             ret,
-        });
-        Stmt::LetClosure {
-            def: Box::new(ClosureDef {
-                var,
-                params,
-                ret,
-                body,
-                tail,
-            }),
+            body,
+            tail,
+        })
+    }
+
+    /// The closure space ends its method table with a counter for every struct that has an integer field:
+    /// `fn mK(&mut self) -> uint { self.fJ = (self.fJ & 255) + 1; self.fJ }`. Its results differ from call to call, so
+    /// two calls on one root show their order (a closure's arguments `c.mK()`, `c.mK()`), without drawing anything
+    /// from the generator's stream.
+    pub(super) fn counter_methods(&mut self) {
+        for j in 0..self.table.structs.len() {
+            let Some(k) = self.table.structs[j]
+                .fields
+                .iter()
+                .position(|f| matches!(f, Ty::U32 | Ty::I32))
+            else {
+                continue;
+            };
+            let fty = self.table.structs[j].fields[k];
+            let sty = Ty::Struct(j as u8);
+            let mut place = Place::this(sty);
+            place.path.push(k as u8);
+            let masked = Expr::bin(
+                BinOp::BitAnd,
+                Expr::Read {
+                    place: place.clone(),
+                    ty: fty,
+                },
+                Expr::Lit(fty, 255),
+            );
+            let value = Expr::bin(BinOp::Add, masked, Expr::Lit(fty, 1));
+            self.table.fns.push(crate::ast::FnDef {
+                owner: Some(j as u8),
+                recv: Recv::Mut,
+                params: Vec::new(),
+                ret: Some(fty),
+                body: vec![Stmt::Set {
+                    place: place.clone(),
+                    ty: fty,
+                    op: None,
+                    value,
+                }],
+                tail: Some(Expr::Read { place, ty: fty }),
+            });
         }
+    }
+
+    /// Registers `def` as a closure in reach and returns its binding statement.
+    pub(super) fn bind_closure(&mut self, def: ClosureDef) -> Stmt {
+        let info = crate::ast::closure_info(&self.table, &def);
+        self.cls.push(Cl {
+            var: def.var,
+            params: def.params.iter().map(|p| p.1).collect(),
+            muts: def.params.iter().map(|p| p.2).collect(),
+            writes: info.writes,
+            weighted: info.weighted,
+            ret: def.ret,
+        });
+        Stmt::LetClosure { def: Box::new(def) }
     }
 
     /// A scalar result type and its tail: the array reads of the written parameters fold into an integer or `bool` one.
@@ -169,7 +221,7 @@ impl Gen<'_> {
             .filter(|p| matches!(p.1, Ty::U32 | Ty::I32))
             .collect();
         for (k, (var, pty)) in ints.into_iter().enumerate().take(3) {
-            if self.b.chance(85) {
+            if self.b.chance(95) {
                 let masked = Expr::bin(BinOp::BitAnd, Expr::Var(var, pty), Expr::Lit(pty, 255));
                 let weighted = Expr::bin(BinOp::Mul, masked, Expr::Lit(pty, 2 * k as u32 + 1));
                 value = fold_in(value, weighted);
@@ -296,10 +348,17 @@ impl Gen<'_> {
     /// expression by a read of that variable: `f(v) + v.f0`. The call runs first, so the read shows whether the callee
     /// changed the caller's value (it must not: the parameter is a copy).
     pub(super) fn closure_observed_call(&mut self, ty: Ty, depth: u32) -> Option<Expr> {
+        // The read joins the call with a `^` (no short circuit, no dropped arm): an integer result and an integer read.
+        if !matches!(ty, Ty::U32 | Ty::I32) {
+            return None;
+        }
         let mut options: Vec<(Cl, usize, u32)> = Vec::new();
         for cl in self.cls.iter().filter(|c| c.ret == ty) {
             for (slot, pty) in cl.params.iter().enumerate() {
-                if !cl.muts[slot] || !matches!(pty, Ty::Struct(_) | Ty::Array(_)) {
+                if !cl.muts[slot]
+                    || !cl.writes[slot]
+                    || !matches!(pty, Ty::Struct(_) | Ty::Array(_))
+                {
                     continue;
                 }
                 for &(var, vty, _) in &self.scope {
@@ -319,7 +378,7 @@ impl Gen<'_> {
                 let k = self.table.structs[usize::from(j)]
                     .fields
                     .iter()
-                    .position(|f| matches!(f, Ty::U32 | Ty::I32 | Ty::Bool))?;
+                    .position(|f| matches!(f, Ty::U32 | Ty::I32))?;
                 let fty = self.table.structs[usize::from(j)].fields[k];
                 Expr::Read {
                     place: Place::var(var, pty).field(k as u8),
@@ -378,7 +437,14 @@ impl Gen<'_> {
         }
         let r = calls.pop()?;
         let l = calls.pop()?;
-        let op = [BinOp::BitXor, BinOp::Add, BinOp::Sub, BinOp::BitOr][self.b.below(4) as usize];
+        // Mostly a combination that is not symmetric in the two calls (`l ^ ((r & 255) * 3)`), so that the order of the
+        // calls shows in the value and not only the number of body runs; sometimes the symmetric `^` and `|`.
+        if self.b.chance(75) {
+            let masked = Expr::bin(BinOp::BitAnd, r, Expr::Lit(ty, 255));
+            let scaled = Expr::bin(BinOp::Mul, masked, Expr::Lit(ty, 3));
+            return Some(Expr::bin(BinOp::BitXor, l, scaled));
+        }
+        let op = [BinOp::BitXor, BinOp::BitOr][self.b.below(2) as usize];
         Some(Expr::bin(op, l, r))
     }
 
@@ -402,8 +468,6 @@ impl Gen<'_> {
         };
         let args = self.closure_args(&cl, 3, &bias)?;
         let var = self.fresh();
-        self.uniform.push(var);
-        self.equal.push(var);
         self.scope.push((var, cl.ret, false));
         arrays.push((var, aty));
         Some(Stmt::Let {
@@ -418,6 +482,167 @@ impl Gen<'_> {
         })
     }
 
+    /// Kernel-start probes (fix round 1 of m9.d1e): a closure of two weighted integer parameters, and a closure that
+    /// writes a struct parameter. The end of the kernel calls them in the forms the order and by-value rules show in
+    /// (`closure_probe_calls`), so that a wrong argument order or a parameter passed by reference changes the output of
+    /// many closure programs, not of a few.
+    pub(super) fn closure_probe_lets(&mut self, body: &mut Vec<Stmt>) {
+        if self.b.chance(88) {
+            let tys = [Ty::U32, Ty::I32];
+            let pa = tys[self.b.below(2) as usize];
+            let pb = tys[self.b.below(2) as usize];
+            let ret = tys[self.b.below(2) as usize];
+            let (a, b) = (self.fresh(), self.fresh());
+            let term = |var: u32, ty: Ty, weight: u32| {
+                let masked = Expr::bin(BinOp::BitAnd, Expr::Var(var, ty), Expr::Lit(ty, 255));
+                let weighted = Expr::bin(BinOp::Mul, masked, Expr::Lit(ty, weight));
+                if ty == ret {
+                    weighted
+                } else {
+                    Expr::cast(ret, weighted)
+                }
+            };
+            let tail = Expr::bin(BinOp::BitXor, term(a, pa, 1), term(b, pb, 3));
+            let var = self.fresh();
+            let stmt = self.bind_closure(ClosureDef {
+                var,
+                params: vec![(a, pa, false), (b, pb, false)],
+                ret,
+                body: Vec::new(),
+                tail,
+            });
+            body.push(stmt);
+        }
+        if self.b.chance(85) {
+            let mut options: Vec<(u32, Ty, u8, Ty)> = Vec::new();
+            for &(var, vty, _) in &self.scope {
+                if let Ty::Struct(j) = vty {
+                    for (k, f) in self.table.structs[usize::from(j)].fields.iter().enumerate() {
+                        if matches!(f, Ty::U32 | Ty::I32) {
+                            options.push((var, vty, k as u8, *f));
+                        }
+                    }
+                }
+            }
+            if !options.is_empty() {
+                let (sv, sty, k, fty) = options[self.b.below(options.len() as u32) as usize];
+                let p = self.fresh();
+                let place = Place::var(p, sty).field(k);
+                let set = Stmt::Set {
+                    place: place.clone(),
+                    ty: fty,
+                    op: Some(BinOp::BitXor),
+                    value: Expr::Lit(fty, 1),
+                };
+                let tail = Expr::Read { place, ty: fty };
+                let var = self.fresh();
+                let stmt = self.bind_closure(ClosureDef {
+                    var,
+                    params: vec![(p, sty, true)],
+                    ret: fty,
+                    body: vec![set],
+                    tail,
+                });
+                self.probe_writers.push((var, sv, k, fty));
+                body.push(stmt);
+            }
+        }
+    }
+
+    /// The arguments of a probe call: an integer parameter is a `&mut self` call on `root` (of either integer type, cast
+    /// to the parameter's), the others ordinary.
+    fn probe_args(&mut self, cl: &Cl, root: Root) -> Vec<Expr> {
+        let mut args = Vec::new();
+        for (slot, &pty) in cl.params.iter().enumerate() {
+            let arg = match pty {
+                Ty::U32 | Ty::I32 if cl.weighted[slot] => {
+                    let other = if pty == Ty::U32 { Ty::I32 } else { Ty::U32 };
+                    match self.root_call(pty, root, 2) {
+                        Some(call) => call,
+                        None => match self.root_call(other, root, 2) {
+                            Some(call) => Expr::cast(pty, call),
+                            None => self.expr(pty, 2),
+                        },
+                    }
+                }
+                scalar => self.expr(scalar, 2),
+            };
+            args.push(arg);
+        }
+        args
+    }
+
+    /// The probe calls of the end of the kernel: `f(c.bump(), c.bump())` on the two-parameter closure (both arguments
+    /// call `&mut self` on one root, retried until they do), and `g(v) ^ v.k` on the writer closure (the post-call
+    /// read of the caller's variable joins the result with a `^`, which does not short-circuit).
+    pub(super) fn closure_probe_calls(&mut self) -> Vec<Expr> {
+        let mut out = Vec::new();
+        let ordered: Vec<Cl> = self
+            .cls
+            .iter()
+            .filter(|c| {
+                matches!(c.ret, Ty::U32 | Ty::I32)
+                    && c.params.iter().all(|p| matches!(p, Ty::U32 | Ty::I32))
+                    && c.weighted.iter().filter(|w| **w).count() >= 2
+            })
+            .cloned()
+            .collect();
+        if !ordered.is_empty() && self.b.chance(90) {
+            let cl = ordered[self.b.below(ordered.len() as u32) as usize].clone();
+            for _ in 0..10 {
+                let Some(root) = self.bias_root() else { break };
+                let args = self.probe_args(&cl, root);
+                let roots: Vec<Vec<Root>> = args
+                    .iter()
+                    .map(|arg| {
+                        let mut r = Vec::new();
+                        crate::ast::mutating_roots(&self.table, arg, &mut r);
+                        r
+                    })
+                    .collect();
+                let both = (0..args.len()).any(|a| {
+                    cl.weighted[a]
+                        && ((a + 1)..args.len()).any(|b| {
+                            cl.weighted[b] && roots[a].iter().any(|r| roots[b].contains(r))
+                        })
+                });
+                if both {
+                    out.push(Expr::ClosureCall {
+                        var: cl.var,
+                        args,
+                        ty: cl.ret,
+                    });
+                    break;
+                }
+            }
+        }
+        let writers: Vec<(u32, u32, u8, Ty)> = self
+            .probe_writers
+            .iter()
+            .copied()
+            .filter(|w| {
+                self.cls.iter().any(|c| c.var == w.0) && self.scope.iter().any(|(v, ..)| *v == w.1)
+            })
+            .collect();
+        if !writers.is_empty() && self.b.chance(90) {
+            let (var, sv, k, fty) = writers[self.b.below(writers.len() as u32) as usize];
+            let sty = self.scope.iter().find(|s| s.0 == sv).map(|s| s.1);
+            if let Some(sty) = sty {
+                let call = Expr::ClosureCall {
+                    var,
+                    args: vec![Expr::Var(sv, sty)],
+                    ty: fty,
+                };
+                let read = Expr::Read {
+                    place: Place::var(sv, sty).field(k),
+                    ty: fty,
+                };
+                out.push(Expr::bin(BinOp::BitXor, call, read));
+            }
+        }
+        out
+    }
+
     /// Puts the closures bound at the top level of `body` back in reach (the block drawing popped them), as the array
     /// section and the result draw need.
     pub(super) fn restore_closures(&mut self, body: &[Stmt]) {
@@ -425,10 +650,13 @@ impl Gen<'_> {
             if let Stmt::LetClosure { def } = stmt
                 && !self.cls.iter().any(|c| c.var == def.var)
             {
+                let info = crate::ast::closure_info(&self.table, def);
                 self.cls.push(Cl {
                     var: def.var,
                     params: def.params.iter().map(|p| p.1).collect(),
                     muts: def.params.iter().map(|p| p.2).collect(),
+                    writes: info.writes,
+                    weighted: info.weighted,
                     ret: def.ret,
                 });
             }

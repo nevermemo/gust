@@ -175,7 +175,7 @@ impl Gen<'_> {
                 if let Some(root) = bias
                     && self.closures
                     && !self.cls.is_empty()
-                    && self.b.chance(40)
+                    && self.b.chance(70)
                     && let Some(call) = self.closure_call(ty, 2, Some(root))
                 {
                     return call;
@@ -237,7 +237,14 @@ impl Gen<'_> {
     /// repeat. With a bias root, the elements are often calls on that one root, left to right.
     fn array_value(&mut self, aty: ArrTy, top: bool, bias: Option<Root>) -> Expr {
         let ty = Ty::Array(aty);
-        if top && !matches!(aty.e, Elem::Struct(_)) && self.b.chance(28) {
+        if top
+            && !matches!(aty.e, Elem::Struct(_))
+            && self.b.chance(match (bias.is_some(), self.closures) {
+                (true, true) => 55,
+                (true, false) => 40,
+                _ => 28,
+            })
+        {
             let element = self.array_elem_value(aty.e, bias);
             return Expr::Repeat {
                 ty,
@@ -292,6 +299,13 @@ impl Gen<'_> {
                         Expr::bin(BinOp::BitAnd, self.expr(elem, 2), Expr::Lit(elem, 0xFF)),
                     ),
                 };
+                // E0421: `^=` on an indexed place refuses a value with a `&mut self` call (the counter methods of the
+                // closure space make such a value likely).
+                let op = match op {
+                    Some(BinOp::BitXor) if self.has_mut_call(&value) => Some(BinOp::BitOr),
+                    other => other,
+                };
+                let (place, value) = self.guard_set(var, aty, &[], elem, op, place, value);
                 body.push(Stmt::Set {
                     place,
                     ty: elem,
@@ -333,8 +347,9 @@ impl Gen<'_> {
             return None;
         }
         let f = candidates[self.b.below(candidates.len() as u32) as usize];
+        // A literal `at` (the index the place of the set also takes) keeps the call and the place on one element.
         let index = match at {
-            Some(at) if !self.driver_hole_calls(var, aty) => at,
+            Some(at @ Expr::Lit(..)) => at,
             _ => self.call_index(var, aty),
         };
         let recv = Self::elem_place(var, aty, index, &[]);
@@ -348,18 +363,11 @@ impl Gen<'_> {
         })
     }
 
-    /// Whether array local `var` is in the known driver hole (plans/m9/arrbug.md, D168): it may hold one value in
-    /// every element and its length is not 2 or 4.
-    fn driver_hole_array(&self, var: u32, aty: ArrTy) -> bool {
-        !matches!(aty.n, 2 | 4) && self.uniform.contains(&var)
-    }
-
-    /// `operand` for `place op= operand` made provably not the identity of `op` at run time, for an array in the
-    /// driver hole. `+= -= ^=` take `v | 1` (never 0: a non-zero addend or an odd mask changes every value), `<<= >>=`
+    /// `operand` for `place op= operand` made provably not the identity of `op` at run time (see `guard_set`). `+= -= ^=` take `v | 1` (never 0: a non-zero addend or an odd mask changes every value), `<<= >>=`
     /// take `(v & 31) | 1` (1 to 31) and `*= /=` take `v | 2` (never 0 or 1); these leave an element unchanged only for
     /// special values (0, or -1 under an `i32` `>>`) that the driver cannot prove for a runtime element. `|= &= %=` are
     /// not rewritten: an element with known bits or range can be provably unchanged by them (`(c | 1) | 1`,
-    /// `(c & 0xFE) & !1`, `(c & 7) % 9`), so `array_set_stmt` gives them a literal index instead.
+    /// `(c & 0xFE) & !1`, `(c & 7) % 9`), so `guard_set` gives them a literal index instead.
     fn non_identity(op: BinOp, v: Expr, ty: Ty) -> Expr {
         match op {
             BinOp::Add | BinOp::Sub | BinOp::BitXor => Expr::bin(BinOp::BitOr, v, Expr::Lit(ty, 1)),
@@ -373,21 +381,51 @@ impl Gen<'_> {
         }
     }
 
-    /// Whether array local `var` is in the narrow form of the hole, for element method calls: it holds a repeat, an
-    /// equal-element literal, a copy of one or a call result, and its length is not 2 or 4 (a fresh distinct element
-    /// is neither one value nor a provably unchanged write-back).
-    fn driver_hole_calls(&self, var: u32, aty: ArrTy) -> bool {
-        !matches!(aty.n, 2 | 4) && self.equal.contains(&var)
+    /// The known driver hole (plans/m9/arrbug.md and arrbug2.md, D168, D169; NVIDIA 610.88): a load and store-back of
+    /// an unchanged value at a dynamic index into any function-local array (any length, uniform or not) can zero
+    /// elements. `place op= value` at a dynamic index therefore gets a provably non-identity operand for
+    /// `+= -= ^= <<= >>= *= /=` (every operand: a call or `%` that folds to 0 after inlining triggered it) and a
+    /// literal index for `|= &= %=`; a plain set that stores the place's own value back at a dynamic index takes a
+    /// literal value instead. A literal index is never in the hole. Removed when a driver fixes it.
+    #[allow(clippy::too_many_arguments)]
+    fn guard_set(
+        &mut self,
+        var: u32,
+        aty: ArrTy,
+        path: &[u8],
+        ty: Ty,
+        op: Option<BinOp>,
+        place: Place,
+        value: Expr,
+    ) -> (Place, Expr) {
+        if matches!(place.index.as_deref(), Some(Expr::Lit(..))) {
+            return (place, value);
+        }
+        match op {
+            Some(BinOp::BitOr | BinOp::BitAnd | BinOp::Rem) => (
+                Self::elem_place(var, aty, Expr::u32(self.b.below(u32::from(aty.n))), path),
+                value,
+            ),
+            Some(o) => (place, Self::non_identity(o, value, ty)),
+            None => {
+                let mut inner = &value;
+                while let Expr::Cast { e, .. } = inner {
+                    inner = e;
+                }
+                if matches!(inner, Expr::Read { place: p, .. } if *p == place) {
+                    let lit = if ty == Ty::Bool { 1 } else { 5 };
+                    (place, Expr::Lit(ty, lit))
+                } else {
+                    (place, value)
+                }
+            }
+        }
     }
 
-    /// An element index for a `&mut self` call on element of array `var`: a literal in the narrow hole (the call's
-    /// write-back of `self` is a copy store), else any index.
-    fn call_index(&mut self, var: u32, aty: ArrTy) -> Expr {
-        if self.driver_hole_calls(var, aty) {
-            Expr::u32(self.b.below(u32::from(aty.n)))
-        } else {
-            self.array_index(aty.n)
-        }
+    /// An element index for a `&mut self` call on element of array `var`: always a literal (D168, D169: the call's
+    /// write-back of `self` is a copy store, which the NVIDIA driver loses at a dynamic index on any local array).
+    fn call_index(&mut self, _var: u32, aty: ArrTy) -> Expr {
+        Expr::u32(self.b.below(u32::from(aty.n)))
     }
 
     /// Whether `e` holds a `&mut self` call.
@@ -470,7 +508,10 @@ impl Gen<'_> {
             _ => return None,
         };
         let index = self.array_index(aty.n);
-        let same_index = index.clone();
+        // The element a call in the value and the place share: a literal (a call at a dynamic index is in the D168/D169
+        // hole, so the place takes the call's literal rather than the call taking the place's dynamic index).
+        let same_index = Expr::u32(self.b.below(u32::from(aty.n)));
+        let mut same = false;
         let place = Self::elem_place(var, aty, index, &path);
         let (op, value) = if ty == Ty::Bool {
             (None, self.expr(Ty::Bool, 3))
@@ -500,6 +541,7 @@ impl Gen<'_> {
             // read after the value, so the order shows.
             let biased = if self.b.chance(85) && matches!(aty.e, Elem::Struct(_)) {
                 let at = self.b.chance(80).then(|| same_index.clone());
+                same = at.is_some();
                 // The closure space: the call is a closure's, with arguments that call the array's own elements.
                 let via = if self.closures && !self.cls.is_empty() && self.b.chance(35) {
                     self.closure_call_with(value_ty, 3, &super::ArgBias::Elem(var, aty, at.clone()))
@@ -534,30 +576,18 @@ impl Gen<'_> {
             }
             other => other,
         };
+        let place = if same {
+            Self::elem_place(var, aty, same_index.clone(), &path)
+        } else {
+            place
+        };
         // `x % a.len()` names the array: only when the value calls nothing on it (`reject_stale_index`).
         let place = if self.b.chance(18) && !self.has_mut_call_on(&value, Root::Var(var)) {
             Self::elem_place(var, aty, Self::array_len_index(var, aty), &path)
         } else {
             place
         };
-        // Known driver hole (plans/m9/arrbug.md, D168, NVIDIA 610.88): a compound set at a dynamic index into a local
-        // array of length other than 2 or 4 that may hold one value in every element can lose element 0 when the
-        // operand is an identity the driver folds. For `+= -= ^= *= /= <<= >>=` the index stays dynamic and the operand
-        // is made not the identity of its operator (`non_identity`). For `|= &= %=` it is not: an element with known
-        // bits or range (`c | 1`, `c & 0xFE`, `c & 7`) can be provably unchanged by `| 1`, `& !1` or `% 9`, so the index
-        // is a literal. Removed when a driver fixes it.
-        let (place, value) = match op {
-            Some(BinOp::BitOr | BinOp::BitAnd | BinOp::Rem) if self.driver_hole_array(var, aty) => {
-                (
-                    Self::elem_place(var, aty, Expr::u32(self.b.below(u32::from(aty.n))), &path),
-                    value,
-                )
-            }
-            Some(o) if self.driver_hole_array(var, aty) => {
-                (place, Self::non_identity(o, value, ty))
-            }
-            _ => (place, value),
-        };
+        let (place, value) = self.guard_set(var, aty, &path, ty, op, place, value);
         Some(Stmt::Set {
             place,
             ty,
@@ -613,7 +643,6 @@ impl Gen<'_> {
             let (pre_mark, at) = (self.pre.len(), body.len());
             let init = self.array_value(aty, true, bias);
             let var = self.fresh();
-            self.note_uniform(var, &init);
             self.scope.push((var, Ty::Array(aty), false));
             body.push(Stmt::Let {
                 var,
@@ -713,33 +742,6 @@ impl Gen<'_> {
         ))
     }
 
-    /// Records whether array local `var`, initialised or assigned `init`, may hold one value in every element.
-    fn note_uniform(&mut self, var: u32, init: &Expr) {
-        self.uniform.retain(|v| *v != var);
-        self.equal.retain(|v| *v != var);
-        let (narrow, wide) = match init {
-            Expr::Repeat { .. } => (true, true),
-            // Equal elements: the narrow form. Any element that is not a plain literal widens it for scalar compound
-            // sets only (`[x, x + 0, x]` may fold to one value).
-            Expr::ArrayLit { elems, .. } => {
-                let equal = elems.windows(2).all(|w| w[0] == w[1]);
-                (
-                    equal,
-                    equal || elems.iter().any(|e| !matches!(e, Expr::Lit(..))),
-                )
-            }
-            Expr::Var(src, _) => (self.equal.contains(src), self.uniform.contains(src)),
-            // A call result is unknown.
-            _ => (true, true),
-        };
-        if narrow {
-            self.equal.push(var);
-        }
-        if wide {
-            self.uniform.push(var);
-        }
-    }
-
     /// `let mut b = a;` (a copy: the elements are `Copy`), then a write to `b`, so that `a` must stay as it was.
     fn array_copy_stmt(&mut self, arrays: &mut Vec<(u32, ArrTy)>) -> Option<Stmt> {
         let (var, aty) = arrays[self.b.below(arrays.len() as u32) as usize];
@@ -747,7 +749,6 @@ impl Gen<'_> {
             return None;
         }
         let copy = self.fresh();
-        self.note_uniform(copy, &Expr::Var(var, Ty::Array(aty)));
         self.scope.push((copy, Ty::Array(aty), false));
         arrays.push((copy, aty));
         // The write to the copy comes from the loop in `array_section` (any array may be drawn); the copy itself:
@@ -768,7 +769,6 @@ impl Gen<'_> {
             None
         };
         let value = self.array_value(aty, true, bias);
-        self.note_uniform(var, &value);
         Some(Stmt::Assign { var, value })
     }
 
@@ -791,8 +791,6 @@ impl Gen<'_> {
         let Ty::Array(aty) = ret else { return None };
         let (recv, args) = self.call_parts_on(f, 3, None)?;
         let var = self.fresh();
-        self.uniform.push(var);
-        self.equal.push(var);
         self.scope.push((var, ret, false));
         arrays.push((var, aty));
         Some(Stmt::Let {

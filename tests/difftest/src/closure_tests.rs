@@ -15,9 +15,9 @@ use crate::ast::{
 use crate::ast::{
     CLOSURE_ARRAY_RESULT, CLOSURE_BODY_HELPER, CLOSURE_BODY_METHOD, CLOSURE_CALL,
     CLOSURE_IN_HELPER, CLOSURE_IN_KERNEL, CLOSURE_IN_METHOD, CLOSURE_LET, CLOSURE_MUT_ARRAY,
-    CLOSURE_MUT_STRUCT, SHAPE_CLOSURE_ARGS_ROOT, SHAPE_CLOSURE_ARRAY_LIT,
-    SHAPE_CLOSURE_METHOD_PARAM, SHAPE_CLOSURE_MUT_PARAM, SHAPE_CLOSURE_SET_INDEX,
-    SHAPE_CLOSURE_SET_OP, SHAPE_CLOSURE_STORE, SHAPE_CLOSURE_TWICE,
+    CLOSURE_MUT_STRUCT, CLOSURE_PARAM_METHOD, SHAPE_CLOSURE_ARGS_ROOT, SHAPE_CLOSURE_ARRAY_LIT,
+    SHAPE_CLOSURE_MUT_PARAM, SHAPE_CLOSURE_SET_INDEX, SHAPE_CLOSURE_SET_OP, SHAPE_CLOSURE_STORE,
+    SHAPE_CLOSURE_TWICE,
 };
 use crate::emit::emit_module;
 use crate::generator::{
@@ -539,7 +539,7 @@ const SHAPES: &[&str] = &[
     SHAPE_CLOSURE_STORE,
     SHAPE_CLOSURE_TWICE,
     SHAPE_CLOSURE_MUT_PARAM,
-    SHAPE_CLOSURE_METHOD_PARAM,
+    CLOSURE_PARAM_METHOD,
 ];
 
 /// (programs that write it, evaluations) minima over the closure space of seeds 1 to 64 (1024 programs) and over the
@@ -548,24 +548,24 @@ const SHAPES: &[&str] = &[
 type Minima = &'static [(&'static str, (usize, u64))];
 
 const SPACE_MINIMA: Minima = &[
-    (SHAPE_CLOSURE_ARGS_ROOT, (32, 23224)),
-    (SHAPE_CLOSURE_ARRAY_LIT, (30, 12082)),
-    (SHAPE_CLOSURE_SET_OP, (35, 18839)),
-    (SHAPE_CLOSURE_SET_INDEX, (7, 4706)),
-    (SHAPE_CLOSURE_STORE, (33, 9577)),
-    (SHAPE_CLOSURE_TWICE, (25, 1375)),
-    (SHAPE_CLOSURE_MUT_PARAM, (60, 30669)),
-    (SHAPE_CLOSURE_METHOD_PARAM, (16, 2619)),
+    (SHAPE_CLOSURE_ARGS_ROOT, (836, 622679)),
+    (SHAPE_CLOSURE_ARRAY_LIT, (121, 62645)),
+    (SHAPE_CLOSURE_SET_OP, (190, 102081)),
+    (SHAPE_CLOSURE_SET_INDEX, (74, 31112)),
+    (SHAPE_CLOSURE_STORE, (610, 228199)),
+    (SHAPE_CLOSURE_TWICE, (272, 197026)),
+    (SHAPE_CLOSURE_MUT_PARAM, (836, 513496)),
+    (CLOSURE_PARAM_METHOD, (31, 46413)),
 ];
 const BATCH_MINIMA: Minima = &[
-    (SHAPE_CLOSURE_ARGS_ROOT, (3, 322)),
-    (SHAPE_CLOSURE_ARRAY_LIT, (5, 516)),
-    (SHAPE_CLOSURE_SET_OP, (4, 450)),
-    (SHAPE_CLOSURE_SET_INDEX, (2, 387)),
-    (SHAPE_CLOSURE_STORE, (2, 129)),
-    (SHAPE_CLOSURE_TWICE, (4, 76)),
-    (SHAPE_CLOSURE_MUT_PARAM, (8, 308)),
-    (SHAPE_CLOSURE_METHOD_PARAM, (4, 2)),
+    (SHAPE_CLOSURE_ARGS_ROOT, (102, 108616)),
+    (SHAPE_CLOSURE_ARRAY_LIT, (16, 6908)),
+    (SHAPE_CLOSURE_SET_OP, (17, 30341)),
+    (SHAPE_CLOSURE_SET_INDEX, (6, 259)),
+    (SHAPE_CLOSURE_STORE, (75, 26333)),
+    (SHAPE_CLOSURE_TWICE, (23, 9147)),
+    (SHAPE_CLOSURE_MUT_PARAM, (106, 54253)),
+    (CLOSURE_PARAM_METHOD, (2, 65)),
 ];
 
 fn tally(programs: &[Program]) -> Vec<(&'static str, usize, usize, u64)> {
@@ -602,6 +602,7 @@ fn the_closure_programs_of_the_64_seed_runs_write_and_run_every_form_and_order_s
         );
     }
     assert_eq!((space.len(), batch.len()), (1024, 128));
+    let mut failures: Vec<String> = Vec::new();
     for (label, programs, minima) in [
         ("space", &space, SPACE_MINIMA),
         ("batch", &batch, BATCH_MINIMA),
@@ -618,14 +619,23 @@ fn the_closure_programs_of_the_64_seed_runs_write_and_run_every_form_and_order_s
         }
         for (name, (min_programs, min_evals)) in minima {
             let row = counts.iter().find(|r| r.0 == *name).unwrap();
-            assert!(
-                row.1 >= *min_programs && row.3 >= *min_evals,
-                "{label}: {name}: {} programs, {} evaluations",
-                row.1,
-                row.3
-            );
+            if row.1 < *min_programs || row.3 < *min_evals {
+                failures.push(format!(
+                    "{label}: {name}: {} programs, {} evaluations",
+                    row.1, row.3
+                ));
+            }
         }
     }
+    // Seeds 1 to 4 (the G5 run): the closure programs are the first 8 of the batch; each order shape is written by at least
+    // one and executed. (The method-call-on-a-parameter row is a form, not an order shape: it may be absent here.)
+    for &(name, with, _, executed) in &tally(&batch[..8]) {
+        eprintln!("CLOSURE-seeds-1-4 {name}: programs {with}, evaluations {executed}");
+        if SHAPES.contains(&name) && name != CLOSURE_PARAM_METHOD && (with == 0 || executed == 0) {
+            failures.push(format!("seeds 1 to 4: {name} is not written and executed"));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:?}");
 }
 
 /// Each order mutant changes generated programs, not only the hand vectors, so a GPU lowering that ran the same
@@ -644,29 +654,39 @@ fn the_closure_mutants_change_generated_programs() {
                 .skip(ARRAY_END),
         );
     }
-    // A mutated run may break an assumption of the interpreter (a debug assertion): that is a change too.
+    // A change is a different output buffer (or a different domain verdict). A mutated run that breaks an assertion of
+    // the interpreter is no change here (it is counted apart as `asserts`).
     let changes = |p: &Program, mutant| {
         let mutated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             run_mutant(p, mutant).ok().map(|r| r.values)
         }));
-        mutated.map_or(true, |values| run(p).ok() != values)
+        mutated.is_ok_and(|values| run(p).ok() != values)
+    };
+    let mut failures = Vec::new();
+    let breaks = |p: &Program, mutant| {
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = run_mutant(p, mutant);
+        }))
+        .is_err()
     };
     for (mutant, in_space_floor, in_batch_floor) in [
-        (Mutant::ClosureArgsRightToLeft, 8, 1),
-        (Mutant::ClosureParamByRef, 17, 1),
-        (Mutant::ClosureMemo, 335, 32),
+        (Mutant::ClosureArgsRightToLeft, 700, 80),
+        (Mutant::ClosureParamByRef, 600, 70),
+        (Mutant::ClosureMemo, 700, 70),
     ] {
         let in_space = space.iter().filter(|p| changes(p, mutant)).count();
         let in_batch = batch.iter().filter(|p| changes(p, mutant)).count();
+        // The closure programs of the batch of seeds 1 to 4 (the G5 run): each rule is observed by at least one.
+        let in_first_four = batch[..8].iter().filter(|p| changes(p, mutant)).count();
+        let asserts = space.iter().filter(|p| breaks(p, mutant)).count();
         eprintln!(
-            "CLOSURE-MUTANT {mutant:?}: changes {in_space} of 1024 space programs, {in_batch} of 128 batch programs"
+            "CLOSURE-MUTANT {mutant:?}: changes {in_space} of 1024 space programs, {in_batch} of 128 batch programs, {in_first_four} of the 8 of seeds 1 to 4 (and {asserts} space programs that break an interpreter assertion)"
         );
-        assert!(
-            in_space >= in_space_floor && in_space > 0,
-            "{mutant:?}: {in_space}"
-        );
-        assert!(in_batch >= in_batch_floor, "{mutant:?}: {in_batch}");
+        if in_space < in_space_floor || in_batch < in_batch_floor || in_first_four == 0 {
+            failures.push(format!("{mutant:?}: {in_space} in the space, {in_batch} in the batch, {in_first_four} in seeds 1 to 4"));
+        }
     }
+    assert!(failures.is_empty(), "{failures:?}");
 }
 
 /// Whether `index` is a literal, or a literal modulo `.len()`: the only indices a closure writes an array at (D168).
@@ -683,14 +703,21 @@ fn literal_index(index: &Expr) -> bool {
     }
 }
 
-/// D168 in the closure space. (1) The kernel-level scan of the array space (identity operands and element calls at a
-/// dynamic index) holds for the closure space, where an array a closure returns is a call result (`uniform`). (2)
+/// D168 in the closure space. (1) The whole-program scan of the array space (identity operands, self-assignments and
+/// element calls at a dynamic index, any array of any length) holds for the closure space. (2)
 /// Inside a closure body an array is written only at a literal index (or a literal modulo `.len()`), and no array
 /// local is declared: a closure never fills an array in the hole form, and never writes back a dynamic element.
 #[test]
 fn no_closure_fills_or_writes_back_an_array_in_the_driver_hole_form() {
-    let (guarded, ..) = scan_driver_hole(Space::Closure);
-    eprintln!("CLOSURE-GUARD-SCAN guarded dynamic compound sets {guarded}");
+    let counts = scan_driver_hole(Space::Closure);
+    eprintln!("CLOSURE-GUARD-SCAN {counts:?}");
+    assert!(
+        counts.rewritten > 0
+            && counts.literal_ops > 0
+            && counts.literal_calls > 0
+            && counts.plain_dynamic > 0,
+        "{counts:?}"
+    );
     let (mut array_sets, mut closures) = (0, 0);
     for seed in 1..=64 {
         for p in generate_batch_in(Space::Closure, seed).unwrap().programs {
@@ -729,4 +756,97 @@ fn no_closure_fills_or_writes_back_an_array_in_the_driver_hole_form() {
     }
     eprintln!("CLOSURE-GUARD-SCAN closures {closures}, array writes inside closures {array_sets}");
     assert!(closures > 0 && array_sets > 0);
+}
+
+/// `let cl10 = |a: u32, b: u32| -> u32 { ((a & 255) * 1) ^ ((b & 255) * 3) }; out = cl10(<x>, <y>)`.
+fn weighted_program(x: Expr, y: Expr) -> Program {
+    let term = |var: u32, w: u32| {
+        mul(
+            Expr::bin(BinOp::BitAnd, Expr::Var(var, Ty::U32), u(255)),
+            u(w),
+        )
+    };
+    program(
+        vec![closure(
+            10,
+            vec![(11, Ty::U32, false), (12, Ty::U32, false)],
+            Vec::new(),
+            Expr::bin(BinOp::BitXor, term(11, 1), term(12, 3)),
+            Ty::U32,
+        )],
+        call(10, vec![x, y]),
+    )
+}
+
+/// `let cl10 = |mut s: S0| -> u32 { s.n ^= 1; s.n }; out = <result>`.
+fn writer_program(result: Expr) -> Program {
+    program(
+        vec![closure(
+            10,
+            vec![(11, S0, true)],
+            vec![Stmt::Set {
+                place: field(11),
+                ty: Ty::U32,
+                op: Some(BinOp::BitXor),
+                value: u(1),
+            }],
+            Expr::Read {
+                place: field(11),
+                ty: Ty::U32,
+            },
+            Ty::U32,
+        )],
+        result,
+    )
+}
+
+/// The order shapes count only where the order is observable: the arguments shape and the store shape need a closure
+/// that weights both arguments and two arguments that call `&mut self` on one root; the by-value shape needs the call,
+/// then (a `^`, which does not short-circuit) a read of the variable it was given, in a closure that writes it. The
+/// static and the executed counts agree.
+#[test]
+fn the_order_shapes_count_only_where_the_order_is_observable() {
+    let counted = |program: &Program, name: &str| {
+        let text = operator_counts(program).get(name).copied().unwrap_or(0);
+        let ran = run_covered(program)
+            .unwrap()
+            .1
+            .operators
+            .get(name)
+            .copied()
+            .unwrap_or(0);
+        assert_eq!(
+            text > 0,
+            ran > 0,
+            "{name}: {text} in the text, {ran} executed"
+        );
+        text > 0
+    };
+    // Two calls on one root, both arguments weighted: counted, as the store shape too.
+    let both = weighted_program(tick(), tick());
+    assert!(counted(&both, SHAPE_CLOSURE_ARGS_ROOT));
+    crate::ast::register_closures(&both);
+    assert!(!crate::ast::closure_store_names(&both.methods, &both.result).is_empty());
+    // One argument is a literal: nothing to order.
+    let one = weighted_program(tick(), u(5));
+    assert!(!counted(&one, SHAPE_CLOSURE_ARGS_ROOT));
+    crate::ast::register_closures(&one);
+    assert!(crate::ast::closure_store_names(&one.methods, &one.result).is_empty());
+    // A closure that does not weight its arguments (`a * 10 + b`) is not counted either.
+    assert!(!counted(&order_program(), SHAPE_CLOSURE_ARGS_ROOT));
+    // The by-value shape: `cl10(v0) ^ v0.n` counts; the same call summed (`cl10(v0) + v0.n`) or without a read does not.
+    let read = Expr::Read {
+        place: field(0),
+        ty: Ty::U32,
+    };
+    let observed = writer_program(Expr::bin(
+        BinOp::BitXor,
+        call(10, vec![Expr::Var(0, S0)]),
+        read.clone(),
+    ));
+    assert!(counted(&observed, SHAPE_CLOSURE_MUT_PARAM));
+    let summed = writer_program(add(call(10, vec![Expr::Var(0, S0)]), read));
+    assert!(!counted(&summed, SHAPE_CLOSURE_MUT_PARAM));
+    let unread = writer_program(call(10, vec![Expr::Var(0, S0)]));
+    assert!(!counted(&unread, SHAPE_CLOSURE_MUT_PARAM));
 }

@@ -821,6 +821,7 @@ pub fn bin_shape(methods: &Methods, op: BinOp, l: &Expr, r: &Expr) -> Option<&'s
         .then_some(SHAPE_READ_AND_CALL)
         .or_else(|| array_index_shape(methods, l, r))
         .or_else(|| closure_twice_shape(methods, l, r))
+        .or_else(|| closure_observed_shape(op, l, r))
 }
 
 /// The shape of a call: a by-value call whose arguments contain a `&mut self` call on the receiver's root.
@@ -920,7 +921,7 @@ pub const KNOWN_SHAPE_NAMES: [&str; 62] = [
     SHAPE_CLOSURE_STORE,
     SHAPE_CLOSURE_TWICE,
     SHAPE_CLOSURE_MUT_PARAM,
-    SHAPE_CLOSURE_METHOD_PARAM,
+    CLOSURE_PARAM_METHOD,
 ];
 
 /// Names of the constructs of format 10 (slice m9.d1c), counted statically by `operator_counts` and when executed by
@@ -1243,8 +1244,7 @@ pub const SHAPE_CLOSURE_TWICE: &str =
     "shape closure called twice with a side effect in an argument";
 pub const SHAPE_CLOSURE_MUT_PARAM: &str =
     "shape closure mutates its parameter, caller variable passed";
-pub const SHAPE_CLOSURE_METHOD_PARAM: &str =
-    "shape closure in a method calls a method on its parameter";
+pub const CLOSURE_PARAM_METHOD: &str = "closure method call on a struct parameter";
 
 /// The roots of the `&mut self` calls in the arguments of the closure calls inside `e` (each call's arguments run
 /// before its body, left to right).
@@ -1275,22 +1275,147 @@ fn closure_calls_with_roots(methods: &Methods, e: &Expr) -> Vec<(u32, Vec<Root>)
     calls
 }
 
-/// The names a closure call counts under: itself, and the shape when two of its arguments call `&mut self` on one root
-/// (the left argument must run first).
-pub fn closure_call_names(methods: &Methods, args: &[Expr]) -> Vec<&'static str> {
-    let mut names = vec![CLOSURE_CALL];
-    let mut roots = Vec::new();
-    for arg in args {
-        mutating_roots(methods, arg, &mut roots);
-    }
-    if roots
-        .iter()
-        .enumerate()
-        .any(|(k, root)| roots[..k].contains(root))
+/// What the order shapes need to know about a closure's definition (slice m9.d1e, fix round 1): `weighted[k]` is true
+/// when parameter `k` is an integer that enters an integer result with a weight of its own (`(p & 255) * (2j + 1)`,
+/// exclusive-or'ed into the tail), so swapping two such arguments changes the result; `writes[k]` is true when the body
+/// writes the aggregate parameter `k`.
+#[derive(Clone, Debug, Default)]
+pub struct ClosureInfo {
+    pub weighted: Vec<bool>,
+    pub writes: Vec<bool>,
+}
+
+thread_local! {
+    static CLOSURE_INFO: std::cell::RefCell<BTreeMap<u32, ClosureInfo>> = const {
+        std::cell::RefCell::new(BTreeMap::new())
+    };
+}
+
+/// The terms of a chain of `^` (the shape the generator folds a tail into).
+fn xor_terms<'a>(e: &'a Expr, out: &mut Vec<&'a Expr>) {
+    if let Expr::Bin {
+        op: BinOp::BitXor,
+        l,
+        r,
+        ..
+    } = e
     {
+        xor_terms(l, out);
+        xor_terms(r, out);
+    } else {
+        out.push(e);
+    }
+}
+
+/// Whether `term` is `(var & 255) * w`, possibly cast.
+fn is_weighted_term(term: &Expr, var: u32) -> bool {
+    let term = match term {
+        Expr::Cast { e, .. } => e,
+        other => other,
+    };
+    matches!(term, Expr::Bin { op: BinOp::Mul, l, .. }
+        if matches!(&**l, Expr::Bin { op: BinOp::BitAnd, l: inner, .. }
+            if matches!(&**inner, Expr::Var(v, _) if *v == var)))
+}
+
+/// The order facts about a closure definition.
+pub fn closure_info(methods: &Methods, def: &ClosureDef) -> ClosureInfo {
+    let mut terms = Vec::new();
+    if matches!(def.ret, Ty::U32 | Ty::I32) {
+        xor_terms(&def.tail, &mut terms);
+    }
+    ClosureInfo {
+        weighted: def
+            .params
+            .iter()
+            .map(|p| {
+                matches!(p.1, Ty::U32 | Ty::I32) && terms.iter().any(|t| is_weighted_term(t, p.0))
+            })
+            .collect(),
+        writes: def
+            .params
+            .iter()
+            .map(|p| (p.1.is_array() || p.1.is_struct()) && writes_var(methods, &def.body, p.0))
+            .collect(),
+    }
+}
+
+/// Records the facts about every closure of `program` for the shape functions of this thread; `operator_counts` and the
+/// interpreter call it before they count.
+pub fn register_closures(program: &Program) {
+    let methods = &program.methods;
+    let mut table = BTreeMap::new();
+    let mut sites: Vec<&[Stmt]> = vec![program.body.as_slice()];
+    sites.extend(methods.fns.iter().map(|def| def.body.as_slice()));
+    for stmts in sites {
+        walk_all_stmts(stmts, &mut |s| {
+            if let Stmt::LetClosure { def } = s {
+                table.insert(def.var, closure_info(methods, def));
+            }
+        });
+    }
+    CLOSURE_INFO.with(|cell| *cell.borrow_mut() = table);
+}
+
+fn info_of(var: u32) -> ClosureInfo {
+    CLOSURE_INFO.with(|cell| cell.borrow().get(&var).cloned().unwrap_or_default())
+}
+
+/// Whether a call of closure `var` is order-sensitive in its arguments: two arguments, each an integer that the body
+/// weights into the result, call `&mut self` on one root (the left argument must run first, or the result changes).
+pub fn closure_args_ordered(methods: &Methods, var: u32, args: &[Expr]) -> bool {
+    let info = info_of(var);
+    let roots: Vec<Vec<Root>> = args
+        .iter()
+        .map(|arg| {
+            let mut r = Vec::new();
+            mutating_roots(methods, arg, &mut r);
+            r
+        })
+        .collect();
+    (0..args.len()).any(|a| {
+        info.weighted.get(a) == Some(&true)
+            && ((a + 1)..args.len()).any(|b| {
+                info.weighted.get(b) == Some(&true) && roots[a].iter().any(|r| roots[b].contains(r))
+            })
+    })
+}
+
+/// The names a closure call counts under: itself, and the shape when two of its weighted arguments call `&mut self`
+/// on one root (the left argument must run first).
+pub fn closure_call_names(methods: &Methods, var: u32, args: &[Expr]) -> Vec<&'static str> {
+    let mut names = vec![CLOSURE_CALL];
+    if closure_args_ordered(methods, var, args) {
         names.push(SHAPE_CLOSURE_ARGS_ROOT);
     }
     names
+}
+
+/// `shape closure mutates its parameter, caller variable passed`: `f(v) ^ read`, the call of a closure whose body
+/// writes its aggregate parameter, passed the caller's variable `v`, then (`^` does not short-circuit) a read of `v`
+/// whose value goes into the result. The read shows whether the callee changed the caller's copy.
+pub fn closure_observed_shape(op: BinOp, l: &Expr, r: &Expr) -> Option<&'static str> {
+    if op != BinOp::BitXor {
+        return None;
+    }
+    let Expr::ClosureCall { var, args, .. } = l else {
+        return None;
+    };
+    let read = match r {
+        Expr::Cast { e, .. } => e,
+        other => other,
+    };
+    let Expr::Read { place, .. } = read else {
+        return None;
+    };
+    let info = info_of(*var);
+    args.iter()
+        .enumerate()
+        .any(|(k, arg)| {
+            matches!(arg, Expr::Var(v, ty) if Root::Var(*v) == place.root && (ty.is_array() || ty.is_struct()))
+                && info.writes.get(k) == Some(&true)
+        })
+        .then_some(SHAPE_CLOSURE_MUT_PARAM)
 }
 
 /// `shape closure call in an array literal beside a call on its root`: an element of the literal holds a closure call
@@ -1347,12 +1472,19 @@ pub fn closure_set_names(
     names
 }
 
-/// The closure shape of the final store: the result calls a closure with an argument that calls `&mut self`.
+/// The closure shape of the final store: the result calls a closure whose weighted arguments call `&mut self` on one
+/// root (an ordered call, [`closure_args_ordered`]).
 pub fn closure_store_names(methods: &Methods, result: &Expr) -> Vec<&'static str> {
-    if closure_arg_roots(methods, result).is_empty() {
-        Vec::new()
-    } else {
+    let mut ordered = false;
+    walk_expr(result, &mut |n| {
+        if let Expr::ClosureCall { var, args, .. } = n {
+            ordered |= closure_args_ordered(methods, *var, args);
+        }
+    });
+    if ordered {
         vec![SHAPE_CLOSURE_STORE]
+    } else {
+        Vec::new()
     }
 }
 
@@ -1468,25 +1600,17 @@ pub fn closure_let_names(
     names
 }
 
-/// The two closure shapes that need the definition, at a call (static form): an aggregate parameter whose argument is a
-/// variable and whose body writes it; and, in a method, a body that calls a method on a struct parameter.
+/// The form that needs the definition, at a call (static form): a body that calls a method on a struct
+/// parameter (not an order shape: only `&self` and by-value methods are called on a parameter).
 pub fn closure_mut_param_names(
     methods: &Methods,
     def: &ClosureDef,
-    args: &[Expr],
-    in_method: bool,
+    _args: &[Expr],
+    _in_method: bool,
 ) -> Vec<&'static str> {
     let mut names = Vec::new();
-    let mutates = def.params.iter().zip(args).any(|(p, arg)| {
-        (p.1.is_array() || p.1.is_struct())
-            && matches!(arg, Expr::Var(..))
-            && writes_var(methods, &def.body, p.0)
-    });
-    if mutates {
-        names.push(SHAPE_CLOSURE_MUT_PARAM);
-    }
-    if in_method && closure_calls_on_param(methods, def) {
-        names.push(SHAPE_CLOSURE_METHOD_PARAM);
+    if closure_calls_on_param(methods, def) {
+        names.push(CLOSURE_PARAM_METHOD);
     }
     names
 }
@@ -2536,7 +2660,7 @@ fn returns_last(stmts: &[Stmt]) -> Result<(), String> {
 }
 
 /// The roots of the `&mut self` calls inside `expr` (a call's receiver, and the calls in its arguments).
-fn mutating_roots(methods: &Methods, expr: &Expr, out: &mut Vec<Root>) {
+pub fn mutating_roots(methods: &Methods, expr: &Expr, out: &mut Vec<Root>) {
     if let Expr::Call {
         f,
         recv: Some(place),
@@ -3585,6 +3709,7 @@ pub const ASSIGN_COMP: &str = "assign comp";
 
 /// How many times each operator is used in `program` (for coverage counts in tests and reports).
 pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
+    register_closures(program);
     fn expr(methods: &Methods, e: &Expr, counts: &mut BTreeMap<String, usize>) {
         let name = match e {
             Expr::Lit(..) | Expr::Var(..) | Expr::Gid | Expr::Len(_) | Expr::Input { .. } => None,
@@ -3646,8 +3771,8 @@ pub fn operator_counts(program: &Program) -> BTreeMap<String, usize> {
         for name in array_expr_names(methods, e) {
             *counts.entry(name.to_owned()).or_default() += 1;
         }
-        if let Expr::ClosureCall { args, .. } = e {
-            for name in closure_call_names(methods, args) {
+        if let Expr::ClosureCall { var, args, .. } = e {
+            for name in closure_call_names(methods, *var, args) {
                 *counts.entry(name.to_owned()).or_default() += 1;
             }
         }

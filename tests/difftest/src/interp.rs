@@ -15,13 +15,13 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::agg::{self, Agg, Scalar};
 use crate::ast::{
-    ASSIGN_COMP, Arm, BinOp, CLOSURE_BODY_HELPER, CLOSURE_BODY_METHOD, ClosureDef, Elem, Expr,
-    MATCH_ARM_RETURN_RUN, Pat, Place, Program, Recv, Root, SHAPE_CLOSURE_METHOD_PARAM,
-    SHAPE_CLOSURE_MUT_PARAM, SHAPE_EXPR_CALL, SHAPE_STMT_CALL, STRUCT_LIT, Stmt, TUPLE_READ, Ty,
-    UnOp, array_call_names, array_expr_names, array_set_names, array_store_names, bin_shape,
-    call_arg_names, call_name, call_shape, closure_call_names, closure_let_names,
-    closure_set_names, destruct_names, enum_as_name, enum_call_shapes, match_names, match_shape,
-    set_name, set_shape, tuple_field_names, tuple_lit_names, tuple_set_names, value_match_names,
+    ASSIGN_COMP, Arm, BinOp, CLOSURE_BODY_HELPER, CLOSURE_BODY_METHOD, CLOSURE_PARAM_METHOD,
+    ClosureDef, Elem, Expr, MATCH_ARM_RETURN_RUN, Pat, Place, Program, Recv, Root, SHAPE_EXPR_CALL,
+    SHAPE_STMT_CALL, STRUCT_LIT, Stmt, TUPLE_READ, Ty, UnOp, array_call_names, array_expr_names,
+    array_set_names, array_store_names, bin_shape, call_arg_names, call_name, call_shape,
+    closure_call_names, closure_let_names, closure_set_names, destruct_names, enum_as_name,
+    enum_call_shapes, match_names, match_shape, set_name, set_shape, tuple_field_names,
+    tuple_lit_names, tuple_set_names, value_match_names,
 };
 use crate::float::{self, Fl};
 
@@ -922,22 +922,20 @@ impl Machine<'_> {
             }
         }
         if self.coverage.is_some()
-            && let Some((closure, in_method)) = self.closure_ctx
+            && let Some((closure, _)) = self.closure_ctx
         {
             self.count_name(if def.recv == Recv::None && def.owner.is_none() {
                 CLOSURE_BODY_HELPER
             } else {
                 CLOSURE_BODY_METHOD
             });
-            if in_method
-                && recv.as_ref().is_some_and(|place| {
-                    closure
-                        .params
-                        .iter()
-                        .any(|p| p.1.is_struct() && place.root == Root::Var(p.0))
-                })
-            {
-                self.count_name(SHAPE_CLOSURE_METHOD_PARAM);
+            if recv.as_ref().is_some_and(|place| {
+                closure
+                    .params
+                    .iter()
+                    .any(|p| p.1.is_struct() && place.root == Root::Var(p.0))
+            }) {
+                self.count_name(CLOSURE_PARAM_METHOD);
             }
         }
         let loc = recv.as_ref().map(|place| self.locate(place)).transpose()?;
@@ -999,7 +997,7 @@ impl Machine<'_> {
         let program = self.program;
         let &(def, site) = self.closures.get(&var).expect("a call of a bound closure");
         if self.coverage.is_some() {
-            for name in closure_call_names(&program.methods, args) {
+            for name in closure_call_names(&program.methods, var, args) {
                 self.count_name(name);
             }
         }
@@ -1012,7 +1010,6 @@ impl Machine<'_> {
         for k in order {
             values[k] = Some(self.expr(&args[k])?);
         }
-        let before: Vec<Val> = values.iter().flatten().copied().collect();
         for (&(param, ..), value) in def.params.iter().zip(values.into_iter().flatten()) {
             self.vars[param as usize] = value;
         }
@@ -1029,21 +1026,6 @@ impl Machine<'_> {
         (self.for_depth, self.arm_depth) = depths;
         self.closure_ctx = saved;
         let value = ran?;
-        if self.coverage.is_some() {
-            let mutated = def
-                .params
-                .iter()
-                .zip(args)
-                .zip(&before)
-                .any(|((p, arg), was)| {
-                    (p.1.is_array() || p.1.is_struct())
-                        && matches!(arg, Expr::Var(..))
-                        && format!("{was:?}") != format!("{:?}", self.vars[p.0 as usize])
-                });
-            if mutated {
-                self.count_name(SHAPE_CLOSURE_MUT_PARAM);
-            }
-        }
         if self.mutant == Some(Mutant::ClosureParamByRef) {
             for (arg, p) in args.iter().zip(&def.params) {
                 if let Expr::Var(outer, ty) = arg
@@ -1354,6 +1336,7 @@ impl Machine<'_> {
 
 /// Every closure of the program by its variable, with the function that binds it (`None`: the kernel).
 fn closure_table(program: &Program) -> BTreeMap<u32, (&ClosureDef, Option<usize>)> {
+    crate::ast::register_closures(program);
     fn collect<'a>(
         stmts: &'a [Stmt],
         site: Option<usize>,
@@ -1588,6 +1571,7 @@ fn run_machine(
     for element in 0..program.count {
         machine.element = element;
         machine.self_stack.clear();
+        machine.memo.clear();
         let (bits, interval, slot) = run_element(&mut machine, program)
             .map_err(|violation| Failure { element, violation })?;
         match slot {

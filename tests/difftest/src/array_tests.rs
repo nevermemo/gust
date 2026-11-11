@@ -489,131 +489,115 @@ fn is_non_identity_operand(op: BinOp, value: &Expr) -> bool {
     }
 }
 
-/// The two uniformity sets of `Gen::note_uniform`, mirrored: `wide` (a repeat, equal elements or any non-literal element,
-/// a copy of a wide array, a call result) for scalar compound sets, `narrow` (a repeat, equal elements, a copy of a narrow
-/// array, a call result) for element method calls.
-fn note_uniform(var: u32, init: &Expr, wide: &mut Vec<u32>, narrow: &mut Vec<u32>) {
-    wide.retain(|v| *v != var);
-    narrow.retain(|v| *v != var);
-    let (n, w) = match init {
-        Expr::Repeat { .. } => (true, true),
-        Expr::ArrayLit { elems, .. } => {
-            let equal = elems.windows(2).all(|w| w[0] == w[1]);
-            (
-                equal,
-                equal || elems.iter().any(|e| !matches!(e, Expr::Lit(..))),
-            )
-        }
-        Expr::Var(src, _) => (narrow.contains(src), wide.contains(src)),
-        _ => (true, true),
-    };
-    if n {
-        narrow.push(var);
-    }
-    if w {
-        wide.push(var);
-    }
-}
-
-/// The guard for the NVIDIA hole (plans/m9/arrbug.md, D168), by the rules of `Gen::note_uniform` (mirrored here). In a
-/// local array of length other than 2 or 4 that may hold one value in every element (the wide set): a compound set at a
-/// dynamic index is `+= -= ^= *= /= <<= >>=` with an operand that is never the identity of its operator; `|= &= %=` have
-/// a literal index. A `&mut self` call statement on a struct element of an array of the narrow set has a literal index,
-/// and a struct array of the wide set but not the narrow one (distinct non-literal elements) keeps a dynamic index on
-/// element calls: the scan must see that at least once, so the narrow rule is not secretly the wide one (R2 of fix round
-/// 2). Scans the top-level statements of the array space of seeds 1 to 64.
+/// The guard for the NVIDIA hole (plans/m9/arrbug.md and arrbug2.md, D168, D169), for every array of every length,
+/// uniform or not, in the kernel, the helpers, the methods and the closure bodies (`Gen::guard_set`). A compound set
+/// at a dynamic index is `+= -= ^= *= /= <<= >>=` with an operand that is never the identity of its operator; `|= &= %=`
+/// have a literal index; a plain set at a dynamic index never stores the place's own value back; an element method
+/// call (statement or inside a value) has a literal index. The counts show the guarded forms are reached.
 #[test]
 fn no_generated_program_gives_the_driver_hole_an_identity_operand_or_a_call_at_a_dynamic_index() {
-    let (guarded, _, _, free_calls) = scan_driver_hole(Space::Array);
+    let c = scan_driver_hole(Space::Array);
     assert!(
-        guarded > 5,
-        "{guarded} guarded dynamic compound sets in seeds 1-64"
-    );
-    assert!(
-        free_calls > 0,
-        "no dynamic element call on a distinct-element array of length 1, 3 or 5"
+        c.rewritten > 5 && c.literal_ops > 0 && c.literal_calls > 0 && c.plain_dynamic > 0,
+        "{c:?}"
     );
 }
 
-/// The scan of the test above over the top-level statements of `space` (seeds 1 to 64): (guarded dynamic compound
-/// sets, literal-index `|= &= %=`, guarded element calls, dynamic element calls on non-narrow arrays). It asserts
-/// the rules and returns the counts.
-pub(crate) fn scan_driver_hole(space: Space) -> (usize, usize, usize, usize) {
-    let (mut guarded, mut literal_ops, mut calls, mut free_calls) = (0, 0, 0, 0);
+/// What `scan_driver_hole` counted.
+#[derive(Debug, Default)]
+pub(crate) struct GuardCounts {
+    /// Dynamic compound sets with a rewritten operand.
+    pub rewritten: usize,
+    /// `|= &= %=` at a literal index.
+    pub literal_ops: usize,
+    /// Element method calls at a literal index.
+    pub literal_calls: usize,
+    /// Plain sets at a dynamic index (none a self-assignment).
+    pub plain_dynamic: usize,
+}
+
+/// The scan of the test above over every statement and expression of `space` (seeds 1 to 64): it asserts the rules
+/// and returns the counts.
+pub(crate) fn scan_driver_hole(space: Space) -> GuardCounts {
+    use crate::ast::{FnDef, Root, walk_all_stmts, walk_stmts};
+    let mut c = GuardCounts::default();
+    let array_index =
+        |place: &crate::ast::Place| match (place.root, place.root_ty, place.index.as_deref()) {
+            (Root::Var(_), Ty::Array(_), Some(index)) => Some(index.clone()),
+            _ => None,
+        };
     for seed in 1..=64 {
         for p in generate_batch_in(space, seed).unwrap().programs {
-            let (mut wide, mut narrow): (Vec<u32>, Vec<u32>) = (Vec::new(), Vec::new());
-            let mut arrays: Vec<u32> = Vec::new();
-            for stmt in &p.body {
-                match stmt {
-                    Stmt::Let {
-                        var,
-                        ty: Ty::Array(_),
-                        init,
-                        ..
-                    } => {
-                        arrays.push(*var);
-                        note_uniform(*var, init, &mut wide, &mut narrow);
-                    }
-                    Stmt::Assign { var, value } if arrays.contains(var) => {
-                        note_uniform(*var, value, &mut wide, &mut narrow)
-                    }
+            let who = format!("seed {seed} attempt {}", p.attempt);
+            let mut bodies: Vec<&[Stmt]> = vec![&p.body];
+            let fns: Vec<&FnDef> = p.methods.fns.iter().collect();
+            bodies.extend(fns.iter().map(|f| &f.body[..]));
+            for body in bodies {
+                walk_all_stmts(body, &mut |stmt: &Stmt| match stmt {
                     Stmt::Set {
-                        place,
-                        op: Some(op),
-                        value,
-                        ..
+                        place, op, value, ..
                     } => {
-                        if let (crate::ast::Root::Var(v), Ty::Array(aty), Some(index)) =
-                            (place.root, place.root_ty, place.index.as_deref())
-                            && wide.contains(&v)
-                            && !matches!(aty.n, 2 | 4)
-                        {
-                            if matches!(op, BinOp::BitOr | BinOp::BitAnd | BinOp::Rem) {
-                                literal_ops += 1;
-                                assert!(
-                                    matches!(index, Expr::Lit(..)),
-                                    "seed {seed} attempt {}: {op:?} at a dynamic index",
-                                    p.attempt
-                                );
-                            } else if !matches!(index, Expr::Lit(..)) {
-                                guarded += 1;
+                        let Some(index) = array_index(place) else {
+                            return;
+                        };
+                        let dynamic = !matches!(index, Expr::Lit(..));
+                        match op {
+                            Some(BinOp::BitOr | BinOp::BitAnd | BinOp::Rem) => {
+                                c.literal_ops += 1;
+                                assert!(!dynamic, "{who}: {op:?} at a dynamic index");
+                            }
+                            Some(op) if dynamic => {
+                                c.rewritten += 1;
                                 assert!(
                                     is_non_identity_operand(*op, value),
-                                    "seed {seed} attempt {}: {op:?} {value:?}",
-                                    p.attempt
+                                    "{who}: {op:?} {value:?}"
                                 );
                             }
+                            None if dynamic => {
+                                c.plain_dynamic += 1;
+                                let mut inner = value;
+                                while let Expr::Cast { e, .. } = inner {
+                                    inner = e;
+                                }
+                                assert!(
+                                    !matches!(inner, Expr::Read { place: q, .. } if q == place),
+                                    "{who}: a self-assignment at a dynamic index"
+                                );
+                            }
+                            _ => {}
                         }
                     }
                     Stmt::Call {
                         recv: Some(place), ..
                     } => {
-                        if let (crate::ast::Root::Var(v), Ty::Array(aty), Some(index)) =
-                            (place.root, place.root_ty, place.index.as_deref())
-                            && !matches!(aty.n, 2 | 4)
-                        {
-                            if narrow.contains(&v) {
-                                calls += 1;
-                                assert!(
-                                    matches!(index, Expr::Lit(..)),
-                                    "seed {seed} attempt {}",
-                                    p.attempt
-                                );
-                            } else if !matches!(index, Expr::Lit(..)) {
-                                free_calls += 1;
-                            }
+                        if let Some(index) = array_index(place) {
+                            assert!(
+                                matches!(index, Expr::Lit(..)),
+                                "{who}: an element call at a dynamic index"
+                            );
+                            c.literal_calls += 1;
                         }
                     }
                     _ => {}
-                }
+                });
+                walk_stmts(body, &mut |e: &Expr| {
+                    if let Expr::Call {
+                        recv: Some(place), ..
+                    } = e
+                        && let Some(index) = array_index(place)
+                    {
+                        assert!(
+                            matches!(index, Expr::Lit(..)),
+                            "{who}: an element call at a dynamic index"
+                        );
+                        c.literal_calls += 1;
+                    }
+                });
             }
         }
     }
-    eprintln!(
-        "GUARD-SCAN dynamic compound sets {guarded}, literal-index |= &= %= {literal_ops}, guarded element calls {calls}, dynamic element calls on non-narrow arrays {free_calls}"
-    );
-    (guarded, literal_ops, calls, free_calls)
+    eprintln!("GUARD-SCAN {space:?} {c:?}");
+    c
 }
 
 /// Fix round 1 (S2): the order mutants change generated programs, not only the hand vectors, so a GPU lowering that
@@ -644,6 +628,7 @@ fn the_order_mutants_change_generated_programs_and_the_order_shapes_keep_their_m
     // place-first mutant the program must also execute `SHAPE_ARRAY_SET_CALL` (an element set with a call on the same
     // array in the value): the enum and method programs of the space have same-root sets that the mutant changes too,
     // and those do not show the array rule (R3 of fix round 2).
+    let mut failures: Vec<String> = Vec::new();
     let changes = |p: &crate::ast::Program, mutant| {
         let differs = run(p).ok() != run_mutant(p, mutant).ok().map(|r| r.values);
         differs
@@ -680,14 +665,14 @@ fn the_order_mutants_change_generated_programs_and_the_order_shapes_keep_their_m
         eprintln!(
             "ARRAY-MUTANT {mutant:?}: changes {in_space} of 1024 space programs, {in_batch} of 128 batch programs"
         );
-        assert!(
-            in_space >= minimum,
-            "{mutant:?} changes {in_space} space programs"
-        );
-        assert!(
-            in_batch >= in_batch_floor,
-            "{mutant:?} changes {in_batch} programs of the 64-seed batch"
-        );
+        if in_space < minimum {
+            failures.push(format!("{mutant:?} changes {in_space} space programs"));
+        }
+        if in_batch < in_batch_floor {
+            failures.push(format!(
+                "{mutant:?} changes {in_batch} programs of the 64-seed batch"
+            ));
+        }
     }
     let (mut written, mut executed): (BTreeMap<&str, usize>, BTreeMap<&str, u64>) =
         Default::default();
@@ -708,28 +693,43 @@ fn the_order_mutants_change_generated_programs_and_the_order_shapes_keep_their_m
             executed.get(name).copied().unwrap_or(0),
         );
         eprintln!("ARRAY-SHAPE {name}: {w} programs, {e} evaluations");
-        assert!(
-            w >= *programs && e >= *evaluations,
-            "{name}: {w} programs, {e} evaluations"
-        );
+        if w < *programs || e < *evaluations {
+            failures.push(format!("{name}: {w} programs, {e} evaluations"));
+        }
     }
+    // Seeds 1 to 4 (the G5 run, 64 programs of all spaces; the array shapes also occur in the closure programs): each
+    // order shape is written by at least one.
+    let first_four: Vec<crate::ast::Program> = (1..=4)
+        .flat_map(|seed| generate_batch(seed).unwrap().programs)
+        .collect();
+    for (name, _) in SHAPE_MINIMA {
+        let first = first_four
+            .iter()
+            .filter(|p| operator_counts(p).get(*name).copied().unwrap_or(0) > 0)
+            .count();
+        eprintln!("ARRAY-seeds-1-4 {name}: {first} programs");
+        if first == 0 {
+            failures.push(format!("seeds 1 to 4: {name} is not written"));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:?}");
 }
 
-const MIN_CHANGED_LIT: usize = 5;
-const MIN_CHANGED_REPEAT: usize = 5;
+const MIN_CHANGED_LIT: usize = 4;
+const MIN_CHANGED_REPEAT: usize = 3;
 const MIN_CHANGED_ARG: usize = 10;
-const MIN_CHANGED_PLACE_FIRST: usize = 13;
+const MIN_CHANGED_PLACE_FIRST: usize = 11;
 /// The same mutants over the 128 programs of the batch (a regression pin of what was measured: `RepeatPerElement` is 0 there,
 /// so a GPU run of the batch does not observe that rule by itself).
-const BATCH_CHANGED_LIT: usize = 1;
+const BATCH_CHANGED_LIT: usize = 2;
 const BATCH_CHANGED_REPEAT: usize = 0;
-const BATCH_CHANGED_ARG: usize = 2;
+const BATCH_CHANGED_ARG: usize = 3;
 const BATCH_CHANGED_PLACE_FIRST: usize = 1;
 /// (shape row, minimum programs that write it, minimum evaluations) over the 64-seed batch.
 const SHAPE_MINIMA: &[(&str, (usize, u64))] = &[
-    (crate::ast::SHAPE_ARRAY_LIT_ROOT, (3, 363)),
-    (crate::ast::SHAPE_ARRAY_REPEAT_CALL, (2, 2194)),
-    (crate::ast::SHAPE_ARRAY_INDEX_CALLS, (5, 254)),
-    (crate::ast::SHAPE_ARRAY_SET_CALL, (1, 63)),
-    (crate::ast::SHAPE_ARRAY_STORE_CALL, (7, 514)),
+    (crate::ast::SHAPE_ARRAY_LIT_ROOT, (5, 2720)),
+    (crate::ast::SHAPE_ARRAY_REPEAT_CALL, (3, 2001)),
+    (crate::ast::SHAPE_ARRAY_INDEX_CALLS, (7, 628)),
+    (crate::ast::SHAPE_ARRAY_SET_CALL, (1, 771)),
+    (crate::ast::SHAPE_ARRAY_STORE_CALL, (7, 630)),
 ];

@@ -248,13 +248,6 @@ struct Gen<'a> {
     arm_return_fns: Vec<usize>,
     /// The array space (implies `enums`, not `values`): arrays, `store` and the array helpers.
     arrays: bool,
-    /// Array locals that may hold one value in every element (a repeat, an equal-element literal, a copy or a call
-    /// result): a compound set at a dynamic index into one is the NVIDIA trigger of plans/m9/arrbug.md, which the
-    /// generator does not write while that driver bug stands (DIFFTEST.md, "Known driver hole").
-    uniform: Vec<u32>,
-    /// The narrow form: array locals that hold a repeat, an equal-element literal, a copy of one or a call result. A
-    /// `&mut self` call on an element of one gets a literal index (the copy-store form of the same hole).
-    equal: Vec<u32>,
     /// The final store of the program being drawn (the array space).
     store: Option<crate::ast::Store>,
     /// The closure space (implies `arrays`): non-capturing closures and their calls. Every draw they add sits behind
@@ -262,6 +255,8 @@ struct Gen<'a> {
     closures: bool,
     /// A closure body is being drawn: no `i`, no buffer, no `self`, no `return`, no closure.
     in_closure: bool,
+    /// The probe writer closures (closure, struct local, field, field type) of the kernel (see `closure_probe_lets`).
+    probe_writers: Vec<(u32, u32, u8, Ty)>,
     /// The closures bound in the open blocks.
     cls: Vec<Cl>,
 }
@@ -401,6 +396,15 @@ impl Gen<'_> {
             0 => Expr::Gid,
             1 => {
                 let inner = self.expr(Ty::U32, 1);
+                // The closure space has `&mut self` calls everywhere (the counter methods), and this index may stand in an
+                // assigned place (E0421): it keeps the draw but drops a call that mutates.
+                let mut roots = Vec::new();
+                crate::ast::mutating_roots(&self.table, &inner, &mut roots);
+                let inner = if self.closures && !roots.is_empty() {
+                    Expr::Gid
+                } else {
+                    inner
+                };
                 Expr::bin(BinOp::Rem, inner, Expr::Len(buf))
             }
             2 => Expr::bin(
@@ -1447,11 +1451,10 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         pre: Vec::new(),
         arm_return_fns: Vec::new(),
         arrays: matches!(space, Space::Array | Space::Closure),
-        uniform: Vec::new(),
-        equal: Vec::new(),
         store: None,
         closures: space == Space::Closure,
         in_closure: false,
+        probe_writers: Vec::new(),
         cls: Vec::new(),
     };
     let count = match g.b.below(6) {
@@ -1509,6 +1512,7 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
             body.push(stmt);
             g.splice_pre(pre_mark, at, &mut body);
         }
+        g.closure_probe_lets(&mut body);
     }
     body.extend(g.block(0, 2, 7));
     // The value space ends the kernel body, often, with `t.k.f op= t.k.m()` on a top-level tuple local (fix round 1),
@@ -1551,6 +1555,10 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         ty = Ty::Bool;
     }
     if forced_set && ty == Ty::Bool {
+        ty = Ty::U32;
+    }
+    // The closure space wants an integer result: the probe calls join it with a `^` that every path evaluates.
+    if g.closures && ty == Ty::Bool && g.b.chance(70) {
         ty = Ty::U32;
     }
     if g.methods {
@@ -1774,6 +1782,11 @@ pub fn decode_in(space: Space, bytes: &[u8], seed: u64, attempt: u64) -> Program
         && let Some(call) = g.root_call(result.ty(), root, 3)
     {
         result = fold_in(result, call);
+    }
+    if g.closures && matches!(result.ty(), Ty::U32 | Ty::I32) {
+        for probe in g.closure_probe_calls() {
+            result = fold_in(result, probe);
+        }
     }
     // ... and, in the closure space, a call of a closure whose arguments call it: the store's value then holds the call.
     if g.closures
@@ -2368,7 +2381,7 @@ impl Gen<'_> {
 
     /// A `&mut self` call of a method returning `ty` on a writable place of root `root`, if one is in reach and no
     /// enclosing call is borrowing that root: the call whose effect on `root` a surrounding read or place can see.
-    fn root_call(&mut self, ty: Ty, root: Root, depth: u32) -> Option<Expr> {
+    pub(super) fn root_call(&mut self, ty: Ty, root: Root, depth: u32) -> Option<Expr> {
         if depth == 0 || self.forbid.contains(&root) {
             return None;
         }
@@ -2590,6 +2603,9 @@ impl Gen<'_> {
             self.gen_fn(k);
         }
         self.force_enum_ret = false;
+        if self.closures {
+            self.counter_methods();
+        }
     }
 
     fn gen_fn(&mut self, k: usize) {

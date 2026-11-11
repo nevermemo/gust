@@ -209,10 +209,11 @@ mod tests {
         assert_eq!(hashes, pinned, "value");
     }
 
-    /// Format 11 (m9.d1d): the array space of seeds 1 to 4 (16 programs each, as `generate_batch_in` keeps them)
+    /// Format 11 (m9.d1d), re-pinned in format 12 (m9.d1e fix round 2: the D168 guard now covers every array, D169): the
+    /// array space of seeds 1 to 4 (16 programs each, as `generate_batch_in` keeps them)
     /// decodes to these programs. The older spaces are untouched: their format 3, 9 and 10 pins above still hold.
     #[test]
-    fn the_array_space_holds_the_format_11_programs_of_the_first_seeds() {
+    fn the_array_space_holds_the_programs_of_the_first_seeds_with_the_widened_guard() {
         let hashes: Vec<(u64, u64)> = (1..=4)
             .map(|seed| {
                 let batch = generate_batch_in(Space::Array, seed).unwrap();
@@ -226,10 +227,10 @@ mod tests {
             })
             .collect();
         let pinned: Vec<(u64, u64)> = vec![
-            (1, 17866143740336553378),
-            (2, 16719969045829137986),
-            (3, 13468092371448034076),
-            (4, 4894026718084840015),
+            (1, 4623533607603803085),
+            (2, 12657800841464584760),
+            (3, 16336804947945770575),
+            (4, 7162040925401680788),
         ];
         assert_eq!(hashes, pinned, "array");
     }
@@ -252,10 +253,10 @@ mod tests {
             })
             .collect();
         let pinned: Vec<(u64, u64)> = vec![
-            (1, 12241926679976752482),
-            (2, 11107039089136461779),
-            (3, 12782383001583604423),
-            (4, 16495067024626273188),
+            (1, 10042002379242349144),
+            (2, 6698736558324710702),
+            (3, 14225375692781081802),
+            (4, 2186207238784607583),
         ];
         assert_eq!(hashes, pinned, "closure");
     }

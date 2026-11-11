@@ -495,52 +495,69 @@ primitive `op=`, with a bounds check (`Violation::Index`). Accepted programs mak
 
 **Reachability** (the 128 array programs of the 64-seed batch, the `ARRAY-FORMS` lines of
 `the_array_programs_of_the_64_seed_batch_write_and_run_every_form_and_order_shape` and `difftest-run`'s coverage table;
-programs / occurrences in text / evaluations executed): literal 121 / 349 / 113 832, repeat 47 / 52 / 27 007, element read
-127 / 940 / 303 297, `.len()` 70 / 106 / 42 185, element set 72 / 106 / 49 353, compound set 115 / 304 / 113 253, copy
-12 / 13 / 2 025, argument 58 / 169 / 46 431, element method call 12 / 21 / 1 895, output store 66 / 66 / 23 058. Discards of
-the array space over seeds 1 to 64 (`difftest-gen stats 1-64`): 986 attempts for 128 programs; `overflow` 355, `static`
-210, `no-call` 193, `division-by-zero` 44, `index` 23, `shift-amount` 22, `no-input-read` 11 (seeds 1 to 4: 83 attempts,
-`overflow` 33, `static` 19, `no-call` 11, `division-by-zero` 6, `index` 2, `no-input-read` 2, `shift-amount` 2).
+programs / occurrences in text / evaluations executed; the D169 guard below moved these numbers, they are the ones of the
+format 12 tree): literal 115 / 355 / 116 977, repeat 52 / 68 / 35 388, element read 128 / 1 065 / 317 153, `.len()` 62 /
+79 / 28 813, element set 70 / 117 / 43 190, compound set 116 / 301 / 96 312, copy 18 / 21 / 15 126, argument 62 / 195 /
+52 720, element method call 20 / 28 / 2 571, output store 66 / 66 / 26 736. Discards of the array space over seeds 1 to 64
+(`difftest-gen stats 1-64`): 1 034 attempts for 128 programs (986 before the D169 guard); `overflow` 378, `static` 222,
+`no-call` 210, `division-by-zero` 41, `index` 24, `shift-amount` 18, `no-input-read` 13.
 
 **Order shapes** (static programs / executed evaluations over the batch; these are **thin**, one to seven programs of 128,
-and they are minima pinned in `SHAPE_MINIMA`): literal of calls on one root 3 / 363, repeat of a call 2 / 2 194, reads
-indexed by calls on one root 5 / 254, set with a call on the array in the value **1 / 63**, output store with a call in the
-value 7 / 514. The generator biases toward them: a struct array is drawn for a set 85 % of the time, an element set often
-names a field that one of the struct's methods writes, the value of a set on a struct element calls the same array (80 % at
-the same index, so that `ps[k].f op= ps[k].bump()` shows place-after-value), a literal with a bias root mixes calls on that
-root with reads of a field that one of its methods writes, and helper calls with array arguments are drawn more often. The
-set-with-call shape is the thinnest (earlier trees had 2 to 5 programs): the draw moves it, and the order-mutant counts
-below say how much of it the batch observes.
+and they are minima pinned in `SHAPE_MINIMA`): literal of calls on one root 5 / 2 720, repeat of a call 3 / 2 001, reads
+indexed by calls on one root 7 / 628, set with a call on the array in the value **1 / 771**, output store with a call in the
+value 7 / 630. The generator biases toward them: a struct array is drawn for a set 85 % of the time, an element set often
+names a field that one of the struct's methods writes, the value of a set on a struct element calls the same array (80 %,
+on one element: since D169 every element call has a literal index, so the place of such a set takes the call's literal
+and `ps[2].f op= ps[2].bump()` shows place-after-value), a literal with a bias root mixes calls on that root with reads of a
+field that one of its methods writes, a repeat is drawn 40 % of the time (28 % without a bias root) so that the
+repeat-of-a-call shape stays in the batch, and helper calls with array arguments are drawn more often. The set-with-call
+shape is the thinnest (earlier trees had 1 to 5 programs): the draw moves it, and the order-mutant counts below say how much
+of it the batch observes.
 
 **Generated programs observe the order mutants**
 (`the_order_mutants_change_generated_programs_and_the_order_shapes_keep_their_minima`). Over the 1 024 programs of the
-array space of seeds 1 to 64 the mutant changes at least: `ArrayLitRightToLeft` 5, `RepeatPerElement` 5, `ArrayArgByRef`
-10 programs, and `CompoundPlaceFirst` (place read before the value) 13 programs **that also execute the array shape
-`set with a call on the array in the value`** (the enum and method programs have same-root sets that the mutant changes
-too; they are not counted). A mutant run that ends in a `Violation` counts as a change. In the 128-program batch the
-measured counts are 1, 0, 2 and 1, and the test pins exactly those as floors: **a GPU run of the batch does not observe the
-repeat-once rule at all by itself**, and observes each other order by one or two programs. The observability is low because
-the generated methods often return values that do not depend on their writes; the bias changes that were cheap (reads of
-written fields in literals, same-index calls and written fields in element sets, more array-argument calls) raised the
-space counts but moved the batch counts only by the luck of the draw. A periodic array-space-only wide run (16 array
-programs per seed) would add weight and is not scheduled. `IndexBeforeValue` is not asked of generated programs: an accepted
-program cannot show it (E0421 refuses the only case where an index could see the value), so only the hand vectors, written
-past the checker, pin that rule.
+array space of seeds 1 to 64 the mutant changes at least: `ArrayLitRightToLeft` 4, `RepeatPerElement` 3, `ArrayArgByRef`
+10 programs (15 measured), and `CompoundPlaceFirst` (place read before the value) 11 programs **that also execute the array
+shape `set with a call on the array in the value`** (the enum and method programs have same-root sets that the mutant
+changes too; they are not counted). A mutant run that ends in a `Violation` counts as a change. In the 128-program batch
+the measured counts are 2, 0, 3 and 1, and the test pins exactly those as floors (before D169: 1, 0, 2 and 1; the space
+floors were 5, 5, 10 and 13): **a GPU run of the batch does not observe the repeat-once rule at all by itself**, and
+observes each other order by one to three programs. The observability is low because the generated methods often return
+values that do not depend on their writes; the bias changes that were cheap (reads of written fields in literals, same-element
+calls and written fields in element sets, more array-argument calls) raised the space counts but moved the batch counts only
+by the luck of the draw. A periodic array-space-only wide run (16 array programs per seed) would add weight and is not
+scheduled. `IndexBeforeValue` is not asked of generated programs: an accepted program cannot show it (E0421 refuses the
+only case where an index could see the value), so only the hand vectors, written past the checker, pin that rule.
 
-**Known driver hole (guard).** On the RTX 5090 (NVIDIA driver 610.88, Vulkan and D3D12 alike) a local array of length 3, 5
-or 17 whose elements all hold one runtime value, then an element at a dynamic index loaded, combined with an operand the
-driver can prove is the identity (`- 0`, `+ 0`, `^ 0`, a copy) and written back, reads element 0 as 0 wherever the index
-is not 0. GUST's Slang, slangc's WGSL and naga's SPIR-V are correct; a 20-instruction `spirv-val`-clean module reproduces
-it, and the Radeon 890M computes the interpreter's values. This is a driver shader-compiler defect (decision D168 records
-it; the reproduction module and the investigation are kept with the project's run notes, not in this repository). The
-first wide run hit it once (seed 40, attempt 5 000 008, shrunk to `let mut v17: [i32; 3] = [-3 - a[0]; 3];
-v17[(i % 3) as usize] -= v8.f1;` with `v8.f1 == 0`).
+**Known driver hole (guard).** Decisions D168 and D169 (coordinator, to be recorded at merge) record it; the
+investigations (arrbug.md, arrbug2.md) and the reproduction modules are kept with the project's run notes, not in this
+repository. It is a defect of the NVIDIA shader compiler, not of GUST: GUST's Slang, slangc's WGSL and naga's SPIR-V are
+correct (a `spirv-val`-clean module reproduces it), and the Radeon 890M computes the interpreter's values on every variant.
 
-The guard has two parts, for local arrays of length other than 2 or 4 (lengths 1, 3, 5).
+*The envelope (RTX 5090, Vulkan driver 610.88).* A load of an element at a dynamic index into a function-local array and
+a store back of a value the compiler can prove unchanged zeroes elements. "Unchanged" is after constant folding by slangc
+or the driver: a literal `^ 0`, `+ 0` or `- 0`, `& !0`, `<< 0`, an element stored onto itself, or a constant that folds to
+0 through `%` or an inlined call (the second wide-run hit, seed 53 of fix round 1, was `^= (m0(..) as u32) % 2` where the
+method returns its constant enum argument; an operand that merely looks run-time to the generator is not safe). It needs
+the driver to know the array: a uniform array of any length from 3 (lengths 3, 4, 5, 8 and 16 failed; length 2 never did,
+in three shapes, and is guarded anyway), or any array, uniform or not (distinct constants, distinct run-time values), once an
+earlier dynamic-index store and a copy precede the write-back. Several elements can be zeroed, not only element 0 (the last
+element for an array that was shifted and copied; elements 0 to 2, 1 to 5 or 1 to 13 for lengths 5, 8 and 16). A genuine
+run-time zero from buffer data (`^= a[1]`) never triggered it, nor did a non-identity operand, a literal index on either
+store, distinct run-time values without an earlier dynamic store, or a dynamic read. D168 first recorded lengths 3, 5 and 17
+and uniform arrays only; the seed 53 mismatch (closure space, attempt 6 000 001, shrunk to the vector below) showed the
+wider envelope.
 
-*Compound sets.* The array may hold one value in every element (the wide set): a repeat filled it, its literal has equal
-elements or any element that is not a plain literal (`[x, x + 0, x]` may fold to one value), it is a copy of such an array,
-or it is a call result. Per operator, for a compound set into it:
+*Other routes.* D3D12 on the same GPU depends on the HLSL compiler and its flags: with release flags Auto and DXC are right
+and FXC wrong; with the debug flags wgpu adds when `InstanceFlags::DEBUG` is set (skip optimisation) the compilers are wrong
+(D168's "D3D12 alike" held only for its debug-flag runs). The difftest runs Vulkan. slangc's own SPIR-V, passed to Vulkan
+on the same GPU, is right, while slangc's WGSL through naga's SPIR-V is wrong; a runtime that took slangc's SPIR-V would
+avoid the defect. That is recorded by the coordinator and is not part of this slice.
+
+*The guard (D169, `Gen::guard_set`, `non_identity` and `call_index` in `generator/array_gen.rs`).* It covers every local
+array of every length (1, 2, 3, 4, 5, ...), uniform or not, whether it came from a literal, a repeat, a copy, a call result
+or a closure result, and every array parameter a function writes; it no longer depends on any uniformity set. Per
+operator, for a set at a dynamic index (the kernel, helpers, methods and closure bodies alike):
 
 | operator | index | operand `v` becomes | why |
 | --- | --- | --- | --- |
@@ -548,35 +565,47 @@ or it is a call result. Per operator, for a compound set into it:
 | `<<= >>=` | dynamic | `(v & 31) \| 1` | a shift amount of 1 to 31, never 0 |
 | `*= /=` | dynamic | `v \| 2` | never 0 or 1 (so also never a division by zero) |
 | `\|= &= %=` | **literal** | unchanged | an element with known bits or range can be provably unchanged: `(c \| 1) \| 1`, `(c & 0xFE) & !1`, `(c & 7) % 9`; no operand removes that, so the index is a literal |
+| plain `=` | dynamic | unchanged, except a self-assignment `a[e] = a[e]` (also through casts), which takes a literal value | slangc deleted the one Slang instance measured, but the same store in WGSL, by index or through a pointer, fails; other plain sets (`= 9`) passed |
+| `&mut self` call on an element | **literal** | unchanged | the call writes `self` back, a method that leaves `self` unchanged writes a copy: the same trigger |
 
-For `+ - ^ * / << >>` an element is left unchanged only by special values (0, or -1 under an `i32` `>>`) that the driver
-cannot prove for a runtime element; this is an argument from the trigger map in the investigation, not a GPU measurement.
-Wrapping needs no rule of its own: an overflow is a discard in the interpreter, not a wrapped value. Plain `=` sets are not
-guarded (the trigger map did not hit them). A side effect on scalar arrays of length 1, 3 or 5 in the wide set: addends
-and masks are always odd, shift amounts always odd, and a multiplier or divisor at least 2; lengths 2 and 4 keep the full
-operand range.
+The operand rewrite applies to every operand, a call or a `%` included. For `+ - ^ * / << >>` an element is left unchanged
+only by special values (0, or -1 under an `i32` `>>`) that the driver cannot prove for a runtime element; this is an
+argument from the trigger map in the investigation, not a GPU measurement. Wrapping needs no rule of its own (an overflow
+is a discard in the interpreter). A set whose value calls `&mut self` on an element of its own array takes the call's
+literal index for its place as well, so call and place stay on one element and the order shapes keep their meaning.
+A closure body writes an array parameter only at a literal index or a literal modulo `.len()` and declares no array local;
+what a closure returns is an ordinary array to the kernel, so the same rules apply to it.
 
-*Element method calls.* A `&mut self` call on an element of a struct array writes `self` back, and a method that leaves
-`self` unchanged writes a copy: the other trigger form. The index is a literal for arrays of the narrow set only (a repeat,
-an equal-element literal, a copy of one, or a call result); a struct array of distinct fresh elements keeps its dynamic
-index (`call_index`, `driver_hole_calls`), which the scan test must see at least once.
+There is no sentinel: no test fails when a driver fixes the hole, so nobody will be told to remove the guard. A GPU sentinel
+run from the shrunk program would do that; it is a recorded follow-up, not part of this slice.
 
-There is no sentinel: no test fails when a driver fixes the hole, so nobody will be told to remove the guard. A GPU
-sentinel run from the shrunk program would do that; it is a recorded follow-up (cure item 3 of the investigation), not
-part of this slice.
+*What the guard does and does not give.* Dynamic-index compound sets with `+ - ^ * / << >>` still reach the GPU, with
+operands that are not the identity, and the call-in-the-value order shapes still run. **Not exercised on the GPU while the
+guard stands:** an identity operand at a dynamic index into any array; `|= &= %=` at a dynamic index; a self-assignment at a
+dynamic index; an element method call at a dynamic index. The host-only vectors in `tests/array_known_driver.rs` (the shrunk
+seed 40 program and the seed 53 minimal program, `let x = 2048; let mut v46 = [x, x, 1073742547, x]; v46[i % 4] <<= 10;
+let mut v48 = v46; v48[i % 4] ^= 0; out[i] = v48[3]`, on the interpreter and the CPU twin) pin the interpreter's reading of
+those forms; **they are not GPU coverage and cannot find a GUST lowering bug**, because no Slang or WGSL runs.
+`no_generated_program_gives_the_driver_hole_an_identity_operand_or_a_call_at_a_dynamic_index` scans every statement and
+value of the array space of seeds 1 to 64, in the kernel, the helpers and the methods and through the closure bodies, and
+asserts each rule; it counted 787 dynamic compound sets with a rewritten operand, 704 `|= &= %=` at a literal index, 206
+element calls at a literal index and 546 plain sets at a dynamic index (none a self-assignment). The closure space gave
+778, 802, 618 and 429 (`no_closure_fills_or_writes_back_an_array_in_the_driver_hole_form`). Remove the guard
+(`guard_set`, `non_identity`, `call_index`, and the same-element literal in `array_set_stmt`) when a driver fixes it.
 
-What the guard does and does not give: dynamic-index compound sets with `+ - ^ * / << >>` into these arrays still reach the
-GPU, with operands that are not the identity, and the call-in-the-value order shape still runs. The identity operand on a
-dynamic index into such an array, and `|= &= %=` at a dynamic index, are **not** exercised on the GPU while the guard stands.
-The host-only vector `tests/array_known_driver.rs` (the shrunk seed 40 program on the interpreter and the CPU twin) pins the
-interpreter's reading of that form; **it is not GPU coverage and cannot find a GUST lowering bug**, because no Slang or
-WGSL runs. `no_generated_program_gives_the_driver_hole_an_identity_operand_or_a_call_at_a_dynamic_index` scans seeds 1 to 64
-with the same two uniformity rules and checks both halves. Remove the guard (`Gen::uniform`, `Gen::equal`,
-`driver_hole_array`, `driver_hole_calls`, `non_identity` and `call_index` in `generator/array_gen.rs`) when a driver fixes it.
+**Effect of D169 on format 11 and on the pins.** The guard changes the array space, so the array pin of
+`corpus::tests::the_array_space_holds_the_programs_of_the_first_seeds_with_the_widened_guard` moved from format 11's
+`(1, 17866143740336553378) (2, 16719969045829137986) (3, 13468092371448034076) (4, 4894026718084840015)` to
+`(1, 4623533607603803085) (2, 12657800841464584760) (3, 16336804947945770575) (4, 7162040925401680788)`. The older spaces
+(format 3, 9 and 10 pins) are unchanged. The format-12 closure pin moved from
+`(1, 16380561398231883991) (2, 1555899843030428023) (3, 17055776649504420456) (4, 6199642395575606840)` to
+`(1, 10042002379242349144) (2, 6698736558324710702) (3, 14225375692781081802) (4, 2186207238784607583)`, and `seeds.txt` was
+regenerated. `DIFFTEST_FORMAT` stays 12 (the format is unreleased).
 
-**GPU results (RTX 5090, driver 610.88, tree of fix round 2).** Seeds 1 to 4: 64 of 64 programs, 0 mismatches. Seeds 1 to 64:
-1 024 of 1 024 programs in `dev` and again in `dev+subgroups`, 0 mismatches, the short-circuit GPU test passing
-(1 571 s). The first wide run of the slice (before the guard) had the one mismatch described above.
+**GPU results (RTX 5090, driver 610.88), format 11 slice only.** Seeds 1 to 4: 64 of 64 programs, 0 mismatches. Seeds 1 to
+64: 1 024 of 1 024 programs in `dev` and again in `dev+subgroups`, 0 mismatches, the short-circuit GPU test passing
+(1 571 s). The first wide run of that slice (before any guard) had the seed 40 mismatch; the GPU results of the current
+tree are in the Closures section.
 
 **Not generated.** Arrays of vectors, matrices and enums (the checker, interpreter and emitter accept them; the generator
 would need interval tracking through lanes and a discriminant check), `make(x)[1]` (an index of a call result needs an
@@ -613,7 +642,7 @@ recorded one. wgpu renders a real shader-module error as a codespan diagnostic w
 **Tests.** `array_tests`: hand vectors (literal order, repeat once, value before index for `=`, `op=` and the store, copy
 on argument and `let`), the mutants, the emitted text, the reachability and order-shape tests, the guard scan.
 `tests/array_known_driver.rs`. `roundtrip`: `array_programs_compile_through_the_macro_without_a_gust_diagnostic` compiles
-192 array programs. `corpus`: the array space of seeds 1 to 4 is pinned as format 11. `xtask`: `is_shape_row` takes the
+192 array programs. `corpus`: the array space of seeds 1 to 4 is pinned (format 11, re-pinned in format 12 for D169). `xtask`: `is_shape_row` takes the
 `array ` rows.
 
 ## Closures (format 12, slice m9.d1e)
@@ -621,8 +650,9 @@ on argument and `let`), the mutants, the emitted text, the reachability and orde
 `DIFFTEST_FORMAT` is 12. A batch is three float, four vector, one method, two enum, two value, two array and two closure
 programs (16 in all). The closure space (`Space::Closure`, attempts from 6 000 000) is the array space (structs, enums,
 methods, `match`, arrays and the final store; no floats, tuples or value `match`) plus the non-capturing closures of
-m9.c (D166). Older spaces decode as before: the array space of seeds 1 to 64 still makes 986 attempts for its 128
-programs, and every older pin (format 3, 9, 10 and 11) holds, read with its own stamp. The cut takes two float slots
+m9.c (D166). Older spaces decode as before: the format 3, 9 and 10 pins hold, read with their own stamp. The array space itself
+changed once more in this slice (the D169 guard widening, below): it makes 1 034 attempts for its 128 programs (986
+before), and its pin is re-pinned. The cut takes two float slots
 for the closure space (five float programs became three; the array and closure spaces each own two). Mismatches are
 compiler bugs (D163); an order difference is never a D39 note.
 
@@ -654,64 +684,74 @@ reused for every call.
 
 **Reachability** (programs that write it / written occurrences / evaluations executed; `CLOSURE-space` and `CLOSURE-batch`
 lines of `the_closure_programs_of_the_64_seed_runs_write_and_run_every_form_and_order_shape`; the closure space of seeds
-1 to 64 is 1 024 programs, the batch part is its first two programs per seed, 128). Forms, space: closure binding 1 024 /
-7 553 / 4 518 906, call 1 024 / 4 650 / 1 963 192, bound in the kernel 1 024 / 2 369 / 812 123, in a helper 495 / 899 /
-1 124 231, in a method 1 020 / 4 285 / 2 582 552, body calls a helper 217 / 330 / 246 349, body calls a method 442 / 639 /
-517 240, `mut` array parameter 597 / 904 / 565 783, `mut` struct parameter 784 / 1 445 / 814 934, array result 146 / 153 /
-76 300. Forms, batch: binding 128 / 938 / 388 687, call 128 / 542 / 174 431, kernel 128 / 296 / 137 254, helper 59 / 115 /
-78 773, method 128 / 527 / 172 660, body calls a helper 24 / 37 / 7 533, a method 54 / 75 / 26 907, `mut` array 79 / 120 /
-150 461, `mut` struct 91 / 165 / 29 042, array result 17 / 18 / 1 490. Discards of the closure space over seeds 1 to 64
-(`difftest-gen stats 1-64`): 1 563 attempts for 128 programs (`overflow` 443, `static` 496, `no-call` 253, `no-closure`
-114, `division-by-zero` 61, `shift-amount` 29, `index` 27, `no-input-read` 10, `min-over-minus-one` 2); seeds 1 to 4: 110
-attempts for 8 programs.
+1 to 64 is 1 024 programs, the batch part is the last two programs per seed, 128). Forms, space: closure binding 1 024 /
+9 121 / 4 106 864, call 1 024 / 7 453 / 3 184 947, bound in the kernel 1 024 / 4 124 / 1 838 928, in a helper 498 / 968 /
+360 972, in a method 1 013 / 4 029 / 1 906 964, body calls a helper 221 / 335 / 175 805, body calls a method 384 / 531 /
+293 167, `mut` array parameter 614 / 911 / 327 821, `mut` struct parameter 996 / 2 233 / 1 089 383, array result 134 /
+148 / 33 979, method call on a struct parameter 31 / 48 / 46 413. Forms, batch: binding 128 / 1 115 / 650 935, call 128 /
+855 / 364 562, kernel 128 / 517 / 375 560, helper 67 / 144 / 120 748, method 127 / 454 / 154 627, body calls a helper 27 /
+44 / 57 322, a method 47 / 60 / 50 667, `mut` array 76 / 115 / 41 357, `mut` struct 126 / 282 / 170 287, array result 13 /
+15 / 1 505, method call on a struct parameter 2 / 2 / 65. Discards of the closure space over seeds 1 to 64
+(`difftest-gen stats 1-64`): 638 attempts for 128 programs (`static` 246, `overflow` 195, `division-by-zero` 22, `index`
+20, `no-call` 9, `shift-amount` 9, `no-input-read` 8, `min-over-minus-one` 1).
 
-**Order shapes** (static programs / executed evaluations; space, then batch; minima pinned in `SPACE_MINIMA` and
-`BATCH_MINIMA`; each is causal: it counts only where the value shown to the order is a `&mut self` call on a root that the
-other operand reads or calls, or, for the parameter shape, where the callee really changed its copy):
+**Order shapes** (programs that write the shape / executed evaluations; space, then batch; minima pinned in
+`SPACE_MINIMA` and `BATCH_MINIMA` and printed by the `CLOSURE-` lines). A shape counts only where the order is observable:
+the value shown to the order is a `&mut self` call on a root that the other operand reads or calls, and for the parameter
+shapes only where the callee really changed what the caller then reads. Without that, a closure that ignores its arguments
+or a `mut` parameter that is never written would count as an order shape and no mutant would change it.
 
 | shape | space | batch |
 | --- | --- | --- |
-| `f(c.bump(), c.bump())`: arguments built from calls on one root | 32 / 23 224 | 3 / 322 |
-| closure call in an array literal beside a call on its root | 30 / 12 082 | 5 / 516 |
-| closure call in a compound set value on the place's root | 35 / 18 839 | 4 / 450 |
-| closure call in an indexed set value on the array's root | 7 / 4 706 | 2 / 387 |
-| closure call in the output store's value | 33 / 9 577 | 2 / 129 |
-| closure called twice with a side effect in an argument | 25 / 1 375 | 4 / 76 |
-| closure mutates its parameter, caller variable passed (observed after the call) | 60 / 30 669 | 8 / 308 |
-| closure in a method calls a method on its parameter | 16 / 2 619 | 4 / 2 |
+| `f(c.k(), c.k())`: two weighted arguments built from calls on one root | 836 / 622 679 | 102 / 108 616 |
+| closure call in an array literal beside a call on its root | 121 / 62 645 | 16 / 6 908 |
+| closure call in a compound set value on the place's root | 190 / 102 081 | 17 / 30 341 |
+| closure call in an indexed set value on the array's root | 74 / 31 112 | 6 / 259 |
+| closure call in the output store's value | 610 / 228 199 | 75 / 26 333 |
+| closure called twice with a side effect in an argument | 272 / 197 026 | 23 / 9 147 |
+| closure writes its parameter and the caller's variable is read after the call (`f(v) ^ v.fk`) | 836 / 513 496 | 106 / 54 253 |
 
-The batch counts are thin (two to eight programs of 128), like the array shapes before them; the last row is the thinnest
-in evaluations. The bias: calls take arguments that are `&mut self` calls on one root (78 % each), closures with two
-integer parameters are preferred for those, the integer parameters enter the result as `(p & 255) * (2k + 1)` so that the
-argument order shows in the value, a call of a closure with a `mut` struct or array parameter is often given a caller
-variable and followed in the same expression by a read of that variable (`f(v) + v.f0`), and closures in helpers and
-methods are drawn often and take struct parameters on which `&self` methods are called.
+Every one of the seven is written in the eight closure programs of seeds 1 to 4 (the G5 run), by 6, 1, 2, 1, 6, 3 and 7
+programs, and the test asserts it (`CLOSURE-seeds-1-4` lines). The method-call-on-a-struct-parameter form (31 / 46 413 in
+the space, 2 / 65 in the batch, none in seeds 1 to 4) is counted as a form, not as an order shape: a `&self` call on a
+parameter has no order to show. The bias, since fix round 1: every kernel draws an *order closure* (two integer
+parameters that enter the result as `(p & 255) * (2k + 1)`, an empty body, chance 88 %) and a *writer closure*
+(`|mut s: S| { s.fk ^= 1; s.fk }`, chance 85 %), and calls them as `f(c.k(), c.k())` and `g(v) ^ v.fk` (the arguments are
+retried until both mutate one root); every struct with an integer field gets a counter method
+`fn k(&mut self) -> T { self.f = (self.f & 255) + 1; self.f }`. An integer argument is a `&mut self` call on the bias root 78 %
+of the time, an element of an array literal with a bias root is a closure call 70 % of the time, a repeat is drawn 55 % of the time
+with a bias root (28 % without), a closure called twice takes a non-commutative combination (`l ^ ((r & 255) * 3)`, 75 %),
+and closures in helpers and methods take struct parameters on which `&self` methods are called. Two E0421 guards keep the
+macro quiet: an index of an assigned place never holds a `&mut self` call in the closure space (`input_read` uses `i`), and
+a `^=` on an indexed place whose value holds one becomes `|=`.
 
 **Mutation checks.** Three test-only mutants (`DIFFTEST_MUTANT`), each failing exactly one hand vector of `closure_tests`
 (gates `xfail-<mutant>`): `closure-args-right-to-left` fails `closure_arguments_run_left_to_right`; `closure-param-by-ref`
 (a struct or array argument that is a variable receives the callee's final parameter) fails
 `a_closure_parameter_is_a_copy`; `closure-memo` (the result of the first call of a closure is reused) fails
-`a_closure_body_runs_once_per_call`. Generated programs observe them (`the_closure_mutants_change_generated_programs`;
-a mutated run that breaks an interpreter assertion counts as a change): the right-to-left mutant changes 8 of the 1 024
-space programs and **1 of the 128 batch programs**, the by-reference mutant 17 and **1**, the memo mutant 335 and 32. So a
-GPU run of the batch observes the memo rule well and the other two rules by a single program each; the observability is
-low for the same reason as in the array space (many arguments or results do not reach the output).
+`a_closure_body_runs_once_per_call`. Generated programs observe them
+(`the_closure_mutants_change_generated_programs`; a change is a different output buffer or domain verdict, and a mutated
+run that breaks an interpreter assertion is counted apart): the right-to-left mutant changes 752 of the 1 024 space programs
+and 92 of the 128 batch programs, the by-reference mutant 671 and 81 (20 more space programs break an assertion), the memo
+mutant 733 and 83; each changes at least one of the 8 closure programs of seeds 1 to 4 (5, 5 and 7). The floors are 700 / 80,
+600 / 70 and 700 / 70. So a GPU run of the batch observes every rule through dozens of programs, unlike the array
+mutants above.
 
-**D168 (NVIDIA hole) in the closure space.** The guard of format 11 stays on every array a closure touches.
-(1) A closure writes an array parameter only at a literal index or a literal modulo `.len()` (the indices a helper's array
-parameter gets) and declares no array local, so no closure fills an array in the hole form or writes back a dynamic
-element. (2) An array a closure returns, and one bound from a closure call (`let c = cl(a)`), is a call result: it goes
-through `note_uniform` into both uniformity sets exactly like a helper's, so the kernel's compound sets on it take the
-non-identity operand or a literal index, and `&mut self` calls on its elements a literal index.
-`no_closure_fills_or_writes_back_an_array_in_the_driver_hole_form` checks (2) with the scan of the array space on the
-closure space (277 guarded dynamic compound sets) and (1) on 6 486 closures (737 array writes inside closures, all at
-literal indices).
+**D168 and D169 (NVIDIA hole) in the closure space.** The guard of the Arrays section applies unchanged to every array a
+closure touches or returns. (1) A closure writes an array parameter only at a literal index or a literal modulo `.len()`
+and declares no array local, so no closure fills an array in the hole form or writes back a dynamic element. (2) An array a
+closure returns, and one bound from a closure call (`let c = cl(a)`), is an ordinary array for the kernel: its compound
+sets take the rewritten operand or a literal index, no plain set stores it back, and `&mut self` calls on its elements have a
+literal index, whether or not it is uniform. `no_closure_fills_or_writes_back_an_array_in_the_driver_hole_form` runs the
+whole-program scan on the closure space (778 dynamic compound sets with a rewritten operand, 802 `|= &= %=` at a literal
+index, 618 element calls at a literal index, 429 plain sets at a dynamic index) and checks (1) on 9 121 closures (844
+array writes inside closures, all at literal indices). The seed 53 mismatch of fix round 1 was a closure-space program.
 
 **Not generated.** Capturing and higher-order closures (a closure as an argument, result or struct field), closures that
 call closures, closure calls in a `for` bound, unit closures, `move` closures, arrays in struct fields and storage buffers
 (m9.r2a). A `&mut self` call on a closure parameter is not generated (E0333, above).
 
-**GPU results (RTX 5090, driver 610.88):** the 4-seed run (64 programs, 8 of them closure programs) and the 64-seed wide run (1 024 programs, 128 closure programs, dev and dev+subgroups, 2 048 exported records byte for byte equal) executed every program with 0 mismatches; the grid,pixel shapes run on seeds 1 and 2 (32 programs, 29 pixel, 3 grid-only) had 0 mismatches. The executed shape counts of the wide run are the batch column of the table above, with these static / executing programs: arguments on one root 3 / 2, array literal 5 / 5, compound set 4 / 3, indexed set 2 / 2, output store 2 / 2, called twice 4 / 2, mutated parameter 8 / 3, method parameter 4 / 1. No mismatch was seen, so nothing was shrunk or classified on the Radeon 890M.
+**GPU results (RTX 5090, driver 610.88), final tree of fix round 2 (the D169 guard).** The 4-seed run (64 programs, 8 of them closure programs) executed every program with 0 mismatches; the grid,pixel shapes run on seeds 1 and 2 (32 programs, 28 pixel, 4 grid-only) had 0 mismatches; the 64-seed wide run (1 024 programs, 128 closure programs, `dev` and `dev+subgroups`, `1024 of 1024 programs executed (gpu), 0 mismatches` in both) had 0 mismatches (1 613 s). The first wide run of fix round 1 had the seed 53 mismatch (the D168 hole in its wider form); with the guard widened it is gone, which is evidence for the guard on these seeds and not a proof. The executed shape counts of the wide run are the batch column of the tables above. No mismatch was seen on the final tree, so nothing was shrunk or classified on the Radeon 890M.
 
 **Tests.** `closure_tests`: hand vectors (arguments left to right, parameters by value for a struct and an array, the body
 once per call), the mutants, the emitted text, the checker's refusals, the batch cut, names, the 64-seed reachability

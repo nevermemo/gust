@@ -1,0 +1,85 @@
+{
+  "entry_point": "gpu_pre_arrays_field",
+  "key": "794f2959e8738056",
+  "module": "pre_arrays",
+  "name": "field",
+  "parameters": [
+    {
+      "access": "not_applicable",
+      "binding": null,
+      "kind": "invocation",
+      "layout": null,
+      "name": "id",
+      "rust_type": "SV_DispatchThreadID"
+    },
+    {
+      "access": "read_write",
+      "binding": {
+        "binding": 0,
+        "group": 0
+      },
+      "kind": "storage",
+      "layout": {
+        "element": {
+          "alignment": 4,
+          "fields": [
+            {
+              "name": "items",
+              "offset": 0,
+              "type": {
+                "alignment": 4,
+                "count": 4,
+                "element": {
+                  "alignment": 4,
+                  "kind": "scalar",
+                  "name": "u32",
+                  "scalar": "u32",
+                  "size": 4,
+                  "stride": 4
+                },
+                "kind": "array",
+                "name": "array",
+                "size": 16,
+                "stride": 16
+              }
+            },
+            {
+              "name": "count",
+              "offset": 16,
+              "type": {
+                "alignment": 4,
+                "kind": "scalar",
+                "name": "u32",
+                "scalar": "u32",
+                "size": 4,
+                "stride": 4
+              }
+            }
+          ],
+          "kind": "struct",
+          "name": "Bag",
+          "size": 20,
+          "stride": 20
+        },
+        "element_stride": 20,
+        "rules": "storage_v1"
+      },
+      "name": "bags",
+      "rust_type": "RWStructuredBuffer < Bag >"
+    }
+  ],
+  "schema": 1,
+  "source": {
+    "file": "kernels/src/lib.rs",
+    "lines": [
+      [3, 7, 3],
+      [9, 13, 8],
+      [15, 21, 13],
+      [33, 33, 32],
+      [34, 38, 33],
+      [36, 36, 34],
+      [37, 37, 35]
+    ]
+  },
+  "workgroup_size": [64, 1, 1]
+}

@@ -443,7 +443,8 @@ WebGPU format name or `null` for a sampled texture) and describes a texture para
 sampler's `kind` is `sampler` and its `layout` is `null`; the golden is
 `crates/gust-macros/tests/golden/texture.kernel.json`). A texture does not move the schema number: a grid texture
 kernel's record is schema 1. The element's `kind` is `scalar`, `vector`
-(`scalar`, `count`), `matrix` (`scalar`, `rows`, `cols`, `column_stride`) or `struct` (`fields` of `name`, `offset`
+(`scalar`, `count`), `matrix` (`scalar`, `rows`, `cols`, `column_stride`), `array` (`count` and a nested `element`;
+the element is never an array) or `struct` (`fields` of `name`, `offset`
 and a nested `type`). The macro writes these numbers from the same functions that produce its const assertions
 (storage structs are padding-free; a uniform struct uses the std140 offsets, an alignment of at least 16 and a size
 rounded up to 16, and its `element_stride` is its size), for every element it can describe from the module's own

@@ -996,7 +996,7 @@ pub(crate) struct GpuSuitePin {
 ///
 /// prints `<passed> <lines>`; the output must also show no line other than `0 failed; 0 ignored`.
 pub(crate) const GPU_SUITE_PIN: GpuSuitePin = GpuSuitePin {
-    passed: 442,
+    passed: 446,
     result_lines: 46,
 };
 

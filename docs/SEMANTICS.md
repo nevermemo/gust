@@ -1483,9 +1483,11 @@ arrays. `.len()` of a field or element whose receiver contains a call is refused
 constant and would drop the call. An out-of-range dynamic index on a stored array is not checked: the CPU twin panics, and
 on the GPU the access clamps, reads zero or drops the store by the target's rules (a constant-sized inner array is not
 measured; KM-11 measured the runtime-sized buffer level). Array validation runs before struct validation, so a field
-`Option<[u32; 33]>` reports `GUST-E0216` before the `Option` refusal. Kernels with a stored array do not yet build through
-the precompiled and native path (`cargo gust build`): cargo-gust's layout fill rejects the `array` kind, a follow-up. Tests:
-`crates/gust-wgpu/tests/m9_arrays_storage.rs` (GPU and CPU twin at 1, 63, 64, 65 and 257) and the `naga_layout` table.
+`Option<[u32; 33]>` reports `GUST-E0216` before the `Option` refusal. A stored array builds through the
+precompiled and native path too (m9.pa): the record has an `array` layout kind and the fill reads it from the
+reflection (`GUST-E0217` keeps arrays of arrays out). Tests: `crates/gust-wgpu/tests/m9_arrays_storage.rs` (GPU and
+CPU twin at 1, 63, 64, 65 and 257), the `naga_layout` table and, for the precompiled run,
+`crates/gust-wgpu/tests/precompiled.rs`.
 
 ## 12. Closures (M9, D154, D160)
 

@@ -321,3 +321,210 @@ fn the_generated_host_snippet_prefers_the_embedded_artifact() {
     assert!(source.contains("`slang-runtime` feature"));
     assert!(source.contains("cargo gust build"));
 }
+
+// ---- stored arrays through the precompiled path (m9.pa) ----
+//
+// A buffer element that is, or holds, a fixed-size array. The artifacts are `cargo gust build` of this module on a
+// scratch copy, as for `vector_add`. Before m9.pa the build refused them ("unsupported element type `array`").
+
+#[gpu]
+mod pre_arrays {
+    pub struct Bag {
+        pub items: [u32; 4],
+        pub count: u32,
+    }
+
+    pub struct Pt {
+        pub x: u32,
+        pub y: f32,
+    }
+
+    pub struct Poly {
+        pub pts: [Pt; 2],
+        pub tip: [Vec2; 2],
+        pub n: u32,
+        pub pad: u32,
+    }
+
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn element(id: SV_DispatchThreadID, mut quads: RWStructuredBuffer<[u32; 4]>) {
+        let i = id.x;
+        if i < quads.len() {
+            let q = quads[i];
+            quads[i][0] = q[3] + 100u32;
+            quads[i][3] = q[0] + q[1] + q[2];
+        }
+    }
+
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn field(id: SV_DispatchThreadID, mut bags: RWStructuredBuffer<Bag>) {
+        let i = id.x;
+        if i < bags.len() {
+            bags[i].items[1] += 7u32;
+            bags[i].count = bags[i].items.len() as u32 + bags[i].items[0];
+        }
+    }
+
+    #[kernel(workgroup_size(64, 1, 1))]
+    pub fn shapes(
+        id: SV_DispatchThreadID,
+        mut pairs: RWStructuredBuffer<[Vec2; 2]>,
+        mut polys: RWStructuredBuffer<Poly>,
+    ) {
+        let i = id.x;
+        if i < pairs.len() {
+            let p = pairs[i];
+            pairs[i][0] = p[1];
+            pairs[i][1] = p[0];
+            polys[i].pts[1].x = polys[i].pts[0].x + 1u32;
+            polys[i].tip[0] = polys[i].tip[1];
+            polys[i].n = polys[i].pts[1].x;
+        }
+    }
+}
+
+const ELEMENT_KEY: &str = "54bb2958cc5fe568";
+const FIELD_KEY: &str = "794f2959e8738056";
+const SHAPES_KEY: &str = "baf2462e890b0200";
+
+const ELEMENT: KernelDescriptor = pre_arrays::element::DESCRIPTOR.with_artifacts(&[Artifact {
+    format: Format::Wgsl,
+    key: ELEMENT_KEY,
+    bytes: include_bytes!("fixtures/precompiled/54bb2958cc5fe568.wgsl"),
+    reflection: include_str!("fixtures/precompiled/54bb2958cc5fe568.wgsl.reflection.json"),
+}]);
+const FIELD: KernelDescriptor = pre_arrays::field::DESCRIPTOR.with_artifacts(&[Artifact {
+    format: Format::Wgsl,
+    key: FIELD_KEY,
+    bytes: include_bytes!("fixtures/precompiled/794f2959e8738056.wgsl"),
+    reflection: include_str!("fixtures/precompiled/794f2959e8738056.wgsl.reflection.json"),
+}]);
+const SHAPES: KernelDescriptor = pre_arrays::shapes::DESCRIPTOR.with_artifacts(&[Artifact {
+    format: Format::Wgsl,
+    key: SHAPES_KEY,
+    bytes: include_bytes!("fixtures/precompiled/baf2462e890b0200.wgsl"),
+    reflection: include_str!("fixtures/precompiled/baf2462e890b0200.wgsl.reflection.json"),
+}]);
+
+/// More than one workgroup of 64, so the second workgroup is checked too.
+const ARRAY_ROWS: u32 = 70;
+
+#[test]
+fn the_array_fixtures_are_current_and_verify_without_a_process() {
+    for (kernel, key) in [
+        (&ELEMENT, ELEMENT_KEY),
+        (&FIELD, FIELD_KEY),
+        (&SHAPES, SHAPES_KEY),
+    ] {
+        assert_eq!(
+            format!(
+                "{:016x}",
+                gust::artifact::content_key(kernel.entry_point, kernel.slang_source)
+            ),
+            key,
+            "the kernel changed: run `cargo gust build` on a scratch copy of the module and replace its fixtures"
+        );
+        gust::artifact::verify_artifact(kernel, &kernel.artifacts[0])
+            .unwrap_or_else(|error| panic!("{}: {error:?}", kernel.entry_point));
+    }
+}
+
+#[test]
+fn a_buffer_of_arrays_runs_from_its_precompiled_artifact() {
+    let device = device();
+    let rows: Vec<[u32; 4]> = (0..ARRAY_ROWS).map(|i| [i, i + 1, i + 2, i + 3]).collect();
+    let quads = device.create_typed_buffer("quads", &rows, GpuBufferAccess::ReadWrite);
+    device
+        .dispatch_buffers(&ELEMENT, ARRAY_ROWS, &[BufferBinding::read_write(&quads)])
+        .expect("the verified artifact of an array element runs");
+    let out: Vec<[u32; 4]> = device.read_typed_buffer(&quads).unwrap();
+    // Written by hand: element 0 becomes q[3] + 100 = i + 103, element 3 the sum of the first three = 3 i + 3.
+    assert_eq!(out[0], [103, 1, 2, 3]);
+    assert_eq!(out[1], [104, 2, 3, 6]);
+    assert_eq!(out[69], [172, 70, 71, 210]);
+    for (i, row) in out.iter().enumerate() {
+        let i = i as u32;
+        assert_eq!(*row, [i + 103, i + 1, i + 2, 3 * i + 3], "row {i}");
+    }
+}
+
+#[test]
+fn a_struct_with_an_array_field_runs_from_its_precompiled_artifact() {
+    use pre_arrays::Bag;
+    let device = device();
+    let bags: Vec<Bag> = (0..ARRAY_ROWS)
+        .map(|i| Bag {
+            items: [i, 2 * i, 3 * i, 4 * i],
+            count: 0,
+        })
+        .collect();
+    let buffer = device.create_typed_buffer("bags", &bags, GpuBufferAccess::ReadWrite);
+    device
+        .dispatch_buffers(&FIELD, ARRAY_ROWS, &[BufferBinding::read_write(&buffer)])
+        .expect("the verified artifact of an array field runs");
+    let out: Vec<Bag> = device.read_typed_buffer(&buffer).unwrap();
+    // Written by hand: items[1] gains 7 (2 i + 7); count is the array length 4 plus items[0] = i + 4.
+    assert_eq!((out[0].items, out[0].count), ([0, 7, 0, 0], 4));
+    assert_eq!((out[1].items, out[1].count), ([1, 9, 3, 4], 5));
+    assert_eq!((out[69].items, out[69].count), ([69, 145, 207, 276], 73));
+    for (i, bag) in out.iter().enumerate() {
+        let i = i as u32;
+        assert_eq!(bag.items, [i, 2 * i + 7, 3 * i, 4 * i], "row {i}");
+        assert_eq!(bag.count, i + 4, "row {i}");
+    }
+}
+
+#[test]
+fn arrays_of_vectors_and_of_structs_run_from_their_precompiled_artifact() {
+    use gust::math::Vec2;
+    use pre_arrays::{Poly, Pt};
+    let device = device();
+    let pairs: Vec<[Vec2; 2]> = (0..ARRAY_ROWS)
+        .map(|i| [Vec2::new(i as f32, 1.0), Vec2::new(2.0, i as f32 + 0.5)])
+        .collect();
+    let polys: Vec<Poly> = (0..ARRAY_ROWS)
+        .map(|i| Poly {
+            pts: [Pt { x: i, y: 1.5 }, Pt { x: 0, y: 2.5 }],
+            tip: [Vec2::new(1.0, 2.0), Vec2::new(3.0, 4.0)],
+            n: 0,
+            pad: 9,
+        })
+        .collect();
+    let g_pairs = device.create_typed_buffer("pairs", &pairs, GpuBufferAccess::ReadWrite);
+    let g_polys = device.create_typed_buffer("polys", &polys, GpuBufferAccess::ReadWrite);
+    device
+        .dispatch_buffers(
+            &SHAPES,
+            ARRAY_ROWS,
+            &[
+                BufferBinding::read_write(&g_pairs),
+                BufferBinding::read_write(&g_polys),
+            ],
+        )
+        .expect("the verified artifact of vector and struct arrays runs");
+    let pairs: Vec<[Vec2; 2]> = device.read_typed_buffer(&g_pairs).unwrap();
+    let polys: Vec<Poly> = device.read_typed_buffer(&g_polys).unwrap();
+    // Written by hand: the pair swaps, so row 69 is [(2.0, 69.5), (69.0, 1.0)]; the poly's second point takes the first
+    // point's x plus one, its first tip becomes the second, and n is that new x (row 69: x 70, tip (3, 4), n 70).
+    let show = |pair: &[Vec2; 2]| ((pair[0].x, pair[0].y), (pair[1].x, pair[1].y));
+    assert_eq!(show(&pairs[0]), ((2.0, 0.5), (0.0, 1.0)));
+    assert_eq!(show(&pairs[69]), ((2.0, 69.5), (69.0, 1.0)));
+    assert_eq!((polys[69].pts[1].x, polys[69].pts[1].y), (70, 2.5));
+    assert_eq!((polys[69].tip[0].x, polys[69].tip[0].y), (3.0, 4.0));
+    assert_eq!((polys[69].n, polys[69].pad), (70, 9));
+    for i in 0..ARRAY_ROWS as usize {
+        let x = i as u32;
+        assert_eq!(
+            show(&pairs[i]),
+            ((2.0, x as f32 + 0.5), (x as f32, 1.0)),
+            "pair {i}"
+        );
+        let poly = &polys[i];
+        assert_eq!((poly.pts[0].x, poly.pts[0].y), (x, 1.5), "poly {i}");
+        assert_eq!((poly.pts[1].x, poly.pts[1].y), (x + 1, 2.5), "poly {i}");
+        for tip in &poly.tip {
+            assert_eq!((tip.x, tip.y), (3.0, 4.0), "poly {i}");
+        }
+        assert_eq!((poly.n, poly.pad), (x + 1, 9), "poly {i}");
+    }
+}

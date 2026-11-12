@@ -138,7 +138,8 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   (`RWStructuredBuffer<[T; N]>`, `StructuredBuffer<[T; N]>`) are accepted, `N` in 1..=32 or 64..=4096 by powers of two and
   `T` a scalar, a 2- or 4-wide vector, `Mat2`, `Mat4` or a struct of the module. New: `GUST-E0214` (a `Vec3`,
   `UVec3` or `Mat3` element) and `GUST-E0215` (an array in a uniform); `GUST-E0216` also names the stored length set.
-  `.len()` of a field or an element is its constant (a receiver with a call is `GUST-E0306`); `==` on them is `GUST-E0811`. Kernels with a stored array do not yet build through the precompiled path (`cargo gust build`; the fill rejects the `array` kind). A field of array type was `GUST-E0813` before. The `GUST-E0421` rule
+  `.len()` of a field or an element is its constant (a receiver with a call is `GUST-E0306`);
+  `==` on them is `GUST-E0811`. A field of array type was `GUST-E0813` before. The `GUST-E0421` rule
   already covered every indexed place; field arrays of storage elements are covered by tests and a fixture.
 - Non-capturing closures (M9, slice c, D160). `let f = |x: f32, y: f32| -> f32 { .. };` with typed parameters, an
   explicit result type and a block body, bound immutably and called as `f(a, b)` in a kernel, a helper or a method. Each
@@ -159,6 +160,11 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   rustc refuses it when building, and naga used to reject the generated WGSL with an error that was not a GUST
   diagnostic. Known gap: an amount the macro does not see as constant (a literal sum, a local bound to a literal) is
   folded by Slang and still rejected by naga. A run-time amount is unchanged and masks to its low 5 bits (KM-04).
+- Fixed (m9.pa): a kernel whose buffer element is or holds a fixed-size array (`RWStructuredBuffer<[u32; 4]>`, a struct
+  with an array field, arrays of vectors and of structs) now builds through `cargo gust build` and runs from its
+  precompiled artifact. The record has an `array` layout kind (`count` and a nested `element`), and the fill reads it
+  from the reflection. An array of arrays is `GUST-E0217` in the macro (the tool refuses one too). The record
+  schema stays 1: an older tool refuses the unknown kind by name.
 
 ### Changed, and may break code written for 0.1.0
 

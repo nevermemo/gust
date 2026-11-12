@@ -308,6 +308,35 @@ fn layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
                 },
             )
         }
+        "array" => {
+            let count = number(value, "elementCount", context)?;
+            let element = layout(
+                value.field("elementType", context)?,
+                &format!("{context}.elementType"),
+            )?;
+            // The element of a `GpuPod` array is never an array (GUST-E0217), and the record has no spelling for it.
+            if matches!(element.kind, LayoutKindRecord::Array { .. }) {
+                return Err(format!(
+                    "{context}: unsupported nested array (the element of an array must not be an array)"
+                ));
+            }
+            // Elements sit end to end: a reflected element stride other than the element's size is no Rust array.
+            let element_stride = number(value, "elementStride", context)?;
+            if element_stride != element.size {
+                return Err(format!(
+                    "{context}: the array's elementStride is {element_stride}, not the element's size {} (a Rust \
+                     array has no padding between elements)",
+                    element.size
+                ));
+            }
+            (
+                "array".to_owned(),
+                LayoutKindRecord::Array {
+                    element: Box::new(element),
+                    count,
+                },
+            )
+        }
         "struct" => {
             let fields = value
                 .field("fields", context)?
@@ -342,8 +371,8 @@ fn layout(value: &Json, context: &str) -> Result<LayoutRecord, String> {
         }
         other => {
             return Err(format!(
-                "{context}: unsupported element type `{other}` (only 32-bit scalars, vectors, matrices and \
-                 structs of them)"
+                "{context}: unsupported element type `{other}` (only 32-bit scalars, vectors, matrices, \
+                 arrays and structs of them)"
             ));
         }
     };
@@ -370,6 +399,143 @@ mod tests {
         include_str!("testdata/uniform/bfb6e436140611c0.wgsl.reflection.json");
     const OUTER_REFLECTION: &str =
         include_str!("testdata/uniform/f6dd8e3fe6e29694.wgsl.reflection.json");
+
+    /// The three array reflections are the helper's own output for the kernels of `gust-wgpu`'s `precompiled.rs`
+    /// (`pre_arrays`; m9.pa): `quads` is a buffer of `[u32; 4]`, `bags` a buffer of a struct with an array field,
+    /// `pairs` a buffer of `[Vec2; 2]` and `polys` a struct with arrays of structs and of vectors.
+    const QUADS_REFLECTION: &str =
+        include_str!("testdata/array/54bb2958cc5fe568.wgsl.reflection.json");
+    const BAGS_REFLECTION: &str =
+        include_str!("testdata/array/794f2959e8738056.wgsl.reflection.json");
+    const SHAPES_REFLECTION: &str =
+        include_str!("testdata/array/baf2462e890b0200.wgsl.reflection.json");
+
+    #[test]
+    fn an_array_element_is_read_with_its_count_and_element() {
+        let layout = reflected_layout(QUADS_REFLECTION, "quads").unwrap();
+        assert_eq!(layout.rules, ShaderLayoutRules::StorageV1);
+        assert_eq!(layout.element_stride, 16);
+        let element = layout.element;
+        assert_eq!(
+            (
+                element.name.as_str(),
+                element.size,
+                element.alignment,
+                element.stride
+            ),
+            ("array", 16, 4, 16)
+        );
+        let LayoutKindRecord::Array {
+            element: inner,
+            count,
+        } = element.kind
+        else {
+            panic!("expected an array");
+        };
+        assert_eq!(count, 4);
+        assert_eq!(
+            (inner.name.as_str(), inner.size, inner.alignment, inner.kind),
+            ("u32", 4, 4, LayoutKindRecord::Scalar(ScalarKind::U32))
+        );
+
+        // An array of vectors makes the element a vector holder: StorageV2.
+        let pairs = reflected_layout(SHAPES_REFLECTION, "pairs").unwrap();
+        assert_eq!(pairs.rules, ShaderLayoutRules::StorageV2);
+        assert_eq!(
+            (
+                pairs.element_stride,
+                pairs.element.size,
+                pairs.element.alignment
+            ),
+            (16, 16, 8)
+        );
+        let LayoutKindRecord::Array {
+            element: inner,
+            count,
+        } = pairs.element.kind
+        else {
+            panic!("expected an array");
+        };
+        assert_eq!((count, inner.name.as_str(), inner.size), (2, "Vec2", 8));
+    }
+
+    #[test]
+    fn an_array_field_and_arrays_of_structs_are_read_inside_a_struct() {
+        let bags = reflected_layout(BAGS_REFLECTION, "bags").unwrap();
+        assert_eq!(bags.rules, ShaderLayoutRules::StorageV1);
+        assert_eq!((bags.element_stride, bags.element.size), (20, 20));
+        let LayoutKindRecord::Struct(fields) = &bags.element.kind else {
+            panic!("expected a struct");
+        };
+        let items = &fields[0];
+        assert_eq!(
+            (items.name.as_str(), items.offset, items.ty.size),
+            ("items", 0, 16)
+        );
+        assert!(matches!(
+            items.ty.kind,
+            LayoutKindRecord::Array { count: 4, .. }
+        ));
+        assert_eq!((fields[1].name.as_str(), fields[1].offset), ("count", 16));
+
+        let polys = reflected_layout(SHAPES_REFLECTION, "polys").unwrap();
+        assert_eq!(polys.rules, ShaderLayoutRules::StorageV2);
+        assert_eq!(
+            (
+                polys.element_stride,
+                polys.element.size,
+                polys.element.alignment
+            ),
+            (40, 40, 8)
+        );
+        let LayoutKindRecord::Struct(fields) = &polys.element.kind else {
+            panic!("expected a struct");
+        };
+        let seen: Vec<(&str, u32, u32)> = fields
+            .iter()
+            .map(|field| (field.name.as_str(), field.offset, field.ty.size))
+            .collect();
+        assert_eq!(
+            seen,
+            [
+                ("pts", 0, 16),
+                ("tip", 16, 16),
+                ("n", 32, 4),
+                ("pad", 36, 4)
+            ]
+        );
+        let LayoutKindRecord::Array {
+            element: point,
+            count,
+        } = &fields[0].ty.kind
+        else {
+            panic!("expected an array of structs");
+        };
+        assert_eq!((*count, point.name.as_str(), point.size), (2, "Pt", 8));
+    }
+
+    #[test]
+    fn nested_arrays_and_padded_array_elements_are_refused_with_a_clear_message() {
+        // An array whose element is an array: the element of a `GpuPod` array is never one (GUST-E0217).
+        let element = r#"{"size":16,"alignment":4,"stride":16,"name":"Array","kind":"array","elementCount":4,"elementStride":4,"elementType":{"size":4,"alignment":4,"stride":4,"name":"uint","kind":"scalar","scalarType":"uint32"}}"#;
+        let nested = format!(
+            r#"{{"parameters":[{{"name":"m","elementStride":64,"type":{{"resultType":{{"size":64,"alignment":4,"stride":64,"name":"Array","kind":"array","elementCount":4,"elementStride":16,"elementType":{element}}}}}}}]}}"#
+        );
+        let error = reflected_layout(&nested, "m").unwrap_err();
+        assert!(error.contains("unsupported nested array"), "{error}");
+
+        // An element stride that is not the element's size is no Rust array.
+        let padded = QUADS_REFLECTION.replace(
+            "\"elementStride\":4,\"elementType\"",
+            "\"elementStride\":16,\"elementType\"",
+        );
+        assert_ne!(padded, QUADS_REFLECTION);
+        let error = reflected_layout(&padded, "quads").unwrap_err();
+        assert!(
+            error.contains("elementStride is 16, not the element's size 4"),
+            "{error}"
+        );
+    }
 
     /// `ScalarKind` is `#[non_exhaustive]`, so a gust release that adds a kind compiles here; this walks
     /// `ScalarKind::ALL` so that the `unsupported scalar kind` arms fail a test, not a user's export. Each kind must
@@ -489,7 +655,7 @@ mod tests {
         assert_eq!(
             error,
             "reflection parameter `pairs`.resultType: unsupported element type `texture` (only 32-bit scalars, \
-             vectors, matrices and structs of them)"
+             vectors, matrices, arrays and structs of them)"
         );
         assert!(
             !error.contains(['\r', '\n']) && !error.contains("  "),

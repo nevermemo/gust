@@ -1099,13 +1099,15 @@ only (slice mx.t4); they have no software pin yet, so a lavapipe run compares th
 NOTE where they differ, and nothing fails except the KM-13 bound. Both are unspecified, measured observations of
 one driver version each, not requirements, and the Rust and twin columns are unchanged.
 
-**Known driver defect (D168), not a ledger row.** On the RTX 5090 with NVIDIA driver 610.88, through Vulkan and
-D3D12 alike, a function-scope array (N = 3, 5 or 17 measured; not 2 or 4) whose elements all hold one run-time
-value reads element 0 as 0 after an element at a dynamic index is loaded and written back with a value the driver
-can prove unchanged (`a[k] -= 0`, `a[k] ^= 0`, `a[k] = a[k]`), wherever `k` was not 0. The generated Slang, WGSL
-and SPIR-V are correct and the AMD Radeon 890M computes Rust's values, so GUST does not refuse or rewrite the form.
-Programs that write a real change, or whose elements differ, are not affected. A stored array in a struct field is
-affected the same way; arrays in storage buffers were not measured.
+**Known driver defect (D168, D169), not a ledger row.** On the RTX 5090 with NVIDIA driver 610.88 through Vulkan,
+a function-scope array has one or more elements read as 0 after an element at a dynamic index is loaded and
+written back with a value the compiler can prove unchanged (`a[k] -= 0`, `a[k] ^= 0`, `a[k] <<= 0`, `a[k] &= !0`,
+`a[k] = a[k]`, or an operand that folds to 0 through `%` or a call). Measured: arrays of length 3, 4, 5, 8, 16
+and 17 whose elements all hold one value, and any array after an earlier dynamic store and a copy; length 2
+never failed, and a zero read from buffer data never triggered it. Through D3D12 it depends on the HLSL compiler
+and its flags. The generated Slang, WGSL and SPIR-V are correct and the AMD Radeon 890M computes Rust's values,
+so GUST does not refuse or rewrite the form. Programs that write a real change are not affected. A stored array in
+a struct field is affected the same way; arrays in storage buffers were not measured.
 
 ## 8. What is proven
 

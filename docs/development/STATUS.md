@@ -234,6 +234,14 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   22-row capture table pins it. Argument order matches Rust on slangc 2026.21 and is pinned on the GPU, with
   by-value array and struct parameters. 30 main gates green on the two merges, ending 13:53Z on 2026-11-11
   (pin 441/45).
+- m9.d1e, the closures difftest, format 12 (merge `13d2651`; Opus review MERGE AFTER FIXES 1/3/2, re-check
+  MERGE AFTER FIXES 0/3/5, doc fixes verified). It generates m9.c's closures in kernels, helpers and methods, with
+  order shapes that count only where the order or the copy is observable; three mutants (right-to-left arguments,
+  by-reference parameters, a memoised body) each change 81 to 92 of 128 batch programs and fail a named test. Its
+  wide run found the D168 NVIDIA defect outside D168's recorded envelope (a length-4 array after a dynamic store
+  and a copy); the investigation widened it (D169) and the generator's guard now covers every local array of every
+  length. Wide run seeds 1-64: 1024 programs, 0 mismatches in dev and dev+subgroups. 31 main gates green (the
+  pixel shape added), ending 01:39Z on 2026-11-12. With m9.d1e every phase-1 lowering has difftest coverage.
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

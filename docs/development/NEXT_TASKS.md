@@ -556,10 +556,18 @@ test module; do not mix that mechanical move with behavior changes.
 - m9.r2a re-check 2 nits: the component-name exemption of the E0811 array comparison takes any 1 to 4 letters of
   `xyzwrgba` (`math_types::is_swizzle` is narrower); with `&&`, a comparison where only one side resolves to an
   array reaches slangc (loud) and DIAGNOSTICS does not say so.
-- The NVIDIA array defect (D168): an expected-failure GPU sentinel built from the investigation's `m7.spv`, so a
-  driver update that fixes it is noticed; a run on the RTX 3070 (another NVIDIA architecture) to scope it; the
-  NVIDIA report is the owner's call (a draft can be prepared); the difftest's guard is removed when a fixed driver
-  is measured.
+- The NVIDIA array defect (D168, D169): an expected-failure GPU sentinel built from the investigations' modules
+  (D168's `m7.spv`, D169's clean naga module of the length-4 program), so a driver update that fixes it is
+  noticed; a run on the RTX 3070 (another NVIDIA architecture) to scope it; the NVIDIA report is the owner's call
+  (a draft can be prepared); the difftest's guard is removed when a fixed driver is measured. Owner's call: slangc's
+  own SPIR-V, passed to Vulkan, computed the right values on the RTX 5090 where slangc's WGSL through naga did not;
+  a runtime route that uses it on Vulkan would protect users' programs, not only the difftest.
+- m9.d1e re-check nits: the `CLOSURE_INFO` registry (`tests/difftest/src/ast.rs`) is thread-local state that
+  `bin_shape` and `closure_call_names` depend on silently (pass it explicitly); the high closure mutant counts come
+  mostly from the fixed kernel-result probes, so measure order and by-value observation for closures bound in
+  helpers and methods apart; the self-assignment scan should check that a plain dynamic set's value reads nothing
+  from the same array, not only that it is not the same place; the closure parameter shape counts a write and a
+  read, not a changed value.
 - m9.d1d re-check 2 nits: make the place-first order count causal (a mutant only on indexed places) and require at
   least 1 batch program; print and pin value differences apart from `Violation` counts in `ARRAY-MUTANT`; cite
   m9.r1's GPU test `bump_once` (`m9_arrays.rs`) in DIFFTEST.md as the GPU coverage of repeat-once (the batch observes

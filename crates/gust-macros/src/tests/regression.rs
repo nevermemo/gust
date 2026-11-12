@@ -8798,7 +8798,8 @@ fn closures_with_option_and_result_values_are_decided_by_the_helper_rule() {
 
 #[test]
 fn a_constant_shift_amount_outside_the_width_is_gust_e0335() {
-    // rustc's `arithmetic_overflow` refuses these; a run-time amount masks on the GPU (KM-04) and is accepted.
+    // rustc's `arithmetic_overflow` refuses these when building; a run-time amount (one Slang cannot fold) masks on the
+    // GPU (KM-04) and is accepted.
     let rejected = [
         "out[id.x] = id.x << 34u32;",
         "out[id.x] = id.x >> 32;",
@@ -8806,6 +8807,10 @@ fn a_constant_shift_amount_outside_the_width_is_gust_e0335() {
         "let mut v = id.x; v >>= 33u32; out[id.x] = v;",
         "out[id.x] = id.x << ((40i32) as u32);",
         "let v = id.x as i32; out[id.x] = (v >> -1i32) as u32;",
+        "out[id.x] = id.x << (40 as uint);",
+        "let v = id.x as i32; out[id.x] = (v >> (40u32 as i32)) as u32;",
+        "out[id.x] = 1u32 << 40;",
+        "out[id.x] = id.x << 99999999999999999999999999999999999999999u32;",
     ];
     for body in rejected {
         assert_rejected(&with_kernel("", body), Code::ShiftAmountOutOfRange);
@@ -8816,7 +8821,8 @@ fn a_constant_shift_amount_outside_the_width_is_gust_e0335() {
         "let mut v = id.x; v <<= 31; out[id.x] = v;",
         "let n = id.x + 40u32; out[id.x] = id.x << n;",
         "out[id.x] = id.x >> (3i32 as u32);",
-        // No arithmetic is folded: a sum of literals is treated as a run-time amount (masked on the GPU).
+        // PINNED GAP: no arithmetic is folded, so a sum of literals passes the macro. Slang folds it to a constant and
+        // naga rejects the WGSL (rustc refuses it when building). A follow-up folds literal-only arithmetic.
         "out[id.x] = id.x << (30u32 + 4u32);",
     ] {
         translate(&with_kernel("", body)).unwrap_or_else(|error| panic!("{body}: {error}"));

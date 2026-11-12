@@ -345,27 +345,30 @@ pub(crate) fn is_literal_zero(expression: &syn::Expr) -> bool {
 }
 
 /// The value of a constant shift amount: an integer literal (any suffix or none), through parentheses, groups, unary
-/// `-` and `as` casts to `u32` or `i32` (the cast wraps as in Rust), or `None` for anything else. No arithmetic is
-/// folded: `1 + 33` and a named constant stay run-time amounts here, and the GPU masks them (KM-04).
+/// `-` and `as` casts to `u32`/`uint` or `i32`/`int` (the cast wraps as in Rust), or `None` for anything else. A literal
+/// too large for `i128` saturates, so it is refused. No arithmetic is folded: a sum of literals, a local bound to a
+/// literal or a float literal cast passes the macro (a known gap): Slang folds it to a constant, naga rejects the
+/// WGSL, and rustc refuses it when building (`arithmetic_overflow`, not under `cargo check`). Only an amount Slang
+/// cannot fold (from a buffer, a parameter, a loop variable) is run-time, and only that kind masks on the GPU (KM-04).
 fn constant_shift_amount(expression: &syn::Expr) -> Option<i128> {
     match expression {
         syn::Expr::Lit(literal) => match &literal.lit {
-            syn::Lit::Int(value) => value.base10_parse::<i128>().ok(),
+            syn::Lit::Int(value) => Some(value.base10_parse::<i128>().unwrap_or(i128::MAX)),
             _ => None,
         },
         syn::Expr::Paren(paren) => constant_shift_amount(&paren.expr),
         syn::Expr::Group(group) => constant_shift_amount(&group.expr),
         syn::Expr::Unary(unary) if matches!(unary.op, syn::UnOp::Neg(_)) => {
-            constant_shift_amount(&unary.expr).and_then(i128::checked_neg)
+            constant_shift_amount(&unary.expr).map(|value| value.saturating_neg())
         }
         syn::Expr::Cast(cast) => {
             let value = constant_shift_amount(&cast.expr)?;
-            let syn::Type::Path(target) = cast.ty.as_ref() else {
+            let syn::Type::Path(target) = strip_type_parens(&cast.ty) else {
                 return None;
             };
-            if target.path.is_ident("u32") {
+            if target.path.is_ident("u32") || target.path.is_ident("uint") {
                 Some(i128::from(value as u32))
-            } else if target.path.is_ident("i32") {
+            } else if target.path.is_ident("i32") || target.path.is_ident("int") {
                 Some(i128::from(value as i32))
             } else {
                 None
@@ -4644,11 +4647,20 @@ impl<'ast> Visit<'ast> for RestrictedVisitor {
         ) && let Some(amount) = constant_shift_amount(&binary.right)
             && !(0..32).contains(&amount)
         {
+            let operator = match binary.op {
+                syn::BinOp::Shl(_) | syn::BinOp::ShlAssign(_) => "<<",
+                _ => ">>",
+            };
+            let shown = if amount == i128::MAX {
+                "larger than any integer".to_string()
+            } else {
+                amount.to_string()
+            };
             self.reject(
                 Code::ShiftAmountOutOfRange,
                 &binary.right,
                 &format!(
-                    "the constant shift amount {amount} is outside 0..32, the width of a 32-bit integer: rustc refuses it and the GPU would mask it; use an amount below 32, or write the mask yourself (`x << ({amount} & 31)`) if wrapping is wanted"
+                    "the constant shift amount {shown} is outside 0..32, the width of a 32-bit integer: rustc refuses it (`arithmetic_overflow`) and WGSL refuses it (a constant shift amount must be below the width); use an amount in 0..32, or write the mask yourself (`x {operator} (amount & 31)`) if wrapping is wanted"
                 ),
             );
             return;

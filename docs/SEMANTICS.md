@@ -425,8 +425,11 @@ on the GPU (it may fail spuriously, section 6; KM-09). The float rules of sectio
    `wrapping_sub`, `wrapping_mul` and `wrapping_neg` have no such condition: their result is inside the domain for
    every input.
 2. Divisors are not zero, and `i32::MIN / -1` and `i32::MIN % -1` do not occur (KM-01 to KM-03).
-3. Run-time shift amounts are below 32 (KM-04; a constant amount of 32 or more is a compile error, GUST-E0335). Bits
-   shifted out by an in-range amount, such as `1u32 << 31`, are lost on both targets and are inside the domain.
+3. Run-time shift amounts are in 0..32 (KM-04). "Run-time" means an amount Slang cannot fold to a constant (from a
+   buffer, a parameter, a loop variable). A constant amount outside 0..32 that the macro sees (a literal, through
+   parentheses, a negation and casts) is a compile error, GUST-E0335; one it does not see (a literal sum, a local bound
+   to a literal) is folded by Slang and rejected by naga, a known gap. Bits shifted out by an in-range amount, such as
+   `1u32 << 31`, are lost on both targets and are inside the domain.
 4. `f32 as i32` and `f32 as u32` have a finite operand whose truncated value fits the target type (KM-05, KM-06).
 5. Float operands, intermediate values and results are finite, and each is zero or normal (KM-07, KM-08).
 6. Every index into a storage buffer is below its `len()`, and no two invocations race (section 5; KM-11).
@@ -438,9 +441,10 @@ What happens outside the domain, in one line each (the table has the exact value
   wraps when it is off.
 - Division and remainder by zero, `MIN / -1`, `MIN % -1`: the GPU returns the dividend, 0, the dividend and 0
   (section 8.8). Rust panics in every profile.
-- Shift by a run-time amount of 32 or more: the GPU uses the amount modulo 32; section 8.10: "The number of bits to
+- Shift by a run-time amount outside 0..32: the GPU uses the amount modulo 32; section 8.10: "The number of bits to
   shift is the value of e2, modulo the bit width of e1." Rust panics when checks are on and masks when they are off.
-  A constant amount of 32 or more is refused at compile time (GUST-E0335), as rustc does (`arithmetic_overflow`).
+  A constant amount outside 0..32 that the macro sees is refused at compile time (GUST-E0335), as rustc refuses it
+  when building (`arithmetic_overflow`, not under `cargo check`); WGSL refuses a constant amount of the width or more.
 - Out-of-range or NaN float-to-integer casts: Rust saturates to the integer's extremes with NaN as 0. The GPU clamps
   to the range that both types represent, so the top end differs (`2147483520`, `4294967040`), and NaN is
   indeterminate (section 15.7.6).
@@ -1060,7 +1064,7 @@ difference, and the proven label needs the two targets to agree.
 | KM-01 | `x / 0` for `u32` and `i32` | Panics "attempt to divide by zero" in every profile. | Returns the dividend: `7 / 0 == 7`, `u32::MAX / 0 == u32::MAX`, `-7 / 0 == -7` (WGSL section 8.8). | spec-allowed, measured |
 | KM-02 | `x % 0` for `u32` and `i32` | Panics "attempt to calculate the remainder with a divisor of zero" in every profile. | Returns 0 (WGSL section 8.8). | spec-allowed, measured |
 | KM-03 | `i32::MIN / -1` and `i32::MIN % -1` | Panic "attempt to divide with overflow" and "attempt to calculate the remainder with overflow" in every profile. | `MIN / -1 == i32::MIN` and `MIN % -1 == 0` (WGSL section 8.8). | spec-allowed, measured |
-| KM-04 | Shift by a run-time amount of 32 or more (`<<`, `>>` on `u32` and `i32`; a constant amount of 32 or more is refused by the macro, GUST-E0335, as rustc does) | Checks on: panics "attempt to shift left with overflow" or "attempt to shift right with overflow". Checks off: the amount is masked to its low 5 bits. | The amount is masked to its low 5 bits (WGSL section 8.10): `1 << 32 == 1`, `1 << 33 == 2`, `1 << 64 == 1`, `0x8000_0000 >> 33 == 0x4000_0000`, `-8i32 >> 33 == -4`. | spec-allowed, measured |
+| KM-04 | Shift by a run-time amount outside 0..32 (`<<`, `>>` on `u32` and `i32`; run-time: Slang cannot fold it to a constant; a constant amount the macro sees is refused, GUST-E0335) | Checks on: panics "attempt to shift left with overflow" or "attempt to shift right with overflow". Checks off: the amount is masked to its low 5 bits. | The amount is masked to its low 5 bits (WGSL section 8.10): `1 << 32 == 1`, `1 << 33 == 2`, `1 << 64 == 1`, `0x8000_0000 >> 33 == 0x4000_0000`, `-8i32 >> 33 == -4`. | spec-allowed, measured |
 | KM-05 | `f32 as i32` of a value outside the `i32` range, and of NaN | Saturates: `1.0e10 -> i32::MAX`, `-1.0e10 -> i32::MIN`, `NaN -> 0`, in every profile. | Finite values: the `i32` value closest to the truncated source that `f32` represents exactly (WGSL section 15.7.6), which differs from Rust at the top end: `1.0e10 -> 2147483520` and `2^31 -> 2147483520` (not `i32::MAX`), `-1.0e10 -> i32::MIN`. NaN: indeterminate; observed `i32::MIN`. | spec-allowed (finite), unspecified (NaN), measured |
 | KM-06 | `f32 as u32` of a negative, too large or NaN value | Saturates: negative and NaN give 0, `1.0e10` and `2^32` give `u32::MAX`, in every profile. | Finite values (WGSL section 15.7.6, as KM-05): negatives such as `-1.0`, `-3.99` and `-1.0e10` give 0; `1.0e10` and `2^32` give 4294967040 (`0xffffff00`), not `u32::MAX`. NaN: indeterminate; observed 0. | spec-allowed (finite), unspecified (NaN), measured |
 | KM-07 | NaN and infinity through arithmetic and comparison | IEEE 754: NaN propagates, `NaN != NaN` is true, ordered comparisons with NaN are false, `1.0 / 0.0` is `+inf`. | Unspecified (an operation that would produce NaN or infinity may give an indeterminate value; comparisons with NaN are not guaranteed to be unordered). Observed: NaN and infinity propagate and compare as in IEEE for every case except `NaN != NaN`, which is false. The sign and payload of a NaN are not preserved either: the GPU produced `0x7fffffff` in every case, Rust produces `0x7fc00000` or `0xffc00000`. Division by a divisor above 2^126 is also outside WGSL's division accuracy range: `3.0e38 / 3.0e38` gave 0 on the GPU, Rust gives 1. | unspecified, measured |

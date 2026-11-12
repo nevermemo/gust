@@ -813,19 +813,25 @@ Decision: D159 (M9 plan 2.4, slice m9.r1).
 
 ### GUST-E0335 constant shift amount outside the width
 
-A shift whose right operand is a constant below 0 or at least 32 (every integer of the dialect is 32 bits). rustc
-refuses the same shift with its deny-by-default `arithmetic_overflow` lint and the GPU would mask the amount, so the
-macro refuses it. A constant amount is an integer literal with any suffix or none, through parentheses, a negation and
-`as u32` or `as i32` casts. A sum such as `30u32 + 4u32` is not folded (the macro has no constant evaluator), and a
-run-time amount is accepted: it is masked to its low 5 bits on the GPU (KM-04).
+A shift whose right operand is a constant outside 0..32 (every integer of the dialect is 32 bits). rustc refuses the
+same shift when building (its deny-by-default `arithmetic_overflow` lint; `cargo check` does not report it), and WGSL
+refuses a constant shift amount of the width or more, so naga would reject the generated shader with an error that is
+not a GUST diagnostic. The macro refuses it first. A constant amount is an integer literal with any suffix or none,
+through parentheses, a negation and `as u32`, `as uint`, `as i32` or `as int` casts; a literal too large for any
+integer is refused too.
+Known gap: the macro folds no arithmetic. A constant it does not see (a sum such as `30u32 + 4u32`, a `let` local
+bound to a literal, a float literal cast) passes the macro; Slang folds it to a constant, naga rejects the WGSL, and
+rustc refuses it when building. Only an amount Slang cannot fold (from a buffer, a parameter, a loop variable) is
+run-time, and only that kind is masked to its low 5 bits on the GPU (KM-04).
 Reached through `#[gpu]`.
-Rejected: `x << 34u32`, `x >> 32`, `v <<= 32u32`, `v >>= 33u32`, `x << ((40i32) as u32)`, `v >> -1i32`.
+Rejected: `x << 34u32`, `x >> 32`, `v <<= 32u32`, `v >>= 33u32`, `x << ((40i32) as u32)`, `x << (40 as uint)`,
+`v >> -1i32`.
 Write instead: a smaller constant (`x << 31u32` is accepted), or the mask written out when wrapping is wanted:
 `x << (34 & 31)` is `x << 2`.
 Fixture: `tests/ui/shift-literal`, `tests/ui/shift-assign-suffixed`, `tests/ui/shift-cast-paren` and
 `tests/ui/shift-negative` (`cargo xtask check-ui`, `code: none` plus the message); `tests/ui/shift-ok` is the accepted
 counterpart.
-Decision: D39 (edge cases are limitations); review m9.d1c S3 (slice m9.shift).
+Decision: coordinator ruling, review m9.d1c S3 (slice m9.shift).
 
 ## E04xx: control flow and loops
 

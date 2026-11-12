@@ -226,6 +226,10 @@ pub(crate) const ARRAYS_STORAGE_GOLDEN_SPIRV: [&str; 4] = [
 pub(crate) const CLOSURES_GOLDEN_STEMS: [&str; 1] = ["closures"];
 pub(crate) const CLOSURES_GOLDEN_SPIRV: [&str; 1] = ["closures__run.spv"];
 
+/// The golden of the traits fixture (m9.g1): one kernel, "traits__run.spv".
+pub(crate) const TRAITS_GOLDEN_STEMS: [&str; 1] = ["traits"];
+pub(crate) const TRAITS_GOLDEN_SPIRV: [&str; 1] = ["traits__run.spv"];
+
 pub(crate) const WORKGROUP_GOLDEN_STEMS: [&str; 1] = ["workgroup"];
 pub(crate) const WORKGROUP_GOLDEN_SPIRV: [&str; 2] =
     ["workgroup__block_sum.spv", "workgroup__local_ids.spv"];
@@ -304,7 +308,7 @@ pub(crate) const COMPACT_GOLDEN_SPIRV: [&str; 5] = [
 
 /// Every golden set `verify` exports and validates after the examples' SPIR-V: the area (the directory under the
 /// target directory's `golden-spirv`), the fixture stems and the expected file names.
-pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 21] = [
+pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 22] = [
     ("vectors", &VECTOR_GOLDEN_STEMS, &VECTOR_GOLDEN_SPIRV),
     ("uniforms", &UNIFORM_GOLDEN_STEMS, &UNIFORM_GOLDEN_SPIRV),
     ("map", &MAP_GOLDEN_STEMS, &MAP_GOLDEN_SPIRV),
@@ -342,6 +346,7 @@ pub(crate) const GOLDEN_SPIRV_SETS: [(&str, &[&str], &[&str]); 21] = [
         &ARRAYS_STORAGE_GOLDEN_SPIRV,
     ),
     ("closures", &CLOSURES_GOLDEN_STEMS, &CLOSURES_GOLDEN_SPIRV),
+    ("traits", &TRAITS_GOLDEN_STEMS, &TRAITS_GOLDEN_SPIRV),
 ];
 
 /// The cargo calls of `cargo xtask check-cpu` (a step of the Unit suite): the non-ignored,

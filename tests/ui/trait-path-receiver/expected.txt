@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: trait-path-receiver/src/main.rs
+line: 26
+message: [GUST-E0126] the receiver of a trait path call must be a place

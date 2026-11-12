@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: trait-foreign-impl/src/main.rs
+line: 19
+message: [GUST-E0121] a trait impl is for a struct or a unit enum defined in this `#[gpu]` module

@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: trait-inherent-clash/src/main.rs
+line: 14
+message: [GUST-E0328] `area` is a method of the trait `Shape` and also a member of an inherent `impl Sq`

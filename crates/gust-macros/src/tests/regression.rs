@@ -8828,3 +8828,410 @@ fn a_constant_shift_amount_outside_the_width_is_gust_e0335() {
         translate(&with_kernel("", body)).unwrap_or_else(|error| panic!("{body}: {error}"));
     }
 }
+
+// ---- Traits as Slang interfaces, static dispatch (slice m9.g1, D170) ----
+
+/// One trait with the three receiver kinds, and a struct that implements it.
+const TRAIT_ITEMS: &str = "pub trait T { fn get(&self) -> u32; fn inc(&mut self, by: u32); fn twice(self) -> Self; } \
+    pub struct S { pub v: u32 } \
+    impl T for S { fn get(&self) -> u32 { self.v } fn inc(&mut self, by: u32) { self.v += by; } \
+    fn twice(self) -> S { let r = S { v: self.v * 2u32 }; r } } ";
+
+fn trait_module(extra_items: &str, body: &str) -> String {
+    with_kernel(&format!("{TRAIT_ITEMS}{extra_items}"), body)
+}
+
+#[test]
+fn traits_golden() {
+    let source = translate(include_str!("../../../../tests/fixtures/traits.rs")).unwrap();
+    assert_golden(
+        &source.replace("\r\n", "\n"),
+        "traits.slang",
+        &include_str!("../../../../tests/fixtures/traits.slang").replace("\r\n", "\n"),
+    );
+}
+
+#[test]
+fn a_trait_and_its_impls_lower_to_an_interface_and_extensions() {
+    let source = translate(&with_kernel(
+        "pub trait Tg { fn tag(&self) -> u32; } #[derive(PartialEq, Eq)] pub enum K { A, B } \
+         impl Tg for K { fn tag(&self) -> u32 { match self { K::A => { return 1u32; } K::B => { return 2u32; } } } } ",
+        "out[id.x] = K::B.tag();",
+    ))
+    .unwrap();
+    assert!(source.contains("interface Tg"), "{source}");
+    assert!(source.contains("extension K : Tg"), "{source}");
+    let source = translate(&trait_module(
+        "",
+        "let mut s = S { v: 1u32 }; s.inc(2u32); out[id.x] = s.twice().get();",
+    ))
+    .unwrap();
+    assert!(source.contains("interface T"), "{source}");
+    assert!(source.contains("[mutating]"), "{source}");
+    assert!(source.contains("This twice()"), "{source}");
+    assert!(source.contains("extension S : T"), "{source}");
+}
+
+#[test]
+fn a_trait_method_is_callable_from_a_helper_a_method_and_a_closure() {
+    translate(&trait_module(
+        "fn via_helper(s: S) -> u32 { s.get() } \
+         pub struct W { pub s: S } impl W { pub fn read(&self) -> u32 { self.s.get() } } ",
+        "let q0 = S { v: 1u32 }; let w = W { s: q0 }; \
+         let f = |q: S| -> u32 { q.get() + via_helper(q) }; \
+         out[id.x] = f(w.s) + w.read();",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn each_path_call_spelling_lowers_to_the_method_call() {
+    for call in [
+        "T::get(&s)",
+        "T::get(s)",
+        "<S as T>::get(&s)",
+        "<S as T>::get(s)",
+        "<S as self::T>::get(&s)",
+    ] {
+        let body = format!("let s = S {{ v: 1u32 }}; out[id.x] = {call};");
+        let source =
+            translate(&trait_module("", &body)).unwrap_or_else(|error| panic!("{call}: {error}"));
+        assert!(source.contains("s.get()"), "{call}: {source}");
+    }
+    let source = translate(&trait_module(
+        "",
+        "let mut s = S { v: 1u32 }; T::inc(&mut s, 2u32); out[id.x] = T::twice(s).v;",
+    ))
+    .unwrap();
+    assert!(source.contains("s.inc(uint(2))"), "{source}");
+    // A field is a place too.
+    translate(&trait_module(
+        "pub struct W { pub s: S } ",
+        "let q0 = S { v: 1u32 }; let w = W { s: q0 }; out[id.x] = T::get(&w.s);",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn the_cpu_twin_and_the_typecheck_item_keep_the_trait_path_call_as_written() {
+    let source = "mod m { pub trait T { fn get(&self) -> u32; } pub struct S { pub v: u32 } \
+        impl T for S { fn get(&self) -> u32 { self.v } } \
+        #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<u32>) { \
+        let s = S { v: 1u32 }; out[id.x] = T::get(&s); } }";
+    for profile in [crate::expand::Profile::Other, crate::expand::Profile::Cpu] {
+        let text = expansion_for(source, profile).to_string();
+        assert!(
+            text.contains("T :: get (& s)"),
+            "the path call as written survives: {text}"
+        );
+        assert!(
+            text.contains("trait T"),
+            "the trait reaches the output: {text}"
+        );
+        assert!(
+            text.contains("impl T for S"),
+            "the impl reaches the output: {text}"
+        );
+    }
+}
+
+#[test]
+fn each_trait_refusal_carries_its_code() {
+    let blank = "out[id.x] = 1u32;";
+    let impl_of = |ty: &str| {
+        format!(
+            "impl T for {ty} {{ fn get(&self) -> u32 {{ 1u32 }} fn inc(&mut self, by: u32) {{ }} fn twice(self) -> {ty} {{ self }} }} "
+        )
+    };
+    let cases: Vec<(&str, String, Code)> = vec![
+        // E0218: no dynamic dispatch, no `impl Trait`, no trait-typed value
+        (
+            "dyn",
+            with_kernel(
+                &format!("{TRAIT_ITEMS} fn f(x: &dyn T) -> u32 {{ 1u32 }} "),
+                blank,
+            ),
+            Code::TraitTypeUse,
+        ),
+        (
+            "impl arg",
+            with_kernel(
+                &format!("{TRAIT_ITEMS} fn f(x: impl T) -> u32 {{ 1u32 }} "),
+                blank,
+            ),
+            Code::TraitTypeUse,
+        ),
+        (
+            "impl ret",
+            with_kernel(
+                &format!("{TRAIT_ITEMS} fn f() -> impl T {{ S {{ v: 1u32 }} }} "),
+                blank,
+            ),
+            Code::TraitTypeUse,
+        ),
+        (
+            "field",
+            with_kernel(
+                &format!("{TRAIT_ITEMS} pub struct H {{ pub t: T }} "),
+                blank,
+            ),
+            Code::TraitTypeUse,
+        ),
+        (
+            "local",
+            trait_module("", "let a: T = S { v: 1u32 }; out[id.x] = 1u32;"),
+            Code::TraitTypeUse,
+        ),
+        // E0124: only receiver-method signatures
+        (
+            "default body",
+            with_kernel("pub trait U { fn m(&self) -> u32 { 1u32 } } ", blank),
+            Code::TraitFeature,
+        ),
+        (
+            "assoc type",
+            with_kernel("pub trait U { type X; fn m(&self) -> u32; } ", blank),
+            Code::TraitFeature,
+        ),
+        (
+            "assoc const",
+            with_kernel("pub trait U { const N: u32; fn m(&self) -> u32; } ", blank),
+            Code::TraitFeature,
+        ),
+        (
+            "supertrait",
+            with_kernel(
+                &format!("{TRAIT_ITEMS} pub trait U: T {{ fn m(&self) -> u32; }} "),
+                blank,
+            ),
+            Code::TraitFeature,
+        ),
+        (
+            "generic trait",
+            with_kernel("pub trait U<A> { fn m(&self) -> u32; } ", blank),
+            Code::TraitFeature,
+        ),
+        (
+            "generic method",
+            with_kernel("pub trait U { fn m<A>(&self) -> u32; } ", blank),
+            Code::TraitFeature,
+        ),
+        (
+            "no receiver",
+            with_kernel("pub trait U { fn m() -> u32; } ", blank),
+            Code::TraitFeature,
+        ),
+        (
+            "assoc item in impl",
+            with_kernel(
+                &format!(
+                    "{TRAIT_ITEMS} pub struct R {{ pub v: u32 }} impl T for R {{ const N: u32 = 1u32; fn get(&self) -> u32 {{ 1u32 }} fn inc(&mut self, by: u32) {{ }} fn twice(self) -> R {{ self }} }} "
+                ),
+                blank,
+            ),
+            Code::TraitFeature,
+        ),
+        // E0126: the receiver of a path call
+        (
+            "path call on a call",
+            trait_module(
+                "fn mk() -> S { S { v: 1u32 } } ",
+                "out[id.x] = T::get(&mk());",
+            ),
+            Code::TraitPathReceiver,
+        ),
+        (
+            "path call by value on a call",
+            trait_module(
+                "fn mk() -> S { S { v: 1u32 } } ",
+                "out[id.x] = T::get(mk());",
+            ),
+            Code::TraitPathReceiver,
+        ),
+        (
+            "path call with no argument",
+            trait_module("", "out[id.x] = T::get();"),
+            Code::TraitPathReceiver,
+        ),
+        // E0121: only module types
+        (
+            "foreign type",
+            with_kernel(&format!("{TRAIT_ITEMS} {}", impl_of("u32")), blank),
+            Code::ImplForeignType,
+        ),
+        (
+            "blanket impl",
+            with_kernel(
+                &format!(
+                    "{TRAIT_ITEMS} impl<A> T for A {{ fn get(&self) -> u32 {{ 1u32 }} fn inc(&mut self, by: u32) {{ }} fn twice(self) -> A {{ self }} }} "
+                ),
+                blank,
+            ),
+            Code::ImplForeignType,
+        ),
+        // E0328: one name, one meaning (P18)
+        (
+            "inherent name",
+            trait_module("impl S { pub fn get(&self) -> u32 { 2u32 } } ", blank),
+            Code::MethodNameClash,
+        ),
+        (
+            "two traits, one method",
+            with_kernel(
+                &format!(
+                    "{TRAIT_ITEMS} pub trait U {{ fn get(&self) -> u32; }} impl U for S {{ fn get(&self) -> u32 {{ 2u32 }} }} "
+                ),
+                blank,
+            ),
+            Code::MethodNameClash,
+        ),
+        // E0333: a `&mut self` trait method on storage
+        (
+            "mut method on storage",
+            format!(
+                "mod m {{ {TRAIT_ITEMS} #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>, mut bufs: RWStructuredBuffer<S>) {{ bufs[id.x].inc(1u32); out[id.x] = 1u32; }} }}"
+            ),
+            Code::MutatingMethodOnSharedPlace,
+        ),
+        // E0120: recursion through an impl
+        (
+            "recursion",
+            with_kernel(
+                "pub trait U { fn m(&self) -> u32; } pub struct R { pub v: u32 } impl U for R { fn m(&self) -> u32 { self.m() } } ",
+                "let r = R { v: 1u32 }; out[id.x] = r.m();",
+            ),
+            Code::RecursiveCall,
+        ),
+        // D154: a barrier in an impl method
+        (
+            "barrier in an impl",
+            with_kernel(
+                "pub trait U { fn m(&self) -> u32; } pub struct R { pub v: u32 } impl U for R { fn m(&self) -> u32 { workgroup_barrier(); 1u32 } } ",
+                "let r = R { v: 1u32 }; out[id.x] = r.m();",
+            ),
+            Code::BarrierPosition,
+        ),
+    ];
+    let mut misses = Vec::new();
+    for (label, source, code) in &cases {
+        match translate(source) {
+            Ok(_) => misses.push(format!("{label}: accepted")),
+            Err(error) => {
+                let codes = crate::diagnostics::testing::codes_of(&error);
+                if codes.first() == Some(code) {
+                    assert_code_for(&error, *code, label);
+                } else {
+                    misses.push(format!("{label}: wanted {code:?}, got {codes:?}: {error}"));
+                }
+            }
+        }
+    }
+    assert!(misses.is_empty(), "{}", misses.join("\n"));
+}
+
+#[test]
+fn a_mutating_trait_method_obeys_the_order_rules_of_an_inherent_one() {
+    // The ledger sees the desugared call: a `&mut self` trait method in the bound of a `for` is E0421, like `tick()`.
+    assert_rejected(
+        &trait_module(
+            "pub struct Cnt { pub n: u32 } pub trait Bump { fn bump(&mut self) -> u32; } \
+             impl Bump for Cnt { fn bump(&mut self) -> u32 { self.n += 1u32; self.n } } ",
+            "let mut c = Cnt { n: 0u32 }; for i in 0u32..c.bump() { out[id.x] = i; }",
+        ),
+        Code::ForBoundSideEffect,
+    );
+    // The same through the path call.
+    assert_rejected(
+        &trait_module(
+            "pub struct Cnt { pub n: u32 } pub trait Bump { fn bump(&mut self) -> u32; } \
+             impl Bump for Cnt { fn bump(&mut self) -> u32 { self.n += 1u32; self.n } } ",
+            "let mut c = Cnt { n: 0u32 }; for i in 0u32..Bump::bump(&mut c) { out[id.x] = i; }",
+        ),
+        Code::ForBoundSideEffect,
+    );
+}
+
+#[test]
+fn a_user_trait_named_like_a_stdlib_interface_is_renamed() {
+    let source = translate(&with_kernel(
+        "pub trait IFloat { fn half(&self) -> u32; } pub struct S { pub v: u32 } \
+         impl IFloat for S { fn half(&self) -> u32 { self.v / 2u32 } } ",
+        "let s = S { v: 4u32 }; out[id.x] = s.half();",
+    ))
+    .unwrap();
+    assert!(!source.contains("interface IFloat "), "{source}");
+    assert!(source.contains("interface __gust_r_IFloat"), "{source}");
+}
+
+#[test]
+fn a_trait_method_name_obeys_the_method_name_rules() {
+    // A name of the dialect, and a field of an implementing struct (E0328, D154 and the P18 ruling).
+    assert_rejected(
+        &with_kernel(
+            "pub trait U { fn len(&self) -> u32; } ",
+            "out[id.x] = 1u32;",
+        ),
+        Code::MethodNameClash,
+    );
+    assert_rejected(
+        &with_kernel(
+            "pub trait U { fn v(&self) -> u32; } pub struct R { pub v: u32 } \
+             impl U for R { fn v(&self) -> u32 { 1u32 } } ",
+            "out[id.x] = 1u32;",
+        ),
+        Code::MethodNameClash,
+    );
+    // A trait method of one name in two types is fine, and so is a struct that implements two traits.
+    translate(&with_kernel(
+        "pub trait A { fn a(&self) -> u32; } pub trait B { fn b(&self) -> u32; } \
+         pub struct R { pub v: u32 } pub struct Q { pub v: u32 } \
+         impl A for R { fn a(&self) -> u32 { self.v } } impl B for R { fn b(&self) -> u32 { self.v } } \
+         impl A for Q { fn a(&self) -> u32 { self.v + 1u32 } } ",
+        "let r = R { v: 1u32 }; let q = Q { v: 2u32 }; out[id.x] = r.a() + r.b() + q.a();",
+    ))
+    .unwrap();
+}
+
+#[test]
+fn a_trait_path_call_in_a_storage_place_is_refused_like_the_method_call() {
+    let source = format!(
+        "mod m {{ {TRAIT_ITEMS} #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<uint>, mut bufs: RWStructuredBuffer<S>) {{ T::inc(&mut bufs[id.x], 1u32); out[id.x] = 1u32; }} }}"
+    );
+    assert_rejected(&source, Code::MutatingMethodOnSharedPlace);
+}
+
+#[test]
+fn a_trait_declaration_alone_and_a_missing_impl_method_are_not_the_macros_business() {
+    // A trait with no impl is accepted; the macro emits an interface nothing conforms to.
+    let source = translate(&with_kernel(
+        "pub trait Unused { fn m(&self) -> u32; } ",
+        "out[id.x] = 1u32;",
+    ))
+    .unwrap();
+    assert!(source.contains("interface Unused"), "{source}");
+    // An impl that leaves out a method of its trait is rustc's E0046: the macro accepts it and the twin keeps the
+    // impl as written, so the CPU build fails in rustc, never in slangc.
+    let text = expansion_for(
+        "mod m { pub trait T { fn a(&self) -> u32; fn b(&self) -> u32; } pub struct S { pub v: u32 } \
+         impl T for S { fn a(&self) -> u32 { self.v } } \
+         #[kernel] pub fn run(id: SV_DispatchThreadID, mut out: RWStructuredBuffer<u32>) { \
+         let s = S { v: 1u32 }; out[id.x] = s.a(); } }",
+        crate::expand::Profile::Cpu,
+    )
+    .to_string();
+    assert!(text.contains("impl T for S"), "{text}");
+}
+
+#[test]
+fn a_trait_path_call_is_rewritten_inside_a_closure_a_helper_and_a_method() {
+    let source = translate(&trait_module(
+        "fn h(s: S) -> u32 { T::get(&s) } \
+         pub struct W { pub s: S } impl W { pub fn read(&self) -> u32 { T::get(&self.s) } } ",
+        "let f = |q: S| -> u32 { T::get(&q) }; let s = S { v: 1u32 }; let w = W { s: s }; \
+         out[id.x] = f(s) + h(s) + w.read();",
+    ))
+    .unwrap();
+    assert!(source.contains("q.get()"), "{source}");
+    assert!(source.contains("s.get()"), "{source}");
+    assert!(source.contains("this.s.get()"), "{source}");
+}

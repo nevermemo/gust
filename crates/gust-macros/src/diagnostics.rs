@@ -110,6 +110,11 @@ codes! {
     /// missing `PartialEq` derive, a `repr` other than `u32` or `i32`, generics, no variants, or an `as` to the other
     /// integer type than the repr.
     EnumShape = 122 => "GUST-E0122";
+    /// A trait feature outside the methods-only subset: a default body, an associated item, a supertrait, a generic
+    /// trait or trait method, a function without a receiver, or a `&mut self` method implemented for an enum.
+    TraitFeature = 124 => "GUST-E0124";
+    /// A trait path call (`Trait::m(x, ..)`, `<S as Trait>::m(x, ..)`) whose first argument is not a place.
+    TraitPathReceiver = 126 => "GUST-E0126";
 
     // E02xx: types.
     /// A primitive type outside the 32-bit scalar subset.
@@ -154,6 +159,9 @@ codes! {
     /// An array element that is itself an array (`[[T; N]; M]`), or not a scalar, vector, matrix, struct or enum of the
     /// module (a tuple, `Option`, `Result`, reference or resource).
     ArrayElement = 217 => "GUST-E0217";
+    /// `dyn Trait`, `impl Trait`, or a trait of the module used as the type of a local, a field, a parameter or a
+    /// result: traits are static dispatch only.
+    TraitTypeUse = 218 => "GUST-E0218";
 
     // E03xx: expressions and calls.
     /// A CPU-only library or type name.

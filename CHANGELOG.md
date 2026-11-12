@@ -151,6 +151,9 @@ operations). The third, B3, is that recursion is refused (`GUST-E0120`).
   On the RTX 5090 the fixture runs equal to hand-written tables on the GPU and the CPU twin, including the order of the
   arguments of a closure call.
 - Fixed (m9.f1): a method call with a `<` comparison argument before another argument, such as `s.m(a < b, c)`, failed in slangc with an undefined `__gust_keep`, because the scan that defines that helper did not visit method calls.
+- A constant shift amount below 0 or of 32 or more (`x << 34u32`, `v >>= 32`) is refused with `GUST-E0335`, as rustc's
+  `arithmetic_overflow` lint refuses it; naga used to reject the generated WGSL with an error that was not a GUST
+  diagnostic. A run-time amount is unchanged and masks to its low 5 bits on the GPU (KM-04).
 
 ### Changed, and may break code written for 0.1.0
 

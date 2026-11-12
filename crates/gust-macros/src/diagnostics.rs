@@ -226,6 +226,9 @@ codes! {
     /// `usize` as a type, a local, a parameter, a cast target or a `.len()` value anywhere but the operand of an array
     /// index.
     UsizeOutsideIndex = 334 => "GUST-E0334";
+    /// A constant shift amount of 32 or more, or a negative one (`x << 34u32`, `x >>= 32`): rustc refuses it and the GPU
+    /// would mask it.
+    ShiftAmountOutOfRange = 335 => "GUST-E0335";
 
     // E04xx: control flow and loops.
     /// A `loop` expression.

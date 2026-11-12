@@ -1,0 +1,6 @@
+# Keys matched against the one error of `cargo check --message-format json` (see barrier-in-if/expected.txt).
+# A macro error is a compile_error!: code none.
+code: none
+file: shift-literal/src/main.rs
+line: 9
+message: [GUST-E0335] the constant shift amount 34 is outside 0..32

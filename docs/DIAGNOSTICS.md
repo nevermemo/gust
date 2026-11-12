@@ -811,6 +811,22 @@ Write instead: keep the index a `u32` and cast it where it is used, `a[i as usiz
 Fixture: `tests/ui/array-usize-local`, `tests/ui/array-usize-param` and `tests/ui/array-usize-cast` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D159 (M9 plan 2.4, slice m9.r1).
 
+### GUST-E0335 constant shift amount outside the width
+
+A shift whose right operand is a constant below 0 or at least 32 (every integer of the dialect is 32 bits). rustc
+refuses the same shift with its deny-by-default `arithmetic_overflow` lint and the GPU would mask the amount, so the
+macro refuses it. A constant amount is an integer literal with any suffix or none, through parentheses, a negation and
+`as u32` or `as i32` casts. A sum such as `30u32 + 4u32` is not folded (the macro has no constant evaluator), and a
+run-time amount is accepted: it is masked to its low 5 bits on the GPU (KM-04).
+Reached through `#[gpu]`.
+Rejected: `x << 34u32`, `x >> 32`, `v <<= 32u32`, `v >>= 33u32`, `x << ((40i32) as u32)`, `v >> -1i32`.
+Write instead: a smaller constant (`x << 31u32` is accepted), or the mask written out when wrapping is wanted:
+`x << (34 & 31)` is `x << 2`.
+Fixture: `tests/ui/shift-literal`, `tests/ui/shift-assign-suffixed`, `tests/ui/shift-cast-paren` and
+`tests/ui/shift-negative` (`cargo xtask check-ui`, `code: none` plus the message); `tests/ui/shift-ok` is the accepted
+counterpart.
+Decision: D39 (edge cases are limitations); review m9.d1c S3 (slice m9.shift).
+
 ## E04xx: control flow and loops
 
 A GPU thread must always terminate and must never wait on another workgroup, so the

@@ -1112,7 +1112,10 @@ and 17 whose elements all hold one value, and any array after an earlier dynamic
 never failed, and a zero read from buffer data never triggered it. Through D3D12 it depends on the HLSL compiler
 and its flags. The generated Slang, WGSL and SPIR-V are correct and the AMD Radeon 890M computes Rust's values,
 so GUST does not refuse or rewrite the form. Programs that write a real change are not affected. A stored array in
-a struct field is affected the same way; arrays in storage buffers were not measured.
+a struct field is affected the same way; arrays in storage buffers were not measured. The GPU test
+`driver_sentinel` (m9.sen) runs three `#[gpu]` kernels shaped like the investigations' programs (the D168 kernels read
+`v[0]` directly) and expects these wrong values on the RTX 5090 and Rust's elsewhere; if their results change on the
+5090, it fails, the cue to re-measure before touching the difftest guard.
 
 ## 8. What is proven
 

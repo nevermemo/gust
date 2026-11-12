@@ -254,6 +254,13 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   current pins) stands; phase 2 is g0 (probes P11 to P18), g1 (traits, E0126 new), g2 (generics), d2 (format
   13), x. Not measured: the Radeon 890M and lavapipe for most slices, a browser check, usage per slice. The
   go/no-go (D170) is the owner's call.
+- m9.shift (merge `bedb1de`; Opus review MERGE AFTER FIXES 1/2/5, re-check MERGE with three nits): GUST-E0335
+  refuses a constant shift amount outside 0..32 (`x << 34u32`, `x >>= 40`, through parentheses, unary minus and
+  `as u32`/`i32`/`uint`/`int` casts), as rustc's `arithmetic_overflow` does when building; before, the macro
+  passed it and naga rejected the WGSL. Run-time amounts still mask on the GPU. Gap, documented: an amount the
+  macro does not see as a literal (a `let` local, a literal sum, a float cast) passes, slangc folds it and naga
+  rejects it (loud, not a wrong value). Five UI fixtures (pin 217), a unit test. 31 main gates green, ending
+  06:18Z on 2026-11-12 (pin 441/45).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

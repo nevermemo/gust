@@ -543,11 +543,14 @@ test module; do not mix that mechanical move with behavior changes.
   a function-scope array (KM-11 covers buffers; a row needs `mismatch.rs`); a plain-`=` hoist of the value into a
   temporary would let E0421 accept `out[c.n] = c.next()` in Rust's order (not compound: `Vec*`/`Mat*` `op=` reads
   the place first).
-- m9.d1c follow-ups: a constant over-wide shift (`x << 34u32`) passes gust-macros and fails in naga, and SEMANTICS
-  says shifts mask, which is false for constants (review S3: refuse or mask constant shift amounts in the macro);
-  the shrinker has no identity class for a wgpu/naga validation failure (N6, carried by m9.d1d); the mutant batch
+- m9.d1c follow-ups: the shrinker has no identity class for a wgpu/naga validation failure (N6, carried by m9.d1d); the mutant batch
   pin counts any compound set, not only the tuple element shape; builders overwrote failing logs (keep
   `.failN.log`).
+- m9.shift follow-ups: a folded constant amount (a `let` local holding a literal, a sum of literals, a float
+  literal cast) passes GUST-E0335, slangc folds it and naga rejects the WGSL; mask or fold the amount in the
+  emitter, or refuse it with a small constant folder. Re-check nits: the hint could print the amount; KM-04
+  claims negative run-time amounts mask, not measured on a GPU; a negated literal too large for `i128` is shown
+  raw; the `int` cast alias and `as (u32)` have no test.
 - Order audit follow-ups: `&&` and `||` short circuit has no named compiler test (the difftest covers it); the
   storage-place order shape belongs to m9.d1d. `out[atomic_add(&mut ctr[0], 1u32) as usize] =
   atomic_add(&mut ctr[0], 10u32)` on the same cell: Slang takes the index's atomic first, Rust the value's;

@@ -224,18 +224,18 @@ fn the_cache_root_table_equals_the_cargo_gust_rules_case_by_case() {
 #[test]
 fn the_pin_and_the_managed_paths_are_keyed_by_it() {
     // slang_tests.rs:228-242, with the pin fixed (the copy took the version as an argument).
-    assert_eq!(SLANG_PIN, "2026.21");
+    assert_eq!(SLANG_PIN, "2026.22");
     let root = synthetic("r");
     assert_eq!(
         managed_slangc(&root),
-        root.join("2026.21")
+        root.join("2026.22")
             .join("bin")
             .join(executable_name("slangc"))
     );
     assert_eq!(
         managed_helper(&root),
         root.join("helper")
-            .join("2026.21")
+            .join("2026.22")
             .join(executable_name("gust-slang-reflect"))
     );
     assert_eq!(
@@ -501,12 +501,12 @@ fn a_registry_build_finds_no_helper_in_a_checkout_path() {
 #[test]
 fn the_version_output_table_of_cargo_gust() {
     // slang_tests.rs:172-185.
-    assert_eq!(parse_version_output("2026.21\n").unwrap(), "2026.21");
+    assert_eq!(parse_version_output("2026.22\n").unwrap(), "2026.22");
     assert_eq!(
-        parse_version_output("\r\n 2026.21-1-g0a1b2c3d4 \r\n").unwrap(),
-        "2026.21-1-g0a1b2c3d4"
+        parse_version_output("\r\n 2026.22-1-g0a1b2c3d4 \r\n").unwrap(),
+        "2026.22-1-g0a1b2c3d4"
     );
-    for bad in ["", "\n", "error: no input files", "slangc 2026.21", "v1"] {
+    for bad in ["", "\n", "error: no input files", "slangc 2026.22", "v1"] {
         let error = parse_version_output(bad).unwrap_err();
         assert!(
             matches!(error, VersionError::Output(_)),
@@ -520,7 +520,7 @@ fn the_version_output_table_of_cargo_gust() {
 }
 
 /// A `git describe` tag that no Slang prints, listed as a validated build only by the tests of the mechanism.
-const SYNTHETIC_BUILD: &str = "2026.21-1-g0a1b2c3d4";
+const SYNTHETIC_BUILD: &str = "2026.22-1-g0a1b2c3d4";
 
 #[test]
 fn the_pin_rule_is_exactly_the_one_of_cargo_gust() {
@@ -535,26 +535,26 @@ fn the_pin_rule_is_exactly_the_one_of_cargo_gust() {
     for reported in [
         "",
         "2026.2",
-        "2026.210",
-        "2026.22",
-        "2026.21-",
-        "2026.21-rc1",
-        "2026.21-1",
-        "2026.21-g0a1b2c3d4",
-        "2026.21-1-g0a1b2c3d4-dirty",
-        "2026.21-2-gdeadbee",
-        "2026.21-1-g0a1b2c3d5",
-        "2026.21 ",
-        "v2026.21",
+        "2026.220",
+        "2026.23",
+        "2026.22-",
+        "2026.22-rc1",
+        "2026.22-1",
+        "2026.22-g0a1b2c3d4",
+        "2026.22-1-g0a1b2c3d4-dirty",
+        "2026.22-2-gdeadbee",
+        "2026.22-1-g0a1b2c3d5",
+        "2026.22 ",
+        "v2026.22",
         "2026.19-1-g0a1b2c3d4",
-        "12026.21",
+        "12026.22",
     ] {
         assert!(!matches_pin(reported, &validated), "{reported:?}");
     }
     // A listed tag that does not extend the pin is not the pin.
     assert!(!matches_pin(
-        "2026.22-1-g0a1b2c3d4",
-        &["2026.22-1-g0a1b2c3d4"]
+        "2026.23-1-g0a1b2c3d4",
+        &["2026.23-1-g0a1b2c3d4"]
     ));
 }
 
@@ -609,18 +609,18 @@ fn the_version_check_accepts_exactly_the_pin_and_names_both_otherwise() {
         check_slangc_version(&fake_slangc(&scratch.0.join(name), stdout, stderr, code))
     };
 
-    assert_eq!(case("pin", "2026.21", "", 0), Ok(()));
+    assert_eq!(case("pin", "2026.22", "", 0), Ok(()));
     // The version on stderr when stdout is empty.
-    assert_eq!(case("stderr", "", "2026.21", 0), Ok(()));
+    assert_eq!(case("stderr", "", "2026.22", 0), Ok(()));
 
     // Anything but the exact pin is a mismatch that names the executable, what it printed and the pin.
     for found in [
         "2025.1.0",
         "2026.19",
-        "2026.210",
+        "2026.220",
         "2026.2",
-        "2026.21-1-g0a1b2c3d4",
-        "2026.21-rc1",
+        "2026.22-1-g0a1b2c3d4",
+        "2026.22-rc1",
     ] {
         let slangc = fake_slangc(&scratch.0.join(format!("other-{found}")), found, "", 0);
         let error = check_slangc_version(&slangc).unwrap_err();
@@ -634,7 +634,7 @@ fn the_version_check_accepts_exactly_the_pin_and_names_both_otherwise() {
         let text = error.to_string();
         assert!(text.contains(&slangc.display().to_string()), "{text}");
         assert!(text.contains(&format!("`{found}`")), "{text}");
-        assert!(text.contains("not the pinned 2026.21"), "{text}");
+        assert!(text.contains("not the pinned 2026.22"), "{text}");
         assert!(text.contains("cargo gust slang install"), "{text}");
     }
 
@@ -645,7 +645,7 @@ fn the_version_check_accepts_exactly_the_pin_and_names_both_otherwise() {
     assert_eq!(check_slangc_version_in(&build, &[SYNTHETIC_BUILD]), Ok(()));
     assert!(check_slangc_version_in(&build, &[]).is_err());
     assert!(check_slangc_version(&build).is_err());
-    assert!(check_slangc_version_in(&build, &["2026.21-2-gdeadbee"]).is_err());
+    assert!(check_slangc_version_in(&build, &["2026.22-2-gdeadbee"]).is_err());
 
     // Output that is not a version, a failing run and a missing executable are their own errors.
     let error = case("garbage", "error:", "", 0).unwrap_err();

@@ -53,7 +53,7 @@ use std::{
 };
 
 /// The Slang release GUST works with. This is the one home of the pin; `cargo-gust` and `cargo xtask` read it here.
-pub const SLANG_PIN: &str = "2026.21";
+pub const SLANG_PIN: &str = "2026.22";
 
 /// The variable that names the cache root.
 pub const HOME_VARIABLE: &str = "GUST_SLANG_HOME";
@@ -64,7 +64,7 @@ pub const HELPER_VARIABLE: &str = "GUST_SLANG_REFLECT";
 const HELPER_NAME: &str = "gust-slang-reflect";
 
 /// Other `slangc -version` tags that count as the pin: validated source builds (`git describe` tags that extend the
-/// pin). Ships empty (D72): 2026.21 was validated with the release archive, which prints the bare pin. Adding a tag
+/// pin). Ships empty (D72): 2026.22 was validated with the release archive, which prints the bare pin. Adding a tag
 /// is a decision, like moving the pin. Keep it a plain array of string literals.
 pub const VALIDATED_BUILDS: &[&str] = &[];
 

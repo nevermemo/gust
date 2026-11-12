@@ -148,8 +148,8 @@ mod tests {
         }
         // The shared schema-3 helper and the schema-4 one (arrays, m9.r2h) are both usable.
         for schema in ["3", "4"] {
-            let output = format!("gust-slang-reflect schema={schema} slang=2026.21\n");
-            assert_eq!(parse_helper_version(&output).unwrap(), "2026.21");
+            let output = format!("gust-slang-reflect schema={schema} slang=2026.22\n");
+            assert_eq!(parse_helper_version(&output).unwrap(), "2026.22");
         }
         for (bad, expected) in [
             ("", "unexpected"),

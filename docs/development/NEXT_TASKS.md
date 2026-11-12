@@ -562,9 +562,10 @@ test module; do not mix that mechanical move with behavior changes.
 - m9.r2a re-check 2 nits: the component-name exemption of the E0811 array comparison takes any 1 to 4 letters of
   `xyzwrgba` (`math_types::is_swizzle` is narrower); with `&&`, a comparison where only one side resolves to an
   array reaches slangc (loud) and DIAGNOSTICS does not say so.
-- The NVIDIA array defect (D168, D169): an expected-failure GPU sentinel built from the investigations' modules
-  (D168's `m7.spv`, D169's clean naga module of the length-4 program), so a driver update that fixes it is
-  noticed; a run on the RTX 3070 (another NVIDIA architecture) to scope it; the NVIDIA report is the owner's call
+- The NVIDIA array defect (D168, D169): the expected-failure sentinel landed (m9.sen,
+  `crates/gust-wgpu/tests/driver_sentinel.rs`). Left: a run on the RTX 3070 (another NVIDIA architecture) to
+  scope it, recorded in D168/D169's envelope; the sentinel's message names the local investigation folders
+  (`arrbug`, `arrbug2`), which a reader of the public repository cannot open, so name D168/D169 instead; the NVIDIA report is the owner's call
   (a draft can be prepared); the difftest's guard is removed when a fixed driver is measured. Owner's call: slangc's
   own SPIR-V, passed to Vulkan, computed the right values on the RTX 5090 where slangc's WGSL through naga did not;
   a runtime route that uses it on Vulkan would protect users' programs, not only the difftest.

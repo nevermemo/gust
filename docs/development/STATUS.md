@@ -261,6 +261,16 @@ and a NEXT_TASKS pointer to an item never filed; both fixed. D152 corrects D138'
   macro does not see as a literal (a `let` local, a literal sum, a float cast) passes, slangc folds it and naga
   rejects it (loud, not a wrong value). Five UI fixtures (pin 217), a unit test. 31 main gates green, ending
   06:18Z on 2026-11-12 (pin 441/45).
+- m9.sen (merge `92e8312`; Opus review MERGE AFTER FIXES 0/3/4, coordinator re-check MERGE with one nit): the
+  D168/D169 expected-failure GPU sentinel, `crates/gust-wgpu/tests/driver_sentinel.rs`, the first piece of D170's
+  driver lane. Three `#[gpu]` kernels follow the investigations' shapes (D168 with N=3 and N=5, D169's length-4
+  copy); the expected values are hand-written. Only the measured device (NVIDIA, Vulkan, a name containing
+  "RTX 5090") expects the defect's values: if it computes Rust's values or anything else, the test fails once,
+  after printing every program's verdict, and says to re-measure before removing the difftest guard
+  (`Gen::guard_set`, `scan_driver_hole`). Another NVIDIA adapter or backend passes on Rust's values or the
+  defect's with a note to record the result; every other adapter expects Rust's values. Measured: RTX 5090
+  (610.88) defect values on all three, Radeon 890M and lavapipe (CI) Rust's values. 31 main gates green, ending
+  12:14Z on 2026-11-12 (pin 442/46).
 
 - M4 m4.i (`b508e42`, fix round `08914bc`, merge `27b342b`): the M4 sanity-check fixes. A `CXX` whose file stem
   is `cl` gets MSVC arguments; the precompiled consumer prints "no GPU adapter" only for `Error::NoAdapter`, so

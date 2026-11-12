@@ -11,6 +11,11 @@ struct Rect
     {
         return (uint(2) * ((this.w + this.h)));
     }
+
+    uint score()
+    {
+        return ((this.area() * uint(2)) + this.tag());
+    }
 };
 
 struct Square
@@ -47,9 +52,13 @@ struct Results
     uint path_qualified;
     uint path_mut;
     uint order_args;
+    uint order_args_path;
     uint order_self;
     uint order_self_path;
     uint method_helper;
+    uint method_score;
+    uint pack_sum;
+    uint pack_both;
 };
 
 interface Shape
@@ -67,6 +76,17 @@ interface Tagged
 interface Plus
 {
     uint plus(uint k);
+}
+
+interface Mix
+{
+    uint mix(uint a, uint b);
+}
+
+interface Pack
+{
+    uint sum2(uint[2] v);
+    Tuple<uint, uint> both();
 }
 
 extension Rect : Shape
@@ -148,6 +168,27 @@ extension Kind : Tagged
     }
 }
 
+extension Square : Mix
+{
+    uint mix(uint a, uint b)
+    {
+        return (((this.side * uint(1000)) + (a * uint(10))) + b);
+    }
+}
+
+extension Square : Pack
+{
+    uint sum2(uint[2] v)
+    {
+        return ((this.side + v[0]) + v[1]);
+    }
+
+    Tuple<uint, uint> both()
+    {
+        return makeTuple(this.side, (this.side * uint(2)));
+    }
+}
+
 extension Counter : Plus
 {
     uint plus(uint k)
@@ -167,11 +208,6 @@ uint bias(uint v)
 uint area_of(Rect r)
 {
     return (r.area() + uint(1));
-}
-
-uint pair(uint a, uint b)
-{
-    return ((a * uint(10)) + b);
 }
 
 uint __gust_cl_run_0(Rect q)
@@ -237,35 +273,49 @@ void gpu_traits_run(uint3 id : SV_DispatchThreadID)
         Counter __gust_struct_23;
         __gust_struct_23.n = uint(0);
         Counter c = __gust_struct_23;
-        var order_args = pair(c.bump(), c.bump());
+        var order_args = s.mix(c.bump(), c.bump());
         Counter __gust_struct_25;
-        __gust_struct_25.n = x;
-        Counter d = __gust_struct_25;
-        var order_self = d.plus(d.bump());
+        __gust_struct_25.n = uint(0);
+        Counter c2 = __gust_struct_25;
+        var order_args_path = s.mix(c2.bump(), c2.bump());
         Counter __gust_struct_27;
         __gust_struct_27.n = x;
-        Counter e = __gust_struct_27;
+        Counter d = __gust_struct_27;
+        var order_self = d.plus(d.bump());
+        Counter __gust_struct_29;
+        __gust_struct_29.n = x;
+        Counter e = __gust_struct_29;
         var order_self_path = e.plus(e.bump());
-        Results __gust_struct_29;
-        __gust_struct_29.rect_area = rect_area;
-        __gust_struct_29.square_area = square_area;
-        __gust_struct_29.rect_doubled = rect_doubled;
-        __gust_struct_29.square_doubled = square_doubled;
-        __gust_struct_29.grown = g.area();
-        __gust_struct_29.grown_square = gs.area();
-        __gust_struct_29.kind_small = Kind::Small.tag();
-        __gust_struct_29.kind_big = Kind::Big.tag();
-        __gust_struct_29.two_traits = two_traits;
-        __gust_struct_29.helper_call = helper_call;
-        __gust_struct_29.closure_call = closure_call;
-        __gust_struct_29.path_ref = path_ref;
-        __gust_struct_29.path_value = path_value;
-        __gust_struct_29.path_qualified = path_qualified;
-        __gust_struct_29.path_mut = path_mut;
-        __gust_struct_29.order_args = order_args;
-        __gust_struct_29.order_self = order_self;
-        __gust_struct_29.order_self_path = order_self_path;
-        __gust_struct_29.method_helper = r.tag();
-        results[i] = __gust_struct_29;
+        Square __gust_struct_31;
+        __gust_struct_31.side = (x + uint(2));
+        Square pk = __gust_struct_31;
+        var pack_sum = pk.sum2({ x, uint(1) });
+        var both = pk.both();
+        var pack_both = ((both._0 * uint(100)) + both._1);
+        Results __gust_struct_35;
+        __gust_struct_35.rect_area = rect_area;
+        __gust_struct_35.square_area = square_area;
+        __gust_struct_35.rect_doubled = rect_doubled;
+        __gust_struct_35.square_doubled = square_doubled;
+        __gust_struct_35.grown = g.area();
+        __gust_struct_35.grown_square = gs.area();
+        __gust_struct_35.kind_small = Kind::Small.tag();
+        __gust_struct_35.kind_big = Kind::Big.tag();
+        __gust_struct_35.two_traits = two_traits;
+        __gust_struct_35.helper_call = helper_call;
+        __gust_struct_35.closure_call = closure_call;
+        __gust_struct_35.path_ref = path_ref;
+        __gust_struct_35.path_value = path_value;
+        __gust_struct_35.path_qualified = path_qualified;
+        __gust_struct_35.path_mut = path_mut;
+        __gust_struct_35.order_args = order_args;
+        __gust_struct_35.order_args_path = order_args_path;
+        __gust_struct_35.order_self = order_self;
+        __gust_struct_35.order_self_path = order_self_path;
+        __gust_struct_35.method_helper = r.tag();
+        __gust_struct_35.method_score = r.score();
+        __gust_struct_35.pack_sum = pack_sum;
+        __gust_struct_35.pack_both = pack_both;
+        results[i] = __gust_struct_35;
     }
 }

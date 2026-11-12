@@ -15,6 +15,18 @@ mod traits {
         fn plus(self, k: u32) -> u32;
     }
 
+    // Two arguments, to see the order they run in through a trait method.
+    pub trait Mix {
+        fn mix(&self, a: u32, b: u32) -> u32;
+    }
+
+    // An array parameter and a tuple result. `Self` inside a tuple needs `Self: Sized`, which a trait of this dialect cannot
+    // say (no supertrait, no where clause): rustc refuses it, see tests/ui/trait-self-in-tuple.
+    pub trait Pack {
+        fn sum2(&self, v: [u32; 2]) -> u32;
+        fn both(&self) -> (u32, u32);
+    }
+
     pub struct Rect {
         pub w: u32,
         pub h: u32,
@@ -53,14 +65,23 @@ mod traits {
         pub path_qualified: u32,
         pub path_mut: u32,
         pub order_args: u32,
+        pub order_args_path: u32,
         pub order_self: u32,
         pub order_self_path: u32,
         pub method_helper: u32,
+        pub method_score: u32,
+        pub pack_sum: u32,
+        pub pack_both: u32,
     }
 
     impl Rect {
         pub fn perimeter(&self) -> u32 {
             2u32 * (self.w + self.h)
+        }
+
+        // An inherent method that calls trait methods: emitted inside the struct, above the extensions that declare them.
+        pub fn score(&self) -> u32 {
+            self.area() * 2u32 + self.tag()
         }
     }
 
@@ -129,6 +150,22 @@ mod traits {
         }
     }
 
+    impl Mix for Square {
+        fn mix(&self, a: u32, b: u32) -> u32 {
+            self.side * 1000u32 + a * 10u32 + b
+        }
+    }
+
+    impl Pack for Square {
+        fn sum2(&self, v: [u32; 2]) -> u32 {
+            self.side + v[0] + v[1]
+        }
+
+        fn both(&self) -> (u32, u32) {
+            (self.side, self.side * 2u32)
+        }
+    }
+
     impl Counter {
         pub fn bump(&mut self) -> u32 {
             self.n += 1u32;
@@ -188,11 +225,18 @@ mod traits {
 
             // Arguments run left to right, and a by-value `self` is copied before the arguments run.
             let mut c = Counter { n: 0u32 };
-            let order_args = pair(c.bump(), c.bump());
+            let order_args = s.mix(c.bump(), c.bump());
+            let mut c2 = Counter { n: 0u32 };
+            let order_args_path = Mix::mix(&s, c2.bump(), c2.bump());
             let mut d = Counter { n: x };
             let order_self = d.plus(d.bump());
             let mut e = Counter { n: x };
             let order_self_path = Plus::plus(e, e.bump());
+
+            let pk = Square { side: x + 2u32 };
+            let pack_sum = pk.sum2([x, 1u32]);
+            let both = pk.both();
+            let pack_both = both.0 * 100u32 + both.1;
 
             results[i] = Results {
                 rect_area,
@@ -211,14 +255,14 @@ mod traits {
                 path_qualified,
                 path_mut,
                 order_args,
+                order_args_path,
                 order_self,
                 order_self_path,
                 method_helper: r.tag(),
+                method_score: r.score(),
+                pack_sum,
+                pack_both,
             };
         }
-    }
-
-    fn pair(a: u32, b: u32) -> u32 {
-        a * 10u32 + b
     }
 }

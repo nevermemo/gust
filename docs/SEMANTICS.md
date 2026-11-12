@@ -1565,8 +1565,17 @@ method as to an inherent one. A trait method is validated as a helper: it may ca
 **Order of evaluation.** Measured with rustc (through the CPU twin) and with slangc 2026.21 (the pinned one) on the RTX 5090:
 the arguments of a call run left to right, and a by-value `self` receiver is copied before the arguments run. For a counter
 `d` with `d.n = x`: `d.plus(d.bump())` with `plus(self, k) = self.n * 100 + k` is `101x + 1` (the receiver is read before
-`bump`), by method syntax and by `Plus::plus(d, d.bump())`; `pair(c.bump(), c.bump())` is 12. The GPU test
-`m9_traits` pins all three, on the GPU and on the twin, with hand-written expectations.
+`bump`), by method syntax and by `Plus::plus(d, d.bump())`. For a trait method with two arguments,
+`s.mix(c.bump(), c.bump())` and `Mix::mix(&s, c2.bump(), c2.bump())` with `mix(&self, a, b) = side * 1000 + a * 10 + b`
+give `side * 1000 + 12`: the first `bump` is the first argument. The GPU test `m9_traits` pins all four, on the GPU and
+on the twin, with hand-written expectations (`order_self`, `order_self_path`, `order_args`, `order_args_path`).
+
+**Shapes in signatures and calls.** A trait method may take an array (`fn sum2(&self, v: [u32; 2])`, Slang `uint[2]`)
+and return a tuple (`-> (u32, u32)`, Slang `Tuple<uint, uint>`); the GPU test runs both (`pack_sum`, `pack_both`). `Self`
+inside a tuple or array (`-> (Self, u32)`) needs `Self: Sized` in Rust, which a trait of this dialect cannot say (a
+supertrait and a `where` clause are `GUST-E0124`), so rustc refuses it with E0277 (UI fixture `trait-self-in-tuple`). An
+inherent method may call trait methods (`Rect::score` calls `self.area()` and `self.tag()`; it is emitted inside the
+struct, above the extensions that declare the callee, and slangc accepts it: `method_score`).
 
 **Edge cases.** The arithmetic in a trait method has the contract of section 3, as in a helper. Slang's standard module
 declares interfaces (`IFloat`, `IInteger`, ..); a user trait of such a name is renamed `__gust_r_<name>`

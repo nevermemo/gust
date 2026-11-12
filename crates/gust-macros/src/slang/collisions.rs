@@ -279,7 +279,8 @@ pub fn collides(text: &str) -> bool {
         || STDLIB_INTERFACES.binary_search(&text).is_ok()
 }
 
-/// The Slang spelling of a user name: the name itself, or `__gust_r_<name>` when it is in the table.
+/// The Slang spelling of a user name: the name itself, or `__gust_r_<name>` when it is in the table or names an interface
+/// of the standard module.
 ///
 /// A pure function of the text, so every site agrees without scope analysis. It is injective because user names that
 /// start with `__gust_` are rejected (E0901), and the inverse is "delete the prefix where an emitted name starts" (`strip_rename_prefix` in `crates/gust/src/slang/mod.rs`).

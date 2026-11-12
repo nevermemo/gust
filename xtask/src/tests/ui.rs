@@ -1819,7 +1819,7 @@ fn the_profile_fixtures_pin_the_exact_texts_and_variables() {
 /// The fixture crates under tests/ui, by name. `discover_cases` takes whatever directories exist, so
 /// deleting a fixture (with its `members` entry) would leave `check-ui` green; this list is the pin.
 /// Adding or removing a fixture changes it deliberately, in the same change as the fixture.
-const PINNED_FIXTURES: [&str; 234] = [
+const PINNED_FIXTURES: [&str; 236] = [
     "array-barrier",
     "array-buffer-len",
     "array-const-len",
@@ -1989,6 +1989,7 @@ const PINNED_FIXTURES: [&str; 234] = [
     "trait-blanket-impl",
     "trait-default-body",
     "trait-dyn",
+    "trait-enum-mut-self",
     "trait-foreign-impl",
     "trait-generic",
     "trait-ifloat-ok",
@@ -2000,6 +2001,7 @@ const PINNED_FIXTURES: [&str; 234] = [
     "trait-path-receiver",
     "trait-recursion",
     "trait-reserved-name",
+    "trait-self-in-tuple",
     "trait-supertrait",
     "tuple-barrier",
     "tuple-buffer",

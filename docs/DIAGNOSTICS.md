@@ -152,7 +152,7 @@ Decision: D02.
 
 A GPU module holds functions, plain structs, field-less enums (GUST-E0122), the inherent `impl` blocks of its structs (several blocks for one struct are allowed) and, since slice m9.g1, traits of the module (GUST-E0124) with their impls.
 Reached through `#[gpu]`.
-Rejected: `const`, `static`, `use`, nested `mod`, type aliases; a `trait` that is `unsafe`, `auto` or carries an attribute other than documentation and lints; an `impl` that is an `unsafe impl`, a trait impl of a trait the module does not declare (`impl Clone for S`), a negative impl, an associated `const` or an associated type, a `Self` anywhere but inside an `impl` block (inside one it is the struct of the block, in a type, a struct literal or a path such as `Self::make()`). A path call of a function that has a receiver (`S::area(c)`; write `c.area()`) or of an associated function that no struct has (`S::nowhere()`) is GUST-E0302, not this code. Methods and associated functions are accepted since M9 slices m9.a1 and m9.a2.
+Rejected: `const`, `static`, `use`, nested `mod`, type aliases; an `impl` that is an `unsafe impl`, a trait impl of a trait the module does not declare (`impl Clone for S`), a negative impl, an associated `const` or an associated type, a `Self` anywhere but inside an `impl` block (inside one it is the struct of the block, in a type, a struct literal or a path such as `Self::make()`). A path call of a function that has a receiver (`S::area(c)`; write `c.area()`) or of an associated function that no struct has (`S::nowhere()`) is GUST-E0302, not this code. Methods and associated functions are accepted since M9 slices m9.a1 and m9.a2.
 Write instead: pass constants as uniform or value parameters, or write them inline.
 Decision: D02, D133 (methods), D154.
 
@@ -258,7 +258,7 @@ Decision: D02.
 
 An attribute with no proven Rust-to-Slang meaning cannot be silently dropped.
 Allowed attributes: `doc`, `allow`, `warn`, `deny`, `forbid`, `derive` (on structs),
-and `kernel`.
+and `kernel`. A `trait` takes `doc`, `allow`, `warn`, `deny` and `forbid` only (slice m9.g1).
 Reached through `#[gpu]`.
 Rejected: `#[cfg(..)]`, `#[inline]`, `#[must_use]` and every other attribute. On an `impl` block only `doc`, `allow`, `warn`, `deny` and `forbid` are accepted (`#[derive(..)]` and `#[kernel]` are errors in rustc there, `#[cfg(..)]` would let the Slang and the twin disagree about the methods).
 Write instead: remove the attribute.
@@ -315,7 +315,7 @@ Write instead: declare the struct in the same `#[gpu]` module and put the method
 Fixture: `tests/ui/method-impl-foreign`, `tests/ui/trait-foreign-impl` and `tests/ui/trait-blanket-impl` (`cargo xtask check-ui`, `code: none` plus the message).
 Decision: D154 (M9 plan 2.1, slice m9.a1).
 
-An `impl` block for an enum of the module (`impl Mode { .. }`) is this code too, with the message "methods on an enum are not supported": enums have no methods in M9 (slice m9.e1); write a free function that takes the enum.
+An `impl` block for an enum of the module (`impl Mode { .. }`) is this code too, with the message "methods on an enum are not supported": an inherent `impl` is for a struct (slice m9.e1); write a free function that takes the enum, or implement a trait of the module for it (slice m9.g1).
 
 ### GUST-E0122 enum shape outside the contract
 
@@ -329,7 +329,7 @@ Decision: D157 (M9 plan 2.2, slice m9.e1).
 
 ### GUST-E0124 trait form outside the contract
 
-A `#[gpu]` module accepts a trait that declares methods with a receiver (`&self`, `&mut self` or `self`) and no body, and `impl Trait for S` of a struct or field-less enum of the module (slice m9.g1, D170). The trait lowers to a Slang `interface`, each impl to an `extension S : Trait`, and a call to the concrete method: dispatch is static. A `&mut self` method becomes `[mutating]`; `Self` in a signature is `This`. Everything else about a trait is refused with this code: a default method body, an associated type, constant or function without a receiver, a supertrait (`trait B: A`), a generic trait or method, an `async`, `const`, `unsafe`, `extern` or variadic method, and in an impl any item that is not a method (an associated `const` or type). A `&mut self` method in the impl of an enum is this code too: an enum is a value of the module with no fields to write, and that form is not part of this slice. Bounds and generics are slice m9.g2.
+A `#[gpu]` module accepts a trait that declares methods with a receiver (`&self`, `&mut self` or `self`) and no body, and `impl Trait for S` of a struct or field-less enum of the module (slice m9.g1, D170). The trait lowers to a Slang `interface`, each impl to an `extension S : Trait`, and a call to the concrete method: dispatch is static. A `&mut self` method becomes `[mutating]`; `Self` in a signature is `This`. Everything else about a trait is refused with this code: an `unsafe` or `auto` trait, a default method body, an associated type, constant or function without a receiver, a supertrait (`trait B: A`), a generic trait or method, an `async`, `const`, `unsafe`, `extern` or variadic method, and in an impl any item that is not a method (an associated `const` or type). A `&mut self` method in the impl of an enum is this code too: an enum is a value of the module with no fields to write, and that form is not part of this slice. Bounds and generics are slice m9.g2.
 Reached through `#[gpu]`.
 Rejected: `trait T { fn m(&self) -> u32 { 1u32 } }`, `trait T { type X; }`, `trait T { const N: u32; }`, `trait B: A { .. }`, `trait T<A> { .. }`, `trait T { fn m<A>(&self); }`, `trait T { fn make() -> u32; }`, `impl T for E { fn bump(&mut self) { .. } }` for an enum `E`.
 Write instead: declare the method without a body and implement it in each impl; share code with a helper function.

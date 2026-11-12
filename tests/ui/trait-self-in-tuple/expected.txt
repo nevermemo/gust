@@ -1,0 +1,5 @@
+# Keys matched against the one error of `cargo check --message-format json` (xtask/src/ui.rs).
+code: E0277
+file: trait-self-in-tuple/src/main.rs
+line: 8
+message: the size for values of type `Self` cannot be known at compilation time

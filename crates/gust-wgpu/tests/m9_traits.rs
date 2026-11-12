@@ -25,10 +25,16 @@ use gust_wgpu::{GpuBufferAccess, HeadlessDevice};
 //   path_mut        = (x+1)^2           (Shape::grow(&mut pm, 1), pm = {x, x})    : 1, 9, 25, 49, 81
 //   method_helper   = 1006 + 2x         (a trait method that calls a helper and an inherent method) : 1006, 1010, 1014, 1018, 1022
 // Order (Rust: left to right, and a by-value `self` is copied before the arguments run):
-//   order_args      = pair(bump, bump) = 1 * 10 + 2 = 12
+//   order_args      = s.mix(c.bump(), c.bump()), mix = side * 1000 + a * 10 + b, side = x + 1, a = 1, b = 2:
+//                     (x+1) * 1000 + 12 : 1012, 3012, 5012, 7012, 9012 (a trait method with two arguments, left to right)
+//   order_args_path = Mix::mix(&s, c2.bump(), c2.bump()): the same call  : 1012, 3012, 5012, 7012, 9012
 //   order_self      = d.plus(d.bump()) with d.n = x: self copied first (n = x), the argument is x + 1,
 //                     plus = n * 100 + k = 100x + x + 1 = 101x + 1 : 1, 203, 405, 607, 809
 //   order_self_path = Plus::plus(e, e.bump()): the same call          : 1, 203, 405, 607, 809
+// method_score = r.score() = 2 * area + tag = 6x + 1006 + 2x = 1006 + 8x (an inherent method that calls trait methods): 1006, 1022, 1038, 1054, 1070
+// pk = Square { side: x + 2 }:
+//   pack_sum   = pk.sum2([x, 1]) = (x+2) + x + 1 = 2x + 3             (an array parameter)       : 3, 7, 11, 15, 19
+//   pack_both  = pk.both() = (x+2, 2(x+2)) as 0*100 + 1 = 102(x+2)   (a tuple result)         : 204, 408, 612, 816, 1020
 const RECT_AREA: [u32; 5] = [0, 6, 12, 18, 24];
 const SQUARE_AREA: [u32; 5] = [1, 9, 25, 49, 81];
 const RECT_DOUBLED: [u32; 5] = [0, 24, 48, 72, 96];
@@ -40,7 +46,10 @@ const HELPER_CALL: [u32; 5] = [1, 7, 13, 19, 25];
 const CLOSURE_CALL: [u32; 5] = [1004, 1012, 1020, 1028, 1036];
 const PATH_VALUE: [u32; 5] = [0, 8, 16, 24, 32];
 const METHOD_HELPER: [u32; 5] = [1006, 1010, 1014, 1018, 1022];
-const ORDER_ARGS: u32 = 12;
+const ORDER_ARGS: [u32; 5] = [1012, 3012, 5012, 7012, 9012];
+const METHOD_SCORE: [u32; 5] = [1006, 1022, 1038, 1054, 1070];
+const PACK_SUM: [u32; 5] = [3, 7, 11, 15, 19];
+const PACK_BOTH: [u32; 5] = [204, 408, 612, 816, 1020];
 const ORDER_SELF: [u32; 5] = [1, 203, 405, 607, 809];
 
 #[test]
@@ -71,9 +80,13 @@ fn traits_execute_on_gpu_and_on_the_cpu_twin() {
                 path_qualified: u32::MAX,
                 path_mut: u32::MAX,
                 order_args: u32::MAX,
+                order_args_path: u32::MAX,
                 order_self: u32::MAX,
                 order_self_path: u32::MAX,
                 method_helper: u32::MAX,
+                method_score: u32::MAX,
+                pack_sum: u32::MAX,
+                pack_both: u32::MAX,
             };
             count
         ];
@@ -116,7 +129,14 @@ fn traits_execute_on_gpu_and_on_the_cpu_twin() {
                     "path_qualified {note}"
                 );
                 assert_eq!(got[i].path_mut, SQUARE_AREA[k], "path_mut {note}");
-                assert_eq!(got[i].order_args, ORDER_ARGS, "order_args {note}");
+                assert_eq!(got[i].order_args, ORDER_ARGS[k], "order_args {note}");
+                assert_eq!(
+                    got[i].order_args_path, ORDER_ARGS[k],
+                    "order_args_path {note}"
+                );
+                assert_eq!(got[i].method_score, METHOD_SCORE[k], "method_score {note}");
+                assert_eq!(got[i].pack_sum, PACK_SUM[k], "pack_sum {note}");
+                assert_eq!(got[i].pack_both, PACK_BOTH[k], "pack_both {note}");
                 assert_eq!(got[i].order_self, ORDER_SELF[k], "order_self {note}");
                 assert_eq!(
                     got[i].order_self_path, ORDER_SELF[k],

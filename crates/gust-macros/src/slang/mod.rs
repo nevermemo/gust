@@ -852,7 +852,7 @@ pub(crate) fn emit_kernel_in(
                 _ => None,
             })
         })
-        .unwrap_or(kernel);
+        .unwrap_or(kernel); // no trait: the caller's kernel is the module's own
     let rules = stage.binding_rules();
     let (_, items) = module.content.as_ref().expect("validated inline module");
     let lowering = module_lowering(module);

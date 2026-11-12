@@ -1901,6 +1901,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "trait-enum-mut-self"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
 name = "trait-foreign-impl"
 version = "0.0.0"
 dependencies = [
@@ -1972,6 +1979,13 @@ dependencies = [
 
 [[package]]
 name = "trait-reserved-name"
+version = "0.0.0"
+dependencies = [
+ "gust-compute",
+]
+
+[[package]]
+name = "trait-self-in-tuple"
 version = "0.0.0"
 dependencies = [
  "gust-compute",

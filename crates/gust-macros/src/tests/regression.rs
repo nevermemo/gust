@@ -9022,6 +9022,30 @@ fn each_trait_refusal_carries_its_code() {
             Code::TraitFeature,
         ),
         (
+            "&mut self in an enum impl",
+            with_kernel(
+                "pub trait U { fn bump(&mut self); } #[derive(PartialEq, Eq)] pub enum K { A, B } \
+                 impl U for K { fn bump(&mut self) { } } ",
+                blank,
+            ),
+            Code::TraitFeature,
+        ),
+        (
+            "unsafe trait",
+            with_kernel("pub unsafe trait U { fn m(&self) -> u32; } ", blank),
+            Code::TraitFeature,
+        ),
+        (
+            "auto trait",
+            with_kernel("pub auto trait U { } ", blank),
+            Code::TraitFeature,
+        ),
+        (
+            "attribute on a trait",
+            with_kernel("#[inline] pub trait U { fn m(&self) -> u32; } ", blank),
+            Code::UnsupportedAttribute,
+        ),
+        (
             "assoc item in impl",
             with_kernel(
                 &format!(
@@ -9234,4 +9258,33 @@ fn a_trait_path_call_is_rewritten_inside_a_closure_a_helper_and_a_method() {
     assert!(source.contains("q.get()"), "{source}");
     assert!(source.contains("s.get()"), "{source}");
     assert!(source.contains("this.s.get()"), "{source}");
+}
+
+#[test]
+fn a_trait_mutating_call_in_an_indexed_place_is_refused_like_an_inherent_one() {
+    // Plan case (d), second half: `out[c.n] = c.bump()` for a trait `&mut self` method, both spellings.
+    let items = "pub struct Cnt { pub n: u32 } pub trait Bump { fn bump(&mut self) -> u32; } \
+                 impl Bump for Cnt { fn bump(&mut self) -> u32 { self.n += 1u32; self.n } } ";
+    assert_rejected(
+        &with_kernel(items, "let mut c = Cnt { n: 0u32 }; out[c.n] = c.bump();"),
+        Code::ForBoundSideEffect,
+    );
+    assert_rejected(
+        &with_kernel(
+            items,
+            "let mut c = Cnt { n: 0u32 }; out[c.n] = Bump::bump(&mut c);",
+        ),
+        Code::ForBoundSideEffect,
+    );
+}
+
+#[test]
+fn a_closure_in_a_trait_impl_method_and_an_empty_trait_are_accepted() {
+    translate(&with_kernel(
+        "pub trait U { fn m(&self, k: u32) -> u32; } pub trait Empty { } pub struct R { pub v: u32 } \
+         impl U for R { fn m(&self, k: u32) -> u32 { let f = |a: u32, b: u32| -> u32 { a * b }; f(self.v, k) } } \
+         impl Empty for R { } ",
+        "let r = R { v: 2u32 }; out[id.x] = r.m(3u32);",
+    ))
+    .unwrap();
 }
